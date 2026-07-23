@@ -18,3 +18,4 @@ export const updateCharacter = (id, body) =>
 export const deleteCharacter = (id) =>
   fetch(`/api/characters/${id}`, { method: 'DELETE' }).then(json);
 export const getChat = () => fetch('/api/chat').then(json);
+export const getRuleset = () => fetch('/api/ruleset').then(json);

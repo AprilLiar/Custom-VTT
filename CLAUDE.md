@@ -4,8 +4,13 @@
 truth for this project: the game mechanics, data model, Socket.io event contract, page layout,
 implementation phases, risks, and the list of deliberately-open design questions. Every change
 must stay consistent with it. If a request conflicts with the plan, flag the conflict instead
-of silently diverging; if a decision resolves one of the plan's "Open items", update the plan
-in the same PR.
+of silently diverging.
+
+**Keep the plan current — always, in the same PR.** Whenever ANY change is made or implemented
+— a mechanic, a schema column, an event payload, a UI behavior, a decided open item, a rule the
+user states in conversation — update `vttprojectplan.md` to match before committing. The plan
+is the living knowledge base; code and plan must never drift. A PR that changes behavior but
+not the plan is incomplete.
 
 ## Orientation (details in the plan)
 

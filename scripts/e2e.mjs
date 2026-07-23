@@ -20,7 +20,7 @@ const jpost = (url, body, method = 'POST') =>
 const watcher = io(URL);
 const actor = io(URL);
 const events = [];
-for (const ev of ['character:created', 'character:updated', 'character:deleted', 'die:updated', 'roll:result', 'inventory:updated', 'injuries:updated']) {
+for (const ev of ['character:created', 'character:updated', 'character:deleted', 'die:updated', 'roll:result', 'inventory:updated', 'injuries:updated', 'stance:created', 'stance:updated', 'stance:deleted', 'stance:activated']) {
   watcher.on(ev, (payload) => events.push({ ev, payload }));
 }
 const waitEvent = (ev, pred = () => true, ms = 3000) =>
@@ -70,11 +70,13 @@ emit('die:roll', { characterId: ch.id, dieId: skull.id, modifier: 500 });
 roll = await waitEvent('roll:result');
 check('modifier clamped to +20', roll.modifier === 20, `got ${roll.modifier}`);
 
-// --- pool roll ---
+// --- pool roll: any selection of dice, across body sections ---
+const body = full.dice.find((d) => d.slot_name === 'Body');
+const rightLeg = full.dice.find((d) => d.slot_name === 'Right Leg');
 events.length = 0;
-emit('pool:roll', { characterId: ch.id, pool: 'core', modifier: -2 });
+emit('pool:roll', { characterId: ch.id, dieIds: [skull.id, body.id, rightLeg.id], modifier: -2 });
 roll = await waitEvent('roll:result');
-check('pool roll rolls all 4 core dice', roll.dice.length === 4, JSON.stringify(roll.dice));
+check('pool roll rolls the 3 selected dice (cross-section)', roll.dice.length === 3, JSON.stringify(roll.dice));
 check('pool total = sum of results', roll.total === roll.dice.reduce((s, d) => s + d.result, 0));
 
 // --- stepping: d8 -> d10 -> d12 -> d12+1 -> d12+2 ---
@@ -139,21 +141,96 @@ emit('die:roll', { characterId: ch.id, dieId: leftLeg.id, modifier: 0 });
 await sleep(400);
 check('incapacitated die does not roll', !events.some((e) => e.ev === 'roll:result'));
 
+// --- pool roll silently drops incapacitated dice from the selection ---
+events.length = 0;
+emit('pool:roll', { characterId: ch.id, dieIds: [skull.id, leftLeg.id], modifier: 0 });
+roll = await waitEvent('roll:result');
+check('pool roll filters incapacitated dice', roll.dice.length === 1 && roll.dice[0].slot_name === 'Skull');
+
 // --- revive ---
 events.length = 0;
 emit('die:step', { dieId: leftLeg.id, direction: 'up' });
 upd = await waitEvent('die:updated', (d) => d.dieId === leftLeg.id);
 check('revive to fresh d4', upd.current_size === 4 && upd.bonus === 0 && upd.status === 'active');
 
-// --- inventory ---
+// --- inventory (name + optional description, editable) ---
 events.length = 0;
-emit('inventory:add', { characterId: ch.id, itemName: 'Brass Knuckles' });
+emit('inventory:add', { characterId: ch.id, itemName: 'Brass Knuckles', description: 'worn but solid' });
 let inv = await waitEvent('inventory:updated', (p) => p.characterId === ch.id);
-check('inventory add broadcast with items', inv.items.length === 1 && inv.items[0].item_name === 'Brass Knuckles');
+check('inventory add with description', inv.items.length === 1 && inv.items[0].item_name === 'Brass Knuckles' && inv.items[0].description === 'worn but solid');
+events.length = 0;
+emit('inventory:add', { characterId: ch.id, itemName: 'Rope' });
+inv = await waitEvent('inventory:updated', (p) => p.characterId === ch.id && p.items.length === 2);
+check('inventory add without description defaults empty', inv.items[1].description === '');
+events.length = 0;
+emit('inventory:update', { itemId: inv.items[1].id, itemName: 'Long Rope', description: '15 meters' });
+inv = await waitEvent('inventory:updated', (p) => p.characterId === ch.id);
+check('inventory item editable (name + description)', inv.items[1].item_name === 'Long Rope' && inv.items[1].description === '15 meters');
 events.length = 0;
 emit('inventory:remove', { itemId: inv.items[0].id });
-inv = await waitEvent('inventory:updated', (p) => p.characterId === ch.id);
+inv = await waitEvent('inventory:updated', (p) => p.characterId === ch.id && p.items.length === 1);
+emit('inventory:remove', { itemId: inv.items[0].id });
+inv = await waitEvent('inventory:updated', (p) => p.characterId === ch.id && p.items.length === 0);
 check('inventory remove', inv.items.length === 0);
+
+// --- ruleset: 7 styles, complete tournament, +2 edges ---
+const ruleset = (await jf('/api/ruleset')).body;
+check('7 attributes seeded with icons', ruleset.attributes.length === 7 && ruleset.attributes.every((a) => a.icon));
+check('21 counter edges at +2', ruleset.counters.length === 21 && ruleset.counters.every((c) => c.bonus === 2));
+const outDegree = new Map();
+const inDegree = new Map();
+for (const c of ruleset.counters) {
+  outDegree.set(c.attacker_attribute_id, (outDegree.get(c.attacker_attribute_id) ?? 0) + 1);
+  inDegree.set(c.defender_attribute_id, (inDegree.get(c.defender_attribute_id) ?? 0) + 1);
+}
+check('every style defeats exactly 3 and is defeated by 3', ruleset.attributes.every((a) => outDegree.get(a.id) === 3 && inDegree.get(a.id) === 3));
+const attrIdByName = new Map(ruleset.attributes.map((a) => [a.name, a.id]));
+
+// --- stances ---
+events.length = 0;
+emit('stance:create', { characterId: ch.id, name: 'Blitz', attributeAId: attrIdByName.get('Speed'), attributeBId: attrIdByName.get('Power') });
+const stanceA = await waitEvent('stance:created', (s) => s.character_id === ch.id);
+check('stance created', stanceA.name === 'Blitz');
+const firstActivation = await waitEvent('stance:activated', (p) => p.characterId === ch.id);
+check('first stance auto-activates', firstActivation.stanceId === stanceA.id);
+
+events.length = 0;
+emit('stance:create', { characterId: ch.id, name: 'Fortress', attributeAId: attrIdByName.get('Defensive'), attributeBId: attrIdByName.get('Keep-out') });
+const stanceB = await waitEvent('stance:created', (s) => s.character_id === ch.id);
+await sleep(300);
+check('second stance does not steal active', !events.some((e) => e.ev === 'stance:activated'));
+
+let sheet = (await jf(`/api/characters/${ch.id}`)).body;
+check('sheet includes stances, active is first', sheet.stances.length === 2 && sheet.character.active_stance_id === stanceA.id);
+
+events.length = 0;
+emit('stance:create', { characterId: ch.id, name: 'Broken', attributeAId: attrIdByName.get('Speed'), attributeBId: attrIdByName.get('Speed') });
+await sleep(300);
+check('duplicate-attribute stance rejected', !events.some((e) => e.ev === 'stance:created'));
+
+events.length = 0;
+emit('stance:activate', { characterId: ch.id, stanceId: stanceB.id });
+const switched = await waitEvent('stance:activated', (p) => p.characterId === ch.id);
+check('activate switches stance', switched.stanceId === stanceB.id);
+
+events.length = 0;
+emit('stance:update', { stanceId: stanceB.id, name: 'Iron Fortress', attributeAId: attrIdByName.get('Defensive'), attributeBId: attrIdByName.get('Close-Quarters') });
+const updatedStance = await waitEvent('stance:updated', (s) => s.id === stanceB.id);
+check('stance update', updatedStance.name === 'Iron Fortress' && updatedStance.attribute_b_id === attrIdByName.get('Close-Quarters'));
+
+// deleting the ACTIVE stance hands active to the survivor
+events.length = 0;
+emit('stance:delete', { stanceId: stanceB.id });
+const reActivated = await waitEvent('stance:activated', (p) => p.characterId === ch.id);
+await waitEvent('stance:deleted', (p) => p.stanceId === stanceB.id);
+check('deleting active stance auto-activates survivor', reActivated.stanceId === stanceA.id);
+
+// the last stance cannot be deleted
+events.length = 0;
+emit('stance:delete', { stanceId: stanceA.id });
+await sleep(300);
+sheet = (await jf(`/api/characters/${ch.id}`)).body;
+check('last stance cannot be deleted', !events.some((e) => e.ev === 'stance:deleted') && sheet.stances.length === 1);
 
 // --- injuries ---
 events.length = 0;
@@ -171,7 +248,7 @@ check('injury remove', inj.injuries.length === 0);
 
 // --- chat history ---
 const chat = (await jf('/api/chat')).body;
-check('chat history has all rolls (4)', chat.length === 4, `got ${chat.length}`);
+check('chat history has all rolls (5)', chat.length === 5, `got ${chat.length}`);
 check('chat entries carry name + dice + total', chat.every((e) => e.characterName && Array.isArray(e.dice) && typeof e.total === 'number' && e.timestamp));
 
 // --- name + portrait update ---
@@ -188,7 +265,7 @@ await waitEvent('character:deleted', (p) => p.id === ch.id);
 check('character:deleted broadcast', true);
 check('sheet fetch now 404', (await jf(`/api/characters/${ch.id}`)).status === 404);
 const chatAfter = (await jf('/api/chat')).body;
-check('chat log survives character deletion', chatAfter.length === 4 && chatAfter[0].characterName === '(deleted)');
+check('chat log survives character deletion', chatAfter.length === 5 && chatAfter[0].characterName === '(deleted)');
 
 await jf(`/api/characters/${npc.id}`, { method: 'DELETE' });
 
