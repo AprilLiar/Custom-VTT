@@ -12,7 +12,7 @@
     "dev:client": "npm run dev --prefix client",
     "build": "npm install --prefix client && npm run build --prefix client",
     "start": "node server/index.js",
-    "test": "node --test server/test"
+    "test": "node --test \"server/test/*.test.js\""
   },
   "dependencies": {
     "@libsql/client": "^0.15.0",

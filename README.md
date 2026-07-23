@@ -44,5 +44,9 @@ Note: Render's free tier sleeps after inactivity — the first load of a session
 
 ## Project status
 
-Phase 0 (walking skeleton) — hosting + database + websockets proven end-to-end with a
-trivial ping round-trip. See `vttprojectplan.md` phases for what comes next.
+Phase 1 (Characters & Core Stats) — role-select modal, character list, full Core Stats
+tab (dice pools with roll/step/tint, Lock/Revert, stamina, inventory, injuries), and the
+live Chat Log panel. See `vttprojectplan.md` phases for what comes next.
+
+**Testing:** `npm test` runs the game-logic unit tests. `scripts/e2e.mjs` is a full
+integration pass (run it against a freshly started server with a clean `local.db`).
