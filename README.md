@@ -44,9 +44,11 @@ Note: Render's free tier sleeps after inactivity — the first load of a session
 
 ## Project status
 
-Phase 1 (Characters & Core Stats) — role-select modal, character list, full Core Stats
-tab (dice pools with roll/step/tint, Lock/Revert, stamina, inventory, injuries), and the
-live Chat Log panel. See `vttprojectplan.md` phases for what comes next.
+Phase 2 (Stances) — the 7-style ruleset seeded (complete counter tournament, ±2),
+Stance Creator, activate-on-click with live broadcast, the SVG counter chart with
+best/worst matchup lists, and sheet-header stance badge. Phase 1 refinements landed
+alongside: inventory items with editable descriptions (stacked layout, shared with
+Injuries) and the selection-based Pool Roll. See `vttprojectplan.md` for what's next.
 
 **Testing:** `npm test` runs the game-logic unit tests. `scripts/e2e.mjs` is a full
 integration pass (run it against a freshly started server with a clean `local.db`).

@@ -27,7 +27,7 @@ Each character has 3 fixed dice pools, always the same slot names for every char
 | Core | Left Hand, Stamina, Body, Right Hand |
 | Legs | Left Leg, Right Leg |
 
-- Each die can be rolled individually (opens a dialog asking for an ad-hoc +/- modifier for that roll) or as a full pool (rolls all active dice in the pool at once, with one shared +/- modifier applied to all of them).
+- Each die can be rolled individually (opens a dialog asking for an ad-hoc +/- modifier for that roll, clamped to ±20), or via **Pool Roll**: a single button on the sheet enters selection mode, where any set of that character's active dice — across Head/Core/Legs alike, not one body section at a time — is picked and rolled together with one shared +/- modifier.
 - Each die has a green up-arrow and red down-arrow next to it to step its size: d4 → d6 → d8 → d10 → d12.
 - Stepping up past d12: size stays at d12, and a permanent bonus stacks instead (d12 → d12+1 → d12+2 → ...). This bonus is added to every future roll of that die.
 - Stepping down from d12+N: the bonus is reduced first (d12+2 → d12+1 → d12 → d10 → d8 ...); only once size is back to d4 with no bonus does the next down-click incapacitate the die.
@@ -44,10 +44,24 @@ Each die tracks two states: its **current** value (fluctuates during play) and i
 
 ## Game mechanic — Stances (Stances tab)
 Each character builds their own stances via an in-sheet **Stance Creator**; stances are not shared between characters.
-- A stance is a name plus exactly 2 attributes, chosen from a fixed pool of 7 (e.g. Technique, Improvisation, Speed, Power, Defensive — final list still TBD, seeded into the database once decided; not editable in-app since it's core ruleset, not session content).
-- The 7 attributes form a **2-Paradoxical Tree**: each attribute counters exactly 2 others and is countered by exactly 2 others. Each counter relationship carries a numeric bonus/penalty (not just binary advantage/disadvantage) — seeded once as a fixed table of "this attribute vs that attribute → bonus" pairs.
-- A character's Stances tab lists all stances they've created; left-clicking one makes it that character's **currently active stance** (exactly one at a time, mechanically relevant — not cosmetic). This is tracked per-character and broadcast live, so it's visible to everyone (including opponents), Pokemon-switch style.
-- How the active stance's attributes actually modify rolls/outcomes depends on the Moves tab (next), so full resolution logic is an open item until that's defined — the data (stances, attributes, counter bonuses, active stance) is modeled now so it's ready to plug in.
+- A stance is a name plus exactly 2 styles (attributes), chosen from the fixed pool of 7 — seeded once as core ruleset, not editable in-app. The **final list** (decided): Speed, Power, Improvisation, Technique, Keep-out, Defensive, Close-Quarters. Each style has an assigned open-source icon (lucide, stored as an icon name on the attribute row) shown throughout the UI.
+- The 7 styles form the **2-Paradox tournament**: a complete tournament — every pair of styles has a winner, so each style defeats exactly 3 others and is defeated by the remaining 3 (21 seeded winner→loser pairs). The full defeats table:
+
+  | Style | Defeats |
+  |-------|---------|
+  | Speed | Power, Improvisation, Keep-out |
+  | Power | Defensive, Improvisation, Technique |
+  | Improvisation | Technique, Keep-out, Close-Quarters |
+  | Technique | Speed, Defensive, Keep-out |
+  | Keep-out | Power, Defensive, Close-Quarters |
+  | Defensive | Speed, Improvisation, Close-Quarters |
+  | Close-Quarters | Speed, Power, Technique |
+
+- Counter bonus (decided): **+2 for each enemy style you are strong against, −2 for each you are weak towards** (the same seeded edge read from the loser's side). Styles are also expected to carry their own mechanical benefits eventually — structure TBD, schema kept extensible for it.
+- A character's Stances tab lists all stances they've created; left-clicking one makes it that character's **currently active stance** (exactly one at a time, mechanically relevant — not cosmetic). This is tracked per-character and broadcast live, so it's visible to everyone (including opponents), Pokemon-switch style. The active stance also shows as a badge on the sheet header, and (Phase 6) in each participant's Combat Arena summary.
+- **No deactivation** (decided): the active stance can only be switched, never turned off. Every character should keep at least one stance with one active at all times — the first stance created auto-activates, the last remaining stance can't be deleted, and deleting the active stance auto-activates a surviving one. (A brand-new character has none until their first is created — the tab nudges for it.)
+- The Stances tab shows the **counter chart** to everyone: a vector (SVG) graph of the 7-style tournament that blends with the UI, arrows pointing winner → disadvantaged. When a stance is active, its two styles are highlighted — green edges for matchups it counters, red for matchups that counter it — plus **Best/Worst Matchups** lists: enemy style-pairs ranked by net score (sum of ±2 across all cross pairs; a style shared with the enemy pair contributes 0), top and bottom few shown.
+- How the active stance's attributes actually modify rolls/outcomes beyond this scoring depends on the Moves tab (next), so full resolution logic is an open item until that's defined — the data (stances, attributes, counter bonuses, active stance) is modeled now so it's ready to plug in.
 
 ## Game mechanic — Moves & Tells (Moves tab)
 - **Default Moves** (Block, Jab, Dodge, etc. — list still incomplete) are automatically available to every character, PC or NPC, with no granting step.
@@ -123,10 +137,13 @@ CREATE TABLE characters (
 -- Seeded once, fixed ruleset (not user-editable in-app)
 CREATE TABLE attributes (
   id INTEGER PRIMARY KEY,
-  name TEXT NOT NULL UNIQUE
+  name TEXT NOT NULL UNIQUE,
+  icon TEXT NOT NULL DEFAULT '' -- lucide icon name, rendered client-side
 );
 
--- Seeded once: 14 rows total for 7 attributes x 2 outgoing counters each
+-- Seeded once: 21 rows — the complete 2-Paradox tournament (every pair of the
+-- 7 styles has a winner; each style defeats exactly 3). bonus is +2 on every
+-- edge; the loser's -2 is the same row read from the other side.
 CREATE TABLE attribute_counters (
   id INTEGER PRIMARY KEY,
   attacker_attribute_id INTEGER NOT NULL REFERENCES attributes(id),
@@ -158,7 +175,8 @@ CREATE TABLE dice (
 CREATE TABLE inventory_items (
   id INTEGER PRIMARY KEY,
   character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
-  item_name TEXT NOT NULL
+  item_name TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '' -- optional; empty renders nothing
 );
 
 CREATE TABLE injuries (
@@ -302,16 +320,16 @@ When a character is created, auto-generate its 8 `dice` rows (2 head + 4 core + 
 ## Real-time events (Socket.io)
 - `character:created` / `character:updated` / `character:deleted` — server → all clients, includes `character_type`. `character:updated` covers name edits and portrait uploads alike, so every device refreshes both live.
 - `die:roll` (client → server): `{ characterId, dieId, modifier }` — modifier is the ad-hoc +/- entered in the roll dialog. Result = roll(current_size) + bonus + modifier. Server logs to `chat_log`, broadcasts `roll:result`.
-- `pool:roll` (client → server): `{ characterId, pool, modifier }` — rolls all active dice in that pool, each at its own size + bonus, plus the one shared modifier applied to all of them. Broadcasts `roll:result`.
+- `pool:roll` (client → server): `{ characterId, dieIds, modifier }` — rolls the selected set of that character's dice (any mix across Head/Core/Legs; incapacitated dice are silently dropped), each at its own size + bonus, plus the one shared modifier applied to all of them. Broadcasts `roll:result`.
 - `die:step` (client → server): `{ dieId, direction: 'up' | 'down' }` — server logic:
   - **up:** if `status == 'incapacitated'`, revive to `current_size = 4`, `bonus = 0`, `status = 'active'`; else if `current_size < 12`, advance to next size; else (`current_size == 12`) increment `bonus` instead.
   - **down:** if `bonus > 0`, decrement `bonus`; else if `current_size > 4`, drop to previous size; else set `status = 'incapacitated'`.
   - Broadcasts `die:updated`.
 - `roll:result` (server → all clients): `{ characterId, characterName, modifier, dice: [{slot_name, size, bonus, result}], total, timestamp }`
 - `die:updated` (server → all clients): `{ dieId, characterId, current_size, bonus, status }`
-- `inventory:add` / `inventory:remove` (client → server): `{ characterId, itemName }` / `{ itemId }` — updates `inventory_items`, broadcasts `inventory:updated` `{ characterId, items }` to all clients
+- `inventory:add` / `inventory:update` / `inventory:remove` (client → server): `{ characterId, itemName, description }` / `{ itemId, itemName, description }` / `{ itemId }` — updates `inventory_items`, broadcasts `inventory:updated` `{ characterId, items }` to all clients
 - `injury:add` / `injury:remove` / `injury:update` (client → server): `{ characterId, name, effect }` / `{ injuryId }` / `{ injuryId, name, effect }` — updates `injuries`, broadcasts `injuries:updated` `{ characterId, injuries }` to all clients
-- `stance:create` / `stance:update` / `stance:delete` (client → server): `{ characterId, name, attributeAId, attributeBId }` / `{ stanceId, name, attributeAId, attributeBId }` / `{ stanceId }` — updates `stances`, broadcasts `stance:created` / `stance:updated` / `stance:deleted` to all clients
+- `stance:create` / `stance:update` / `stance:delete` (client → server): `{ characterId, name, attributeAId, attributeBId }` / `{ stanceId, name, attributeAId, attributeBId }` / `{ stanceId }` — updates `stances`, broadcasts `stance:created` / `stance:updated` / `stance:deleted` to all clients. Server-enforced rules: a character's first stance auto-activates (also broadcasts `stance:activated`); the last remaining stance can't be deleted; deleting the active stance auto-activates a surviving one.
 - `stance:activate` (client → server): `{ characterId, stanceId }` — sets `characters.active_stance_id`, broadcasts `stance:activated` `{ characterId, stanceId }` to all clients
 - `character:lock_stats` (client → server): `{ characterId }` — copies every die's `current_size/bonus/status` into `locked_size/locked_bonus/locked_status`; recalculates `max_stamina` from the locked Stamina die; clamps `current_stamina` down if it now exceeds the new max. Broadcasts `character:updated` + `die:updated` for each die.
 - `character:revert_stats` (client → server): `{ characterId }` — copies every die's `locked_size/locked_bonus/locked_status` back into `current_size/bonus/status` (Current Stamina untouched). Broadcasts `die:updated` for each die.
@@ -345,11 +363,12 @@ When a character is created, auto-generate its 8 `dice` rows (2 head + 4 core + 
      - **Name** — simple editable text field, saved live
      - **Portrait** — image area; clicking it opens a file picker to upload/replace the character's picture (same click-to-change flow whether setting it the first time or changing it later)
      - **Lock in Stats** / **Revert Stats to Base** buttons — snapshot or restore all 8 dice against the character's locked baseline (see mechanic above)
-     - **Dice pools** (Head/Core/Legs) — each die shown sized/styled by its die type (or greyed-out/scratched-out if incapacitated), tinted green/red (opacity scaling with the gap) when current differs from locked, with a green up-arrow and red down-arrow beside it to step size; clicking the die itself opens a roll dialog asking for an ad-hoc modifier. A "roll pool" button per section rolls all active dice in that pool together, asking for one shared modifier first
+     - **Dice pools** (Head/Core/Legs) — each die shown sized/styled by its die type (or greyed-out/scratched-out if incapacitated), tinted green/red (opacity scaling with the gap) when current differs from locked, with a green up-arrow and red down-arrow beside it to step size; clicking the die itself opens a roll dialog asking for an ad-hoc modifier. One **Pool Roll** button for the whole sheet enters selection mode — tap any set of dice (across sections), then roll them together with one shared modifier
      - **Maximum Stamina** / **Current Stamina** — Max is computed from the locked Stamina die and the character's stamina multiplier; Current is tracked live and regenerates via a per-turn roll
-     - **Inventory** — simple list of item names (add/remove only, no other fields)
-     - **Injuries** — similar widget to inventory, but each entry has two fields: name and effect (add/remove/edit)
-   - **Tab 2 — Stances:** list of the character's own stances (left-click to set active, highlighted when active); **Stance Creator** to build a new one (name + pick 2 of the 7 attributes)
+     - **Inventory** — list of items, each with a name and an optional description (add/edit/remove; editing via a per-row pencil toggle)
+     - **Injuries** — same widget/behavior as Inventory: name + optional effect (add/edit/remove)
+     - Both lists render stacked: bold name on top, description/effect under it in smaller grey text — and no second line at all when it's empty, so description-less entries stay compact
+   - **Tab 2 — Stances:** list of the character's own stances (left-click to set active, highlighted when active; edit/delete per stance, minus the last-stance/active-stance rules above); **Stance Creator** to build a new one (name + pick exactly 2 of the 7 styles, icon-buttons); the counter chart (SVG tournament graph, highlighted for the active stance) with Best/Worst Matchups lists; active stance badge on the sheet header
    - **Tab 3 — Moves:** read-only list of the character's available moves (all Default moves + any Unique moves granted by the GM); field layout TBD beyond name and Tell
    - **Tab 4 — Perks:** read-only grid (infinite rows, 2 columns) of granted Perks, name + description shown per card
    - **Tab 5 — Counters:** the character's own counters (name, target/current pips, +/- buttons), each with a "Show in Combat" toggle; anyone controlling the character can create a new one here (name + target pips 2-20)
@@ -429,8 +448,8 @@ A scope check for whoever picks this up: this grew well past "semi-simple websit
 ## Open items to decide later (not blocking MVP)
 - Exact combat/roll resolution rules (what a roll "means" mechanically) — not needed for the roll/step mechanism itself
 - Visual theme specifics (colors, fonts, character art) — covered in the polish milestone
-- Final list of the 7 stance attributes and their counter bonuses (needed before Tab 2 can be seeded/built)
-- How an active stance's attributes actually modify outcomes — depends on Moves/Combat Timing, still not fully described
+- How an active stance's attributes actually modify outcomes — the ±2 counter scoring is decided and displayed; full resolution depends on Moves/Combat Timing, still not fully described
+- Per-style mechanical benefits (styles granting bonuses beyond counter matchups) — planned for later, structure TBD; attribute rows kept extensible for it
 - How Current Stamina is spent/reduced during play — confirmed no automation for now; `stamina:adjust` remains the manual control, actual spending happens narratively at the table
 - Full list of Default Moves (Block, Jab, Dodge, + others not yet named)
 - The remaining 4+ fields of a Move's structure, beyond name, Tell, and Startup

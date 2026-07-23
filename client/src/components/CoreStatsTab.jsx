@@ -4,6 +4,7 @@ import { updateCharacter } from '../lib/api.js';
 import { fileToPortrait, portraitSrc } from '../lib/image.js';
 import DieWidget from './DieWidget.jsx';
 import RollDialog from './RollDialog.jsx';
+import ItemList from './ItemList.jsx';
 
 const POOLS = [
   { key: 'head', label: 'Head' },
@@ -123,174 +124,29 @@ function StaminaBlock({ character, staminaDie }) {
   );
 }
 
-function ListSection({ title, children, form }) {
-  return (
-    <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
-      <h3 className="mb-3 text-sm font-bold uppercase tracking-wide text-zinc-400">{title}</h3>
-      {children}
-      {form}
-    </div>
-  );
-}
-
-function Inventory({ character, items }) {
-  const [name, setName] = useState('');
-  const add = (e) => {
-    e.preventDefault();
-    if (!name.trim()) return;
-    socket.emit('inventory:add', { characterId: character.id, itemName: name.trim() });
-    setName('');
-  };
-  return (
-    <ListSection
-      title="Inventory"
-      form={
-        <form onSubmit={add} className="mt-2 flex gap-2">
-          <input
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="New item"
-            className="min-w-0 flex-1 rounded-md border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm outline-none focus:border-indigo-500"
-          />
-          <button
-            type="submit"
-            disabled={!name.trim()}
-            className="rounded-md bg-indigo-600 px-3 text-sm font-semibold hover:bg-indigo-500 disabled:opacity-40"
-          >
-            Add
-          </button>
-        </form>
-      }
-    >
-      {items.length === 0 ? (
-        <p className="text-sm text-zinc-600">Empty.</p>
-      ) : (
-        <ul className="space-y-1">
-          {items.map((item) => (
-            <li key={item.id} className="flex items-center gap-2 text-sm text-zinc-200">
-              <span className="flex-1">{item.item_name}</span>
-              <button
-                onClick={() => socket.emit('inventory:remove', { itemId: item.id })}
-                className="rounded px-1.5 text-zinc-600 hover:bg-red-900/40 hover:text-red-400"
-              >
-                ✕
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
-    </ListSection>
-  );
-}
-
-function InjuryRow({ injury }) {
-  const [name, setName] = useState(injury.name);
-  const [effect, setEffect] = useState(injury.effect);
-
-  useEffect(() => setName(injury.name), [injury.name]);
-  useEffect(() => setEffect(injury.effect), [injury.effect]);
-
-  const save = () => {
-    if (!name.trim()) {
-      setName(injury.name);
-      return;
-    }
-    if (name.trim() !== injury.name || effect.trim() !== injury.effect) {
-      socket.emit('injury:update', {
-        injuryId: injury.id,
-        name: name.trim(),
-        effect: effect.trim(),
-      });
-    }
-  };
-
-  return (
-    <li className="flex items-center gap-2">
-      <input
-        value={name}
-        onChange={(e) => setName(e.target.value)}
-        onBlur={save}
-        className="w-1/3 rounded-md border border-transparent bg-transparent px-2 py-1 text-sm font-semibold text-zinc-200 outline-none hover:border-zinc-700 focus:border-indigo-500"
-      />
-      <input
-        value={effect}
-        onChange={(e) => setEffect(e.target.value)}
-        onBlur={save}
-        placeholder="Effect"
-        className="min-w-0 flex-1 rounded-md border border-transparent bg-transparent px-2 py-1 text-sm text-zinc-400 outline-none hover:border-zinc-700 focus:border-indigo-500"
-      />
-      <button
-        onClick={() => socket.emit('injury:remove', { injuryId: injury.id })}
-        className="rounded px-1.5 text-zinc-600 hover:bg-red-900/40 hover:text-red-400"
-      >
-        ✕
-      </button>
-    </li>
-  );
-}
-
-function Injuries({ character, injuries }) {
-  const [name, setName] = useState('');
-  const [effect, setEffect] = useState('');
-  const add = (e) => {
-    e.preventDefault();
-    if (!name.trim()) return;
-    socket.emit('injury:add', {
-      characterId: character.id,
-      name: name.trim(),
-      effect: effect.trim(),
-    });
-    setName('');
-    setEffect('');
-  };
-  return (
-    <ListSection
-      title="Injuries"
-      form={
-        <form onSubmit={add} className="mt-2 flex gap-2">
-          <input
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="Injury"
-            className="w-1/3 rounded-md border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm outline-none focus:border-indigo-500"
-          />
-          <input
-            value={effect}
-            onChange={(e) => setEffect(e.target.value)}
-            placeholder="Effect"
-            className="min-w-0 flex-1 rounded-md border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm outline-none focus:border-indigo-500"
-          />
-          <button
-            type="submit"
-            disabled={!name.trim()}
-            className="rounded-md bg-indigo-600 px-3 text-sm font-semibold hover:bg-indigo-500 disabled:opacity-40"
-          >
-            Add
-          </button>
-        </form>
-      }
-    >
-      {injuries.length === 0 ? (
-        <p className="text-sm text-zinc-600">None.</p>
-      ) : (
-        <ul className="space-y-1">
-          {injuries.map((injury) => (
-            <InjuryRow key={injury.id} injury={injury} />
-          ))}
-        </ul>
-      )}
-    </ListSection>
-  );
-}
-
 export default function CoreStatsTab({ data }) {
   const { character, dice, inventory, injuries } = data;
-  const [dialog, setDialog] = useState(null); // { type: 'die', die } | { type: 'pool', pool, label }
+  const [dialog, setDialog] = useState(null); // { type: 'die', die } | { type: 'pool' }
+  const [selecting, setSelecting] = useState(false);
+  const [selectedIds, setSelectedIds] = useState(new Set());
 
   const staminaDie = dice.find((d) => d.slot_name === 'Stamina');
+  const anyActive = dice.some((d) => d.status === 'active');
 
   const rollDie = (die) => setDialog({ type: 'die', die });
   const stepDie = (die, direction) => socket.emit('die:step', { dieId: die.id, direction });
+  const toggleSelect = (die) =>
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(die.id)) next.delete(die.id);
+      else next.add(die.id);
+      return next;
+    });
+
+  const exitSelection = () => {
+    setSelecting(false);
+    setSelectedIds(new Set());
+  };
 
   const onDialogRoll = (modifier) => {
     if (dialog.type === 'die') {
@@ -300,7 +156,12 @@ export default function CoreStatsTab({ data }) {
         modifier,
       });
     } else {
-      socket.emit('pool:roll', { characterId: character.id, pool: dialog.pool, modifier });
+      socket.emit('pool:roll', {
+        characterId: character.id,
+        dieIds: [...selectedIds],
+        modifier,
+      });
+      exitSelection();
     }
   };
 
@@ -308,7 +169,7 @@ export default function CoreStatsTab({ data }) {
     <div className="space-y-4">
       <NamePortrait character={character} />
 
-      <div className="flex gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         <button
           onClick={() => socket.emit('character:lock_stats', { characterId: character.id })}
           title="Snapshot every die's current size/bonus/status as the new rested baseline"
@@ -323,28 +184,53 @@ export default function CoreStatsTab({ data }) {
         >
           Revert Stats to Base
         </button>
+        {!selecting ? (
+          <button
+            onClick={() => setSelecting(true)}
+            disabled={!anyActive}
+            title="Select any dice to roll together with one shared modifier"
+            className="rounded-md bg-indigo-600 px-4 py-2 text-sm font-semibold hover:bg-indigo-500 disabled:opacity-40"
+          >
+            Pool Roll
+          </button>
+        ) : (
+          <>
+            <button
+              onClick={() => setDialog({ type: 'pool' })}
+              disabled={selectedIds.size === 0}
+              className="rounded-md bg-indigo-600 px-4 py-2 text-sm font-semibold hover:bg-indigo-500 disabled:opacity-40"
+            >
+              Roll {selectedIds.size || ''} selected
+            </button>
+            <button
+              onClick={exitSelection}
+              className="rounded-md border border-zinc-700 px-4 py-2 text-sm text-zinc-400 hover:bg-zinc-800"
+            >
+              Cancel
+            </button>
+            <span className="text-xs text-zinc-500">Tap dice to add them to the roll</span>
+          </>
+        )}
       </div>
 
       {POOLS.map((pool) => {
         const poolDice = dice.filter((d) => d.pool === pool.key);
-        const anyActive = poolDice.some((d) => d.status === 'active');
         return (
           <div key={pool.key} className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
-            <div className="mb-3 flex items-center">
-              <h3 className="text-sm font-bold uppercase tracking-wide text-zinc-400">
-                {pool.label}
-              </h3>
-              <button
-                onClick={() => setDialog({ type: 'pool', pool: pool.key, label: pool.label })}
-                disabled={!anyActive}
-                className="ml-auto rounded-md border border-zinc-700 px-3 py-1 text-sm font-semibold text-zinc-300 hover:bg-zinc-800 disabled:opacity-40"
-              >
-                Roll pool
-              </button>
-            </div>
+            <h3 className="mb-3 text-sm font-bold uppercase tracking-wide text-zinc-400">
+              {pool.label}
+            </h3>
             <div className="flex flex-wrap gap-4">
               {poolDice.map((die) => (
-                <DieWidget key={die.id} die={die} onRoll={rollDie} onStep={stepDie} />
+                <DieWidget
+                  key={die.id}
+                  die={die}
+                  onRoll={rollDie}
+                  onStep={stepDie}
+                  selecting={selecting}
+                  selected={selectedIds.has(die.id)}
+                  onToggleSelect={toggleSelect}
+                />
               ))}
             </div>
           </div>
@@ -354,8 +240,38 @@ export default function CoreStatsTab({ data }) {
       <StaminaBlock character={character} staminaDie={staminaDie} />
 
       <div className="grid gap-4 md:grid-cols-2">
-        <Inventory character={character} items={inventory} />
-        <Injuries character={character} injuries={injuries} />
+        <ItemList
+          title="Inventory"
+          items={inventory.map((i) => ({ id: i.id, name: i.item_name, desc: i.description ?? '' }))}
+          emptyText="Empty."
+          namePlaceholder="Item"
+          descPlaceholder="Description (optional)"
+          onAdd={(name, desc) =>
+            socket.emit('inventory:add', {
+              characterId: character.id,
+              itemName: name,
+              description: desc,
+            })
+          }
+          onUpdate={(id, name, desc) =>
+            socket.emit('inventory:update', { itemId: id, itemName: name, description: desc })
+          }
+          onRemove={(id) => socket.emit('inventory:remove', { itemId: id })}
+        />
+        <ItemList
+          title="Injuries"
+          items={injuries.map((i) => ({ id: i.id, name: i.name, desc: i.effect ?? '' }))}
+          emptyText="None."
+          namePlaceholder="Injury"
+          descPlaceholder="Effect (optional)"
+          onAdd={(name, desc) =>
+            socket.emit('injury:add', { characterId: character.id, name, effect: desc })
+          }
+          onUpdate={(id, name, desc) =>
+            socket.emit('injury:update', { injuryId: id, name, effect: desc })
+          }
+          onRemove={(id) => socket.emit('injury:remove', { injuryId: id })}
+        />
       </div>
 
       {dialog && (
@@ -363,7 +279,7 @@ export default function CoreStatsTab({ data }) {
           title={
             dialog.type === 'die'
               ? `Roll ${dialog.die.slot_name}`
-              : `Roll ${dialog.label} pool`
+              : `Roll ${selectedIds.size} dice together`
           }
           onRoll={onDialogRoll}
           onClose={() => setDialog(null)}

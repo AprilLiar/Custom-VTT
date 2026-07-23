@@ -32,6 +32,8 @@ const getInjuries = (characterId) =>
   all('SELECT * FROM injuries WHERE character_id = ? ORDER BY id', [characterId]);
 const getStaminaDie = (characterId) =>
   one("SELECT * FROM dice WHERE character_id = ? AND slot_name = 'Stamina'", [characterId]);
+const getStances = (characterId) =>
+  all('SELECT * FROM stances WHERE character_id = ? ORDER BY id', [characterId]);
 
 // Superset of the plan's die:updated payload: locked_* is included because the
 // current-vs-locked tint can't update after Lock/Revert without it.
@@ -100,6 +102,15 @@ app.get('/api/characters/:id', wrap(async (req, res) => {
     dice: await getDice(character.id),
     inventory: await getInventory(character.id),
     injuries: await getInjuries(character.id),
+    stances: await getStances(character.id),
+  });
+}));
+
+// The fixed ruleset: 7 styles + the complete counter tournament (seeded once)
+app.get('/api/ruleset', wrap(async (_req, res) => {
+  res.json({
+    attributes: await all('SELECT * FROM attributes ORDER BY id'),
+    counters: await all('SELECT * FROM attribute_counters ORDER BY id'),
   });
 }));
 
@@ -164,6 +175,7 @@ app.delete('/api/characters/:id', wrap(async (req, res) => {
   await run('DELETE FROM dice WHERE character_id = ?', [character.id]);
   await run('DELETE FROM inventory_items WHERE character_id = ?', [character.id]);
   await run('DELETE FROM injuries WHERE character_id = ?', [character.id]);
+  await run('DELETE FROM stances WHERE character_id = ?', [character.id]);
   await run('DELETE FROM characters WHERE id = ?', [character.id]);
 
   io.emit('character:deleted', { id: character.id });
@@ -225,13 +237,20 @@ io.on('connection', (socket) => {
     });
   });
 
-  on('pool:roll', async ({ characterId, pool, modifier }) => {
-    if (!['head', 'core', 'legs'].includes(pool)) return;
+  // Selection-based pool roll: any set of the character's dice, rolled
+  // together with one shared modifier (not tied to a body section).
+  on('pool:roll', async ({ characterId, dieIds, modifier }) => {
     const character = await getCharacter(characterId);
-    if (!character) return;
-    const dice = await all(
-      "SELECT * FROM dice WHERE character_id = ? AND pool = ? AND status = 'active' ORDER BY id",
-      [character.id, pool]
+    if (!character || !Array.isArray(dieIds) || !dieIds.length) return;
+    const ids = [...new Set(dieIds.map(Number).filter(Number.isInteger))];
+    if (!ids.length) return;
+    const dice = (
+      await all(
+        `SELECT * FROM dice WHERE character_id = ? AND status = 'active' AND id IN (${ids
+          .map(() => '?')
+          .join(',')}) ORDER BY id`,
+        [character.id, ...ids]
+      )
     );
     if (!dice.length) return;
     const mod = clampModifier(modifier);
@@ -350,17 +369,32 @@ io.on('connection', (socket) => {
     io.emit('character:updated', await getCharacter(character.id));
   });
 
-  on('inventory:add', async ({ characterId, itemName }) => {
+  on('inventory:add', async ({ characterId, itemName, description }) => {
     const character = await getCharacter(characterId);
     const name = String(itemName ?? '').trim();
     if (!character || !name) return;
-    await run('INSERT INTO inventory_items (character_id, item_name) VALUES (?, ?)', [
-      character.id,
-      name,
-    ]);
+    await run(
+      'INSERT INTO inventory_items (character_id, item_name, description) VALUES (?, ?, ?)',
+      [character.id, name, String(description ?? '').trim()]
+    );
     io.emit('inventory:updated', {
       characterId: character.id,
       items: await getInventory(character.id),
+    });
+  });
+
+  on('inventory:update', async ({ itemId, itemName, description }) => {
+    const item = await one('SELECT * FROM inventory_items WHERE id = ?', [itemId]);
+    const name = String(itemName ?? '').trim();
+    if (!item || !name) return;
+    await run('UPDATE inventory_items SET item_name = ?, description = ? WHERE id = ?', [
+      name,
+      String(description ?? '').trim(),
+      item.id,
+    ]);
+    io.emit('inventory:updated', {
+      characterId: item.character_id,
+      items: await getInventory(item.character_id),
     });
   });
 
@@ -372,6 +406,85 @@ io.on('connection', (socket) => {
       characterId: item.character_id,
       items: await getInventory(item.character_id),
     });
+  });
+
+  // Both stance attributes must exist and differ
+  const validStancePair = async (attributeAId, attributeBId) => {
+    if (!attributeAId || !attributeBId || attributeAId === attributeBId) return false;
+    const found = await all(
+      'SELECT id FROM attributes WHERE id IN (?, ?)',
+      [attributeAId, attributeBId]
+    );
+    return found.length === 2;
+  };
+
+  on('stance:create', async ({ characterId, name, attributeAId, attributeBId }) => {
+    const character = await getCharacter(characterId);
+    const stanceName = String(name ?? '').trim();
+    if (!character || !stanceName) return;
+    if (!(await validStancePair(attributeAId, attributeBId))) return;
+    const result = await run(
+      'INSERT INTO stances (character_id, name, attribute_a_id, attribute_b_id) VALUES (?, ?, ?, ?)',
+      [character.id, stanceName, attributeAId, attributeBId]
+    );
+    const stance = await one('SELECT * FROM stances WHERE id = ?', [
+      Number(result.lastInsertRowid),
+    ]);
+    io.emit('stance:created', stance);
+    // A character's first stance auto-activates: one stance must be active
+    // at all times once any exist.
+    if (character.active_stance_id == null) {
+      await run('UPDATE characters SET active_stance_id = ? WHERE id = ?', [
+        stance.id,
+        character.id,
+      ]);
+      io.emit('stance:activated', { characterId: character.id, stanceId: stance.id });
+    }
+  });
+
+  on('stance:update', async ({ stanceId, name, attributeAId, attributeBId }) => {
+    const stance = await one('SELECT * FROM stances WHERE id = ?', [stanceId]);
+    const stanceName = String(name ?? '').trim();
+    if (!stance || !stanceName) return;
+    if (!(await validStancePair(attributeAId, attributeBId))) return;
+    await run(
+      'UPDATE stances SET name = ?, attribute_a_id = ?, attribute_b_id = ? WHERE id = ?',
+      [stanceName, attributeAId, attributeBId, stance.id]
+    );
+    io.emit('stance:updated', await one('SELECT * FROM stances WHERE id = ?', [stance.id]));
+  });
+
+  on('stance:delete', async ({ stanceId }) => {
+    const stance = await one('SELECT * FROM stances WHERE id = ?', [stanceId]);
+    if (!stance) return;
+    const siblings = await getStances(stance.character_id);
+    if (siblings.length <= 1) return; // every character keeps at least one stance
+    const character = await getCharacter(stance.character_id);
+    // Deleting the active stance hands "active" to another one — one stance
+    // stays active at all times.
+    if (character.active_stance_id === stance.id) {
+      const next = siblings.find((s) => s.id !== stance.id);
+      await run('UPDATE characters SET active_stance_id = ? WHERE id = ?', [
+        next.id,
+        character.id,
+      ]);
+      io.emit('stance:activated', { characterId: character.id, stanceId: next.id });
+    }
+    await run('DELETE FROM stances WHERE id = ?', [stance.id]);
+    io.emit('stance:deleted', { stanceId: stance.id, characterId: stance.character_id });
+  });
+
+  on('stance:activate', async ({ characterId, stanceId }) => {
+    const stance = await one(
+      'SELECT * FROM stances WHERE id = ? AND character_id = ?',
+      [stanceId, characterId]
+    );
+    if (!stance) return;
+    await run('UPDATE characters SET active_stance_id = ? WHERE id = ?', [
+      stance.id,
+      stance.character_id,
+    ]);
+    io.emit('stance:activated', { characterId: stance.character_id, stanceId: stance.id });
   });
 
   on('injury:add', async ({ characterId, name, effect }) => {
