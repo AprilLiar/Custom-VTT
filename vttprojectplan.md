@@ -66,9 +66,14 @@ Each character builds their own stances via an in-sheet **Stance Creator**; stan
 ## Game mechanic — Moves & Tells (Moves tab)
 - **Default Moves** (Block, Jab, Dodge, etc. — list still incomplete) are automatically available to every character, PC or NPC, with no granting step.
 - **Unique Moves** are not present at character creation; the GM grants them individually.
-- Both are created through the same GM-only **Move Creator**, just flagged `is_default` vs not. Full field structure is still TBD (5+ fields expected) beyond name and Tell — more columns can be added to `moves` once finalized.
-- **Compendium** — a persistent, GM-only library of every move ever created (default and unique). The GM drags a move from the compendium onto any character (PC or NPC) to grant it.
-- **Tells** — a separate, world-level list, editable by the GM at any time (unlike the fixed 7 stance attributes). When creating a move, the GM picks one Tell from this list.
+- Both are created through the same GM-only **Move Creator**, just flagged `is_default` vs not.
+- **Move structure (decided).** A move card renders top-to-bottom as:
+  1. **Tell header** — a special header strip showing only the move's Tell (icon + name), nothing else.
+  2. **Name** (top-left) and **Frame Data** (to its right): a single line of adjoining squares — **Startup (yellow), Active (red), Recovery (blue)** — one square per Tic. Each segment is assigned 0-10 squares at creation (at least 1 total); the card just renders however many exist (e.g. Startup 3 / Active 2 / Recovery 1 → 6 squares). Combat meaning: placed on Tic *N*, the move charges up through its Startup squares, actively hits through its Active squares, then its Recovery squares carry over — eating into the next round if they run past the round's end.
+  3. **Description** text.
+  4. **Special interactions** — three categories: **On Hit / On Block / On Miss**. Each holds free text plus optional **automations**, limited to exactly four types for now: add/remove Recovery on yourself (±), add Recovery to the opponent, lose additional Stamina yourself, or the opponent loses Stamina. Anything else stays text-only, adjudicated at the table. Automations are stored/displayed now; they execute in the combat phases.
+- **Compendium** — a persistent, GM-only library of every move ever created (default and unique). The GM drags a move from the compendium onto a character in the page's character rail to grant it (a per-move Grant checklist covers touch devices); the GM can revoke a Unique move from the character's Moves tab.
+- **Tells** — a separate, world-level list, editable by the GM at any time (unlike the fixed 7 stance attributes). A Tell is a **name + icon** (picked from a curated open-source lucide set). Two placeholders ("Tell 1", "Tell 2") are seeded so moves can be created immediately; the GM replaces them with real Tells. A Tell in use by a move can't be deleted. When creating a move, the GM picks one Tell from this list.
 - **Declaring a move** — happens during combat, with real timing/reveal mechanics covered in detail in "Combat Timing" below. Short version: only the Tell is shown to everyone (including the GM) until the move's Startup timer completes.
 
 ## Game mechanic — Combat Arena
@@ -91,8 +96,9 @@ One shared timer runs the whole round (not one per pair), and it's actually a si
 
 **Tic Countdown Phase**
 - The GM presses a button to lock in declarations and start the countdown, then manually moves the (global) Tic counter forward and backward — a round is 5 Tics for now, though that length isn't hardcoded and can change later. The GM's display shows Tics relative to the current round (Tic 1-5), even though the counter underneath never actually resets.
-- Every Move has a **Startup** (in Tics). A move placed at Tic *N* resolves/reveals at Tic *N + Startup*. Until then, everyone (GM included) sees only its Tell; the instant the counter reaches that Tic, the real move is revealed to everyone and posted to the Chat Log alongside a roll — no automatic stat changes, purely informational.
+- Every Move has a **Startup** (in Tics — the same unit also called "Pips"). A move placed at Tic *N* resolves/reveals at Tic *N + Startup*. Until then, everyone (GM included) sees only its Tell; the instant the counter reaches that Tic, the real move is revealed to everyone and posted to the Chat Log alongside a roll — no automatic stat changes, purely informational.
   - Example: a Hook with Startup 3, placed at the start of the round, shows its Tell through Tics 1-3; the moment the counter reaches Tic 4, it's revealed as a Hook.
+- Since the Move structure was finalized (Phase 3), moves also carry **Active** and **Recovery** Tics beyond Startup: after revealing, a move actively hits through its Active squares, then its Recovery squares occupy the timeline — carrying into the next round if they run past the round's end, exactly like Startup overflow. How Active/Recovery integrate with placement of a character's *next* move (and when On Hit/Block/Miss automations fire) is Phase 7 design work — the timing engine must account for the full Startup+Active+Recovery footprint, not Startup alone.
 - **Overflow:** if a move's reveal Tic falls past the round's 5-Tic window, it simply carries into the next round — e.g. overflowing by 2 means the first 2 Tics of the next round are already occupied finishing that move. Because the Tic counter never resets, this needs no special-casing: the move's reveal Tic was always an absolute point on the timeline, and (per the Declaration Phase rule above) that character's next new move can't be placed any earlier than that point anyway.
 - Reveal state is computed live from the current Tic vs. each move's reveal point, so moving the counter backward re-hides a move that hasn't "really" happened yet in the GM's current read of the scene.
 - Fast, low-Startup moves (e.g. a Jab with Startup 2) can potentially interrupt slower ones declared earlier but resolving later — the app tracks the Tic order but doesn't auto-adjudicate interrupts; that's a GM/table call.
@@ -198,7 +204,8 @@ CREATE TABLE chat_log (
 -- World-level, GM-editable at any time
 CREATE TABLE tells (
   id INTEGER PRIMARY KEY,
-  name TEXT NOT NULL
+  name TEXT NOT NULL,
+  icon TEXT NOT NULL DEFAULT '' -- lucide icon name, GM-picked from a curated set
 );
 
 -- Perks compendium (separate from Moves)
@@ -258,14 +265,39 @@ CREATE TABLE counters (
   show_in_combat INTEGER NOT NULL DEFAULT 0 -- only meaningful when character_id is set
 );
 
--- The compendium: master list of move templates
+-- The compendium: master list of move templates (structure finalized)
 CREATE TABLE moves (
   id INTEGER PRIMARY KEY,
   name TEXT NOT NULL,
   is_default INTEGER NOT NULL DEFAULT 0, -- 1 = auto-granted to every character
   tell_id INTEGER NOT NULL REFERENCES tells(id),
-  startup_tics INTEGER NOT NULL DEFAULT 1 -- Tics until this move resolves/reveals once placed
-  -- 4+ additional fields still TBD; add columns here once the Move structure is finalized
+  startup_tics INTEGER NOT NULL DEFAULT 1,   -- frame data: 0-10 each,
+  active_tics INTEGER NOT NULL DEFAULT 1,    -- at least 1 square total
+  recovery_tics INTEGER NOT NULL DEFAULT 0,
+  description TEXT NOT NULL DEFAULT ''
+);
+
+-- On Hit / On Block / On Miss entries: text plus optional automations
+-- (only rows with content are stored)
+CREATE TABLE move_interactions (
+  id INTEGER PRIMARY KEY,
+  move_id INTEGER NOT NULL REFERENCES moves(id) ON DELETE CASCADE,
+  trigger TEXT NOT NULL CHECK(trigger IN ('hit','block','miss')),
+  text TEXT NOT NULL DEFAULT '',
+  automations TEXT NOT NULL DEFAULT '[]'
+  -- JSON [{type, amount}]; type in: self_recovery (amount may be negative),
+  -- opponent_recovery, self_stamina, opponent_stamina (positive = amount lost)
+);
+
+-- Role-play tab (Tab 6): per-character Q&A. The 6 canonical questions live in
+-- client code; answers upsert here keyed by question text (is_custom = 0).
+-- Custom questions (up to 20 per character) are rows with is_custom = 1.
+CREATE TABLE roleplay_entries (
+  id INTEGER PRIMARY KEY,
+  character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+  question TEXT NOT NULL,
+  answer TEXT NOT NULL DEFAULT '',
+  is_custom INTEGER NOT NULL DEFAULT 0
 );
 
 -- Grants a Unique move to a specific character (Default moves need no row here)
@@ -335,9 +367,10 @@ When a character is created, auto-generate its 8 `dice` rows (2 head + 4 core + 
 - `character:revert_stats` (client → server): `{ characterId }` — copies every die's `locked_size/locked_bonus/locked_status` back into `current_size/bonus/status` (Current Stamina untouched). Broadcasts `die:updated` for each die.
 - `stamina:regen` (client → server): `{ characterId }` — rolls the Stamina die at its current size + bonus, adds the result to `current_stamina` (clamped to `max_stamina`), logs to `chat_log`. Broadcasts `character:updated` and `roll:result`.
 - `stamina:adjust` (client → server): `{ characterId, delta }` — manual +/- to `current_stamina`, clamped to `[0, max_stamina]`. Interim building block until the Moves tab defines how Stamina is actually spent. Broadcasts `character:updated`.
-- `tell:create` / `tell:update` / `tell:delete` (client [GM] → server) — manages the world-level `tells` list, broadcasts `tell:created` / `tell:updated` / `tell:deleted` to all clients
-- `move:create` / `move:update` / `move:delete` (client [GM] → server): `{ name, isDefault, tellId, ...fields TBD }` / `{ moveId, ...same fields }` / `{ moveId }` — manages `moves` (delete cascades to `character_moves`), broadcasts `move:created` / `move:updated` / `move:deleted` to all clients
+- `tell:create` / `tell:update` / `tell:delete` (client [GM] → server): `{ name, icon }` / `{ tellId, name, icon }` / `{ tellId }` — manages the world-level `tells` list (delete refused while any move uses the Tell), broadcasts `tell:created` / `tell:updated` / `tell:deleted` to all clients
+- `move:create` / `move:update` / `move:delete` (client [GM] → server): `{ name, isDefault, tellId, startupTics, activeTics, recoveryTics, description, interactions: {hit|block|miss: {text, automations}} }` / `{ moveId, ...same fields }` (interactions replaced wholesale on update) / `{ moveId }` — manages `moves` + `move_interactions` (delete cascades to `character_moves`), broadcasts `move:created` / `move:updated` / `move:deleted` (full move incl. interactions) to all clients
 - `move:grant` / `move:revoke` (client [GM] → server): `{ characterId, moveId }` — inserts/deletes a `character_moves` row (the drag-and-drop from the compendium), broadcasts `move:granted` / `move:revoked`
+- `roleplay:save_answer` / `roleplay:add_question` / `roleplay:update_entry` / `roleplay:delete_question` (client → server): `{ characterId, question, answer }` (upserts a canonical-question answer) / `{ characterId, question }` (custom, capped at 20 per character) / `{ entryId, question, answer }` (question editable only on custom rows) / `{ entryId }` (custom rows only) — all broadcast `roleplay:updated` `{ characterId, entries }`
 - `combat:next_round` (client [GM only] → server) — increments `round_number`, sets `round_start_tic = current_tic` (the counter itself is untouched — it never resets), sets `phase = 'declaration'`, rolls the Brain die for every current participant (each posted to `chat_log` as a normal roll). Broadcasts `combat:updated` + `roll:result` for each initiative roll.
 - `move:declare` (client → server): `{ characterId, moveId }` — only valid while `phase == 'declaration'`. Computes `queue_order` (this character's Nth declared move this round), `placement_tic = MAX(round_start_tic, this character's own last reveal_tic across any declared_moves row, or round_start_tic if they have none)`, and `reveal_tic = placement_tic + startup_tics`. Inserts into `declared_moves`. Broadcasts `move:declared` to every other client — Tell only (`{ characterId, tellName, queueOrder }`, `moveId` withheld) — including GM-mode clients; the declaring client already has the full info since it just chose it.
 - `combat:start_tic_countdown` (client [GM only] → server) — sets `phase = 'tic_countdown'`, locking further declarations for the round. Broadcasts `combat:updated`.
@@ -369,10 +402,11 @@ When a character is created, auto-generate its 8 `dice` rows (2 head + 4 core + 
      - **Injuries** — same widget/behavior as Inventory: name + optional effect (add/edit/remove)
      - Both lists render stacked: bold name on top, description/effect under it in smaller grey text — and no second line at all when it's empty, so description-less entries stay compact
    - **Tab 2 — Stances:** list of the character's own stances (left-click to set active, highlighted when active; edit/delete per stance, minus the last-stance/active-stance rules above); **Stance Creator** to build a new one (name + pick exactly 2 of the 7 styles, icon-buttons); the counter chart (SVG tournament graph, highlighted for the active stance) with Best/Worst Matchups lists; active stance badge on the sheet header
-   - **Tab 3 — Moves:** read-only list of the character's available moves (all Default moves + any Unique moves granted by the GM); field layout TBD beyond name and Tell
+   - **Tab 3 — Moves:** read-only list of the character's available moves (all Default moves + any Unique moves granted by the GM), rendered as full move cards per the decided structure (Tell header, name + frame-data squares, description, interactions with automation chips); Default/Unique badges; GM can revoke a Unique move from here
    - **Tab 4 — Perks:** read-only grid (infinite rows, 2 columns) of granted Perks, name + description shown per card
    - **Tab 5 — Counters:** the character's own counters (name, target/current pips, +/- buttons), each with a "Show in Combat" toggle; anyone controlling the character can create a new one here (name + target pips 2-20)
-4. **Compendium** (GM-only) — persistent library of every move; Move Creator form (name, Default toggle, Tell picker, other fields TBD); drag a move onto a character card to grant it; also manages the world-level Tells and Tags lists
+   - **Tab 6 — Role-play:** persistent free-text fields, each under a question the player asks themselves about the character. Six canonical questions (what they love and can't pass by on the street; biggest traumatic event/memory; irrational fear; favorite food; what another person can do to infuriate them; biggest vice) with ~2-3-line answer boxes, kept compact so it all fits with little scrolling, plus the ability to add custom questions with answers — up to 20 additional per character (question editable, deletable). Same open-access editing as the rest of the sheet.
+4. **Compendium** (GM-only) — persistent library of every move; the Tell manager (name + icon picker, placeholders replaceable, in-use Tells undeletable); Move Creator form (name, Default toggle, Tell picker, frame-data inputs with live colored preview, description, On Hit/Block/Miss text + automation builders); drag a move onto a character in the page's character rail to grant it (per-move Grant checklist as touch fallback); also manages the world-level Tags list (Phase 4)
 5. **Perks Compendium** (GM-only, separate from the Moves Compendium) — persistent library of every Perk; Perk Creator (name, description, one or more automation entries: Resource Manipulation or Move Tag); drag a Perk onto a character card to grant it
 6. **Combat Arena** — shared page, no map/tokens. GM drags characters onto a left/right side and arranges them into pairs (semi-translucent divider between pairs); shows only portrait/dice pools/stamina per participant; NPCs here are visible to Players as an explicit exception. "Uneven Combat" toggle (GM-only) allows uneven pair sizes. Also shows any counters flagged "Show in Combat" (labeled `"{CharacterName} - {CounterName}"`) plus any standalone counters the GM created directly here. Includes the round's Declaration/Tic-Countdown phase indicator, a **Next Round** button, initiative results per pair, each character's declared-move slots (Tell-only until revealed), and the GM's Tic forward/back controls.
 7. **Chat Log** — shared, live feed of all rolls and revealed-move cards, updates instantly on every connected device; a **Clear Chat** button empties it for everyone (also clears automatically on server restart)
@@ -451,8 +485,9 @@ A scope check for whoever picks this up: this grew well past "semi-simple websit
 - How an active stance's attributes actually modify outcomes — the ±2 counter scoring is decided and displayed; full resolution depends on Moves/Combat Timing, still not fully described
 - Per-style mechanical benefits (styles granting bonuses beyond counter matchups) — planned for later, structure TBD; attribute rows kept extensible for it
 - How Current Stamina is spent/reduced during play — confirmed no automation for now; `stamina:adjust` remains the manual control, actual spending happens narratively at the table
-- Full list of Default Moves (Block, Jab, Dodge, + others not yet named)
-- The remaining 4+ fields of a Move's structure, beyond name, Tell, and Startup
+- Full list of Default Moves (Block, Jab, Dodge, + others not yet named) — the Creator is live, content still needs to be written (in-app or provided)
+- Real Tells (names + icons) to replace the two seeded placeholders — GM task, tooling is live
+- When/how On Hit / On Block / On Miss automations actually fire during combat (GM adjudicates hit/block/miss; presumably a GM control per resolved move) — Phase 7 design
 - Exact set of Resource Manipulation types for Perks (which resources, whether they touch locked vs. current values) — to be refined once real Perks are written
 - Perks are explicitly MVP-scope; more automation types are expected later
 - Who besides the GM, if anyone, can press Clear Chat — currently assumed GM-only

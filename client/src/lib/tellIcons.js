@@ -1,0 +1,46 @@
+// Curated open-source (lucide) icon set the GM picks Tell icons from.
+import {
+  Activity,
+  Anchor,
+  Bomb,
+  Crosshair,
+  Eye,
+  Feather,
+  Flame,
+  Footprints,
+  Ghost,
+  Hand,
+  Shield,
+  Skull,
+  Sparkles,
+  Swords,
+  Target,
+  Timer,
+  Waves,
+  Wind,
+  Zap,
+} from 'lucide-react';
+
+export const TELL_ICONS = {
+  eye: Eye,
+  footprints: Footprints,
+  wind: Wind,
+  flame: Flame,
+  hand: Hand,
+  activity: Activity,
+  crosshair: Crosshair,
+  zap: Zap,
+  shield: Shield,
+  swords: Swords,
+  timer: Timer,
+  target: Target,
+  skull: Skull,
+  sparkles: Sparkles,
+  waves: Waves,
+  feather: Feather,
+  anchor: Anchor,
+  bomb: Bomb,
+  ghost: Ghost,
+};
+
+export const tellIconFor = (name) => TELL_ICONS[name] ?? Eye;

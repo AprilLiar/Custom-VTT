@@ -5,6 +5,8 @@ import { socket } from '../socket.js';
 import { getCharacter } from '../lib/api.js';
 import CoreStatsTab from './CoreStatsTab.jsx';
 import StancesTab from './StancesTab.jsx';
+import MovesTab from './MovesTab.jsx';
+import RoleplayTab from './RoleplayTab.jsx';
 
 const TABS = [
   { key: 'core', label: 'Core Stats', phase: 1 },
@@ -12,8 +14,9 @@ const TABS = [
   { key: 'moves', label: 'Moves', phase: 3 },
   { key: 'perks', label: 'Perks', phase: 4 },
   { key: 'counters', label: 'Counters', phase: 5 },
+  { key: 'roleplay', label: 'Role-play', phase: 3 },
 ];
-const BUILT_TABS = ['core', 'stances'];
+const BUILT_TABS = ['core', 'stances', 'moves', 'roleplay'];
 
 export default function CharacterSheet() {
   const { id } = useParams();
@@ -100,7 +103,25 @@ export default function CharacterSheet() {
           : prev
       );
     };
+    // Any move-template change or a grant/revoke for this character can alter
+    // the move list — refetch it wholesale (cheap, always consistent).
+    const refetchMoves = ({ characterId: cid } = {}) => {
+      if (cid !== undefined && cid !== characterId) return;
+      getCharacter(characterId)
+        .then((fresh) => setData((prev) => (prev ? { ...prev, moves: fresh.moves } : prev)))
+        .catch(() => {});
+    };
+    const onRoleplayUpdated = ({ characterId: cid, entries }) => {
+      if (cid !== characterId) return;
+      setData((prev) => (prev ? { ...prev, roleplay: entries } : prev));
+    };
 
+    socket.on('move:created', refetchMoves);
+    socket.on('move:updated', refetchMoves);
+    socket.on('move:deleted', refetchMoves);
+    socket.on('move:granted', refetchMoves);
+    socket.on('move:revoked', refetchMoves);
+    socket.on('roleplay:updated', onRoleplayUpdated);
     socket.on('character:updated', onCharacterUpdated);
     socket.on('character:deleted', onCharacterDeleted);
     socket.on('die:updated', onDieUpdated);
@@ -111,6 +132,12 @@ export default function CharacterSheet() {
     socket.on('stance:deleted', onStanceDeleted);
     socket.on('stance:activated', onStanceActivated);
     return () => {
+      socket.off('move:created', refetchMoves);
+      socket.off('move:updated', refetchMoves);
+      socket.off('move:deleted', refetchMoves);
+      socket.off('move:granted', refetchMoves);
+      socket.off('move:revoked', refetchMoves);
+      socket.off('roleplay:updated', onRoleplayUpdated);
       socket.off('character:updated', onCharacterUpdated);
       socket.off('character:deleted', onCharacterDeleted);
       socket.off('die:updated', onDieUpdated);
@@ -167,6 +194,8 @@ export default function CharacterSheet() {
 
       {tab === 'core' && <CoreStatsTab data={data} />}
       {tab === 'stances' && <StancesTab data={data} />}
+      {tab === 'moves' && <MovesTab data={data} />}
+      {tab === 'roleplay' && <RoleplayTab data={data} />}
     </div>
   );
 }

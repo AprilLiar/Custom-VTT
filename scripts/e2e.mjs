@@ -20,7 +20,7 @@ const jpost = (url, body, method = 'POST') =>
 const watcher = io(URL);
 const actor = io(URL);
 const events = [];
-for (const ev of ['character:created', 'character:updated', 'character:deleted', 'die:updated', 'roll:result', 'inventory:updated', 'injuries:updated', 'stance:created', 'stance:updated', 'stance:deleted', 'stance:activated']) {
+for (const ev of ['character:created', 'character:updated', 'character:deleted', 'die:updated', 'roll:result', 'inventory:updated', 'injuries:updated', 'stance:created', 'stance:updated', 'stance:deleted', 'stance:activated', 'tell:created', 'tell:updated', 'tell:deleted', 'move:created', 'move:updated', 'move:deleted', 'move:granted', 'move:revoked', 'roleplay:updated']) {
   watcher.on(ev, (payload) => events.push({ ev, payload }));
 }
 const waitEvent = (ev, pred = () => true, ms = 3000) =>
@@ -231,6 +231,123 @@ emit('stance:delete', { stanceId: stanceA.id });
 await sleep(300);
 sheet = (await jf(`/api/characters/${ch.id}`)).body;
 check('last stance cannot be deleted', !events.some((e) => e.ev === 'stance:deleted') && sheet.stances.length === 1);
+
+// --- tells: 2 placeholders seeded, CRUD, delete-blocked-when-used ---
+let tells = (await jf('/api/tells')).body;
+check('2 placeholder tells seeded', tells.length === 2 && tells[0].name === 'Tell 1' && tells[1].name === 'Tell 2');
+events.length = 0;
+emit('tell:create', { name: 'Shoulder Drop', icon: 'wind' });
+const newTell = await waitEvent('tell:created');
+check('tell created with icon', newTell.name === 'Shoulder Drop' && newTell.icon === 'wind');
+events.length = 0;
+emit('tell:update', { tellId: newTell.id, name: 'Shoulder Twitch', icon: 'activity' });
+const updTell = await waitEvent('tell:updated');
+check('tell updated', updTell.name === 'Shoulder Twitch' && updTell.icon === 'activity');
+
+// --- moves: create with frame data + interactions ---
+events.length = 0;
+emit('move:create', {
+  name: 'Hook', isDefault: false, tellId: tells[0].id,
+  startupTics: 3, activeTics: 2, recoveryTics: 1,
+  description: 'A heavy swinging punch.',
+  interactions: {
+    hit: { text: 'Staggers the target', automations: [{ type: 'opponent_stamina', amount: 2 }] },
+    block: { text: '', automations: [] },
+    miss: { text: 'Wide open', automations: [{ type: 'self_recovery', amount: 2 }] },
+  },
+});
+const hook = await waitEvent('move:created');
+check('move created with frame data 3/2/1', hook.startup_tics === 3 && hook.active_tics === 2 && hook.recovery_tics === 1);
+check('empty interaction dropped, 2 kept', hook.interactions.length === 2 && hook.interactions.map((r) => r.trigger).join() === 'hit,miss');
+check('automation stored', hook.interactions[0].automations[0].type === 'opponent_stamina' && hook.interactions[0].automations[0].amount === 2);
+
+events.length = 0;
+emit('move:create', { name: 'Jab', isDefault: true, tellId: tells[1].id, startupTics: 2, activeTics: 1, recoveryTics: 0, description: 'Quick poke.', interactions: {} });
+const jab = await waitEvent('move:created');
+check('default move created', jab.is_default === 1);
+
+events.length = 0;
+emit('move:create', { name: 'Nothing', isDefault: false, tellId: tells[0].id, startupTics: 0, activeTics: 0, recoveryTics: 0, description: '', interactions: {} });
+await sleep(300);
+check('zero-frame move rejected', !events.some((e) => e.ev === 'move:created'));
+
+// tell in use can't be deleted; unused one can
+events.length = 0;
+emit('tell:delete', { tellId: tells[0].id });
+await sleep(300);
+check('tell in use is not deletable', !events.some((e) => e.ev === 'tell:deleted'));
+events.length = 0;
+emit('tell:delete', { tellId: newTell.id });
+await waitEvent('tell:deleted', (p) => p.tellId === newTell.id);
+check('unused tell deleted', true);
+
+// default appears on the sheet without a grant; unique doesn't until granted
+sheet = (await jf(`/api/characters/${ch.id}`)).body;
+check('default move on sheet automatically', sheet.moves.some((m) => m.id === jab.id));
+check('unique move absent before grant', !sheet.moves.some((m) => m.id === hook.id));
+
+events.length = 0;
+emit('move:grant', { characterId: ch.id, moveId: hook.id });
+await waitEvent('move:granted', (p) => p.characterId === ch.id && p.moveId === hook.id);
+sheet = (await jf(`/api/characters/${ch.id}`)).body;
+check('granted move on sheet with is_granted', sheet.moves.some((m) => m.id === hook.id && m.is_granted === 1));
+const compendium = (await jf('/api/moves')).body;
+check('compendium tracks grants', compendium.find((m) => m.id === hook.id).granted_character_ids.includes(ch.id));
+
+events.length = 0;
+emit('move:update', {
+  moveId: hook.id, name: 'Heavy Hook', isDefault: false, tellId: tells[1].id,
+  startupTics: 4, activeTics: 2, recoveryTics: 2, description: 'Slower, harder.',
+  interactions: { block: { text: 'Chip', automations: [{ type: 'self_stamina', amount: -3 }] } },
+});
+const updMove = await waitEvent('move:updated', (m) => m.id === hook.id);
+check('move updated, interactions replaced', updMove.name === 'Heavy Hook' && updMove.interactions.length === 1 && updMove.interactions[0].automations[0].amount === 3);
+
+events.length = 0;
+emit('move:revoke', { characterId: ch.id, moveId: hook.id });
+await waitEvent('move:revoked', (p) => p.characterId === ch.id);
+sheet = (await jf(`/api/characters/${ch.id}`)).body;
+check('revoked move gone from sheet', !sheet.moves.some((m) => m.id === hook.id));
+
+events.length = 0;
+emit('move:delete', { moveId: hook.id });
+await waitEvent('move:deleted', (p) => p.moveId === hook.id);
+check('move deleted', ((await jf('/api/moves')).body).every((m) => m.id !== hook.id));
+
+// --- roleplay: fixed-question upsert, custom questions, cap of 20 ---
+const q1 = 'What is their favorite food?';
+events.length = 0;
+emit('roleplay:save_answer', { characterId: ch.id, question: q1, answer: 'Dumplings' });
+let rp = await waitEvent('roleplay:updated', (p) => p.characterId === ch.id);
+check('fixed answer saved', rp.entries.length === 1 && rp.entries[0].answer === 'Dumplings' && rp.entries[0].is_custom === 0);
+events.length = 0;
+emit('roleplay:save_answer', { characterId: ch.id, question: q1, answer: 'Spicy dumplings' });
+rp = await waitEvent('roleplay:updated', (p) => p.characterId === ch.id);
+check('fixed answer upserts, not duplicates', rp.entries.length === 1 && rp.entries[0].answer === 'Spicy dumplings');
+
+events.length = 0;
+emit('roleplay:add_question', { characterId: ch.id, question: 'What do they hum when nervous?' });
+rp = await waitEvent('roleplay:updated', (p) => p.characterId === ch.id && p.entries.length === 2);
+const customQ = rp.entries.find((e) => e.is_custom === 1);
+check('custom question added', customQ.question === 'What do they hum when nervous?');
+events.length = 0;
+emit('roleplay:update_entry', { entryId: customQ.id, question: 'What tune do they hum?', answer: 'An old waltz' });
+rp = await waitEvent('roleplay:updated', (p) => p.characterId === ch.id);
+check('custom question + answer editable', rp.entries.find((e) => e.id === customQ.id).question === 'What tune do they hum?' && rp.entries.find((e) => e.id === customQ.id).answer === 'An old waltz');
+
+for (let i = 2; i <= 20; i++) {
+  emit('roleplay:add_question', { characterId: ch.id, question: `Custom question ${i}` });
+  await waitEvent('roleplay:updated', (p) => p.characterId === ch.id && p.entries.filter((e) => e.is_custom).length === i, 5000);
+}
+events.length = 0;
+emit('roleplay:add_question', { characterId: ch.id, question: 'One too many' });
+await sleep(300);
+rp = (await jf(`/api/characters/${ch.id}`)).body;
+check('custom questions capped at 20', rp.roleplay.filter((e) => e.is_custom).length === 20 && !events.some((e) => e.ev === 'roleplay:updated'));
+events.length = 0;
+emit('roleplay:delete_question', { entryId: customQ.id });
+rp = await waitEvent('roleplay:updated', (p) => p.characterId === ch.id);
+check('custom question deletable', rp.entries.filter((e) => e.is_custom).length === 19);
 
 // --- injuries ---
 events.length = 0;

@@ -12,6 +12,7 @@ import {
   rollDie,
   stepDie,
 } from './gameLogic.js';
+import { clampFrame, validFrames, normalizeInteractions } from './moveLogic.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3001;
@@ -34,6 +35,45 @@ const getStaminaDie = (characterId) =>
   one("SELECT * FROM dice WHERE character_id = ? AND slot_name = 'Stamina'", [characterId]);
 const getStances = (characterId) =>
   all('SELECT * FROM stances WHERE character_id = ? ORDER BY id', [characterId]);
+const getRoleplay = (characterId) =>
+  all('SELECT * FROM roleplay_entries WHERE character_id = ? ORDER BY id', [characterId]);
+
+// Attach parsed interaction rows to each move in the list
+async function attachInteractions(moves) {
+  if (!moves.length) return moves;
+  const rows = await all(
+    `SELECT * FROM move_interactions WHERE move_id IN (${moves.map(() => '?').join(',')}) ORDER BY id`,
+    moves.map((m) => m.id)
+  );
+  const byMove = new Map();
+  for (const row of rows) {
+    if (!byMove.has(row.move_id)) byMove.set(row.move_id, []);
+    byMove.get(row.move_id).push({
+      trigger: row.trigger,
+      text: row.text,
+      automations: JSON.parse(row.automations),
+    });
+  }
+  return moves.map((m) => ({ ...m, interactions: byMove.get(m.id) ?? [] }));
+}
+
+const getMove = async (id) => {
+  const move = await one('SELECT * FROM moves WHERE id = ?', [id]);
+  return move ? (await attachInteractions([move]))[0] : null;
+};
+
+// A character's full move list: all defaults + everything granted to them
+async function getMovesFor(characterId) {
+  const moves = await all(
+    `SELECT m.*, CASE WHEN cm.id IS NULL THEN 0 ELSE 1 END AS is_granted
+     FROM moves m
+     LEFT JOIN character_moves cm ON cm.move_id = m.id AND cm.character_id = ?
+     WHERE m.is_default = 1 OR cm.id IS NOT NULL
+     ORDER BY m.is_default DESC, m.id`,
+    [characterId]
+  );
+  return attachInteractions(moves);
+}
 
 // Superset of the plan's die:updated payload: locked_* is included because the
 // current-vs-locked tint can't update after Lock/Revert without it.
@@ -103,7 +143,25 @@ app.get('/api/characters/:id', wrap(async (req, res) => {
     inventory: await getInventory(character.id),
     injuries: await getInjuries(character.id),
     stances: await getStances(character.id),
+    moves: await getMovesFor(character.id),
+    roleplay: await getRoleplay(character.id),
   });
+}));
+
+app.get('/api/tells', wrap(async (_req, res) => {
+  res.json(await all('SELECT * FROM tells ORDER BY id'));
+}));
+
+// Compendium view: every move, with interactions and current grants
+app.get('/api/moves', wrap(async (_req, res) => {
+  const moves = await attachInteractions(await all('SELECT * FROM moves ORDER BY id'));
+  const grants = await all('SELECT * FROM character_moves');
+  const byMove = new Map();
+  for (const g of grants) {
+    if (!byMove.has(g.move_id)) byMove.set(g.move_id, []);
+    byMove.get(g.move_id).push(g.character_id);
+  }
+  res.json(moves.map((m) => ({ ...m, granted_character_ids: byMove.get(m.id) ?? [] })));
 }));
 
 // The fixed ruleset: 7 styles + the complete counter tournament (seeded once)
@@ -176,6 +234,8 @@ app.delete('/api/characters/:id', wrap(async (req, res) => {
   await run('DELETE FROM inventory_items WHERE character_id = ?', [character.id]);
   await run('DELETE FROM injuries WHERE character_id = ?', [character.id]);
   await run('DELETE FROM stances WHERE character_id = ?', [character.id]);
+  await run('DELETE FROM character_moves WHERE character_id = ?', [character.id]);
+  await run('DELETE FROM roleplay_entries WHERE character_id = ?', [character.id]);
   await run('DELETE FROM characters WHERE id = ?', [character.id]);
 
   io.emit('character:deleted', { id: character.id });
@@ -485,6 +545,180 @@ io.on('connection', (socket) => {
       stance.character_id,
     ]);
     io.emit('stance:activated', { characterId: stance.character_id, stanceId: stance.id });
+  });
+
+  on('tell:create', async ({ name, icon }) => {
+    const tellName = String(name ?? '').trim();
+    if (!tellName) return;
+    const result = await run('INSERT INTO tells (name, icon) VALUES (?, ?)', [
+      tellName,
+      String(icon ?? '').trim(),
+    ]);
+    io.emit('tell:created', await one('SELECT * FROM tells WHERE id = ?', [
+      Number(result.lastInsertRowid),
+    ]));
+  });
+
+  on('tell:update', async ({ tellId, name, icon }) => {
+    const tell = await one('SELECT * FROM tells WHERE id = ?', [tellId]);
+    const tellName = String(name ?? '').trim();
+    if (!tell || !tellName) return;
+    await run('UPDATE tells SET name = ?, icon = ? WHERE id = ?', [
+      tellName,
+      String(icon ?? '').trim(),
+      tell.id,
+    ]);
+    io.emit('tell:updated', await one('SELECT * FROM tells WHERE id = ?', [tell.id]));
+  });
+
+  on('tell:delete', async ({ tellId }) => {
+    const tell = await one('SELECT * FROM tells WHERE id = ?', [tellId]);
+    if (!tell) return;
+    const used = await one('SELECT COUNT(*) AS count FROM moves WHERE tell_id = ?', [tell.id]);
+    if (Number(used.count) > 0) return; // a Tell in use by moves can't be deleted
+    await run('DELETE FROM tells WHERE id = ?', [tell.id]);
+    io.emit('tell:deleted', { tellId: tell.id });
+  });
+
+  // Shared validation + write path for move create/update
+  const writeMove = async (moveId, payload) => {
+    const name = String(payload.name ?? '').trim();
+    if (!name) return null;
+    const tell = await one('SELECT * FROM tells WHERE id = ?', [payload.tellId]);
+    if (!tell) return null;
+    const startup = clampFrame(payload.startupTics);
+    const active = clampFrame(payload.activeTics);
+    const recovery = clampFrame(payload.recoveryTics);
+    if (!validFrames(startup, active, recovery)) return null;
+    const isDefault = payload.isDefault ? 1 : 0;
+    const description = String(payload.description ?? '').trim();
+
+    let id = moveId;
+    if (id == null) {
+      const result = await run(
+        'INSERT INTO moves (name, is_default, tell_id, startup_tics, active_tics, recovery_tics, description) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        [name, isDefault, tell.id, startup, active, recovery, description]
+      );
+      id = Number(result.lastInsertRowid);
+    } else {
+      await run(
+        'UPDATE moves SET name = ?, is_default = ?, tell_id = ?, startup_tics = ?, active_tics = ?, recovery_tics = ?, description = ? WHERE id = ?',
+        [name, isDefault, tell.id, startup, active, recovery, description, id]
+      );
+      await run('DELETE FROM move_interactions WHERE move_id = ?', [id]);
+    }
+    for (const row of normalizeInteractions(payload.interactions)) {
+      await run(
+        'INSERT INTO move_interactions (move_id, trigger, text, automations) VALUES (?, ?, ?, ?)',
+        [id, row.trigger, row.text, JSON.stringify(row.automations)]
+      );
+    }
+    return getMove(id);
+  };
+
+  on('move:create', async (payload) => {
+    const move = await writeMove(null, payload ?? {});
+    if (move) io.emit('move:created', move);
+  });
+
+  on('move:update', async (payload) => {
+    const existing = await one('SELECT * FROM moves WHERE id = ?', [payload?.moveId]);
+    if (!existing) return;
+    const move = await writeMove(existing.id, payload);
+    if (move) io.emit('move:updated', move);
+  });
+
+  on('move:delete', async ({ moveId }) => {
+    const move = await one('SELECT * FROM moves WHERE id = ?', [moveId]);
+    if (!move) return;
+    await run('DELETE FROM move_interactions WHERE move_id = ?', [move.id]);
+    await run('DELETE FROM character_moves WHERE move_id = ?', [move.id]);
+    await run('DELETE FROM moves WHERE id = ?', [move.id]);
+    io.emit('move:deleted', { moveId: move.id });
+  });
+
+  on('move:grant', async ({ characterId, moveId }) => {
+    const character = await getCharacter(characterId);
+    const move = await one('SELECT * FROM moves WHERE id = ?', [moveId]);
+    if (!character || !move) return;
+    await run('INSERT OR IGNORE INTO character_moves (character_id, move_id) VALUES (?, ?)', [
+      character.id,
+      move.id,
+    ]);
+    io.emit('move:granted', { characterId: character.id, moveId: move.id });
+  });
+
+  on('move:revoke', async ({ characterId, moveId }) => {
+    await run('DELETE FROM character_moves WHERE character_id = ? AND move_id = ?', [
+      characterId,
+      moveId,
+    ]);
+    io.emit('move:revoked', { characterId: Number(characterId), moveId: Number(moveId) });
+  });
+
+  const emitRoleplay = async (characterId) =>
+    io.emit('roleplay:updated', { characterId, entries: await getRoleplay(characterId) });
+
+  // Upsert the answer to one of the canonical (non-custom) questions
+  on('roleplay:save_answer', async ({ characterId, question, answer }) => {
+    const character = await getCharacter(characterId);
+    const q = String(question ?? '').trim();
+    if (!character || !q) return;
+    const existing = await one(
+      'SELECT * FROM roleplay_entries WHERE character_id = ? AND question = ? AND is_custom = 0',
+      [character.id, q]
+    );
+    if (existing) {
+      await run('UPDATE roleplay_entries SET answer = ? WHERE id = ?', [
+        String(answer ?? ''),
+        existing.id,
+      ]);
+    } else {
+      await run(
+        'INSERT INTO roleplay_entries (character_id, question, answer, is_custom) VALUES (?, ?, ?, 0)',
+        [character.id, q, String(answer ?? '')]
+      );
+    }
+    await emitRoleplay(character.id);
+  });
+
+  on('roleplay:add_question', async ({ characterId, question }) => {
+    const character = await getCharacter(characterId);
+    const q = String(question ?? '').trim();
+    if (!character || !q) return;
+    const custom = await one(
+      'SELECT COUNT(*) AS count FROM roleplay_entries WHERE character_id = ? AND is_custom = 1',
+      [character.id]
+    );
+    if (Number(custom.count) >= 20) return; // up to 20 additional questions
+    await run(
+      'INSERT INTO roleplay_entries (character_id, question, answer, is_custom) VALUES (?, ?, ?, 1)',
+      [character.id, q, '']
+    );
+    await emitRoleplay(character.id);
+  });
+
+  on('roleplay:update_entry', async ({ entryId, question, answer }) => {
+    const entry = await one('SELECT * FROM roleplay_entries WHERE id = ?', [entryId]);
+    if (!entry) return;
+    const q = entry.is_custom ? String(question ?? entry.question).trim() : entry.question;
+    if (!q) return;
+    await run('UPDATE roleplay_entries SET question = ?, answer = ? WHERE id = ?', [
+      q,
+      String(answer ?? ''),
+      entry.id,
+    ]);
+    await emitRoleplay(entry.character_id);
+  });
+
+  on('roleplay:delete_question', async ({ entryId }) => {
+    const entry = await one(
+      'SELECT * FROM roleplay_entries WHERE id = ? AND is_custom = 1',
+      [entryId]
+    );
+    if (!entry) return;
+    await run('DELETE FROM roleplay_entries WHERE id = ?', [entry.id]);
+    await emitRoleplay(entry.character_id);
   });
 
   on('injury:add', async ({ characterId, name, effect }) => {

@@ -135,7 +135,75 @@ export async function initDb() {
     )
   `);
 
+  // World-level Tell list, GM-editable at any time (unlike the fixed styles)
+  await run(`
+    CREATE TABLE IF NOT EXISTS tells (
+      id INTEGER PRIMARY KEY,
+      name TEXT NOT NULL,
+      icon TEXT NOT NULL DEFAULT '' -- lucide icon name, GM-picked
+    )
+  `);
+
+  // The compendium: master list of move templates with frame data
+  await run(`
+    CREATE TABLE IF NOT EXISTS moves (
+      id INTEGER PRIMARY KEY,
+      name TEXT NOT NULL,
+      is_default INTEGER NOT NULL DEFAULT 0, -- 1 = auto-granted to every character
+      tell_id INTEGER NOT NULL REFERENCES tells(id),
+      startup_tics INTEGER NOT NULL DEFAULT 1,
+      active_tics INTEGER NOT NULL DEFAULT 1,
+      recovery_tics INTEGER NOT NULL DEFAULT 0,
+      description TEXT NOT NULL DEFAULT ''
+    )
+  `);
+
+  // On Hit / On Block / On Miss: text plus optional automations (JSON)
+  await run(`
+    CREATE TABLE IF NOT EXISTS move_interactions (
+      id INTEGER PRIMARY KEY,
+      move_id INTEGER NOT NULL REFERENCES moves(id) ON DELETE CASCADE,
+      trigger TEXT NOT NULL CHECK(trigger IN ('hit','block','miss')),
+      text TEXT NOT NULL DEFAULT '',
+      automations TEXT NOT NULL DEFAULT '[]' -- JSON [{type, amount}]
+    )
+  `);
+
+  // Grants a Unique move to a specific character (Default moves need no row)
+  await run(`
+    CREATE TABLE IF NOT EXISTS character_moves (
+      id INTEGER PRIMARY KEY,
+      character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+      move_id INTEGER NOT NULL REFERENCES moves(id) ON DELETE CASCADE,
+      UNIQUE(character_id, move_id)
+    )
+  `);
+
+  // Role-play tab: per-character question/answer entries. The 6 canonical
+  // questions live in client code; their answers are upserted here keyed by
+  // question text (is_custom = 0). Custom questions are rows with is_custom = 1.
+  await run(`
+    CREATE TABLE IF NOT EXISTS roleplay_entries (
+      id INTEGER PRIMARY KEY,
+      character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+      question TEXT NOT NULL,
+      answer TEXT NOT NULL DEFAULT '',
+      is_custom INTEGER NOT NULL DEFAULT 0
+    )
+  `);
+
   await seedRuleset();
+  await seedTells();
+}
+
+// Two placeholder Tells so moves can be created immediately; the GM replaces
+// them with real Tells (name + icon) in the Compendium.
+async function seedTells() {
+  const { count } = await one('SELECT COUNT(*) AS count FROM tells');
+  if (Number(count) === 0) {
+    await run("INSERT INTO tells (name, icon) VALUES ('Tell 1', 'eye')");
+    await run("INSERT INTO tells (name, icon) VALUES ('Tell 2', 'eye')");
+  }
 }
 
 // Seed the 7 styles and their complete counter tournament exactly once.
