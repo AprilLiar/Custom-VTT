@@ -233,6 +233,97 @@ export async function initDb() {
     )
   `);
 
+  // The Perks compendium: master list of Perk templates. Just picture, name,
+  // description, and automations (per user instruction) — no folders/style
+  // filter, unlike Moves.
+  await run(`
+    CREATE TABLE IF NOT EXISTS perks (
+      id INTEGER PRIMARY KEY,
+      name TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      image_data TEXT,
+      image_mime_type TEXT
+    )
+  `);
+
+  // One or more automation entries per Perk template. payload shape depends
+  // on automation_type — see server/perkAutomations.js.
+  await run(`
+    CREATE TABLE IF NOT EXISTS perk_automations (
+      id INTEGER PRIMARY KEY,
+      perk_id INTEGER NOT NULL REFERENCES perks(id) ON DELETE CASCADE,
+      automation_type TEXT NOT NULL CHECK(automation_type IN
+        ('die_step','stamina_multiplier','move_tag','move_frame_override','move_roll_bonus')),
+      payload TEXT NOT NULL
+    )
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS character_perks (
+      id INTEGER PRIMARY KEY,
+      character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+      perk_id INTEGER NOT NULL REFERENCES perks(id) ON DELETE CASCADE,
+      UNIQUE(character_id, perk_id)
+    )
+  `);
+
+  // A snapshot, taken at grant time, of the Perk's automations as they stood
+  // then. Revoke reverses THIS, not the live perk_automations template — so
+  // editing a Perk after granting it never retroactively changes what an
+  // existing grant applied or what revoking it undoes.
+  await run(`
+    CREATE TABLE IF NOT EXISTS character_perk_automations (
+      id INTEGER PRIMARY KEY,
+      character_perk_id INTEGER NOT NULL REFERENCES character_perks(id) ON DELETE CASCADE,
+      automation_type TEXT NOT NULL,
+      payload TEXT NOT NULL
+    )
+  `);
+
+  // Per-character Move Tag overrides granted by a Perk (personal, not
+  // global — the shared move_tags template is untouched). A character's
+  // effective tags on a move = move_tags, plus 'add' rows, minus 'remove'
+  // rows here.
+  await run(`
+    CREATE TABLE IF NOT EXISTS character_move_tags (
+      id INTEGER PRIMARY KEY,
+      character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+      move_id INTEGER NOT NULL REFERENCES moves(id) ON DELETE CASCADE,
+      tag_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+      action TEXT NOT NULL CHECK(action IN ('add','remove')),
+      source_character_perk_id INTEGER REFERENCES character_perks(id) ON DELETE CASCADE
+    )
+  `);
+
+  // Per-character frame-data deltas on a specific move, granted by a Perk —
+  // "the move copy on the character," not the shared template. Multiple
+  // Perks can each contribute deltas to the same move; they sum.
+  await run(`
+    CREATE TABLE IF NOT EXISTS character_move_overrides (
+      id INTEGER PRIMARY KEY,
+      character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+      move_id INTEGER NOT NULL REFERENCES moves(id) ON DELETE CASCADE,
+      startup_delta INTEGER NOT NULL DEFAULT 0,
+      active_delta INTEGER NOT NULL DEFAULT 0,
+      recovery_delta INTEGER NOT NULL DEFAULT 0,
+      source_character_perk_id INTEGER REFERENCES character_perks(id) ON DELETE CASCADE
+    )
+  `);
+
+  // Per-character bonus that only applies to rolls made using a specific
+  // move. Stored and displayed now; there is no move-triggered roll yet to
+  // apply it to (that's Phase 7's declared-move reveal-and-roll) — see the
+  // plan's open items.
+  await run(`
+    CREATE TABLE IF NOT EXISTS character_move_roll_bonuses (
+      id INTEGER PRIMARY KEY,
+      character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+      move_id INTEGER NOT NULL REFERENCES moves(id) ON DELETE CASCADE,
+      amount INTEGER NOT NULL,
+      source_character_perk_id INTEGER REFERENCES character_perks(id) ON DELETE CASCADE
+    )
+  `);
+
   await seedRuleset();
   await seedTells();
 }

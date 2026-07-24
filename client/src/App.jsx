@@ -6,6 +6,7 @@ import CharacterList from './components/CharacterList.jsx';
 import CharacterSheet from './components/CharacterSheet.jsx';
 import ChatPanel from './components/ChatPanel.jsx';
 import Compendium from './components/Compendium.jsx';
+import PerksCompendium from './components/PerksCompendium.jsx';
 
 function Shell() {
   const { role } = useRole();
@@ -27,12 +28,20 @@ function Shell() {
           {role === 'gm' ? 'GM' : 'Player'}
         </span>
         {role === 'gm' && (
-          <Link
-            to="/compendium"
-            className="rounded-md px-2 py-1 text-sm font-semibold text-zinc-400 hover:text-indigo-300"
-          >
-            Compendium
-          </Link>
+          <>
+            <Link
+              to="/compendium"
+              className="rounded-md px-2 py-1 text-sm font-semibold text-zinc-400 hover:text-indigo-300"
+            >
+              Compendium
+            </Link>
+            <Link
+              to="/perks-compendium"
+              className="rounded-md px-2 py-1 text-sm font-semibold text-zinc-400 hover:text-indigo-300"
+            >
+              Perks
+            </Link>
+          </>
         )}
         <div className="flex-1" />
         <button
@@ -49,6 +58,7 @@ function Shell() {
             <Route path="/" element={<CharacterList />} />
             <Route path="/character/:id" element={<CharacterSheet />} />
             <Route path="/compendium" element={<Compendium />} />
+            <Route path="/perks-compendium" element={<PerksCompendium />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </main>

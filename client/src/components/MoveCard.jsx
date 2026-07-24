@@ -15,6 +15,8 @@ export default function MoveCard({
   dimmed = false,
   dimReason,
   folderLabel,
+  perkModified = false, // this character's frame/tags include Perk deltas
+  rollBonus = 0, // per-character bonus on rolls with this move (Phase 7)
   actions,
 }) {
   const StyleIcon = style ? iconFor(style.icon) : null;
@@ -46,12 +48,29 @@ export default function MoveCard({
               {badge}
             </span>
           </span>
-          <FrameBar
-            startup={move.startup_tics}
-            active={move.active_tics}
-            recovery={move.recovery_tics}
-          />
+          <span className="flex items-center gap-1.5">
+            {perkModified && (
+              <span title="Includes bonuses from a granted Perk" className="text-amber-400">
+                ⭐
+              </span>
+            )}
+            <FrameBar
+              startup={move.startup_tics}
+              active={move.active_tics}
+              recovery={move.recovery_tics}
+            />
+          </span>
         </div>
+
+        {rollBonus !== 0 && (
+          <div
+            className="text-xs text-amber-400"
+            title="Stored now — applies once Moves get their own rolls in Combat Timing (Phase 7)"
+          >
+            {rollBonus > 0 ? '+' : ''}
+            {rollBonus} on rolls with this move (Perk, not yet active)
+          </div>
+        )}
 
         {(style || tags.length > 0) && (
           <div className="flex flex-wrap items-center gap-1">

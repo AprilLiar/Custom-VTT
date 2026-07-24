@@ -7,6 +7,7 @@ import CoreStatsTab from './CoreStatsTab.jsx';
 import StancesTab from './StancesTab.jsx';
 import MovesTab from './MovesTab.jsx';
 import RoleplayTab from './RoleplayTab.jsx';
+import PerksTab from './PerksTab.jsx';
 
 const TABS = [
   { key: 'core', label: 'Core Stats', phase: 1 },
@@ -16,7 +17,7 @@ const TABS = [
   { key: 'counters', label: 'Counters', phase: 5 },
   { key: 'roleplay', label: 'Role-play', phase: 3 },
 ];
-const BUILT_TABS = ['core', 'stances', 'moves', 'roleplay'];
+const BUILT_TABS = ['core', 'stances', 'moves', 'perks', 'roleplay'];
 
 export default function CharacterSheet() {
   const { id } = useParams();
@@ -103,12 +104,23 @@ export default function CharacterSheet() {
           : prev
       );
     };
-    // Any move-template change or a grant/revoke for this character can alter
-    // the move list — refetch it wholesale (cheap, always consistent).
+    // Any move-template change, or a Move/Perk grant/revoke for this
+    // character (Perks can carry per-character move overrides), can alter
+    // the effective move list — refetch it wholesale (cheap, always
+    // consistent, avoids re-deriving the override math client-side).
     const refetchMoves = ({ characterId: cid } = {}) => {
       if (cid !== undefined && cid !== characterId) return;
       getCharacter(characterId)
         .then((fresh) => setData((prev) => (prev ? { ...prev, moves: fresh.moves } : prev)))
+        .catch(() => {});
+    };
+    // A Perk grant/revoke also needs the perks list itself refetched — its
+    // die/stamina side-effects arrive separately via die:updated/
+    // character:updated, which are already handled above.
+    const refetchPerks = ({ characterId: cid } = {}) => {
+      if (cid !== undefined && cid !== characterId) return;
+      getCharacter(characterId)
+        .then((fresh) => setData((prev) => (prev ? { ...prev, perks: fresh.perks } : prev)))
         .catch(() => {});
     };
     const onRoleplayUpdated = ({ characterId: cid, entries }) => {
@@ -121,6 +133,10 @@ export default function CharacterSheet() {
     socket.on('move:deleted', refetchMoves);
     socket.on('move:granted', refetchMoves);
     socket.on('move:revoked', refetchMoves);
+    socket.on('perk:granted', refetchMoves);
+    socket.on('perk:revoked', refetchMoves);
+    socket.on('perk:granted', refetchPerks);
+    socket.on('perk:revoked', refetchPerks);
     socket.on('roleplay:updated', onRoleplayUpdated);
     socket.on('character:updated', onCharacterUpdated);
     socket.on('character:deleted', onCharacterDeleted);
@@ -137,6 +153,10 @@ export default function CharacterSheet() {
       socket.off('move:deleted', refetchMoves);
       socket.off('move:granted', refetchMoves);
       socket.off('move:revoked', refetchMoves);
+      socket.off('perk:granted', refetchMoves);
+      socket.off('perk:revoked', refetchMoves);
+      socket.off('perk:granted', refetchPerks);
+      socket.off('perk:revoked', refetchPerks);
       socket.off('roleplay:updated', onRoleplayUpdated);
       socket.off('character:updated', onCharacterUpdated);
       socket.off('character:deleted', onCharacterDeleted);
@@ -195,6 +215,7 @@ export default function CharacterSheet() {
       {tab === 'core' && <CoreStatsTab data={data} />}
       {tab === 'stances' && <StancesTab data={data} />}
       {tab === 'moves' && <MovesTab data={data} />}
+      {tab === 'perks' && <PerksTab data={data} />}
       {tab === 'roleplay' && <RoleplayTab data={data} />}
     </div>
   );
