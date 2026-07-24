@@ -1,31 +1,45 @@
 import { useEffect, useState } from 'react';
 import { useRole } from '../roleContext.jsx';
 import { socket } from '../socket.js';
-import { getTells } from '../lib/api.js';
+import { getRuleset, getTags, getTells } from '../lib/api.js';
 import MoveCard from './MoveCard.jsx';
 
 // Tab 3: read-only list of the character's available moves — all Default
 // moves plus Unique moves granted by the GM (who can revoke from here).
+// A styled move is only usable while the ACTIVE stance carries its style;
+// unusable moves render dimmed.
 export default function MovesTab({ data }) {
   const { role } = useRole();
-  const { character, moves } = data;
+  const { character, moves, stances } = data;
   const [tells, setTells] = useState(null);
+  const [tags, setTags] = useState(null);
+  const [ruleset, setRuleset] = useState(null);
 
   useEffect(() => {
-    getTells().then(setTells).catch(console.error);
-    const refresh = () => getTells().then(setTells).catch(console.error);
-    socket.on('tell:created', refresh);
-    socket.on('tell:updated', refresh);
-    socket.on('tell:deleted', refresh);
+    const refresh = () => {
+      getTells().then(setTells).catch(console.error);
+      getTags().then(setTags).catch(console.error);
+      getRuleset().then(setRuleset).catch(console.error);
+    };
+    refresh();
+    const events = ['tell:created', 'tell:updated', 'tell:deleted', 'tag:created', 'tag:updated', 'tag:deleted'];
+    for (const ev of events) socket.on(ev, refresh);
     return () => {
-      socket.off('tell:created', refresh);
-      socket.off('tell:updated', refresh);
-      socket.off('tell:deleted', refresh);
+      for (const ev of events) socket.off(ev, refresh);
     };
   }, []);
 
-  if (!tells) return <p className="text-zinc-500">Loading…</p>;
+  if (!tells || !tags || !ruleset) return <p className="text-zinc-500">Loading…</p>;
   const tellById = new Map(tells.map((t) => [t.id, t]));
+  const tagById = new Map(tags.map((t) => [t.id, t]));
+  const attrById = new Map(ruleset.attributes.map((a) => [a.id, a]));
+
+  const activeStance = stances.find((s) => s.id === character.active_stance_id);
+  const activeStyles = activeStance
+    ? [activeStance.attribute_a_id, activeStance.attribute_b_id]
+    : [];
+  const usable = (move) =>
+    move.style_attribute_id == null || activeStyles.includes(move.style_attribute_id);
 
   if (moves.length === 0) {
     return (
@@ -38,37 +52,45 @@ export default function MovesTab({ data }) {
 
   return (
     <div className="grid gap-3 sm:grid-cols-2">
-      {moves.map((move) => (
-        <MoveCard
-          key={move.id}
-          move={move}
-          tell={tellById.get(move.tell_id)}
-          badge={
-            move.is_default ? (
-              <span className="ml-2 rounded bg-zinc-700/60 px-1.5 text-xs font-semibold uppercase text-zinc-400">
-                Default
-              </span>
-            ) : (
-              <span className="ml-2 rounded bg-purple-600/30 px-1.5 text-xs font-semibold uppercase text-purple-300">
-                Unique
-              </span>
-            )
-          }
-          actions={
-            role === 'gm' && !move.is_default ? (
-              <button
-                onClick={() =>
-                  window.confirm(`Revoke ${move.name} from ${character.name}?`) &&
-                  socket.emit('move:revoke', { characterId: character.id, moveId: move.id })
-                }
-                className="rounded px-2 py-0.5 text-xs text-zinc-500 hover:bg-red-900/40 hover:text-red-400"
-              >
-                Revoke
-              </button>
-            ) : null
-          }
-        />
-      ))}
+      {moves.map((move) => {
+        const style = move.style_attribute_id ? attrById.get(move.style_attribute_id) : null;
+        const isUsable = usable(move);
+        return (
+          <MoveCard
+            key={move.id}
+            move={move}
+            tell={tellById.get(move.tell_id)}
+            style={style}
+            tags={move.tag_ids.map((id) => tagById.get(id)).filter(Boolean)}
+            dimmed={!isUsable}
+            dimReason={style ? `Needs an active stance with ${style.name}` : undefined}
+            badge={
+              move.is_default ? (
+                <span className="ml-2 rounded bg-zinc-700/60 px-1.5 text-xs font-semibold uppercase text-zinc-400">
+                  Default
+                </span>
+              ) : (
+                <span className="ml-2 rounded bg-purple-600/30 px-1.5 text-xs font-semibold uppercase text-purple-300">
+                  Unique
+                </span>
+              )
+            }
+            actions={
+              role === 'gm' && !move.is_default ? (
+                <button
+                  onClick={() =>
+                    window.confirm(`Revoke ${move.name} from ${character.name}?`) &&
+                    socket.emit('move:revoke', { characterId: character.id, moveId: move.id })
+                  }
+                  className="rounded px-2 py-0.5 text-xs text-zinc-500 hover:bg-red-900/40 hover:text-red-400"
+                >
+                  Revoke
+                </button>
+              ) : null
+            }
+          />
+        );
+      })}
     </div>
   );
 }

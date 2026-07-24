@@ -20,7 +20,7 @@ const jpost = (url, body, method = 'POST') =>
 const watcher = io(URL);
 const actor = io(URL);
 const events = [];
-for (const ev of ['character:created', 'character:updated', 'character:deleted', 'die:updated', 'roll:result', 'inventory:updated', 'injuries:updated', 'stance:created', 'stance:updated', 'stance:deleted', 'stance:activated', 'tell:created', 'tell:updated', 'tell:deleted', 'move:created', 'move:updated', 'move:deleted', 'move:granted', 'move:revoked', 'roleplay:updated']) {
+for (const ev of ['character:created', 'character:updated', 'character:deleted', 'die:updated', 'roll:result', 'inventory:updated', 'injuries:updated', 'stance:created', 'stance:updated', 'stance:deleted', 'stance:activated', 'tell:created', 'tell:updated', 'tell:deleted', 'move:created', 'move:updated', 'move:deleted', 'move:granted', 'move:revoked', 'roleplay:updated', 'tag:created', 'tag:updated', 'tag:deleted', 'folder:created', 'folder:updated', 'folder:deleted']) {
   watcher.on(ev, (payload) => events.push({ ev, payload }));
 }
 const waitEvent = (ev, pred = () => true, ms = 3000) =>
@@ -236,18 +236,30 @@ check('last stance cannot be deleted', !events.some((e) => e.ev === 'stance:dele
 let tells = (await jf('/api/tells')).body;
 check('2 placeholder tells seeded', tells.length === 2 && tells[0].name === 'Tell 1' && tells[1].name === 'Tell 2');
 events.length = 0;
-emit('tell:create', { name: 'Shoulder Drop', icon: 'wind' });
+emit('tell:create', { name: 'Shoulder Drop', imageData: 'aGVsbG8=', imageMimeType: 'image/png' });
 const newTell = await waitEvent('tell:created');
-check('tell created with icon', newTell.name === 'Shoulder Drop' && newTell.icon === 'wind');
+check('tell created with uploaded image', newTell.name === 'Shoulder Drop' && newTell.image_data === 'aGVsbG8=' && newTell.image_mime_type === 'image/png');
 events.length = 0;
-emit('tell:update', { tellId: newTell.id, name: 'Shoulder Twitch', icon: 'activity' });
+emit('tell:update', { tellId: newTell.id, name: 'Shoulder Twitch' });
 const updTell = await waitEvent('tell:updated');
-check('tell updated', updTell.name === 'Shoulder Twitch' && updTell.icon === 'activity');
+check('tell rename keeps image', updTell.name === 'Shoulder Twitch' && updTell.image_data === 'aGVsbG8=');
 
-// --- moves: create with frame data + interactions ---
+// --- tags (world-level, GM-managed) ---
+events.length = 0;
+emit('tag:create', { name: 'Overhead' });
+const tagA = await waitEvent('tag:created');
+emit('tag:create', { name: 'Sweep' });
+const tagB = await waitEvent('tag:created', (t) => t.name === 'Sweep');
+check('tags created', tagA.name === 'Overhead' && tagB.name === 'Sweep');
+
+// --- moves: frame data + interactions + style + tags + image ---
+const speedId = attrIdByName.get('Speed');
 events.length = 0;
 emit('move:create', {
   name: 'Hook', isDefault: false, tellId: tells[0].id,
+  styleAttributeId: speedId,
+  tagIds: [tagA.id, tagB.id, tagA.id], // duplicate must dedupe
+  imageData: 'bW92ZQ==', imageMimeType: 'image/png',
   startupTics: 3, activeTics: 2, recoveryTics: 1,
   description: 'A heavy swinging punch.',
   interactions: {
@@ -258,13 +270,14 @@ emit('move:create', {
 });
 const hook = await waitEvent('move:created');
 check('move created with frame data 3/2/1', hook.startup_tics === 3 && hook.active_tics === 2 && hook.recovery_tics === 1);
+check('move carries style, deduped tags, image', hook.style_attribute_id === speedId && hook.tag_ids.length === 2 && hook.image_data === 'bW92ZQ==');
 check('empty interaction dropped, 2 kept', hook.interactions.length === 2 && hook.interactions.map((r) => r.trigger).join() === 'hit,miss');
 check('automation stored', hook.interactions[0].automations[0].type === 'opponent_stamina' && hook.interactions[0].automations[0].amount === 2);
 
 events.length = 0;
 emit('move:create', { name: 'Jab', isDefault: true, tellId: tells[1].id, startupTics: 2, activeTics: 1, recoveryTics: 0, description: 'Quick poke.', interactions: {} });
 const jab = await waitEvent('move:created');
-check('default move created', jab.is_default === 1);
+check('default move created (legacy null style allowed)', jab.is_default === 1 && jab.style_attribute_id === null);
 
 events.length = 0;
 emit('move:create', { name: 'Nothing', isDefault: false, tellId: tells[0].id, startupTics: 0, activeTics: 0, recoveryTics: 0, description: '', interactions: {} });
@@ -286,22 +299,57 @@ sheet = (await jf(`/api/characters/${ch.id}`)).body;
 check('default move on sheet automatically', sheet.moves.some((m) => m.id === jab.id));
 check('unique move absent before grant', !sheet.moves.some((m) => m.id === hook.id));
 
+// grant works because ch's stance 'Blitz' carries Speed (Hook's style)
 events.length = 0;
 emit('move:grant', { characterId: ch.id, moveId: hook.id });
 await waitEvent('move:granted', (p) => p.characterId === ch.id && p.moveId === hook.id);
 sheet = (await jf(`/api/characters/${ch.id}`)).body;
 check('granted move on sheet with is_granted', sheet.moves.some((m) => m.id === hook.id && m.is_granted === 1));
-const compendium = (await jf('/api/moves')).body;
-check('compendium tracks grants', compendium.find((m) => m.id === hook.id).granted_character_ids.includes(ch.id));
+let compendium = (await jf('/api/moves')).body;
+check('compendium tracks grants', compendium.moves.find((m) => m.id === hook.id).granted_character_ids.includes(ch.id));
+
+// style gate: a Defensive-styled move can't be granted (no Defensive stance)
+events.length = 0;
+emit('move:create', { name: 'Guard Wall', isDefault: false, tellId: tells[0].id, styleAttributeId: attrIdByName.get('Defensive'), startupTics: 1, activeTics: 1, recoveryTics: 0, description: '', interactions: {} });
+const guardWall = await waitEvent('move:created', (m) => m.name === 'Guard Wall');
+events.length = 0;
+emit('move:grant', { characterId: ch.id, moveId: guardWall.id });
+await sleep(300);
+check('grant blocked without a stance of the move style', !events.some((e) => e.ev === 'move:granted'));
+emit('move:delete', { moveId: guardWall.id });
+await waitEvent('move:deleted', (p) => p.moveId === guardWall.id);
+
+// --- folders: create, assign via move:update, delete returns moves to root ---
+events.length = 0;
+emit('folder:create', { name: 'Punches' });
+const folder = await waitEvent('folder:created');
+check('folder created', folder.name === 'Punches');
 
 events.length = 0;
 emit('move:update', {
   moveId: hook.id, name: 'Heavy Hook', isDefault: false, tellId: tells[1].id,
+  styleAttributeId: speedId, folderId: folder.id, tagIds: [tagB.id],
   startupTics: 4, activeTics: 2, recoveryTics: 2, description: 'Slower, harder.',
   interactions: { block: { text: 'Chip', automations: [{ type: 'self_stamina', amount: -3 }] } },
 });
 const updMove = await waitEvent('move:updated', (m) => m.id === hook.id);
 check('move updated, interactions replaced', updMove.name === 'Heavy Hook' && updMove.interactions.length === 1 && updMove.interactions[0].automations[0].amount === 3);
+check('move placed in folder, tags replaced, image kept', updMove.folder_id === folder.id && updMove.tag_ids.length === 1 && updMove.tag_ids[0] === tagB.id && updMove.image_data === 'bW92ZQ==');
+compendium = (await jf('/api/moves')).body;
+check('folders listed by /api/moves', compendium.folders.some((f) => f.id === folder.id));
+
+events.length = 0;
+emit('folder:delete', { folderId: folder.id });
+await waitEvent('folder:deleted', (p) => p.folderId === folder.id);
+compendium = (await jf('/api/moves')).body;
+check('deleting folder returns moves to root', compendium.moves.find((m) => m.id === hook.id).folder_id === null);
+
+// tag deletion strips it from moves
+events.length = 0;
+emit('tag:delete', { tagId: tagB.id });
+await waitEvent('tag:deleted', (p) => p.tagId === tagB.id);
+compendium = (await jf('/api/moves')).body;
+check('deleting tag strips it from moves', compendium.moves.find((m) => m.id === hook.id).tag_ids.length === 0);
 
 events.length = 0;
 emit('move:revoke', { characterId: ch.id, moveId: hook.id });
@@ -312,7 +360,7 @@ check('revoked move gone from sheet', !sheet.moves.some((m) => m.id === hook.id)
 events.length = 0;
 emit('move:delete', { moveId: hook.id });
 await waitEvent('move:deleted', (p) => p.moveId === hook.id);
-check('move deleted', ((await jf('/api/moves')).body).every((m) => m.id !== hook.id));
+check('move deleted', ((await jf('/api/moves')).body).moves.every((m) => m.id !== hook.id));
 
 // --- roleplay: fixed-question upsert, custom questions, cap of 20 ---
 const q1 = 'What is their favorite food?';

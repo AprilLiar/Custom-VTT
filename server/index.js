@@ -38,12 +38,14 @@ const getStances = (characterId) =>
 const getRoleplay = (characterId) =>
   all('SELECT * FROM roleplay_entries WHERE character_id = ? ORDER BY id', [characterId]);
 
-// Attach parsed interaction rows to each move in the list
+// Attach parsed interaction rows + tag ids to each move in the list
 async function attachInteractions(moves) {
   if (!moves.length) return moves;
+  const ids = moves.map((m) => m.id);
+  const marks = ids.map(() => '?').join(',');
   const rows = await all(
-    `SELECT * FROM move_interactions WHERE move_id IN (${moves.map(() => '?').join(',')}) ORDER BY id`,
-    moves.map((m) => m.id)
+    `SELECT * FROM move_interactions WHERE move_id IN (${marks}) ORDER BY id`,
+    ids
   );
   const byMove = new Map();
   for (const row of rows) {
@@ -54,8 +56,30 @@ async function attachInteractions(moves) {
       automations: JSON.parse(row.automations),
     });
   }
-  return moves.map((m) => ({ ...m, interactions: byMove.get(m.id) ?? [] }));
+  const tagRows = await all(
+    `SELECT * FROM move_tags WHERE move_id IN (${marks}) ORDER BY id`,
+    ids
+  );
+  const tagsByMove = new Map();
+  for (const row of tagRows) {
+    if (!tagsByMove.has(row.move_id)) tagsByMove.set(row.move_id, []);
+    tagsByMove.get(row.move_id).push(row.tag_id);
+  }
+  return moves.map((m) => ({
+    ...m,
+    interactions: byMove.get(m.id) ?? [],
+    tag_ids: tagsByMove.get(m.id) ?? [],
+  }));
 }
+
+// A character can learn/use a styled move only via a stance with that style
+const characterHasStyle = async (characterId, styleAttributeId) => {
+  const row = await one(
+    'SELECT id FROM stances WHERE character_id = ? AND (attribute_a_id = ? OR attribute_b_id = ?) LIMIT 1',
+    [characterId, styleAttributeId, styleAttributeId]
+  );
+  return Boolean(row);
+};
 
 const getMove = async (id) => {
   const move = await one('SELECT * FROM moves WHERE id = ?', [id]);
@@ -152,7 +176,11 @@ app.get('/api/tells', wrap(async (_req, res) => {
   res.json(await all('SELECT * FROM tells ORDER BY id'));
 }));
 
-// Compendium view: every move, with interactions and current grants
+app.get('/api/tags', wrap(async (_req, res) => {
+  res.json(await all('SELECT * FROM tags ORDER BY id'));
+}));
+
+// Compendium view: folders + every move, with interactions, tags and grants
 app.get('/api/moves', wrap(async (_req, res) => {
   const moves = await attachInteractions(await all('SELECT * FROM moves ORDER BY id'));
   const grants = await all('SELECT * FROM character_moves');
@@ -161,7 +189,10 @@ app.get('/api/moves', wrap(async (_req, res) => {
     if (!byMove.has(g.move_id)) byMove.set(g.move_id, []);
     byMove.get(g.move_id).push(g.character_id);
   }
-  res.json(moves.map((m) => ({ ...m, granted_character_ids: byMove.get(m.id) ?? [] })));
+  res.json({
+    folders: await all('SELECT * FROM move_folders ORDER BY name'),
+    moves: moves.map((m) => ({ ...m, granted_character_ids: byMove.get(m.id) ?? [] })),
+  });
 }));
 
 // The fixed ruleset: 7 styles + the complete counter tournament (seeded once)
@@ -547,27 +578,33 @@ io.on('connection', (socket) => {
     io.emit('stance:activated', { characterId: stance.character_id, stanceId: stance.id });
   });
 
-  on('tell:create', async ({ name, icon }) => {
+  on('tell:create', async ({ name, imageData, imageMimeType }) => {
     const tellName = String(name ?? '').trim();
     if (!tellName) return;
-    const result = await run('INSERT INTO tells (name, icon) VALUES (?, ?)', [
-      tellName,
-      String(icon ?? '').trim(),
-    ]);
+    const result = await run(
+      'INSERT INTO tells (name, image_data, image_mime_type) VALUES (?, ?, ?)',
+      [tellName, imageData ?? null, imageData ? (imageMimeType ?? 'image/png') : null]
+    );
     io.emit('tell:created', await one('SELECT * FROM tells WHERE id = ?', [
       Number(result.lastInsertRowid),
     ]));
   });
 
-  on('tell:update', async ({ tellId, name, icon }) => {
+  on('tell:update', async ({ tellId, name, imageData, imageMimeType }) => {
     const tell = await one('SELECT * FROM tells WHERE id = ?', [tellId]);
     const tellName = String(name ?? '').trim();
     if (!tell || !tellName) return;
-    await run('UPDATE tells SET name = ?, icon = ? WHERE id = ?', [
-      tellName,
-      String(icon ?? '').trim(),
-      tell.id,
-    ]);
+    // image only replaced when a new one is provided
+    if (imageData !== undefined) {
+      await run('UPDATE tells SET name = ?, image_data = ?, image_mime_type = ? WHERE id = ?', [
+        tellName,
+        imageData,
+        imageMimeType ?? 'image/png',
+        tell.id,
+      ]);
+    } else {
+      await run('UPDATE tells SET name = ? WHERE id = ?', [tellName, tell.id]);
+    }
     io.emit('tell:updated', await one('SELECT * FROM tells WHERE id = ?', [tell.id]));
   });
 
@@ -593,19 +630,64 @@ io.on('connection', (socket) => {
     const isDefault = payload.isDefault ? 1 : 0;
     const description = String(payload.description ?? '').trim();
 
+    // Style: one of the 7 (required for new moves; legacy rows may be NULL)
+    let styleId = null;
+    if (payload.styleAttributeId != null) {
+      const style = await one('SELECT id FROM attributes WHERE id = ?', [
+        payload.styleAttributeId,
+      ]);
+      if (!style) return null;
+      styleId = style.id;
+    }
+
+    let folderId = null;
+    if (payload.folderId != null) {
+      const folder = await one('SELECT id FROM move_folders WHERE id = ?', [payload.folderId]);
+      if (folder) folderId = folder.id;
+    }
+
+    // 0-10 tags, all must exist
+    let tagIds = [];
+    if (Array.isArray(payload.tagIds) && payload.tagIds.length) {
+      const unique = [...new Set(payload.tagIds.map(Number).filter(Number.isInteger))].slice(0, 10);
+      if (unique.length) {
+        const found = await all(
+          `SELECT id FROM tags WHERE id IN (${unique.map(() => '?').join(',')})`,
+          unique
+        );
+        tagIds = found.map((t) => t.id);
+      }
+    }
+
     let id = moveId;
     if (id == null) {
       const result = await run(
-        'INSERT INTO moves (name, is_default, tell_id, startup_tics, active_tics, recovery_tics, description) VALUES (?, ?, ?, ?, ?, ?, ?)',
-        [name, isDefault, tell.id, startup, active, recovery, description]
+        `INSERT INTO moves (name, is_default, tell_id, startup_tics, active_tics, recovery_tics,
+          description, style_attribute_id, folder_id, image_data, image_mime_type)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [name, isDefault, tell.id, startup, active, recovery, description, styleId, folderId,
+          payload.imageData ?? null, payload.imageData ? (payload.imageMimeType ?? 'image/png') : null]
       );
       id = Number(result.lastInsertRowid);
     } else {
       await run(
-        'UPDATE moves SET name = ?, is_default = ?, tell_id = ?, startup_tics = ?, active_tics = ?, recovery_tics = ?, description = ? WHERE id = ?',
-        [name, isDefault, tell.id, startup, active, recovery, description, id]
+        `UPDATE moves SET name = ?, is_default = ?, tell_id = ?, startup_tics = ?, active_tics = ?,
+          recovery_tics = ?, description = ?, style_attribute_id = ?, folder_id = ? WHERE id = ?`,
+        [name, isDefault, tell.id, startup, active, recovery, description, styleId, folderId, id]
       );
+      // image only replaced when a new one is provided
+      if (payload.imageData !== undefined) {
+        await run('UPDATE moves SET image_data = ?, image_mime_type = ? WHERE id = ?', [
+          payload.imageData,
+          payload.imageMimeType ?? 'image/png',
+          id,
+        ]);
+      }
       await run('DELETE FROM move_interactions WHERE move_id = ?', [id]);
+    }
+    await run('DELETE FROM move_tags WHERE move_id = ?', [id]);
+    for (const tagId of tagIds) {
+      await run('INSERT INTO move_tags (move_id, tag_id) VALUES (?, ?)', [id, tagId]);
     }
     for (const row of normalizeInteractions(payload.interactions)) {
       await run(
@@ -632,6 +714,7 @@ io.on('connection', (socket) => {
     const move = await one('SELECT * FROM moves WHERE id = ?', [moveId]);
     if (!move) return;
     await run('DELETE FROM move_interactions WHERE move_id = ?', [move.id]);
+    await run('DELETE FROM move_tags WHERE move_id = ?', [move.id]);
     await run('DELETE FROM character_moves WHERE move_id = ?', [move.id]);
     await run('DELETE FROM moves WHERE id = ?', [move.id]);
     io.emit('move:deleted', { moveId: move.id });
@@ -641,11 +724,69 @@ io.on('connection', (socket) => {
     const character = await getCharacter(characterId);
     const move = await one('SELECT * FROM moves WHERE id = ?', [moveId]);
     if (!character || !move) return;
+    // Learnability: a styled move needs at least one stance with that style
+    if (
+      move.style_attribute_id != null &&
+      !(await characterHasStyle(character.id, move.style_attribute_id))
+    ) {
+      return;
+    }
     await run('INSERT OR IGNORE INTO character_moves (character_id, move_id) VALUES (?, ?)', [
       character.id,
       move.id,
     ]);
     io.emit('move:granted', { characterId: character.id, moveId: move.id });
+  });
+
+  on('tag:create', async ({ name }) => {
+    const tagName = String(name ?? '').trim();
+    if (!tagName) return;
+    const result = await run('INSERT INTO tags (name) VALUES (?)', [tagName]);
+    io.emit('tag:created', await one('SELECT * FROM tags WHERE id = ?', [
+      Number(result.lastInsertRowid),
+    ]));
+  });
+
+  on('tag:update', async ({ tagId, name }) => {
+    const tag = await one('SELECT * FROM tags WHERE id = ?', [tagId]);
+    const tagName = String(name ?? '').trim();
+    if (!tag || !tagName) return;
+    await run('UPDATE tags SET name = ? WHERE id = ?', [tagName, tag.id]);
+    io.emit('tag:updated', await one('SELECT * FROM tags WHERE id = ?', [tag.id]));
+  });
+
+  on('tag:delete', async ({ tagId }) => {
+    const tag = await one('SELECT * FROM tags WHERE id = ?', [tagId]);
+    if (!tag) return;
+    await run('DELETE FROM move_tags WHERE tag_id = ?', [tag.id]);
+    await run('DELETE FROM tags WHERE id = ?', [tag.id]);
+    io.emit('tag:deleted', { tagId: tag.id });
+  });
+
+  on('folder:create', async ({ name }) => {
+    const folderName = String(name ?? '').trim();
+    if (!folderName) return;
+    const result = await run('INSERT INTO move_folders (name) VALUES (?)', [folderName]);
+    io.emit('folder:created', await one('SELECT * FROM move_folders WHERE id = ?', [
+      Number(result.lastInsertRowid),
+    ]));
+  });
+
+  on('folder:rename', async ({ folderId, name }) => {
+    const folder = await one('SELECT * FROM move_folders WHERE id = ?', [folderId]);
+    const folderName = String(name ?? '').trim();
+    if (!folder || !folderName) return;
+    await run('UPDATE move_folders SET name = ? WHERE id = ?', [folderName, folder.id]);
+    io.emit('folder:updated', await one('SELECT * FROM move_folders WHERE id = ?', [folder.id]));
+  });
+
+  on('folder:delete', async ({ folderId }) => {
+    const folder = await one('SELECT * FROM move_folders WHERE id = ?', [folderId]);
+    if (!folder) return;
+    // Moves inside return to the root directory
+    await run('UPDATE moves SET folder_id = NULL WHERE folder_id = ?', [folder.id]);
+    await run('DELETE FROM move_folders WHERE id = ?', [folder.id]);
+    io.emit('folder:deleted', { folderId: folder.id });
   });
 
   on('move:revoke', async ({ characterId, moveId }) => {

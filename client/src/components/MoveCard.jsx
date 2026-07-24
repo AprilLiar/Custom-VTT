@@ -1,26 +1,50 @@
-import { tellIconFor } from '../lib/tellIcons.js';
 import { TRIGGER_LABELS, automationLabel } from '../lib/moveDisplay.js';
+import { iconFor } from '../lib/styleIcons.js';
 import FrameBar from './FrameBar.jsx';
+import Thumb from './Thumb.jsx';
 
-// The Move card per spec: a special header showing ONLY the Tell (icon +
-// name), then name + frame data, description, and the On Hit/Block/Miss
-// interaction rows with automation chips.
-export default function MoveCard({ move, tell, badge, actions }) {
-  const TellIcon = tellIconFor(tell?.icon);
+// The Move card per spec: a special header showing ONLY the Tell (art +
+// name), then move art + name + frame data, style/tags, description, and the
+// On Hit/Block/Miss interaction rows with automation chips.
+export default function MoveCard({
+  move,
+  tell,
+  style, // attribute row for the move's style, or null
+  tags = [], // tag rows for move.tag_ids
+  badge,
+  dimmed = false,
+  dimReason,
+  folderLabel,
+  actions,
+}) {
+  const StyleIcon = style ? iconFor(style.icon) : null;
   return (
-    <div className="overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900">
+    <div
+      title={dimmed ? dimReason : undefined}
+      className={`overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900 ${
+        dimmed ? 'opacity-50 grayscale' : ''
+      }`}
+    >
       <div className="flex items-center gap-2 border-b border-zinc-800 bg-zinc-800/60 px-3 py-1.5">
-        <TellIcon size={14} className="text-zinc-400" />
+        <Thumb record={tell} name={tell?.name} size="h-5 w-5" />
         <span className="text-xs font-semibold uppercase tracking-wide text-zinc-400">
           {tell?.name ?? '—'}
         </span>
+        {folderLabel && (
+          <span className="ml-auto rounded bg-zinc-700/50 px-1.5 text-xs text-zinc-400">
+            📁 {folderLabel}
+          </span>
+        )}
       </div>
 
       <div className="space-y-2 p-3">
         <div className="flex items-start justify-between gap-3">
-          <span className="font-bold text-zinc-100">
-            {move.name}
-            {badge}
+          <span className="flex min-w-0 items-center gap-2 font-bold text-zinc-100">
+            <Thumb record={move} name={move.name} size="h-8 w-8" />
+            <span className="min-w-0">
+              {move.name}
+              {badge}
+            </span>
           </span>
           <FrameBar
             startup={move.startup_tics}
@@ -29,9 +53,26 @@ export default function MoveCard({ move, tell, badge, actions }) {
           />
         </div>
 
-        {move.description && (
-          <p className="text-sm text-zinc-400">{move.description}</p>
+        {(style || tags.length > 0) && (
+          <div className="flex flex-wrap items-center gap-1">
+            {style && (
+              <span className="inline-flex items-center gap-1 rounded-full bg-zinc-800 px-2 py-0.5 text-xs font-semibold text-zinc-300">
+                <StyleIcon size={11} />
+                {style.name}
+              </span>
+            )}
+            {tags.map((tag) => (
+              <span
+                key={tag.id}
+                className="rounded-full bg-emerald-900/40 px-2 py-0.5 text-xs font-semibold text-emerald-300"
+              >
+                {tag.name}
+              </span>
+            ))}
+          </div>
         )}
+
+        {move.description && <p className="text-sm text-zinc-400">{move.description}</p>}
 
         {move.interactions?.length > 0 && (
           <div className="space-y-1 border-t border-zinc-800 pt-2">
@@ -58,7 +99,9 @@ export default function MoveCard({ move, tell, badge, actions }) {
           </div>
         )}
 
-        {actions && <div className="flex justify-end gap-1 border-t border-zinc-800 pt-2">{actions}</div>}
+        {actions && (
+          <div className="flex justify-end gap-1 border-t border-zinc-800 pt-2">{actions}</div>
+        )}
       </div>
     </div>
   );

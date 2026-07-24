@@ -135,12 +135,25 @@ export async function initDb() {
     )
   `);
 
-  // World-level Tell list, GM-editable at any time (unlike the fixed styles)
+  // World-level Tell list, GM-editable at any time (unlike the fixed styles).
+  // Tells carry small uploaded images (commissioned art), not icons — the
+  // legacy icon column remains on old deployments but is unused.
   await run(`
     CREATE TABLE IF NOT EXISTS tells (
       id INTEGER PRIMARY KEY,
       name TEXT NOT NULL,
-      icon TEXT NOT NULL DEFAULT '' -- lucide icon name, GM-picked
+      image_data TEXT,      -- base64 small image
+      image_mime_type TEXT
+    )
+  `);
+  await ensureColumn('tells', 'image_data', 'TEXT');
+  await ensureColumn('tells', 'image_mime_type', 'TEXT');
+
+  // GM-created folders for organizing the Moves compendium
+  await run(`
+    CREATE TABLE IF NOT EXISTS move_folders (
+      id INTEGER PRIMARY KEY,
+      name TEXT NOT NULL
     )
   `);
 
@@ -154,7 +167,33 @@ export async function initDb() {
       startup_tics INTEGER NOT NULL DEFAULT 1,
       active_tics INTEGER NOT NULL DEFAULT 1,
       recovery_tics INTEGER NOT NULL DEFAULT 0,
-      description TEXT NOT NULL DEFAULT ''
+      description TEXT NOT NULL DEFAULT '',
+      style_attribute_id INTEGER REFERENCES attributes(id), -- NULL only on legacy rows
+      folder_id INTEGER,    -- compendium folder; NULL = root
+      image_data TEXT,      -- base64 small image (commissioned art)
+      image_mime_type TEXT
+    )
+  `);
+  await ensureColumn('moves', 'style_attribute_id', 'INTEGER REFERENCES attributes(id)');
+  await ensureColumn('moves', 'folder_id', 'INTEGER');
+  await ensureColumn('moves', 'image_data', 'TEXT');
+  await ensureColumn('moves', 'image_mime_type', 'TEXT');
+
+  // World-level Tag list, GM-managed like Tells (Phase 4 pulls in
+  // per-character tag overrides; the base tables land now for Move tagging)
+  await run(`
+    CREATE TABLE IF NOT EXISTS tags (
+      id INTEGER PRIMARY KEY,
+      name TEXT NOT NULL
+    )
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS move_tags (
+      id INTEGER PRIMARY KEY,
+      move_id INTEGER NOT NULL REFERENCES moves(id) ON DELETE CASCADE,
+      tag_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+      UNIQUE(move_id, tag_id)
     )
   `);
 
@@ -201,8 +240,8 @@ export async function initDb() {
 async function seedTells() {
   const { count } = await one('SELECT COUNT(*) AS count FROM tells');
   if (Number(count) === 0) {
-    await run("INSERT INTO tells (name, icon) VALUES ('Tell 1', 'eye')");
-    await run("INSERT INTO tells (name, icon) VALUES ('Tell 2', 'eye')");
+    await run("INSERT INTO tells (name) VALUES ('Tell 1')");
+    await run("INSERT INTO tells (name) VALUES ('Tell 2')");
   }
 }
 
