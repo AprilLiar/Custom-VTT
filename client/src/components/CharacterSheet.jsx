@@ -8,6 +8,7 @@ import StancesTab from './StancesTab.jsx';
 import MovesTab from './MovesTab.jsx';
 import RoleplayTab from './RoleplayTab.jsx';
 import PerksTab from './PerksTab.jsx';
+import CountersTab from './CountersTab.jsx';
 
 const TABS = [
   { key: 'core', label: 'Core Stats', phase: 1 },
@@ -17,7 +18,7 @@ const TABS = [
   { key: 'counters', label: 'Counters', phase: 5 },
   { key: 'roleplay', label: 'Role-play', phase: 3 },
 ];
-const BUILT_TABS = ['core', 'stances', 'moves', 'perks', 'roleplay'];
+const BUILT_TABS = ['core', 'stances', 'moves', 'perks', 'counters', 'roleplay'];
 
 export default function CharacterSheet() {
   const { id } = useParams();
@@ -127,6 +128,23 @@ export default function CharacterSheet() {
       if (cid !== characterId) return;
       setData((prev) => (prev ? { ...prev, roleplay: entries } : prev));
     };
+    const onCounterCreated = (counter) => {
+      if (counter.character_id !== characterId) return;
+      setData((prev) => (prev ? { ...prev, counters: [...prev.counters, counter] } : prev));
+    };
+    const onCounterUpdated = (counter) => {
+      if (counter.character_id !== characterId) return;
+      setData((prev) =>
+        prev
+          ? { ...prev, counters: prev.counters.map((c) => (c.id === counter.id ? counter : c)) }
+          : prev
+      );
+    };
+    const onCounterDeleted = ({ counterId }) => {
+      setData((prev) =>
+        prev ? { ...prev, counters: prev.counters.filter((c) => c.id !== counterId) } : prev
+      );
+    };
 
     socket.on('move:created', refetchMoves);
     socket.on('move:updated', refetchMoves);
@@ -147,6 +165,9 @@ export default function CharacterSheet() {
     socket.on('stance:updated', onStanceUpdated);
     socket.on('stance:deleted', onStanceDeleted);
     socket.on('stance:activated', onStanceActivated);
+    socket.on('counter:created', onCounterCreated);
+    socket.on('counter:updated', onCounterUpdated);
+    socket.on('counter:deleted', onCounterDeleted);
     return () => {
       socket.off('move:created', refetchMoves);
       socket.off('move:updated', refetchMoves);
@@ -167,6 +188,9 @@ export default function CharacterSheet() {
       socket.off('stance:updated', onStanceUpdated);
       socket.off('stance:deleted', onStanceDeleted);
       socket.off('stance:activated', onStanceActivated);
+      socket.off('counter:created', onCounterCreated);
+      socket.off('counter:updated', onCounterUpdated);
+      socket.off('counter:deleted', onCounterDeleted);
     };
   }, [characterId, navigate]);
 
@@ -216,6 +240,7 @@ export default function CharacterSheet() {
       {tab === 'stances' && <StancesTab data={data} />}
       {tab === 'moves' && <MovesTab data={data} />}
       {tab === 'perks' && <PerksTab data={data} />}
+      {tab === 'counters' && <CountersTab data={data} />}
       {tab === 'roleplay' && <RoleplayTab data={data} />}
     </div>
   );
