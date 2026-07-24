@@ -1,6 +1,4 @@
 import { useEffect, useState } from 'react';
-import { Navigate } from 'react-router-dom';
-import { useRole } from '../roleContext.jsx';
 import { socket } from '../socket.js';
 import { getCharacters, getMoves, getPerks, getTags } from '../lib/api.js';
 import { portraitSrc } from '../lib/image.js';
@@ -36,10 +34,10 @@ function GrantList({ perk, characters }) {
   );
 }
 
-// GM-only page: persistent Perk library. Just picture/name/description/
-// automations per spec — no folders or style filter, unlike Moves.
+// The Compendium page's Perks tab: persistent Perk library. Just picture/
+// name/description/automations per spec — no folders or style filter,
+// unlike Moves. Rendering is GM-gated by the parent CompendiumPage.
 export default function PerksCompendium() {
-  const { role } = useRole();
   const [perks, setPerks] = useState(null);
   const [moves, setMoves] = useState(null);
   const [tags, setTags] = useState(null);
@@ -49,7 +47,6 @@ export default function PerksCompendium() {
   const [dropTarget, setDropTarget] = useState(null);
 
   useEffect(() => {
-    if (role !== 'gm') return;
     const refreshAll = () => {
       getPerks().then(setPerks).catch(console.error);
       getMoves().then((d) => setMoves(d.moves)).catch(console.error);
@@ -67,9 +64,8 @@ export default function PerksCompendium() {
     return () => {
       for (const ev of events) socket.off(ev, refreshAll);
     };
-  }, [role]);
+  }, []);
 
-  if (role !== 'gm') return <Navigate to="/" replace />;
   if (!perks || !moves || !tags) return <p className="text-zinc-500">Loading…</p>;
 
   const moveById = new Map(moves.map((m) => [m.id, m]));
@@ -97,10 +93,8 @@ export default function PerksCompendium() {
   };
 
   return (
-    <div className="mx-auto flex max-w-5xl gap-4">
+    <div className="flex gap-4">
       <div className="min-w-0 flex-1 space-y-4">
-        <h1 className="text-2xl font-bold">Perks Compendium</h1>
-
         {form ? (
           <PerkCreator
             moves={moves}

@@ -1,6 +1,4 @@
 import { useEffect, useRef, useState } from 'react';
-import { Navigate } from 'react-router-dom';
-import { useRole } from '../roleContext.jsx';
 import { socket } from '../socket.js';
 import { getCharacter, getCharacters, getMoves, getRuleset, getTags, getTells } from '../lib/api.js';
 import { iconFor } from '../lib/styleIcons.js';
@@ -268,10 +266,10 @@ function GrantList({ move, characters, canLearn }) {
   );
 }
 
-// GM-only page: Tell + Tag managers, folders, style filter, and the
-// persistent move library with drag/checklist granting.
-export default function Compendium() {
-  const { role } = useRole();
+// The Compendium page's Moves tab: Tell + Tag managers, folders, style
+// filter, and the persistent move library with drag/checklist granting.
+// Rendering is GM-gated by the parent CompendiumPage.
+export default function MovesCompendium() {
   const [tells, setTells] = useState(null);
   const [tags, setTags] = useState(null);
   const [ruleset, setRuleset] = useState(null);
@@ -287,7 +285,6 @@ export default function Compendium() {
   const [newFolderName, setNewFolderName] = useState('');
 
   useEffect(() => {
-    if (role !== 'gm') return;
     const refreshAll = () => {
       getTells().then(setTells).catch(console.error);
       getTags().then(setTags).catch(console.error);
@@ -318,9 +315,8 @@ export default function Compendium() {
     return () => {
       for (const ev of events) socket.off(ev, refreshAll);
     };
-  }, [role]);
+  }, []);
 
-  if (role !== 'gm') return <Navigate to="/" replace />;
   if (!tells || !tags || !ruleset || !data) return <p className="text-zinc-500">Loading…</p>;
 
   const { folders, moves } = data;
@@ -381,9 +377,8 @@ export default function Compendium() {
   };
 
   return (
-    <div className="mx-auto flex max-w-5xl gap-4">
+    <div className="flex gap-4">
       <div className="min-w-0 flex-1 space-y-4">
-        <h1 className="text-2xl font-bold">Compendium</h1>
         <TellManager tells={tells} usedTellIds={usedTellIds} />
         <TagManager tags={tags} />
 

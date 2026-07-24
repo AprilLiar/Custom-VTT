@@ -324,6 +324,20 @@ export async function initDb() {
     )
   `);
 
+  // Character-owned counters (Phase 5). character_id nullable for standalone
+  // arena counters (GM-only, created directly in the Combat Arena) — that
+  // creation path arrives in Phase 6, this table just already accepts it.
+  await run(`
+    CREATE TABLE IF NOT EXISTS counters (
+      id INTEGER PRIMARY KEY,
+      character_id INTEGER REFERENCES characters(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      target_pips INTEGER NOT NULL CHECK(target_pips BETWEEN 2 AND 20),
+      current_pips INTEGER NOT NULL DEFAULT 0,
+      show_in_combat INTEGER NOT NULL DEFAULT 0
+    )
+  `);
+
   await seedRuleset();
   await seedTells();
 }

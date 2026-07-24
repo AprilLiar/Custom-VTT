@@ -44,13 +44,11 @@ Note: Render's free tier sleeps after inactivity — the first load of a session
 
 ## Project status
 
-Phase 4 (Perks & Tags) — the GM Perks Compendium, a Perk Creator built on a small
-extensible automation registry (step a die, adjust the stamina multiplier, add/remove
-a move tag, override a move's frame data, or grant a move-scoped roll bonus — all
-scoped to the granting character, snapshotted at grant time so revoke is always exact),
-and the character sheet's read-only Perks tab. Tags gained descriptions (tooltips), and
-the Moves tab now shows each character's Perk-adjusted "effective" copy of a move.
-See `vttprojectplan.md` for what's next.
+Phase 5 (Counters) — the character sheet's Counters tab (name, target/current pips
+as dot rows, +/- buttons, a "Show in Combat" toggle stored ahead of the Combat Arena
+that will read it in Phase 6). Also consolidated the GM Compendium: Moves and Perks
+(and any future compendium) now live as tabs on one `/compendium` page instead of
+separate top-level nav links. See `vttprojectplan.md` for what's next.
 
 **Testing:** `npm test` runs the game-logic unit tests. `scripts/e2e.mjs` is a full
 integration pass (run it against a freshly started server with a clean `local.db`).

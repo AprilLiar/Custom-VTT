@@ -42,6 +42,8 @@ const getStances = (characterId) =>
   all('SELECT * FROM stances WHERE character_id = ? ORDER BY id', [characterId]);
 const getRoleplay = (characterId) =>
   all('SELECT * FROM roleplay_entries WHERE character_id = ? ORDER BY id', [characterId]);
+const getCounters = (characterId) =>
+  all('SELECT * FROM counters WHERE character_id = ? ORDER BY id', [characterId]);
 
 // Attach parsed interaction rows + tag ids to each move in the list
 async function attachInteractions(moves) {
@@ -290,6 +292,7 @@ app.get('/api/characters/:id', wrap(async (req, res) => {
     moves: await getMovesFor(character.id),
     roleplay: await getRoleplay(character.id),
     perks: await getCharacterPerks(character.id),
+    counters: await getCounters(character.id),
   });
 }));
 
@@ -420,6 +423,7 @@ app.delete('/api/characters/:id', wrap(async (req, res) => {
     [character.id]
   );
   await run('DELETE FROM character_perks WHERE character_id = ?', [character.id]);
+  await run('DELETE FROM counters WHERE character_id = ?', [character.id]);
   await run('DELETE FROM characters WHERE id = ?', [character.id]);
 
   io.emit('character:deleted', { id: character.id });
@@ -1311,6 +1315,49 @@ io.on('connection', (socket) => {
       characterId: injury.character_id,
       injuries: await getInjuries(injury.character_id),
     });
+  });
+
+  // Character-owned counters only for now — standalone (characterId null)
+  // arena counters arrive with the Combat Arena in Phase 6.
+  on('counter:create', async ({ characterId, name, targetPips }) => {
+    const character = await getCharacter(characterId);
+    const counterName = String(name ?? '').trim();
+    const target = Math.trunc(Number(targetPips));
+    if (!character || !counterName || !Number.isInteger(target)) return;
+    if (target < 2 || target > 20) return;
+    const result = await run(
+      'INSERT INTO counters (character_id, name, target_pips) VALUES (?, ?, ?)',
+      [character.id, counterName, target]
+    );
+    io.emit('counter:created', await one('SELECT * FROM counters WHERE id = ?', [
+      Number(result.lastInsertRowid),
+    ]));
+  });
+
+  on('counter:adjust', async ({ counterId, delta }) => {
+    const counter = await one('SELECT * FROM counters WHERE id = ?', [counterId]);
+    const change = Math.trunc(Number(delta) || 0);
+    if (!counter || !change) return;
+    const currentPips = clamp(counter.current_pips + change, 0, counter.target_pips);
+    await run('UPDATE counters SET current_pips = ? WHERE id = ?', [currentPips, counter.id]);
+    io.emit('counter:updated', await one('SELECT * FROM counters WHERE id = ?', [counter.id]));
+  });
+
+  on('counter:toggle_show_in_combat', async ({ counterId }) => {
+    const counter = await one('SELECT * FROM counters WHERE id = ?', [counterId]);
+    if (!counter) return;
+    await run('UPDATE counters SET show_in_combat = ? WHERE id = ?', [
+      counter.show_in_combat ? 0 : 1,
+      counter.id,
+    ]);
+    io.emit('counter:updated', await one('SELECT * FROM counters WHERE id = ?', [counter.id]));
+  });
+
+  on('counter:delete', async ({ counterId }) => {
+    const counter = await one('SELECT * FROM counters WHERE id = ?', [counterId]);
+    if (!counter) return;
+    await run('DELETE FROM counters WHERE id = ?', [counter.id]);
+    io.emit('counter:deleted', { counterId: counter.id });
   });
 });
 

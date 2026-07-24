@@ -20,7 +20,7 @@ const jpost = (url, body, method = 'POST') =>
 const watcher = io(URL);
 const actor = io(URL);
 const events = [];
-for (const ev of ['character:created', 'character:updated', 'character:deleted', 'die:updated', 'roll:result', 'inventory:updated', 'injuries:updated', 'stance:created', 'stance:updated', 'stance:deleted', 'stance:activated', 'tell:created', 'tell:updated', 'tell:deleted', 'move:created', 'move:updated', 'move:deleted', 'move:granted', 'move:revoked', 'roleplay:updated', 'tag:created', 'tag:updated', 'tag:deleted', 'folder:created', 'folder:updated', 'folder:deleted', 'perk:created', 'perk:updated', 'perk:deleted', 'perk:granted', 'perk:revoked']) {
+for (const ev of ['character:created', 'character:updated', 'character:deleted', 'die:updated', 'roll:result', 'inventory:updated', 'injuries:updated', 'stance:created', 'stance:updated', 'stance:deleted', 'stance:activated', 'tell:created', 'tell:updated', 'tell:deleted', 'move:created', 'move:updated', 'move:deleted', 'move:granted', 'move:revoked', 'roleplay:updated', 'tag:created', 'tag:updated', 'tag:deleted', 'folder:created', 'folder:updated', 'folder:deleted', 'perk:created', 'perk:updated', 'perk:deleted', 'perk:granted', 'perk:revoked', 'counter:created', 'counter:updated', 'counter:deleted']) {
   watcher.on(ev, (payload) => events.push({ ev, payload }));
 }
 const waitEvent = (ev, pred = () => true, ms = 3000) =>
@@ -565,6 +565,52 @@ events.length = 0;
 emit('injury:remove', { injuryId: inj.injuries[0].id });
 inj = await waitEvent('injuries:updated', (p) => p.characterId === ch.id);
 check('injury remove', inj.injuries.length === 0);
+
+// --- counters: character-owned CRUD, clamped adjust, show-in-combat toggle ---
+events.length = 0;
+emit('counter:create', { characterId: ch.id, name: 'Rage', targetPips: 5 });
+const counter = await waitEvent('counter:created', (c) => c.character_id === ch.id);
+check('counter created with target, current defaults to 0', counter.name === 'Rage' && counter.target_pips === 5 && counter.current_pips === 0 && counter.show_in_combat === 0);
+
+events.length = 0;
+emit('counter:create', { characterId: ch.id, name: 'Bad', targetPips: 1 });
+await sleep(300);
+check('target below 2 rejected', !events.some((e) => e.ev === 'counter:created'));
+events.length = 0;
+emit('counter:create', { characterId: ch.id, name: 'Bad', targetPips: 21 });
+await sleep(300);
+check('target above 20 rejected', !events.some((e) => e.ev === 'counter:created'));
+
+events.length = 0;
+emit('counter:adjust', { counterId: counter.id, delta: 3 });
+let counterUpd = await waitEvent('counter:updated', (c) => c.id === counter.id);
+check('counter adjust +3', counterUpd.current_pips === 3);
+events.length = 0;
+emit('counter:adjust', { counterId: counter.id, delta: 10 });
+counterUpd = await waitEvent('counter:updated', (c) => c.id === counter.id);
+check('counter adjust clamps at target', counterUpd.current_pips === 5);
+events.length = 0;
+emit('counter:adjust', { counterId: counter.id, delta: -100 });
+counterUpd = await waitEvent('counter:updated', (c) => c.id === counter.id);
+check('counter adjust clamps at 0', counterUpd.current_pips === 0);
+
+events.length = 0;
+emit('counter:toggle_show_in_combat', { counterId: counter.id });
+counterUpd = await waitEvent('counter:updated', (c) => c.id === counter.id);
+check('show_in_combat toggles on', counterUpd.show_in_combat === 1);
+events.length = 0;
+emit('counter:toggle_show_in_combat', { counterId: counter.id });
+counterUpd = await waitEvent('counter:updated', (c) => c.id === counter.id);
+check('show_in_combat toggles off', counterUpd.show_in_combat === 0);
+
+sheet = (await jf(`/api/characters/${ch.id}`)).body;
+check('counter present on character sheet', sheet.counters.length === 1 && sheet.counters[0].id === counter.id);
+
+events.length = 0;
+emit('counter:delete', { counterId: counter.id });
+await waitEvent('counter:deleted', (p) => p.counterId === counter.id);
+sheet = (await jf(`/api/characters/${ch.id}`)).body;
+check('counter deleted', sheet.counters.length === 0);
 
 // --- chat history ---
 const chat = (await jf('/api/chat')).body;
