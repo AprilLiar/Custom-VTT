@@ -3,6 +3,7 @@ import { useRole } from '../roleContext.jsx';
 import { socket } from '../socket.js';
 import { getRuleset, getTags, getTells } from '../lib/api.js';
 import MoveCard from './MoveCard.jsx';
+import RollDialog from './RollDialog.jsx';
 
 // Tab 3: read-only list of the character's available moves — all Default
 // moves plus Unique moves granted by the GM (who can revoke from here).
@@ -14,6 +15,7 @@ export default function MovesTab({ data }) {
   const [tells, setTells] = useState(null);
   const [tags, setTags] = useState(null);
   const [ruleset, setRuleset] = useState(null);
+  const [rollFor, setRollFor] = useState(null); // move whose Roll dialog is open
 
   useEffect(() => {
     const refresh = () => {
@@ -73,6 +75,7 @@ export default function MovesTab({ data }) {
             tags={effectiveTagIds.map((id) => tagById.get(id)).filter(Boolean)}
             perkModified={move.has_perk_overrides}
             rollBonus={move.roll_bonus ?? 0}
+            onRollClick={() => setRollFor(move)}
             dimmed={!isUsable}
             dimReason={style ? `Needs an active stance with ${style.name}` : undefined}
             badge={
@@ -102,6 +105,21 @@ export default function MovesTab({ data }) {
           />
         );
       })}
+
+      {rollFor && (
+        <RollDialog
+          title={`Roll ${rollFor.name}`}
+          initialModifier={rollFor.effective_roll_modifier ?? 0}
+          onRoll={(modifier) =>
+            socket.emit('pool:roll', {
+              characterId: character.id,
+              dieIds: rollFor.roll_dice.map((d) => d.dieId),
+              modifier,
+            })
+          }
+          onClose={() => setRollFor(null)}
+        />
+      )}
     </div>
   );
 }

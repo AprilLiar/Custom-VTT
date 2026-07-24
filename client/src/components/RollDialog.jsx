@@ -3,8 +3,10 @@ import { useState } from 'react';
 const MODIFIER_LIMIT = 20;
 
 // Asks for the ad-hoc +/- modifier before a die or pool roll (clamped to +/-20).
-export default function RollDialog({ title, onRoll, onClose }) {
-  const [value, setValue] = useState('0');
+// initialModifier pre-fills the field (e.g. a Move's own Roll bonus) while
+// still leaving it freely editable before submitting.
+export default function RollDialog({ title, onRoll, onClose, initialModifier = 0 }) {
+  const [value, setValue] = useState(String(initialModifier));
 
   const submit = (e) => {
     e.preventDefault();

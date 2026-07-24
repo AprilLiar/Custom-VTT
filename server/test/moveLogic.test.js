@@ -5,6 +5,8 @@ import {
   validFrames,
   sanitizeAutomations,
   normalizeInteractions,
+  clampRollBonus,
+  sanitizeRollSlots,
 } from '../moveLogic.js';
 
 test('frames clamp to 0-10 and coerce junk', () => {
@@ -74,4 +76,18 @@ test('automation-only interaction (no text) is kept', () => {
   });
   assert.equal(rows.length, 1);
   assert.equal(rows[0].trigger, 'block');
+});
+
+test('roll bonus clamps to +/-20 and coerces junk', () => {
+  assert.equal(clampRollBonus(5), 5);
+  assert.equal(clampRollBonus(99), 20);
+  assert.equal(clampRollBonus(-99), -20);
+  assert.equal(clampRollBonus('junk'), 0);
+});
+
+test('roll slots: dedupes and drops unknown slot names, empty = no Roll', () => {
+  assert.deepEqual(sanitizeRollSlots(['Body', 'Body', 'Right Hand']), ['Body', 'Right Hand']);
+  assert.deepEqual(sanitizeRollSlots(['Body', 'Wing', 'Left Leg']), ['Body', 'Left Leg']);
+  assert.deepEqual(sanitizeRollSlots([]), []);
+  assert.deepEqual(sanitizeRollSlots(null), []);
 });

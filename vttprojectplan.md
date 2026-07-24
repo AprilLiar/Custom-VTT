@@ -9,6 +9,7 @@ On every fresh page load, a modal asks: **Player** or **GM**. This is a client-s
 - **GM:** character list shows all characters (`pc` and `npc`). Character creation form includes a PC/NPC toggle. Can view/edit anything.
 - The choice is not remembered — it asks again on every reload, and there's no in-app way to switch roles without reloading.
 - This restriction is about **who can control which characters**, not about hiding activity: rolls, inventory/injury updates, stance changes, etc. are broadcast to and visible by everyone regardless of role — a Player sees an NPC's roll just like anyone else's. The only things actually restricted for Players are the character list (only PCs are listed/openable) and creating/editing NPCs — both GM-only. The Combat Arena is a deliberate exception to even that: NPCs placed there become visible to Players too (see below).
+- **Character-list folders are GM-managed** (decided): only the GM creates/renames/deletes folders and drags characters into them; Players just browse whatever folders the GM has set up (same folder tabs, same drag target for the GM, but no create/rename/delete controls or drag handles rendered for Players). This is the one organizational feature that's GM-only in the same way NPC creation is, even though folder contents themselves aren't secret.
 
 ## Stack
 - **Frontend:** React + Vite, Tailwind CSS, Framer Motion (transitions/layout), GSAP (impact/roll effects)
@@ -75,6 +76,7 @@ Each character builds their own stances via an in-sheet **Stance Creator**; stan
   5. **Special interactions** — three categories: **On Hit / On Block / On Miss**. Each holds free text plus optional **automations**, limited to exactly four types for now: add/remove Recovery on yourself (±), add Recovery to the opponent, lose additional Stamina yourself, or the opponent loses Stamina. Anything else stays text-only, adjudicated at the table. Automations are stored/displayed now; they execute in the combat phases.
 - **Images, not icons**: Moves and Tells each carry a small uploaded picture (commissioned simple art, uploaded by the GM through the Tell manager / Move Creator; resized client-side to ≤128px, PNG transparency preserved). Until uploaded, an initial-letter placeholder shows. Only the 7 styles keep open-source (lucide) icons.
 - **Style (decided)**: every move is assigned one of the 7 styles (required in the Creator; rows created before this rule may be NULL = unrestricted). No mechanical modifier — it gates two things: **learnability** (a Unique move can only be granted to a character who has at least one stance containing that style — enforced server-side on grant and shown in the Grant checklist) and **usability** (a move is only usable while the character's *active* stance contains its style — unusable moves render dimmed on the Moves tab). Already-granted moves are kept if stances later change; they just show as unusable.
+- **Roll (decided, optional)**, configured directly below Style in the Move Creator: a move can specify which of the character's 8 body-part dice it rolls (any subset, e.g. Body + Right Hand) plus one flat bonus (±20) shared across the whole collection — mechanically identical to Pool Roll (one shared modifier across an arbitrary dice selection), just pre-configured per move. Most moves are expected to have one, but it's optional for scalability (e.g. purely narrative moves). On a character's Moves tab, a move with a Roll shows the character's *actual current* die for each configured slot as a clickable button (e.g. `Body (d8+3)`, the same combined-formula convention as the Chat Log), pre-filled with the move's bonus — its own flat bonus plus any Perk-granted `move_roll_bonus` for that move (see Perks & Tags: this is now the live use case for that automation) — but freely editable before rolling, in the same roll dialog used everywhere else. An incapacitated die among the configured slots is silently dropped rather than blocking the roll, exactly like Pool Roll. In the Compendium (no character context to resolve real dice against), the Roll shows only the static slot names and bonus.
 - **Tags (decided)**: each move carries 0-10 Tags, picked from the world-level GM-managed `tags` list (created/edited in the Compendium, like Tells — this pulls the base tag tables forward from Phase 4; per-character tag overrides via Perks remain Phase 4). Tags can also change dynamically later (Perks adding Tags to specific moves). A Tag has a **name and an optional description**; hovering a Tag anywhere it's shown (the Tag manager, a Move Creator's picker, a Move card) pops a tooltip with that description.
 - **Compendium** — a persistent, GM-only library of every move ever created (default and unique). The GM drags a move from the compendium onto a character in the page's character rail to grant it (a per-move Grant checklist covers touch devices); the GM can revoke a Unique move from the character's Moves tab.
 - **Compendium folders & filtering (decided)**: the GM can create folders and place moves in them — either assigned in the Move Creator, or by **dragging a move card onto a folder tab** (dragging onto "All Moves" removes it from any folder, back to root); deleting a folder returns its moves to root the same way. A **style filter** narrows the listing: used inside a folder it filters within that folder; used at the root it scans across all folders and shows every match labeled with its source folder.
@@ -124,7 +126,7 @@ A single shared feed for the whole game (what was "roll log" earlier — renamed
   - **Stamina Multiplier** (`stamina_multiplier`) — adjusts the character's stamina multiplier by a delta; Max Stamina is recomputed immediately from the current multiplier and the locked Stamina die (same formula Lock in Stats uses), and Current Stamina is clamped down if needed.
   - **Move Tag** (`move_tag`) — add or remove a Tag on a specific Move, **scoped only to the character holding the Perk** — it does not change the shared Move template for anyone else, exactly "the move copy on the character." Tags are the GM-managed world-level list (picked from existing Tags, not typed freeform); a Tag now also carries an optional description, shown as a tooltip wherever the tag appears.
   - **Move Frame Data** (`move_frame_override`) — Startup/Active/Recovery **deltas** (not absolute values, for the same clean-revoke reason as die steps) applied to a specific Move, again scoped only to the granted character's copy. Multiple Perks touching the same Move's frame data on the same character simply sum. The Moves tab shows this character's *effective* frame data (base + their deltas) with a small ⭐ indicator when it differs from the shared template.
-  - **Move Roll Bonus** (`move_roll_bonus`) — a bonus scoped to a specific Move that's meant to apply "only to rolls made using that Move." **Stored and displayed now, with no live effect yet** — there is no move-triggered roll to attach it to until Phase 7 gives declared Moves their own reveal-and-roll (the plan's Combat Timing phase). Shown on the Moves tab and Perks tab tagged "not yet active," the same "stored/displayed now, executes later" treatment already used for Move interaction automations.
+  - **Move Roll Bonus** (`move_roll_bonus`) — a bonus scoped to a specific Move that applies "only to rolls made using that Move." **Live** for any Move that has a Roll configured (see Moves & Tells above): folded into the pre-filled modifier shown when a character clicks that Move's Roll. For a Move with no Roll configured, the bonus is still stored, granted/revoked, and shown on the Moves tab and Perks tab tagged "not yet active" — that case still waits on Phase 7's declared-move reveal-and-roll (the plan's Combat Timing phase), the same "stored/displayed now, executes later" treatment already used for Move interaction automations.
 - **Grant applies each automation and snapshots it** — `character_perk_automations` copies the Perk's automations at the moment of granting, and revoke reverses *that snapshot*, not whatever the live Perk template says at revoke time. Editing a Perk after it's already been granted to someone never retroactively changes what that grant already did or what revoking it undoes.
 - A Perk in use (granted to anyone) can't be deleted — matches the same "in use" pattern already used for Tells.
 - The Perks tab on a character sheet is read-only — displays granted Perks in a grid (infinite rows, 2 columns), each card showing picture/name/description plus its automations (for the same transparency reason granted Moves show their full effect).
@@ -135,6 +137,9 @@ Simple, persistent "clocks" — no automation, just a name, a target (2-20 pips)
 - **Character-owned counters:** created by whoever controls that character (any player for a PC, GM for an NPC), shown on that character's own Counters tab — same open-access pattern as Inventory.
 - **Standalone counters:** created directly in the Combat Arena, not tied to any character — GM-only, since arena control is already GM-only.
 - **Show in Combat toggle:** a character-owned counter can be flagged to also appear in the Combat Arena, labeled `"{CharacterName} - {CounterName}"` (e.g. "Aaron - Rage"). It's the same underlying record wherever it's shown — adjusting it from the Arena or from the character sheet updates the other live.
+
+## Global UI — Search
+Every page's header carries a **Search bar**, available to all roles (not GM-only, unlike the Compendium itself). Typing debounces (250ms) a query against `GET /api/search?q=...`, which matches **named library entities only** — Characters, Moves, Perks, Tells, Tags — by substring on name or description, case-insensitive; character sub-records (Inventory, Injuries, Stances, Counters) are deliberately not indexed. Results render in a dropdown grouped by type. The same role-based visibility rule used everywhere else applies **client-side**, same as the rest of this no-auth app: NPCs are filtered out of Character results for Players. Clicking a Character result navigates straight to its sheet; clicking a Move/Perk/Tell/Tag result opens the GM-only Compendium to the relevant internal tab (Perks vs. Moves/Tells/Tags) — for Players those rows still show (the underlying entities aren't secret) but aren't clickable, since there's no page for a Player to open them into.
 
 ## Data model
 ```sql
@@ -148,7 +153,15 @@ CREATE TABLE characters (
   stamina_multiplier INTEGER NOT NULL DEFAULT 4,  -- editable by future Perks, not hardcoded
   max_stamina INTEGER NOT NULL DEFAULT 0,          -- recalculated on Lock
   current_stamina INTEGER NOT NULL DEFAULT 0,
-  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  folder_id INTEGER -- character list folder; NULL = root
+);
+
+-- GM-managed folders for organizing the character list — same structural
+-- pattern as move_folders (create/rename/delete, delete returns to root)
+CREATE TABLE character_folders (
+  id INTEGER PRIMARY KEY,
+  name TEXT NOT NULL
 );
 
 -- Seeded once, fixed ruleset (not user-editable in-app)
@@ -252,7 +265,8 @@ CREATE TABLE perk_automations (
   -- stamina_multiplier:  {delta}
   -- move_tag:            {moveId, tagId, action: 'add'|'remove'}
   -- move_frame_override: {moveId, startupDelta, activeDelta, recoveryDelta}
-  -- move_roll_bonus:     {moveId, amount} -- inert until Phase 7's move-triggered rolls exist
+  -- move_roll_bonus:     {moveId, amount} -- live once that move has a Roll configured (move_roll_slots);
+  --                                          otherwise inert until Phase 7's move-triggered rolls exist
 );
 
 -- A snapshot, taken at grant time, of the Perk's automations as they stood
@@ -306,9 +320,11 @@ CREATE TABLE character_move_overrides (
   source_character_perk_id INTEGER REFERENCES character_perks(id) ON DELETE CASCADE
 );
 
--- Per-character bonus scoped to a specific move, meant to apply only to
--- rolls made using that move. Stored/displayed now; no live effect until
--- Phase 7 gives declared moves their own reveal-and-roll.
+-- Per-character bonus scoped to a specific move, applying only to rolls
+-- made using that move. Live once the move has a Roll configured
+-- (move_roll_slots) — folded into the pre-filled modifier on click. For a
+-- move with no Roll, still stored/displayed but with nothing to attach to
+-- until Phase 7 gives declared moves their own reveal-and-roll.
 CREATE TABLE character_move_roll_bonuses (
   id INTEGER PRIMARY KEY,
   character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
@@ -345,7 +361,20 @@ CREATE TABLE moves (
   style_attribute_id INTEGER REFERENCES attributes(id), -- learn/use gate; NULL only on legacy rows
   folder_id INTEGER,    -- compendium folder; NULL = root
   image_data TEXT,      -- base64 small uploaded image
-  image_mime_type TEXT
+  image_mime_type TEXT,
+  roll_modifier INTEGER NOT NULL DEFAULT 0 -- flat bonus on this move's own Roll (see move_roll_slots);
+                                            -- distinct from the per-character roll_bonus a Perk can grant
+);
+
+-- Which body-part dice a move's optional Roll is made of (see Moves & Tells
+-- above) — a move with no rows here simply has no Roll. slot_name matches
+-- the DICE_TEMPLATE slot names (Skull/Brain/Left Hand/Stamina/Body/Right
+-- Hand/Left Leg/Right Leg).
+CREATE TABLE move_roll_slots (
+  id INTEGER PRIMARY KEY,
+  move_id INTEGER NOT NULL REFERENCES moves(id) ON DELETE CASCADE,
+  slot_name TEXT NOT NULL,
+  UNIQUE(move_id, slot_name)
 );
 
 -- On Hit / On Block / On Miss entries: text plus optional automations
@@ -421,7 +450,9 @@ When a character is created, auto-generate its 8 `dice` rows (2 head + 4 core + 
 **Move list note:** a character's full Tab 3 list = all `moves` where `is_default = 1`, plus all moves joined through `character_moves` for that character. Declared moves during combat ARE persisted (`declared_moves`), unlike the earlier draft of this plan — the Tic-based reveal timer needs them to survive a mid-round reload. The server still withholds the real `move_id` from broadcasts to non-owners until the reveal Tic, sending only the Tell.
 
 ## Real-time events (Socket.io)
-- `character:created` / `character:updated` / `character:deleted` — server → all clients, includes `character_type`. `character:updated` covers name edits and portrait uploads alike, so every device refreshes both live.
+- `character:created` / `character:updated` / `character:deleted` — server → all clients, includes `character_type`. `character:updated` covers name edits, portrait uploads, and folder reassignment alike, so every device refreshes all three live.
+- `character_folder:create` / `character_folder:rename` / `character_folder:delete` (client [GM] → server): `{ name }` / `{ folderId, name }` / `{ folderId }` — manages `character_folders` (delete moves its characters back to root), broadcasts `character_folder:created` / `character_folder:updated` / `character_folder:deleted`. `GET /api/character-folders` lists them (kept separate from `GET /api/characters`, whose flat-array shape existing callers depend on).
+- `character:set_folder` (client [GM] → server): `{ characterId, folderId }` (`folderId` null = root; an unknown id also falls back to root) — the drag-and-drop reassignment path, mirrors `move:set_folder`: touches only `characters.folder_id`. Broadcasts `character:updated`. `POST /api/characters` also accepts an optional `folderId` so a new character can be filed in directly from the Add Character form (GM only — Players' new PCs always land at root).
 - `die:roll` (client → server): `{ characterId, dieId, modifier }` — modifier is the ad-hoc +/- entered in the roll dialog. Result = roll(current_size) + bonus + modifier. Server logs to `chat_log`, broadcasts `roll:result`.
 - `pool:roll` (client → server): `{ characterId, dieIds, modifier }` — rolls the selected set of that character's dice (any mix across Head/Core/Legs; incapacitated dice are silently dropped), each at its own size + bonus, plus the one shared modifier applied to all of them. Broadcasts `roll:result`.
 - `die:step` (client → server): `{ dieId, direction: 'up' | 'down' }` — server logic:
@@ -439,7 +470,8 @@ When a character is created, auto-generate its 8 `dice` rows (2 head + 4 core + 
 - `stamina:regen` (client → server): `{ characterId }` — rolls the Stamina die at its current size + bonus, adds the result to `current_stamina` (clamped to `max_stamina`), logs to `chat_log`. Broadcasts `character:updated` and `roll:result`.
 - `stamina:adjust` (client → server): `{ characterId, delta }` — manual +/- to `current_stamina`, clamped to `[0, max_stamina]`. Interim building block until the Moves tab defines how Stamina is actually spent. Broadcasts `character:updated`.
 - `tell:create` / `tell:update` / `tell:delete` (client [GM] → server): `{ name, imageData?, imageMimeType? }` / `{ tellId, name, imageData?, imageMimeType? }` (image only replaced when provided) / `{ tellId }` — manages the world-level `tells` list (delete refused while any move uses the Tell), broadcasts `tell:created` / `tell:updated` / `tell:deleted` to all clients
-- `move:create` / `move:update` / `move:delete` (client [GM] → server): `{ name, isDefault, tellId, styleAttributeId, folderId, tagIds, imageData?, imageMimeType?, startupTics, activeTics, recoveryTics, description, interactions: {hit|block|miss: {text, automations}} }` / `{ moveId, ...same fields }` (interactions + tags replaced wholesale on update; image only when provided) / `{ moveId }` — manages `moves` + `move_interactions` + `move_tags` (delete cascades to `character_moves`), broadcasts `move:created` / `move:updated` / `move:deleted` (full move incl. interactions + tag_ids) to all clients
+- `move:create` / `move:update` / `move:delete` (client [GM] → server): `{ name, isDefault, tellId, styleAttributeId, folderId, tagIds, rollSlots?, rollModifier?, imageData?, imageMimeType?, startupTics, activeTics, recoveryTics, description, interactions: {hit|block|miss: {text, automations}} }` / `{ moveId, ...same fields }` (interactions + tags + roll slots replaced wholesale on update; image only when provided) / `{ moveId }` — manages `moves` + `move_interactions` + `move_tags` + `move_roll_slots` (delete cascades to `character_moves`), broadcasts `move:created` / `move:updated` / `move:deleted` (full move incl. interactions, tag_ids, roll_slots, roll_modifier) to all clients. `rollSlots` dedupes and drops unknown slot names; an empty/omitted list means the move has no Roll.
+- **Move Roll has no dedicated roll-execution event** — it reuses `pool:roll` unchanged. Server-side, `getMovesFor(characterId)` (used by `GET /api/characters/:id` and everywhere a character's move list is sent) resolves each move's `roll_slots` against that character's live `dice` rows into `roll_dice: [{dieId, slot_name, current_size, bonus, status}]`, and computes `effective_roll_modifier = roll_modifier + roll_bonus` (the move's own bonus plus any Perk-granted `move_roll_bonus` for that move). Clicking a move's Roll on the client opens the same roll dialog as any other roll, pre-filled with `effective_roll_modifier`, and on submit emits `pool:roll` with `dieIds` set to every `roll_dice[].dieId` — `pool:roll`'s existing `status = 'active'` filter is what silently drops any incapacitated die from the collection, no separate logic needed.
 - `folder:create` / `folder:rename` / `folder:delete` (client [GM] → server): `{ name }` / `{ folderId, name }` / `{ folderId }` — manages compendium `move_folders` (delete moves its contents back to root), broadcasts `folder:created` / `folder:updated` / `folder:deleted`
 - `move:set_folder` (client [GM] → server): `{ moveId, folderId }` (`folderId` null = root; an unknown id also falls back to root) — the drag-and-drop reassignment path: touches only `moves.folder_id`, leaving name/tell/style/frames/description/interactions/tags untouched (unlike `move:update`, which replaces the whole move). Broadcasts `move:updated`.
 - `move:grant` / `move:revoke` (client [GM] → server): `{ characterId, moveId }` — inserts/deletes a `character_moves` row (the drag-and-drop from the compendium). Grant is refused server-side when the move has a style and the character has no stance containing it (learnability rule). Broadcasts `move:granted` / `move:revoked`
@@ -462,9 +494,10 @@ When a character is created, auto-generate its 8 `dice` rows (2 head + 4 core + 
 - `counter:delete` (client → server): `{ counterId }` — broadcasts `counter:deleted`
 
 ## Pages / views
+Every page's header also carries the **Search bar** (see Global UI — Search above) and the Chat Log toggle, persistent regardless of which page is open.
 1. **Role-select modal** — shown on every fresh load, before anything else: "Player" or "GM". Not persisted.
-2. **Character list** (home) — cards for each character, filtered by role (`pc` only for Player, all for GM); "+ Add Character" button (name only, plus a PC/NPC toggle for GM; dice auto-seeded either way); each card has a **Delete** option that asks for confirmation first (it cascades — dice, stances, moves, inventory, injuries all go with it)
-3. **Character sheet**, split into 3 tabs:
+2. **Character list** (home) — cards for each character, filtered by role (`pc` only for Player, all for GM); folder tabs above the grid (🏠 All Characters plus one tab per folder) work exactly like Move folders — drag a card onto a folder tab to file it, or onto "All Characters" to return it to root, deleting a folder returns its characters to root — but are **GM-managed**: only the GM sees create/rename/delete controls and can drag; Players just browse whatever folders exist. "+ Add Character" button (name only, plus a PC/NPC toggle and a folder picker for GM — Players' new PCs always land at root; dice auto-seeded either way); each card has a **Delete** option that asks for confirmation first (it cascades — dice, stances, moves, inventory, injuries all go with it)
+3. **Character sheet**, split into 6 tabs:
    - **Tab 1 — Core Stats:**
      - **Name** — simple editable text field, saved live
      - **Portrait** — image area; clicking it opens a file picker to upload/replace the character's picture (same click-to-change flow whether setting it the first time or changing it later)
@@ -475,12 +508,12 @@ When a character is created, auto-generate its 8 `dice` rows (2 head + 4 core + 
      - **Injuries** — same widget/behavior as Inventory: name + optional effect (add/edit/remove)
      - Both lists render stacked: bold name on top, description/effect under it in smaller grey text — and no second line at all when it's empty, so description-less entries stay compact
    - **Tab 2 — Stances:** list of the character's own stances (left-click to set active, highlighted when active; edit/delete per stance, minus the last-stance/active-stance rules above); **Stance Creator** to build a new one (name + pick exactly 2 of the 7 styles, icon-buttons); the counter chart (SVG tournament graph, highlighted for the active stance) with Best/Worst Matchups lists; active stance badge on the sheet header
-   - **Tab 3 — Moves:** read-only list of the character's available moves (all Default moves + any Unique moves granted by the GM), rendered as full move cards per the decided structure (Tell header, move art + name + frame-data squares, style/tag chips, description, interactions with automation chips); shows this character's **effective** frame data and tags — base template plus any Perk-granted `character_move_overrides`/`character_move_tags` — with a ⭐ indicator when they differ from the shared template, plus any Perk `move_roll_bonus` (marked "not yet active"); Default/Unique badges; moves whose style isn't in the active stance render dimmed (unusable); GM can revoke a Unique move from here
+   - **Tab 3 — Moves:** read-only list of the character's available moves (all Default moves + any Unique moves granted by the GM), rendered as full move cards per the decided structure (Tell header, move art + name + frame-data squares, style/tag chips, Roll row, description, interactions with automation chips); shows this character's **effective** frame data and tags — base template plus any Perk-granted `character_move_overrides`/`character_move_tags` — with a ⭐ indicator when they differ from the shared template, plus any Perk `move_roll_bonus` (live if the move has a Roll, otherwise marked "not yet active"); a move with a Roll shows its live current dice as a clickable button (opens the roll dialog, pre-filled and editable); Default/Unique badges; moves whose style isn't in the active stance render dimmed (unusable); GM can revoke a Unique move from here
    - **Tab 4 — Perks:** read-only grid (infinite rows, 2 columns) of granted Perks — picture, name, description, and automation summary chips shown per card
    - **Tab 5 — Counters:** the character's own counters, name on its own line, then a full-width row — a minus button on the left, dot pips filled up to the current count out of target across the middle, a plus button on the right (both clamped to `[0, target]`) — each with a "Show in Combat" toggle; anyone controlling the character can create a new one here (name + target pips 2-20)
    - **Tab 6 — Role-play:** persistent free-text fields, each under a question the player asks themselves about the character. Six canonical questions (what they love and can't pass by on the street; biggest traumatic event/memory; irrational fear; favorite food; what another person can do to infuriate them; biggest vice) with ~2-3-line answer boxes, kept compact so it all fits with little scrolling, plus the ability to add custom questions with answers — up to 20 additional per character (question editable, deletable). Same open-access editing as the rest of the sheet.
 4. **Compendium** (GM-only) — a single page holding every compendium as an internal tab, rather than a separate top-level nav entry per type (decided — this is the pattern for any compendium added later too):
-   - **Moves tab** — persistent library of every move; the Tell manager (name + uploaded image, placeholders replaceable, in-use Tells undeletable); the Tag manager (world-level list, name + optional description shown as a tooltip everywhere the tag appears); folders (create/rename/delete, delete returns moves to root), reorganized either via the Move Creator's folder field or by **dragging a move card onto a folder tab** (or onto "All Moves" to pull it back to root), with the style filter (in-folder filters the folder, at root it scans all folders and labels each hit's origin); Move Creator form (art upload, name, Default toggle, Tell picker, required Style picker, Tag picker 0-10, folder assignment, frame-data inputs with live colored preview, description, On Hit/Block/Miss text + automation builders); drag a move onto a character in the page's character rail to grant it (per-move Grant checklist as touch fallback, with unlearnable characters disabled)
+   - **Moves tab** — persistent library of every move; the Tell manager (name + uploaded image, placeholders replaceable, in-use Tells undeletable); the Tag manager (world-level list, name + optional description shown as a tooltip everywhere the tag appears); folders (create/rename/delete, delete returns moves to root), reorganized either via the Move Creator's folder field or by **dragging a move card onto a folder tab** (or onto "All Moves" to pull it back to root), with the style filter (in-folder filters the folder, at root it scans all folders and labels each hit's origin); Move Creator form (art upload, name, Default toggle, Tell picker, required Style picker, optional Roll picker directly below Style — toggle any of the 8 body-part slots plus a flat bonus, empty = no Roll —, Tag picker 0-10, folder assignment, frame-data inputs with live colored preview, description, On Hit/Block/Miss text + automation builders); drag a move onto a character in the page's character rail to grant it (per-move Grant checklist as touch fallback, with unlearnable characters disabled)
    - **Perks tab** — persistent library of every Perk; Perk Creator (picture upload, name, description, one or more automation entries picked from the extensible registry: Step a Die, Stamina Multiplier, Move Tag, Move Frame Data, Move Roll Bonus); drag a Perk onto a character in the page's character rail to grant it (per-Perk Grant checklist as touch fallback); delete blocked while granted to anyone
 5. **Combat Arena** — shared page, no map/tokens. GM drags characters onto a left/right side and arranges them into pairs (semi-translucent divider between pairs); shows only portrait/dice pools/stamina per participant; NPCs here are visible to Players as an explicit exception. "Uneven Combat" toggle (GM-only) allows uneven pair sizes. Also shows any counters flagged "Show in Combat" (labeled `"{CharacterName} - {CounterName}"`) plus any standalone counters the GM created directly here. Includes the round's Declaration/Tic-Countdown phase indicator, a **Next Round** button, initiative results per pair, each character's declared-move slots (Tell-only until revealed), and the GM's Tic forward/back controls.
 6. **Chat Log** — shared, live feed of all rolls and revealed-move cards, updates instantly on every connected device; each entry shows the roller's avatar beside their name, and the roll modifier folded into each die's formula rather than a separate tag; a **Clear Chat** button empties it for everyone (also clears automatically on server restart)
@@ -564,7 +597,7 @@ A scope check for whoever picks this up: this grew well past "semi-simple websit
 - Real Tells (names + commissioned images) to replace the two seeded placeholders — GM task, tooling is live
 - When/how On Hit / On Block / On Miss automations actually fire during combat (GM adjudicates hit/block/miss; presumably a GM control per resolved move) — Phase 7 design
 - Perks are explicitly MVP-scope; more automation types are expected later — the registry (`die_step`, `stamina_multiplier`, `move_tag`, `move_frame_override`, `move_roll_bonus`) is built to make that additive
-- `move_roll_bonus` is stored, granted/revoked, and displayed, but has no live effect yet — it needs Phase 7's move-triggered rolls (declared Moves resolving with a roll) to actually apply. Also unresolved from Phase 3: exactly when/how On Hit/Block/Miss automations fire during combat — both are Phase 7 design work.
+- `move_roll_bonus` is live for any Move that has a Roll configured (folds into that Roll's pre-filled modifier); for a Move with no Roll it's still stored, granted/revoked, and displayed but has no live effect yet, since that case needs Phase 7's declared-move reveal-and-roll to actually apply it. Also unresolved from Phase 3: exactly when/how On Hit/Block/Miss automations fire during combat — both are Phase 7 design work.
 - Real Perk content (actual Perks with real automations) still needs writing — the tooling is live
 - Who besides the GM, if anyone, can press Clear Chat — currently assumed GM-only
 - Interrupt resolution (e.g. a fast Jab potentially interrupting a slower move) is tracked via Tic order but not auto-adjudicated — a GM/table call for now

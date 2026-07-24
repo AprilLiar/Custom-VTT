@@ -56,7 +56,18 @@ export async function initDb() {
       stamina_multiplier INTEGER NOT NULL DEFAULT 4,
       max_stamina INTEGER NOT NULL DEFAULT 0,
       current_stamina INTEGER NOT NULL DEFAULT 0,
-      created_at TEXT DEFAULT CURRENT_TIMESTAMP
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      folder_id INTEGER -- character list folder; NULL = root
+    )
+  `);
+  await ensureColumn('characters', 'folder_id', 'INTEGER');
+
+  // GM-created folders for organizing the character list — same structural
+  // pattern as move_folders (create/rename/delete, delete returns to root).
+  await run(`
+    CREATE TABLE IF NOT EXISTS character_folders (
+      id INTEGER PRIMARY KEY,
+      name TEXT NOT NULL
     )
   `);
 
@@ -171,13 +182,29 @@ export async function initDb() {
       style_attribute_id INTEGER REFERENCES attributes(id), -- NULL only on legacy rows
       folder_id INTEGER,    -- compendium folder; NULL = root
       image_data TEXT,      -- base64 small image (commissioned art)
-      image_mime_type TEXT
+      image_mime_type TEXT,
+      -- Flat bonus baked into this move's own Roll (distinct from the
+      -- per-character roll_bonus a Perk can separately grant a move).
+      roll_modifier INTEGER NOT NULL DEFAULT 0
     )
   `);
   await ensureColumn('moves', 'style_attribute_id', 'INTEGER REFERENCES attributes(id)');
   await ensureColumn('moves', 'folder_id', 'INTEGER');
   await ensureColumn('moves', 'image_data', 'TEXT');
   await ensureColumn('moves', 'image_mime_type', 'TEXT');
+  await ensureColumn('moves', 'roll_modifier', 'INTEGER NOT NULL DEFAULT 0');
+
+  // Which body-part dice a move's optional Roll is made of — a move with no
+  // rows here has no Roll. Order isn't meaningful; slot_name matches
+  // DICE_TEMPLATE (Skull/Brain/Left Hand/Stamina/Body/Right Hand/Left Leg/Right Leg).
+  await run(`
+    CREATE TABLE IF NOT EXISTS move_roll_slots (
+      id INTEGER PRIMARY KEY,
+      move_id INTEGER NOT NULL REFERENCES moves(id) ON DELETE CASCADE,
+      slot_name TEXT NOT NULL,
+      UNIQUE(move_id, slot_name)
+    )
+  `);
 
   // World-level Tag list, GM-managed like Tells (Phase 4 pulls in
   // per-character tag overrides; the base tables land now for Move tagging)

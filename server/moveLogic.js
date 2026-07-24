@@ -1,6 +1,10 @@
 // Pure validation/normalization for Moves — kept free of I/O for unit testing.
 
+import { DICE_TEMPLATE } from './gameLogic.js';
+
 export const TRIGGERS = ['hit', 'block', 'miss'];
+
+export const DIE_SLOT_NAMES = DICE_TEMPLATE.map((d) => d.slot_name);
 
 // Frame data: 0-10 squares per segment (Startup/Active/Recovery), at least
 // one square total. Startup yellow, Active red, Recovery blue (client-side).
@@ -59,4 +63,18 @@ export function normalizeInteractions(interactions) {
     if (text || automations.length) rows.push({ trigger, text, automations });
   }
   return rows;
+}
+
+const ROLL_BONUS_LIMIT = 20;
+
+export function clampRollBonus(value) {
+  const n = Math.trunc(Number(value) || 0);
+  return Math.max(-ROLL_BONUS_LIMIT, Math.min(ROLL_BONUS_LIMIT, n));
+}
+
+// A move's optional Roll: which body-part dice get rolled together. Dedupes,
+// drops unknown slot names, empty array = no Roll on this move.
+export function sanitizeRollSlots(list) {
+  if (!Array.isArray(list)) return [];
+  return [...new Set(list.map((s) => String(s)))].filter((s) => DIE_SLOT_NAMES.includes(s));
 }

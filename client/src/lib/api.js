@@ -10,6 +10,7 @@ const post = { method: 'POST', headers: { 'Content-Type': 'application/json' } }
 const put = { method: 'PUT', headers: { 'Content-Type': 'application/json' } };
 
 export const getCharacters = () => fetch('/api/characters').then(json);
+export const getCharacterFolders = () => fetch('/api/character-folders').then(json);
 export const getCharacter = (id) => fetch(`/api/characters/${id}`).then(json);
 export const createCharacter = (body) =>
   fetch('/api/characters', { ...post, body: JSON.stringify(body) }).then(json);
@@ -23,3 +24,4 @@ export const getTells = () => fetch('/api/tells').then(json);
 export const getTags = () => fetch('/api/tags').then(json);
 export const getMoves = () => fetch('/api/moves').then(json);
 export const getPerks = () => fetch('/api/perks').then(json);
+export const search = (q) => fetch(`/api/search?q=${encodeURIComponent(q)}`).then(json);
