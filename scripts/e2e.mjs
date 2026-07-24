@@ -20,7 +20,7 @@ const jpost = (url, body, method = 'POST') =>
 const watcher = io(URL);
 const actor = io(URL);
 const events = [];
-for (const ev of ['character:created', 'character:updated', 'character:deleted', 'die:updated', 'roll:result', 'inventory:updated', 'injuries:updated', 'stance:created', 'stance:updated', 'stance:deleted', 'stance:activated', 'tell:created', 'tell:updated', 'tell:deleted', 'move:created', 'move:updated', 'move:deleted', 'move:granted', 'move:revoked', 'roleplay:updated', 'tag:created', 'tag:updated', 'tag:deleted', 'folder:created', 'folder:updated', 'folder:deleted']) {
+for (const ev of ['character:created', 'character:updated', 'character:deleted', 'die:updated', 'roll:result', 'inventory:updated', 'injuries:updated', 'stance:created', 'stance:updated', 'stance:deleted', 'stance:activated', 'tell:created', 'tell:updated', 'tell:deleted', 'move:created', 'move:updated', 'move:deleted', 'move:granted', 'move:revoked', 'roleplay:updated', 'tag:created', 'tag:updated', 'tag:deleted', 'folder:created', 'folder:updated', 'folder:deleted', 'perk:created', 'perk:updated', 'perk:deleted', 'perk:granted', 'perk:revoked']) {
   watcher.on(ev, (payload) => events.push({ ev, payload }));
 }
 const waitEvent = (ev, pred = () => true, ms = 3000) =>
@@ -244,13 +244,17 @@ emit('tell:update', { tellId: newTell.id, name: 'Shoulder Twitch' });
 const updTell = await waitEvent('tell:updated');
 check('tell rename keeps image', updTell.name === 'Shoulder Twitch' && updTell.image_data === 'aGVsbG8=');
 
-// --- tags (world-level, GM-managed) ---
+// --- tags (world-level, GM-managed, with description) ---
 events.length = 0;
-emit('tag:create', { name: 'Overhead' });
+emit('tag:create', { name: 'Overhead', description: 'Must be blocked standing' });
 const tagA = await waitEvent('tag:created');
 emit('tag:create', { name: 'Sweep' });
 const tagB = await waitEvent('tag:created', (t) => t.name === 'Sweep');
-check('tags created', tagA.name === 'Overhead' && tagB.name === 'Sweep');
+check('tags created, description optional', tagA.name === 'Overhead' && tagA.description === 'Must be blocked standing' && tagB.description === '');
+events.length = 0;
+emit('tag:update', { tagId: tagB.id, name: 'Sweep', description: 'Must be blocked low' });
+const tagBUpdated = await waitEvent('tag:updated');
+check('tag description editable', tagBUpdated.description === 'Must be blocked low');
 
 // --- moves: frame data + interactions + style + tags + image ---
 const speedId = attrIdByName.get('Speed');
@@ -325,6 +329,21 @@ emit('folder:create', { name: 'Punches' });
 const folder = await waitEvent('folder:created');
 check('folder created', folder.name === 'Punches');
 
+// move:set_folder (drag-and-drop) must touch ONLY folder_id — everything
+// else about the move stays exactly as it was, unlike move:update.
+events.length = 0;
+emit('move:set_folder', { moveId: hook.id, folderId: folder.id });
+const draggedIn = await waitEvent('move:updated', (m) => m.id === hook.id);
+check('move:set_folder files the move without touching other fields', draggedIn.folder_id === folder.id && draggedIn.name === hook.name && draggedIn.tell_id === hook.tell_id && draggedIn.style_attribute_id === hook.style_attribute_id && draggedIn.startup_tics === hook.startup_tics && draggedIn.image_data === hook.image_data && draggedIn.interactions.length === hook.interactions.length);
+events.length = 0;
+emit('move:set_folder', { moveId: hook.id, folderId: null });
+const draggedOut = await waitEvent('move:updated', (m) => m.id === hook.id);
+check('move:set_folder back to root (drop on "All Moves")', draggedOut.folder_id === null && draggedOut.name === hook.name);
+events.length = 0;
+emit('move:set_folder', { moveId: hook.id, folderId: 999999 });
+const draggedBad = await waitEvent('move:updated', (m) => m.id === hook.id);
+check('move:set_folder falls back to root for a nonexistent folder id', draggedBad.folder_id === null);
+
 events.length = 0;
 emit('move:update', {
   moveId: hook.id, name: 'Heavy Hook', isDefault: false, tellId: tells[1].id,
@@ -361,6 +380,142 @@ events.length = 0;
 emit('move:delete', { moveId: hook.id });
 await waitEvent('move:deleted', (p) => p.moveId === hook.id);
 check('move deleted', ((await jf('/api/moves')).body).moves.every((m) => m.id !== hook.id));
+
+// --- perks: picture/name/description/automations, extensible registry ---
+sheet = (await jf(`/api/characters/${ch.id}`)).body;
+const rightHandBaseline = sheet.dice.find((d) => d.slot_name === 'Right Hand');
+check('Right Hand die untouched baseline d8', rightHandBaseline.current_size === 8 && rightHandBaseline.bonus === 0 && rightHandBaseline.locked_size === 8);
+const beforeMultiplier = sheet.character.stamina_multiplier;
+const beforeMaxStamina = sheet.character.max_stamina;
+
+events.length = 0;
+emit('perk:create', {
+  name: 'Iron Body',
+  description: 'Years of conditioning.',
+  imageData: 'cGVyaw==', imageMimeType: 'image/png',
+  automations: [
+    { type: 'die_step', payload: { slotName: 'Right Hand', steps: 2, scope: 'permanent' } },
+    { type: 'stamina_multiplier', payload: { delta: 1 } },
+    { type: 'move_tag', payload: { moveId: jab.id, tagId: tagA.id, action: 'add' } },
+    { type: 'move_frame_override', payload: { moveId: jab.id, startupDelta: 1, activeDelta: 0, recoveryDelta: 0 } },
+    { type: 'move_roll_bonus', payload: { moveId: jab.id, amount: 3 } },
+    { type: 'die_step', payload: { slotName: 'Right Hand', steps: 0 } }, // no-op, dropped
+  ],
+});
+const perk = await waitEvent('perk:created');
+check('perk created with image, 5 valid automations (1 no-op dropped)', perk.name === 'Iron Body' && perk.image_data === 'cGVyaw==' && perk.automations.length === 5, `got ${perk.automations.length}`);
+
+let perksResp = (await jf('/api/perks')).body;
+check('perk listed in compendium, ungranted', perksResp.find((p) => p.id === perk.id)?.granted_character_ids.length === 0);
+
+events.length = 0;
+emit('perk:grant', { characterId: ch.id, perkId: perk.id });
+await waitEvent('perk:granted', (p) => p.characterId === ch.id && p.perkId === perk.id);
+await waitEvent('die:updated', (d) => d.characterId === ch.id && d.slot_name === 'Right Hand');
+await waitEvent('character:updated', (c) => c.id === ch.id);
+await sleep(200);
+
+sheet = (await jf(`/api/characters/${ch.id}`)).body;
+let rightHand = sheet.dice.find((d) => d.slot_name === 'Right Hand');
+check('die_step permanent moves current AND locked (d8 -> d12, 2 steps)', rightHand.current_size === 12 && rightHand.bonus === 0 && rightHand.locked_size === 12 && rightHand.locked_bonus === 0, JSON.stringify(rightHand));
+check('stamina_multiplier applied + max stamina recomputed', sheet.character.stamina_multiplier === beforeMultiplier + 1 && sheet.character.max_stamina > beforeMaxStamina, `mult ${sheet.character.stamina_multiplier} max ${sheet.character.max_stamina}`);
+
+let jabOnSheet = sheet.moves.find((m) => m.id === jab.id);
+check('move_tag add reflected in effective tags only (base template untouched)', jabOnSheet.effective_tag_ids.includes(tagA.id) && !jabOnSheet.tag_ids.includes(tagA.id));
+check('move_frame_override reflected in effective frame data', jabOnSheet.effective_startup_tics === jab.startup_tics + 1 && jabOnSheet.has_perk_overrides === true);
+check('move_roll_bonus stored on the character copy (inert until Phase 7)', jabOnSheet.roll_bonus === 3);
+check('granted perk on character sheet carries its automation snapshot', sheet.perks.length === 1 && sheet.perks[0].name === 'Iron Body' && sheet.perks[0].automations.length === 5);
+
+perksResp = (await jf('/api/perks')).body;
+check('compendium tracks the grant', perksResp.find((p) => p.id === perk.id).granted_character_ids.includes(ch.id));
+
+// Editing the Perk template AFTER granting must not retroactively change what
+// was already applied, or what revoke will undo — the grant kept a snapshot.
+events.length = 0;
+emit('perk:update', {
+  perkId: perk.id, name: 'Iron Body', description: 'Years of conditioning.',
+  automations: [{ type: 'die_step', payload: { slotName: 'Right Hand', steps: 5, scope: 'permanent' } }],
+});
+await waitEvent('perk:updated', (p) => p.id === perk.id);
+sheet = (await jf(`/api/characters/${ch.id}`)).body;
+check('editing the perk template leaves an existing grant snapshot untouched', sheet.perks[0].automations.length === 5 && sheet.perks[0].automations.some((a) => a.type === 'die_step' && a.payload.steps === 2));
+
+events.length = 0;
+emit('perk:delete', { perkId: perk.id });
+await sleep(300);
+check('perk delete blocked while still granted to someone', !events.some((e) => e.ev === 'perk:deleted'));
+
+// Revoke reverses the GRANT SNAPSHOT (steps: 2), not the edited template (steps: 5)
+events.length = 0;
+emit('perk:revoke', { characterId: ch.id, perkId: perk.id });
+await waitEvent('perk:revoked', (p) => p.characterId === ch.id && p.perkId === perk.id);
+await waitEvent('die:updated', (d) => d.characterId === ch.id && d.slot_name === 'Right Hand');
+await waitEvent('character:updated', (c) => c.id === ch.id);
+await sleep(200);
+
+sheet = (await jf(`/api/characters/${ch.id}`)).body;
+rightHand = sheet.dice.find((d) => d.slot_name === 'Right Hand');
+check('revoke reverses exactly the snapshot, not the edited template', rightHand.current_size === 8 && rightHand.bonus === 0 && rightHand.locked_size === 8 && rightHand.locked_bonus === 0, JSON.stringify(rightHand));
+check('revoke reverses stamina_multiplier + recomputes max', sheet.character.stamina_multiplier === beforeMultiplier && sheet.character.max_stamina === beforeMaxStamina, `mult ${sheet.character.stamina_multiplier} max ${sheet.character.max_stamina}`);
+jabOnSheet = sheet.moves.find((m) => m.id === jab.id);
+check('move-scoped overrides fully removed on revoke', !jabOnSheet.effective_tag_ids.includes(tagA.id) && jabOnSheet.effective_startup_tics === jab.startup_tics && jabOnSheet.roll_bonus === 0 && jabOnSheet.has_perk_overrides === false);
+check('perk removed from character sheet', sheet.perks.length === 0);
+
+events.length = 0;
+emit('perk:delete', { perkId: perk.id });
+await waitEvent('perk:deleted', (p) => p.perkId === perk.id);
+perksResp = (await jf('/api/perks')).body;
+check('perk deletable once ungranted', perksResp.every((p) => p.id !== perk.id));
+
+// --- die_step scope: current-only vs permanent ---
+events.length = 0;
+emit('perk:create', {
+  name: 'Adrenaline Rush', description: '',
+  automations: [{ type: 'die_step', payload: { slotName: 'Right Hand', steps: 1, scope: 'current' } }],
+});
+const tempPerk = await waitEvent('perk:created');
+events.length = 0;
+emit('perk:grant', { characterId: ch.id, perkId: tempPerk.id });
+await waitEvent('perk:granted', (p) => p.characterId === ch.id && p.perkId === tempPerk.id);
+await waitEvent('die:updated', (d) => d.characterId === ch.id && d.slot_name === 'Right Hand');
+sheet = (await jf(`/api/characters/${ch.id}`)).body;
+rightHand = sheet.dice.find((d) => d.slot_name === 'Right Hand');
+check('current-only scope steps current but leaves locked untouched', rightHand.current_size === 10 && rightHand.locked_size === 8);
+
+events.length = 0;
+emit('perk:revoke', { characterId: ch.id, perkId: tempPerk.id });
+await waitEvent('perk:revoked', (p) => p.characterId === ch.id && p.perkId === tempPerk.id);
+await waitEvent('die:updated', (d) => d.characterId === ch.id && d.slot_name === 'Right Hand');
+sheet = (await jf(`/api/characters/${ch.id}`)).body;
+rightHand = sheet.dice.find((d) => d.slot_name === 'Right Hand');
+check('revoking a current-only die_step steps it back down cleanly', rightHand.current_size === 8 && rightHand.locked_size === 8);
+emit('perk:delete', { perkId: tempPerk.id });
+await waitEvent('perk:deleted', (p) => p.perkId === tempPerk.id);
+
+// A SEPARATE grant demonstrates current-only being erased by Revert Stats to
+// Base instead of by revoke — the accepted "numbers don't match" risk the
+// plan documents applies if you mix the two, so this test keeps them apart
+// (grants fresh, reverts, then revokes without asserting the post-revoke
+// die state, since revert already changed what revoke's inverse lands on).
+events.length = 0;
+emit('perk:create', {
+  name: 'Second Wind', description: '',
+  automations: [{ type: 'die_step', payload: { slotName: 'Right Hand', steps: 1, scope: 'current' } }],
+});
+const tempPerk2 = await waitEvent('perk:created');
+emit('perk:grant', { characterId: ch.id, perkId: tempPerk2.id });
+await waitEvent('perk:granted', (p) => p.characterId === ch.id && p.perkId === tempPerk2.id);
+await waitEvent('die:updated', (d) => d.characterId === ch.id && d.slot_name === 'Right Hand');
+events.length = 0;
+emit('character:revert_stats', { characterId: ch.id });
+await waitEvent('die:updated', (d) => d.characterId === ch.id && d.slot_name === 'Right Hand');
+sheet = (await jf(`/api/characters/${ch.id}`)).body;
+rightHand = sheet.dice.find((d) => d.slot_name === 'Right Hand');
+check('Revert Stats to Base erases a current-only Perk buff', rightHand.current_size === 8 && rightHand.locked_size === 8);
+emit('perk:revoke', { characterId: ch.id, perkId: tempPerk2.id });
+await waitEvent('perk:revoked', (p) => p.characterId === ch.id && p.perkId === tempPerk2.id);
+emit('perk:delete', { perkId: tempPerk2.id });
+await waitEvent('perk:deleted', (p) => p.perkId === tempPerk2.id);
 
 // --- roleplay: fixed-question upsert, custom questions, cap of 20 ---
 const q1 = 'What is their favorite food?';

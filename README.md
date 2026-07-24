@@ -44,10 +44,13 @@ Note: Render's free tier sleeps after inactivity — the first load of a session
 
 ## Project status
 
-Phase 3 (Moves, Tells & Compendium), plus a follow-up pass — uploaded art (not icons)
-for Moves and Tells, a required Style per move (gates learning/using it against a
-character's stances), 0-10 Tags per move, and Compendium folders with a style filter
-that scans across folders from the root. See `vttprojectplan.md` for what's next.
+Phase 4 (Perks & Tags) — the GM Perks Compendium, a Perk Creator built on a small
+extensible automation registry (step a die, adjust the stamina multiplier, add/remove
+a move tag, override a move's frame data, or grant a move-scoped roll bonus — all
+scoped to the granting character, snapshotted at grant time so revoke is always exact),
+and the character sheet's read-only Perks tab. Tags gained descriptions (tooltips), and
+the Moves tab now shows each character's Perk-adjusted "effective" copy of a move.
+See `vttprojectplan.md` for what's next.
 
 **Testing:** `npm test` runs the game-logic unit tests. `scripts/e2e.mjs` is a full
 integration pass (run it against a freshly started server with a clean `local.db`).

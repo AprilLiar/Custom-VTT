@@ -55,13 +55,24 @@ export default function MovesTab({ data }) {
       {moves.map((move) => {
         const style = move.style_attribute_id ? attrById.get(move.style_attribute_id) : null;
         const isUsable = usable(move);
+        // "The move copy on the character": Perk-granted frame/tag overrides
+        // folded in, so this sheet shows what this character actually has.
+        const effectiveMove = {
+          ...move,
+          startup_tics: move.effective_startup_tics ?? move.startup_tics,
+          active_tics: move.effective_active_tics ?? move.active_tics,
+          recovery_tics: move.effective_recovery_tics ?? move.recovery_tics,
+        };
+        const effectiveTagIds = move.effective_tag_ids ?? move.tag_ids;
         return (
           <MoveCard
             key={move.id}
-            move={move}
+            move={effectiveMove}
             tell={tellById.get(move.tell_id)}
             style={style}
-            tags={move.tag_ids.map((id) => tagById.get(id)).filter(Boolean)}
+            tags={effectiveTagIds.map((id) => tagById.get(id)).filter(Boolean)}
+            perkModified={move.has_perk_overrides}
+            rollBonus={move.roll_bonus ?? 0}
             dimmed={!isUsable}
             dimReason={style ? `Needs an active stance with ${style.name}` : undefined}
             badge={

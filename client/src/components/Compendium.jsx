@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Navigate } from 'react-router-dom';
 import { useRole } from '../roleContext.jsx';
 import { socket } from '../socket.js';
-import { getCharacters, getMoves, getRuleset, getTags, getTells } from '../lib/api.js';
+import { getCharacter, getCharacters, getMoves, getRuleset, getTags, getTells } from '../lib/api.js';
 import { iconFor } from '../lib/styleIcons.js';
 import { fileToSmallImage, portraitSrc } from '../lib/image.js';
 import MoveCard from './MoveCard.jsx';
@@ -128,13 +128,31 @@ function TellManager({ tells, usedTellIds }) {
 }
 
 function TagManager({ tags }) {
+  const [editing, setEditing] = useState(null); // null | 'new' | tag
   const [name, setName] = useState('');
-  const add = (e) => {
+  const [description, setDescription] = useState('');
+
+  const startEdit = (tag) => {
+    setEditing(tag);
+    setName(tag === 'new' ? '' : tag.name);
+    setDescription(tag === 'new' ? '' : tag.description ?? '');
+  };
+
+  const save = (e) => {
     e.preventDefault();
     if (!name.trim()) return;
-    socket.emit('tag:create', { name: name.trim() });
-    setName('');
+    if (editing === 'new') {
+      socket.emit('tag:create', { name: name.trim(), description: description.trim() });
+    } else {
+      socket.emit('tag:update', {
+        tagId: editing.id,
+        name: name.trim(),
+        description: description.trim(),
+      });
+    }
+    setEditing(null);
   };
+
   return (
     <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
       <h2 className="mb-3 text-sm font-bold uppercase tracking-wide text-zinc-400">
@@ -144,9 +162,17 @@ function TagManager({ tags }) {
         {tags.map((tag) => (
           <span
             key={tag.id}
+            title={tag.description || undefined}
             className="inline-flex items-center gap-1.5 rounded-full bg-emerald-900/40 px-2.5 py-0.5 text-sm font-semibold text-emerald-300"
           >
             {tag.name}
+            <button
+              onClick={() => startEdit(tag)}
+              className="text-emerald-700 hover:text-emerald-200"
+              title="Edit"
+            >
+              ✎
+            </button>
             <button
               onClick={() =>
                 window.confirm(`Delete tag "${tag.name}"? It is removed from every move.`) &&
@@ -159,22 +185,46 @@ function TagManager({ tags }) {
             </button>
           </span>
         ))}
-        <form onSubmit={add} className="flex gap-1.5">
+        {!editing && (
+          <button
+            onClick={() => startEdit('new')}
+            className="rounded-full border border-dashed border-zinc-600 px-3 py-1 text-sm text-zinc-400 hover:border-indigo-500 hover:text-indigo-300"
+          >
+            + New Tag
+          </button>
+        )}
+      </div>
+      {editing && (
+        <form onSubmit={save} className="mt-3 flex flex-wrap items-center gap-2 border-t border-zinc-800 pt-3">
           <input
+            autoFocus
             value={name}
             onChange={(e) => setName(e.target.value)}
-            placeholder="New tag"
-            className="w-28 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-sm outline-none focus:border-indigo-500"
+            placeholder="Tag name"
+            className="w-28 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm text-zinc-100 outline-none focus:border-indigo-500"
+          />
+          <input
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            placeholder="Description (shown as a tooltip)"
+            className="min-w-0 flex-1 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm text-zinc-100 outline-none focus:border-indigo-500"
           />
           <button
             type="submit"
             disabled={!name.trim()}
-            className="rounded-md bg-indigo-600 px-2 text-sm font-semibold hover:bg-indigo-500 disabled:opacity-40"
+            className="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-semibold hover:bg-indigo-500 disabled:opacity-40"
           >
-            Add
+            Save
+          </button>
+          <button
+            type="button"
+            onClick={() => setEditing(null)}
+            className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-400 hover:bg-zinc-800"
+          >
+            Cancel
           </button>
         </form>
-      </div>
+      )}
     </div>
   );
 }
@@ -231,6 +281,7 @@ export default function Compendium() {
   const [form, setForm] = useState(null); // null | { move? }
   const [grantOpen, setGrantOpen] = useState(null);
   const [dropTarget, setDropTarget] = useState(null);
+  const [folderDropTarget, setFolderDropTarget] = useState(null); // 'root' | folderId | null
   const [currentFolder, setCurrentFolder] = useState(null); // folder id | null = root
   const [styleFilter, setStyleFilter] = useState(null); // attribute id | null
   const [newFolderName, setNewFolderName] = useState('');
@@ -246,7 +297,6 @@ export default function Compendium() {
         .then(async (chars) => {
           setCharacters(chars);
           // stances are needed for the learnability gate in the grant list
-          const { getCharacter } = await import('../lib/api.js');
           const entries = await Promise.all(
             chars.map(async (c) => [c.id, (await getCharacter(c.id)).stances])
           );
@@ -321,6 +371,15 @@ export default function Compendium() {
     if (moveId) socket.emit('move:grant', { characterId: character.id, moveId });
   };
 
+  // Drag a move card onto a folder tab (or "All Moves") to reassign it —
+  // only touches folder_id, leaving the rest of the move untouched.
+  const onDropOnFolder = (e, targetFolderId) => {
+    e.preventDefault();
+    setFolderDropTarget(null);
+    const moveId = Number(e.dataTransfer.getData('text/move-id'));
+    if (moveId) socket.emit('move:set_folder', { moveId, folderId: targetFolderId });
+  };
+
   return (
     <div className="mx-auto flex max-w-5xl gap-4">
       <div className="min-w-0 flex-1 space-y-4">
@@ -332,11 +391,18 @@ export default function Compendium() {
         <div className="flex flex-wrap items-center gap-2">
           <button
             onClick={() => setCurrentFolder(null)}
+            onDragOver={(e) => {
+              e.preventDefault();
+              setFolderDropTarget('root');
+            }}
+            onDragLeave={() => setFolderDropTarget(null)}
+            onDrop={(e) => onDropOnFolder(e, null)}
+            title="Drop a move here to remove it from its folder"
             className={`rounded-md px-3 py-1.5 text-sm font-semibold ${
               currentFolder == null
                 ? 'bg-zinc-700 text-zinc-100'
                 : 'bg-zinc-800 text-zinc-400 hover:text-zinc-200'
-            }`}
+            } ${folderDropTarget === 'root' ? 'ring-2 ring-indigo-400' : ''}`}
           >
             🏠 All Moves
           </button>
@@ -344,11 +410,18 @@ export default function Compendium() {
             <span key={f.id} className="inline-flex items-center">
               <button
                 onClick={() => setCurrentFolder(f.id)}
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  setFolderDropTarget(f.id);
+                }}
+                onDragLeave={() => setFolderDropTarget(null)}
+                onDrop={(e) => onDropOnFolder(e, f.id)}
+                title="Drop a move here to file it in this folder"
                 className={`rounded-l-md px-3 py-1.5 text-sm font-semibold ${
                   currentFolder === f.id
                     ? 'bg-zinc-700 text-zinc-100'
                     : 'bg-zinc-800 text-zinc-400 hover:text-zinc-200'
-                }`}
+                } ${folderDropTarget === f.id ? 'ring-2 ring-indigo-400' : ''}`}
               >
                 📁 {f.name}
               </button>
@@ -451,9 +524,10 @@ export default function Compendium() {
             {visibleMoves.map((move) => (
               <div
                 key={move.id}
-                draggable={!move.is_default}
+                draggable
                 onDragStart={(e) => e.dataTransfer.setData('text/move-id', String(move.id))}
-                className={move.is_default ? '' : 'cursor-grab active:cursor-grabbing'}
+                title="Drag onto a folder to file it, or onto a character to grant it"
+                className="cursor-grab active:cursor-grabbing"
               >
                 <MoveCard
                   move={move}
