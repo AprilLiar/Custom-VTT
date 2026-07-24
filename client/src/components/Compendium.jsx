@@ -1,53 +1,48 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Navigate } from 'react-router-dom';
 import { useRole } from '../roleContext.jsx';
 import { socket } from '../socket.js';
-import { getCharacters, getMoves, getTells } from '../lib/api.js';
-import { TELL_ICONS, tellIconFor } from '../lib/tellIcons.js';
-import { portraitSrc } from '../lib/image.js';
+import { getCharacters, getMoves, getRuleset, getTags, getTells } from '../lib/api.js';
+import { iconFor } from '../lib/styleIcons.js';
+import { fileToSmallImage, portraitSrc } from '../lib/image.js';
 import MoveCard from './MoveCard.jsx';
 import MoveCreator from './MoveCreator.jsx';
-
-function IconPicker({ value, onChange }) {
-  return (
-    <div className="flex max-w-72 flex-wrap gap-1">
-      {Object.entries(TELL_ICONS).map(([name, Icon]) => (
-        <button
-          key={name}
-          type="button"
-          onClick={() => onChange(name)}
-          title={name}
-          className={`rounded-md border p-1.5 ${
-            value === name
-              ? 'border-indigo-500 bg-indigo-600/30 text-indigo-300'
-              : 'border-zinc-700 text-zinc-500 hover:border-zinc-500'
-          }`}
-        >
-          <Icon size={16} />
-        </button>
-      ))}
-    </div>
-  );
-}
+import Thumb from './Thumb.jsx';
 
 function TellManager({ tells, usedTellIds }) {
   const [editing, setEditing] = useState(null); // null | 'new' | tell
   const [name, setName] = useState('');
-  const [icon, setIcon] = useState('eye');
+  const [image, setImage] = useState(undefined); // undefined = keep existing
+  const fileRef = useRef(null);
 
   const startEdit = (tell) => {
     setEditing(tell);
     setName(tell === 'new' ? '' : tell.name);
-    setIcon(tell === 'new' ? 'eye' : tell.icon || 'eye');
+    setImage(undefined);
+  };
+
+  const pickImage = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setImage(await fileToSmallImage(file).catch(() => undefined));
   };
 
   const save = (e) => {
     e.preventDefault();
     if (!name.trim()) return;
-    if (editing === 'new') socket.emit('tell:create', { name: name.trim(), icon });
-    else socket.emit('tell:update', { tellId: editing.id, name: name.trim(), icon });
+    const imagePayload = image !== undefined ? image : {};
+    if (editing === 'new') socket.emit('tell:create', { name: name.trim(), ...imagePayload });
+    else socket.emit('tell:update', { tellId: editing.id, name: name.trim(), ...imagePayload });
     setEditing(null);
   };
+
+  const preview =
+    image !== undefined
+      ? { image_data: image?.imageData, image_mime_type: image?.imageMimeType }
+      : editing !== 'new'
+        ? editing
+        : null;
 
   return (
     <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
@@ -56,14 +51,13 @@ function TellManager({ tells, usedTellIds }) {
       </h2>
       <div className="flex flex-wrap gap-2">
         {tells.map((tell) => {
-          const Icon = tellIconFor(tell.icon);
           const used = usedTellIds.has(tell.id);
           return (
             <span
               key={tell.id}
-              className="inline-flex items-center gap-1.5 rounded-full border border-zinc-700 bg-zinc-800 px-3 py-1 text-sm text-zinc-200"
+              className="inline-flex items-center gap-1.5 rounded-full border border-zinc-700 bg-zinc-800 px-2 py-1 text-sm text-zinc-200"
             >
-              <Icon size={14} className="text-zinc-400" />
+              <Thumb record={tell} name={tell.name} size="h-5 w-5" rounded="rounded-full" />
               {tell.name}
               <button
                 onClick={() => startEdit(tell)}
@@ -96,47 +90,113 @@ function TellManager({ tells, usedTellIds }) {
         )}
       </div>
       {editing && (
-        <form onSubmit={save} className="mt-3 flex flex-col gap-2 border-t border-zinc-800 pt-3">
-          <div className="flex gap-2">
-            <input
-              autoFocus
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="Tell name"
-              className="rounded-md border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm text-zinc-100 outline-none focus:border-indigo-500"
-            />
-            <button
-              type="submit"
-              disabled={!name.trim()}
-              className="rounded-md bg-indigo-600 px-3 text-sm font-semibold hover:bg-indigo-500 disabled:opacity-40"
-            >
-              Save
-            </button>
-            <button
-              type="button"
-              onClick={() => setEditing(null)}
-              className="rounded-md border border-zinc-700 px-3 text-sm text-zinc-400 hover:bg-zinc-800"
-            >
-              Cancel
-            </button>
-          </div>
-          <IconPicker value={icon} onChange={setIcon} />
+        <form onSubmit={save} className="mt-3 flex items-center gap-2 border-t border-zinc-800 pt-3">
+          <button
+            type="button"
+            onClick={() => fileRef.current?.click()}
+            title="Upload Tell art"
+            className="rounded-lg border border-zinc-700 hover:border-indigo-500"
+          >
+            <Thumb record={preview} name={name || '?'} size="h-9 w-9" rounded="rounded-lg" />
+          </button>
+          <input ref={fileRef} type="file" accept="image/*" hidden onChange={pickImage} />
+          <input
+            autoFocus
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="Tell name"
+            className="rounded-md border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm text-zinc-100 outline-none focus:border-indigo-500"
+          />
+          <button
+            type="submit"
+            disabled={!name.trim()}
+            className="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-semibold hover:bg-indigo-500 disabled:opacity-40"
+          >
+            Save
+          </button>
+          <button
+            type="button"
+            onClick={() => setEditing(null)}
+            className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-400 hover:bg-zinc-800"
+          >
+            Cancel
+          </button>
         </form>
       )}
     </div>
   );
 }
 
-function GrantList({ move, characters }) {
+function TagManager({ tags }) {
+  const [name, setName] = useState('');
+  const add = (e) => {
+    e.preventDefault();
+    if (!name.trim()) return;
+    socket.emit('tag:create', { name: name.trim() });
+    setName('');
+  };
+  return (
+    <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
+      <h2 className="mb-3 text-sm font-bold uppercase tracking-wide text-zinc-400">
+        Tags (world-level)
+      </h2>
+      <div className="flex flex-wrap items-center gap-2">
+        {tags.map((tag) => (
+          <span
+            key={tag.id}
+            className="inline-flex items-center gap-1.5 rounded-full bg-emerald-900/40 px-2.5 py-0.5 text-sm font-semibold text-emerald-300"
+          >
+            {tag.name}
+            <button
+              onClick={() =>
+                window.confirm(`Delete tag "${tag.name}"? It is removed from every move.`) &&
+                socket.emit('tag:delete', { tagId: tag.id })
+              }
+              className="text-emerald-700 hover:text-red-400"
+              title="Delete"
+            >
+              ✕
+            </button>
+          </span>
+        ))}
+        <form onSubmit={add} className="flex gap-1.5">
+          <input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="New tag"
+            className="w-28 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-sm outline-none focus:border-indigo-500"
+          />
+          <button
+            type="submit"
+            disabled={!name.trim()}
+            className="rounded-md bg-indigo-600 px-2 text-sm font-semibold hover:bg-indigo-500 disabled:opacity-40"
+          >
+            Add
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function GrantList({ move, characters, canLearn }) {
   return (
     <div className="mt-1 space-y-1 rounded-md border border-zinc-800 bg-zinc-950/60 p-2">
       {characters.map((c) => {
         const granted = move.granted_character_ids.includes(c.id);
+        const learnable = canLearn(c, move);
         return (
-          <label key={c.id} className="flex items-center gap-2 text-sm text-zinc-300">
+          <label
+            key={c.id}
+            title={!learnable && !granted ? 'No stance with this move’s style' : undefined}
+            className={`flex items-center gap-2 text-sm ${
+              learnable || granted ? 'text-zinc-300' : 'text-zinc-600'
+            }`}
+          >
             <input
               type="checkbox"
               checked={granted}
+              disabled={!granted && !learnable}
               onChange={() =>
                 socket.emit(granted ? 'move:revoke' : 'move:grant', {
                   characterId: c.id,
@@ -158,31 +218,51 @@ function GrantList({ move, characters }) {
   );
 }
 
-// GM-only page: Tell manager + the persistent library of every move.
-// Grant by dragging a move onto a character in the right rail, or via the
-// per-move Grant checklist (works on touch).
+// GM-only page: Tell + Tag managers, folders, style filter, and the
+// persistent move library with drag/checklist granting.
 export default function Compendium() {
   const { role } = useRole();
   const [tells, setTells] = useState(null);
-  const [moves, setMoves] = useState(null);
+  const [tags, setTags] = useState(null);
+  const [ruleset, setRuleset] = useState(null);
+  const [data, setData] = useState(null); // { folders, moves }
   const [characters, setCharacters] = useState([]);
+  const [characterStances, setCharacterStances] = useState(new Map()); // charId -> stances
   const [form, setForm] = useState(null); // null | { move? }
-  const [grantOpen, setGrantOpen] = useState(null); // moveId
-  const [dropTarget, setDropTarget] = useState(null); // characterId
+  const [grantOpen, setGrantOpen] = useState(null);
+  const [dropTarget, setDropTarget] = useState(null);
+  const [currentFolder, setCurrentFolder] = useState(null); // folder id | null = root
+  const [styleFilter, setStyleFilter] = useState(null); // attribute id | null
+  const [newFolderName, setNewFolderName] = useState('');
 
   useEffect(() => {
     if (role !== 'gm') return;
     const refreshAll = () => {
       getTells().then(setTells).catch(console.error);
-      getMoves().then(setMoves).catch(console.error);
-      getCharacters().then(setCharacters).catch(console.error);
+      getTags().then(setTags).catch(console.error);
+      getRuleset().then(setRuleset).catch(console.error);
+      getMoves().then(setData).catch(console.error);
+      getCharacters()
+        .then(async (chars) => {
+          setCharacters(chars);
+          // stances are needed for the learnability gate in the grant list
+          const { getCharacter } = await import('../lib/api.js');
+          const entries = await Promise.all(
+            chars.map(async (c) => [c.id, (await getCharacter(c.id)).stances])
+          );
+          setCharacterStances(new Map(entries));
+        })
+        .catch(console.error);
     };
     refreshAll();
     const events = [
       'tell:created', 'tell:updated', 'tell:deleted',
+      'tag:created', 'tag:updated', 'tag:deleted',
+      'folder:created', 'folder:updated', 'folder:deleted',
       'move:created', 'move:updated', 'move:deleted',
       'move:granted', 'move:revoked',
       'character:created', 'character:updated', 'character:deleted',
+      'stance:created', 'stance:updated', 'stance:deleted',
     ];
     for (const ev of events) socket.on(ev, refreshAll);
     return () => {
@@ -191,15 +271,47 @@ export default function Compendium() {
   }, [role]);
 
   if (role !== 'gm') return <Navigate to="/" replace />;
-  if (!tells || !moves) return <p className="text-zinc-500">Loading…</p>;
+  if (!tells || !tags || !ruleset || !data) return <p className="text-zinc-500">Loading…</p>;
 
+  const { folders, moves } = data;
   const tellById = new Map(tells.map((t) => [t.id, t]));
+  const tagById = new Map(tags.map((t) => [t.id, t]));
+  const attrById = new Map(ruleset.attributes.map((a) => [a.id, a]));
+  const folderById = new Map(folders.map((f) => [f.id, f]));
   const usedTellIds = new Set(moves.map((m) => m.tell_id));
+
+  const canLearn = (character, move) => {
+    if (move.style_attribute_id == null) return true;
+    const stances = characterStances.get(character.id) ?? [];
+    return stances.some(
+      (s) =>
+        s.attribute_a_id === move.style_attribute_id ||
+        s.attribute_b_id === move.style_attribute_id
+    );
+  };
+
+  // Filter semantics: inside a folder the filter applies within it; at root a
+  // filter scans everything (all folders + root) and labels each hit's origin.
+  let visibleMoves;
+  if (styleFilter != null) {
+    const pool = currentFolder != null ? moves.filter((m) => m.folder_id === currentFolder) : moves;
+    visibleMoves = pool.filter((m) => m.style_attribute_id === styleFilter);
+  } else {
+    visibleMoves = moves.filter((m) => (m.folder_id ?? null) === currentFolder);
+  }
+  const showFolderLabels = styleFilter != null && currentFolder == null;
 
   const submitMove = (payload) => {
     if (form?.move) socket.emit('move:update', { moveId: form.move.id, ...payload });
     else socket.emit('move:create', payload);
     setForm(null);
+  };
+
+  const createFolder = (e) => {
+    e.preventDefault();
+    if (!newFolderName.trim()) return;
+    socket.emit('folder:create', { name: newFolderName.trim() });
+    setNewFolderName('');
   };
 
   const onDropOnCharacter = (e, character) => {
@@ -214,10 +326,104 @@ export default function Compendium() {
       <div className="min-w-0 flex-1 space-y-4">
         <h1 className="text-2xl font-bold">Compendium</h1>
         <TellManager tells={tells} usedTellIds={usedTellIds} />
+        <TagManager tags={tags} />
+
+        {/* Folder navigation + style filter */}
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            onClick={() => setCurrentFolder(null)}
+            className={`rounded-md px-3 py-1.5 text-sm font-semibold ${
+              currentFolder == null
+                ? 'bg-zinc-700 text-zinc-100'
+                : 'bg-zinc-800 text-zinc-400 hover:text-zinc-200'
+            }`}
+          >
+            🏠 All Moves
+          </button>
+          {folders.map((f) => (
+            <span key={f.id} className="inline-flex items-center">
+              <button
+                onClick={() => setCurrentFolder(f.id)}
+                className={`rounded-l-md px-3 py-1.5 text-sm font-semibold ${
+                  currentFolder === f.id
+                    ? 'bg-zinc-700 text-zinc-100'
+                    : 'bg-zinc-800 text-zinc-400 hover:text-zinc-200'
+                }`}
+              >
+                📁 {f.name}
+              </button>
+              <span className="flex rounded-r-md bg-zinc-800/70 px-1 py-1.5">
+                <button
+                  onClick={() => {
+                    const name = window.prompt('Rename folder', f.name);
+                    if (name?.trim())
+                      socket.emit('folder:rename', { folderId: f.id, name: name.trim() });
+                  }}
+                  className="px-1 text-xs text-zinc-600 hover:text-zinc-300"
+                  title="Rename"
+                >
+                  ✎
+                </button>
+                <button
+                  onClick={() => {
+                    if (window.confirm(`Delete folder "${f.name}"? Its moves return to root.`)) {
+                      socket.emit('folder:delete', { folderId: f.id });
+                      if (currentFolder === f.id) setCurrentFolder(null);
+                    }
+                  }}
+                  className="px-1 text-xs text-zinc-600 hover:text-red-400"
+                  title="Delete (moves return to root)"
+                >
+                  ✕
+                </button>
+              </span>
+            </span>
+          ))}
+          <form onSubmit={createFolder} className="flex gap-1">
+            <input
+              value={newFolderName}
+              onChange={(e) => setNewFolderName(e.target.value)}
+              placeholder="New folder"
+              className="w-28 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-sm outline-none focus:border-indigo-500"
+            />
+            <button
+              type="submit"
+              disabled={!newFolderName.trim()}
+              className="rounded-md bg-zinc-700 px-2 text-sm font-semibold text-zinc-200 hover:bg-zinc-600 disabled:opacity-40"
+            >
+              +
+            </button>
+          </form>
+
+          <div className="ml-auto flex items-center gap-1">
+            {ruleset.attributes.map((attr) => {
+              const Icon = iconFor(attr.icon);
+              const active = styleFilter === attr.id;
+              return (
+                <button
+                  key={attr.id}
+                  onClick={() => setStyleFilter(active ? null : attr.id)}
+                  title={`Filter by ${attr.name}`}
+                  className={`rounded-md border p-1.5 ${
+                    active
+                      ? 'border-indigo-500 bg-indigo-600/30 text-indigo-300'
+                      : 'border-zinc-700 text-zinc-500 hover:border-zinc-500'
+                  }`}
+                >
+                  <Icon size={14} />
+                </button>
+              );
+            })}
+          </div>
+        </div>
 
         {form ? (
           <MoveCreator
             tells={tells}
+            attributes={ruleset.attributes}
+            tags={tags}
+            folders={folders}
+            initialFolderId={currentFolder}
             initial={form.move ?? null}
             onSubmit={submitMove}
             onCancel={() => setForm(null)}
@@ -232,11 +438,17 @@ export default function Compendium() {
           </button>
         )}
 
-        {moves.length === 0 ? (
-          <p className="text-sm text-zinc-600">No moves yet — create the first one.</p>
+        {visibleMoves.length === 0 ? (
+          <p className="text-sm text-zinc-600">
+            {styleFilter != null
+              ? 'No moves with this style here.'
+              : currentFolder != null
+                ? 'This folder is empty — assign moves to it in the Move Creator.'
+                : 'No moves here yet.'}
+          </p>
         ) : (
           <div className="grid gap-3 sm:grid-cols-2">
-            {moves.map((move) => (
+            {visibleMoves.map((move) => (
               <div
                 key={move.id}
                 draggable={!move.is_default}
@@ -246,6 +458,13 @@ export default function Compendium() {
                 <MoveCard
                   move={move}
                   tell={tellById.get(move.tell_id)}
+                  style={move.style_attribute_id ? attrById.get(move.style_attribute_id) : null}
+                  tags={move.tag_ids.map((id) => tagById.get(id)).filter(Boolean)}
+                  folderLabel={
+                    showFolderLabels && move.folder_id
+                      ? folderById.get(move.folder_id)?.name
+                      : null
+                  }
                   badge={
                     move.is_default ? (
                       <span className="ml-2 rounded bg-zinc-700/60 px-1.5 text-xs font-semibold uppercase text-zinc-400">
@@ -257,9 +476,7 @@ export default function Compendium() {
                     <>
                       {!move.is_default && (
                         <button
-                          onClick={() =>
-                            setGrantOpen(grantOpen === move.id ? null : move.id)
-                          }
+                          onClick={() => setGrantOpen(grantOpen === move.id ? null : move.id)}
                           className="rounded px-2 py-0.5 text-xs text-indigo-400 hover:bg-indigo-900/40"
                         >
                           Grant… ({move.granted_character_ids.length})
@@ -285,7 +502,7 @@ export default function Compendium() {
                   }
                 />
                 {grantOpen === move.id && !move.is_default && (
-                  <GrantList move={move} characters={characters} />
+                  <GrantList move={move} characters={characters} canLearn={canLearn} />
                 )}
               </div>
             ))}

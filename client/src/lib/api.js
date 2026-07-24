@@ -20,4 +20,5 @@ export const deleteCharacter = (id) =>
 export const getChat = () => fetch('/api/chat').then(json);
 export const getRuleset = () => fetch('/api/ruleset').then(json);
 export const getTells = () => fetch('/api/tells').then(json);
+export const getTags = () => fetch('/api/tags').then(json);
 export const getMoves = () => fetch('/api/moves').then(json);

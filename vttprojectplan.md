@@ -68,12 +68,17 @@ Each character builds their own stances via an in-sheet **Stance Creator**; stan
 - **Unique Moves** are not present at character creation; the GM grants them individually.
 - Both are created through the same GM-only **Move Creator**, just flagged `is_default` vs not.
 - **Move structure (decided).** A move card renders top-to-bottom as:
-  1. **Tell header** — a special header strip showing only the move's Tell (icon + name), nothing else.
-  2. **Name** (top-left) and **Frame Data** (to its right): a single line of adjoining squares — **Startup (yellow), Active (red), Recovery (blue)** — one square per Tic. Each segment is assigned 0-10 squares at creation (at least 1 total); the card just renders however many exist (e.g. Startup 3 / Active 2 / Recovery 1 → 6 squares). Combat meaning: placed on Tic *N*, the move charges up through its Startup squares, actively hits through its Active squares, then its Recovery squares carry over — eating into the next round if they run past the round's end.
-  3. **Description** text.
-  4. **Special interactions** — three categories: **On Hit / On Block / On Miss**. Each holds free text plus optional **automations**, limited to exactly four types for now: add/remove Recovery on yourself (±), add Recovery to the opponent, lose additional Stamina yourself, or the opponent loses Stamina. Anything else stays text-only, adjudicated at the table. Automations are stored/displayed now; they execute in the combat phases.
+  1. **Tell header** — a special header strip showing only the move's Tell (art + name), nothing else.
+  2. **Name** (top-left, with the move's small uploaded art beside it) and **Frame Data** (to its right): a single line of adjoining squares — **Startup (yellow), Active (red), Recovery (blue)** — one square per Tic. Each segment is assigned 0-10 squares at creation (at least 1 total); the card just renders however many exist (e.g. Startup 3 / Active 2 / Recovery 1 → 6 squares). Combat meaning: placed on Tic *N*, the move charges up through its Startup squares, actively hits through its Active squares, then its Recovery squares carry over — eating into the next round if they run past the round's end.
+  3. **Style and Tags chips.**
+  4. **Description** text.
+  5. **Special interactions** — three categories: **On Hit / On Block / On Miss**. Each holds free text plus optional **automations**, limited to exactly four types for now: add/remove Recovery on yourself (±), add Recovery to the opponent, lose additional Stamina yourself, or the opponent loses Stamina. Anything else stays text-only, adjudicated at the table. Automations are stored/displayed now; they execute in the combat phases.
+- **Images, not icons**: Moves and Tells each carry a small uploaded picture (commissioned simple art, uploaded by the GM through the Tell manager / Move Creator; resized client-side to ≤128px, PNG transparency preserved). Until uploaded, an initial-letter placeholder shows. Only the 7 styles keep open-source (lucide) icons.
+- **Style (decided)**: every move is assigned one of the 7 styles (required in the Creator; rows created before this rule may be NULL = unrestricted). No mechanical modifier — it gates two things: **learnability** (a Unique move can only be granted to a character who has at least one stance containing that style — enforced server-side on grant and shown in the Grant checklist) and **usability** (a move is only usable while the character's *active* stance contains its style — unusable moves render dimmed on the Moves tab). Already-granted moves are kept if stances later change; they just show as unusable.
+- **Tags (decided)**: each move carries 0-10 Tags, picked from the world-level GM-managed `tags` list (created/edited in the Compendium, like Tells — this pulls the base tag tables forward from Phase 4; per-character tag overrides via Perks remain Phase 4). Tags can also change dynamically later (Perks adding Tags to specific moves).
 - **Compendium** — a persistent, GM-only library of every move ever created (default and unique). The GM drags a move from the compendium onto a character in the page's character rail to grant it (a per-move Grant checklist covers touch devices); the GM can revoke a Unique move from the character's Moves tab.
-- **Tells** — a separate, world-level list, editable by the GM at any time (unlike the fixed 7 stance attributes). A Tell is a **name + icon** (picked from a curated open-source lucide set). Two placeholders ("Tell 1", "Tell 2") are seeded so moves can be created immediately; the GM replaces them with real Tells. A Tell in use by a move can't be deleted. When creating a move, the GM picks one Tell from this list.
+- **Compendium folders & filtering (decided)**: the GM can create folders and place moves in them (assigned in the Move Creator; deleting a folder returns its moves to the root). A **style filter** narrows the listing: used inside a folder it filters within that folder; used at the root it scans across all folders and shows every match labeled with its source folder.
+- **Tells** — a separate, world-level list, editable by the GM at any time (unlike the fixed 7 stance attributes). A Tell is a **name + small uploaded image**. Two placeholders ("Tell 1", "Tell 2") are seeded so moves can be created immediately; the GM replaces them with real Tells. A Tell in use by a move can't be deleted. When creating a move, the GM picks one Tell from this list.
 - **Declaring a move** — happens during combat, with real timing/reveal mechanics covered in detail in "Combat Timing" below. Short version: only the Tell is shown to everyone (including the GM) until the move's Startup timer completes.
 
 ## Game mechanic — Combat Arena
@@ -205,7 +210,8 @@ CREATE TABLE chat_log (
 CREATE TABLE tells (
   id INTEGER PRIMARY KEY,
   name TEXT NOT NULL,
-  icon TEXT NOT NULL DEFAULT '' -- lucide icon name, GM-picked from a curated set
+  image_data TEXT,      -- base64 small uploaded image (commissioned art)
+  image_mime_type TEXT
 );
 
 -- Perks compendium (separate from Moves)
@@ -230,13 +236,14 @@ CREATE TABLE perk_automations (
   payload TEXT NOT NULL -- JSON, e.g. {"resource":"die","slotName":"Stamina","amount":1} or {"moveId":42,"tagId":7,"action":"add"}
 );
 
--- World-level, GM-managed, like Tells
+-- World-level, GM-managed, like Tells (landed in Phase 3 for Move tagging)
 CREATE TABLE tags (
   id INTEGER PRIMARY KEY,
   name TEXT NOT NULL
 );
 
 -- Base tags on a Move template — global, visible to everyone with that Move
+-- (0-10 per move, landed in Phase 3)
 CREATE TABLE move_tags (
   id INTEGER PRIMARY KEY,
   move_id INTEGER NOT NULL REFERENCES moves(id) ON DELETE CASCADE,
@@ -265,6 +272,12 @@ CREATE TABLE counters (
   show_in_combat INTEGER NOT NULL DEFAULT 0 -- only meaningful when character_id is set
 );
 
+-- GM-created folders for organizing the Moves compendium
+CREATE TABLE move_folders (
+  id INTEGER PRIMARY KEY,
+  name TEXT NOT NULL
+);
+
 -- The compendium: master list of move templates (structure finalized)
 CREATE TABLE moves (
   id INTEGER PRIMARY KEY,
@@ -274,7 +287,11 @@ CREATE TABLE moves (
   startup_tics INTEGER NOT NULL DEFAULT 1,   -- frame data: 0-10 each,
   active_tics INTEGER NOT NULL DEFAULT 1,    -- at least 1 square total
   recovery_tics INTEGER NOT NULL DEFAULT 0,
-  description TEXT NOT NULL DEFAULT ''
+  description TEXT NOT NULL DEFAULT '',
+  style_attribute_id INTEGER REFERENCES attributes(id), -- learn/use gate; NULL only on legacy rows
+  folder_id INTEGER,    -- compendium folder; NULL = root
+  image_data TEXT,      -- base64 small uploaded image
+  image_mime_type TEXT
 );
 
 -- On Hit / On Block / On Miss entries: text plus optional automations
@@ -367,9 +384,10 @@ When a character is created, auto-generate its 8 `dice` rows (2 head + 4 core + 
 - `character:revert_stats` (client → server): `{ characterId }` — copies every die's `locked_size/locked_bonus/locked_status` back into `current_size/bonus/status` (Current Stamina untouched). Broadcasts `die:updated` for each die.
 - `stamina:regen` (client → server): `{ characterId }` — rolls the Stamina die at its current size + bonus, adds the result to `current_stamina` (clamped to `max_stamina`), logs to `chat_log`. Broadcasts `character:updated` and `roll:result`.
 - `stamina:adjust` (client → server): `{ characterId, delta }` — manual +/- to `current_stamina`, clamped to `[0, max_stamina]`. Interim building block until the Moves tab defines how Stamina is actually spent. Broadcasts `character:updated`.
-- `tell:create` / `tell:update` / `tell:delete` (client [GM] → server): `{ name, icon }` / `{ tellId, name, icon }` / `{ tellId }` — manages the world-level `tells` list (delete refused while any move uses the Tell), broadcasts `tell:created` / `tell:updated` / `tell:deleted` to all clients
-- `move:create` / `move:update` / `move:delete` (client [GM] → server): `{ name, isDefault, tellId, startupTics, activeTics, recoveryTics, description, interactions: {hit|block|miss: {text, automations}} }` / `{ moveId, ...same fields }` (interactions replaced wholesale on update) / `{ moveId }` — manages `moves` + `move_interactions` (delete cascades to `character_moves`), broadcasts `move:created` / `move:updated` / `move:deleted` (full move incl. interactions) to all clients
-- `move:grant` / `move:revoke` (client [GM] → server): `{ characterId, moveId }` — inserts/deletes a `character_moves` row (the drag-and-drop from the compendium), broadcasts `move:granted` / `move:revoked`
+- `tell:create` / `tell:update` / `tell:delete` (client [GM] → server): `{ name, imageData?, imageMimeType? }` / `{ tellId, name, imageData?, imageMimeType? }` (image only replaced when provided) / `{ tellId }` — manages the world-level `tells` list (delete refused while any move uses the Tell), broadcasts `tell:created` / `tell:updated` / `tell:deleted` to all clients
+- `move:create` / `move:update` / `move:delete` (client [GM] → server): `{ name, isDefault, tellId, styleAttributeId, folderId, tagIds, imageData?, imageMimeType?, startupTics, activeTics, recoveryTics, description, interactions: {hit|block|miss: {text, automations}} }` / `{ moveId, ...same fields }` (interactions + tags replaced wholesale on update; image only when provided) / `{ moveId }` — manages `moves` + `move_interactions` + `move_tags` (delete cascades to `character_moves`), broadcasts `move:created` / `move:updated` / `move:deleted` (full move incl. interactions + tag_ids) to all clients
+- `folder:create` / `folder:rename` / `folder:delete` (client [GM] → server): `{ name }` / `{ folderId, name }` / `{ folderId }` — manages compendium `move_folders` (delete moves its contents back to root), broadcasts `folder:created` / `folder:updated` / `folder:deleted`
+- `move:grant` / `move:revoke` (client [GM] → server): `{ characterId, moveId }` — inserts/deletes a `character_moves` row (the drag-and-drop from the compendium). Grant is refused server-side when the move has a style and the character has no stance containing it (learnability rule). Broadcasts `move:granted` / `move:revoked`
 - `roleplay:save_answer` / `roleplay:add_question` / `roleplay:update_entry` / `roleplay:delete_question` (client → server): `{ characterId, question, answer }` (upserts a canonical-question answer) / `{ characterId, question }` (custom, capped at 20 per character) / `{ entryId, question, answer }` (question editable only on custom rows) / `{ entryId }` (custom rows only) — all broadcast `roleplay:updated` `{ characterId, entries }`
 - `combat:next_round` (client [GM only] → server) — increments `round_number`, sets `round_start_tic = current_tic` (the counter itself is untouched — it never resets), sets `phase = 'declaration'`, rolls the Brain die for every current participant (each posted to `chat_log` as a normal roll). Broadcasts `combat:updated` + `roll:result` for each initiative roll.
 - `move:declare` (client → server): `{ characterId, moveId }` — only valid while `phase == 'declaration'`. Computes `queue_order` (this character's Nth declared move this round), `placement_tic = MAX(round_start_tic, this character's own last reveal_tic across any declared_moves row, or round_start_tic if they have none)`, and `reveal_tic = placement_tic + startup_tics`. Inserts into `declared_moves`. Broadcasts `move:declared` to every other client — Tell only (`{ characterId, tellName, queueOrder }`, `moveId` withheld) — including GM-mode clients; the declaring client already has the full info since it just chose it.
@@ -402,11 +420,11 @@ When a character is created, auto-generate its 8 `dice` rows (2 head + 4 core + 
      - **Injuries** — same widget/behavior as Inventory: name + optional effect (add/edit/remove)
      - Both lists render stacked: bold name on top, description/effect under it in smaller grey text — and no second line at all when it's empty, so description-less entries stay compact
    - **Tab 2 — Stances:** list of the character's own stances (left-click to set active, highlighted when active; edit/delete per stance, minus the last-stance/active-stance rules above); **Stance Creator** to build a new one (name + pick exactly 2 of the 7 styles, icon-buttons); the counter chart (SVG tournament graph, highlighted for the active stance) with Best/Worst Matchups lists; active stance badge on the sheet header
-   - **Tab 3 — Moves:** read-only list of the character's available moves (all Default moves + any Unique moves granted by the GM), rendered as full move cards per the decided structure (Tell header, name + frame-data squares, description, interactions with automation chips); Default/Unique badges; GM can revoke a Unique move from here
+   - **Tab 3 — Moves:** read-only list of the character's available moves (all Default moves + any Unique moves granted by the GM), rendered as full move cards per the decided structure (Tell header, move art + name + frame-data squares, style/tag chips, description, interactions with automation chips); Default/Unique badges; moves whose style isn't in the active stance render dimmed (unusable); GM can revoke a Unique move from here
    - **Tab 4 — Perks:** read-only grid (infinite rows, 2 columns) of granted Perks, name + description shown per card
    - **Tab 5 — Counters:** the character's own counters (name, target/current pips, +/- buttons), each with a "Show in Combat" toggle; anyone controlling the character can create a new one here (name + target pips 2-20)
    - **Tab 6 — Role-play:** persistent free-text fields, each under a question the player asks themselves about the character. Six canonical questions (what they love and can't pass by on the street; biggest traumatic event/memory; irrational fear; favorite food; what another person can do to infuriate them; biggest vice) with ~2-3-line answer boxes, kept compact so it all fits with little scrolling, plus the ability to add custom questions with answers — up to 20 additional per character (question editable, deletable). Same open-access editing as the rest of the sheet.
-4. **Compendium** (GM-only) — persistent library of every move; the Tell manager (name + icon picker, placeholders replaceable, in-use Tells undeletable); Move Creator form (name, Default toggle, Tell picker, frame-data inputs with live colored preview, description, On Hit/Block/Miss text + automation builders); drag a move onto a character in the page's character rail to grant it (per-move Grant checklist as touch fallback); also manages the world-level Tags list (Phase 4)
+4. **Compendium** (GM-only) — persistent library of every move; the Tell manager (name + uploaded image, placeholders replaceable, in-use Tells undeletable); the Tag manager (world-level list); folders (create/rename/delete, delete returns moves to root) with the style filter (in-folder filters the folder, at root it scans all folders and labels each hit's origin); Move Creator form (art upload, name, Default toggle, Tell picker, required Style picker, Tag picker 0-10, folder assignment, frame-data inputs with live colored preview, description, On Hit/Block/Miss text + automation builders); drag a move onto a character in the page's character rail to grant it (per-move Grant checklist as touch fallback, with unlearnable characters disabled)
 5. **Perks Compendium** (GM-only, separate from the Moves Compendium) — persistent library of every Perk; Perk Creator (name, description, one or more automation entries: Resource Manipulation or Move Tag); drag a Perk onto a character card to grant it
 6. **Combat Arena** — shared page, no map/tokens. GM drags characters onto a left/right side and arranges them into pairs (semi-translucent divider between pairs); shows only portrait/dice pools/stamina per participant; NPCs here are visible to Players as an explicit exception. "Uneven Combat" toggle (GM-only) allows uneven pair sizes. Also shows any counters flagged "Show in Combat" (labeled `"{CharacterName} - {CounterName}"`) plus any standalone counters the GM created directly here. Includes the round's Declaration/Tic-Countdown phase indicator, a **Next Round** button, initiative results per pair, each character's declared-move slots (Tell-only until revealed), and the GM's Tic forward/back controls.
 7. **Chat Log** — shared, live feed of all rolls and revealed-move cards, updates instantly on every connected device; a **Clear Chat** button empties it for everyone (also clears automatically on server restart)
@@ -486,7 +504,7 @@ A scope check for whoever picks this up: this grew well past "semi-simple websit
 - Per-style mechanical benefits (styles granting bonuses beyond counter matchups) — planned for later, structure TBD; attribute rows kept extensible for it
 - How Current Stamina is spent/reduced during play — confirmed no automation for now; `stamina:adjust` remains the manual control, actual spending happens narratively at the table
 - Full list of Default Moves (Block, Jab, Dodge, + others not yet named) — the Creator is live, content still needs to be written (in-app or provided)
-- Real Tells (names + icons) to replace the two seeded placeholders — GM task, tooling is live
+- Real Tells (names + commissioned images) to replace the two seeded placeholders — GM task, tooling is live
 - When/how On Hit / On Block / On Miss automations actually fire during combat (GM adjudicates hit/block/miss; presumably a GM control per resolved move) — Phase 7 design
 - Exact set of Resource Manipulation types for Perks (which resources, whether they touch locked vs. current values) — to be refined once real Perks are written
 - Perks are explicitly MVP-scope; more automation types are expected later

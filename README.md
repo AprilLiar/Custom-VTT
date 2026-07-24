@@ -44,11 +44,10 @@ Note: Render's free tier sleeps after inactivity — the first load of a session
 
 ## Project status
 
-Phase 3 (Moves, Tells & Compendium) — finalized Move structure (Tell header, colored
-frame-data squares, description, On Hit/Block/Miss interactions with automations), the
-GM Compendium with Tell manager and drag/checklist granting, the character Moves tab,
-plus the new Role-play tab (6 canonical questions + up to 20 custom). See
-`vttprojectplan.md` for what's next.
+Phase 3 (Moves, Tells & Compendium), plus a follow-up pass — uploaded art (not icons)
+for Moves and Tells, a required Style per move (gates learning/using it against a
+character's stances), 0-10 Tags per move, and Compendium folders with a style filter
+that scans across folders from the root. See `vttprojectplan.md` for what's next.
 
 **Testing:** `npm test` runs the game-logic unit tests. `scripts/e2e.mjs` is a full
 integration pass (run it against a freshly started server with a clean `local.db`).
