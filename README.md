@@ -44,11 +44,11 @@ Note: Render's free tier sleeps after inactivity — the first load of a session
 
 ## Project status
 
-Phase 2 (Stances) — the 7-style ruleset seeded (complete counter tournament, ±2),
-Stance Creator, activate-on-click with live broadcast, the SVG counter chart with
-best/worst matchup lists, and sheet-header stance badge. Phase 1 refinements landed
-alongside: inventory items with editable descriptions (stacked layout, shared with
-Injuries) and the selection-based Pool Roll. See `vttprojectplan.md` for what's next.
+Phase 3 (Moves, Tells & Compendium) — finalized Move structure (Tell header, colored
+frame-data squares, description, On Hit/Block/Miss interactions with automations), the
+GM Compendium with Tell manager and drag/checklist granting, the character Moves tab,
+plus the new Role-play tab (6 canonical questions + up to 20 custom). See
+`vttprojectplan.md` for what's next.
 
 **Testing:** `npm test` runs the game-logic unit tests. `scripts/e2e.mjs` is a full
 integration pass (run it against a freshly started server with a clean `local.db`).
