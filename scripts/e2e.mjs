@@ -20,7 +20,7 @@ const jpost = (url, body, method = 'POST') =>
 const watcher = io(URL);
 const actor = io(URL);
 const events = [];
-for (const ev of ['character:created', 'character:updated', 'character:deleted', 'die:updated', 'roll:result', 'inventory:updated', 'injuries:updated', 'stance:created', 'stance:updated', 'stance:deleted', 'stance:activated', 'tell:created', 'tell:updated', 'tell:deleted', 'move:created', 'move:updated', 'move:deleted', 'move:granted', 'move:revoked', 'roleplay:updated', 'tag:created', 'tag:updated', 'tag:deleted', 'folder:created', 'folder:updated', 'folder:deleted', 'perk:created', 'perk:updated', 'perk:deleted', 'perk:granted', 'perk:revoked', 'counter:created', 'counter:updated', 'counter:deleted']) {
+for (const ev of ['character:created', 'character:updated', 'character:deleted', 'die:updated', 'roll:result', 'inventory:updated', 'injuries:updated', 'stance:created', 'stance:updated', 'stance:deleted', 'stance:activated', 'tell:created', 'tell:updated', 'tell:deleted', 'move:created', 'move:updated', 'move:deleted', 'move:granted', 'move:revoked', 'roleplay:updated', 'tag:created', 'tag:updated', 'tag:deleted', 'folder:created', 'folder:updated', 'folder:deleted', 'perk:created', 'perk:updated', 'perk:deleted', 'perk:granted', 'perk:revoked', 'counter:created', 'counter:updated', 'counter:deleted', 'character_folder:created', 'character_folder:updated', 'character_folder:deleted']) {
   watcher.on(ev, (payload) => events.push({ ev, payload }));
 }
 const waitEvent = (ev, pred = () => true, ms = 3000) =>
@@ -381,6 +381,83 @@ emit('move:delete', { moveId: hook.id });
 await waitEvent('move:deleted', (p) => p.moveId === hook.id);
 check('move deleted', ((await jf('/api/moves')).body).moves.every((m) => m.id !== hook.id));
 
+// --- Move Roll: optional die-collection + shared bonus, resolved live per character ---
+events.length = 0;
+emit('move:create', {
+  name: 'Body Slam', isDefault: true, tellId: tells[1].id,
+  rollSlots: ['Body', 'Body', 'Right Hand', 'Nonsense'], rollModifier: 2,
+  startupTics: 2, activeTics: 1, recoveryTics: 1, description: '', interactions: {},
+});
+const bodySlam = await waitEvent('move:created', (m) => m.name === 'Body Slam');
+check('move Roll dedupes slots and drops unknown ones', bodySlam.roll_slots.length === 2 && bodySlam.roll_slots.includes('Body') && bodySlam.roll_slots.includes('Right Hand'), JSON.stringify(bodySlam.roll_slots));
+check('move Roll bonus stored', bodySlam.roll_modifier === 2);
+
+sheet = (await jf(`/api/characters/${ch.id}`)).body;
+let slamOnSheet = sheet.moves.find((m) => m.id === bodySlam.id);
+check('default move with a Roll appears on sheet without a grant', !!slamOnSheet);
+check('Roll resolves to exactly the character\'s live dice for those slots', slamOnSheet.roll_dice.length === 2, JSON.stringify(slamOnSheet.roll_dice));
+const slamBody = slamOnSheet.roll_dice.find((d) => d.slot_name === 'Body');
+const slamRightHand = slamOnSheet.roll_dice.find((d) => d.slot_name === 'Right Hand');
+check('Roll dice carry real die ids + current size/bonus/status', slamBody.current_size === 8 && slamBody.status === 'active' && Number.isInteger(slamBody.dieId));
+check('Right Hand die still untouched baseline d8 going into the Perks section', slamRightHand.current_size === 8 && slamRightHand.bonus === 0);
+check('effective_roll_modifier = move roll_modifier, no Perk bonus granted yet', slamOnSheet.effective_roll_modifier === 2);
+
+// step the Body die up — the Roll must reflect the CURRENT die, not a stale snapshot
+events.length = 0;
+emit('die:step', { dieId: slamBody.dieId, direction: 'up' });
+await waitEvent('die:updated', (d) => d.dieId === slamBody.dieId);
+sheet = (await jf(`/api/characters/${ch.id}`)).body;
+slamOnSheet = sheet.moves.find((m) => m.id === bodySlam.id);
+check('Roll reflects the die\'s current (stepped) size, live', slamOnSheet.roll_dice.find((d) => d.slot_name === 'Body').current_size === 10);
+events.length = 0;
+emit('die:step', { dieId: slamBody.dieId, direction: 'down' }); // back to d8
+await waitEvent('die:updated', (d) => d.dieId === slamBody.dieId);
+
+// clicking the Roll = pool:roll with the resolved die ids + the pre-filled modifier
+events.length = 0;
+emit('pool:roll', { characterId: ch.id, dieIds: slamOnSheet.roll_dice.map((d) => d.dieId), modifier: slamOnSheet.effective_roll_modifier });
+roll = await waitEvent('roll:result');
+check('Move Roll click rolls exactly its configured dice', roll.dice.length === 2 && roll.dice.every((d) => ['Body', 'Right Hand'].includes(d.slot_name)));
+check('Move Roll click uses the pre-filled modifier', roll.modifier === 2);
+
+// incapacitate one of the Roll's dice — pool:roll must silently drop it, not block the whole roll
+for (const _ of [1, 2, 3]) { events.length = 0; emit('die:step', { dieId: slamBody.dieId, direction: 'down' }); await waitEvent('die:updated', (d) => d.dieId === slamBody.dieId); }
+sheet = (await jf(`/api/characters/${ch.id}`)).body;
+slamOnSheet = sheet.moves.find((m) => m.id === bodySlam.id);
+check('Roll still lists the incapacitated die (client dims/excludes it, server keeps it visible)', slamOnSheet.roll_dice.find((d) => d.slot_name === 'Body').status === 'incapacitated');
+events.length = 0;
+emit('pool:roll', { characterId: ch.id, dieIds: slamOnSheet.roll_dice.map((d) => d.dieId), modifier: 0 });
+roll = await waitEvent('roll:result');
+check('Move Roll silently drops the incapacitated die and still rolls the rest', roll.dice.length === 1 && roll.dice[0].slot_name === 'Right Hand', JSON.stringify(roll.dice));
+
+// a move_roll_bonus Perk now applies live once its target move HAS a Roll
+events.length = 0;
+emit('perk:create', {
+  name: 'Slam Specialist', description: '',
+  automations: [{ type: 'move_roll_bonus', payload: { moveId: bodySlam.id, amount: 4 } }],
+});
+const slamPerk = await waitEvent('perk:created');
+events.length = 0;
+emit('perk:grant', { characterId: ch.id, perkId: slamPerk.id });
+await waitEvent('perk:granted', (p) => p.characterId === ch.id && p.perkId === slamPerk.id);
+sheet = (await jf(`/api/characters/${ch.id}`)).body;
+slamOnSheet = sheet.moves.find((m) => m.id === bodySlam.id);
+check('Perk move_roll_bonus folds into effective_roll_modifier for a move with a Roll', slamOnSheet.effective_roll_modifier === 6, `got ${slamOnSheet.effective_roll_modifier}`);
+events.length = 0;
+emit('perk:revoke', { characterId: ch.id, perkId: slamPerk.id });
+await waitEvent('perk:revoked', (p) => p.characterId === ch.id && p.perkId === slamPerk.id);
+events.length = 0;
+emit('perk:delete', { perkId: slamPerk.id });
+await waitEvent('perk:deleted', (p) => p.perkId === slamPerk.id);
+
+// revive the Body die and clean up the test move
+events.length = 0;
+emit('die:step', { dieId: slamBody.dieId, direction: 'up' });
+await waitEvent('die:updated', (d) => d.dieId === slamBody.dieId);
+events.length = 0;
+emit('move:delete', { moveId: bodySlam.id });
+await waitEvent('move:deleted', (p) => p.moveId === bodySlam.id);
+
 // --- perks: picture/name/description/automations, extensible registry ---
 sheet = (await jf(`/api/characters/${ch.id}`)).body;
 const rightHandBaseline = sheet.dice.find((d) => d.slot_name === 'Right Hand');
@@ -612,9 +689,72 @@ await waitEvent('counter:deleted', (p) => p.counterId === counter.id);
 sheet = (await jf(`/api/characters/${ch.id}`)).body;
 check('counter deleted', sheet.counters.length === 0);
 
+// --- character folders: GM-managed, same structural pattern as move folders ---
+events.length = 0;
+emit('character_folder:create', { name: 'Party' });
+const charFolder = await waitEvent('character_folder:created');
+check('character folder created', charFolder.name === 'Party');
+
+events.length = 0;
+emit('character:set_folder', { characterId: ch.id, folderId: charFolder.id });
+let folderedChar = await waitEvent('character:updated', (c) => c.id === ch.id && c.folder_id === charFolder.id);
+check('character filed into folder via character:set_folder', folderedChar.folder_id === charFolder.id);
+
+let charFolders = (await jf('/api/character-folders')).body;
+check('character folder listed by /api/character-folders', charFolders.some((f) => f.id === charFolder.id));
+
+events.length = 0;
+emit('character_folder:rename', { folderId: charFolder.id, name: 'Party A' });
+const renamedFolder = await waitEvent('character_folder:updated', (f) => f.id === charFolder.id);
+check('character folder renamed', renamedFolder.name === 'Party A');
+
+events.length = 0;
+emit('character:set_folder', { characterId: ch.id, folderId: 999999 });
+folderedChar = await waitEvent('character:updated', (c) => c.id === ch.id && c.folder_id === null);
+check('character:set_folder falls back to root for a nonexistent folder id', folderedChar.folder_id === null);
+
+events.length = 0;
+emit('character:set_folder', { characterId: ch.id, folderId: charFolder.id });
+await waitEvent('character:updated', (c) => c.id === ch.id && c.folder_id === charFolder.id);
+
+events.length = 0;
+emit('character_folder:delete', { folderId: charFolder.id });
+await waitEvent('character_folder:deleted', (p) => p.folderId === charFolder.id);
+sheet = (await jf(`/api/characters/${ch.id}`)).body;
+check('deleting a character folder returns its characters to root', sheet.character.folder_id === null);
+
+// creating a character directly into a folder (Add Character form's GM-only folder picker)
+events.length = 0;
+emit('character_folder:create', { name: 'Villains' });
+const villainsFolder = await waitEvent('character_folder:created');
+const seeded = await jpost('/api/characters', { name: 'Seeded Villain', characterType: 'npc', folderId: villainsFolder.id });
+check('character created directly into a folder', seeded.body.folder_id === villainsFolder.id);
+await jf(`/api/characters/${seeded.body.id}`, { method: 'DELETE' });
+events.length = 0;
+emit('character_folder:delete', { folderId: villainsFolder.id });
+await waitEvent('character_folder:deleted', (p) => p.folderId === villainsFolder.id);
+
+// --- global search: named library entities only (Characters/Moves/Perks/Tells/Tags) ---
+let searchResults = (await jf('/api/search?q=aaron')).body;
+check('search finds a character by name, case-insensitive', searchResults.characters.some((c) => c.id === ch.id));
+searchResults = (await jf(`/api/search?q=${encodeURIComponent(jab.name)}`)).body;
+check('search finds a move by name', searchResults.moves.some((m) => m.id === jab.id));
+searchResults = (await jf('/api/search?q=poke')).body;
+check('search finds a move by description substring', searchResults.moves.some((m) => m.id === jab.id));
+searchResults = (await jf(`/api/search?q=${encodeURIComponent(tagA.description)}`)).body;
+check('search finds a tag by description substring', searchResults.tags.some((t) => t.id === tagA.id));
+searchResults = (await jf('/api/search?q=')).body;
+check('empty query returns empty result sets, not everything', Object.values(searchResults).every((arr) => arr.length === 0));
+searchResults = (await jf('/api/search?q=zzzznomatchzzzz')).body;
+check(
+  'no-match query returns empty arrays for every type',
+  searchResults.characters.length === 0 && searchResults.moves.length === 0 &&
+    searchResults.perks.length === 0 && searchResults.tells.length === 0 && searchResults.tags.length === 0
+);
+
 // --- chat history ---
 const chat = (await jf('/api/chat')).body;
-check('chat history has all rolls (5)', chat.length === 5, `got ${chat.length}`);
+check('chat history has all rolls (7)', chat.length === 7, `got ${chat.length}`);
 check('chat entries carry name + dice + total', chat.every((e) => e.characterName && Array.isArray(e.dice) && typeof e.total === 'number' && e.timestamp));
 
 // --- name + portrait update ---
@@ -631,7 +771,7 @@ await waitEvent('character:deleted', (p) => p.id === ch.id);
 check('character:deleted broadcast', true);
 check('sheet fetch now 404', (await jf(`/api/characters/${ch.id}`)).status === 404);
 const chatAfter = (await jf('/api/chat')).body;
-check('chat log survives character deletion', chatAfter.length === 5 && chatAfter[0].characterName === '(deleted)');
+check('chat log survives character deletion', chatAfter.length === 7 && chatAfter[0].characterName === '(deleted)');
 
 await jf(`/api/characters/${npc.id}`, { method: 'DELETE' });
 

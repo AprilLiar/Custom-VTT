@@ -12,7 +12,13 @@ import {
   rollDie,
   stepDie,
 } from './gameLogic.js';
-import { clampFrame, validFrames, normalizeInteractions } from './moveLogic.js';
+import {
+  clampFrame,
+  validFrames,
+  normalizeInteractions,
+  clampRollBonus,
+  sanitizeRollSlots,
+} from './moveLogic.js';
 import {
   normalizeAutomations,
   invertAutomationPayload,
@@ -72,10 +78,20 @@ async function attachInteractions(moves) {
     if (!tagsByMove.has(row.move_id)) tagsByMove.set(row.move_id, []);
     tagsByMove.get(row.move_id).push(row.tag_id);
   }
+  const rollSlotRows = await all(
+    `SELECT * FROM move_roll_slots WHERE move_id IN (${marks}) ORDER BY id`,
+    ids
+  );
+  const rollSlotsByMove = new Map();
+  for (const row of rollSlotRows) {
+    if (!rollSlotsByMove.has(row.move_id)) rollSlotsByMove.set(row.move_id, []);
+    rollSlotsByMove.get(row.move_id).push(row.slot_name);
+  }
   return moves.map((m) => ({
     ...m,
     interactions: byMove.get(m.id) ?? [],
     tag_ids: tagsByMove.get(m.id) ?? [],
+    roll_slots: rollSlotsByMove.get(m.id) ?? [],
   }));
 }
 
@@ -144,6 +160,11 @@ async function getMovesFor(characterId) {
     bonusByMove.set(row.move_id, (bonusByMove.get(row.move_id) ?? 0) + row.amount);
   }
 
+  // Live dice, keyed by body-part slot, to resolve each move's Roll to the
+  // character's actual current dice (not the shared template).
+  const dice = await getDice(characterId);
+  const dieBySlot = new Map(dice.map((d) => [d.slot_name, d]));
+
   return withBase.map((move) => {
     const deltas = overrideByMove.get(move.id) ?? { startup: 0, active: 0, recovery: 0 };
     const effective = effectiveFrames(move, deltas);
@@ -159,6 +180,22 @@ async function getMovesFor(characterId) {
     const hasOverrides =
       deltas.startup !== 0 || deltas.active !== 0 || deltas.recovery !== 0 ||
       tagOverrides.length > 0 || rollBonus !== 0;
+
+    // Resolve the move's configured Roll slots to this character's actual
+    // dice, and fold the move's own roll_modifier together with any
+    // Perk-granted per-move roll_bonus into one suggested modifier — the
+    // "specified bonus" the Roll dialog pre-fills, editable manually from there.
+    const rollDice = move.roll_slots
+      .map((slotName) => dieBySlot.get(slotName))
+      .filter(Boolean)
+      .map((d) => ({
+        dieId: d.id,
+        slot_name: d.slot_name,
+        current_size: d.current_size,
+        bonus: d.bonus,
+        status: d.status,
+      }));
+
     return {
       ...move,
       effective_startup_tics: effective.startup_tics,
@@ -167,6 +204,8 @@ async function getMovesFor(characterId) {
       effective_tag_ids: effectiveTagIds,
       roll_bonus: rollBonus,
       has_perk_overrides: hasOverrides,
+      roll_dice: rollDice,
+      effective_roll_modifier: move.roll_modifier + rollBonus,
     };
   });
 }
@@ -280,6 +319,12 @@ app.get('/api/characters', wrap(async (_req, res) => {
   res.json(await all('SELECT * FROM characters ORDER BY id'));
 }));
 
+// Character-list folders (GM-managed) — separate from /api/characters so
+// existing callers that just want the flat character array are unaffected.
+app.get('/api/character-folders', wrap(async (_req, res) => {
+  res.json(await all('SELECT * FROM character_folders ORDER BY name'));
+}));
+
 app.get('/api/characters/:id', wrap(async (req, res) => {
   const character = await getCharacter(req.params.id);
   if (!character) return res.status(404).json({ error: 'not found' });
@@ -343,6 +388,37 @@ app.get('/api/perks', wrap(async (_req, res) => {
   );
 }));
 
+// Global search across named library entities only (Characters, Moves,
+// Perks, Tells, Tags) — no character sub-records (Inventory/Injuries/
+// Stances/Counters aren't indexed). Role-based visibility (e.g. hiding NPCs
+// from Players) is applied client-side, same as everywhere else in this
+// no-auth app — the server has no concept of role.
+app.get('/api/search', wrap(async (req, res) => {
+  const q = String(req.query.q ?? '').trim();
+  if (!q) return res.json({ characters: [], moves: [], perks: [], tells: [], tags: [] });
+  const like = `%${q}%`;
+
+  const characters = await all(
+    'SELECT id, name, character_type FROM characters WHERE name LIKE ? ORDER BY name',
+    [like]
+  );
+  const moves = await all(
+    'SELECT id, name, description FROM moves WHERE name LIKE ? OR description LIKE ? ORDER BY name',
+    [like, like]
+  );
+  const perks = await all(
+    'SELECT id, name, description FROM perks WHERE name LIKE ? OR description LIKE ? ORDER BY name',
+    [like, like]
+  );
+  const tells = await all('SELECT id, name FROM tells WHERE name LIKE ? ORDER BY name', [like]);
+  const tags = await all(
+    'SELECT id, name, description FROM tags WHERE name LIKE ? OR description LIKE ? ORDER BY name',
+    [like, like]
+  );
+
+  res.json({ characters, moves, perks, tells, tags });
+}));
+
 // The fixed ruleset: 7 styles + the complete counter tournament (seeded once)
 app.get('/api/ruleset', wrap(async (_req, res) => {
   res.json({
@@ -356,11 +432,17 @@ app.post('/api/characters', wrap(async (req, res) => {
   if (!name) return res.status(400).json({ error: 'name required' });
   const characterType = req.body?.characterType === 'npc' ? 'npc' : 'pc';
 
+  let folderId = null;
+  if (req.body?.folderId != null) {
+    const folder = await one('SELECT id FROM character_folders WHERE id = ?', [req.body.folderId]);
+    if (folder) folderId = folder.id;
+  }
+
   // Dice seed at d8, so starting Max Stamina = 4 x (8 + 0); Current starts at Max.
   const maxStamina = computeMaxStamina(4, 8, 0);
   const result = await run(
-    'INSERT INTO characters (name, character_type, max_stamina, current_stamina) VALUES (?, ?, ?, ?)',
-    [name, characterType, maxStamina, maxStamina]
+    'INSERT INTO characters (name, character_type, max_stamina, current_stamina, folder_id) VALUES (?, ?, ?, ?, ?)',
+    [name, characterType, maxStamina, maxStamina, folderId]
   );
   const id = Number(result.lastInsertRowid);
 
@@ -803,6 +885,10 @@ io.on('connection', (socket) => {
       if (folder) folderId = folder.id;
     }
 
+    // Roll is optional — a move with no slots has no Roll at all.
+    const rollModifier = clampRollBonus(payload.rollModifier);
+    const rollSlots = sanitizeRollSlots(payload.rollSlots);
+
     // 0-10 tags, all must exist
     let tagIds = [];
     if (Array.isArray(payload.tagIds) && payload.tagIds.length) {
@@ -820,17 +906,20 @@ io.on('connection', (socket) => {
     if (id == null) {
       const result = await run(
         `INSERT INTO moves (name, is_default, tell_id, startup_tics, active_tics, recovery_tics,
-          description, style_attribute_id, folder_id, image_data, image_mime_type)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          description, style_attribute_id, folder_id, image_data, image_mime_type, roll_modifier)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [name, isDefault, tell.id, startup, active, recovery, description, styleId, folderId,
-          payload.imageData ?? null, payload.imageData ? (payload.imageMimeType ?? 'image/png') : null]
+          payload.imageData ?? null, payload.imageData ? (payload.imageMimeType ?? 'image/png') : null,
+          rollModifier]
       );
       id = Number(result.lastInsertRowid);
     } else {
       await run(
         `UPDATE moves SET name = ?, is_default = ?, tell_id = ?, startup_tics = ?, active_tics = ?,
-          recovery_tics = ?, description = ?, style_attribute_id = ?, folder_id = ? WHERE id = ?`,
-        [name, isDefault, tell.id, startup, active, recovery, description, styleId, folderId, id]
+          recovery_tics = ?, description = ?, style_attribute_id = ?, folder_id = ?, roll_modifier = ?
+          WHERE id = ?`,
+        [name, isDefault, tell.id, startup, active, recovery, description, styleId, folderId,
+          rollModifier, id]
       );
       // image only replaced when a new one is provided
       if (payload.imageData !== undefined) {
@@ -845,6 +934,10 @@ io.on('connection', (socket) => {
     await run('DELETE FROM move_tags WHERE move_id = ?', [id]);
     for (const tagId of tagIds) {
       await run('INSERT INTO move_tags (move_id, tag_id) VALUES (?, ?)', [id, tagId]);
+    }
+    await run('DELETE FROM move_roll_slots WHERE move_id = ?', [id]);
+    for (const slotName of rollSlots) {
+      await run('INSERT INTO move_roll_slots (move_id, slot_name) VALUES (?, ?)', [id, slotName]);
     }
     for (const row of normalizeInteractions(payload.interactions)) {
       await run(
@@ -872,6 +965,7 @@ io.on('connection', (socket) => {
     if (!move) return;
     await run('DELETE FROM move_interactions WHERE move_id = ?', [move.id]);
     await run('DELETE FROM move_tags WHERE move_id = ?', [move.id]);
+    await run('DELETE FROM move_roll_slots WHERE move_id = ?', [move.id]);
     await run('DELETE FROM character_moves WHERE move_id = ?', [move.id]);
     await run('DELETE FROM character_move_tags WHERE move_id = ?', [move.id]);
     await run('DELETE FROM character_move_overrides WHERE move_id = ?', [move.id]);
@@ -969,6 +1063,50 @@ io.on('connection', (socket) => {
     }
     await run('UPDATE moves SET folder_id = ? WHERE id = ?', [target, move.id]);
     io.emit('move:updated', await getMove(move.id));
+  });
+
+  // Character-list folders — GM-managed (client-side gated), same structural
+  // pattern as move folders: create/rename/delete, delete returns to root.
+  on('character_folder:create', async ({ name }) => {
+    const folderName = String(name ?? '').trim();
+    if (!folderName) return;
+    const result = await run('INSERT INTO character_folders (name) VALUES (?)', [folderName]);
+    io.emit('character_folder:created', await one('SELECT * FROM character_folders WHERE id = ?', [
+      Number(result.lastInsertRowid),
+    ]));
+  });
+
+  on('character_folder:rename', async ({ folderId, name }) => {
+    const folder = await one('SELECT * FROM character_folders WHERE id = ?', [folderId]);
+    const folderName = String(name ?? '').trim();
+    if (!folder || !folderName) return;
+    await run('UPDATE character_folders SET name = ? WHERE id = ?', [folderName, folder.id]);
+    io.emit(
+      'character_folder:updated',
+      await one('SELECT * FROM character_folders WHERE id = ?', [folder.id])
+    );
+  });
+
+  on('character_folder:delete', async ({ folderId }) => {
+    const folder = await one('SELECT * FROM character_folders WHERE id = ?', [folderId]);
+    if (!folder) return;
+    // Characters inside return to the root directory
+    await run('UPDATE characters SET folder_id = NULL WHERE folder_id = ?', [folder.id]);
+    await run('DELETE FROM character_folders WHERE id = ?', [folder.id]);
+    io.emit('character_folder:deleted', { folderId: folder.id });
+  });
+
+  // Drag-and-drop reassignment: touches only folder_id.
+  on('character:set_folder', async ({ characterId, folderId }) => {
+    const character = await getCharacter(characterId);
+    if (!character) return;
+    let target = null;
+    if (folderId != null) {
+      const folder = await one('SELECT id FROM character_folders WHERE id = ?', [folderId]);
+      if (folder) target = folder.id;
+    }
+    await run('UPDATE characters SET folder_id = ? WHERE id = ?', [target, character.id]);
+    io.emit('character:updated', await getCharacter(character.id));
   });
 
   on('move:revoke', async ({ characterId, moveId }) => {

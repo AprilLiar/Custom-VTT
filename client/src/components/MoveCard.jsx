@@ -1,5 +1,6 @@
 import { TRIGGER_LABELS, automationLabel } from '../lib/moveDisplay.js';
 import { iconFor } from '../lib/styleIcons.js';
+import { dieFormula } from '../lib/dice.js';
 import FrameBar from './FrameBar.jsx';
 import Thumb from './Thumb.jsx';
 
@@ -16,10 +17,14 @@ export default function MoveCard({
   dimReason,
   folderLabel,
   perkModified = false, // this character's frame/tags include Perk deltas
-  rollBonus = 0, // per-character bonus on rolls with this move (Phase 7)
+  rollBonus = 0, // per-character bonus on rolls with this move, from a Perk
+  onRollClick, // present on the character sheet's Moves tab only
   actions,
 }) {
   const StyleIcon = style ? iconFor(style.icon) : null;
+  const hasRoll = move.roll_slots?.length > 0;
+  const isLiveRoll = hasRoll && Array.isArray(move.roll_dice);
+  const activeRollDice = isLiveRoll ? move.roll_dice.filter((d) => d.status === 'active') : [];
   return (
     <div
       title={dimmed ? dimReason : undefined}
@@ -65,10 +70,49 @@ export default function MoveCard({
         {rollBonus !== 0 && (
           <div
             className="text-xs text-amber-400"
-            title="Stored now — applies once Moves get their own rolls in Combat Timing (Phase 7)"
+            title={
+              hasRoll
+                ? 'Included in this move’s Roll bonus below'
+                : 'Stored now — applies once this move has a Roll to attach it to'
+            }
           >
             {rollBonus > 0 ? '+' : ''}
-            {rollBonus} on rolls with this move (Perk, not yet active)
+            {rollBonus} on rolls with this move (Perk{hasRoll ? '' : ', not yet active'})
+          </div>
+        )}
+
+        {hasRoll && (
+          <div className="flex flex-wrap items-center gap-1.5 text-xs">
+            <span className="font-semibold uppercase text-zinc-500">Roll:</span>
+            {isLiveRoll ? (
+              <button
+                type="button"
+                onClick={onRollClick}
+                disabled={!onRollClick || activeRollDice.length === 0}
+                title={
+                  activeRollDice.length === 0
+                    ? 'Every die in this Roll is incapacitated'
+                    : 'Roll this move’s dice'
+                }
+                className="rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 font-mono text-zinc-200 hover:border-indigo-500 hover:text-indigo-300 disabled:opacity-40"
+              >
+                {move.roll_dice
+                  .map(
+                    (d) =>
+                      `${d.slot_name} (${
+                        d.status === 'incapacitated'
+                          ? '—'
+                          : dieFormula(d.current_size, d.bonus, move.effective_roll_modifier ?? 0)
+                      })`
+                  )
+                  .join(' + ')}
+              </button>
+            ) : (
+              <span className="text-zinc-400">
+                {move.roll_slots.join(' + ')}
+                {move.roll_modifier ? ` (${move.roll_modifier > 0 ? '+' : ''}${move.roll_modifier})` : ''}
+              </span>
+            )}
           </div>
         )}
 

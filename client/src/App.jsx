@@ -6,6 +6,7 @@ import CharacterList from './components/CharacterList.jsx';
 import CharacterSheet from './components/CharacterSheet.jsx';
 import ChatPanel from './components/ChatPanel.jsx';
 import CompendiumPage from './components/CompendiumPage.jsx';
+import SearchBar from './components/SearchBar.jsx';
 
 function Shell() {
   const { role } = useRole();
@@ -35,6 +36,7 @@ function Shell() {
           </Link>
         )}
         <div className="flex-1" />
+        <SearchBar />
         <button
           onClick={() => setChatOpen((v) => !v)}
           className="rounded-md border border-zinc-700 px-3 py-1 text-sm text-zinc-300 hover:bg-zinc-800"

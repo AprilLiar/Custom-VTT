@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Navigate } from 'react-router-dom';
+import { Navigate, useLocation } from 'react-router-dom';
 import { useRole } from '../roleContext.jsx';
 import MovesCompendium from './Compendium.jsx';
 import PerksCompendium from './PerksCompendium.jsx';
@@ -14,7 +14,10 @@ const TABS = [
 
 export default function CompendiumPage() {
   const { role } = useRole();
-  const [tab, setTab] = useState('moves');
+  const location = useLocation();
+  // The header search bar can deep-link here (e.g. a Perk result) via
+  // navigate('/compendium', { state: { tab: 'perks' } }).
+  const [tab, setTab] = useState(location.state?.tab === 'perks' ? 'perks' : 'moves');
 
   if (role !== 'gm') return <Navigate to="/" replace />;
 

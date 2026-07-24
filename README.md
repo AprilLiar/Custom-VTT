@@ -48,7 +48,14 @@ Phase 5 (Counters) — the character sheet's Counters tab (name, target/current 
 as dot rows, +/- buttons, a "Show in Combat" toggle stored ahead of the Combat Arena
 that will read it in Phase 6). Also consolidated the GM Compendium: Moves and Perks
 (and any future compendium) now live as tabs on one `/compendium` page instead of
-separate top-level nav links. See `vttprojectplan.md` for what's next.
+separate top-level nav links.
+
+Since then: GM-managed character-list folders (mirrors Move folders), a global
+Search bar in the header (Characters/Moves/Perks/Tells/Tags, role-scoped), and an
+optional Move Roll field — a move can specify which body-part dice it rolls plus a
+shared bonus, resolved to a character's live dice and rollable in one click (reuses
+Pool Roll under the hood). This also makes the Perk `move_roll_bonus` automation
+live for any move that has a Roll. See `vttprojectplan.md` for what's next.
 
 **Testing:** `npm test` runs the game-logic unit tests. `scripts/e2e.mjs` is a full
 integration pass (run it against a freshly started server with a clean `local.db`).

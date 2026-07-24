@@ -2,6 +2,7 @@ import { useRef, useState } from 'react';
 import { AUTOMATION_OPTIONS, TRIGGER_LABELS } from '../lib/moveDisplay.js';
 import { iconFor } from '../lib/styleIcons.js';
 import { fileToSmallImage } from '../lib/image.js';
+import { DIE_SLOT_NAMES } from '../lib/diceSlots.js';
 import FrameBar from './FrameBar.jsx';
 import Thumb from './Thumb.jsx';
 
@@ -82,6 +83,8 @@ export default function MoveCreator({
   const [tellId, setTellId] = useState(initial?.tell_id ?? tells[0]?.id ?? null);
   const [styleId, setStyleId] = useState(initial?.style_attribute_id ?? null);
   const [folderId, setFolderId] = useState(initial?.folder_id ?? initialFolderId);
+  const [rollSlots, setRollSlots] = useState(initial?.roll_slots ?? []);
+  const [rollModifier, setRollModifier] = useState(initial?.roll_modifier ?? 0);
   const [tagIds, setTagIds] = useState(initial?.tag_ids ?? []);
   const [image, setImage] = useState(undefined); // undefined = keep existing
   const [frames, setFrames] = useState({
@@ -98,6 +101,9 @@ export default function MoveCreator({
 
   const total = frames.startup + frames.active + frames.recovery;
   const valid = name.trim() && tellId && styleId && total >= 1;
+
+  const toggleRollSlot = (slot) =>
+    setRollSlots((prev) => (prev.includes(slot) ? prev.filter((s) => s !== slot) : [...prev, slot]));
 
   const toggleTag = (id) =>
     setTagIds((prev) =>
@@ -120,6 +126,8 @@ export default function MoveCreator({
       tellId,
       styleAttributeId: styleId,
       folderId,
+      rollSlots,
+      rollModifier,
       tagIds,
       startupTics: frames.startup,
       activeTics: frames.active,
@@ -217,6 +225,46 @@ export default function MoveCreator({
               </button>
             );
           })}
+        </div>
+      </div>
+
+      <div>
+        <p className="mb-1 text-xs font-semibold uppercase text-zinc-500">
+          Roll (optional — which body-part dice this move rolls)
+        </p>
+        <div className="flex flex-wrap items-center gap-1.5">
+          {DIE_SLOT_NAMES.map((slot) => {
+            const selected = rollSlots.includes(slot);
+            return (
+              <button
+                key={slot}
+                type="button"
+                onClick={() => toggleRollSlot(slot)}
+                className={`rounded-lg border px-2 py-1 text-xs font-semibold ${
+                  selected
+                    ? 'border-indigo-500 bg-indigo-600/30 text-indigo-200'
+                    : 'border-zinc-700 bg-zinc-800 text-zinc-400 hover:border-zinc-500'
+                }`}
+              >
+                {slot}
+              </button>
+            );
+          })}
+          {rollSlots.length > 0 && (
+            <label className="ml-2 flex items-center gap-1.5 text-xs text-zinc-400">
+              Bonus
+              <input
+                type="number"
+                min={-20}
+                max={20}
+                value={rollModifier}
+                onChange={(e) =>
+                  setRollModifier(Math.max(-20, Math.min(20, Math.trunc(Number(e.target.value) || 0))))
+                }
+                className="w-16 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs text-zinc-100 outline-none focus:border-indigo-500"
+              />
+            </label>
+          )}
         </div>
       </div>
 
