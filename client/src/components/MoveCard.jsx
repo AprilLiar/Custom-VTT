@@ -64,6 +64,7 @@ export default function MoveCard({
             {tags.map((tag) => (
               <span
                 key={tag.id}
+                title={tag.description || undefined}
                 className="rounded-full bg-emerald-900/40 px-2 py-0.5 text-xs font-semibold text-emerald-300"
               >
                 {tag.name}

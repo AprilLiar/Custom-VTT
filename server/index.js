@@ -738,20 +738,27 @@ io.on('connection', (socket) => {
     io.emit('move:granted', { characterId: character.id, moveId: move.id });
   });
 
-  on('tag:create', async ({ name }) => {
+  on('tag:create', async ({ name, description }) => {
     const tagName = String(name ?? '').trim();
     if (!tagName) return;
-    const result = await run('INSERT INTO tags (name) VALUES (?)', [tagName]);
+    const result = await run('INSERT INTO tags (name, description) VALUES (?, ?)', [
+      tagName,
+      String(description ?? '').trim(),
+    ]);
     io.emit('tag:created', await one('SELECT * FROM tags WHERE id = ?', [
       Number(result.lastInsertRowid),
     ]));
   });
 
-  on('tag:update', async ({ tagId, name }) => {
+  on('tag:update', async ({ tagId, name, description }) => {
     const tag = await one('SELECT * FROM tags WHERE id = ?', [tagId]);
     const tagName = String(name ?? '').trim();
     if (!tag || !tagName) return;
-    await run('UPDATE tags SET name = ? WHERE id = ?', [tagName, tag.id]);
+    await run('UPDATE tags SET name = ?, description = ? WHERE id = ?', [
+      tagName,
+      String(description ?? '').trim(),
+      tag.id,
+    ]);
     io.emit('tag:updated', await one('SELECT * FROM tags WHERE id = ?', [tag.id]));
   });
 
@@ -787,6 +794,20 @@ io.on('connection', (socket) => {
     await run('UPDATE moves SET folder_id = NULL WHERE folder_id = ?', [folder.id]);
     await run('DELETE FROM move_folders WHERE id = ?', [folder.id]);
     io.emit('folder:deleted', { folderId: folder.id });
+  });
+
+  // Drag-and-drop reassignment: touches only folder_id, unlike move:update
+  // which replaces the whole move (interactions/tags included).
+  on('move:set_folder', async ({ moveId, folderId }) => {
+    const move = await one('SELECT * FROM moves WHERE id = ?', [moveId]);
+    if (!move) return;
+    let target = null;
+    if (folderId != null) {
+      const folder = await one('SELECT id FROM move_folders WHERE id = ?', [folderId]);
+      if (folder) target = folder.id;
+    }
+    await run('UPDATE moves SET folder_id = ? WHERE id = ?', [target, move.id]);
+    io.emit('move:updated', await getMove(move.id));
   });
 
   on('move:revoke', async ({ characterId, moveId }) => {

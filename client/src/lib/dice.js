@@ -5,6 +5,14 @@ export const rankOf = (size, bonus) => DIE_SIZES.indexOf(size) + bonus;
 
 export const dieLabel = (size, bonus) => `d${size}${bonus > 0 ? `+${bonus}` : ''}`;
 
+// Chat-log formula: the die's permanent bonus and the roll's ad-hoc modifier
+// combined into one signed suffix, e.g. "d8+3" — matches the printed result.
+export function dieFormula(size, bonus, modifier = 0) {
+  const total = bonus + modifier;
+  if (total === 0) return `d${size}`;
+  return `d${size}${total > 0 ? `+${total}` : total}`;
+}
+
 // Green above locked, red below, no tint when equal; opacity scales with the gap.
 export function tintFor(die) {
   if (die.status === 'incapacitated') return null;

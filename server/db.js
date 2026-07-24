@@ -184,9 +184,11 @@ export async function initDb() {
   await run(`
     CREATE TABLE IF NOT EXISTS tags (
       id INTEGER PRIMARY KEY,
-      name TEXT NOT NULL
+      name TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT ''
     )
   `);
+  await ensureColumn('tags', 'description', "TEXT NOT NULL DEFAULT ''");
 
   await run(`
     CREATE TABLE IF NOT EXISTS move_tags (

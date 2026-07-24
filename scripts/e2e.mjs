@@ -244,13 +244,17 @@ emit('tell:update', { tellId: newTell.id, name: 'Shoulder Twitch' });
 const updTell = await waitEvent('tell:updated');
 check('tell rename keeps image', updTell.name === 'Shoulder Twitch' && updTell.image_data === 'aGVsbG8=');
 
-// --- tags (world-level, GM-managed) ---
+// --- tags (world-level, GM-managed, with description) ---
 events.length = 0;
-emit('tag:create', { name: 'Overhead' });
+emit('tag:create', { name: 'Overhead', description: 'Must be blocked standing' });
 const tagA = await waitEvent('tag:created');
 emit('tag:create', { name: 'Sweep' });
 const tagB = await waitEvent('tag:created', (t) => t.name === 'Sweep');
-check('tags created', tagA.name === 'Overhead' && tagB.name === 'Sweep');
+check('tags created, description optional', tagA.name === 'Overhead' && tagA.description === 'Must be blocked standing' && tagB.description === '');
+events.length = 0;
+emit('tag:update', { tagId: tagB.id, name: 'Sweep', description: 'Must be blocked low' });
+const tagBUpdated = await waitEvent('tag:updated');
+check('tag description editable', tagBUpdated.description === 'Must be blocked low');
 
 // --- moves: frame data + interactions + style + tags + image ---
 const speedId = attrIdByName.get('Speed');
@@ -324,6 +328,21 @@ events.length = 0;
 emit('folder:create', { name: 'Punches' });
 const folder = await waitEvent('folder:created');
 check('folder created', folder.name === 'Punches');
+
+// move:set_folder (drag-and-drop) must touch ONLY folder_id — everything
+// else about the move stays exactly as it was, unlike move:update.
+events.length = 0;
+emit('move:set_folder', { moveId: hook.id, folderId: folder.id });
+const draggedIn = await waitEvent('move:updated', (m) => m.id === hook.id);
+check('move:set_folder files the move without touching other fields', draggedIn.folder_id === folder.id && draggedIn.name === hook.name && draggedIn.tell_id === hook.tell_id && draggedIn.style_attribute_id === hook.style_attribute_id && draggedIn.startup_tics === hook.startup_tics && draggedIn.image_data === hook.image_data && draggedIn.interactions.length === hook.interactions.length);
+events.length = 0;
+emit('move:set_folder', { moveId: hook.id, folderId: null });
+const draggedOut = await waitEvent('move:updated', (m) => m.id === hook.id);
+check('move:set_folder back to root (drop on "All Moves")', draggedOut.folder_id === null && draggedOut.name === hook.name);
+events.length = 0;
+emit('move:set_folder', { moveId: hook.id, folderId: 999999 });
+const draggedBad = await waitEvent('move:updated', (m) => m.id === hook.id);
+check('move:set_folder falls back to root for a nonexistent folder id', draggedBad.folder_id === null);
 
 events.length = 0;
 emit('move:update', {

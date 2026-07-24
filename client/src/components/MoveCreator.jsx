@@ -236,6 +236,7 @@ export default function MoveCreator({
                   type="button"
                   onClick={() => toggleTag(tag.id)}
                   disabled={!selected && tagIds.length >= 10}
+                  title={tag.description || undefined}
                   className={`rounded-full border px-2 py-0.5 text-xs font-semibold ${
                     selected
                       ? 'border-emerald-500 bg-emerald-900/40 text-emerald-300'

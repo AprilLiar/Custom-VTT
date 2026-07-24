@@ -1,44 +1,49 @@
 import { useEffect, useRef, useState } from 'react';
 import { socket } from '../socket.js';
-import { getChat } from '../lib/api.js';
-import { dieLabel } from '../lib/dice.js';
+import { getChat, getCharacters } from '../lib/api.js';
+import { dieFormula } from '../lib/dice.js';
+import Thumb from './Thumb.jsx';
 
-function Entry({ entry }) {
+function Entry({ entry, character }) {
   const time = new Date(entry.timestamp).toLocaleTimeString([], {
     hour: '2-digit',
     minute: '2-digit',
   });
   const multi = entry.dice.length > 1;
   return (
-    <div className="border-b border-zinc-800 px-3 py-2 text-sm">
-      <div className="flex items-baseline gap-2">
-        <span className="font-semibold text-zinc-200">{entry.characterName}</span>
-        {entry.modifier !== 0 && (
-          <span className="text-xs text-indigo-400">
-            mod {entry.modifier > 0 ? `+${entry.modifier}` : entry.modifier}
-          </span>
-        )}
-        <span className="ml-auto text-xs text-zinc-600">{time}</span>
-      </div>
-      <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-zinc-400">
-        {entry.dice.map((d, i) => (
-          <span key={i}>
-            {d.slot_name} ({dieLabel(d.size, d.bonus)}):{' '}
-            <span className="font-mono text-zinc-200">{d.result}</span>
-          </span>
-        ))}
-      </div>
-      {multi && (
-        <div className="mt-0.5 text-right font-mono text-sm font-bold text-zinc-100">
-          Total {entry.total}
+    <div className="flex gap-2 border-b border-zinc-800 px-3 py-2 text-sm">
+      <Thumb
+        record={character}
+        name={character ? entry.characterName : '?'}
+        size="h-6 w-6"
+        rounded="rounded-full"
+      />
+      <div className="min-w-0 flex-1">
+        <div className="flex items-baseline gap-2">
+          <span className="font-semibold text-zinc-200">{entry.characterName}</span>
+          <span className="ml-auto text-xs text-zinc-600">{time}</span>
         </div>
-      )}
+        <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-zinc-400">
+          {entry.dice.map((d, i) => (
+            <span key={i}>
+              {d.slot_name} ({dieFormula(d.size, d.bonus, entry.modifier)}):{' '}
+              <span className="font-mono text-zinc-200">{d.result}</span>
+            </span>
+          ))}
+        </div>
+        {multi && (
+          <div className="mt-0.5 text-right font-mono text-sm font-bold text-zinc-100">
+            Total {entry.total}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
 
 export default function ChatPanel({ open, onClose }) {
   const [entries, setEntries] = useState([]);
+  const [characters, setCharacters] = useState(new Map());
   const bottomRef = useRef(null);
 
   useEffect(() => {
@@ -46,6 +51,21 @@ export default function ChatPanel({ open, onClose }) {
     const onRoll = (entry) => setEntries((prev) => [...prev, entry]);
     socket.on('roll:result', onRoll);
     return () => socket.off('roll:result', onRoll);
+  }, []);
+
+  useEffect(() => {
+    // Avatars for the roll feed — unfiltered by role, same as the rolls
+    // themselves (everyone sees everyone's rolls, NPCs included).
+    const refresh = () =>
+      getCharacters()
+        .then((list) => setCharacters(new Map(list.map((c) => [c.id, c]))))
+        .catch(console.error);
+    refresh();
+    const events = ['character:created', 'character:updated', 'character:deleted'];
+    for (const ev of events) socket.on(ev, refresh);
+    return () => {
+      for (const ev of events) socket.off(ev, refresh);
+    };
   }, []);
 
   useEffect(() => {
@@ -69,7 +89,13 @@ export default function ChatPanel({ open, onClose }) {
         {entries.length === 0 ? (
           <p className="p-4 text-sm text-zinc-600">No rolls yet.</p>
         ) : (
-          entries.map((entry, i) => <Entry key={entry.id ?? `live-${i}`} entry={entry} />)
+          entries.map((entry, i) => (
+            <Entry
+              key={entry.id ?? `live-${i}`}
+              entry={entry}
+              character={characters.get(entry.characterId)}
+            />
+          ))
         )}
         <div ref={bottomRef} />
       </div>
