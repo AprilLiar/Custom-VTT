@@ -755,9 +755,10 @@ check('injury remove', inj.injuries.length === 0);
 
 // --- counters: character-owned CRUD, clamped adjust, show-in-combat toggle ---
 events.length = 0;
-emit('counter:create', { characterId: ch.id, name: 'Rage', targetPips: 5 });
+emit('counter:create', { characterId: ch.id, name: 'Rage', targetPips: 5, rewardType: 'story' });
 const counter = await waitEvent('counter:created', (c) => c.character_id === ch.id);
 check('counter created with target, current defaults to 0', counter.name === 'Rage' && counter.target_pips === 5 && counter.current_pips === 0 && counter.show_in_combat === 0);
+check('reward stored on a character-owned counter', counter.reward_type === 'story');
 
 events.length = 0;
 emit('counter:create', { characterId: ch.id, name: 'Bad', targetPips: 1 });
@@ -790,8 +791,23 @@ emit('counter:toggle_show_in_combat', { counterId: counter.id });
 counterUpd = await waitEvent('counter:updated', (c) => c.id === counter.id);
 check('show_in_combat toggles off', counterUpd.show_in_combat === 0);
 
+// --- counter rewards: purely cosmetic, character-owned only, changeable any time ---
+events.length = 0;
+emit('counter:set_reward', { counterId: counter.id, rewardType: 'combat_prowess' });
+counterUpd = await waitEvent('counter:updated', (c) => c.id === counter.id);
+check('reward can be changed after creation', counterUpd.reward_type === 'combat_prowess');
+events.length = 0;
+emit('counter:set_reward', { counterId: counter.id, rewardType: 'nonsense' });
+counterUpd = await waitEvent('counter:updated', (c) => c.id === counter.id);
+check('an unrecognized reward type clears the reward', counterUpd.reward_type === null, JSON.stringify(counterUpd.reward_type));
+events.length = 0;
+emit('counter:set_reward', { counterId: counter.id, rewardType: 'perk' });
+counterUpd = await waitEvent('counter:updated', (c) => c.id === counter.id);
+check('reward re-set after clearing', counterUpd.reward_type === 'perk');
+
 sheet = (await jf(`/api/characters/${ch.id}`)).body;
 check('counter present on character sheet', sheet.counters.length === 1 && sheet.counters[0].id === counter.id);
+check('reward included on the character sheet', sheet.counters[0].reward_type === 'perk');
 
 events.length = 0;
 emit('counter:delete', { counterId: counter.id });
@@ -975,15 +991,22 @@ await jf(`/api/characters/${sidekick.id}`, { method: 'DELETE' });
 
 // standalone counters (characterId null) — blocked before Phase 6, now allowed
 events.length = 0;
-emit('counter:create', { characterId: null, name: 'Momentum', targetPips: 5 });
+emit('counter:create', { characterId: null, name: 'Momentum', targetPips: 5, rewardType: 'story' });
 const standaloneCounter = await waitEvent('counter:created', (c) => c.name === 'Momentum');
 check('standalone counter created with null character_id', standaloneCounter.character_id === null);
+check('reward silently dropped for a standalone counter, even when requested', standaloneCounter.reward_type === null);
 combat = (await jf('/api/combat')).body;
 check('/api/combat includes standalone counters', combat.counters.some((c) => c.id === standaloneCounter.id));
 
-// a character counter only shows in the arena once flagged Show in Combat
 events.length = 0;
-emit('counter:create', { characterId: ch.id, name: 'Rage', targetPips: 5 });
+emit('counter:set_reward', { counterId: standaloneCounter.id, rewardType: 'story' });
+await sleep(300);
+check('counter:set_reward is a no-op on a standalone counter', !events.some((e) => e.ev === 'counter:updated'));
+
+// a character counter only shows in the arena once flagged Show in Combat;
+// its reward tag (purely cosmetic) travels with it once it does
+events.length = 0;
+emit('counter:create', { characterId: ch.id, name: 'Rage', targetPips: 5, rewardType: 'combat_prowess' });
 const rageCounter = await waitEvent('counter:created', (c) => c.name === 'Rage' && c.character_id === ch.id);
 combat = (await jf('/api/combat')).body;
 check('character counter hidden from the arena until flagged', !combat.counters.some((c) => c.id === rageCounter.id));
@@ -992,6 +1015,7 @@ emit('counter:toggle_show_in_combat', { counterId: rageCounter.id });
 await waitEvent('counter:updated', (c) => c.id === rageCounter.id && c.show_in_combat === 1);
 combat = (await jf('/api/combat')).body;
 check('flagged character counter now included in the arena', combat.counters.some((c) => c.id === rageCounter.id));
+check('its reward tag is included via /api/combat too', combat.counters.find((c) => c.id === rageCounter.id).reward_type === 'combat_prowess');
 
 events.length = 0;
 emit('counter:delete', { counterId: standaloneCounter.id });

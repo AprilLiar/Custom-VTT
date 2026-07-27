@@ -392,9 +392,18 @@ export async function initDb() {
       name TEXT NOT NULL,
       target_pips INTEGER NOT NULL CHECK(target_pips BETWEEN 2 AND 20),
       current_pips INTEGER NOT NULL DEFAULT 0,
-      show_in_combat INTEGER NOT NULL DEFAULT 0
+      show_in_combat INTEGER NOT NULL DEFAULT 0,
+      -- Purely cosmetic tracking tag — no mechanical effect. Character-owned
+      -- counters only (server rejects it for a standalone character_id=NULL
+      -- counter); still shown if that counter is flagged Show in Combat.
+      reward_type TEXT CHECK(reward_type IN ('story','statistic','perk','move','combat_prowess'))
     )
   `);
+  await ensureColumn(
+    'counters',
+    'reward_type',
+    "TEXT CHECK(reward_type IN ('story','statistic','perk','move','combat_prowess'))"
+  );
 
   // Singleton row holding the Combat Arena's global state. Phase 6 only
   // needs the Uneven Combat toggle; phase/round_number/current_tic/etc.

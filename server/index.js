@@ -582,6 +582,10 @@ app.get('/api/chat', wrap(async (_req, res) => {
 
 // ---------- Socket.io game events ----------
 
+// A Counter's optional reward tag — purely cosmetic (no mechanical
+// effect), character-owned counters only. See counter:create/counter:set_reward.
+const REWARD_TYPES = ['story', 'statistic', 'perk', 'move', 'combat_prowess'];
+
 io.on('connection', (socket) => {
   const on = (event, handler) => {
     socket.on(event, async (payload) => {
@@ -1416,7 +1420,7 @@ io.on('connection', (socket) => {
 
   // Character-owned counters, or standalone (characterId null) — GM-only
   // client-side, created directly in the Combat Arena.
-  on('counter:create', async ({ characterId, name, targetPips }) => {
+  on('counter:create', async ({ characterId, name, targetPips, rewardType }) => {
     const counterName = String(name ?? '').trim();
     const target = Math.trunc(Number(targetPips));
     if (!counterName || !Number.isInteger(target)) return;
@@ -1427,13 +1431,27 @@ io.on('connection', (socket) => {
       if (!character) return;
       charId = character.id;
     }
+    // Rewards are a purely cosmetic tracking tag for character-owned
+    // counters only — a standalone Arena counter never gets one.
+    const reward = charId != null && REWARD_TYPES.includes(rewardType) ? rewardType : null;
     const result = await run(
-      'INSERT INTO counters (character_id, name, target_pips) VALUES (?, ?, ?)',
-      [charId, counterName, target]
+      'INSERT INTO counters (character_id, name, target_pips, reward_type) VALUES (?, ?, ?, ?)',
+      [charId, counterName, target, reward]
     );
     io.emit('counter:created', await one('SELECT * FROM counters WHERE id = ?', [
       Number(result.lastInsertRowid),
     ]));
+  });
+
+  // Sets or clears (rewardType omitted/unknown) a counter's reward tag at
+  // any point in its lifetime — character-owned counters only, same
+  // restriction as creation time.
+  on('counter:set_reward', async ({ counterId, rewardType }) => {
+    const counter = await one('SELECT * FROM counters WHERE id = ?', [counterId]);
+    if (!counter || counter.character_id == null) return;
+    const reward = REWARD_TYPES.includes(rewardType) ? rewardType : null;
+    await run('UPDATE counters SET reward_type = ? WHERE id = ?', [reward, counter.id]);
+    io.emit('counter:updated', await one('SELECT * FROM counters WHERE id = ?', [counter.id]));
   });
 
   on('counter:adjust', async ({ counterId, delta }) => {
