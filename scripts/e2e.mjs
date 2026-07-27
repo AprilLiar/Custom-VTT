@@ -20,7 +20,7 @@ const jpost = (url, body, method = 'POST') =>
 const watcher = io(URL);
 const actor = io(URL);
 const events = [];
-for (const ev of ['character:created', 'character:updated', 'character:deleted', 'die:updated', 'roll:result', 'inventory:updated', 'injuries:updated', 'stance:created', 'stance:updated', 'stance:deleted', 'stance:activated', 'tell:created', 'tell:updated', 'tell:deleted', 'move:created', 'move:updated', 'move:deleted', 'move:granted', 'move:revoked', 'roleplay:updated', 'tag:created', 'tag:updated', 'tag:deleted', 'folder:created', 'folder:updated', 'folder:deleted', 'perk:created', 'perk:updated', 'perk:deleted', 'perk:granted', 'perk:revoked', 'counter:created', 'counter:updated', 'counter:deleted', 'character_folder:created', 'character_folder:updated', 'character_folder:deleted', 'combat:updated']) {
+for (const ev of ['character:created', 'character:updated', 'character:deleted', 'die:updated', 'roll:result', 'inventory:updated', 'injuries:updated', 'stance:created', 'stance:updated', 'stance:deleted', 'stance:activated', 'tell:created', 'tell:updated', 'tell:deleted', 'move:created', 'move:updated', 'move:deleted', 'move:granted', 'move:revoked', 'roleplay:updated', 'tag:created', 'tag:updated', 'tag:deleted', 'folder:created', 'folder:updated', 'folder:deleted', 'perk:created', 'perk:updated', 'perk:deleted', 'perk:granted', 'perk:revoked', 'counter:created', 'counter:updated', 'counter:deleted', 'character_folder:created', 'character_folder:updated', 'character_folder:deleted', 'combat:updated', 'chat:message', 'chat:cleared']) {
   watcher.on(ev, (payload) => events.push({ ev, payload }));
 }
 const waitEvent = (ev, pred = () => true, ms = 3000) =>
@@ -1055,6 +1055,47 @@ const chatAfter = (await jf('/api/chat')).body;
 check('chat log survives character deletion', chatAfter.length === 9 && chatAfter[0].characterName === '(deleted)');
 
 await jf(`/api/characters/${npc.id}`, { method: 'DELETE' });
+
+// --- free-text chat messages + images/GIFs + Clear Chat ---
+const chatty = (await jpost('/api/characters', { name: 'Chatty', characterType: 'pc' })).body;
+
+events.length = 0;
+emit('chat:message', { characterId: chatty.id, text: 'hello table' });
+let msg = await waitEvent('chat:message', (m) => m.characterId === chatty.id);
+check('chat:message broadcast has kind/name/text', msg.kind === 'message' && msg.characterName === 'Chatty' && msg.message === 'hello table' && msg.imageData === null);
+let chatNow = (await jf('/api/chat')).body;
+let stored = chatNow.find((e) => e.message === 'hello table');
+check('text-only message persisted with kind message, no dice', !!stored && stored.kind === 'message' && stored.dice.length === 0 && stored.total === 0);
+
+events.length = 0;
+const tinyPng = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
+emit('chat:message', { characterId: chatty.id, text: '', imageData: tinyPng, imageMimeType: 'image/png' });
+msg = await waitEvent('chat:message', (m) => m.imageData === tinyPng);
+check('image-only message broadcasts image with no text', msg.message === null && msg.imageMimeType === 'image/png');
+chatNow = (await jf('/api/chat')).body;
+check('image message persisted', chatNow.some((e) => e.imageData === tinyPng && e.imageMimeType === 'image/png'));
+
+events.length = 0;
+emit('chat:message', { characterId: chatty.id, text: '   ' });
+await sleep(300);
+check('whitespace-only message with no image is a silent no-op', !events.some((e) => e.ev === 'chat:message'));
+
+events.length = 0;
+emit('chat:message', { characterId: 999999, text: 'ghost' });
+await sleep(300);
+check('unknown characterId is a silent no-op', !events.some((e) => e.ev === 'chat:message'));
+
+events.length = 0;
+const longText = 'x'.repeat(2500);
+emit('chat:message', { characterId: chatty.id, text: longText });
+msg = await waitEvent('chat:message', (m) => m.characterId === chatty.id && m.message?.startsWith('xxx'));
+check('message text capped at 2000 chars', msg.message.length === 2000);
+
+events.length = 0;
+emit('chat:clear', {});
+await waitEvent('chat:cleared');
+chatNow = (await jf('/api/chat')).body;
+check('chat:clear empties the log for everyone', chatNow.length === 0);
 
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : `\n${failures} CHECKS FAILED`);
 watcher.close(); actor.close();

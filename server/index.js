@@ -31,7 +31,10 @@ app.use(express.json({ limit: '3mb' })); // portraits arrive as base64 JSON
 const httpServer = createServer(app);
 // Exported so a future server/perkAutomations.js PERK_HOOKS entry can
 // broadcast (die:updated/character:updated/etc.) after a manual effect.
-export const io = new Server(httpServer);
+// maxHttpBufferSize raised from Socket.io's 1MB default: chat GIFs are sent
+// raw/unresized (to keep their animation) up to a 4MB client-side cap, which
+// is ~5.3MB once base64-encoded — the default would reject that payload.
+export const io = new Server(httpServer, { maxHttpBufferSize: 8 * 1024 * 1024 });
 
 // ---------- shared lookups ----------
 
@@ -290,6 +293,7 @@ async function logRoll({ characterId, characterName, modifier, dice }) {
     modifier,
   ]);
   io.emit('roll:result', {
+    kind: 'roll',
     characterId,
     characterName,
     modifier,
@@ -558,7 +562,8 @@ app.delete('/api/characters/:id', wrap(async (req, res) => {
 
 app.get('/api/chat', wrap(async (_req, res) => {
   const rows = await all(`
-    SELECT c.id, c.character_id, c.modifier, c.dice_rolled, c.created_at,
+    SELECT c.id, c.kind, c.character_id, c.modifier, c.dice_rolled, c.content,
+           c.image_data, c.image_mime_type, c.created_at,
            ch.name AS character_name
     FROM chat_log c
     LEFT JOIN characters ch ON ch.id = c.character_id
@@ -569,11 +574,15 @@ app.get('/api/chat', wrap(async (_req, res) => {
       const dice = JSON.parse(row.dice_rolled);
       return {
         id: row.id,
+        kind: row.kind,
         characterId: row.character_id,
         characterName: row.character_name ?? '(deleted)',
         modifier: row.modifier,
         dice,
         total: dice.reduce((sum, d) => sum + d.result, 0),
+        message: row.content,
+        imageData: row.image_data,
+        imageMimeType: row.image_mime_type,
         timestamp: sqliteToIso(row.created_at),
       };
     })
@@ -1480,6 +1489,43 @@ io.on('connection', (socket) => {
     io.emit('counter:deleted', { counterId: counter.id });
   });
 
+  // Free-text chat message, optionally with an attached image/GIF (see Chat
+  // Log above). Attributed to a character the same way a roll is — chosen
+  // client-side in the compose box, not implied by the current page. Never
+  // kept long-term: wiped by chat:clear and automatically on every server
+  // boot (see the initDb() call at the bottom of this file).
+  const MAX_CHAT_MESSAGE_LENGTH = 2000;
+  on('chat:message', async ({ characterId, text, imageData, imageMimeType }) => {
+    const character = await getCharacter(characterId);
+    if (!character) return;
+    const message =
+      typeof text === 'string' ? text.trim().slice(0, MAX_CHAT_MESSAGE_LENGTH) : '';
+    const image = typeof imageData === 'string' && imageData ? imageData : null;
+    if (!message && !image) return;
+    const mimeType = image ? imageMimeType || 'image/png' : null;
+    await run(
+      `INSERT INTO chat_log (kind, character_id, dice_rolled, content, image_data, image_mime_type)
+       VALUES ('message', ?, '[]', ?, ?, ?)`,
+      [character.id, message || null, image, mimeType]
+    );
+    io.emit('chat:message', {
+      kind: 'message',
+      characterId: character.id,
+      characterName: character.name,
+      message: message || null,
+      imageData: image,
+      imageMimeType: mimeType,
+      timestamp: new Date().toISOString(),
+    });
+  });
+
+  // GM-only client-side, same as every other admin-style control in this
+  // no-auth app — the server itself has no concept of role.
+  on('chat:clear', async () => {
+    await run('DELETE FROM chat_log');
+    io.emit('chat:cleared');
+  });
+
   // Combat Arena (Phase 6 — structure only, no round/Tic timing yet).
   // GM-only client-side, same as every other GM-gated control in this app.
   // Seats (or re-seats) a character at side/pairIndex — the same upsert
@@ -1548,6 +1594,10 @@ app.get('*', (_req, res) => {
 });
 
 await initDb();
+// Chat is intentionally ephemeral — see chat:clear below — and clearing it
+// on every boot doubles as clearing it between sessions on Render's free
+// tier, which spins the server down after inactivity.
+await run('DELETE FROM chat_log');
 httpServer.listen(PORT, () => {
   console.log(`Custom VTT server listening on port ${PORT}`);
 });
