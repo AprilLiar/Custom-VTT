@@ -7,6 +7,8 @@ import {
   normalizeInteractions,
   clampRollBonus,
   sanitizeRollSlots,
+  hasAmbiguousRollSlot,
+  AMBIGUOUS_ROLL_SLOTS,
 } from '../moveLogic.js';
 
 test('frames clamp to 0-10 and coerce junk', () => {
@@ -86,8 +88,24 @@ test('roll bonus clamps to +/-20 and coerces junk', () => {
 });
 
 test('roll slots: dedupes and drops unknown slot names, empty = no Roll', () => {
-  assert.deepEqual(sanitizeRollSlots(['Body', 'Body', 'Right Hand']), ['Body', 'Right Hand']);
-  assert.deepEqual(sanitizeRollSlots(['Body', 'Wing', 'Left Leg']), ['Body', 'Left Leg']);
+  assert.deepEqual(sanitizeRollSlots(['Body', 'Body', 'Hand']), ['Body', 'Hand']);
+  assert.deepEqual(sanitizeRollSlots(['Body', 'Wing', 'Leg']), ['Body', 'Leg']);
   assert.deepEqual(sanitizeRollSlots([]), []);
   assert.deepEqual(sanitizeRollSlots(null), []);
+});
+
+test('roll slots: concrete Left/Right Hand and Leg names are no longer valid — only the ambiguous choice is', () => {
+  assert.deepEqual(sanitizeRollSlots(['Left Hand', 'Right Hand', 'Left Leg', 'Right Leg']), []);
+});
+
+test('hasAmbiguousRollSlot: true only when Hand or Leg is present', () => {
+  assert.ok(hasAmbiguousRollSlot(['Body', 'Hand']));
+  assert.ok(hasAmbiguousRollSlot(['Leg']));
+  assert.ok(!hasAmbiguousRollSlot(['Body', 'Skull', 'Stamina', 'Brain']));
+  assert.ok(!hasAmbiguousRollSlot([]));
+});
+
+test('AMBIGUOUS_ROLL_SLOTS resolves Hand/Leg to [left, right] die slot names', () => {
+  assert.deepEqual(AMBIGUOUS_ROLL_SLOTS.Hand, ['Left Hand', 'Right Hand']);
+  assert.deepEqual(AMBIGUOUS_ROLL_SLOTS.Leg, ['Left Leg', 'Right Leg']);
 });

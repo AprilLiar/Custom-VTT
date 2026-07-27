@@ -385,21 +385,22 @@ check('move deleted', ((await jf('/api/moves')).body).moves.every((m) => m.id !=
 events.length = 0;
 emit('move:create', {
   name: 'Body Slam', isDefault: true, tellId: tells[1].id,
-  rollSlots: ['Body', 'Body', 'Right Hand', 'Nonsense'], rollModifier: 2,
+  rollSlots: ['Body', 'Body', 'Brain', 'Nonsense'], rollModifier: 2,
   startupTics: 2, activeTics: 1, recoveryTics: 1, description: '', interactions: {},
 });
 const bodySlam = await waitEvent('move:created', (m) => m.name === 'Body Slam');
-check('move Roll dedupes slots and drops unknown ones', bodySlam.roll_slots.length === 2 && bodySlam.roll_slots.includes('Body') && bodySlam.roll_slots.includes('Right Hand'), JSON.stringify(bodySlam.roll_slots));
+check('move Roll dedupes slots and drops unknown ones', bodySlam.roll_slots.length === 2 && bodySlam.roll_slots.includes('Body') && bodySlam.roll_slots.includes('Brain'), JSON.stringify(bodySlam.roll_slots));
 check('move Roll bonus stored', bodySlam.roll_modifier === 2);
 
 sheet = (await jf(`/api/characters/${ch.id}`)).body;
 let slamOnSheet = sheet.moves.find((m) => m.id === bodySlam.id);
 check('default move with a Roll appears on sheet without a grant', !!slamOnSheet);
 check('Roll resolves to exactly the character\'s live dice for those slots', slamOnSheet.roll_dice.length === 2, JSON.stringify(slamOnSheet.roll_dice));
+check('a move with only concrete slots has no ambiguous roll_choice', slamOnSheet.roll_choice === null);
 const slamBody = slamOnSheet.roll_dice.find((d) => d.slot_name === 'Body');
-const slamRightHand = slamOnSheet.roll_dice.find((d) => d.slot_name === 'Right Hand');
+const slamBrain = slamOnSheet.roll_dice.find((d) => d.slot_name === 'Brain');
 check('Roll dice carry real die ids + current size/bonus/status', slamBody.current_size === 8 && slamBody.status === 'active' && Number.isInteger(slamBody.dieId));
-check('Right Hand die still untouched baseline d8 going into the Perks section', slamRightHand.current_size === 8 && slamRightHand.bonus === 0);
+check('Brain die still untouched baseline d8', slamBrain.current_size === 8 && slamBrain.bonus === 0);
 check('effective_roll_modifier = move roll_modifier, no Perk bonus granted yet', slamOnSheet.effective_roll_modifier === 2);
 
 // step the Body die up — the Roll must reflect the CURRENT die, not a stale snapshot
@@ -417,7 +418,7 @@ await waitEvent('die:updated', (d) => d.dieId === slamBody.dieId);
 events.length = 0;
 emit('pool:roll', { characterId: ch.id, dieIds: slamOnSheet.roll_dice.map((d) => d.dieId), modifier: slamOnSheet.effective_roll_modifier });
 roll = await waitEvent('roll:result');
-check('Move Roll click rolls exactly its configured dice', roll.dice.length === 2 && roll.dice.every((d) => ['Body', 'Right Hand'].includes(d.slot_name)));
+check('Move Roll click rolls exactly its configured dice', roll.dice.length === 2 && roll.dice.every((d) => ['Body', 'Brain'].includes(d.slot_name)));
 check('Move Roll click uses the pre-filled modifier', roll.modifier === 2);
 
 // incapacitate one of the Roll's dice — pool:roll must silently drop it, not block the whole roll
@@ -428,7 +429,7 @@ check('Roll still lists the incapacitated die (client dims/excludes it, server k
 events.length = 0;
 emit('pool:roll', { characterId: ch.id, dieIds: slamOnSheet.roll_dice.map((d) => d.dieId), modifier: 0 });
 roll = await waitEvent('roll:result');
-check('Move Roll silently drops the incapacitated die and still rolls the rest', roll.dice.length === 1 && roll.dice[0].slot_name === 'Right Hand', JSON.stringify(roll.dice));
+check('Move Roll silently drops the incapacitated die and still rolls the rest', roll.dice.length === 1 && roll.dice[0].slot_name === 'Brain', JSON.stringify(roll.dice));
 
 // a move_roll_bonus Perk now applies live once its target move HAS a Roll
 events.length = 0;
@@ -457,6 +458,104 @@ await waitEvent('die:updated', (d) => d.dieId === slamBody.dieId);
 events.length = 0;
 emit('move:delete', { moveId: bodySlam.id });
 await waitEvent('move:deleted', (p) => p.moveId === bodySlam.id);
+
+// --- Move Roll: ambiguous [Left/Right] Hand/Leg slots need two Tells, and
+// ONE shared Left/Right choice resolves every ambiguous slot in the Roll together ---
+events.length = 0;
+emit('move:create', {
+  name: 'Haymaker', isDefault: true, tellId: tells[0].id, // no rightTellId/leftTellId
+  rollSlots: ['Hand'], rollModifier: 1,
+  startupTics: 2, activeTics: 1, recoveryTics: 1, description: '', interactions: {},
+});
+await sleep(300);
+check('ambiguous Roll without both right/left Tells is rejected', !events.some((e) => e.ev === 'move:created'));
+
+events.length = 0;
+emit('move:create', {
+  name: 'Haymaker', isDefault: true,
+  rightTellId: tells[0].id, leftTellId: tells[1].id,
+  rollSlots: ['Left Hand', 'Right Hand', 'Hand'], rollModifier: 1,
+  startupTics: 2, activeTics: 1, recoveryTics: 1, description: '', interactions: {},
+});
+const haymaker = await waitEvent('move:created', (m) => m.name === 'Haymaker');
+check(
+  'ambiguous move stores right/left tell ids, drops legacy concrete Left/Right Hand slot names',
+  haymaker.roll_slots.length === 1 && haymaker.roll_slots[0] === 'Hand' &&
+    haymaker.right_tell_id === tells[0].id && haymaker.left_tell_id === tells[1].id,
+  JSON.stringify(haymaker)
+);
+
+sheet = (await jf(`/api/characters/${ch.id}`)).body;
+const haymakerOnSheet = sheet.moves.find((m) => m.id === haymaker.id);
+check(
+  'ambiguous move has no concrete roll_dice, only a roll_choice',
+  haymakerOnSheet.roll_dice.length === 0 && haymakerOnSheet.roll_choice !== null
+);
+check(
+  'roll_choice resolves to the actual Left/Right Hand dice, both still baseline d8',
+  haymakerOnSheet.roll_choice.right.length === 1 &&
+    haymakerOnSheet.roll_choice.right[0].slot_name === 'Right Hand' &&
+    haymakerOnSheet.roll_choice.right[0].current_size === 8 &&
+    haymakerOnSheet.roll_choice.left.length === 1 &&
+    haymakerOnSheet.roll_choice.left[0].slot_name === 'Left Hand' &&
+    haymakerOnSheet.roll_choice.left[0].current_size === 8,
+  JSON.stringify(haymakerOnSheet.roll_choice)
+);
+
+// choosing a side = pool:roll with that side's resolved dice
+events.length = 0;
+emit('pool:roll', {
+  characterId: ch.id,
+  dieIds: haymakerOnSheet.roll_choice.right.map((d) => d.dieId),
+  modifier: haymakerOnSheet.effective_roll_modifier,
+});
+roll = await waitEvent('roll:result');
+check('choosing Right rolls the Right Hand die', roll.dice.length === 1 && roll.dice[0].slot_name === 'Right Hand' && roll.modifier === 1);
+
+events.length = 0;
+emit('pool:roll', {
+  characterId: ch.id,
+  dieIds: haymakerOnSheet.roll_choice.left.map((d) => d.dieId),
+  modifier: haymakerOnSheet.effective_roll_modifier,
+});
+roll = await waitEvent('roll:result');
+check('choosing Left rolls the Left Hand die', roll.dice.length === 1 && roll.dice[0].slot_name === 'Left Hand' && roll.modifier === 1);
+
+// a Tell used only as an ambiguous right/left Tell (not the base tell_id) still blocks deletion
+events.length = 0;
+emit('tell:delete', { tellId: tells[0].id });
+await sleep(300);
+check('a Tell used as an ambiguous right/left Tell is not deletable', !events.some((e) => e.ev === 'tell:deleted'));
+
+// two ambiguous slots together (Hand + Leg): still ONE shared Left/Right
+// choice, resolving both simultaneously — not independent per-slot choices
+events.length = 0;
+emit('move:create', {
+  name: 'Dive Kick', isDefault: true,
+  rightTellId: tells[0].id, leftTellId: tells[1].id,
+  rollSlots: ['Hand', 'Leg'], rollModifier: 0,
+  startupTics: 1, activeTics: 1, recoveryTics: 1, description: '', interactions: {},
+});
+const diveKick = await waitEvent('move:created', (m) => m.name === 'Dive Kick');
+sheet = (await jf(`/api/characters/${ch.id}`)).body;
+const diveKickOnSheet = sheet.moves.find((m) => m.id === diveKick.id);
+check(
+  'a move with two ambiguous slots resolves one Right side (Hand+Leg together) and one Left side',
+  diveKickOnSheet.roll_choice.right.length === 2 &&
+    diveKickOnSheet.roll_choice.right.some((d) => d.slot_name === 'Right Hand') &&
+    diveKickOnSheet.roll_choice.right.some((d) => d.slot_name === 'Right Leg') &&
+    diveKickOnSheet.roll_choice.left.length === 2 &&
+    diveKickOnSheet.roll_choice.left.some((d) => d.slot_name === 'Left Hand') &&
+    diveKickOnSheet.roll_choice.left.some((d) => d.slot_name === 'Left Leg'),
+  JSON.stringify(diveKickOnSheet.roll_choice)
+);
+
+events.length = 0;
+emit('move:delete', { moveId: haymaker.id });
+await waitEvent('move:deleted', (p) => p.moveId === haymaker.id);
+events.length = 0;
+emit('move:delete', { moveId: diveKick.id });
+await waitEvent('move:deleted', (p) => p.moveId === diveKick.id);
 
 // --- perks: picture/name/description/automations, extensible registry ---
 sheet = (await jf(`/api/characters/${ch.id}`)).body;
@@ -754,7 +853,7 @@ check(
 
 // --- chat history ---
 const chat = (await jf('/api/chat')).body;
-check('chat history has all rolls (7)', chat.length === 7, `got ${chat.length}`);
+check('chat history has all rolls (9)', chat.length === 9, `got ${chat.length}`);
 check('chat entries carry name + dice + total', chat.every((e) => e.characterName && Array.isArray(e.dice) && typeof e.total === 'number' && e.timestamp));
 
 // --- name + portrait update ---
@@ -771,7 +870,7 @@ await waitEvent('character:deleted', (p) => p.id === ch.id);
 check('character:deleted broadcast', true);
 check('sheet fetch now 404', (await jf(`/api/characters/${ch.id}`)).status === 404);
 const chatAfter = (await jf('/api/chat')).body;
-check('chat log survives character deletion', chatAfter.length === 7 && chatAfter[0].characterName === '(deleted)');
+check('chat log survives character deletion', chatAfter.length === 9 && chatAfter[0].characterName === '(deleted)');
 
 await jf(`/api/characters/${npc.id}`, { method: 'DELETE' });
 

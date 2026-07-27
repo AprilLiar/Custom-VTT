@@ -185,7 +185,14 @@ export async function initDb() {
       image_mime_type TEXT,
       -- Flat bonus baked into this move's own Roll (distinct from the
       -- per-character roll_bonus a Perk can separately grant a move).
-      roll_modifier INTEGER NOT NULL DEFAULT 0
+      roll_modifier INTEGER NOT NULL DEFAULT 0,
+      -- Only set when the Roll includes an ambiguous Hand/Leg slot (see
+      -- move_roll_slots): the two Tells the header shows side by side, one
+      -- per appendage choice. tell_id above is left pointing at one of them
+      -- in that case, purely to satisfy its NOT NULL constraint — the
+      -- Tell header ignores it once right/left are both set.
+      right_tell_id INTEGER REFERENCES tells(id),
+      left_tell_id INTEGER REFERENCES tells(id)
     )
   `);
   await ensureColumn('moves', 'style_attribute_id', 'INTEGER REFERENCES attributes(id)');
@@ -193,10 +200,14 @@ export async function initDb() {
   await ensureColumn('moves', 'image_data', 'TEXT');
   await ensureColumn('moves', 'image_mime_type', 'TEXT');
   await ensureColumn('moves', 'roll_modifier', 'INTEGER NOT NULL DEFAULT 0');
+  await ensureColumn('moves', 'right_tell_id', 'INTEGER REFERENCES tells(id)');
+  await ensureColumn('moves', 'left_tell_id', 'INTEGER REFERENCES tells(id)');
 
-  // Which body-part dice a move's optional Roll is made of — a move with no
-  // rows here has no Roll. Order isn't meaningful; slot_name matches
-  // DICE_TEMPLATE (Skull/Brain/Left Hand/Stamina/Body/Right Hand/Left Leg/Right Leg).
+  // Which of a move's optional Roll dice it's made of — a move with no rows
+  // here has no Roll. slot_name is either a concrete DICE_TEMPLATE slot
+  // (Skull/Brain/Stamina/Body) or one of the two ambiguous appendage
+  // choices, 'Hand' or 'Leg' — resolved to the character's actual Left or
+  // Right die only at roll time, per the player's choice (see moveLogic.js).
   await run(`
     CREATE TABLE IF NOT EXISTS move_roll_slots (
       id INTEGER PRIMARY KEY,

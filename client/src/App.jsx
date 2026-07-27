@@ -6,6 +6,7 @@ import CharacterList from './components/CharacterList.jsx';
 import CharacterSheet from './components/CharacterSheet.jsx';
 import ChatPanel from './components/ChatPanel.jsx';
 import CompendiumPage from './components/CompendiumPage.jsx';
+import CombatPlaceholder from './components/CombatPlaceholder.jsx';
 import SearchBar from './components/SearchBar.jsx';
 
 function Shell() {
@@ -17,7 +18,11 @@ function Shell() {
   return (
     <div className="flex h-screen flex-col bg-zinc-950 text-zinc-100">
       <header className="flex items-center gap-3 border-b border-zinc-800 px-4 py-2">
-        <Link to="/" className="text-lg font-bold tracking-tight hover:text-indigo-400">
+        <Link
+          to="/combat"
+          title="Combat Arena (placeholder)"
+          className="text-lg font-bold tracking-tight hover:text-indigo-400"
+        >
           Custom VTT
         </Link>
         <span
@@ -35,6 +40,12 @@ function Shell() {
             Compendium
           </Link>
         )}
+        <Link
+          to="/"
+          className="rounded-md px-2 py-1 text-sm font-semibold text-zinc-400 hover:text-indigo-300"
+        >
+          Characters
+        </Link>
         <div className="flex-1" />
         <SearchBar />
         <button
@@ -51,6 +62,7 @@ function Shell() {
             <Route path="/" element={<CharacterList />} />
             <Route path="/character/:id" element={<CharacterSheet />} />
             <Route path="/compendium" element={<CompendiumPage />} />
+            <Route path="/combat" element={<CombatPlaceholder />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </main>

@@ -2,7 +2,7 @@ import { useRef, useState } from 'react';
 import { AUTOMATION_OPTIONS, TRIGGER_LABELS } from '../lib/moveDisplay.js';
 import { iconFor } from '../lib/styleIcons.js';
 import { fileToSmallImage } from '../lib/image.js';
-import { DIE_SLOT_NAMES } from '../lib/diceSlots.js';
+import { ROLL_SLOT_NAMES, ROLL_SLOT_LABELS, AMBIGUOUS_ROLL_SLOTS } from '../lib/diceSlots.js';
 import FrameBar from './FrameBar.jsx';
 import Thumb from './Thumb.jsx';
 
@@ -81,6 +81,8 @@ export default function MoveCreator({
   const [name, setName] = useState(initial?.name ?? '');
   const [isDefault, setIsDefault] = useState(Boolean(initial?.is_default));
   const [tellId, setTellId] = useState(initial?.tell_id ?? tells[0]?.id ?? null);
+  const [rightTellId, setRightTellId] = useState(initial?.right_tell_id ?? tells[0]?.id ?? null);
+  const [leftTellId, setLeftTellId] = useState(initial?.left_tell_id ?? tells[0]?.id ?? null);
   const [styleId, setStyleId] = useState(initial?.style_attribute_id ?? null);
   const [folderId, setFolderId] = useState(initial?.folder_id ?? initialFolderId);
   const [rollSlots, setRollSlots] = useState(initial?.roll_slots ?? []);
@@ -100,7 +102,12 @@ export default function MoveCreator({
   });
 
   const total = frames.startup + frames.active + frames.recovery;
-  const valid = name.trim() && tellId && styleId && total >= 1;
+  const ambiguousRoll = rollSlots.some((s) => AMBIGUOUS_ROLL_SLOTS.has(s));
+  const valid =
+    name.trim() &&
+    styleId &&
+    total >= 1 &&
+    (ambiguousRoll ? rightTellId && leftTellId : tellId);
 
   const toggleRollSlot = (slot) =>
     setRollSlots((prev) => (prev.includes(slot) ? prev.filter((s) => s !== slot) : [...prev, slot]));
@@ -123,7 +130,7 @@ export default function MoveCreator({
     onSubmit({
       name: name.trim(),
       isDefault,
-      tellId,
+      ...(ambiguousRoll ? { rightTellId, leftTellId } : { tellId }),
       styleAttributeId: styleId,
       folderId,
       rollSlots,
@@ -176,26 +183,55 @@ export default function MoveCreator({
           />
           Default (everyone has it)
         </label>
-        <select
-          value={tellId ?? ''}
-          onChange={(e) => setTellId(Number(e.target.value))}
-          className="rounded-md border border-zinc-700 bg-zinc-800 px-2 py-2 text-sm text-zinc-300 outline-none focus:border-indigo-500"
-        >
-          {tells.map((t) => (
-            <option key={t.id} value={t.id}>
-              Tell: {t.name}
-            </option>
-          ))}
-        </select>
+        {ambiguousRoll ? (
+          <>
+            <select
+              value={rightTellId ?? ''}
+              onChange={(e) => setRightTellId(Number(e.target.value))}
+              title="Tell shown when this move is rolled as the Right appendage"
+              className="rounded-md border border-zinc-700 bg-zinc-800 px-2 py-2 text-sm text-zinc-300 outline-none focus:border-indigo-500"
+            >
+              {tells.map((t) => (
+                <option key={t.id} value={t.id}>
+                  Right Tell: {t.name}
+                </option>
+              ))}
+            </select>
+            <select
+              value={leftTellId ?? ''}
+              onChange={(e) => setLeftTellId(Number(e.target.value))}
+              title="Tell shown when this move is rolled as the Left appendage"
+              className="rounded-md border border-zinc-700 bg-zinc-800 px-2 py-2 text-sm text-zinc-300 outline-none focus:border-indigo-500"
+            >
+              {tells.map((t) => (
+                <option key={t.id} value={t.id}>
+                  Left Tell: {t.name}
+                </option>
+              ))}
+            </select>
+          </>
+        ) : (
+          <select
+            value={tellId ?? ''}
+            onChange={(e) => setTellId(Number(e.target.value))}
+            className="rounded-md border border-zinc-700 bg-zinc-800 px-2 py-2 text-sm text-zinc-300 outline-none focus:border-indigo-500"
+          >
+            {tells.map((t) => (
+              <option key={t.id} value={t.id}>
+                Tell: {t.name}
+              </option>
+            ))}
+          </select>
+        )}
         <select
           value={folderId ?? ''}
           onChange={(e) => setFolderId(e.target.value ? Number(e.target.value) : null)}
           className="rounded-md border border-zinc-700 bg-zinc-800 px-2 py-2 text-sm text-zinc-300 outline-none focus:border-indigo-500"
         >
-          <option value="">Folder: root</option>
+          <option value="">Discipline: none</option>
           {folders.map((f) => (
             <option key={f.id} value={f.id}>
-              Folder: {f.name}
+              Discipline: {f.name}
             </option>
           ))}
         </select>
@@ -232,8 +268,14 @@ export default function MoveCreator({
         <p className="mb-1 text-xs font-semibold uppercase text-zinc-500">
           Roll (optional — which body-part dice this move rolls)
         </p>
+        {ambiguousRoll && (
+          <p className="mb-1.5 text-xs text-amber-400">
+            Includes a Left/Right choice — pick which Tell shows for each side above. The
+            player chooses which appendage to roll with when the move is actually used.
+          </p>
+        )}
         <div className="flex flex-wrap items-center gap-1.5">
-          {DIE_SLOT_NAMES.map((slot) => {
+          {ROLL_SLOT_NAMES.map((slot) => {
             const selected = rollSlots.includes(slot);
             return (
               <button
@@ -246,7 +288,7 @@ export default function MoveCreator({
                     : 'border-zinc-700 bg-zinc-800 text-zinc-400 hover:border-zinc-500'
                 }`}
               >
-                {slot}
+                {ROLL_SLOT_LABELS[slot]}
               </button>
             );
           })}

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useRole } from '../roleContext.jsx';
 import { socket } from '../socket.js';
-import { getRuleset, getTags, getTells } from '../lib/api.js';
+import { getRuleset, getTags, getTells, getMoves } from '../lib/api.js';
 import MoveCard from './MoveCard.jsx';
 import RollDialog from './RollDialog.jsx';
 
@@ -15,26 +15,33 @@ export default function MovesTab({ data }) {
   const [tells, setTells] = useState(null);
   const [tags, setTags] = useState(null);
   const [ruleset, setRuleset] = useState(null);
-  const [rollFor, setRollFor] = useState(null); // move whose Roll dialog is open
+  const [folders, setFolders] = useState(null); // move disciplines, for the always-shown discipline label
+  const [rollFor, setRollFor] = useState(null); // { move, side } whose Roll dialog is open
 
   useEffect(() => {
     const refresh = () => {
       getTells().then(setTells).catch(console.error);
       getTags().then(setTags).catch(console.error);
       getRuleset().then(setRuleset).catch(console.error);
+      getMoves().then((d) => setFolders(d.folders)).catch(console.error);
     };
     refresh();
-    const events = ['tell:created', 'tell:updated', 'tell:deleted', 'tag:created', 'tag:updated', 'tag:deleted'];
+    const events = [
+      'tell:created', 'tell:updated', 'tell:deleted',
+      'tag:created', 'tag:updated', 'tag:deleted',
+      'folder:created', 'folder:updated', 'folder:deleted',
+    ];
     for (const ev of events) socket.on(ev, refresh);
     return () => {
       for (const ev of events) socket.off(ev, refresh);
     };
   }, []);
 
-  if (!tells || !tags || !ruleset) return <p className="text-zinc-500">Loading…</p>;
+  if (!tells || !tags || !ruleset || !folders) return <p className="text-zinc-500">Loading…</p>;
   const tellById = new Map(tells.map((t) => [t.id, t]));
   const tagById = new Map(tags.map((t) => [t.id, t]));
   const attrById = new Map(ruleset.attributes.map((a) => [a.id, a]));
+  const folderById = new Map(folders.map((f) => [f.id, f]));
 
   const activeStance = stances.find((s) => s.id === character.active_stance_id);
   const activeStyles = activeStance
@@ -71,11 +78,14 @@ export default function MovesTab({ data }) {
             key={move.id}
             move={effectiveMove}
             tell={tellById.get(move.tell_id)}
+            rightTell={move.right_tell_id ? tellById.get(move.right_tell_id) : null}
+            leftTell={move.left_tell_id ? tellById.get(move.left_tell_id) : null}
             style={style}
             tags={effectiveTagIds.map((id) => tagById.get(id)).filter(Boolean)}
+            folderLabel={move.folder_id ? folderById.get(move.folder_id)?.name : undefined}
             perkModified={move.has_perk_overrides}
             rollBonus={move.roll_bonus ?? 0}
-            onRollClick={() => setRollFor(move)}
+            onRollClick={(side) => setRollFor({ move, side })}
             dimmed={!isUsable}
             dimReason={style ? `Needs an active stance with ${style.name}` : undefined}
             badge={
@@ -108,15 +118,20 @@ export default function MovesTab({ data }) {
 
       {rollFor && (
         <RollDialog
-          title={`Roll ${rollFor.name}`}
-          initialModifier={rollFor.effective_roll_modifier ?? 0}
-          onRoll={(modifier) =>
+          title={
+            rollFor.side
+              ? `Roll ${rollFor.move.name} (${rollFor.side === 'right' ? 'Right' : 'Left'})`
+              : `Roll ${rollFor.move.name}`
+          }
+          initialModifier={rollFor.move.effective_roll_modifier ?? 0}
+          onRoll={(modifier) => {
+            const sideDice = rollFor.side ? rollFor.move.roll_choice[rollFor.side] : [];
             socket.emit('pool:roll', {
               characterId: character.id,
-              dieIds: rollFor.roll_dice.map((d) => d.dieId),
+              dieIds: [...rollFor.move.roll_dice, ...sideDice].map((d) => d.dieId),
               modifier,
-            })
-          }
+            });
+          }}
           onClose={() => setRollFor(null)}
         />
       )}
