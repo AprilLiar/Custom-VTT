@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useRole } from '../roleContext.jsx';
 import { socket } from '../socket.js';
-import { getCombat, getCharacters } from '../lib/api.js';
+import { getCombat, getCharacters, getCharacterFolders } from '../lib/api.js';
 import { portraitSrc } from '../lib/image.js';
 import { dieLabel, tintFor, POOLS } from '../lib/dice.js';
 
@@ -25,7 +25,7 @@ function ParticipantCard({ entry, role, onRemove, onDragStart, navigate }) {
       onDragStart={onDragStart}
       onClick={() => navigate(`/character/${character.id}`)}
       title="Open full sheet"
-      className="group relative flex w-40 shrink-0 cursor-pointer flex-col gap-1.5 rounded-lg border border-zinc-800 bg-zinc-900 p-2 hover:border-indigo-600"
+      className="group relative flex min-w-24 flex-1 cursor-pointer flex-col gap-1.5 rounded-lg border border-zinc-800 bg-zinc-900 p-2 hover:border-indigo-600"
     >
       {role === 'gm' && (
         <button
@@ -150,6 +150,7 @@ export default function CombatArena() {
   const navigate = useNavigate();
   const [combat, setCombat] = useState(null); // { unevenCombatEnabled, participants, characters, counters }
   const [roster, setRoster] = useState(null);
+  const [folders, setFolders] = useState(null);
   const [dropTarget, setDropTarget] = useState(null); // `${side}-${pairIndex}` | null
   const [counterName, setCounterName] = useState('');
   const [counterTarget, setCounterTarget] = useState(6);
@@ -158,6 +159,7 @@ export default function CombatArena() {
     const refresh = () => {
       getCombat().then(setCombat).catch(console.error);
       getCharacters().then(setRoster).catch(console.error);
+      getCharacterFolders().then(setFolders).catch(console.error);
     };
     refresh();
     const events = [
@@ -165,6 +167,7 @@ export default function CombatArena() {
       'character:created', 'character:deleted',
       'counter:created', 'counter:updated', 'counter:deleted',
       'stance:created', 'stance:updated', 'stance:deleted',
+      'character_folder:created', 'character_folder:updated', 'character_folder:deleted',
     ];
     for (const ev of events) socket.on(ev, refresh);
     return () => {
@@ -240,12 +243,19 @@ export default function CombatArena() {
     };
   }, []);
 
-  if (!combat || !roster) return <p className="text-zinc-500">Loading…</p>;
+  if (!combat || !roster || !folders) return <p className="text-zinc-500">Loading…</p>;
 
   const { unevenCombatEnabled, participants, characters, counters } = combat;
   const seatedIds = new Set(participants.map((p) => p.character_id));
   const visibleRoster = role === 'gm' ? roster : roster.filter((c) => c.character_type === 'pc');
   const availableCharacters = visibleRoster.filter((c) => !seatedIds.has(c.id));
+  // Root (unfiled) characters render first with no header, then each folder
+  // that has any available characters gets its own small section header —
+  // mirrors the character list's folder grouping, adapted to a narrow rail.
+  const rootCharacters = availableCharacters.filter((c) => c.folder_id == null);
+  const foldersWithCharacters = folders
+    .map((f) => ({ folder: f, chars: availableCharacters.filter((c) => c.folder_id === f.id) }))
+    .filter((g) => g.chars.length > 0);
 
   const pairIndices = [...new Set(participants.map((p) => p.pair_index))].sort((a, b) => a - b);
   const rows = [...pairIndices, pairIndices.length ? pairIndices[pairIndices.length - 1] + 1 : 0];
@@ -260,6 +270,33 @@ export default function CombatArena() {
   };
 
   const remove = (characterId) => socket.emit('combat:remove_participant', { characterId });
+
+  const rosterCard = (c) => {
+    const src = portraitSrc(c);
+    return (
+      <div
+        key={c.id}
+        draggable
+        onDragStart={(e) => e.dataTransfer.setData('text/character-id', String(c.id))}
+        title="Drag onto a side to seat them"
+        className="flex cursor-grab items-center gap-2 rounded-lg border border-zinc-800 bg-zinc-900 p-2 active:cursor-grabbing"
+      >
+        <div className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-md bg-zinc-800 text-sm font-bold text-zinc-600">
+          {src ? (
+            <img src={src} alt="" className="h-full w-full object-cover" />
+          ) : (
+            c.name.slice(0, 1).toUpperCase()
+          )}
+        </div>
+        <span className="truncate text-sm text-zinc-300">{c.name}</span>
+        {c.character_type === 'npc' && (
+          <span className="ml-auto rounded bg-purple-600/30 px-1 text-[10px] font-bold uppercase text-purple-300">
+            NPC
+          </span>
+        )}
+      </div>
+    );
+  };
 
   const addCounter = (e) => {
     e.preventDefault();
@@ -332,7 +369,7 @@ export default function CombatArena() {
                   }}
                   onDragLeave={() => setDropTarget(null)}
                   onDrop={(e) => role === 'gm' && onDrop(e, 'left', rowIdx)}
-                  className={`flex min-h-24 flex-1 flex-wrap justify-end gap-2 rounded-lg border border-dashed p-2 ${
+                  className={`flex min-h-24 flex-1 gap-2 overflow-x-auto rounded-lg border border-dashed p-2 ${
                     dropTarget === leftKey ? 'border-indigo-400 bg-indigo-950/20' : 'border-zinc-800'
                   }`}
                 >
@@ -359,7 +396,7 @@ export default function CombatArena() {
                   }}
                   onDragLeave={() => setDropTarget(null)}
                   onDrop={(e) => role === 'gm' && onDrop(e, 'right', rowIdx)}
-                  className={`flex min-h-24 flex-1 flex-wrap gap-2 rounded-lg border border-dashed p-2 ${
+                  className={`flex min-h-24 flex-1 gap-2 overflow-x-auto rounded-lg border border-dashed p-2 ${
                     dropTarget === rightKey ? 'border-indigo-400 bg-indigo-950/20' : 'border-zinc-800'
                   }`}
                 >
@@ -436,33 +473,18 @@ export default function CombatArena() {
             <h2 className="mb-2 text-xs font-bold uppercase tracking-wide text-zinc-500">
               Roster (drag to seat)
             </h2>
-            <div className="space-y-2">
-              {availableCharacters.map((c) => {
-                const src = portraitSrc(c);
-                return (
-                  <div
-                    key={c.id}
-                    draggable
-                    onDragStart={(e) => e.dataTransfer.setData('text/character-id', String(c.id))}
-                    title="Drag onto a side to seat them"
-                    className="flex cursor-grab items-center gap-2 rounded-lg border border-zinc-800 bg-zinc-900 p-2 active:cursor-grabbing"
-                  >
-                    <div className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-md bg-zinc-800 text-sm font-bold text-zinc-600">
-                      {src ? (
-                        <img src={src} alt="" className="h-full w-full object-cover" />
-                      ) : (
-                        c.name.slice(0, 1).toUpperCase()
-                      )}
-                    </div>
-                    <span className="truncate text-sm text-zinc-300">{c.name}</span>
-                    {c.character_type === 'npc' && (
-                      <span className="ml-auto rounded bg-purple-600/30 px-1 text-[10px] font-bold uppercase text-purple-300">
-                        NPC
-                      </span>
-                    )}
-                  </div>
-                );
-              })}
+            <div className="space-y-3">
+              {rootCharacters.length > 0 && (
+                <div className="space-y-2">{rootCharacters.map(rosterCard)}</div>
+              )}
+              {foldersWithCharacters.map(({ folder, chars }) => (
+                <div key={folder.id}>
+                  <h3 className="mb-1 truncate text-[10px] font-bold uppercase tracking-wide text-zinc-600">
+                    📁 {folder.name}
+                  </h3>
+                  <div className="space-y-2">{chars.map(rosterCard)}</div>
+                </div>
+              ))}
               {availableCharacters.length === 0 && (
                 <p className="text-xs text-zinc-600">Everyone is seated.</p>
               )}

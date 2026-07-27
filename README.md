@@ -44,15 +44,24 @@ Note: Render's free tier sleeps after inactivity — the first load of a session
 
 ## Project status
 
-Since Phase 6: character list cards resize to their portrait's own aspect ratio (art fills
-the card's full height, width scales naturally) and show a folder chip when filed; the
-Combat Arena's per-participant dice now group into the same Head/Core/Legs rows as the
-character sheet instead of one flat row. Also, several read-heavy API endpoints
-(`GET /api/characters/:id`, `GET /api/combat`, move-resolution helpers) were switched from
-sequential to parallel (`Promise.all`) database queries — Turso's networked connection makes
-every query a real round-trip, so a per-participant N+1 loop (Arena) or a chain of ~8
-sequential awaits (character sheet load) was compounding into multi-second production
-latency that a local SQLite dev environment never surfaces.
+Since Phase 6: character list cards use a fixed-size portrait area with the art cropped to
+cover it edge-to-edge (no letterboxing, regardless of the source image's aspect ratio) and
+show a folder chip when filed; the Combat Arena's roster rail now groups not-yet-seated
+characters by folder, and seated participant cards fill their side's full width with no
+unoccupied space — under Uneven Combat, adding more characters to a side scales every card
+on it down evenly instead of leaving gaps — with dice grouped into the same Head/Core/Legs
+rows as the character sheet instead of one flat row. Perks lost their generic automation
+system (the original 5-type registry — Step a Die, Stamina Multiplier, Move Tag, Move Frame
+Data, Move Roll Bonus — applied/reversed automatically on every grant/revoke): a Perk is now
+just picture/name/description plus membership, and a mechanical effect for a specific Perk
+is hand-written as an `onGrant`/`onRevoke` entry in `server/perkAutomations.js`'s
+`PERK_HOOKS` map, keyed by that Perk's name, only once its real content is decided. Also,
+several read-heavy API endpoints (`GET /api/characters/:id`, `GET /api/combat`,
+move-resolution helpers) were switched from sequential to parallel (`Promise.all`) database
+queries — Turso's networked connection makes every query a real round-trip, so a
+per-participant N+1 loop (Arena) or a chain of ~8 sequential awaits (character sheet load)
+was compounding into multi-second production latency that a local SQLite dev environment
+never surfaces.
 
 Phase 6 (Combat Arena — structure only, no round/Tic timing yet) — reachable via the
 header logo, visible to every role. GM drags characters from a roster rail onto a
@@ -69,10 +78,10 @@ Since Phase 5 (Counters): GM-managed character-list folders, a global header Sea
 bar (Characters/Moves/Perks/Tells/Tags, role-scoped), and Move Roll — a move can
 specify which dice it rolls plus a shared bonus, including an ambiguous Left/Right
 Hand or Leg choice the player picks only when actually rolling (such a move needs
-two Tells, shown side by side). This also makes the Perk `move_roll_bonus`
-automation live for any move that has a Roll. Move folders are relabeled
-"Discipline" in the UI, and every move always shows its discipline (or "Without
-Discipline"). See `vttprojectplan.md` for what's next.
+two Tells, shown side by side). A per-character Move Roll bonus can still be granted
+via a manual Perk hook (see above) once one exists for a given move. Move folders are
+relabeled "Discipline" in the UI, and every move always shows its discipline (or
+"Without Discipline"). See `vttprojectplan.md` for what's next.
 
 **Testing:** `npm test` runs the game-logic unit tests. `scripts/e2e.mjs` is a full
 integration pass (run it against a freshly started server with a clean `local.db`).

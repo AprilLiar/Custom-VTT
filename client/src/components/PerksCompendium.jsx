@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { socket } from '../socket.js';
-import { getCharacters, getMoves, getPerks, getTags } from '../lib/api.js';
+import { getCharacters, getPerks } from '../lib/api.js';
 import { portraitSrc } from '../lib/image.js';
 import PerkCard from './PerkCard.jsx';
 import PerkCreator from './PerkCreator.jsx';
@@ -35,12 +35,10 @@ function GrantList({ perk, characters }) {
 }
 
 // The Compendium page's Perks tab: persistent Perk library. Just picture/
-// name/description/automations per spec — no folders or style filter,
-// unlike Moves. Rendering is GM-gated by the parent CompendiumPage.
+// name/description per spec — no folders or style filter, unlike Moves.
+// Rendering is GM-gated by the parent CompendiumPage.
 export default function PerksCompendium() {
   const [perks, setPerks] = useState(null);
-  const [moves, setMoves] = useState(null);
-  const [tags, setTags] = useState(null);
   const [characters, setCharacters] = useState([]);
   const [form, setForm] = useState(null); // null | { perk? }
   const [grantOpen, setGrantOpen] = useState(null);
@@ -49,15 +47,11 @@ export default function PerksCompendium() {
   useEffect(() => {
     const refreshAll = () => {
       getPerks().then(setPerks).catch(console.error);
-      getMoves().then((d) => setMoves(d.moves)).catch(console.error);
-      getTags().then(setTags).catch(console.error);
       getCharacters().then(setCharacters).catch(console.error);
     };
     refreshAll();
     const events = [
       'perk:created', 'perk:updated', 'perk:deleted', 'perk:granted', 'perk:revoked',
-      'move:created', 'move:updated', 'move:deleted',
-      'tag:created', 'tag:updated', 'tag:deleted',
       'character:created', 'character:updated', 'character:deleted',
     ];
     for (const ev of events) socket.on(ev, refreshAll);
@@ -66,10 +60,7 @@ export default function PerksCompendium() {
     };
   }, []);
 
-  if (!perks || !moves || !tags) return <p className="text-zinc-500">Loading…</p>;
-
-  const moveById = new Map(moves.map((m) => [m.id, m]));
-  const tagById = new Map(tags.map((t) => [t.id, t]));
+  if (!perks) return <p className="text-zinc-500">Loading…</p>;
 
   const submitPerk = (payload) => {
     if (form?.perk) socket.emit('perk:update', { perkId: form.perk.id, ...payload });
@@ -97,8 +88,6 @@ export default function PerksCompendium() {
       <div className="min-w-0 flex-1 space-y-4">
         {form ? (
           <PerkCreator
-            moves={moves}
-            tags={tags}
             initial={form.perk ?? null}
             onSubmit={submitPerk}
             onCancel={() => setForm(null)}
@@ -126,8 +115,6 @@ export default function PerksCompendium() {
               >
                 <PerkCard
                   perk={perk}
-                  moveById={moveById}
-                  tagById={tagById}
                   actions={
                     <>
                       <button

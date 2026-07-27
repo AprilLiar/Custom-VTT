@@ -272,8 +272,9 @@ export async function initDb() {
   `);
 
   // The Perks compendium: master list of Perk templates. Just picture, name,
-  // description, and automations (per user instruction) — no folders/style
-  // filter, unlike Moves.
+  // and description — no generic automation system (removed; see
+  // server/perkAutomations.js for the manual per-Perk hook skeleton that
+  // replaced it) and no folders/style filter, unlike Moves.
   await run(`
     CREATE TABLE IF NOT EXISTS perks (
       id INTEGER PRIMARY KEY,
@@ -284,37 +285,12 @@ export async function initDb() {
     )
   `);
 
-  // One or more automation entries per Perk template. payload shape depends
-  // on automation_type — see server/perkAutomations.js.
-  await run(`
-    CREATE TABLE IF NOT EXISTS perk_automations (
-      id INTEGER PRIMARY KEY,
-      perk_id INTEGER NOT NULL REFERENCES perks(id) ON DELETE CASCADE,
-      automation_type TEXT NOT NULL CHECK(automation_type IN
-        ('die_step','stamina_multiplier','move_tag','move_frame_override','move_roll_bonus')),
-      payload TEXT NOT NULL
-    )
-  `);
-
   await run(`
     CREATE TABLE IF NOT EXISTS character_perks (
       id INTEGER PRIMARY KEY,
       character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
       perk_id INTEGER NOT NULL REFERENCES perks(id) ON DELETE CASCADE,
       UNIQUE(character_id, perk_id)
-    )
-  `);
-
-  // A snapshot, taken at grant time, of the Perk's automations as they stood
-  // then. Revoke reverses THIS, not the live perk_automations template — so
-  // editing a Perk after granting it never retroactively changes what an
-  // existing grant applied or what revoking it undoes.
-  await run(`
-    CREATE TABLE IF NOT EXISTS character_perk_automations (
-      id INTEGER PRIMARY KEY,
-      character_perk_id INTEGER NOT NULL REFERENCES character_perks(id) ON DELETE CASCADE,
-      automation_type TEXT NOT NULL,
-      payload TEXT NOT NULL
     )
   `);
 

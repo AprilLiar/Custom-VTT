@@ -21,11 +21,7 @@ import {
   hasAmbiguousRollSlot,
   AMBIGUOUS_ROLL_SLOTS,
 } from './moveLogic.js';
-import {
-  normalizeAutomations,
-  invertAutomationPayload,
-  effectiveFrames,
-} from './perkAutomations.js';
+import { effectiveFrames, PERK_HOOKS } from './perkAutomations.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3001;
@@ -33,7 +29,9 @@ const PORT = process.env.PORT || 3001;
 const app = express();
 app.use(express.json({ limit: '3mb' })); // portraits arrive as base64 JSON
 const httpServer = createServer(app);
-const io = new Server(httpServer);
+// Exported so a future server/perkAutomations.js PERK_HOOKS entry can
+// broadcast (die:updated/character:updated/etc.) after a manual effect.
+export const io = new Server(httpServer);
 
 // ---------- shared lookups ----------
 
@@ -228,26 +226,12 @@ async function getMovesFor(characterId) {
   });
 }
 
-// Perks with their automation list, e.g. for the Compendium view.
 async function getPerk(id) {
-  const perk = await one('SELECT * FROM perks WHERE id = ?', [id]);
-  if (!perk) return null;
-  const automations = await all(
-    'SELECT * FROM perk_automations WHERE perk_id = ? ORDER BY id',
-    [id]
-  );
-  return {
-    ...perk,
-    automations: automations.map((a) => ({
-      id: a.id,
-      type: a.automation_type,
-      payload: JSON.parse(a.payload),
-    })),
-  };
+  return one('SELECT * FROM perks WHERE id = ?', [id]);
 }
 
-// A character's granted Perks, each carrying the SNAPSHOT of automations
-// taken at grant time (not the live perk template) — what actually applied.
+// A character's granted Perks (id, name, description, picture — automation
+// is now manual per-Perk code, not stored data, see perkAutomations.js).
 async function getCharacterPerks(characterId) {
   const rows = await all(
     `SELECT p.*, cp.id AS character_perk_id
@@ -255,18 +239,6 @@ async function getCharacterPerks(characterId) {
      WHERE cp.character_id = ? ORDER BY cp.id`,
     [characterId]
   );
-  if (!rows.length) return [];
-  const ids = rows.map((r) => r.character_perk_id);
-  const marks = ids.map(() => '?').join(',');
-  const autos = await all(
-    `SELECT * FROM character_perk_automations WHERE character_perk_id IN (${marks}) ORDER BY id`,
-    ids
-  );
-  const byGrant = new Map();
-  for (const a of autos) {
-    if (!byGrant.has(a.character_perk_id)) byGrant.set(a.character_perk_id, []);
-    byGrant.get(a.character_perk_id).push({ type: a.automation_type, payload: JSON.parse(a.payload) });
-  }
   return rows.map((r) => ({
     id: r.id,
     character_perk_id: r.character_perk_id,
@@ -274,7 +246,6 @@ async function getCharacterPerks(characterId) {
     description: r.description,
     image_data: r.image_data,
     image_mime_type: r.image_mime_type,
-    automations: byGrant.get(r.character_perk_id) ?? [],
   }));
 }
 
@@ -401,28 +372,16 @@ app.get('/api/moves', wrap(async (_req, res) => {
   });
 }));
 
-// The Perks compendium: every Perk, with automations and current grants
+// The Perks compendium: every Perk plus who currently has it
 app.get('/api/perks', wrap(async (_req, res) => {
   const perks = await all('SELECT * FROM perks ORDER BY id');
-  const automations = await all('SELECT * FROM perk_automations ORDER BY id');
-  const byPerk = new Map();
-  for (const a of automations) {
-    if (!byPerk.has(a.perk_id)) byPerk.set(a.perk_id, []);
-    byPerk.get(a.perk_id).push({ id: a.id, type: a.automation_type, payload: JSON.parse(a.payload) });
-  }
   const grants = await all('SELECT * FROM character_perks');
   const grantedBy = new Map();
   for (const g of grants) {
     if (!grantedBy.has(g.perk_id)) grantedBy.set(g.perk_id, []);
     grantedBy.get(g.perk_id).push(g.character_id);
   }
-  res.json(
-    perks.map((p) => ({
-      ...p,
-      automations: byPerk.get(p.id) ?? [],
-      granted_character_ids: grantedBy.get(p.id) ?? [],
-    }))
-  );
+  res.json(perks.map((p) => ({ ...p, granted_character_ids: grantedBy.get(p.id) ?? [] })));
 }));
 
 // Global search across named library entities only (Characters, Moves,
@@ -584,10 +543,6 @@ app.delete('/api/characters/:id', wrap(async (req, res) => {
   await run('DELETE FROM character_move_tags WHERE character_id = ?', [character.id]);
   await run('DELETE FROM character_move_overrides WHERE character_id = ?', [character.id]);
   await run('DELETE FROM character_move_roll_bonuses WHERE character_id = ?', [character.id]);
-  await run(
-    'DELETE FROM character_perk_automations WHERE character_perk_id IN (SELECT id FROM character_perks WHERE character_id = ?)',
-    [character.id]
-  );
   await run('DELETE FROM character_perks WHERE character_id = ?', [character.id]);
   await run('DELETE FROM counters WHERE character_id = ?', [character.id]);
   const wasSeated = await one('SELECT id FROM combat_participants WHERE character_id = ?', [
@@ -1235,123 +1190,13 @@ io.on('connection', (socket) => {
     io.emit('move:revoked', { characterId: Number(characterId), moveId: Number(moveId) });
   });
 
-  // Max Stamina = multiplier x locked Stamina die — recomputed whenever a
-  // Perk changes the multiplier or permanently steps the Stamina die,
-  // exactly like character:lock_stats already does.
-  const recomputeMaxStamina = async (characterId) => {
-    const character = await getCharacter(characterId);
-    const stamina = await getStaminaDie(characterId);
-    const maxStamina = computeMaxStamina(
-      character.stamina_multiplier,
-      stamina.locked_size,
-      stamina.locked_bonus
-    );
-    const currentStamina = Math.min(character.current_stamina, maxStamina);
-    await run('UPDATE characters SET max_stamina = ?, current_stamina = ? WHERE id = ?', [
-      maxStamina,
-      currentStamina,
-      characterId,
-    ]);
-    io.emit('character:updated', await getCharacter(characterId));
-  };
-
-  // Applies one automation to a character. Called with the automation's own
-  // payload on grant, and with invertAutomationPayload(...)'s result on
-  // revoke for the two character-scoped types below — same function, either
-  // direction. The three move-scoped types instead insert a row tagged with
-  // characterPerkId; their "revoke" is a bulk delete of those rows, done
-  // once in perk:revoke rather than per automation (see there).
-  const applyAutomation = async (characterId, characterPerkId, type, payload) => {
-    if (type === 'die_step') {
-      const die = await one('SELECT * FROM dice WHERE character_id = ? AND slot_name = ?', [
-        characterId,
-        payload.slotName,
-      ]);
-      if (!die) return;
-      const direction = payload.steps > 0 ? 'up' : 'down';
-      const times = Math.abs(payload.steps);
-      let current = { current_size: die.current_size, bonus: die.bonus, status: die.status };
-      for (let i = 0; i < times; i++) current = stepDie(current, direction);
-      const sets = {
-        current_size: current.current_size,
-        bonus: current.bonus,
-        status: current.status,
-      };
-      if (payload.scope === 'permanent') {
-        let locked = {
-          current_size: die.locked_size,
-          bonus: die.locked_bonus,
-          status: die.locked_status,
-        };
-        for (let i = 0; i < times; i++) locked = stepDie(locked, direction);
-        sets.locked_size = locked.current_size;
-        sets.locked_bonus = locked.bonus;
-        sets.locked_status = locked.status;
-      }
-      const cols = Object.keys(sets);
-      await run(
-        `UPDATE dice SET ${cols.map((c) => `${c} = ?`).join(', ')} WHERE id = ?`,
-        [...cols.map((c) => sets[c]), die.id]
-      );
-      io.emit('die:updated', diePayload(await one('SELECT * FROM dice WHERE id = ?', [die.id])));
-      if (payload.slotName === 'Stamina' && payload.scope === 'permanent') {
-        await recomputeMaxStamina(characterId);
-      }
-      return;
-    }
-    if (type === 'stamina_multiplier') {
-      const character = await getCharacter(characterId);
-      await run('UPDATE characters SET stamina_multiplier = ? WHERE id = ?', [
-        character.stamina_multiplier + payload.delta,
-        characterId,
-      ]);
-      await recomputeMaxStamina(characterId);
-      return;
-    }
-    if (type === 'move_tag') {
-      await run(
-        'INSERT INTO character_move_tags (character_id, move_id, tag_id, action, source_character_perk_id) VALUES (?, ?, ?, ?, ?)',
-        [characterId, payload.moveId, payload.tagId, payload.action, characterPerkId]
-      );
-      return;
-    }
-    if (type === 'move_frame_override') {
-      await run(
-        'INSERT INTO character_move_overrides (character_id, move_id, startup_delta, active_delta, recovery_delta, source_character_perk_id) VALUES (?, ?, ?, ?, ?, ?)',
-        [characterId, payload.moveId, payload.startupDelta, payload.activeDelta, payload.recoveryDelta, characterPerkId]
-      );
-      return;
-    }
-    if (type === 'move_roll_bonus') {
-      await run(
-        'INSERT INTO character_move_roll_bonuses (character_id, move_id, amount, source_character_perk_id) VALUES (?, ?, ?, ?)',
-        [characterId, payload.moveId, payload.amount, characterPerkId]
-      );
-    }
-  };
-
-  // Shared validation + write path for perk create/update
+  // Shared validation + write path for perk create/update. Perks are just
+  // picture/name/description now — mechanical effects are handled per-Perk
+  // in server/perkAutomations.js's PERK_HOOKS, not stored automation data.
   const writePerk = async (perkId, payload) => {
     const name = String(payload.name ?? '').trim();
     if (!name) return null;
     const description = String(payload.description ?? '').trim();
-
-    // Reference-check move/tag ids (shape already validated by normalizeAutomations)
-    const candidates = normalizeAutomations(payload.automations);
-    const validated = [];
-    for (const a of candidates) {
-      if (a.automation_type === 'move_tag') {
-        const [move, tag] = await Promise.all([
-          one('SELECT id FROM moves WHERE id = ?', [a.payload.moveId]),
-          one('SELECT id FROM tags WHERE id = ?', [a.payload.tagId]),
-        ]);
-        if (!move || !tag) continue;
-      } else if (a.automation_type === 'move_frame_override' || a.automation_type === 'move_roll_bonus') {
-        const move = await one('SELECT id FROM moves WHERE id = ?', [a.payload.moveId]);
-        if (!move) continue;
-      }
-      validated.push(a);
-    }
 
     let id = perkId;
     if (id == null) {
@@ -1369,14 +1214,6 @@ io.on('connection', (socket) => {
           id,
         ]);
       }
-      await run('DELETE FROM perk_automations WHERE perk_id = ?', [id]);
-    }
-    for (const a of validated) {
-      await run('INSERT INTO perk_automations (perk_id, automation_type, payload) VALUES (?, ?, ?)', [
-        id,
-        a.automation_type,
-        JSON.stringify(a.payload),
-      ]);
     }
     return getPerk(id);
   };
@@ -1398,7 +1235,6 @@ io.on('connection', (socket) => {
     if (!perk) return;
     const inUse = await one('SELECT COUNT(*) AS count FROM character_perks WHERE perk_id = ?', [perk.id]);
     if (Number(inUse.count) > 0) return; // must be revoked from everyone first
-    await run('DELETE FROM perk_automations WHERE perk_id = ?', [perk.id]);
     await run('DELETE FROM perks WHERE id = ?', [perk.id]);
     io.emit('perk:deleted', { perkId: perk.id });
   });
@@ -1419,17 +1255,7 @@ io.on('connection', (socket) => {
     ]);
     const characterPerkId = Number(result.lastInsertRowid);
 
-    const automations = await all('SELECT * FROM perk_automations WHERE perk_id = ? ORDER BY id', [
-      perk.id,
-    ]);
-    for (const auto of automations) {
-      const payload = JSON.parse(auto.payload);
-      await run(
-        'INSERT INTO character_perk_automations (character_perk_id, automation_type, payload) VALUES (?, ?, ?)',
-        [characterPerkId, auto.automation_type, auto.payload]
-      );
-      await applyAutomation(character.id, characterPerkId, auto.automation_type, payload);
-    }
+    await PERK_HOOKS[perk.name]?.onGrant?.({ characterId: character.id, perkId: perk.id, characterPerkId });
 
     io.emit('perk:granted', { characterId: character.id, perkId: perk.id });
   });
@@ -1440,30 +1266,20 @@ io.on('connection', (socket) => {
       [characterId, perkId]
     );
     if (!characterPerk) return;
+    const perk = await one('SELECT * FROM perks WHERE id = ?', [characterPerk.perk_id]);
 
-    // Reverse the SNAPSHOT taken at grant time, not the live perk template.
-    const snapshot = await all(
-      'SELECT * FROM character_perk_automations WHERE character_perk_id = ? ORDER BY id',
-      [characterPerk.id]
-    );
-    for (const row of snapshot) {
-      if (row.automation_type !== 'die_step' && row.automation_type !== 'stamina_multiplier') {
-        continue; // move-scoped rows are cleaned up in bulk below
-      }
-      const payload = JSON.parse(row.payload);
-      await applyAutomation(
-        characterPerk.character_id,
-        characterPerk.id,
-        row.automation_type,
-        invertAutomationPayload(row.automation_type, payload)
-      );
-    }
-
+    // Move-scoped rows a manual PERK_HOOKS.onGrant may have tagged with this
+    // grant — cleaned up in bulk here rather than by the hook itself.
     await run('DELETE FROM character_move_tags WHERE source_character_perk_id = ?', [characterPerk.id]);
     await run('DELETE FROM character_move_overrides WHERE source_character_perk_id = ?', [characterPerk.id]);
     await run('DELETE FROM character_move_roll_bonuses WHERE source_character_perk_id = ?', [characterPerk.id]);
-    await run('DELETE FROM character_perk_automations WHERE character_perk_id = ?', [characterPerk.id]);
     await run('DELETE FROM character_perks WHERE id = ?', [characterPerk.id]);
+
+    await PERK_HOOKS[perk?.name]?.onRevoke?.({
+      characterId: characterPerk.character_id,
+      perkId: characterPerk.perk_id,
+      characterPerkId: characterPerk.id,
+    });
 
     io.emit('perk:revoked', { characterId: characterPerk.character_id, perkId: characterPerk.perk_id });
   });
