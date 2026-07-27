@@ -297,6 +297,20 @@ const diePayload = (die) => ({
 const sqliteToIso = (ts) =>
   ts && !ts.includes('T') ? new Date(ts.replace(' ', 'T') + 'Z').toISOString() : ts;
 
+// Broadcasts the Combat Arena's current seating + toggle — called from the
+// combat:* socket handlers below and from character delete (a seated
+// character leaving the roster needs the arena to drop them too).
+async function emitCombatUpdated() {
+  const state = await one('SELECT * FROM combat_state WHERE id = 1');
+  const participants = await all(
+    'SELECT * FROM combat_participants ORDER BY side, pair_index, id'
+  );
+  io.emit('combat:updated', {
+    unevenCombatEnabled: Boolean(state.uneven_combat_enabled),
+    participants,
+  });
+}
+
 async function logRoll({ characterId, characterName, modifier, dice }) {
   const total = dice.reduce((sum, d) => sum + d.result, 0);
   await run('INSERT INTO chat_log (character_id, dice_rolled, modifier) VALUES (?, ?, ?)', [
@@ -445,6 +459,42 @@ app.get('/api/ruleset', wrap(async (_req, res) => {
   });
 }));
 
+// Combat Arena: who's seated, the Uneven Combat toggle, each seated
+// character's simplified stats (portrait/dice/stamina/active-stance name —
+// read-only glance, kept live client-side via the existing
+// character:updated/die:updated/stance:activated broadcasts), and every
+// counter relevant to the arena (standalone ones, plus any character
+// counter flagged Show in Combat).
+app.get('/api/combat', wrap(async (_req, res) => {
+  const state = await one('SELECT * FROM combat_state WHERE id = 1');
+  const participants = await all(
+    'SELECT * FROM combat_participants ORDER BY side, pair_index, id'
+  );
+  const characters = {};
+  for (const p of participants) {
+    characters[p.character_id] = {
+      character: await getCharacter(p.character_id),
+      dice: await getDice(p.character_id),
+      stances: await getStances(p.character_id),
+    };
+  }
+  const charIds = participants.map((p) => p.character_id);
+  const counters = charIds.length
+    ? await all(
+        `SELECT * FROM counters WHERE character_id IS NULL OR (show_in_combat = 1 AND character_id IN (${charIds
+          .map(() => '?')
+          .join(',')})) ORDER BY id`,
+        charIds
+      )
+    : await all('SELECT * FROM counters WHERE character_id IS NULL ORDER BY id');
+  res.json({
+    unevenCombatEnabled: Boolean(state.uneven_combat_enabled),
+    participants,
+    characters,
+    counters,
+  });
+}));
+
 app.post('/api/characters', wrap(async (req, res) => {
   const name = String(req.body?.name ?? '').trim();
   if (!name) return res.status(400).json({ error: 'name required' });
@@ -524,9 +574,14 @@ app.delete('/api/characters/:id', wrap(async (req, res) => {
   );
   await run('DELETE FROM character_perks WHERE character_id = ?', [character.id]);
   await run('DELETE FROM counters WHERE character_id = ?', [character.id]);
+  const wasSeated = await one('SELECT id FROM combat_participants WHERE character_id = ?', [
+    character.id,
+  ]);
+  await run('DELETE FROM combat_participants WHERE character_id = ?', [character.id]);
   await run('DELETE FROM characters WHERE id = ?', [character.id]);
 
   io.emit('character:deleted', { id: character.id });
+  if (wasSeated) await emitCombatUpdated();
   res.json({ ok: true });
 }));
 
@@ -1502,17 +1557,22 @@ io.on('connection', (socket) => {
     });
   });
 
-  // Character-owned counters only for now — standalone (characterId null)
-  // arena counters arrive with the Combat Arena in Phase 6.
+  // Character-owned counters, or standalone (characterId null) — GM-only
+  // client-side, created directly in the Combat Arena.
   on('counter:create', async ({ characterId, name, targetPips }) => {
-    const character = await getCharacter(characterId);
     const counterName = String(name ?? '').trim();
     const target = Math.trunc(Number(targetPips));
-    if (!character || !counterName || !Number.isInteger(target)) return;
+    if (!counterName || !Number.isInteger(target)) return;
     if (target < 2 || target > 20) return;
+    let charId = null;
+    if (characterId != null) {
+      const character = await getCharacter(characterId);
+      if (!character) return;
+      charId = character.id;
+    }
     const result = await run(
       'INSERT INTO counters (character_id, name, target_pips) VALUES (?, ?, ?)',
-      [character.id, counterName, target]
+      [charId, counterName, target]
     );
     io.emit('counter:created', await one('SELECT * FROM counters WHERE id = ?', [
       Number(result.lastInsertRowid),
@@ -1543,6 +1603,64 @@ io.on('connection', (socket) => {
     if (!counter) return;
     await run('DELETE FROM counters WHERE id = ?', [counter.id]);
     io.emit('counter:deleted', { counterId: counter.id });
+  });
+
+  // Combat Arena (Phase 6 — structure only, no round/Tic timing yet).
+  // GM-only client-side, same as every other GM-gated control in this app.
+  // Seats (or re-seats) a character at side/pairIndex — the same upsert
+  // covers both combat:add_participant and combat:move_participant, since
+  // a character can only ever occupy one seat (combat_participants.character_id
+  // is UNIQUE). More than one character can share a side/pair_index — that's
+  // how an Uneven Combat 2v1 (etc.) grouping is represented.
+  const seatParticipant = async (characterId, side, pairIndex) => {
+    const character = await getCharacter(characterId);
+    if (!character) return false;
+    if (!['left', 'right'].includes(side)) return false;
+    const idx = Math.trunc(Number(pairIndex));
+    if (!Number.isInteger(idx) || idx < 0) return false;
+    const existing = await one('SELECT id FROM combat_participants WHERE character_id = ?', [
+      character.id,
+    ]);
+    if (existing) {
+      await run('UPDATE combat_participants SET side = ?, pair_index = ? WHERE id = ?', [
+        side,
+        idx,
+        existing.id,
+      ]);
+    } else {
+      await run('INSERT INTO combat_participants (character_id, side, pair_index) VALUES (?, ?, ?)', [
+        character.id,
+        side,
+        idx,
+      ]);
+    }
+    return true;
+  };
+
+  on('combat:add_participant', async ({ characterId, side, pairIndex }) => {
+    if (await seatParticipant(characterId, side, pairIndex)) await emitCombatUpdated();
+  });
+
+  on('combat:move_participant', async ({ characterId, side, pairIndex }) => {
+    if (await seatParticipant(characterId, side, pairIndex)) await emitCombatUpdated();
+  });
+
+  on('combat:remove_participant', async ({ characterId }) => {
+    await run('DELETE FROM combat_participants WHERE character_id = ?', [characterId]);
+    await emitCombatUpdated();
+  });
+
+  on('combat:toggle_uneven', async () => {
+    const state = await one('SELECT * FROM combat_state WHERE id = 1');
+    await run('UPDATE combat_state SET uneven_combat_enabled = ? WHERE id = 1', [
+      state.uneven_combat_enabled ? 0 : 1,
+    ]);
+    await emitCombatUpdated();
+  });
+
+  on('combat:clear', async () => {
+    await run('DELETE FROM combat_participants');
+    await emitCombatUpdated();
   });
 });
 

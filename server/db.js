@@ -376,6 +376,31 @@ export async function initDb() {
     )
   `);
 
+  // Singleton row holding the Combat Arena's global state. Phase 6 only
+  // needs the Uneven Combat toggle; phase/round_number/current_tic/etc.
+  // arrive as new columns (via ensureColumn) once Phase 7 builds timing.
+  await run(`
+    CREATE TABLE IF NOT EXISTS combat_state (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      uneven_combat_enabled INTEGER NOT NULL DEFAULT 0
+    )
+  `);
+  await run(`INSERT OR IGNORE INTO combat_state (id, uneven_combat_enabled) VALUES (1, 0)`);
+
+  // Who's currently seated in the arena. side + pair_index group participants
+  // into facing pairs; a side/pair_index can hold more than one character
+  // when Uneven Combat is on (the app doesn't enforce the toggle, it's just
+  // a GM-facing flag). A character can only be seated once.
+  await run(`
+    CREATE TABLE IF NOT EXISTS combat_participants (
+      id INTEGER PRIMARY KEY,
+      character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+      side TEXT NOT NULL CHECK(side IN ('left','right')),
+      pair_index INTEGER NOT NULL,
+      UNIQUE(character_id)
+    )
+  `);
+
   await seedRuleset();
   await seedTells();
 }

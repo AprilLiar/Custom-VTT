@@ -20,7 +20,7 @@ const jpost = (url, body, method = 'POST') =>
 const watcher = io(URL);
 const actor = io(URL);
 const events = [];
-for (const ev of ['character:created', 'character:updated', 'character:deleted', 'die:updated', 'roll:result', 'inventory:updated', 'injuries:updated', 'stance:created', 'stance:updated', 'stance:deleted', 'stance:activated', 'tell:created', 'tell:updated', 'tell:deleted', 'move:created', 'move:updated', 'move:deleted', 'move:granted', 'move:revoked', 'roleplay:updated', 'tag:created', 'tag:updated', 'tag:deleted', 'folder:created', 'folder:updated', 'folder:deleted', 'perk:created', 'perk:updated', 'perk:deleted', 'perk:granted', 'perk:revoked', 'counter:created', 'counter:updated', 'counter:deleted', 'character_folder:created', 'character_folder:updated', 'character_folder:deleted']) {
+for (const ev of ['character:created', 'character:updated', 'character:deleted', 'die:updated', 'roll:result', 'inventory:updated', 'injuries:updated', 'stance:created', 'stance:updated', 'stance:deleted', 'stance:activated', 'tell:created', 'tell:updated', 'tell:deleted', 'move:created', 'move:updated', 'move:deleted', 'move:granted', 'move:revoked', 'roleplay:updated', 'tag:created', 'tag:updated', 'tag:deleted', 'folder:created', 'folder:updated', 'folder:deleted', 'perk:created', 'perk:updated', 'perk:deleted', 'perk:granted', 'perk:revoked', 'counter:created', 'counter:updated', 'counter:deleted', 'character_folder:created', 'character_folder:updated', 'character_folder:deleted', 'combat:updated']) {
   watcher.on(ev, (payload) => events.push({ ev, payload }));
 }
 const waitEvent = (ev, pred = () => true, ms = 3000) =>
@@ -856,6 +856,97 @@ const chat = (await jf('/api/chat')).body;
 check('chat history has all rolls (9)', chat.length === 9, `got ${chat.length}`);
 check('chat entries carry name + dice + total', chat.every((e) => e.characterName && Array.isArray(e.dice) && typeof e.total === 'number' && e.timestamp));
 
+// --- Combat Arena (Phase 6: structure only, no round/Tic timing yet) ---
+let combat = (await jf('/api/combat')).body;
+check('fresh arena starts empty, Uneven Combat off', combat.participants.length === 0 && combat.unevenCombatEnabled === false);
+
+events.length = 0;
+emit('combat:add_participant', { characterId: ch.id, side: 'left', pairIndex: 0 });
+await waitEvent('combat:updated', (c) => c.participants.some((p) => p.character_id === ch.id));
+combat = (await jf('/api/combat')).body;
+check('character seated on the left', combat.participants.find((p) => p.character_id === ch.id)?.side === 'left');
+check(
+  '/api/combat resolves the seated character + live dice',
+  combat.characters[ch.id]?.character.id === ch.id && combat.characters[ch.id]?.dice.length === 8
+);
+check(
+  '/api/combat includes the seated character\'s stances, for the active-stance badge',
+  combat.characters[ch.id]?.stances.some((s) => s.id === combat.characters[ch.id].character.active_stance_id)
+);
+
+events.length = 0;
+emit('combat:add_participant', { characterId: npc.id, side: 'right', pairIndex: 0 });
+await waitEvent('combat:updated', (c) => c.participants.some((p) => p.character_id === npc.id));
+check('NPC can be seated too (visibility exception is a client-side concern only)', true);
+
+events.length = 0;
+emit('combat:toggle_uneven', {});
+await waitEvent('combat:updated', (c) => c.unevenCombatEnabled === true);
+check('Uneven Combat toggles on', true);
+
+const sidekick = (await jpost('/api/characters', { name: 'Sidekick', characterType: 'pc' })).body;
+events.length = 0;
+emit('combat:add_participant', { characterId: sidekick.id, side: 'left', pairIndex: 0 });
+await waitEvent('combat:updated', (c) => c.participants.some((p) => p.character_id === sidekick.id));
+combat = (await jf('/api/combat')).body;
+const leftPair0 = combat.participants.filter((p) => p.side === 'left' && p.pair_index === 0);
+check(
+  'Uneven Combat: two characters can share the same side/pair (2v1)',
+  leftPair0.length === 2 && leftPair0.some((p) => p.character_id === ch.id) && leftPair0.some((p) => p.character_id === sidekick.id)
+);
+
+events.length = 0;
+emit('combat:move_participant', { characterId: sidekick.id, side: 'right', pairIndex: 1 });
+await waitEvent('combat:updated', (c) => c.participants.find((p) => p.character_id === sidekick.id)?.pair_index === 1);
+combat = (await jf('/api/combat')).body;
+const sidekickSeat = combat.participants.find((p) => p.character_id === sidekick.id);
+check('move_participant re-seats an already-seated character', sidekickSeat.side === 'right' && sidekickSeat.pair_index === 1);
+
+events.length = 0;
+emit('combat:remove_participant', { characterId: sidekick.id });
+await waitEvent('combat:updated', (c) => !c.participants.some((p) => p.character_id === sidekick.id));
+check('remove_participant drops just that character', true);
+await jf(`/api/characters/${sidekick.id}`, { method: 'DELETE' });
+
+// standalone counters (characterId null) — blocked before Phase 6, now allowed
+events.length = 0;
+emit('counter:create', { characterId: null, name: 'Momentum', targetPips: 5 });
+const standaloneCounter = await waitEvent('counter:created', (c) => c.name === 'Momentum');
+check('standalone counter created with null character_id', standaloneCounter.character_id === null);
+combat = (await jf('/api/combat')).body;
+check('/api/combat includes standalone counters', combat.counters.some((c) => c.id === standaloneCounter.id));
+
+// a character counter only shows in the arena once flagged Show in Combat
+events.length = 0;
+emit('counter:create', { characterId: ch.id, name: 'Rage', targetPips: 5 });
+const rageCounter = await waitEvent('counter:created', (c) => c.name === 'Rage' && c.character_id === ch.id);
+combat = (await jf('/api/combat')).body;
+check('character counter hidden from the arena until flagged', !combat.counters.some((c) => c.id === rageCounter.id));
+events.length = 0;
+emit('counter:toggle_show_in_combat', { counterId: rageCounter.id });
+await waitEvent('counter:updated', (c) => c.id === rageCounter.id && c.show_in_combat === 1);
+combat = (await jf('/api/combat')).body;
+check('flagged character counter now included in the arena', combat.counters.some((c) => c.id === rageCounter.id));
+
+events.length = 0;
+emit('counter:delete', { counterId: standaloneCounter.id });
+await waitEvent('counter:deleted', (p) => p.counterId === standaloneCounter.id);
+events.length = 0;
+emit('counter:delete', { counterId: rageCounter.id });
+await waitEvent('counter:deleted', (p) => p.counterId === rageCounter.id);
+
+events.length = 0;
+emit('combat:clear', {});
+await waitEvent('combat:updated', (c) => c.participants.length === 0);
+combat = (await jf('/api/combat')).body;
+check('combat:clear empties the arena', combat.participants.length === 0);
+
+// re-seat ch alone so the character-delete cascade check below also
+// exercises combat_participants cleanup
+events.length = 0;
+emit('combat:add_participant', { characterId: ch.id, side: 'left', pairIndex: 0 });
+await waitEvent('combat:updated', (c) => c.participants.some((p) => p.character_id === ch.id));
+
 // --- name + portrait update ---
 events.length = 0;
 const renamed = await jpost(`/api/characters/${ch.id}`, { name: 'Aaron the Fist', imageData: 'aGVsbG8=', imageMimeType: 'image/jpeg' }, 'PUT');
@@ -868,6 +959,8 @@ events.length = 0;
 await jf(`/api/characters/${ch.id}`, { method: 'DELETE' });
 await waitEvent('character:deleted', (p) => p.id === ch.id);
 check('character:deleted broadcast', true);
+await waitEvent('combat:updated', (c) => !c.participants.some((p) => p.character_id === ch.id));
+check('deleting a seated character removes them from the arena too', true);
 check('sheet fetch now 404', (await jf(`/api/characters/${ch.id}`)).status === 404);
 const chatAfter = (await jf('/api/chat')).body;
 check('chat log survives character deletion', chatAfter.length === 9 && chatAfter[0].characterName === '(deleted)');

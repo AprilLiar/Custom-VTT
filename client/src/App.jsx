@@ -6,7 +6,7 @@ import CharacterList from './components/CharacterList.jsx';
 import CharacterSheet from './components/CharacterSheet.jsx';
 import ChatPanel from './components/ChatPanel.jsx';
 import CompendiumPage from './components/CompendiumPage.jsx';
-import CombatPlaceholder from './components/CombatPlaceholder.jsx';
+import CombatArena from './components/CombatArena.jsx';
 import SearchBar from './components/SearchBar.jsx';
 
 function Shell() {
@@ -20,7 +20,7 @@ function Shell() {
       <header className="flex items-center gap-3 border-b border-zinc-800 px-4 py-2">
         <Link
           to="/combat"
-          title="Combat Arena (placeholder)"
+          title="Combat Arena"
           className="text-lg font-bold tracking-tight hover:text-indigo-400"
         >
           Custom VTT
@@ -62,7 +62,7 @@ function Shell() {
             <Route path="/" element={<CharacterList />} />
             <Route path="/character/:id" element={<CharacterSheet />} />
             <Route path="/compendium" element={<CompendiumPage />} />
-            <Route path="/combat" element={<CombatPlaceholder />} />
+            <Route path="/combat" element={<CombatArena />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </main>
