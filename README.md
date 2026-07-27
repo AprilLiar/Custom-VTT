@@ -44,6 +44,13 @@ Note: Render's free tier sleeps after inactivity — the first load of a session
 
 ## Project status
 
+A character-owned counter can now carry one optional, purely cosmetic **reward tag** —
+Story (amber), Statistic (blue), Perk (violet), Move (orange), or Combat Prowess (red) — set
+at creation or changed any time after via a small colored select next to the counter's name
+that doubles as the tag itself. Standalone Arena counters can never have one (rejected
+server-side too, not just hidden in the UI); a character counter's reward still shows
+(read-only) in the Arena's Counters section if that counter is flagged Show in Combat.
+
 Character folders and move Disciplines now **nest** to any depth (`parent_id` self-references
 on both `character_folders` and `move_folders`), browsed via a shared indented
 `FolderTreeNav` sidebar instead of the old flat tab row; creating a folder while another is

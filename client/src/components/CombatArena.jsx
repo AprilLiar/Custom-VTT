@@ -6,6 +6,7 @@ import { getCombat, getCharacters, getCharacterFolders } from '../lib/api.js';
 import { portraitSrc } from '../lib/image.js';
 import { dieLabel, tintFor, POOLS } from '../lib/dice.js';
 import { buildFolderTree } from '../lib/folders.js';
+import { REWARD_LABELS, REWARD_COLORS } from '../lib/counterDisplay.js';
 
 const MIN_TARGET = 2;
 const MAX_TARGET = 20;
@@ -102,6 +103,16 @@ function ArenaCounterRow({ counter, characterName }) {
   return (
     <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-3">
       <span className="font-bold text-zinc-100">{label}</span>
+      {/* Character-owned counters only ever carry a reward — a standalone
+          counter never has one — but this stays read-only display here
+          either way; editing it happens on the character's own sheet. */}
+      {counter.reward_type && (
+        <span
+          className={`ml-2 rounded-full px-2 py-0.5 text-xs font-semibold uppercase ${REWARD_COLORS[counter.reward_type]}`}
+        >
+          {REWARD_LABELS[counter.reward_type]}
+        </span>
+      )}
       <div className="mt-2 flex items-center gap-2">
         <button
           onClick={() => socket.emit('counter:adjust', { counterId: counter.id, delta: -1 })}
