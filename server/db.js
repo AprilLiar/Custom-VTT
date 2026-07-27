@@ -169,16 +169,35 @@ export async function initDb() {
 
   // No FK clause on character_id: libsql enforces foreign keys, and chat
   // entries must survive character deletion (history shows "(deleted)").
+  // kind='message' rows are free-text chat posts (optionally with an
+  // attached image/GIF); dice_rolled stays '[]' for them rather than NULL,
+  // since it predates message rows and was already NOT NULL on existing
+  // databases. The text column is named `content`, not `message` — a column
+  // literally named "message" would collide with ensureColumn's word-boundary
+  // detection, which would then false-positive-match the CHECK constraint's
+  // own `'message'` enum literal above and skip adding the column entirely.
   await run(`
     CREATE TABLE IF NOT EXISTS chat_log (
       id INTEGER PRIMARY KEY,
+      kind TEXT NOT NULL DEFAULT 'roll' CHECK(kind IN ('roll','message')),
       character_id INTEGER NOT NULL,
       dice_rolled TEXT NOT NULL, -- JSON array of {slot_name, size, bonus, result}
       modifier INTEGER NOT NULL DEFAULT 0,
       move_id INTEGER, -- moves table arrives in Phase 3
+      content TEXT, -- free-text message content; kind='message' only
+      image_data TEXT, -- base64; kind='message' only. GIFs stored raw/unresized to keep animation
+      image_mime_type TEXT,
       created_at TEXT DEFAULT CURRENT_TIMESTAMP
     )
   `);
+  await ensureColumn(
+    'chat_log',
+    'kind',
+    "TEXT NOT NULL DEFAULT 'roll' CHECK(kind IN ('roll','message'))"
+  );
+  await ensureColumn('chat_log', 'content', 'TEXT');
+  await ensureColumn('chat_log', 'image_data', 'TEXT');
+  await ensureColumn('chat_log', 'image_mime_type', 'TEXT');
 
   // World-level Tell list, GM-editable at any time (unlike the fixed styles).
   // Tells carry small uploaded images (commissioned art), not icons — the

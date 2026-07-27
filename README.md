@@ -44,6 +44,16 @@ Note: Render's free tier sleeps after inactivity — the first load of a session
 
 ## Project status
 
+The Chat Log now takes free-text messages, not just rolls: a compose box at the bottom lets
+anyone pick a character to post as (PC-only for Players), type a message, and/or attach an
+image or GIF, rendered with the same avatar/name/timestamp header a roll uses. GIFs keep their
+animation — they're sent as raw uploaded bytes (capped at 4MB) rather than redrawn onto a
+canvas, which would otherwise flatten them to one frame; other images are still resized
+client-side like everywhere else in the app. Nothing in chat sticks around: a **Clear Chat**
+button (GM-only) wipes the whole log for everyone, and the log now also actually clears itself
+on every server boot (previously only documented, never implemented) rather than relying on
+Render's free tier spinning down as an incidental side effect.
+
 A character-owned counter can now carry one optional, purely cosmetic **reward tag** —
 Story (amber), Statistic (blue), Perk (violet), Move (orange), or Combat Prowess (red) — set
 at creation or changed any time after via a small colored select next to the counter's name
