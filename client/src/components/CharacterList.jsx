@@ -272,7 +272,7 @@ export default function CharacterList() {
           {currentFolder == null ? 'No characters yet — add the first one.' : 'This folder is empty.'}
         </p>
       ) : (
-        <div className="flex flex-wrap gap-4">
+        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
           {visible.map((c) => {
             const src = portraitSrc(c);
             const folderName = c.folder_id ? folderById.get(c.folder_id)?.name : null;
@@ -286,9 +286,9 @@ export default function CharacterList() {
               >
                 <div className="flex h-56 items-center justify-center bg-zinc-800">
                   {src ? (
-                    <img src={src} alt={c.name} className="h-full w-auto" />
+                    <img src={src} alt={c.name} className="h-full w-full object-cover" />
                   ) : (
-                    <span className="flex h-full w-40 items-center justify-center text-5xl font-bold text-zinc-600">
+                    <span className="flex h-full w-full items-center justify-center text-5xl font-bold text-zinc-600">
                       {c.name.slice(0, 1).toUpperCase()}
                     </span>
                   )}
