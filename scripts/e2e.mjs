@@ -323,6 +323,64 @@ check('grant blocked without a stance of the move style', !events.some((e) => e.
 emit('move:delete', { moveId: guardWall.id });
 await waitEvent('move:deleted', (p) => p.moveId === guardWall.id);
 
+// --- Defensive moves: is_defensive + On Successful/Failed Defense outcomes ---
+events.length = 0;
+emit('move:create', {
+  name: 'Parry', isDefault: false, tellId: tells[0].id, isDefensive: true,
+  startupTics: 1, activeTics: 1, recoveryTics: 0, description: 'A defensive stance.',
+  interactions: {
+    hit: { text: '', automations: [] }, // empty — must be dropped like any other
+    defense_success: { text: 'Countered!', automations: [{ type: 'opponent_stamina', amount: 2 }] },
+    defense_failure: { text: '', automations: [{ type: 'self_stamina', amount: 3 }] },
+  },
+});
+const parry = await waitEvent('move:created', (m) => m.name === 'Parry');
+check('Defensive move stores is_defensive', parry.is_defensive === 1);
+check(
+  'empty hit interaction dropped, both defense outcomes kept',
+  parry.interactions.length === 2 && parry.interactions.map((r) => r.trigger).sort().join() === 'defense_failure,defense_success',
+  JSON.stringify(parry.interactions)
+);
+check('defense_success automation stored', parry.interactions.find((r) => r.trigger === 'defense_success').automations[0].type === 'opponent_stamina');
+check('automation-only defense_failure interaction kept (no text)', parry.interactions.find((r) => r.trigger === 'defense_failure').text === '');
+
+// Defense-outcome content submitted for a NON-Defensive move must be
+// silently dropped by the server, regardless of what the client sends.
+events.length = 0;
+emit('move:create', {
+  name: 'Plain Strike', isDefault: false, tellId: tells[0].id, isDefensive: false,
+  startupTics: 1, activeTics: 1, recoveryTics: 0, description: '',
+  interactions: {
+    hit: { text: 'A solid hit', automations: [] },
+    defense_success: { text: 'Should not be stored', automations: [] },
+  },
+});
+const plainStrike = await waitEvent('move:created', (m) => m.name === 'Plain Strike');
+check(
+  'non-Defensive move never stores a defense_success interaction',
+  plainStrike.is_defensive === 0 && plainStrike.interactions.every((r) => r.trigger !== 'defense_success')
+);
+
+// Switching Defensive off and saving removes previously-stored defensive rows
+events.length = 0;
+emit('move:update', {
+  moveId: parry.id, name: 'Parry', isDefault: false, tellId: tells[0].id, isDefensive: false,
+  startupTics: 1, activeTics: 1, recoveryTics: 0, description: 'A defensive stance.',
+  interactions: {
+    defense_success: { text: 'Countered!', automations: [{ type: 'opponent_stamina', amount: 2 }] },
+    defense_failure: { text: '', automations: [{ type: 'self_stamina', amount: 3 }] },
+  },
+});
+const parryOff = await waitEvent('move:updated', (m) => m.id === parry.id);
+check('turning Defensive off and saving removes stored defensive outcome rows', parryOff.is_defensive === 0 && parryOff.interactions.length === 0);
+
+events.length = 0;
+emit('move:delete', { moveId: parry.id });
+await waitEvent('move:deleted', (p) => p.moveId === parry.id);
+events.length = 0;
+emit('move:delete', { moveId: plainStrike.id });
+await waitEvent('move:deleted', (p) => p.moveId === plainStrike.id);
+
 // --- folders: create, assign via move:update, delete returns moves to root ---
 events.length = 0;
 emit('folder:create', { name: 'Punches' });
@@ -362,6 +420,62 @@ emit('folder:delete', { folderId: folder.id });
 await waitEvent('folder:deleted', (p) => p.folderId === folder.id);
 compendium = (await jf('/api/moves')).body;
 check('deleting folder returns moves to root', compendium.moves.find((m) => m.id === hook.id).folder_id === null);
+
+// --- nested disciplines: parentFolderId, invalid parent -> root, delete
+// reparents direct contents + child disciplines ONE LEVEL UP (to the
+// deleted discipline's own parent), not unconditionally to root ---
+events.length = 0;
+emit('folder:create', { name: 'Striking' });
+const disciplineA = await waitEvent('folder:created', (f) => f.name === 'Striking');
+check('root discipline has no parent', disciplineA.parent_id == null);
+
+events.length = 0;
+emit('folder:create', { name: 'Boxing', parentFolderId: disciplineA.id });
+const disciplineB = await waitEvent('folder:created', (f) => f.name === 'Boxing');
+check('nested discipline stores parent_id', disciplineB.parent_id === disciplineA.id);
+
+events.length = 0;
+emit('folder:create', { name: 'Southpaw', parentFolderId: disciplineB.id });
+const disciplineC = await waitEvent('folder:created', (f) => f.name === 'Southpaw');
+check('grandchild discipline nests under its own parent', disciplineC.parent_id === disciplineB.id);
+
+events.length = 0;
+emit('folder:create', { name: 'Bad Parent', parentFolderId: 999999 });
+const badParentFolder = await waitEvent('folder:created', (f) => f.name === 'Bad Parent');
+check('unknown parentFolderId falls back to root', badParentFolder.parent_id == null);
+
+// file a move directly under Boxing, the discipline about to be deleted
+events.length = 0;
+emit('move:set_folder', { moveId: jab.id, folderId: disciplineB.id });
+await waitEvent('move:updated', (m) => m.id === jab.id && m.folder_id === disciplineB.id);
+
+events.length = 0;
+emit('folder:delete', { folderId: disciplineB.id });
+const deletedB = await waitEvent('folder:deleted', (p) => p.folderId === disciplineB.id);
+check('deleting a nested discipline reports its own parent for client navigation', deletedB.parentFolderId === disciplineA.id);
+compendium = (await jf('/api/moves')).body;
+check("directly-contained move promotes to the deleted discipline's parent, not root", compendium.moves.find((m) => m.id === jab.id).folder_id === disciplineA.id);
+check("child discipline promotes to the deleted discipline's parent, not root", compendium.folders.find((f) => f.id === disciplineC.id).parent_id === disciplineA.id);
+
+// Deleting a ROOT discipline (no parent) promotes its contents/children to
+// root — same reparenting code path, just parent_id happens to be null.
+events.length = 0;
+emit('folder:delete', { folderId: disciplineA.id });
+const deletedA = await waitEvent('folder:deleted', (p) => p.folderId === disciplineA.id);
+check('deleting a root discipline promotes contents to root', deletedA.parentFolderId == null);
+compendium = (await jf('/api/moves')).body;
+check('move that had promoted to A now promotes to root', compendium.moves.find((m) => m.id === jab.id).folder_id === null);
+check("grandchild discipline promotes to root once its whole ancestor chain collapses", compendium.folders.find((f) => f.id === disciplineC.id).parent_id === null);
+
+events.length = 0;
+emit('folder:delete', { folderId: disciplineC.id });
+await waitEvent('folder:deleted', (p) => p.folderId === disciplineC.id);
+events.length = 0;
+emit('folder:delete', { folderId: badParentFolder.id });
+await waitEvent('folder:deleted', (p) => p.folderId === badParentFolder.id);
+events.length = 0;
+emit('move:set_folder', { moveId: jab.id, folderId: null });
+await waitEvent('move:updated', (m) => m.id === jab.id && m.folder_id === null);
 
 // tag deletion strips it from moves
 events.length = 0;
@@ -729,6 +843,60 @@ await jf(`/api/characters/${seeded.body.id}`, { method: 'DELETE' });
 events.length = 0;
 emit('character_folder:delete', { folderId: villainsFolder.id });
 await waitEvent('character_folder:deleted', (p) => p.folderId === villainsFolder.id);
+
+// --- nested character folders: parentFolderId, invalid parent -> root,
+// delete reparents direct contents + child folders ONE LEVEL UP (to the
+// deleted folder's own parent), not unconditionally to root ---
+events.length = 0;
+emit('character_folder:create', { name: 'Heroes' });
+const rootFolder = await waitEvent('character_folder:created', (f) => f.name === 'Heroes');
+check('root character folder has no parent', rootFolder.parent_id == null);
+
+events.length = 0;
+emit('character_folder:create', { name: 'Front Line', parentFolderId: rootFolder.id });
+const midFolder = await waitEvent('character_folder:created', (f) => f.name === 'Front Line');
+check('nested character folder stores parent_id', midFolder.parent_id === rootFolder.id);
+
+events.length = 0;
+emit('character_folder:create', { name: 'Tanks', parentFolderId: midFolder.id });
+const leafFolder = await waitEvent('character_folder:created', (f) => f.name === 'Tanks');
+check('grandchild character folder nests under its own parent', leafFolder.parent_id === midFolder.id);
+
+events.length = 0;
+emit('character_folder:create', { name: 'Ghost Parent', parentFolderId: 999999 });
+const ghostParentFolder = await waitEvent('character_folder:created', (f) => f.name === 'Ghost Parent');
+check('unknown parentFolderId falls back to root', ghostParentFolder.parent_id == null);
+
+// file a character directly under Front Line, the folder about to be deleted
+events.length = 0;
+emit('character:set_folder', { characterId: ch.id, folderId: midFolder.id });
+await waitEvent('character:updated', (c) => c.id === ch.id && c.folder_id === midFolder.id);
+
+events.length = 0;
+emit('character_folder:delete', { folderId: midFolder.id });
+const deletedMid = await waitEvent('character_folder:deleted', (p) => p.folderId === midFolder.id);
+check('deleting a nested folder reports its own parent for client navigation', deletedMid.parentFolderId === rootFolder.id);
+sheet = (await jf(`/api/characters/${ch.id}`)).body;
+check("directly-contained character promotes to the deleted folder's parent, not root", sheet.character.folder_id === rootFolder.id);
+charFolders = (await jf('/api/character-folders')).body;
+check("child folder promotes to the deleted folder's parent, not root", charFolders.find((f) => f.id === leafFolder.id).parent_id === rootFolder.id);
+
+// Deleting a ROOT folder (no parent) promotes its contents/children to root
+events.length = 0;
+emit('character_folder:delete', { folderId: rootFolder.id });
+const deletedRoot = await waitEvent('character_folder:deleted', (p) => p.folderId === rootFolder.id);
+check('deleting a root folder promotes contents to root', deletedRoot.parentFolderId == null);
+sheet = (await jf(`/api/characters/${ch.id}`)).body;
+check('character that had promoted to root folder now at true root', sheet.character.folder_id === null);
+charFolders = (await jf('/api/character-folders')).body;
+check('grandchild folder promotes to root once its whole ancestor chain collapses', charFolders.find((f) => f.id === leafFolder.id).parent_id === null);
+
+events.length = 0;
+emit('character_folder:delete', { folderId: leafFolder.id });
+await waitEvent('character_folder:deleted', (p) => p.folderId === leafFolder.id);
+events.length = 0;
+emit('character_folder:delete', { folderId: ghostParentFolder.id });
+await waitEvent('character_folder:deleted', (p) => p.folderId === ghostParentFolder.id);
 
 // --- global search: named library entities only (Characters/Moves/Perks/Tells/Tags) ---
 let searchResults = (await jf('/api/search?q=aaron')).body;

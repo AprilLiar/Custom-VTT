@@ -9,6 +9,9 @@ import {
   sanitizeRollSlots,
   hasAmbiguousRollSlot,
   AMBIGUOUS_ROLL_SLOTS,
+  TRIGGERS,
+  DEFENSE_TRIGGERS,
+  ALL_TRIGGERS,
 } from '../moveLogic.js';
 
 test('frames clamp to 0-10 and coerce junk', () => {
@@ -78,6 +81,61 @@ test('automation-only interaction (no text) is kept', () => {
   });
   assert.equal(rows.length, 1);
   assert.equal(rows[0].trigger, 'block');
+});
+
+test('TRIGGERS/DEFENSE_TRIGGERS/ALL_TRIGGERS shape', () => {
+  assert.deepEqual(TRIGGERS, ['hit', 'block', 'miss']);
+  assert.deepEqual(DEFENSE_TRIGGERS, ['defense_success', 'defense_failure']);
+  assert.deepEqual(ALL_TRIGGERS, ['hit', 'block', 'miss', 'defense_success', 'defense_failure']);
+});
+
+test('normalizeInteractions: defense triggers dropped for a non-Defensive move even with content', () => {
+  const rows = normalizeInteractions(
+    {
+      hit: { text: 'Clean hit', automations: [] },
+      defense_success: { text: 'Counter!', automations: [] },
+      defense_failure: { text: 'Overwhelmed', automations: [{ type: 'self_stamina', amount: 2 }] },
+    },
+    false
+  );
+  assert.equal(rows.length, 1);
+  assert.deepEqual(rows.map((r) => r.trigger), ['hit']);
+});
+
+test('normalizeInteractions: defense triggers accepted for a Defensive move', () => {
+  const rows = normalizeInteractions(
+    {
+      hit: { text: 'Clean hit', automations: [] },
+      defense_success: { text: 'Counter!', automations: [] },
+      defense_failure: { text: '', automations: [{ type: 'self_stamina', amount: 2 }] },
+    },
+    true
+  );
+  assert.equal(rows.length, 3);
+  assert.deepEqual(
+    rows.map((r) => r.trigger).sort(),
+    ['defense_failure', 'defense_success', 'hit']
+  );
+  const failure = rows.find((r) => r.trigger === 'defense_failure');
+  assert.equal(failure.automations[0].amount, 2);
+});
+
+test('normalizeInteractions: empty defense rows on a Defensive move are still dropped', () => {
+  const rows = normalizeInteractions(
+    {
+      defense_success: { text: '', automations: [] },
+      defense_failure: { text: '   ', automations: [] },
+    },
+    true
+  );
+  assert.equal(rows.length, 0);
+});
+
+test('normalizeInteractions: isDefensive defaults to false when omitted', () => {
+  const rows = normalizeInteractions({
+    defense_success: { text: 'Should not be stored', automations: [] },
+  });
+  assert.equal(rows.length, 0);
 });
 
 test('roll bonus clamps to +/-20 and coerces junk', () => {

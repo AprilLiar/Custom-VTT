@@ -30,6 +30,12 @@ export default function MoveCard({
   const hasRoll = move.roll_slots?.length > 0;
   const isLiveRoll = hasRoll && Array.isArray(move.roll_dice);
   const ambiguousRoll = Boolean(move.roll_choice);
+  // Never render an interaction category with nothing in it — covers both
+  // the normal (server-side normalizeInteractions already drops empty rows)
+  // and legacy-data cases (a pre-validation empty row that slipped in).
+  const visibleInteractions = (move.interactions ?? []).filter(
+    (row) => row.text || row.automations?.length > 0
+  );
   const sideActive = (dice) => dice.some((d) => d.status === 'active');
   const formulaFor = (dice) =>
     dice
@@ -84,6 +90,11 @@ export default function MoveCard({
             <span className="min-w-0">
               {move.name}
               {badge}
+              {move.is_defensive && (
+                <span className="ml-1.5 rounded bg-sky-900/50 px-1.5 text-xs font-semibold uppercase text-sky-300">
+                  Defensive
+                </span>
+              )}
             </span>
           </span>
           <span className="flex items-center gap-1.5">
@@ -181,9 +192,9 @@ export default function MoveCard({
 
         {move.description && <p className="text-sm text-zinc-400">{move.description}</p>}
 
-        {move.interactions?.length > 0 && (
+        {visibleInteractions.length > 0 && (
           <div className="space-y-1 border-t border-zinc-800 pt-2">
-            {move.interactions.map((row) => (
+            {visibleInteractions.map((row) => (
               <div key={row.trigger} className="text-sm">
                 <span className="font-semibold text-zinc-300">
                   {TRIGGER_LABELS[row.trigger]}:

@@ -3,6 +3,7 @@ import { AUTOMATION_OPTIONS, TRIGGER_LABELS } from '../lib/moveDisplay.js';
 import { iconFor } from '../lib/styleIcons.js';
 import { fileToSmallImage } from '../lib/image.js';
 import { ROLL_SLOT_NAMES, ROLL_SLOT_LABELS, AMBIGUOUS_ROLL_SLOTS } from '../lib/diceSlots.js';
+import { flattenFolderTree } from '../lib/folders.js';
 import FrameBar from './FrameBar.jsx';
 import Thumb from './Thumb.jsx';
 
@@ -11,6 +12,11 @@ const FRAME_FIELDS = [
   { key: 'active', label: 'Active', color: 'text-red-500' },
   { key: 'recovery', label: 'Recovery', color: 'text-blue-500' },
 ];
+
+// hit/block/miss always show; the two defensive-only triggers only render
+// when the Defensive checkbox is on (see below).
+const BASE_TRIGGERS = ['hit', 'block', 'miss'];
+const DEFENSE_TRIGGERS = ['defense_success', 'defense_failure'];
 
 function AutomationEditor({ automations, onChange }) {
   const add = () => onChange([...automations, { type: 'self_recovery', amount: 1 }]);
@@ -61,6 +67,36 @@ function AutomationEditor({ automations, onChange }) {
   );
 }
 
+// One On Hit/Block/Miss/Defense-outcome box: free text + automation editor.
+function TriggerBox({ trigger, label, interactions, setInteractions }) {
+  return (
+    <div className="rounded-lg border border-zinc-800 p-2">
+      <div className="mb-1 text-xs font-bold uppercase tracking-wide text-zinc-400">{label}</div>
+      <textarea
+        value={interactions[trigger].text}
+        onChange={(e) =>
+          setInteractions((prev) => ({
+            ...prev,
+            [trigger]: { ...prev[trigger], text: e.target.value },
+          }))
+        }
+        placeholder="Text (optional)"
+        rows={2}
+        className="mb-2 w-full rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs text-zinc-300 outline-none focus:border-indigo-500"
+      />
+      <AutomationEditor
+        automations={interactions[trigger].automations}
+        onChange={(automations) =>
+          setInteractions((prev) => ({
+            ...prev,
+            [trigger]: { ...prev[trigger], automations },
+          }))
+        }
+      />
+    </div>
+  );
+}
+
 // Full Move create/edit form. `initial` is a move (with interactions) for
 // edit mode; onSubmit receives the socket payload minus moveId.
 export default function MoveCreator({
@@ -80,6 +116,7 @@ export default function MoveCreator({
   const fileRef = useRef(null);
   const [name, setName] = useState(initial?.name ?? '');
   const [isDefault, setIsDefault] = useState(Boolean(initial?.is_default));
+  const [isDefensive, setIsDefensive] = useState(Boolean(initial?.is_defensive));
   const [tellId, setTellId] = useState(initial?.tell_id ?? tells[0]?.id ?? null);
   const [rightTellId, setRightTellId] = useState(initial?.right_tell_id ?? tells[0]?.id ?? null);
   const [leftTellId, setLeftTellId] = useState(initial?.left_tell_id ?? tells[0]?.id ?? null);
@@ -99,6 +136,8 @@ export default function MoveCreator({
     hit: initInteraction('hit'),
     block: initInteraction('block'),
     miss: initInteraction('miss'),
+    defense_success: initInteraction('defense_success'),
+    defense_failure: initInteraction('defense_failure'),
   });
 
   const total = frames.startup + frames.active + frames.recovery;
@@ -130,6 +169,7 @@ export default function MoveCreator({
     onSubmit({
       name: name.trim(),
       isDefault,
+      isDefensive,
       ...(ambiguousRoll ? { rightTellId, leftTellId } : { tellId }),
       styleAttributeId: styleId,
       folderId,
@@ -183,6 +223,14 @@ export default function MoveCreator({
           />
           Default (everyone has it)
         </label>
+        <label className="flex items-center gap-1.5 text-sm text-zinc-300">
+          <input
+            type="checkbox"
+            checked={isDefensive}
+            onChange={(e) => setIsDefensive(e.target.checked)}
+          />
+          Defensive (adds On Successful/Failed Defense)
+        </label>
         {ambiguousRoll ? (
           <>
             <select
@@ -229,9 +277,9 @@ export default function MoveCreator({
           className="rounded-md border border-zinc-700 bg-zinc-800 px-2 py-2 text-sm text-zinc-300 outline-none focus:border-indigo-500"
         >
           <option value="">Discipline: none</option>
-          {folders.map((f) => (
-            <option key={f.id} value={f.id}>
-              Discipline: {f.name}
+          {flattenFolderTree(folders).map(({ folder, depth, path }) => (
+            <option key={folder.id} value={folder.id}>
+              Discipline: {'—'.repeat(depth)} {path}
             </option>
           ))}
         </select>
@@ -375,35 +423,35 @@ export default function MoveCreator({
       />
 
       <div className="grid gap-3 sm:grid-cols-3">
-        {Object.entries(TRIGGER_LABELS).map(([trigger, label]) => (
-          <div key={trigger} className="rounded-lg border border-zinc-800 p-2">
-            <div className="mb-1 text-xs font-bold uppercase tracking-wide text-zinc-400">
-              {label}
-            </div>
-            <textarea
-              value={interactions[trigger].text}
-              onChange={(e) =>
-                setInteractions((prev) => ({
-                  ...prev,
-                  [trigger]: { ...prev[trigger], text: e.target.value },
-                }))
-              }
-              placeholder="Text (optional)"
-              rows={2}
-              className="mb-2 w-full rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs text-zinc-300 outline-none focus:border-indigo-500"
-            />
-            <AutomationEditor
-              automations={interactions[trigger].automations}
-              onChange={(automations) =>
-                setInteractions((prev) => ({
-                  ...prev,
-                  [trigger]: { ...prev[trigger], automations },
-                }))
-              }
-            />
-          </div>
+        {BASE_TRIGGERS.map((trigger) => (
+          <TriggerBox
+            key={trigger}
+            trigger={trigger}
+            label={TRIGGER_LABELS[trigger]}
+            interactions={interactions}
+            setInteractions={setInteractions}
+          />
         ))}
       </div>
+
+      {isDefensive && (
+        <div>
+          <p className="mb-1 text-xs font-semibold uppercase text-zinc-500">
+            Defensive outcomes
+          </p>
+          <div className="grid gap-3 sm:grid-cols-2">
+            {DEFENSE_TRIGGERS.map((trigger) => (
+              <TriggerBox
+                key={trigger}
+                trigger={trigger}
+                label={TRIGGER_LABELS[trigger]}
+                interactions={interactions}
+                setInteractions={setInteractions}
+              />
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="flex gap-2">
         <button

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useRole } from '../roleContext.jsx';
 import { socket } from '../socket.js';
 import { getRuleset, getTags, getTells, getMoves } from '../lib/api.js';
+import { folderPath } from '../lib/folders.js';
 import MoveCard from './MoveCard.jsx';
 import RollDialog from './RollDialog.jsx';
 
@@ -41,7 +42,6 @@ export default function MovesTab({ data }) {
   const tellById = new Map(tells.map((t) => [t.id, t]));
   const tagById = new Map(tags.map((t) => [t.id, t]));
   const attrById = new Map(ruleset.attributes.map((a) => [a.id, a]));
-  const folderById = new Map(folders.map((f) => [f.id, f]));
 
   const activeStance = stances.find((s) => s.id === character.active_stance_id);
   const activeStyles = activeStance
@@ -82,7 +82,7 @@ export default function MovesTab({ data }) {
             leftTell={move.left_tell_id ? tellById.get(move.left_tell_id) : null}
             style={style}
             tags={effectiveTagIds.map((id) => tagById.get(id)).filter(Boolean)}
-            folderLabel={move.folder_id ? folderById.get(move.folder_id)?.name : undefined}
+            folderLabel={folderPath(move.folder_id, folders) ?? undefined}
             perkModified={move.has_perk_overrides}
             rollBonus={move.roll_bonus ?? 0}
             onRollClick={(side) => setRollFor({ move, side })}
