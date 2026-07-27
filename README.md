@@ -44,6 +44,15 @@ Note: Render's free tier sleeps after inactivity — the first load of a session
 
 ## Project status
 
+Phase 7 (Combat Timing) has begun: `server/combatTiming.js` is a bare, pure-function module for
+the placement/reveal/overflow Tic math — per-side Brain initiative, a move's placement/reveal/
+active-end/recovery-end Tics, live reveal-vs-Tell visibility, and round-relative Tic display —
+unit-tested in isolation with no socket/DB/Arena wiring yet, per the plan's own recommended
+build order for its highest-risk piece. Decided along the way: a character's next move is
+blocked only until their previous move's Startup reveals (not the full Startup+Active+Recovery
+footprint); Active/Recovery still count toward the move's own timeline, just not toward
+blocking the *next* declaration.
+
 The Chat Log now takes free-text messages, not just rolls: a compose box at the bottom lets
 anyone pick a character to post as (PC-only for Players), type a message, and/or attach an
 image or GIF, rendered with the same avatar/name/timestamp header a roll uses. GIFs keep their
