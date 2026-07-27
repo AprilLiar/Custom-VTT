@@ -424,16 +424,40 @@ export async function initDb() {
     "TEXT CHECK(reward_type IN ('story','statistic','perk','move','combat_prowess'))"
   );
 
-  // Singleton row holding the Combat Arena's global state. Phase 6 only
-  // needs the Uneven Combat toggle; phase/round_number/current_tic/etc.
-  // arrive as new columns (via ensureColumn) once Phase 7 builds timing.
+  // Singleton row holding the Combat Arena's global state. Phase 7 adds the
+  // round/Tic timing columns: phase is null until the first Next Round press;
+  // declaring_side is whichever side may currently call move:declare (null
+  // once both sides are done, or already both trivially done); pending_declare_side
+  // is the side still queued behind it (null once there's nothing left to open).
   await run(`
     CREATE TABLE IF NOT EXISTS combat_state (
       id INTEGER PRIMARY KEY CHECK (id = 1),
-      uneven_combat_enabled INTEGER NOT NULL DEFAULT 0
+      uneven_combat_enabled INTEGER NOT NULL DEFAULT 0,
+      phase TEXT CHECK(phase IN ('declaration','tic_countdown')),
+      round_number INTEGER NOT NULL DEFAULT 0,
+      current_tic INTEGER NOT NULL DEFAULT 0,
+      round_start_tic INTEGER NOT NULL DEFAULT 0,
+      round_length INTEGER NOT NULL DEFAULT 5,
+      declaring_side TEXT CHECK(declaring_side IN ('left','right')),
+      pending_declare_side TEXT CHECK(pending_declare_side IN ('left','right'))
     )
   `);
   await run(`INSERT OR IGNORE INTO combat_state (id, uneven_combat_enabled) VALUES (1, 0)`);
+  await ensureColumn('combat_state', 'phase', "TEXT CHECK(phase IN ('declaration','tic_countdown'))");
+  await ensureColumn('combat_state', 'round_number', 'INTEGER NOT NULL DEFAULT 0');
+  await ensureColumn('combat_state', 'current_tic', 'INTEGER NOT NULL DEFAULT 0');
+  await ensureColumn('combat_state', 'round_start_tic', 'INTEGER NOT NULL DEFAULT 0');
+  await ensureColumn('combat_state', 'round_length', 'INTEGER NOT NULL DEFAULT 5');
+  await ensureColumn(
+    'combat_state',
+    'declaring_side',
+    "TEXT CHECK(declaring_side IN ('left','right'))"
+  );
+  await ensureColumn(
+    'combat_state',
+    'pending_declare_side',
+    "TEXT CHECK(pending_declare_side IN ('left','right'))"
+  );
 
   // Who's currently seated in the arena. side + pair_index group participants
   // into facing pairs; a side/pair_index can hold more than one character
@@ -446,6 +470,23 @@ export async function initDb() {
       side TEXT NOT NULL CHECK(side IN ('left','right')),
       pair_index INTEGER NOT NULL,
       UNIQUE(character_id)
+    )
+  `);
+
+  // Per-round queued moves — see server/combatTiming.js for the placement/
+  // reveal math this feeds. Persisted (not ephemeral like chat) so they
+  // survive a mid-round reload; the server withholds move_id/move_name from
+  // every broadcast/response until the reveal Tic (see getPublicDeclaredMoves
+  // in index.js) — Tells are never secret, only the real move is.
+  await run(`
+    CREATE TABLE IF NOT EXISTS declared_moves (
+      id INTEGER PRIMARY KEY,
+      character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+      move_id INTEGER NOT NULL REFERENCES moves(id),
+      round_number INTEGER NOT NULL,
+      queue_order INTEGER NOT NULL,
+      placement_tic INTEGER NOT NULL,
+      reveal_tic INTEGER NOT NULL
     )
   `);
 

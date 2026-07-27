@@ -22,6 +22,13 @@ import {
   AMBIGUOUS_ROLL_SLOTS,
 } from './moveLogic.js';
 import { effectiveFrames, PERK_HOOKS } from './perkAutomations.js';
+import {
+  resolveSideInitiative,
+  computePlacementTic,
+  computeMoveFootprint,
+  isMoveRevealedTo,
+  relativeTic,
+} from './combatTiming.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3001;
@@ -271,17 +278,78 @@ const diePayload = (die) => ({
 const sqliteToIso = (ts) =>
   ts && !ts.includes('T') ? new Date(ts.replace(' ', 'T') + 'Z').toISOString() : ts;
 
-// Broadcasts the Combat Arena's current seating + toggle — called from the
-// combat:* socket handlers below and from character delete (a seated
-// character leaving the roster needs the arena to drop them too).
+// Every declared move, Tell always included (never secret) but move_id/
+// move_name withheld until currentTic reaches its reveal_tic — matches the
+// plan's accepted no-auth limitation: the server can't tell which client is
+// "the owner", so it withholds from everyone equally and relies on the
+// declaring client to remember its own move locally (see move:declare's
+// direct declared_move:own emit).
+async function getPublicDeclaredMoves(currentTic) {
+  const rows = await all(`
+    SELECT dm.id, dm.character_id, dm.round_number, dm.queue_order,
+           dm.placement_tic, dm.reveal_tic,
+           m.id AS move_id, m.name AS move_name, m.tell_id, m.right_tell_id,
+           m.left_tell_id, m.active_tics, m.recovery_tics
+    FROM declared_moves dm
+    JOIN moves m ON m.id = dm.move_id
+    ORDER BY dm.id
+  `);
+  return rows.map((row) => {
+    const isRevealed = isMoveRevealedTo({
+      revealTic: row.reveal_tic,
+      currentTic,
+      viewerIsOwner: false,
+    });
+    return {
+      id: row.id,
+      characterId: row.character_id,
+      roundNumber: row.round_number,
+      queueOrder: row.queue_order,
+      placementTic: row.placement_tic,
+      revealTic: row.reveal_tic,
+      activeEndTic: row.reveal_tic + row.active_tics,
+      recoveryEndTic: row.reveal_tic + row.active_tics + row.recovery_tics,
+      tellId: row.tell_id,
+      rightTellId: row.right_tell_id,
+      leftTellId: row.left_tell_id,
+      isRevealed,
+      moveId: isRevealed ? row.move_id : null,
+      moveName: isRevealed ? row.move_name : null,
+    };
+  });
+}
+
+// Broadcasts the Combat Arena's full current state — seating/toggle plus
+// (Phase 7) the round/Tic timing state and every declared move — called
+// from the combat:*/move:declare socket handlers below and from character
+// delete (a seated character leaving the roster needs the arena to drop
+// them too). Always the full state, not a delta, same pattern `participants`
+// already used before Phase 7.
 async function emitCombatUpdated() {
-  const state = await one('SELECT * FROM combat_state WHERE id = 1');
-  const participants = await all(
-    'SELECT * FROM combat_participants ORDER BY side, pair_index, id'
-  );
+  const [state, participants] = await Promise.all([
+    one('SELECT * FROM combat_state WHERE id = 1'),
+    all('SELECT * FROM combat_participants ORDER BY side, pair_index, id'),
+  ]);
+  const declaredMoves = await getPublicDeclaredMoves(state.current_tic);
+  const tic = relativeTic({
+    tic: state.current_tic,
+    roundStartTic: state.round_start_tic,
+    roundLength: state.round_length,
+  });
   io.emit('combat:updated', {
     unevenCombatEnabled: Boolean(state.uneven_combat_enabled),
+    phase: state.phase,
+    roundNumber: state.round_number,
+    currentTic: state.current_tic,
+    roundStartTic: state.round_start_tic,
+    roundLength: state.round_length,
+    relativeTic: tic.relative,
+    isOverflow: tic.isOverflow,
+    overflowBy: tic.overflowBy,
+    declaringSide: state.declaring_side,
+    pendingDeclareSide: state.pending_declare_side,
     participants,
+    declaredMoves,
   });
 }
 
@@ -430,9 +498,11 @@ app.get('/api/ruleset', wrap(async (_req, res) => {
 // Combat Arena: who's seated, the Uneven Combat toggle, each seated
 // character's simplified stats (portrait/dice/stamina/active-stance name —
 // read-only glance, kept live client-side via the existing
-// character:updated/die:updated/stance:activated broadcasts), and every
-// counter relevant to the arena (standalone ones, plus any character
-// counter flagged Show in Combat).
+// character:updated/die:updated/stance:activated broadcasts), each seated
+// character's available moves (for the Declaration Phase's declare-a-move
+// picker), every counter relevant to the arena (standalone ones, plus any
+// character counter flagged Show in Combat), the round/Tic timing state,
+// and every declared move so far this fight (Tell-only until revealed).
 app.get('/api/combat', wrap(async (_req, res) => {
   const [state, participants] = await Promise.all([
     one('SELECT * FROM combat_state WHERE id = 1'),
@@ -445,9 +515,10 @@ app.get('/api/combat', wrap(async (_req, res) => {
   // Batched IN-clause lookups instead of a per-participant loop — this used
   // to be 3 sequential queries PER seated character (a real N+1 against
   // Turso's networked connection, and the main cause of "adding a
-  // character takes ~4 seconds"); now it's 3 total, run concurrently,
-  // regardless of how many are seated.
-  const [charRows, diceRows, stanceRows, counters] = await Promise.all([
+  // character takes ~4 seconds"); now it's 4 total (moves is naturally one
+  // per character, getMovesFor's own shape), run concurrently regardless of
+  // how many are seated.
+  const [charRows, diceRows, stanceRows, counters, movesByChar, declaredMoves] = await Promise.all([
     charIds.length ? all(`SELECT * FROM characters WHERE id IN (${marks})`, charIds) : [],
     charIds.length ? all(`SELECT * FROM dice WHERE character_id IN (${marks}) ORDER BY id`, charIds) : [],
     charIds.length ? all(`SELECT * FROM stances WHERE character_id IN (${marks}) ORDER BY id`, charIds) : [],
@@ -457,6 +528,8 @@ app.get('/api/combat', wrap(async (_req, res) => {
           charIds
         )
       : all('SELECT * FROM counters WHERE character_id IS NULL ORDER BY id'),
+    Promise.all(charIds.map((id) => getMovesFor(id))),
+    getPublicDeclaredMoves(state.current_tic),
   ]);
 
   const characters = {};
@@ -465,12 +538,32 @@ app.get('/api/combat', wrap(async (_req, res) => {
   }
   for (const die of diceRows) characters[die.character_id]?.dice.push(die);
   for (const stance of stanceRows) characters[stance.character_id]?.stances.push(stance);
+  charIds.forEach((id, i) => {
+    if (characters[id]) characters[id].moves = movesByChar[i];
+  });
+
+  const tic = relativeTic({
+    tic: state.current_tic,
+    roundStartTic: state.round_start_tic,
+    roundLength: state.round_length,
+  });
 
   res.json({
     unevenCombatEnabled: Boolean(state.uneven_combat_enabled),
+    phase: state.phase,
+    roundNumber: state.round_number,
+    currentTic: state.current_tic,
+    roundStartTic: state.round_start_tic,
+    roundLength: state.round_length,
+    relativeTic: tic.relative,
+    isOverflow: tic.isOverflow,
+    overflowBy: tic.overflowBy,
+    declaringSide: state.declaring_side,
+    pendingDeclareSide: state.pending_declare_side,
     participants,
     characters,
     counters,
+    declaredMoves,
   });
 }));
 
@@ -549,6 +642,7 @@ app.delete('/api/characters/:id', wrap(async (req, res) => {
   await run('DELETE FROM character_move_roll_bonuses WHERE character_id = ?', [character.id]);
   await run('DELETE FROM character_perks WHERE character_id = ?', [character.id]);
   await run('DELETE FROM counters WHERE character_id = ?', [character.id]);
+  await run('DELETE FROM declared_moves WHERE character_id = ?', [character.id]);
   const wasSeated = await one('SELECT id FROM combat_participants WHERE character_id = ?', [
     character.id,
   ]);
@@ -1057,6 +1151,10 @@ io.on('connection', (socket) => {
     await run('DELETE FROM character_move_tags WHERE move_id = ?', [move.id]);
     await run('DELETE FROM character_move_overrides WHERE move_id = ?', [move.id]);
     await run('DELETE FROM character_move_roll_bonuses WHERE move_id = ?', [move.id]);
+    // declared_moves.move_id has no ON DELETE clause (unlike character_id's
+    // CASCADE) — deleting a move that's currently declared mid-fight would
+    // otherwise throw a foreign key error and leave the move half-deleted.
+    await run('DELETE FROM declared_moves WHERE move_id = ?', [move.id]);
     await run('DELETE FROM moves WHERE id = ?', [move.id]);
     io.emit('move:deleted', { moveId: move.id });
   });
@@ -1581,6 +1679,202 @@ io.on('connection', (socket) => {
 
   on('combat:clear', async () => {
     await run('DELETE FROM combat_participants');
+    await run('DELETE FROM declared_moves');
+    await run(`
+      UPDATE combat_state SET phase = NULL, round_number = 0, current_tic = 0,
+      round_start_tic = 0, declaring_side = NULL, pending_declare_side = NULL
+      WHERE id = 1
+    `);
+    await emitCombatUpdated();
+  });
+
+  // Phase 7 — Combat Timing. Uses server/combatTiming.js's pure functions
+  // for all placement/reveal/overflow math; see that module + the plan's
+  // Combat Timing mechanic section for the decided rules wired together
+  // here. GM-only client-side for next_round/start_tic_countdown/
+  // tic_forward/tic_backward (matching the plan's own event contract);
+  // move:declare and side_done_declaring are open-access, matching how
+  // declaring/rolling for a character already works everywhere else.
+  on('combat:next_round', async () => {
+    const state = await one('SELECT * FROM combat_state WHERE id = 1');
+    if (state.phase === 'declaration') return;
+    const participants = await all('SELECT * FROM combat_participants');
+    if (!participants.length) return;
+
+    const charIds = [...new Set(participants.map((p) => p.character_id))];
+    const marks = charIds.map(() => '?').join(',');
+    const [charRows, brainDice] = await Promise.all([
+      all(`SELECT * FROM characters WHERE id IN (${marks})`, charIds),
+      all(
+        `SELECT * FROM dice WHERE character_id IN (${marks}) AND slot_name = 'Brain'`,
+        charIds
+      ),
+    ]);
+    const charById = new Map(charRows.map((c) => [c.id, c]));
+    const brainByChar = new Map(brainDice.map((d) => [d.character_id, d]));
+
+    // Brain rolls per side, posted to chat as normal initiative rolls — an
+    // incapacitated/missing Brain die is silently dropped from its side's
+    // initiative, same as pool:roll drops incapacitated dice elsewhere.
+    const rollsBySide = { left: [], right: [] };
+    for (const p of participants) {
+      const die = brainByChar.get(p.character_id);
+      const character = charById.get(p.character_id);
+      if (!die || die.status !== 'active' || !character) continue;
+      const result = rollDie(die.current_size) + die.bonus;
+      rollsBySide[p.side].push(result);
+      await logRoll({
+        characterId: character.id,
+        characterName: character.name,
+        modifier: 0,
+        dice: [{ slot_name: 'Brain', size: die.current_size, bonus: die.bonus, result }],
+      });
+    }
+
+    const hasLeft = participants.some((p) => p.side === 'left');
+    const hasRight = participants.some((p) => p.side === 'right');
+    let declaringSide;
+    let pendingDeclareSide = null;
+    if (hasLeft && hasRight) {
+      const { firstToDeclare, secondToDeclare } = resolveSideInitiative(rollsBySide);
+      declaringSide = firstToDeclare;
+      pendingDeclareSide = secondToDeclare;
+    } else {
+      declaringSide = hasLeft ? 'left' : 'right';
+    }
+
+    await run(
+      `UPDATE combat_state SET phase = 'declaration', round_number = round_number + 1,
+       round_start_tic = current_tic, declaring_side = ?, pending_declare_side = ?
+       WHERE id = 1`,
+      [declaringSide, pendingDeclareSide]
+    );
+    await emitCombatUpdated();
+  });
+
+  on('move:declare', async ({ characterId, moveId }) => {
+    const state = await one('SELECT * FROM combat_state WHERE id = 1');
+    if (state.phase !== 'declaration') return;
+    const participant = await one(
+      'SELECT * FROM combat_participants WHERE character_id = ?',
+      [characterId]
+    );
+    if (!participant || participant.side !== state.declaring_side) return;
+    const character = await getCharacter(characterId);
+    const move = await one('SELECT * FROM moves WHERE id = ?', [moveId]);
+    if (!character || !move) return;
+
+    // Move must actually be available to this character (Default, or
+    // granted) — same rule getMovesFor uses to build a character's list.
+    if (!move.is_default) {
+      const granted = await one(
+        'SELECT id FROM character_moves WHERE character_id = ? AND move_id = ?',
+        [character.id, move.id]
+      );
+      if (!granted) return;
+    }
+    // Learnability: a styled move is only usable while the character's
+    // ACTIVE stance carries that style (Tab 3 dims it otherwise).
+    if (move.style_attribute_id != null) {
+      const stance = character.active_stance_id
+        ? await one('SELECT * FROM stances WHERE id = ?', [character.active_stance_id])
+        : null;
+      if (
+        !stance ||
+        (stance.attribute_a_id !== move.style_attribute_id &&
+          stance.attribute_b_id !== move.style_attribute_id)
+      ) {
+        return;
+      }
+    }
+
+    const last = await one(
+      'SELECT reveal_tic FROM declared_moves WHERE character_id = ? ORDER BY reveal_tic DESC LIMIT 1',
+      [character.id]
+    );
+    const placementTic = computePlacementTic({
+      roundStartTic: state.round_start_tic,
+      previousRevealTic: last ? last.reveal_tic : null,
+    });
+    const { revealTic } = computeMoveFootprint({
+      placementTic,
+      startupTics: move.startup_tics,
+      activeTics: move.active_tics,
+      recoveryTics: move.recovery_tics,
+    });
+    const countRow = await one(
+      'SELECT COUNT(*) AS count FROM declared_moves WHERE character_id = ? AND round_number = ?',
+      [character.id, state.round_number]
+    );
+    const queueOrder = countRow.count + 1;
+
+    const result = await run(
+      `INSERT INTO declared_moves (character_id, move_id, round_number, queue_order, placement_tic, reveal_tic)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [character.id, move.id, state.round_number, queueOrder, placementTic, revealTic]
+    );
+    const declaredMoveId = Number(result.lastInsertRowid);
+
+    const publicPayload = {
+      id: declaredMoveId,
+      characterId: character.id,
+      roundNumber: state.round_number,
+      queueOrder,
+      placementTic,
+      revealTic,
+      activeEndTic: revealTic + move.active_tics,
+      recoveryEndTic: revealTic + move.active_tics + move.recovery_tics,
+      tellId: move.tell_id,
+      rightTellId: move.right_tell_id,
+      leftTellId: move.left_tell_id,
+      isRevealed: false,
+      moveId: null,
+      moveName: null,
+    };
+    // Everyone gets the redacted (Tell-only) version via the usual full
+    // broadcast; only the declaring socket also gets the real move, so its
+    // own client can remember it locally until the natural reveal Tic (see
+    // the plan's no-auth known-limitation note: the server can't otherwise
+    // tell whose client this is).
+    await emitCombatUpdated();
+    socket.emit('declared_move:own', {
+      ...publicPayload,
+      isRevealed: true,
+      moveId: move.id,
+      moveName: move.name,
+    });
+  });
+
+  on('combat:side_done_declaring', async ({ side }) => {
+    if (!['left', 'right'].includes(side)) return;
+    const state = await one('SELECT * FROM combat_state WHERE id = 1');
+    if (state.phase !== 'declaration' || state.declaring_side !== side) return;
+    await run(
+      'UPDATE combat_state SET declaring_side = ?, pending_declare_side = NULL WHERE id = 1',
+      [state.pending_declare_side]
+    );
+    await emitCombatUpdated();
+  });
+
+  on('combat:start_tic_countdown', async () => {
+    const state = await one('SELECT * FROM combat_state WHERE id = 1');
+    if (state.phase !== 'declaration' || state.declaring_side != null) return;
+    await run("UPDATE combat_state SET phase = 'tic_countdown' WHERE id = 1");
+    await emitCombatUpdated();
+  });
+
+  on('combat:tic_forward', async () => {
+    const state = await one('SELECT * FROM combat_state WHERE id = 1');
+    if (state.phase !== 'tic_countdown') return;
+    await run('UPDATE combat_state SET current_tic = current_tic + 1 WHERE id = 1');
+    await emitCombatUpdated();
+  });
+
+  on('combat:tic_backward', async () => {
+    const state = await one('SELECT * FROM combat_state WHERE id = 1');
+    if (state.phase !== 'tic_countdown') return;
+    const newTic = Math.max(state.round_start_tic, state.current_tic - 1);
+    await run('UPDATE combat_state SET current_tic = ? WHERE id = 1', [newTic]);
     await emitCombatUpdated();
   });
 });
