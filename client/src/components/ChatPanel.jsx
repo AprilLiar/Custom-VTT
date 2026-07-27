@@ -5,6 +5,7 @@ import { dieFormula } from '../lib/dice.js';
 import { fileToChatImage } from '../lib/image.js';
 import { useRole } from '../roleContext.jsx';
 import Thumb from './Thumb.jsx';
+import FrameBar from './FrameBar.jsx';
 
 function Entry({ entry, character }) {
   const time = new Date(entry.timestamp).toLocaleTimeString([], {
@@ -38,6 +39,23 @@ function Entry({ entry, character }) {
               />
             )}
           </div>
+        ) : entry.kind === 'move_reveal' ? (
+          entry.move ? (
+            <div className="mt-1 flex items-center gap-2 rounded-md bg-zinc-800/60 p-1.5">
+              <Thumb record={{ image_data: entry.move.imageData, image_mime_type: entry.move.imageMimeType }} name={entry.move.name} size="h-8 w-8" />
+              <div className="min-w-0">
+                <div className="truncate text-sm font-semibold text-zinc-100">{entry.move.name}</div>
+                <FrameBar
+                  startup={entry.move.startupTics}
+                  active={entry.move.activeTics}
+                  recovery={entry.move.recoveryTics}
+                  size="h-2.5 w-2.5"
+                />
+              </div>
+            </div>
+          ) : (
+            <p className="mt-1 italic text-zinc-600">(move deleted)</p>
+          )
         ) : (
           <>
             <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-zinc-400">
@@ -182,13 +200,16 @@ export default function ChatPanel({ open, onClose }) {
     getChat().then(setEntries).catch(console.error);
     const onRoll = (entry) => setEntries((prev) => [...prev, entry]);
     const onMessage = (entry) => setEntries((prev) => [...prev, entry]);
+    const onMoveReveal = (entry) => setEntries((prev) => [...prev, entry]);
     const onCleared = () => setEntries([]);
     socket.on('roll:result', onRoll);
     socket.on('chat:message', onMessage);
+    socket.on('chat:move_reveal', onMoveReveal);
     socket.on('chat:cleared', onCleared);
     return () => {
       socket.off('roll:result', onRoll);
       socket.off('chat:message', onMessage);
+      socket.off('chat:move_reveal', onMoveReveal);
       socket.off('chat:cleared', onCleared);
     };
   }, []);

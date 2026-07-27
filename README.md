@@ -56,13 +56,16 @@ move's reveal point, the real move name after (recomputing live, so stepping bac
 re-hides a move that hasn't "really" happened yet). A character's next move is blocked only
 until their *previous* move's Startup reveals, not its full Startup+Active+Recovery footprint —
 and since the Tic counter never resets, a move overflowing past its round's end correctly keeps
-blocking that character into the next round with no special-casing anywhere. Rolling a revealed
-move's configured Roll already works today (the same Roll button/dialog used everywhere else);
-posting that reveal into the Chat Log as a proper card is the one deliberately deferred piece,
-its own next step. The no-auth model means the server can't tell whose client declared a given
-move — it withholds every declared move's real identity from every broadcast/response equally,
-and the declaring client alone remembers its own move locally (lost on reload, an accepted
-trade-off already called out in the plan).
+blocking that character into the next round with no special-casing anywhere. The no-auth model
+means the server can't tell whose client declared a given move — it withholds every declared
+move's real identity from every broadcast/response equally, and the declaring client alone
+remembers its own move locally (lost on reload, an accepted trade-off already called out in the
+plan). Phase 7 is now complete: the moment a declared move actually reveals, a compact card
+(portrait, name, Startup/Active/Recovery frame-data strip) posts itself to the Chat Log
+automatically — no button, no manual step — and never duplicates even if the GM steps the Tic
+counter back and forth across the same threshold a dozen times. Rolling that move (if it has a
+Roll) is completely unchanged, the same Roll button/dialog used everywhere else, and lands as
+its own ordinary roll entry rather than merging into the reveal card.
 
 The Chat Log now takes free-text messages, not just rolls: a compose box at the bottom lets
 anyone pick a character to post as (PC-only for Players), type a message, and/or attach an

@@ -70,6 +70,37 @@ async function migrateMoveInteractionsTrigger() {
   await run('ALTER TABLE move_interactions_v2 RENAME TO move_interactions');
 }
 
+// chat_log.kind originally had a 2-value CHECK ('roll','message'). Same
+// rebuild pattern as move_interactions.trigger above — a fresh database's
+// CREATE TABLE IF NOT EXISTS already gets the expanded CHECK directly, so
+// this only fires against a database created before move_reveal existed.
+async function migrateChatLogKind() {
+  const row = await one(
+    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'chat_log'"
+  );
+  if (!row || row.sql.includes('move_reveal')) return;
+  await run(`
+    CREATE TABLE chat_log_v2 (
+      id INTEGER PRIMARY KEY,
+      kind TEXT NOT NULL DEFAULT 'roll' CHECK(kind IN ('roll','message','move_reveal')),
+      character_id INTEGER NOT NULL,
+      dice_rolled TEXT NOT NULL,
+      modifier INTEGER NOT NULL DEFAULT 0,
+      move_id INTEGER,
+      content TEXT,
+      image_data TEXT,
+      image_mime_type TEXT,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  await run(`
+    INSERT INTO chat_log_v2 (id, kind, character_id, dice_rolled, modifier, move_id, content, image_data, image_mime_type, created_at)
+    SELECT id, kind, character_id, dice_rolled, modifier, move_id, content, image_data, image_mime_type, created_at FROM chat_log
+  `);
+  await run('DROP TABLE chat_log');
+  await run('ALTER TABLE chat_log_v2 RENAME TO chat_log');
+}
+
 export async function initDb() {
   // Phase 0's demo table is no longer used.
   await run('DROP TABLE IF EXISTS pings');
@@ -170,20 +201,22 @@ export async function initDb() {
   // No FK clause on character_id: libsql enforces foreign keys, and chat
   // entries must survive character deletion (history shows "(deleted)").
   // kind='message' rows are free-text chat posts (optionally with an
-  // attached image/GIF); dice_rolled stays '[]' for them rather than NULL,
-  // since it predates message rows and was already NOT NULL on existing
-  // databases. The text column is named `content`, not `message` — a column
-  // literally named "message" would collide with ensureColumn's word-boundary
-  // detection, which would then false-positive-match the CHECK constraint's
-  // own `'message'` enum literal above and skip adding the column entirely.
+  // attached image/GIF); kind='move_reveal' rows mark a declared move's
+  // reveal (move_id set, posted automatically — see combat:tic_forward);
+  // dice_rolled stays '[]' for both rather than NULL, since it predates
+  // them and was already NOT NULL on existing databases. The text column is
+  // named `content`, not `message` — a column literally named "message"
+  // would collide with ensureColumn's word-boundary detection, which would
+  // then false-positive-match the CHECK constraint's own `'message'` enum
+  // literal above and skip adding the column entirely.
   await run(`
     CREATE TABLE IF NOT EXISTS chat_log (
       id INTEGER PRIMARY KEY,
-      kind TEXT NOT NULL DEFAULT 'roll' CHECK(kind IN ('roll','message')),
+      kind TEXT NOT NULL DEFAULT 'roll' CHECK(kind IN ('roll','message','move_reveal')),
       character_id INTEGER NOT NULL,
       dice_rolled TEXT NOT NULL, -- JSON array of {slot_name, size, bonus, result}
       modifier INTEGER NOT NULL DEFAULT 0,
-      move_id INTEGER, -- moves table arrives in Phase 3
+      move_id INTEGER, -- set for kind='move_reveal'; no FK, same survive-deletion reasoning as character_id
       content TEXT, -- free-text message content; kind='message' only
       image_data TEXT, -- base64; kind='message' only. GIFs stored raw/unresized to keep animation
       image_mime_type TEXT,
@@ -193,11 +226,12 @@ export async function initDb() {
   await ensureColumn(
     'chat_log',
     'kind',
-    "TEXT NOT NULL DEFAULT 'roll' CHECK(kind IN ('roll','message'))"
+    "TEXT NOT NULL DEFAULT 'roll' CHECK(kind IN ('roll','message','move_reveal'))"
   );
   await ensureColumn('chat_log', 'content', 'TEXT');
   await ensureColumn('chat_log', 'image_data', 'TEXT');
   await ensureColumn('chat_log', 'image_mime_type', 'TEXT');
+  await migrateChatLogKind();
 
   // World-level Tell list, GM-editable at any time (unlike the fixed styles).
   // Tells carry small uploaded images (commissioned art), not icons — the
@@ -478,6 +512,9 @@ export async function initDb() {
   // survive a mid-round reload; the server withholds move_id/move_name from
   // every broadcast/response until the reveal Tic (see getPublicDeclaredMoves
   // in index.js) — Tells are never secret, only the real move is.
+  // reveal_posted tracks whether this row's move_reveal chat card has
+  // already gone out, since reveal state itself is recomputed live (stepping
+  // the Tic counter back and forth must not re-post — see combat:tic_forward).
   await run(`
     CREATE TABLE IF NOT EXISTS declared_moves (
       id INTEGER PRIMARY KEY,
@@ -486,9 +523,11 @@ export async function initDb() {
       round_number INTEGER NOT NULL,
       queue_order INTEGER NOT NULL,
       placement_tic INTEGER NOT NULL,
-      reveal_tic INTEGER NOT NULL
+      reveal_tic INTEGER NOT NULL,
+      reveal_posted INTEGER NOT NULL DEFAULT 0
     )
   `);
+  await ensureColumn('declared_moves', 'reveal_posted', 'INTEGER NOT NULL DEFAULT 0');
 
   await seedRuleset();
   await seedTells();
