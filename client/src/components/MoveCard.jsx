@@ -1,30 +1,45 @@
 import { TRIGGER_LABELS, automationLabel } from '../lib/moveDisplay.js';
 import { iconFor } from '../lib/styleIcons.js';
 import { dieFormula } from '../lib/dice.js';
+import { ROLL_SLOT_LABELS } from '../lib/diceSlots.js';
 import FrameBar from './FrameBar.jsx';
 import Thumb from './Thumb.jsx';
 
 // The Move card per spec: a special header showing ONLY the Tell (art +
-// name), then move art + name + frame data, style/tags, description, and the
-// On Hit/Block/Miss interaction rows with automation chips.
+// name) — or, for a move with an ambiguous Left/Right Roll slot, BOTH
+// possible Tells side by side, always, since nothing's chosen until the
+// move is actually rolled — then move art + name + frame data, style/tags,
+// discipline, description, and the On Hit/Block/Miss interaction rows.
 export default function MoveCard({
   move,
   tell,
+  rightTell, // set only when the move's Roll has a Left/Right appendage slot
+  leftTell,
   style, // attribute row for the move's style, or null
   tags = [], // tag rows for move.tag_ids
   badge,
   dimmed = false,
   dimReason,
-  folderLabel,
+  folderLabel = 'Without Discipline', // the martial-arts discipline (compendium folder) this move belongs to
   perkModified = false, // this character's frame/tags include Perk deltas
   rollBonus = 0, // per-character bonus on rolls with this move, from a Perk
-  onRollClick, // present on the character sheet's Moves tab only
+  onRollClick, // present on the character sheet's Moves tab only; (side) => void
   actions,
 }) {
   const StyleIcon = style ? iconFor(style.icon) : null;
   const hasRoll = move.roll_slots?.length > 0;
   const isLiveRoll = hasRoll && Array.isArray(move.roll_dice);
-  const activeRollDice = isLiveRoll ? move.roll_dice.filter((d) => d.status === 'active') : [];
+  const ambiguousRoll = Boolean(move.roll_choice);
+  const sideActive = (dice) => dice.some((d) => d.status === 'active');
+  const formulaFor = (dice) =>
+    dice
+      .map(
+        (d) =>
+          `${d.slot_name} (${
+            d.status === 'incapacitated' ? '—' : dieFormula(d.current_size, d.bonus, move.effective_roll_modifier ?? 0)
+          })`
+      )
+      .join(' + ');
   return (
     <div
       title={dimmed ? dimReason : undefined}
@@ -33,15 +48,33 @@ export default function MoveCard({
       }`}
     >
       <div className="flex items-center gap-2 border-b border-zinc-800 bg-zinc-800/60 px-3 py-1.5">
-        <Thumb record={tell} name={tell?.name} size="h-5 w-5" />
-        <span className="text-xs font-semibold uppercase tracking-wide text-zinc-400">
-          {tell?.name ?? '—'}
-        </span>
-        {folderLabel && (
-          <span className="ml-auto rounded bg-zinc-700/50 px-1.5 text-xs text-zinc-400">
-            📁 {folderLabel}
-          </span>
+        {rightTell || leftTell ? (
+          <>
+            <span className="flex items-center gap-1">
+              <Thumb record={rightTell} name={rightTell?.name} size="h-5 w-5" />
+              <span className="text-xs font-semibold uppercase tracking-wide text-zinc-400">
+                {rightTell?.name ?? '—'}
+              </span>
+            </span>
+            <span className="text-zinc-600">/</span>
+            <span className="flex items-center gap-1">
+              <Thumb record={leftTell} name={leftTell?.name} size="h-5 w-5" />
+              <span className="text-xs font-semibold uppercase tracking-wide text-zinc-400">
+                {leftTell?.name ?? '—'}
+              </span>
+            </span>
+          </>
+        ) : (
+          <>
+            <Thumb record={tell} name={tell?.name} size="h-5 w-5" />
+            <span className="text-xs font-semibold uppercase tracking-wide text-zinc-400">
+              {tell?.name ?? '—'}
+            </span>
+          </>
         )}
+        <span className="ml-auto rounded bg-zinc-700/50 px-1.5 text-xs text-zinc-400">
+          📁 {folderLabel}
+        </span>
       </div>
 
       <div className="space-y-2 p-3">
@@ -85,31 +118,41 @@ export default function MoveCard({
           <div className="flex flex-wrap items-center gap-1.5 text-xs">
             <span className="font-semibold uppercase text-zinc-500">Roll:</span>
             {isLiveRoll ? (
-              <button
-                type="button"
-                onClick={onRollClick}
-                disabled={!onRollClick || activeRollDice.length === 0}
-                title={
-                  activeRollDice.length === 0
-                    ? 'Every die in this Roll is incapacitated'
-                    : 'Roll this move’s dice'
-                }
-                className="rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 font-mono text-zinc-200 hover:border-indigo-500 hover:text-indigo-300 disabled:opacity-40"
-              >
-                {move.roll_dice
-                  .map(
-                    (d) =>
-                      `${d.slot_name} (${
-                        d.status === 'incapacitated'
-                          ? '—'
-                          : dieFormula(d.current_size, d.bonus, move.effective_roll_modifier ?? 0)
-                      })`
-                  )
-                  .join(' + ')}
-              </button>
+              ambiguousRoll ? (
+                ['right', 'left'].map((side) => {
+                  const sideDice = [...move.roll_dice, ...move.roll_choice[side]];
+                  const active = sideActive(sideDice);
+                  return (
+                    <button
+                      key={side}
+                      type="button"
+                      onClick={() => onRollClick?.(side)}
+                      disabled={!onRollClick || !active}
+                      title={active ? `Roll as the ${side === 'right' ? 'Right' : 'Left'} appendage` : 'Every die on this side is incapacitated'}
+                      className="rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 font-mono text-zinc-200 hover:border-indigo-500 hover:text-indigo-300 disabled:opacity-40"
+                    >
+                      {side === 'right' ? 'Right' : 'Left'}: {formulaFor(sideDice)}
+                    </button>
+                  );
+                })
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => onRollClick?.(null)}
+                  disabled={!onRollClick || !sideActive(move.roll_dice)}
+                  title={
+                    sideActive(move.roll_dice)
+                      ? 'Roll this move’s dice'
+                      : 'Every die in this Roll is incapacitated'
+                  }
+                  className="rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 font-mono text-zinc-200 hover:border-indigo-500 hover:text-indigo-300 disabled:opacity-40"
+                >
+                  {formulaFor(move.roll_dice)}
+                </button>
+              )
             ) : (
               <span className="text-zinc-400">
-                {move.roll_slots.join(' + ')}
+                {move.roll_slots.map((s) => ROLL_SLOT_LABELS[s] ?? s).join(' + ')}
                 {move.roll_modifier ? ` (${move.roll_modifier > 0 ? '+' : ''}${move.roll_modifier})` : ''}
               </span>
             )}

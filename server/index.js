@@ -18,6 +18,8 @@ import {
   normalizeInteractions,
   clampRollBonus,
   sanitizeRollSlots,
+  hasAmbiguousRollSlot,
+  AMBIGUOUS_ROLL_SLOTS,
 } from './moveLogic.js';
 import {
   normalizeAutomations,
@@ -185,16 +187,31 @@ async function getMovesFor(characterId) {
     // dice, and fold the move's own roll_modifier together with any
     // Perk-granted per-move roll_bonus into one suggested modifier — the
     // "specified bonus" the Roll dialog pre-fills, editable manually from there.
-    const rollDice = move.roll_slots
-      .map((slotName) => dieBySlot.get(slotName))
-      .filter(Boolean)
-      .map((d) => ({
-        dieId: d.id,
-        slot_name: d.slot_name,
-        current_size: d.current_size,
-        bonus: d.bonus,
-        status: d.status,
-      }));
+    const toDieInfo = (d) => ({
+      dieId: d.id,
+      slot_name: d.slot_name,
+      current_size: d.current_size,
+      bonus: d.bonus,
+      status: d.status,
+    });
+    const concreteSlots = move.roll_slots.filter((s) => !(s in AMBIGUOUS_ROLL_SLOTS));
+    const rollDice = concreteSlots.map((s) => dieBySlot.get(s)).filter(Boolean).map(toDieInfo);
+    const ambiguousSlots = move.roll_slots.filter((s) => s in AMBIGUOUS_ROLL_SLOTS);
+    // Not resolved to one die — the player picks Left or Right at roll time
+    // (see plan: Move Roll's Left/Right Hand/Leg choice), so both sides'
+    // dice are sent and the client asks before rolling.
+    const rollChoice = ambiguousSlots.length
+      ? {
+          left: ambiguousSlots
+            .map((s) => dieBySlot.get(AMBIGUOUS_ROLL_SLOTS[s][0]))
+            .filter(Boolean)
+            .map(toDieInfo),
+          right: ambiguousSlots
+            .map((s) => dieBySlot.get(AMBIGUOUS_ROLL_SLOTS[s][1]))
+            .filter(Boolean)
+            .map(toDieInfo),
+        }
+      : null;
 
     return {
       ...move,
@@ -205,6 +222,7 @@ async function getMovesFor(characterId) {
       roll_bonus: rollBonus,
       has_perk_overrides: hasOverrides,
       roll_dice: rollDice,
+      roll_choice: rollChoice,
       effective_roll_modifier: move.roll_modifier + rollBonus,
     };
   });
@@ -850,7 +868,10 @@ io.on('connection', (socket) => {
   on('tell:delete', async ({ tellId }) => {
     const tell = await one('SELECT * FROM tells WHERE id = ?', [tellId]);
     if (!tell) return;
-    const used = await one('SELECT COUNT(*) AS count FROM moves WHERE tell_id = ?', [tell.id]);
+    const used = await one(
+      'SELECT COUNT(*) AS count FROM moves WHERE tell_id = ? OR right_tell_id = ? OR left_tell_id = ?',
+      [tell.id, tell.id, tell.id]
+    );
     if (Number(used.count) > 0) return; // a Tell in use by moves can't be deleted
     await run('DELETE FROM tells WHERE id = ?', [tell.id]);
     io.emit('tell:deleted', { tellId: tell.id });
@@ -860,14 +881,42 @@ io.on('connection', (socket) => {
   const writeMove = async (moveId, payload) => {
     const name = String(payload.name ?? '').trim();
     if (!name) return null;
-    const tell = await one('SELECT * FROM tells WHERE id = ?', [payload.tellId]);
-    if (!tell) return null;
     const startup = clampFrame(payload.startupTics);
     const active = clampFrame(payload.activeTics);
     const recovery = clampFrame(payload.recoveryTics);
     if (!validFrames(startup, active, recovery)) return null;
     const isDefault = payload.isDefault ? 1 : 0;
     const description = String(payload.description ?? '').trim();
+
+    // Roll is optional — a move with no slots has no Roll at all. An
+    // ambiguous Hand/Leg slot means this move needs two Tells (one per
+    // appendage choice) instead of the usual one.
+    const rollModifier = clampRollBonus(payload.rollModifier);
+    const rollSlots = sanitizeRollSlots(payload.rollSlots);
+    const ambiguousRoll = hasAmbiguousRollSlot(rollSlots);
+
+    let tellId;
+    let rightTellId = null;
+    let leftTellId = null;
+    if (ambiguousRoll) {
+      const [rightTell, leftTell] = await Promise.all([
+        payload.rightTellId != null
+          ? one('SELECT * FROM tells WHERE id = ?', [payload.rightTellId])
+          : null,
+        payload.leftTellId != null
+          ? one('SELECT * FROM tells WHERE id = ?', [payload.leftTellId])
+          : null,
+      ]);
+      if (!rightTell || !leftTell) return null;
+      rightTellId = rightTell.id;
+      leftTellId = leftTell.id;
+      tellId = rightTell.id; // satisfies moves.tell_id's NOT NULL; unused once right/left are both set
+    } else {
+      if (payload.tellId == null) return null;
+      const tell = await one('SELECT * FROM tells WHERE id = ?', [payload.tellId]);
+      if (!tell) return null;
+      tellId = tell.id;
+    }
 
     // Style: one of the 7 (required for new moves; legacy rows may be NULL)
     let styleId = null;
@@ -884,10 +933,6 @@ io.on('connection', (socket) => {
       const folder = await one('SELECT id FROM move_folders WHERE id = ?', [payload.folderId]);
       if (folder) folderId = folder.id;
     }
-
-    // Roll is optional — a move with no slots has no Roll at all.
-    const rollModifier = clampRollBonus(payload.rollModifier);
-    const rollSlots = sanitizeRollSlots(payload.rollSlots);
 
     // 0-10 tags, all must exist
     let tagIds = [];
@@ -906,20 +951,22 @@ io.on('connection', (socket) => {
     if (id == null) {
       const result = await run(
         `INSERT INTO moves (name, is_default, tell_id, startup_tics, active_tics, recovery_tics,
-          description, style_attribute_id, folder_id, image_data, image_mime_type, roll_modifier)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [name, isDefault, tell.id, startup, active, recovery, description, styleId, folderId,
+          description, style_attribute_id, folder_id, image_data, image_mime_type, roll_modifier,
+          right_tell_id, left_tell_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [name, isDefault, tellId, startup, active, recovery, description, styleId, folderId,
           payload.imageData ?? null, payload.imageData ? (payload.imageMimeType ?? 'image/png') : null,
-          rollModifier]
+          rollModifier, rightTellId, leftTellId]
       );
       id = Number(result.lastInsertRowid);
     } else {
       await run(
         `UPDATE moves SET name = ?, is_default = ?, tell_id = ?, startup_tics = ?, active_tics = ?,
-          recovery_tics = ?, description = ?, style_attribute_id = ?, folder_id = ?, roll_modifier = ?
+          recovery_tics = ?, description = ?, style_attribute_id = ?, folder_id = ?, roll_modifier = ?,
+          right_tell_id = ?, left_tell_id = ?
           WHERE id = ?`,
-        [name, isDefault, tell.id, startup, active, recovery, description, styleId, folderId,
-          rollModifier, id]
+        [name, isDefault, tellId, startup, active, recovery, description, styleId, folderId,
+          rollModifier, rightTellId, leftTellId, id]
       );
       // image only replaced when a new one is provided
       if (payload.imageData !== undefined) {

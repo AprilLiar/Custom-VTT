@@ -55,7 +55,15 @@ Search bar in the header (Characters/Moves/Perks/Tells/Tags, role-scoped), and a
 optional Move Roll field — a move can specify which body-part dice it rolls plus a
 shared bonus, resolved to a character's live dice and rollable in one click (reuses
 Pool Roll under the hood). This also makes the Perk `move_roll_bonus` automation
-live for any move that has a Roll. See `vttprojectplan.md` for what's next.
+live for any move that has a Roll.
+
+And most recently: a Move's Roll can include an ambiguous Left/Right Hand or Leg
+choice (the player picks a side only when actually rolling — the move needs two
+Tells, shown side by side, until then); the header nav now has an explicit
+Characters link plus a Combat Arena placeholder behind the logo, ahead of Phase 6/7;
+and Move folders are relabeled "Discipline" in the UI, with the "All Moves" tab now
+correctly showing every move and every move always showing its discipline (or
+"Without Discipline"). See `vttprojectplan.md` for what's next.
 
 **Testing:** `npm test` runs the game-logic unit tests. `scripts/e2e.mjs` is a full
 integration pass (run it against a freshly started server with a clean `local.db`).

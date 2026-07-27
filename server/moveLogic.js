@@ -1,10 +1,6 @@
 // Pure validation/normalization for Moves — kept free of I/O for unit testing.
 
-import { DICE_TEMPLATE } from './gameLogic.js';
-
 export const TRIGGERS = ['hit', 'block', 'miss'];
-
-export const DIE_SLOT_NAMES = DICE_TEMPLATE.map((d) => d.slot_name);
 
 // Frame data: 0-10 squares per segment (Startup/Active/Recovery), at least
 // one square total. Startup yellow, Active red, Recovery blue (client-side).
@@ -72,9 +68,27 @@ export function clampRollBonus(value) {
   return Math.max(-ROLL_BONUS_LIMIT, Math.min(ROLL_BONUS_LIMIT, n));
 }
 
-// A move's optional Roll: which body-part dice get rolled together. Dedupes,
-// drops unknown slot names, empty array = no Roll on this move.
+// A move's Roll picks from 6 slots, not the 8 concrete dice: Left/Right Hand
+// collapse into one ambiguous 'Hand' choice, Left/Right Leg into 'Leg' — the
+// player picks which side at roll time, not the GM at creation time (see
+// AMBIGUOUS_ROLL_SLOTS below for how each resolves to a real die).
+export const ROLL_SLOT_NAMES = ['Skull', 'Brain', 'Hand', 'Stamina', 'Body', 'Leg'];
+
+// left/right resolution for each ambiguous Roll slot, in [left, right] order.
+export const AMBIGUOUS_ROLL_SLOTS = {
+  Hand: ['Left Hand', 'Right Hand'],
+  Leg: ['Left Leg', 'Right Leg'],
+};
+
+// A move's optional Roll: which slots get rolled together. Dedupes, drops
+// unknown slot names, empty array = no Roll on this move.
 export function sanitizeRollSlots(list) {
   if (!Array.isArray(list)) return [];
-  return [...new Set(list.map((s) => String(s)))].filter((s) => DIE_SLOT_NAMES.includes(s));
+  return [...new Set(list.map((s) => String(s)))].filter((s) => ROLL_SLOT_NAMES.includes(s));
+}
+
+// Does this Roll include an ambiguous appendage slot? If so the move needs
+// two Tells (right-choice, left-choice) instead of one.
+export function hasAmbiguousRollSlot(rollSlots) {
+  return rollSlots.some((s) => s in AMBIGUOUS_ROLL_SLOTS);
 }
