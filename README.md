@@ -44,26 +44,25 @@ Note: Render's free tier sleeps after inactivity — the first load of a session
 
 ## Project status
 
-Phase 5 (Counters) — the character sheet's Counters tab (name, target/current pips
-as dot rows, +/- buttons, a "Show in Combat" toggle stored ahead of the Combat Arena
-that will read it in Phase 6). Also consolidated the GM Compendium: Moves and Perks
-(and any future compendium) now live as tabs on one `/compendium` page instead of
-separate top-level nav links.
+Phase 6 (Combat Arena — structure only, no round/Tic timing yet) — reachable via the
+header logo, visible to every role. GM drags characters from a roster rail onto a
+Left/Right side and groups them into pairs (drag onto a pair row; dropping onto an
+occupied side adds rather than replaces, for Uneven Combat groupings like 2v1); NPCs
+placed here become visible to Players as an explicit exception. Each seated character
+is a **read-only** glance card — portrait, active stance, dice, stamina — live-synced
+via the same broadcasts the character sheet uses; click through to the sheet to
+actually roll/step. Also lists standalone counters (GM-only to create) and any
+character's "Show in Combat" counters while they're seated, both adjustable right
+there. Phase 7 adds the actual round/Tic timing on top of this structure.
 
-Since then: GM-managed character-list folders (mirrors Move folders), a global
-Search bar in the header (Characters/Moves/Perks/Tells/Tags, role-scoped), and an
-optional Move Roll field — a move can specify which body-part dice it rolls plus a
-shared bonus, resolved to a character's live dice and rollable in one click (reuses
-Pool Roll under the hood). This also makes the Perk `move_roll_bonus` automation
-live for any move that has a Roll.
-
-And most recently: a Move's Roll can include an ambiguous Left/Right Hand or Leg
-choice (the player picks a side only when actually rolling — the move needs two
-Tells, shown side by side, until then); the header nav now has an explicit
-Characters link plus a Combat Arena placeholder behind the logo, ahead of Phase 6/7;
-and Move folders are relabeled "Discipline" in the UI, with the "All Moves" tab now
-correctly showing every move and every move always showing its discipline (or
-"Without Discipline"). See `vttprojectplan.md` for what's next.
+Since Phase 5 (Counters): GM-managed character-list folders, a global header Search
+bar (Characters/Moves/Perks/Tells/Tags, role-scoped), and Move Roll — a move can
+specify which dice it rolls plus a shared bonus, including an ambiguous Left/Right
+Hand or Leg choice the player picks only when actually rolling (such a move needs
+two Tells, shown side by side). This also makes the Perk `move_roll_bonus`
+automation live for any move that has a Roll. Move folders are relabeled
+"Discipline" in the UI, and every move always shows its discipline (or "Without
+Discipline"). See `vttprojectplan.md` for what's next.
 
 **Testing:** `npm test` runs the game-logic unit tests. `scripts/e2e.mjs` is a full
 integration pass (run it against a freshly started server with a clean `local.db`).

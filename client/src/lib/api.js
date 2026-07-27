@@ -25,3 +25,4 @@ export const getTags = () => fetch('/api/tags').then(json);
 export const getMoves = () => fetch('/api/moves').then(json);
 export const getPerks = () => fetch('/api/perks').then(json);
 export const search = (q) => fetch(`/api/search?q=${encodeURIComponent(q)}`).then(json);
+export const getCombat = () => fetch('/api/combat').then(json);
