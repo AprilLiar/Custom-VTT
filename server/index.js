@@ -53,15 +53,18 @@ const getRoleplay = (characterId) =>
 const getCounters = (characterId) =>
   all('SELECT * FROM counters WHERE character_id = ? ORDER BY id', [characterId]);
 
-// Attach parsed interaction rows + tag ids to each move in the list
+// Attach parsed interaction rows + tag ids to each move in the list. The
+// three lookups are independent of each other — fired concurrently so this
+// costs one network round-trip (to Turso in production), not three.
 async function attachInteractions(moves) {
   if (!moves.length) return moves;
   const ids = moves.map((m) => m.id);
   const marks = ids.map(() => '?').join(',');
-  const rows = await all(
-    `SELECT * FROM move_interactions WHERE move_id IN (${marks}) ORDER BY id`,
-    ids
-  );
+  const [rows, tagRows, rollSlotRows] = await Promise.all([
+    all(`SELECT * FROM move_interactions WHERE move_id IN (${marks}) ORDER BY id`, ids),
+    all(`SELECT * FROM move_tags WHERE move_id IN (${marks}) ORDER BY id`, ids),
+    all(`SELECT * FROM move_roll_slots WHERE move_id IN (${marks}) ORDER BY id`, ids),
+  ]);
   const byMove = new Map();
   for (const row of rows) {
     if (!byMove.has(row.move_id)) byMove.set(row.move_id, []);
@@ -71,19 +74,11 @@ async function attachInteractions(moves) {
       automations: JSON.parse(row.automations),
     });
   }
-  const tagRows = await all(
-    `SELECT * FROM move_tags WHERE move_id IN (${marks}) ORDER BY id`,
-    ids
-  );
   const tagsByMove = new Map();
   for (const row of tagRows) {
     if (!tagsByMove.has(row.move_id)) tagsByMove.set(row.move_id, []);
     tagsByMove.get(row.move_id).push(row.tag_id);
   }
-  const rollSlotRows = await all(
-    `SELECT * FROM move_roll_slots WHERE move_id IN (${marks}) ORDER BY id`,
-    ids
-  );
   const rollSlotsByMove = new Map();
   for (const row of rollSlotRows) {
     if (!rollSlotsByMove.has(row.move_id)) rollSlotsByMove.set(row.move_id, []);
@@ -130,10 +125,26 @@ async function getMovesFor(characterId) {
   const ids = withBase.map((m) => m.id);
   const marks = ids.map(() => '?').join(',');
 
-  const overrideRows = await all(
-    `SELECT * FROM character_move_overrides WHERE character_id = ? AND move_id IN (${marks})`,
-    [characterId, ...ids]
-  );
+  // Four independent lookups — fired concurrently rather than one after
+  // another, since none of them depend on each other's results.
+  const [overrideRows, tagOverrideRows, bonusRows, dice] = await Promise.all([
+    all(
+      `SELECT * FROM character_move_overrides WHERE character_id = ? AND move_id IN (${marks})`,
+      [characterId, ...ids]
+    ),
+    all(
+      `SELECT * FROM character_move_tags WHERE character_id = ? AND move_id IN (${marks})`,
+      [characterId, ...ids]
+    ),
+    all(
+      `SELECT * FROM character_move_roll_bonuses WHERE character_id = ? AND move_id IN (${marks})`,
+      [characterId, ...ids]
+    ),
+    // Live dice, keyed by body-part slot below, to resolve each move's Roll
+    // to the character's actual current dice (not the shared template).
+    getDice(characterId),
+  ]);
+
   const overrideByMove = new Map();
   for (const row of overrideRows) {
     const acc = overrideByMove.get(row.move_id) ?? { startup: 0, active: 0, recovery: 0 };
@@ -143,28 +154,17 @@ async function getMovesFor(characterId) {
     overrideByMove.set(row.move_id, acc);
   }
 
-  const tagOverrideRows = await all(
-    `SELECT * FROM character_move_tags WHERE character_id = ? AND move_id IN (${marks})`,
-    [characterId, ...ids]
-  );
   const tagOverridesByMove = new Map();
   for (const row of tagOverrideRows) {
     if (!tagOverridesByMove.has(row.move_id)) tagOverridesByMove.set(row.move_id, []);
     tagOverridesByMove.get(row.move_id).push(row);
   }
 
-  const bonusRows = await all(
-    `SELECT * FROM character_move_roll_bonuses WHERE character_id = ? AND move_id IN (${marks})`,
-    [characterId, ...ids]
-  );
   const bonusByMove = new Map();
   for (const row of bonusRows) {
     bonusByMove.set(row.move_id, (bonusByMove.get(row.move_id) ?? 0) + row.amount);
   }
 
-  // Live dice, keyed by body-part slot, to resolve each move's Roll to the
-  // character's actual current dice (not the shared template).
-  const dice = await getDice(characterId);
   const dieBySlot = new Map(dice.map((d) => [d.slot_name, d]));
 
   return withBase.map((move) => {
@@ -360,17 +360,22 @@ app.get('/api/character-folders', wrap(async (_req, res) => {
 app.get('/api/characters/:id', wrap(async (req, res) => {
   const character = await getCharacter(req.params.id);
   if (!character) return res.status(404).json({ error: 'not found' });
-  res.json({
-    character,
-    dice: await getDice(character.id),
-    inventory: await getInventory(character.id),
-    injuries: await getInjuries(character.id),
-    stances: await getStances(character.id),
-    moves: await getMovesFor(character.id),
-    roleplay: await getRoleplay(character.id),
-    perks: await getCharacterPerks(character.id),
-    counters: await getCounters(character.id),
-  });
+  // Eight independent lookups — none depend on another's result, so they're
+  // fired concurrently. Sequentially awaiting each one (the original shape)
+  // is fine against a local SQLite file, but against Turso's networked
+  // connection in production every await is a real round-trip, and eight in
+  // a row is exactly the "a few seconds to open a character" symptom.
+  const [dice, inventory, injuries, stances, moves, roleplay, perks, counters] = await Promise.all([
+    getDice(character.id),
+    getInventory(character.id),
+    getInjuries(character.id),
+    getStances(character.id),
+    getMovesFor(character.id),
+    getRoleplay(character.id),
+    getCharacterPerks(character.id),
+    getCounters(character.id),
+  ]);
+  res.json({ character, dice, inventory, injuries, stances, moves, roleplay, perks, counters });
 }));
 
 app.get('/api/tells', wrap(async (_req, res) => {
@@ -466,27 +471,38 @@ app.get('/api/ruleset', wrap(async (_req, res) => {
 // counter relevant to the arena (standalone ones, plus any character
 // counter flagged Show in Combat).
 app.get('/api/combat', wrap(async (_req, res) => {
-  const state = await one('SELECT * FROM combat_state WHERE id = 1');
-  const participants = await all(
-    'SELECT * FROM combat_participants ORDER BY side, pair_index, id'
-  );
+  const [state, participants] = await Promise.all([
+    one('SELECT * FROM combat_state WHERE id = 1'),
+    all('SELECT * FROM combat_participants ORDER BY side, pair_index, id'),
+  ]);
+
+  const charIds = [...new Set(participants.map((p) => p.character_id))];
+  const marks = charIds.map(() => '?').join(',');
+
+  // Batched IN-clause lookups instead of a per-participant loop — this used
+  // to be 3 sequential queries PER seated character (a real N+1 against
+  // Turso's networked connection, and the main cause of "adding a
+  // character takes ~4 seconds"); now it's 3 total, run concurrently,
+  // regardless of how many are seated.
+  const [charRows, diceRows, stanceRows, counters] = await Promise.all([
+    charIds.length ? all(`SELECT * FROM characters WHERE id IN (${marks})`, charIds) : [],
+    charIds.length ? all(`SELECT * FROM dice WHERE character_id IN (${marks}) ORDER BY id`, charIds) : [],
+    charIds.length ? all(`SELECT * FROM stances WHERE character_id IN (${marks}) ORDER BY id`, charIds) : [],
+    charIds.length
+      ? all(
+          `SELECT * FROM counters WHERE character_id IS NULL OR (show_in_combat = 1 AND character_id IN (${marks})) ORDER BY id`,
+          charIds
+        )
+      : all('SELECT * FROM counters WHERE character_id IS NULL ORDER BY id'),
+  ]);
+
   const characters = {};
-  for (const p of participants) {
-    characters[p.character_id] = {
-      character: await getCharacter(p.character_id),
-      dice: await getDice(p.character_id),
-      stances: await getStances(p.character_id),
-    };
+  for (const character of charRows) {
+    characters[character.id] = { character, dice: [], stances: [] };
   }
-  const charIds = participants.map((p) => p.character_id);
-  const counters = charIds.length
-    ? await all(
-        `SELECT * FROM counters WHERE character_id IS NULL OR (show_in_combat = 1 AND character_id IN (${charIds
-          .map(() => '?')
-          .join(',')})) ORDER BY id`,
-        charIds
-      )
-    : await all('SELECT * FROM counters WHERE character_id IS NULL ORDER BY id');
+  for (const die of diceRows) characters[die.character_id]?.dice.push(die);
+  for (const stance of stanceRows) characters[stance.character_id]?.stances.push(stance);
+
   res.json({
     unevenCombatEnabled: Boolean(state.uneven_combat_enabled),
     participants,

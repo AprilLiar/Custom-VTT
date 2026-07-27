@@ -5,12 +5,7 @@ import { fileToPortrait, portraitSrc } from '../lib/image.js';
 import DieWidget from './DieWidget.jsx';
 import RollDialog from './RollDialog.jsx';
 import ItemList from './ItemList.jsx';
-
-const POOLS = [
-  { key: 'head', label: 'Head' },
-  { key: 'core', label: 'Core' },
-  { key: 'legs', label: 'Legs' },
-];
+import { POOLS } from '../lib/dice.js';
 
 function NamePortrait({ character }) {
   const fileRef = useRef(null);
