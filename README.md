@@ -44,6 +44,23 @@ Note: Render's free tier sleeps after inactivity — the first load of a session
 
 ## Project status
 
+Character folders and move Disciplines now **nest** to any depth (`parent_id` self-references
+on both `character_folders` and `move_folders`), browsed via a shared indented
+`FolderTreeNav` sidebar instead of the old flat tab row; creating a folder while another is
+selected nests it inside, and deleting one promotes its direct contents and direct child
+folders one level up to its own parent (root if it was already at root) rather than
+flattening the whole subtree. Character cards and move cards show their full folder path
+("📁 Fighters / Bosses"). The Combat Arena's roster mirrors this — folders recursive,
+collapsible, alphabetical, with a running available-character count including descendants,
+empty subtrees hidden, folderless characters last under their own heading — and seated
+participant cards are now horizontal, with a full-height portrait filling the entire left
+edge and name/stance/stamina/dice stacked to its right. Moves can be flagged **Defensive**,
+adding two more interaction categories (On Successful Defense / On Failed Defense) to the
+existing On Hit/Block/Miss — any category (old or new) with no text and no automations
+simply isn't stored or rendered; `move_interactions.trigger`'s CHECK constraint expanded
+from 3 to 5 values, which for an existing database means a one-time table rebuild
+(`server/db.js`'s `migrateMoveInteractionsTrigger`) that preserves every row.
+
 Since Phase 6: character list cards use a fixed-size portrait area with the art cropped to
 cover it edge-to-edge (no letterboxing, regardless of the source image's aspect ratio) and
 show a folder chip when filed; the Combat Arena's roster rail now groups not-yet-seated

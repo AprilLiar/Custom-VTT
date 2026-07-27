@@ -2,6 +2,12 @@
 
 export const TRIGGERS = ['hit', 'block', 'miss'];
 
+// Defensive-only triggers — only accepted by normalizeInteractions when the
+// move itself is flagged is_defensive (see Defensive Moves in the plan).
+export const DEFENSE_TRIGGERS = ['defense_success', 'defense_failure'];
+
+export const ALL_TRIGGERS = [...TRIGGERS, ...DEFENSE_TRIGGERS];
+
 // Frame data: 0-10 squares per segment (Startup/Active/Recovery), at least
 // one square total. Startup yellow, Active red, Recovery blue (client-side).
 export const FRAME_MAX = 10;
@@ -46,12 +52,17 @@ export function sanitizeAutomations(list) {
   return clean;
 }
 
-// Normalizes the interactions payload {hit, block, miss} -> rows worth storing
-// (non-empty text or at least one automation).
-export function normalizeInteractions(interactions) {
+// Normalizes the interactions payload {hit, block, miss, defense_success?,
+// defense_failure?} -> rows worth storing (non-empty text or at least one
+// automation). hit/block/miss are always accepted; the two defense triggers
+// are only accepted when isDefensive is true — a move switched off and
+// re-saved simply stops having them normalized in, so a plain move:update
+// (which always replaces move_interactions wholesale) drops them.
+export function normalizeInteractions(interactions, isDefensive = false) {
   const rows = [];
   if (!interactions || typeof interactions !== 'object') return rows;
-  for (const trigger of TRIGGERS) {
+  const allowedTriggers = isDefensive ? ALL_TRIGGERS : TRIGGERS;
+  for (const trigger of allowedTriggers) {
     const entry = interactions[trigger];
     if (!entry) continue;
     const text = String(entry.text ?? '').trim();

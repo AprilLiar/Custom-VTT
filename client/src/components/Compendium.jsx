@@ -3,6 +3,8 @@ import { socket } from '../socket.js';
 import { getCharacter, getCharacters, getMoves, getRuleset, getTags, getTells } from '../lib/api.js';
 import { iconFor } from '../lib/styleIcons.js';
 import { fileToSmallImage, portraitSrc } from '../lib/image.js';
+import { folderPath } from '../lib/folders.js';
+import FolderTreeNav from './FolderTreeNav.jsx';
 import MoveCard from './MoveCard.jsx';
 import MoveCreator from './MoveCreator.jsx';
 import Thumb from './Thumb.jsx';
@@ -279,10 +281,8 @@ export default function MovesCompendium() {
   const [form, setForm] = useState(null); // null | { move? }
   const [grantOpen, setGrantOpen] = useState(null);
   const [dropTarget, setDropTarget] = useState(null);
-  const [folderDropTarget, setFolderDropTarget] = useState(null); // 'root' | folderId | null
   const [currentFolder, setCurrentFolder] = useState(null); // folder id | null = root
   const [styleFilter, setStyleFilter] = useState(null); // attribute id | null
-  const [newFolderName, setNewFolderName] = useState('');
 
   useEffect(() => {
     const refreshAll = () => {
@@ -305,15 +305,24 @@ export default function MovesCompendium() {
     const events = [
       'tell:created', 'tell:updated', 'tell:deleted',
       'tag:created', 'tag:updated', 'tag:deleted',
-      'folder:created', 'folder:updated', 'folder:deleted',
+      'folder:created', 'folder:updated',
       'move:created', 'move:updated', 'move:deleted',
       'move:granted', 'move:revoked',
       'character:created', 'character:updated', 'character:deleted',
       'stance:created', 'stance:updated', 'stance:deleted',
     ];
     for (const ev of events) socket.on(ev, refreshAll);
+    // If the discipline currently being viewed is the one that just got
+    // deleted, follow it up to its parent (or root) instead of showing a
+    // stale "no moves" view for a folder id that no longer exists.
+    const onFolderDeleted = ({ folderId, parentFolderId }) => {
+      refreshAll();
+      setCurrentFolder((prev) => (prev === folderId ? parentFolderId ?? null : prev));
+    };
+    socket.on('folder:deleted', onFolderDeleted);
     return () => {
       for (const ev of events) socket.off(ev, refreshAll);
+      socket.off('folder:deleted', onFolderDeleted);
     };
   }, []);
 
@@ -323,7 +332,6 @@ export default function MovesCompendium() {
   const tellById = new Map(tells.map((t) => [t.id, t]));
   const tagById = new Map(tags.map((t) => [t.id, t]));
   const attrById = new Map(ruleset.attributes.map((a) => [a.id, a]));
-  const folderById = new Map(folders.map((f) => [f.id, f]));
   const usedTellIds = new Set();
   for (const m of moves) {
     usedTellIds.add(m.tell_id);
@@ -354,13 +362,6 @@ export default function MovesCompendium() {
     setForm(null);
   };
 
-  const createFolder = (e) => {
-    e.preventDefault();
-    if (!newFolderName.trim()) return;
-    socket.emit('folder:create', { name: newFolderName.trim() });
-    setNewFolderName('');
-  };
-
   const onDropOnCharacter = (e, character) => {
     e.preventDefault();
     setDropTarget(null);
@@ -368,122 +369,56 @@ export default function MovesCompendium() {
     if (moveId) socket.emit('move:grant', { characterId: character.id, moveId });
   };
 
-  // Drag a move card onto a folder tab (or "All Moves") to reassign it —
-  // only touches folder_id, leaving the rest of the move untouched.
+  // Drag a move card onto a discipline (or root) to reassign it — only
+  // touches folder_id, leaving the rest of the move untouched.
   const onDropOnFolder = (e, targetFolderId) => {
     e.preventDefault();
-    setFolderDropTarget(null);
     const moveId = Number(e.dataTransfer.getData('text/move-id'));
     if (moveId) socket.emit('move:set_folder', { moveId, folderId: targetFolderId });
   };
 
   return (
     <div className="flex gap-4">
+      <aside className="w-44 shrink-0">
+        <FolderTreeNav
+          folders={folders}
+          currentFolderId={currentFolder}
+          onSelect={setCurrentFolder}
+          canManage
+          onCreate={(name, parentFolderId) => socket.emit('folder:create', { name, parentFolderId })}
+          onRename={(folderId, name) => socket.emit('folder:rename', { folderId, name })}
+          onDelete={(folderId) => socket.emit('folder:delete', { folderId })}
+          onDropOnFolder={onDropOnFolder}
+          rootLabel="All Moves"
+          nounLabel="discipline"
+        />
+      </aside>
+
       <div className="min-w-0 flex-1 space-y-4">
         <TellManager tells={tells} usedTellIds={usedTellIds} />
         <TagManager tags={tags} />
 
-        {/* Discipline (folder) navigation + style filter */}
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            onClick={() => setCurrentFolder(null)}
-            onDragOver={(e) => {
-              e.preventDefault();
-              setFolderDropTarget('root');
-            }}
-            onDragLeave={() => setFolderDropTarget(null)}
-            onDrop={(e) => onDropOnFolder(e, null)}
-            title="Every move, regardless of discipline — drop a move here to clear its discipline"
-            className={`rounded-md px-3 py-1.5 text-sm font-semibold ${
-              currentFolder == null
-                ? 'bg-zinc-700 text-zinc-100'
-                : 'bg-zinc-800 text-zinc-400 hover:text-zinc-200'
-            } ${folderDropTarget === 'root' ? 'ring-2 ring-indigo-400' : ''}`}
-          >
-            🏠 All Moves
-          </button>
-          {folders.map((f) => (
-            <span key={f.id} className="inline-flex items-center">
+        {/* Style filter */}
+        <div className="flex flex-wrap items-center gap-1">
+          <span className="mr-1 text-xs font-semibold uppercase text-zinc-500">Filter by style:</span>
+          {ruleset.attributes.map((attr) => {
+            const Icon = iconFor(attr.icon);
+            const active = styleFilter === attr.id;
+            return (
               <button
-                onClick={() => setCurrentFolder(f.id)}
-                onDragOver={(e) => {
-                  e.preventDefault();
-                  setFolderDropTarget(f.id);
-                }}
-                onDragLeave={() => setFolderDropTarget(null)}
-                onDrop={(e) => onDropOnFolder(e, f.id)}
-                title="Drop a move here to set its discipline"
-                className={`rounded-l-md px-3 py-1.5 text-sm font-semibold ${
-                  currentFolder === f.id
-                    ? 'bg-zinc-700 text-zinc-100'
-                    : 'bg-zinc-800 text-zinc-400 hover:text-zinc-200'
-                } ${folderDropTarget === f.id ? 'ring-2 ring-indigo-400' : ''}`}
+                key={attr.id}
+                onClick={() => setStyleFilter(active ? null : attr.id)}
+                title={`Filter by ${attr.name}`}
+                className={`rounded-md border p-1.5 ${
+                  active
+                    ? 'border-indigo-500 bg-indigo-600/30 text-indigo-300'
+                    : 'border-zinc-700 text-zinc-500 hover:border-zinc-500'
+                }`}
               >
-                📁 {f.name}
+                <Icon size={14} />
               </button>
-              <span className="flex rounded-r-md bg-zinc-800/70 px-1 py-1.5">
-                <button
-                  onClick={() => {
-                    const name = window.prompt('Rename discipline', f.name);
-                    if (name?.trim())
-                      socket.emit('folder:rename', { folderId: f.id, name: name.trim() });
-                  }}
-                  className="px-1 text-xs text-zinc-600 hover:text-zinc-300"
-                  title="Rename"
-                >
-                  ✎
-                </button>
-                <button
-                  onClick={() => {
-                    if (window.confirm(`Delete discipline "${f.name}"? Its moves become Without Discipline.`)) {
-                      socket.emit('folder:delete', { folderId: f.id });
-                      if (currentFolder === f.id) setCurrentFolder(null);
-                    }
-                  }}
-                  className="px-1 text-xs text-zinc-600 hover:text-red-400"
-                  title="Delete (moves become Without Discipline)"
-                >
-                  ✕
-                </button>
-              </span>
-            </span>
-          ))}
-          <form onSubmit={createFolder} className="flex gap-1">
-            <input
-              value={newFolderName}
-              onChange={(e) => setNewFolderName(e.target.value)}
-              placeholder="New discipline"
-              className="w-28 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-sm outline-none focus:border-indigo-500"
-            />
-            <button
-              type="submit"
-              disabled={!newFolderName.trim()}
-              className="rounded-md bg-zinc-700 px-2 text-sm font-semibold text-zinc-200 hover:bg-zinc-600 disabled:opacity-40"
-            >
-              +
-            </button>
-          </form>
-
-          <div className="ml-auto flex items-center gap-1">
-            {ruleset.attributes.map((attr) => {
-              const Icon = iconFor(attr.icon);
-              const active = styleFilter === attr.id;
-              return (
-                <button
-                  key={attr.id}
-                  onClick={() => setStyleFilter(active ? null : attr.id)}
-                  title={`Filter by ${attr.name}`}
-                  className={`rounded-md border p-1.5 ${
-                    active
-                      ? 'border-indigo-500 bg-indigo-600/30 text-indigo-300'
-                      : 'border-zinc-700 text-zinc-500 hover:border-zinc-500'
-                  }`}
-                >
-                  <Icon size={14} />
-                </button>
-              );
-            })}
-          </div>
+            );
+          })}
         </div>
 
         {form ? (
@@ -532,7 +467,7 @@ export default function MovesCompendium() {
                   leftTell={move.left_tell_id ? tellById.get(move.left_tell_id) : null}
                   style={move.style_attribute_id ? attrById.get(move.style_attribute_id) : null}
                   tags={move.tag_ids.map((id) => tagById.get(id)).filter(Boolean)}
-                  folderLabel={move.folder_id ? folderById.get(move.folder_id)?.name : undefined}
+                  folderLabel={folderPath(move.folder_id, folders) ?? undefined}
                   badge={
                     move.is_default ? (
                       <span className="ml-2 rounded bg-zinc-700/60 px-1.5 text-xs font-semibold uppercase text-zinc-400">

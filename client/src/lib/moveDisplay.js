@@ -1,6 +1,12 @@
 // Display helpers for Move cards.
 
-export const TRIGGER_LABELS = { hit: 'On Hit', block: 'On Block', miss: 'On Miss' };
+export const TRIGGER_LABELS = {
+  hit: 'On Hit',
+  block: 'On Block',
+  miss: 'On Miss',
+  defense_success: 'On Successful Defense',
+  defense_failure: 'On Failed Defense',
+};
 
 export function automationLabel({ type, amount }) {
   const n = Math.abs(amount);

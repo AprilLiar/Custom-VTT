@@ -912,6 +912,7 @@ io.on('connection', (socket) => {
     const recovery = clampFrame(payload.recoveryTics);
     if (!validFrames(startup, active, recovery)) return null;
     const isDefault = payload.isDefault ? 1 : 0;
+    const isDefensive = payload.isDefensive ? 1 : 0;
     const description = String(payload.description ?? '').trim();
 
     // Roll is optional — a move with no slots has no Roll at all. An
@@ -978,21 +979,21 @@ io.on('connection', (socket) => {
       const result = await run(
         `INSERT INTO moves (name, is_default, tell_id, startup_tics, active_tics, recovery_tics,
           description, style_attribute_id, folder_id, image_data, image_mime_type, roll_modifier,
-          right_tell_id, left_tell_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          right_tell_id, left_tell_id, is_defensive)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [name, isDefault, tellId, startup, active, recovery, description, styleId, folderId,
           payload.imageData ?? null, payload.imageData ? (payload.imageMimeType ?? 'image/png') : null,
-          rollModifier, rightTellId, leftTellId]
+          rollModifier, rightTellId, leftTellId, isDefensive]
       );
       id = Number(result.lastInsertRowid);
     } else {
       await run(
         `UPDATE moves SET name = ?, is_default = ?, tell_id = ?, startup_tics = ?, active_tics = ?,
           recovery_tics = ?, description = ?, style_attribute_id = ?, folder_id = ?, roll_modifier = ?,
-          right_tell_id = ?, left_tell_id = ?
+          right_tell_id = ?, left_tell_id = ?, is_defensive = ?
           WHERE id = ?`,
         [name, isDefault, tellId, startup, active, recovery, description, styleId, folderId,
-          rollModifier, rightTellId, leftTellId, id]
+          rollModifier, rightTellId, leftTellId, isDefensive, id]
       );
       // image only replaced when a new one is provided
       if (payload.imageData !== undefined) {
@@ -1012,7 +1013,7 @@ io.on('connection', (socket) => {
     for (const slotName of rollSlots) {
       await run('INSERT INTO move_roll_slots (move_id, slot_name) VALUES (?, ?)', [id, slotName]);
     }
-    for (const row of normalizeInteractions(payload.interactions)) {
+    for (const row of normalizeInteractions(payload.interactions, Boolean(isDefensive))) {
       await run(
         'INSERT INTO move_interactions (move_id, trigger, text, automations) VALUES (?, ?, ?, ?)',
         [id, row.trigger, row.text, JSON.stringify(row.automations)]
@@ -1098,10 +1099,18 @@ io.on('connection', (socket) => {
     io.emit('tag:deleted', { tagId: tag.id });
   });
 
-  on('folder:create', async ({ name }) => {
+  on('folder:create', async ({ name, parentFolderId }) => {
     const folderName = String(name ?? '').trim();
     if (!folderName) return;
-    const result = await run('INSERT INTO move_folders (name) VALUES (?)', [folderName]);
+    let parentId = null;
+    if (parentFolderId != null) {
+      const parent = await one('SELECT id FROM move_folders WHERE id = ?', [parentFolderId]);
+      if (parent) parentId = parent.id; // unknown parent falls back to root
+    }
+    const result = await run('INSERT INTO move_folders (name, parent_id) VALUES (?, ?)', [
+      folderName,
+      parentId,
+    ]);
     io.emit('folder:created', await one('SELECT * FROM move_folders WHERE id = ?', [
       Number(result.lastInsertRowid),
     ]));
@@ -1118,10 +1127,14 @@ io.on('connection', (socket) => {
   on('folder:delete', async ({ folderId }) => {
     const folder = await one('SELECT * FROM move_folders WHERE id = ?', [folderId]);
     if (!folder) return;
-    // Moves inside return to the root directory
-    await run('UPDATE moves SET folder_id = NULL WHERE folder_id = ?', [folder.id]);
+    // Directly-contained moves and direct child disciplines promote one
+    // level, to this discipline's own parent (root if it was already at
+    // root) — not unconditionally to root, so deleting a nested discipline
+    // only collapses that one level rather than flattening the whole subtree.
+    await run('UPDATE moves SET folder_id = ? WHERE folder_id = ?', [folder.parent_id, folder.id]);
+    await run('UPDATE move_folders SET parent_id = ? WHERE parent_id = ?', [folder.parent_id, folder.id]);
     await run('DELETE FROM move_folders WHERE id = ?', [folder.id]);
-    io.emit('folder:deleted', { folderId: folder.id });
+    io.emit('folder:deleted', { folderId: folder.id, parentFolderId: folder.parent_id });
   });
 
   // Drag-and-drop reassignment: touches only folder_id, unlike move:update
@@ -1140,10 +1153,18 @@ io.on('connection', (socket) => {
 
   // Character-list folders — GM-managed (client-side gated), same structural
   // pattern as move folders: create/rename/delete, delete returns to root.
-  on('character_folder:create', async ({ name }) => {
+  on('character_folder:create', async ({ name, parentFolderId }) => {
     const folderName = String(name ?? '').trim();
     if (!folderName) return;
-    const result = await run('INSERT INTO character_folders (name) VALUES (?)', [folderName]);
+    let parentId = null;
+    if (parentFolderId != null) {
+      const parent = await one('SELECT id FROM character_folders WHERE id = ?', [parentFolderId]);
+      if (parent) parentId = parent.id; // unknown parent falls back to root
+    }
+    const result = await run('INSERT INTO character_folders (name, parent_id) VALUES (?, ?)', [
+      folderName,
+      parentId,
+    ]);
     io.emit('character_folder:created', await one('SELECT * FROM character_folders WHERE id = ?', [
       Number(result.lastInsertRowid),
     ]));
@@ -1163,10 +1184,14 @@ io.on('connection', (socket) => {
   on('character_folder:delete', async ({ folderId }) => {
     const folder = await one('SELECT * FROM character_folders WHERE id = ?', [folderId]);
     if (!folder) return;
-    // Characters inside return to the root directory
-    await run('UPDATE characters SET folder_id = NULL WHERE folder_id = ?', [folder.id]);
+    // Directly-contained characters and direct child folders promote one
+    // level, to this folder's own parent (root if it was already at root) —
+    // not unconditionally to root, so deleting a nested folder only
+    // collapses that one level rather than flattening the whole subtree.
+    await run('UPDATE characters SET folder_id = ? WHERE folder_id = ?', [folder.parent_id, folder.id]);
+    await run('UPDATE character_folders SET parent_id = ? WHERE parent_id = ?', [folder.parent_id, folder.id]);
     await run('DELETE FROM character_folders WHERE id = ?', [folder.id]);
-    io.emit('character_folder:deleted', { folderId: folder.id });
+    io.emit('character_folder:deleted', { folderId: folder.id, parentFolderId: folder.parent_id });
   });
 
   // Drag-and-drop reassignment: touches only folder_id.

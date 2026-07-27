@@ -41,6 +41,35 @@ async function ensureColumn(table, column, ddl) {
   }
 }
 
+// move_interactions.trigger originally had a 3-value CHECK ('hit','block',
+// 'miss'). SQLite can't ALTER a CHECK constraint in place, so an existing
+// table stuck with the old constraint gets rebuilt: a v2 table with the
+// expanded 5-value CHECK, every row copied across, the old table dropped,
+// then v2 renamed into place. A fresh database's CREATE TABLE IF NOT EXISTS
+// above already gets the expanded CHECK directly, so this only fires
+// against a database created before defense_success/defense_failure existed.
+async function migrateMoveInteractionsTrigger() {
+  const row = await one(
+    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'move_interactions'"
+  );
+  if (!row || row.sql.includes('defense_success')) return;
+  await run(`
+    CREATE TABLE move_interactions_v2 (
+      id INTEGER PRIMARY KEY,
+      move_id INTEGER NOT NULL REFERENCES moves(id) ON DELETE CASCADE,
+      trigger TEXT NOT NULL CHECK(trigger IN ('hit','block','miss','defense_success','defense_failure')),
+      text TEXT NOT NULL DEFAULT '',
+      automations TEXT NOT NULL DEFAULT '[]'
+    )
+  `);
+  await run(`
+    INSERT INTO move_interactions_v2 (id, move_id, trigger, text, automations)
+    SELECT id, move_id, trigger, text, automations FROM move_interactions
+  `);
+  await run('DROP TABLE move_interactions');
+  await run('ALTER TABLE move_interactions_v2 RENAME TO move_interactions');
+}
+
 export async function initDb() {
   // Phase 0's demo table is no longer used.
   await run('DROP TABLE IF EXISTS pings');
@@ -63,13 +92,18 @@ export async function initDb() {
   await ensureColumn('characters', 'folder_id', 'INTEGER');
 
   // GM-created folders for organizing the character list — same structural
-  // pattern as move_folders (create/rename/delete, delete returns to root).
+  // pattern as move_folders (create/rename/delete). Nested: parent_id is a
+  // self-reference (NULL = root); ON DELETE SET NULL is metadata only — the
+  // actual reparenting-on-delete logic is explicit in character_folder:delete
+  // (promote to the deleted folder's own parent, not unconditionally to root).
   await run(`
     CREATE TABLE IF NOT EXISTS character_folders (
       id INTEGER PRIMARY KEY,
-      name TEXT NOT NULL
+      name TEXT NOT NULL,
+      parent_id INTEGER REFERENCES character_folders(id) ON DELETE SET NULL
     )
   `);
+  await ensureColumn('character_folders', 'parent_id', 'INTEGER REFERENCES character_folders(id) ON DELETE SET NULL');
 
   await run(`
     CREATE TABLE IF NOT EXISTS dice (
@@ -160,13 +194,16 @@ export async function initDb() {
   await ensureColumn('tells', 'image_data', 'TEXT');
   await ensureColumn('tells', 'image_mime_type', 'TEXT');
 
-  // GM-created folders for organizing the Moves compendium
+  // GM-created folders for organizing the Moves compendium. Nested, same
+  // parent_id self-reference pattern as character_folders above.
   await run(`
     CREATE TABLE IF NOT EXISTS move_folders (
       id INTEGER PRIMARY KEY,
-      name TEXT NOT NULL
+      name TEXT NOT NULL,
+      parent_id INTEGER REFERENCES move_folders(id) ON DELETE SET NULL
     )
   `);
+  await ensureColumn('move_folders', 'parent_id', 'INTEGER REFERENCES move_folders(id) ON DELETE SET NULL');
 
   // The compendium: master list of move templates with frame data
   await run(`
@@ -192,7 +229,10 @@ export async function initDb() {
       -- in that case, purely to satisfy its NOT NULL constraint — the
       -- Tell header ignores it once right/left are both set.
       right_tell_id INTEGER REFERENCES tells(id),
-      left_tell_id INTEGER REFERENCES tells(id)
+      left_tell_id INTEGER REFERENCES tells(id),
+      -- 1 = this move has On Successful Defense / On Failed Defense
+      -- interactions available (see move_interactions below)
+      is_defensive INTEGER NOT NULL DEFAULT 0
     )
   `);
   await ensureColumn('moves', 'style_attribute_id', 'INTEGER REFERENCES attributes(id)');
@@ -202,6 +242,7 @@ export async function initDb() {
   await ensureColumn('moves', 'roll_modifier', 'INTEGER NOT NULL DEFAULT 0');
   await ensureColumn('moves', 'right_tell_id', 'INTEGER REFERENCES tells(id)');
   await ensureColumn('moves', 'left_tell_id', 'INTEGER REFERENCES tells(id)');
+  await ensureColumn('moves', 'is_defensive', 'INTEGER NOT NULL DEFAULT 0');
 
   // Which of a move's optional Roll dice it's made of — a move with no rows
   // here has no Roll. slot_name is either a concrete DICE_TEMPLATE slot
@@ -237,16 +278,19 @@ export async function initDb() {
     )
   `);
 
-  // On Hit / On Block / On Miss: text plus optional automations (JSON)
+  // On Hit / On Block / On Miss (every move) plus On Successful Defense /
+  // On Failed Defense (Defensive moves only, gated client + server side by
+  // moves.is_defensive) — text plus optional automations (JSON).
   await run(`
     CREATE TABLE IF NOT EXISTS move_interactions (
       id INTEGER PRIMARY KEY,
       move_id INTEGER NOT NULL REFERENCES moves(id) ON DELETE CASCADE,
-      trigger TEXT NOT NULL CHECK(trigger IN ('hit','block','miss')),
+      trigger TEXT NOT NULL CHECK(trigger IN ('hit','block','miss','defense_success','defense_failure')),
       text TEXT NOT NULL DEFAULT '',
       automations TEXT NOT NULL DEFAULT '[]' -- JSON [{type, amount}]
     )
   `);
+  await migrateMoveInteractionsTrigger();
 
   // Grants a Unique move to a specific character (Default moves need no row)
   await run(`

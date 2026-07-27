@@ -5,6 +5,7 @@ import { socket } from '../socket.js';
 import { getCombat, getCharacters, getCharacterFolders } from '../lib/api.js';
 import { portraitSrc } from '../lib/image.js';
 import { dieLabel, tintFor, POOLS } from '../lib/dice.js';
+import { buildFolderTree } from '../lib/folders.js';
 
 const MIN_TARGET = 2;
 const MAX_TARGET = 20;
@@ -25,7 +26,7 @@ function ParticipantCard({ entry, role, onRemove, onDragStart, navigate }) {
       onDragStart={onDragStart}
       onClick={() => navigate(`/character/${character.id}`)}
       title="Open full sheet"
-      className="group relative flex min-w-24 flex-1 cursor-pointer flex-col gap-1.5 rounded-lg border border-zinc-800 bg-zinc-900 p-2 hover:border-indigo-600"
+      className="group relative flex min-h-40 min-w-64 flex-1 cursor-pointer overflow-hidden rounded-lg border border-zinc-800 bg-zinc-900 hover:border-indigo-600"
     >
       {role === 'gm' && (
         <button
@@ -39,14 +40,17 @@ function ParticipantCard({ entry, role, onRemove, onDragStart, navigate }) {
           ✕
         </button>
       )}
-      <div className="flex items-center gap-2">
-        <div className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-md bg-zinc-800 text-sm font-bold text-zinc-600">
-          {src ? (
-            <img src={src} alt="" className="h-full w-full object-cover" />
-          ) : (
-            character.name.slice(0, 1).toUpperCase()
-          )}
+
+      {/* Portrait fills the card's full height edge-to-edge, no padding/gaps */}
+      {src ? (
+        <img src={src} alt="" className="h-full w-28 shrink-0 object-cover sm:w-32" />
+      ) : (
+        <div className="flex h-full w-28 shrink-0 items-center justify-center bg-zinc-800 text-3xl font-bold text-zinc-600 sm:w-32">
+          {character.name.slice(0, 1).toUpperCase()}
         </div>
+      )}
+
+      <div className="flex min-w-0 flex-1 flex-col gap-1.5 p-2">
         <div className="min-w-0">
           <div className="truncate text-sm font-semibold text-zinc-100">{character.name}</div>
           {character.character_type === 'npc' && (
@@ -55,36 +59,36 @@ function ParticipantCard({ entry, role, onRemove, onDragStart, navigate }) {
             </span>
           )}
         </div>
-      </div>
-      {activeStance && (
-        <div className="truncate text-xs text-indigo-300" title="Active stance">
-          {activeStance.name}
+        {activeStance && (
+          <div className="truncate text-xs text-indigo-300" title="Active stance">
+            {activeStance.name}
+          </div>
+        )}
+        <div className="text-xs text-zinc-400">
+          Stamina {character.current_stamina}/{character.max_stamina}
         </div>
-      )}
-      <div className="text-xs text-zinc-400">
-        Stamina {character.current_stamina}/{character.max_stamina}
-      </div>
-      <div className="space-y-1">
-        {POOLS.map((pool) => {
-          const poolDice = dice.filter((d) => d.pool === pool.key);
-          if (!poolDice.length) return null;
-          return (
-            <div key={pool.key} className="flex flex-wrap gap-1">
-              {poolDice.map((d) => (
-                <span
-                  key={d.id}
-                  title={d.slot_name}
-                  className={`rounded px-1 py-0.5 text-[10px] font-mono ${
-                    d.status === 'incapacitated' ? 'text-zinc-700 line-through' : 'text-zinc-300'
-                  }`}
-                  style={{ backgroundColor: tintFor(d) || 'rgba(255,255,255,0.05)' }}
-                >
-                  {dieLabel(d.current_size, d.bonus)}
-                </span>
-              ))}
-            </div>
-          );
-        })}
+        <div className="space-y-1">
+          {POOLS.map((pool) => {
+            const poolDice = dice.filter((d) => d.pool === pool.key);
+            if (!poolDice.length) return null;
+            return (
+              <div key={pool.key} className="flex flex-wrap gap-1">
+                {poolDice.map((d) => (
+                  <span
+                    key={d.id}
+                    title={d.slot_name}
+                    className={`rounded px-1 py-0.5 text-[10px] font-mono ${
+                      d.status === 'incapacitated' ? 'text-zinc-700 line-through' : 'text-zinc-300'
+                    }`}
+                    style={{ backgroundColor: tintFor(d) || 'rgba(255,255,255,0.05)' }}
+                  >
+                    {dieLabel(d.current_size, d.bonus)}
+                  </span>
+                ))}
+              </div>
+            );
+          })}
+        </div>
       </div>
     </div>
   );
@@ -140,6 +144,57 @@ function ArenaCounterRow({ counter, characterName }) {
   );
 }
 
+// Every available (unseated) character inside this folder, including all
+// descendant folders — what the roster's per-folder count shows, and what
+// decides whether an empty subtree hides itself entirely.
+function countAvailable(node, charsByFolder) {
+  const direct = charsByFolder.get(node.id)?.length ?? 0;
+  const childSum = node.children.reduce((sum, child) => sum + countAvailable(child, charsByFolder), 0);
+  return direct + childSum;
+}
+
+// One folder row in the roster's recursive, collapsible tree. Clicking the
+// header toggles collapse for its whole subtree (tracked as a Set of folder
+// ids in the parent); a folder whose complete subtree has no available
+// characters hides itself rather than showing an always-empty row. Direct
+// characters render before child folders once expanded, per spec.
+function FolderRosterNode({ node, charsByFolder, collapsed, onToggle, depth, rosterCard }) {
+  const count = countAvailable(node, charsByFolder);
+  if (count === 0) return null;
+  const isCollapsed = collapsed.has(node.id);
+  const directChars = charsByFolder.get(node.id) ?? [];
+  return (
+    <div>
+      <button
+        onClick={() => onToggle(node.id)}
+        style={{ paddingLeft: `${depth * 12}px` }}
+        className="flex w-full items-center gap-1 rounded-md py-1 text-left text-[10px] font-bold uppercase tracking-wide text-zinc-500 hover:text-zinc-300"
+      >
+        <span className="shrink-0">{isCollapsed ? '▸' : '▾'}</span>
+        <span className="min-w-0 flex-1 truncate">📁 {node.name}</span>
+        <span className="shrink-0 normal-case text-zinc-600">({count})</span>
+      </button>
+      {!isCollapsed && directChars.length > 0 && (
+        <div className="space-y-2 pb-1" style={{ paddingLeft: `${depth * 12 + 10}px` }}>
+          {directChars.map(rosterCard)}
+        </div>
+      )}
+      {!isCollapsed &&
+        node.children.map((child) => (
+          <FolderRosterNode
+            key={child.id}
+            node={child}
+            charsByFolder={charsByFolder}
+            collapsed={collapsed}
+            onToggle={onToggle}
+            depth={depth + 1}
+            rosterCard={rosterCard}
+          />
+        ))}
+    </div>
+  );
+}
+
 // Phase 6: structure only, no round/Tic timing yet. GM drags characters onto
 // a left/right side and groups them into pairs (a side/pair_index can hold
 // more than one character when Uneven Combat is on). Dice/stamina here are
@@ -154,6 +209,7 @@ export default function CombatArena() {
   const [dropTarget, setDropTarget] = useState(null); // `${side}-${pairIndex}` | null
   const [counterName, setCounterName] = useState('');
   const [counterTarget, setCounterTarget] = useState(6);
+  const [collapsedFolders, setCollapsedFolders] = useState(new Set()); // roster folder ids, collapsed
 
   useEffect(() => {
     const refresh = () => {
@@ -249,13 +305,24 @@ export default function CombatArena() {
   const seatedIds = new Set(participants.map((p) => p.character_id));
   const visibleRoster = role === 'gm' ? roster : roster.filter((c) => c.character_type === 'pc');
   const availableCharacters = visibleRoster.filter((c) => !seatedIds.has(c.id));
-  // Root (unfiled) characters render first with no header, then each folder
-  // that has any available characters gets its own small section header —
-  // mirrors the character list's folder grouping, adapted to a narrow rail.
+  // Folders render first (recursive, collapsible, alphabetical at every
+  // level, hidden entirely when their whole subtree has nobody available),
+  // then folderless characters last under their own heading.
   const rootCharacters = availableCharacters.filter((c) => c.folder_id == null);
-  const foldersWithCharacters = folders
-    .map((f) => ({ folder: f, chars: availableCharacters.filter((c) => c.folder_id === f.id) }))
-    .filter((g) => g.chars.length > 0);
+  const availableByFolder = new Map();
+  for (const c of availableCharacters) {
+    if (c.folder_id == null) continue;
+    if (!availableByFolder.has(c.folder_id)) availableByFolder.set(c.folder_id, []);
+    availableByFolder.get(c.folder_id).push(c);
+  }
+  const rosterFolderTree = buildFolderTree(folders);
+  const toggleFolderCollapse = (folderId) =>
+    setCollapsedFolders((prev) => {
+      const next = new Set(prev);
+      if (next.has(folderId)) next.delete(folderId);
+      else next.add(folderId);
+      return next;
+    });
 
   const pairIndices = [...new Set(participants.map((p) => p.pair_index))].sort((a, b) => a - b);
   const rows = [...pairIndices, pairIndices.length ? pairIndices[pairIndices.length - 1] + 1 : 0];
@@ -473,18 +540,26 @@ export default function CombatArena() {
             <h2 className="mb-2 text-xs font-bold uppercase tracking-wide text-zinc-500">
               Roster (drag to seat)
             </h2>
-            <div className="space-y-3">
-              {rootCharacters.length > 0 && (
-                <div className="space-y-2">{rootCharacters.map(rosterCard)}</div>
-              )}
-              {foldersWithCharacters.map(({ folder, chars }) => (
-                <div key={folder.id}>
-                  <h3 className="mb-1 truncate text-[10px] font-bold uppercase tracking-wide text-zinc-600">
-                    📁 {folder.name}
-                  </h3>
-                  <div className="space-y-2">{chars.map(rosterCard)}</div>
-                </div>
+            <div className="space-y-1">
+              {rosterFolderTree.map((node) => (
+                <FolderRosterNode
+                  key={node.id}
+                  node={node}
+                  charsByFolder={availableByFolder}
+                  collapsed={collapsedFolders}
+                  onToggle={toggleFolderCollapse}
+                  depth={0}
+                  rosterCard={rosterCard}
+                />
               ))}
+              {rootCharacters.length > 0 && (
+                <div className="pt-2">
+                  <h3 className="mb-1 text-[10px] font-bold uppercase tracking-wide text-zinc-600">
+                    Folderless
+                  </h3>
+                  <div className="space-y-2">{rootCharacters.map(rosterCard)}</div>
+                </div>
+              )}
               {availableCharacters.length === 0 && (
                 <p className="text-xs text-zinc-600">Everyone is seated.</p>
               )}
