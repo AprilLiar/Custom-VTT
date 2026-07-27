@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useRole } from '../roleContext.jsx';
 import { socket } from '../socket.js';
-import { getCombat, getCharacters, getCharacterFolders } from '../lib/api.js';
+import { getCombat, getCharacters, getCharacterFolders, getTells } from '../lib/api.js';
 import { portraitSrc } from '../lib/image.js';
 import { dieLabel, tintFor, POOLS } from '../lib/dice.js';
 import { buildFolderTree } from '../lib/folders.js';
@@ -11,13 +11,45 @@ import { REWARD_LABELS, REWARD_COLORS } from '../lib/counterDisplay.js';
 const MIN_TARGET = 2;
 const MAX_TARGET = 20;
 
+// Small badges for a character's declared moves this fight, oldest first —
+// a Tell (never secret) until the move's own reveal Tic, the real move name
+// after. Shows every round's declares, not just the current one, so an
+// overflowing move (still pending from a previous round) stays visible.
+function DeclaredMoveBadges({ declaredMoves, characterId, tellById }) {
+  const mine = declaredMoves
+    .filter((dm) => dm.characterId === characterId)
+    .sort((a, b) => a.placementTic - b.placementTic);
+  if (!mine.length) return null;
+  return (
+    <div className="flex flex-wrap gap-1">
+      {mine.map((dm) => {
+        const tell = tellById.get(dm.tellId) ?? tellById.get(dm.rightTellId) ?? tellById.get(dm.leftTellId);
+        const label = dm.isRevealed ? dm.moveName : (tell?.name ?? 'Tell');
+        return (
+          <span
+            key={dm.id}
+            title={`Tic ${dm.placementTic} → reveals Tic ${dm.revealTic}`}
+            className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${
+              dm.isRevealed
+                ? 'bg-emerald-900/50 text-emerald-300'
+                : 'bg-zinc-800 text-zinc-400 italic'
+            }`}
+          >
+            {label}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
 // Read-only glance at a seated character: portrait, active stance, dice
 // pools, stamina — not the full sheet. Click through to the sheet to
 // actually roll/step; everything shown here stays live via the same
 // character:updated/die:updated/stance:activated broadcasts the sheet
 // itself listens to. Stance is shown because it's the one thing the plan
 // already calls strategically visible to opponents mid-fight.
-function ParticipantCard({ entry, role, onRemove, onDragStart, navigate }) {
+function ParticipantCard({ entry, role, onRemove, onDragStart, navigate, declaredMoves, tellById }) {
   const { character, dice, stances } = entry;
   const src = portraitSrc(character);
   const activeStance = stances.find((s) => s.id === character.active_stance_id);
@@ -90,6 +122,7 @@ function ParticipantCard({ entry, role, onRemove, onDragStart, navigate }) {
             );
           })}
         </div>
+        <DeclaredMoveBadges declaredMoves={declaredMoves} characterId={character.id} tellById={tellById} />
       </div>
     </div>
   );
@@ -206,17 +239,138 @@ function FolderRosterNode({ node, charsByFolder, collapsed, onToggle, depth, ros
   );
 }
 
-// Phase 6: structure only, no round/Tic timing yet. GM drags characters onto
-// a left/right side and groups them into pairs (a side/pair_index can hold
+// Phase 7 status bar: round/phase, per-side declare sequencing (server-
+// enforced — see combat:side_done_declaring), and the Tic Countdown's
+// forward/back controls. "Done Declaring" is open-access (same trust model
+// as declaring itself); Next Round/Start Tic Countdown/Tic forward-back are
+// GM-only client-side, matching the plan's own event contract.
+function CombatTimingBar({ combat, role, hasParticipants }) {
+  const { phase, roundNumber, declaringSide, relativeTic, roundLength, isOverflow, overflowBy } = combat;
+  if (phase == null && !hasParticipants) return null;
+  return (
+    <div className="mb-3 flex flex-wrap items-center gap-3 rounded-lg border border-zinc-800 bg-zinc-900 px-3 py-2 text-sm">
+      <span className="font-bold text-zinc-200">
+        {phase == null ? 'Not started' : `Round ${roundNumber}`}
+      </span>
+      {phase === 'declaration' && (
+        <>
+          <span className="text-zinc-400">
+            {declaringSide
+              ? `${declaringSide === 'left' ? 'Left' : 'Right'} is declaring…`
+              : 'Declarations complete'}
+          </span>
+          {declaringSide && (
+            <button
+              onClick={() => socket.emit('combat:side_done_declaring', { side: declaringSide })}
+              className="rounded-md border border-zinc-700 px-2 py-1 text-xs text-zinc-300 hover:bg-zinc-800"
+            >
+              {declaringSide === 'left' ? 'Left' : 'Right'} done declaring
+            </button>
+          )}
+          {role === 'gm' && !declaringSide && (
+            <button
+              onClick={() => socket.emit('combat:start_tic_countdown', {})}
+              className="rounded-md bg-indigo-600 px-2 py-1 text-xs font-semibold hover:bg-indigo-500"
+            >
+              Start Tic Countdown
+            </button>
+          )}
+        </>
+      )}
+      {phase === 'tic_countdown' && (
+        <>
+          <span className="text-zinc-400">
+            Tic {relativeTic} / {roundLength}
+            {isOverflow && <span className="ml-1 text-amber-400">(overflow +{overflowBy})</span>}
+          </span>
+          {role === 'gm' && (
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => socket.emit('combat:tic_backward', {})}
+                title="Tic back"
+                className="rounded-md border border-zinc-700 px-2 py-1 text-xs hover:bg-zinc-800"
+              >
+                ◀
+              </button>
+              <button
+                onClick={() => socket.emit('combat:tic_forward', {})}
+                title="Tic forward"
+                className="rounded-md border border-zinc-700 px-2 py-1 text-xs hover:bg-zinc-800"
+              >
+                ▶
+              </button>
+            </div>
+          )}
+        </>
+      )}
+      {role === 'gm' && phase !== 'declaration' && hasParticipants && (
+        <button
+          onClick={() => socket.emit('combat:next_round', {})}
+          className="ml-auto rounded-md bg-emerald-700 px-2 py-1 text-xs font-semibold hover:bg-emerald-600"
+        >
+          Next Round
+        </button>
+      )}
+    </div>
+  );
+}
+
+// Declaration Phase's declare-a-move picker — one row per seated character
+// on whichever side may currently declare (server-enforced; this is purely
+// a courtesy filter so the UI doesn't offer a button that'd just be
+// rejected). A styled move dims/disables the same way Tab 3 does: usable
+// only while it matches one of the two styles in the character's active
+// stance.
+function DeclareMoveRow({ entry, onDeclare }) {
+  const { character, stances, moves } = entry;
+  const [moveId, setMoveId] = useState('');
+  const activeStance = stances.find((s) => s.id === character.active_stance_id);
+  const activeStyles = activeStance ? [activeStance.attribute_a_id, activeStance.attribute_b_id] : [];
+  const usable = (move) => move.style_attribute_id == null || activeStyles.includes(move.style_attribute_id);
+  const usableMoves = (moves ?? []).filter(usable);
+  return (
+    <div className="flex items-center gap-2 rounded-md border border-zinc-800 bg-zinc-950 p-2">
+      <span className="min-w-0 flex-1 truncate text-sm text-zinc-300">{character.name}</span>
+      <select
+        value={moveId}
+        onChange={(e) => setMoveId(e.target.value)}
+        className="min-w-0 flex-1 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs text-zinc-200"
+      >
+        <option value="">Declare a move…</option>
+        {usableMoves.map((m) => (
+          <option key={m.id} value={m.id}>
+            {m.name}
+          </option>
+        ))}
+      </select>
+      <button
+        onClick={() => {
+          if (!moveId) return;
+          onDeclare(character.id, Number(moveId));
+          setMoveId('');
+        }}
+        disabled={!moveId}
+        className="shrink-0 rounded-md bg-indigo-600 px-2 py-1 text-xs font-semibold hover:bg-indigo-500 disabled:opacity-40"
+      >
+        Declare
+      </button>
+    </div>
+  );
+}
+
+// Phase 6 shipped structure only; Phase 7 adds round/Tic timing on top (see
+// CombatTimingBar/DeclareMoveRow above). GM drags characters onto a
+// left/right side and groups them into pairs (a side/pair_index can hold
 // more than one character when Uneven Combat is on). Dice/stamina here are
 // a read-only glance — rolling still happens from each character's own
 // sheet, reachable by clicking their card.
 export default function CombatArena() {
   const { role } = useRole();
   const navigate = useNavigate();
-  const [combat, setCombat] = useState(null); // { unevenCombatEnabled, participants, characters, counters }
+  const [combat, setCombat] = useState(null); // { unevenCombatEnabled, participants, characters, counters, ...Phase 7 timing state, declaredMoves }
   const [roster, setRoster] = useState(null);
   const [folders, setFolders] = useState(null);
+  const [tells, setTells] = useState(null);
   const [dropTarget, setDropTarget] = useState(null); // `${side}-${pairIndex}` | null
   const [counterName, setCounterName] = useState('');
   const [counterTarget, setCounterTarget] = useState(6);
@@ -227,6 +381,7 @@ export default function CombatArena() {
       getCombat().then(setCombat).catch(console.error);
       getCharacters().then(setRoster).catch(console.error);
       getCharacterFolders().then(setFolders).catch(console.error);
+      getTells().then(setTells).catch(console.error);
     };
     refresh();
     const events = [
@@ -235,11 +390,26 @@ export default function CombatArena() {
       'counter:created', 'counter:updated', 'counter:deleted',
       'stance:created', 'stance:updated', 'stance:deleted',
       'character_folder:created', 'character_folder:updated', 'character_folder:deleted',
+      'tell:created', 'tell:updated', 'tell:deleted',
     ];
     for (const ev of events) socket.on(ev, refresh);
     return () => {
       for (const ev of events) socket.off(ev, refresh);
     };
+  }, []);
+
+  // The server withholds a declared move's real identity from everyone but
+  // the declaring client (no-auth means it can't tell who "owns" a socket
+  // otherwise — see the plan's known limitation). declared_move:own arrives
+  // only on the socket that actually declared it; remembered here so this
+  // client keeps showing its own move as revealed even though every
+  // combat:updated refresh still brings back the redacted Tell-only version.
+  const [ownDeclares, setOwnDeclares] = useState(new Map()); // declaredMoveId -> {moveId, moveName}
+  useEffect(() => {
+    const onOwnDeclare = (dm) =>
+      setOwnDeclares((prev) => new Map(prev).set(dm.id, { moveId: dm.moveId, moveName: dm.moveName }));
+    socket.on('declared_move:own', onOwnDeclare);
+    return () => socket.off('declared_move:own', onOwnDeclare);
   }, []);
 
   // Live dice/stamina patching for whoever's currently seated — same
@@ -310,9 +480,16 @@ export default function CombatArena() {
     };
   }, []);
 
-  if (!combat || !roster || !folders) return <p className="text-zinc-500">Loading…</p>;
+  if (!combat || !roster || !folders || !tells) return <p className="text-zinc-500">Loading…</p>;
 
-  const { unevenCombatEnabled, participants, characters, counters } = combat;
+  const { unevenCombatEnabled, participants, characters, counters, declaringSide } = combat;
+  const tellById = new Map(tells.map((t) => [t.id, t]));
+  const declaredMoves = combat.declaredMoves.map((dm) =>
+    ownDeclares.has(dm.id) ? { ...dm, ...ownDeclares.get(dm.id), isRevealed: true } : dm
+  );
+  const declareForSide = (side) =>
+    participants.filter((p) => p.side === side).map((p) => characters[p.character_id]).filter(Boolean);
+  const onDeclareMove = (characterId, moveId) => socket.emit('move:declare', { characterId, moveId });
   const seatedIds = new Set(participants.map((p) => p.character_id));
   const visibleRoster = role === 'gm' ? roster : roster.filter((c) => c.character_type === 'pc');
   const availableCharacters = visibleRoster.filter((c) => !seatedIds.has(c.id));
@@ -423,6 +600,19 @@ export default function CombatArena() {
         </div>
       </div>
 
+      <CombatTimingBar combat={combat} role={role} hasParticipants={participants.length > 0} />
+
+      {combat.phase === 'declaration' && declaringSide && declareForSide(declaringSide).length > 0 && (
+        <div className="mb-3 space-y-1.5 rounded-lg border border-zinc-800 bg-zinc-900 p-3">
+          <h2 className="text-xs font-bold uppercase tracking-wide text-zinc-500">
+            {declaringSide === 'left' ? 'Left' : 'Right'} declaring
+          </h2>
+          {declareForSide(declaringSide).map((entry) => (
+            <DeclareMoveRow key={entry.character.id} entry={entry} onDeclare={onDeclareMove} />
+          ))}
+        </div>
+      )}
+
       <div className="flex gap-4">
         <div className="min-w-0 flex-1 space-y-3">
           {participants.length === 0 && (
@@ -460,6 +650,8 @@ export default function CombatArena() {
                           role={role}
                           onRemove={remove}
                           navigate={navigate}
+                          declaredMoves={declaredMoves}
+                          tellById={tellById}
                           onDragStart={(e) => e.dataTransfer.setData('text/character-id', String(p.character_id))}
                         />
                       )
@@ -487,6 +679,8 @@ export default function CombatArena() {
                           role={role}
                           onRemove={remove}
                           navigate={navigate}
+                          declaredMoves={declaredMoves}
+                          tellById={tellById}
                           onDragStart={(e) => e.dataTransfer.setData('text/character-id', String(p.character_id))}
                         />
                       )

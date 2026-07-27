@@ -44,14 +44,25 @@ Note: Render's free tier sleeps after inactivity — the first load of a session
 
 ## Project status
 
-Phase 7 (Combat Timing) has begun: `server/combatTiming.js` is a bare, pure-function module for
-the placement/reveal/overflow Tic math — per-side Brain initiative, a move's placement/reveal/
-active-end/recovery-end Tics, live reveal-vs-Tell visibility, and round-relative Tic display —
-unit-tested in isolation with no socket/DB/Arena wiring yet, per the plan's own recommended
-build order for its highest-risk piece. Decided along the way: a character's next move is
-blocked only until their previous move's Startup reveals (not the full Startup+Active+Recovery
-footprint); Active/Recovery still count toward the move's own timeline, just not toward
-blocking the *next* declaration.
+Phase 7 (Combat Timing) now has a real, playable round loop in the Arena, built on top of the
+isolated, unit-tested `server/combatTiming.js` engine from the previous round of work. **Next
+Round** rolls Brain initiative for every seated participant and opens the Declaration Phase for
+whichever side lost it; that side declares moves one at a time from a picker (styled moves
+dimmed the same way the character sheet already does), then explicitly marks itself done — a
+server-enforced lock, not just a UI suggestion — before the other side can declare. Once both
+sides are done, the GM starts the Tic Countdown and steps it forward/back; each seated
+character's card shows their declared moves as small badges, a Tell until the Tic reaches that
+move's reveal point, the real move name after (recomputing live, so stepping backward correctly
+re-hides a move that hasn't "really" happened yet). A character's next move is blocked only
+until their *previous* move's Startup reveals, not its full Startup+Active+Recovery footprint —
+and since the Tic counter never resets, a move overflowing past its round's end correctly keeps
+blocking that character into the next round with no special-casing anywhere. Rolling a revealed
+move's configured Roll already works today (the same Roll button/dialog used everywhere else);
+posting that reveal into the Chat Log as a proper card is the one deliberately deferred piece,
+its own next step. The no-auth model means the server can't tell whose client declared a given
+move — it withholds every declared move's real identity from every broadcast/response equally,
+and the declaring client alone remembers its own move locally (lost on reload, an accepted
+trade-off already called out in the plan).
 
 The Chat Log now takes free-text messages, not just rolls: a compose box at the bottom lets
 anyone pick a character to post as (PC-only for Players), type a message, and/or attach an

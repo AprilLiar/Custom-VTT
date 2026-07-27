@@ -1030,6 +1030,128 @@ await waitEvent('combat:updated', (c) => c.participants.length === 0);
 combat = (await jf('/api/combat')).body;
 check('combat:clear empties the arena', combat.participants.length === 0);
 
+// --- Phase 7: Combat Timing (declared_moves, Declaration Phase sequencing,
+// Tic Countdown, reveal-vs-Tell, Next Round, overflow) ---
+const rightFighter = (await jpost('/api/characters', { name: 'Righty', characterType: 'pc' })).body;
+const actorOwnEvents = [];
+actor.on('declared_move:own', (p) => actorOwnEvents.push(p));
+
+events.length = 0;
+emit('combat:add_participant', { characterId: ch.id, side: 'left', pairIndex: 0 });
+await waitEvent('combat:updated', (c) => c.participants.some((p) => p.character_id === ch.id));
+events.length = 0;
+emit('combat:add_participant', { characterId: rightFighter.id, side: 'right', pairIndex: 0 });
+await waitEvent('combat:updated', (c) => c.participants.some((p) => p.character_id === rightFighter.id));
+
+events.length = 0;
+emit('combat:next_round', {});
+let p7state = await waitEvent('combat:updated', (c) => c.phase === 'declaration');
+check('Next Round opens Declaration Phase', p7state.phase === 'declaration' && p7state.roundNumber === 1);
+check('a side is set to declare first, the other pending', ['left', 'right'].includes(p7state.declaringSide) && p7state.pendingDeclareSide === (p7state.declaringSide === 'left' ? 'right' : 'left'));
+check('Brain initiative rolled for both participants, posted to chat', events.filter((e) => e.ev === 'roll:result').length === 2);
+
+const losingSide = p7state.declaringSide;
+const winningSide = p7state.pendingDeclareSide;
+const losingChar = losingSide === 'left' ? ch : rightFighter;
+const winningChar = winningSide === 'left' ? ch : rightFighter;
+
+events.length = 0;
+emit('move:declare', { characterId: winningChar.id, moveId: jab.id });
+await sleep(300);
+check('declaring out of turn (before the losing side is done) is a silent no-op', !events.some((e) => e.ev === 'combat:updated'));
+
+events.length = 0;
+emit('move:declare', { characterId: 999999, moveId: jab.id });
+await sleep(300);
+check('declaring for an unseated/unknown character is a silent no-op', !events.some((e) => e.ev === 'combat:updated'));
+
+events.length = 0;
+actorOwnEvents.length = 0;
+emit('move:declare', { characterId: losingChar.id, moveId: jab.id });
+let dUpdate = await waitEvent('combat:updated', (c) => c.declaredMoves.some((dm) => dm.characterId === losingChar.id));
+let losingDeclared = dUpdate.declaredMoves.find((dm) => dm.characterId === losingChar.id);
+check('declared move is Tell-only to non-owners', losingDeclared.moveId === null && losingDeclared.moveName === null && losingDeclared.isRevealed === false);
+check('placement Tic is the round\'s start Tic for a first-ever move', losingDeclared.placementTic === dUpdate.roundStartTic);
+check('reveal Tic is placement + Startup (Jab: 2)', losingDeclared.revealTic === losingDeclared.placementTic + 2);
+await sleep(200);
+check('the declaring client itself gets the real move via declared_move:own', actorOwnEvents.some((e) => e.moveId === jab.id && e.moveName === 'Jab'));
+
+events.length = 0;
+emit('combat:side_done_declaring', { side: winningSide });
+await sleep(300);
+check('marking the wrong (not-currently-open) side done is a no-op', !events.some((e) => e.ev === 'combat:updated'));
+
+events.length = 0;
+emit('combat:side_done_declaring', { side: losingSide });
+dUpdate = await waitEvent('combat:updated', (c) => c.declaringSide === winningSide);
+check('losing side done declaring opens the winning side', dUpdate.declaringSide === winningSide && dUpdate.pendingDeclareSide === null);
+
+events.length = 0;
+emit('move:declare', { characterId: winningChar.id, moveId: jab.id });
+await waitEvent('combat:updated', (c) => c.declaredMoves.some((dm) => dm.characterId === winningChar.id));
+check('winning side can now declare', true);
+
+events.length = 0;
+emit('combat:tic_forward', {});
+await sleep(300);
+check('Tic forward is rejected outside Tic Countdown phase (still declaration)', !events.some((e) => e.ev === 'combat:updated'));
+
+events.length = 0;
+emit('combat:side_done_declaring', { side: winningSide });
+dUpdate = await waitEvent('combat:updated', (c) => c.declaringSide === null);
+check('both sides done: declaringSide clears, ready for the countdown', dUpdate.declaringSide === null);
+
+events.length = 0;
+emit('combat:start_tic_countdown', {});
+dUpdate = await waitEvent('combat:updated', (c) => c.phase === 'tic_countdown');
+check('GM starts the Tic Countdown', dUpdate.phase === 'tic_countdown');
+
+events.length = 0;
+emit('move:declare', { characterId: winningChar.id, moveId: jab.id });
+await sleep(300);
+check('declaring is rejected once the countdown has started', !events.some((e) => e.ev === 'combat:updated'));
+
+for (let i = 0; i < 2; i++) {
+  events.length = 0;
+  emit('combat:tic_forward', {});
+  dUpdate = await waitEvent('combat:updated', () => true);
+}
+let revealed = dUpdate.declaredMoves.find((dm) => dm.characterId === losingChar.id);
+check('2 Tics forward: the losing character\'s move reveals for everyone, not just the owner', revealed.isRevealed === true && revealed.moveId === jab.id && revealed.moveName === 'Jab');
+
+events.length = 0;
+emit('combat:tic_backward', {});
+dUpdate = await waitEvent('combat:updated', () => true);
+let rehidden = dUpdate.declaredMoves.find((dm) => dm.characterId === losingChar.id);
+check('stepping back past the reveal Tic re-hides it live (stateless, no caching)', rehidden.isRevealed === false && rehidden.moveId === null);
+
+events.length = 0;
+emit('combat:tic_forward', {});
+await waitEvent('combat:updated', () => true);
+
+events.length = 0;
+emit('combat:next_round', {});
+dUpdate = await waitEvent('combat:updated', (c) => c.phase === 'declaration' && c.roundNumber === 2);
+check('Next Round from Tic Countdown starts round 2, back in Declaration Phase', true);
+
+const round2Declaring = dUpdate.declaringSide === losingSide ? losingChar : winningChar;
+const round1RevealForThatChar = dUpdate.declaredMoves.find((dm) => dm.characterId === round2Declaring.id && dm.roundNumber === 1);
+events.length = 0;
+emit('move:declare', { characterId: round2Declaring.id, moveId: jab.id });
+dUpdate = await waitEvent('combat:updated', (c) => c.declaredMoves.filter((dm) => dm.characterId === round2Declaring.id).length === 2);
+const round2Declared = dUpdate.declaredMoves.find((dm) => dm.characterId === round2Declaring.id && dm.roundNumber === 2);
+check(
+  'overflow carries with no special-casing: this character\'s next placement Tic is max(round 2 start, their round-1 move\'s reveal Tic)',
+  round2Declared.placementTic === Math.max(dUpdate.roundStartTic, round1RevealForThatChar.revealTic)
+);
+
+events.length = 0;
+emit('combat:clear', {});
+dUpdate = await waitEvent('combat:updated', (c) => c.participants.length === 0);
+check('combat:clear resets phase/round/tic and empties declaredMoves', dUpdate.phase === null && dUpdate.roundNumber === 0 && dUpdate.currentTic === 0 && dUpdate.declaredMoves.length === 0);
+
+await jf(`/api/characters/${rightFighter.id}`, { method: 'DELETE' });
+
 // re-seat ch alone so the character-delete cascade check below also
 // exercises combat_participants cleanup
 events.length = 0;
@@ -1052,7 +1174,7 @@ await waitEvent('combat:updated', (c) => !c.participants.some((p) => p.character
 check('deleting a seated character removes them from the arena too', true);
 check('sheet fetch now 404', (await jf(`/api/characters/${ch.id}`)).status === 404);
 const chatAfter = (await jf('/api/chat')).body;
-check('chat log survives character deletion', chatAfter.length === 9 && chatAfter[0].characterName === '(deleted)');
+check('chat log survives character deletion', chatAfter.length === 13 && chatAfter[0].characterName === '(deleted)');
 
 await jf(`/api/characters/${npc.id}`, { method: 'DELETE' });
 
