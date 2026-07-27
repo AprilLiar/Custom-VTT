@@ -1,5 +1,11 @@
 const DIE_SIZES = [4, 6, 8, 10, 12];
 
+export const POOLS = [
+  { key: 'head', label: 'Head' },
+  { key: 'core', label: 'Core' },
+  { key: 'legs', label: 'Legs' },
+];
+
 // d4=0 .. d12=4, then +1 per bonus point — used for the current-vs-locked tint
 export const rankOf = (size, bonus) => DIE_SIZES.indexOf(size) + bonus;
 

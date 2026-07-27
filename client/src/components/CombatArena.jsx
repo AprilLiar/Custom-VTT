@@ -4,7 +4,7 @@ import { useRole } from '../roleContext.jsx';
 import { socket } from '../socket.js';
 import { getCombat, getCharacters } from '../lib/api.js';
 import { portraitSrc } from '../lib/image.js';
-import { dieLabel, tintFor } from '../lib/dice.js';
+import { dieLabel, tintFor, POOLS } from '../lib/dice.js';
 
 const MIN_TARGET = 2;
 const MAX_TARGET = 20;
@@ -64,19 +64,27 @@ function ParticipantCard({ entry, role, onRemove, onDragStart, navigate }) {
       <div className="text-xs text-zinc-400">
         Stamina {character.current_stamina}/{character.max_stamina}
       </div>
-      <div className="flex flex-wrap gap-1">
-        {dice.map((d) => (
-          <span
-            key={d.id}
-            title={d.slot_name}
-            className={`rounded px-1 py-0.5 text-[10px] font-mono ${
-              d.status === 'incapacitated' ? 'text-zinc-700 line-through' : 'text-zinc-300'
-            }`}
-            style={{ backgroundColor: tintFor(d) || 'rgba(255,255,255,0.05)' }}
-          >
-            {dieLabel(d.current_size, d.bonus)}
-          </span>
-        ))}
+      <div className="space-y-1">
+        {POOLS.map((pool) => {
+          const poolDice = dice.filter((d) => d.pool === pool.key);
+          if (!poolDice.length) return null;
+          return (
+            <div key={pool.key} className="flex flex-wrap gap-1">
+              {poolDice.map((d) => (
+                <span
+                  key={d.id}
+                  title={d.slot_name}
+                  className={`rounded px-1 py-0.5 text-[10px] font-mono ${
+                    d.status === 'incapacitated' ? 'text-zinc-700 line-through' : 'text-zinc-300'
+                  }`}
+                  style={{ backgroundColor: tintFor(d) || 'rgba(255,255,255,0.05)' }}
+                >
+                  {dieLabel(d.current_size, d.bonus)}
+                </span>
+              ))}
+            </div>
+          );
+        })}
       </div>
     </div>
   );

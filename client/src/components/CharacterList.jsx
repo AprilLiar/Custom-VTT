@@ -128,6 +128,7 @@ export default function CharacterList() {
   const roleVisible =
     role === 'gm' ? characters : characters.filter((c) => c.character_type === 'pc');
   const visible = roleVisible.filter((c) => (c.folder_id ?? null) === currentFolder);
+  const folderById = new Map(folders.map((f) => [f.id, f]));
 
   const remove = async (character) => {
     const sure = window.confirm(
@@ -271,22 +272,23 @@ export default function CharacterList() {
           {currentFolder == null ? 'No characters yet — add the first one.' : 'This folder is empty.'}
         </p>
       ) : (
-        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
+        <div className="flex flex-wrap gap-4">
           {visible.map((c) => {
             const src = portraitSrc(c);
+            const folderName = c.folder_id ? folderById.get(c.folder_id)?.name : null;
             return (
               <div
                 key={c.id}
                 draggable={role === 'gm'}
                 onDragStart={(e) => e.dataTransfer.setData('text/character-id', String(c.id))}
                 onClick={() => navigate(`/character/${c.id}`)}
-                className="group cursor-pointer overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900 transition hover:border-indigo-600"
+                className="group flex cursor-pointer flex-col overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900 transition hover:border-indigo-600"
               >
-                <div className="flex aspect-square items-center justify-center bg-zinc-800">
+                <div className="flex h-56 items-center justify-center bg-zinc-800">
                   {src ? (
-                    <img src={src} alt={c.name} className="h-full w-full object-cover" />
+                    <img src={src} alt={c.name} className="h-full w-auto" />
                   ) : (
-                    <span className="text-5xl font-bold text-zinc-600">
+                    <span className="flex h-full w-40 items-center justify-center text-5xl font-bold text-zinc-600">
                       {c.name.slice(0, 1).toUpperCase()}
                     </span>
                   )}
@@ -298,13 +300,18 @@ export default function CharacterList() {
                       NPC
                     </span>
                   )}
+                  {folderName && (
+                    <span className="truncate rounded bg-zinc-700/50 px-1.5 text-xs text-zinc-400">
+                      📁 {folderName}
+                    </span>
+                  )}
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
                       remove(c);
                     }}
                     title="Delete character"
-                    className="ml-auto rounded px-1.5 text-zinc-600 opacity-0 transition group-hover:opacity-100 hover:bg-red-900/40 hover:text-red-400"
+                    className="ml-auto shrink-0 rounded px-1.5 text-zinc-600 opacity-0 transition group-hover:opacity-100 hover:bg-red-900/40 hover:text-red-400"
                   >
                     ✕
                   </button>

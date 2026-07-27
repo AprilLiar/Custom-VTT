@@ -44,6 +44,16 @@ Note: Render's free tier sleeps after inactivity — the first load of a session
 
 ## Project status
 
+Since Phase 6: character list cards resize to their portrait's own aspect ratio (art fills
+the card's full height, width scales naturally) and show a folder chip when filed; the
+Combat Arena's per-participant dice now group into the same Head/Core/Legs rows as the
+character sheet instead of one flat row. Also, several read-heavy API endpoints
+(`GET /api/characters/:id`, `GET /api/combat`, move-resolution helpers) were switched from
+sequential to parallel (`Promise.all`) database queries — Turso's networked connection makes
+every query a real round-trip, so a per-participant N+1 loop (Arena) or a chain of ~8
+sequential awaits (character sheet load) was compounding into multi-second production
+latency that a local SQLite dev environment never surfaces.
+
 Phase 6 (Combat Arena — structure only, no round/Tic timing yet) — reachable via the
 header logo, visible to every role. GM drags characters from a roster rail onto a
 Left/Right side and groups them into pairs (drag onto a pair row; dropping onto an
