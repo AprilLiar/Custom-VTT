@@ -36,23 +36,22 @@ function ParticipantCard({
   onDragStart,
   navigate,
   declaredMoves,
-  ownDeclares,
   sideStillDeclaring,
 }) {
   const { character, dice, stances } = entry;
   const src = portraitSrc(character);
   const activeStance = stances.find((s) => s.id === character.active_stance_id);
-  // Would-be Stamina after every move this client itself declared this
-  // window, purely a visual preview — the real current_stamina isn't
-  // touched until the side actually finishes declaring (see
-  // combat:side_done_declaring server-side). Only computable for moves
-  // THIS client declared (staminaCost never rides the public broadcast —
-  // see move:declare — so an opponent's pending cost stays hidden, same
-  // secrecy as the move's identity).
+  // Would-be Stamina after every move declared this window, purely a
+  // visual preview — the real current_stamina isn't touched until the side
+  // actually finishes declaring (see combat:side_done_declaring
+  // server-side). staminaCost only ever rides a declaredMoves entry this
+  // client is actually entitled to see (see mapDeclaredMovesForViewer
+  // server-side) — an opponent's pending cost stays exactly as hidden as
+  // the move's identity, same secrecy boundary.
   const pendingCost = sideStillDeclaring
     ? declaredMoves
-        .filter((dm) => dm.characterId === character.id && ownDeclares.has(dm.id))
-        .reduce((sum, dm) => sum + (ownDeclares.get(dm.id).staminaCost ?? 0), 0)
+        .filter((dm) => dm.characterId === character.id && dm.staminaCost != null && !dm.staminaCommitted)
+        .reduce((sum, dm) => sum + dm.staminaCost, 0)
     : 0;
   const previewStamina = character.current_stamina - pendingCost;
   return (
@@ -374,19 +373,32 @@ function DeclaredMovesPanel({ participants, characters, declaredMoves, tellById,
 // gets declared; see dragMoveState.js for why the live-drag footprint
 // preview needs that extra bit of shared state alongside the native
 // dataTransfer payload used for the eventual drop.
-function DeclareMoveCard({ character, move }) {
+function DeclareMoveCard({ character, move, roundStartTic, declaredMoves }) {
   const cost =
     move.stamina_cost > 0 ? `-${move.stamina_cost}` : move.stamina_cost < 0 ? `+${-move.stamina_cost}` : '0';
   return (
     <div
       draggable
       onDragStart={(e) => {
+        // Matches computePlacementTic server-side exactly: no earlier than
+        // the round's start, or this character's own last-queued move's
+        // reveal Tic if later — revealTic rides every declaredMoves entry
+        // regardless of whether its identity is revealed to this client
+        // (see server/index.js), so this is accurate even for a still-secret
+        // prior declare.
+        const priorReveals = declaredMoves
+          .filter((dm) => dm.characterId === character.id)
+          .map((dm) => dm.revealTic);
+        const minPlacementTic = priorReveals.length
+          ? Math.max(roundStartTic, ...priorReveals)
+          : roundStartTic;
         const payload = {
           characterId: character.id,
           moveId: move.id,
           startupTics: move.startup_tics,
           activeTics: move.active_tics,
           recoveryTics: move.recovery_tics,
+          minPlacementTic,
         };
         e.dataTransfer.setData('application/x-vtt-move', JSON.stringify(payload));
         e.dataTransfer.effectAllowed = 'copy';
@@ -407,7 +419,7 @@ function DeclareMoveCard({ character, move }) {
 // rejected). Default/Unique tabs split the character's move list the same
 // way Tab 3 does; a styled move is left out of either tab unless it matches
 // one of the two styles in the character's active stance.
-function DeclareMovePicker({ entry }) {
+function DeclareMovePicker({ entry, roundStartTic, declaredMoves }) {
   const { character, stances, moves } = entry;
   const [tab, setTab] = useState('default');
   const activeStance = stances.find((s) => s.id === character.active_stance_id);
@@ -432,7 +444,15 @@ function DeclareMovePicker({ entry }) {
       </div>
       <div className="flex flex-wrap gap-1.5">
         {shown.length ? (
-          shown.map((m) => <DeclareMoveCard key={m.id} character={character} move={m} />)
+          shown.map((m) => (
+            <DeclareMoveCard
+              key={m.id}
+              character={character}
+              move={m}
+              roundStartTic={roundStartTic}
+              declaredMoves={declaredMoves}
+            />
+          ))
         ) : (
           <span className="text-xs text-zinc-600">No {tab} moves.</span>
         )}
@@ -449,7 +469,7 @@ function DeclareMovePicker({ entry }) {
 // on). Dice/stamina here are a read-only glance — rolling still happens
 // from each character's own sheet, reachable by clicking their card.
 export default function CombatArena() {
-  const { role } = useRole();
+  const { role, characterId } = useRole();
   const navigate = useNavigate();
   const [combat, setCombat] = useState(null); // { unevenCombatEnabled, participants, characters, counters, ...Phase 7 timing state, declaredMoves }
   const [roster, setRoster] = useState(null);
@@ -467,7 +487,10 @@ export default function CombatArena() {
 
   useEffect(() => {
     const refresh = () => {
-      getCombat().then(setCombat).catch(console.error);
+      // REST has no socket to carry identity, so it rides as query params
+      // instead (see viewerFromQuery server-side) — same info the socket
+      // itself was already told via identity:set in roleContext.jsx.
+      getCombat(role === 'gm' ? { role } : { role, characterId }).then(setCombat).catch(console.error);
       getCharacters().then(setRoster).catch(console.error);
       getCharacterFolders().then(setFolders).catch(console.error);
       getTells().then(setTells).catch(console.error);
@@ -490,27 +513,7 @@ export default function CombatArena() {
     return () => {
       for (const ev of events) socket.off(ev, refresh);
     };
-  }, []);
-
-  // The server withholds a declared move's real identity from everyone but
-  // the declaring client (no-auth means it can't tell who "owns" a socket
-  // otherwise — see the plan's known limitation). declared_move:own arrives
-  // only on the socket that actually declared it; remembered here so this
-  // client keeps showing its own move as revealed even though every
-  // combat:updated refresh still brings back the redacted Tell-only version.
-  // staminaCost rides along the same own-only channel (never the public
-  // broadcast — see move:declare server-side) so the pending-Stamina
-  // preview below is exactly as secret as the move's identity: only this
-  // client, for moves it declared itself, can compute it before reveal.
-  const [ownDeclares, setOwnDeclares] = useState(new Map()); // declaredMoveId -> {moveId, moveName, staminaCost}
-  useEffect(() => {
-    const onOwnDeclare = (dm) =>
-      setOwnDeclares((prev) =>
-        new Map(prev).set(dm.id, { moveId: dm.moveId, moveName: dm.moveName, staminaCost: dm.staminaCost })
-      );
-    socket.on('declared_move:own', onOwnDeclare);
-    return () => socket.off('declared_move:own', onOwnDeclare);
-  }, []);
+  }, [role, characterId]);
 
   // Live dice/stamina patching for whoever's currently seated — same
   // fine-grained approach as CharacterSheet.jsx, so a die click anywhere
@@ -588,9 +591,12 @@ export default function CombatArena() {
   const tellById = new Map(tells.map((t) => [t.id, t]));
   const tagById = new Map(tags.map((t) => [t.id, t]));
   const styleById = new Map(ruleset.attributes.map((a) => [a.id, a]));
-  const declaredMoves = combat.declaredMoves.map((dm) =>
-    ownDeclares.has(dm.id) ? { ...dm, ...ownDeclares.get(dm.id), isRevealed: true } : dm
-  );
+  // combat:updated/GET /api/combat already come back tailored to this
+  // client's own identity (see server's mapDeclaredMovesForViewer) — a
+  // declaredMoves entry this client is entitled to see early already has
+  // isRevealed/moveId/moveName/staminaCost filled in, no client-side merge
+  // needed.
+  const declaredMoves = combat.declaredMoves;
   const declareForSide = (side) =>
     participants.filter((p) => p.side === side).map((p) => characters[p.character_id]).filter(Boolean);
   const seatedIds = new Set(participants.map((p) => p.character_id));
@@ -736,7 +742,12 @@ export default function CombatArena() {
             {declaringSide === 'left' ? 'Left' : 'Right'} declaring — drag a move onto the Tic Counter above
           </h2>
           {declareForSide(declaringSide).map((entry) => (
-            <DeclareMovePicker key={entry.character.id} entry={entry} />
+            <DeclareMovePicker
+              key={entry.character.id}
+              entry={entry}
+              roundStartTic={combat.roundStartTic}
+              declaredMoves={declaredMoves}
+            />
           ))}
         </div>
       )}
@@ -779,7 +790,6 @@ export default function CombatArena() {
                           onRemove={remove}
                           navigate={navigate}
                           declaredMoves={declaredMoves}
-                          ownDeclares={ownDeclares}
                           sideStillDeclaring={phase === 'declaration' && declaringSide === p.side}
                           onDragStart={(e) => e.dataTransfer.setData('text/character-id', String(p.character_id))}
                         />
@@ -809,7 +819,6 @@ export default function CombatArena() {
                           onRemove={remove}
                           navigate={navigate}
                           declaredMoves={declaredMoves}
-                          ownDeclares={ownDeclares}
                           sideStillDeclaring={phase === 'declaration' && declaringSide === p.side}
                           onDragStart={(e) => e.dataTransfer.setData('text/character-id', String(p.character_id))}
                         />

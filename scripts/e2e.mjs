@@ -31,6 +31,21 @@ const waitEvent = (ev, pred = () => true, ms = 3000) =>
     const h = (payload) => { if (pred(payload)) { clearTimeout(timer); watcher.off(ev, h); resolve(payload); } };
     watcher.on(ev, h);
   });
+// combat:updated is now per-socket-tailored (see mapDeclaredMovesForViewer
+// server-side), so watcher and actor can see genuinely different payloads
+// once either has an identity set — a second recorder+waiter, scoped to
+// actor, is what lets a test assert "this is what the declaring player's
+// own client sees" separately from "this is what an outside watcher sees".
+const actorEvents = [];
+actor.on('combat:updated', (payload) => actorEvents.push({ ev: 'combat:updated', payload }));
+const waitActorEvent = (ev, pred = () => true, ms = 3000) =>
+  new Promise((resolve, reject) => {
+    const existing = actorEvents.find((e) => e.ev === ev && pred(e.payload));
+    if (existing) return resolve(existing.payload);
+    const timer = setTimeout(() => { actor.off(ev, h); reject(new Error(`timeout waiting for actor ${ev}`)); }, ms);
+    const h = (payload) => { if (pred(payload)) { clearTimeout(timer); actor.off(ev, h); resolve(payload); } };
+    actor.on(ev, h);
+  });
 const emit = (ev, payload) => actor.emit(ev, payload);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -1033,8 +1048,6 @@ check('combat:clear empties the arena', combat.participants.length === 0);
 // --- Phase 7: Combat Timing (declared_moves, Declaration Phase sequencing,
 // Tic Countdown, reveal-vs-Tell, Next Round, overflow) ---
 const rightFighter = (await jpost('/api/characters', { name: 'Righty', characterType: 'pc' })).body;
-const actorOwnEvents = [];
-actor.on('declared_move:own', (p) => actorOwnEvents.push(p));
 
 events.length = 0;
 emit('combat:add_participant', { characterId: ch.id, side: 'left', pairIndex: 0 });
@@ -1065,16 +1078,26 @@ emit('move:declare', { characterId: 999999, moveId: jab.id });
 await sleep(300);
 check('declaring for an unseated/unknown character is a silent no-op', !events.some((e) => e.ev === 'combat:updated'));
 
+// actor logs in as the declaring character itself — combat:updated is now
+// tailored per socket (see mapDeclaredMovesForViewer), so actor's own copy
+// should reveal this move immediately while watcher (still unidentified)
+// keeps seeing Tell-only.
+emit('identity:set', { role: 'player', characterId: losingChar.id });
+await sleep(150);
 events.length = 0;
-actorOwnEvents.length = 0;
+actorEvents.length = 0;
 emit('move:declare', { characterId: losingChar.id, moveId: jab.id });
 let dUpdate = await waitEvent('combat:updated', (c) => c.declaredMoves.some((dm) => dm.characterId === losingChar.id));
 let losingDeclared = dUpdate.declaredMoves.find((dm) => dm.characterId === losingChar.id);
-check('declared move is Tell-only to non-owners', losingDeclared.moveId === null && losingDeclared.moveName === null && losingDeclared.isRevealed === false);
+check('declared move is Tell-only to an unidentified/other viewer', losingDeclared.moveId === null && losingDeclared.moveName === null && losingDeclared.isRevealed === false);
 check('placement Tic is the round\'s start Tic for a first-ever move', losingDeclared.placementTic === dUpdate.roundStartTic);
 check('reveal Tic is placement + Startup (Jab: 2)', losingDeclared.revealTic === losingDeclared.placementTic + 2);
-await sleep(200);
-check('the declaring client itself gets the real move via declared_move:own', actorOwnEvents.some((e) => e.moveId === jab.id && e.moveName === 'Jab'));
+const ownUpdate = await waitActorEvent('combat:updated', (c) => c.declaredMoves.some((dm) => dm.characterId === losingChar.id));
+const ownDeclared = ownUpdate.declaredMoves.find((dm) => dm.characterId === losingChar.id);
+check(
+  'the player logged in as the declaring character sees the real move on their own combat:updated',
+  ownDeclared.isRevealed === true && ownDeclared.moveId === jab.id && ownDeclared.moveName === 'Jab' && ownDeclared.staminaCost === 0
+);
 
 events.length = 0;
 emit('combat:side_done_declaring', { side: winningSide });
@@ -1091,15 +1114,27 @@ emit('move:declare', { characterId: winningChar.id, moveId: jab.id });
 await waitEvent('combat:updated', (c) => c.declaredMoves.some((dm) => dm.characterId === winningChar.id));
 check('winning side can now declare', true);
 
+// Switch identity to the OTHER character — no new declare needed, since
+// visibility is recomputed fresh on every broadcast from whatever
+// socket.data.identity currently holds (see mapDeclaredMovesForViewer);
+// the next combat:updated (triggered below) is enough to observe it.
+emit('identity:set', { role: 'player', characterId: winningChar.id });
+await sleep(150);
+
 events.length = 0;
 emit('combat:tic_forward', {});
 await sleep(300);
 check('Tic forward is rejected outside Tic Countdown phase (still declaration)', !events.some((e) => e.ev === 'combat:updated'));
 
-events.length = 0;
+actorEvents.length = 0;
 emit('combat:side_done_declaring', { side: winningSide });
 dUpdate = await waitEvent('combat:updated', (c) => c.declaringSide === null);
 check('both sides done: declaringSide clears, ready for the countdown', dUpdate.declaringSide === null);
+const switchedUpdate = await waitActorEvent('combat:updated', (c) => c.declaringSide === null);
+const switchedOwn = switchedUpdate.declaredMoves.find((dm) => dm.characterId === winningChar.id);
+check('after switching identity, the new character\'s move is revealed to actor', switchedOwn.isRevealed === true && switchedOwn.moveId === jab.id);
+const noLongerOwn = switchedUpdate.declaredMoves.find((dm) => dm.characterId === losingChar.id);
+check('after switching identity, the previous character\'s move is no longer revealed to actor', noLongerOwn.isRevealed === false && noLongerOwn.moveId === null);
 
 events.length = 0;
 emit('combat:start_tic_countdown', {});
@@ -1248,12 +1283,15 @@ const otherChar = costSide === 'left' ? staminaB : staminaA;
 const beforeCost = (await jf(`/api/characters/${costChar.id}`)).body.character;
 check('character starts at full Stamina before any declares', beforeCost.current_stamina === beforeCost.max_stamina);
 
+emit('identity:set', { role: 'player', characterId: costChar.id });
+await sleep(150);
 events.length = 0;
-actorOwnEvents.length = 0;
+actorEvents.length = 0;
 emit('move:declare', { characterId: costChar.id, moveId: overkill.id });
 await waitEvent('combat:updated', (c) => c.declaredMoves.some((dm) => dm.characterId === costChar.id));
-await sleep(200);
-check('a move costing exactly what\'s affordable (20 of 32) is declared, staminaCost riding the own-only emit', actorOwnEvents.some((e) => e.moveId === overkill.id && e.staminaCost === 20));
+const ownCostUpdate = await waitActorEvent('combat:updated', (c) => c.declaredMoves.some((dm) => dm.characterId === costChar.id && dm.moveId === overkill.id));
+const ownCostDeclared = ownCostUpdate.declaredMoves.find((dm) => dm.characterId === costChar.id);
+check('a move costing exactly what\'s affordable (20 of 32) is declared, staminaCost visible to the declaring character\'s own player', ownCostDeclared.staminaCost === 20);
 
 events.length = 0;
 emit('move:declare', { characterId: costChar.id, moveId: overkill.id });
@@ -1276,12 +1314,15 @@ const afterCommit = (await jf(`/api/characters/${costChar.id}`)).body.character;
 check('the committed value persists', afterCommit.current_stamina === beforeCost.max_stamina - 25, `expected ${beforeCost.max_stamina - 25}, got ${afterCommit.current_stamina}`);
 
 const beforeOther = (await jf(`/api/characters/${otherChar.id}`)).body.character;
+emit('identity:set', { role: 'player', characterId: otherChar.id });
+await sleep(150);
 events.length = 0;
-actorOwnEvents.length = 0;
+actorEvents.length = 0;
 emit('move:declare', { characterId: otherChar.id, moveId: secondWind.id });
 await waitEvent('combat:updated', (c) => c.declaredMoves.some((dm) => dm.characterId === otherChar.id));
-await sleep(200);
-check('a negative-cost move is declarable too, staminaCost riding the own-only emit', actorOwnEvents.some((e) => e.moveId === secondWind.id && e.staminaCost === -3));
+const ownOtherUpdate = await waitActorEvent('combat:updated', (c) => c.declaredMoves.some((dm) => dm.characterId === otherChar.id && dm.moveId === secondWind.id));
+const ownOtherDeclared = ownOtherUpdate.declaredMoves.find((dm) => dm.characterId === otherChar.id);
+check('a negative-cost move is declarable too, staminaCost visible to the declaring character\'s own player', ownOtherDeclared.staminaCost === -3);
 
 events.length = 0;
 emit('combat:side_done_declaring', { side: otherCostSide });
@@ -1294,6 +1335,72 @@ await waitEvent('combat:updated', (c) => c.participants.length === 0);
 
 await jf(`/api/characters/${staminaA.id}`, { method: 'DELETE' });
 await jf(`/api/characters/${staminaB.id}`, { method: 'DELETE' });
+
+// --- Identity fairness (decided): GM sees NPC moves early — the GM
+// effectively declared them — but a Player's move stays exactly as hidden
+// from the GM as from anyone else, since the GM is an adversarial party
+// here, not an omniscient narrator ---
+const fairPc = (await jpost('/api/characters', { name: 'Fairness PC', characterType: 'pc' })).body;
+const fairNpc = (await jpost('/api/characters', { name: 'Fairness NPC', characterType: 'npc' })).body;
+
+events.length = 0;
+emit('combat:add_participant', { characterId: fairPc.id, side: 'left', pairIndex: 0 });
+await waitEvent('combat:updated', (c) => c.participants.some((p) => p.character_id === fairPc.id));
+events.length = 0;
+emit('combat:add_participant', { characterId: fairNpc.id, side: 'right', pairIndex: 0 });
+await waitEvent('combat:updated', (c) => c.participants.some((p) => p.character_id === fairNpc.id));
+
+events.length = 0;
+emit('combat:next_round', {});
+let fairState = await waitEvent('combat:updated', (c) => c.phase === 'declaration');
+
+// Declare for whichever side opens first, mark it done, then the other —
+// order-agnostic since initiative is randomly rolled.
+for (let round = 0; round < 2; round++) {
+  const side = fairState.declaringSide;
+  const charForSide = side === 'left' ? fairPc : fairNpc;
+  events.length = 0;
+  emit('move:declare', { characterId: charForSide.id, moveId: jab.id });
+  await waitEvent('combat:updated', (c) => c.declaredMoves.some((dm) => dm.characterId === charForSide.id));
+  events.length = 0;
+  emit('combat:side_done_declaring', { side });
+  fairState = await waitEvent('combat:updated', () => true);
+}
+
+// combat:toggle_uneven is a harmless GM-only flip used purely to force a
+// fresh combat:updated broadcast under the new identity — identity:set
+// itself doesn't broadcast anything on its own.
+emit('identity:set', { role: 'gm' });
+await sleep(150);
+actorEvents.length = 0;
+emit('combat:toggle_uneven', {});
+const gmView = await waitActorEvent('combat:updated', () => true);
+emit('combat:toggle_uneven', {});
+await sleep(150);
+
+const gmSeesNpc = gmView.declaredMoves.find((dm) => dm.characterId === fairNpc.id);
+check('GM sees an NPC\'s declared move early, before its reveal Tic', gmSeesNpc.isRevealed === true && gmSeesNpc.moveId === jab.id);
+const gmSeesPc = gmView.declaredMoves.find((dm) => dm.characterId === fairPc.id);
+check('GM does NOT see a Player\'s declared move early — fairness, same as any other viewer', gmSeesPc.isRevealed === false && gmSeesPc.moveId === null);
+
+emit('identity:set', { role: 'player', characterId: fairPc.id });
+await sleep(150);
+actorEvents.length = 0;
+emit('combat:toggle_uneven', {});
+const playerView = await waitActorEvent('combat:updated', () => true);
+emit('combat:toggle_uneven', {});
+await sleep(150);
+
+const playerSeesOwn = playerView.declaredMoves.find((dm) => dm.characterId === fairPc.id);
+check('a Player sees their own character\'s move early', playerSeesOwn.isRevealed === true && playerSeesOwn.moveId === jab.id);
+const playerSeesNpc = playerView.declaredMoves.find((dm) => dm.characterId === fairNpc.id);
+check('a Player does not see an NPC\'s move early either', playerSeesNpc.isRevealed === false && playerSeesNpc.moveId === null);
+
+events.length = 0;
+emit('combat:clear', {});
+await waitEvent('combat:updated', (c) => c.participants.length === 0);
+await jf(`/api/characters/${fairPc.id}`, { method: 'DELETE' });
+await jf(`/api/characters/${fairNpc.id}`, { method: 'DELETE' });
 
 await jf(`/api/characters/${rightFighter.id}`, { method: 'DELETE' });
 
@@ -1319,9 +1426,10 @@ await waitEvent('combat:updated', (c) => !c.participants.some((p) => p.character
 check('deleting a seated character removes them from the arena too', true);
 check('sheet fetch now 404', (await jf(`/api/characters/${ch.id}`)).status === 404);
 const chatAfter = (await jf('/api/chat')).body;
-// +2 vs. the pre-Stamina-Cost count: the extra combat:next_round for
-// staminaA/staminaB rolled Brain initiative for both, each posting to chat.
-check('chat log survives character deletion', chatAfter.length === 17 && chatAfter[0].characterName === '(deleted)');
+// +4 vs. the pre-Stamina-Cost count: two extra combat:next_round calls
+// (staminaA/staminaB, then fairPc/fairNpc) each rolled Brain initiative for
+// both their participants, each roll posting to chat.
+check('chat log survives character deletion', chatAfter.length === 19 && chatAfter[0].characterName === '(deleted)');
 
 await jf(`/api/characters/${npc.id}`, { method: 'DELETE' });
 

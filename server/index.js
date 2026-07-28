@@ -327,26 +327,56 @@ async function postMoveReveals(newTic) {
 }
 
 // Every declared move, Tell always included (never secret) but move_id/
-// move_name withheld until currentTic reaches its reveal_tic — matches the
-// plan's accepted no-auth limitation: the server can't tell which client is
-// "the owner", so it withholds from everyone equally and relies on the
-// declaring client to remember its own move locally (see move:declare's
-// direct declared_move:own emit).
-async function getPublicDeclaredMoves(currentTic) {
-  const rows = await all(`
+// move_name withheld from anyone who isn't entitled to see it early (see
+// isRevealedToViewer below). Split in two: the DB round-trip happens once
+// per broadcast regardless of how many sockets are watching (fetchDeclaredMoveRows),
+// then each connected socket's own view is a cheap in-memory map
+// (mapDeclaredMovesForViewer) — see emitCombatUpdated.
+async function fetchDeclaredMoveRows() {
+  return all(`
     SELECT dm.id, dm.character_id, dm.round_number, dm.queue_order,
-           dm.placement_tic, dm.reveal_tic,
+           dm.placement_tic, dm.reveal_tic, dm.stamina_committed,
            m.id AS move_id, m.name AS move_name, m.tell_id, m.right_tell_id,
-           m.left_tell_id, m.active_tics, m.recovery_tics
+           m.left_tell_id, m.active_tics, m.recovery_tics, m.stamina_cost,
+           ch.character_type
     FROM declared_moves dm
     JOIN moves m ON m.id = dm.move_id
+    JOIN characters ch ON ch.id = dm.character_id
     ORDER BY dm.id
   `);
+}
+
+// GET /api/combat has no socket to carry an identity, so the client sends
+// it as query params instead — same shape as identity:set's payload.
+function viewerFromQuery(query) {
+  if (query?.role === 'gm') return { role: 'gm' };
+  const characterId = Number(query?.characterId);
+  if (query?.role === 'player' && Number.isInteger(characterId)) {
+    return { role: 'player', characterId };
+  }
+  return null;
+}
+
+// A viewer is `{ role: 'gm' }`, `{ role: 'player', characterId }`, or null
+// (not yet identified — see identity:set). A move is revealed early to:
+// the player who's logged in as the declaring character (their own move),
+// or the GM for any NPC's move (the GM effectively declared it) — but
+// never the GM for a Player's move, "for fairness" (decided): the GM is an
+// adversarial party in this game, not an omniscient narrator, so a Player's
+// secret stays secret from the GM exactly like it does from other Players.
+function isRevealedToViewer(row, viewer) {
+  if (!viewer) return false;
+  if (viewer.role === 'player') return viewer.characterId === row.character_id;
+  if (viewer.role === 'gm') return row.character_type === 'npc';
+  return false;
+}
+
+function mapDeclaredMovesForViewer(rows, currentTic, viewer) {
   return rows.map((row) => {
     const isRevealed = isMoveRevealedTo({
       revealTic: row.reveal_tic,
       currentTic,
-      viewerIsOwner: false,
+      viewerIsOwner: isRevealedToViewer(row, viewer),
     });
     return {
       id: row.id,
@@ -363,6 +393,14 @@ async function getPublicDeclaredMoves(currentTic) {
       isRevealed,
       moveId: isRevealed ? row.move_id : null,
       moveName: isRevealed ? row.move_name : null,
+      // Fine to disclose whenever the move itself is: either it's really
+      // this viewer's own still-secret pending move (the only case where
+      // this actually matters — it drives the Arena's pending-Stamina
+      // preview), or the move's identity is already public knowledge via
+      // reveal_tic, in which case its cost is just a Compendium lookup away
+      // anyway.
+      staminaCost: isRevealed ? row.stamina_cost : null,
+      staminaCommitted: Boolean(row.stamina_committed),
     };
   });
 }
@@ -386,19 +424,21 @@ async function getPendingStaminaCost(characterId) {
 // from the combat:*/move:declare socket handlers below and from character
 // delete (a seated character leaving the roster needs the arena to drop
 // them too). Always the full state, not a delta, same pattern `participants`
-// already used before Phase 7.
+// already used before Phase 7. declaredMoves' visibility depends on who's
+// watching (see isRevealedToViewer above), so this is a per-socket emit
+// rather than one io.emit — the DB round-trip still only happens once.
 async function emitCombatUpdated() {
-  const [state, participants] = await Promise.all([
+  const [state, participants, declaredMoveRows] = await Promise.all([
     one('SELECT * FROM combat_state WHERE id = 1'),
     all('SELECT * FROM combat_participants ORDER BY side, pair_index, id'),
+    fetchDeclaredMoveRows(),
   ]);
-  const declaredMoves = await getPublicDeclaredMoves(state.current_tic);
   const tic = relativeTic({
     tic: state.current_tic,
     roundStartTic: state.round_start_tic,
     roundLength: state.round_length,
   });
-  io.emit('combat:updated', {
+  const base = {
     unevenCombatEnabled: Boolean(state.uneven_combat_enabled),
     phase: state.phase,
     roundNumber: state.round_number,
@@ -411,8 +451,13 @@ async function emitCombatUpdated() {
     declaringSide: state.declaring_side,
     pendingDeclareSide: state.pending_declare_side,
     participants,
-    declaredMoves,
-  });
+  };
+  for (const viewerSocket of io.sockets.sockets.values()) {
+    viewerSocket.emit('combat:updated', {
+      ...base,
+      declaredMoves: mapDeclaredMovesForViewer(declaredMoveRows, state.current_tic, viewerSocket.data.identity),
+    });
+  }
 }
 
 async function logRoll({ characterId, characterName, modifier, dice }) {
@@ -565,7 +610,8 @@ app.get('/api/ruleset', wrap(async (_req, res) => {
 // picker), every counter relevant to the arena (standalone ones, plus any
 // character counter flagged Show in Combat), the round/Tic timing state,
 // and every declared move so far this fight (Tell-only until revealed).
-app.get('/api/combat', wrap(async (_req, res) => {
+app.get('/api/combat', wrap(async (req, res) => {
+  const viewer = viewerFromQuery(req.query);
   const [state, participants] = await Promise.all([
     one('SELECT * FROM combat_state WHERE id = 1'),
     all('SELECT * FROM combat_participants ORDER BY side, pair_index, id'),
@@ -580,7 +626,7 @@ app.get('/api/combat', wrap(async (_req, res) => {
   // character takes ~4 seconds"); now it's 4 total (moves is naturally one
   // per character, getMovesFor's own shape), run concurrently regardless of
   // how many are seated.
-  const [charRows, diceRows, stanceRows, counters, movesByChar, declaredMoves] = await Promise.all([
+  const [charRows, diceRows, stanceRows, counters, movesByChar, declaredMoveRows] = await Promise.all([
     charIds.length ? all(`SELECT * FROM characters WHERE id IN (${marks})`, charIds) : [],
     charIds.length ? all(`SELECT * FROM dice WHERE character_id IN (${marks}) ORDER BY id`, charIds) : [],
     charIds.length ? all(`SELECT * FROM stances WHERE character_id IN (${marks}) ORDER BY id`, charIds) : [],
@@ -591,8 +637,9 @@ app.get('/api/combat', wrap(async (_req, res) => {
         )
       : all('SELECT * FROM counters WHERE character_id IS NULL ORDER BY id'),
     Promise.all(charIds.map((id) => getMovesFor(id))),
-    getPublicDeclaredMoves(state.current_tic),
+    fetchDeclaredMoveRows(),
   ]);
+  const declaredMoves = mapDeclaredMovesForViewer(declaredMoveRows, state.current_tic, viewer);
 
   const characters = {};
   for (const character of charRows) {
@@ -781,6 +828,24 @@ io.on('connection', (socket) => {
       }
     });
   };
+
+  // Who this connection is playing as — stored per-socket, in memory only
+  // (lost on disconnect, matching the no-login/session-only model; the
+  // client re-sends it on every reconnect — see roleContext.jsx). Drives
+  // declared-move visibility in combat:updated/GET /api/combat, replacing
+  // the old declared_move:own hack that only worked for the exact socket
+  // that clicked declare, not "whoever is logged in as that character".
+  on('identity:set', async ({ role, characterId }) => {
+    if (role === 'gm') {
+      socket.data.identity = { role: 'gm' };
+      return;
+    }
+    const id = Number(characterId);
+    if (role === 'player' && Number.isInteger(id)) {
+      const character = await one('SELECT id FROM characters WHERE id = ?', [id]);
+      socket.data.identity = character ? { role: 'player', characterId: character.id } : null;
+    }
+  });
 
   on('die:roll', async ({ characterId, dieId, modifier }) => {
     const die = await one('SELECT * FROM dice WHERE id = ? AND character_id = ?', [
@@ -1948,46 +2013,17 @@ io.on('connection', (socket) => {
     );
     const queueOrder = countRow.count + 1;
 
-    const result = await run(
+    await run(
       `INSERT INTO declared_moves (character_id, move_id, round_number, queue_order, placement_tic, reveal_tic)
        VALUES (?, ?, ?, ?, ?, ?)`,
       [character.id, move.id, state.round_number, queueOrder, placementTic, revealTic]
     );
-    const declaredMoveId = Number(result.lastInsertRowid);
-
-    const publicPayload = {
-      id: declaredMoveId,
-      characterId: character.id,
-      roundNumber: state.round_number,
-      queueOrder,
-      placementTic,
-      revealTic,
-      activeEndTic: revealTic + move.active_tics,
-      recoveryEndTic: revealTic + move.active_tics + move.recovery_tics,
-      tellId: move.tell_id,
-      rightTellId: move.right_tell_id,
-      leftTellId: move.left_tell_id,
-      isRevealed: false,
-      moveId: null,
-      moveName: null,
-    };
-    // Everyone gets the redacted (Tell-only) version via the usual full
-    // broadcast; only the declaring socket also gets the real move, so its
-    // own client can remember it locally until the natural reveal Tic (see
-    // the plan's no-auth known-limitation note: the server can't otherwise
-    // tell whose client this is).
+    // Every connected socket gets its own tailored view via emitCombatUpdated
+    // (see isRevealedToViewer/mapDeclaredMovesForViewer) — whoever's logged
+    // in as this character sees the real move and its Stamina Cost
+    // immediately, everyone else sees Tell-only, regardless of who actually
+    // triggered this declare.
     await emitCombatUpdated();
-    // staminaCost rides along only on this direct own-only emit — never on
-    // the public broadcast — so the live pending-Stamina preview (Combat
-    // Arena) stays exactly as secret as the move's identity already is:
-    // only the declaring client can compute it before the reveal.
-    socket.emit('declared_move:own', {
-      ...publicPayload,
-      isRevealed: true,
-      moveId: move.id,
-      moveName: move.name,
-      staminaCost: move.stamina_cost,
-    });
   });
 
   on('combat:side_done_declaring', async ({ side }) => {

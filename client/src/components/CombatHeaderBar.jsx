@@ -4,13 +4,6 @@ import { socket } from '../socket.js';
 import { getCombat } from '../lib/api.js';
 import { onDraggingMoveChange } from '../lib/dragMoveState.js';
 
-// How many Tics past the current round's end to render as droppable —
-// lets a player drop a move further out than the current round without
-// needing to wait for it to actually arrive (see move:declare's
-// placementTic, which accepts any Tic at or after the character's own
-// next-eligible one).
-const LOOKAHEAD_TICS = 8;
-
 // One square on the Tic Counter strip. `footprint` (startup/active/recovery
 // tic ranges, relative to the square's own absolute Tic) is only non-null
 // while something is being dragged and this square is the hovered drop
@@ -19,11 +12,12 @@ const LOOKAHEAD_TICS = 8;
 // Startup/Active/Recovery length dictates, without ever revealing which
 // square any *other* declared move actually landed on (that stays hidden
 // until reveal — see DeclaredMovesPanel in CombatArena.jsx).
-function TicSquare({ relativeTic, isOverflow, isCurrent, footprintZone, onDragOver, onDrop }) {
+function TicSquare({ relativeTic, isCurrent, footprintZone, onDragOver, onDrop }) {
   const zoneStyle = {
     startup: 'bg-amber-600/70 border-amber-400',
     active: 'bg-rose-600/70 border-rose-400',
-    recovery: 'bg-rose-900/60 border-rose-700',
+    recovery: 'bg-blue-600/70 border-blue-400',
+    blocked: 'bg-zinc-700/80 border-zinc-500 text-zinc-500',
   }[footprintZone];
   return (
     <div
@@ -34,8 +28,6 @@ function TicSquare({ relativeTic, isOverflow, isCurrent, footprintZone, onDragOv
         zoneStyle ??
         (isCurrent
           ? 'border-indigo-400 bg-indigo-600 text-white'
-          : isOverflow
-          ? 'border-zinc-700 bg-zinc-800/60 text-zinc-500'
           : 'border-zinc-700 bg-zinc-900 text-zinc-400')
       }`}
     >
@@ -54,17 +46,20 @@ function TicSquare({ relativeTic, isOverflow, isCurrent, footprintZone, onDragOv
 // the Arena page itself keeps the roster, the declare-a-move picker (the
 // drag source for this bar's squares), and DeclaredMovesPanel.
 export default function CombatHeaderBar() {
-  const { role } = useRole();
+  const { role, characterId } = useRole();
   const [combat, setCombat] = useState(null);
   const [hoverTic, setHoverTic] = useState(null);
   const [draggingMove, setDraggingMoveLocal] = useState(null);
 
   useEffect(() => {
-    getCombat().then(setCombat).catch(console.error);
+    // This bar doesn't render declaredMoves itself, but keeps the same
+    // identity-tailored fetch as CombatArena.jsx for consistency (see
+    // lib/api.js's getCombat) in case that ever changes.
+    getCombat(role === 'gm' ? { role } : { role, characterId }).then(setCombat).catch(console.error);
     const onUpdated = (c) => setCombat(c);
     socket.on('combat:updated', onUpdated);
     return () => socket.off('combat:updated', onUpdated);
-  }, []);
+  }, [role, characterId]);
 
   useEffect(() => onDraggingMoveChange(setDraggingMoveLocal), []);
 
@@ -81,20 +76,31 @@ export default function CombatHeaderBar() {
   } = combat;
   const hasParticipants = (participants ?? []).length > 0;
 
-  const squareCount = roundLength + LOOKAHEAD_TICS;
-  const squares = Array.from({ length: squareCount }, (_, i) => {
-    const absoluteTic = roundStartTic + i;
-    const relative = i + 1;
-    return { absoluteTic, relative, isOverflow: relative > roundLength };
-  });
+  // Exactly the round's own Tics — nothing more. A move that would land
+  // past the last one still declares fine (the drop clamps forward to the
+  // character's real legal Tic, even beyond what's drawn here — see
+  // handleDrop/move:declare); it just carries over and shows up as blocked
+  // Tics at the start of next round instead of being previewable now.
+  const squares = Array.from({ length: roundLength }, (_, i) => ({
+    absoluteTic: roundStartTic + i,
+    relative: i + 1,
+  }));
 
+  // While dragging, Tics before this character's own next-eligible Tic
+  // (e.g. still finishing a move carried over from last round) are shown
+  // as blocked — not just clamped silently on drop — so it's visually
+  // obvious why an early Tic can't be picked.
   const zoneFor = (absoluteTic) => {
-    if (!draggingMove || hoverTic == null) return null;
+    if (!draggingMove) return null;
+    const minTic = draggingMove.minPlacementTic ?? roundStartTic;
+    if (absoluteTic < minTic) return 'blocked';
+    if (hoverTic == null) return null;
+    const effectiveTic = Math.max(hoverTic, minTic);
     const { startupTics, activeTics, recoveryTics } = draggingMove;
-    const startupEnd = hoverTic + startupTics;
+    const startupEnd = effectiveTic + startupTics;
     const activeEnd = startupEnd + activeTics;
     const recoveryEnd = activeEnd + recoveryTics;
-    if (absoluteTic >= hoverTic && absoluteTic < startupEnd) return 'startup';
+    if (absoluteTic >= effectiveTic && absoluteTic < startupEnd) return 'startup';
     if (absoluteTic >= startupEnd && absoluteTic < activeEnd) return 'active';
     if (absoluteTic >= activeEnd && absoluteTic < recoveryEnd) return 'recovery';
     return null;
@@ -182,9 +188,7 @@ export default function CombatHeaderBar() {
         {squares.map((sq) => (
           <TicSquare
             key={sq.absoluteTic}
-            absoluteTic={sq.absoluteTic}
             relativeTic={sq.relative}
-            isOverflow={sq.isOverflow}
             isCurrent={sq.absoluteTic === currentTic}
             footprintZone={zoneFor(sq.absoluteTic)}
             onDragOver={
