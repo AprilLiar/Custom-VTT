@@ -1164,6 +1164,97 @@ emit('combat:clear', {});
 dUpdate = await waitEvent('combat:updated', (c) => c.participants.length === 0);
 check('combat:clear resets phase/round/tic and empties declaredMoves', dUpdate.phase === null && dUpdate.roundNumber === 0 && dUpdate.currentTic === 0 && dUpdate.declaredMoves.length === 0);
 
+// --- Stamina Cost: required on every move (0 is valid, negative restores
+// instead of spending), only actually subtracted in one batch once the
+// declaring side finishes declaring — move:declare itself only checks
+// affordability up front against current_stamina minus every other pending
+// (not yet committed) move ---
+events.length = 0;
+emit('move:create', { name: 'Costly Strike', isDefault: true, tellId: tells[0].id, startupTics: 1, activeTics: 1, recoveryTics: 0, staminaCost: 5, description: '', interactions: {} });
+const costlyStrike = await waitEvent('move:created', (m) => m.name === 'Costly Strike');
+check('Stamina Cost is stored on the move', costlyStrike.stamina_cost === 5);
+
+events.length = 0;
+emit('move:create', { name: 'Second Wind', isDefault: true, tellId: tells[1].id, startupTics: 1, activeTics: 1, recoveryTics: 0, staminaCost: -3, description: '', interactions: {} });
+const secondWind = await waitEvent('move:created', (m) => m.name === 'Second Wind');
+check('a negative Stamina Cost is stored (restores instead of spending)', secondWind.stamina_cost === -3);
+
+events.length = 0;
+emit('move:create', { name: 'Overkill', isDefault: true, tellId: tells[0].id, startupTics: 1, activeTics: 1, recoveryTics: 0, staminaCost: 999, description: '', interactions: {} });
+const overkill = await waitEvent('move:created', (m) => m.name === 'Overkill');
+check('Stamina Cost clamps to +/-20, same as roll bonus', overkill.stamina_cost === 20);
+
+// Fresh, never-before-mutated characters — ch/rightFighter have been
+// through the whole script's worth of regen rolls/adjust/lock/step by this
+// point, so their Stamina can't be assumed to still be a known value.
+const staminaA = (await jpost('/api/characters', { name: 'Stamina Test A', characterType: 'pc' })).body;
+const staminaB = (await jpost('/api/characters', { name: 'Stamina Test B', characterType: 'pc' })).body;
+
+events.length = 0;
+emit('combat:add_participant', { characterId: staminaA.id, side: 'left', pairIndex: 0 });
+await waitEvent('combat:updated', (c) => c.participants.some((p) => p.character_id === staminaA.id));
+events.length = 0;
+emit('combat:add_participant', { characterId: staminaB.id, side: 'right', pairIndex: 0 });
+await waitEvent('combat:updated', (c) => c.participants.some((p) => p.character_id === staminaB.id));
+
+events.length = 0;
+emit('combat:next_round', {});
+p7state = await waitEvent('combat:updated', (c) => c.phase === 'declaration');
+const costSide = p7state.declaringSide;
+const otherCostSide = p7state.pendingDeclareSide;
+const costChar = costSide === 'left' ? staminaA : staminaB;
+const otherChar = costSide === 'left' ? staminaB : staminaA;
+
+const beforeCost = (await jf(`/api/characters/${costChar.id}`)).body.character;
+check('character starts at full Stamina before any declares', beforeCost.current_stamina === beforeCost.max_stamina);
+
+events.length = 0;
+actorOwnEvents.length = 0;
+emit('move:declare', { characterId: costChar.id, moveId: overkill.id });
+await waitEvent('combat:updated', (c) => c.declaredMoves.some((dm) => dm.characterId === costChar.id));
+await sleep(200);
+check('a move costing exactly what\'s affordable (20 of 32) is declared, staminaCost riding the own-only emit', actorOwnEvents.some((e) => e.moveId === overkill.id && e.staminaCost === 20));
+
+events.length = 0;
+emit('move:declare', { characterId: costChar.id, moveId: overkill.id });
+await sleep(300);
+check('declaring a second copy that would exceed current Stamina (20+20=40 > 32) is a silent no-op', !events.some((e) => e.ev === 'combat:updated'));
+
+events.length = 0;
+emit('move:declare', { characterId: costChar.id, moveId: costlyStrike.id });
+await waitEvent('combat:updated', (c) => c.declaredMoves.filter((dm) => dm.characterId === costChar.id).length === 2);
+check('a second, cheaper move (5) still fits the remaining pending budget (32-20=12 >= 5)', true);
+
+const stillBefore = (await jf(`/api/characters/${costChar.id}`)).body.character;
+check('Stamina Cost is only a visual preview until the side finishes declaring — current_stamina untouched so far', stillBefore.current_stamina === beforeCost.max_stamina);
+
+events.length = 0;
+emit('combat:side_done_declaring', { side: costSide });
+const costCharUpdate = await waitEvent('character:updated', (c) => c.id === costChar.id);
+check('Stamina Cost is subtracted in one batch (20 + 5 = 25) once the side finishes declaring', costCharUpdate.current_stamina === beforeCost.max_stamina - 25, `expected ${beforeCost.max_stamina - 25}, got ${costCharUpdate.current_stamina}`);
+const afterCommit = (await jf(`/api/characters/${costChar.id}`)).body.character;
+check('the committed value persists', afterCommit.current_stamina === beforeCost.max_stamina - 25, `expected ${beforeCost.max_stamina - 25}, got ${afterCommit.current_stamina}`);
+
+const beforeOther = (await jf(`/api/characters/${otherChar.id}`)).body.character;
+events.length = 0;
+actorOwnEvents.length = 0;
+emit('move:declare', { characterId: otherChar.id, moveId: secondWind.id });
+await waitEvent('combat:updated', (c) => c.declaredMoves.some((dm) => dm.characterId === otherChar.id));
+await sleep(200);
+check('a negative-cost move is declarable too, staminaCost riding the own-only emit', actorOwnEvents.some((e) => e.moveId === secondWind.id && e.staminaCost === -3));
+
+events.length = 0;
+emit('combat:side_done_declaring', { side: otherCostSide });
+const otherCharUpdate = await waitEvent('character:updated', (c) => c.id === otherChar.id);
+check('a negative Stamina Cost restores Stamina, clamped at max (already full, so unchanged)', otherCharUpdate.current_stamina === beforeOther.max_stamina, `expected ${beforeOther.max_stamina}, got ${otherCharUpdate.current_stamina}`);
+
+events.length = 0;
+emit('combat:clear', {});
+await waitEvent('combat:updated', (c) => c.participants.length === 0);
+
+await jf(`/api/characters/${staminaA.id}`, { method: 'DELETE' });
+await jf(`/api/characters/${staminaB.id}`, { method: 'DELETE' });
+
 await jf(`/api/characters/${rightFighter.id}`, { method: 'DELETE' });
 
 // re-seat ch alone so the character-delete cascade check below also
@@ -1188,7 +1279,9 @@ await waitEvent('combat:updated', (c) => !c.participants.some((p) => p.character
 check('deleting a seated character removes them from the arena too', true);
 check('sheet fetch now 404', (await jf(`/api/characters/${ch.id}`)).status === 404);
 const chatAfter = (await jf('/api/chat')).body;
-check('chat log survives character deletion', chatAfter.length === 15 && chatAfter[0].characterName === '(deleted)');
+// +2 vs. the pre-Stamina-Cost count: the extra combat:next_round for
+// staminaA/staminaB rolled Brain initiative for both, each posting to chat.
+check('chat log survives character deletion', chatAfter.length === 17 && chatAfter[0].characterName === '(deleted)');
 
 await jf(`/api/characters/${npc.id}`, { method: 'DELETE' });
 

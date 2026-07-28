@@ -1,3 +1,4 @@
+import { Zap } from 'lucide-react';
 import { TRIGGER_LABELS, automationLabel } from '../lib/moveDisplay.js';
 import { iconFor } from '../lib/styleIcons.js';
 import { dieFormula } from '../lib/dice.js';
@@ -90,7 +91,7 @@ export default function MoveCard({
             <span className="min-w-0">
               {move.name}
               {badge}
-              {move.is_defensive && (
+              {Boolean(move.is_defensive) && (
                 <span className="ml-1.5 rounded bg-sky-900/50 px-1.5 text-xs font-semibold uppercase text-sky-300">
                   Defensive
                 </span>
@@ -103,6 +104,19 @@ export default function MoveCard({
                 ⭐
               </span>
             )}
+            <span
+              title="Stamina Cost — subtracted once the declaring side finishes declaring"
+              className={`flex items-center gap-0.5 rounded bg-zinc-800 px-1.5 py-0.5 text-xs font-semibold ${
+                move.stamina_cost > 0
+                  ? 'text-red-400'
+                  : move.stamina_cost < 0
+                    ? 'text-emerald-400'
+                    : 'text-zinc-500'
+              }`}
+            >
+              <Zap size={12} />
+              {move.stamina_cost > 0 ? `-${move.stamina_cost}` : move.stamina_cost < 0 ? `+${-move.stamina_cost}` : 0}
+            </span>
             <FrameBar
               startup={move.startup_tics}
               active={move.active_tics}

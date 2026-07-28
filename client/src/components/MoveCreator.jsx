@@ -131,6 +131,7 @@ export default function MoveCreator({
     active: initial?.active_tics ?? 1,
     recovery: initial?.recovery_tics ?? 0,
   });
+  const [staminaCost, setStaminaCost] = useState(initial?.stamina_cost ?? 0);
   const [description, setDescription] = useState(initial?.description ?? '');
   const [interactions, setInteractions] = useState({
     hit: initInteraction('hit'),
@@ -179,6 +180,7 @@ export default function MoveCreator({
       startupTics: frames.startup,
       activeTics: frames.active,
       recoveryTics: frames.recovery,
+      staminaCost,
       description: description.trim(),
       interactions,
       ...(image !== undefined ? image : {}),
@@ -412,6 +414,18 @@ export default function MoveCreator({
           <FrameBar startup={frames.startup} active={frames.active} recovery={frames.recovery} />
           {total < 1 && <p className="text-xs text-red-400">At least 1 square total</p>}
         </div>
+        <label className="text-xs font-semibold uppercase text-emerald-500">
+          Stamina Cost (required)
+          <input
+            type="number"
+            min={-20}
+            max={20}
+            value={staminaCost}
+            onChange={(e) => setStaminaCost(Math.trunc(Number(e.target.value) || 0))}
+            title="Subtracted from Current Stamina once the declaring side finishes declaring. 0 is a valid free cost; negative restores Stamina instead."
+            className="mt-1 block w-20 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm text-zinc-100 outline-none focus:border-indigo-500"
+          />
+        </label>
       </div>
 
       <textarea

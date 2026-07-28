@@ -6,6 +6,7 @@ import {
   sanitizeAutomations,
   normalizeInteractions,
   clampRollBonus,
+  clampStaminaCost,
   sanitizeRollSlots,
   hasAmbiguousRollSlot,
   AMBIGUOUS_ROLL_SLOTS,
@@ -143,6 +144,15 @@ test('roll bonus clamps to +/-20 and coerces junk', () => {
   assert.equal(clampRollBonus(99), 20);
   assert.equal(clampRollBonus(-99), -20);
   assert.equal(clampRollBonus('junk'), 0);
+});
+
+test('stamina cost clamps to +/-20, allows 0 and negative, coerces junk', () => {
+  assert.equal(clampStaminaCost(3), 3);
+  assert.equal(clampStaminaCost(0), 0);
+  assert.equal(clampStaminaCost(-5), -5);
+  assert.equal(clampStaminaCost(99), 20);
+  assert.equal(clampStaminaCost(-99), -20);
+  assert.equal(clampStaminaCost('junk'), 0);
 });
 
 test('roll slots: dedupes and drops unknown slot names, empty = no Roll', () => {

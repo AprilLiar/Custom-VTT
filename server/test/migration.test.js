@@ -100,9 +100,11 @@ test('legacy move_interactions (3-value trigger CHECK, no is_defensive/parent_id
     const afterRows = await all('SELECT trigger FROM move_interactions ORDER BY id');
     assert.deepEqual(afterRows.map((r) => r.trigger), ['hit', 'defense_success', 'defense_failure']);
 
-    // moves.is_defensive and both folder tables' parent_id were backfilled.
-    const move = await all('SELECT is_defensive FROM moves WHERE id = 1');
+    // moves.is_defensive, moves.stamina_cost, and both folder tables'
+    // parent_id were backfilled.
+    const move = await all('SELECT is_defensive, stamina_cost FROM moves WHERE id = 1');
     assert.equal(move[0].is_defensive, 0);
+    assert.equal(move[0].stamina_cost, 0);
     await run("INSERT INTO character_folders (name) VALUES ('Root Folder')");
     await run(
       "INSERT INTO character_folders (name, parent_id) VALUES ('Child Folder', (SELECT id FROM character_folders WHERE name = 'Root Folder'))"
