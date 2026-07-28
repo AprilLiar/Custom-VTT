@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
+import { AnimatePresence, motion } from 'framer-motion';
 import { useRole } from '../roleContext.jsx';
 import { socket } from '../socket.js';
 import { getCharacter } from '../lib/api.js';
@@ -216,32 +217,47 @@ export default function CharacterSheet() {
               disabled={!built}
               onClick={() => setTab(t.key)}
               title={!built ? `Coming in Phase ${t.phase}` : undefined}
-              className={`whitespace-nowrap rounded-t-md px-4 py-2 text-sm font-semibold ${
-                tab === t.key
-                  ? 'border-b-2 border-indigo-500 text-zinc-100'
-                  : 'text-zinc-600'
+              className={`relative whitespace-nowrap px-4 py-2 font-display text-sm font-semibold uppercase tracking-wide transition-colors ${
+                tab === t.key ? 'text-zinc-100' : 'text-zinc-600'
               } ${!built ? 'cursor-not-allowed opacity-50' : 'hover:text-zinc-300'}`}
             >
               {t.label}
+              {tab === t.key && (
+                <motion.span
+                  layoutId="tab-underline"
+                  transition={{ type: 'spring', stiffness: 500, damping: 40 }}
+                  className="absolute inset-x-2 -bottom-px h-0.5 bg-gradient-to-r from-indigo-500 to-indigo-400"
+                />
+              )}
             </button>
           );
         })}
         {activeStance && (
           <span
             title="Active stance"
-            className="ml-auto whitespace-nowrap rounded-full bg-indigo-600/30 px-2.5 py-0.5 text-xs font-semibold text-indigo-300"
+            className="ml-auto whitespace-nowrap bg-indigo-600/30 px-3 py-1 text-xs font-semibold text-indigo-300 [clip-path:polygon(8%_0,100%_0,92%_100%,0_100%)]"
           >
             {activeStance.name}
           </span>
         )}
       </div>
 
-      {tab === 'core' && <CoreStatsTab data={data} />}
-      {tab === 'stances' && <StancesTab data={data} />}
-      {tab === 'moves' && <MovesTab data={data} />}
-      {tab === 'perks' && <PerksTab data={data} />}
-      {tab === 'counters' && <CountersTab data={data} />}
-      {tab === 'roleplay' && <RoleplayTab data={data} />}
+      <AnimatePresence mode="wait">
+        <motion.div
+          key={tab}
+          initial={{ opacity: 0, x: 8 }}
+          animate={{ opacity: 1, x: 0 }}
+          exit={{ opacity: 0, x: -8 }}
+          transition={{ duration: 0.15, ease: 'easeOut' }}
+        >
+          {tab === 'core' && <CoreStatsTab data={data} />}
+          {tab === 'stances' && <StancesTab data={data} />}
+          {tab === 'moves' && <MovesTab data={data} />}
+          {tab === 'perks' && <PerksTab data={data} />}
+          {tab === 'counters' && <CountersTab data={data} />}
+          {tab === 'roleplay' && <RoleplayTab data={data} />}
+        </motion.div>
+      </AnimatePresence>
     </div>
   );
 }
