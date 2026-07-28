@@ -1,11 +1,32 @@
 import { useEffect, useRef, useState } from 'react';
+import { motion } from 'framer-motion';
+import { Skull, Brain, HandFist, Zap, HeartPulse, Footprints } from 'lucide-react';
 import { socket } from '../socket.js';
 import { updateCharacter } from '../lib/api.js';
 import { fileToPortrait, portraitSrc } from '../lib/image.js';
 import DieWidget from './DieWidget.jsx';
 import RollDialog from './RollDialog.jsx';
 import ItemList from './ItemList.jsx';
-import { POOLS } from '../lib/dice.js';
+import VitruvianFigure from './VitruvianFigure.jsx';
+
+// Where each of the 8 dice sits, overlaid on the Vitruvian figure as three
+// horizontal rows that mirror the original Head/Core/Legs pool grouping
+// (2-4-2) rather than tracing the artwork point-for-point: Skull+Brain form
+// a symmetric pair straddling the vertical midline (head row); Left Hand,
+// Stamina, Body, Right Hand share one row at the hands' height, showing
+// they're one group (core row); Left Leg+Right Leg stay a symmetric pair at
+// the spread stance (leg row). Each die carries its own low-opacity icon
+// (rendered inside the die by DieWidget) instead of a separate overlay.
+const ANATOMY = {
+  Skull: { top: '11%', left: '42%', Icon: Skull },
+  Brain: { top: '11%', left: '58%', Icon: Brain },
+  'Left Hand': { top: '32%', left: '9%', Icon: HandFist },
+  Stamina: { top: '32%', left: '36%', Icon: Zap },
+  Body: { top: '32%', left: '64%', Icon: HeartPulse },
+  'Right Hand': { top: '32%', left: '91%', Icon: HandFist },
+  'Left Leg': { top: '90%', left: '32%', Icon: Footprints },
+  'Right Leg': { top: '90%', left: '68%', Icon: Footprints },
+};
 
 function NamePortrait({ character }) {
   const fileRef = useRef(null);
@@ -47,10 +68,12 @@ function NamePortrait({ character }) {
   const src = portraitSrc(character);
   return (
     <div className="flex items-center gap-4">
-      <button
+      <motion.button
         onClick={() => fileRef.current?.click()}
         title="Click to upload / replace portrait"
-        className="flex h-24 w-24 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-zinc-700 bg-zinc-800 hover:border-indigo-500"
+        whileHover={{ scale: 1.04 }}
+        whileTap={{ scale: 0.97 }}
+        className="flex h-24 w-24 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-zinc-700 bg-zinc-800 [clip-path:polygon(0_0,100%_0,100%_88%,88%_100%,0_100%)] hover:border-indigo-500"
       >
         {uploading ? (
           <span className="text-xs text-zinc-500">…</span>
@@ -59,14 +82,14 @@ function NamePortrait({ character }) {
         ) : (
           <span className="px-1 text-center text-xs text-zinc-500">Add portrait</span>
         )}
-      </button>
+      </motion.button>
       <input ref={fileRef} type="file" accept="image/*" hidden onChange={onPickImage} />
       <div className="min-w-0 flex-1">
         <input
           ref={nameRef}
           value={name}
           onChange={(e) => onNameChange(e.target.value)}
-          className="w-full rounded-md border border-transparent bg-transparent px-2 py-1 text-2xl font-bold text-zinc-100 outline-none hover:border-zinc-700 focus:border-indigo-500"
+          className="w-full rounded-md border border-transparent bg-transparent px-2 py-1 font-display text-3xl font-bold uppercase tracking-wide text-zinc-100 outline-none hover:border-zinc-700 focus:border-indigo-500"
         />
         {character.character_type === 'npc' && (
           <span className="ml-2 rounded bg-purple-600/30 px-1.5 text-xs font-bold uppercase text-purple-300">
@@ -81,11 +104,21 @@ function NamePortrait({ character }) {
 function StaminaBlock({ character, staminaDie }) {
   const regenBlocked = !staminaDie || staminaDie.status === 'incapacitated';
   return (
-    <div className="flex flex-wrap items-center gap-4 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
+    <div className="flex flex-wrap items-center gap-4 rounded-xl border border-zinc-800 bg-zinc-900 p-4 [clip-path:polygon(0_0,100%_0,100%_100%,3%_100%,0_82%)]">
       <div>
-        <div className="text-xs uppercase tracking-wide text-zinc-500">Stamina</div>
+        <div className="font-display text-xs font-semibold uppercase tracking-widest text-zinc-500">
+          Stamina
+        </div>
         <div className="text-2xl font-bold">
-          {character.current_stamina}
+          <motion.span
+            key={character.current_stamina}
+            initial={{ scale: 1.35, color: '#fbbf24' }}
+            animate={{ scale: 1, color: '#f4f4f5' }}
+            transition={{ duration: 0.35, ease: 'easeOut' }}
+            className="inline-block"
+          >
+            {character.current_stamina}
+          </motion.span>
           <span className="text-zinc-500"> / {character.max_stamina}</span>
         </div>
       </div>
@@ -208,29 +241,30 @@ export default function CoreStatsTab({ data }) {
         )}
       </div>
 
-      {POOLS.map((pool) => {
-        const poolDice = dice.filter((d) => d.pool === pool.key);
-        return (
-          <div key={pool.key} className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
-            <h3 className="mb-3 text-sm font-bold uppercase tracking-wide text-zinc-400">
-              {pool.label}
-            </h3>
-            <div className="flex flex-wrap gap-4">
-              {poolDice.map((die) => (
-                <DieWidget
-                  key={die.id}
-                  die={die}
-                  onRoll={rollDie}
-                  onStep={stepDie}
-                  selecting={selecting}
-                  selected={selectedIds.has(die.id)}
-                  onToggleSelect={toggleSelect}
-                />
-              ))}
+      <div className="relative mx-auto aspect-square w-full max-w-2xl select-none">
+        <VitruvianFigure className="absolute inset-0 h-full w-full text-zinc-400" />
+        {dice.map((die) => {
+          const spot = ANATOMY[die.slot_name];
+          if (!spot) return null;
+          return (
+            <div
+              key={die.id}
+              className="absolute -translate-x-1/2 -translate-y-1/2"
+              style={{ top: spot.top, left: spot.left }}
+            >
+              <DieWidget
+                die={die}
+                onRoll={rollDie}
+                onStep={stepDie}
+                selecting={selecting}
+                selected={selectedIds.has(die.id)}
+                onToggleSelect={toggleSelect}
+                Icon={spot.Icon}
+              />
             </div>
-          </div>
-        );
-      })}
+          );
+        })}
+      </div>
 
       <StaminaBlock character={character} staminaDie={staminaDie} />
 

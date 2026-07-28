@@ -44,16 +44,29 @@ Note: Render's free tier sleeps after inactivity — the first load of a session
 
 ## Project status
 
-Phase 7 (Combat Timing) now has a real, playable round loop in the Arena, built on top of the
+Phase 8 (Polish) has started, piloted on the character sheet first before rolling out everywhere
+(the plan's own recommendation, since this is the piece most likely to get reworked). Framer
+Motion and GSAP are now real dependencies. The sheet's tab bar got a sliding underline and
+animated tab transitions; Tab 1 — Core Stats was rebuilt around a Vitruvian-Man backdrop, with
+the 8 dice overlaid as three horizontal rows mirroring the original Head/Core/Legs pool grouping
+— Skull+Brain a symmetric pair on the midline, Left Hand/Stamina/Body/Right Hand one row at the
+hands' height, Left/Right Leg a symmetric pair at the stance — full-size dice, each with its own
+low-opacity icon rendered inside the die itself, behind the number. Stepping a die now plays a
+quick GSAP flash-pop; the portrait and Stamina number got their own small motion touches. This is
+a first-pass proposal on one tab, not yet rolled out to Tabs 2-6.
+
+Phase 7 (Combat Timing) has a real, playable round loop in the Arena, built on top of the
 isolated, unit-tested `server/combatTiming.js` engine from the previous round of work. **Next
 Round** rolls Brain initiative for every seated participant and opens the Declaration Phase for
 whichever side lost it; that side declares moves one at a time from a picker (styled moves
 dimmed the same way the character sheet already does), then explicitly marks itself done — a
 server-enforced lock, not just a UI suggestion — before the other side can declare. Once both
-sides are done, the GM starts the Tic Countdown and steps it forward/back; each seated
-character's card shows their declared moves as small badges, a Tell until the Tic reaches that
-move's reveal point, the real move name after (recomputing live, so stepping backward correctly
-re-hides a move that hasn't "really" happened yet). A character's next move is blocked only
+sides are done, the GM starts the Tic Countdown and steps it forward/back; every seated
+character's declared moves show up below the status bar as small flip cards — grey, Tell-only
+while secret, flipping (a Framer Motion rotate) to the same full move card Tab 3/Compendium
+already use the instant it's either this client's own declare or the real reveal Tic (recomputing
+live, so stepping backward correctly re-hides a move that hasn't "really" happened yet). A
+character's next move is blocked only
 until their *previous* move's Startup reveals, not its full Startup+Active+Recovery footprint —
 and since the Tic counter never resets, a move overflowing past its round's end correctly keeps
 blocking that character into the next round with no special-casing anywhere. The no-auth model
@@ -66,6 +79,15 @@ automatically — no button, no manual step — and never duplicates even if the
 counter back and forth across the same threshold a dozen times. Rolling that move (if it has a
 Roll) is completely unchanged, the same Roll button/dialog used everywhere else, and lands as
 its own ordinary roll entry rather than merging into the reveal card.
+
+Moves now carry a required **Stamina Cost** (0 is a valid free cost; negative restores Stamina
+instead of spending it) — set in the Move Creator, shown as a small badge on every move card.
+Declaring a move only checks it's affordable (current Stamina minus everything else already
+pending this Declaration Phase); the actual spend happens in one batch, for the whole side, the
+moment it presses **Done Declaring**, clamped so it can never go negative or over max. While a
+move is declared but not yet committed, that character's Stamina in the Arena shows a live
+preview of what it'll become — red if lower, green if higher — visible only to whoever actually
+declared it, exactly as secret as the move's own identity already was.
 
 The Chat Log now takes free-text messages, not just rolls: a compose box at the bottom lets
 anyone pick a character to post as (PC-only for Players), type a message, and/or attach an

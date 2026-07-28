@@ -79,6 +79,16 @@ export function clampRollBonus(value) {
   return Math.max(-ROLL_BONUS_LIMIT, Math.min(ROLL_BONUS_LIMIT, n));
 }
 
+// Stamina Cost: required on every move, but 0 (free) is valid; negative
+// restores Stamina instead of spending it. Same +/-20 bound as roll bonus —
+// there's nothing move-specific requiring a different limit.
+const STAMINA_COST_LIMIT = 20;
+
+export function clampStaminaCost(value) {
+  const n = Math.trunc(Number(value) || 0);
+  return Math.max(-STAMINA_COST_LIMIT, Math.min(STAMINA_COST_LIMIT, n));
+}
+
 // A move's Roll picks from 6 slots, not the 8 concrete dice: Left/Right Hand
 // collapse into one ambiguous 'Hand' choice, Left/Right Leg into 'Leg' — the
 // player picks which side at roll time, not the GM at creation time (see

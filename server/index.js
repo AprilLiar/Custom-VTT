@@ -17,6 +17,7 @@ import {
   validFrames,
   normalizeInteractions,
   clampRollBonus,
+  clampStaminaCost,
   sanitizeRollSlots,
   hasAmbiguousRollSlot,
   AMBIGUOUS_ROLL_SLOTS,
@@ -361,6 +362,20 @@ async function getPublicDeclaredMoves(currentTic) {
       moveName: isRevealed ? row.move_name : null,
     };
   });
+}
+
+// Sum of Stamina Cost across a character's declared-but-not-yet-committed
+// moves — moves only stay uncommitted while their side's Declaration Phase
+// is still open (combat:side_done_declaring commits the whole batch at
+// once), so this is also exactly "how much is currently pending."
+async function getPendingStaminaCost(characterId) {
+  const row = await one(
+    `SELECT COALESCE(SUM(m.stamina_cost), 0) AS pending
+     FROM declared_moves dm JOIN moves m ON m.id = dm.move_id
+     WHERE dm.character_id = ? AND dm.stamina_committed = 0`,
+    [characterId]
+  );
+  return row.pending;
 }
 
 // Broadcasts the Combat Arena's full current state — seating/toggle plus
@@ -1079,6 +1094,7 @@ io.on('connection', (socket) => {
     const active = clampFrame(payload.activeTics);
     const recovery = clampFrame(payload.recoveryTics);
     if (!validFrames(startup, active, recovery)) return null;
+    const staminaCost = clampStaminaCost(payload.staminaCost);
     const isDefault = payload.isDefault ? 1 : 0;
     const isDefensive = payload.isDefensive ? 1 : 0;
     const description = String(payload.description ?? '').trim();
@@ -1146,22 +1162,23 @@ io.on('connection', (socket) => {
     if (id == null) {
       const result = await run(
         `INSERT INTO moves (name, is_default, tell_id, startup_tics, active_tics, recovery_tics,
-          description, style_attribute_id, folder_id, image_data, image_mime_type, roll_modifier,
-          right_tell_id, left_tell_id, is_defensive)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [name, isDefault, tellId, startup, active, recovery, description, styleId, folderId,
-          payload.imageData ?? null, payload.imageData ? (payload.imageMimeType ?? 'image/png') : null,
+          stamina_cost, description, style_attribute_id, folder_id, image_data, image_mime_type,
+          roll_modifier, right_tell_id, left_tell_id, is_defensive)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [name, isDefault, tellId, startup, active, recovery, staminaCost, description, styleId,
+          folderId, payload.imageData ?? null,
+          payload.imageData ? (payload.imageMimeType ?? 'image/png') : null,
           rollModifier, rightTellId, leftTellId, isDefensive]
       );
       id = Number(result.lastInsertRowid);
     } else {
       await run(
         `UPDATE moves SET name = ?, is_default = ?, tell_id = ?, startup_tics = ?, active_tics = ?,
-          recovery_tics = ?, description = ?, style_attribute_id = ?, folder_id = ?, roll_modifier = ?,
-          right_tell_id = ?, left_tell_id = ?, is_defensive = ?
+          recovery_tics = ?, stamina_cost = ?, description = ?, style_attribute_id = ?, folder_id = ?,
+          roll_modifier = ?, right_tell_id = ?, left_tell_id = ?, is_defensive = ?
           WHERE id = ?`,
-        [name, isDefault, tellId, startup, active, recovery, description, styleId, folderId,
-          rollModifier, rightTellId, leftTellId, isDefensive, id]
+        [name, isDefault, tellId, startup, active, recovery, staminaCost, description, styleId,
+          folderId, rollModifier, rightTellId, leftTellId, isDefensive, id]
       );
       // image only replaced when a new one is provided
       if (payload.imageData !== undefined) {
@@ -1849,6 +1866,15 @@ io.on('connection', (socket) => {
       }
     }
 
+    // Affordability is checked up front, against current_stamina minus
+    // every other move this character already has pending (not yet
+    // committed) this Declaration Phase — the actual spend only happens in
+    // one batch when the side finishes declaring (see
+    // combat:side_done_declaring), but a character can never queue more
+    // than they can actually pay for once that happens.
+    const pending = await getPendingStaminaCost(character.id);
+    if (character.current_stamina - pending - move.stamina_cost < 0) return;
+
     const last = await one(
       'SELECT reveal_tic FROM declared_moves WHERE character_id = ? ORDER BY reveal_tic DESC LIMIT 1',
       [character.id]
@@ -1898,11 +1924,16 @@ io.on('connection', (socket) => {
     // the plan's no-auth known-limitation note: the server can't otherwise
     // tell whose client this is).
     await emitCombatUpdated();
+    // staminaCost rides along only on this direct own-only emit — never on
+    // the public broadcast — so the live pending-Stamina preview (Combat
+    // Arena) stays exactly as secret as the move's identity already is:
+    // only the declaring client can compute it before the reveal.
     socket.emit('declared_move:own', {
       ...publicPayload,
       isRevealed: true,
       moveId: move.id,
       moveName: move.name,
+      staminaCost: move.stamina_cost,
     });
   });
 
@@ -1910,6 +1941,35 @@ io.on('connection', (socket) => {
     if (!['left', 'right'].includes(side)) return;
     const state = await one('SELECT * FROM combat_state WHERE id = 1');
     if (state.phase !== 'declaration' || state.declaring_side !== side) return;
+
+    // Commit every pending move's Stamina Cost for this side now, in one
+    // batch — this is the one and only place cost actually leaves/returns
+    // to current_stamina (move:declare only ever checked affordability).
+    // Clamped defensively to [0, max]; the up-front affordability check
+    // already keeps this from going negative in the normal flow.
+    const sideParticipants = await all(
+      'SELECT character_id FROM combat_participants WHERE side = ?',
+      [side]
+    );
+    for (const p of sideParticipants) {
+      const pending = await getPendingStaminaCost(p.character_id);
+      if (pending !== 0) {
+        const character = await getCharacter(p.character_id);
+        if (character) {
+          const newStamina = clamp(character.current_stamina - pending, 0, character.max_stamina);
+          await run('UPDATE characters SET current_stamina = ? WHERE id = ?', [
+            newStamina,
+            character.id,
+          ]);
+          io.emit('character:updated', await getCharacter(character.id));
+        }
+      }
+      await run(
+        'UPDATE declared_moves SET stamina_committed = 1 WHERE character_id = ? AND stamina_committed = 0',
+        [p.character_id]
+      );
+    }
+
     await run(
       'UPDATE combat_state SET declaring_side = ?, pending_declare_side = NULL WHERE id = 1',
       [state.pending_declare_side]

@@ -268,6 +268,11 @@ export async function initDb() {
       startup_tics INTEGER NOT NULL DEFAULT 1,
       active_tics INTEGER NOT NULL DEFAULT 1,
       recovery_tics INTEGER NOT NULL DEFAULT 0,
+      -- Current Stamina spent by the declaring character the moment their
+      -- side finishes declaring (combat:side_done_declaring) — required at
+      -- creation, but 0 is a valid "free" cost; a negative cost restores
+      -- Stamina instead of spending it.
+      stamina_cost INTEGER NOT NULL DEFAULT 0,
       description TEXT NOT NULL DEFAULT '',
       style_attribute_id INTEGER REFERENCES attributes(id), -- NULL only on legacy rows
       folder_id INTEGER,    -- compendium folder; NULL = root
@@ -296,6 +301,7 @@ export async function initDb() {
   await ensureColumn('moves', 'right_tell_id', 'INTEGER REFERENCES tells(id)');
   await ensureColumn('moves', 'left_tell_id', 'INTEGER REFERENCES tells(id)');
   await ensureColumn('moves', 'is_defensive', 'INTEGER NOT NULL DEFAULT 0');
+  await ensureColumn('moves', 'stamina_cost', 'INTEGER NOT NULL DEFAULT 0');
 
   // Which of a move's optional Roll dice it's made of — a move with no rows
   // here has no Roll. slot_name is either a concrete DICE_TEMPLATE slot
@@ -524,10 +530,17 @@ export async function initDb() {
       queue_order INTEGER NOT NULL,
       placement_tic INTEGER NOT NULL,
       reveal_tic INTEGER NOT NULL,
-      reveal_posted INTEGER NOT NULL DEFAULT 0
+      reveal_posted INTEGER NOT NULL DEFAULT 0,
+      -- 1 once this move's Stamina Cost has actually been subtracted from
+      -- (or added to, for a negative cost) the character's current_stamina —
+      -- happens in one batch when the declaring side presses "done
+      -- declaring" (combat:side_done_declaring), not at move:declare time.
+      -- Until then the cost is only a *visual* preview client-side.
+      stamina_committed INTEGER NOT NULL DEFAULT 0
     )
   `);
   await ensureColumn('declared_moves', 'reveal_posted', 'INTEGER NOT NULL DEFAULT 0');
+  await ensureColumn('declared_moves', 'stamina_committed', 'INTEGER NOT NULL DEFAULT 0');
 
   await seedRuleset();
   await seedTells();
