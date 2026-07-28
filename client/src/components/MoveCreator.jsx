@@ -143,11 +143,18 @@ export default function MoveCreator({
 
   const total = frames.startup + frames.active + frames.recovery;
   const ambiguousRoll = rollSlots.some((s) => AMBIGUOUS_ROLL_SLOTS.has(s));
+  // A Default move is usable by anyone, anytime — it never carries a Style
+  // gate, so Style stays required only for a Unique move.
   const valid =
     name.trim() &&
-    styleId &&
+    (isDefault || styleId) &&
     total >= 1 &&
     (ambiguousRoll ? rightTellId && leftTellId : tellId);
+
+  const toggleDefault = (checked) => {
+    setIsDefault(checked);
+    if (checked) setStyleId(null);
+  };
 
   const toggleRollSlot = (slot) =>
     setRollSlots((prev) => (prev.includes(slot) ? prev.filter((s) => s !== slot) : [...prev, slot]));
@@ -221,7 +228,7 @@ export default function MoveCreator({
           <input
             type="checkbox"
             checked={isDefault}
-            onChange={(e) => setIsDefault(e.target.checked)}
+            onChange={(e) => toggleDefault(e.target.checked)}
           />
           Default (everyone has it)
         </label>
@@ -287,32 +294,38 @@ export default function MoveCreator({
         </select>
       </div>
 
-      <div>
-        <p className="mb-1 text-xs font-semibold uppercase text-zinc-500">
-          Style (required — gates who can learn/use this move)
+      {isDefault ? (
+        <p className="text-xs text-zinc-500">
+          Default moves have no Style — usable by anyone, anytime.
         </p>
-        <div className="flex flex-wrap gap-1.5">
-          {attributes.map((attr) => {
-            const Icon = iconFor(attr.icon);
-            const selected = styleId === attr.id;
-            return (
-              <button
-                key={attr.id}
-                type="button"
-                onClick={() => setStyleId(attr.id)}
-                className={`inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-xs font-semibold ${
-                  selected
-                    ? 'border-indigo-500 bg-indigo-600/30 text-indigo-200'
-                    : 'border-zinc-700 bg-zinc-800 text-zinc-400 hover:border-zinc-500'
-                }`}
-              >
-                <Icon size={12} />
-                {attr.name}
-              </button>
-            );
-          })}
+      ) : (
+        <div>
+          <p className="mb-1 text-xs font-semibold uppercase text-zinc-500">
+            Style (required — gates who can learn/use this move)
+          </p>
+          <div className="flex flex-wrap gap-1.5">
+            {attributes.map((attr) => {
+              const Icon = iconFor(attr.icon);
+              const selected = styleId === attr.id;
+              return (
+                <button
+                  key={attr.id}
+                  type="button"
+                  onClick={() => setStyleId(attr.id)}
+                  className={`inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-xs font-semibold ${
+                    selected
+                      ? 'border-indigo-500 bg-indigo-600/30 text-indigo-200'
+                      : 'border-zinc-700 bg-zinc-800 text-zinc-400 hover:border-zinc-500'
+                  }`}
+                >
+                  <Icon size={12} />
+                  {attr.name}
+                </button>
+              );
+            })}
+          </div>
         </div>
-      </div>
+      )}
 
       <div>
         <p className="mb-1 text-xs font-semibold uppercase text-zinc-500">

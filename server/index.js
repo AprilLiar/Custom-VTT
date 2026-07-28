@@ -758,6 +758,14 @@ app.put('/api/characters/:id', wrap(async (req, res) => {
     sets.push('image_data = ?', 'image_mime_type = ?');
     args.push(String(req.body.imageData), String(req.body.imageMimeType ?? 'image/jpeg'));
   }
+  // GM-only client-side (same trust model as everywhere else in this
+  // no-auth app) — replaces Tab 1's default backdrop figure for this
+  // character specifically. No "clear" affordance, matching the portrait
+  // upload above: re-uploading replaces, there's no revert-to-default.
+  if (req.body?.vitruvianImageData !== undefined) {
+    sets.push('vitruvian_image_data = ?', 'vitruvian_image_mime_type = ?');
+    args.push(String(req.body.vitruvianImageData), String(req.body.vitruvianImageMimeType ?? 'image/jpeg'));
+  }
   if (sets.length) {
     args.push(character.id);
     await run(`UPDATE characters SET ${sets.join(', ')} WHERE id = ?`, args);
@@ -829,11 +837,12 @@ app.get('/api/chat', wrap(async (_req, res) => {
   res.json(
     rows.map((row) => {
       const dice = JSON.parse(row.dice_rolled);
+      const isGmPost = row.character_id === GM_CHAT_SENTINEL_ID;
       return {
         id: row.id,
         kind: row.kind,
-        characterId: row.character_id,
-        characterName: row.character_name ?? '(deleted)',
+        characterId: isGmPost ? null : row.character_id,
+        characterName: isGmPost ? 'GM' : (row.character_name ?? '(deleted)'),
         modifier: row.modifier,
         dice,
         total: dice.reduce((sum, d) => sum + d.result, 0),
@@ -867,6 +876,13 @@ app.get('/api/chat', wrap(async (_req, res) => {
 // A Counter's optional reward tag — purely cosmetic (no mechanical
 // effect), character-owned counters only. See counter:create/counter:set_reward.
 const REWARD_TYPES = ['story', 'statistic', 'perk', 'move', 'combat_prowess'];
+
+// chat_log.character_id's sentinel for "the GM, generically" (chat:message
+// only — a real character always backs every roll/move_reveal entry).
+// characters.id is an AUTOINCREMENT rowid starting at 1, so 0 can never
+// collide with a real row; chat_log.character_id stays NOT NULL without a
+// schema change.
+const GM_CHAT_SENTINEL_ID = 0;
 
 io.on('connection', (socket) => {
   const on = (event, handler) => {
@@ -1270,9 +1286,13 @@ io.on('connection', (socket) => {
       tellId = tell.id;
     }
 
-    // Style: one of the 7 (required for new moves; legacy rows may be NULL)
+    // Style: one of the 7, or none. A Default move is usable by anyone,
+    // anytime, so it never carries a Style gate — any styleAttributeId sent
+    // alongside isDefault is silently dropped rather than stored, regardless
+    // of what the client sent (see MoveCreator.jsx, which already hides the
+    // picker in that case).
     let styleId = null;
-    if (payload.styleAttributeId != null) {
+    if (!isDefault && payload.styleAttributeId != null) {
       const style = await one('SELECT id FROM attributes WHERE id = ?', [
         payload.styleAttributeId,
       ]);
@@ -1808,13 +1828,16 @@ io.on('connection', (socket) => {
 
   // Free-text chat message, optionally with an attached image/GIF (see Chat
   // Log above). Attributed to a character the same way a roll is — chosen
-  // client-side in the compose box, not implied by the current page. Never
-  // kept long-term: wiped by chat:clear and automatically on every server
-  // boot (see the initDb() call at the bottom of this file).
+  // client-side in the compose box, not implied by the current page — or to
+  // GM_CHAT_SENTINEL_ID, the GM's own generic persona (no real character
+  // row; characters.id starts at 1, so 0 can never collide with a real
+  // one). Never kept long-term: wiped by chat:clear and automatically on
+  // every server boot (see the initDb() call at the bottom of this file).
   const MAX_CHAT_MESSAGE_LENGTH = 2000;
   on('chat:message', async ({ characterId, text, imageData, imageMimeType }) => {
-    const character = await getCharacter(characterId);
-    if (!character) return;
+    const asGm = characterId == null;
+    const character = asGm ? null : await getCharacter(characterId);
+    if (!asGm && !character) return;
     const message =
       typeof text === 'string' ? text.trim().slice(0, MAX_CHAT_MESSAGE_LENGTH) : '';
     const image = typeof imageData === 'string' && imageData ? imageData : null;
@@ -1823,12 +1846,12 @@ io.on('connection', (socket) => {
     await run(
       `INSERT INTO chat_log (kind, character_id, dice_rolled, content, image_data, image_mime_type)
        VALUES ('message', ?, '[]', ?, ?, ?)`,
-      [character.id, message || null, image, mimeType]
+      [asGm ? GM_CHAT_SENTINEL_ID : character.id, message || null, image, mimeType]
     );
     io.emit('chat:message', {
       kind: 'message',
-      characterId: character.id,
-      characterName: character.name,
+      characterId: asGm ? null : character.id,
+      characterName: asGm ? 'GM' : character.name,
       message: message || null,
       imageData: image,
       imageMimeType: mimeType,
@@ -2057,23 +2080,34 @@ io.on('connection', (socket) => {
     // one batch when the side finishes declaring (see
     // combat:side_done_declaring), but a character can never queue more
     // than they can actually pay for once that happens.
+    // The character's own last-queued move's full footprint end (reveal +
+    // Active + Recovery) — ORDER BY the computed end, not just reveal_tic,
+    // since a shorter-Active/Recovery move declared later could still end
+    // earlier than a longer one declared before it.
     const [pending, last] = await Promise.all([
       getPendingStaminaCost(character.id),
       one(
-        'SELECT reveal_tic FROM declared_moves WHERE character_id = ? ORDER BY reveal_tic DESC LIMIT 1',
+        `SELECT (dm.reveal_tic + m.active_tics + m.recovery_tics) AS blocked_until_tic
+         FROM declared_moves dm JOIN moves m ON m.id = dm.move_id
+         WHERE dm.character_id = ?
+         ORDER BY blocked_until_tic DESC LIMIT 1`,
         [character.id]
       ),
     ]);
     if (character.current_stamina - pending - move.stamina_cost < 0) return;
 
     // A player can drag a move onto any Tic they like on the Tic Counter —
-    // never earlier than the character's own next-eligible Tic (Startup-only
-    // blocking, same rule as before), which is why this is a floor, not an
-    // exact placement: dropping too early just snaps forward to the
-    // earliest legal Tic instead of failing.
+    // never earlier than the character's own next-eligible Tic, which is
+    // why this is a floor, not an exact placement: dropping too early just
+    // snaps forward to the earliest legal Tic instead of failing. That
+    // floor is the previous move's full footprint end (Startup+Active+
+    // Recovery, not just Startup) — a new move can't be placed while an
+    // earlier one is still active or recovering (revised: an earlier
+    // version of this rule blocked only through Startup, letting a
+    // still-Active/Recovering move get silently overlapped by a new one).
     const minPlacementTic = computePlacementTic({
       roundStartTic: state.round_start_tic,
-      previousRevealTic: last ? last.reveal_tic : null,
+      previousBlockedUntilTic: last ? last.blocked_until_tic : null,
     });
     const placementTic = Number.isInteger(requestedPlacementTic)
       ? Math.max(requestedPlacementTic, minPlacementTic)
@@ -2100,6 +2134,24 @@ io.on('connection', (socket) => {
     // in as this character sees the real move and its Stamina Cost
     // immediately, everyone else sees Tell-only, regardless of who actually
     // triggered this declare.
+    await emitCombatUpdated();
+  });
+
+  // Lets a still-pending declared move be taken back and something else
+  // declared instead — open access, same trust model as move:declare
+  // itself. Only while it's genuinely still pending: stamina_committed = 1
+  // means the declaring side already pressed Done Declaring, at which point
+  // its Stamina Cost has actually left current_stamina (see
+  // combat:side_done_declaring) — undoing that would need a refund this
+  // event deliberately doesn't attempt, so it's simply rejected past that
+  // point (a no-op, matching move:declare's own rejection pattern). Once
+  // both sides are done, phase already isn't 'declaration' either way.
+  on('move:undeclare', async ({ declaredMoveId }) => {
+    const state = await one('SELECT * FROM combat_state WHERE id = 1');
+    if (state.phase !== 'declaration') return;
+    const row = await one('SELECT * FROM declared_moves WHERE id = ?', [declaredMoveId]);
+    if (!row || row.stamina_committed) return;
+    await run('DELETE FROM declared_moves WHERE id = ?', [row.id]);
     await emitCombatUpdated();
   });
 

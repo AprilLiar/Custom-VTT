@@ -112,6 +112,8 @@ export async function initDb() {
       character_type TEXT NOT NULL DEFAULT 'pc' CHECK(character_type IN ('pc','npc')),
       image_data TEXT,          -- base64-encoded image, stored directly in Turso
       image_mime_type TEXT,     -- e.g. 'image/jpeg', needed to render image_data correctly
+      vitruvian_image_data TEXT,      -- GM-uploaded replacement for the default Tab 1 backdrop figure
+      vitruvian_image_mime_type TEXT,
       active_stance_id INTEGER, -- FK to stances(id), set once stances exist (Phase 2)
       stamina_multiplier INTEGER NOT NULL DEFAULT 4,
       max_stamina INTEGER NOT NULL DEFAULT 0,
@@ -121,6 +123,8 @@ export async function initDb() {
     )
   `);
   await ensureColumn('characters', 'folder_id', 'INTEGER');
+  await ensureColumn('characters', 'vitruvian_image_data', 'TEXT');
+  await ensureColumn('characters', 'vitruvian_image_mime_type', 'TEXT');
 
   // GM-created folders for organizing the character list — same structural
   // pattern as move_folders (create/rename/delete). Nested: parent_id is a
@@ -302,6 +306,13 @@ export async function initDb() {
   await ensureColumn('moves', 'left_tell_id', 'INTEGER REFERENCES tells(id)');
   await ensureColumn('moves', 'is_defensive', 'INTEGER NOT NULL DEFAULT 0');
   await ensureColumn('moves', 'stamina_cost', 'INTEGER NOT NULL DEFAULT 0');
+  // A Default move is usable by anyone, anytime — it never made sense for
+  // one to also carry a Style gate. writeMove now refuses to set one going
+  // forward; this is the one-time cleanup for any Default move that already
+  // had one from before that rule existed.
+  await run(
+    `UPDATE moves SET style_attribute_id = NULL WHERE is_default = 1 AND style_attribute_id IS NOT NULL`
+  );
 
   // Which of a move's optional Roll dice it's made of — a move with no rows
   // here has no Roll. slot_name is either a concrete DICE_TEMPLATE slot

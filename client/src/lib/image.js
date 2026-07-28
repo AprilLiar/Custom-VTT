@@ -33,6 +33,13 @@ export const portraitSrc = (character) =>
     ? `data:${character.image_mime_type || 'image/jpeg'};base64,${character.image_data}`
     : null;
 
+// A GM-uploaded replacement for Tab 1's default backdrop figure, specific
+// to this character — null falls back to the built-in artwork.
+export const vitruvianSrc = (character) =>
+  character?.vitruvian_image_data
+    ? `data:${character.vitruvian_image_mime_type || 'image/jpeg'};base64,${character.vitruvian_image_data}`
+    : null;
+
 // Chat images/GIFs: never persisted long-term (wiped on Clear Chat and on
 // every server restart), so a wider cap than Moves/Tells' 128px thumbnails
 // is fine. GIFs are sent as their raw uploaded bytes rather than redrawn

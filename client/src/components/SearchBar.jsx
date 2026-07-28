@@ -11,9 +11,8 @@ const GROUPS = [
   { key: 'tags', label: 'Tags' },
 ];
 
-// Compendium entries (Moves/Perks/Tells/Tags) link to the GM-only
-// Compendium page; Players see the same matches but as inert rows, since
-// there's nowhere for them to navigate to.
+// Compendium entries (Moves/Perks/Tells/Tags) link to the Compendium page,
+// which every role can browse (read-only for Players).
 const COMPENDIUM_TAB = { moves: 'moves', perks: 'perks', tells: 'moves', tags: 'moves' };
 
 export default function SearchBar() {
@@ -51,9 +50,7 @@ export default function SearchBar() {
       navigate(`/character/${item.id}`);
       return;
     }
-    if (role === 'gm') {
-      navigate('/compendium', { state: { tab: COMPENDIUM_TAB[group] } });
-    }
+    navigate('/compendium', { state: { tab: COMPENDIUM_TAB[group] } });
   };
 
   const visibleResults = results && {
@@ -82,7 +79,6 @@ export default function SearchBar() {
             GROUPS.map((g) => {
               const items = visibleResults[g.key] ?? [];
               if (!items.length) return null;
-              const clickable = g.key === 'characters' || role === 'gm';
               return (
                 <div key={g.key} className="border-b border-zinc-800 last:border-0">
                   <div className="px-3 pt-2 text-xs font-bold uppercase tracking-wide text-zinc-600">
@@ -91,12 +87,8 @@ export default function SearchBar() {
                   {items.map((item) => (
                     <div
                       key={item.id}
-                      onClick={() => clickable && goTo(g.key, item)}
-                      className={`px-3 py-1.5 text-sm ${
-                        clickable
-                          ? 'cursor-pointer text-zinc-200 hover:bg-zinc-800'
-                          : 'cursor-default text-zinc-400'
-                      }`}
+                      onClick={() => goTo(g.key, item)}
+                      className="cursor-pointer px-3 py-1.5 text-sm text-zinc-200 hover:bg-zinc-800"
                     >
                       <div className="flex items-center gap-1.5">
                         <span className="truncate font-medium">{item.name}</span>

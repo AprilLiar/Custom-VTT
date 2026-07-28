@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { useRole } from '../roleContext.jsx';
 import { socket } from '../socket.js';
 import { getCharacter, getCharacters, getMoves, getRuleset, getTags, getTells } from '../lib/api.js';
 import { iconFor } from '../lib/styleIcons.js';
@@ -270,8 +271,12 @@ function GrantList({ move, characters, canLearn }) {
 
 // The Compendium page's Moves tab: Tell + Tag managers, folders, style
 // filter, and the persistent move library with drag/checklist granting.
-// Rendering is GM-gated by the parent CompendiumPage.
+// The page itself is open to every role (see CompendiumPage.jsx) — every
+// mutating control here (Tell/Tag managers, the Creator, Edit/Delete/Grant,
+// folder management, drag-and-drop) is gated to role === 'gm' below; a
+// Player gets a read-only browse of the same cards.
 export default function MovesCompendium() {
+  const { role } = useRole();
   const [tells, setTells] = useState(null);
   const [tags, setTags] = useState(null);
   const [ruleset, setRuleset] = useState(null);
@@ -384,7 +389,7 @@ export default function MovesCompendium() {
           folders={folders}
           currentFolderId={currentFolder}
           onSelect={setCurrentFolder}
-          canManage
+          canManage={role === 'gm'}
           onCreate={(name, parentFolderId) => socket.emit('folder:create', { name, parentFolderId })}
           onRename={(folderId, name) => socket.emit('folder:rename', { folderId, name })}
           onDelete={(folderId) => socket.emit('folder:delete', { folderId })}
@@ -395,8 +400,12 @@ export default function MovesCompendium() {
       </aside>
 
       <div className="min-w-0 flex-1 space-y-4">
-        <TellManager tells={tells} usedTellIds={usedTellIds} />
-        <TagManager tags={tags} />
+        {role === 'gm' && (
+          <>
+            <TellManager tells={tells} usedTellIds={usedTellIds} />
+            <TagManager tags={tags} />
+          </>
+        )}
 
         {/* Style filter */}
         <div className="flex flex-wrap items-center gap-1">
@@ -421,26 +430,27 @@ export default function MovesCompendium() {
           })}
         </div>
 
-        {form ? (
-          <MoveCreator
-            tells={tells}
-            attributes={ruleset.attributes}
-            tags={tags}
-            folders={folders}
-            initialFolderId={currentFolder}
-            initial={form.move ?? null}
-            onSubmit={submitMove}
-            onCancel={() => setForm(null)}
-          />
-        ) : (
-          <button
-            onClick={() => setForm({})}
-            disabled={tells.length === 0}
-            className="rounded-md bg-indigo-600 px-4 py-2 font-semibold hover:bg-indigo-500 disabled:opacity-40"
-          >
-            + New Move
-          </button>
-        )}
+        {role === 'gm' &&
+          (form ? (
+            <MoveCreator
+              tells={tells}
+              attributes={ruleset.attributes}
+              tags={tags}
+              folders={folders}
+              initialFolderId={currentFolder}
+              initial={form.move ?? null}
+              onSubmit={submitMove}
+              onCancel={() => setForm(null)}
+            />
+          ) : (
+            <button
+              onClick={() => setForm({})}
+              disabled={tells.length === 0}
+              className="rounded-md bg-indigo-600 px-4 py-2 font-semibold hover:bg-indigo-500 disabled:opacity-40"
+            >
+              + New Move
+            </button>
+          ))}
 
         {visibleMoves.length === 0 ? (
           <p className="text-sm text-zinc-600">
@@ -455,10 +465,10 @@ export default function MovesCompendium() {
             {visibleMoves.map((move) => (
               <div
                 key={move.id}
-                draggable
-                onDragStart={(e) => e.dataTransfer.setData('text/move-id', String(move.id))}
-                title="Drag onto a discipline to file it, or onto a character to grant it"
-                className="cursor-grab active:cursor-grabbing"
+                draggable={role === 'gm'}
+                onDragStart={role === 'gm' ? (e) => e.dataTransfer.setData('text/move-id', String(move.id)) : undefined}
+                title={role === 'gm' ? 'Drag onto a discipline to file it, or onto a character to grant it' : undefined}
+                className={role === 'gm' ? 'cursor-grab active:cursor-grabbing' : undefined}
               >
                 <MoveCard
                   move={move}
@@ -476,35 +486,37 @@ export default function MovesCompendium() {
                     ) : null
                   }
                   actions={
-                    <>
-                      {!move.is_default && (
+                    role === 'gm' ? (
+                      <>
+                        {!move.is_default && (
+                          <button
+                            onClick={() => setGrantOpen(grantOpen === move.id ? null : move.id)}
+                            className="rounded px-2 py-0.5 text-xs text-indigo-400 hover:bg-indigo-900/40"
+                          >
+                            Grant… ({move.granted_character_ids.length})
+                          </button>
+                        )}
                         <button
-                          onClick={() => setGrantOpen(grantOpen === move.id ? null : move.id)}
-                          className="rounded px-2 py-0.5 text-xs text-indigo-400 hover:bg-indigo-900/40"
+                          onClick={() => setForm({ move })}
+                          className="rounded px-2 py-0.5 text-xs text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300"
                         >
-                          Grant… ({move.granted_character_ids.length})
+                          Edit
                         </button>
-                      )}
-                      <button
-                        onClick={() => setForm({ move })}
-                        className="rounded px-2 py-0.5 text-xs text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300"
-                      >
-                        Edit
-                      </button>
-                      <button
-                        onClick={() =>
-                          window.confirm(
-                            `Delete ${move.name}? It disappears from every character.`
-                          ) && socket.emit('move:delete', { moveId: move.id })
-                        }
-                        className="rounded px-2 py-0.5 text-xs text-zinc-500 hover:bg-red-900/40 hover:text-red-400"
-                      >
-                        Delete
-                      </button>
-                    </>
+                        <button
+                          onClick={() =>
+                            window.confirm(
+                              `Delete ${move.name}? It disappears from every character.`
+                            ) && socket.emit('move:delete', { moveId: move.id })
+                          }
+                          className="rounded px-2 py-0.5 text-xs text-zinc-500 hover:bg-red-900/40 hover:text-red-400"
+                        >
+                          Delete
+                        </button>
+                      </>
+                    ) : null
                   }
                 />
-                {grantOpen === move.id && !move.is_default && (
+                {role === 'gm' && grantOpen === move.id && !move.is_default && (
                   <GrantList move={move} characters={characters} canLearn={canLearn} />
                 )}
               </div>
@@ -513,41 +525,43 @@ export default function MovesCompendium() {
         )}
       </div>
 
-      <aside className="hidden w-44 shrink-0 sm:block">
-        <h2 className="mb-2 text-xs font-bold uppercase tracking-wide text-zinc-500">
-          Drag a move here
-        </h2>
-        <div className="space-y-2">
-          {characters.map((c) => {
-            const src = portraitSrc(c);
-            return (
-              <div
-                key={c.id}
-                onDragOver={(e) => {
-                  e.preventDefault();
-                  setDropTarget(c.id);
-                }}
-                onDragLeave={() => setDropTarget(null)}
-                onDrop={(e) => onDropOnCharacter(e, c)}
-                className={`flex items-center gap-2 rounded-lg border p-2 transition ${
-                  dropTarget === c.id
-                    ? 'border-indigo-500 bg-indigo-950/50'
-                    : 'border-zinc-800 bg-zinc-900'
-                }`}
-              >
-                <div className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-md bg-zinc-800 text-sm font-bold text-zinc-600">
-                  {src ? (
-                    <img src={src} alt="" className="h-full w-full object-cover" />
-                  ) : (
-                    c.name.slice(0, 1).toUpperCase()
-                  )}
+      {role === 'gm' && (
+        <aside className="hidden w-44 shrink-0 sm:block">
+          <h2 className="mb-2 text-xs font-bold uppercase tracking-wide text-zinc-500">
+            Drag a move here
+          </h2>
+          <div className="space-y-2">
+            {characters.map((c) => {
+              const src = portraitSrc(c);
+              return (
+                <div
+                  key={c.id}
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    setDropTarget(c.id);
+                  }}
+                  onDragLeave={() => setDropTarget(null)}
+                  onDrop={(e) => onDropOnCharacter(e, c)}
+                  className={`flex items-center gap-2 rounded-lg border p-2 transition ${
+                    dropTarget === c.id
+                      ? 'border-indigo-500 bg-indigo-950/50'
+                      : 'border-zinc-800 bg-zinc-900'
+                  }`}
+                >
+                  <div className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-md bg-zinc-800 text-sm font-bold text-zinc-600">
+                    {src ? (
+                      <img src={src} alt="" className="h-full w-full object-cover" />
+                    ) : (
+                      c.name.slice(0, 1).toUpperCase()
+                    )}
+                  </div>
+                  <span className="truncate text-sm text-zinc-300">{c.name}</span>
                 </div>
-                <span className="truncate text-sm text-zinc-300">{c.name}</span>
-              </div>
-            );
-          })}
-        </div>
-      </aside>
+              );
+            })}
+          </div>
+        </aside>
+      )}
     </div>
   );
 }
