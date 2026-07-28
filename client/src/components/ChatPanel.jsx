@@ -44,7 +44,17 @@ function Entry({ entry, character }) {
           entry.move ? (
             <button
               type="button"
-              onClick={() => setExpanded((v) => !v)}
+              onClick={() => {
+                // Interim honor-system gate (decided) — asks rather than
+                // checking real Perk ownership automatically; a later pass
+                // is expected to replace this with an actual check against
+                // the logged-in character's granted Perks.
+                if (expanded) {
+                  setExpanded(false);
+                } else if (window.confirm('Does your character have the Genius Observer Perk?')) {
+                  setExpanded(true);
+                }
+              }}
               title="Click to show the full description"
               className="mt-1 w-full rounded-md bg-zinc-800/60 p-1.5 text-left hover:bg-zinc-800"
             >

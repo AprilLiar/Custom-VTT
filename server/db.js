@@ -520,8 +520,10 @@ export async function initDb() {
   // Per-round queued moves — see server/combatTiming.js for the placement/
   // reveal math this feeds. Persisted (not ephemeral like chat) so they
   // survive a mid-round reload; the server withholds move_id/move_name from
-  // every broadcast/response until the reveal Tic (see getPublicDeclaredMoves
-  // in index.js) — Tells are never secret, only the real move is.
+  // a viewer until the reveal Tic UNLESS they're entitled to see it early —
+  // the player logged in as the declaring character, or the GM for an NPC's
+  // move (see isRevealedToViewer/mapDeclaredMovesForViewer in index.js) —
+  // Tells are never secret, only the real move is.
   // reveal_posted tracks whether this row's move_reveal chat card has
   // already gone out, since reveal state itself is recomputed live (stepping
   // the Tic counter back and forth must not re-post — see combat:tic_forward).
