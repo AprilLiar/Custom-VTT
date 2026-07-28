@@ -48,11 +48,12 @@ Phase 8 (Polish) has started, piloted on the character sheet first before rollin
 (the plan's own recommendation, since this is the piece most likely to get reworked). Framer
 Motion and GSAP are now real dependencies. The sheet's tab bar got a sliding underline and
 animated tab transitions; Tab 1 — Core Stats was rebuilt around a Vitruvian-Man backdrop, with
-each of the 8 dice positioned at its anatomically matching spot (Skull/Brain at the head,
-Left/Right Hand at the outstretched arms, Stamina/Body down the torso, Left/Right Leg at the
-spread stance) and a large low-opacity icon behind each one. Stepping a die now plays a quick
-GSAP flash-pop; the portrait and Stamina number got their own small motion touches. This is a
-first-pass proposal on one tab, not yet rolled out to Tabs 2-6.
+the 8 dice overlaid as three horizontal rows mirroring the original Head/Core/Legs pool grouping
+— Skull+Brain a symmetric pair on the midline, Left Hand/Stamina/Body/Right Hand one row at the
+hands' height, Left/Right Leg a symmetric pair at the stance — full-size dice, each with its own
+low-opacity icon rendered inside the die itself, behind the number. Stepping a die now plays a
+quick GSAP flash-pop; the portrait and Stamina number got their own small motion touches. This is
+a first-pass proposal on one tab, not yet rolled out to Tabs 2-6.
 
 Phase 7 (Combat Timing) has a real, playable round loop in the Arena, built on top of the
 isolated, unit-tested `server/combatTiming.js` engine from the previous round of work. **Next

@@ -9,20 +9,23 @@ import RollDialog from './RollDialog.jsx';
 import ItemList from './ItemList.jsx';
 import VitruvianFigure from './VitruvianFigure.jsx';
 
-// Where each of the 8 dice sits on the Vitruvian figure, and which icon
-// (low-opacity, purely decorative) sits behind it — Skull/Brain crown the
-// head, Hands sit at the outstretched arms, Stamina/Body stack down the
-// torso, Legs plant at the spread stance. Percentages are hand-tuned against
-// vitruvian-man.png's actual proportions, so they track it at any size.
+// Where each of the 8 dice sits, overlaid on the Vitruvian figure as three
+// horizontal rows that mirror the original Head/Core/Legs pool grouping
+// (2-4-2) rather than tracing the artwork point-for-point: Skull+Brain form
+// a symmetric pair straddling the vertical midline (head row); Left Hand,
+// Stamina, Body, Right Hand share one row at the hands' height, showing
+// they're one group (core row); Left Leg+Right Leg stay a symmetric pair at
+// the spread stance (leg row). Each die carries its own low-opacity icon
+// (rendered inside the die by DieWidget) instead of a separate overlay.
 const ANATOMY = {
-  Skull: { top: '10%', left: '50%', Icon: Skull },
-  Brain: { top: '23%', left: '50%', Icon: Brain },
-  'Left Hand': { top: '19%', left: '13%', Icon: HandFist },
-  'Right Hand': { top: '19%', left: '87%', Icon: HandFist },
-  Stamina: { top: '38%', left: '50%', Icon: Zap },
-  Body: { top: '54%', left: '50%', Icon: HeartPulse },
-  'Left Leg': { top: '96%', left: '28%', Icon: Footprints },
-  'Right Leg': { top: '96%', left: '72%', Icon: Footprints },
+  Skull: { top: '11%', left: '42%', Icon: Skull },
+  Brain: { top: '11%', left: '58%', Icon: Brain },
+  'Left Hand': { top: '32%', left: '9%', Icon: HandFist },
+  Stamina: { top: '32%', left: '36%', Icon: Zap },
+  Body: { top: '32%', left: '64%', Icon: HeartPulse },
+  'Right Hand': { top: '32%', left: '91%', Icon: HandFist },
+  'Left Leg': { top: '90%', left: '32%', Icon: Footprints },
+  'Right Leg': { top: '90%', left: '68%', Icon: Footprints },
 };
 
 function NamePortrait({ character }) {
@@ -238,19 +241,17 @@ export default function CoreStatsTab({ data }) {
         )}
       </div>
 
-      <div className="relative mx-auto aspect-square w-full max-w-xl select-none">
+      <div className="relative mx-auto aspect-square w-full max-w-2xl select-none">
         <VitruvianFigure className="absolute inset-0 h-full w-full text-zinc-400" />
         {dice.map((die) => {
           const spot = ANATOMY[die.slot_name];
           if (!spot) return null;
-          const { Icon } = spot;
           return (
             <div
               key={die.id}
               className="absolute -translate-x-1/2 -translate-y-1/2"
               style={{ top: spot.top, left: spot.left }}
             >
-              <Icon className="pointer-events-none absolute left-1/2 top-1/2 h-24 w-24 -translate-x-1/2 -translate-y-1/2 text-indigo-400 opacity-30" />
               <DieWidget
                 die={die}
                 onRoll={rollDie}
@@ -258,7 +259,7 @@ export default function CoreStatsTab({ data }) {
                 selecting={selecting}
                 selected={selectedIds.has(die.id)}
                 onToggleSelect={toggleSelect}
-                compact
+                Icon={spot.Icon}
               />
             </div>
           );

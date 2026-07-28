@@ -3,9 +3,9 @@ import { motion } from 'framer-motion';
 import { gsap } from 'gsap';
 import { dieLabel, tintFor } from '../lib/dice.js';
 
-// compact drops the slot-name label and shrinks the button — used on the
-// Vitruvian anatomy layout (Tab 1), where position + the icon behind the die
-// already say what it is.
+// compact drops the slot-name label and shrinks the button. Icon, if given,
+// renders low-opacity inside the button itself, behind the die-size number
+// — used on the Vitruvian anatomy layout (Tab 1) to mark what each die is.
 export default function DieWidget({
   die,
   onRoll,
@@ -14,6 +14,7 @@ export default function DieWidget({
   selected,
   onToggleSelect,
   compact = false,
+  Icon = null,
 }) {
   const incapacitated = die.status === 'incapacitated';
   const tint = tintFor(die);
@@ -66,6 +67,13 @@ export default function DieWidget({
           }`}
           style={tint ? { backgroundColor: tint } : undefined}
         >
+          {Icon && !incapacitated && (
+            <Icon
+              className={`pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 text-zinc-100 opacity-25 ${
+                compact ? 'h-8 w-8' : 'h-9 w-9'
+              }`}
+            />
+          )}
           <span className={incapacitated ? 'line-through' : ''}>
             {dieLabel(die.current_size, die.bonus)}
           </span>
