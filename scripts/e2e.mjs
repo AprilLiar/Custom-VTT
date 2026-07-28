@@ -6,7 +6,7 @@
 // chat history, delete cascade — with a second socket verifying broadcasts.
 import { io } from 'socket.io-client';
 
-const URL = 'http://localhost:3001';
+const URL = process.env.E2E_URL || 'http://localhost:3001';
 let failures = 0;
 const check = (label, cond, detail = '') => {
   console.log(`${cond ? 'PASS' : 'FAIL'}: ${label}${cond ? '' : ' — ' + detail}`);
@@ -1157,6 +1157,46 @@ const round2Declared = dUpdate.declaredMoves.find((dm) => dm.characterId === rou
 check(
   'overflow carries with no special-casing: this character\'s next placement Tic is max(round 2 start, their round-1 move\'s reveal Tic)',
   round2Declared.placementTic === Math.max(dUpdate.roundStartTic, round1RevealForThatChar.revealTic)
+);
+
+// --- Explicit placementTic: dragging a move onto the Tic Counter picks a
+// specific Tic, not just the earliest legal one — but never earlier than
+// the character's own next-eligible Tic (server clamps forward instead of
+// rejecting) ---
+const latestFor = (state) =>
+  state.declaredMoves
+    .filter((dm) => dm.characterId === round2Declaring.id)
+    .sort((a, b) => b.id - a.id)[0]; // highest id = most recently declared
+
+const round2Min = Math.max(dUpdate.roundStartTic, round2Declared.revealTic);
+events.length = 0;
+emit('move:declare', { characterId: round2Declaring.id, moveId: jab.id, placementTic: round2Min + 5 });
+dUpdate = await waitEvent('combat:updated', (c) => c.declaredMoves.filter((dm) => dm.characterId === round2Declaring.id).length === 3);
+const explicitDeclared = latestFor(dUpdate);
+check('an explicit placementTic at/after the legal minimum is honored exactly', explicitDeclared.placementTic === round2Min + 5);
+
+events.length = 0;
+emit('move:declare', { characterId: round2Declaring.id, moveId: jab.id, placementTic: 0 });
+dUpdate = await waitEvent('combat:updated', (c) => c.declaredMoves.filter((dm) => dm.characterId === round2Declaring.id).length === 4);
+const clampedDeclared = latestFor(dUpdate);
+const clampedMin = Math.max(dUpdate.roundStartTic, explicitDeclared.revealTic);
+check(
+  'an explicit placementTic before the legal minimum snaps forward to the minimum instead of being rejected',
+  clampedDeclared.placementTic === clampedMin
+);
+
+// --- End Combat: the global header's toggle — unlike Clear Arena, the
+// roster stays seated so a fresh fight can start without re-seating ---
+events.length = 0;
+emit('combat:end', {});
+dUpdate = await waitEvent('combat:updated', (c) => c.phase === null);
+check(
+  'combat:end resets phase/round/tic and empties declaredMoves but leaves the roster seated',
+  dUpdate.phase === null &&
+    dUpdate.roundNumber === 0 &&
+    dUpdate.currentTic === 0 &&
+    dUpdate.declaredMoves.length === 0 &&
+    dUpdate.participants.length === 2
 );
 
 events.length = 0;

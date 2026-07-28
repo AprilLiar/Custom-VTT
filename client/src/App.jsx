@@ -7,6 +7,7 @@ import CharacterSheet from './components/CharacterSheet.jsx';
 import ChatPanel from './components/ChatPanel.jsx';
 import CompendiumPage from './components/CompendiumPage.jsx';
 import CombatArena from './components/CombatArena.jsx';
+import CombatHeaderBar from './components/CombatHeaderBar.jsx';
 import SearchBar from './components/SearchBar.jsx';
 
 function Shell() {
@@ -55,6 +56,7 @@ function Shell() {
           {chatOpen ? 'Hide chat' : 'Chat'}
         </button>
       </header>
+      <CombatHeaderBar />
 
       <div className="flex flex-1 overflow-hidden">
         <main className="flex-1 overflow-y-auto p-4">

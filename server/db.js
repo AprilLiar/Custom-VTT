@@ -477,7 +477,7 @@ export async function initDb() {
       round_number INTEGER NOT NULL DEFAULT 0,
       current_tic INTEGER NOT NULL DEFAULT 0,
       round_start_tic INTEGER NOT NULL DEFAULT 0,
-      round_length INTEGER NOT NULL DEFAULT 5,
+      round_length INTEGER NOT NULL DEFAULT 7,
       declaring_side TEXT CHECK(declaring_side IN ('left','right')),
       pending_declare_side TEXT CHECK(pending_declare_side IN ('left','right'))
     )
@@ -487,7 +487,11 @@ export async function initDb() {
   await ensureColumn('combat_state', 'round_number', 'INTEGER NOT NULL DEFAULT 0');
   await ensureColumn('combat_state', 'current_tic', 'INTEGER NOT NULL DEFAULT 0');
   await ensureColumn('combat_state', 'round_start_tic', 'INTEGER NOT NULL DEFAULT 0');
-  await ensureColumn('combat_state', 'round_length', 'INTEGER NOT NULL DEFAULT 5');
+  await ensureColumn('combat_state', 'round_length', 'INTEGER NOT NULL DEFAULT 7');
+  // Round length was extended from 5 to 7 Tics after playtesting — bump any
+  // existing singleton row still sitting at the old default (a GM who has
+  // since customized it, if that's ever exposed, is left alone).
+  await run(`UPDATE combat_state SET round_length = 7 WHERE id = 1 AND round_length = 5`);
   await ensureColumn(
     'combat_state',
     'declaring_side',
