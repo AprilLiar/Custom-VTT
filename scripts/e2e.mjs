@@ -1160,9 +1160,18 @@ check('2 Tics forward: the losing character\'s move reveals for everyone, not ju
 const reveals = revealEventsSeen;
 check('a move_reveal chat card is posted automatically for each move that revealed this step (both fighters\' Jabs)', reveals.length === 2);
 check('move_reveal card carries the character + move display info', reveals.every((r) => r.payload.characterName && r.payload.move.name === 'Jab' && r.payload.move.startupTics === 2));
+check(
+  'move_reveal card also carries the full move (everything MoveCard needs beyond the compact fields) for the Genius Observer expand',
+  reveals.every((r) => r.payload.move.full?.id === jab.id && r.payload.move.full?.tell_id === tells[1].id && Array.isArray(r.payload.move.full?.interactions) && Array.isArray(r.payload.move.full?.tag_ids) && Array.isArray(r.payload.move.full?.roll_slots)),
+  JSON.stringify(reveals[0]?.payload.move.full)
+);
 let chatSoFar = (await jf('/api/chat')).body;
 let revealEntries = chatSoFar.filter((e) => e.kind === 'move_reveal');
 check('move_reveal entries persisted and fetchable via /api/chat', revealEntries.length === 2 && revealEntries.every((e) => e.move?.name === 'Jab'));
+check(
+  '/api/chat also carries the full move for each move_reveal entry',
+  revealEntries.every((e) => e.move?.full?.id === jab.id && e.move?.full?.tell_id === tells[1].id)
+);
 
 events.length = 0;
 emit('combat:tic_backward', {});
@@ -1402,6 +1411,87 @@ await waitEvent('combat:updated', (c) => c.participants.length === 0);
 await jf(`/api/characters/${fairPc.id}`, { method: 'DELETE' });
 await jf(`/api/characters/${fairNpc.id}`, { method: 'DELETE' });
 
+// --- Ambiguous moves: a move with a Left/Right Roll slot requires a
+// declare-time appendage choice (the client's popup — see
+// CombatHeaderBar.jsx's pendingDeclare) — server-enforced, not just a UI
+// nicety, and stored on the declared_moves row so it's recoverable after a
+// reload (unlike tellId/rightTellId/leftTellId, it's never secret, same
+// reasoning as the Tell itself: it's visible the instant the move
+// declares, whoever's watching) ---
+const ambigLeft = (await jpost('/api/characters', { name: 'Ambig Left', characterType: 'pc' })).body;
+const ambigRight = (await jpost('/api/characters', { name: 'Ambig Right', characterType: 'pc' })).body;
+
+events.length = 0;
+emit('move:create', {
+  name: 'Cross Punch', isDefault: true,
+  rightTellId: tells[0].id, leftTellId: tells[1].id,
+  rollSlots: ['Hand'], rollModifier: 0,
+  startupTics: 1, activeTics: 1, recoveryTics: 0, description: '', interactions: {},
+});
+const crossPunch = await waitEvent('move:created', (m) => m.name === 'Cross Punch');
+
+events.length = 0;
+emit('combat:add_participant', { characterId: ambigLeft.id, side: 'left', pairIndex: 0 });
+await waitEvent('combat:updated', (c) => c.participants.some((p) => p.character_id === ambigLeft.id));
+events.length = 0;
+emit('combat:add_participant', { characterId: ambigRight.id, side: 'right', pairIndex: 0 });
+await waitEvent('combat:updated', (c) => c.participants.some((p) => p.character_id === ambigRight.id));
+
+events.length = 0;
+emit('combat:next_round', {});
+const ambigState = await waitEvent('combat:updated', (c) => c.phase === 'declaration');
+const ambigSide = ambigState.declaringSide;
+const ambigChar = ambigSide === 'left' ? ambigLeft : ambigRight;
+
+events.length = 0;
+emit('move:declare', { characterId: ambigChar.id, moveId: crossPunch.id });
+await sleep(300);
+check(
+  'ambiguous move declared without an appendageChoice is a silent no-op',
+  !events.some((e) => e.ev === 'combat:updated' && e.payload.declaredMoves.some((dm) => dm.characterId === ambigChar.id))
+);
+
+events.length = 0;
+emit('move:declare', { characterId: ambigChar.id, moveId: crossPunch.id, appendageChoice: 'sideways' });
+await sleep(300);
+check(
+  'an invalid appendageChoice is also a silent no-op',
+  !events.some((e) => e.ev === 'combat:updated' && e.payload.declaredMoves.some((dm) => dm.characterId === ambigChar.id))
+);
+
+events.length = 0;
+emit('move:declare', { characterId: ambigChar.id, moveId: crossPunch.id, appendageChoice: 'left' });
+const ambigUpdate = await waitEvent('combat:updated', (c) => c.declaredMoves.some((dm) => dm.characterId === ambigChar.id));
+const ambigDm = ambigUpdate.declaredMoves.find((dm) => dm.characterId === ambigChar.id);
+check(
+  'a valid appendageChoice declares the move and is recorded on it, visible to any viewer like the Tell itself',
+  ambigDm.appendageChoice === 'left' && ambigDm.rightTellId === tells[0].id && ambigDm.leftTellId === tells[1].id,
+  JSON.stringify(ambigDm)
+);
+
+events.length = 0;
+emit('combat:side_done_declaring', { side: ambigSide });
+await waitEvent('combat:updated', () => true);
+const otherAmbigChar = ambigSide === 'left' ? ambigRight : ambigLeft;
+events.length = 0;
+emit('move:declare', { characterId: otherAmbigChar.id, moveId: jab.id, appendageChoice: 'left' });
+const otherUpdate = await waitEvent('combat:updated', (c) => c.declaredMoves.some((dm) => dm.characterId === otherAmbigChar.id));
+const otherDm = otherUpdate.declaredMoves.find((dm) => dm.characterId === otherAmbigChar.id);
+check(
+  'a non-ambiguous move ignores an appendageChoice sent alongside it',
+  otherDm.appendageChoice === null,
+  JSON.stringify(otherDm)
+);
+
+events.length = 0;
+emit('combat:clear', {});
+await waitEvent('combat:updated', (c) => c.participants.length === 0);
+events.length = 0;
+emit('move:delete', { moveId: crossPunch.id });
+await waitEvent('move:deleted', (p) => p.moveId === crossPunch.id);
+await jf(`/api/characters/${ambigLeft.id}`, { method: 'DELETE' });
+await jf(`/api/characters/${ambigRight.id}`, { method: 'DELETE' });
+
 await jf(`/api/characters/${rightFighter.id}`, { method: 'DELETE' });
 
 // re-seat ch alone so the character-delete cascade check below also
@@ -1426,10 +1516,10 @@ await waitEvent('combat:updated', (c) => !c.participants.some((p) => p.character
 check('deleting a seated character removes them from the arena too', true);
 check('sheet fetch now 404', (await jf(`/api/characters/${ch.id}`)).status === 404);
 const chatAfter = (await jf('/api/chat')).body;
-// +4 vs. the pre-Stamina-Cost count: two extra combat:next_round calls
-// (staminaA/staminaB, then fairPc/fairNpc) each rolled Brain initiative for
-// both their participants, each roll posting to chat.
-check('chat log survives character deletion', chatAfter.length === 19 && chatAfter[0].characterName === '(deleted)');
+// +6 vs. the pre-Stamina-Cost count: three extra combat:next_round calls
+// (staminaA/staminaB, fairPc/fairNpc, ambigLeft/ambigRight) each rolled
+// Brain initiative for both their participants, each roll posting to chat.
+check('chat log survives character deletion', chatAfter.length === 21 && chatAfter[0].characterName === '(deleted)');
 
 await jf(`/api/characters/${npc.id}`, { method: 'DELETE' });
 

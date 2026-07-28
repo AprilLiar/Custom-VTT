@@ -306,6 +306,16 @@ async function postMoveReveals(newTic) {
       "INSERT INTO chat_log (kind, character_id, dice_rolled, move_id) VALUES ('move_reveal', ?, '[]', ?)",
       [row.character_id, row.move_id]
     );
+    // `full` carries everything MoveCard needs (interactions, tag_ids,
+    // roll_slots, tells, style, discipline) beyond the compact fields
+    // above — those stay as they are for the card's collapsed face, `full`
+    // is only read once the Genius Observer gate expands it (see
+    // ChatPanel.jsx). A move deleted between declare and this reveal still
+    // posts the card (moveId already NULL there'd have made postMoveReveals
+    // itself impossible — this can only race the OTHER way, deleted after
+    // reveal), so `full` degrades to whatever attachInteractions found, same
+    // null-safety as everywhere else a deleted move is displayed.
+    const full = await getMove(row.move_id);
     io.emit('chat:move_reveal', {
       kind: 'move_reveal',
       characterId: row.character_id,
@@ -320,6 +330,7 @@ async function postMoveReveals(newTic) {
         recoveryTics: row.recovery_tics,
         description: row.description,
         staminaCost: row.stamina_cost,
+        full,
       },
       timestamp: new Date().toISOString(),
     });
@@ -335,7 +346,7 @@ async function postMoveReveals(newTic) {
 async function fetchDeclaredMoveRows() {
   return all(`
     SELECT dm.id, dm.character_id, dm.round_number, dm.queue_order,
-           dm.placement_tic, dm.reveal_tic, dm.stamina_committed,
+           dm.placement_tic, dm.reveal_tic, dm.stamina_committed, dm.appendage_choice,
            m.id AS move_id, m.name AS move_name, m.tell_id, m.right_tell_id,
            m.left_tell_id, m.active_tics, m.recovery_tics, m.stamina_cost,
            ch.character_type
@@ -371,13 +382,23 @@ function isRevealedToViewer(row, viewer) {
   return false;
 }
 
-function mapDeclaredMovesForViewer(rows, currentTic, viewer) {
+function mapDeclaredMovesForViewer(rows, currentTic, viewer, phase, roundNumber) {
   return rows.map((row) => {
-    const isRevealed = isMoveRevealedTo({
-      revealTic: row.reveal_tic,
-      currentTic,
-      viewerIsOwner: isRevealedToViewer(row, viewer),
-    });
+    const viewerIsOwner = isRevealedToViewer(row, viewer);
+    // Natural (non-owner) reveal only applies once this row's own round has
+    // actually entered Tic Countdown. Without this, a 0-Startup move placed
+    // at the round's very first Tic already satisfies currentTic >=
+    // revealTic the instant it's declared — while still in Declaration
+    // Phase, before the other side has even finished declaring — leaking
+    // its identity to everyone early. A row from an earlier round is
+    // always safe to check live: round_start_tic/current_tic only ever
+    // move forward, so this can't un-reveal something already legitimately
+    // shown.
+    const ticCountdownRanForThisRow = row.round_number < roundNumber || phase === 'tic_countdown';
+    const isRevealed =
+      viewerIsOwner ||
+      (ticCountdownRanForThisRow &&
+        isMoveRevealedTo({ revealTic: row.reveal_tic, currentTic, viewerIsOwner: false }));
     return {
       id: row.id,
       characterId: row.character_id,
@@ -390,6 +411,7 @@ function mapDeclaredMovesForViewer(rows, currentTic, viewer) {
       tellId: row.tell_id,
       rightTellId: row.right_tell_id,
       leftTellId: row.left_tell_id,
+      appendageChoice: row.appendage_choice,
       isRevealed,
       moveId: isRevealed ? row.move_id : null,
       moveName: isRevealed ? row.move_name : null,
@@ -455,7 +477,13 @@ async function emitCombatUpdated() {
   for (const viewerSocket of io.sockets.sockets.values()) {
     viewerSocket.emit('combat:updated', {
       ...base,
-      declaredMoves: mapDeclaredMovesForViewer(declaredMoveRows, state.current_tic, viewerSocket.data.identity),
+      declaredMoves: mapDeclaredMovesForViewer(
+        declaredMoveRows,
+        state.current_tic,
+        viewerSocket.data.identity,
+        state.phase,
+        state.round_number
+      ),
     });
   }
 }
@@ -639,7 +667,13 @@ app.get('/api/combat', wrap(async (req, res) => {
     Promise.all(charIds.map((id) => getMovesFor(id))),
     fetchDeclaredMoveRows(),
   ]);
-  const declaredMoves = mapDeclaredMovesForViewer(declaredMoveRows, state.current_tic, viewer);
+  const declaredMoves = mapDeclaredMovesForViewer(
+    declaredMoveRows,
+    state.current_tic,
+    viewer,
+    state.phase,
+    state.round_number
+  );
 
   const characters = {};
   for (const character of charRows) {
@@ -777,6 +811,21 @@ app.get('/api/chat', wrap(async (_req, res) => {
     LEFT JOIN moves m ON m.id = c.move_id
     ORDER BY c.id
   `);
+  // `full` (everything MoveCard needs beyond the compact fields above — see
+  // postMoveReveals) is fetched once per distinct still-existing move
+  // referenced by a move_reveal row, not per chat row — a fight can post
+  // the same move's reveal card many times over.
+  const revealedMoveIds = [...new Set(
+    rows.filter((r) => r.kind === 'move_reveal' && r.move_id != null).map((r) => r.move_id)
+  )];
+  const fullMoveById = new Map();
+  if (revealedMoveIds.length) {
+    const marks = revealedMoveIds.map(() => '?').join(',');
+    const fullMoves = await attachInteractions(
+      await all(`SELECT * FROM moves WHERE id IN (${marks})`, revealedMoveIds)
+    );
+    for (const m of fullMoves) fullMoveById.set(m.id, m);
+  }
   res.json(
     rows.map((row) => {
       const dice = JSON.parse(row.dice_rolled);
@@ -804,6 +853,7 @@ app.get('/api/chat', wrap(async (_req, res) => {
                 recoveryTics: row.move_recovery_tics,
                 description: row.move_description,
                 staminaCost: row.move_stamina_cost,
+                full: fullMoveById.get(row.move_id) ?? null,
               }
           : undefined,
         timestamp: sqliteToIso(row.created_at),
@@ -1897,6 +1947,24 @@ io.on('connection', (socket) => {
     const charById = new Map(charRows.map((c) => [c.id, c]));
     const brainByChar = new Map(brainDice.map((d) => [d.character_id, d]));
 
+    // Start Combat (the very first round, phase was null) restores every
+    // seated character to full Stamina — a fresh fight starts fresh, even
+    // if someone was topped up mid-round from an earlier encounter. Only
+    // this one time, not on every subsequent Next Round: ongoing Stamina
+    // spend across rounds is the whole point of Stamina Cost.
+    if (state.phase === null) {
+      await Promise.all(
+        charRows
+          .filter((c) => c.current_stamina !== c.max_stamina)
+          .map((c) => run('UPDATE characters SET current_stamina = ? WHERE id = ?', [c.max_stamina, c.id]))
+      );
+      for (const c of charRows) {
+        if (c.current_stamina !== c.max_stamina) {
+          io.emit('character:updated', { ...c, current_stamina: c.max_stamina });
+        }
+      }
+    }
+
     // Brain rolls per side, posted to chat as normal initiative rolls — an
     // incapacitated/missing Brain die is silently dropped from its side's
     // initiative, same as pool:roll drops incapacitated dice elsewhere.
@@ -1936,7 +2004,7 @@ io.on('connection', (socket) => {
     await emitCombatUpdated();
   });
 
-  on('move:declare', async ({ characterId, moveId, placementTic: requestedPlacementTic }) => {
+  on('move:declare', async ({ characterId, moveId, placementTic: requestedPlacementTic, appendageChoice }) => {
     // The four lookups below are all independent of each other (none reads
     // a value the others produce), so they run as one round trip instead
     // of four sequential ones.
@@ -1949,6 +2017,15 @@ io.on('connection', (socket) => {
     if (state.phase !== 'declaration') return;
     if (!participant || participant.side !== state.declaring_side) return;
     if (!character || !move) return;
+
+    // right_tell_id/left_tell_id are only ever set together, exactly when
+    // this move's Roll has an ambiguous Hand/Leg slot (see db.js) — the
+    // client is expected to have already asked Left/Right via a popup
+    // before ever emitting this event for such a move, so a missing/invalid
+    // choice here is rejected rather than silently guessed.
+    const isAmbiguous = move.right_tell_id != null;
+    if (isAmbiguous && !['left', 'right'].includes(appendageChoice)) return;
+    const storedAppendageChoice = isAmbiguous ? appendageChoice : null;
 
     // Move must actually be available to this character (Default, or
     // granted) — same rule getMovesFor uses to build a character's list.
@@ -2014,9 +2091,9 @@ io.on('connection', (socket) => {
     const queueOrder = countRow.count + 1;
 
     await run(
-      `INSERT INTO declared_moves (character_id, move_id, round_number, queue_order, placement_tic, reveal_tic)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      [character.id, move.id, state.round_number, queueOrder, placementTic, revealTic]
+      `INSERT INTO declared_moves (character_id, move_id, round_number, queue_order, placement_tic, reveal_tic, appendage_choice)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [character.id, move.id, state.round_number, queueOrder, placementTic, revealTic, storedAppendageChoice]
     );
     // Every connected socket gets its own tailored view via emitCombatUpdated
     // (see isRevealedToViewer/mapDeclaredMovesForViewer) — whoever's logged
@@ -2097,6 +2174,14 @@ io.on('connection', (socket) => {
     const state = await one('SELECT * FROM combat_state WHERE id = 1');
     if (state.phase !== 'declaration' || state.declaring_side != null) return;
     await run("UPDATE combat_state SET phase = 'tic_countdown' WHERE id = 1");
+    // A move with 0 Startup Tics placed at the round's very first Tic
+    // reveals immediately — its reveal_tic already equals current_tic
+    // before a single Tic forward happens. postMoveReveals only otherwise
+    // runs from inside tic_forward, so without this it would sit fully
+    // revealed (isMoveRevealedTo is computed live) with no move_reveal
+    // chat card ever posted for it. Catches any other already-due reveal
+    // the same way, for the same reason.
+    await postMoveReveals(state.current_tic);
     await emitCombatUpdated();
   });
 

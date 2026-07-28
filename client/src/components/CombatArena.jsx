@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { AnimatePresence, motion } from 'framer-motion';
 import { useRole } from '../roleContext.jsx';
@@ -17,7 +17,9 @@ import { dieLabel, tintFor, POOLS } from '../lib/dice.js';
 import { buildFolderTree, folderPath } from '../lib/folders.js';
 import { REWARD_LABELS, REWARD_COLORS } from '../lib/counterDisplay.js';
 import { setDraggingMove } from '../lib/dragMoveState.js';
+import { joinNames } from '../lib/names.js';
 import MoveCard from './MoveCard.jsx';
+import RollDialog from './RollDialog.jsx';
 import Thumb from './Thumb.jsx';
 
 const MIN_TARGET = 2;
@@ -252,17 +254,28 @@ function FolderRosterNode({ node, charsByFolder, collapsed, onToggle, depth, ros
   );
 }
 
-// The secret face: just the Tell (or both Tells side by side, for a move
-// with an ambiguous Left/Right Roll), greyed out — a move can be declared
-// to land at any open Tic, so unlike the old text badge this deliberately
-// shows no timing/length hint at all, only identity-via-Tell.
+// The secret face: just the Tell, greyed out — a move can be declared to
+// land at any open Tic, so unlike the old text badge this deliberately
+// shows no timing/length hint at all, only identity-via-Tell. A move with
+// an ambiguous Left/Right Roll shows only the Tell for whichever appendage
+// was actually chosen at declare time (see the popup in CombatHeaderBar.jsx)
+// — both side by side only as a fallback for a legacy row declared before
+// appendage_choice existed, where which side was meant is genuinely unknown.
 function DeclaredMoveTellFace({ dm, tellById }) {
   const rightTell = dm.rightTellId ? tellById.get(dm.rightTellId) : null;
   const leftTell = dm.leftTellId ? tellById.get(dm.leftTellId) : null;
   const tell = tellById.get(dm.tellId);
+  const chosenTell = dm.appendageChoice === 'right' ? rightTell : dm.appendageChoice === 'left' ? leftTell : null;
   return (
     <div className="flex w-64 items-center gap-2 rounded-lg border border-zinc-800 bg-zinc-900/60 p-2 opacity-60 grayscale">
-      {rightTell || leftTell ? (
+      {chosenTell ? (
+        <>
+          <Thumb record={chosenTell} name={chosenTell?.name} size="h-8 w-8" />
+          <span className="min-w-0 truncate text-xs font-semibold uppercase text-zinc-500">
+            {chosenTell?.name ?? 'Tell'}
+          </span>
+        </>
+      ) : rightTell || leftTell ? (
         <>
           <Thumb record={rightTell} name={rightTell?.name} size="h-8 w-8" />
           <Thumb record={leftTell} name={leftTell?.name} size="h-8 w-8" />
@@ -327,9 +340,10 @@ function DeclaredMoveFlipCard({ dm, move, tellById, tagById, styleById, moveFold
   );
 }
 
-// Every seated character's declared moves (any round — an overflowing move
-// still pending from a previous round stays visible, same as the badges
-// this replaced), each as a DeclaredMoveFlipCard.
+// Every seated character's declared moves *this round* (decided: cleared
+// each round rather than persisting old ones — an overflowing move still
+// finishing from last round shows up as a blocked Tic in the header
+// instead, see CombatHeaderBar.jsx), each as a DeclaredMoveFlipCard.
 function DeclaredMovesPanel({ participants, characters, declaredMoves, tellById, tagById, styleById, moveFolders }) {
   const byCharacter = new Map();
   for (const dm of declaredMoves) {
@@ -395,10 +409,18 @@ function DeclareMoveCard({ character, move, roundStartTic, declaredMoves }) {
         const payload = {
           characterId: character.id,
           moveId: move.id,
+          moveName: move.name,
           startupTics: move.startup_tics,
           activeTics: move.active_tics,
           recoveryTics: move.recovery_tics,
           minPlacementTic,
+          staminaCost: move.stamina_cost,
+          // right_tell_id/left_tell_id are only ever set together, exactly
+          // when this move's Roll has an ambiguous Hand/Leg slot (see
+          // db.js) — the header bar's drop handler uses this to decide
+          // whether to ask Left/Right before declaring at all.
+          ambiguous: move.right_tell_id != null,
+          appendageSlot: move.roll_slots?.find((s) => s === 'Hand' || s === 'Leg') ?? null,
         };
         e.dataTransfer.setData('application/x-vtt-move', JSON.stringify(payload));
         e.dataTransfer.effectAllowed = 'copy';
@@ -583,6 +605,67 @@ export default function CombatArena() {
     };
   }, []);
 
+  // Auto-open the same Roll dialog a manual "Roll" click would, the moment
+  // a declared move actually reaches its reveal Tic — for whichever
+  // character this viewer actually controls (their own PC, or any NPC for
+  // the GM — same ownership rule as isRevealedToViewer server-side), and
+  // only when the move has a Roll at all. dm.isRevealed can't drive this: it
+  // goes true for the owner the instant they declare (see
+  // mapDeclaredMovesForViewer), long before the real reveal Tic — this
+  // instead mirrors the server's own postMoveReveals timing (phase must
+  // have reached Tic Countdown, currentTic >= revealTic) so the prompt
+  // never fires early during Declaration Phase.
+  const seenRevealedRef = useRef(new Set());
+  const autoRollInitializedRef = useRef(false);
+  const [autoRollQueue, setAutoRollQueue] = useState([]);
+
+  useEffect(() => {
+    if (!combat) return;
+    const currentRoundMoves = (combat.declaredMoves ?? []).filter(
+      (dm) => dm.roundNumber === combat.roundNumber
+    );
+    const reallyRevealedNow =
+      combat.phase === 'tic_countdown'
+        ? currentRoundMoves.filter((dm) => dm.revealTic <= combat.currentTic)
+        : [];
+    if (!autoRollInitializedRef.current) {
+      // First load (including a mid-fight page refresh): don't retroactively
+      // prompt for moves that already revealed before this tab was open.
+      for (const dm of reallyRevealedNow) seenRevealedRef.current.add(dm.id);
+      autoRollInitializedRef.current = true;
+      return;
+    }
+    const newlyRevealed = reallyRevealedNow.filter((dm) => !seenRevealedRef.current.has(dm.id));
+    if (!newlyRevealed.length) return;
+    for (const dm of newlyRevealed) seenRevealedRef.current.add(dm.id);
+    const isMine = (dm) => {
+      const entry = combat.characters[dm.characterId];
+      if (!entry) return false;
+      return role === 'player'
+        ? dm.characterId === characterId
+        : role === 'gm'
+          ? entry.character.character_type === 'npc'
+          : false;
+    };
+    const eligible = newlyRevealed.filter((dm) => {
+      if (!isMine(dm)) return false;
+      const move = combat.characters[dm.characterId]?.moves?.find((m) => m.id === dm.moveId);
+      return move && (move.roll_dice?.length > 0 || move.roll_choice);
+    });
+    if (eligible.length) setAutoRollQueue((prev) => [...prev, ...eligible]);
+  }, [combat, role, characterId]);
+
+  // Defensive pruning for the rare case the queued character/move can't be
+  // found by the time it's up (e.g. deleted mid-fight) — without this a
+  // stale entry would block every prompt behind it forever.
+  useEffect(() => {
+    if (!autoRollQueue.length || !combat) return;
+    const dm = autoRollQueue[0];
+    const entry = combat.characters[dm.characterId];
+    const move = entry?.moves?.find((m) => m.id === dm.moveId);
+    if (!entry || !move) setAutoRollQueue((q) => q.slice(1));
+  }, [autoRollQueue, combat]);
+
   if (!combat || !roster || !folders || !tells || !tags || !ruleset || !moveFolders) {
     return <p className="text-zinc-500">Loading…</p>;
   }
@@ -727,7 +810,7 @@ export default function CombatArena() {
           <DeclaredMovesPanel
             participants={participants}
             characters={characters}
-            declaredMoves={declaredMoves}
+            declaredMoves={declaredMoves.filter((dm) => dm.roundNumber === combat.roundNumber)}
             tellById={tellById}
             tagById={tagById}
             styleById={styleById}
@@ -739,7 +822,7 @@ export default function CombatArena() {
       {combat.phase === 'declaration' && declaringSide && declareForSide(declaringSide).length > 0 && (
         <div className="mb-3 space-y-1.5 rounded-lg border border-zinc-800 bg-zinc-900 p-3">
           <h2 className="text-xs font-bold uppercase tracking-wide text-zinc-500">
-            {declaringSide === 'left' ? 'Left' : 'Right'} declaring — drag a move onto the Tic Counter above
+            {joinNames(declareForSide(declaringSide).map((entry) => entry.character.name))} declaring — drag a move onto the Tic Counter above
           </h2>
           {declareForSide(declaringSide).map((entry) => (
             <DeclareMovePicker
@@ -911,6 +994,27 @@ export default function CombatArena() {
           </aside>
         )}
       </div>
+
+      {autoRollQueue.length > 0 && (() => {
+        const dm = autoRollQueue[0];
+        const entry = characters[dm.characterId];
+        const move = entry?.moves?.find((m) => m.id === dm.moveId);
+        if (!entry || !move) return null; // pruned by the effect above on the next render
+        const sideDice = dm.appendageChoice ? (move.roll_choice?.[dm.appendageChoice] ?? []) : [];
+        const dieIds = [...(move.roll_dice ?? []), ...sideDice].map((d) => d.dieId);
+        return (
+          <RollDialog
+            title={`Roll ${move.name}${
+              dm.appendageChoice ? ` (${dm.appendageChoice === 'right' ? 'Right' : 'Left'})` : ''
+            } — ${entry.character.name}`}
+            initialModifier={move.effective_roll_modifier ?? 0}
+            onRoll={(modifier) =>
+              socket.emit('pool:roll', { characterId: dm.characterId, dieIds, modifier })
+            }
+            onClose={() => setAutoRollQueue((q) => q.slice(1))}
+          />
+        );
+      })()}
     </div>
   );
 }

@@ -542,11 +542,19 @@ export async function initDb() {
       -- happens in one batch when the declaring side presses "done
       -- declaring" (combat:side_done_declaring), not at move:declare time.
       -- Until then the cost is only a *visual* preview client-side.
-      stamina_committed INTEGER NOT NULL DEFAULT 0
+      stamina_committed INTEGER NOT NULL DEFAULT 0,
+      -- 'left' or 'right', recorded once at declare time via a client
+      -- popup, for a move whose Roll includes an ambiguous Hand/Leg slot
+      -- (see move_roll_slots) — NULL for a move with no ambiguous slot.
+      -- Drives which single Tell is shown pre-reveal (both are shown only
+      -- as a legacy-data fallback) and which appendage's die is included
+      -- once the move auto-rolls at reveal.
+      appendage_choice TEXT CHECK(appendage_choice IN ('left','right'))
     )
   `);
   await ensureColumn('declared_moves', 'reveal_posted', 'INTEGER NOT NULL DEFAULT 0');
   await ensureColumn('declared_moves', 'stamina_committed', 'INTEGER NOT NULL DEFAULT 0');
+  await ensureColumn('declared_moves', 'appendage_choice', "TEXT CHECK(appendage_choice IN ('left','right'))");
 
   await seedRuleset();
   await seedTells();

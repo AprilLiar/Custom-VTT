@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react';
 import { useRole } from '../roleContext.jsx';
 import { socket } from '../socket.js';
-import { getCombat } from '../lib/api.js';
+import { getCombat, getCharacters } from '../lib/api.js';
 import { onDraggingMoveChange } from '../lib/dragMoveState.js';
+import { joinNames } from '../lib/names.js';
 
 // One square on the Tic Counter strip. `footprint` (startup/active/recovery
 // tic ranges, relative to the square's own absolute Tic) is only non-null
@@ -50,6 +51,21 @@ export default function CombatHeaderBar() {
   const [combat, setCombat] = useState(null);
   const [hoverTic, setHoverTic] = useState(null);
   const [draggingMove, setDraggingMoveLocal] = useState(null);
+  // Names only, kept separately from `combat` — combat:updated's broadcast
+  // payload doesn't carry the full `characters` map (only the initial
+  // GET /api/combat fetch does), so relying on combat.characters here
+  // would go stale/undefined after the first live update.
+  const [roster, setRoster] = useState(null);
+  const [toast, setToast] = useState(null);
+  // A move with an ambiguous Left/Right Roll slot doesn't declare on drop —
+  // it holds here until the popup below records a choice (or is cancelled).
+  const [pendingDeclare, setPendingDeclare] = useState(null);
+
+  useEffect(() => {
+    if (!toast) return;
+    const timer = setTimeout(() => setToast(null), 2500);
+    return () => clearTimeout(timer);
+  }, [toast]);
 
   useEffect(() => {
     // This bar doesn't render declaredMoves itself, but keeps the same
@@ -60,6 +76,16 @@ export default function CombatHeaderBar() {
     socket.on('combat:updated', onUpdated);
     return () => socket.off('combat:updated', onUpdated);
   }, [role, characterId]);
+
+  useEffect(() => {
+    const refreshRoster = () => getCharacters().then(setRoster).catch(console.error);
+    refreshRoster();
+    const events = ['character:created', 'character:updated', 'character:deleted'];
+    for (const ev of events) socket.on(ev, refreshRoster);
+    return () => {
+      for (const ev of events) socket.off(ev, refreshRoster);
+    };
+  }, []);
 
   useEffect(() => onDraggingMoveChange(setDraggingMoveLocal), []);
 
@@ -75,6 +101,14 @@ export default function CombatHeaderBar() {
     participants,
   } = combat;
   const hasParticipants = (participants ?? []).length > 0;
+  const nameById = new Map((roster ?? []).map((c) => [c.id, c.name]));
+  const namesForSide = (side) => {
+    const names = (participants ?? [])
+      .filter((p) => p.side === side)
+      .map((p) => nameById.get(p.character_id))
+      .filter(Boolean);
+    return { text: joinNames(names), isPlural: names.length > 1 };
+  };
 
   // Exactly the round's own Tics — nothing more. A move that would land
   // past the last one still declares fine (the drop clamps forward to the
@@ -113,19 +147,89 @@ export default function CombatHeaderBar() {
     setHoverTic(null);
     const raw = e.dataTransfer.getData('application/x-vtt-move');
     if (!raw) return;
-    const { characterId, moveId } = JSON.parse(raw);
+    const { characterId, moveId, moveName, staminaCost, ambiguous, appendageSlot } = JSON.parse(raw);
+    // A pre-check purely for a fast, friendly "Not enough Stamina" —
+    // move:declare still enforces this authoritatively server-side (a
+    // silent no-op on failure), same as ever. Mirrors the server's own
+    // affordability formula, but can under-count `pending` for a character
+    // this client can't see early declares for (declaring on someone
+    // else's behalf, e.g. GM for a Player) — an accepted edge case given
+    // the trust-based model; worst case it just misses showing the toast.
+    const character = (roster ?? []).find((c) => c.id === characterId);
+    if (character && Number.isInteger(staminaCost)) {
+      const pending = (combat.declaredMoves ?? [])
+        .filter((dm) => dm.characterId === characterId && dm.staminaCost != null && !dm.staminaCommitted)
+        .reduce((sum, dm) => sum + dm.staminaCost, 0);
+      if (character.current_stamina - pending - staminaCost < 0) {
+        setToast('Not enough Stamina');
+        return;
+      }
+    }
+    if (ambiguous) {
+      setPendingDeclare({ characterId, moveId, moveName, absoluteTic, appendageSlot });
+      return;
+    }
     socket.emit('move:declare', { characterId, moveId, placementTic: absoluteTic });
   };
 
+  const chooseAppendage = (side) => {
+    socket.emit('move:declare', {
+      characterId: pendingDeclare.characterId,
+      moveId: pendingDeclare.moveId,
+      placementTic: pendingDeclare.absoluteTic,
+      appendageChoice: side,
+    });
+    setPendingDeclare(null);
+  };
+
   return (
-    <div className="border-b border-zinc-800 bg-zinc-950 px-4 py-2">
+    <div className="relative border-b border-zinc-800 bg-zinc-950 px-4 py-2">
+      {toast && (
+        <div className="absolute left-1/2 top-full z-50 mt-2 -translate-x-1/2 rounded-md border border-red-700 bg-red-950/95 px-3 py-1.5 text-sm font-semibold text-red-200 shadow-lg">
+          {toast}
+        </div>
+      )}
+      {pendingDeclare && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+          onClick={() => setPendingDeclare(null)}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="flex w-72 flex-col gap-3 rounded-xl border border-zinc-700 bg-zinc-900 p-4"
+          >
+            <h3 className="font-bold text-zinc-100">
+              {nameById.get(pendingDeclare.characterId) ?? 'Character'}: {pendingDeclare.moveName}
+            </h3>
+            <p className="text-sm text-zinc-400">Which side is throwing this?</p>
+            <div className="flex gap-2">
+              {['left', 'right'].map((side) => (
+                <button
+                  key={side}
+                  onClick={() => chooseAppendage(side)}
+                  className="flex-1 rounded-md bg-indigo-600 py-2 font-semibold capitalize hover:bg-indigo-500"
+                >
+                  {side}
+                  {pendingDeclare.appendageSlot ? ` ${pendingDeclare.appendageSlot}` : ''}
+                </button>
+              ))}
+            </div>
+            <button
+              onClick={() => setPendingDeclare(null)}
+              className="rounded-md border border-zinc-700 py-1.5 text-sm text-zinc-400 hover:bg-zinc-800"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
       <div className="flex flex-wrap items-center gap-3 text-sm">
         <span className="font-bold text-zinc-200">Round {roundNumber}</span>
         {phase === 'declaration' && (
           <>
             <span className="text-zinc-400">
               {declaringSide
-                ? `${declaringSide === 'left' ? 'Left' : 'Right'} is declaring…`
+                ? `${namesForSide(declaringSide).text} ${namesForSide(declaringSide).isPlural ? 'are' : 'is'} declaring…`
                 : 'Declarations complete'}
             </span>
             {declaringSide && (
@@ -133,7 +237,7 @@ export default function CombatHeaderBar() {
                 onClick={() => socket.emit('combat:side_done_declaring', { side: declaringSide })}
                 className="rounded-md border border-zinc-700 px-2 py-1 text-xs text-zinc-300 hover:bg-zinc-800"
               >
-                {declaringSide === 'left' ? 'Left' : 'Right'} done declaring
+                {namesForSide(declaringSide).text} done declaring
               </button>
             )}
             {role === 'gm' && !declaringSide && (
