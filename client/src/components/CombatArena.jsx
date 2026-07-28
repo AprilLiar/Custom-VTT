@@ -16,9 +16,9 @@ import { portraitSrc } from '../lib/image.js';
 import { dieLabel, tintFor, POOLS } from '../lib/dice.js';
 import { buildFolderTree, folderPath } from '../lib/folders.js';
 import { REWARD_LABELS, REWARD_COLORS } from '../lib/counterDisplay.js';
-import { setDraggingMove } from '../lib/dragMoveState.js';
-import { joinNames } from '../lib/names.js';
+import { setDraggingMove, onDraggingMoveChange } from '../lib/dragMoveState.js';
 import MoveCard from './MoveCard.jsx';
+import FrameBar from './FrameBar.jsx';
 import RollDialog from './RollDialog.jsx';
 import Thumb from './Thumb.jsx';
 
@@ -44,12 +44,13 @@ function ParticipantCard({
   const src = portraitSrc(character);
   const activeStance = stances.find((s) => s.id === character.active_stance_id);
   // Would-be Stamina after every move declared this window, purely a
-  // visual preview — the real current_stamina isn't touched until the side
-  // actually finishes declaring (see combat:side_done_declaring
-  // server-side). staminaCost only ever rides a declaredMoves entry this
-  // client is actually entitled to see (see mapDeclaredMovesForViewer
-  // server-side) — an opponent's pending cost stays exactly as hidden as
-  // the move's identity, same secrecy boundary.
+  // visual preview — the real current_stamina isn't touched until this
+  // character actually finishes declaring (see
+  // combat:character_done_declaring server-side). staminaCost only ever
+  // rides a declaredMoves entry this client is actually entitled to see
+  // (see mapDeclaredMovesForViewer server-side) — an opponent's pending
+  // cost stays exactly as hidden as the move's identity, same secrecy
+  // boundary.
   const pendingCost = sideStillDeclaring
     ? declaredMoves
         .filter((dm) => dm.characterId === character.id && dm.staminaCost != null && !dm.staminaCommitted)
@@ -62,7 +63,7 @@ function ParticipantCard({
       onDragStart={onDragStart}
       onClick={() => navigate(`/character/${character.id}`)}
       title="Open full sheet"
-      className="group relative flex min-h-40 min-w-64 flex-1 cursor-pointer overflow-hidden rounded-lg border border-zinc-800 bg-zinc-900 hover:border-indigo-600"
+      className="group relative flex min-h-40 min-w-64 flex-1 cursor-pointer overflow-hidden rounded-lg border border-zinc-800 bg-zinc-900 transition-colors hover:border-indigo-600"
     >
       {role === 'gm' && (
         <button
@@ -254,69 +255,151 @@ function FolderRosterNode({ node, charsByFolder, collapsed, onToggle, depth, ros
   );
 }
 
-// The secret face: just the Tell, greyed out — a move can be declared to
-// land at any open Tic, so unlike the old text badge this deliberately
-// shows no timing/length hint at all, only identity-via-Tell. A move with
-// an ambiguous Left/Right Roll shows only the Tell for whichever appendage
-// was actually chosen at declare time (see the popup in CombatHeaderBar.jsx)
-// — both side by side only as a fallback for a legacy row declared before
-// appendage_choice existed, where which side was meant is genuinely unknown.
-function DeclaredMoveTellFace({ dm, tellById }) {
-  const rightTell = dm.rightTellId ? tellById.get(dm.rightTellId) : null;
-  const leftTell = dm.leftTellId ? tellById.get(dm.leftTellId) : null;
-  const tell = tellById.get(dm.tellId);
-  const chosenTell = dm.appendageChoice === 'right' ? rightTell : dm.appendageChoice === 'left' ? leftTell : null;
+// ---------- Tic Counter (combat redesign: now the Arena's centerpiece) ----------
+
+// One square on the Tic Counter strip. `footprint` (startup/active/recovery
+// tic ranges, relative to the square's own absolute Tic) is only non-null
+// while something is being dragged and this square is the hovered drop
+// point — it drives the live width preview described in the plan: the
+// footprint grows/shrinks across neighboring squares as the move's own
+// Startup/Active/Recovery length dictates, without ever revealing which
+// square any *other* declared move actually landed on (that stays hidden
+// until reveal).
+function TicSquare({ relativeTic, isCurrent, footprintZone, onDragOver, onDrop }) {
+  const zoneStyle = {
+    startup: 'border-amber-300 bg-amber-500/80 shadow-[0_0_10px_rgba(251,191,36,0.45)]',
+    active: 'border-rose-300 bg-rose-500/80 shadow-[0_0_10px_rgba(244,63,94,0.45)]',
+    recovery: 'border-blue-300 bg-blue-500/80 shadow-[0_0_10px_rgba(59,130,246,0.45)]',
+    blocked: 'border-zinc-600 bg-zinc-800 text-zinc-600',
+  }[footprintZone];
   return (
-    <div className="flex w-64 items-center gap-2 rounded-lg border border-zinc-800 bg-zinc-900/60 p-2 opacity-60 grayscale">
-      {chosenTell ? (
-        <>
-          <Thumb record={chosenTell} name={chosenTell?.name} size="h-8 w-8" />
-          <span className="min-w-0 truncate text-xs font-semibold uppercase text-zinc-500">
-            {chosenTell?.name ?? 'Tell'}
-          </span>
-        </>
-      ) : rightTell || leftTell ? (
-        <>
-          <Thumb record={rightTell} name={rightTell?.name} size="h-8 w-8" />
-          <Thumb record={leftTell} name={leftTell?.name} size="h-8 w-8" />
-          <span className="min-w-0 truncate text-xs font-semibold uppercase text-zinc-500">
-            {rightTell?.name ?? '?'} / {leftTell?.name ?? '?'}
-          </span>
-        </>
-      ) : (
-        <>
-          <Thumb record={tell} name={tell?.name} size="h-8 w-8" />
-          <span className="min-w-0 truncate text-xs font-semibold uppercase text-zinc-500">
-            {tell?.name ?? 'Tell'}
-          </span>
-        </>
-      )}
+    <div
+      onDragOver={onDragOver}
+      onDrop={onDrop}
+      title={`Tic ${relativeTic}`}
+      className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border text-sm font-bold transition-all duration-150 ${
+        zoneStyle ??
+        (isCurrent
+          ? 'scale-110 border-indigo-300 bg-indigo-600 text-white shadow-[0_0_16px_rgba(99,102,241,0.55)]'
+          : 'border-zinc-700 bg-zinc-900/80 text-zinc-400 hover:border-zinc-500')
+      }`}
+    >
+      {relativeTic}
     </div>
   );
 }
 
-// A declared move as a small flip card: the grey Tell-only face above until
-// this client's own declare or the real reveal Tic, then a Framer Motion
-// flip (rotate + cross-fade, since the two faces are very different sizes —
-// a literal double-sided 3D flip would force the small face into the big
-// one's footprint) swaps in the full MoveCard. A small ✕ overlays whichever
-// face is showing while the move is still genuinely pending (its Stamina
-// Cost hasn't left/returned to current_stamina yet — see
-// combat:side_done_declaring) — canceling it frees the Tic and Stamina
-// budget to declare something else instead. Placed outside the flip
+// The centerpiece (decided, combat redesign): large, prominent, and always
+// front-and-center on the Arena page — the single shared timeline for the
+// whole fight, and the drag-and-drop declare target. Declaration itself now
+// runs independently per pair (see combat_pairs server-side), but the
+// countdown that follows stays one global strip, since there's still only
+// one Tic Counter.
+function TicCounterCentral({ phase, currentTic, roundStartTic, roundLength, draggingMove, hoverTic, setHoverTic, onDrop }) {
+  const squares = Array.from({ length: roundLength }, (_, i) => ({
+    absoluteTic: roundStartTic + i,
+    relative: i + 1,
+  }));
+  const zoneFor = (absoluteTic) => {
+    if (!draggingMove) return null;
+    const minTic = draggingMove.minPlacementTic ?? roundStartTic;
+    if (absoluteTic < minTic) return 'blocked';
+    if (hoverTic == null) return null;
+    const effectiveTic = Math.max(hoverTic, minTic);
+    const { startupTics, activeTics, recoveryTics } = draggingMove;
+    const startupEnd = effectiveTic + startupTics;
+    const activeEnd = startupEnd + activeTics;
+    const recoveryEnd = activeEnd + recoveryTics;
+    if (absoluteTic >= effectiveTic && absoluteTic < startupEnd) return 'startup';
+    if (absoluteTic >= startupEnd && absoluteTic < activeEnd) return 'active';
+    if (absoluteTic >= activeEnd && absoluteTic < recoveryEnd) return 'recovery';
+    return null;
+  };
+  const canDrop = phase === 'declaration';
+  return (
+    <div className="flex flex-col items-center gap-1.5 rounded-2xl border border-zinc-800 bg-gradient-to-b from-zinc-900 to-zinc-950 px-4 py-3 shadow-2xl shadow-black/40">
+      <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-zinc-500">
+        {phase === 'declaration' ? 'Drag a move here to declare' : 'Tic Counter'}
+      </span>
+      <div className="flex gap-1.5 overflow-x-auto py-1">
+        {squares.map((sq) => (
+          <TicSquare
+            key={sq.absoluteTic}
+            relativeTic={sq.relative}
+            isCurrent={sq.absoluteTic === currentTic}
+            footprintZone={zoneFor(sq.absoluteTic)}
+            onDragOver={
+              canDrop
+                ? (e) => {
+                    e.preventDefault();
+                    setHoverTic(sq.absoluteTic);
+                  }
+                : undefined
+            }
+            onDrop={canDrop ? onDrop(sq.absoluteTic) : undefined}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ---------- Compact declared-move cards (small, flank the Tic Counter) ----------
+
+// The secret face: just the Tell, greyed out — a move can be declared to
+// land at any open Tic, so this deliberately shows no timing/length hint at
+// all, only identity-via-Tell. A move with an ambiguous Left/Right Roll
+// shows only the Tell for whichever appendage was actually chosen at
+// declare time (both side by side only as a fallback for a legacy row
+// declared before that choice existed).
+function CompactTellFace({ dm, tellById }) {
+  const rightTell = dm.rightTellId ? tellById.get(dm.rightTellId) : null;
+  const leftTell = dm.leftTellId ? tellById.get(dm.leftTellId) : null;
+  const tell = tellById.get(dm.tellId);
+  const chosenTell = dm.appendageChoice === 'right' ? rightTell : dm.appendageChoice === 'left' ? leftTell : null;
+  const showBoth = !chosenTell && (rightTell || leftTell);
+  const shown = chosenTell ?? (showBoth ? null : tell);
+  return (
+    <div className="flex w-28 items-center gap-1.5 rounded-lg border border-zinc-800 bg-zinc-900/60 p-1.5 opacity-60 grayscale">
+      {showBoth ? (
+        <>
+          <Thumb record={rightTell} name={rightTell?.name} size="h-6 w-6" />
+          <Thumb record={leftTell} name={leftTell?.name} size="h-6 w-6" />
+        </>
+      ) : (
+        <Thumb record={shown} name={shown?.name} size="h-6 w-6" />
+      )}
+      <span className="min-w-0 truncate text-[9px] font-semibold uppercase text-zinc-500">
+        {shown?.name ?? (showBoth ? `${rightTell?.name ?? '?'}/${leftTell?.name ?? '?'}` : 'Tell')}
+      </span>
+    </div>
+  );
+}
+
+// A declared move as a small flip card. Pre-reveal: the grey Tell-only face
+// above. Post-reveal (decided, combat redesign): everyone gets name + frame
+// data + Tell — small and glanceable, deliberately NOT the full move card, so
+// the Arena stays a fast-reading battle view. A Player wanting the full
+// description/interactions goes to the Chat Log's move-reveal card instead
+// (gated by the Genius Observer honor-system prompt — see ChatPanel.jsx).
+// The GM is the one exception: clicking a revealed card opens the full
+// MoveCard in an overlay, since the GM needs full information readily
+// available to run the table. A small ✕ overlays whichever face is showing
+// while the move is still genuinely pending (its Stamina Cost hasn't
+// left/returned to current_stamina yet) — canceling it frees the Tic and
+// Stamina budget to declare something else instead. Placed outside the flip
 // animation, not just on the Tell face, since the *declaring* player's own
-// view already shows the revealed back face immediately (isRevealed is true
-// for them from the moment they declare, well before staminaCommitted), and
-// they're exactly who'd want to cancel their own still-pending move.
-function DeclaredMoveFlipCard({ dm, move, tellById, tagById, styleById, moveFolders }) {
+// view already shows the revealed back face immediately.
+function CompactDeclaredMoveCard({ dm, move, tellById, tagById, styleById, moveFolders, role }) {
+  const [expanded, setExpanded] = useState(false);
   const revealed = dm.isRevealed && move;
   return (
-    <div style={{ perspective: 1200 }} className="relative">
+    <div style={{ perspective: 1000 }} className="relative">
       {!dm.staminaCommitted && (
         <button
           onClick={() => socket.emit('move:undeclare', { declaredMoveId: dm.id })}
           title="Take this back and declare something else"
-          className="absolute -right-1.5 -top-1.5 z-10 flex h-5 w-5 items-center justify-center rounded-full border border-zinc-700 bg-zinc-900 text-xs text-zinc-400 hover:border-red-500 hover:text-red-400"
+          className="absolute -right-1 -top-1 z-10 flex h-4 w-4 items-center justify-center rounded-full border border-zinc-700 bg-zinc-900 text-[10px] text-zinc-400 hover:border-red-500 hover:text-red-400"
         >
           ✕
         </button>
@@ -328,9 +411,46 @@ function DeclaredMoveFlipCard({ dm, move, tellById, tagById, styleById, moveFold
             initial={{ rotateY: -90, opacity: 0 }}
             animate={{ rotateY: 0, opacity: 1 }}
             exit={{ rotateY: 90, opacity: 0 }}
-            transition={{ duration: 0.35, ease: 'easeInOut' }}
-            className="w-64"
+            transition={{ duration: 0.3, ease: 'easeInOut' }}
           >
+            <button
+              type="button"
+              onClick={role === 'gm' ? () => setExpanded(true) : undefined}
+              title={role === 'gm' ? 'Click for full move details' : move.name}
+              className={`flex w-28 items-center gap-1.5 rounded-lg border border-indigo-800/60 bg-indigo-950/30 p-1.5 text-left transition-colors ${
+                role === 'gm' ? 'cursor-pointer hover:border-indigo-400' : ''
+              }`}
+            >
+              <Thumb record={move} name={move.name} size="h-6 w-6" />
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-[11px] font-semibold text-zinc-100">{move.name}</div>
+                <FrameBar
+                  startup={move.startup_tics}
+                  active={move.active_tics}
+                  recovery={move.recovery_tics}
+                  size="h-1.5 w-1.5"
+                />
+              </div>
+            </button>
+          </motion.div>
+        ) : (
+          <motion.div
+            key="front"
+            initial={{ rotateY: 90, opacity: 0 }}
+            animate={{ rotateY: 0, opacity: 1 }}
+            exit={{ rotateY: -90, opacity: 0 }}
+            transition={{ duration: 0.3, ease: 'easeInOut' }}
+          >
+            <CompactTellFace dm={dm} tellById={tellById} />
+          </motion.div>
+        )}
+      </AnimatePresence>
+      {expanded && revealed && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+          onClick={() => setExpanded(false)}
+        >
+          <div onClick={(e) => e.stopPropagation()} className="max-h-[85vh] w-80 overflow-y-auto">
             <MoveCard
               move={move}
               tell={tellById.get(move.tell_id)}
@@ -340,70 +460,109 @@ function DeclaredMoveFlipCard({ dm, move, tellById, tagById, styleById, moveFold
               tags={(move.tag_ids ?? []).map((id) => tagById.get(id)).filter(Boolean)}
               folderLabel={folderPath(move.folder_id, moveFolders) ?? undefined}
             />
-          </motion.div>
-        ) : (
-          <motion.div
-            key="front"
-            initial={{ rotateY: 90, opacity: 0 }}
-            animate={{ rotateY: 0, opacity: 1 }}
-            exit={{ rotateY: -90, opacity: 0 }}
-            transition={{ duration: 0.35, ease: 'easeInOut' }}
-          >
-            <DeclaredMoveTellFace dm={dm} tellById={tellById} />
-          </motion.div>
-        )}
-      </AnimatePresence>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
-// Every seated character's declared moves *this round* (decided: cleared
-// each round rather than persisting old ones — an overflowing move still
-// finishing from last round shows up as a blocked Tic in the header
-// instead, see CombatHeaderBar.jsx), each as a DeclaredMoveFlipCard.
-function DeclaredMovesPanel({ participants, characters, declaredMoves, tellById, tagById, styleById, moveFolders }) {
-  const byCharacter = new Map();
-  for (const dm of declaredMoves) {
-    if (!byCharacter.has(dm.characterId)) byCharacter.set(dm.characterId, []);
-    byCharacter.get(dm.characterId).push(dm);
-  }
-  const seatedOrder = participants.map((p) => p.character_id).filter((id) => byCharacter.has(id));
-  if (!seatedOrder.length) return null;
-
+// A tight row of small declared-move cards flanking the Tic Counter — one
+// band for Player-controlled characters (above), one for NPCs (below), per
+// the combat redesign. Each card sits under its declaring character's name.
+function MoveBand({ entries, tellById, tagById, styleById, moveFolders, role }) {
+  if (!entries.length) return null;
   return (
-    <div className="mt-2 space-y-2 border-t border-zinc-800 pt-2">
-      {seatedOrder.map((characterId) => (
-        <div key={characterId} className="flex flex-wrap items-start gap-2">
-          <div className="w-24 shrink-0 pt-2 text-xs text-zinc-400">
-            {characters[characterId]?.character.name ?? '—'}
-          </div>
-          <div className="flex flex-1 flex-wrap gap-2">
-            {byCharacter
-              .get(characterId)
-              .sort((a, b) => a.placementTic - b.placementTic)
-              .map((dm) => (
-                <DeclaredMoveFlipCard
-                  key={dm.id}
-                  dm={dm}
-                  move={characters[characterId]?.moves?.find((m) => m.id === dm.moveId)}
-                  tellById={tellById}
-                  tagById={tagById}
-                  styleById={styleById}
-                  moveFolders={moveFolders}
-                />
-              ))}
-          </div>
+    <div className="flex flex-wrap items-start justify-center gap-2">
+      {entries.map(({ dm, move, characterName }) => (
+        <div key={dm.id} className="flex flex-col items-center gap-0.5">
+          <CompactDeclaredMoveCard
+            dm={dm}
+            move={move}
+            tellById={tellById}
+            tagById={tagById}
+            styleById={styleById}
+            moveFolders={moveFolders}
+            role={role}
+          />
+          <span className="max-w-28 truncate text-[9px] text-zinc-600">{characterName}</span>
         </div>
       ))}
     </div>
   );
 }
 
-// A single draggable move chip in the declare picker — dragging it onto a
-// Tic square in the global CombatHeaderBar (see App.jsx) is how it actually
-// gets declared; see dragMoveState.js for why the live-drag footprint
-// preview needs that extra bit of shared state alongside the native
-// dataTransfer payload used for the eventual drop.
+// ---------- Declaration status + picker ----------
+
+const STATUS_META = {
+  declaring: { label: 'Declaring', className: 'font-medium text-zinc-400' },
+  declared: { label: 'Declared', className: 'font-semibold text-emerald-400' },
+  waiting: { label: 'Waiting for round start', className: 'font-semibold text-sky-400' },
+  not_yet: { label: 'Not yet', className: 'text-zinc-700' },
+};
+
+function characterDeclareStatus(participant, participants, pairs) {
+  const pair = pairs.find((p) => p.pair_index === participant.pair_index);
+  if (participant.declared_this_round) {
+    const sideFullyDeclared = participants
+      .filter((p) => p.pair_index === participant.pair_index && p.side === participant.side)
+      .every((p) => p.declared_this_round);
+    return sideFullyDeclared ? 'waiting' : 'declared';
+  }
+  return pair && pair.declaring_side === participant.side ? 'declaring' : 'not_yet';
+}
+
+// GM-only glance at every seated participant's declaration progress across
+// every pair at once (decided, combat redesign) — since declaration now runs
+// independently per pair, this is the one place the GM sees the whole
+// picture instead of piecing it together pair by pair. Clicking an NPC whose
+// turn it currently is makes it the "active" NPC for the declare picker
+// below — a Player never needs this, they only ever declare for their own
+// single character. Only rendered during phase === 'declaration'; the whole
+// table disappears once every pair finishes and the Tic Countdown starts.
+function DeclarationStatusTable({ participants, characters, pairs, activeNpcId, onActivateNpc }) {
+  return (
+    <div className="w-full max-w-sm rounded-xl border border-zinc-800 bg-zinc-900/80 p-3">
+      <h3 className="mb-2 text-[10px] font-bold uppercase tracking-widest text-zinc-500">
+        Declaration status
+      </h3>
+      <div className="space-y-1">
+        {participants.map((p) => {
+          const character = characters[p.character_id]?.character;
+          const status = characterDeclareStatus(p, participants, pairs);
+          const isNpc = character?.character_type === 'npc';
+          const clickable = isNpc && status === 'declaring';
+          const active = activeNpcId === p.character_id;
+          return (
+            <div
+              key={p.character_id}
+              onClick={clickable ? () => onActivateNpc(p.character_id) : undefined}
+              className={`flex items-center justify-between gap-2 rounded-md px-2 py-1 text-xs transition-colors ${
+                clickable ? 'cursor-pointer hover:bg-zinc-800' : ''
+              } ${active ? 'bg-indigo-950/50 ring-1 ring-indigo-600' : ''}`}
+            >
+              <span className="flex min-w-0 items-center gap-1 truncate text-zinc-200">
+                <span className="truncate">{character?.name ?? '—'}</span>
+                {isNpc && (
+                  <span className="shrink-0 rounded bg-purple-600/30 px-1 text-[9px] font-bold uppercase text-purple-300">
+                    NPC
+                  </span>
+                )}
+              </span>
+              <span className={STATUS_META[status].className}>{STATUS_META[status].label}</span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// A single draggable move chip in the declare picker — dragging it onto the
+// Tic Counter (see TicCounterCentral above) is how it actually gets
+// declared; see dragMoveState.js for why the live-drag footprint preview
+// needs that extra bit of shared state alongside the native dataTransfer
+// payload used for the eventual drop.
 function DeclareMoveCard({ character, move, roundStartTic, declaredMoves }) {
   const cost =
     move.stamina_cost > 0 ? `-${move.stamina_cost}` : move.stamina_cost < 0 ? `+${-move.stamina_cost}` : '0';
@@ -435,8 +594,8 @@ function DeclareMoveCard({ character, move, roundStartTic, declaredMoves }) {
           staminaCost: move.stamina_cost,
           // right_tell_id/left_tell_id are only ever set together, exactly
           // when this move's Roll has an ambiguous Hand/Leg slot (see
-          // db.js) — the header bar's drop handler uses this to decide
-          // whether to ask Left/Right before declaring at all.
+          // db.js) — the drop handler uses this to decide whether to ask
+          // Left/Right before declaring at all.
           ambiguous: move.right_tell_id != null,
           appendageSlot: move.roll_slots?.find((s) => s === 'Hand' || s === 'Leg') ?? null,
         };
@@ -446,19 +605,17 @@ function DeclareMoveCard({ character, move, roundStartTic, declaredMoves }) {
       }}
       onDragEnd={() => setDraggingMove(null)}
       title="Drag onto the Tic Counter to declare"
-      className="cursor-grab select-none rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs text-zinc-200 active:cursor-grabbing"
+      className="cursor-grab select-none rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs text-zinc-200 transition-colors hover:border-indigo-600 active:cursor-grabbing"
     >
       {move.name} <span className="text-zinc-500">({cost} Stamina)</span>
     </div>
   );
 }
 
-// Declaration Phase's declare-a-move picker — one block per seated
-// character on whichever side may currently declare (server-enforced; this
-// is purely a courtesy filter so the UI doesn't offer a card that'd just be
-// rejected). Default/Unique tabs split the character's move list the same
-// way Tab 3 does; a styled move is left out of either tab unless it matches
-// one of the two styles in the character's active stance.
+// Declaration Phase's declare-a-move picker for whichever single character
+// currently has the floor — Default/Unique tabs split the character's move
+// list the same way Tab 3 does; a styled move is left out of either tab
+// unless it matches one of the two styles in the character's active stance.
 function DeclareMovePicker({ entry, roundStartTic, declaredMoves }) {
   const { character, stances, moves } = entry;
   const [tab, setTab] = useState('default');
@@ -469,7 +626,6 @@ function DeclareMovePicker({ entry, roundStartTic, declaredMoves }) {
   return (
     <div className="rounded-md border border-zinc-800 bg-zinc-950 p-2">
       <div className="mb-1.5 flex items-center gap-2">
-        <span className="min-w-0 flex-1 truncate text-sm font-semibold text-zinc-300">{character.name}</span>
         <div className="flex overflow-hidden rounded-md border border-zinc-700 text-[11px] font-semibold uppercase">
           {['default', 'unique'].map((t) => (
             <button
@@ -501,17 +657,40 @@ function DeclareMovePicker({ entry, roundStartTic, declaredMoves }) {
   );
 }
 
-// Phase 6 shipped structure only; Phase 7 adds round/Tic timing on top (the
-// round/phase controls live in the global CombatHeaderBar — see App.jsx —
-// while DeclaredMovesPanel/DeclareMovePicker above stay here). GM drags
-// characters onto a left/right side and groups them into pairs (a
+// The declare panel for whichever single character currently has the floor
+// — a Player's own character when it's their turn, or the GM's "active" NPC
+// (picked from DeclarationStatusTable above). Each character presses their
+// own Done Declaring individually now (decided, combat redesign) — there's
+// no shared per-side button anymore.
+function ActiveDeclarePanel({ entry, roundStartTic, declaredMoves }) {
+  return (
+    <div className="w-full max-w-md space-y-2 rounded-xl border border-indigo-800/50 bg-indigo-950/20 p-3">
+      <div className="flex items-center justify-between gap-2">
+        <h3 className="truncate text-sm font-bold text-indigo-200">{entry.character.name}'s turn to declare</h3>
+        <button
+          onClick={() => socket.emit('combat:character_done_declaring', { characterId: entry.character.id })}
+          className="shrink-0 rounded-md bg-emerald-700 px-3 py-1 text-xs font-semibold hover:bg-emerald-600"
+        >
+          ✓ Done Declaring
+        </button>
+      </div>
+      <DeclareMovePicker entry={entry} roundStartTic={roundStartTic} declaredMoves={declaredMoves} />
+    </div>
+  );
+}
+
+// Phase 6 shipped structure only; Phase 7 added round/Tic timing; Phase 9's
+// combat redesign made declaration itself asynchronous per pair (see
+// combat_pairs server-side) and made the Tic Counter the Arena's visual
+// centerpiece — see vttprojectplan.md's Combat Timing/Combat Arena sections.
+// GM drags characters onto a left/right side and groups them into pairs (a
 // side/pair_index can hold more than one character when Uneven Combat is
-// on). Dice/stamina here are a read-only glance — rolling still happens
-// from each character's own sheet, reachable by clicking their card.
+// on). Dice/stamina here are a read-only glance — rolling still happens from
+// each character's own sheet, reachable by clicking their card.
 export default function CombatArena() {
   const { role, characterId } = useRole();
   const navigate = useNavigate();
-  const [combat, setCombat] = useState(null); // { unevenCombatEnabled, participants, characters, counters, ...Phase 7 timing state, declaredMoves }
+  const [combat, setCombat] = useState(null); // { unevenCombatEnabled, participants, characters, counters, pairs, ...Phase 7 timing state, declaredMoves }
   const [roster, setRoster] = useState(null);
   const [folders, setFolders] = useState(null);
   const [tells, setTells] = useState(null);
@@ -524,6 +703,35 @@ export default function CombatArena() {
   const [counterName, setCounterName] = useState('');
   const [counterTarget, setCounterTarget] = useState(6);
   const [collapsedFolders, setCollapsedFolders] = useState(new Set()); // roster folder ids, collapsed
+  const [hoverTic, setHoverTic] = useState(null);
+  const [draggingMove, setDraggingMoveLocal] = useState(null);
+  const [toast, setToast] = useState(null);
+  // A move with an ambiguous Left/Right Roll slot doesn't declare on drop —
+  // it holds here until the popup below records a choice (or is cancelled).
+  const [pendingDeclare, setPendingDeclare] = useState(null);
+  // GM-only: which NPC's declare picker is currently shown (see
+  // DeclarationStatusTable above) — client-only convenience state, reset
+  // whenever it's no longer that NPC's turn.
+  const [activeNpcId, setActiveNpcId] = useState(null);
+
+  useEffect(() => onDraggingMoveChange(setDraggingMoveLocal), []);
+
+  useEffect(() => {
+    if (!toast) return;
+    const timer = setTimeout(() => setToast(null), 2500);
+    return () => clearTimeout(timer);
+  }, [toast]);
+
+  // Clears the GM's "active NPC" selection once it's no longer that NPC's
+  // turn (they finished declaring, the round moved on, etc.) — purely a UI
+  // tidiness thing, the actual gating already lives server-side.
+  useEffect(() => {
+    if (!combat || activeNpcId == null) return;
+    const p = combat.participants.find((pp) => pp.character_id === activeNpcId);
+    const pair = p && (combat.pairs ?? []).find((pr) => pr.pair_index === p.pair_index);
+    const stillTheirTurn = combat.phase === 'declaration' && p && !p.declared_this_round && pair?.declaring_side === p.side;
+    if (!stillTheirTurn) setActiveNpcId(null);
+  }, [combat, activeNpcId]);
 
   useEffect(() => {
     const refresh = () => {
@@ -688,7 +896,7 @@ export default function CombatArena() {
     return <p className="text-zinc-500">Loading…</p>;
   }
 
-  const { unevenCombatEnabled, participants, characters, counters, declaringSide, phase } = combat;
+  const { unevenCombatEnabled, participants, characters, counters, pairs, phase } = combat;
   const tellById = new Map(tells.map((t) => [t.id, t]));
   const tagById = new Map(tags.map((t) => [t.id, t]));
   const styleById = new Map(ruleset.attributes.map((a) => [a.id, a]));
@@ -698,8 +906,6 @@ export default function CombatArena() {
   // isRevealed/moveId/moveName/staminaCost filled in, no client-side merge
   // needed.
   const declaredMoves = combat.declaredMoves;
-  const declareForSide = (side) =>
-    participants.filter((p) => p.side === side).map((p) => characters[p.character_id]).filter(Boolean);
   const seatedIds = new Set(participants.map((p) => p.character_id));
   const visibleRoster = role === 'gm' ? roster : roster.filter((c) => c.character_type === 'pc');
   const availableCharacters = visibleRoster.filter((c) => !seatedIds.has(c.id));
@@ -724,6 +930,16 @@ export default function CombatArena() {
 
   const pairIndices = [...new Set(participants.map((p) => p.pair_index))].sort((a, b) => a - b);
   const rows = [...pairIndices, pairIndices.length ? pairIndices[pairIndices.length - 1] + 1 : 0];
+
+  // Whether THIS character currently has the floor: their own pair's
+  // declaring_side matches their own side, and they haven't already pressed
+  // Done Declaring this round (Phase 9 combat redesign — see combat_pairs).
+  const isCharacterTurn = (charId) => {
+    const p = participants.find((pp) => pp.character_id === charId);
+    if (!p || p.declared_this_round) return false;
+    const pair = (pairs ?? []).find((pr) => pr.pair_index === p.pair_index);
+    return Boolean(pair && pair.declaring_side === p.side);
+  };
 
   const onDrop = (e, side, pairIndex) => {
     e.preventDefault();
@@ -775,10 +991,77 @@ export default function CombatArena() {
     setCounterTarget(6);
   };
 
+  // ---------- Tic Counter drag/drop handling ----------
+
+  const handleTicDrop = (absoluteTic) => (e) => {
+    e.preventDefault();
+    setHoverTic(null);
+    const raw = e.dataTransfer.getData('application/x-vtt-move');
+    if (!raw) return;
+    const { characterId: draggedCharId, moveId, moveName, staminaCost, ambiguous, appendageSlot } = JSON.parse(raw);
+    // A pre-check purely for a fast, friendly "Not enough Stamina" —
+    // move:declare still enforces this authoritatively server-side (a
+    // silent no-op on failure), same as ever.
+    const character = roster.find((c) => c.id === draggedCharId);
+    if (character && Number.isInteger(staminaCost)) {
+      const pending = declaredMoves
+        .filter((dm) => dm.characterId === draggedCharId && dm.staminaCost != null && !dm.staminaCommitted)
+        .reduce((sum, dm) => sum + dm.staminaCost, 0);
+      if (character.current_stamina - pending - staminaCost < 0) {
+        setToast('Not enough Stamina');
+        return;
+      }
+    }
+    if (ambiguous) {
+      setPendingDeclare({ characterId: draggedCharId, moveId, moveName, absoluteTic, appendageSlot });
+      return;
+    }
+    socket.emit('move:declare', { characterId: draggedCharId, moveId, placementTic: absoluteTic });
+  };
+
+  const chooseAppendage = (side) => {
+    socket.emit('move:declare', {
+      characterId: pendingDeclare.characterId,
+      moveId: pendingDeclare.moveId,
+      placementTic: pendingDeclare.absoluteTic,
+      appendageChoice: side,
+    });
+    setPendingDeclare(null);
+  };
+
+  // ---------- Declared-move bands flanking the Tic Counter ----------
+
+  const currentRoundMoves = declaredMoves.filter((dm) => dm.roundNumber === combat.roundNumber);
+  const bandEntries = (predicate) =>
+    currentRoundMoves
+      .filter((dm) => {
+        const entry = characters[dm.characterId];
+        return entry && predicate(entry.character);
+      })
+      .sort((a, b) => a.placementTic - b.placementTic)
+      .map((dm) => ({
+        dm,
+        move: characters[dm.characterId]?.moves?.find((m) => m.id === dm.moveId),
+        characterName: characters[dm.characterId]?.character.name ?? '—',
+      }));
+  const playerBandEntries = bandEntries((c) => c.character_type === 'pc');
+  const npcBandEntries = bandEntries((c) => c.character_type === 'npc');
+
+  // ---------- Who currently has the declare-picker floor ----------
+
+  let activeDeclareEntry = null;
+  if (phase === 'declaration') {
+    if (role === 'player' && isCharacterTurn(characterId)) {
+      activeDeclareEntry = characters[characterId] ?? null;
+    } else if (role === 'gm' && activeNpcId != null && isCharacterTurn(activeNpcId)) {
+      activeDeclareEntry = characters[activeNpcId] ?? null;
+    }
+  }
+
   return (
     <div className="mx-auto max-w-6xl">
       <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
-        <h1 className="text-2xl font-bold">Combat Arena</h1>
+        <h1 className="text-2xl font-bold tracking-tight">Combat Arena</h1>
         <div className="flex items-center gap-3">
           {role === 'gm' ? (
             <label className="flex items-center gap-1.5 text-sm text-zinc-300">
@@ -818,38 +1101,104 @@ export default function CombatArena() {
         </div>
       </div>
 
-      {(phase != null || participants.length > 0) && (
-        <div className="mb-3 rounded-lg border border-zinc-800 bg-zinc-900 px-3 py-2 text-sm">
-          {phase == null && (
-            <span className="text-zinc-500">
-              Combat hasn't started — the global Tic Counter appears once it does.
-            </span>
+      {phase != null && (
+        <div className="relative mb-4 flex flex-col items-center gap-3">
+          {toast && (
+            <div className="absolute -top-2 left-1/2 z-50 -translate-x-1/2 -translate-y-full rounded-md border border-red-700 bg-red-950/95 px-3 py-1.5 text-sm font-semibold text-red-200 shadow-lg">
+              {toast}
+            </div>
           )}
-          <DeclaredMovesPanel
-            participants={participants}
-            characters={characters}
-            declaredMoves={declaredMoves.filter((dm) => dm.roundNumber === combat.roundNumber)}
+          {pendingDeclare && (
+            <div
+              className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+              onClick={() => setPendingDeclare(null)}
+            >
+              <div
+                onClick={(e) => e.stopPropagation()}
+                className="flex w-72 flex-col gap-3 rounded-xl border border-zinc-700 bg-zinc-900 p-4"
+              >
+                <h3 className="font-bold text-zinc-100">
+                  {characters[pendingDeclare.characterId]?.character.name ?? 'Character'}: {pendingDeclare.moveName}
+                </h3>
+                <p className="text-sm text-zinc-400">Which side is throwing this?</p>
+                <div className="flex gap-2">
+                  {['left', 'right'].map((side) => (
+                    <button
+                      key={side}
+                      onClick={() => chooseAppendage(side)}
+                      className="flex-1 rounded-md bg-indigo-600 py-2 font-semibold capitalize hover:bg-indigo-500"
+                    >
+                      {side}
+                      {pendingDeclare.appendageSlot ? ` ${pendingDeclare.appendageSlot}` : ''}
+                    </button>
+                  ))}
+                </div>
+                <button
+                  onClick={() => setPendingDeclare(null)}
+                  className="rounded-md border border-zinc-700 py-1.5 text-sm text-zinc-400 hover:bg-zinc-800"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+
+          <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-600">Player moves</span>
+          <MoveBand
+            entries={playerBandEntries}
             tellById={tellById}
             tagById={tagById}
             styleById={styleById}
             moveFolders={moveFolders}
+            role={role}
           />
+
+          <TicCounterCentral
+            phase={phase}
+            currentTic={combat.currentTic}
+            roundStartTic={combat.roundStartTic}
+            roundLength={combat.roundLength}
+            draggingMove={draggingMove}
+            hoverTic={hoverTic}
+            setHoverTic={setHoverTic}
+            onDrop={handleTicDrop}
+          />
+
+          <MoveBand
+            entries={npcBandEntries}
+            tellById={tellById}
+            tagById={tagById}
+            styleById={styleById}
+            moveFolders={moveFolders}
+            role={role}
+          />
+          <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-600">NPC moves</span>
         </div>
       )}
 
-      {combat.phase === 'declaration' && declaringSide && declareForSide(declaringSide).length > 0 && (
-        <div className="mb-3 space-y-1.5 rounded-lg border border-zinc-800 bg-zinc-900 p-3">
-          <h2 className="text-xs font-bold uppercase tracking-wide text-zinc-500">
-            {joinNames(declareForSide(declaringSide).map((entry) => entry.character.name))} declaring — drag a move onto the Tic Counter above
-          </h2>
-          {declareForSide(declaringSide).map((entry) => (
-            <DeclareMovePicker
-              key={entry.character.id}
-              entry={entry}
+      {phase === 'declaration' && (
+        <div className="mb-4 flex flex-wrap items-start justify-center gap-3">
+          {role === 'gm' && (
+            <DeclarationStatusTable
+              participants={participants}
+              characters={characters}
+              pairs={pairs ?? []}
+              activeNpcId={activeNpcId}
+              onActivateNpc={setActiveNpcId}
+            />
+          )}
+          {activeDeclareEntry && (
+            <ActiveDeclarePanel
+              entry={activeDeclareEntry}
               roundStartTic={combat.roundStartTic}
               declaredMoves={declaredMoves}
             />
-          ))}
+          )}
+          {role === 'gm' && !activeDeclareEntry && (
+            <div className="flex max-w-md items-center rounded-xl border border-dashed border-zinc-800 px-4 py-6 text-sm text-zinc-600">
+              Click an NPC above whose turn it is to declare for them.
+            </div>
+          )}
         </div>
       )}
 
@@ -877,7 +1226,7 @@ export default function CombatArena() {
                   }}
                   onDragLeave={() => setDropTarget(null)}
                   onDrop={(e) => role === 'gm' && onDrop(e, 'left', rowIdx)}
-                  className={`flex min-h-24 flex-1 gap-2 overflow-x-auto rounded-lg border border-dashed p-2 ${
+                  className={`flex min-h-24 flex-1 gap-2 overflow-x-auto rounded-lg border border-dashed p-2 transition-colors ${
                     dropTarget === leftKey ? 'border-indigo-400 bg-indigo-950/20' : 'border-zinc-800'
                   }`}
                 >
@@ -891,7 +1240,10 @@ export default function CombatArena() {
                           onRemove={remove}
                           navigate={navigate}
                           declaredMoves={declaredMoves}
-                          sideStillDeclaring={phase === 'declaration' && declaringSide === p.side}
+                          sideStillDeclaring={
+                            phase === 'declaration' &&
+                            (pairs ?? []).find((pr) => pr.pair_index === p.pair_index)?.declaring_side === p.side
+                          }
                           onDragStart={(e) => e.dataTransfer.setData('text/character-id', String(p.character_id))}
                         />
                       )
@@ -906,7 +1258,7 @@ export default function CombatArena() {
                   }}
                   onDragLeave={() => setDropTarget(null)}
                   onDrop={(e) => role === 'gm' && onDrop(e, 'right', rowIdx)}
-                  className={`flex min-h-24 flex-1 gap-2 overflow-x-auto rounded-lg border border-dashed p-2 ${
+                  className={`flex min-h-24 flex-1 gap-2 overflow-x-auto rounded-lg border border-dashed p-2 transition-colors ${
                     dropTarget === rightKey ? 'border-indigo-400 bg-indigo-950/20' : 'border-zinc-800'
                   }`}
                 >
@@ -920,7 +1272,10 @@ export default function CombatArena() {
                           onRemove={remove}
                           navigate={navigate}
                           declaredMoves={declaredMoves}
-                          sideStillDeclaring={phase === 'declaration' && declaringSide === p.side}
+                          sideStillDeclaring={
+                            phase === 'declaration' &&
+                            (pairs ?? []).find((pr) => pr.pair_index === p.pair_index)?.declaring_side === p.side
+                          }
                           onDragStart={(e) => e.dataTransfer.setData('text/character-id', String(p.character_id))}
                         />
                       )
