@@ -20,7 +20,7 @@ const jpost = (url, body, method = 'POST') =>
 const watcher = io(URL);
 const actor = io(URL);
 const events = [];
-for (const ev of ['character:created', 'character:updated', 'character:deleted', 'die:updated', 'roll:result', 'inventory:updated', 'injuries:updated', 'stance:created', 'stance:updated', 'stance:deleted', 'stance:activated', 'tell:created', 'tell:updated', 'tell:deleted', 'move:created', 'move:updated', 'move:deleted', 'move:granted', 'move:revoked', 'roleplay:updated', 'tag:created', 'tag:updated', 'tag:deleted', 'folder:created', 'folder:updated', 'folder:deleted', 'perk:created', 'perk:updated', 'perk:deleted', 'perk:granted', 'perk:revoked', 'counter:created', 'counter:updated', 'counter:deleted', 'character_folder:created', 'character_folder:updated', 'character_folder:deleted', 'combat:updated', 'chat:message', 'chat:cleared']) {
+for (const ev of ['character:created', 'character:updated', 'character:deleted', 'die:updated', 'roll:result', 'inventory:updated', 'injuries:updated', 'stance:created', 'stance:updated', 'stance:deleted', 'stance:activated', 'tell:created', 'tell:updated', 'tell:deleted', 'move:created', 'move:updated', 'move:deleted', 'move:granted', 'move:revoked', 'roleplay:updated', 'tag:created', 'tag:updated', 'tag:deleted', 'folder:created', 'folder:updated', 'folder:deleted', 'perk:created', 'perk:updated', 'perk:deleted', 'perk:granted', 'perk:revoked', 'counter:created', 'counter:updated', 'counter:deleted', 'character_folder:created', 'character_folder:updated', 'character_folder:deleted', 'combat:updated', 'chat:message', 'chat:cleared', 'chat:move_reveal']) {
   watcher.on(ev, (payload) => events.push({ ev, payload }));
 }
 const waitEvent = (ev, pred = () => true, ms = 3000) =>
@@ -1111,23 +1111,37 @@ emit('move:declare', { characterId: winningChar.id, moveId: jab.id });
 await sleep(300);
 check('declaring is rejected once the countdown has started', !events.some((e) => e.ev === 'combat:updated'));
 
+const revealEventsSeen = [];
 for (let i = 0; i < 2; i++) {
   events.length = 0;
   emit('combat:tic_forward', {});
   dUpdate = await waitEvent('combat:updated', () => true);
+  revealEventsSeen.push(...events.filter((e) => e.ev === 'chat:move_reveal'));
 }
 let revealed = dUpdate.declaredMoves.find((dm) => dm.characterId === losingChar.id);
 check('2 Tics forward: the losing character\'s move reveals for everyone, not just the owner', revealed.isRevealed === true && revealed.moveId === jab.id && revealed.moveName === 'Jab');
+
+// --- Chat Log move-reveal cards: posted automatically the instant a move reveals ---
+const reveals = revealEventsSeen;
+check('a move_reveal chat card is posted automatically for each move that revealed this step (both fighters\' Jabs)', reveals.length === 2);
+check('move_reveal card carries the character + move display info', reveals.every((r) => r.payload.characterName && r.payload.move.name === 'Jab' && r.payload.move.startupTics === 2));
+let chatSoFar = (await jf('/api/chat')).body;
+let revealEntries = chatSoFar.filter((e) => e.kind === 'move_reveal');
+check('move_reveal entries persisted and fetchable via /api/chat', revealEntries.length === 2 && revealEntries.every((e) => e.move?.name === 'Jab'));
 
 events.length = 0;
 emit('combat:tic_backward', {});
 dUpdate = await waitEvent('combat:updated', () => true);
 let rehidden = dUpdate.declaredMoves.find((dm) => dm.characterId === losingChar.id);
 check('stepping back past the reveal Tic re-hides it live (stateless, no caching)', rehidden.isRevealed === false && rehidden.moveId === null);
+check('stepping backward never posts a move_reveal card', !events.some((e) => e.ev === 'chat:move_reveal'));
 
 events.length = 0;
 emit('combat:tic_forward', {});
 await waitEvent('combat:updated', () => true);
+check('re-crossing the same reveal Tic (back then forward again) does not duplicate the chat card', !events.some((e) => e.ev === 'chat:move_reveal'));
+chatSoFar = (await jf('/api/chat')).body;
+check('still exactly 2 move_reveal entries after the oscillation', chatSoFar.filter((e) => e.kind === 'move_reveal').length === 2);
 
 events.length = 0;
 emit('combat:next_round', {});
@@ -1174,7 +1188,7 @@ await waitEvent('combat:updated', (c) => !c.participants.some((p) => p.character
 check('deleting a seated character removes them from the arena too', true);
 check('sheet fetch now 404', (await jf(`/api/characters/${ch.id}`)).status === 404);
 const chatAfter = (await jf('/api/chat')).body;
-check('chat log survives character deletion', chatAfter.length === 13 && chatAfter[0].characterName === '(deleted)');
+check('chat log survives character deletion', chatAfter.length === 15 && chatAfter[0].characterName === '(deleted)');
 
 await jf(`/api/characters/${npc.id}`, { method: 'DELETE' });
 

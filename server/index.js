@@ -278,6 +278,50 @@ const diePayload = (die) => ({
 const sqliteToIso = (ts) =>
   ts && !ts.includes('T') ? new Date(ts.replace(' ', 'T') + 'Z').toISOString() : ts;
 
+// Posts a move-reveal chat card the instant the Tic counter reaches a
+// declared move's reveal_tic — automatic, per the plan's Combat Timing
+// section (only the Roll itself is manual, unchanged, via the existing
+// Roll button/dialog — this never touches rolling). reveal_posted makes
+// this idempotent: only ever fires once per declared move, even if the GM
+// steps the Tic counter back and forth across the same threshold — see
+// combat:tic_forward, the only caller (tic_backward never advances current_tic,
+// so it can never newly cross a reveal_tic).
+async function postMoveReveals(newTic) {
+  const rows = await all(
+    `SELECT dm.id, dm.character_id, dm.move_id,
+            ch.name AS character_name,
+            m.name AS move_name, m.image_data, m.image_mime_type,
+            m.startup_tics, m.active_tics, m.recovery_tics
+     FROM declared_moves dm
+     JOIN characters ch ON ch.id = dm.character_id
+     JOIN moves m ON m.id = dm.move_id
+     WHERE dm.reveal_posted = 0 AND dm.reveal_tic <= ?`,
+    [newTic]
+  );
+  for (const row of rows) {
+    await run('UPDATE declared_moves SET reveal_posted = 1 WHERE id = ?', [row.id]);
+    await run(
+      "INSERT INTO chat_log (kind, character_id, dice_rolled, move_id) VALUES ('move_reveal', ?, '[]', ?)",
+      [row.character_id, row.move_id]
+    );
+    io.emit('chat:move_reveal', {
+      kind: 'move_reveal',
+      characterId: row.character_id,
+      characterName: row.character_name,
+      move: {
+        id: row.move_id,
+        name: row.move_name,
+        imageData: row.image_data,
+        imageMimeType: row.image_mime_type,
+        startupTics: row.startup_tics,
+        activeTics: row.active_tics,
+        recoveryTics: row.recovery_tics,
+      },
+      timestamp: new Date().toISOString(),
+    });
+  }
+}
+
 // Every declared move, Tell always included (never secret) but move_id/
 // move_name withheld until currentTic reaches its reveal_tic — matches the
 // plan's accepted no-auth limitation: the server can't tell which client is
@@ -658,9 +702,13 @@ app.get('/api/chat', wrap(async (_req, res) => {
   const rows = await all(`
     SELECT c.id, c.kind, c.character_id, c.modifier, c.dice_rolled, c.content,
            c.image_data, c.image_mime_type, c.created_at,
-           ch.name AS character_name
+           ch.name AS character_name,
+           m.id AS move_id, m.name AS move_name, m.image_data AS move_image_data,
+           m.image_mime_type AS move_image_mime_type, m.startup_tics AS move_startup_tics,
+           m.active_tics AS move_active_tics, m.recovery_tics AS move_recovery_tics
     FROM chat_log c
     LEFT JOIN characters ch ON ch.id = c.character_id
+    LEFT JOIN moves m ON m.id = c.move_id
     ORDER BY c.id
   `);
   res.json(
@@ -677,6 +725,19 @@ app.get('/api/chat', wrap(async (_req, res) => {
         message: row.content,
         imageData: row.image_data,
         imageMimeType: row.image_mime_type,
+        move: row.kind === 'move_reveal'
+          ? row.move_id == null
+            ? null
+            : {
+                id: row.move_id,
+                name: row.move_name,
+                imageData: row.move_image_data,
+                imageMimeType: row.move_image_mime_type,
+                startupTics: row.move_startup_tics,
+                activeTics: row.move_active_tics,
+                recoveryTics: row.move_recovery_tics,
+              }
+          : undefined,
         timestamp: sqliteToIso(row.created_at),
       };
     })
@@ -1866,7 +1927,9 @@ io.on('connection', (socket) => {
   on('combat:tic_forward', async () => {
     const state = await one('SELECT * FROM combat_state WHERE id = 1');
     if (state.phase !== 'tic_countdown') return;
-    await run('UPDATE combat_state SET current_tic = current_tic + 1 WHERE id = 1');
+    const newTic = state.current_tic + 1;
+    await run('UPDATE combat_state SET current_tic = ? WHERE id = 1', [newTic]);
+    await postMoveReveals(newTic);
     await emitCombatUpdated();
   });
 
