@@ -1082,11 +1082,11 @@ events.length = 0;
 emit('combat:next_round', {});
 let p7state = await waitEvent('combat:updated', (c) => c.phase === 'declaration');
 check('Next Round opens Declaration Phase', p7state.phase === 'declaration' && p7state.roundNumber === 1);
-check('a side is set to declare first, the other pending', ['left', 'right'].includes(p7state.declaringSide) && p7state.pendingDeclareSide === (p7state.declaringSide === 'left' ? 'right' : 'left'));
+check('pair 0 has exactly one combat_pairs row with a side set to declare first', p7state.pairs.length === 1 && ['left', 'right'].includes(p7state.pairs[0].declaring_side));
 check('Brain initiative rolled for both participants, posted to chat', events.filter((e) => e.ev === 'roll:result').length === 2);
 
-const losingSide = p7state.declaringSide;
-const winningSide = p7state.pendingDeclareSide;
+const losingSide = p7state.pairs[0].declaring_side;
+const winningSide = losingSide === 'left' ? 'right' : 'left';
 const losingChar = losingSide === 'left' ? ch : rightFighter;
 const winningChar = winningSide === 'left' ? ch : rightFighter;
 
@@ -1122,14 +1122,14 @@ check(
 );
 
 events.length = 0;
-emit('combat:side_done_declaring', { side: winningSide });
+emit('combat:character_done_declaring', { characterId: winningChar.id });
 await sleep(300);
-check('marking the wrong (not-currently-open) side done is a no-op', !events.some((e) => e.ev === 'combat:updated'));
+check('marking done for a character whose side isn\'t open yet is a no-op', !events.some((e) => e.ev === 'combat:updated'));
 
 events.length = 0;
-emit('combat:side_done_declaring', { side: losingSide });
-dUpdate = await waitEvent('combat:updated', (c) => c.declaringSide === winningSide);
-check('losing side done declaring opens the winning side', dUpdate.declaringSide === winningSide && dUpdate.pendingDeclareSide === null);
+emit('combat:character_done_declaring', { characterId: losingChar.id });
+dUpdate = await waitEvent('combat:updated', (c) => c.pairs[0].declaring_side === winningSide);
+check('losing character done declaring opens the winning side of the pair', dUpdate.pairs[0].declaring_side === winningSide);
 
 events.length = 0;
 emit('move:declare', { characterId: winningChar.id, moveId: jab.id });
@@ -1149,10 +1149,10 @@ await sleep(300);
 check('Tic forward is rejected outside Tic Countdown phase (still declaration)', !events.some((e) => e.ev === 'combat:updated'));
 
 actorEvents.length = 0;
-emit('combat:side_done_declaring', { side: winningSide });
-dUpdate = await waitEvent('combat:updated', (c) => c.declaringSide === null);
-check('both sides done: declaringSide clears, ready for the countdown', dUpdate.declaringSide === null);
-const switchedUpdate = await waitActorEvent('combat:updated', (c) => c.declaringSide === null);
+emit('combat:character_done_declaring', { characterId: winningChar.id });
+dUpdate = await waitEvent('combat:updated', (c) => c.pairs[0].declaring_side === null);
+check('both sides of the pair done: declaring_side clears, ready for the countdown', dUpdate.pairs[0].declaring_side === null);
+const switchedUpdate = await waitActorEvent('combat:updated', (c) => c.pairs[0].declaring_side === null);
 const switchedOwn = switchedUpdate.declaredMoves.find((dm) => dm.characterId === winningChar.id);
 check('after switching identity, the new character\'s move is revealed to actor', switchedOwn.isRevealed === true && switchedOwn.moveId === jab.id);
 const noLongerOwn = switchedUpdate.declaredMoves.find((dm) => dm.characterId === losingChar.id);
@@ -1214,7 +1214,7 @@ emit('combat:next_round', {});
 dUpdate = await waitEvent('combat:updated', (c) => c.phase === 'declaration' && c.roundNumber === 2);
 check('Next Round from Tic Countdown starts round 2, back in Declaration Phase', true);
 
-const round2Declaring = dUpdate.declaringSide === losingSide ? losingChar : winningChar;
+const round2Declaring = dUpdate.pairs[0].declaring_side === losingSide ? losingChar : winningChar;
 const round1FootprintForThatChar = dUpdate.declaredMoves.find((dm) => dm.characterId === round2Declaring.id && dm.roundNumber === 1);
 events.length = 0;
 emit('move:declare', { characterId: round2Declaring.id, moveId: jab.id });
@@ -1306,8 +1306,8 @@ await waitEvent('combat:updated', (c) => c.participants.some((p) => p.character_
 events.length = 0;
 emit('combat:next_round', {});
 p7state = await waitEvent('combat:updated', (c) => c.phase === 'declaration');
-const costSide = p7state.declaringSide;
-const otherCostSide = p7state.pendingDeclareSide;
+const costSide = p7state.pairs[0].declaring_side;
+const otherCostSide = costSide === 'left' ? 'right' : 'left';
 const costChar = costSide === 'left' ? staminaA : staminaB;
 const otherChar = costSide === 'left' ? staminaB : staminaA;
 
@@ -1338,7 +1338,7 @@ const stillBefore = (await jf(`/api/characters/${costChar.id}`)).body.character;
 check('Stamina Cost is only a visual preview until the side finishes declaring — current_stamina untouched so far', stillBefore.current_stamina === beforeCost.max_stamina);
 
 events.length = 0;
-emit('combat:side_done_declaring', { side: costSide });
+emit('combat:character_done_declaring', { characterId: costChar.id });
 const costCharUpdate = await waitEvent('character:updated', (c) => c.id === costChar.id);
 check('Stamina Cost is subtracted in one batch (20 + 5 = 25) once the side finishes declaring', costCharUpdate.current_stamina === beforeCost.max_stamina - 25, `expected ${beforeCost.max_stamina - 25}, got ${costCharUpdate.current_stamina}`);
 const afterCommit = (await jf(`/api/characters/${costChar.id}`)).body.character;
@@ -1356,7 +1356,7 @@ const ownOtherDeclared = ownOtherUpdate.declaredMoves.find((dm) => dm.characterI
 check('a negative-cost move is declarable too, staminaCost visible to the declaring character\'s own player', ownOtherDeclared.staminaCost === -3);
 
 events.length = 0;
-emit('combat:side_done_declaring', { side: otherCostSide });
+emit('combat:character_done_declaring', { characterId: otherChar.id });
 const otherCharUpdate = await waitEvent('character:updated', (c) => c.id === otherChar.id);
 check('a negative Stamina Cost restores Stamina, clamped at max (already full, so unchanged)', otherCharUpdate.current_stamina === beforeOther.max_stamina, `expected ${beforeOther.max_stamina}, got ${otherCharUpdate.current_stamina}`);
 
@@ -1388,13 +1388,13 @@ let fairState = await waitEvent('combat:updated', (c) => c.phase === 'declaratio
 // Declare for whichever side opens first, mark it done, then the other —
 // order-agnostic since initiative is randomly rolled.
 for (let round = 0; round < 2; round++) {
-  const side = fairState.declaringSide;
+  const side = fairState.pairs[0].declaring_side;
   const charForSide = side === 'left' ? fairPc : fairNpc;
   events.length = 0;
   emit('move:declare', { characterId: charForSide.id, moveId: jab.id });
   await waitEvent('combat:updated', (c) => c.declaredMoves.some((dm) => dm.characterId === charForSide.id));
   events.length = 0;
-  emit('combat:side_done_declaring', { side });
+  emit('combat:character_done_declaring', { characterId: charForSide.id });
   fairState = await waitEvent('combat:updated', () => true);
 }
 
@@ -1462,7 +1462,7 @@ await waitEvent('combat:updated', (c) => c.participants.some((p) => p.character_
 events.length = 0;
 emit('combat:next_round', {});
 const ambigState = await waitEvent('combat:updated', (c) => c.phase === 'declaration');
-const ambigSide = ambigState.declaringSide;
+const ambigSide = ambigState.pairs[0].declaring_side;
 const ambigChar = ambigSide === 'left' ? ambigLeft : ambigRight;
 
 events.length = 0;
@@ -1492,7 +1492,7 @@ check(
 );
 
 events.length = 0;
-emit('combat:side_done_declaring', { side: ambigSide });
+emit('combat:character_done_declaring', { characterId: ambigChar.id });
 await waitEvent('combat:updated', () => true);
 const otherAmbigChar = ambigSide === 'left' ? ambigRight : ambigLeft;
 events.length = 0;
@@ -1532,7 +1532,7 @@ await waitEvent('combat:updated', (c) => c.participants.some((p) => p.character_
 events.length = 0;
 emit('combat:next_round', {});
 const fpState = await waitEvent('combat:updated', (c) => c.phase === 'declaration');
-const fpSide = fpState.declaringSide;
+const fpSide = fpState.pairs[0].declaring_side;
 const fpChar = fpSide === 'left' ? fpLeft : fpRight;
 
 // Startup 1, Active 2, Recovery 3, placed at round start (tic T): reveals at
@@ -1592,8 +1592,8 @@ check('a fresh declare after canceling lands at the same legal floor as before',
 // Once the side finishes declaring, the committed move can no longer be
 // undeclared — same silent no-op as any other rejected declare/undeclare.
 events.length = 0;
-emit('combat:side_done_declaring', { side: fpSide });
-await waitEvent('combat:updated', (c) => c.declaringSide !== fpSide);
+emit('combat:character_done_declaring', { characterId: fpChar.id });
+await waitEvent('combat:updated', (c) => c.pairs[0].declaring_side !== fpSide);
 events.length = 0;
 emit('move:undeclare', { declaredMoveId: firstDm.id });
 await sleep(300);
@@ -1619,6 +1619,90 @@ emit('move:delete', { moveId: crossPunch.id });
 await waitEvent('move:deleted', (p) => p.moveId === crossPunch.id);
 await jf(`/api/characters/${ambigLeft.id}`, { method: 'DELETE' });
 await jf(`/api/characters/${ambigRight.id}`, { method: 'DELETE' });
+
+// --- Multiple pairs declare independently and simultaneously (decided,
+// combat redesign): pair 1's losing side and pair 2's losing side can both
+// be mid-Declaration at the same time even though they might be literal
+// opposite "sides" — declaration is scoped per pair (combat_pairs), not one
+// shared batch across the whole arena like Phase 7 originally had it ---
+const mpA = (await jpost('/api/characters', { name: 'MultiPair A', characterType: 'pc' })).body;
+const mpB = (await jpost('/api/characters', { name: 'MultiPair B', characterType: 'pc' })).body;
+const mpC = (await jpost('/api/characters', { name: 'MultiPair C', characterType: 'pc' })).body;
+const mpD = (await jpost('/api/characters', { name: 'MultiPair D', characterType: 'pc' })).body;
+
+events.length = 0;
+emit('combat:add_participant', { characterId: mpA.id, side: 'left', pairIndex: 0 });
+await waitEvent('combat:updated', (c) => c.participants.some((p) => p.character_id === mpA.id));
+emit('combat:add_participant', { characterId: mpB.id, side: 'right', pairIndex: 0 });
+await waitEvent('combat:updated', (c) => c.participants.some((p) => p.character_id === mpB.id));
+emit('combat:add_participant', { characterId: mpC.id, side: 'left', pairIndex: 1 });
+await waitEvent('combat:updated', (c) => c.participants.some((p) => p.character_id === mpC.id));
+emit('combat:add_participant', { characterId: mpD.id, side: 'right', pairIndex: 1 });
+await waitEvent('combat:updated', (c) => c.participants.some((p) => p.character_id === mpD.id));
+
+events.length = 0;
+emit('combat:next_round', {});
+let mpState = await waitEvent('combat:updated', (c) => c.phase === 'declaration');
+check('two combat_pairs rows exist, one per pair_index', mpState.pairs.length === 2);
+const mpPair0 = mpState.pairs.find((p) => p.pair_index === 0);
+const mpPair1 = mpState.pairs.find((p) => p.pair_index === 1);
+check('both pairs have their own declaring_side independently resolved', ['left', 'right'].includes(mpPair0.declaring_side) && ['left', 'right'].includes(mpPair1.declaring_side));
+
+const mpDeclarer0 = mpPair0.declaring_side === 'left' ? mpA : mpB;
+const mpOther0 = mpPair0.declaring_side === 'left' ? mpB : mpA;
+const mpDeclarer1 = mpPair1.declaring_side === 'left' ? mpC : mpD;
+
+events.length = 0;
+emit('move:declare', { characterId: mpDeclarer0.id, moveId: jab.id });
+emit('move:declare', { characterId: mpDeclarer1.id, moveId: jab.id });
+await waitEvent('combat:updated', (c) => c.declaredMoves.some((dm) => dm.characterId === mpDeclarer0.id) && c.declaredMoves.some((dm) => dm.characterId === mpDeclarer1.id));
+check('pair 0 and pair 1 can both declare in the same window — genuinely independent/simultaneous, not batched', true);
+
+events.length = 0;
+emit('move:declare', { characterId: mpOther0.id, moveId: jab.id });
+await sleep(300);
+check('the not-yet-eligible side of pair 0 still can\'t declare while pair 0\'s own turn hasn\'t flipped', !events.some((e) => e.ev === 'combat:updated' && e.payload.declaredMoves.some((dm) => dm.characterId === mpOther0.id)));
+
+events.length = 0;
+emit('combat:character_done_declaring', { characterId: mpDeclarer0.id });
+let mpUpdate = await waitEvent('combat:updated', (c) => c.pairs.find((p) => p.pair_index === 0).declaring_side !== mpPair0.declaring_side);
+check('pair 0 flips to its other side once that side finishes', mpUpdate.pairs.find((p) => p.pair_index === 0).declaring_side === (mpPair0.declaring_side === 'left' ? 'right' : 'left'));
+check('pair 1 is completely unaffected by pair 0 finishing', mpUpdate.pairs.find((p) => p.pair_index === 1).declaring_side === mpPair1.declaring_side);
+
+const mpCharAfter = (await jf(`/api/characters/${mpDeclarer0.id}`)).body.character;
+check('Stamina committed per-character (not batched by side) the moment they finish', mpCharAfter.current_stamina === mpCharAfter.max_stamina, `expected full, got ${mpCharAfter.current_stamina}/${mpCharAfter.max_stamina}`);
+
+events.length = 0;
+emit('combat:start_tic_countdown', {});
+await sleep(300);
+check('Start Tic Countdown stays blocked while pair 1 (and pair 0\'s other side) haven\'t finished', !events.some((e) => e.ev === 'combat:updated' && e.payload.phase === 'tic_countdown'));
+
+events.length = 0;
+emit('move:declare', { characterId: mpOther0.id, moveId: jab.id });
+await waitEvent('combat:updated', (c) => c.declaredMoves.some((dm) => dm.characterId === mpOther0.id));
+emit('combat:character_done_declaring', { characterId: mpOther0.id });
+await waitEvent('combat:updated', (c) => c.pairs.find((p) => p.pair_index === 0).declaring_side === null);
+emit('combat:character_done_declaring', { characterId: mpDeclarer1.id });
+await waitEvent('combat:updated', () => true);
+const mpOther1 = mpPair1.declaring_side === 'left' ? mpD : mpC;
+emit('move:declare', { characterId: mpOther1.id, moveId: jab.id });
+await waitEvent('combat:updated', (c) => c.declaredMoves.some((dm) => dm.characterId === mpOther1.id));
+emit('combat:character_done_declaring', { characterId: mpOther1.id });
+mpUpdate = await waitEvent('combat:updated', (c) => c.pairs.every((p) => p.declaring_side === null));
+check('every pair finishes independently and ends up fully done', mpUpdate.pairs.every((p) => p.declaring_side === null));
+
+events.length = 0;
+emit('combat:start_tic_countdown', {});
+mpUpdate = await waitEvent('combat:updated', (c) => c.phase === 'tic_countdown');
+check('Start Tic Countdown now succeeds once every pair has finished', mpUpdate.phase === 'tic_countdown');
+
+events.length = 0;
+emit('combat:clear', {});
+await waitEvent('combat:updated', (c) => c.participants.length === 0);
+await jf(`/api/characters/${mpA.id}`, { method: 'DELETE' });
+await jf(`/api/characters/${mpB.id}`, { method: 'DELETE' });
+await jf(`/api/characters/${mpC.id}`, { method: 'DELETE' });
+await jf(`/api/characters/${mpD.id}`, { method: 'DELETE' });
 
 await jf(`/api/characters/${rightFighter.id}`, { method: 'DELETE' });
 
@@ -1647,8 +1731,10 @@ const chatAfter = (await jf('/api/chat')).body;
 // +8 vs. the pre-Stamina-Cost count: four extra combat:next_round calls
 // (staminaA/staminaB, fairPc/fairNpc, ambigLeft/ambigRight, fpLeft/fpRight)
 // each rolled Brain initiative for both their participants, each roll
-// posting to chat.
-check('chat log survives character deletion', chatAfter.length === 23 && chatAfter[0].characterName === '(deleted)');
+// posting to chat. +4 more from the multi-pair combat-redesign test block's
+// one combat:next_round call, seating 4 characters (mpA/mpB/mpC/mpD) across
+// two pairs — each rolls its own Brain initiative too.
+check('chat log survives character deletion', chatAfter.length === 27 && chatAfter[0].characterName === '(deleted)', `got ${chatAfter.length}`);
 
 await jf(`/api/characters/${npc.id}`, { method: 'DELETE' });
 

@@ -476,10 +476,13 @@ export async function initDb() {
   );
 
   // Singleton row holding the Combat Arena's global state. Phase 7 adds the
-  // round/Tic timing columns: phase is null until the first Next Round press;
-  // declaring_side is whichever side may currently call move:declare (null
-  // once both sides are done, or already both trivially done); pending_declare_side
-  // is the side still queued behind it (null once there's nothing left to open).
+  // round/Tic timing columns: phase is null until the first Next Round press.
+  // declaring_side/pending_declare_side are Phase 7 leftovers, now unused —
+  // Phase 9's combat redesign moved declaration ordering to per-pair state
+  // (combat_pairs below) since declaration now runs independently per pair
+  // instead of as one global side-vs-side batch. The columns stay (SQLite
+  // migrations in this app are additive-only) but nothing reads/writes them
+  // anymore.
   await run(`
     CREATE TABLE IF NOT EXISTS combat_state (
       id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -518,13 +521,40 @@ export async function initDb() {
   // into facing pairs; a side/pair_index can hold more than one character
   // when Uneven Combat is on (the app doesn't enforce the toggle, it's just
   // a GM-facing flag). A character can only be seated once.
+  // declared_this_round (Phase 9 combat redesign): has THIS character
+  // individually pressed "done declaring" for the round currently in
+  // combat_state.round_number — declaration is per-character now, not a
+  // single batched press for a whole side (see combat_pairs below). Reset to
+  // 0 for everyone at combat:next_round/clear/end.
   await run(`
     CREATE TABLE IF NOT EXISTS combat_participants (
       id INTEGER PRIMARY KEY,
       character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
       side TEXT NOT NULL CHECK(side IN ('left','right')),
       pair_index INTEGER NOT NULL,
+      declared_this_round INTEGER NOT NULL DEFAULT 0,
       UNIQUE(character_id)
+    )
+  `);
+  await ensureColumn('combat_participants', 'declared_this_round', 'INTEGER NOT NULL DEFAULT 0');
+
+  // Phase 9 combat redesign: declaration now runs independently per pair —
+  // pair 1's losing side and pair 2's losing side can be declaring
+  // simultaneously even though they might be literal opposite "sides", so a
+  // single global declaring_side (combat_state, now unused — see above) no
+  // longer describes who may currently call move:declare. One row per
+  // pair_index that has participants, (re)computed fresh every
+  // combat:next_round from that pair's own per-side Brain initiative
+  // (resolveSideInitiative, scoped to just this pair's seated characters).
+  // declaring_side is whichever side of THIS pair may currently declare —
+  // NULL once both sides of this pair have every character marked
+  // declared_this_round (both trivially "done" if a pair has only one side
+  // seated). Rows are cleared and recreated by combat:next_round, and wiped
+  // entirely by combat:clear/combat:end.
+  await run(`
+    CREATE TABLE IF NOT EXISTS combat_pairs (
+      pair_index INTEGER PRIMARY KEY,
+      declaring_side TEXT CHECK(declaring_side IN ('left','right'))
     )
   `);
 

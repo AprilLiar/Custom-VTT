@@ -428,9 +428,9 @@ function mapDeclaredMovesForViewer(rows, currentTic, viewer, phase, roundNumber)
 }
 
 // Sum of Stamina Cost across a character's declared-but-not-yet-committed
-// moves — moves only stay uncommitted while their side's Declaration Phase
-// is still open (combat:side_done_declaring commits the whole batch at
-// once), so this is also exactly "how much is currently pending."
+// moves — moves only stay uncommitted until this character themselves
+// presses "done declaring" (combat:character_done_declaring commits them
+// all at once), so this is also exactly "how much is currently pending."
 async function getPendingStaminaCost(characterId) {
   const row = await one(
     `SELECT COALESCE(SUM(m.stamina_cost), 0) AS pending
@@ -450,9 +450,10 @@ async function getPendingStaminaCost(characterId) {
 // watching (see isRevealedToViewer above), so this is a per-socket emit
 // rather than one io.emit — the DB round-trip still only happens once.
 async function emitCombatUpdated() {
-  const [state, participants, declaredMoveRows] = await Promise.all([
+  const [state, participants, pairs, declaredMoveRows] = await Promise.all([
     one('SELECT * FROM combat_state WHERE id = 1'),
     all('SELECT * FROM combat_participants ORDER BY side, pair_index, id'),
+    all('SELECT * FROM combat_pairs ORDER BY pair_index'),
     fetchDeclaredMoveRows(),
   ]);
   const tic = relativeTic({
@@ -470,8 +471,12 @@ async function emitCombatUpdated() {
     relativeTic: tic.relative,
     isOverflow: tic.isOverflow,
     overflowBy: tic.overflowBy,
-    declaringSide: state.declaring_side,
-    pendingDeclareSide: state.pending_declare_side,
+    // Phase 9 combat redesign: declaration runs independently per pair now
+    // (see combat_pairs in db.js) — pairs[].declaring_side is whichever side
+    // of that pair may currently call move:declare (null once both sides of
+    // it are done); participants[].declared_this_round is the per-character
+    // status the GM's declaration table renders (see Combat Timing above).
+    pairs,
     participants,
   };
   for (const viewerSocket of io.sockets.sockets.values()) {
@@ -640,9 +645,10 @@ app.get('/api/ruleset', wrap(async (_req, res) => {
 // and every declared move so far this fight (Tell-only until revealed).
 app.get('/api/combat', wrap(async (req, res) => {
   const viewer = viewerFromQuery(req.query);
-  const [state, participants] = await Promise.all([
+  const [state, participants, pairs] = await Promise.all([
     one('SELECT * FROM combat_state WHERE id = 1'),
     all('SELECT * FROM combat_participants ORDER BY side, pair_index, id'),
+    all('SELECT * FROM combat_pairs ORDER BY pair_index'),
   ]);
 
   const charIds = [...new Set(participants.map((p) => p.character_id))];
@@ -701,8 +707,7 @@ app.get('/api/combat', wrap(async (req, res) => {
     relativeTic: tic.relative,
     isOverflow: tic.isOverflow,
     overflowBy: tic.overflowBy,
-    declaringSide: state.declaring_side,
-    pendingDeclareSide: state.pending_declare_side,
+    pairs,
     participants,
     characters,
     counters,
@@ -1922,9 +1927,10 @@ io.on('connection', (socket) => {
   on('combat:clear', async () => {
     await run('DELETE FROM combat_participants');
     await run('DELETE FROM declared_moves');
+    await run('DELETE FROM combat_pairs');
     await run(`
       UPDATE combat_state SET phase = NULL, round_number = 0, current_tic = 0,
-      round_start_tic = 0, declaring_side = NULL, pending_declare_side = NULL
+      round_start_tic = 0
       WHERE id = 1
     `);
     await emitCombatUpdated();
@@ -1937,9 +1943,11 @@ io.on('connection', (socket) => {
   // fight for the same roster without re-seating.
   on('combat:end', async () => {
     await run('DELETE FROM declared_moves');
+    await run('DELETE FROM combat_pairs');
+    await run('UPDATE combat_participants SET declared_this_round = 0');
     await run(`
       UPDATE combat_state SET phase = NULL, round_number = 0, current_tic = 0,
-      round_start_tic = 0, declaring_side = NULL, pending_declare_side = NULL
+      round_start_tic = 0
       WHERE id = 1
     `);
     await emitCombatUpdated();
@@ -1950,8 +1958,14 @@ io.on('connection', (socket) => {
   // Combat Timing mechanic section for the decided rules wired together
   // here. GM-only client-side for next_round/start_tic_countdown/
   // tic_forward/tic_backward (matching the plan's own event contract);
-  // move:declare and side_done_declaring are open-access, matching how
+  // move:declare and character_done_declaring are open-access, matching how
   // declaring/rolling for a character already works everywhere else.
+  //
+  // Phase 9 combat redesign: initiative and declaration order are now
+  // resolved independently PER PAIR, not once across the whole arena — pair
+  // 1's losing side and pair 2's losing side can be declaring at the same
+  // time even though they might be literal opposite "sides" (see
+  // combat_pairs in db.js).
   on('combat:next_round', async () => {
     const state = await one('SELECT * FROM combat_state WHERE id = 1');
     if (state.phase === 'declaration') return;
@@ -1988,16 +2002,20 @@ io.on('connection', (socket) => {
       }
     }
 
-    // Brain rolls per side, posted to chat as normal initiative rolls — an
-    // incapacitated/missing Brain die is silently dropped from its side's
-    // initiative, same as pool:roll drops incapacitated dice elsewhere.
-    const rollsBySide = { left: [], right: [] };
+    // Brain rolls per PAIR per side, posted to chat as normal initiative
+    // rolls exactly as before — an incapacitated/missing Brain die is
+    // silently dropped from its side's initiative, same as pool:roll drops
+    // incapacitated dice elsewhere. Grouped by pair_index now instead of
+    // pooled across the whole arena, since each pair resolves its own
+    // initiative independently.
+    const rollsByPair = new Map(); // pair_index -> { left: [], right: [] }
     for (const p of participants) {
       const die = brainByChar.get(p.character_id);
       const character = charById.get(p.character_id);
       if (!die || die.status !== 'active' || !character) continue;
       const result = rollDie(die.current_size) + die.bonus;
-      rollsBySide[p.side].push(result);
+      if (!rollsByPair.has(p.pair_index)) rollsByPair.set(p.pair_index, { left: [], right: [] });
+      rollsByPair.get(p.pair_index)[p.side].push(result);
       await logRoll({
         characterId: character.id,
         characterName: character.name,
@@ -2006,23 +2024,37 @@ io.on('connection', (socket) => {
       });
     }
 
-    const hasLeft = participants.some((p) => p.side === 'left');
-    const hasRight = participants.some((p) => p.side === 'right');
-    let declaringSide;
-    let pendingDeclareSide = null;
-    if (hasLeft && hasRight) {
-      const { firstToDeclare, secondToDeclare } = resolveSideInitiative(rollsBySide);
-      declaringSide = firstToDeclare;
-      pendingDeclareSide = secondToDeclare;
-    } else {
-      declaringSide = hasLeft ? 'left' : 'right';
+    const pairIndices = [...new Set(participants.map((p) => p.pair_index))];
+    const pairDeclaringSide = new Map();
+    for (const pairIndex of pairIndices) {
+      const pairParticipants = participants.filter((p) => p.pair_index === pairIndex);
+      const hasLeft = pairParticipants.some((p) => p.side === 'left');
+      const hasRight = pairParticipants.some((p) => p.side === 'right');
+      if (hasLeft && hasRight) {
+        const { firstToDeclare } = resolveSideInitiative(
+          rollsByPair.get(pairIndex) ?? { left: [], right: [] }
+        );
+        pairDeclaringSide.set(pairIndex, firstToDeclare);
+      } else {
+        pairDeclaringSide.set(pairIndex, hasLeft ? 'left' : 'right');
+      }
     }
+
+    await run('DELETE FROM combat_pairs');
+    await Promise.all(
+      pairIndices.map((pairIndex) =>
+        run('INSERT INTO combat_pairs (pair_index, declaring_side) VALUES (?, ?)', [
+          pairIndex,
+          pairDeclaringSide.get(pairIndex),
+        ])
+      )
+    );
+    await run('UPDATE combat_participants SET declared_this_round = 0');
 
     await run(
       `UPDATE combat_state SET phase = 'declaration', round_number = round_number + 1,
-       round_start_tic = current_tic, declaring_side = ?, pending_declare_side = ?
-       WHERE id = 1`,
-      [declaringSide, pendingDeclareSide]
+       round_start_tic = current_tic
+       WHERE id = 1`
     );
     await emitCombatUpdated();
   });
@@ -2038,7 +2070,13 @@ io.on('connection', (socket) => {
       one('SELECT * FROM moves WHERE id = ?', [moveId]),
     ]);
     if (state.phase !== 'declaration') return;
-    if (!participant || participant.side !== state.declaring_side) return;
+    // Declaration runs independently per pair now (Phase 9 combat redesign)
+    // — a character may only declare while their OWN pair's declaring_side
+    // matches their own side, and only until they themselves have pressed
+    // "done declaring" for the round (declared_this_round).
+    if (!participant || participant.declared_this_round) return;
+    const pair = await one('SELECT * FROM combat_pairs WHERE pair_index = ?', [participant.pair_index]);
+    if (!pair || pair.declaring_side !== participant.side) return;
     if (!character || !move) return;
 
     // right_tell_id/left_tell_id are only ever set together, exactly when
@@ -2076,10 +2114,10 @@ io.on('connection', (socket) => {
 
     // Affordability is checked up front, against current_stamina minus
     // every other move this character already has pending (not yet
-    // committed) this Declaration Phase — the actual spend only happens in
-    // one batch when the side finishes declaring (see
-    // combat:side_done_declaring), but a character can never queue more
-    // than they can actually pay for once that happens.
+    // committed) this Declaration Phase — the actual spend only happens when
+    // this character themselves finishes declaring (see
+    // combat:character_done_declaring), but they can never queue more than
+    // they can actually pay for once that happens.
     // The character's own last-queued move's full footprint end (reveal +
     // Active + Recovery) — ORDER BY the computed end, not just reveal_tic,
     // since a shorter-Active/Recovery move declared later could still end
@@ -2140,12 +2178,11 @@ io.on('connection', (socket) => {
   // Lets a still-pending declared move be taken back and something else
   // declared instead — open access, same trust model as move:declare
   // itself. Only while it's genuinely still pending: stamina_committed = 1
-  // means the declaring side already pressed Done Declaring, at which point
-  // its Stamina Cost has actually left current_stamina (see
-  // combat:side_done_declaring) — undoing that would need a refund this
-  // event deliberately doesn't attempt, so it's simply rejected past that
-  // point (a no-op, matching move:declare's own rejection pattern). Once
-  // both sides are done, phase already isn't 'declaration' either way.
+  // means this character already pressed Done Declaring, at which point its
+  // Stamina Cost has actually left current_stamina (see
+  // combat:character_done_declaring) — undoing that would need a refund
+  // this event deliberately doesn't attempt, so it's simply rejected past
+  // that point (a no-op, matching move:declare's own rejection pattern).
   on('move:undeclare', async ({ declaredMoveId }) => {
     const state = await one('SELECT * FROM combat_state WHERE id = 1');
     if (state.phase !== 'declaration') return;
@@ -2155,76 +2192,89 @@ io.on('connection', (socket) => {
     await emitCombatUpdated();
   });
 
-  on('combat:side_done_declaring', async ({ side }) => {
-    if (!['left', 'right'].includes(side)) return;
-    const state = await one('SELECT * FROM combat_state WHERE id = 1');
-    if (state.phase !== 'declaration' || state.declaring_side !== side) return;
+  // Phase 9 combat redesign: declaring is now asynchronous per character,
+  // not one shared button per side — every seated character presses their
+  // own "done declaring" individually (open access, same trust model as
+  // move:declare — declaring/finishing for a character isn't restricted to
+  // whoever's logged in as them). A no-op unless it's genuinely this
+  // character's turn (their pair's declaring_side matches their own side)
+  // and they haven't already finished this round.
+  on('combat:character_done_declaring', async ({ characterId }) => {
+    const [state, participant] = await Promise.all([
+      one('SELECT * FROM combat_state WHERE id = 1'),
+      one('SELECT * FROM combat_participants WHERE character_id = ?', [characterId]),
+    ]);
+    if (state.phase !== 'declaration' || !participant || participant.declared_this_round) return;
+    const pair = await one('SELECT * FROM combat_pairs WHERE pair_index = ?', [participant.pair_index]);
+    if (!pair || pair.declaring_side !== participant.side) return;
 
-    // Commit every pending move's Stamina Cost for this side now, in one
-    // batch — this is the one and only place cost actually leaves/returns
-    // to current_stamina (move:declare only ever checked affordability).
+    // Commit this character's own pending moves' Stamina Cost now — this is
+    // the one and only place cost actually leaves/returns to
+    // current_stamina (move:declare only ever checked affordability).
     // Clamped defensively to [0, max]; the up-front affordability check
-    // already keeps this from going negative in the normal flow. Batched
-    // across the whole side (one GROUP BY instead of a per-character
-    // round trip, updates fired in parallel) rather than looping
-    // sequentially per participant — that loop was the single worst
-    // offender for combat lag with more than one or two characters seated.
-    const sideParticipants = await all(
-      'SELECT character_id FROM combat_participants WHERE side = ?',
-      [side]
+    // already keeps this from going negative in the normal flow. Per
+    // character now rather than batched per side, since declaring itself is.
+    const [pendingRow, character] = await Promise.all([
+      one(
+        `SELECT COALESCE(SUM(m.stamina_cost), 0) AS pending
+         FROM declared_moves dm JOIN moves m ON m.id = dm.move_id
+         WHERE dm.character_id = ? AND dm.stamina_committed = 0`,
+        [characterId]
+      ),
+      getCharacter(characterId),
+    ]);
+    if (character && pendingRow.pending !== 0) {
+      const newStamina = clamp(character.current_stamina - pendingRow.pending, 0, character.max_stamina);
+      await run('UPDATE characters SET current_stamina = ? WHERE id = ?', [newStamina, characterId]);
+      io.emit('character:updated', { ...character, current_stamina: newStamina });
+    }
+    await Promise.all([
+      run('UPDATE declared_moves SET stamina_committed = 1 WHERE character_id = ? AND stamina_committed = 0', [
+        characterId,
+      ]),
+      run('UPDATE combat_participants SET declared_this_round = 1 WHERE character_id = ?', [characterId]),
+    ]);
+
+    // Has every character on THIS side of THIS pair now finished? If so,
+    // this pair's declaring_side flips to the other side (if it exists and
+    // hasn't already gone) or clears to NULL (this pair is fully done) — see
+    // combat_pairs' schema comment in db.js for the full reasoning behind
+    // not needing a separate "pending side" field to figure this out.
+    const pairmates = await all(
+      'SELECT declared_this_round FROM combat_participants WHERE pair_index = ? AND side = ?',
+      [participant.pair_index, participant.side]
     );
-    if (sideParticipants.length) {
-      const ids = sideParticipants.map((p) => p.character_id);
-      const marks = ids.map(() => '?').join(',');
-      const [pendingRows, characters] = await Promise.all([
-        all(
-          `SELECT dm.character_id, COALESCE(SUM(m.stamina_cost), 0) AS pending
-           FROM declared_moves dm JOIN moves m ON m.id = dm.move_id
-           WHERE dm.character_id IN (${marks}) AND dm.stamina_committed = 0
-           GROUP BY dm.character_id`,
-          ids
-        ),
-        all(`SELECT * FROM characters WHERE id IN (${marks})`, ids),
+    if (pairmates.every((p) => p.declared_this_round)) {
+      const otherSide = participant.side === 'left' ? 'right' : 'left';
+      const otherSideParticipants = await all(
+        'SELECT declared_this_round FROM combat_participants WHERE pair_index = ? AND side = ?',
+        [participant.pair_index, otherSide]
+      );
+      const nextDeclaringSide =
+        otherSideParticipants.length && otherSideParticipants.some((p) => !p.declared_this_round)
+          ? otherSide
+          : null;
+      await run('UPDATE combat_pairs SET declaring_side = ? WHERE pair_index = ?', [
+        nextDeclaringSide,
+        participant.pair_index,
       ]);
-      const pendingByChar = new Map(pendingRows.map((r) => [r.character_id, r.pending]));
-      const charById = new Map(characters.map((c) => [c.id, c]));
-
-      const updates = ids
-        .map((id) => {
-          const pending = pendingByChar.get(id) ?? 0;
-          const character = charById.get(id);
-          if (pending === 0 || !character) return null;
-          const newStamina = clamp(character.current_stamina - pending, 0, character.max_stamina);
-          return { character, newStamina };
-        })
-        .filter(Boolean);
-
-      await Promise.all([
-        ...updates.map((u) =>
-          run('UPDATE characters SET current_stamina = ? WHERE id = ?', [u.newStamina, u.character.id])
-        ),
-        run(
-          `UPDATE declared_moves SET stamina_committed = 1 WHERE character_id IN (${marks}) AND stamina_committed = 0`,
-          ids
-        ),
-      ]);
-      // Broadcast from the rows already in hand plus the one field that
-      // changed — no re-fetch needed.
-      for (const u of updates) {
-        io.emit('character:updated', { ...u.character, current_stamina: u.newStamina });
-      }
     }
 
-    await run(
-      'UPDATE combat_state SET declaring_side = ?, pending_declare_side = NULL WHERE id = 1',
-      [state.pending_declare_side]
-    );
     await emitCombatUpdated();
   });
 
   on('combat:start_tic_countdown', async () => {
-    const state = await one('SELECT * FROM combat_state WHERE id = 1');
-    if (state.phase !== 'declaration' || state.declaring_side != null) return;
+    const [state, pairs] = await Promise.all([
+      one('SELECT * FROM combat_state WHERE id = 1'),
+      all('SELECT * FROM combat_pairs'),
+    ]);
+    // Every pair must have finished declaring (both sides done, or trivially
+    // done for a single-sided pair) — the Tic Counter is one shared timeline
+    // for the whole arena, so it can't start counting down while any pair is
+    // still mid-Declaration (Phase 9 combat redesign: declaration itself now
+    // runs independently per pair, but the countdown that follows it is
+    // still global).
+    if (state.phase !== 'declaration' || pairs.some((p) => p.declaring_side != null)) return;
     await run("UPDATE combat_state SET phase = 'tic_countdown' WHERE id = 1");
     // A move with 0 Startup Tics placed at the round's very first Tic
     // reveals immediately — its reveal_tic already equals current_tic
