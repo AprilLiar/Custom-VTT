@@ -51,11 +51,19 @@ function Edge({ from, to, kind }) {
   );
 }
 
-export default function StanceGraph({ attributes, counters, activePair }) {
+// `onNodeClick`, when passed, turns every style node into a picker: clicking
+// one calls onNodeClick(attr.id) instead of just displaying matchups (see
+// StancesTab.jsx's Stance Creator, which highlights the same `activePair`
+// prop as the pick-in-progress rather than an active stance). A node not
+// already in the pair dims once two are picked, mirroring the old chip
+// buttons' disabled state.
+export default function StanceGraph({ attributes, counters, activePair, onNodeClick }) {
   const positions = new Map(
     attributes.map((attr, i) => [attr.id, polar(i, attributes.length, RADIUS)])
   );
   const inPair = (id) => activePair?.includes(id) ?? false;
+  const picking = Boolean(onNodeClick);
+  const atCapacity = picking && (activePair?.length ?? 0) >= 2;
 
   const edgeKind = (row) => {
     if (!activePair) return 'neutral';
@@ -100,8 +108,17 @@ export default function StanceGraph({ attributes, counters, activePair }) {
         const label = polar(i, attributes.length, RADIUS + 44);
         const active = inPair(attr.id);
         const Icon = iconFor(attr.icon);
+        const disabled = picking && atCapacity && !active;
         return (
-          <g key={attr.id}>
+          <g
+            key={attr.id}
+            onClick={picking ? () => onNodeClick(attr.id) : undefined}
+            style={picking ? { cursor: disabled ? 'not-allowed' : 'pointer' } : undefined}
+            opacity={disabled ? 0.4 : 1}
+          >
+            {picking && (
+              <circle cx={pos.x} cy={pos.y} r={NODE_R + 12} fill="transparent" />
+            )}
             <circle
               cx={pos.x}
               cy={pos.y}

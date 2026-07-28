@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
-import { Skull, Brain, HandFist, Zap, HeartPulse, Footprints } from 'lucide-react';
+import { Skull, Brain, HandFist, Zap, HeartPulse, Footprints, Upload } from 'lucide-react';
+import { useRole } from '../roleContext.jsx';
 import { socket } from '../socket.js';
 import { updateCharacter } from '../lib/api.js';
-import { fileToPortrait, portraitSrc } from '../lib/image.js';
+import { fileToPortrait, portraitSrc, vitruvianSrc } from '../lib/image.js';
 import DieWidget from './DieWidget.jsx';
 import RollDialog from './RollDialog.jsx';
 import ItemList from './ItemList.jsx';
@@ -154,12 +155,33 @@ function StaminaBlock({ character, staminaDie }) {
 
 export default function CoreStatsTab({ data }) {
   const { character, dice, inventory, injuries } = data;
+  const { role } = useRole();
   const [dialog, setDialog] = useState(null); // { type: 'die', die } | { type: 'pool' }
   const [selecting, setSelecting] = useState(false);
   const [selectedIds, setSelectedIds] = useState(new Set());
+  const vitruvianFileRef = useRef(null);
+  const [uploadingVitruvian, setUploadingVitruvian] = useState(false);
 
   const staminaDie = dice.find((d) => d.slot_name === 'Stamina');
   const anyActive = dice.some((d) => d.status === 'active');
+
+  const onPickVitruvian = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setUploadingVitruvian(true);
+    try {
+      const { imageData, imageMimeType } = await fileToPortrait(file);
+      await updateCharacter(character.id, {
+        vitruvianImageData: imageData,
+        vitruvianImageMimeType: imageMimeType,
+      });
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setUploadingVitruvian(false);
+    }
+  };
 
   const rollDie = (die) => setDialog({ type: 'die', die });
   const stepDie = (die, direction) => socket.emit('die:step', { dieId: die.id, direction });
@@ -242,7 +264,29 @@ export default function CoreStatsTab({ data }) {
       </div>
 
       <div className="relative mx-auto aspect-square w-full max-w-2xl select-none">
-        <VitruvianFigure className="absolute inset-0 h-full w-full text-zinc-400" />
+        <VitruvianFigure
+          className="absolute inset-0 h-full w-full text-zinc-400"
+          customSrc={vitruvianSrc(character)}
+        />
+        {role === 'gm' && (
+          <>
+            <button
+              onClick={() => vitruvianFileRef.current?.click()}
+              disabled={uploadingVitruvian}
+              title="Upload a custom Vitruvian Man for this character"
+              className="absolute right-1 top-1 z-10 rounded-md border border-zinc-700 bg-zinc-900/80 p-1.5 text-zinc-400 hover:border-indigo-500 hover:text-indigo-300 disabled:opacity-40"
+            >
+              <Upload size={14} />
+            </button>
+            <input
+              ref={vitruvianFileRef}
+              type="file"
+              accept="image/*"
+              hidden
+              onChange={onPickVitruvian}
+            />
+          </>
+        )}
         {dice.map((die) => {
           const spot = ANATOMY[die.slot_name];
           if (!spot) return null;

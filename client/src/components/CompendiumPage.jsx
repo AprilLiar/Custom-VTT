@@ -1,25 +1,26 @@
 import { useState } from 'react';
-import { Navigate, useLocation } from 'react-router-dom';
-import { useRole } from '../roleContext.jsx';
+import { useLocation } from 'react-router-dom';
 import MovesCompendium from './Compendium.jsx';
 import PerksCompendium from './PerksCompendium.jsx';
 
-// GM-only page hosting every compendium as an internal tab, rather than a
-// separate top-level nav link per type — add future compendia (e.g. a Tags-
-// only view, if one's ever split out) as another entry here.
+// Hosts every compendium as an internal tab, rather than a separate
+// top-level nav link per type — add future compendia (e.g. a Tags-only
+// view, if one's ever split out) as another entry here. Open to every
+// role: a Player can browse (see what Moves/Perks exist) but every
+// mutating control — Tell/Tag managers, the Move/Perk Creator, Edit/
+// Delete/Grant, folder management, drag-and-drop — is GM-gated inside
+// Compendium.jsx/PerksCompendium.jsx themselves, same pattern as the
+// character list's folder management.
 const TABS = [
   { key: 'moves', label: 'Moves' },
   { key: 'perks', label: 'Perks' },
 ];
 
 export default function CompendiumPage() {
-  const { role } = useRole();
   const location = useLocation();
   // The header search bar can deep-link here (e.g. a Perk result) via
   // navigate('/compendium', { state: { tab: 'perks' } }).
   const [tab, setTab] = useState(location.state?.tab === 'perks' ? 'perks' : 'moves');
-
-  if (role !== 'gm') return <Navigate to="/" replace />;
 
   return (
     <div className="mx-auto max-w-5xl">

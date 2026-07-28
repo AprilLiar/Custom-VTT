@@ -299,11 +299,28 @@ function DeclaredMoveTellFace({ dm, tellById }) {
 // this client's own declare or the real reveal Tic, then a Framer Motion
 // flip (rotate + cross-fade, since the two faces are very different sizes —
 // a literal double-sided 3D flip would force the small face into the big
-// one's footprint) swaps in the full MoveCard.
+// one's footprint) swaps in the full MoveCard. A small ✕ overlays whichever
+// face is showing while the move is still genuinely pending (its Stamina
+// Cost hasn't left/returned to current_stamina yet — see
+// combat:side_done_declaring) — canceling it frees the Tic and Stamina
+// budget to declare something else instead. Placed outside the flip
+// animation, not just on the Tell face, since the *declaring* player's own
+// view already shows the revealed back face immediately (isRevealed is true
+// for them from the moment they declare, well before staminaCommitted), and
+// they're exactly who'd want to cancel their own still-pending move.
 function DeclaredMoveFlipCard({ dm, move, tellById, tagById, styleById, moveFolders }) {
   const revealed = dm.isRevealed && move;
   return (
-    <div style={{ perspective: 1200 }}>
+    <div style={{ perspective: 1200 }} className="relative">
+      {!dm.staminaCommitted && (
+        <button
+          onClick={() => socket.emit('move:undeclare', { declaredMoveId: dm.id })}
+          title="Take this back and declare something else"
+          className="absolute -right-1.5 -top-1.5 z-10 flex h-5 w-5 items-center justify-center rounded-full border border-zinc-700 bg-zinc-900 text-xs text-zinc-400 hover:border-red-500 hover:text-red-400"
+        >
+          ✕
+        </button>
+      )}
       <AnimatePresence mode="wait" initial={false}>
         {revealed ? (
           <motion.div
@@ -395,16 +412,17 @@ function DeclareMoveCard({ character, move, roundStartTic, declaredMoves }) {
       draggable
       onDragStart={(e) => {
         // Matches computePlacementTic server-side exactly: no earlier than
-        // the round's start, or this character's own last-queued move's
-        // reveal Tic if later — revealTic rides every declaredMoves entry
-        // regardless of whether its identity is revealed to this client
-        // (see server/index.js), so this is accurate even for a still-secret
-        // prior declare.
-        const priorReveals = declaredMoves
+        // the round's start, or the end of this character's own last-queued
+        // move's full footprint (Startup+Active+Recovery, not just
+        // Startup/reveal) if later — recoveryEndTic rides every
+        // declaredMoves entry regardless of whether its identity is
+        // revealed to this client (see server/index.js), so this is
+        // accurate even for a still-secret prior declare.
+        const priorBlockedUntil = declaredMoves
           .filter((dm) => dm.characterId === character.id)
-          .map((dm) => dm.revealTic);
-        const minPlacementTic = priorReveals.length
-          ? Math.max(roundStartTic, ...priorReveals)
+          .map((dm) => dm.recoveryEndTic);
+        const minPlacementTic = priorBlockedUntil.length
+          ? Math.max(roundStartTic, ...priorBlockedUntil)
           : roundStartTic;
         const payload = {
           characterId: character.id,

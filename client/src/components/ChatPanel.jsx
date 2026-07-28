@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { Paperclip } from 'lucide-react';
 import { socket } from '../socket.js';
 import { getChat, getCharacters, getTells, getTags, getRuleset, getMoves } from '../lib/api.js';
 import { dieFormula } from '../lib/dice.js';
@@ -20,7 +21,7 @@ function Entry({ entry, character, moveInfo }) {
     <div className="flex gap-2 border-b border-zinc-800 px-3 py-2 text-sm">
       <Thumb
         record={character}
-        name={character ? entry.characterName : '?'}
+        name={entry.characterName}
         size="h-6 w-6"
         rounded="rounded-full"
       />
@@ -135,45 +136,69 @@ function Entry({ entry, character, moveInfo }) {
 }
 
 function Composer({ characters }) {
-  const [characterId, setCharacterId] = useState('');
+  const { role, characterId: myCharacterId } = useRole();
+  // Defaults to posting without ever needing a pick: a Player always posts
+  // as the one character they logged in as (fixed, no picker — see Roles /
+  // access model); the GM defaults to a generic 'gm' persona but can still
+  // pick any character from the dropdown, same as before.
+  const [characterId, setCharacterId] = useState(() =>
+    role === 'player' ? String(myCharacterId ?? '') : 'gm'
+  );
   const [text, setText] = useState('');
   const [pending, setPending] = useState(null); // { imageData, imageMimeType, previewName }
   const [error, setError] = useState('');
+  const fileRef = useRef(null);
 
   useEffect(() => {
-    if (characterId && !characters.some((c) => String(c.id) === characterId)) {
-      setCharacterId('');
+    if (role === 'player') {
+      setCharacterId(String(myCharacterId ?? ''));
+      return;
     }
-  }, [characters, characterId]);
+    if (characterId !== 'gm' && !characters.some((c) => String(c.id) === characterId)) {
+      setCharacterId('gm');
+    }
+  }, [role, myCharacterId, characters, characterId]);
 
-  // Images/GIFs attach by pasting straight into the composer — no file
-  // picker. Same fileToChatImage pipeline either way: a clipboard image
-  // item's getAsFile() returns a real File/Blob, indistinguishable from one
-  // picked off disk.
-  const onPaste = async (e) => {
-    const item = [...e.clipboardData.items].find((it) => it.type.startsWith('image/'));
-    if (!item) return;
-    e.preventDefault();
-    const file = item.getAsFile();
+  const attachFile = async (file) => {
     if (!file) return;
     setError('');
     try {
       const { imageData, imageMimeType } = await fileToChatImage(file);
-      setPending({ imageData, imageMimeType, previewName: file.name || 'pasted image' });
+      setPending({ imageData, imageMimeType, previewName: file.name || 'image' });
     } catch (err) {
       setError(err.message);
     }
   };
 
+  // Paste still works for a quick static screenshot — same fileToChatImage
+  // pipeline either way, a clipboard image item's getAsFile() returns a
+  // real File/Blob indistinguishable from one picked off disk. But an
+  // actual animated GIF needs the file picker below, not paste: browsers
+  // flatten a pasted clipboard image to a single static frame (typically
+  // re-encoding it as PNG) regardless of the source format, which is why a
+  // pasted GIF always posted looking static — a real <input type="file">
+  // selection is the only path that preserves the original file's true
+  // image/gif type and raw bytes.
+  const onPaste = async (e) => {
+    const item = [...e.clipboardData.items].find((it) => it.type.startsWith('image/'));
+    if (!item) return;
+    e.preventDefault();
+    await attachFile(item.getAsFile());
+  };
+
+  const onPickFile = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    await attachFile(file);
+  };
+
   const send = () => {
-    if (!characterId) {
-      setError('Pick who is posting first.');
-      return;
-    }
     const trimmed = text.trim();
     if (!trimmed && !pending) return;
+    const postingCharacterId =
+      role === 'player' ? myCharacterId : characterId === 'gm' ? null : Number(characterId);
     socket.emit('chat:message', {
-      characterId: Number(characterId),
+      characterId: postingCharacterId,
       text: trimmed,
       imageData: pending?.imageData ?? null,
       imageMimeType: pending?.imageMimeType ?? null,
@@ -205,26 +230,44 @@ function Composer({ characters }) {
         </div>
       )}
       <div className="flex items-center gap-1">
-        <select
-          value={characterId}
-          onChange={(e) => setCharacterId(e.target.value)}
-          className="max-w-[6.5rem] shrink-0 rounded-md border border-zinc-700 bg-zinc-900 px-1 py-1.5 text-xs text-zinc-300"
-          title="Post as"
+        {role === 'player' ? (
+          <span
+            title="You always post as your own character"
+            className="max-w-[6.5rem] shrink-0 truncate rounded-md border border-zinc-800 bg-zinc-900 px-2 py-1.5 text-xs text-zinc-400"
+          >
+            {characters.find((c) => String(c.id) === characterId)?.name ?? '…'}
+          </span>
+        ) : (
+          <select
+            value={characterId}
+            onChange={(e) => setCharacterId(e.target.value)}
+            className="max-w-[6.5rem] shrink-0 rounded-md border border-zinc-700 bg-zinc-900 px-1 py-1.5 text-xs text-zinc-300"
+            title="Post as"
+          >
+            <option value="gm">GM</option>
+            {characters.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name}
+              </option>
+            ))}
+          </select>
+        )}
+        <button
+          type="button"
+          onClick={() => fileRef.current?.click()}
+          title="Attach an image — use this (not paste) for an animated GIF, since pasting flattens the animation"
+          className="shrink-0 rounded-md border border-zinc-700 p-1.5 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
         >
-          <option value="">Post as…</option>
-          {characters.map((c) => (
-            <option key={c.id} value={c.id}>
-              {c.name}
-            </option>
-          ))}
-        </select>
+          <Paperclip size={16} />
+        </button>
+        <input ref={fileRef} type="file" accept="image/*" hidden onChange={onPickFile} />
         <textarea
           rows={1}
           value={text}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={onKeyDown}
           onPaste={onPaste}
-          placeholder="Say something… (paste an image to attach)"
+          placeholder="Say something…"
           className="min-w-0 flex-1 resize-none rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1.5 text-sm text-zinc-200 placeholder:text-zinc-600"
         />
         <button

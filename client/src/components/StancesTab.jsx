@@ -21,7 +21,7 @@ function StyleChip({ attr, className = '' }) {
   );
 }
 
-function StanceForm({ attributes, initial, onSubmit, onCancel }) {
+function StanceForm({ attributes, counters, initial, onSubmit, onCancel }) {
   const [name, setName] = useState(initial?.name ?? '');
   const [picked, setPicked] = useState(
     initial ? [initial.attribute_a_id, initial.attribute_b_id] : []
@@ -54,29 +54,10 @@ function StanceForm({ attributes, initial, onSubmit, onCancel }) {
         placeholder="Stance name"
         className="rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-zinc-100 outline-none focus:border-indigo-500"
       />
-      <div className="flex flex-wrap gap-2">
-        {attributes.map((attr) => {
-          const selected = picked.includes(attr.id);
-          const Icon = iconFor(attr.icon);
-          return (
-            <button
-              key={attr.id}
-              type="button"
-              onClick={() => toggle(attr.id)}
-              disabled={!selected && picked.length >= 2}
-              className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-sm font-semibold transition ${
-                selected
-                  ? 'border-indigo-500 bg-indigo-600/30 text-indigo-200'
-                  : 'border-zinc-700 bg-zinc-800 text-zinc-400 hover:border-zinc-500 disabled:opacity-40'
-              }`}
-            >
-              <Icon size={14} />
-              {attr.name}
-            </button>
-          );
-        })}
-      </div>
-      <p className="text-xs text-zinc-600">Pick exactly 2 styles ({picked.length}/2 selected)</p>
+      <p className="text-xs text-zinc-600">
+        Click 2 styles on the graph below ({picked.length}/2 selected)
+      </p>
+      <StanceGraph attributes={attributes} counters={counters} activePair={picked} onNodeClick={toggle} />
       <div className="flex gap-2">
         <button
           type="submit"
@@ -243,6 +224,7 @@ export default function StancesTab({ data }) {
       {form ? (
         <StanceForm
           attributes={attributes}
+          counters={counters}
           initial={form.mode === 'edit' ? form.stance : null}
           onSubmit={submitForm}
           onCancel={() => setForm(null)}

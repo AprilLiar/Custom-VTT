@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useRole } from '../roleContext.jsx';
 import { socket } from '../socket.js';
 import { getCharacters, getPerks } from '../lib/api.js';
 import { portraitSrc } from '../lib/image.js';
@@ -36,8 +37,11 @@ function GrantList({ perk, characters }) {
 
 // The Compendium page's Perks tab: persistent Perk library. Just picture/
 // name/description per spec — no folders or style filter, unlike Moves.
-// Rendering is GM-gated by the parent CompendiumPage.
+// The page is open to every role (see CompendiumPage.jsx) — creation,
+// editing, deleting, and granting are gated to role === 'gm' below; a
+// Player gets a read-only browse of the same cards.
 export default function PerksCompendium() {
+  const { role } = useRole();
   const [perks, setPerks] = useState(null);
   const [characters, setCharacters] = useState([]);
   const [form, setForm] = useState(null); // null | { perk? }
@@ -86,20 +90,21 @@ export default function PerksCompendium() {
   return (
     <div className="flex gap-4">
       <div className="min-w-0 flex-1 space-y-4">
-        {form ? (
-          <PerkCreator
-            initial={form.perk ?? null}
-            onSubmit={submitPerk}
-            onCancel={() => setForm(null)}
-          />
-        ) : (
-          <button
-            onClick={() => setForm({})}
-            className="rounded-md bg-indigo-600 px-4 py-2 font-semibold hover:bg-indigo-500"
-          >
-            + New Perk
-          </button>
-        )}
+        {role === 'gm' &&
+          (form ? (
+            <PerkCreator
+              initial={form.perk ?? null}
+              onSubmit={submitPerk}
+              onCancel={() => setForm(null)}
+            />
+          ) : (
+            <button
+              onClick={() => setForm({})}
+              className="rounded-md bg-indigo-600 px-4 py-2 font-semibold hover:bg-indigo-500"
+            >
+              + New Perk
+            </button>
+          ))}
 
         {perks.length === 0 ? (
           <p className="text-sm text-zinc-600">No Perks yet — create the first one.</p>
@@ -108,78 +113,82 @@ export default function PerksCompendium() {
             {perks.map((perk) => (
               <div
                 key={perk.id}
-                draggable
-                onDragStart={(e) => e.dataTransfer.setData('text/perk-id', String(perk.id))}
-                title="Drag onto a character to grant it"
-                className="cursor-grab active:cursor-grabbing"
+                draggable={role === 'gm'}
+                onDragStart={role === 'gm' ? (e) => e.dataTransfer.setData('text/perk-id', String(perk.id)) : undefined}
+                title={role === 'gm' ? 'Drag onto a character to grant it' : undefined}
+                className={role === 'gm' ? 'cursor-grab active:cursor-grabbing' : undefined}
               >
                 <PerkCard
                   perk={perk}
                   actions={
-                    <>
-                      <button
-                        onClick={() => setGrantOpen(grantOpen === perk.id ? null : perk.id)}
-                        className="rounded px-2 py-0.5 text-xs text-indigo-400 hover:bg-indigo-900/40"
-                      >
-                        Grant… ({perk.granted_character_ids.length})
-                      </button>
-                      <button
-                        onClick={() => setForm({ perk })}
-                        className="rounded px-2 py-0.5 text-xs text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300"
-                      >
-                        Edit
-                      </button>
-                      <button
-                        onClick={() => deletePerk(perk)}
-                        className="rounded px-2 py-0.5 text-xs text-zinc-500 hover:bg-red-900/40 hover:text-red-400"
-                      >
-                        Delete
-                      </button>
-                    </>
+                    role === 'gm' ? (
+                      <>
+                        <button
+                          onClick={() => setGrantOpen(grantOpen === perk.id ? null : perk.id)}
+                          className="rounded px-2 py-0.5 text-xs text-indigo-400 hover:bg-indigo-900/40"
+                        >
+                          Grant… ({perk.granted_character_ids.length})
+                        </button>
+                        <button
+                          onClick={() => setForm({ perk })}
+                          className="rounded px-2 py-0.5 text-xs text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300"
+                        >
+                          Edit
+                        </button>
+                        <button
+                          onClick={() => deletePerk(perk)}
+                          className="rounded px-2 py-0.5 text-xs text-zinc-500 hover:bg-red-900/40 hover:text-red-400"
+                        >
+                          Delete
+                        </button>
+                      </>
+                    ) : null
                   }
                 />
-                {grantOpen === perk.id && <GrantList perk={perk} characters={characters} />}
+                {role === 'gm' && grantOpen === perk.id && <GrantList perk={perk} characters={characters} />}
               </div>
             ))}
           </div>
         )}
       </div>
 
-      <aside className="hidden w-44 shrink-0 sm:block">
-        <h2 className="mb-2 text-xs font-bold uppercase tracking-wide text-zinc-500">
-          Drag a Perk here
-        </h2>
-        <div className="space-y-2">
-          {characters.map((c) => {
-            const src = portraitSrc(c);
-            return (
-              <div
-                key={c.id}
-                onDragOver={(e) => {
-                  e.preventDefault();
-                  setDropTarget(c.id);
-                }}
-                onDragLeave={() => setDropTarget(null)}
-                onDrop={(e) => onDropOnCharacter(e, c)}
-                className={`flex items-center gap-2 rounded-lg border p-2 transition ${
-                  dropTarget === c.id
-                    ? 'border-indigo-500 bg-indigo-950/50'
-                    : 'border-zinc-800 bg-zinc-900'
-                }`}
-              >
-                <div className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-md bg-zinc-800 text-sm font-bold text-zinc-600">
-                  {src ? (
-                    <img src={src} alt="" className="h-full w-full object-cover" />
-                  ) : (
-                    c.name.slice(0, 1).toUpperCase()
-                  )}
+      {role === 'gm' && (
+        <aside className="hidden w-44 shrink-0 sm:block">
+          <h2 className="mb-2 text-xs font-bold uppercase tracking-wide text-zinc-500">
+            Drag a Perk here
+          </h2>
+          <div className="space-y-2">
+            {characters.map((c) => {
+              const src = portraitSrc(c);
+              return (
+                <div
+                  key={c.id}
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    setDropTarget(c.id);
+                  }}
+                  onDragLeave={() => setDropTarget(null)}
+                  onDrop={(e) => onDropOnCharacter(e, c)}
+                  className={`flex items-center gap-2 rounded-lg border p-2 transition ${
+                    dropTarget === c.id
+                      ? 'border-indigo-500 bg-indigo-950/50'
+                      : 'border-zinc-800 bg-zinc-900'
+                  }`}
+                >
+                  <div className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-md bg-zinc-800 text-sm font-bold text-zinc-600">
+                    {src ? (
+                      <img src={src} alt="" className="h-full w-full object-cover" />
+                    ) : (
+                      c.name.slice(0, 1).toUpperCase()
+                    )}
+                  </div>
+                  <span className="truncate text-sm text-zinc-300">{c.name}</span>
                 </div>
-                <span className="truncate text-sm text-zinc-300">{c.name}</span>
-              </div>
-            );
-          })}
-        </div>
-      </aside>
+              );
+            })}
+          </div>
+        </aside>
+      )}
     </div>
   );
 }

@@ -19,14 +19,16 @@ export function resolveSideInitiative({ left, right }) {
 }
 
 // A character's next move can't be placed before the round's start Tic, or
-// before their own last-queued move's reveal Tic — even if that move was
-// queued in a previous round (Declaration Phase). `previousRevealTic` is
-// null for a character's first move ever. Startup-only: Active/Recovery
-// don't extend this blocking window (decided — see vttprojectplan.md's
-// Combat Timing section).
-export function computePlacementTic({ roundStartTic, previousRevealTic }) {
-  if (previousRevealTic == null) return roundStartTic;
-  return Math.max(roundStartTic, previousRevealTic);
+// before their own last-queued move's full footprint ends (reveal Tic +
+// Active + Recovery) — even if that move was queued in a previous round
+// (Declaration Phase). `previousBlockedUntilTic` is null for a character's
+// first move ever. Revised (decided): an earlier version of this rule only
+// blocked through Startup (the reveal Tic), letting a new move get placed
+// while an earlier one was still Active or Recovering — see
+// vttprojectplan.md's Combat Timing section.
+export function computePlacementTic({ roundStartTic, previousBlockedUntilTic }) {
+  if (previousBlockedUntilTic == null) return roundStartTic;
+  return Math.max(roundStartTic, previousBlockedUntilTic);
 }
 
 // A move placed at placementTic resolves/reveals at placementTic + startup,

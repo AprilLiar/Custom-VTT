@@ -34,23 +34,37 @@ test('resolveSideInitiative: tied initiative — left declares first (determinis
 });
 
 test('computePlacementTic: a character\'s first move ever placed at round start', () => {
-  assert.equal(computePlacementTic({ roundStartTic: 1, previousRevealTic: null }), 1);
-  assert.equal(computePlacementTic({ roundStartTic: 6, previousRevealTic: null }), 6);
+  assert.equal(computePlacementTic({ roundStartTic: 1, previousBlockedUntilTic: null }), 1);
+  assert.equal(computePlacementTic({ roundStartTic: 6, previousBlockedUntilTic: null }), 6);
 });
 
-test('computePlacementTic: later move placed at round start once the previous move already revealed', () => {
-  // previous move revealed back at tic 3, this round starts at tic 6
-  assert.equal(computePlacementTic({ roundStartTic: 6, previousRevealTic: 3 }), 6);
+test('computePlacementTic: later move placed at round start once the previous move\'s full footprint already ended', () => {
+  // previous move's Recovery ended back at tic 3, this round starts at tic 6
+  assert.equal(computePlacementTic({ roundStartTic: 6, previousBlockedUntilTic: 3 }), 6);
 });
 
-test('computePlacementTic: overflow carries — can\'t place before the previous move\'s reveal Tic, even across a round boundary', () => {
-  // previous move (declared last round) doesn't reveal until tic 8, which is
-  // into the new round (started at tic 6) — the new move can't jump ahead of it
-  assert.equal(computePlacementTic({ roundStartTic: 6, previousRevealTic: 8 }), 8);
+test('computePlacementTic: overflow carries — can\'t place before the previous move\'s footprint fully ends, even across a round boundary', () => {
+  // previous move (declared last round) doesn't finish Recovery until tic 8,
+  // which is into the new round (started at tic 6) — the new move can't jump ahead of it
+  assert.equal(computePlacementTic({ roundStartTic: 6, previousBlockedUntilTic: 8 }), 8);
 });
 
 test('computePlacementTic: exactly equal boundary', () => {
-  assert.equal(computePlacementTic({ roundStartTic: 6, previousRevealTic: 6 }), 6);
+  assert.equal(computePlacementTic({ roundStartTic: 6, previousBlockedUntilTic: 6 }), 6);
+});
+
+test('computePlacementTic: blocks through Active/Recovery, not just Startup/reveal (revised rule)', () => {
+  // A slow move (Startup 2, Active 3, Recovery 1) placed at tic 1 reveals at
+  // tic 3 but doesn't finish Recovery until tic 7 — a follow-up move can't
+  // be placed at tic 3 (its reveal Tic) even though that's when it's
+  // revealed; it has to wait for the whole footprint to finish.
+  const footprint = computeMoveFootprint({ placementTic: 1, startupTics: 2, activeTics: 3, recoveryTics: 1 });
+  assert.equal(footprint.revealTic, 3);
+  assert.equal(footprint.recoveryEndTic, 7);
+  assert.equal(
+    computePlacementTic({ roundStartTic: 1, previousBlockedUntilTic: footprint.recoveryEndTic }),
+    7
+  );
 });
 
 test('computeMoveFootprint: worked example from the plan — Hook, Startup 3, placed at round start', () => {
@@ -117,18 +131,20 @@ test('relativeTic: past the round window is overflow, by exactly the excess', ()
 });
 
 test('integration: a move overflowing into the next round blocks that character\'s next placement, with no special-casing', () => {
-  // Round 1 starts at tic 1, length 5. A Jab (startup 2) is placed at the
-  // last tic of the round (tic 5) — reveals at tic 7, which overflows into
-  // round 2 by 2 tics.
+  // Round 1 starts at tic 1, length 5. A Jab (startup 2, active 1, no
+  // recovery) is placed at the last tic of the round (tic 5) — reveals at
+  // tic 7, footprint ends at tic 8 (no Recovery beyond Active here), which
+  // overflows into round 2.
   const round1Start = 1;
   const roundLength = 5;
-  const placementTic1 = computePlacementTic({ roundStartTic: round1Start, previousRevealTic: null });
+  const placementTic1 = computePlacementTic({ roundStartTic: round1Start, previousBlockedUntilTic: null });
   assert.equal(placementTic1, 1);
 
   // character queues a second move this same round, placed right after the
-  // first one reveals (simulating a very fast follow-up declared same round)
+  // first one's footprint ends (simulating a very fast follow-up declared same round)
   const footprint1 = computeMoveFootprint({ placementTic: 5, startupTics: 2, activeTics: 1, recoveryTics: 0 });
   assert.equal(footprint1.revealTic, 7);
+  assert.equal(footprint1.recoveryEndTic, 8);
   const overflowInfo = relativeTic({ tic: footprint1.revealTic, roundStartTic: round1Start, roundLength });
   assert.equal(overflowInfo.isOverflow, true);
   assert.equal(overflowInfo.overflowBy, 2);
@@ -136,11 +152,12 @@ test('integration: a move overflowing into the next round blocks that character\
   // GM presses Next Round once the counter reaches (or passes) the old
   // round's end; round 2 starts wherever the counter currently sits.
   const round2Start = 6;
-  // this character's next move can't be placed before tic 7, even though
-  // round 2 already started at tic 6 — the overflow carries automatically
+  // this character's next move can't be placed before tic 8 (the first
+  // move's full footprint end), even though round 2 already started at tic
+  // 6 — the overflow carries automatically
   const placementTic2 = computePlacementTic({
     roundStartTic: round2Start,
-    previousRevealTic: footprint1.revealTic,
+    previousBlockedUntilTic: footprint1.recoveryEndTic,
   });
-  assert.equal(placementTic2, 7);
+  assert.equal(placementTic2, 8);
 });

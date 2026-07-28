@@ -298,6 +298,28 @@ emit('move:create', { name: 'Jab', isDefault: true, tellId: tells[1].id, startup
 const jab = await waitEvent('move:created');
 check('default move created (legacy null style allowed)', jab.is_default === 1 && jab.style_attribute_id === null);
 
+// A Default move is usable by anyone, anytime — it never carries a Style
+// gate. A styleAttributeId sent alongside isDefault is silently dropped
+// rather than stored, regardless of what the client sent.
+events.length = 0;
+emit('move:create', {
+  name: 'Slip Punch', isDefault: true, tellId: tells[1].id, styleAttributeId: speedId,
+  startupTics: 1, activeTics: 1, recoveryTics: 0, description: '', interactions: {},
+});
+const slipPunch = await waitEvent('move:created', (m) => m.name === 'Slip Punch');
+check(
+  'a Default move ignores a styleAttributeId sent alongside it — never stored',
+  slipPunch.is_default === 1 && slipPunch.style_attribute_id === null,
+  JSON.stringify(slipPunch)
+);
+events.length = 0;
+emit('move:update', { moveId: slipPunch.id, name: 'Slip Punch', isDefault: true, tellId: tells[1].id, styleAttributeId: speedId, startupTics: 1, activeTics: 1, recoveryTics: 0, description: '', interactions: {} });
+const slipPunchUpdated = await waitEvent('move:updated');
+check('editing a Default move also can\'t give it a Style', slipPunchUpdated.style_attribute_id === null);
+events.length = 0;
+emit('move:delete', { moveId: slipPunch.id });
+await waitEvent('move:deleted', (p) => p.moveId === slipPunch.id);
+
 events.length = 0;
 emit('move:create', { name: 'Nothing', isDefault: false, tellId: tells[0].id, startupTics: 0, activeTics: 0, recoveryTics: 0, description: '', interactions: {} });
 await sleep(300);
@@ -1193,14 +1215,14 @@ dUpdate = await waitEvent('combat:updated', (c) => c.phase === 'declaration' && 
 check('Next Round from Tic Countdown starts round 2, back in Declaration Phase', true);
 
 const round2Declaring = dUpdate.declaringSide === losingSide ? losingChar : winningChar;
-const round1RevealForThatChar = dUpdate.declaredMoves.find((dm) => dm.characterId === round2Declaring.id && dm.roundNumber === 1);
+const round1FootprintForThatChar = dUpdate.declaredMoves.find((dm) => dm.characterId === round2Declaring.id && dm.roundNumber === 1);
 events.length = 0;
 emit('move:declare', { characterId: round2Declaring.id, moveId: jab.id });
 dUpdate = await waitEvent('combat:updated', (c) => c.declaredMoves.filter((dm) => dm.characterId === round2Declaring.id).length === 2);
 const round2Declared = dUpdate.declaredMoves.find((dm) => dm.characterId === round2Declaring.id && dm.roundNumber === 2);
 check(
-  'overflow carries with no special-casing: this character\'s next placement Tic is max(round 2 start, their round-1 move\'s reveal Tic)',
-  round2Declared.placementTic === Math.max(dUpdate.roundStartTic, round1RevealForThatChar.revealTic)
+  'overflow carries with no special-casing: this character\'s next placement Tic is max(round 2 start, their round-1 move\'s full footprint end)',
+  round2Declared.placementTic === Math.max(dUpdate.roundStartTic, round1FootprintForThatChar.recoveryEndTic)
 );
 
 // --- Explicit placementTic: dragging a move onto the Tic Counter picks a
@@ -1212,7 +1234,7 @@ const latestFor = (state) =>
     .filter((dm) => dm.characterId === round2Declaring.id)
     .sort((a, b) => b.id - a.id)[0]; // highest id = most recently declared
 
-const round2Min = Math.max(dUpdate.roundStartTic, round2Declared.revealTic);
+const round2Min = Math.max(dUpdate.roundStartTic, round2Declared.recoveryEndTic);
 events.length = 0;
 emit('move:declare', { characterId: round2Declaring.id, moveId: jab.id, placementTic: round2Min + 5 });
 dUpdate = await waitEvent('combat:updated', (c) => c.declaredMoves.filter((dm) => dm.characterId === round2Declaring.id).length === 3);
@@ -1223,7 +1245,7 @@ events.length = 0;
 emit('move:declare', { characterId: round2Declaring.id, moveId: jab.id, placementTic: 0 });
 dUpdate = await waitEvent('combat:updated', (c) => c.declaredMoves.filter((dm) => dm.characterId === round2Declaring.id).length === 4);
 const clampedDeclared = latestFor(dUpdate);
-const clampedMin = Math.max(dUpdate.roundStartTic, explicitDeclared.revealTic);
+const clampedMin = Math.max(dUpdate.roundStartTic, explicitDeclared.recoveryEndTic);
 check(
   'an explicit placementTic before the legal minimum snaps forward to the minimum instead of being rejected',
   clampedDeclared.placementTic === clampedMin
@@ -1486,6 +1508,112 @@ check(
 events.length = 0;
 emit('combat:clear', {});
 await waitEvent('combat:updated', (c) => c.participants.length === 0);
+
+// --- Full footprint blocking (decided, revised): a character's next move
+// can't be placed until their previous move's ENTIRE footprint (Startup +
+// Active + Recovery) ends, not just past its reveal Tic ---
+const fpLeft = (await jpost('/api/characters', { name: 'Footprint Left', characterType: 'npc' })).body;
+const fpRight = (await jpost('/api/characters', { name: 'Footprint Right', characterType: 'npc' })).body;
+
+events.length = 0;
+emit('move:create', {
+  name: 'Long Recovery Move', isDefault: true, tellId: tells[0].id,
+  startupTics: 1, activeTics: 2, recoveryTics: 3, description: '', interactions: {},
+});
+const longMove = await waitEvent('move:created', (m) => m.name === 'Long Recovery Move');
+
+events.length = 0;
+emit('combat:add_participant', { characterId: fpLeft.id, side: 'left', pairIndex: 0 });
+await waitEvent('combat:updated', (c) => c.participants.some((p) => p.character_id === fpLeft.id));
+events.length = 0;
+emit('combat:add_participant', { characterId: fpRight.id, side: 'right', pairIndex: 0 });
+await waitEvent('combat:updated', (c) => c.participants.some((p) => p.character_id === fpRight.id));
+
+events.length = 0;
+emit('combat:next_round', {});
+const fpState = await waitEvent('combat:updated', (c) => c.phase === 'declaration');
+const fpSide = fpState.declaringSide;
+const fpChar = fpSide === 'left' ? fpLeft : fpRight;
+
+// Startup 1, Active 2, Recovery 3, placed at round start (tic T): reveals at
+// T+1, footprint ends (recoveryEndTic) at T+1+2+3 = T+6.
+events.length = 0;
+emit('move:declare', { characterId: fpChar.id, moveId: longMove.id });
+let fpUpdate = await waitEvent('combat:updated', (c) => c.declaredMoves.some((dm) => dm.characterId === fpChar.id));
+const firstDm = fpUpdate.declaredMoves.find((dm) => dm.characterId === fpChar.id);
+check(
+  'recoveryEndTic reflects the full Startup+Active+Recovery footprint',
+  firstDm.recoveryEndTic === firstDm.revealTic + 2 + 3,
+  JSON.stringify(firstDm)
+);
+
+// Try to declare a second move at a Tic that's past the first move's reveal
+// (its old, no-longer-correct floor) but still inside its Active/Recovery —
+// it must clamp all the way to recoveryEndTic, not just snap to revealTic.
+events.length = 0;
+emit('move:declare', {
+  characterId: fpChar.id,
+  moveId: jab.id,
+  placementTic: firstDm.revealTic, // squarely inside the first move's Active window
+});
+fpUpdate = await waitEvent('combat:updated', (c) => c.declaredMoves.filter((dm) => dm.characterId === fpChar.id).length === 2);
+const secondDm = fpUpdate.declaredMoves.filter((dm) => dm.characterId === fpChar.id).find((dm) => dm.id !== firstDm.id);
+check(
+  'a follow-up move can\'t be placed during the prior move\'s Active/Recovery — clamped to the full footprint end, not just past its reveal',
+  secondDm.placementTic === firstDm.recoveryEndTic,
+  `expected ${firstDm.recoveryEndTic}, got ${secondDm.placementTic}`
+);
+
+// --- move:undeclare: a still-pending (not yet Stamina-committed) declared
+// move can be taken back and something else declared instead ---
+events.length = 0;
+emit('move:undeclare', { declaredMoveId: 999999 });
+await sleep(300);
+check('undeclaring a nonexistent row is a silent no-op', !events.some((e) => e.ev === 'combat:updated'));
+
+events.length = 0;
+emit('move:undeclare', { declaredMoveId: secondDm.id });
+fpUpdate = await waitEvent('combat:updated', (c) => !c.declaredMoves.some((dm) => dm.id === secondDm.id));
+check(
+  'canceling a pending declared move removes it entirely',
+  !fpUpdate.declaredMoves.some((dm) => dm.id === secondDm.id) &&
+    fpUpdate.declaredMoves.some((dm) => dm.id === firstDm.id)
+);
+
+// With the second move taken back, the character can now declare a
+// different one landing wherever they like again (still bounded by the
+// first move's still-standing footprint).
+events.length = 0;
+emit('move:declare', { characterId: fpChar.id, moveId: jab.id });
+fpUpdate = await waitEvent('combat:updated', (c) => c.declaredMoves.filter((dm) => dm.characterId === fpChar.id).length === 2);
+const thirdDm = fpUpdate.declaredMoves.filter((dm) => dm.characterId === fpChar.id).find((dm) => dm.id !== firstDm.id);
+check('a fresh declare after canceling lands at the same legal floor as before', thirdDm.placementTic === firstDm.recoveryEndTic);
+
+// Once the side finishes declaring, the committed move can no longer be
+// undeclared — same silent no-op as any other rejected declare/undeclare.
+events.length = 0;
+emit('combat:side_done_declaring', { side: fpSide });
+await waitEvent('combat:updated', (c) => c.declaringSide !== fpSide);
+events.length = 0;
+emit('move:undeclare', { declaredMoveId: firstDm.id });
+await sleep(300);
+check(
+  'a committed move (side already done declaring) can no longer be undeclared',
+  !events.some((e) => e.ev === 'combat:updated')
+);
+
+events.length = 0;
+emit('combat:clear', {});
+await waitEvent('combat:updated', (c) => c.participants.length === 0);
+events.length = 0;
+emit('move:delete', { moveId: longMove.id });
+await waitEvent('move:deleted', (p) => p.moveId === longMove.id);
+await jf(`/api/characters/${fpLeft.id}`, { method: 'DELETE' });
+await jf(`/api/characters/${fpRight.id}`, { method: 'DELETE' });
+
+events.length = 0;
+emit('combat:clear', {});
+await waitEvent('combat:updated', (c) => c.participants.length === 0);
 events.length = 0;
 emit('move:delete', { moveId: crossPunch.id });
 await waitEvent('move:deleted', (p) => p.moveId === crossPunch.id);
@@ -1516,10 +1644,11 @@ await waitEvent('combat:updated', (c) => !c.participants.some((p) => p.character
 check('deleting a seated character removes them from the arena too', true);
 check('sheet fetch now 404', (await jf(`/api/characters/${ch.id}`)).status === 404);
 const chatAfter = (await jf('/api/chat')).body;
-// +6 vs. the pre-Stamina-Cost count: three extra combat:next_round calls
-// (staminaA/staminaB, fairPc/fairNpc, ambigLeft/ambigRight) each rolled
-// Brain initiative for both their participants, each roll posting to chat.
-check('chat log survives character deletion', chatAfter.length === 21 && chatAfter[0].characterName === '(deleted)');
+// +8 vs. the pre-Stamina-Cost count: four extra combat:next_round calls
+// (staminaA/staminaB, fairPc/fairNpc, ambigLeft/ambigRight, fpLeft/fpRight)
+// each rolled Brain initiative for both their participants, each roll
+// posting to chat.
+check('chat log survives character deletion', chatAfter.length === 23 && chatAfter[0].characterName === '(deleted)');
 
 await jf(`/api/characters/${npc.id}`, { method: 'DELETE' });
 
@@ -1533,6 +1662,16 @@ check('chat:message broadcast has kind/name/text', msg.kind === 'message' && msg
 let chatNow = (await jf('/api/chat')).body;
 let stored = chatNow.find((e) => e.message === 'hello table');
 check('text-only message persisted with kind message, no dice', !!stored && stored.kind === 'message' && stored.dice.length === 0 && stored.total === 0);
+
+// A null characterId posts as the GM's generic persona instead of a real
+// character — no picker needed, matches the client's default-poster UX.
+events.length = 0;
+emit('chat:message', { characterId: null, text: 'GM says hello' });
+const gmMsg = await waitEvent('chat:message', (m) => m.message === 'GM says hello');
+check('a null characterId posts as "GM" — characterId null, characterName GM', gmMsg.characterId === null && gmMsg.characterName === 'GM');
+chatNow = (await jf('/api/chat')).body;
+const gmStored = chatNow.find((e) => e.message === 'GM says hello');
+check('the GM post persists and reads back the same way via /api/chat', !!gmStored && gmStored.characterId === null && gmStored.characterName === 'GM');
 
 events.length = 0;
 const tinyPng = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
