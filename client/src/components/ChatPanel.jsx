@@ -1,13 +1,15 @@
 import { useEffect, useRef, useState } from 'react';
 import { socket } from '../socket.js';
-import { getChat, getCharacters } from '../lib/api.js';
+import { getChat, getCharacters, getTells, getTags, getRuleset, getMoves } from '../lib/api.js';
 import { dieFormula } from '../lib/dice.js';
 import { fileToChatImage } from '../lib/image.js';
+import { folderPath } from '../lib/folders.js';
 import { useRole } from '../roleContext.jsx';
 import Thumb from './Thumb.jsx';
 import FrameBar from './FrameBar.jsx';
+import MoveCard from './MoveCard.jsx';
 
-function Entry({ entry, character }) {
+function Entry({ entry, character, moveInfo }) {
   const [expanded, setExpanded] = useState(false);
   const time = new Date(entry.timestamp).toLocaleTimeString([], {
     hour: '2-digit',
@@ -42,23 +44,23 @@ function Entry({ entry, character }) {
           </div>
         ) : entry.kind === 'move_reveal' ? (
           entry.move ? (
-            <button
-              type="button"
-              onClick={() => {
-                // Interim honor-system gate (decided) — asks rather than
-                // checking real Perk ownership automatically; a later pass
-                // is expected to replace this with an actual check against
-                // the logged-in character's granted Perks.
-                if (expanded) {
-                  setExpanded(false);
-                } else if (window.confirm('Does your character have the Genius Observer Perk?')) {
-                  setExpanded(true);
-                }
-              }}
-              title="Click to show the full description"
-              className="mt-1 w-full rounded-md bg-zinc-800/60 p-1.5 text-left hover:bg-zinc-800"
-            >
-              <div className="flex items-center gap-2">
+            <div className="mt-1 w-full rounded-md bg-zinc-800/60 p-1.5">
+              <button
+                type="button"
+                onClick={() => {
+                  // Interim honor-system gate (decided) — asks rather than
+                  // checking real Perk ownership automatically; a later pass
+                  // is expected to replace this with an actual check against
+                  // the logged-in character's granted Perks.
+                  if (expanded) {
+                    setExpanded(false);
+                  } else if (window.confirm('Does your character have the Genius Observer Perk?')) {
+                    setExpanded(true);
+                  }
+                }}
+                title={expanded ? 'Click to collapse' : 'Click to show the full move'}
+                className="flex w-full items-center gap-2 text-left hover:opacity-80"
+              >
                 <Thumb record={{ image_data: entry.move.imageData, image_mime_type: entry.move.imageMimeType }} name={entry.move.name} size="h-8 w-8" />
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-sm font-semibold text-zinc-100">{entry.move.name}</div>
@@ -69,27 +71,44 @@ function Entry({ entry, character }) {
                     size="h-2.5 w-2.5"
                   />
                 </div>
-              </div>
+              </button>
               {expanded && (
-                <div className="mt-1.5 border-t border-zinc-700 pt-1.5 text-xs text-zinc-400">
-                  {entry.move.description ? (
-                    <p className="whitespace-pre-wrap break-words">{entry.move.description}</p>
-                  ) : (
-                    <p className="italic text-zinc-600">No description.</p>
-                  )}
-                  {entry.move.staminaCost != null && (
-                    <p className="mt-1 text-zinc-500">
-                      Stamina Cost:{' '}
-                      {entry.move.staminaCost > 0
-                        ? `-${entry.move.staminaCost}`
-                        : entry.move.staminaCost < 0
-                        ? `+${-entry.move.staminaCost}`
-                        : '0'}
-                    </p>
-                  )}
-                </div>
+                entry.move.full && moveInfo ? (
+                  <div className="mt-1.5 border-t border-zinc-700 pt-1.5">
+                    <MoveCard
+                      move={entry.move.full}
+                      tell={moveInfo.tellById.get(entry.move.full.tell_id)}
+                      rightTell={entry.move.full.right_tell_id ? moveInfo.tellById.get(entry.move.full.right_tell_id) : null}
+                      leftTell={entry.move.full.left_tell_id ? moveInfo.tellById.get(entry.move.full.left_tell_id) : null}
+                      style={entry.move.full.style_attribute_id ? moveInfo.styleById.get(entry.move.full.style_attribute_id) : null}
+                      tags={(entry.move.full.tag_ids ?? []).map((id) => moveInfo.tagById.get(id)).filter(Boolean)}
+                      folderLabel={folderPath(entry.move.full.folder_id, moveInfo.moveFolders) ?? undefined}
+                    />
+                  </div>
+                ) : (
+                  // Auxiliary move data hasn't loaded yet, or this move was
+                  // itself deleted after revealing — falls back to the
+                  // compact fields every move_reveal card always carries.
+                  <div className="mt-1.5 border-t border-zinc-700 pt-1.5 text-xs text-zinc-400">
+                    {entry.move.description ? (
+                      <p className="whitespace-pre-wrap break-words">{entry.move.description}</p>
+                    ) : (
+                      <p className="italic text-zinc-600">No description.</p>
+                    )}
+                    {entry.move.staminaCost != null && (
+                      <p className="mt-1 text-zinc-500">
+                        Stamina Cost:{' '}
+                        {entry.move.staminaCost > 0
+                          ? `-${entry.move.staminaCost}`
+                          : entry.move.staminaCost < 0
+                          ? `+${-entry.move.staminaCost}`
+                          : '0'}
+                      </p>
+                    )}
+                  </div>
+                )
               )}
-            </button>
+            </div>
           ) : (
             <p className="mt-1 italic text-zinc-600">(move deleted)</p>
           )
@@ -223,6 +242,13 @@ export default function ChatPanel({ open, onClose }) {
   const { role } = useRole();
   const [entries, setEntries] = useState([]);
   const [characters, setCharacters] = useState(new Map());
+  // Only needed to render a move_reveal card's expanded full MoveCard (see
+  // Entry above) — the same lookups CombatArena.jsx/MovesTab.jsx already
+  // fetch independently for the same purpose, no shared cache between them.
+  const [tells, setTells] = useState(null);
+  const [tags, setTags] = useState(null);
+  const [ruleset, setRuleset] = useState(null);
+  const [moveFolders, setMoveFolders] = useState(null);
   const bottomRef = useRef(null);
 
   useEffect(() => {
@@ -257,6 +283,35 @@ export default function ChatPanel({ open, onClose }) {
       for (const ev of events) socket.off(ev, refresh);
     };
   }, []);
+
+  useEffect(() => {
+    const refresh = () => {
+      getTells().then(setTells).catch(console.error);
+      getTags().then(setTags).catch(console.error);
+      getRuleset().then(setRuleset).catch(console.error);
+      getMoves().then((d) => setMoveFolders(d.folders)).catch(console.error);
+    };
+    refresh();
+    const events = [
+      'tell:created', 'tell:updated', 'tell:deleted',
+      'tag:created', 'tag:updated', 'tag:deleted',
+      'folder:created', 'folder:updated', 'folder:deleted',
+    ];
+    for (const ev of events) socket.on(ev, refresh);
+    return () => {
+      for (const ev of events) socket.off(ev, refresh);
+    };
+  }, []);
+
+  const moveInfo =
+    tells && tags && ruleset && moveFolders
+      ? {
+          tellById: new Map(tells.map((t) => [t.id, t])),
+          tagById: new Map(tags.map((t) => [t.id, t])),
+          styleById: new Map(ruleset.attributes.map((a) => [a.id, a])),
+          moveFolders,
+        }
+      : null;
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -296,6 +351,7 @@ export default function ChatPanel({ open, onClose }) {
               key={entry.id ?? `live-${i}`}
               entry={entry}
               character={characters.get(entry.characterId)}
+              moveInfo={moveInfo}
             />
           ))
         )}
