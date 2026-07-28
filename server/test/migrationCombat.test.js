@@ -38,7 +38,7 @@ test('legacy combat_state (Uneven Combat toggle only, no Phase 7 columns) surviv
     assert.equal(rows[0].round_number, 0);
     assert.equal(rows[0].current_tic, 0);
     assert.equal(rows[0].round_start_tic, 0);
-    assert.equal(rows[0].round_length, 5);
+    assert.equal(rows[0].round_length, 7);
     assert.equal(rows[0].declaring_side, null);
     assert.equal(rows[0].pending_declare_side, null);
 

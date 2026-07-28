@@ -292,7 +292,8 @@ async function postMoveReveals(newTic) {
     `SELECT dm.id, dm.character_id, dm.move_id,
             ch.name AS character_name,
             m.name AS move_name, m.image_data, m.image_mime_type,
-            m.startup_tics, m.active_tics, m.recovery_tics
+            m.startup_tics, m.active_tics, m.recovery_tics,
+            m.description, m.stamina_cost
      FROM declared_moves dm
      JOIN characters ch ON ch.id = dm.character_id
      JOIN moves m ON m.id = dm.move_id
@@ -317,6 +318,8 @@ async function postMoveReveals(newTic) {
         startupTics: row.startup_tics,
         activeTics: row.active_tics,
         recoveryTics: row.recovery_tics,
+        description: row.description,
+        staminaCost: row.stamina_cost,
       },
       timestamp: new Date().toISOString(),
     });
@@ -720,7 +723,8 @@ app.get('/api/chat', wrap(async (_req, res) => {
            ch.name AS character_name,
            m.id AS move_id, m.name AS move_name, m.image_data AS move_image_data,
            m.image_mime_type AS move_image_mime_type, m.startup_tics AS move_startup_tics,
-           m.active_tics AS move_active_tics, m.recovery_tics AS move_recovery_tics
+           m.active_tics AS move_active_tics, m.recovery_tics AS move_recovery_tics,
+           m.description AS move_description, m.stamina_cost AS move_stamina_cost
     FROM chat_log c
     LEFT JOIN characters ch ON ch.id = c.character_id
     LEFT JOIN moves m ON m.id = c.move_id
@@ -751,6 +755,8 @@ app.get('/api/chat', wrap(async (_req, res) => {
                 startupTics: row.move_startup_tics,
                 activeTics: row.move_active_tics,
                 recoveryTics: row.move_recovery_tics,
+                description: row.move_description,
+                staminaCost: row.move_stamina_cost,
               }
           : undefined,
         timestamp: sqliteToIso(row.created_at),
@@ -846,42 +852,60 @@ io.on('connection', (socket) => {
   });
 
   on('character:lock_stats', async ({ characterId }) => {
-    const character = await getCharacter(characterId);
+    const [character, dice] = await Promise.all([getCharacter(characterId), getDice(characterId)]);
     if (!character) return;
-    await run(
-      'UPDATE dice SET locked_size = current_size, locked_bonus = bonus, locked_status = status WHERE character_id = ?',
-      [character.id]
-    );
-    const stamina = await getStaminaDie(character.id);
+    const stamina = dice.find((d) => d.slot_name === 'Stamina');
     const maxStamina = computeMaxStamina(
       character.stamina_multiplier,
       stamina.current_size,
       stamina.bonus
     );
     const currentStamina = Math.min(character.current_stamina, maxStamina);
-    await run('UPDATE characters SET max_stamina = ?, current_stamina = ? WHERE id = ?', [
-      maxStamina,
-      currentStamina,
-      character.id,
+    // Both UPDATEs are independent (different tables, no shared read), so
+    // they run as one round trip instead of two.
+    await Promise.all([
+      run(
+        'UPDATE dice SET locked_size = current_size, locked_bonus = bonus, locked_status = status WHERE character_id = ?',
+        [character.id]
+      ),
+      run('UPDATE characters SET max_stamina = ?, current_stamina = ? WHERE id = ?', [
+        maxStamina,
+        currentStamina,
+        character.id,
+      ]),
     ]);
-    io.emit('character:updated', await getCharacter(character.id));
-    for (const die of await getDice(character.id)) io.emit('die:updated', diePayload(die));
+    // Broadcast from the rows already in hand (current_size/bonus/status
+    // aren't touched by this UPDATE, only locked_*) — no re-fetch needed.
+    io.emit('character:updated', { ...character, max_stamina: maxStamina, current_stamina: currentStamina });
+    for (const die of dice) {
+      io.emit(
+        'die:updated',
+        diePayload({ ...die, locked_size: die.current_size, locked_bonus: die.bonus, locked_status: die.status })
+      );
+    }
   });
 
   on('character:revert_stats', async ({ characterId }) => {
-    const character = await getCharacter(characterId);
+    const [character, dice] = await Promise.all([getCharacter(characterId), getDice(characterId)]);
     if (!character) return;
     await run(
       'UPDATE dice SET current_size = locked_size, bonus = locked_bonus, status = locked_status WHERE character_id = ?',
       [character.id]
     );
-    for (const die of await getDice(character.id)) io.emit('die:updated', diePayload(die));
+    for (const die of dice) {
+      io.emit(
+        'die:updated',
+        diePayload({ ...die, current_size: die.locked_size, bonus: die.locked_bonus, status: die.locked_status })
+      );
+    }
   });
 
   on('stamina:regen', async ({ characterId }) => {
-    const character = await getCharacter(characterId);
+    const [character, stamina] = await Promise.all([
+      getCharacter(characterId),
+      getStaminaDie(characterId),
+    ]);
     if (!character) return;
-    const stamina = await getStaminaDie(character.id);
     if (!stamina || stamina.status !== 'active') return; // incapacitated dice can't be rolled
     const result = rollDie(stamina.current_size) + stamina.bonus;
     const currentStamina = clamp(
@@ -893,7 +917,7 @@ io.on('connection', (socket) => {
       currentStamina,
       character.id,
     ]);
-    io.emit('character:updated', await getCharacter(character.id));
+    io.emit('character:updated', { ...character, current_stamina: currentStamina });
     await logRoll({
       characterId: character.id,
       characterName: character.name,
@@ -923,7 +947,9 @@ io.on('connection', (socket) => {
       currentStamina,
       character.id,
     ]);
-    io.emit('character:updated', await getCharacter(character.id));
+    // Broadcast the row we already have plus the one field we just changed —
+    // no need to round-trip back to the DB for data we already know.
+    io.emit('character:updated', { ...character, current_stamina: currentStamina });
   });
 
   on('inventory:add', async ({ characterId, itemName, description }) => {
@@ -1393,7 +1419,7 @@ io.on('connection', (socket) => {
       if (folder) target = folder.id;
     }
     await run('UPDATE characters SET folder_id = ? WHERE id = ?', [target, character.id]);
-    io.emit('character:updated', await getCharacter(character.id));
+    io.emit('character:updated', { ...character, folder_id: target });
   });
 
   on('move:revoke', async ({ characterId, moveId }) => {
@@ -1766,6 +1792,21 @@ io.on('connection', (socket) => {
     await emitCombatUpdated();
   });
 
+  // End Combat — the other half of the Start/End Combat toggle shown in the
+  // global Tic Counter header (visible on every page while phase is
+  // non-null). Unlike combat:clear ("Clear Arena"), this only turns the
+  // fight itself off; everyone stays seated so the GM can start a fresh
+  // fight for the same roster without re-seating.
+  on('combat:end', async () => {
+    await run('DELETE FROM declared_moves');
+    await run(`
+      UPDATE combat_state SET phase = NULL, round_number = 0, current_tic = 0,
+      round_start_tic = 0, declaring_side = NULL, pending_declare_side = NULL
+      WHERE id = 1
+    `);
+    await emitCombatUpdated();
+  });
+
   // Phase 7 — Combat Timing. Uses server/combatTiming.js's pure functions
   // for all placement/reveal/overflow math; see that module + the plan's
   // Combat Timing mechanic section for the decided rules wired together
@@ -1830,16 +1871,18 @@ io.on('connection', (socket) => {
     await emitCombatUpdated();
   });
 
-  on('move:declare', async ({ characterId, moveId }) => {
-    const state = await one('SELECT * FROM combat_state WHERE id = 1');
+  on('move:declare', async ({ characterId, moveId, placementTic: requestedPlacementTic }) => {
+    // The four lookups below are all independent of each other (none reads
+    // a value the others produce), so they run as one round trip instead
+    // of four sequential ones.
+    const [state, participant, character, move] = await Promise.all([
+      one('SELECT * FROM combat_state WHERE id = 1'),
+      one('SELECT * FROM combat_participants WHERE character_id = ?', [characterId]),
+      getCharacter(characterId),
+      one('SELECT * FROM moves WHERE id = ?', [moveId]),
+    ]);
     if (state.phase !== 'declaration') return;
-    const participant = await one(
-      'SELECT * FROM combat_participants WHERE character_id = ?',
-      [characterId]
-    );
     if (!participant || participant.side !== state.declaring_side) return;
-    const character = await getCharacter(characterId);
-    const move = await one('SELECT * FROM moves WHERE id = ?', [moveId]);
     if (!character || !move) return;
 
     // Move must actually be available to this character (Default, or
@@ -1872,17 +1915,27 @@ io.on('connection', (socket) => {
     // one batch when the side finishes declaring (see
     // combat:side_done_declaring), but a character can never queue more
     // than they can actually pay for once that happens.
-    const pending = await getPendingStaminaCost(character.id);
+    const [pending, last] = await Promise.all([
+      getPendingStaminaCost(character.id),
+      one(
+        'SELECT reveal_tic FROM declared_moves WHERE character_id = ? ORDER BY reveal_tic DESC LIMIT 1',
+        [character.id]
+      ),
+    ]);
     if (character.current_stamina - pending - move.stamina_cost < 0) return;
 
-    const last = await one(
-      'SELECT reveal_tic FROM declared_moves WHERE character_id = ? ORDER BY reveal_tic DESC LIMIT 1',
-      [character.id]
-    );
-    const placementTic = computePlacementTic({
+    // A player can drag a move onto any Tic they like on the Tic Counter —
+    // never earlier than the character's own next-eligible Tic (Startup-only
+    // blocking, same rule as before), which is why this is a floor, not an
+    // exact placement: dropping too early just snaps forward to the
+    // earliest legal Tic instead of failing.
+    const minPlacementTic = computePlacementTic({
       roundStartTic: state.round_start_tic,
       previousRevealTic: last ? last.reveal_tic : null,
     });
+    const placementTic = Number.isInteger(requestedPlacementTic)
+      ? Math.max(requestedPlacementTic, minPlacementTic)
+      : minPlacementTic;
     const { revealTic } = computeMoveFootprint({
       placementTic,
       startupTics: move.startup_tics,
@@ -1946,28 +1999,55 @@ io.on('connection', (socket) => {
     // batch — this is the one and only place cost actually leaves/returns
     // to current_stamina (move:declare only ever checked affordability).
     // Clamped defensively to [0, max]; the up-front affordability check
-    // already keeps this from going negative in the normal flow.
+    // already keeps this from going negative in the normal flow. Batched
+    // across the whole side (one GROUP BY instead of a per-character
+    // round trip, updates fired in parallel) rather than looping
+    // sequentially per participant — that loop was the single worst
+    // offender for combat lag with more than one or two characters seated.
     const sideParticipants = await all(
       'SELECT character_id FROM combat_participants WHERE side = ?',
       [side]
     );
-    for (const p of sideParticipants) {
-      const pending = await getPendingStaminaCost(p.character_id);
-      if (pending !== 0) {
-        const character = await getCharacter(p.character_id);
-        if (character) {
+    if (sideParticipants.length) {
+      const ids = sideParticipants.map((p) => p.character_id);
+      const marks = ids.map(() => '?').join(',');
+      const [pendingRows, characters] = await Promise.all([
+        all(
+          `SELECT dm.character_id, COALESCE(SUM(m.stamina_cost), 0) AS pending
+           FROM declared_moves dm JOIN moves m ON m.id = dm.move_id
+           WHERE dm.character_id IN (${marks}) AND dm.stamina_committed = 0
+           GROUP BY dm.character_id`,
+          ids
+        ),
+        all(`SELECT * FROM characters WHERE id IN (${marks})`, ids),
+      ]);
+      const pendingByChar = new Map(pendingRows.map((r) => [r.character_id, r.pending]));
+      const charById = new Map(characters.map((c) => [c.id, c]));
+
+      const updates = ids
+        .map((id) => {
+          const pending = pendingByChar.get(id) ?? 0;
+          const character = charById.get(id);
+          if (pending === 0 || !character) return null;
           const newStamina = clamp(character.current_stamina - pending, 0, character.max_stamina);
-          await run('UPDATE characters SET current_stamina = ? WHERE id = ?', [
-            newStamina,
-            character.id,
-          ]);
-          io.emit('character:updated', await getCharacter(character.id));
-        }
+          return { character, newStamina };
+        })
+        .filter(Boolean);
+
+      await Promise.all([
+        ...updates.map((u) =>
+          run('UPDATE characters SET current_stamina = ? WHERE id = ?', [u.newStamina, u.character.id])
+        ),
+        run(
+          `UPDATE declared_moves SET stamina_committed = 1 WHERE character_id IN (${marks}) AND stamina_committed = 0`,
+          ids
+        ),
+      ]);
+      // Broadcast from the rows already in hand plus the one field that
+      // changed — no re-fetch needed.
+      for (const u of updates) {
+        io.emit('character:updated', { ...u.character, current_stamina: u.newStamina });
       }
-      await run(
-        'UPDATE declared_moves SET stamina_committed = 1 WHERE character_id = ? AND stamina_committed = 0',
-        [p.character_id]
-      );
     }
 
     await run(

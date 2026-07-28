@@ -8,6 +8,7 @@ import Thumb from './Thumb.jsx';
 import FrameBar from './FrameBar.jsx';
 
 function Entry({ entry, character }) {
+  const [expanded, setExpanded] = useState(false);
   const time = new Date(entry.timestamp).toLocaleTimeString([], {
     hour: '2-digit',
     minute: '2-digit',
@@ -41,18 +42,44 @@ function Entry({ entry, character }) {
           </div>
         ) : entry.kind === 'move_reveal' ? (
           entry.move ? (
-            <div className="mt-1 flex items-center gap-2 rounded-md bg-zinc-800/60 p-1.5">
-              <Thumb record={{ image_data: entry.move.imageData, image_mime_type: entry.move.imageMimeType }} name={entry.move.name} size="h-8 w-8" />
-              <div className="min-w-0">
-                <div className="truncate text-sm font-semibold text-zinc-100">{entry.move.name}</div>
-                <FrameBar
-                  startup={entry.move.startupTics}
-                  active={entry.move.activeTics}
-                  recovery={entry.move.recoveryTics}
-                  size="h-2.5 w-2.5"
-                />
+            <button
+              type="button"
+              onClick={() => setExpanded((v) => !v)}
+              title="Click to show the full description"
+              className="mt-1 w-full rounded-md bg-zinc-800/60 p-1.5 text-left hover:bg-zinc-800"
+            >
+              <div className="flex items-center gap-2">
+                <Thumb record={{ image_data: entry.move.imageData, image_mime_type: entry.move.imageMimeType }} name={entry.move.name} size="h-8 w-8" />
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-sm font-semibold text-zinc-100">{entry.move.name}</div>
+                  <FrameBar
+                    startup={entry.move.startupTics}
+                    active={entry.move.activeTics}
+                    recovery={entry.move.recoveryTics}
+                    size="h-2.5 w-2.5"
+                  />
+                </div>
               </div>
-            </div>
+              {expanded && (
+                <div className="mt-1.5 border-t border-zinc-700 pt-1.5 text-xs text-zinc-400">
+                  {entry.move.description ? (
+                    <p className="whitespace-pre-wrap break-words">{entry.move.description}</p>
+                  ) : (
+                    <p className="italic text-zinc-600">No description.</p>
+                  )}
+                  {entry.move.staminaCost != null && (
+                    <p className="mt-1 text-zinc-500">
+                      Stamina Cost:{' '}
+                      {entry.move.staminaCost > 0
+                        ? `-${entry.move.staminaCost}`
+                        : entry.move.staminaCost < 0
+                        ? `+${-entry.move.staminaCost}`
+                        : '0'}
+                    </p>
+                  )}
+                </div>
+              )}
+            </button>
           ) : (
             <p className="mt-1 italic text-zinc-600">(move deleted)</p>
           )
@@ -83,7 +110,6 @@ function Composer({ characters }) {
   const [text, setText] = useState('');
   const [pending, setPending] = useState(null); // { imageData, imageMimeType, previewName }
   const [error, setError] = useState('');
-  const fileInputRef = useRef(null);
 
   useEffect(() => {
     if (characterId && !characters.some((c) => String(c.id) === characterId)) {
@@ -91,14 +117,20 @@ function Composer({ characters }) {
     }
   }, [characters, characterId]);
 
-  const onPickFile = async (e) => {
-    const file = e.target.files?.[0];
-    e.target.value = '';
+  // Images/GIFs attach by pasting straight into the composer — no file
+  // picker. Same fileToChatImage pipeline either way: a clipboard image
+  // item's getAsFile() returns a real File/Blob, indistinguishable from one
+  // picked off disk.
+  const onPaste = async (e) => {
+    const item = [...e.clipboardData.items].find((it) => it.type.startsWith('image/'));
+    if (!item) return;
+    e.preventDefault();
+    const file = item.getAsFile();
     if (!file) return;
     setError('');
     try {
       const { imageData, imageMimeType } = await fileToChatImage(file);
-      setPending({ imageData, imageMimeType, previewName: file.name });
+      setPending({ imageData, imageMimeType, previewName: file.name || 'pasted image' });
     } catch (err) {
       setError(err.message);
     }
@@ -162,23 +194,10 @@ function Composer({ characters }) {
           value={text}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={onKeyDown}
-          placeholder="Say something…"
+          onPaste={onPaste}
+          placeholder="Say something… (paste an image to attach)"
           className="min-w-0 flex-1 resize-none rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1.5 text-sm text-zinc-200 placeholder:text-zinc-600"
         />
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept="image/*"
-          className="hidden"
-          onChange={onPickFile}
-        />
-        <button
-          onClick={() => fileInputRef.current?.click()}
-          title="Attach an image or GIF"
-          className="shrink-0 rounded-md border border-zinc-700 px-2 py-1.5 text-sm text-zinc-400 hover:bg-zinc-800"
-        >
-          🖼
-        </button>
         <button
           onClick={send}
           className="shrink-0 rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-indigo-500"
