@@ -6,6 +6,7 @@ import {
   computeMoveFootprint,
   isMoveRevealedTo,
   relativeTic,
+  computeNextRoundStartTic,
 } from '../combatTiming.js';
 
 test('resolveSideInitiative: higher side wins, loser declares first', () => {
@@ -128,6 +129,57 @@ test('relativeTic: past the round window is overflow, by exactly the excess', ()
   assert.equal(r.relative, 7);
   assert.equal(r.isOverflow, true);
   assert.equal(r.overflowBy, 2);
+});
+
+test('computeNextRoundStartTic: the very first round (phase null) just starts wherever the counter sits', () => {
+  assert.equal(
+    computeNextRoundStartTic({ phase: null, currentTic: 0, roundStartTic: 0, roundLength: 7 }),
+    0
+  );
+});
+
+test('computeNextRoundStartTic: fully-stepped round advances a full round_length past the old start (no 1-tic overlap)', () => {
+  // round 1 started at tic 1, length 5; GM stepped all the way to the last
+  // legal Tic (5) before pressing Next Round
+  assert.equal(
+    computeNextRoundStartTic({ phase: 'tic_countdown', currentTic: 5, roundStartTic: 1, roundLength: 5 }),
+    6
+  );
+});
+
+test('computeNextRoundStartTic: bug repro — Next Round pressed without ever stepping the countdown does not replay round 1\'s Tics', () => {
+  // GM starts the Tic Countdown but presses Next Round immediately —
+  // current_tic never moved off round 1's own start
+  assert.equal(
+    computeNextRoundStartTic({ phase: 'tic_countdown', currentTic: 1, roundStartTic: 1, roundLength: 5 }),
+    6
+  );
+});
+
+test('computeNextRoundStartTic: partially-stepped round is still floored a full round_length ahead', () => {
+  assert.equal(
+    computeNextRoundStartTic({ phase: 'tic_countdown', currentTic: 3, roundStartTic: 1, roundLength: 5 }),
+    6
+  );
+});
+
+test('computeNextRoundStartTic: genuine cross-round overflow still carries — the floor never reaches back past a move that ran long', () => {
+  // Round 1 (start 1, length 5) fully stepped to tic 5, but this is about the
+  // ROUND boundary itself, not a move's footprint — computePlacementTic is
+  // what layers actual move overflow on top of whatever this returns.
+  const nextStart = computeNextRoundStartTic({
+    phase: 'tic_countdown',
+    currentTic: 5,
+    roundStartTic: 1,
+    roundLength: 5,
+  });
+  assert.equal(nextStart, 6);
+  // a move whose footprint didn't end until tic 8 still correctly blocks
+  // placement in round 2 despite the new round starting at tic 6
+  assert.equal(
+    computePlacementTic({ roundStartTic: nextStart, previousBlockedUntilTic: 8 }),
+    8
+  );
 });
 
 test('integration: a move overflowing into the next round blocks that character\'s next placement, with no special-casing', () => {

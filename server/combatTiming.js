@@ -49,6 +49,24 @@ export function isMoveRevealedTo({ revealTic, currentTic, viewerIsOwner }) {
   return viewerIsOwner || currentTic >= revealTic;
 }
 
+// A new round's start Tic must never land inside the previous round's own
+// window, even if the GM presses Next Round without ever stepping the Tic
+// Countdown forward (e.g. right after Start Tic Countdown, or after only a
+// partial countdown) — otherwise computePlacementTic can't tell the
+// difference between genuine cross-round overflow and a round that simply
+// never elapsed, and a character's moves declared (but never resolved) last
+// round wrongly keep blocking the exact same Tics again this round. The new
+// round is therefore floored at a full round_length past the previous
+// round's own start — actual overflow (a footprint ending later than that)
+// still carries through normally, since computePlacementTic takes the max of
+// this and the offending move's own blocked-until Tic. The very first round
+// (phase null — no previous window to protect against) is exempt and simply
+// starts wherever the counter already sits.
+export function computeNextRoundStartTic({ phase, currentTic, roundStartTic, roundLength }) {
+  if (phase === null) return currentTic;
+  return Math.max(currentTic, roundStartTic + roundLength);
+}
+
 // The GM's display shows Tics relative to the current round (Tic 1-N) even
 // though the underlying counter never resets. A Tic past round_length is
 // overflow — it belongs to this round only in the sense that it's still
