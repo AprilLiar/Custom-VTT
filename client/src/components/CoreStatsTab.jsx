@@ -74,7 +74,7 @@ function NamePortrait({ character }) {
         title="Click to upload / replace portrait"
         whileHover={{ scale: 1.04 }}
         whileTap={{ scale: 0.97 }}
-        className="flex h-24 w-24 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-zinc-700 bg-zinc-800 [clip-path:polygon(0_0,100%_0,100%_88%,88%_100%,0_100%)] hover:border-indigo-500"
+        className="flex h-24 w-24 shrink-0 items-center justify-center overflow-hidden border border-zinc-700 bg-zinc-800 [clip-path:polygon(0_0,100%_0,100%_88%,88%_100%,0_100%)] hover:border-brand-500"
       >
         {uploading ? (
           <span className="text-xs text-zinc-500">…</span>
@@ -90,10 +90,10 @@ function NamePortrait({ character }) {
           ref={nameRef}
           value={name}
           onChange={(e) => onNameChange(e.target.value)}
-          className="w-full rounded-md border border-transparent bg-transparent px-2 py-1 font-display text-3xl font-bold uppercase tracking-wide text-zinc-100 outline-none hover:border-zinc-700 focus:border-indigo-500"
+          className="w-full panel-cut-sm border border-transparent bg-transparent px-2 py-1 font-display text-3xl font-bold uppercase tracking-wide text-zinc-100 outline-none hover:border-zinc-700 focus:border-brand-500"
         />
         {character.character_type === 'npc' && (
-          <span className="ml-2 rounded bg-purple-600/30 px-1.5 text-xs font-bold uppercase text-purple-300">
+          <span className="ml-2 panel-cut-sm bg-purple-600/30 px-1.5 text-xs font-bold uppercase text-purple-300">
             NPC
           </span>
         )}
@@ -105,7 +105,7 @@ function NamePortrait({ character }) {
 function StaminaBlock({ character, staminaDie }) {
   const regenBlocked = !staminaDie || staminaDie.status === 'incapacitated';
   return (
-    <div className="flex flex-wrap items-center gap-4 rounded-xl border border-zinc-800 bg-zinc-900 p-4 [clip-path:polygon(0_0,100%_0,100%_100%,3%_100%,0_82%)]">
+    <div className="flex flex-wrap items-center gap-4 border border-zinc-800 bg-zinc-900 p-4 [clip-path:polygon(0_0,100%_0,100%_100%,3%_100%,0_82%)]">
       <div>
         <div className="font-display text-xs font-semibold uppercase tracking-widest text-zinc-500">
           Stamina
@@ -126,13 +126,13 @@ function StaminaBlock({ character, staminaDie }) {
       <div className="flex gap-1">
         <button
           onClick={() => socket.emit('stamina:adjust', { characterId: character.id, delta: -1 })}
-          className="h-9 w-9 rounded-md border border-zinc-700 text-lg text-red-400 hover:bg-zinc-800"
+          className="h-9 w-9 panel-cut-sm border border-zinc-700 text-lg text-red-400 hover:bg-zinc-800"
         >
           −
         </button>
         <button
           onClick={() => socket.emit('stamina:adjust', { characterId: character.id, delta: 1 })}
-          className="h-9 w-9 rounded-md border border-zinc-700 text-lg text-green-400 hover:bg-zinc-800"
+          className="h-9 w-9 panel-cut-sm border border-zinc-700 text-lg text-green-400 hover:bg-zinc-800"
         >
           +
         </button>
@@ -145,7 +145,7 @@ function StaminaBlock({ character, staminaDie }) {
             ? 'Stamina die is incapacitated — it can’t be rolled'
             : 'Roll the Stamina die (current size) and add it to Current Stamina'
         }
-        className="ml-auto rounded-md bg-emerald-700 px-4 py-2 font-semibold hover:bg-emerald-600 disabled:opacity-40"
+        className="ml-auto panel-cut-sm bg-emerald-700 px-4 py-2 font-semibold hover:bg-emerald-600 disabled:opacity-40"
       >
         Roll Regen
       </button>
@@ -223,14 +223,14 @@ export default function CoreStatsTab({ data }) {
         <button
           onClick={() => socket.emit('character:lock_stats', { characterId: character.id })}
           title="Snapshot every die's current size/bonus/status as the new rested baseline"
-          className="rounded-md bg-zinc-800 px-4 py-2 text-sm font-semibold text-amber-300 hover:bg-zinc-700"
+          className="panel-cut-sm bg-zinc-800 px-4 py-2 text-sm font-semibold text-amber-300 hover:bg-zinc-700"
         >
           Lock in Stats
         </button>
         <button
           onClick={() => socket.emit('character:revert_stats', { characterId: character.id })}
           title="Reset every die back to its locked baseline (Current Stamina untouched)"
-          className="rounded-md bg-zinc-800 px-4 py-2 text-sm font-semibold text-sky-300 hover:bg-zinc-700"
+          className="panel-cut-sm bg-zinc-800 px-4 py-2 text-sm font-semibold text-sky-300 hover:bg-zinc-700"
         >
           Revert Stats to Base
         </button>
@@ -239,7 +239,7 @@ export default function CoreStatsTab({ data }) {
             onClick={() => setSelecting(true)}
             disabled={!anyActive}
             title="Select any dice to roll together with one shared modifier"
-            className="rounded-md bg-indigo-600 px-4 py-2 text-sm font-semibold hover:bg-indigo-500 disabled:opacity-40"
+            className="panel-cut-sm bg-brand-600 px-4 py-2 text-sm font-semibold hover:bg-brand-500 disabled:opacity-40"
           >
             Pool Roll
           </button>
@@ -248,13 +248,13 @@ export default function CoreStatsTab({ data }) {
             <button
               onClick={() => setDialog({ type: 'pool' })}
               disabled={selectedIds.size === 0}
-              className="rounded-md bg-indigo-600 px-4 py-2 text-sm font-semibold hover:bg-indigo-500 disabled:opacity-40"
+              className="panel-cut-sm bg-brand-600 px-4 py-2 text-sm font-semibold hover:bg-brand-500 disabled:opacity-40"
             >
               Roll {selectedIds.size || ''} selected
             </button>
             <button
               onClick={exitSelection}
-              className="rounded-md border border-zinc-700 px-4 py-2 text-sm text-zinc-400 hover:bg-zinc-800"
+              className="panel-cut-sm border border-zinc-700 px-4 py-2 text-sm text-zinc-400 hover:bg-zinc-800"
             >
               Cancel
             </button>
@@ -274,7 +274,7 @@ export default function CoreStatsTab({ data }) {
               onClick={() => vitruvianFileRef.current?.click()}
               disabled={uploadingVitruvian}
               title="Upload a custom Vitruvian Man for this character"
-              className="absolute right-1 top-1 z-10 rounded-md border border-zinc-700 bg-zinc-900/80 p-1.5 text-zinc-400 hover:border-indigo-500 hover:text-indigo-300 disabled:opacity-40"
+              className="absolute right-1 top-1 z-10 panel-cut-sm border border-zinc-700 bg-zinc-900/80 p-1.5 text-zinc-400 hover:border-brand-500 hover:text-brand-300 disabled:opacity-40"
             >
               <Upload size={14} />
             </button>

@@ -24,7 +24,7 @@ function AnswerArea({ value, onSave }) {
       onBlur={() => draft !== value && onSave(draft)}
       rows={2}
       placeholder="…"
-      className="w-full resize-y rounded-md border border-zinc-800 bg-zinc-900 px-2 py-1.5 text-sm text-zinc-200 outline-none focus:border-indigo-500"
+      className="w-full resize-y panel-cut-sm border border-zinc-800 bg-zinc-900 px-2 py-1.5 text-sm text-zinc-200 outline-none focus:border-brand-500"
     />
   );
 }
@@ -76,7 +76,7 @@ export default function RoleplayTab({ data }) {
                 socket.emit('roleplay:delete_question', { entryId: entry.id })
               }
               title="Delete question"
-              className="rounded px-1 text-zinc-600 hover:bg-red-900/40 hover:text-red-400"
+              className="panel-cut-sm px-1 text-zinc-600 hover:bg-red-900/40 hover:text-red-400"
             >
               ✕
             </button>
@@ -104,12 +104,12 @@ export default function RoleplayTab({ data }) {
               : 'Add your own question…'
           }
           disabled={custom.length >= MAX_CUSTOM}
-          className="min-w-0 flex-1 rounded-md border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm outline-none focus:border-indigo-500 disabled:opacity-40"
+          className="min-w-0 flex-1 panel-cut-sm border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm outline-none focus:border-brand-500 disabled:opacity-40"
         />
         <button
           type="submit"
           disabled={!newQuestion.trim() || custom.length >= MAX_CUSTOM}
-          className="rounded-md bg-indigo-600 px-3 text-sm font-semibold hover:bg-indigo-500 disabled:opacity-40"
+          className="panel-cut-sm bg-brand-600 px-3 text-sm font-semibold hover:bg-brand-500 disabled:opacity-40"
         >
           Add
         </button>
@@ -134,7 +134,7 @@ function CustomQuestion({ entry }) {
           answer: entry.answer,
         })
       }
-      className="min-w-0 flex-1 rounded-md border border-transparent bg-transparent px-1 text-sm font-semibold text-zinc-300 outline-none hover:border-zinc-700 focus:border-indigo-500"
+      className="min-w-0 flex-1 panel-cut-sm border border-transparent bg-transparent px-1 text-sm font-semibold text-zinc-300 outline-none hover:border-zinc-700 focus:border-brand-500"
     />
   );
 }

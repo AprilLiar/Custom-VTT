@@ -8,7 +8,7 @@ import PerkCreator from './PerkCreator.jsx';
 
 function GrantList({ perk, characters }) {
   return (
-    <div className="mt-1 space-y-1 rounded-md border border-zinc-800 bg-zinc-950/60 p-2">
+    <div className="mt-1 space-y-1 panel-cut-sm border border-zinc-800 bg-zinc-950/60 p-2">
       {characters.map((c) => {
         const granted = perk.granted_character_ids.includes(c.id);
         return (
@@ -25,7 +25,7 @@ function GrantList({ perk, characters }) {
             />
             {c.name}
             {c.character_type === 'npc' && (
-              <span className="rounded bg-purple-600/30 px-1 text-xs uppercase text-purple-300">npc</span>
+              <span className="panel-cut-sm bg-purple-600/30 px-1 text-xs uppercase text-purple-300">npc</span>
             )}
           </label>
         );
@@ -100,7 +100,7 @@ export default function PerksCompendium() {
           ) : (
             <button
               onClick={() => setForm({})}
-              className="rounded-md bg-indigo-600 px-4 py-2 font-semibold hover:bg-indigo-500"
+              className="panel-cut-sm bg-brand-600 px-4 py-2 font-semibold hover:bg-brand-500"
             >
               + New Perk
             </button>
@@ -125,19 +125,19 @@ export default function PerksCompendium() {
                       <>
                         <button
                           onClick={() => setGrantOpen(grantOpen === perk.id ? null : perk.id)}
-                          className="rounded px-2 py-0.5 text-xs text-indigo-400 hover:bg-indigo-900/40"
+                          className="panel-cut-sm px-2 py-0.5 text-xs text-brand-400 hover:bg-brand-900/40"
                         >
                           Grant… ({perk.granted_character_ids.length})
                         </button>
                         <button
                           onClick={() => setForm({ perk })}
-                          className="rounded px-2 py-0.5 text-xs text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300"
+                          className="panel-cut-sm px-2 py-0.5 text-xs text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300"
                         >
                           Edit
                         </button>
                         <button
                           onClick={() => deletePerk(perk)}
-                          className="rounded px-2 py-0.5 text-xs text-zinc-500 hover:bg-red-900/40 hover:text-red-400"
+                          className="panel-cut-sm px-2 py-0.5 text-xs text-zinc-500 hover:bg-red-900/40 hover:text-red-400"
                         >
                           Delete
                         </button>
@@ -169,13 +169,13 @@ export default function PerksCompendium() {
                   }}
                   onDragLeave={() => setDropTarget(null)}
                   onDrop={(e) => onDropOnCharacter(e, c)}
-                  className={`flex items-center gap-2 rounded-lg border p-2 transition ${
+                  className={`flex items-center gap-2 panel-cut border p-2 transition ${
                     dropTarget === c.id
-                      ? 'border-indigo-500 bg-indigo-950/50'
+                      ? 'border-brand-500 bg-brand-950/50'
                       : 'border-zinc-800 bg-zinc-900'
                   }`}
                 >
-                  <div className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-md bg-zinc-800 text-sm font-bold text-zinc-600">
+                  <div className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden panel-cut-sm bg-zinc-800 text-sm font-bold text-zinc-600">
                     {src ? (
                       <img src={src} alt="" className="h-full w-full object-cover" />
                     ) : (

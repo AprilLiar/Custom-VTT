@@ -39,7 +39,7 @@ function Pips({ current, target }) {
           key={i}
           className={`h-4 w-4 rounded-full border ${
             i < current
-              ? 'border-indigo-400 bg-indigo-500'
+              ? 'border-brand-400 bg-brand-500'
               : 'border-zinc-700 bg-zinc-800'
           }`}
         />
@@ -50,7 +50,7 @@ function Pips({ current, target }) {
 
 function CounterRow({ counter }) {
   return (
-    <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-3">
+    <div className="panel-cut-lg border border-zinc-800 bg-zinc-900 p-3">
       <div className="flex items-center gap-2">
         <span className="font-bold text-zinc-100">{counter.name}</span>
         <RewardSelect counter={counter} />
@@ -68,7 +68,7 @@ function CounterRow({ counter }) {
         <button
           onClick={() => socket.emit('counter:delete', { counterId: counter.id })}
           title="Delete"
-          className="rounded px-1.5 text-zinc-600 hover:bg-red-900/40 hover:text-red-400"
+          className="panel-cut-sm px-1.5 text-zinc-600 hover:bg-red-900/40 hover:text-red-400"
         >
           ✕
         </button>
@@ -77,7 +77,7 @@ function CounterRow({ counter }) {
         <button
           onClick={() => socket.emit('counter:adjust', { counterId: counter.id, delta: -1 })}
           disabled={counter.current_pips <= 0}
-          className="h-8 w-8 shrink-0 rounded-md border border-zinc-700 text-lg text-red-400 hover:bg-zinc-800 disabled:opacity-30"
+          className="h-8 w-8 shrink-0 panel-cut-sm border border-zinc-700 text-lg text-red-400 hover:bg-zinc-800 disabled:opacity-30"
         >
           −
         </button>
@@ -85,7 +85,7 @@ function CounterRow({ counter }) {
         <button
           onClick={() => socket.emit('counter:adjust', { counterId: counter.id, delta: 1 })}
           disabled={counter.current_pips >= counter.target_pips}
-          className="h-8 w-8 shrink-0 rounded-md border border-zinc-700 text-lg text-green-400 hover:bg-zinc-800 disabled:opacity-30"
+          className="h-8 w-8 shrink-0 panel-cut-sm border border-zinc-700 text-lg text-green-400 hover:bg-zinc-800 disabled:opacity-30"
         >
           +
         </button>
@@ -124,12 +124,12 @@ export default function CountersTab({ data }) {
         counters.map((counter) => <CounterRow key={counter.id} counter={counter} />)
       )}
 
-      <form onSubmit={add} className="flex flex-wrap items-center gap-2 rounded-xl border border-zinc-800 bg-zinc-900 p-3">
+      <form onSubmit={add} className="flex flex-wrap items-center gap-2 panel-cut-lg border border-zinc-800 bg-zinc-900 p-3">
         <input
           value={name}
           onChange={(e) => setName(e.target.value)}
           placeholder="Counter name"
-          className="min-w-0 flex-1 rounded-md border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm text-zinc-100 outline-none focus:border-indigo-500"
+          className="min-w-0 flex-1 panel-cut-sm border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm text-zinc-100 outline-none focus:border-brand-500"
         />
         <label className="flex items-center gap-1.5 text-xs text-zinc-500">
           Target
@@ -141,14 +141,14 @@ export default function CountersTab({ data }) {
             onChange={(e) =>
               setTarget(Math.max(MIN_TARGET, Math.min(MAX_TARGET, Number(e.target.value) || MIN_TARGET)))
             }
-            className="w-16 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm text-zinc-100 outline-none focus:border-indigo-500"
+            className="w-16 panel-cut-sm border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm text-zinc-100 outline-none focus:border-brand-500"
           />
         </label>
         <select
           value={reward}
           onChange={(e) => setReward(e.target.value)}
           title="Reward (tracking only — no mechanical effect)"
-          className="rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm text-zinc-300 outline-none focus:border-indigo-500"
+          className="panel-cut-sm border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm text-zinc-300 outline-none focus:border-brand-500"
         >
           <option value="">No Reward</option>
           {REWARD_TYPES.map((r) => (
@@ -160,7 +160,7 @@ export default function CountersTab({ data }) {
         <button
           type="submit"
           disabled={!name.trim()}
-          className="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-semibold hover:bg-indigo-500 disabled:opacity-40"
+          className="panel-cut-sm bg-brand-600 px-3 py-1.5 text-sm font-semibold hover:bg-brand-500 disabled:opacity-40"
         >
           + New Counter
         </button>

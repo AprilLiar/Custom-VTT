@@ -24,12 +24,12 @@ function Shell() {
   const homePath = role === 'player' ? `/character/${characterId}` : '/';
 
   return (
-    <div className="flex h-screen flex-col bg-zinc-950 text-zinc-100">
+    <div className="bg-arena flex h-screen flex-col text-zinc-100">
       <header className="flex items-center gap-3 border-b border-zinc-800 px-4 py-2">
         <Link
           to="/combat"
           title="Combat Arena"
-          className="text-lg font-bold tracking-tight hover:text-indigo-400"
+          className="font-display text-xl font-bold uppercase tracking-wide hover:text-brand-400"
         >
           Custom VTT
         </Link>
@@ -42,13 +42,13 @@ function Shell() {
         </span>
         <Link
           to="/compendium"
-          className="rounded-md px-2 py-1 text-sm font-semibold text-zinc-400 hover:text-indigo-300"
+          className="panel-cut-sm font-display px-2 py-1 text-sm font-semibold uppercase tracking-wide text-zinc-400 hover:text-brand-300"
         >
           Compendium
         </Link>
         <Link
           to={homePath}
-          className="rounded-md px-2 py-1 text-sm font-semibold text-zinc-400 hover:text-indigo-300"
+          className="panel-cut-sm font-display px-2 py-1 text-sm font-semibold uppercase tracking-wide text-zinc-400 hover:text-brand-300"
         >
           {role === 'gm' ? 'Characters' : 'Character'}
         </Link>
@@ -56,7 +56,7 @@ function Shell() {
         <SearchBar />
         <button
           onClick={() => setChatOpen((v) => !v)}
-          className="rounded-md border border-zinc-700 px-3 py-1 text-sm text-zinc-300 hover:bg-zinc-800"
+          className="panel-cut-sm font-display border border-zinc-700 px-3 py-1 text-sm font-semibold uppercase tracking-wide text-zinc-300 hover:bg-zinc-800"
         >
           {chatOpen ? 'Hide chat' : 'Chat'}
         </button>

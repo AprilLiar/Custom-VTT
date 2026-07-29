@@ -39,7 +39,7 @@ export default function PerkCreator({ initial, onSubmit, onCancel }) {
       : initial;
 
   return (
-    <form onSubmit={submit} className="space-y-3 rounded-xl border border-zinc-700 bg-zinc-900 p-4">
+    <form onSubmit={submit} className="space-y-3 panel-cut-lg border border-zinc-700 bg-zinc-900 p-4">
       <h3 className="text-sm font-bold uppercase tracking-wide text-zinc-400">
         {initial ? 'Edit Perk' : 'Perk Creator'}
       </h3>
@@ -49,9 +49,9 @@ export default function PerkCreator({ initial, onSubmit, onCancel }) {
           type="button"
           onClick={() => fileRef.current?.click()}
           title="Upload Perk art (optional)"
-          className="rounded-lg border border-zinc-700 hover:border-indigo-500"
+          className="panel-cut border border-zinc-700 hover:border-brand-500"
         >
-          <Thumb record={preview} name={name || '?'} size="h-12 w-12" rounded="rounded-lg" />
+          <Thumb record={preview} name={name || '?'} size="h-12 w-12" cut="panel-cut" />
         </button>
         <input ref={fileRef} type="file" accept="image/*" hidden onChange={pickImage} />
         <input
@@ -59,7 +59,7 @@ export default function PerkCreator({ initial, onSubmit, onCancel }) {
           value={name}
           onChange={(e) => setName(e.target.value)}
           placeholder="Perk name"
-          className="min-w-40 flex-1 rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-zinc-100 outline-none focus:border-indigo-500"
+          className="min-w-40 flex-1 panel-cut-sm border border-zinc-700 bg-zinc-800 px-3 py-2 text-zinc-100 outline-none focus:border-brand-500"
         />
       </div>
 
@@ -68,21 +68,21 @@ export default function PerkCreator({ initial, onSubmit, onCancel }) {
         onChange={(e) => setDescription(e.target.value)}
         placeholder="Description"
         rows={2}
-        className="w-full rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-indigo-500"
+        className="w-full panel-cut-sm border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-brand-500"
       />
 
       <div className="flex gap-2">
         <button
           type="submit"
           disabled={!valid}
-          className="flex-1 rounded-md bg-indigo-600 py-2 font-semibold hover:bg-indigo-500 disabled:opacity-40"
+          className="flex-1 panel-cut-sm bg-brand-600 py-2 font-semibold hover:bg-brand-500 disabled:opacity-40"
         >
           {initial ? 'Save Perk' : 'Create Perk'}
         </button>
         <button
           type="button"
           onClick={onCancel}
-          className="rounded-md border border-zinc-700 px-4 text-zinc-400 hover:bg-zinc-800"
+          className="panel-cut-sm border border-zinc-700 px-4 text-zinc-400 hover:bg-zinc-800"
         >
           Cancel
         </button>

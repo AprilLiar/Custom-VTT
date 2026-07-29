@@ -31,7 +31,7 @@ function AutomationEditor({ automations, onChange }) {
           <select
             value={a.type}
             onChange={(e) => update(i, { type: e.target.value })}
-            className="min-w-0 flex-1 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs text-zinc-300 outline-none focus:border-indigo-500"
+            className="min-w-0 flex-1 panel-cut-sm border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs text-zinc-300 outline-none focus:border-brand-500"
           >
             {AUTOMATION_OPTIONS.map((o) => (
               <option key={o.type} value={o.type}>
@@ -45,12 +45,12 @@ function AutomationEditor({ automations, onChange }) {
             max={20}
             value={a.amount}
             onChange={(e) => update(i, { amount: Number(e.target.value) })}
-            className="w-16 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs text-zinc-300 outline-none focus:border-indigo-500"
+            className="w-16 panel-cut-sm border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs text-zinc-300 outline-none focus:border-brand-500"
           />
           <button
             type="button"
             onClick={() => remove(i)}
-            className="rounded px-1 text-zinc-600 hover:text-red-400"
+            className="panel-cut-sm px-1 text-zinc-600 hover:text-red-400"
           >
             ✕
           </button>
@@ -59,7 +59,7 @@ function AutomationEditor({ automations, onChange }) {
       <button
         type="button"
         onClick={add}
-        className="text-xs text-indigo-400 hover:text-indigo-300"
+        className="text-xs text-brand-400 hover:text-brand-300"
       >
         + automation
       </button>
@@ -70,7 +70,7 @@ function AutomationEditor({ automations, onChange }) {
 // One On Hit/Block/Miss/Defense-outcome box: free text + automation editor.
 function TriggerBox({ trigger, label, interactions, setInteractions }) {
   return (
-    <div className="rounded-lg border border-zinc-800 p-2">
+    <div className="panel-cut border border-zinc-800 p-2">
       <div className="mb-1 text-xs font-bold uppercase tracking-wide text-zinc-400">{label}</div>
       <textarea
         value={interactions[trigger].text}
@@ -82,7 +82,7 @@ function TriggerBox({ trigger, label, interactions, setInteractions }) {
         }
         placeholder="Text (optional)"
         rows={2}
-        className="mb-2 w-full rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs text-zinc-300 outline-none focus:border-indigo-500"
+        className="mb-2 w-full panel-cut-sm border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs text-zinc-300 outline-none focus:border-brand-500"
       />
       <AutomationEditor
         automations={interactions[trigger].automations}
@@ -201,7 +201,7 @@ export default function MoveCreator({
   return (
     <form
       onSubmit={submit}
-      className="space-y-3 rounded-xl border border-zinc-700 bg-zinc-900 p-4"
+      className="space-y-3 panel-cut-lg border border-zinc-700 bg-zinc-900 p-4"
     >
       <h3 className="text-sm font-bold uppercase tracking-wide text-zinc-400">
         {initial ? 'Edit Move' : 'Move Creator'}
@@ -212,9 +212,9 @@ export default function MoveCreator({
           type="button"
           onClick={() => fileRef.current?.click()}
           title="Upload move art"
-          className="rounded-lg border border-zinc-700 hover:border-indigo-500"
+          className="panel-cut border border-zinc-700 hover:border-brand-500"
         >
-          <Thumb record={preview} name={name || '?'} size="h-10 w-10" rounded="rounded-lg" />
+          <Thumb record={preview} name={name || '?'} size="h-10 w-10" cut="panel-cut" />
         </button>
         <input ref={fileRef} type="file" accept="image/*" hidden onChange={pickImage} />
         <input
@@ -222,7 +222,7 @@ export default function MoveCreator({
           value={name}
           onChange={(e) => setName(e.target.value)}
           placeholder="Move name"
-          className="min-w-40 flex-1 rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-zinc-100 outline-none focus:border-indigo-500"
+          className="min-w-40 flex-1 panel-cut-sm border border-zinc-700 bg-zinc-800 px-3 py-2 text-zinc-100 outline-none focus:border-brand-500"
         />
         <label className="flex items-center gap-1.5 text-sm text-zinc-300">
           <input
@@ -246,7 +246,7 @@ export default function MoveCreator({
               value={rightTellId ?? ''}
               onChange={(e) => setRightTellId(Number(e.target.value))}
               title="Tell shown when this move is rolled as the Right appendage"
-              className="rounded-md border border-zinc-700 bg-zinc-800 px-2 py-2 text-sm text-zinc-300 outline-none focus:border-indigo-500"
+              className="panel-cut-sm border border-zinc-700 bg-zinc-800 px-2 py-2 text-sm text-zinc-300 outline-none focus:border-brand-500"
             >
               {tells.map((t) => (
                 <option key={t.id} value={t.id}>
@@ -258,7 +258,7 @@ export default function MoveCreator({
               value={leftTellId ?? ''}
               onChange={(e) => setLeftTellId(Number(e.target.value))}
               title="Tell shown when this move is rolled as the Left appendage"
-              className="rounded-md border border-zinc-700 bg-zinc-800 px-2 py-2 text-sm text-zinc-300 outline-none focus:border-indigo-500"
+              className="panel-cut-sm border border-zinc-700 bg-zinc-800 px-2 py-2 text-sm text-zinc-300 outline-none focus:border-brand-500"
             >
               {tells.map((t) => (
                 <option key={t.id} value={t.id}>
@@ -271,7 +271,7 @@ export default function MoveCreator({
           <select
             value={tellId ?? ''}
             onChange={(e) => setTellId(Number(e.target.value))}
-            className="rounded-md border border-zinc-700 bg-zinc-800 px-2 py-2 text-sm text-zinc-300 outline-none focus:border-indigo-500"
+            className="panel-cut-sm border border-zinc-700 bg-zinc-800 px-2 py-2 text-sm text-zinc-300 outline-none focus:border-brand-500"
           >
             {tells.map((t) => (
               <option key={t.id} value={t.id}>
@@ -283,7 +283,7 @@ export default function MoveCreator({
         <select
           value={folderId ?? ''}
           onChange={(e) => setFolderId(e.target.value ? Number(e.target.value) : null)}
-          className="rounded-md border border-zinc-700 bg-zinc-800 px-2 py-2 text-sm text-zinc-300 outline-none focus:border-indigo-500"
+          className="panel-cut-sm border border-zinc-700 bg-zinc-800 px-2 py-2 text-sm text-zinc-300 outline-none focus:border-brand-500"
         >
           <option value="">Discipline: none</option>
           {flattenFolderTree(folders).map(({ folder, depth, path }) => (
@@ -312,9 +312,9 @@ export default function MoveCreator({
                   key={attr.id}
                   type="button"
                   onClick={() => setStyleId(attr.id)}
-                  className={`inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-xs font-semibold ${
+                  className={`inline-flex items-center gap-1 panel-cut border px-2 py-1 text-xs font-semibold ${
                     selected
-                      ? 'border-indigo-500 bg-indigo-600/30 text-indigo-200'
+                      ? 'border-brand-500 bg-brand-600/30 text-brand-200'
                       : 'border-zinc-700 bg-zinc-800 text-zinc-400 hover:border-zinc-500'
                   }`}
                 >
@@ -345,9 +345,9 @@ export default function MoveCreator({
                 key={slot}
                 type="button"
                 onClick={() => toggleRollSlot(slot)}
-                className={`rounded-lg border px-2 py-1 text-xs font-semibold ${
+                className={`panel-cut border px-2 py-1 text-xs font-semibold ${
                   selected
-                    ? 'border-indigo-500 bg-indigo-600/30 text-indigo-200'
+                    ? 'border-brand-500 bg-brand-600/30 text-brand-200'
                     : 'border-zinc-700 bg-zinc-800 text-zinc-400 hover:border-zinc-500'
                 }`}
               >
@@ -366,7 +366,7 @@ export default function MoveCreator({
                 onChange={(e) =>
                   setRollModifier(Math.max(-20, Math.min(20, Math.trunc(Number(e.target.value) || 0))))
                 }
-                className="w-16 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs text-zinc-100 outline-none focus:border-indigo-500"
+                className="w-16 panel-cut-sm border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs text-zinc-100 outline-none focus:border-brand-500"
               />
             </label>
           )}
@@ -419,7 +419,7 @@ export default function MoveCreator({
                   [f.key]: Math.max(0, Math.min(10, Math.trunc(Number(e.target.value) || 0))),
                 }))
               }
-              className="mt-1 block w-20 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm text-zinc-100 outline-none focus:border-indigo-500"
+              className="mt-1 block w-20 panel-cut-sm border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm text-zinc-100 outline-none focus:border-brand-500"
             />
           </label>
         ))}
@@ -436,7 +436,7 @@ export default function MoveCreator({
             value={staminaCost}
             onChange={(e) => setStaminaCost(Math.trunc(Number(e.target.value) || 0))}
             title="Subtracted from Current Stamina once the declaring side finishes declaring. 0 is a valid free cost; negative restores Stamina instead."
-            className="mt-1 block w-20 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm text-zinc-100 outline-none focus:border-indigo-500"
+            className="mt-1 block w-20 panel-cut-sm border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm text-zinc-100 outline-none focus:border-brand-500"
           />
         </label>
       </div>
@@ -446,7 +446,7 @@ export default function MoveCreator({
         onChange={(e) => setDescription(e.target.value)}
         placeholder="Description"
         rows={2}
-        className="w-full rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-indigo-500"
+        className="w-full panel-cut-sm border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-brand-500"
       />
 
       <div className="grid gap-3 sm:grid-cols-3">
@@ -484,14 +484,14 @@ export default function MoveCreator({
         <button
           type="submit"
           disabled={!valid}
-          className="flex-1 rounded-md bg-indigo-600 py-2 font-semibold hover:bg-indigo-500 disabled:opacity-40"
+          className="flex-1 panel-cut-sm bg-brand-600 py-2 font-semibold hover:bg-brand-500 disabled:opacity-40"
         >
           {initial ? 'Save Move' : 'Create Move'}
         </button>
         <button
           type="button"
           onClick={onCancel}
-          className="rounded-md border border-zinc-700 px-4 text-zinc-400 hover:bg-zinc-800"
+          className="panel-cut-sm border border-zinc-700 px-4 text-zinc-400 hover:bg-zinc-800"
         >
           Cancel
         </button>

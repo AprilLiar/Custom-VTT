@@ -23,29 +23,29 @@ function Entry({ entry, character, moveInfo }) {
         record={character}
         name={entry.characterName}
         size="h-6 w-6"
-        rounded="rounded-full"
+        cut="rounded-full"
       />
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline gap-2">
-          <span className="font-semibold text-zinc-200">{entry.characterName}</span>
-          <span className="ml-auto text-xs text-zinc-600">{time}</span>
+          <span className="font-display font-semibold text-zinc-200">{entry.characterName}</span>
+          <span className="font-display ml-auto text-xs text-zinc-600">{time}</span>
         </div>
         {entry.kind === 'message' ? (
           <div className="mt-1">
             {entry.message && (
-              <p className="whitespace-pre-wrap break-words text-zinc-300">{entry.message}</p>
+              <p className="font-display whitespace-pre-wrap break-words text-zinc-300">{entry.message}</p>
             )}
             {entry.imageData && (
               <img
                 src={`data:${entry.imageMimeType || 'image/png'};base64,${entry.imageData}`}
                 alt=""
-                className="mt-1 max-h-64 max-w-full rounded-md object-contain"
+                className="mt-1 max-h-64 max-w-full panel-cut-sm object-contain"
               />
             )}
           </div>
         ) : entry.kind === 'move_reveal' ? (
           entry.move ? (
-            <div className="mt-1 w-full rounded-md bg-zinc-800/60 p-1.5">
+            <div className="mt-1 w-full panel-cut-sm bg-zinc-800/60 p-1.5">
               <button
                 type="button"
                 onClick={() => {
@@ -64,7 +64,7 @@ function Entry({ entry, character, moveInfo }) {
               >
                 <Thumb record={{ image_data: entry.move.imageData, image_mime_type: entry.move.imageMimeType }} name={entry.move.name} size="h-8 w-8" />
                 <div className="min-w-0 flex-1">
-                  <div className="truncate text-sm font-semibold text-zinc-100">{entry.move.name}</div>
+                  <div className="font-display truncate text-sm font-semibold text-zinc-100">{entry.move.name}</div>
                   <FrameBar
                     startup={entry.move.startupTics}
                     active={entry.move.activeTics}
@@ -115,7 +115,7 @@ function Entry({ entry, character, moveInfo }) {
           )
         ) : (
           <>
-            <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-zinc-400">
+            <div className="font-display mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-zinc-400">
               {entry.dice.map((d, i) => (
                 <span key={i}>
                   {d.slot_name} ({dieFormula(d.size, d.bonus, entry.modifier)}):{' '}
@@ -124,7 +124,7 @@ function Entry({ entry, character, moveInfo }) {
               ))}
             </div>
             {multi && (
-              <div className="mt-0.5 text-right font-mono text-sm font-bold text-zinc-100">
+              <div className="font-display mt-0.5 text-right font-mono text-sm font-bold text-zinc-100">
                 Total {entry.total}
               </div>
             )}
@@ -219,7 +219,7 @@ function Composer({ characters }) {
     <div className="border-t border-zinc-800 p-2">
       {error && <p className="mb-1 text-xs text-red-400">{error}</p>}
       {pending && (
-        <div className="mb-1 flex items-center gap-2 rounded-md bg-zinc-800 px-2 py-1 text-xs text-zinc-300">
+        <div className="mb-1 flex items-center gap-2 panel-cut-sm bg-zinc-800 px-2 py-1 text-xs text-zinc-300">
           <span className="truncate">📎 {pending.previewName}</span>
           <button
             onClick={() => setPending(null)}
@@ -233,7 +233,7 @@ function Composer({ characters }) {
         {role === 'player' ? (
           <span
             title="You always post as your own character"
-            className="max-w-[6.5rem] shrink-0 truncate rounded-md border border-zinc-800 bg-zinc-900 px-2 py-1.5 text-xs text-zinc-400"
+            className="font-display max-w-[6.5rem] shrink-0 truncate panel-cut-sm border border-zinc-800 bg-zinc-900 px-2 py-1.5 text-xs text-zinc-400"
           >
             {characters.find((c) => String(c.id) === characterId)?.name ?? '…'}
           </span>
@@ -241,7 +241,7 @@ function Composer({ characters }) {
           <select
             value={characterId}
             onChange={(e) => setCharacterId(e.target.value)}
-            className="max-w-[6.5rem] shrink-0 rounded-md border border-zinc-700 bg-zinc-900 px-1 py-1.5 text-xs text-zinc-300"
+            className="font-display max-w-[6.5rem] shrink-0 panel-cut-sm border border-zinc-700 bg-zinc-900 px-1 py-1.5 text-xs text-zinc-300"
             title="Post as"
           >
             <option value="gm">GM</option>
@@ -256,7 +256,7 @@ function Composer({ characters }) {
           type="button"
           onClick={() => fileRef.current?.click()}
           title="Attach an image — use this (not paste) for an animated GIF, since pasting flattens the animation"
-          className="shrink-0 rounded-md border border-zinc-700 p-1.5 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
+          className="shrink-0 panel-cut-sm border border-zinc-700 p-1.5 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
         >
           <Paperclip size={16} />
         </button>
@@ -268,11 +268,11 @@ function Composer({ characters }) {
           onKeyDown={onKeyDown}
           onPaste={onPaste}
           placeholder="Say something…"
-          className="min-w-0 flex-1 resize-none rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1.5 text-sm text-zinc-200 placeholder:text-zinc-600"
+          className="font-display min-w-0 flex-1 resize-none panel-cut-sm border border-zinc-700 bg-zinc-900 px-2 py-1.5 text-sm text-zinc-200 placeholder:text-zinc-600"
         />
         <button
           onClick={send}
-          className="shrink-0 rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-indigo-500"
+          className="shrink-0 panel-cut-sm bg-brand-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-brand-500"
         >
           Send
         </button>
@@ -373,14 +373,14 @@ export default function ChatPanel({ open, onClose }) {
         {role === 'gm' && (
           <button
             onClick={clearChat}
-            className="ml-auto rounded px-2 py-0.5 text-xs text-zinc-500 hover:bg-zinc-800 hover:text-red-400"
+            className="ml-auto panel-cut-sm px-2 py-0.5 text-xs text-zinc-500 hover:bg-zinc-800 hover:text-red-400"
           >
             Clear Chat
           </button>
         )}
         <button
           onClick={onClose}
-          className={`${role === 'gm' ? '' : 'ml-auto'} rounded px-2 text-zinc-500 hover:text-zinc-200 md:hidden`}
+          className={`${role === 'gm' ? '' : 'ml-auto'} panel-cut-sm px-2 text-zinc-500 hover:text-zinc-200 md:hidden`}
         >
           ✕
         </button>

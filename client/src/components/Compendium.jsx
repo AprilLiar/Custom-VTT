@@ -46,7 +46,7 @@ function TellManager({ tells, usedTellIds }) {
         : null;
 
   return (
-    <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
+    <div className="panel-cut-lg border border-zinc-800 bg-zinc-900 p-4">
       <h2 className="mb-3 text-sm font-bold uppercase tracking-wide text-zinc-400">
         Tells (world-level)
       </h2>
@@ -58,7 +58,7 @@ function TellManager({ tells, usedTellIds }) {
               key={tell.id}
               className="inline-flex items-center gap-1.5 rounded-full border border-zinc-700 bg-zinc-800 px-2 py-1 text-sm text-zinc-200"
             >
-              <Thumb record={tell} name={tell.name} size="h-5 w-5" rounded="rounded-full" />
+              <Thumb record={tell} name={tell.name} size="h-5 w-5" cut="rounded-full" />
               {tell.name}
               <button
                 onClick={() => startEdit(tell)}
@@ -84,7 +84,7 @@ function TellManager({ tells, usedTellIds }) {
         {!editing && (
           <button
             onClick={() => startEdit('new')}
-            className="rounded-full border border-dashed border-zinc-600 px-3 py-1 text-sm text-zinc-400 hover:border-indigo-500 hover:text-indigo-300"
+            className="rounded-full border border-dashed border-zinc-600 px-3 py-1 text-sm text-zinc-400 hover:border-brand-500 hover:text-brand-300"
           >
             + New Tell
           </button>
@@ -96,9 +96,9 @@ function TellManager({ tells, usedTellIds }) {
             type="button"
             onClick={() => fileRef.current?.click()}
             title="Upload Tell art"
-            className="rounded-lg border border-zinc-700 hover:border-indigo-500"
+            className="panel-cut border border-zinc-700 hover:border-brand-500"
           >
-            <Thumb record={preview} name={name || '?'} size="h-9 w-9" rounded="rounded-lg" />
+            <Thumb record={preview} name={name || '?'} size="h-9 w-9" cut="panel-cut" />
           </button>
           <input ref={fileRef} type="file" accept="image/*" hidden onChange={pickImage} />
           <input
@@ -106,19 +106,19 @@ function TellManager({ tells, usedTellIds }) {
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder="Tell name"
-            className="rounded-md border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm text-zinc-100 outline-none focus:border-indigo-500"
+            className="panel-cut-sm border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm text-zinc-100 outline-none focus:border-brand-500"
           />
           <button
             type="submit"
             disabled={!name.trim()}
-            className="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-semibold hover:bg-indigo-500 disabled:opacity-40"
+            className="panel-cut-sm bg-brand-600 px-3 py-1.5 text-sm font-semibold hover:bg-brand-500 disabled:opacity-40"
           >
             Save
           </button>
           <button
             type="button"
             onClick={() => setEditing(null)}
-            className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-400 hover:bg-zinc-800"
+            className="panel-cut-sm border border-zinc-700 px-3 py-1.5 text-sm text-zinc-400 hover:bg-zinc-800"
           >
             Cancel
           </button>
@@ -155,7 +155,7 @@ function TagManager({ tags }) {
   };
 
   return (
-    <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
+    <div className="panel-cut-lg border border-zinc-800 bg-zinc-900 p-4">
       <h2 className="mb-3 text-sm font-bold uppercase tracking-wide text-zinc-400">
         Tags (world-level)
       </h2>
@@ -189,7 +189,7 @@ function TagManager({ tags }) {
         {!editing && (
           <button
             onClick={() => startEdit('new')}
-            className="rounded-full border border-dashed border-zinc-600 px-3 py-1 text-sm text-zinc-400 hover:border-indigo-500 hover:text-indigo-300"
+            className="rounded-full border border-dashed border-zinc-600 px-3 py-1 text-sm text-zinc-400 hover:border-brand-500 hover:text-brand-300"
           >
             + New Tag
           </button>
@@ -202,25 +202,25 @@ function TagManager({ tags }) {
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder="Tag name"
-            className="w-28 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm text-zinc-100 outline-none focus:border-indigo-500"
+            className="w-28 panel-cut-sm border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm text-zinc-100 outline-none focus:border-brand-500"
           />
           <input
             value={description}
             onChange={(e) => setDescription(e.target.value)}
             placeholder="Description (shown as a tooltip)"
-            className="min-w-0 flex-1 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm text-zinc-100 outline-none focus:border-indigo-500"
+            className="min-w-0 flex-1 panel-cut-sm border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm text-zinc-100 outline-none focus:border-brand-500"
           />
           <button
             type="submit"
             disabled={!name.trim()}
-            className="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-semibold hover:bg-indigo-500 disabled:opacity-40"
+            className="panel-cut-sm bg-brand-600 px-3 py-1.5 text-sm font-semibold hover:bg-brand-500 disabled:opacity-40"
           >
             Save
           </button>
           <button
             type="button"
             onClick={() => setEditing(null)}
-            className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-400 hover:bg-zinc-800"
+            className="panel-cut-sm border border-zinc-700 px-3 py-1.5 text-sm text-zinc-400 hover:bg-zinc-800"
           >
             Cancel
           </button>
@@ -232,7 +232,7 @@ function TagManager({ tags }) {
 
 function GrantList({ move, characters, canLearn }) {
   return (
-    <div className="mt-1 space-y-1 rounded-md border border-zinc-800 bg-zinc-950/60 p-2">
+    <div className="mt-1 space-y-1 panel-cut-sm border border-zinc-800 bg-zinc-950/60 p-2">
       {characters.map((c) => {
         const granted = move.granted_character_ids.includes(c.id);
         const learnable = canLearn(c, move);
@@ -257,7 +257,7 @@ function GrantList({ move, characters, canLearn }) {
             />
             {c.name}
             {c.character_type === 'npc' && (
-              <span className="rounded bg-purple-600/30 px-1 text-xs uppercase text-purple-300">
+              <span className="panel-cut-sm bg-purple-600/30 px-1 text-xs uppercase text-purple-300">
                 npc
               </span>
             )}
@@ -418,9 +418,9 @@ export default function MovesCompendium() {
                 key={attr.id}
                 onClick={() => setStyleFilter(active ? null : attr.id)}
                 title={`Filter by ${attr.name}`}
-                className={`rounded-md border p-1.5 ${
+                className={`panel-cut-sm border p-1.5 ${
                   active
-                    ? 'border-indigo-500 bg-indigo-600/30 text-indigo-300'
+                    ? 'border-brand-500 bg-brand-600/30 text-brand-300'
                     : 'border-zinc-700 text-zinc-500 hover:border-zinc-500'
                 }`}
               >
@@ -446,7 +446,7 @@ export default function MovesCompendium() {
             <button
               onClick={() => setForm({})}
               disabled={tells.length === 0}
-              className="rounded-md bg-indigo-600 px-4 py-2 font-semibold hover:bg-indigo-500 disabled:opacity-40"
+              className="panel-cut-sm bg-brand-600 px-4 py-2 font-semibold hover:bg-brand-500 disabled:opacity-40"
             >
               + New Move
             </button>
@@ -480,7 +480,7 @@ export default function MovesCompendium() {
                   folderLabel={folderPath(move.folder_id, folders) ?? undefined}
                   badge={
                     move.is_default ? (
-                      <span className="ml-2 rounded bg-zinc-700/60 px-1.5 text-xs font-semibold uppercase text-zinc-400">
+                      <span className="ml-2 panel-cut-sm bg-zinc-700/60 px-1.5 text-xs font-semibold uppercase text-zinc-400">
                         Default
                       </span>
                     ) : null
@@ -491,14 +491,14 @@ export default function MovesCompendium() {
                         {!move.is_default && (
                           <button
                             onClick={() => setGrantOpen(grantOpen === move.id ? null : move.id)}
-                            className="rounded px-2 py-0.5 text-xs text-indigo-400 hover:bg-indigo-900/40"
+                            className="panel-cut-sm px-2 py-0.5 text-xs text-brand-400 hover:bg-brand-900/40"
                           >
                             Grant… ({move.granted_character_ids.length})
                           </button>
                         )}
                         <button
                           onClick={() => setForm({ move })}
-                          className="rounded px-2 py-0.5 text-xs text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300"
+                          className="panel-cut-sm px-2 py-0.5 text-xs text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300"
                         >
                           Edit
                         </button>
@@ -508,7 +508,7 @@ export default function MovesCompendium() {
                               `Delete ${move.name}? It disappears from every character.`
                             ) && socket.emit('move:delete', { moveId: move.id })
                           }
-                          className="rounded px-2 py-0.5 text-xs text-zinc-500 hover:bg-red-900/40 hover:text-red-400"
+                          className="panel-cut-sm px-2 py-0.5 text-xs text-zinc-500 hover:bg-red-900/40 hover:text-red-400"
                         >
                           Delete
                         </button>
@@ -542,13 +542,13 @@ export default function MovesCompendium() {
                   }}
                   onDragLeave={() => setDropTarget(null)}
                   onDrop={(e) => onDropOnCharacter(e, c)}
-                  className={`flex items-center gap-2 rounded-lg border p-2 transition ${
+                  className={`flex items-center gap-2 panel-cut border p-2 transition ${
                     dropTarget === c.id
-                      ? 'border-indigo-500 bg-indigo-950/50'
+                      ? 'border-brand-500 bg-brand-950/50'
                       : 'border-zinc-800 bg-zinc-900'
                   }`}
                 >
-                  <div className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-md bg-zinc-800 text-sm font-bold text-zinc-600">
+                  <div className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden panel-cut-sm bg-zinc-800 text-sm font-bold text-zinc-600">
                     {src ? (
                       <img src={src} alt="" className="h-full w-full object-cover" />
                     ) : (
