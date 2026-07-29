@@ -298,7 +298,7 @@ function TicSquare({
   isCurrent,
   footprintZone,
   declaredPhases,
-  overflowOccupied,
+  overflowNames,
   onDragOver,
   onDrop,
 }) {
@@ -308,12 +308,19 @@ function TicSquare({
     recovery: 'border-blue-300 bg-blue-500/80 shadow-[0_0_10px_rgba(59,130,246,0.45)]',
     blocked: 'border-zinc-600 bg-zinc-800 text-zinc-600',
   }[footprintZone];
+  // Capped at 2 badges so they never crowd a 44px square — the tooltip
+  // still lists everyone if there are more.
+  const shownNames = (overflowNames ?? []).slice(0, 2);
   return (
     <motion.div
       key={isCurrent ? 'current' : 'idle'}
       onDragOver={onDragOver}
       onDrop={onDrop}
-      title={`Tic ${relativeTic}${overflowOccupied ? ' — occupied by carryover from last round' : ''}`}
+      title={`Tic ${relativeTic}${
+        overflowNames?.length
+          ? ` — occupied by ${overflowNames.join(', ')} (carryover from last round)`
+          : ''
+      }`}
       initial={isCurrent ? { scale: 1.5 } : false}
       animate={{ scale: isCurrent && !zoneStyle ? 1.1 : 1 }}
       transition={{ duration: 0.35, ease: 'easeOut' }}
@@ -325,8 +332,18 @@ function TicSquare({
       }`}
     >
       {relativeTic}
-      {overflowOccupied && (
-        <span className="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-zinc-400" />
+      {shownNames.length > 0 && (
+        <div className="absolute -right-0.5 -top-0.5 flex">
+          {shownNames.map((name, i) => (
+            <span
+              key={name}
+              className="flex h-3.5 w-3.5 items-center justify-center rounded-full bg-zinc-500 text-[8px] font-bold leading-none text-zinc-100 ring-1 ring-zinc-900"
+              style={i > 0 ? { marginLeft: '-4px' } : undefined}
+            >
+              {name.slice(0, 1).toUpperCase()}
+            </span>
+          ))}
+        </div>
       )}
       {declaredPhases?.length > 0 && (
         <div className="absolute inset-x-0 bottom-1 flex flex-wrap items-center justify-center gap-0.5">
@@ -393,7 +410,7 @@ function TicCounterCentral({
             declaredPhases={
               showDeclaredPreview ? declaredPhasesAt(sq.absoluteTic, declaredMoves) : undefined
             }
-            overflowOccupied={overflowTics.has(sq.absoluteTic)}
+            overflowNames={overflowTics.get(sq.absoluteTic)}
             onDragOver={
               canDrop
                 ? (e) => {
@@ -425,8 +442,10 @@ function TicCounterCentral({
       )}
       {overflowTics.size > 0 && (
         <div className="flex items-center gap-1 text-[9px] text-zinc-600">
-          <span className="h-1.5 w-1.5 rounded-full bg-zinc-400" /> Tic occupied by carryover from
-          last round
+          <span className="flex h-3.5 w-3.5 items-center justify-center rounded-full bg-zinc-500 text-[8px] font-bold leading-none text-zinc-100 ring-1 ring-zinc-900">
+            X
+          </span>{' '}
+          initial = that character still has a move recovering here (carryover from last round)
         </div>
       )}
     </div>
@@ -1172,14 +1191,22 @@ export default function CombatArena() {
   const currentRoundMoves = declaredMoves.filter((dm) => dm.roundNumber === combat.roundNumber);
   // Tics at the start of THIS round already occupied by a previous round's
   // overflowing Recovery — general board-state awareness, broadcast to
-  // everyone regardless of role/turn (not attributed to any character).
-  // Only ever built from prior rounds, so it can never leak this round's
-  // own still-secret placements the way showing everyone's current-round
-  // moves would.
-  const overflowTics = new Set();
+  // everyone regardless of role/turn. Attributed by character name: which
+  // character still has something recovering here isn't secret (their Tell
+  // card is already visible in the Move Band the whole time), only the
+  // move's own identity/details are — same distinction the rest of Combat
+  // Timing already draws. Only ever built from prior rounds, so it can
+  // never leak this round's own still-secret placements.
+  const overflowTics = new Map(); // absoluteTic -> character names occupying it
   for (const dm of declaredMoves) {
     if (dm.roundNumber >= combat.roundNumber) continue;
-    for (let t = combat.roundStartTic; t < dm.recoveryEndTic; t++) overflowTics.add(t);
+    const name = characters[dm.characterId]?.character.name;
+    if (!name) continue;
+    for (let t = combat.roundStartTic; t < dm.recoveryEndTic; t++) {
+      const names = overflowTics.get(t) ?? [];
+      if (!names.includes(name)) names.push(name);
+      overflowTics.set(t, names);
+    }
   }
   const bandEntries = (predicate) =>
     currentRoundMoves
