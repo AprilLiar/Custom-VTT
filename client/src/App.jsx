@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { Link, Navigate, Route, Routes } from 'react-router-dom';
+import { Cog } from 'lucide-react';
 import { RoleProvider, useRole } from './roleContext.jsx';
 import RoleModal from './components/RoleModal.jsx';
 import CharacterList from './components/CharacterList.jsx';
@@ -9,6 +10,7 @@ import CompendiumPage from './components/CompendiumPage.jsx';
 import CombatArena from './components/CombatArena.jsx';
 import CombatHeaderBar from './components/CombatHeaderBar.jsx';
 import SearchBar from './components/SearchBar.jsx';
+import SettingsPage from './components/SettingsPage.jsx';
 
 function Shell() {
   const { role, characterId } = useRole();
@@ -60,6 +62,13 @@ function Shell() {
         >
           {chatOpen ? 'Hide chat' : 'Chat'}
         </button>
+        <Link
+          to="/settings"
+          title="Settings"
+          className="panel-cut-sm border border-zinc-700 p-1.5 text-zinc-400 hover:border-brand-500 hover:text-brand-300"
+        >
+          <Cog size={18} />
+        </Link>
       </header>
       <CombatHeaderBar />
 
@@ -73,6 +82,7 @@ function Shell() {
             <Route path="/character/:id" element={<CharacterSheet />} />
             <Route path="/compendium" element={<CompendiumPage />} />
             <Route path="/combat" element={<CombatArena />} />
+            <Route path="/settings" element={<SettingsPage />} />
             <Route path="*" element={<Navigate to={homePath} replace />} />
           </Routes>
         </main>

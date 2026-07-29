@@ -208,7 +208,7 @@ export default function CharacterSheet() {
 
   return (
     <div className="mx-auto max-w-3xl">
-      <div className="mb-4 flex items-center gap-1 overflow-x-auto border-b border-zinc-800">
+      <div className="mb-4 flex items-center gap-1 overflow-x-auto overflow-y-hidden border-b border-zinc-800">
         {TABS.map((t) => {
           const built = BUILT_TABS.includes(t.key);
           return (

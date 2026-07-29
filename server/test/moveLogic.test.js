@@ -9,6 +9,7 @@ import {
   clampStaminaCost,
   sanitizeRollSlots,
   hasAmbiguousRollSlot,
+  sanitizeDefensePositions,
   AMBIGUOUS_ROLL_SLOTS,
   TRIGGERS,
   DEFENSE_TRIGGERS,
@@ -176,4 +177,17 @@ test('hasAmbiguousRollSlot: true only when Hand or Leg is present', () => {
 test('AMBIGUOUS_ROLL_SLOTS resolves Hand/Leg to [left, right] die slot names', () => {
   assert.deepEqual(AMBIGUOUS_ROLL_SLOTS.Hand, ['Left Hand', 'Right Hand']);
   assert.deepEqual(AMBIGUOUS_ROLL_SLOTS.Leg, ['Left Leg', 'Right Leg']);
+});
+
+test('sanitizeDefensePositions: keeps in-range integers, dedupes, sorts', () => {
+  assert.deepEqual(sanitizeDefensePositions([2, 0, 2, 4], 5), [0, 2, 4]);
+});
+
+test('sanitizeDefensePositions: drops out-of-range and junk entries, truncates fractional/string numbers', () => {
+  assert.deepEqual(sanitizeDefensePositions([-1, 5, 1.9, '2', 3, 'junk'], 5), [1, 2, 3]);
+});
+
+test('sanitizeDefensePositions: non-array input yields empty', () => {
+  assert.deepEqual(sanitizeDefensePositions(null, 5), []);
+  assert.deepEqual(sanitizeDefensePositions(undefined, 5), []);
 });

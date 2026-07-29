@@ -21,6 +21,22 @@ export function validFrames(startup, active, recovery) {
   return startup + active + recovery >= 1;
 }
 
+// Defense Frames: a purely additive annotation on top of the Startup/
+// Active/Recovery totals above, not a 4th timing phase — combatTiming.js's
+// placement/reveal/overflow math is untouched by this. Each entry is a
+// 0-based index into the move's full frame sequence (0..totalTics-1,
+// Startup squares first, then Active, then Recovery — same order FrameBar
+// renders) marking that particular square as also granting a defensive
+// window; the client renders it green instead of its phase color. Can land
+// anywhere in the sequence, including mid-Startup or mid-Recovery.
+export function sanitizeDefensePositions(list, totalTics) {
+  if (!Array.isArray(list)) return [];
+  const clean = list
+    .map((n) => Math.trunc(Number(n)))
+    .filter((n) => Number.isInteger(n) && n >= 0 && n < totalTics);
+  return [...new Set(clean)].sort((a, b) => a - b);
+}
+
 // Automation types on an interaction (the only automated effects for now):
 //   self_recovery:     add/remove Recovery on yourself (amount may be negative)
 //   opponent_recovery: add Recovery to the opponent (positive)

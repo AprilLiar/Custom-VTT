@@ -69,6 +69,7 @@ function Entry({ entry, character, moveInfo }) {
                     startup={entry.move.startupTics}
                     active={entry.move.activeTics}
                     recovery={entry.move.recoveryTics}
+                    defensePositions={entry.move.defenseFramePositions}
                     size="h-2.5 w-2.5"
                   />
                 </div>

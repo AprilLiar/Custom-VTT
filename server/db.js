@@ -306,6 +306,11 @@ export async function initDb() {
   await ensureColumn('moves', 'left_tell_id', 'INTEGER REFERENCES tells(id)');
   await ensureColumn('moves', 'is_defensive', 'INTEGER NOT NULL DEFAULT 0');
   await ensureColumn('moves', 'stamina_cost', 'INTEGER NOT NULL DEFAULT 0');
+  // JSON array of 0-based indices into the move's full frame sequence
+  // (Startup squares first, then Active, then Recovery) marking which
+  // squares also grant a defensive window — see sanitizeDefensePositions in
+  // moveLogic.js. Purely a display annotation, not a timing phase.
+  await ensureColumn('moves', 'defense_frame_positions', "TEXT NOT NULL DEFAULT '[]'");
   // A Default move is usable by anyone, anytime — it never made sense for
   // one to also carry a Style gate. writeMove now refuses to set one going
   // forward; this is the one-time cleanup for any Default move that already
