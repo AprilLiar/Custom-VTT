@@ -30,6 +30,7 @@ import {
   computeMoveFootprint,
   isMoveRevealedTo,
   relativeTic,
+  computeNextRoundStartTic,
 } from './combatTiming.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -2067,10 +2068,23 @@ io.on('connection', (socket) => {
     );
     await run('UPDATE combat_participants SET declared_this_round = 0');
 
+    // The new round's start Tic is floored a full round_length past the
+    // previous round's own start (see computeNextRoundStartTic) — not just
+    // set to wherever current_tic happens to sit — so a round that never
+    // actually had its Tic Countdown run (or only partially did) can't leave
+    // its declared moves' Tics "occupied" again in the new round. current_tic
+    // is advanced to match, keeping it in sync with the new round_start_tic.
+    const nextRoundStartTic = computeNextRoundStartTic({
+      phase: state.phase,
+      currentTic: state.current_tic,
+      roundStartTic: state.round_start_tic,
+      roundLength: state.round_length,
+    });
     await run(
       `UPDATE combat_state SET phase = 'declaration', round_number = round_number + 1,
-       round_start_tic = current_tic
-       WHERE id = 1`
+       current_tic = ?, round_start_tic = ?
+       WHERE id = 1`,
+      [nextRoundStartTic, nextRoundStartTic]
     );
     await emitCombatUpdated();
   });
