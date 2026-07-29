@@ -1,7 +1,97 @@
 @import 'tailwindcss';
 
-/* Phase 8 pilot: fighting-game HUD type, layered on the existing zinc/indigo
-   palette rather than replacing it, so unstyled pages don't clash. */
+/* Fighting-game HUD pass (Phase 10): red replaces indigo as the app's one
+   accent color, zinc's dark end gets a warm red undertone instead of a
+   neutral cool gray, and panels/buttons get cut/beveled HUD corners
+   (Tekken/MK menu-panel style) instead of rounded ones. Rolled out
+   everywhere in one pass, not piloted on a single page like the earlier
+   Rajdhani/Vitruvian pilot was. Rajdhani (font-display) now covers headers,
+   labels, buttons, and chat — long-form move/perk descriptions stay on the
+   default readable font on purpose. */
 @theme {
   --font-display: 'Rajdhani', ui-sans-serif, system-ui, sans-serif;
+
+  --color-brand-50: #fef1f2;
+  --color-brand-100: #fee2e4;
+  --color-brand-200: #fecdd0;
+  --color-brand-300: #fca5ab;
+  --color-brand-400: #f87179;
+  --color-brand-500: #ef3f4c;
+  --color-brand-600: #d41f2c;
+  --color-brand-700: #ad1622;
+  --color-brand-800: #82121c;
+  --color-brand-900: #5c1015;
+  --color-brand-950: #33080a;
+
+  /* Only the dark end shifts — 50-600 stay stock Tailwind zinc so body text
+     and icons keep neutral, legible contrast. */
+  --color-zinc-700: #453637;
+  --color-zinc-800: #2c2222;
+  --color-zinc-900: #1a1313;
+  --color-zinc-950: #0c0808;
+}
+
+/* Raw r g b triplet for the accent color, for the handful of places (GSAP
+   inline styles, arbitrary box-shadow glows) that can't reach a Tailwind
+   utility class. Keep this in sync with --color-brand-500 above so every
+   red in the app — utility classes and inline glows alike — traces back to
+   these variables. That's the hook a future user-configurable color setting
+   would swap out, rather than colors being hardcoded ad hoc per component. */
+:root {
+  --color-brand-rgb: 239 63 76;
+}
+
+@layer base {
+  /* "Headers, labels, buttons... and chat, but not long-form descriptions"
+     — rather than hand-tagging every heading/button/badge across the app,
+     apply Rajdhani structurally to the elements that are always short UI
+     chrome (headings, buttons, real <label>s, and anything already styled
+     as an uppercase tag/badge/section-label). Move/perk description text
+     always lives in plain <p>/<textarea> siblings, never nested inside one
+     of these, so it's untouched. Chat gets its own explicit treatment in
+     ChatPanel.jsx since it isn't covered by this list. */
+  h1,
+  h2,
+  h3,
+  button,
+  label,
+  .uppercase {
+    font-family: var(--font-display);
+  }
+}
+
+@layer components {
+  /* "Arena" backdrop: near-black with a dim red glow — used on full-page
+     shells instead of a flat bg-zinc-950. */
+  .bg-arena {
+    background-color: #0a0707;
+    background-image:
+      radial-gradient(ellipse 130% 55% at 50% -15%, rgba(212, 31, 44, 0.16), transparent 60%),
+      radial-gradient(ellipse 120% 50% at 10% 115%, rgba(130, 18, 28, 0.12), transparent 70%),
+      radial-gradient(ellipse 120% 50% at 90% 115%, rgba(130, 18, 28, 0.1), transparent 70%);
+    background-attachment: fixed;
+  }
+
+  /* Cut/beveled corners in three sizes, for buttons/inputs, standard
+     panels/cards, and hero elements (the Tic Counter). rounded-full stays
+     untouched everywhere — badges, pills, and circular controls keep their
+     circle. */
+  .panel-cut-sm {
+    clip-path: polygon(
+      5px 0, calc(100% - 5px) 0, 100% 5px, 100% calc(100% - 5px),
+      calc(100% - 5px) 100%, 5px 100%, 0 calc(100% - 5px), 0 5px
+    );
+  }
+  .panel-cut {
+    clip-path: polygon(
+      9px 0, calc(100% - 9px) 0, 100% 9px, 100% calc(100% - 9px),
+      calc(100% - 9px) 100%, 9px 100%, 0 calc(100% - 9px), 0 9px
+    );
+  }
+  .panel-cut-lg {
+    clip-path: polygon(
+      16px 0, calc(100% - 16px) 0, 100% 16px, 100% calc(100% - 16px),
+      calc(100% - 16px) 100%, 16px 100%, 0 calc(100% - 16px), 0 16px
+    );
+  }
 }

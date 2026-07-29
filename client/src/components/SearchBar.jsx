@@ -67,10 +67,10 @@ export default function SearchBar() {
         onChange={(e) => setQuery(e.target.value)}
         onFocus={() => setOpen(true)}
         placeholder="Search…"
-        className="w-full rounded-md border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm text-zinc-100 outline-none focus:border-indigo-500"
+        className="w-full panel-cut-sm border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm text-zinc-100 outline-none focus:border-brand-500"
       />
       {open && query.trim() && (
-        <div className="absolute left-0 right-0 top-full z-50 mt-1 max-h-96 overflow-y-auto rounded-md border border-zinc-700 bg-zinc-900 shadow-xl">
+        <div className="absolute left-0 right-0 top-full z-50 mt-1 max-h-96 overflow-y-auto panel-cut-sm border border-zinc-700 bg-zinc-900 shadow-xl">
           {!visibleResults ? (
             <p className="p-3 text-sm text-zinc-500">Searching…</p>
           ) : !hasAny ? (
@@ -93,7 +93,7 @@ export default function SearchBar() {
                       <div className="flex items-center gap-1.5">
                         <span className="truncate font-medium">{item.name}</span>
                         {g.key === 'characters' && item.character_type === 'npc' && (
-                          <span className="rounded bg-purple-600/30 px-1 text-[10px] font-bold uppercase text-purple-300">
+                          <span className="panel-cut-sm bg-purple-600/30 px-1 text-[10px] font-bold uppercase text-purple-300">
                             NPC
                           </span>
                         )}

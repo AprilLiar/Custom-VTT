@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
+import { motion, AnimatePresence } from 'framer-motion';
 import { socket } from '../socket.js';
 import { getCombat } from '../lib/api.js';
 import { useRole } from '../roleContext.jsx';
@@ -36,21 +37,47 @@ export default function CombatHeaderBar() {
 
   return (
     <div className="flex flex-wrap items-center gap-3 border-b border-zinc-800 bg-gradient-to-r from-zinc-950 via-zinc-900 to-zinc-950 px-4 py-2 text-sm">
-      <span className="rounded-full bg-indigo-600/20 px-2.5 py-0.5 font-bold text-indigo-300">
+      <motion.span
+        key={roundNumber}
+        initial={{ scale: 1.6, filter: 'brightness(2)' }}
+        animate={{ scale: 1, filter: 'brightness(1)' }}
+        transition={{ type: 'spring', stiffness: 500, damping: 18 }}
+        className="rounded-full bg-brand-600/20 px-2.5 py-0.5 font-bold text-brand-300"
+      >
         Round {roundNumber}
-      </span>
-      {phase === 'declaration' && (
-        <span className="text-zinc-400">
-          {pairsStillDeclaring === 0
-            ? 'Every pair has finished declaring'
-            : `${pairsStillDeclaring} pair${pairsStillDeclaring === 1 ? '' : 's'} still declaring…`}
-        </span>
-      )}
-      {phase === 'tic_countdown' && <span className="text-zinc-400">Tic Countdown</span>}
+      </motion.span>
+      <AnimatePresence mode="wait">
+        {phase === 'declaration' && (
+          <motion.span
+            key="declaration"
+            initial={{ opacity: 0, x: -8 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: 8 }}
+            transition={{ duration: 0.2 }}
+            className="text-zinc-400"
+          >
+            {pairsStillDeclaring === 0
+              ? 'Every pair has finished declaring'
+              : `${pairsStillDeclaring} pair${pairsStillDeclaring === 1 ? '' : 's'} still declaring…`}
+          </motion.span>
+        )}
+        {phase === 'tic_countdown' && (
+          <motion.span
+            key="tic_countdown"
+            initial={{ opacity: 0, scale: 0.8, filter: 'brightness(2)' }}
+            animate={{ opacity: 1, scale: 1, filter: 'brightness(1)' }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.3 }}
+            className="font-display font-bold uppercase tracking-wide text-brand-300"
+          >
+            Tic Countdown
+          </motion.span>
+        )}
+      </AnimatePresence>
       {!onArena && (
         <Link
           to="/combat"
-          className="rounded-md border border-indigo-700/50 bg-indigo-950/40 px-2 py-1 text-xs font-semibold text-indigo-300 hover:bg-indigo-900/40"
+          className="panel-cut-sm border border-brand-700/50 bg-brand-950/40 px-2 py-1 text-xs font-semibold text-brand-300 hover:bg-brand-900/40"
         >
           Go to Arena →
         </Link>
@@ -60,14 +87,14 @@ export default function CombatHeaderBar() {
           <button
             onClick={() => socket.emit('combat:tic_backward', {})}
             title="Tic back"
-            className="rounded-md border border-zinc-700 px-2 py-1 text-xs hover:bg-zinc-800"
+            className="panel-cut-sm border border-zinc-700 px-2 py-1 text-xs hover:bg-zinc-800"
           >
             ◀
           </button>
           <button
             onClick={() => socket.emit('combat:tic_forward', {})}
             title="Tic forward"
-            className="rounded-md border border-zinc-700 px-2 py-1 text-xs hover:bg-zinc-800"
+            className="panel-cut-sm border border-zinc-700 px-2 py-1 text-xs hover:bg-zinc-800"
           >
             ▶
           </button>
@@ -76,7 +103,7 @@ export default function CombatHeaderBar() {
       {role === 'gm' && everyoneReady && (
         <button
           onClick={() => socket.emit('combat:start_tic_countdown', {})}
-          className="rounded-md bg-indigo-600 px-2 py-1 text-xs font-semibold hover:bg-indigo-500"
+          className="panel-cut-sm bg-brand-600 px-2 py-1 text-xs font-semibold hover:bg-brand-500"
         >
           Start Tic Countdown
         </button>
@@ -84,7 +111,7 @@ export default function CombatHeaderBar() {
       {role === 'gm' && phase !== 'declaration' && (
         <button
           onClick={() => socket.emit('combat:next_round', {})}
-          className="rounded-md bg-emerald-700 px-2 py-1 text-xs font-semibold hover:bg-emerald-600"
+          className="panel-cut-sm bg-emerald-700 px-2 py-1 text-xs font-semibold hover:bg-emerald-600"
         >
           Next Round
         </button>
@@ -95,7 +122,7 @@ export default function CombatHeaderBar() {
             window.confirm('End combat? Everyone stays seated, but the round/Tic state resets.') &&
             socket.emit('combat:end', {})
           }
-          className="ml-auto rounded-md border border-zinc-700 px-3 py-1 text-xs font-semibold text-zinc-400 hover:bg-zinc-800"
+          className="ml-auto panel-cut-sm border border-zinc-700 px-3 py-1 text-xs font-semibold text-zinc-400 hover:bg-zinc-800"
         >
           End Combat
         </button>

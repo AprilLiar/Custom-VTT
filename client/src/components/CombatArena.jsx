@@ -21,6 +21,7 @@ import MoveCard from './MoveCard.jsx';
 import FrameBar from './FrameBar.jsx';
 import RollDialog from './RollDialog.jsx';
 import Thumb from './Thumb.jsx';
+import DropSlamGhost from './DropSlamGhost.jsx';
 
 const MIN_TARGET = 2;
 const MAX_TARGET = 20;
@@ -63,7 +64,7 @@ function ParticipantCard({
       onDragStart={onDragStart}
       onClick={() => navigate(`/character/${character.id}`)}
       title="Open full sheet"
-      className="group relative flex min-h-40 min-w-64 flex-1 cursor-pointer overflow-hidden rounded-lg border border-zinc-800 bg-zinc-900 transition-colors hover:border-indigo-600"
+      className="group relative flex min-h-40 min-w-64 flex-1 cursor-pointer overflow-hidden panel-cut border border-zinc-800 bg-zinc-900 transition-colors hover:border-brand-600"
     >
       {role === 'gm' && (
         <button
@@ -72,7 +73,7 @@ function ParticipantCard({
             onRemove(character.id);
           }}
           title="Remove from arena"
-          className="absolute right-1 top-1 z-10 rounded px-1 text-xs text-zinc-600 opacity-0 transition group-hover:opacity-100 hover:bg-red-900/40 hover:text-red-400"
+          className="absolute right-1 top-1 z-10 panel-cut-sm px-1 text-xs text-zinc-600 opacity-0 transition group-hover:opacity-100 hover:bg-red-900/40 hover:text-red-400"
         >
           ✕
         </button>
@@ -91,13 +92,13 @@ function ParticipantCard({
         <div className="min-w-0">
           <div className="truncate text-sm font-semibold text-zinc-100">{character.name}</div>
           {character.character_type === 'npc' && (
-            <span className="rounded bg-purple-600/30 px-1 text-[10px] font-bold uppercase text-purple-300">
+            <span className="panel-cut-sm bg-purple-600/30 px-1 text-[10px] font-bold uppercase text-purple-300">
               NPC
             </span>
           )}
         </div>
         {activeStance && (
-          <div className="truncate text-xs text-indigo-300" title="Active stance">
+          <div className="truncate text-xs text-brand-300" title="Active stance">
             {activeStance.name}
           </div>
         )}
@@ -127,7 +128,7 @@ function ParticipantCard({
                   <span
                     key={d.id}
                     title={d.slot_name}
-                    className={`rounded px-1 py-0.5 text-[10px] font-mono ${
+                    className={`panel-cut-sm px-1 py-0.5 text-[10px] font-mono ${
                       d.status === 'incapacitated' ? 'text-zinc-700 line-through' : 'text-zinc-300'
                     }`}
                     style={{ backgroundColor: tintFor(d) || 'rgba(255,255,255,0.05)' }}
@@ -150,7 +151,7 @@ function ParticipantCard({
 function ArenaCounterRow({ counter, characterName }) {
   const label = characterName ? `${characterName} - ${counter.name}` : counter.name;
   return (
-    <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-3">
+    <div className="panel-cut-lg border border-zinc-800 bg-zinc-900 p-3">
       <span className="font-bold text-zinc-100">{label}</span>
       {/* Character-owned counters only ever carry a reward — a standalone
           counter never has one — but this stays read-only display here
@@ -166,7 +167,7 @@ function ArenaCounterRow({ counter, characterName }) {
         <button
           onClick={() => socket.emit('counter:adjust', { counterId: counter.id, delta: -1 })}
           disabled={counter.current_pips <= 0}
-          className="h-8 w-8 shrink-0 rounded-md border border-zinc-700 text-lg text-red-400 hover:bg-zinc-800 disabled:opacity-30"
+          className="h-8 w-8 shrink-0 panel-cut-sm border border-zinc-700 text-lg text-red-400 hover:bg-zinc-800 disabled:opacity-30"
         >
           −
         </button>
@@ -179,7 +180,7 @@ function ArenaCounterRow({ counter, characterName }) {
               key={i}
               className={`h-4 w-4 rounded-full border ${
                 i < counter.current_pips
-                  ? 'border-indigo-400 bg-indigo-500'
+                  ? 'border-brand-400 bg-brand-500'
                   : 'border-zinc-700 bg-zinc-800'
               }`}
             />
@@ -188,14 +189,14 @@ function ArenaCounterRow({ counter, characterName }) {
         <button
           onClick={() => socket.emit('counter:adjust', { counterId: counter.id, delta: 1 })}
           disabled={counter.current_pips >= counter.target_pips}
-          className="h-8 w-8 shrink-0 rounded-md border border-zinc-700 text-lg text-green-400 hover:bg-zinc-800 disabled:opacity-30"
+          className="h-8 w-8 shrink-0 panel-cut-sm border border-zinc-700 text-lg text-green-400 hover:bg-zinc-800 disabled:opacity-30"
         >
           +
         </button>
         <button
           onClick={() => socket.emit('counter:delete', { counterId: counter.id })}
           title="Delete"
-          className="rounded px-1.5 text-zinc-600 hover:bg-red-900/40 hover:text-red-400"
+          className="panel-cut-sm px-1.5 text-zinc-600 hover:bg-red-900/40 hover:text-red-400"
         >
           ✕
         </button>
@@ -228,7 +229,7 @@ function FolderRosterNode({ node, charsByFolder, collapsed, onToggle, depth, ros
       <button
         onClick={() => onToggle(node.id)}
         style={{ paddingLeft: `${depth * 12}px` }}
-        className="flex w-full items-center gap-1 rounded-md py-1 text-left text-[10px] font-bold uppercase tracking-wide text-zinc-500 hover:text-zinc-300"
+        className="flex w-full items-center gap-1 panel-cut-sm py-1 text-left text-[10px] font-bold uppercase tracking-wide text-zinc-500 hover:text-zinc-300"
       >
         <span className="shrink-0">{isCollapsed ? '▸' : '▾'}</span>
         <span className="min-w-0 flex-1 truncate">📁 {node.name}</span>
@@ -273,19 +274,23 @@ function TicSquare({ relativeTic, isCurrent, footprintZone, onDragOver, onDrop }
     blocked: 'border-zinc-600 bg-zinc-800 text-zinc-600',
   }[footprintZone];
   return (
-    <div
+    <motion.div
+      key={isCurrent ? 'current' : 'idle'}
       onDragOver={onDragOver}
       onDrop={onDrop}
       title={`Tic ${relativeTic}`}
-      className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border text-sm font-bold transition-all duration-150 ${
+      initial={isCurrent ? { scale: 1.5 } : false}
+      animate={{ scale: isCurrent && !zoneStyle ? 1.1 : 1 }}
+      transition={{ duration: 0.35, ease: 'easeOut' }}
+      className={`flex h-11 w-11 shrink-0 items-center justify-center panel-cut border text-sm font-bold transition-colors duration-150 ${
         zoneStyle ??
         (isCurrent
-          ? 'scale-110 border-indigo-300 bg-indigo-600 text-white shadow-[0_0_16px_rgba(99,102,241,0.55)]'
+          ? 'border-brand-300 bg-brand-600 text-white shadow-[0_0_16px_rgb(var(--color-brand-rgb)/55%)]'
           : 'border-zinc-700 bg-zinc-900/80 text-zinc-400 hover:border-zinc-500')
       }`}
     >
       {relativeTic}
-    </div>
+    </motion.div>
   );
 }
 
@@ -317,7 +322,7 @@ function TicCounterCentral({ phase, currentTic, roundStartTic, roundLength, drag
   };
   const canDrop = phase === 'declaration';
   return (
-    <div className="flex flex-col items-center gap-1.5 rounded-2xl border border-zinc-800 bg-gradient-to-b from-zinc-900 to-zinc-950 px-4 py-3 shadow-2xl shadow-black/40">
+    <div className="flex flex-col items-center gap-1.5 panel-cut-lg border border-zinc-800 bg-gradient-to-b from-zinc-900 to-zinc-950 px-4 py-3 shadow-2xl shadow-black/40">
       <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-zinc-500">
         {phase === 'declaration' ? 'Drag a move here to declare' : 'Tic Counter'}
       </span>
@@ -360,7 +365,7 @@ function CompactTellFace({ dm, tellById }) {
   const showBoth = !chosenTell && (rightTell || leftTell);
   const shown = chosenTell ?? (showBoth ? null : tell);
   return (
-    <div className="flex w-28 items-center gap-1.5 rounded-lg border border-zinc-800 bg-zinc-900/60 p-1.5 opacity-60 grayscale">
+    <div className="flex w-28 items-center gap-1.5 panel-cut border border-zinc-800 bg-zinc-900/60 p-1.5 opacity-60 grayscale">
       {showBoth ? (
         <>
           <Thumb record={rightTell} name={rightTell?.name} size="h-6 w-6" />
@@ -417,8 +422,8 @@ function CompactDeclaredMoveCard({ dm, move, tellById, tagById, styleById, moveF
               type="button"
               onClick={role === 'gm' ? () => setExpanded(true) : undefined}
               title={role === 'gm' ? 'Click for full move details' : move.name}
-              className={`flex w-28 items-center gap-1.5 rounded-lg border border-indigo-800/60 bg-indigo-950/30 p-1.5 text-left transition-colors ${
-                role === 'gm' ? 'cursor-pointer hover:border-indigo-400' : ''
+              className={`flex w-28 items-center gap-1.5 panel-cut border border-brand-800/60 bg-brand-950/30 p-1.5 text-left transition-colors ${
+                role === 'gm' ? 'cursor-pointer hover:border-brand-400' : ''
               }`}
             >
               <Thumb record={move} name={move.name} size="h-6 w-6" />
@@ -522,7 +527,7 @@ function characterDeclareStatus(participant, participants, pairs) {
 // table disappears once every pair finishes and the Tic Countdown starts.
 function DeclarationStatusTable({ participants, characters, pairs, activeNpcId, onActivateNpc }) {
   return (
-    <div className="w-full max-w-sm rounded-xl border border-zinc-800 bg-zinc-900/80 p-3">
+    <div className="w-full max-w-sm panel-cut-lg border border-zinc-800 bg-zinc-900/80 p-3">
       <h3 className="mb-2 text-[10px] font-bold uppercase tracking-widest text-zinc-500">
         Declaration status
       </h3>
@@ -537,14 +542,14 @@ function DeclarationStatusTable({ participants, characters, pairs, activeNpcId, 
             <div
               key={p.character_id}
               onClick={clickable ? () => onActivateNpc(p.character_id) : undefined}
-              className={`flex items-center justify-between gap-2 rounded-md px-2 py-1 text-xs transition-colors ${
+              className={`flex items-center justify-between gap-2 panel-cut-sm px-2 py-1 text-xs transition-colors ${
                 clickable ? 'cursor-pointer hover:bg-zinc-800' : ''
-              } ${active ? 'bg-indigo-950/50 ring-1 ring-indigo-600' : ''}`}
+              } ${active ? 'bg-brand-950/50 ring-1 ring-brand-600' : ''}`}
             >
               <span className="flex min-w-0 items-center gap-1 truncate text-zinc-200">
                 <span className="truncate">{character?.name ?? '—'}</span>
                 {isNpc && (
-                  <span className="shrink-0 rounded bg-purple-600/30 px-1 text-[9px] font-bold uppercase text-purple-300">
+                  <span className="shrink-0 panel-cut-sm bg-purple-600/30 px-1 text-[9px] font-bold uppercase text-purple-300">
                     NPC
                   </span>
                 )}
@@ -605,7 +610,7 @@ function DeclareMoveCard({ character, move, roundStartTic, declaredMoves }) {
       }}
       onDragEnd={() => setDraggingMove(null)}
       title="Drag onto the Tic Counter to declare"
-      className="cursor-grab select-none rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs text-zinc-200 transition-colors hover:border-indigo-600 active:cursor-grabbing"
+      className="cursor-grab select-none panel-cut-sm border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs text-zinc-200 transition-colors hover:border-brand-600 active:cursor-grabbing"
     >
       {move.name} <span className="text-zinc-500">({cost} Stamina)</span>
     </div>
@@ -624,14 +629,14 @@ function DeclareMovePicker({ entry, roundStartTic, declaredMoves }) {
   const usable = (move) => move.style_attribute_id == null || activeStyles.includes(move.style_attribute_id);
   const shown = (moves ?? []).filter((m) => Boolean(m.is_default) === (tab === 'default') && usable(m));
   return (
-    <div className="rounded-md border border-zinc-800 bg-zinc-950 p-2">
+    <div className="panel-cut-sm border border-zinc-800 bg-zinc-950 p-2">
       <div className="mb-1.5 flex items-center gap-2">
-        <div className="flex overflow-hidden rounded-md border border-zinc-700 text-[11px] font-semibold uppercase">
+        <div className="flex overflow-hidden panel-cut-sm border border-zinc-700 text-[11px] font-semibold uppercase">
           {['default', 'unique'].map((t) => (
             <button
               key={t}
               onClick={() => setTab(t)}
-              className={`px-2 py-0.5 ${tab === t ? 'bg-indigo-600 text-white' : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700'}`}
+              className={`px-2 py-0.5 ${tab === t ? 'bg-brand-600 text-white' : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700'}`}
             >
               {t}
             </button>
@@ -664,12 +669,12 @@ function DeclareMovePicker({ entry, roundStartTic, declaredMoves }) {
 // no shared per-side button anymore.
 function ActiveDeclarePanel({ entry, roundStartTic, declaredMoves }) {
   return (
-    <div className="w-full max-w-md space-y-2 rounded-xl border border-indigo-800/50 bg-indigo-950/20 p-3">
+    <div className="w-full max-w-md space-y-2 panel-cut-lg border border-brand-800/50 bg-brand-950/20 p-3">
       <div className="flex items-center justify-between gap-2">
-        <h3 className="truncate text-sm font-bold text-indigo-200">{entry.character.name}'s turn to declare</h3>
+        <h3 className="truncate text-sm font-bold text-brand-200">{entry.character.name}'s turn to declare</h3>
         <button
           onClick={() => socket.emit('combat:character_done_declaring', { characterId: entry.character.id })}
-          className="shrink-0 rounded-md bg-emerald-700 px-3 py-1 text-xs font-semibold hover:bg-emerald-600"
+          className="shrink-0 panel-cut-sm bg-emerald-700 px-3 py-1 text-xs font-semibold hover:bg-emerald-600"
         >
           ✓ Done Declaring
         </button>
@@ -713,6 +718,15 @@ export default function CombatArena() {
   // DeclarationStatusTable above) — client-only convenience state, reset
   // whenever it's no longer that NPC's turn.
   const [activeNpcId, setActiveNpcId] = useState(null);
+  // Transient "linger then slam" impact effects for a successful drop —
+  // declaring a move onto the Tic Counter, or seating a character — see
+  // DropSlamGhost.jsx. Keyed so more than one can be in flight at once.
+  const [dropGhosts, setDropGhosts] = useState([]);
+  const spawnDropGhost = (x, y, content) => {
+    const id = `${Date.now()}-${Math.random()}`;
+    setDropGhosts((prev) => [...prev, { id, x, y, content }]);
+  };
+  const removeDropGhost = (id) => setDropGhosts((prev) => prev.filter((g) => g.id !== id));
 
   useEffect(() => onDraggingMoveChange(setDraggingMoveLocal), []);
 
@@ -946,6 +960,15 @@ export default function CombatArena() {
     setDropTarget(null);
     const characterId = Number(e.dataTransfer.getData('text/character-id'));
     if (!characterId) return;
+    const seatedCharacterName =
+      roster.find((c) => c.id === characterId)?.name ?? characters[characterId]?.character.name ?? 'Character';
+    spawnDropGhost(
+      e.clientX,
+      e.clientY,
+      <div className="panel-cut border border-brand-400 bg-zinc-900 px-3 py-2 font-display text-sm font-bold uppercase tracking-wide text-white shadow-lg">
+        {seatedCharacterName}
+      </div>
+    );
     const event = seatedIds.has(characterId) ? 'combat:move_participant' : 'combat:add_participant';
     socket.emit(event, { characterId, side, pairIndex });
   };
@@ -960,9 +983,9 @@ export default function CombatArena() {
         draggable
         onDragStart={(e) => e.dataTransfer.setData('text/character-id', String(c.id))}
         title="Drag onto a side to seat them"
-        className="flex cursor-grab items-center gap-2 rounded-lg border border-zinc-800 bg-zinc-900 p-2 active:cursor-grabbing"
+        className="flex cursor-grab items-center gap-2 panel-cut border border-zinc-800 bg-zinc-900 p-2 active:cursor-grabbing"
       >
-        <div className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-md bg-zinc-800 text-sm font-bold text-zinc-600">
+        <div className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden panel-cut-sm bg-zinc-800 text-sm font-bold text-zinc-600">
           {src ? (
             <img src={src} alt="" className="h-full w-full object-cover" />
           ) : (
@@ -971,7 +994,7 @@ export default function CombatArena() {
         </div>
         <span className="truncate text-sm text-zinc-300">{c.name}</span>
         {c.character_type === 'npc' && (
-          <span className="ml-auto rounded bg-purple-600/30 px-1 text-[10px] font-bold uppercase text-purple-300">
+          <span className="ml-auto panel-cut-sm bg-purple-600/30 px-1 text-[10px] font-bold uppercase text-purple-300">
             NPC
           </span>
         )}
@@ -1013,13 +1036,35 @@ export default function CombatArena() {
       }
     }
     if (ambiguous) {
-      setPendingDeclare({ characterId: draggedCharId, moveId, moveName, absoluteTic, appendageSlot });
+      setPendingDeclare({
+        characterId: draggedCharId,
+        moveId,
+        moveName,
+        absoluteTic,
+        appendageSlot,
+        x: e.clientX,
+        y: e.clientY,
+      });
       return;
     }
+    spawnDropGhost(
+      e.clientX,
+      e.clientY,
+      <div className="panel-cut-sm border border-brand-400 bg-brand-600 px-3 py-1.5 font-display text-xs font-bold uppercase tracking-wide text-white shadow-lg">
+        {moveName}
+      </div>
+    );
     socket.emit('move:declare', { characterId: draggedCharId, moveId, placementTic: absoluteTic });
   };
 
   const chooseAppendage = (side) => {
+    spawnDropGhost(
+      pendingDeclare.x,
+      pendingDeclare.y,
+      <div className="panel-cut-sm border border-brand-400 bg-brand-600 px-3 py-1.5 font-display text-xs font-bold uppercase tracking-wide text-white shadow-lg">
+        {pendingDeclare.moveName}
+      </div>
+    );
     socket.emit('move:declare', {
       characterId: pendingDeclare.characterId,
       moveId: pendingDeclare.moveId,
@@ -1082,7 +1127,7 @@ export default function CombatArena() {
           {role === 'gm' && phase == null && participants.length > 0 && (
             <button
               onClick={() => socket.emit('combat:next_round', {})}
-              className="rounded-md bg-emerald-700 px-3 py-1 text-sm font-semibold hover:bg-emerald-600"
+              className="panel-cut-sm bg-emerald-700 px-3 py-1 text-sm font-semibold hover:bg-emerald-600"
             >
               Start Combat
             </button>
@@ -1093,7 +1138,7 @@ export default function CombatArena() {
                 window.confirm('Clear the arena? Everyone currently seated is removed.') &&
                 socket.emit('combat:clear', {})
               }
-              className="rounded-md border border-zinc-700 px-3 py-1 text-sm text-zinc-400 hover:bg-zinc-800"
+              className="panel-cut-sm border border-zinc-700 px-3 py-1 text-sm text-zinc-400 hover:bg-zinc-800"
             >
               Clear Arena
             </button>
@@ -1104,7 +1149,7 @@ export default function CombatArena() {
       {phase != null && (
         <div className="relative mb-4 flex flex-col items-center gap-3">
           {toast && (
-            <div className="absolute -top-2 left-1/2 z-50 -translate-x-1/2 -translate-y-full rounded-md border border-red-700 bg-red-950/95 px-3 py-1.5 text-sm font-semibold text-red-200 shadow-lg">
+            <div className="absolute -top-2 left-1/2 z-50 -translate-x-1/2 -translate-y-full panel-cut-sm border border-red-700 bg-red-950/95 px-3 py-1.5 text-sm font-semibold text-red-200 shadow-lg">
               {toast}
             </div>
           )}
@@ -1115,7 +1160,7 @@ export default function CombatArena() {
             >
               <div
                 onClick={(e) => e.stopPropagation()}
-                className="flex w-72 flex-col gap-3 rounded-xl border border-zinc-700 bg-zinc-900 p-4"
+                className="flex w-72 flex-col gap-3 panel-cut-lg border border-zinc-700 bg-zinc-900 p-4"
               >
                 <h3 className="font-bold text-zinc-100">
                   {characters[pendingDeclare.characterId]?.character.name ?? 'Character'}: {pendingDeclare.moveName}
@@ -1126,7 +1171,7 @@ export default function CombatArena() {
                     <button
                       key={side}
                       onClick={() => chooseAppendage(side)}
-                      className="flex-1 rounded-md bg-indigo-600 py-2 font-semibold capitalize hover:bg-indigo-500"
+                      className="flex-1 panel-cut-sm bg-brand-600 py-2 font-semibold capitalize hover:bg-brand-500"
                     >
                       {side}
                       {pendingDeclare.appendageSlot ? ` ${pendingDeclare.appendageSlot}` : ''}
@@ -1135,7 +1180,7 @@ export default function CombatArena() {
                 </div>
                 <button
                   onClick={() => setPendingDeclare(null)}
-                  className="rounded-md border border-zinc-700 py-1.5 text-sm text-zinc-400 hover:bg-zinc-800"
+                  className="panel-cut-sm border border-zinc-700 py-1.5 text-sm text-zinc-400 hover:bg-zinc-800"
                 >
                   Cancel
                 </button>
@@ -1195,7 +1240,7 @@ export default function CombatArena() {
             />
           )}
           {role === 'gm' && !activeDeclareEntry && (
-            <div className="flex max-w-md items-center rounded-xl border border-dashed border-zinc-800 px-4 py-6 text-sm text-zinc-600">
+            <div className="flex max-w-md items-center panel-cut-lg border border-dashed border-zinc-800 px-4 py-6 text-sm text-zinc-600">
               Click an NPC above whose turn it is to declare for them.
             </div>
           )}
@@ -1226,8 +1271,8 @@ export default function CombatArena() {
                   }}
                   onDragLeave={() => setDropTarget(null)}
                   onDrop={(e) => role === 'gm' && onDrop(e, 'left', rowIdx)}
-                  className={`flex min-h-24 flex-1 gap-2 overflow-x-auto rounded-lg border border-dashed p-2 transition-colors ${
-                    dropTarget === leftKey ? 'border-indigo-400 bg-indigo-950/20' : 'border-zinc-800'
+                  className={`flex min-h-24 flex-1 gap-2 overflow-x-auto panel-cut border border-dashed p-2 transition-colors ${
+                    dropTarget === leftKey ? 'border-brand-400 bg-brand-950/20' : 'border-zinc-800'
                   }`}
                 >
                   {leftOccupants.map(
@@ -1258,8 +1303,8 @@ export default function CombatArena() {
                   }}
                   onDragLeave={() => setDropTarget(null)}
                   onDrop={(e) => role === 'gm' && onDrop(e, 'right', rowIdx)}
-                  className={`flex min-h-24 flex-1 gap-2 overflow-x-auto rounded-lg border border-dashed p-2 transition-colors ${
-                    dropTarget === rightKey ? 'border-indigo-400 bg-indigo-950/20' : 'border-zinc-800'
+                  className={`flex min-h-24 flex-1 gap-2 overflow-x-auto panel-cut border border-dashed p-2 transition-colors ${
+                    dropTarget === rightKey ? 'border-brand-400 bg-brand-950/20' : 'border-zinc-800'
                   }`}
                 >
                   {rightOccupants.map(
@@ -1285,7 +1330,7 @@ export default function CombatArena() {
             );
           })}
 
-          <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
+          <div className="panel-cut-lg border border-zinc-800 bg-zinc-900 p-4">
             <h2 className="mb-2 text-sm font-bold uppercase tracking-wide text-zinc-400">Counters</h2>
             {counters.length === 0 ? (
               <p className="text-sm text-zinc-600">No counters shown here yet.</p>
@@ -1306,7 +1351,7 @@ export default function CombatArena() {
                   value={counterName}
                   onChange={(e) => setCounterName(e.target.value)}
                   placeholder="Standalone counter name"
-                  className="min-w-0 flex-1 rounded-md border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm text-zinc-100 outline-none focus:border-indigo-500"
+                  className="min-w-0 flex-1 panel-cut-sm border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm text-zinc-100 outline-none focus:border-brand-500"
                 />
                 <label className="flex items-center gap-1.5 text-xs text-zinc-500">
                   Target
@@ -1320,13 +1365,13 @@ export default function CombatArena() {
                         Math.max(MIN_TARGET, Math.min(MAX_TARGET, Number(e.target.value) || MIN_TARGET))
                       )
                     }
-                    className="w-16 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm text-zinc-100 outline-none focus:border-indigo-500"
+                    className="w-16 panel-cut-sm border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm text-zinc-100 outline-none focus:border-brand-500"
                   />
                 </label>
                 <button
                   type="submit"
                   disabled={!counterName.trim()}
-                  className="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-semibold hover:bg-indigo-500 disabled:opacity-40"
+                  className="panel-cut-sm bg-brand-600 px-3 py-1.5 text-sm font-semibold hover:bg-brand-500 disabled:opacity-40"
                 >
                   + New Arena Counter
                 </button>
@@ -1388,6 +1433,14 @@ export default function CombatArena() {
           />
         );
       })()}
+
+      <AnimatePresence>
+        {dropGhosts.map((g) => (
+          <DropSlamGhost key={g.id} x={g.x} y={g.y} onDone={() => removeDropGhost(g.id)}>
+            {g.content}
+          </DropSlamGhost>
+        ))}
+      </AnimatePresence>
     </div>
   );
 }

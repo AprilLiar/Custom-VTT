@@ -50,7 +50,7 @@ export default function MoveCard({
   return (
     <div
       title={dimmed ? dimReason : undefined}
-      className={`overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900 ${
+      className={`overflow-hidden panel-cut-lg border border-zinc-800 bg-zinc-900 ${
         dimmed ? 'opacity-50 grayscale' : ''
       }`}
     >
@@ -79,7 +79,7 @@ export default function MoveCard({
             </span>
           </>
         )}
-        <span className="ml-auto rounded bg-zinc-700/50 px-1.5 text-xs text-zinc-400">
+        <span className="ml-auto panel-cut-sm bg-zinc-700/50 px-1.5 text-xs text-zinc-400">
           📁 {folderLabel}
         </span>
       </div>
@@ -92,7 +92,7 @@ export default function MoveCard({
               {move.name}
               {badge}
               {Boolean(move.is_defensive) && (
-                <span className="ml-1.5 rounded bg-sky-900/50 px-1.5 text-xs font-semibold uppercase text-sky-300">
+                <span className="ml-1.5 panel-cut-sm bg-sky-900/50 px-1.5 text-xs font-semibold uppercase text-sky-300">
                   Defensive
                 </span>
               )}
@@ -106,7 +106,7 @@ export default function MoveCard({
             )}
             <span
               title="Stamina Cost — subtracted once the declaring side finishes declaring"
-              className={`flex items-center gap-0.5 rounded bg-zinc-800 px-1.5 py-0.5 text-xs font-semibold ${
+              className={`flex items-center gap-0.5 panel-cut-sm bg-zinc-800 px-1.5 py-0.5 text-xs font-semibold ${
                 move.stamina_cost > 0
                   ? 'text-red-400'
                   : move.stamina_cost < 0
@@ -154,7 +154,7 @@ export default function MoveCard({
                       onClick={() => onRollClick?.(side)}
                       disabled={!onRollClick || !active}
                       title={active ? `Roll as the ${side === 'right' ? 'Right' : 'Left'} appendage` : 'Every die on this side is incapacitated'}
-                      className="rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 font-mono text-zinc-200 hover:border-indigo-500 hover:text-indigo-300 disabled:opacity-40"
+                      className="panel-cut-sm border border-zinc-700 bg-zinc-800 px-2 py-1 font-mono text-zinc-200 hover:border-brand-500 hover:text-brand-300 disabled:opacity-40"
                     >
                       {side === 'right' ? 'Right' : 'Left'}: {formulaFor(sideDice)}
                     </button>
@@ -170,7 +170,7 @@ export default function MoveCard({
                       ? 'Roll this move’s dice'
                       : 'Every die in this Roll is incapacitated'
                   }
-                  className="rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 font-mono text-zinc-200 hover:border-indigo-500 hover:text-indigo-300 disabled:opacity-40"
+                  className="panel-cut-sm border border-zinc-700 bg-zinc-800 px-2 py-1 font-mono text-zinc-200 hover:border-brand-500 hover:text-brand-300 disabled:opacity-40"
                 >
                   {formulaFor(move.roll_dice)}
                 </button>
@@ -219,7 +219,7 @@ export default function MoveCard({
                     {row.automations.map((a, i) => (
                       <span
                         key={i}
-                        className="rounded bg-indigo-900/50 px-1.5 py-0.5 text-xs font-semibold text-indigo-300"
+                        className="panel-cut-sm bg-brand-900/50 px-1.5 py-0.5 text-xs font-semibold text-brand-300"
                       >
                         {automationLabel(a)}
                       </span>

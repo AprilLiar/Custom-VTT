@@ -226,7 +226,7 @@ export default function CharacterSheet() {
                 <motion.span
                   layoutId="tab-underline"
                   transition={{ type: 'spring', stiffness: 500, damping: 40 }}
-                  className="absolute inset-x-2 -bottom-px h-0.5 bg-gradient-to-r from-indigo-500 to-indigo-400"
+                  className="absolute inset-x-2 -bottom-px h-0.5 bg-gradient-to-r from-brand-500 to-brand-400"
                 />
               )}
             </button>
@@ -235,7 +235,7 @@ export default function CharacterSheet() {
         {activeStance && (
           <span
             title="Active stance"
-            className="ml-auto whitespace-nowrap bg-indigo-600/30 px-3 py-1 text-xs font-semibold text-indigo-300 [clip-path:polygon(8%_0,100%_0,92%_100%,0_100%)]"
+            className="ml-auto whitespace-nowrap bg-brand-600/30 px-3 py-1 text-xs font-semibold text-brand-300 [clip-path:polygon(8%_0,100%_0,92%_100%,0_100%)]"
           >
             {activeStance.name}
           </span>

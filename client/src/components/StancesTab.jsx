@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { motion } from 'framer-motion';
 import { socket } from '../socket.js';
 import { getRuleset } from '../lib/api.js';
 import { iconFor } from '../lib/styleIcons.js';
@@ -42,7 +43,7 @@ function StanceForm({ attributes, counters, initial, onSubmit, onCancel }) {
   return (
     <form
       onSubmit={submit}
-      className="flex flex-col gap-3 rounded-xl border border-zinc-700 bg-zinc-900 p-4"
+      className="flex flex-col gap-3 panel-cut-lg border border-zinc-700 bg-zinc-900 p-4"
     >
       <h3 className="text-sm font-bold uppercase tracking-wide text-zinc-400">
         {initial ? 'Edit Stance' : 'Stance Creator'}
@@ -52,7 +53,7 @@ function StanceForm({ attributes, counters, initial, onSubmit, onCancel }) {
         value={name}
         onChange={(e) => setName(e.target.value)}
         placeholder="Stance name"
-        className="rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-zinc-100 outline-none focus:border-indigo-500"
+        className="panel-cut-sm border border-zinc-700 bg-zinc-800 px-3 py-2 text-zinc-100 outline-none focus:border-brand-500"
       />
       <p className="text-xs text-zinc-600">
         Click 2 styles on the graph below ({picked.length}/2 selected)
@@ -62,14 +63,14 @@ function StanceForm({ attributes, counters, initial, onSubmit, onCancel }) {
         <button
           type="submit"
           disabled={!name.trim() || picked.length !== 2}
-          className="flex-1 rounded-md bg-indigo-600 py-2 font-semibold hover:bg-indigo-500 disabled:opacity-40"
+          className="flex-1 panel-cut-sm bg-brand-600 py-2 font-semibold hover:bg-brand-500 disabled:opacity-40"
         >
           {initial ? 'Save' : 'Create'}
         </button>
         <button
           type="button"
           onClick={onCancel}
-          className="rounded-md border border-zinc-700 px-4 text-zinc-400 hover:bg-zinc-800"
+          className="panel-cut-sm border border-zinc-700 px-4 text-zinc-400 hover:bg-zinc-800"
         >
           Cancel
         </button>
@@ -149,7 +150,7 @@ export default function StancesTab({ data }) {
   return (
     <div className="space-y-4">
       {stances.length === 0 && (
-        <div className="rounded-xl border border-amber-700/50 bg-amber-900/20 p-3 text-sm text-amber-300">
+        <div className="panel-cut-lg border border-amber-700/50 bg-amber-900/20 p-3 text-sm text-amber-300">
           No stances yet — every character should have at least one. Create the first below;
           it becomes the active stance automatically.
         </div>
@@ -160,8 +161,8 @@ export default function StancesTab({ data }) {
           {stances.map((stance) => {
             const isActive = stance.id === character.active_stance_id;
             return (
-              <div
-                key={stance.id}
+              <motion.div
+                key={`${stance.id}-${isActive}`}
                 onClick={() =>
                   !isActive &&
                   socket.emit('stance:activate', {
@@ -170,16 +171,39 @@ export default function StancesTab({ data }) {
                   })
                 }
                 title={isActive ? 'Active stance' : 'Left-click to activate'}
-                className={`cursor-pointer rounded-xl border p-3 transition ${
+                initial={
                   isActive
-                    ? 'border-indigo-500 bg-indigo-950/40'
+                    ? {
+                        scale: 1,
+                        filter: 'brightness(1) drop-shadow(0 0 0px rgb(var(--color-brand-rgb) / 0%))',
+                      }
+                    : false
+                }
+                animate={
+                  isActive
+                    ? {
+                        scale: [1, 1.08, 0.97, 1.03, 1],
+                        filter: [
+                          'brightness(1) drop-shadow(0 0 0px rgb(var(--color-brand-rgb) / 0%))',
+                          'brightness(1.5) drop-shadow(0 0 22px rgb(var(--color-brand-rgb) / 90%))',
+                          'brightness(1.2) drop-shadow(0 0 10px rgb(var(--color-brand-rgb) / 60%))',
+                          'brightness(1.1) drop-shadow(0 0 6px rgb(var(--color-brand-rgb) / 40%))',
+                          'brightness(1) drop-shadow(0 0 0px rgb(var(--color-brand-rgb) / 0%))',
+                        ],
+                      }
+                    : { scale: 1 }
+                }
+                transition={{ duration: 0.55, ease: 'easeOut' }}
+                className={`cursor-pointer panel-cut-lg border p-3 transition-colors ${
+                  isActive
+                    ? 'border-brand-500 bg-brand-950/40'
                     : 'border-zinc-800 bg-zinc-900 hover:border-zinc-600'
                 }`}
               >
                 <div className="flex items-center gap-2">
                   <span className="font-bold text-zinc-100">{stance.name}</span>
                   {isActive && (
-                    <span className="rounded bg-indigo-600/40 px-1.5 text-xs font-bold uppercase text-indigo-300">
+                    <span className="panel-cut-sm bg-brand-600/40 px-1.5 text-xs font-bold uppercase text-brand-300">
                       Active
                     </span>
                   )}
@@ -190,7 +214,7 @@ export default function StancesTab({ data }) {
                         setForm({ mode: 'edit', stance });
                       }}
                       title="Edit"
-                      className="rounded px-1.5 text-zinc-600 hover:bg-zinc-800 hover:text-zinc-300"
+                      className="panel-cut-sm px-1.5 text-zinc-600 hover:bg-zinc-800 hover:text-zinc-300"
                     >
                       ✎
                     </button>
@@ -205,7 +229,7 @@ export default function StancesTab({ data }) {
                           ? 'Every character keeps at least one stance'
                           : 'Delete'
                       }
-                      className="rounded px-1.5 text-zinc-600 hover:bg-red-900/40 hover:text-red-400 disabled:cursor-not-allowed disabled:opacity-30"
+                      className="panel-cut-sm px-1.5 text-zinc-600 hover:bg-red-900/40 hover:text-red-400 disabled:cursor-not-allowed disabled:opacity-30"
                     >
                       ✕
                     </button>
@@ -215,7 +239,7 @@ export default function StancesTab({ data }) {
                   <StyleChip attr={attrById.get(stance.attribute_a_id)} />
                   <StyleChip attr={attrById.get(stance.attribute_b_id)} />
                 </div>
-              </div>
+              </motion.div>
             );
           })}
         </div>
@@ -232,13 +256,13 @@ export default function StancesTab({ data }) {
       ) : (
         <button
           onClick={() => setForm({ mode: 'create' })}
-          className="rounded-md bg-indigo-600 px-4 py-2 font-semibold hover:bg-indigo-500"
+          className="panel-cut-sm bg-brand-600 px-4 py-2 font-semibold hover:bg-brand-500"
         >
           + New Stance
         </button>
       )}
 
-      <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
+      <div className="panel-cut-lg border border-zinc-800 bg-zinc-900 p-4">
         <h3 className="mb-1 text-sm font-bold uppercase tracking-wide text-zinc-400">
           Style Counter Chart
         </h3>

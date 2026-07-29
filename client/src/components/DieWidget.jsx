@@ -20,10 +20,45 @@ export default function DieWidget({
   const tint = tintFor(die);
   const buttonRef = useRef(null);
 
+  // A quick violent spin-punch on roll — distinct from the step flash below,
+  // so clicking the die itself to roll it feels like a heavier, more
+  // dramatic action than nudging its size up/down.
   const clickDie = () => {
     if (incapacitated) return;
-    if (selecting) onToggleSelect(die);
-    else onRoll(die);
+    if (selecting) {
+      onToggleSelect(die);
+      return;
+    }
+    if (buttonRef.current) {
+      gsap
+        .timeline()
+        .fromTo(
+          buttonRef.current,
+          { scale: 1, rotate: 0, filter: 'brightness(1)' },
+          {
+            scale: 1.28,
+            rotate: 14,
+            filter: 'brightness(1.6)',
+            duration: 0.12,
+            ease: 'power2.out',
+          }
+        )
+        .to(buttonRef.current, {
+          scale: 0.94,
+          rotate: -10,
+          filter: 'brightness(1.2)',
+          duration: 0.1,
+          ease: 'power1.inOut',
+        })
+        .to(buttonRef.current, {
+          scale: 1,
+          rotate: 0,
+          filter: 'brightness(1)',
+          duration: 0.35,
+          ease: 'elastic.out(1, 0.5)',
+        });
+    }
+    onRoll(die);
   };
 
   // A quick punchy flash/pop on step — GSAP handles the timeline so the glow
@@ -31,11 +66,24 @@ export default function DieWidget({
   const step = (direction) => {
     onStep(die, direction);
     if (buttonRef.current) {
-      gsap.fromTo(
-        buttonRef.current,
-        { scale: 1.22, boxShadow: '0 0 0 6px rgba(99,102,241,0.55)' },
-        { scale: 1, boxShadow: '0 0 0 0 rgba(99,102,241,0)', duration: 0.45, ease: 'power3.out' }
-      );
+      gsap
+        .timeline()
+        .fromTo(
+          buttonRef.current,
+          { scale: 1.35, boxShadow: '0 0 0 9px rgb(var(--color-brand-rgb) / 70%)', rotate: -6 },
+          {
+            scale: 1,
+            boxShadow: '0 0 0 0 rgb(var(--color-brand-rgb) / 0%)',
+            rotate: 0,
+            duration: 0.5,
+            ease: 'power3.out',
+          }
+        )
+        .to(
+          buttonRef.current,
+          { x: -3, duration: 0.05, ease: 'power1.inOut', yoyo: true, repeat: 3 },
+          0.05
+        );
     }
   };
 
@@ -56,13 +104,13 @@ export default function DieWidget({
                   : 'Add to pool roll'
                 : 'Roll this die'
           }
-          className={`relative flex items-center justify-center rounded-xl border font-display font-bold transition-colors ${
+          className={`relative flex items-center justify-center panel-cut-lg border font-display font-bold transition-colors ${
             compact ? 'h-14 w-14 text-base' : 'h-16 w-16 text-lg'
           } ${
             incapacitated
               ? 'cursor-not-allowed border-zinc-800 bg-zinc-900 text-zinc-700'
-              : 'border-zinc-700 bg-zinc-800/90 text-zinc-100 backdrop-blur-sm hover:border-indigo-500'
-          } ${selected ? 'ring-2 ring-indigo-400' : ''} ${
+              : 'border-zinc-700 bg-zinc-800/90 text-zinc-100 backdrop-blur-sm hover:border-brand-500'
+          } ${selected ? 'ring-2 ring-brand-400' : ''} ${
             selecting && !incapacitated && !selected ? 'opacity-70' : ''
           }`}
           style={tint ? { backgroundColor: tint } : undefined}
@@ -84,7 +132,7 @@ export default function DieWidget({
             </span>
           )}
           {selected && (
-            <span className="absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-indigo-500 text-xs text-white">
+            <span className="absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-brand-500 text-xs text-white">
               ✓
             </span>
           )}
@@ -93,7 +141,7 @@ export default function DieWidget({
           <button
             onClick={() => step('up')}
             title={incapacitated ? 'Revive to d4' : 'Step up'}
-            className="rounded px-1 text-green-500 hover:bg-green-900/30"
+            className="panel-cut-sm px-1 text-green-500 hover:bg-green-900/30"
           >
             ▲
           </button>
@@ -101,7 +149,7 @@ export default function DieWidget({
             onClick={() => step('down')}
             disabled={incapacitated}
             title="Step down"
-            className="rounded px-1 text-red-500 hover:bg-red-900/30 disabled:opacity-30"
+            className="panel-cut-sm px-1 text-red-500 hover:bg-red-900/30 disabled:opacity-30"
           >
             ▼
           </button>

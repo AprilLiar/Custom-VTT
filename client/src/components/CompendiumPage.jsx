@@ -32,7 +32,7 @@ export default function CompendiumPage() {
             onClick={() => setTab(t.key)}
             className={`whitespace-nowrap rounded-t-md px-4 py-2 text-sm font-semibold ${
               tab === t.key
-                ? 'border-b-2 border-indigo-500 text-zinc-100'
+                ? 'border-b-2 border-brand-500 text-zinc-100'
                 : 'text-zinc-600 hover:text-zinc-300'
             }`}
           >

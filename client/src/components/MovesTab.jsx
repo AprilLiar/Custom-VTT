@@ -90,11 +90,11 @@ export default function MovesTab({ data }) {
             dimReason={style ? `Needs an active stance with ${style.name}` : undefined}
             badge={
               move.is_default ? (
-                <span className="ml-2 rounded bg-zinc-700/60 px-1.5 text-xs font-semibold uppercase text-zinc-400">
+                <span className="ml-2 panel-cut-sm bg-zinc-700/60 px-1.5 text-xs font-semibold uppercase text-zinc-400">
                   Default
                 </span>
               ) : (
-                <span className="ml-2 rounded bg-purple-600/30 px-1.5 text-xs font-semibold uppercase text-purple-300">
+                <span className="ml-2 panel-cut-sm bg-purple-600/30 px-1.5 text-xs font-semibold uppercase text-purple-300">
                   Unique
                 </span>
               )
@@ -106,7 +106,7 @@ export default function MovesTab({ data }) {
                     window.confirm(`Revoke ${move.name} from ${character.name}?`) &&
                     socket.emit('move:revoke', { characterId: character.id, moveId: move.id })
                   }
-                  className="rounded px-2 py-0.5 text-xs text-zinc-500 hover:bg-red-900/40 hover:text-red-400"
+                  className="panel-cut-sm px-2 py-0.5 text-xs text-zinc-500 hover:bg-red-900/40 hover:text-red-400"
                 >
                   Revoke
                 </button>

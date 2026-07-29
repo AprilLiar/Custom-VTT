@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { motion } from 'framer-motion';
 
 const MODIFIER_LIMIT = 20;
 
@@ -20,10 +21,13 @@ export default function RollDialog({ title, onRoll, onClose, initialModifier = 0
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
       onClick={onClose}
     >
-      <form
+      <motion.form
         onSubmit={submit}
         onClick={(e) => e.stopPropagation()}
-        className="flex w-64 flex-col gap-3 rounded-xl border border-zinc-700 bg-zinc-900 p-4"
+        initial={{ scale: 0.85, opacity: 0, y: 10 }}
+        animate={{ scale: 1, opacity: 1, y: 0 }}
+        transition={{ type: 'spring', stiffness: 420, damping: 22 }}
+        className="flex w-64 flex-col gap-3 panel-cut-lg border border-zinc-700 bg-zinc-900 p-4"
       >
         <h3 className="font-bold text-zinc-100">{title}</h3>
         <label className="text-sm text-zinc-400">
@@ -36,25 +40,27 @@ export default function RollDialog({ title, onRoll, onClose, initialModifier = 0
             value={value}
             onChange={(e) => setValue(e.target.value)}
             onFocus={(e) => e.target.select()}
-            className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-lg text-zinc-100 outline-none focus:border-indigo-500"
+            className="mt-1 w-full panel-cut-sm border border-zinc-700 bg-zinc-800 px-3 py-2 text-lg text-zinc-100 outline-none focus:border-brand-500"
           />
         </label>
         <div className="flex gap-2">
-          <button
+          <motion.button
             type="submit"
-            className="flex-1 rounded-md bg-indigo-600 py-2 font-semibold hover:bg-indigo-500"
+            whileTap={{ scale: 0.9 }}
+            whileHover={{ scale: 1.03 }}
+            className="flex-1 panel-cut-sm bg-brand-600 py-2 font-semibold hover:bg-brand-500"
           >
             Roll
-          </button>
+          </motion.button>
           <button
             type="button"
             onClick={onClose}
-            className="rounded-md border border-zinc-700 px-4 text-zinc-400 hover:bg-zinc-800"
+            className="panel-cut-sm border border-zinc-700 px-4 text-zinc-400 hover:bg-zinc-800"
           >
             Cancel
           </button>
         </div>
-      </form>
+      </motion.form>
     </div>
   );
 }

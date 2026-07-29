@@ -41,24 +41,24 @@ function AddCharacterForm({ folders, currentFolder, onDone }) {
   return (
     <form
       onSubmit={submit}
-      className="flex flex-col gap-3 rounded-xl border border-zinc-700 bg-zinc-900 p-4"
+      className="flex flex-col gap-3 panel-cut-lg border border-zinc-700 bg-zinc-900 p-4"
     >
       <input
         autoFocus
         value={name}
         onChange={(e) => setName(e.target.value)}
         placeholder="Character name"
-        className="rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-zinc-100 outline-none focus:border-indigo-500"
+        className="panel-cut-sm border border-zinc-700 bg-zinc-800 px-3 py-2 text-zinc-100 outline-none focus:border-brand-500"
       />
       {role === 'gm' && (
-        <div className="flex overflow-hidden rounded-md border border-zinc-700 text-sm font-semibold">
+        <div className="flex overflow-hidden panel-cut-sm border border-zinc-700 text-sm font-semibold">
           {['pc', 'npc'].map((t) => (
             <button
               key={t}
               type="button"
               onClick={() => setType(t)}
               className={`flex-1 py-1.5 uppercase ${
-                type === t ? 'bg-indigo-600 text-white' : 'bg-zinc-800 text-zinc-400'
+                type === t ? 'bg-brand-600 text-white' : 'bg-zinc-800 text-zinc-400'
               }`}
             >
               {t}
@@ -70,7 +70,7 @@ function AddCharacterForm({ folders, currentFolder, onDone }) {
         <select
           value={folderId ?? ''}
           onChange={(e) => setFolderId(e.target.value ? Number(e.target.value) : null)}
-          className="rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-300 outline-none focus:border-indigo-500"
+          className="panel-cut-sm border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-300 outline-none focus:border-brand-500"
         >
           <option value="">Folder: root</option>
           {flatFolders.map(({ folder, path }) => (
@@ -84,14 +84,14 @@ function AddCharacterForm({ folders, currentFolder, onDone }) {
         <button
           type="submit"
           disabled={!name.trim() || busy}
-          className="flex-1 rounded-md bg-indigo-600 py-2 font-semibold hover:bg-indigo-500 disabled:opacity-40"
+          className="flex-1 panel-cut-sm bg-brand-600 py-2 font-semibold hover:bg-brand-500 disabled:opacity-40"
         >
           Create
         </button>
         <button
           type="button"
           onClick={onDone}
-          className="rounded-md border border-zinc-700 px-4 text-zinc-400 hover:bg-zinc-800"
+          className="panel-cut-sm border border-zinc-700 px-4 text-zinc-400 hover:bg-zinc-800"
         >
           Cancel
         </button>
@@ -161,7 +161,7 @@ export default function CharacterList() {
         {!adding && (
           <button
             onClick={() => setAdding(true)}
-            className="rounded-md bg-indigo-600 px-4 py-2 font-semibold hover:bg-indigo-500"
+            className="panel-cut-sm bg-brand-600 px-4 py-2 font-semibold hover:bg-brand-500"
           >
             + Add Character
           </button>
@@ -217,7 +217,7 @@ export default function CharacterList() {
                     draggable={role === 'gm'}
                     onDragStart={(e) => e.dataTransfer.setData('text/character-id', String(c.id))}
                     onClick={() => navigate(`/character/${c.id}`)}
-                    className="group flex cursor-pointer flex-col overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900 transition hover:border-indigo-600"
+                    className="group flex cursor-pointer flex-col overflow-hidden panel-cut-lg border border-zinc-800 bg-zinc-900 transition hover:border-brand-600"
                   >
                     <div className="flex h-56 items-center justify-center bg-zinc-800">
                       {src ? (
@@ -231,14 +231,14 @@ export default function CharacterList() {
                     <div className="flex items-center gap-2 p-3">
                       <span className="truncate font-semibold">{c.name}</span>
                       {role === 'gm' && c.character_type === 'npc' && (
-                        <span className="rounded bg-purple-600/30 px-1.5 text-xs font-bold uppercase text-purple-300">
+                        <span className="panel-cut-sm bg-purple-600/30 px-1.5 text-xs font-bold uppercase text-purple-300">
                           NPC
                         </span>
                       )}
                       {path && (
                         <span
                           title={path}
-                          className="truncate rounded bg-zinc-700/50 px-1.5 text-xs text-zinc-400"
+                          className="truncate panel-cut-sm bg-zinc-700/50 px-1.5 text-xs text-zinc-400"
                         >
                           📁 {path}
                         </span>
@@ -249,7 +249,7 @@ export default function CharacterList() {
                           remove(c);
                         }}
                         title="Delete character"
-                        className="ml-auto shrink-0 rounded px-1.5 text-zinc-600 opacity-0 transition group-hover:opacity-100 hover:bg-red-900/40 hover:text-red-400"
+                        className="ml-auto shrink-0 panel-cut-sm px-1.5 text-zinc-600 opacity-0 transition group-hover:opacity-100 hover:bg-red-900/40 hover:text-red-400"
                       >
                         ✕
                       </button>
