@@ -287,7 +287,14 @@ export default function MovesCompendium() {
   const [grantOpen, setGrantOpen] = useState(null);
   const [dropTarget, setDropTarget] = useState(null);
   const [currentFolder, setCurrentFolder] = useState(null); // folder id | null = root
-  const [styleFilter, setStyleFilter] = useState(null); // attribute id | null
+  const [styleFilter, setStyleFilter] = useState(new Set()); // Set<attribute id> — OR'd together
+  const toggleStyleFilter = (id) =>
+    setStyleFilter((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
 
   useEffect(() => {
     const refreshAll = () => {
@@ -359,7 +366,7 @@ export default function MovesCompendium() {
   // style filter narrows whichever of those two pools is currently showing.
   const folderPool = currentFolder != null ? moves.filter((m) => m.folder_id === currentFolder) : moves;
   const visibleMoves =
-    styleFilter != null ? folderPool.filter((m) => m.style_attribute_id === styleFilter) : folderPool;
+    styleFilter.size > 0 ? folderPool.filter((m) => styleFilter.has(m.style_attribute_id)) : folderPool;
 
   const submitMove = (payload) => {
     if (form?.move) socket.emit('move:update', { moveId: form.move.id, ...payload });
@@ -412,11 +419,11 @@ export default function MovesCompendium() {
           <span className="mr-1 text-xs font-semibold uppercase text-zinc-500">Filter by style:</span>
           {ruleset.attributes.map((attr) => {
             const Icon = iconFor(attr.icon);
-            const active = styleFilter === attr.id;
+            const active = styleFilter.has(attr.id);
             return (
               <button
                 key={attr.id}
-                onClick={() => setStyleFilter(active ? null : attr.id)}
+                onClick={() => toggleStyleFilter(attr.id)}
                 title={`Filter by ${attr.name}`}
                 className={`panel-cut-sm border p-1.5 ${
                   active
@@ -454,7 +461,7 @@ export default function MovesCompendium() {
 
         {visibleMoves.length === 0 ? (
           <p className="text-sm text-zinc-600">
-            {styleFilter != null
+            {styleFilter.size > 0
               ? 'No moves with this style here.'
               : currentFolder != null
                 ? 'No moves in this discipline yet — assign moves to it in the Move Creator.'

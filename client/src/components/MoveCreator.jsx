@@ -131,6 +131,12 @@ export default function MoveCreator({
     active: initial?.active_tics ?? 1,
     recovery: initial?.recovery_tics ?? 0,
   });
+  // 0-based indices into the Startup+Active+Recovery sequence (see
+  // FrameBar.jsx) — an annotation on top of those squares, not a 4th phase,
+  // so it never affects the frame totals above or combat timing.
+  const [defensePositions, setDefensePositions] = useState(
+    new Set(initial?.defense_frame_positions ?? [])
+  );
   const [staminaCost, setStaminaCost] = useState(initial?.stamina_cost ?? 0);
   const [description, setDescription] = useState(initial?.description ?? '');
   const [interactions, setInteractions] = useState({
@@ -142,6 +148,17 @@ export default function MoveCreator({
   });
 
   const total = frames.startup + frames.active + frames.recovery;
+  // Shrinking a frame count can leave a stale Defense tag pointing past the
+  // new total — filtered here rather than pruned from state, so re-growing
+  // the count (undoing the shrink) doesn't lose the tag.
+  const visibleDefensePositions = [...defensePositions].filter((p) => p < total);
+  const toggleDefensePosition = (index) =>
+    setDefensePositions((prev) => {
+      const next = new Set(prev);
+      if (next.has(index)) next.delete(index);
+      else next.add(index);
+      return next;
+    });
   const ambiguousRoll = rollSlots.some((s) => AMBIGUOUS_ROLL_SLOTS.has(s));
   // A Default move is usable by anyone, anytime — it never carries a Style
   // gate, so Style stays required only for a Unique move.
@@ -187,6 +204,7 @@ export default function MoveCreator({
       startupTics: frames.startup,
       activeTics: frames.active,
       recoveryTics: frames.recovery,
+      defenseFramePositions: visibleDefensePositions,
       staminaCost,
       description: description.trim(),
       interactions,
@@ -424,7 +442,16 @@ export default function MoveCreator({
           </label>
         ))}
         <div className="pb-1">
-          <FrameBar startup={frames.startup} active={frames.active} recovery={frames.recovery} />
+          <p className="mb-1 text-xs font-semibold uppercase text-green-500">
+            Click a square for Defense
+          </p>
+          <FrameBar
+            startup={frames.startup}
+            active={frames.active}
+            recovery={frames.recovery}
+            defensePositions={visibleDefensePositions}
+            onToggle={toggleDefensePosition}
+          />
           {total < 1 && <p className="text-xs text-red-400">At least 1 square total</p>}
         </div>
         <label className="text-xs font-semibold uppercase text-emerald-500">

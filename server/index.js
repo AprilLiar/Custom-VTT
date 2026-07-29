@@ -20,6 +20,7 @@ import {
   clampStaminaCost,
   sanitizeRollSlots,
   hasAmbiguousRollSlot,
+  sanitizeDefensePositions,
   AMBIGUOUS_ROLL_SLOTS,
 } from './moveLogic.js';
 import { effectiveFrames, PERK_HOOKS } from './perkAutomations.js';
@@ -98,6 +99,7 @@ async function attachInteractions(moves) {
     interactions: byMove.get(m.id) ?? [],
     tag_ids: tagsByMove.get(m.id) ?? [],
     roll_slots: rollSlotsByMove.get(m.id) ?? [],
+    defense_frame_positions: JSON.parse(m.defense_frame_positions ?? '[]'),
   }));
 }
 
@@ -292,7 +294,7 @@ async function postMoveReveals(newTic) {
     `SELECT dm.id, dm.character_id, dm.move_id,
             ch.name AS character_name,
             m.name AS move_name, m.image_data, m.image_mime_type,
-            m.startup_tics, m.active_tics, m.recovery_tics,
+            m.startup_tics, m.active_tics, m.recovery_tics, m.defense_frame_positions,
             m.description, m.stamina_cost
      FROM declared_moves dm
      JOIN characters ch ON ch.id = dm.character_id
@@ -328,6 +330,7 @@ async function postMoveReveals(newTic) {
         startupTics: row.startup_tics,
         activeTics: row.active_tics,
         recoveryTics: row.recovery_tics,
+        defenseFramePositions: JSON.parse(row.defense_frame_positions ?? '[]'),
         description: row.description,
         staminaCost: row.stamina_cost,
         full,
@@ -349,7 +352,7 @@ async function fetchDeclaredMoveRows() {
            dm.placement_tic, dm.reveal_tic, dm.stamina_committed, dm.appendage_choice,
            m.id AS move_id, m.name AS move_name, m.tell_id, m.right_tell_id,
            m.left_tell_id, m.active_tics, m.recovery_tics, m.stamina_cost,
-           ch.character_type
+           m.defense_frame_positions, ch.character_type
     FROM declared_moves dm
     JOIN moves m ON m.id = dm.move_id
     JOIN characters ch ON ch.id = dm.character_id
@@ -408,6 +411,13 @@ function mapDeclaredMovesForViewer(rows, currentTic, viewer, phase, roundNumber)
       revealTic: row.reveal_tic,
       activeEndTic: row.reveal_tic + row.active_tics,
       recoveryEndTic: row.reveal_tic + row.active_tics + row.recovery_tics,
+      // Same frame-timing precedent as activeEndTic/recoveryEndTic above:
+      // fine to disclose regardless of reveal status, since it's structure
+      // (when the defensive windows land), not identity. Positions are
+      // 0-based into the move's own frame sequence — add placementTic to
+      // get the absolute Tic, same scheme moveLogic.js's
+      // sanitizeDefensePositions stores them in.
+      defenseFramePositions: JSON.parse(row.defense_frame_positions ?? '[]'),
       tellId: row.tell_id,
       rightTellId: row.right_tell_id,
       leftTellId: row.left_tell_id,
@@ -1256,6 +1266,10 @@ io.on('connection', (socket) => {
     const active = clampFrame(payload.activeTics);
     const recovery = clampFrame(payload.recoveryTics);
     if (!validFrames(startup, active, recovery)) return null;
+    const defenseFramePositions = sanitizeDefensePositions(
+      payload.defenseFramePositions,
+      startup + active + recovery
+    );
     const staminaCost = clampStaminaCost(payload.staminaCost);
     const isDefault = payload.isDefault ? 1 : 0;
     const isDefensive = payload.isDefensive ? 1 : 0;
@@ -1329,22 +1343,24 @@ io.on('connection', (socket) => {
       const result = await run(
         `INSERT INTO moves (name, is_default, tell_id, startup_tics, active_tics, recovery_tics,
           stamina_cost, description, style_attribute_id, folder_id, image_data, image_mime_type,
-          roll_modifier, right_tell_id, left_tell_id, is_defensive)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          roll_modifier, right_tell_id, left_tell_id, is_defensive, defense_frame_positions)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [name, isDefault, tellId, startup, active, recovery, staminaCost, description, styleId,
           folderId, payload.imageData ?? null,
           payload.imageData ? (payload.imageMimeType ?? 'image/png') : null,
-          rollModifier, rightTellId, leftTellId, isDefensive]
+          rollModifier, rightTellId, leftTellId, isDefensive, JSON.stringify(defenseFramePositions)]
       );
       id = Number(result.lastInsertRowid);
     } else {
       await run(
         `UPDATE moves SET name = ?, is_default = ?, tell_id = ?, startup_tics = ?, active_tics = ?,
           recovery_tics = ?, stamina_cost = ?, description = ?, style_attribute_id = ?, folder_id = ?,
-          roll_modifier = ?, right_tell_id = ?, left_tell_id = ?, is_defensive = ?
+          roll_modifier = ?, right_tell_id = ?, left_tell_id = ?, is_defensive = ?,
+          defense_frame_positions = ?
           WHERE id = ?`,
         [name, isDefault, tellId, startup, active, recovery, staminaCost, description, styleId,
-          folderId, rollModifier, rightTellId, leftTellId, isDefensive, id]
+          folderId, rollModifier, rightTellId, leftTellId, isDefensive,
+          JSON.stringify(defenseFramePositions), id]
       );
       // image only replaced when a new one is provided
       if (payload.imageData !== undefined) {
@@ -2290,6 +2306,8 @@ io.on('connection', (socket) => {
   on('combat:tic_forward', async () => {
     const state = await one('SELECT * FROM combat_state WHERE id = 1');
     if (state.phase !== 'tic_countdown') return;
+    const maxTic = state.round_start_tic + state.round_length - 1;
+    if (state.current_tic >= maxTic) return;
     const newTic = state.current_tic + 1;
     await run('UPDATE combat_state SET current_tic = ? WHERE id = 1', [newTic]);
     await postMoveReveals(newTic);

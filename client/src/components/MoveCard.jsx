@@ -121,6 +121,7 @@ export default function MoveCard({
               startup={move.startup_tics}
               active={move.active_tics}
               recovery={move.recovery_tics}
+              defensePositions={move.defense_frame_positions}
             />
           </span>
         </div>

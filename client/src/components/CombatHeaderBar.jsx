@@ -30,10 +30,12 @@ export default function CombatHeaderBar() {
 
   if (!combat || combat.phase == null) return null;
 
-  const { phase, roundNumber, pairs } = combat;
+  const { phase, roundNumber, pairs, currentTic, roundStartTic, roundLength } = combat;
   const pairsStillDeclaring = (pairs ?? []).filter((p) => p.declaring_side != null).length;
   const everyoneReady = phase === 'declaration' && pairsStillDeclaring === 0;
   const onArena = location.pathname === '/combat';
+  const atFirstTic = currentTic <= roundStartTic;
+  const atLastTic = currentTic >= roundStartTic + roundLength - 1;
 
   return (
     <div className="flex flex-wrap items-center gap-3 border-b border-zinc-800 bg-gradient-to-r from-zinc-950 via-zinc-900 to-zinc-950 px-4 py-2 text-sm">
@@ -86,15 +88,17 @@ export default function CombatHeaderBar() {
         <div className="flex items-center gap-1">
           <button
             onClick={() => socket.emit('combat:tic_backward', {})}
-            title="Tic back"
-            className="panel-cut-sm border border-zinc-700 px-2 py-1 text-xs hover:bg-zinc-800"
+            disabled={atFirstTic}
+            title={atFirstTic ? 'Already at the round\'s first Tic' : 'Tic back'}
+            className="panel-cut-sm border border-zinc-700 px-2 py-1 text-xs hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-30"
           >
             ◀
           </button>
           <button
             onClick={() => socket.emit('combat:tic_forward', {})}
-            title="Tic forward"
-            className="panel-cut-sm border border-zinc-700 px-2 py-1 text-xs hover:bg-zinc-800"
+            disabled={atLastTic}
+            title={atLastTic ? 'Already at the round\'s last Tic' : 'Tic forward'}
+            className="panel-cut-sm border border-zinc-700 px-2 py-1 text-xs hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-30"
           >
             ▶
           </button>

@@ -266,7 +266,37 @@ function FolderRosterNode({ node, charsByFolder, collapsed, onToggle, depth, ros
 // Startup/Active/Recovery length dictates, without ever revealing which
 // square any *other* declared move actually landed on (that stays hidden
 // until reveal).
-function TicSquare({ relativeTic, isCurrent, footprintZone, onDragOver, onDrop }) {
+const DECLARED_PHASE_COLOR = {
+  startup: 'bg-yellow-500',
+  active: 'bg-red-500',
+  recovery: 'bg-blue-500',
+  defense: 'bg-green-500',
+};
+
+// Which phase (if any) each already-declared move occupies at this absolute
+// Tic — used for the small footprint-preview stripe below, shown only to
+// whoever currently has the declare floor (see showDeclaredPreview). Reads
+// straight off fields the server already sends for every declared move
+// regardless of reveal status (placementTic/revealTic/activeEndTic/
+// recoveryEndTic/defenseFramePositions — see mapDeclaredMovesForViewer
+// server-side): frame *timing* was already established as non-secret
+// (it's what drives the live drag footprint preview elsewhere on this same
+// strip), only a move's *identity* stays hidden pre-reveal — so this never
+// leaks anything beyond what a keen player could already infer.
+function declaredPhasesAt(absoluteTic, declaredMoves) {
+  const colors = [];
+  for (const dm of declaredMoves) {
+    if (absoluteTic < dm.placementTic || absoluteTic >= dm.recoveryEndTic) continue;
+    const offset = absoluteTic - dm.placementTic;
+    if (dm.defenseFramePositions?.includes(offset)) colors.push(DECLARED_PHASE_COLOR.defense);
+    else if (absoluteTic < dm.revealTic) colors.push(DECLARED_PHASE_COLOR.startup);
+    else if (absoluteTic < dm.activeEndTic) colors.push(DECLARED_PHASE_COLOR.active);
+    else colors.push(DECLARED_PHASE_COLOR.recovery);
+  }
+  return colors;
+}
+
+function TicSquare({ relativeTic, isCurrent, footprintZone, declaredPhases, onDragOver, onDrop }) {
   const zoneStyle = {
     startup: 'border-amber-300 bg-amber-500/80 shadow-[0_0_10px_rgba(251,191,36,0.45)]',
     active: 'border-rose-300 bg-rose-500/80 shadow-[0_0_10px_rgba(244,63,94,0.45)]',
@@ -282,7 +312,7 @@ function TicSquare({ relativeTic, isCurrent, footprintZone, onDragOver, onDrop }
       initial={isCurrent ? { scale: 1.5 } : false}
       animate={{ scale: isCurrent && !zoneStyle ? 1.1 : 1 }}
       transition={{ duration: 0.35, ease: 'easeOut' }}
-      className={`flex h-11 w-11 shrink-0 items-center justify-center panel-cut border text-sm font-bold transition-colors duration-150 ${
+      className={`relative flex h-11 w-11 shrink-0 items-center justify-center panel-cut border text-sm font-bold transition-colors duration-150 ${
         zoneStyle ??
         (isCurrent
           ? 'border-brand-300 bg-brand-600 text-white shadow-[0_0_16px_rgb(var(--color-brand-rgb)/55%)]'
@@ -290,6 +320,13 @@ function TicSquare({ relativeTic, isCurrent, footprintZone, onDragOver, onDrop }
       }`}
     >
       {relativeTic}
+      {declaredPhases?.length > 0 && (
+        <div className="absolute inset-x-0.5 bottom-0.5 flex flex-col-reverse gap-px">
+          {declaredPhases.slice(0, 4).map((color, i) => (
+            <span key={i} className={`h-0.5 w-full ${color}`} />
+          ))}
+        </div>
+      )}
     </motion.div>
   );
 }
@@ -300,7 +337,18 @@ function TicSquare({ relativeTic, isCurrent, footprintZone, onDragOver, onDrop }
 // runs independently per pair (see combat_pairs server-side), but the
 // countdown that follows stays one global strip, since there's still only
 // one Tic Counter.
-function TicCounterCentral({ phase, currentTic, roundStartTic, roundLength, draggingMove, hoverTic, setHoverTic, onDrop }) {
+function TicCounterCentral({
+  phase,
+  currentTic,
+  roundStartTic,
+  roundLength,
+  draggingMove,
+  hoverTic,
+  setHoverTic,
+  onDrop,
+  declaredMoves,
+  showDeclaredPreview,
+}) {
   const squares = Array.from({ length: roundLength }, (_, i) => ({
     absoluteTic: roundStartTic + i,
     relative: i + 1,
@@ -326,13 +374,16 @@ function TicCounterCentral({ phase, currentTic, roundStartTic, roundLength, drag
       <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-zinc-500">
         {phase === 'declaration' ? 'Drag a move here to declare' : 'Tic Counter'}
       </span>
-      <div className="flex gap-1.5 overflow-x-auto py-1">
+      <div className="flex flex-wrap justify-center gap-1.5 py-1">
         {squares.map((sq) => (
           <TicSquare
             key={sq.absoluteTic}
             relativeTic={sq.relative}
             isCurrent={sq.absoluteTic === currentTic}
             footprintZone={zoneFor(sq.absoluteTic)}
+            declaredPhases={
+              showDeclaredPreview ? declaredPhasesAt(sq.absoluteTic, declaredMoves) : undefined
+            }
             onDragOver={
               canDrop
                 ? (e) => {
@@ -345,6 +396,23 @@ function TicCounterCentral({ phase, currentTic, roundStartTic, roundLength, drag
           />
         ))}
       </div>
+      {showDeclaredPreview && (
+        <div className="flex flex-wrap items-center justify-center gap-2 text-[9px] text-zinc-600">
+          <span className="flex items-center gap-1">
+            <span className="h-1.5 w-1.5 bg-yellow-500" /> Startup
+          </span>
+          <span className="flex items-center gap-1">
+            <span className="h-1.5 w-1.5 bg-red-500" /> Active
+          </span>
+          <span className="flex items-center gap-1">
+            <span className="h-1.5 w-1.5 bg-blue-500" /> Recovery
+          </span>
+          <span className="flex items-center gap-1">
+            <span className="h-1.5 w-1.5 bg-green-500" /> Defense
+          </span>
+          <span>— already declared</span>
+        </div>
+      )}
     </div>
   );
 }
@@ -433,6 +501,7 @@ function CompactDeclaredMoveCard({ dm, move, tellById, tagById, styleById, moveF
                   startup={move.startup_tics}
                   active={move.active_tics}
                   recovery={move.recovery_tics}
+                  defensePositions={move.defense_frame_positions}
                   size="h-1.5 w-1.5"
                 />
               </div>
@@ -452,10 +521,18 @@ function CompactDeclaredMoveCard({ dm, move, tellById, tagById, styleById, moveF
       </AnimatePresence>
       {expanded && revealed && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
           onClick={() => setExpanded(false)}
         >
-          <div onClick={(e) => e.stopPropagation()} className="max-h-[85vh] w-80 overflow-y-auto">
+          <div
+            onClick={(e) => {
+              // Click-anywhere-to-close, except an interactive button inside
+              // the card (e.g. a live Roll button) — that keeps working
+              // normally instead of also dismissing the popup.
+              if (e.target.closest('button')) e.stopPropagation();
+            }}
+            className="max-h-[85vh] w-full max-w-md overflow-y-auto"
+          >
             <MoveCard
               move={move}
               tell={tellById.get(move.tell_id)}
@@ -1207,6 +1284,8 @@ export default function CombatArena() {
             hoverTic={hoverTic}
             setHoverTic={setHoverTic}
             onDrop={handleTicDrop}
+            declaredMoves={currentRoundMoves}
+            showDeclaredPreview={Boolean(activeDeclareEntry)}
           />
 
           <MoveBand
@@ -1271,7 +1350,7 @@ export default function CombatArena() {
                   }}
                   onDragLeave={() => setDropTarget(null)}
                   onDrop={(e) => role === 'gm' && onDrop(e, 'left', rowIdx)}
-                  className={`flex min-h-24 flex-1 gap-2 overflow-x-auto panel-cut border border-dashed p-2 transition-colors ${
+                  className={`flex min-h-24 flex-1 gap-2 overflow-x-auto overflow-y-hidden panel-cut border border-dashed p-2 transition-colors ${
                     dropTarget === leftKey ? 'border-brand-400 bg-brand-950/20' : 'border-zinc-800'
                   }`}
                 >
@@ -1303,7 +1382,7 @@ export default function CombatArena() {
                   }}
                   onDragLeave={() => setDropTarget(null)}
                   onDrop={(e) => role === 'gm' && onDrop(e, 'right', rowIdx)}
-                  className={`flex min-h-24 flex-1 gap-2 overflow-x-auto panel-cut border border-dashed p-2 transition-colors ${
+                  className={`flex min-h-24 flex-1 gap-2 overflow-x-auto overflow-y-hidden panel-cut border border-dashed p-2 transition-colors ${
                     dropTarget === rightKey ? 'border-brand-400 bg-brand-950/20' : 'border-zinc-800'
                   }`}
                 >
