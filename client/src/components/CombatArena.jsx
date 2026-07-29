@@ -274,15 +274,12 @@ const DECLARED_PHASE_COLOR = {
 };
 
 // Which phase (if any) each already-declared move occupies at this absolute
-// Tic — used for the small footprint-preview stripe below, shown only to
-// whoever currently has the declare floor (see showDeclaredPreview). Reads
-// straight off fields the server already sends for every declared move
-// regardless of reveal status (placementTic/revealTic/activeEndTic/
-// recoveryEndTic/defenseFramePositions — see mapDeclaredMovesForViewer
-// server-side): frame *timing* was already established as non-secret
-// (it's what drives the live drag footprint preview elsewhere on this same
-// strip), only a move's *identity* stays hidden pre-reveal — so this never
-// leaks anything beyond what a keen player could already infer.
+// Tic — used for the small footprint-preview squares below, shown only to
+// whoever currently has the declare floor, and only for **their own**
+// previously-declared moves this round (see showDeclaredPreview and the
+// declaredMoves filtering at the call site) — never another character's,
+// declared or not. This is purely a self-service planning aid (don't
+// double-book your own Tics), not a window into the opponent's timing.
 function declaredPhasesAt(absoluteTic, declaredMoves) {
   const colors = [];
   for (const dm of declaredMoves) {
@@ -296,7 +293,15 @@ function declaredPhasesAt(absoluteTic, declaredMoves) {
   return colors;
 }
 
-function TicSquare({ relativeTic, isCurrent, footprintZone, declaredPhases, onDragOver, onDrop }) {
+function TicSquare({
+  relativeTic,
+  isCurrent,
+  footprintZone,
+  declaredPhases,
+  overflowOccupied,
+  onDragOver,
+  onDrop,
+}) {
   const zoneStyle = {
     startup: 'border-amber-300 bg-amber-500/80 shadow-[0_0_10px_rgba(251,191,36,0.45)]',
     active: 'border-rose-300 bg-rose-500/80 shadow-[0_0_10px_rgba(244,63,94,0.45)]',
@@ -308,7 +313,7 @@ function TicSquare({ relativeTic, isCurrent, footprintZone, declaredPhases, onDr
       key={isCurrent ? 'current' : 'idle'}
       onDragOver={onDragOver}
       onDrop={onDrop}
-      title={`Tic ${relativeTic}`}
+      title={`Tic ${relativeTic}${overflowOccupied ? ' — occupied by carryover from last round' : ''}`}
       initial={isCurrent ? { scale: 1.5 } : false}
       animate={{ scale: isCurrent && !zoneStyle ? 1.1 : 1 }}
       transition={{ duration: 0.35, ease: 'easeOut' }}
@@ -320,10 +325,13 @@ function TicSquare({ relativeTic, isCurrent, footprintZone, declaredPhases, onDr
       }`}
     >
       {relativeTic}
+      {overflowOccupied && (
+        <span className="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-zinc-400" />
+      )}
       {declaredPhases?.length > 0 && (
-        <div className="absolute inset-x-0.5 bottom-0.5 flex flex-col-reverse gap-px">
+        <div className="absolute inset-x-0 bottom-1 flex flex-wrap items-center justify-center gap-0.5">
           {declaredPhases.slice(0, 4).map((color, i) => (
-            <span key={i} className={`h-0.5 w-full ${color}`} />
+            <span key={i} className={`h-1 w-1 ${color}`} />
           ))}
         </div>
       )}
@@ -348,6 +356,7 @@ function TicCounterCentral({
   onDrop,
   declaredMoves,
   showDeclaredPreview,
+  overflowTics,
 }) {
   const squares = Array.from({ length: roundLength }, (_, i) => ({
     absoluteTic: roundStartTic + i,
@@ -384,6 +393,7 @@ function TicCounterCentral({
             declaredPhases={
               showDeclaredPreview ? declaredPhasesAt(sq.absoluteTic, declaredMoves) : undefined
             }
+            overflowOccupied={overflowTics.has(sq.absoluteTic)}
             onDragOver={
               canDrop
                 ? (e) => {
@@ -410,7 +420,13 @@ function TicCounterCentral({
           <span className="flex items-center gap-1">
             <span className="h-1.5 w-1.5 bg-green-500" /> Defense
           </span>
-          <span>— already declared</span>
+          <span>— your declared moves this round</span>
+        </div>
+      )}
+      {overflowTics.size > 0 && (
+        <div className="flex items-center gap-1 text-[9px] text-zinc-600">
+          <span className="h-1.5 w-1.5 rounded-full bg-zinc-400" /> Tic occupied by carryover from
+          last round
         </div>
       )}
     </div>
@@ -1154,6 +1170,17 @@ export default function CombatArena() {
   // ---------- Declared-move bands flanking the Tic Counter ----------
 
   const currentRoundMoves = declaredMoves.filter((dm) => dm.roundNumber === combat.roundNumber);
+  // Tics at the start of THIS round already occupied by a previous round's
+  // overflowing Recovery — general board-state awareness, broadcast to
+  // everyone regardless of role/turn (not attributed to any character).
+  // Only ever built from prior rounds, so it can never leak this round's
+  // own still-secret placements the way showing everyone's current-round
+  // moves would.
+  const overflowTics = new Set();
+  for (const dm of declaredMoves) {
+    if (dm.roundNumber >= combat.roundNumber) continue;
+    for (let t = combat.roundStartTic; t < dm.recoveryEndTic; t++) overflowTics.add(t);
+  }
   const bandEntries = (predicate) =>
     currentRoundMoves
       .filter((dm) => {
@@ -1284,8 +1311,13 @@ export default function CombatArena() {
             hoverTic={hoverTic}
             setHoverTic={setHoverTic}
             onDrop={handleTicDrop}
-            declaredMoves={currentRoundMoves}
+            declaredMoves={
+              activeDeclareEntry
+                ? currentRoundMoves.filter((dm) => dm.characterId === activeDeclareEntry.character.id)
+                : []
+            }
             showDeclaredPreview={Boolean(activeDeclareEntry)}
+            overflowTics={overflowTics}
           />
 
           <MoveBand
