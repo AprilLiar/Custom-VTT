@@ -7,15 +7,59 @@
 // rounds fall out of plain arithmetic instead of needing special-casing.
 
 // A side's Initiative is the highest Brain roll among characters on that
-// side (Declaration Phase). The losing side declares first. Ties aren't
-// addressed in the plan; broken here by having 'left' declare first (i.e.
-// 'right' wins ties) — an arbitrary but deterministic default.
-export function resolveSideInitiative({ left, right }) {
-  const leftInitiative = Math.max(...left);
-  const rightInitiative = Math.max(...right);
-  const firstToDeclare = leftInitiative <= rightInitiative ? 'left' : 'right';
+// side (Declaration Phase). The losing side declares first. `left`/`right`
+// are arrays of per-character records: `{ characterId, roll, currentBrain,
+// lockedBrain, hasSpeedStance }` — only `roll` is required for the common
+// (non-tied) case, the rest feed the tie-break cascade below.
+//
+// Tie-break (decided): when the two sides' top roll is exactly equal, only
+// the character(s) — on either side — who actually posted that tied roll
+// are eligible tie-break candidates (a side with one high outlier and one
+// low roller isn't dragged in by its low roller). Among those candidates,
+// in order: highest current Brain value (die size + bonus) wins; if still
+// tied, highest locked Brain value wins; if still tied, a candidate with
+// Speed in their current active stance wins (only if that narrows the
+// field — if none or all have it, it doesn't decide anything); if still
+// tied, pick at random. Whichever side the winning candidate belongs to
+// wins the roll-off — same as the non-tied case, the loser declares first.
+// `random` is injectable (defaults to Math.random) so the random fallback
+// stays deterministic in tests.
+export function resolveSideInitiative({ left, right }, random = Math.random) {
+  const initiativeOf = (side) => side.reduce((best, c) => Math.max(best, c.roll), -Infinity);
+  const leftInitiative = initiativeOf(left);
+  const rightInitiative = initiativeOf(right);
+
+  let winnerSide;
+  if (leftInitiative !== rightInitiative) {
+    winnerSide = leftInitiative > rightInitiative ? 'left' : 'right';
+  } else {
+    const candidates = [
+      ...left.filter((c) => c.roll === leftInitiative).map((c) => ({ ...c, side: 'left' })),
+      ...right.filter((c) => c.roll === rightInitiative).map((c) => ({ ...c, side: 'right' })),
+    ];
+    winnerSide = breakInitiativeTie(candidates, random)?.side ?? 'right';
+  }
+  const firstToDeclare = winnerSide === 'left' ? 'right' : 'left';
   const secondToDeclare = firstToDeclare === 'left' ? 'right' : 'left';
   return { leftInitiative, rightInitiative, firstToDeclare, secondToDeclare };
+}
+
+// Narrows `list` to whichever entries share the max value of `keyFn`.
+function narrowToBest(list, keyFn) {
+  const best = list.reduce((max, c) => Math.max(max, keyFn(c)), -Infinity);
+  return list.filter((c) => keyFn(c) === best);
+}
+
+function breakInitiativeTie(candidates, random) {
+  if (!candidates.length) return null;
+  let pool = narrowToBest(candidates, (c) => c.currentBrain ?? -Infinity);
+  if (pool.length > 1) pool = narrowToBest(pool, (c) => c.lockedBrain ?? -Infinity);
+  if (pool.length > 1) {
+    const withSpeed = pool.filter((c) => c.hasSpeedStance);
+    if (withSpeed.length > 0 && withSpeed.length < pool.length) pool = withSpeed;
+  }
+  if (pool.length > 1) return pool[Math.floor(random() * pool.length)];
+  return pool[0];
 }
 
 // A character's next move can't be placed before the round's start Tic, or
@@ -76,4 +120,18 @@ export function relativeTic({ tic, roundStartTic, roundLength }) {
   const relative = tic - roundStartTic + 1;
   const overflowBy = Math.max(0, relative - roundLength);
   return { relative, isOverflow: overflowBy > 0, overflowBy };
+}
+
+// Idle-Tic Stamina Regen (decided, see plan): a Tic is "idle" for a
+// character only if it falls completely outside every one of their declared
+// moves' full footprint — Startup through Recovery, same window
+// computePlacementTic blocks the next move against — including a move
+// carried over from an earlier round via overflow. Any single Tic touched
+// by any footprint (even just Recovery, even just the placement Tic itself)
+// disqualifies it; there's no partial credit. `footprints` is this
+// character's full set of `{ placementTic, recoveryEndTic }` windows
+// (inclusive on both ends) across every move that could still be live,
+// regardless of which round declared it.
+export function isTicIdle({ tic, footprints }) {
+  return !footprints.some(({ placementTic, recoveryEndTic }) => tic >= placementTic && tic <= recoveryEndTic);
 }

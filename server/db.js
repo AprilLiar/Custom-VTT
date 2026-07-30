@@ -538,10 +538,28 @@ export async function initDb() {
       side TEXT NOT NULL CHECK(side IN ('left','right')),
       pair_index INTEGER NOT NULL,
       declared_this_round INTEGER NOT NULL DEFAULT 0,
+      -- "Reasons to Fight": 0-3, GM/player-adjustable while seated, +1 to all
+      -- of this character's rolls (die:roll/pool:roll) per point while
+      -- combat is active. Lives on the seat, not the character, so it
+      -- naturally resets whenever they're re-seated for a new fight.
+      reasons_to_fight INTEGER NOT NULL DEFAULT 0 CHECK(reasons_to_fight BETWEEN 0 AND 3),
+      -- Idle-Tic Stamina Regen (see plan, server/staminaRegen.js): qualifying
+      -- idle Tics accumulated toward this character's next +1 Stamina.
+      -- Resets to 0 (with carryover of any remainder) every time it crosses
+      -- the required threshold — see applyIdleTicStaminaRegen in index.js.
+      -- Base rate is 1 Tic per point; a future Perk can require more via
+      -- IDLE_STAMINA_REGEN_HOOKS in perkAutomations.js.
+      idle_regen_progress INTEGER NOT NULL DEFAULT 0,
       UNIQUE(character_id)
     )
   `);
   await ensureColumn('combat_participants', 'declared_this_round', 'INTEGER NOT NULL DEFAULT 0');
+  await ensureColumn(
+    'combat_participants',
+    'reasons_to_fight',
+    'INTEGER NOT NULL DEFAULT 0 CHECK(reasons_to_fight BETWEEN 0 AND 3)'
+  );
+  await ensureColumn('combat_participants', 'idle_regen_progress', 'INTEGER NOT NULL DEFAULT 0');
 
   // Phase 9 combat redesign: declaration now runs independently per pair —
   // pair 1's losing side and pair 2's losing side can be declaring

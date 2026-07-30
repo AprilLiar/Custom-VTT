@@ -23,7 +23,7 @@ import {
   sanitizeDefensePositions,
   AMBIGUOUS_ROLL_SLOTS,
 } from './moveLogic.js';
-import { effectiveFrames, PERK_HOOKS } from './perkAutomations.js';
+import { effectiveFrames, PERK_HOOKS, idleStaminaRegenRate } from './perkAutomations.js';
 import {
   resolveSideInitiative,
   computePlacementTic,
@@ -31,6 +31,7 @@ import {
   isMoveRevealedTo,
   relativeTic,
   computeNextRoundStartTic,
+  isTicIdle,
 } from './combatTiming.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -504,6 +505,92 @@ async function emitCombatUpdated() {
   }
 }
 
+// "Reasons to Fight" (see combat_participants.reasons_to_fight): +1 to all
+// of a seated character's rolls per point, only while a fight is actually
+// underway (combat_state.phase set — seating for an about-to-start fight
+// doesn't count yet). Folded straight into the roll's modifier at the point
+// each roll actually executes (die:roll/pool:roll) rather than as a
+// client-side pre-fill, so it can't be bypassed by whatever a roll dialog
+// happened to pre-fill.
+async function getReasonsToFightBonus(characterId) {
+  const state = await one('SELECT phase FROM combat_state WHERE id = 1');
+  if (!state || state.phase == null) return 0;
+  const participant = await one(
+    'SELECT reasons_to_fight FROM combat_participants WHERE character_id = ?',
+    [characterId]
+  );
+  return participant?.reasons_to_fight ?? 0;
+}
+
+// Idle-Tic Stamina Regen (see plan + combatTiming.js's isTicIdle,
+// perkAutomations.js's idleStaminaRegenRate): called once for every Tic as
+// it becomes current (both from combat:start_tic_countdown, for the round's
+// first Tic, and from combat:tic_forward for every Tic after) — the same
+// call sites/timing postMoveReveals already uses, so every Tic gets
+// evaluated exactly once as it's reached, never on the way back (stepping
+// backward doesn't claw the Stamina back, same one-directional asymmetry
+// postMoveReveals already has for chat cards). A seated character who's
+// already at full Stamina is skipped entirely rather than silently banking
+// progress they can't spend.
+async function applyIdleTicStaminaRegen(tic) {
+  const participants = await all('SELECT * FROM combat_participants');
+  if (!participants.length) return;
+  const charIds = participants.map((p) => p.character_id);
+  const marks = charIds.map(() => '?').join(',');
+  const [charRows, footprintRows, perkRows] = await Promise.all([
+    all(`SELECT * FROM characters WHERE id IN (${marks})`, charIds),
+    all(
+      `SELECT dm.character_id AS characterId, dm.placement_tic AS placementTic,
+              dm.reveal_tic + m.active_tics + m.recovery_tics AS recoveryEndTic
+       FROM declared_moves dm JOIN moves m ON m.id = dm.move_id
+       WHERE dm.character_id IN (${marks})`,
+      charIds
+    ),
+    all(
+      `SELECT cp.character_id AS characterId, p.name
+       FROM character_perks cp JOIN perks p ON p.id = cp.perk_id
+       WHERE cp.character_id IN (${marks})`,
+      charIds
+    ),
+  ]);
+  const charById = new Map(charRows.map((c) => [c.id, c]));
+  const footprintsByChar = new Map();
+  for (const row of footprintRows) {
+    if (!footprintsByChar.has(row.characterId)) footprintsByChar.set(row.characterId, []);
+    footprintsByChar.get(row.characterId).push(row);
+  }
+  const perkNamesByChar = new Map();
+  for (const row of perkRows) {
+    if (!perkNamesByChar.has(row.characterId)) perkNamesByChar.set(row.characterId, []);
+    perkNamesByChar.get(row.characterId).push(row.name);
+  }
+
+  for (const p of participants) {
+    const character = charById.get(p.character_id);
+    if (!character || character.current_stamina >= character.max_stamina) continue;
+    if (!isTicIdle({ tic, footprints: footprintsByChar.get(p.character_id) ?? [] })) continue;
+
+    const ticsRequired = idleStaminaRegenRate(perkNamesByChar.get(p.character_id) ?? []);
+    const progress = p.idle_regen_progress + 1;
+    if (progress < ticsRequired) {
+      await run('UPDATE combat_participants SET idle_regen_progress = ? WHERE character_id = ?', [
+        progress,
+        p.character_id,
+      ]);
+      continue;
+    }
+    const newStamina = Math.min(character.max_stamina, character.current_stamina + 1);
+    await Promise.all([
+      run('UPDATE characters SET current_stamina = ? WHERE id = ?', [newStamina, character.id]),
+      run('UPDATE combat_participants SET idle_regen_progress = ? WHERE character_id = ?', [
+        progress - ticsRequired,
+        p.character_id,
+      ]),
+    ]);
+    io.emit('character:updated', { ...character, current_stamina: newStamina });
+  }
+}
+
 async function logRoll({ characterId, characterName, modifier, dice }) {
   const total = dice.reduce((sum, d) => sum + d.result, 0);
   await run('INSERT INTO chat_log (character_id, dice_rolled, modifier) VALUES (?, ?, ?)', [
@@ -937,7 +1024,7 @@ io.on('connection', (socket) => {
     if (!die || die.status !== 'active') return;
     const character = await getCharacter(die.character_id);
     if (!character) return;
-    const mod = clampModifier(modifier);
+    const mod = clampModifier(modifier) + (await getReasonsToFightBonus(character.id));
     const result = rollDie(die.current_size) + die.bonus + mod;
     await logRoll({
       characterId: character.id,
@@ -963,7 +1050,7 @@ io.on('connection', (socket) => {
       )
     );
     if (!dice.length) return;
-    const mod = clampModifier(modifier);
+    const mod = clampModifier(modifier) + (await getReasonsToFightBonus(character.id));
     await logRoll({
       characterId: character.id,
       characterName: character.name,
@@ -1933,6 +2020,22 @@ io.on('connection', (socket) => {
     await emitCombatUpdated();
   });
 
+  // Reasons to Fight: 0-3 per-seat counter, +1 to all of this character's
+  // rolls per point while combat is active (see getReasonsToFightBonus).
+  on('combat:adjust_reasons_to_fight', async ({ characterId, delta }) => {
+    const participant = await one('SELECT * FROM combat_participants WHERE character_id = ?', [
+      characterId,
+    ]);
+    const change = Math.trunc(Number(delta) || 0);
+    if (!participant || !change) return;
+    const next = clamp(participant.reasons_to_fight + change, 0, 3);
+    await run('UPDATE combat_participants SET reasons_to_fight = ? WHERE character_id = ?', [
+      next,
+      characterId,
+    ]);
+    await emitCombatUpdated();
+  });
+
   on('combat:toggle_uneven', async () => {
     const state = await one('SELECT * FROM combat_state WHERE id = 1');
     await run('UPDATE combat_state SET uneven_combat_enabled = ? WHERE id = 1', [
@@ -1961,7 +2064,7 @@ io.on('connection', (socket) => {
   on('combat:end', async () => {
     await run('DELETE FROM declared_moves');
     await run('DELETE FROM combat_pairs');
-    await run('UPDATE combat_participants SET declared_this_round = 0');
+    await run('UPDATE combat_participants SET declared_this_round = 0, idle_regen_progress = 0');
     await run(`
       UPDATE combat_state SET phase = NULL, round_number = 0, current_tic = 0,
       round_start_tic = 0
@@ -1991,15 +2094,32 @@ io.on('connection', (socket) => {
 
     const charIds = [...new Set(participants.map((p) => p.character_id))];
     const marks = charIds.map(() => '?').join(',');
-    const [charRows, brainDice] = await Promise.all([
+    const [charRows, brainDice, staminaDice, speedAttribute] = await Promise.all([
       all(`SELECT * FROM characters WHERE id IN (${marks})`, charIds),
       all(
         `SELECT * FROM dice WHERE character_id IN (${marks}) AND slot_name = 'Brain'`,
         charIds
       ),
+      all(
+        `SELECT * FROM dice WHERE character_id IN (${marks}) AND slot_name = 'Stamina'`,
+        charIds
+      ),
+      one("SELECT id FROM attributes WHERE name = 'Speed'"),
     ]);
     const charById = new Map(charRows.map((c) => [c.id, c]));
     const brainByChar = new Map(brainDice.map((d) => [d.character_id, d]));
+    const staminaByChar = new Map(staminaDice.map((d) => [d.character_id, d]));
+    const stanceIds = charRows.map((c) => c.active_stance_id).filter((id) => id != null);
+    const stances = stanceIds.length
+      ? await all(`SELECT * FROM stances WHERE id IN (${stanceIds.map(() => '?').join(',')})`, stanceIds)
+      : [];
+    const stanceById = new Map(stances.map((s) => [s.id, s]));
+    const hasSpeedStance = (character) => {
+      if (!speedAttribute || character.active_stance_id == null) return false;
+      const stance = stanceById.get(character.active_stance_id);
+      if (!stance) return false;
+      return stance.attribute_a_id === speedAttribute.id || stance.attribute_b_id === speedAttribute.id;
+    };
 
     // Start Combat (the very first round, phase was null) restores every
     // seated character to full Stamina — a fresh fight starts fresh, even
@@ -2017,6 +2137,40 @@ io.on('connection', (socket) => {
           io.emit('character:updated', { ...c, current_stamina: c.max_stamina });
         }
       }
+    } else {
+      // Stamina Regen (decided, new rule): every round from the 2nd on rolls
+      // each seated character's Stamina die at its current size/bonus and
+      // adds the result to current_stamina, clamped to max — same math/log
+      // shape as the manual stamina:regen button, just automatic now and for
+      // everyone at once. Round 1 is the Start Combat full-restore above
+      // instead (already at max, nothing to regen there).
+      const regenRolls = charRows
+        .map((character) => {
+          const die = staminaByChar.get(character.id);
+          if (!die || die.status !== 'active') return null;
+          const result = rollDie(die.current_size) + die.bonus;
+          const currentStamina = clamp(character.current_stamina + result, 0, character.max_stamina);
+          return { character, die, result, currentStamina };
+        })
+        .filter(Boolean);
+      await Promise.all(
+        regenRolls.map(({ character, currentStamina }) =>
+          run('UPDATE characters SET current_stamina = ? WHERE id = ?', [currentStamina, character.id])
+        )
+      );
+      for (const { character, currentStamina } of regenRolls) {
+        io.emit('character:updated', { ...character, current_stamina: currentStamina });
+      }
+      await Promise.all(
+        regenRolls.map(({ character, die, result }) =>
+          logRoll({
+            characterId: character.id,
+            characterName: character.name,
+            modifier: 0,
+            dice: [{ slot_name: 'Stamina', size: die.current_size, bonus: die.bonus, result }],
+          })
+        )
+      );
     }
 
     // Brain rolls per PAIR per side, posted to chat as normal initiative
@@ -2030,9 +2184,18 @@ io.on('connection', (socket) => {
       const die = brainByChar.get(p.character_id);
       const character = charById.get(p.character_id);
       if (!die || die.status !== 'active' || !character) continue;
-      const result = rollDie(die.current_size) + die.bonus;
+      // Reasons to Fight applies to Initiative rolls too — "+1 to all rolls
+      // during combat" — but only affects the roll itself, never the
+      // currentBrain/lockedBrain tie-break values below (those are raw stats).
+      const result = rollDie(die.current_size) + die.bonus + (p.reasons_to_fight || 0);
       if (!rollsByPair.has(p.pair_index)) rollsByPair.set(p.pair_index, { left: [], right: [] });
-      rollsByPair.get(p.pair_index)[p.side].push(result);
+      rollsByPair.get(p.pair_index)[p.side].push({
+        characterId: character.id,
+        roll: result,
+        currentBrain: die.current_size + die.bonus,
+        lockedBrain: die.locked_size + die.locked_bonus,
+        hasSpeedStance: hasSpeedStance(character),
+      });
       await logRoll({
         characterId: character.id,
         characterName: character.name,
@@ -2314,6 +2477,7 @@ io.on('connection', (socket) => {
     // chat card ever posted for it. Catches any other already-due reveal
     // the same way, for the same reason.
     await postMoveReveals(state.current_tic);
+    await applyIdleTicStaminaRegen(state.current_tic);
     await emitCombatUpdated();
   });
 
@@ -2325,6 +2489,7 @@ io.on('connection', (socket) => {
     const newTic = state.current_tic + 1;
     await run('UPDATE combat_state SET current_tic = ? WHERE id = 1', [newTic]);
     await postMoveReveals(newTic);
+    await applyIdleTicStaminaRegen(newTic);
     await emitCombatUpdated();
   });
 

@@ -7,31 +7,90 @@ import {
   isMoveRevealedTo,
   relativeTic,
   computeNextRoundStartTic,
+  isTicIdle,
 } from '../combatTiming.js';
 
+const roll = (n) => ({ roll: n });
+
 test('resolveSideInitiative: higher side wins, loser declares first', () => {
-  let r = resolveSideInitiative({ left: [8], right: [3] });
+  let r = resolveSideInitiative({ left: [roll(8)], right: [roll(3)] });
   assert.equal(r.leftInitiative, 8);
   assert.equal(r.rightInitiative, 3);
   assert.equal(r.firstToDeclare, 'right');
   assert.equal(r.secondToDeclare, 'left');
 
-  r = resolveSideInitiative({ left: [2], right: [9] });
+  r = resolveSideInitiative({ left: [roll(2)], right: [roll(9)] });
   assert.equal(r.firstToDeclare, 'left');
   assert.equal(r.secondToDeclare, 'right');
 });
 
 test('resolveSideInitiative: a side\'s initiative is the highest roll among its characters (Uneven Combat)', () => {
-  const r = resolveSideInitiative({ left: [4, 4, 11], right: [6, 7] });
+  const r = resolveSideInitiative({ left: [roll(4), roll(4), roll(11)], right: [roll(6), roll(7)] });
   assert.equal(r.leftInitiative, 11);
   assert.equal(r.rightInitiative, 7);
   assert.equal(r.firstToDeclare, 'right');
 });
 
-test('resolveSideInitiative: tied initiative — left declares first (deterministic default)', () => {
-  const r = resolveSideInitiative({ left: [6], right: [6] });
+test('resolveSideInitiative: tied roll — higher current Brain wins the tie', () => {
+  const r = resolveSideInitiative({
+    left: [{ roll: 6, currentBrain: 8 }],
+    right: [{ roll: 6, currentBrain: 10 }],
+  });
+  // right's candidate has the higher current Brain, so right wins the
+  // roll-off and left (the loser) declares first.
   assert.equal(r.firstToDeclare, 'left');
   assert.equal(r.secondToDeclare, 'right');
+});
+
+test('resolveSideInitiative: tied roll and current Brain — higher locked Brain wins', () => {
+  const r = resolveSideInitiative({
+    left: [{ roll: 6, currentBrain: 8, lockedBrain: 8 }],
+    right: [{ roll: 6, currentBrain: 8, lockedBrain: 10 }],
+  });
+  assert.equal(r.firstToDeclare, 'left');
+  assert.equal(r.secondToDeclare, 'right');
+});
+
+test('resolveSideInitiative: tied roll/Brain — Speed in current stance wins', () => {
+  const r = resolveSideInitiative({
+    left: [{ roll: 6, currentBrain: 8, lockedBrain: 8, hasSpeedStance: false }],
+    right: [{ roll: 6, currentBrain: 8, lockedBrain: 8, hasSpeedStance: true }],
+  });
+  assert.equal(r.firstToDeclare, 'left');
+  assert.equal(r.secondToDeclare, 'right');
+});
+
+test('resolveSideInitiative: Speed tie-break only applies when it actually narrows the field', () => {
+  // Both candidates have Speed — doesn't decide anything, falls through to
+  // the random tie-break instead of picking either arbitrarily.
+  const r = resolveSideInitiative(
+    {
+      left: [{ roll: 6, currentBrain: 8, lockedBrain: 8, hasSpeedStance: true }],
+      right: [{ roll: 6, currentBrain: 8, lockedBrain: 8, hasSpeedStance: true }],
+    },
+    () => 0 // forces the random pick to land on the first candidate (left)
+  );
+  assert.equal(r.firstToDeclare, 'right');
+  assert.equal(r.secondToDeclare, 'left');
+});
+
+test('resolveSideInitiative: fully tied — random tie-break is deterministic given an injected random()', () => {
+  const candidates = { left: [{ roll: 6 }], right: [{ roll: 6 }] };
+  const pickLeft = resolveSideInitiative(candidates, () => 0);
+  assert.equal(pickLeft.secondToDeclare, 'left');
+  const pickRight = resolveSideInitiative(candidates, () => 0.999);
+  assert.equal(pickRight.secondToDeclare, 'right');
+});
+
+test('resolveSideInitiative: only characters who actually tied for the top roll are tie-break candidates', () => {
+  // left's 9 beats right's tied-for-top 6es outright — no tie-break needed,
+  // and left's other (lower) roller must never factor into anything.
+  const r = resolveSideInitiative({
+    left: [{ roll: 9, currentBrain: 4 }, { roll: 2, currentBrain: 99 }],
+    right: [{ roll: 6, currentBrain: 50 }],
+  });
+  assert.equal(r.leftInitiative, 9);
+  assert.equal(r.firstToDeclare, 'right');
 });
 
 test('computePlacementTic: a character\'s first move ever placed at round start', () => {
@@ -129,6 +188,34 @@ test('relativeTic: past the round window is overflow, by exactly the excess', ()
   assert.equal(r.relative, 7);
   assert.equal(r.isOverflow, true);
   assert.equal(r.overflowBy, 2);
+});
+
+test('isTicIdle: true with no declared moves at all', () => {
+  assert.equal(isTicIdle({ tic: 4, footprints: [] }), true);
+});
+
+test('isTicIdle: false for a Tic inside a move\'s Startup/placement', () => {
+  assert.equal(isTicIdle({ tic: 4, footprints: [{ placementTic: 4, recoveryEndTic: 9 }] }), false);
+});
+
+test('isTicIdle: false for a Tic that only lands in Recovery, not Startup/Active', () => {
+  assert.equal(isTicIdle({ tic: 9, footprints: [{ placementTic: 4, recoveryEndTic: 9 }] }), false);
+});
+
+test('isTicIdle: true for a Tic strictly between two other footprints', () => {
+  const footprints = [
+    { placementTic: 1, recoveryEndTic: 3 },
+    { placementTic: 6, recoveryEndTic: 8 },
+  ];
+  assert.equal(isTicIdle({ tic: 4, footprints }), true);
+  assert.equal(isTicIdle({ tic: 5, footprints }), true);
+});
+
+test('isTicIdle: a carried-over footprint from an earlier round still blocks idle credit', () => {
+  // Same shape as any other footprint — isTicIdle doesn't care which round
+  // declared it, only whether the Tic falls in [placementTic, recoveryEndTic].
+  const footprints = [{ placementTic: 2, recoveryEndTic: 15 }];
+  assert.equal(isTicIdle({ tic: 10, footprints }), false);
 });
 
 test('computeNextRoundStartTic: the very first round (phase null) just starts wherever the counter sits', () => {
