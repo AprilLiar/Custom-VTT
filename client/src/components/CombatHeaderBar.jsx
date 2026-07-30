@@ -4,7 +4,8 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { socket } from '../socket.js';
 import { getCombat } from '../lib/api.js';
 import { useRole } from '../roleContext.jsx';
-import { TicSquare } from './CombatArena.jsx';
+import { TicCounterCentral } from './CombatArena.jsx';
+import { onDraggingMoveChange } from '../lib/dragMoveState.js';
 
 // This viewer's own current standing in the fight — "waiting for
 // declaration," "your turn," and so on (decided, Tic navigation redesign).
@@ -30,18 +31,25 @@ function viewerDeclarationStatus({ pairs, participants }, role, characterId) {
 
 // Slim global strip, mounted once in App.jsx's Shell so round/phase state is
 // reachable from any page (Phase 7's original "decided" behavior). Tic
-// navigation itself now lives entirely in the Arena (click the next/previous
-// Tic square there — see CombatArena.jsx's TicCounterCentral); this bar is a
-// glanceable "combat is happening, here's the gist" strip instead: a link
-// back to the Arena, the same Tic Counter squares (read-only here) so the
-// round's shape is visible without leaving the page, this viewer's own
-// current state, and the GM's remaining round-level controls (Start Tic
-// Countdown / Next Round / End Combat) so they don't have to leave whatever
-// page they're on to advance the fight in a pinch.
+// navigation redesign, item 3 (decided): the header's Tic Counter is now the
+// exact same TicCounterCentral widget the Arena itself renders — same size,
+// same cross-round overflow badges, same GM click-to-step/Next Round — so
+// the GM can advance the countdown from any page, not just the Arena, and
+// both counters visibly stay in lockstep (they're both just reading the same
+// combat:updated broadcast). The only thing that doesn't apply here is the
+// drag-and-drop declare target: there's no roster/move picker on every page
+// to drag from, so onDrop is a harmless no-op — dragging while ON the Arena
+// page (where both counters are visible at once) still shows the live
+// footprint preview via the same dragMoveState.js pub/sub the Arena uses,
+// just without a working drop.
 export default function CombatHeaderBar() {
   const { role, characterId } = useRole();
   const location = useLocation();
   const [combat, setCombat] = useState(null);
+  const [hoverTic, setHoverTic] = useState(null);
+  const [draggingMove, setDraggingMove] = useState(null);
+
+  useEffect(() => onDraggingMoveChange(setDraggingMove), []);
 
   useEffect(() => {
     getCombat(role === 'gm' ? { role } : { role, characterId }).then(setCombat).catch(console.error);
@@ -56,10 +64,21 @@ export default function CombatHeaderBar() {
   const onArena = location.pathname === '/combat';
   const everyoneReady =
     phase === 'declaration' && (combat.pairs ?? []).every((p) => p.declaring_side == null);
-  const squares = Array.from({ length: roundLength }, (_, i) => ({
-    absoluteTic: roundStartTic + i,
-    relative: i + 1,
-  }));
+  // Same "who still has something recovering here from last round" badge
+  // math as CombatArena.jsx's own overflowTics — duplicated rather than
+  // shared since it's a few lines of pure array/map building, not worth
+  // threading combat state between two independently-mounted components for.
+  const overflowTics = new Map();
+  for (const dm of combat.declaredMoves ?? []) {
+    if (dm.roundNumber >= roundNumber) continue;
+    const name = combat.characters?.[dm.characterId]?.character.name;
+    if (!name) continue;
+    for (let t = roundStartTic; t < dm.recoveryEndTic; t++) {
+      const names = overflowTics.get(t) ?? [];
+      if (!names.includes(name)) names.push(name);
+      overflowTics.set(t, names);
+    }
+  }
 
   return (
     <div className="flex flex-wrap items-center gap-3 border-b border-zinc-800 bg-gradient-to-r from-zinc-950 via-zinc-900 to-zinc-950 px-4 py-2 text-sm">
@@ -98,11 +117,21 @@ export default function CombatHeaderBar() {
           </motion.span>
         )}
       </AnimatePresence>
-      <div className="flex flex-wrap items-center gap-1">
-        {squares.map((sq) => (
-          <TicSquare key={sq.absoluteTic} relativeTic={sq.relative} isCurrent={sq.absoluteTic === currentTic} />
-        ))}
-      </div>
+      <TicCounterCentral
+        phase={phase}
+        currentTic={currentTic}
+        roundStartTic={roundStartTic}
+        roundLength={roundLength}
+        draggingMove={draggingMove}
+        hoverTic={hoverTic}
+        setHoverTic={setHoverTic}
+        onDrop={() => (e) => e.preventDefault()}
+        declaredMoves={[]}
+        showDeclaredPreview={false}
+        overflowTics={overflowTics}
+        role={role}
+        label="Tic Counter"
+      />
       {!onArena && (
         <Link
           to="/combat"

@@ -2,13 +2,158 @@ import { useEffect, useRef, useState } from 'react';
 import { Paperclip } from 'lucide-react';
 import { socket } from '../socket.js';
 import { getChat, getCharacters, getTells, getTags, getRuleset, getMoves } from '../lib/api.js';
-import { dieFormula } from '../lib/dice.js';
 import { fileToChatImage } from '../lib/image.js';
 import { folderPath } from '../lib/folders.js';
 import { useRole } from '../roleContext.jsx';
 import Thumb from './Thumb.jsx';
 import FrameBar from './FrameBar.jsx';
 import MoveCard from './MoveCard.jsx';
+
+// Phase colors match FrameBar/the live Tic Counter's own footprint palette
+// (see CombatArena.jsx's DECLARED_PHASE_COLOR/TicSquare zoneStyle) so a
+// snapshot reads consistently with the Arena itself.
+const SNAPSHOT_PHASE_COLOR = {
+  startup: 'bg-amber-500',
+  active: 'bg-rose-500',
+  recovery: 'bg-blue-500',
+  defense: 'bg-emerald-500',
+};
+
+// Which phase(s) `move` occupies at `tic` — an array since two different
+// characters' moves in the same lane can genuinely overlap the same Tic
+// (both throwing at once); each gets its own thin colored segment in that
+// square rather than one hiding the other.
+function snapshotPhaseColorAt(move, tic) {
+  if (tic < move.placementTic || tic >= move.recoveryEndTic) return null;
+  const offset = tic - move.placementTic;
+  if (move.defenseFramePositions?.includes(offset)) return SNAPSHOT_PHASE_COLOR.defense;
+  if (tic < move.revealTic) return SNAPSHOT_PHASE_COLOR.startup;
+  if (tic < move.activeEndTic) return SNAPSHOT_PHASE_COLOR.active;
+  return SNAPSHOT_PHASE_COLOR.recovery;
+}
+
+// A cumulative per-lane Tic Counter snapshot (decided, Chat Log redesign,
+// item 4): posted fresh every time any move in the lane reveals, so the
+// chat log ends up with a full history of how that lane's Tic Counter
+// filled in over the round — the LAST snapshot for a given lane/round shows
+// every move that ultimately revealed, each in its true position. PC move
+// bars sit above the shared Tic strip, NPC bars below (matches the seating
+// convention the Declaration Lanes already use — see CombatArena.jsx). Each
+// bar spans exactly the Tics its move's footprint occupies, clipped to this
+// round's own window (a carried-over move's earlier Tics belong to a past
+// snapshot, not this one — see overlapsRoundWindow server-side). Clicking a
+// bar re-uses the same Genius Observer honor-system gate the old single-move
+// card had, expanding the full MoveCard for just that move.
+function LaneSnapshotCard({ entry, moveInfo }) {
+  const [expandedId, setExpandedId] = useState(null);
+  const { roundNumber, roundStartTic, roundLength, moves } = entry;
+  const pcMoves = moves.filter((m) => m.characterType === 'pc');
+  const npcMoves = moves.filter((m) => m.characterType === 'npc');
+  const gridStyle = { gridTemplateColumns: `repeat(${roundLength}, minmax(0, 1fr))` };
+  const windowEnd = roundStartTic + roundLength;
+
+  const barStyle = (move) => {
+    const start = Math.max(move.placementTic, roundStartTic);
+    const end = Math.min(move.recoveryEndTic, windowEnd);
+    return { gridColumn: `${start - roundStartTic + 1} / ${end - roundStartTic + 1}` };
+  };
+
+  const toggleExpanded = (move) => {
+    if (expandedId === move.declaredMoveId) {
+      setExpandedId(null);
+    } else if (window.confirm('Does your character have the Genius Observer Perk?')) {
+      setExpandedId(move.declaredMoveId);
+    }
+  };
+
+  const MoveBar = ({ move }) => (
+    <button
+      type="button"
+      onClick={() => toggleExpanded(move)}
+      style={barStyle(move)}
+      title={`${move.characterName}: ${move.moveName}`}
+      className="flex min-w-0 items-center gap-1 truncate panel-cut-sm border border-zinc-700 bg-zinc-800/80 px-1 py-0.5 text-left text-[10px] text-zinc-200 hover:border-brand-600"
+    >
+      <span className="truncate font-semibold">{move.characterName}</span>
+      <span className="truncate text-zinc-400">{move.moveName}</span>
+    </button>
+  );
+
+  const expandedMove = moves.find((m) => m.declaredMoveId === expandedId);
+
+  return (
+    <div className="mt-1 w-full space-y-1 panel-cut-sm bg-zinc-800/60 p-1.5">
+      <div className="font-display text-[9px] font-bold uppercase tracking-wide text-zinc-600">
+        Round {roundNumber}
+      </div>
+      {pcMoves.length > 0 && (
+        <div className="grid gap-1" style={gridStyle}>
+          {pcMoves.map((m) => (
+            <MoveBar key={m.declaredMoveId} move={m} />
+          ))}
+        </div>
+      )}
+      <div className="grid gap-0.5" style={gridStyle}>
+        {Array.from({ length: roundLength }, (_, i) => {
+          const tic = roundStartTic + i;
+          const colors = moves.map((m) => snapshotPhaseColorAt(m, tic)).filter(Boolean);
+          return (
+            <div
+              key={tic}
+              className="flex h-5 items-stretch overflow-hidden border border-zinc-700 bg-zinc-900 text-[9px] font-bold text-zinc-500"
+            >
+              {colors.length === 0 ? (
+                <span className="flex flex-1 items-center justify-center">{i + 1}</span>
+              ) : (
+                colors.map((c, ci) => (
+                  <span key={ci} className={`flex flex-1 items-center justify-center text-zinc-950 ${c}`}>
+                    {ci === 0 ? i + 1 : ''}
+                  </span>
+                ))
+              )}
+            </div>
+          );
+        })}
+      </div>
+      {npcMoves.length > 0 && (
+        <div className="grid gap-1" style={gridStyle}>
+          {npcMoves.map((m) => (
+            <MoveBar key={m.declaredMoveId} move={m} />
+          ))}
+        </div>
+      )}
+      {expandedMove && (
+        <div className="border-t border-zinc-700 pt-1.5">
+          {expandedMove.full && moveInfo ? (
+            <MoveCard
+              move={expandedMove.full}
+              tell={moveInfo.tellById.get(expandedMove.full.tell_id)}
+              rightTell={
+                expandedMove.full.right_tell_id ? moveInfo.tellById.get(expandedMove.full.right_tell_id) : null
+              }
+              leftTell={expandedMove.full.left_tell_id ? moveInfo.tellById.get(expandedMove.full.left_tell_id) : null}
+              style={
+                expandedMove.full.style_attribute_id
+                  ? moveInfo.styleById.get(expandedMove.full.style_attribute_id)
+                  : null
+              }
+              tags={(expandedMove.full.tag_ids ?? []).map((id) => moveInfo.tagById.get(id)).filter(Boolean)}
+              folderLabel={folderPath(expandedMove.full.folder_id, moveInfo.moveFolders) ?? undefined}
+            />
+          ) : (
+            <div className="text-xs text-zinc-400">
+              {expandedMove.description ? (
+                <p className="whitespace-pre-wrap break-words">{expandedMove.description}</p>
+              ) : (
+                <p className="italic text-zinc-600">No description.</p>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function Entry({ entry, character, moveInfo }) {
   const [expanded, setExpanded] = useState(false);
@@ -43,6 +188,8 @@ function Entry({ entry, character, moveInfo }) {
               />
             )}
           </div>
+        ) : entry.kind === 'lane_snapshot' ? (
+          <LaneSnapshotCard entry={entry} moveInfo={moveInfo} />
         ) : entry.kind === 'move_reveal' ? (
           entry.move ? (
             <div className="mt-1 w-full panel-cut-sm bg-zinc-800/60 p-1.5">
@@ -116,16 +263,31 @@ function Entry({ entry, character, moveInfo }) {
           )
         ) : (
           <>
-            <div className="font-display mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-zinc-400">
-              {entry.dice.map((d, i) => (
-                <span key={i}>
-                  {d.slot_name} ({dieFormula(d.size, d.bonus, entry.modifier)}):{' '}
-                  <span className="font-mono text-zinc-200">{d.result}</span>
-                </span>
-              ))}
+            <div className="mt-1 space-y-0.5">
+              {entry.dice.map((d, i) => {
+                // The physical die face isn't stored separately — result is
+                // already `rollDie(size) + bonus + modifier` (see logRoll
+                // server-side), so it's recovered exactly by subtracting the
+                // two flat additions back out. Shown as its own breakdown
+                // ("what was rolled on the d8, then summed") per the plan's
+                // decided chat-card redesign — the final result is bolder
+                // and bigger so it strikes the eye at a glance.
+                const flat = d.bonus + entry.modifier;
+                const raw = d.result - flat;
+                return (
+                  <div key={i} className="font-display flex flex-wrap items-baseline gap-x-1.5">
+                    <span className="text-zinc-500">{d.slot_name}</span>
+                    <span className="font-mono text-xs text-zinc-400">
+                      d{d.size}: {raw}
+                      {flat !== 0 ? ` ${flat > 0 ? '+' : '−'} ${Math.abs(flat)}` : ''} =
+                    </span>
+                    <span className="font-mono text-xl font-black leading-none text-white">{d.result}</span>
+                  </div>
+                );
+              })}
             </div>
             {multi && (
-              <div className="font-display mt-0.5 text-right font-mono text-sm font-bold text-zinc-100">
+              <div className="font-display mt-1 text-right font-mono text-2xl font-black leading-none text-brand-300">
                 Total {entry.total}
               </div>
             )}
@@ -300,15 +462,18 @@ export default function ChatPanel({ open, onClose }) {
     const onRoll = (entry) => setEntries((prev) => [...prev, entry]);
     const onMessage = (entry) => setEntries((prev) => [...prev, entry]);
     const onMoveReveal = (entry) => setEntries((prev) => [...prev, entry]);
+    const onLaneSnapshot = (entry) => setEntries((prev) => [...prev, entry]);
     const onCleared = () => setEntries([]);
     socket.on('roll:result', onRoll);
     socket.on('chat:message', onMessage);
     socket.on('chat:move_reveal', onMoveReveal);
+    socket.on('chat:lane_snapshot', onLaneSnapshot);
     socket.on('chat:cleared', onCleared);
     return () => {
       socket.off('roll:result', onRoll);
       socket.off('chat:message', onMessage);
       socket.off('chat:move_reveal', onMoveReveal);
+      socket.off('chat:lane_snapshot', onLaneSnapshot);
       socket.off('chat:cleared', onCleared);
     };
   }, []);

@@ -70,19 +70,22 @@ async function migrateMoveInteractionsTrigger() {
   await run('ALTER TABLE move_interactions_v2 RENAME TO move_interactions');
 }
 
-// chat_log.kind originally had a 2-value CHECK ('roll','message'). Same
-// rebuild pattern as move_interactions.trigger above — a fresh database's
-// CREATE TABLE IF NOT EXISTS already gets the expanded CHECK directly, so
-// this only fires against a database created before move_reveal existed.
+// chat_log.kind originally had a 2-value CHECK ('roll','message'), then grew
+// to 3 ('move_reveal'). Same rebuild pattern each time SQLite can't ALTER a
+// CHECK constraint in place — a fresh database's CREATE TABLE IF NOT EXISTS
+// above already gets the current (4-value) CHECK directly, so this only
+// fires against a database whose stored table SQL still has an older one
+// (which, as of the lane_snapshot redesign, is every database that predates
+// it — including the currently-deployed production one).
 async function migrateChatLogKind() {
   const row = await one(
     "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'chat_log'"
   );
-  if (!row || row.sql.includes('move_reveal')) return;
+  if (!row || row.sql.includes('lane_snapshot')) return;
   await run(`
     CREATE TABLE chat_log_v2 (
       id INTEGER PRIMARY KEY,
-      kind TEXT NOT NULL DEFAULT 'roll' CHECK(kind IN ('roll','message','move_reveal')),
+      kind TEXT NOT NULL DEFAULT 'roll' CHECK(kind IN ('roll','message','move_reveal','lane_snapshot')),
       character_id INTEGER NOT NULL,
       dice_rolled TEXT NOT NULL,
       modifier INTEGER NOT NULL DEFAULT 0,
@@ -90,12 +93,13 @@ async function migrateChatLogKind() {
       content TEXT,
       image_data TEXT,
       image_mime_type TEXT,
+      payload TEXT,
       created_at TEXT DEFAULT CURRENT_TIMESTAMP
     )
   `);
   await run(`
-    INSERT INTO chat_log_v2 (id, kind, character_id, dice_rolled, modifier, move_id, content, image_data, image_mime_type, created_at)
-    SELECT id, kind, character_id, dice_rolled, modifier, move_id, content, image_data, image_mime_type, created_at FROM chat_log
+    INSERT INTO chat_log_v2 (id, kind, character_id, dice_rolled, modifier, move_id, content, image_data, image_mime_type, payload, created_at)
+    SELECT id, kind, character_id, dice_rolled, modifier, move_id, content, image_data, image_mime_type, payload, created_at FROM chat_log
   `);
   await run('DROP TABLE chat_log');
   await run('ALTER TABLE chat_log_v2 RENAME TO chat_log');
@@ -213,10 +217,20 @@ export async function initDb() {
   // would collide with ensureColumn's word-boundary detection, which would
   // then false-positive-match the CHECK constraint's own `'message'` enum
   // literal above and skip adding the column entirely.
+  // kind='lane_snapshot' rows (Chat Log redesign, item 4) mark a cumulative
+  // per-lane Tic Counter snapshot posted every time any move in that lane
+  // reveals — payload carries the whole snapshot (pairIndex, round/Tic
+  // window, and every currently-revealed move in the lane with its own
+  // footprint + embedded full move data for the Genius Observer expand) as
+  // JSON, since (unlike declared_moves' per-viewer secrecy) a chat card is
+  // broadcast identically to everyone and so only ever needs to carry
+  // already-public data. Replaces the old single-move move_reveal card
+  // going forward; move_reveal rows already in a live chat log keep
+  // rendering exactly as before (see ChatPanel.jsx) for history's sake.
   await run(`
     CREATE TABLE IF NOT EXISTS chat_log (
       id INTEGER PRIMARY KEY,
-      kind TEXT NOT NULL DEFAULT 'roll' CHECK(kind IN ('roll','message','move_reveal')),
+      kind TEXT NOT NULL DEFAULT 'roll' CHECK(kind IN ('roll','message','move_reveal','lane_snapshot')),
       character_id INTEGER NOT NULL,
       dice_rolled TEXT NOT NULL, -- JSON array of {slot_name, size, bonus, result}
       modifier INTEGER NOT NULL DEFAULT 0,
@@ -224,17 +238,19 @@ export async function initDb() {
       content TEXT, -- free-text message content; kind='message' only
       image_data TEXT, -- base64; kind='message' only. GIFs stored raw/unresized to keep animation
       image_mime_type TEXT,
+      payload TEXT, -- JSON; kind='lane_snapshot' only
       created_at TEXT DEFAULT CURRENT_TIMESTAMP
     )
   `);
   await ensureColumn(
     'chat_log',
     'kind',
-    "TEXT NOT NULL DEFAULT 'roll' CHECK(kind IN ('roll','message','move_reveal'))"
+    "TEXT NOT NULL DEFAULT 'roll' CHECK(kind IN ('roll','message','move_reveal','lane_snapshot'))"
   );
   await ensureColumn('chat_log', 'content', 'TEXT');
   await ensureColumn('chat_log', 'image_data', 'TEXT');
   await ensureColumn('chat_log', 'image_mime_type', 'TEXT');
+  await ensureColumn('chat_log', 'payload', 'TEXT');
   await migrateChatLogKind();
 
   // World-level Tell list, GM-editable at any time (unlike the fixed styles).

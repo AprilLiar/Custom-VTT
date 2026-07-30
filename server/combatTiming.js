@@ -135,3 +135,15 @@ export function relativeTic({ tic, roundStartTic, roundLength }) {
 export function isTicIdle({ tic, footprints }) {
   return !footprints.some(({ placementTic, recoveryEndTic }) => tic >= placementTic && tic <= recoveryEndTic);
 }
+
+// Lane snapshot chat cards (decided, Chat Log redesign): a declared move's
+// squares only ever appear on a snapshot when its footprint overlaps the
+// round's own displayed Tic window — the snapshot mirrors the live Tic
+// Counter, which likewise only ever shows one round's worth of squares at a
+// time, never a past round's own. `recoveryEndTic` is exclusive (the first
+// Tic no longer occupied), matching every other footprint check in this
+// module; `roundStartTic + roundLength` (the window's own exclusive end) is
+// the same convention.
+export function overlapsRoundWindow({ placementTic, recoveryEndTic, roundStartTic, roundLength }) {
+  return placementTic < roundStartTic + roundLength && recoveryEndTic > roundStartTic;
+}
