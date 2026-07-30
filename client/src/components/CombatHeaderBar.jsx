@@ -4,18 +4,40 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { socket } from '../socket.js';
 import { getCombat } from '../lib/api.js';
 import { useRole } from '../roleContext.jsx';
+import { TicSquare } from './CombatArena.jsx';
+
+// This viewer's own current standing in the fight — "waiting for
+// declaration," "your turn," and so on (decided, Tic navigation redesign).
+// The GM has no personal declare turn (they run every NPC), so they get the
+// same administrative pair-count summary this bar always showed; a Player
+// gets a status about their own seated character specifically. Only
+// meaningful during Declaration — Tic Countdown is the same experience for
+// everyone (watching Tics advance), so it keeps its own generic badge below
+// instead of a per-viewer line.
+function viewerDeclarationStatus({ pairs, participants }, role, characterId) {
+  const pairsStillDeclaring = (pairs ?? []).filter((p) => p.declaring_side != null).length;
+  if (role === 'gm') {
+    return pairsStillDeclaring === 0
+      ? 'Every pair has finished declaring'
+      : `${pairsStillDeclaring} pair${pairsStillDeclaring === 1 ? '' : 's'} still declaring…`;
+  }
+  const participant = (participants ?? []).find((p) => p.character_id === characterId);
+  if (!participant) return 'Not seated in this fight';
+  if (participant.declared_this_round) return 'Waiting on other declarations…';
+  const pair = (pairs ?? []).find((pr) => pr.pair_index === participant.pair_index);
+  return pair?.declaring_side === participant.side ? 'Your turn to declare!' : 'Waiting for declaration…';
+}
 
 // Slim global strip, mounted once in App.jsx's Shell so round/phase state is
-// reachable from any page (Phase 7's original "decided" behavior) — but
-// since the combat redesign (Phase 9), this bar itself stays deliberately
-// minimal: the prominent Tic Counter, the drag-and-drop declare target, and
-// the per-character declaration status table are all Arena-only now (see
-// CombatArena.jsx) — "the Tic Counter is the centerpiece of the Arena," not
-// something duplicated in miniature on every page. This bar is just a
-// glanceable "combat is happening, here's the gist" strip, plus the GM's
-// round-level controls (Next Round / Start Tic Countdown / Tic step / End
-// Combat) so they don't have to leave whatever page they're on to advance
-// the fight in a pinch.
+// reachable from any page (Phase 7's original "decided" behavior). Tic
+// navigation itself now lives entirely in the Arena (click the next/previous
+// Tic square there — see CombatArena.jsx's TicCounterCentral); this bar is a
+// glanceable "combat is happening, here's the gist" strip instead: a link
+// back to the Arena, the same Tic Counter squares (read-only here) so the
+// round's shape is visible without leaving the page, this viewer's own
+// current state, and the GM's remaining round-level controls (Start Tic
+// Countdown / Next Round / End Combat) so they don't have to leave whatever
+// page they're on to advance the fight in a pinch.
 export default function CombatHeaderBar() {
   const { role, characterId } = useRole();
   const location = useLocation();
@@ -30,12 +52,14 @@ export default function CombatHeaderBar() {
 
   if (!combat || combat.phase == null) return null;
 
-  const { phase, roundNumber, pairs, currentTic, roundStartTic, roundLength } = combat;
-  const pairsStillDeclaring = (pairs ?? []).filter((p) => p.declaring_side != null).length;
-  const everyoneReady = phase === 'declaration' && pairsStillDeclaring === 0;
+  const { phase, roundNumber, currentTic, roundStartTic, roundLength } = combat;
   const onArena = location.pathname === '/combat';
-  const atFirstTic = currentTic <= roundStartTic;
-  const atLastTic = currentTic >= roundStartTic + roundLength - 1;
+  const everyoneReady =
+    phase === 'declaration' && (combat.pairs ?? []).every((p) => p.declaring_side == null);
+  const squares = Array.from({ length: roundLength }, (_, i) => ({
+    absoluteTic: roundStartTic + i,
+    relative: i + 1,
+  }));
 
   return (
     <div className="flex flex-wrap items-center gap-3 border-b border-zinc-800 bg-gradient-to-r from-zinc-950 via-zinc-900 to-zinc-950 px-4 py-2 text-sm">
@@ -58,9 +82,7 @@ export default function CombatHeaderBar() {
             transition={{ duration: 0.2 }}
             className="text-zinc-400"
           >
-            {pairsStillDeclaring === 0
-              ? 'Every pair has finished declaring'
-              : `${pairsStillDeclaring} pair${pairsStillDeclaring === 1 ? '' : 's'} still declaring…`}
+            {viewerDeclarationStatus(combat, role, characterId)}
           </motion.span>
         )}
         {phase === 'tic_countdown' && (
@@ -76,6 +98,11 @@ export default function CombatHeaderBar() {
           </motion.span>
         )}
       </AnimatePresence>
+      <div className="flex flex-wrap items-center gap-1">
+        {squares.map((sq) => (
+          <TicSquare key={sq.absoluteTic} relativeTic={sq.relative} isCurrent={sq.absoluteTic === currentTic} />
+        ))}
+      </div>
       {!onArena && (
         <Link
           to="/combat"
@@ -83,26 +110,6 @@ export default function CombatHeaderBar() {
         >
           Go to Arena →
         </Link>
-      )}
-      {role === 'gm' && phase === 'tic_countdown' && (
-        <div className="flex items-center gap-1">
-          <button
-            onClick={() => socket.emit('combat:tic_backward', {})}
-            disabled={atFirstTic}
-            title={atFirstTic ? 'Already at the round\'s first Tic' : 'Tic back'}
-            className="panel-cut-sm border border-zinc-700 px-2 py-1 text-xs hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-30"
-          >
-            ◀
-          </button>
-          <button
-            onClick={() => socket.emit('combat:tic_forward', {})}
-            disabled={atLastTic}
-            title={atLastTic ? 'Already at the round\'s last Tic' : 'Tic forward'}
-            className="panel-cut-sm border border-zinc-700 px-2 py-1 text-xs hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-30"
-          >
-            ▶
-          </button>
-        </div>
       )}
       {role === 'gm' && everyoneReady && (
         <button

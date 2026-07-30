@@ -8,16 +8,12 @@ import {
   getCharacters,
   getCharacterFolders,
   getTells,
-  getTags,
-  getRuleset,
-  getMoves,
 } from '../lib/api.js';
 import { portraitSrc } from '../lib/image.js';
 import { dieLabel, tintFor, POOLS } from '../lib/dice.js';
-import { buildFolderTree, folderPath } from '../lib/folders.js';
+import { buildFolderTree } from '../lib/folders.js';
 import { REWARD_LABELS, REWARD_COLORS } from '../lib/counterDisplay.js';
 import { setDraggingMove, onDraggingMoveChange } from '../lib/dragMoveState.js';
-import MoveCard from './MoveCard.jsx';
 import FrameBar from './FrameBar.jsx';
 import RollDialog from './RollDialog.jsx';
 import Thumb from './Thumb.jsx';
@@ -34,6 +30,7 @@ const MAX_TARGET = 20;
 // already calls strategically visible to opponents mid-fight.
 function ParticipantCard({
   entry,
+  participant,
   role,
   onRemove,
   onDragStart,
@@ -117,6 +114,32 @@ function ParticipantCard({
           }
         >
           Stamina {pendingCost !== 0 ? previewStamina : character.current_stamina}/{character.max_stamina}
+        </div>
+        <div className="flex items-center gap-1 text-xs text-zinc-400" title="Reasons to Fight: +1 to all rolls per point, during combat">
+          <span className="shrink-0">Reasons to Fight</span>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              socket.emit('combat:adjust_reasons_to_fight', { characterId: character.id, delta: -1 });
+            }}
+            disabled={(participant?.reasons_to_fight ?? 0) <= 0}
+            className="px-1 leading-none text-red-400 hover:bg-zinc-800 disabled:opacity-30"
+          >
+            ▼
+          </button>
+          <span className="w-3 text-center font-mono font-semibold text-zinc-200">
+            {participant?.reasons_to_fight ?? 0}
+          </span>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              socket.emit('combat:adjust_reasons_to_fight', { characterId: character.id, delta: 1 });
+            }}
+            disabled={(participant?.reasons_to_fight ?? 0) >= 3}
+            className="px-1 leading-none text-green-400 hover:bg-zinc-800 disabled:opacity-30"
+          >
+            ▲
+          </button>
         </div>
         <div className="space-y-1">
           {POOLS.map((pool) => {
@@ -293,7 +316,13 @@ function declaredPhasesAt(absoluteTic, declaredMoves) {
   return colors;
 }
 
-function TicSquare({
+// Exported so CombatHeaderBar can render the exact same square visuals in
+// its own compact strip (see the plan's Tic navigation redesign) — passing
+// only relativeTic/isCurrent there and leaving every Arena-only extra
+// (footprint preview, declared-phase dots, overflow badges, drag/drop,
+// click-to-step) undefined, which each already degrade to a plain
+// non-interactive square.
+export function TicSquare({
   relativeTic,
   isCurrent,
   footprintZone,
@@ -301,6 +330,8 @@ function TicSquare({
   overflowNames,
   onDragOver,
   onDrop,
+  onClick,
+  clickTitle,
 }) {
   const zoneStyle = {
     startup: 'border-amber-300 bg-amber-500/80 shadow-[0_0_10px_rgba(251,191,36,0.45)]',
@@ -311,20 +342,24 @@ function TicSquare({
   // Capped at 2 badges so they never crowd a 44px square — the tooltip
   // still lists everyone if there are more.
   const shownNames = (overflowNames ?? []).slice(0, 2);
+  const title = clickTitle ?? `Tic ${relativeTic}${
+    overflowNames?.length
+      ? ` — occupied by ${overflowNames.join(', ')} (carryover from last round)`
+      : ''
+  }`;
   return (
     <motion.div
       key={isCurrent ? 'current' : 'idle'}
       onDragOver={onDragOver}
       onDrop={onDrop}
-      title={`Tic ${relativeTic}${
-        overflowNames?.length
-          ? ` — occupied by ${overflowNames.join(', ')} (carryover from last round)`
-          : ''
-      }`}
+      onClick={onClick}
+      title={title}
       initial={isCurrent ? { scale: 1.5 } : false}
       animate={{ scale: isCurrent && !zoneStyle ? 1.1 : 1 }}
       transition={{ duration: 0.35, ease: 'easeOut' }}
       className={`relative flex h-11 w-11 shrink-0 items-center justify-center panel-cut border text-sm font-bold transition-colors duration-150 ${
+        onClick ? 'cursor-pointer hover:border-brand-400 hover:shadow-[0_0_10px_rgb(var(--color-brand-rgb)/45%)]' : ''
+      } ${
         zoneStyle ??
         (isCurrent
           ? 'border-brand-300 bg-brand-600 text-white shadow-[0_0_16px_rgb(var(--color-brand-rgb)/55%)]'
@@ -374,11 +409,23 @@ function TicCounterCentral({
   declaredMoves,
   showDeclaredPreview,
   overflowTics,
+  role,
 }) {
   const squares = Array.from({ length: roundLength }, (_, i) => ({
     absoluteTic: roundStartTic + i,
     relative: i + 1,
   }));
+  // Tic navigation redesign (decided): the GM steps the Tic Countdown by
+  // left-clicking the square immediately before/after the current one,
+  // instead of the header's old ◀/▶ buttons (removed — see
+  // CombatHeaderBar.jsx). Only those two immediate neighbors are ever
+  // clickable — combat:tic_forward/backward always step by exactly one Tic
+  // server-side, there's no "jump to Tic N". At the round's last Tic there's
+  // no next square to click, so a small "Next Round" button takes its place
+  // in the row instead (see below).
+  const currentIndex = squares.findIndex((sq) => sq.absoluteTic === currentTic);
+  const canStepTic = role === 'gm' && phase === 'tic_countdown';
+  const atLastTic = currentIndex === squares.length - 1;
   const zoneFor = (absoluteTic) => {
     if (!draggingMove) return null;
     const minTic = draggingMove.minPlacementTic ?? roundStartTic;
@@ -400,28 +447,57 @@ function TicCounterCentral({
       <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-zinc-500">
         {phase === 'declaration' ? 'Drag a move here to declare' : 'Tic Counter'}
       </span>
-      <div className="flex flex-wrap justify-center gap-1.5 py-1">
-        {squares.map((sq) => (
-          <TicSquare
-            key={sq.absoluteTic}
-            relativeTic={sq.relative}
-            isCurrent={sq.absoluteTic === currentTic}
-            footprintZone={zoneFor(sq.absoluteTic)}
-            declaredPhases={
-              showDeclaredPreview ? declaredPhasesAt(sq.absoluteTic, declaredMoves) : undefined
-            }
-            overflowNames={overflowTics.get(sq.absoluteTic)}
-            onDragOver={
-              canDrop
-                ? (e) => {
-                    e.preventDefault();
-                    setHoverTic(sq.absoluteTic);
-                  }
-                : undefined
-            }
-            onDrop={canDrop ? onDrop(sq.absoluteTic) : undefined}
-          />
-        ))}
+      <div className="flex flex-wrap items-center justify-center gap-1.5 py-1">
+        {squares.map((sq, i) => {
+          const isNextTic = canStepTic && i === currentIndex + 1;
+          const isPrevTic = canStepTic && i === currentIndex - 1;
+          return (
+            <TicSquare
+              key={sq.absoluteTic}
+              relativeTic={sq.relative}
+              isCurrent={sq.absoluteTic === currentTic}
+              footprintZone={zoneFor(sq.absoluteTic)}
+              declaredPhases={
+                showDeclaredPreview ? declaredPhasesAt(sq.absoluteTic, declaredMoves) : undefined
+              }
+              overflowNames={overflowTics.get(sq.absoluteTic)}
+              onDragOver={
+                canDrop
+                  ? (e) => {
+                      e.preventDefault();
+                      setHoverTic(sq.absoluteTic);
+                    }
+                  : undefined
+              }
+              onDrop={canDrop ? onDrop(sq.absoluteTic) : undefined}
+              onClick={
+                isNextTic
+                  ? () => socket.emit('combat:tic_forward', {})
+                  : isPrevTic
+                    ? () => socket.emit('combat:tic_backward', {})
+                    : undefined
+              }
+              clickTitle={
+                isNextTic
+                  ? `Click to advance to Tic ${sq.relative}`
+                  : isPrevTic
+                    ? `Click to go back to Tic ${sq.relative}`
+                    : undefined
+              }
+            />
+          );
+        })}
+        {canStepTic && atLastTic && (
+          <button
+            onClick={() => socket.emit('combat:next_round', {})}
+            title="No more Tics this round — start the next one"
+            className="panel-cut-sm h-11 shrink-0 bg-emerald-700 px-2 text-[10px] font-semibold uppercase leading-tight hover:bg-emerald-600"
+          >
+            Next
+            <br />
+            Round
+          </button>
+        )}
       </div>
       {showDeclaredPreview && (
         <div className="flex flex-wrap items-center justify-center gap-2 text-[9px] text-zinc-600">
@@ -490,16 +566,15 @@ function CompactTellFace({ dm, tellById }) {
 // the Arena stays a fast-reading battle view. A Player wanting the full
 // description/interactions goes to the Chat Log's move-reveal card instead
 // (gated by the Genius Observer honor-system prompt — see ChatPanel.jsx).
-// The GM is the one exception: clicking a revealed card opens the full
-// MoveCard in an overlay, since the GM needs full information readily
-// available to run the table. A small ✕ overlays whichever face is showing
-// while the move is still genuinely pending (its Stamina Cost hasn't
-// left/returned to current_stamina yet) — canceling it frees the Tic and
-// Stamina budget to declare something else instead. Placed outside the flip
-// animation, not just on the Tell face, since the *declaring* player's own
-// view already shows the revealed back face immediately.
-function CompactDeclaredMoveCard({ dm, move, tellById, tagById, styleById, moveFolders, role }) {
-  const [expanded, setExpanded] = useState(false);
+// Revised (decided): the card is display-only now, not clickable at all —
+// an earlier version let the GM click a revealed card to open the full
+// MoveCard in an overlay, removed per the plan. A small ✕ overlays whichever
+// face is showing while the move is still genuinely pending (its Stamina
+// Cost hasn't left/returned to current_stamina yet) — canceling it frees the
+// Tic and Stamina budget to declare something else instead. Placed outside
+// the flip animation, not just on the Tell face, since the *declaring*
+// player's own view already shows the revealed back face immediately.
+function CompactDeclaredMoveCard({ dm, move, tellById }) {
   const revealed = dm.isRevealed && move;
   return (
     <div style={{ perspective: 1000 }} className="relative">
@@ -521,13 +596,9 @@ function CompactDeclaredMoveCard({ dm, move, tellById, tagById, styleById, moveF
             exit={{ rotateY: 90, opacity: 0 }}
             transition={{ duration: 0.3, ease: 'easeInOut' }}
           >
-            <button
-              type="button"
-              onClick={role === 'gm' ? () => setExpanded(true) : undefined}
-              title={role === 'gm' ? 'Click for full move details' : move.name}
-              className={`flex w-28 items-center gap-1.5 panel-cut border border-brand-800/60 bg-brand-950/30 p-1.5 text-left transition-colors ${
-                role === 'gm' ? 'cursor-pointer hover:border-brand-400' : ''
-              }`}
+            <div
+              title={move.name}
+              className="flex w-28 items-center gap-1.5 panel-cut border border-brand-800/60 bg-brand-950/30 p-1.5 text-left"
             >
               <Thumb record={move} name={move.name} size="h-6 w-6" />
               <div className="min-w-0 flex-1">
@@ -540,7 +611,7 @@ function CompactDeclaredMoveCard({ dm, move, tellById, tagById, styleById, moveF
                   size="h-1.5 w-1.5"
                 />
               </div>
-            </button>
+            </div>
           </motion.div>
         ) : (
           <motion.div
@@ -554,32 +625,6 @@ function CompactDeclaredMoveCard({ dm, move, tellById, tagById, styleById, moveF
           </motion.div>
         )}
       </AnimatePresence>
-      {expanded && revealed && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
-          onClick={() => setExpanded(false)}
-        >
-          <div
-            onClick={(e) => {
-              // Click-anywhere-to-close, except an interactive button inside
-              // the card (e.g. a live Roll button) — that keeps working
-              // normally instead of also dismissing the popup.
-              if (e.target.closest('button')) e.stopPropagation();
-            }}
-            className="max-h-[85vh] w-full max-w-md overflow-y-auto"
-          >
-            <MoveCard
-              move={move}
-              tell={tellById.get(move.tell_id)}
-              rightTell={move.right_tell_id ? tellById.get(move.right_tell_id) : null}
-              leftTell={move.left_tell_id ? tellById.get(move.left_tell_id) : null}
-              style={move.style_attribute_id ? styleById.get(move.style_attribute_id) : null}
-              tags={(move.tag_ids ?? []).map((id) => tagById.get(id)).filter(Boolean)}
-              folderLabel={folderPath(move.folder_id, moveFolders) ?? undefined}
-            />
-          </div>
-        </div>
-      )}
     </div>
   );
 }
@@ -587,21 +632,13 @@ function CompactDeclaredMoveCard({ dm, move, tellById, tagById, styleById, moveF
 // A tight row of small declared-move cards flanking the Tic Counter — one
 // band for Player-controlled characters (above), one for NPCs (below), per
 // the combat redesign. Each card sits under its declaring character's name.
-function MoveBand({ entries, tellById, tagById, styleById, moveFolders, role }) {
+function MoveBand({ entries, tellById }) {
   if (!entries.length) return null;
   return (
     <div className="flex flex-wrap items-start justify-center gap-2">
       {entries.map(({ dm, move, characterName }) => (
         <div key={dm.id} className="flex flex-col items-center gap-0.5">
-          <CompactDeclaredMoveCard
-            dm={dm}
-            move={move}
-            tellById={tellById}
-            tagById={tagById}
-            styleById={styleById}
-            moveFolders={moveFolders}
-            role={role}
-          />
+          <CompactDeclaredMoveCard dm={dm} move={move} tellById={tellById} />
           <span className="max-w-28 truncate text-[9px] text-zinc-600">{characterName}</span>
         </div>
       ))}
@@ -811,11 +848,6 @@ export default function CombatArena() {
   const [roster, setRoster] = useState(null);
   const [folders, setFolders] = useState(null);
   const [tells, setTells] = useState(null);
-  // Only needed to render a declared move's revealed face as the same full
-  // MoveCard Tab 3/Compendium use (style icon, tags, discipline path).
-  const [tags, setTags] = useState(null);
-  const [ruleset, setRuleset] = useState(null);
-  const [moveFolders, setMoveFolders] = useState(null);
   const [dropTarget, setDropTarget] = useState(null); // `${side}-${pairIndex}` | null
   const [counterName, setCounterName] = useState('');
   const [counterTarget, setCounterTarget] = useState(6);
@@ -868,9 +900,6 @@ export default function CombatArena() {
       getCharacters().then(setRoster).catch(console.error);
       getCharacterFolders().then(setFolders).catch(console.error);
       getTells().then(setTells).catch(console.error);
-      getTags().then(setTags).catch(console.error);
-      getRuleset().then(setRuleset).catch(console.error);
-      getMoves().then((d) => setMoveFolders(d.folders)).catch(console.error);
     };
     refresh();
     const events = [
@@ -880,8 +909,6 @@ export default function CombatArena() {
       'stance:created', 'stance:updated', 'stance:deleted',
       'character_folder:created', 'character_folder:updated', 'character_folder:deleted',
       'tell:created', 'tell:updated', 'tell:deleted',
-      'tag:created', 'tag:updated', 'tag:deleted',
-      'folder:created', 'folder:updated', 'folder:deleted',
     ];
     for (const ev of events) socket.on(ev, refresh);
     return () => {
@@ -1018,14 +1045,12 @@ export default function CombatArena() {
     if (!entry || !move) setAutoRollQueue((q) => q.slice(1));
   }, [autoRollQueue, combat]);
 
-  if (!combat || !roster || !folders || !tells || !tags || !ruleset || !moveFolders) {
+  if (!combat || !roster || !folders || !tells) {
     return <p className="text-zinc-500">Loading…</p>;
   }
 
   const { unevenCombatEnabled, participants, characters, counters, pairs, phase } = combat;
   const tellById = new Map(tells.map((t) => [t.id, t]));
-  const tagById = new Map(tags.map((t) => [t.id, t]));
-  const styleById = new Map(ruleset.attributes.map((a) => [a.id, a]));
   // combat:updated/GET /api/combat already come back tailored to this
   // client's own identity (see server's mapDeclaredMovesForViewer) — a
   // declaredMoves entry this client is entitled to see early already has
@@ -1320,14 +1345,7 @@ export default function CombatArena() {
           )}
 
           <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-600">Player moves</span>
-          <MoveBand
-            entries={playerBandEntries}
-            tellById={tellById}
-            tagById={tagById}
-            styleById={styleById}
-            moveFolders={moveFolders}
-            role={role}
-          />
+          <MoveBand entries={playerBandEntries} tellById={tellById} />
 
           <TicCounterCentral
             phase={phase}
@@ -1345,16 +1363,10 @@ export default function CombatArena() {
             }
             showDeclaredPreview={Boolean(activeDeclareEntry)}
             overflowTics={overflowTics}
-          />
-
-          <MoveBand
-            entries={npcBandEntries}
-            tellById={tellById}
-            tagById={tagById}
-            styleById={styleById}
-            moveFolders={moveFolders}
             role={role}
           />
+
+          <MoveBand entries={npcBandEntries} tellById={tellById} />
           <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-600">NPC moves</span>
         </div>
       )}
@@ -1419,6 +1431,7 @@ export default function CombatArena() {
                         <ParticipantCard
                           key={p.character_id}
                           entry={characters[p.character_id]}
+                          participant={p}
                           role={role}
                           onRemove={remove}
                           navigate={navigate}
@@ -1451,6 +1464,7 @@ export default function CombatArena() {
                         <ParticipantCard
                           key={p.character_id}
                           entry={characters[p.character_id]}
+                          participant={p}
                           role={role}
                           onRemove={remove}
                           navigate={navigate}
