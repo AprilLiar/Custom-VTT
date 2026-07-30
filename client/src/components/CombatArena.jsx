@@ -629,23 +629,6 @@ function CompactDeclaredMoveCard({ dm, move, tellById }) {
   );
 }
 
-// A tight row of small declared-move cards flanking the Tic Counter — one
-// band for Player-controlled characters (above), one for NPCs (below), per
-// the combat redesign. Each card sits under its declaring character's name.
-function MoveBand({ entries, tellById }) {
-  if (!entries.length) return null;
-  return (
-    <div className="flex flex-wrap items-start justify-center gap-2">
-      {entries.map(({ dm, move, characterName }) => (
-        <div key={dm.id} className="flex flex-col items-center gap-0.5">
-          <CompactDeclaredMoveCard dm={dm} move={move} tellById={tellById} />
-          <span className="max-w-28 truncate text-[9px] text-zinc-600">{characterName}</span>
-        </div>
-      ))}
-    </div>
-  );
-}
-
 // ---------- Declaration status + picker ----------
 
 const STATUS_META = {
@@ -666,48 +649,117 @@ function characterDeclareStatus(participant, participants, pairs) {
   return pair && pair.declaring_side === participant.side ? 'declaring' : 'not_yet';
 }
 
-// GM-only glance at every seated participant's declaration progress across
-// every pair at once (decided, combat redesign) — since declaration now runs
-// independently per pair, this is the one place the GM sees the whole
-// picture instead of piecing it together pair by pair. Clicking an NPC whose
-// turn it currently is makes it the "active" NPC for the declare picker
-// below — a Player never needs this, they only ever declare for their own
-// single character. Only rendered during phase === 'declaration'; the whole
-// table disappears once every pair finishes and the Tic Countdown starts.
-function DeclarationStatusTable({ participants, characters, pairs, activeNpcId, onActivateNpc }) {
-  return (
-    <div className="w-full max-w-sm panel-cut-lg border border-zinc-800 bg-zinc-900/80 p-3">
-      <h3 className="mb-2 text-[10px] font-bold uppercase tracking-widest text-zinc-500">
-        Declaration status
-      </h3>
-      <div className="space-y-1">
-        {participants.map((p) => {
-          const character = characters[p.character_id]?.character;
-          const status = characterDeclareStatus(p, participants, pairs);
-          const isNpc = character?.character_type === 'npc';
-          const clickable = isNpc && status === 'declaring';
-          const active = activeNpcId === p.character_id;
-          return (
-            <div
-              key={p.character_id}
-              onClick={clickable ? () => onActivateNpc(p.character_id) : undefined}
-              className={`flex items-center justify-between gap-2 panel-cut-sm px-2 py-1 text-xs transition-colors ${
-                clickable ? 'cursor-pointer hover:bg-zinc-800' : ''
-              } ${active ? 'bg-brand-950/50 ring-1 ring-brand-600' : ''}`}
+// A declared move stays visible across a round boundary as long as its own
+// footprint is still live, instead of vanishing the instant Next Round
+// increments round_number (decided, fix). Visibility for a carried-over
+// (earlier-round) entry follows the same viewer-entitlement rule the rest of
+// Combat Timing already draws: the owner always sees their own real frame
+// data; anyone else sees the Tell-only face for as long as it's genuinely
+// still unrevealed, and once it IS publicly revealed, no card renders for
+// them at all — the Tic Counter's own cross-round overflow badge (see
+// overflowTics above) is what conveys "something's still occupying this
+// Tic" to onlookers a round later, without re-disclosing frame-type detail
+// nobody but the owner needs anymore. A same-round entry is unaffected —
+// unchanged "show it all round regardless of resolution state" behavior.
+function isDeclaredMoveVisibleInLane(dm, currentTic, roundNumber, isOwner) {
+  if (dm.roundNumber === roundNumber) return true;
+  if (currentTic >= dm.recoveryEndTic) return false;
+  return isOwner || !dm.isRevealed;
+}
+
+// Declaration Lanes (decided, redesign): replaces the old global Player-
+// moves/NPC-moves bands and the flat declaration-status table with a
+// compact 2-column table — one row per pair_index, in the same order and
+// sides as the seating rows below — so several simultaneous fights stay
+// readable instead of blurring into one long unsorted strip. Each cell
+// lists that side's seated character(s) with their own small declared-move
+// cards (see isDeclaredMoveVisibleInLane above for which ones actually
+// render). GM-only: clicking anywhere on a lane selects it as "active" —
+// see onSelectLane at the call site — instead of picking an individual NPC
+// out of a flat list; a Player's own single-character declare panel is
+// unaffected and keeps auto-showing regardless of lane selection.
+function DeclarationLanes({
+  pairIndices,
+  participants,
+  characters,
+  pairs,
+  tellById,
+  declaredMoves,
+  currentTic,
+  roundNumber,
+  phase,
+  role,
+  characterId,
+  activeLaneIndex,
+  onSelectLane,
+}) {
+  if (!pairIndices.length) return null;
+  const isOwnedByViewer = (charId) => {
+    const entry = characters[charId];
+    if (!entry) return false;
+    return role === 'player' ? charId === characterId : entry.character.character_type === 'npc';
+  };
+  const laneMoveEntries = (charId) => {
+    const isOwner = isOwnedByViewer(charId);
+    return declaredMoves
+      .filter((dm) => dm.characterId === charId)
+      .filter((dm) => isDeclaredMoveVisibleInLane(dm, currentTic, roundNumber, isOwner))
+      .sort((a, b) => a.placementTic - b.placementTic)
+      .map((dm) => ({ dm, move: characters[charId]?.moves?.find((m) => m.id === dm.moveId) }));
+  };
+  const sideCell = (sideParticipants) => (
+    <div className="flex min-w-0 flex-1 flex-wrap items-start gap-2 p-1.5">
+      {sideParticipants.length === 0 && <span className="text-[10px] text-zinc-700">—</span>}
+      {sideParticipants.map((p) => {
+        const character = characters[p.character_id]?.character;
+        if (!character) return null;
+        const entries = laneMoveEntries(p.character_id);
+        const status = characterDeclareStatus(p, participants, pairs);
+        return (
+          <div key={p.character_id} className="flex flex-col items-center gap-0.5">
+            <span
+              className={`max-w-20 truncate text-[9px] ${
+                phase === 'declaration' ? STATUS_META[status].className : 'text-zinc-400'
+              }`}
+              title={character.name}
             >
-              <span className="flex min-w-0 items-center gap-1 truncate text-zinc-200">
-                <span className="truncate">{character?.name ?? '—'}</span>
-                {isNpc && (
-                  <span className="shrink-0 panel-cut-sm bg-purple-600/30 px-1 text-[9px] font-bold uppercase text-purple-300">
-                    NPC
-                  </span>
+              {character.name}
+            </span>
+            {entries.length === 0 ? (
+              <span className="text-[9px] text-zinc-700">·</span>
+            ) : (
+              <div className="flex flex-wrap justify-center gap-1">
+                {entries.map(
+                  ({ dm, move }) => move && <CompactDeclaredMoveCard key={dm.id} dm={dm} move={move} tellById={tellById} />
                 )}
-              </span>
-              <span className={STATUS_META[status].className}>{STATUS_META[status].label}</span>
-            </div>
-          );
-        })}
-      </div>
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+  return (
+    <div className="w-full max-w-3xl space-y-1.5">
+      {pairIndices.map((pairIndex) => {
+        const leftParticipants = participants.filter((p) => p.side === 'left' && p.pair_index === pairIndex);
+        const rightParticipants = participants.filter((p) => p.side === 'right' && p.pair_index === pairIndex);
+        const clickable = role === 'gm';
+        const active = activeLaneIndex === pairIndex;
+        return (
+          <div
+            key={pairIndex}
+            onClick={clickable ? () => onSelectLane(pairIndex) : undefined}
+            className={`flex items-stretch panel-cut-sm border transition-colors ${
+              clickable ? 'cursor-pointer hover:border-brand-500' : ''
+            } ${active ? 'border-brand-500 bg-brand-950/30 ring-1 ring-brand-600' : 'border-zinc-800 bg-zinc-900/60'}`}
+          >
+            {sideCell(leftParticipants)}
+            <div className="w-px shrink-0 bg-zinc-700/50" />
+            {sideCell(rightParticipants)}
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -811,11 +863,13 @@ function DeclareMovePicker({ entry, roundStartTic, declaredMoves }) {
   );
 }
 
-// The declare panel for whichever single character currently has the floor
-// — a Player's own character when it's their turn, or the GM's "active" NPC
-// (picked from DeclarationStatusTable above). Each character presses their
-// own Done Declaring individually now (decided, combat redesign) — there's
-// no shared per-side button anymore.
+// The declare panel for one character currently on the declare floor — a
+// Player's own character when it's their turn, or (Tic navigation redesign)
+// one panel per not-yet-declared NPC on the GM's currently-selected lane
+// (see DeclarationLanes above) — more than one only ever stacks under
+// Uneven Combat. Each character presses their own Done Declaring
+// individually (decided, combat redesign) — there's no shared per-side
+// button anymore.
 function ActiveDeclarePanel({ entry, roundStartTic, declaredMoves }) {
   return (
     <div className="w-full max-w-md space-y-2 panel-cut-lg border border-brand-800/50 bg-brand-950/20 p-3">
@@ -858,10 +912,10 @@ export default function CombatArena() {
   // A move with an ambiguous Left/Right Roll slot doesn't declare on drop —
   // it holds here until the popup below records a choice (or is cancelled).
   const [pendingDeclare, setPendingDeclare] = useState(null);
-  // GM-only: which NPC's declare picker is currently shown (see
-  // DeclarationStatusTable above) — client-only convenience state, reset
-  // whenever it's no longer that NPC's turn.
-  const [activeNpcId, setActiveNpcId] = useState(null);
+  // GM-only: which pair (lane) is currently selected — client-only
+  // convenience state, drives both the declare picker (see
+  // DeclarationLanes above) and the Tic Counter's own-move preview scoping.
+  const [activeLaneIndex, setActiveLaneIndex] = useState(null);
   // Transient "linger then slam" impact effects for a successful drop —
   // declaring a move onto the Tic Counter, or seating a character — see
   // DropSlamGhost.jsx. Keyed so more than one can be in flight at once.
@@ -880,16 +934,15 @@ export default function CombatArena() {
     return () => clearTimeout(timer);
   }, [toast]);
 
-  // Clears the GM's "active NPC" selection once it's no longer that NPC's
-  // turn (they finished declaring, the round moved on, etc.) — purely a UI
-  // tidiness thing, the actual gating already lives server-side.
+  // Clears the GM's "active lane" selection once that pair no longer has
+  // anyone seated (fully cleared) — purely a UI tidiness thing; the
+  // selection otherwise persists across rounds/phases so the GM can keep
+  // watching a lane without it being yanked out from under them.
   useEffect(() => {
-    if (!combat || activeNpcId == null) return;
-    const p = combat.participants.find((pp) => pp.character_id === activeNpcId);
-    const pair = p && (combat.pairs ?? []).find((pr) => pr.pair_index === p.pair_index);
-    const stillTheirTurn = combat.phase === 'declaration' && p && !p.declared_this_round && pair?.declaring_side === p.side;
-    if (!stillTheirTurn) setActiveNpcId(null);
-  }, [combat, activeNpcId]);
+    if (!combat || activeLaneIndex == null) return;
+    const stillExists = combat.participants.some((p) => p.pair_index === activeLaneIndex);
+    if (!stillExists) setActiveLaneIndex(null);
+  }, [combat, activeLaneIndex]);
 
   useEffect(() => {
     const refresh = () => {
@@ -1211,17 +1264,17 @@ export default function CombatArena() {
     setPendingDeclare(null);
   };
 
-  // ---------- Declared-move bands flanking the Tic Counter ----------
+  // ---------- Declared moves: current-round scoping + cross-round overflow ----------
 
   const currentRoundMoves = declaredMoves.filter((dm) => dm.roundNumber === combat.roundNumber);
   // Tics at the start of THIS round already occupied by a previous round's
   // overflowing Recovery — general board-state awareness, broadcast to
   // everyone regardless of role/turn. Attributed by character name: which
   // character still has something recovering here isn't secret (their Tell
-  // card is already visible in the Move Band the whole time), only the
-  // move's own identity/details are — same distinction the rest of Combat
-  // Timing already draws. Only ever built from prior rounds, so it can
-  // never leak this round's own still-secret placements.
+  // card is already visible in the Declaration Lanes the whole time), only
+  // the move's own identity/details are — same distinction the rest of
+  // Combat Timing already draws. Only ever built from prior rounds, so it
+  // can never leak this round's own still-secret placements.
   const overflowTics = new Map(); // absoluteTic -> character names occupying it
   for (const dm of declaredMoves) {
     if (dm.roundNumber >= combat.roundNumber) continue;
@@ -1233,29 +1286,33 @@ export default function CombatArena() {
       overflowTics.set(t, names);
     }
   }
-  const bandEntries = (predicate) =>
-    currentRoundMoves
-      .filter((dm) => {
-        const entry = characters[dm.characterId];
-        return entry && predicate(entry.character);
-      })
-      .sort((a, b) => a.placementTic - b.placementTic)
-      .map((dm) => ({
-        dm,
-        move: characters[dm.characterId]?.moves?.find((m) => m.id === dm.moveId),
-        characterName: characters[dm.characterId]?.character.name ?? '—',
-      }));
-  const playerBandEntries = bandEntries((c) => c.character_type === 'pc');
-  const npcBandEntries = bandEntries((c) => c.character_type === 'npc');
 
   // ---------- Who currently has the declare-picker floor ----------
 
-  let activeDeclareEntry = null;
+  // A Player always declares for their own single character, unaffected by
+  // lane selection. The GM instead picks a lane (see DeclarationLanes above)
+  // — every not-yet-declared NPC on that lane's currently-declaring side
+  // gets its own panel (plural: Uneven Combat can have more than one), never
+  // a Player-controlled character sharing that side, matching the same
+  // GM-can-only-drive-NPCs boundary the old NPC-only status table enforced.
+  let activeDeclareEntries = [];
   if (phase === 'declaration') {
     if (role === 'player' && isCharacterTurn(characterId)) {
-      activeDeclareEntry = characters[characterId] ?? null;
-    } else if (role === 'gm' && activeNpcId != null && isCharacterTurn(activeNpcId)) {
-      activeDeclareEntry = characters[activeNpcId] ?? null;
+      const entry = characters[characterId];
+      if (entry) activeDeclareEntries = [entry];
+    } else if (role === 'gm' && activeLaneIndex != null) {
+      const lanePair = (pairs ?? []).find((pr) => pr.pair_index === activeLaneIndex);
+      if (lanePair && lanePair.declaring_side) {
+        activeDeclareEntries = participants
+          .filter(
+            (p) =>
+              p.pair_index === activeLaneIndex &&
+              p.side === lanePair.declaring_side &&
+              !p.declared_this_round
+          )
+          .map((p) => characters[p.character_id])
+          .filter((entry) => entry && entry.character.character_type === 'npc');
+      }
     }
   }
 
@@ -1344,9 +1401,6 @@ export default function CombatArena() {
             </div>
           )}
 
-          <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-600">Player moves</span>
-          <MoveBand entries={playerBandEntries} tellById={tellById} />
-
           <TicCounterCentral
             phase={phase}
             currentTic={combat.currentTic}
@@ -1357,41 +1411,50 @@ export default function CombatArena() {
             setHoverTic={setHoverTic}
             onDrop={handleTicDrop}
             declaredMoves={
-              activeDeclareEntry
-                ? currentRoundMoves.filter((dm) => dm.characterId === activeDeclareEntry.character.id)
+              activeDeclareEntries.length
+                ? currentRoundMoves.filter((dm) =>
+                    activeDeclareEntries.some((e) => e.character.id === dm.characterId)
+                  )
                 : []
             }
-            showDeclaredPreview={Boolean(activeDeclareEntry)}
+            showDeclaredPreview={activeDeclareEntries.length > 0}
             overflowTics={overflowTics}
             role={role}
           />
 
-          <MoveBand entries={npcBandEntries} tellById={tellById} />
-          <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-600">NPC moves</span>
+          <DeclarationLanes
+            pairIndices={pairIndices}
+            participants={participants}
+            characters={characters}
+            pairs={pairs ?? []}
+            tellById={tellById}
+            declaredMoves={declaredMoves}
+            currentTic={combat.currentTic}
+            roundNumber={combat.roundNumber}
+            phase={phase}
+            role={role}
+            characterId={characterId}
+            activeLaneIndex={activeLaneIndex}
+            onSelectLane={setActiveLaneIndex}
+          />
         </div>
       )}
 
       {phase === 'declaration' && (
         <div className="mb-4 flex flex-wrap items-start justify-center gap-3">
-          {role === 'gm' && (
-            <DeclarationStatusTable
-              participants={participants}
-              characters={characters}
-              pairs={pairs ?? []}
-              activeNpcId={activeNpcId}
-              onActivateNpc={setActiveNpcId}
-            />
-          )}
-          {activeDeclareEntry && (
+          {activeDeclareEntries.map((entry) => (
             <ActiveDeclarePanel
-              entry={activeDeclareEntry}
+              key={entry.character.id}
+              entry={entry}
               roundStartTic={combat.roundStartTic}
               declaredMoves={declaredMoves}
             />
-          )}
-          {role === 'gm' && !activeDeclareEntry && (
+          ))}
+          {role === 'gm' && activeDeclareEntries.length === 0 && (
             <div className="flex max-w-md items-center panel-cut-lg border border-dashed border-zinc-800 px-4 py-6 text-sm text-zinc-600">
-              Click an NPC above whose turn it is to declare for them.
+              {activeLaneIndex == null
+                ? 'Click a lane above to declare for its NPCs.'
+                : "Nothing to declare for this lane right now — it's not an NPC's turn here."}
             </div>
           )}
         </div>

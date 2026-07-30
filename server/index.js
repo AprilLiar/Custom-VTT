@@ -2094,16 +2094,21 @@ io.on('connection', (socket) => {
 
     const charIds = [...new Set(participants.map((p) => p.character_id))];
     const marks = charIds.map(() => '?').join(',');
-    const [charRows, brainDice, speedAttribute] = await Promise.all([
+    const [charRows, brainDice, staminaDice, speedAttribute] = await Promise.all([
       all(`SELECT * FROM characters WHERE id IN (${marks})`, charIds),
       all(
         `SELECT * FROM dice WHERE character_id IN (${marks}) AND slot_name = 'Brain'`,
+        charIds
+      ),
+      all(
+        `SELECT * FROM dice WHERE character_id IN (${marks}) AND slot_name = 'Stamina'`,
         charIds
       ),
       one("SELECT id FROM attributes WHERE name = 'Speed'"),
     ]);
     const charById = new Map(charRows.map((c) => [c.id, c]));
     const brainByChar = new Map(brainDice.map((d) => [d.character_id, d]));
+    const staminaByChar = new Map(staminaDice.map((d) => [d.character_id, d]));
     const stanceIds = charRows.map((c) => c.active_stance_id).filter((id) => id != null);
     const stances = stanceIds.length
       ? await all(`SELECT * FROM stances WHERE id IN (${stanceIds.map(() => '?').join(',')})`, stanceIds)
@@ -2132,6 +2137,40 @@ io.on('connection', (socket) => {
           io.emit('character:updated', { ...c, current_stamina: c.max_stamina });
         }
       }
+    } else {
+      // Stamina Regen (decided, new rule): every round from the 2nd on rolls
+      // each seated character's Stamina die at its current size/bonus and
+      // adds the result to current_stamina, clamped to max — same math/log
+      // shape as the manual stamina:regen button, just automatic now and for
+      // everyone at once. Round 1 is the Start Combat full-restore above
+      // instead (already at max, nothing to regen there).
+      const regenRolls = charRows
+        .map((character) => {
+          const die = staminaByChar.get(character.id);
+          if (!die || die.status !== 'active') return null;
+          const result = rollDie(die.current_size) + die.bonus;
+          const currentStamina = clamp(character.current_stamina + result, 0, character.max_stamina);
+          return { character, die, result, currentStamina };
+        })
+        .filter(Boolean);
+      await Promise.all(
+        regenRolls.map(({ character, currentStamina }) =>
+          run('UPDATE characters SET current_stamina = ? WHERE id = ?', [currentStamina, character.id])
+        )
+      );
+      for (const { character, currentStamina } of regenRolls) {
+        io.emit('character:updated', { ...character, current_stamina: currentStamina });
+      }
+      await Promise.all(
+        regenRolls.map(({ character, die, result }) =>
+          logRoll({
+            characterId: character.id,
+            characterName: character.name,
+            modifier: 0,
+            dice: [{ slot_name: 'Stamina', size: die.current_size, bonus: die.bonus, result }],
+          })
+        )
+      );
     }
 
     // Brain rolls per PAIR per side, posted to chat as normal initiative
