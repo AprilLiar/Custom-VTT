@@ -118,7 +118,12 @@ export default function CombatHeaderBar() {
     const eligible = newlyRevealed.filter((dm) => {
       if (!isMine(dm)) return false;
       const move = combat.characters[dm.characterId]?.moves?.find((m) => m.id === dm.moveId);
-      return move && (move.roll_dice?.length > 0 || move.roll_choice);
+      return (
+        move &&
+        (move.roll_dice?.length > 0 ||
+          move.roll_choice ||
+          (move.roll_type === 'custom' && move.custom_roll_size != null))
+      );
     });
     if (eligible.length) setAutoRollQueue((prev) => [...prev, ...eligible]);
   }, [combat, role, characterId]);
@@ -142,13 +147,18 @@ export default function CombatHeaderBar() {
     if (!entry || !move) return null; // pruned by the effect above on the next render
     const sideDice = dm.appendageChoice ? (move.roll_choice?.[dm.appendageChoice] ?? []) : [];
     const dieIds = [...(move.roll_dice ?? []), ...sideDice].map((d) => d.dieId);
+    const isCustomRoll = move.roll_type === 'custom' && move.custom_roll_size != null;
     return (
       <RollDialog
         title={`Roll ${move.name}${
           dm.appendageChoice ? ` (${dm.appendageChoice === 'right' ? 'Right' : 'Left'})` : ''
         } — ${entry.character.name}`}
         initialModifier={move.effective_roll_modifier ?? 0}
-        onRoll={(modifier) => socket.emit('pool:roll', { characterId: dm.characterId, dieIds, modifier })}
+        onRoll={(modifier) =>
+          isCustomRoll
+            ? socket.emit('dice:roll_custom', { characterId: dm.characterId, size: move.custom_roll_size, modifier })
+            : socket.emit('pool:roll', { characterId: dm.characterId, dieIds, modifier })
+        }
         onClose={() => setAutoRollQueue((q) => q.slice(1))}
       />
     );

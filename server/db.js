@@ -155,9 +155,16 @@ export async function initDb() {
       status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','incapacitated')),
       locked_size INTEGER NOT NULL DEFAULT 8 CHECK(locked_size IN (4,6,8,10,12)),
       locked_bonus INTEGER NOT NULL DEFAULT 0,
-      locked_status TEXT NOT NULL DEFAULT 'active' CHECK(locked_status IN ('active','incapacitated'))
+      locked_status TEXT NOT NULL DEFAULT 'active' CHECK(locked_status IN ('active','incapacitated')),
+      -- Half-Damage (decided): a raw on/off flag, toggled manually (a plain
+      -- flip, no other side effect) or by a future automated effect via
+      -- applyHalfDamage in gameLogic.js, which — only when called — clears
+      -- this flag and steps current_size/bonus/status down by one rank
+      -- instead of just setting the flag a second time.
+      half_damage INTEGER NOT NULL DEFAULT 0
     )
   `);
+  await ensureColumn('dice', 'half_damage', 'INTEGER NOT NULL DEFAULT 0');
 
   await run(`
     CREATE TABLE IF NOT EXISTS inventory_items (
@@ -323,7 +330,16 @@ export async function initDb() {
       left_tell_id INTEGER REFERENCES tells(id),
       -- 1 = this move has On Successful Defense / On Failed Defense
       -- interactions available (see move_interactions below)
-      is_defensive INTEGER NOT NULL DEFAULT 0
+      is_defensive INTEGER NOT NULL DEFAULT 0,
+      -- Roll type (decided, new): 'stat' is the original body-part Roll
+      -- (move_roll_slots below); 'custom' replaces it entirely with one
+      -- flat base die (custom_roll_size), not tied to any character stat —
+      -- for weapons, where the damage die belongs to the item, not the
+      -- wielder. Mutually exclusive: a 'custom' move always has empty
+      -- move_roll_slots (writeMove enforces this), and a 'stat' move always
+      -- has a NULL custom_roll_size.
+      roll_type TEXT NOT NULL DEFAULT 'stat' CHECK(roll_type IN ('stat','custom')),
+      custom_roll_size INTEGER CHECK(custom_roll_size IN (4,6,8,10,12))
     )
   `);
   await ensureColumn('moves', 'style_attribute_id', 'INTEGER REFERENCES attributes(id)');
@@ -335,6 +351,8 @@ export async function initDb() {
   await ensureColumn('moves', 'left_tell_id', 'INTEGER REFERENCES tells(id)');
   await ensureColumn('moves', 'is_defensive', 'INTEGER NOT NULL DEFAULT 0');
   await ensureColumn('moves', 'stamina_cost', 'INTEGER NOT NULL DEFAULT 0');
+  await ensureColumn('moves', 'roll_type', "TEXT NOT NULL DEFAULT 'stat' CHECK(roll_type IN ('stat','custom'))");
+  await ensureColumn('moves', 'custom_roll_size', 'INTEGER CHECK(custom_roll_size IN (4,6,8,10,12))');
   // JSON array of 0-based indices into the move's full frame sequence
   // (Startup squares first, then Active, then Recovery) marking which
   // squares also grant a defensive window — see sanitizeDefensePositions in

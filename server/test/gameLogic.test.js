@@ -7,6 +7,7 @@ import {
   stepDie,
   rankOf,
   applyRankPenalty,
+  applyHalfDamage,
 } from '../gameLogic.js';
 
 const die = (current_size, bonus = 0, status = 'active') => ({ current_size, bonus, status });
@@ -134,4 +135,30 @@ test('applyRankPenalty: a penalty deep enough to push rank below d4 incapacitate
     bonus: 0,
     status: 'incapacitated',
   });
+});
+
+test('applyHalfDamage: not yet half-damaged just sets the flag, no size change', () => {
+  assert.deepEqual(
+    applyHalfDamage({ current_size: 8, bonus: 0, status: 'active', half_damage: false }),
+    { current_size: 8, bonus: 0, status: 'active', half_damage: true }
+  );
+});
+
+test('applyHalfDamage: already half-damaged clears the flag and steps the die down one rank', () => {
+  assert.deepEqual(
+    applyHalfDamage({ current_size: 10, bonus: 0, status: 'active', half_damage: true }),
+    { current_size: 8, bonus: 0, status: 'active', half_damage: false }
+  );
+  // bonus unwinds before size, same as a manual step down
+  assert.deepEqual(
+    applyHalfDamage({ current_size: 12, bonus: 2, status: 'active', half_damage: true }),
+    { current_size: 12, bonus: 1, status: 'active', half_damage: false }
+  );
+});
+
+test('applyHalfDamage: stepping down from a bare d4 while half-damaged incapacitates', () => {
+  assert.deepEqual(
+    applyHalfDamage({ current_size: 4, bonus: 0, status: 'active', half_damage: true }),
+    { current_size: 4, bonus: 0, status: 'incapacitated', half_damage: false }
+  );
 });

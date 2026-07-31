@@ -89,3 +89,18 @@ export function stepDie({ current_size, bonus, status }, direction) {
   }
   return { current_size, bonus, status };
 }
+
+// Half-Damage (decided): a half-step towards losing a die's size. Manually
+// clicking the toggle (die:toggle_half_damage) is a raw on/off flip and
+// never calls this — this is only for a future automated effect (see the
+// Combat Automation plan) applying half-damage in code. If the flag is
+// already set, applying it again instead clears the flag AND steps the die
+// down one full rank (reusing stepDie's own bonus-then-size unwind, same
+// floor into 'incapacitated' at a bare d4); if the flag isn't set, applying
+// it just sets it, with no other change.
+export function applyHalfDamage({ current_size, bonus, status, half_damage }) {
+  if (half_damage) {
+    return { ...stepDie({ current_size, bonus, status }, 'down'), half_damage: false };
+  }
+  return { current_size, bonus, status, half_damage: true };
+}

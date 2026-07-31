@@ -129,3 +129,21 @@ export function sanitizeRollSlots(list) {
 export function hasAmbiguousRollSlot(rollSlots) {
   return rollSlots.some((s) => s in AMBIGUOUS_ROLL_SLOTS);
 }
+
+// Roll type (decided, new): 'stat' is the original body-part Roll above;
+// 'custom' replaces it with one flat base die (for weapons — see
+// CUSTOM_ROLL_SIZES), not tied to any character stat. Anything else falls
+// back to 'stat'.
+export const CUSTOM_ROLL_SIZES = [4, 6, 8, 10, 12];
+
+export function sanitizeRollType(value) {
+  return value === 'custom' ? 'custom' : 'stat';
+}
+
+// Only meaningful (and only ever stored) when rollType is 'custom' —
+// writeMove forces this to null otherwise, mirroring how a Default move's
+// styleAttributeId is always forced null regardless of what's sent.
+export function sanitizeCustomRollSize(value) {
+  const n = Math.trunc(Number(value));
+  return CUSTOM_ROLL_SIZES.includes(n) ? n : null;
+}

@@ -28,8 +28,13 @@ export default function MoveCard({
   actions,
 }) {
   const StyleIcon = style ? iconFor(style.icon) : null;
-  const hasRoll = move.roll_slots?.length > 0;
-  const isLiveRoll = hasRoll && Array.isArray(move.roll_dice);
+  // Custom Roll type (item 2, decided): a flat base die, not tied to any
+  // character stat/die — always "live" (no incapacitation concept for it),
+  // so it renders its own single button rather than going through the
+  // roll_dice/roll_choice resolution the Stat type needs.
+  const isCustomRoll = move.roll_type === 'custom' && move.custom_roll_size != null;
+  const hasRoll = move.roll_slots?.length > 0 || isCustomRoll;
+  const isLiveRoll = hasRoll && !isCustomRoll && Array.isArray(move.roll_dice);
   const ambiguousRoll = Boolean(move.roll_choice);
   // Never render an interaction category with nothing in it — covers both
   // the normal (server-side normalizeInteractions already drops empty rows)
@@ -143,7 +148,17 @@ export default function MoveCard({
         {hasRoll && (
           <div className="flex flex-wrap items-center gap-1.5 text-xs">
             <span className="font-semibold uppercase text-zinc-500">Roll:</span>
-            {isLiveRoll ? (
+            {isCustomRoll ? (
+              <button
+                type="button"
+                onClick={() => onRollClick?.(null)}
+                disabled={!onRollClick}
+                title="Roll this move's base die"
+                className="panel-cut-sm border border-zinc-700 bg-zinc-800 px-2 py-1 font-mono text-zinc-200 hover:border-brand-500 hover:text-brand-300 disabled:opacity-40"
+              >
+                {dieFormula(move.custom_roll_size, 0, move.effective_roll_modifier ?? 0)}
+              </button>
+            ) : isLiveRoll ? (
               ambiguousRoll ? (
                 ['right', 'left'].map((side) => {
                   const sideDice = [...move.roll_dice, ...move.roll_choice[side]];

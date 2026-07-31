@@ -6,6 +6,7 @@ import { Server } from 'socket.io';
 import { db, all, one, run, initDb } from './db.js';
 import {
   DICE_TEMPLATE,
+  DIE_SIZES,
   clamp,
   clampModifier,
   computeMaxStamina,
@@ -23,6 +24,8 @@ import {
   hasAmbiguousRollSlot,
   sanitizeDefensePositions,
   AMBIGUOUS_ROLL_SLOTS,
+  sanitizeRollType,
+  sanitizeCustomRollSize,
 } from './moveLogic.js';
 import { effectiveFrames, PERK_HOOKS, idleStaminaRegenRate } from './perkAutomations.js';
 import {
@@ -285,6 +288,7 @@ const diePayload = (die) => ({
   locked_size: die.locked_size,
   locked_bonus: die.locked_bonus,
   locked_status: die.locked_status,
+  half_damage: Boolean(die.half_damage),
 });
 
 // SQLite CURRENT_TIMESTAMP is 'YYYY-MM-DD HH:MM:SS' in UTC
@@ -640,9 +644,17 @@ async function logRoll({ characterId, characterName, modifier, dice }) {
     JSON.stringify(dice),
     modifier,
   ]);
+  // Every existing caller passes a real character.id (die:roll, pool:roll,
+  // combat:next_round's Brain rolls) — GM_CHAT_SENTINEL_ID only ever shows
+  // up here via dice:roll_custom's "post as GM" path. Normalizing it back to
+  // null on the live broadcast matches how GET /api/chat already reads a
+  // GM-posted row back after reload (see isGmPost there), so a live entry
+  // and its post-refresh reload render identically instead of one carrying
+  // a raw 0 the other doesn't.
+  const isGmPost = characterId === GM_CHAT_SENTINEL_ID;
   io.emit('roll:result', {
     kind: 'roll',
-    characterId,
+    characterId: isGmPost ? null : characterId,
     characterName,
     modifier,
     dice,
@@ -1081,6 +1093,29 @@ io.on('connection', (socket) => {
     });
   });
 
+  // A raw ad-hoc roll of one die size (d4-d12) plus a modifier, not tied to
+  // any character's own die — the chat Dice Tray (item 1) and a move's
+  // Custom Roll type (item 2, base die instead of a Stat) both funnel
+  // through this one event rather than duplicating roll/log logic.
+  // `characterId: null` posts as the generic GM persona, same convention as
+  // chat:message — reasons-to-fight only applies when a real character is
+  // attributed, since a GM-persona roll isn't any seated character's own.
+  on('dice:roll_custom', async ({ characterId, size, modifier }) => {
+    const die = Number(size);
+    if (!DIE_SIZES.includes(die)) return;
+    const asGm = characterId == null;
+    const character = asGm ? null : await getCharacter(characterId);
+    if (!asGm && !character) return;
+    const mod = clampModifier(modifier) + (asGm ? 0 : await getReasonsToFightBonus(character.id));
+    const result = rollDie(die) + mod;
+    await logRoll({
+      characterId: asGm ? GM_CHAT_SENTINEL_ID : character.id,
+      characterName: asGm ? 'GM' : character.name,
+      modifier: mod,
+      dice: [{ slot_name: 'Custom', size: die, bonus: 0, result }],
+    });
+  });
+
   // Selection-based pool roll: any set of the character's dice, rolled
   // together with one shared modifier (not tied to a body section).
   on('pool:roll', async ({ characterId, dieIds, modifier }) => {
@@ -1130,6 +1165,17 @@ io.on('connection', (socket) => {
       die.id,
     ]);
     io.emit('die:updated', diePayload({ ...die, ...next }));
+  });
+
+  // Manual click only — a raw flag flip, never the step-down-and-clear
+  // effect (see applyHalfDamage in gameLogic.js), which is reserved for a
+  // future automated effect to call instead.
+  on('die:toggle_half_damage', async ({ dieId }) => {
+    const die = await one('SELECT * FROM dice WHERE id = ?', [dieId]);
+    if (!die) return;
+    const half_damage = die.half_damage ? 0 : 1;
+    await run('UPDATE dice SET half_damage = ? WHERE id = ?', [half_damage, die.id]);
+    io.emit('die:updated', diePayload({ ...die, half_damage }));
   });
 
   on('character:lock_stats', async ({ characterId }) => {
@@ -1437,11 +1483,18 @@ io.on('connection', (socket) => {
     const isDefensive = payload.isDefensive ? 1 : 0;
     const description = String(payload.description ?? '').trim();
 
-    // Roll is optional — a move with no slots has no Roll at all. An
-    // ambiguous Hand/Leg slot means this move needs two Tells (one per
-    // appendage choice) instead of the usual one.
+    // Roll is optional — a move with no slots (or no custom die picked) has
+    // no Roll at all. An ambiguous Hand/Leg slot means this move needs two
+    // Tells (one per appendage choice) instead of the usual one.
     const rollModifier = clampRollBonus(payload.rollModifier);
-    const rollSlots = sanitizeRollSlots(payload.rollSlots);
+    const rollType = sanitizeRollType(payload.rollType);
+    // Mutually exclusive (decided): 'custom' always has empty roll_slots —
+    // its base die comes from custom_roll_size, not a body-part stat — and
+    // 'stat' always has a null custom_roll_size. Forced here regardless of
+    // what the client actually sent, same pattern as a Default move's
+    // styleAttributeId always being forced null above.
+    const rollSlots = rollType === 'custom' ? [] : sanitizeRollSlots(payload.rollSlots);
+    const customRollSize = rollType === 'custom' ? sanitizeCustomRollSize(payload.customRollSize) : null;
     const ambiguousRoll = hasAmbiguousRollSlot(rollSlots);
 
     let tellId;
@@ -1505,12 +1558,14 @@ io.on('connection', (socket) => {
       const result = await run(
         `INSERT INTO moves (name, is_default, tell_id, startup_tics, active_tics, recovery_tics,
           stamina_cost, description, style_attribute_id, folder_id, image_data, image_mime_type,
-          roll_modifier, right_tell_id, left_tell_id, is_defensive, defense_frame_positions)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          roll_modifier, right_tell_id, left_tell_id, is_defensive, defense_frame_positions,
+          roll_type, custom_roll_size)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [name, isDefault, tellId, startup, active, recovery, staminaCost, description, styleId,
           folderId, payload.imageData ?? null,
           payload.imageData ? (payload.imageMimeType ?? 'image/png') : null,
-          rollModifier, rightTellId, leftTellId, isDefensive, JSON.stringify(defenseFramePositions)]
+          rollModifier, rightTellId, leftTellId, isDefensive, JSON.stringify(defenseFramePositions),
+          rollType, customRollSize]
       );
       id = Number(result.lastInsertRowid);
     } else {
@@ -1518,11 +1573,11 @@ io.on('connection', (socket) => {
         `UPDATE moves SET name = ?, is_default = ?, tell_id = ?, startup_tics = ?, active_tics = ?,
           recovery_tics = ?, stamina_cost = ?, description = ?, style_attribute_id = ?, folder_id = ?,
           roll_modifier = ?, right_tell_id = ?, left_tell_id = ?, is_defensive = ?,
-          defense_frame_positions = ?
+          defense_frame_positions = ?, roll_type = ?, custom_roll_size = ?
           WHERE id = ?`,
         [name, isDefault, tellId, startup, active, recovery, staminaCost, description, styleId,
           folderId, rollModifier, rightTellId, leftTellId, isDefensive,
-          JSON.stringify(defenseFramePositions), id]
+          JSON.stringify(defenseFramePositions), rollType, customRollSize, id]
       );
       // image only replaced when a new one is provided
       if (payload.imageData !== undefined) {

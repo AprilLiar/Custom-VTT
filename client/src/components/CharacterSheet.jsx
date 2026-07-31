@@ -65,6 +65,7 @@ export default function CharacterSheet() {
                       locked_size: die.locked_size,
                       locked_bonus: die.locked_bonus,
                       locked_status: die.locked_status,
+                      half_damage: die.half_damage,
                     }
                   : d
               ),
