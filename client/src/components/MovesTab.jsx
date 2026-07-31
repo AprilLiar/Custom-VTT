@@ -125,6 +125,14 @@ export default function MovesTab({ data }) {
           }
           initialModifier={rollFor.move.effective_roll_modifier ?? 0}
           onRoll={(modifier) => {
+            if (rollFor.move.roll_type === 'custom') {
+              socket.emit('dice:roll_custom', {
+                characterId: character.id,
+                size: rollFor.move.custom_roll_size,
+                modifier,
+              });
+              return;
+            }
             const sideDice = rollFor.side ? rollFor.move.roll_choice[rollFor.side] : [];
             socket.emit('pool:roll', {
               characterId: character.id,

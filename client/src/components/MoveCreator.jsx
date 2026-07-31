@@ -6,12 +6,17 @@ import { ROLL_SLOT_NAMES, ROLL_SLOT_LABELS, AMBIGUOUS_ROLL_SLOTS } from '../lib/
 import { flattenFolderTree } from '../lib/folders.js';
 import FrameBar from './FrameBar.jsx';
 import Thumb from './Thumb.jsx';
+import DiceIcon from './DiceIcon.jsx';
 
 const FRAME_FIELDS = [
   { key: 'startup', label: 'Startup', color: 'text-yellow-500' },
   { key: 'active', label: 'Active', color: 'text-red-500' },
   { key: 'recovery', label: 'Recovery', color: 'text-blue-500' },
 ];
+
+// Custom Roll type (item 2, decided): a flat base die instead of a Stat —
+// for weapons, where the damage die belongs to the item, not the wielder.
+const CUSTOM_ROLL_SIZES = [4, 6, 8, 10, 12];
 
 // hit/block/miss always show; the two defensive-only triggers only render
 // when the Defensive checkbox is on (see below).
@@ -124,6 +129,8 @@ export default function MoveCreator({
   const [folderId, setFolderId] = useState(initial?.folder_id ?? initialFolderId);
   const [rollSlots, setRollSlots] = useState(initial?.roll_slots ?? []);
   const [rollModifier, setRollModifier] = useState(initial?.roll_modifier ?? 0);
+  const [rollType, setRollType] = useState(initial?.roll_type ?? 'stat');
+  const [customRollSize, setCustomRollSize] = useState(initial?.custom_roll_size ?? null);
   const [tagIds, setTagIds] = useState(initial?.tag_ids ?? []);
   const [image, setImage] = useState(undefined); // undefined = keep existing
   const [frames, setFrames] = useState({
@@ -176,6 +183,15 @@ export default function MoveCreator({
   const toggleRollSlot = (slot) =>
     setRollSlots((prev) => (prev.includes(slot) ? prev.filter((s) => s !== slot) : [...prev, slot]));
 
+  // Mutually exclusive (decided): switching Roll type clears the other
+  // type's own picks, same as toggleDefault clearing Style above — a stat
+  // slot and a custom base die never coexist on the same move.
+  const switchRollType = (type) => {
+    setRollType(type);
+    if (type === 'custom') setRollSlots([]);
+    else setCustomRollSize(null);
+  };
+
   const toggleTag = (id) =>
     setTagIds((prev) =>
       prev.includes(id) ? prev.filter((t) => t !== id) : prev.length < 10 ? [...prev, id] : prev
@@ -200,6 +216,8 @@ export default function MoveCreator({
       folderId,
       rollSlots,
       rollModifier,
+      rollType,
+      customRollSize,
       tagIds,
       startupTics: frames.startup,
       activeTics: frames.active,
@@ -346,49 +364,113 @@ export default function MoveCreator({
       )}
 
       <div>
-        <p className="mb-1 text-xs font-semibold uppercase text-zinc-500">
-          Roll (optional — which body-part dice this move rolls)
-        </p>
-        {ambiguousRoll && (
-          <p className="mb-1.5 text-xs text-amber-400">
-            Includes a Left/Right choice — pick which Tell shows for each side above. The
-            player chooses which appendage to roll with when the move is actually used.
-          </p>
-        )}
-        <div className="flex flex-wrap items-center gap-1.5">
-          {ROLL_SLOT_NAMES.map((slot) => {
-            const selected = rollSlots.includes(slot);
-            return (
-              <button
-                key={slot}
-                type="button"
-                onClick={() => toggleRollSlot(slot)}
-                className={`panel-cut border px-2 py-1 text-xs font-semibold ${
-                  selected
-                    ? 'border-brand-500 bg-brand-600/30 text-brand-200'
-                    : 'border-zinc-700 bg-zinc-800 text-zinc-400 hover:border-zinc-500'
-                }`}
-              >
-                {ROLL_SLOT_LABELS[slot]}
-              </button>
-            );
-          })}
-          {rollSlots.length > 0 && (
-            <label className="ml-2 flex items-center gap-1.5 text-xs text-zinc-400">
-              Bonus
-              <input
-                type="number"
-                min={-20}
-                max={20}
-                value={rollModifier}
-                onChange={(e) =>
-                  setRollModifier(Math.max(-20, Math.min(20, Math.trunc(Number(e.target.value) || 0))))
-                }
-                className="w-16 panel-cut-sm border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs text-zinc-100 outline-none focus:border-brand-500"
-              />
-            </label>
-          )}
+        <p className="mb-1 text-xs font-semibold uppercase text-zinc-500">Roll (optional)</p>
+        <div className="mb-1.5 flex gap-1.5">
+          <button
+            type="button"
+            onClick={() => switchRollType('stat')}
+            className={`panel-cut-sm border px-2 py-1 text-xs font-semibold ${
+              rollType === 'stat'
+                ? 'border-brand-500 bg-brand-600/30 text-brand-200'
+                : 'border-zinc-700 bg-zinc-800 text-zinc-400 hover:border-zinc-500'
+            }`}
+          >
+            Stat
+          </button>
+          <button
+            type="button"
+            onClick={() => switchRollType('custom')}
+            title="A fixed base die, not tied to any character Stat — for weapons"
+            className={`panel-cut-sm border px-2 py-1 text-xs font-semibold ${
+              rollType === 'custom'
+                ? 'border-brand-500 bg-brand-600/30 text-brand-200'
+                : 'border-zinc-700 bg-zinc-800 text-zinc-400 hover:border-zinc-500'
+            }`}
+          >
+            Custom
+          </button>
         </div>
+        {rollType === 'stat' ? (
+          <>
+            <p className="mb-1 text-xs text-zinc-500">Which body-part dice this move rolls</p>
+            {ambiguousRoll && (
+              <p className="mb-1.5 text-xs text-amber-400">
+                Includes a Left/Right choice — pick which Tell shows for each side above. The
+                player chooses which appendage to roll with when the move is actually used.
+              </p>
+            )}
+            <div className="flex flex-wrap items-center gap-1.5">
+              {ROLL_SLOT_NAMES.map((slot) => {
+                const selected = rollSlots.includes(slot);
+                return (
+                  <button
+                    key={slot}
+                    type="button"
+                    onClick={() => toggleRollSlot(slot)}
+                    className={`panel-cut border px-2 py-1 text-xs font-semibold ${
+                      selected
+                        ? 'border-brand-500 bg-brand-600/30 text-brand-200'
+                        : 'border-zinc-700 bg-zinc-800 text-zinc-400 hover:border-zinc-500'
+                    }`}
+                  >
+                    {ROLL_SLOT_LABELS[slot]}
+                  </button>
+                );
+              })}
+              {rollSlots.length > 0 && (
+                <label className="ml-2 flex items-center gap-1.5 text-xs text-zinc-400">
+                  Bonus
+                  <input
+                    type="number"
+                    min={-20}
+                    max={20}
+                    value={rollModifier}
+                    onChange={(e) =>
+                      setRollModifier(Math.max(-20, Math.min(20, Math.trunc(Number(e.target.value) || 0))))
+                    }
+                    className="w-16 panel-cut-sm border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs text-zinc-100 outline-none focus:border-brand-500"
+                  />
+                </label>
+              )}
+            </div>
+          </>
+        ) : (
+          <>
+            <p className="mb-1 text-xs text-zinc-500">Base die for this move's Roll (e.g. a weapon's damage die)</p>
+            <div className="flex flex-wrap items-center gap-1.5">
+              {CUSTOM_ROLL_SIZES.map((size) => (
+                <button
+                  key={size}
+                  type="button"
+                  onClick={() => setCustomRollSize(customRollSize === size ? null : size)}
+                  title={`d${size}`}
+                  className={`panel-cut border px-2 py-1.5 ${
+                    customRollSize === size
+                      ? 'border-brand-500 bg-brand-600/30 text-brand-200'
+                      : 'border-zinc-700 bg-zinc-800 text-zinc-400 hover:border-zinc-500'
+                  }`}
+                >
+                  <DiceIcon size={size} className="h-5 w-5" />
+                </button>
+              ))}
+              {customRollSize != null && (
+                <label className="ml-2 flex items-center gap-1.5 text-xs text-zinc-400">
+                  Bonus
+                  <input
+                    type="number"
+                    min={-20}
+                    max={20}
+                    value={rollModifier}
+                    onChange={(e) =>
+                      setRollModifier(Math.max(-20, Math.min(20, Math.trunc(Number(e.target.value) || 0))))
+                    }
+                    className="w-16 panel-cut-sm border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs text-zinc-100 outline-none focus:border-brand-500"
+                  />
+                </label>
+              )}
+            </div>
+          </>
+        )}
       </div>
 
       <div>

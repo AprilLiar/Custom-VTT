@@ -8,6 +8,9 @@ import { useRole } from '../roleContext.jsx';
 import Thumb from './Thumb.jsx';
 import FrameBar from './FrameBar.jsx';
 import MoveCard from './MoveCard.jsx';
+import DiceIcon from './DiceIcon.jsx';
+
+const DICE_TRAY_SIZES = [4, 6, 8, 10, 12];
 
 // Phase colors match FrameBar/the live Tic Counter's own footprint palette
 // (see CombatArena.jsx's DECLARED_PHASE_COLOR/TicSquare zoneStyle) so a
@@ -310,6 +313,7 @@ function Composer({ characters }) {
   const [text, setText] = useState('');
   const [pending, setPending] = useState(null); // { imageData, imageMimeType, previewName }
   const [error, setError] = useState('');
+  const [diceTrayMod, setDiceTrayMod] = useState(0);
   const fileRef = useRef(null);
 
   useEffect(() => {
@@ -355,11 +359,14 @@ function Composer({ characters }) {
     await attachFile(file);
   };
 
+  // Same "who's posting" resolution the message send below already used —
+  // shared so the Dice Tray attributes its rolls identically.
+  const postingCharacterId =
+    role === 'player' ? myCharacterId : characterId === 'gm' ? null : Number(characterId);
+
   const send = () => {
     const trimmed = text.trim();
     if (!trimmed && !pending) return;
-    const postingCharacterId =
-      role === 'player' ? myCharacterId : characterId === 'gm' ? null : Number(characterId);
     socket.emit('chat:message', {
       characterId: postingCharacterId,
       text: trimmed,
@@ -378,6 +385,13 @@ function Composer({ characters }) {
     }
   };
 
+  // Dice Tray (item 1): a raw d4-d12 roll plus an adjustable modifier, not
+  // tied to any character's own die — see dice:roll_custom server-side,
+  // shared with a move's Custom Roll type. Attributed to whoever's
+  // currently selected in the "post as" picker above, same as a message.
+  const rollCustomDie = (size) =>
+    socket.emit('dice:roll_custom', { characterId: postingCharacterId, size, modifier: diceTrayMod });
+
   return (
     <div className="border-t border-zinc-800 p-2">
       {error && <p className="mb-1 text-xs text-red-400">{error}</p>}
@@ -392,6 +406,40 @@ function Composer({ characters }) {
           </button>
         </div>
       )}
+      <div className="mb-1 flex items-center gap-1">
+        <span className="text-[10px] font-semibold uppercase text-zinc-500">Mod</span>
+        <button
+          type="button"
+          onClick={() => setDiceTrayMod((m) => Math.max(-20, m - 1))}
+          className="panel-cut-sm border border-zinc-700 px-1.5 text-xs text-zinc-400 hover:bg-zinc-800"
+        >
+          −
+        </button>
+        <span className="w-6 text-center font-mono text-xs text-zinc-300">
+          {diceTrayMod > 0 ? `+${diceTrayMod}` : diceTrayMod}
+        </span>
+        <button
+          type="button"
+          onClick={() => setDiceTrayMod((m) => Math.min(20, m + 1))}
+          className="panel-cut-sm border border-zinc-700 px-1.5 text-xs text-zinc-400 hover:bg-zinc-800"
+        >
+          +
+        </button>
+        <span className="mx-1 h-4 w-px bg-zinc-800" />
+        {DICE_TRAY_SIZES.map((size) => (
+          <button
+            key={size}
+            type="button"
+            onClick={() => rollCustomDie(size)}
+            title={`Roll 1d${size}${
+              diceTrayMod ? (diceTrayMod > 0 ? ` + ${diceTrayMod}` : ` − ${Math.abs(diceTrayMod)}`) : ''
+            }`}
+            className="shrink-0 panel-cut-sm border border-zinc-700 p-1 text-zinc-400 hover:border-brand-500 hover:bg-zinc-800 hover:text-brand-300"
+          >
+            <DiceIcon size={size} />
+          </button>
+        ))}
+      </div>
       <div className="flex items-center gap-1">
         {role === 'player' ? (
           <span

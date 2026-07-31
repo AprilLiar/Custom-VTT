@@ -14,6 +14,8 @@ import {
   TRIGGERS,
   DEFENSE_TRIGGERS,
   ALL_TRIGGERS,
+  sanitizeRollType,
+  sanitizeCustomRollSize,
 } from '../moveLogic.js';
 
 test('frames clamp to 0-10 and coerce junk', () => {
@@ -190,4 +192,19 @@ test('sanitizeDefensePositions: drops out-of-range and junk entries, truncates f
 test('sanitizeDefensePositions: non-array input yields empty', () => {
   assert.deepEqual(sanitizeDefensePositions(null, 5), []);
   assert.deepEqual(sanitizeDefensePositions(undefined, 5), []);
+});
+
+test('sanitizeRollType: only "custom" survives, anything else falls back to "stat"', () => {
+  assert.equal(sanitizeRollType('custom'), 'custom');
+  assert.equal(sanitizeRollType('stat'), 'stat');
+  assert.equal(sanitizeRollType('junk'), 'stat');
+  assert.equal(sanitizeRollType(undefined), 'stat');
+});
+
+test('sanitizeCustomRollSize: only a valid die size survives, everything else is null', () => {
+  assert.equal(sanitizeCustomRollSize(8), 8);
+  assert.equal(sanitizeCustomRollSize('10'), 10);
+  assert.equal(sanitizeCustomRollSize(7), null);
+  assert.equal(sanitizeCustomRollSize('junk'), null);
+  assert.equal(sanitizeCustomRollSize(undefined), null);
 });

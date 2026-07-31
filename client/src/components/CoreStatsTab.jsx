@@ -179,6 +179,7 @@ export default function CoreStatsTab({ data }) {
 
   const rollDie = (die) => setDialog({ type: 'die', die });
   const stepDie = (die, direction) => socket.emit('die:step', { dieId: die.id, direction });
+  const toggleHalfDamage = (die) => socket.emit('die:toggle_half_damage', { dieId: die.id });
   const toggleSelect = (die) =>
     setSelectedIds((prev) => {
       const next = new Set(prev);
@@ -297,6 +298,7 @@ export default function CoreStatsTab({ data }) {
                 selecting={selecting}
                 selected={selectedIds.has(die.id)}
                 onToggleSelect={toggleSelect}
+                onToggleHalfDamage={toggleHalfDamage}
                 Icon={spot.Icon}
               />
             </div>

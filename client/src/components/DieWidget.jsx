@@ -13,6 +13,7 @@ export default function DieWidget({
   selecting,
   selected,
   onToggleSelect,
+  onToggleHalfDamage,
   compact = false,
   Icon = null,
 }) {
@@ -90,6 +91,24 @@ export default function DieWidget({
   return (
     <div className="flex flex-col items-center gap-1">
       <div className="flex items-center gap-1">
+        {onToggleHalfDamage && (
+          <button
+            type="button"
+            onClick={() => onToggleHalfDamage(die)}
+            title={
+              die.half_damage
+                ? 'Half-Damage marked — click to clear'
+                : 'Mark Half-Damage (a manual click only toggles this; the step-down effect is automated-only)'
+            }
+            className={`panel-cut-sm border px-1 py-2 text-xs font-bold ${
+              die.half_damage
+                ? 'border-amber-600 bg-amber-900/40 text-amber-300'
+                : 'border-zinc-700 text-zinc-600 hover:bg-zinc-800 hover:text-zinc-300'
+            }`}
+          >
+            ½
+          </button>
+        )}
         <motion.button
           ref={buttonRef}
           onClick={clickDie}
