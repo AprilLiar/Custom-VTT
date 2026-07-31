@@ -8,6 +8,7 @@ import {
   relativeTic,
   computeNextRoundStartTic,
   isTicIdle,
+  overlapsRoundWindow,
 } from '../combatTiming.js';
 
 const roll = (n) => ({ roll: n });
@@ -299,4 +300,54 @@ test('integration: a move overflowing into the next round blocks that character\
     previousBlockedUntilTic: footprint1.recoveryEndTic,
   });
   assert.equal(placementTic2, 8);
+});
+
+test('overlapsRoundWindow: a footprint fully inside the round window overlaps', () => {
+  assert.equal(
+    overlapsRoundWindow({ placementTic: 3, recoveryEndTic: 5, roundStartTic: 1, roundLength: 7 }),
+    true
+  );
+});
+
+test('overlapsRoundWindow: a footprint that already fully resolved before the window does not overlap', () => {
+  assert.equal(
+    overlapsRoundWindow({ placementTic: 1, recoveryEndTic: 8, roundStartTic: 8, roundLength: 7 }),
+    false
+  );
+});
+
+test('overlapsRoundWindow: a footprint entirely after the window does not overlap', () => {
+  assert.equal(
+    overlapsRoundWindow({ placementTic: 15, recoveryEndTic: 18, roundStartTic: 1, roundLength: 7 }),
+    false
+  );
+});
+
+test('overlapsRoundWindow: a footprint straddling the window start overlaps', () => {
+  // declared last round, recovery carries one Tic into this round's window
+  assert.equal(
+    overlapsRoundWindow({ placementTic: 5, recoveryEndTic: 9, roundStartTic: 8, roundLength: 7 }),
+    true
+  );
+});
+
+test('overlapsRoundWindow: a footprint straddling the window end overlaps', () => {
+  assert.equal(
+    overlapsRoundWindow({ placementTic: 6, recoveryEndTic: 12, roundStartTic: 1, roundLength: 7 }),
+    true
+  );
+});
+
+test('overlapsRoundWindow: touching the window\'s exclusive end boundary does not overlap', () => {
+  // recoveryEndTic === roundStartTic means it resolved on the very last Tic
+  // before this round's window starts — same exclusive convention as every
+  // other recoveryEndTic check in this module.
+  assert.equal(
+    overlapsRoundWindow({ placementTic: 1, recoveryEndTic: 1, roundStartTic: 1, roundLength: 7 }),
+    false
+  );
+  assert.equal(
+    overlapsRoundWindow({ placementTic: 8, recoveryEndTic: 20, roundStartTic: 1, roundLength: 7 }),
+    false
+  );
 });

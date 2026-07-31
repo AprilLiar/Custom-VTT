@@ -397,7 +397,15 @@ export function TicSquare({
 // runs independently per pair (see combat_pairs server-side), but the
 // countdown that follows stays one global strip, since there's still only
 // one Tic Counter.
-function TicCounterCentral({
+//
+// Exported (Tic navigation redesign, item 3) so CombatHeaderBar can mount
+// the exact same widget — same size, same overflow badges, same GM
+// click-to-step/Next Round — instead of the old read-only mini strip, so
+// the GM can advance the countdown from any page, not just the Arena.
+// `label` overrides the default "Drag a move here to declare"/"Tic Counter"
+// caption: the header has no move source to drag from (no roster/declare
+// picker lives there), so it always passes a fixed "Tic Counter" instead.
+export function TicCounterCentral({
   phase,
   currentTic,
   roundStartTic,
@@ -410,6 +418,7 @@ function TicCounterCentral({
   showDeclaredPreview,
   overflowTics,
   role,
+  label,
 }) {
   const squares = Array.from({ length: roundLength }, (_, i) => ({
     absoluteTic: roundStartTic + i,
@@ -445,7 +454,7 @@ function TicCounterCentral({
   return (
     <div className="flex flex-col items-center gap-1.5 panel-cut-lg border border-zinc-800 bg-gradient-to-b from-zinc-900 to-zinc-950 px-4 py-3 shadow-2xl shadow-black/40">
       <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-zinc-500">
-        {phase === 'declaration' ? 'Drag a move here to declare' : 'Tic Counter'}
+        {label ?? (phase === 'declaration' ? 'Drag a move here to declare' : 'Tic Counter')}
       </span>
       <div className="flex flex-wrap items-center justify-center gap-1.5 py-1">
         {squares.map((sq, i) => {
@@ -729,9 +738,9 @@ function DeclarationLanes({
               <span className="text-[9px] text-zinc-700">·</span>
             ) : (
               <div className="flex flex-wrap justify-center gap-1">
-                {entries.map(
-                  ({ dm, move }) => move && <CompactDeclaredMoveCard key={dm.id} dm={dm} move={move} tellById={tellById} />
-                )}
+                {entries.map(({ dm, move }) => (
+                  <CompactDeclaredMoveCard key={dm.id} dm={dm} move={move} tellById={tellById} />
+                ))}
               </div>
             )}
           </div>
@@ -1053,12 +1062,15 @@ export default function CombatArena() {
 
   useEffect(() => {
     if (!combat) return;
-    const currentRoundMoves = (combat.declaredMoves ?? []).filter(
-      (dm) => dm.roundNumber === combat.roundNumber
-    );
+    // Not scoped to combat.roundNumber (fix, QA pass): a carried-over move
+    // declared last round can have a revealTic that only arrives after this
+    // round already started (long Startup) — round-scoping this excluded
+    // exactly those moves from ever auto-opening their Roll dialog. revealTic
+    // is an absolute Tic value regardless of which round declared the move,
+    // so no round filter is needed here at all.
     const reallyRevealedNow =
       combat.phase === 'tic_countdown'
-        ? currentRoundMoves.filter((dm) => dm.revealTic <= combat.currentTic)
+        ? (combat.declaredMoves ?? []).filter((dm) => dm.revealTic <= combat.currentTic)
         : [];
     if (!autoRollInitializedRef.current) {
       // First load (including a mid-fight page refresh): don't retroactively

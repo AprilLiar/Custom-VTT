@@ -32,6 +32,7 @@ import {
   relativeTic,
   computeNextRoundStartTic,
   isTicIdle,
+  overlapsRoundWindow,
 } from './combatTiming.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -283,62 +284,96 @@ const diePayload = (die) => ({
 const sqliteToIso = (ts) =>
   ts && !ts.includes('T') ? new Date(ts.replace(' ', 'T') + 'Z').toISOString() : ts;
 
-// Posts a move-reveal chat card the instant the Tic counter reaches a
+// Every currently-public (reveal_posted = 1) move belonging to a character
+// seated in `pairIndex`, clipped to whichever moves' footprints still
+// overlap the CURRENT round's own Tic window (see overlapsRoundWindow) —
+// exactly what the live Tic Counter itself would show for that lane right
+// now. Called once per newly-revealed move (see postMoveReveals below), so
+// each lane_snapshot chat card is a full cumulative picture as of that
+// specific reveal, not a delta — "a new snapshot every reveal" is what
+// gives the chat log a full history of how the lane's Tic Counter filled in
+// over the round. `full` is embedded per move (not re-fetched at GET time)
+// so a historical row stays self-contained even after the move itself is
+// edited or deleted later.
+async function buildLaneSnapshotPayload({ pairIndex, roundNumber, roundStartTic, roundLength }) {
+  const rows = await all(
+    `SELECT dm.id AS declared_move_id, dm.character_id, dm.placement_tic, dm.reveal_tic,
+            m.id AS move_id, m.name AS move_name, m.image_data, m.image_mime_type,
+            m.active_tics, m.recovery_tics, m.defense_frame_positions, m.description, m.stamina_cost,
+            ch.name AS character_name, ch.character_type,
+            cp.side AS side
+     FROM declared_moves dm
+     JOIN moves m ON m.id = dm.move_id
+     JOIN characters ch ON ch.id = dm.character_id
+     JOIN combat_participants cp ON cp.character_id = dm.character_id
+     WHERE cp.pair_index = ? AND dm.reveal_posted = 1
+     ORDER BY dm.id`,
+    [pairIndex]
+  );
+  const moves = [];
+  for (const row of rows) {
+    const activeEndTic = row.reveal_tic + row.active_tics;
+    const recoveryEndTic = activeEndTic + row.recovery_tics;
+    if (!overlapsRoundWindow({ placementTic: row.placement_tic, recoveryEndTic, roundStartTic, roundLength })) {
+      continue;
+    }
+    const full = await getMove(row.move_id);
+    moves.push({
+      declaredMoveId: row.declared_move_id,
+      characterId: row.character_id,
+      characterName: row.character_name,
+      characterType: row.character_type,
+      side: row.side,
+      moveId: row.move_id,
+      moveName: row.move_name,
+      imageData: row.image_data,
+      imageMimeType: row.image_mime_type,
+      placementTic: row.placement_tic,
+      revealTic: row.reveal_tic,
+      activeEndTic,
+      recoveryEndTic,
+      defenseFramePositions: JSON.parse(row.defense_frame_positions ?? '[]'),
+      description: row.description,
+      staminaCost: row.stamina_cost,
+      full,
+    });
+  }
+  return { pairIndex, roundNumber, roundStartTic, roundLength, moves };
+}
+
+// Posts a lane_snapshot chat card the instant the Tic counter reaches a
 // declared move's reveal_tic — automatic, per the plan's Combat Timing
 // section (only the Roll itself is manual, unchanged, via the existing
 // Roll button/dialog — this never touches rolling). reveal_posted makes
 // this idempotent: only ever fires once per declared move, even if the GM
 // steps the Tic counter back and forth across the same threshold — see
 // combat:tic_forward, the only caller (tic_backward never advances current_tic,
-// so it can never newly cross a reveal_tic).
-async function postMoveReveals(newTic) {
+// so it can never newly cross a reveal_tic). `roundNumber`/`roundStartTic`/
+// `roundLength` are the round ACTIVE AT THE TIME of this reveal (from the
+// caller's own already-fetched combat_state row) — they decide the Tic
+// window each snapshot is drawn against (see buildLaneSnapshotPayload).
+async function postMoveReveals(newTic, { roundNumber, roundStartTic, roundLength }) {
   const rows = await all(
-    `SELECT dm.id, dm.character_id, dm.move_id,
-            ch.name AS character_name,
-            m.name AS move_name, m.image_data, m.image_mime_type,
-            m.startup_tics, m.active_tics, m.recovery_tics, m.defense_frame_positions,
-            m.description, m.stamina_cost
-     FROM declared_moves dm
-     JOIN characters ch ON ch.id = dm.character_id
-     JOIN moves m ON m.id = dm.move_id
-     WHERE dm.reveal_posted = 0 AND dm.reveal_tic <= ?`,
+    'SELECT dm.id, dm.character_id FROM declared_moves dm WHERE dm.reveal_posted = 0 AND dm.reveal_tic <= ?',
     [newTic]
   );
   for (const row of rows) {
     await run('UPDATE declared_moves SET reveal_posted = 1 WHERE id = ?', [row.id]);
-    await run(
-      "INSERT INTO chat_log (kind, character_id, dice_rolled, move_id) VALUES ('move_reveal', ?, '[]', ?)",
-      [row.character_id, row.move_id]
-    );
-    // `full` carries everything MoveCard needs (interactions, tag_ids,
-    // roll_slots, tells, style, discipline) beyond the compact fields
-    // above — those stay as they are for the card's collapsed face, `full`
-    // is only read once the Genius Observer gate expands it (see
-    // ChatPanel.jsx). A move deleted between declare and this reveal still
-    // posts the card (moveId already NULL there'd have made postMoveReveals
-    // itself impossible — this can only race the OTHER way, deleted after
-    // reveal), so `full` degrades to whatever attachInteractions found, same
-    // null-safety as everywhere else a deleted move is displayed.
-    const full = await getMove(row.move_id);
-    io.emit('chat:move_reveal', {
-      kind: 'move_reveal',
-      characterId: row.character_id,
-      characterName: row.character_name,
-      move: {
-        id: row.move_id,
-        name: row.move_name,
-        imageData: row.image_data,
-        imageMimeType: row.image_mime_type,
-        startupTics: row.startup_tics,
-        activeTics: row.active_tics,
-        recoveryTics: row.recovery_tics,
-        defenseFramePositions: JSON.parse(row.defense_frame_positions ?? '[]'),
-        description: row.description,
-        staminaCost: row.stamina_cost,
-        full,
-      },
-      timestamp: new Date().toISOString(),
+    const participant = await one('SELECT pair_index FROM combat_participants WHERE character_id = ?', [
+      row.character_id,
+    ]);
+    if (!participant) continue; // character left the arena between declaring and revealing
+    const payload = await buildLaneSnapshotPayload({
+      pairIndex: participant.pair_index,
+      roundNumber,
+      roundStartTic,
+      roundLength,
     });
+    await run(
+      "INSERT INTO chat_log (kind, character_id, dice_rolled, payload) VALUES ('lane_snapshot', ?, '[]', ?)",
+      [row.character_id, JSON.stringify(payload)]
+    );
+    io.emit('chat:lane_snapshot', { kind: 'lane_snapshot', ...payload, timestamp: new Date().toISOString() });
   }
 }
 
@@ -911,7 +946,7 @@ app.delete('/api/characters/:id', wrap(async (req, res) => {
 app.get('/api/chat', wrap(async (_req, res) => {
   const rows = await all(`
     SELECT c.id, c.kind, c.character_id, c.modifier, c.dice_rolled, c.content,
-           c.image_data, c.image_mime_type, c.created_at,
+           c.image_data, c.image_mime_type, c.payload, c.created_at,
            ch.name AS character_name,
            m.id AS move_id, m.name AS move_name, m.image_data AS move_image_data,
            m.image_mime_type AS move_image_mime_type, m.startup_tics AS move_startup_tics,
@@ -968,6 +1003,11 @@ app.get('/api/chat', wrap(async (_req, res) => {
                 full: fullMoveById.get(row.move_id) ?? null,
               }
           : undefined,
+        // lane_snapshot rows carry the whole snapshot as JSON (pairIndex,
+        // round/Tic window, every currently-revealed move in the lane with
+        // its own embedded `full` data) — self-contained at write time (see
+        // buildLaneSnapshotPayload), so no server-side joining needed here.
+        ...(row.kind === 'lane_snapshot' && row.payload ? JSON.parse(row.payload) : {}),
         timestamp: sqliteToIso(row.created_at),
       };
     })
@@ -2473,10 +2513,14 @@ io.on('connection', (socket) => {
     // reveals immediately — its reveal_tic already equals current_tic
     // before a single Tic forward happens. postMoveReveals only otherwise
     // runs from inside tic_forward, so without this it would sit fully
-    // revealed (isMoveRevealedTo is computed live) with no move_reveal
+    // revealed (isMoveRevealedTo is computed live) with no lane_snapshot
     // chat card ever posted for it. Catches any other already-due reveal
     // the same way, for the same reason.
-    await postMoveReveals(state.current_tic);
+    await postMoveReveals(state.current_tic, {
+      roundNumber: state.round_number,
+      roundStartTic: state.round_start_tic,
+      roundLength: state.round_length,
+    });
     await applyIdleTicStaminaRegen(state.current_tic);
     await emitCombatUpdated();
   });
@@ -2488,7 +2532,11 @@ io.on('connection', (socket) => {
     if (state.current_tic >= maxTic) return;
     const newTic = state.current_tic + 1;
     await run('UPDATE combat_state SET current_tic = ? WHERE id = 1', [newTic]);
-    await postMoveReveals(newTic);
+    await postMoveReveals(newTic, {
+      roundNumber: state.round_number,
+      roundStartTic: state.round_start_tic,
+      roundLength: state.round_length,
+    });
     await applyIdleTicStaminaRegen(newTic);
     await emitCombatUpdated();
   });
