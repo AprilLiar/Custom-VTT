@@ -5,6 +5,8 @@ import {
   clampModifier,
   computeMaxStamina,
   stepDie,
+  rankOf,
+  applyRankPenalty,
 } from '../gameLogic.js';
 
 const die = (current_size, bonus = 0, status = 'active') => ({ current_size, bonus, status });
@@ -83,4 +85,53 @@ test('max stamina = multiplier x (locked size + locked bonus)', () => {
   assert.equal(computeMaxStamina(4, 8, 0), 32); // fresh character
   assert.equal(computeMaxStamina(4, 12, 2), 56);
   assert.equal(computeMaxStamina(5, 10, 0), 50); // future Perk-adjusted multiplier
+});
+
+test('rankOf: d4 is 0, d12 is 4, bonus stacks past that', () => {
+  assert.equal(rankOf(4, 0), 0);
+  assert.equal(rankOf(6, 0), 1);
+  assert.equal(rankOf(12, 0), 4);
+  assert.equal(rankOf(12, 2), 6);
+});
+
+test('applyRankPenalty: zero penalty or already-incapacitated is a no-op', () => {
+  assert.deepEqual(applyRankPenalty({ size: 8, bonus: 0, status: 'active' }, 0), {
+    size: 8,
+    bonus: 0,
+    status: 'active',
+  });
+  assert.deepEqual(applyRankPenalty({ size: 4, bonus: 0, status: 'incapacitated' }, 2), {
+    size: 4,
+    bonus: 0,
+    status: 'incapacitated',
+  });
+});
+
+test('applyRankPenalty: steps the size down by however many ranks the penalty is', () => {
+  assert.deepEqual(applyRankPenalty({ size: 10, bonus: 0, status: 'active' }, 2), {
+    size: 6,
+    bonus: 0,
+    status: 'active',
+  });
+});
+
+test('applyRankPenalty: eats into stacked bonus before dropping below d12', () => {
+  assert.deepEqual(applyRankPenalty({ size: 12, bonus: 2, status: 'active' }, 1), {
+    size: 12,
+    bonus: 1,
+    status: 'active',
+  });
+});
+
+test('applyRankPenalty: a penalty deep enough to push rank below d4 incapacitates instead of going negative', () => {
+  assert.deepEqual(applyRankPenalty({ size: 4, bonus: 0, status: 'active' }, 1), {
+    size: 4,
+    bonus: 0,
+    status: 'incapacitated',
+  });
+  assert.deepEqual(applyRankPenalty({ size: 8, bonus: 0, status: 'active' }, 10), {
+    size: 4,
+    bonus: 0,
+    status: 'incapacitated',
+  });
 });

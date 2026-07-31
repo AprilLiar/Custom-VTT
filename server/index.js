@@ -11,6 +11,7 @@ import {
   computeMaxStamina,
   rollDie,
   stepDie,
+  applyRankPenalty,
 } from './gameLogic.js';
 import {
   clampFrame,
@@ -33,6 +34,7 @@ import {
   computeNextRoundStartTic,
   isTicIdle,
   overlapsRoundWindow,
+  computeInitiativeOverflowPenalty,
 } from './combatTiming.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -57,6 +59,11 @@ const getInventory = (characterId) =>
   all('SELECT * FROM inventory_items WHERE character_id = ? ORDER BY id', [characterId]);
 const getInjuries = (characterId) =>
   all('SELECT * FROM injuries WHERE character_id = ? ORDER BY id', [characterId]);
+const VALID_INJURY_SLOTS = new Set(DICE_TEMPLATE.map((d) => d.slot_name));
+// Bounds how many ranks a single Injury can dock — well past the 5 needed to
+// fully incapacitate a bare d12 (rank 4), so it's a sanity clamp, not a
+// meaningful design limit.
+const clampInjuryPenalty = (value) => clamp(Math.trunc(Number(value) || 0), 0, 20);
 const getStaminaDie = (characterId) =>
   one("SELECT * FROM dice WHERE character_id = ? AND slot_name = 'Stamina'", [characterId]);
 const getStances = (characterId) =>
@@ -1160,16 +1167,43 @@ io.on('connection', (socket) => {
   });
 
   on('character:revert_stats', async ({ characterId }) => {
-    const [character, dice] = await Promise.all([getCharacter(characterId), getDice(characterId)]);
+    const [character, dice, injuries] = await Promise.all([
+      getCharacter(characterId),
+      getDice(characterId),
+      getInjuries(characterId),
+    ]);
     if (!character) return;
-    await run(
-      'UPDATE dice SET current_size = locked_size, bonus = locked_bonus, status = locked_status WHERE character_id = ?',
-      [character.id]
+    // Injuries affecting base stats (decided): reverting to the locked
+    // baseline isn't a raw copy — each die's locked size/bonus/status first
+    // has this character's per-slot Injury penalties (summed, since more
+    // than one Injury can target the same slot) applied via applyRankPenalty.
+    // Lock in Stats (character:lock_stats above) is unaffected by this.
+    const penaltyBySlot = new Map();
+    for (const injury of injuries) {
+      if (!injury.slot_name || !injury.penalty) continue;
+      penaltyBySlot.set(injury.slot_name, (penaltyBySlot.get(injury.slot_name) ?? 0) + injury.penalty);
+    }
+    const reverted = dice.map((die) => ({
+      die,
+      next: applyRankPenalty(
+        { size: die.locked_size, bonus: die.locked_bonus, status: die.locked_status },
+        penaltyBySlot.get(die.slot_name) ?? 0
+      ),
+    }));
+    await Promise.all(
+      reverted.map(({ die, next }) =>
+        run('UPDATE dice SET current_size = ?, bonus = ?, status = ? WHERE id = ?', [
+          next.size,
+          next.bonus,
+          next.status,
+          die.id,
+        ])
+      )
     );
-    for (const die of dice) {
+    for (const { die, next } of reverted) {
       io.emit(
         'die:updated',
-        diePayload({ ...die, current_size: die.locked_size, bonus: die.locked_bonus, status: die.locked_status })
+        diePayload({ ...die, current_size: next.size, bonus: next.bonus, status: next.status })
       );
     }
   });
@@ -1873,14 +1907,17 @@ io.on('connection', (socket) => {
     await emitRoleplay(entry.character_id);
   });
 
-  on('injury:add', async ({ characterId, name, effect }) => {
+  on('injury:add', async ({ characterId, name, effect, slotName, penalty }) => {
     const character = await getCharacter(characterId);
     const injuryName = String(name ?? '').trim();
     if (!character || !injuryName) return;
-    await run('INSERT INTO injuries (character_id, name, effect) VALUES (?, ?, ?)', [
+    const slot = VALID_INJURY_SLOTS.has(slotName) ? slotName : null;
+    await run('INSERT INTO injuries (character_id, name, effect, slot_name, penalty) VALUES (?, ?, ?, ?, ?)', [
       character.id,
       injuryName,
       String(effect ?? '').trim(),
+      slot,
+      slot ? clampInjuryPenalty(penalty) : 0,
     ]);
     io.emit('injuries:updated', {
       characterId: character.id,
@@ -1888,13 +1925,16 @@ io.on('connection', (socket) => {
     });
   });
 
-  on('injury:update', async ({ injuryId, name, effect }) => {
+  on('injury:update', async ({ injuryId, name, effect, slotName, penalty }) => {
     const injury = await one('SELECT * FROM injuries WHERE id = ?', [injuryId]);
     const injuryName = String(name ?? '').trim();
     if (!injury || !injuryName) return;
-    await run('UPDATE injuries SET name = ?, effect = ? WHERE id = ?', [
+    const slot = VALID_INJURY_SLOTS.has(slotName) ? slotName : null;
+    await run('UPDATE injuries SET name = ?, effect = ?, slot_name = ?, penalty = ? WHERE id = ?', [
       injuryName,
       String(effect ?? '').trim(),
+      slot,
+      slot ? clampInjuryPenalty(penalty) : 0,
       injury.id,
     ]);
     io.emit('injuries:updated', {
@@ -2161,6 +2201,34 @@ io.on('connection', (socket) => {
       return stance.attribute_a_id === speedAttribute.id || stance.attribute_b_id === speedAttribute.id;
     };
 
+    // Computed up front (moved ahead of the Brain-roll loop below, which
+    // needs it) — see the Declaration Phase bullet in the plan for why this
+    // floor exists.
+    const nextRoundStartTic = computeNextRoundStartTic({
+      phase: state.phase,
+      currentTic: state.current_tic,
+      roundStartTic: state.round_start_tic,
+      roundLength: state.round_length,
+    });
+
+    // Initiative overflow penalty (decided, new rule): each character's own
+    // last-queued move's full footprint end, across every round declared so
+    // far this fight — same "blocked until" lookup move:declare's own
+    // placement floor uses, just batched here for every seated character at
+    // once. Feeds computeInitiativeOverflowPenalty below; null (no rows)
+    // means that character has never declared a move, always a 0 penalty.
+    const blockedUntilRows = charIds.length
+      ? await all(
+          `SELECT dm.character_id AS characterId,
+                  MAX(dm.reveal_tic + m.active_tics + m.recovery_tics) AS blockedUntilTic
+           FROM declared_moves dm JOIN moves m ON m.id = dm.move_id
+           WHERE dm.character_id IN (${marks})
+           GROUP BY dm.character_id`,
+          charIds
+        )
+      : [];
+    const blockedUntilByChar = new Map(blockedUntilRows.map((r) => [r.characterId, r.blockedUntilTic]));
+
     // Start Combat (the very first round, phase was null) restores every
     // seated character to full Stamina — a fresh fight starts fresh, even
     // if someone was topped up mid-round from an earlier encounter. Only
@@ -2225,9 +2293,21 @@ io.on('connection', (socket) => {
       const character = charById.get(p.character_id);
       if (!die || die.status !== 'active' || !character) continue;
       // Reasons to Fight applies to Initiative rolls too — "+1 to all rolls
-      // during combat" — but only affects the roll itself, never the
-      // currentBrain/lockedBrain tie-break values below (those are raw stats).
-      const result = rollDie(die.current_size) + die.bonus + (p.reasons_to_fight || 0);
+      // during combat" — on every round including the first, same as any
+      // other roll. The overflow penalty (decided, new rule) subtracts
+      // however many of this new round's own Tics are still occupied by
+      // this character's own carried-over move, if any (0 on round 1, since
+      // there's no previous round to overflow from). Neither ever affects
+      // the currentBrain/lockedBrain tie-break values below (those are raw
+      // stats) — only the roll itself. Folded into `modifier`, not baked
+      // silently into `result`, so the chat log's dice-breakdown display
+      // (raw die face + bonus/modifier = result) actually shows it instead
+      // of misattributing it to the die face.
+      const modifier = (p.reasons_to_fight || 0) - computeInitiativeOverflowPenalty({
+        blockedUntilTic: blockedUntilByChar.get(p.character_id) ?? null,
+        nextRoundStartTic,
+      });
+      const result = rollDie(die.current_size) + die.bonus + modifier;
       if (!rollsByPair.has(p.pair_index)) rollsByPair.set(p.pair_index, { left: [], right: [] });
       rollsByPair.get(p.pair_index)[p.side].push({
         characterId: character.id,
@@ -2239,7 +2319,7 @@ io.on('connection', (socket) => {
       await logRoll({
         characterId: character.id,
         characterName: character.name,
-        modifier: 0,
+        modifier,
         dice: [{ slot_name: 'Brain', size: die.current_size, bonus: die.bonus, result }],
       });
     }
@@ -2271,18 +2351,13 @@ io.on('connection', (socket) => {
     );
     await run('UPDATE combat_participants SET declared_this_round = 0');
 
-    // The new round's start Tic is floored a full round_length past the
-    // previous round's own start (see computeNextRoundStartTic) — not just
-    // set to wherever current_tic happens to sit — so a round that never
-    // actually had its Tic Countdown run (or only partially did) can't leave
-    // its declared moves' Tics "occupied" again in the new round. current_tic
-    // is advanced to match, keeping it in sync with the new round_start_tic.
-    const nextRoundStartTic = computeNextRoundStartTic({
-      phase: state.phase,
-      currentTic: state.current_tic,
-      roundStartTic: state.round_start_tic,
-      roundLength: state.round_length,
-    });
+    // nextRoundStartTic was already computed above (needed earlier, by the
+    // Brain-roll loop's overflow penalty) — floored a full round_length past
+    // the previous round's own start, not just set to wherever current_tic
+    // happens to sit, so a round that never actually had its Tic Countdown
+    // run (or only partially did) can't leave its declared moves' Tics
+    // "occupied" again in the new round. current_tic is advanced to match,
+    // keeping it in sync with the new round_start_tic.
     await run(
       `UPDATE combat_state SET phase = 'declaration', round_number = round_number + 1,
        current_tic = ?, round_start_tic = ?

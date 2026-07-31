@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { AnimatePresence, motion } from 'framer-motion';
 import { useRole } from '../roleContext.jsx';
@@ -15,9 +15,9 @@ import { buildFolderTree } from '../lib/folders.js';
 import { REWARD_LABELS, REWARD_COLORS } from '../lib/counterDisplay.js';
 import { setDraggingMove, onDraggingMoveChange } from '../lib/dragMoveState.js';
 import FrameBar from './FrameBar.jsx';
-import RollDialog from './RollDialog.jsx';
 import Thumb from './Thumb.jsx';
 import DropSlamGhost from './DropSlamGhost.jsx';
+import PopNumber from './PopNumber.jsx';
 
 const MIN_TARGET = 2;
 const MAX_TARGET = 20;
@@ -113,7 +113,8 @@ function ParticipantCard({
               : undefined
           }
         >
-          Stamina {pendingCost !== 0 ? previewStamina : character.current_stamina}/{character.max_stamina}
+          Stamina {pendingCost !== 0 ? previewStamina : <PopNumber value={character.current_stamina} />}/
+          {character.max_stamina}
         </div>
         <div className="flex items-center gap-1 text-xs text-zinc-400" title="Reasons to Fight: +1 to all rolls per point, during combat">
           <span className="shrink-0">Reasons to Fight</span>
@@ -1046,69 +1047,14 @@ export default function CombatArena() {
     };
   }, []);
 
-  // Auto-open the same Roll dialog a manual "Roll" click would, the moment
-  // a declared move actually reaches its reveal Tic — for whichever
-  // character this viewer actually controls (their own PC, or any NPC for
-  // the GM — same ownership rule as isRevealedToViewer server-side), and
-  // only when the move has a Roll at all. dm.isRevealed can't drive this: it
-  // goes true for the owner the instant they declare (see
-  // mapDeclaredMovesForViewer), long before the real reveal Tic — this
-  // instead mirrors the server's own postMoveReveals timing (phase must
-  // have reached Tic Countdown, currentTic >= revealTic) so the prompt
-  // never fires early during Declaration Phase.
-  const seenRevealedRef = useRef(new Set());
-  const autoRollInitializedRef = useRef(false);
-  const [autoRollQueue, setAutoRollQueue] = useState([]);
-
-  useEffect(() => {
-    if (!combat) return;
-    // Not scoped to combat.roundNumber (fix, QA pass): a carried-over move
-    // declared last round can have a revealTic that only arrives after this
-    // round already started (long Startup) — round-scoping this excluded
-    // exactly those moves from ever auto-opening their Roll dialog. revealTic
-    // is an absolute Tic value regardless of which round declared the move,
-    // so no round filter is needed here at all.
-    const reallyRevealedNow =
-      combat.phase === 'tic_countdown'
-        ? (combat.declaredMoves ?? []).filter((dm) => dm.revealTic <= combat.currentTic)
-        : [];
-    if (!autoRollInitializedRef.current) {
-      // First load (including a mid-fight page refresh): don't retroactively
-      // prompt for moves that already revealed before this tab was open.
-      for (const dm of reallyRevealedNow) seenRevealedRef.current.add(dm.id);
-      autoRollInitializedRef.current = true;
-      return;
-    }
-    const newlyRevealed = reallyRevealedNow.filter((dm) => !seenRevealedRef.current.has(dm.id));
-    if (!newlyRevealed.length) return;
-    for (const dm of newlyRevealed) seenRevealedRef.current.add(dm.id);
-    const isMine = (dm) => {
-      const entry = combat.characters[dm.characterId];
-      if (!entry) return false;
-      return role === 'player'
-        ? dm.characterId === characterId
-        : role === 'gm'
-          ? entry.character.character_type === 'npc'
-          : false;
-    };
-    const eligible = newlyRevealed.filter((dm) => {
-      if (!isMine(dm)) return false;
-      const move = combat.characters[dm.characterId]?.moves?.find((m) => m.id === dm.moveId);
-      return move && (move.roll_dice?.length > 0 || move.roll_choice);
-    });
-    if (eligible.length) setAutoRollQueue((prev) => [...prev, ...eligible]);
-  }, [combat, role, characterId]);
-
-  // Defensive pruning for the rare case the queued character/move can't be
-  // found by the time it's up (e.g. deleted mid-fight) — without this a
-  // stale entry would block every prompt behind it forever.
-  useEffect(() => {
-    if (!autoRollQueue.length || !combat) return;
-    const dm = autoRollQueue[0];
-    const entry = combat.characters[dm.characterId];
-    const move = entry?.moves?.find((m) => m.id === dm.moveId);
-    if (!entry || !move) setAutoRollQueue((q) => q.slice(1));
-  }, [autoRollQueue, combat]);
+  // The auto-open-Roll-on-reveal watcher used to live here, but it only ran
+  // while this component was mounted — a GM who navigated away from the
+  // Arena (e.g. to roll an NPC's dice from its own sheet, or just to check
+  // the Compendium) missed every reveal that happened while they were gone,
+  // since the watcher's "already seen" tracking reset on remount instead of
+  // ever getting a chance to queue those prompts (bugfix). It now lives in
+  // CombatHeaderBar.jsx, which stays mounted across the whole app for as
+  // long as a fight is active — see that file for the actual logic.
 
   if (!combat || !roster || !folders || !tells) {
     return <p className="text-zinc-500">Loading…</p>;
@@ -1639,27 +1585,6 @@ export default function CombatArena() {
           </aside>
         )}
       </div>
-
-      {autoRollQueue.length > 0 && (() => {
-        const dm = autoRollQueue[0];
-        const entry = characters[dm.characterId];
-        const move = entry?.moves?.find((m) => m.id === dm.moveId);
-        if (!entry || !move) return null; // pruned by the effect above on the next render
-        const sideDice = dm.appendageChoice ? (move.roll_choice?.[dm.appendageChoice] ?? []) : [];
-        const dieIds = [...(move.roll_dice ?? []), ...sideDice].map((d) => d.dieId);
-        return (
-          <RollDialog
-            title={`Roll ${move.name}${
-              dm.appendageChoice ? ` (${dm.appendageChoice === 'right' ? 'Right' : 'Left'})` : ''
-            } — ${entry.character.name}`}
-            initialModifier={move.effective_roll_modifier ?? 0}
-            onRoll={(modifier) =>
-              socket.emit('pool:roll', { characterId: dm.characterId, dieIds, modifier })
-            }
-            onClose={() => setAutoRollQueue((q) => q.slice(1))}
-          />
-        );
-      })()}
 
       <AnimatePresence>
         {dropGhosts.map((g) => (

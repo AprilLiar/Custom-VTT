@@ -8,7 +8,9 @@ import { fileToPortrait, portraitSrc, vitruvianSrc } from '../lib/image.js';
 import DieWidget from './DieWidget.jsx';
 import RollDialog from './RollDialog.jsx';
 import ItemList from './ItemList.jsx';
+import InjuryList from './InjuryList.jsx';
 import VitruvianFigure from './VitruvianFigure.jsx';
+import PopNumber from './PopNumber.jsx';
 
 // Where each of the 8 dice sits, overlaid on the Vitruvian figure as three
 // horizontal rows that mirror the original Head/Core/Legs pool grouping
@@ -111,15 +113,7 @@ function StaminaBlock({ character, staminaDie }) {
           Stamina
         </div>
         <div className="text-2xl font-bold">
-          <motion.span
-            key={character.current_stamina}
-            initial={{ scale: 1.35, color: '#fbbf24' }}
-            animate={{ scale: 1, color: '#f4f4f5' }}
-            transition={{ duration: 0.35, ease: 'easeOut' }}
-            className="inline-block"
-          >
-            {character.current_stamina}
-          </motion.span>
+          <PopNumber value={character.current_stamina} />
           <span className="text-zinc-500"> / {character.max_stamina}</span>
         </div>
       </div>
@@ -331,17 +325,13 @@ export default function CoreStatsTab({ data }) {
           }
           onRemove={(id) => socket.emit('inventory:remove', { itemId: id })}
         />
-        <ItemList
-          title="Injuries"
-          items={injuries.map((i) => ({ id: i.id, name: i.name, desc: i.effect ?? '' }))}
-          emptyText="None."
-          namePlaceholder="Injury"
-          descPlaceholder="Effect (optional)"
-          onAdd={(name, desc) =>
-            socket.emit('injury:add', { characterId: character.id, name, effect: desc })
+        <InjuryList
+          items={injuries}
+          onAdd={(name, effect, slotName, penalty) =>
+            socket.emit('injury:add', { characterId: character.id, name, effect, slotName, penalty })
           }
-          onUpdate={(id, name, desc) =>
-            socket.emit('injury:update', { injuryId: id, name, effect: desc })
+          onUpdate={(id, name, effect, slotName, penalty) =>
+            socket.emit('injury:update', { injuryId: id, name, effect, slotName, penalty })
           }
           onRemove={(id) => socket.emit('injury:remove', { injuryId: id })}
         />

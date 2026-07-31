@@ -31,6 +31,29 @@ export function rollDie(size) {
   return 1 + Math.floor(Math.random() * size);
 }
 
+// d4=0 .. d12=4, then +1 per bonus point — the same rank unit
+// client/src/lib/dice.js's own rankOf uses for the current-vs-locked tint,
+// and what an Injury's penalty (see applyRankPenalty below) is expressed in.
+export function rankOf(size, bonus) {
+  return DIE_SIZES.indexOf(size) + bonus;
+}
+
+// Injuries affecting base stats (decided): reverting a die to its locked
+// baseline (character:revert_stats) subtracts however many ranks this
+// character's active Injuries penalize that slot by, instead of restoring
+// the raw locked value untouched — see the Injuries mechanic. An
+// already-incapacitated baseline (or a zero penalty) is returned unchanged;
+// a penalty that would push the rank below d4 incapacitates the die outright
+// rather than going negative, the same floor stepping down manually past a
+// bare d4 already hits.
+export function applyRankPenalty({ size, bonus, status }, penalty) {
+  if (status === 'incapacitated' || !penalty) return { size, bonus, status };
+  const rank = rankOf(size, bonus) - penalty;
+  if (rank < 0) return { size: 4, bonus: 0, status: 'incapacitated' };
+  const index = Math.min(rank, DIE_SIZES.length - 1);
+  return { size: DIE_SIZES[index], bonus: Math.max(0, rank - (DIE_SIZES.length - 1)), status: 'active' };
+}
+
 export function computeMaxStamina(multiplier, lockedSize, lockedBonus) {
   return multiplier * (lockedSize + lockedBonus);
 }

@@ -202,9 +202,22 @@ export async function initDb() {
       id INTEGER PRIMARY KEY,
       character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
       name TEXT NOT NULL,
-      effect TEXT NOT NULL
+      effect TEXT NOT NULL,
+      -- Optional die slot this Injury penalizes (decided): NULL for a purely
+      -- descriptive Injury with no mechanical stat effect. Applied only when
+      -- the character reverts to their locked/base stats (character:revert_stats)
+      -- — see applyRankPenalty in gameLogic.js — never live, and never during
+      -- character:lock_stats itself.
+      slot_name TEXT CHECK(slot_name IN ('Skull','Brain','Left Hand','Stamina','Body','Right Hand','Left Leg','Right Leg')),
+      penalty INTEGER NOT NULL DEFAULT 0
     )
   `);
+  await ensureColumn(
+    'injuries',
+    'slot_name',
+    "TEXT CHECK(slot_name IN ('Skull','Brain','Left Hand','Stamina','Body','Right Hand','Left Leg','Right Leg'))"
+  );
+  await ensureColumn('injuries', 'penalty', 'INTEGER NOT NULL DEFAULT 0');
 
   // No FK clause on character_id: libsql enforces foreign keys, and chat
   // entries must survive character deletion (history shows "(deleted)").
