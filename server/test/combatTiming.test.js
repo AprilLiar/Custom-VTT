@@ -9,6 +9,7 @@ import {
   computeNextRoundStartTic,
   isTicIdle,
   overlapsRoundWindow,
+  computeInitiativeOverflowPenalty,
 } from '../combatTiming.js';
 
 const roll = (n) => ({ roll: n });
@@ -349,5 +350,31 @@ test('overlapsRoundWindow: touching the window\'s exclusive end boundary does no
   assert.equal(
     overlapsRoundWindow({ placementTic: 8, recoveryEndTic: 20, roundStartTic: 1, roundLength: 7 }),
     false
+  );
+});
+
+test('computeInitiativeOverflowPenalty: no declared moves ever -> no penalty', () => {
+  assert.equal(
+    computeInitiativeOverflowPenalty({ blockedUntilTic: null, nextRoundStartTic: 8 }),
+    0
+  );
+});
+
+test('computeInitiativeOverflowPenalty: last move already fully resolved before the new round -> no penalty', () => {
+  assert.equal(
+    computeInitiativeOverflowPenalty({ blockedUntilTic: 6, nextRoundStartTic: 8 }),
+    0
+  );
+  // touching the boundary exactly also floors to 0
+  assert.equal(
+    computeInitiativeOverflowPenalty({ blockedUntilTic: 8, nextRoundStartTic: 8 }),
+    0
+  );
+});
+
+test('computeInitiativeOverflowPenalty: still-carrying move penalizes by exactly how many new-round Tics it still occupies', () => {
+  assert.equal(
+    computeInitiativeOverflowPenalty({ blockedUntilTic: 11, nextRoundStartTic: 8 }),
+    3
   );
 });

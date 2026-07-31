@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { socket } from '../socket.js';
@@ -6,6 +6,7 @@ import { getCombat } from '../lib/api.js';
 import { useRole } from '../roleContext.jsx';
 import { TicCounterCentral } from './CombatArena.jsx';
 import { onDraggingMoveChange } from '../lib/dragMoveState.js';
+import RollDialog from './RollDialog.jsx';
 
 // This viewer's own current standing in the fight — "waiting for
 // declaration," "your turn," and so on (decided, Tic navigation redesign).
@@ -41,7 +42,13 @@ function viewerDeclarationStatus({ pairs, participants }, role, characterId) {
 // to drag from, so onDrop is a harmless no-op — dragging while ON the Arena
 // page (where both counters are visible at once) still shows the live
 // footprint preview via the same dragMoveState.js pub/sub the Arena uses,
-// just without a working drop.
+// just without a working drop. **Decided (bugfix):** the strip's own
+// separate, always-visible "Next Round" button (shown whenever not
+// mid-Declaration) is gone — it let the GM jump to the next round from any
+// Tic, not just the last one, unlike the embedded TicCounterCentral's own
+// Next Round button (which only ever appears once the counter reaches the
+// round's actual last Tic). Advancing rounds now only ever happens the one
+// way the Arena itself allows it, matching everywhere else in the app.
 export default function CombatHeaderBar() {
   const { role, characterId } = useRole();
   const location = useLocation();
@@ -58,7 +65,96 @@ export default function CombatHeaderBar() {
     return () => socket.off('combat:updated', onUpdated);
   }, [role, characterId]);
 
-  if (!combat || combat.phase == null) return null;
+  // Auto-open the same Roll dialog a manual "Roll" click would, the moment
+  // a declared move actually reaches its reveal Tic — for whichever
+  // character this viewer actually controls (their own PC, or any NPC for
+  // the GM — same ownership rule as isRevealedToViewer server-side), and
+  // only when the move has a Roll at all. dm.isRevealed can't drive this: it
+  // goes true for the owner the instant they declare (see
+  // mapDeclaredMovesForViewer), long before the real reveal Tic — this
+  // instead mirrors the server's own postMoveReveals timing (phase must
+  // have reached Tic Countdown, currentTic >= revealTic) so the prompt
+  // never fires early during Declaration Phase. Lives here rather than in
+  // CombatArena.jsx (bugfix, moved) — this component stays mounted on every
+  // page for as long as a fight is active, unlike the Arena, so a GM who
+  // steps away to roll an NPC's dice from its own sheet (or just browses the
+  // Compendium mid-fight) still gets prompted the instant they're owed a
+  // roll, instead of that reveal silently going unprompted forever because
+  // the watcher's "already seen" tracking used to reset on remount.
+  const seenRevealedRef = useRef(new Set());
+  const autoRollInitializedRef = useRef(false);
+  const [autoRollQueue, setAutoRollQueue] = useState([]);
+
+  useEffect(() => {
+    if (!combat) return;
+    // Not scoped to combat.roundNumber: a carried-over move declared last
+    // round can have a revealTic that only arrives after this round already
+    // started (long Startup) — round-scoping this would exclude exactly
+    // those moves from ever auto-opening their Roll dialog. revealTic is an
+    // absolute Tic value regardless of which round declared the move.
+    const reallyRevealedNow =
+      combat.phase === 'tic_countdown'
+        ? (combat.declaredMoves ?? []).filter((dm) => dm.revealTic <= combat.currentTic)
+        : [];
+    if (!autoRollInitializedRef.current) {
+      // First load (including a mid-fight page refresh): don't retroactively
+      // prompt for moves that already revealed before this tab was open.
+      for (const dm of reallyRevealedNow) seenRevealedRef.current.add(dm.id);
+      autoRollInitializedRef.current = true;
+      return;
+    }
+    const newlyRevealed = reallyRevealedNow.filter((dm) => !seenRevealedRef.current.has(dm.id));
+    if (!newlyRevealed.length) return;
+    for (const dm of newlyRevealed) seenRevealedRef.current.add(dm.id);
+    const isMine = (dm) => {
+      const entry = combat.characters[dm.characterId];
+      if (!entry) return false;
+      return role === 'player'
+        ? dm.characterId === characterId
+        : role === 'gm'
+          ? entry.character.character_type === 'npc'
+          : false;
+    };
+    const eligible = newlyRevealed.filter((dm) => {
+      if (!isMine(dm)) return false;
+      const move = combat.characters[dm.characterId]?.moves?.find((m) => m.id === dm.moveId);
+      return move && (move.roll_dice?.length > 0 || move.roll_choice);
+    });
+    if (eligible.length) setAutoRollQueue((prev) => [...prev, ...eligible]);
+  }, [combat, role, characterId]);
+
+  // Defensive pruning for the rare case the queued character/move can't be
+  // found by the time it's up (e.g. deleted mid-fight) — without this a
+  // stale entry would block every prompt behind it forever.
+  useEffect(() => {
+    if (!autoRollQueue.length || !combat) return;
+    const dm = autoRollQueue[0];
+    const entry = combat.characters[dm.characterId];
+    const move = entry?.moves?.find((m) => m.id === dm.moveId);
+    if (!entry || !move) setAutoRollQueue((q) => q.slice(1));
+  }, [autoRollQueue, combat]);
+
+  const autoRollDialog = (() => {
+    if (!autoRollQueue.length || !combat) return null;
+    const dm = autoRollQueue[0];
+    const entry = combat.characters[dm.characterId];
+    const move = entry?.moves?.find((m) => m.id === dm.moveId);
+    if (!entry || !move) return null; // pruned by the effect above on the next render
+    const sideDice = dm.appendageChoice ? (move.roll_choice?.[dm.appendageChoice] ?? []) : [];
+    const dieIds = [...(move.roll_dice ?? []), ...sideDice].map((d) => d.dieId);
+    return (
+      <RollDialog
+        title={`Roll ${move.name}${
+          dm.appendageChoice ? ` (${dm.appendageChoice === 'right' ? 'Right' : 'Left'})` : ''
+        } — ${entry.character.name}`}
+        initialModifier={move.effective_roll_modifier ?? 0}
+        onRoll={(modifier) => socket.emit('pool:roll', { characterId: dm.characterId, dieIds, modifier })}
+        onClose={() => setAutoRollQueue((q) => q.slice(1))}
+      />
+    );
+  })();
+
+  if (!combat || combat.phase == null) return autoRollDialog;
 
   const { phase, roundNumber, currentTic, roundStartTic, roundLength } = combat;
   const onArena = location.pathname === '/combat';
@@ -148,14 +244,6 @@ export default function CombatHeaderBar() {
           Start Tic Countdown
         </button>
       )}
-      {role === 'gm' && phase !== 'declaration' && (
-        <button
-          onClick={() => socket.emit('combat:next_round', {})}
-          className="panel-cut-sm bg-emerald-700 px-2 py-1 text-xs font-semibold hover:bg-emerald-600"
-        >
-          Next Round
-        </button>
-      )}
       {role === 'gm' && (
         <button
           onClick={() =>
@@ -167,6 +255,7 @@ export default function CombatHeaderBar() {
           End Combat
         </button>
       )}
+      {autoRollDialog}
     </div>
   );
 }

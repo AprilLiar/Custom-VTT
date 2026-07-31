@@ -111,6 +111,22 @@ export function computeNextRoundStartTic({ phase, currentTic, roundStartTic, rou
   return Math.max(currentTic, roundStartTic + roundLength);
 }
 
+// Initiative overflow penalty (decided, new rule): a character whose own
+// last-queued move is still carrying its footprint into the new round takes
+// a penalty on that round's Brain initiative roll equal to how many of the
+// new round's own Tics are still occupied by it — the same "blocked until"
+// floor computePlacementTic already uses to gate their next declare (see
+// move:declare server-side), just expressed as a roll penalty here instead
+// of a placement floor. `blockedUntilTic` is null for a character with no
+// declared moves yet (always 0 penalty — including the very first round,
+// which by definition has no previous round to overflow from); a move that
+// already fully resolved before the new round starts also floors at 0
+// rather than going negative.
+export function computeInitiativeOverflowPenalty({ blockedUntilTic, nextRoundStartTic }) {
+  if (blockedUntilTic == null) return 0;
+  return Math.max(0, blockedUntilTic - nextRoundStartTic);
+}
+
 // The GM's display shows Tics relative to the current round (Tic 1-N) even
 // though the underlying counter never resets. A Tic past round_length is
 // overflow — it belongs to this round only in the sense that it's still
