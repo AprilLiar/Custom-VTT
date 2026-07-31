@@ -247,6 +247,18 @@ export async function initDb() {
   // already-public data. Replaces the old single-move move_reveal card
   // going forward; move_reveal rows already in a live chat log keep
   // rendering exactly as before (see ChatPanel.jsx) for history's sake.
+  // Combat Automation (Phase 9, planned — see vttprojectplan.md): a
+  // kind='roll' row optionally carries this same payload column too, when
+  // (and only when) the roll is for a declared move's own reveal-time Roll
+  // — never for a bare Dice Tray/manual Stat/Pool roll, which have no move
+  // to attack with. Documented shape (not yet populated by any handler —
+  // that's the socket-event sub-phase):
+  //   { declaredMoveId, moveId, pairIndex, side: 'left'|'right',
+  //     targetCandidateIds: number[] }
+  // targetCandidateIds is every character currently seated on the opposing
+  // side of the roller's own pair at roll time — trivially one id for a
+  // normal 1-on-1 pair, more than one under Uneven Combat, where the future
+  // Apply-damage flow will need to ask which target(s) it actually hit.
   await run(`
     CREATE TABLE IF NOT EXISTS chat_log (
       id INTEGER PRIMARY KEY,
@@ -258,7 +270,7 @@ export async function initDb() {
       content TEXT, -- free-text message content; kind='message' only
       image_data TEXT, -- base64; kind='message' only. GIFs stored raw/unresized to keep animation
       image_mime_type TEXT,
-      payload TEXT, -- JSON; kind='lane_snapshot' only
+      payload TEXT, -- JSON; kind='lane_snapshot' always, kind='roll' optionally (see above)
       created_at TEXT DEFAULT CURRENT_TIMESTAMP
     )
   `);
@@ -373,6 +385,25 @@ export async function initDb() {
   // Right die only at roll time, per the player's choice (see moveLogic.js).
   await run(`
     CREATE TABLE IF NOT EXISTS move_roll_slots (
+      id INTEGER PRIMARY KEY,
+      move_id INTEGER NOT NULL REFERENCES moves(id) ON DELETE CASCADE,
+      slot_name TEXT NOT NULL,
+      UNIQUE(move_id, slot_name)
+    )
+  `);
+
+  // Combat Automation (Phase 9, planned — see vttprojectplan.md): an
+  // additional pool of Stat slots a Defensive move rolls *only* during
+  // Block/Dodge resolution (4.2), on top of its own normal Roll (whichever
+  // of move_roll_slots/custom_roll_size that is). Same slot_name vocabulary
+  // and ambiguous-Hand/Leg handling as move_roll_slots — mirrors it exactly,
+  // just a separate table since a slot can independently be in one, the
+  // other, both, or neither. Only ever populated when the move's own
+  // is_defensive = 1 (enforced in writeMove, same pattern move_roll_slots'
+  // ambiguous-Tell requirement already uses) — not yet wired up; this table
+  // exists ahead of the socket-event/UI work that will actually populate it.
+  await run(`
+    CREATE TABLE IF NOT EXISTS move_defensive_roll_slots (
       id INTEGER PRIMARY KEY,
       move_id INTEGER NOT NULL REFERENCES moves(id) ON DELETE CASCADE,
       slot_name TEXT NOT NULL,
