@@ -7,6 +7,7 @@ import { useRole } from '../roleContext.jsx';
 import { TicCounterCentral } from './CombatArena.jsx';
 import { onDraggingMoveChange } from '../lib/dragMoveState.js';
 import RollDialog from './RollDialog.jsx';
+import MoveConflictDialog from './MoveConflictDialog.jsx';
 
 // This viewer's own current standing in the fight — "waiting for
 // declaration," "your turn," and so on (decided, Tic navigation redesign).
@@ -60,7 +61,16 @@ export default function CombatHeaderBar() {
 
   useEffect(() => {
     getCombat(role === 'gm' ? { role } : { role, characterId }).then(setCombat).catch(console.error);
-    const onUpdated = (c) => setCombat(c);
+    // combat:updated is deliberately narrower than GET /api/combat (see its
+    // own comment server-side) — it never carries characters/counters, to
+    // avoid re-sending every seated character's full sheet (portraits
+    // included) on every minor combat action. Merging onto the previous
+    // state (bugfix) instead of replacing it wholesale keeps characters/
+    // counters from the initial REST load intact; overwriting outright left
+    // combat.characters undefined the moment the first broadcast landed,
+    // crashing the auto-roll-queue effect below the next time a move
+    // revealed.
+    const onUpdated = (c) => setCombat((prev) => ({ ...prev, ...c }));
     socket.on('combat:updated', onUpdated);
     return () => socket.off('combat:updated', onUpdated);
   }, [role, characterId]);
@@ -139,6 +149,29 @@ export default function CombatHeaderBar() {
     if (!entry || !move) setAutoRollQueue((q) => q.slice(1));
   }, [autoRollQueue, combat]);
 
+  // Combat Automation (Phase 9, sub-phase 4): queues combat:move_conflict
+  // events (4.3's Forfeit/Postpone prompt) the same way autoRollQueue above
+  // queues reveal-time Roll prompts — scoped to whoever actually controls
+  // the affected character (own PC for a Player, own NPCs for the GM), so
+  // this doesn't interrupt an unrelated viewer's screen with someone else's
+  // decision to make.
+  const [conflictQueue, setConflictQueue] = useState([]);
+  useEffect(() => {
+    const onConflict = (payload) => {
+      const entry = combat?.characters?.[payload.characterId];
+      if (!entry) return;
+      const isMine =
+        role === 'player'
+          ? payload.characterId === characterId
+          : role === 'gm'
+            ? entry.character.character_type === 'npc'
+            : false;
+      if (isMine) setConflictQueue((q) => [...q, payload]);
+    };
+    socket.on('combat:move_conflict', onConflict);
+    return () => socket.off('combat:move_conflict', onConflict);
+  }, [combat, role, characterId]);
+
   const autoRollDialog = (() => {
     if (!autoRollQueue.length || !combat) return null;
     const dm = autoRollQueue[0];
@@ -169,7 +202,31 @@ export default function CombatHeaderBar() {
     );
   })();
 
-  if (!combat || combat.phase == null) return autoRollDialog;
+  // Combat Automation (Phase 9, sub-phase 4 — 4.3's Forfeit/Postpone
+  // prompt). Same "whoever actually controls this character" ownership
+  // gate as the auto-roll queue above (own PC for a Player, own NPCs for
+  // the GM — see isMine there), and the same queue-one-at-a-time pattern:
+  // combat:resolve_move_conflict's own recursive re-emit (see server-side)
+  // just appends another entry here, no special recursion handling needed
+  // client-side.
+  const conflictDialog = (() => {
+    if (!conflictQueue.length || !combat) return null;
+    const conflict = conflictQueue[0];
+    const entry = combat.characters?.[conflict.characterId];
+    if (!entry) return null; // pruned below on the next render
+    const dm = (combat.declaredMoves ?? []).find((d) => d.id === conflict.declaredMoveId);
+    return (
+      <MoveConflictDialog
+        declaredMoveId={conflict.declaredMoveId}
+        blockerDeclaredMoveId={conflict.blockerDeclaredMoveId}
+        moveName={dm?.moveName}
+        characterName={entry.character.name}
+        onResolve={() => setConflictQueue((q) => q.slice(1))}
+      />
+    );
+  })();
+
+  if (!combat || combat.phase == null) return autoRollDialog ?? conflictDialog;
 
   const { phase, roundNumber, currentTic, roundStartTic, roundLength } = combat;
   const onArena = location.pathname === '/combat';
@@ -271,6 +328,7 @@ export default function CombatHeaderBar() {
         </button>
       )}
       {autoRollDialog}
+      {conflictDialog}
     </div>
   );
 }
