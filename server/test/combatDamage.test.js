@@ -6,6 +6,7 @@ import {
   phaseAtTic,
   classifyDefenseCoverage,
   computeInterruptBonus,
+  clampRecoveryExtension,
 } from '../combatDamage.js';
 
 test('computeHitDamage: every 5 points is 1 Half-Damage step (0.5 damage)', () => {
@@ -147,4 +148,23 @@ test('computeInterruptBonus: grows by 1 per elapsed Active Tic including the cur
 
 test('computeInterruptBonus: never drops below the +1 floor', () => {
   assert.equal(computeInterruptBonus({ revealTic: 13, currentTic: 5 }), 1);
+});
+
+test('clampRecoveryExtension: a positive delta simply adds on', () => {
+  assert.equal(clampRecoveryExtension({ currentExtensionTics: 0, recoveryTics: 3, delta: 2 }), 2);
+  assert.equal(clampRecoveryExtension({ currentExtensionTics: 1, recoveryTics: 3, delta: 2 }), 3);
+});
+
+test('clampRecoveryExtension: a negative delta can shrink the window, floored at -recoveryTics', () => {
+  assert.equal(clampRecoveryExtension({ currentExtensionTics: 0, recoveryTics: 3, delta: -1 }), -1);
+  assert.equal(clampRecoveryExtension({ currentExtensionTics: 0, recoveryTics: 3, delta: -3 }), -3);
+});
+
+test('clampRecoveryExtension: never lets the Recovery window shrink past 0 length', () => {
+  assert.equal(clampRecoveryExtension({ currentExtensionTics: 0, recoveryTics: 3, delta: -10 }), -3);
+  assert.equal(clampRecoveryExtension({ currentExtensionTics: -2, recoveryTics: 3, delta: -5 }), -3);
+});
+
+test('clampRecoveryExtension: stacks on top of an existing extension (e.g. a prior Block-too-late)', () => {
+  assert.equal(clampRecoveryExtension({ currentExtensionTics: 4, recoveryTics: 2, delta: -1 }), 3);
 });

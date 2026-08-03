@@ -24,10 +24,14 @@ import { portraitSrc, vitruvianSrc } from '../lib/image.js';
 // several Stats across multiple clicks); only closing it is the explicit ✕
 // or a click outside, same as every other dialog in this app (nothing here
 // is "pending" that a close would discard — every click already landed for
-// real).
+// real). `attackerDeclaredMoveId` (sub-phase 5, optional): the roll's own
+// declaredMoveId — threaded through to combat:apply_damage so it can fire
+// the attacking move's own 'hit' trigger automations exactly once; omitted
+// entirely for ad-hoc/manual GM damage with no attacking move behind it.
 export default function DamageApplicationDialog({
   targetCandidateIds,
   initialHalfDamageSteps,
+  attackerDeclaredMoveId,
   characters,
   onClose,
 }) {
@@ -57,7 +61,7 @@ export default function DamageApplicationDialog({
 
   const apply = (die) => {
     if (!steps) return;
-    socket.emit('combat:apply_damage', { dieId: die.id, halfDamageSteps: steps });
+    socket.emit('combat:apply_damage', { dieId: die.id, halfDamageSteps: steps, attackerDeclaredMoveId });
   };
 
   const undo = () => socket.emit('combat:undo_damage');
