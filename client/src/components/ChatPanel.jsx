@@ -9,6 +9,18 @@ import Thumb from './Thumb.jsx';
 import FrameBar from './FrameBar.jsx';
 import MoveCard from './MoveCard.jsx';
 import DiceIcon from './DiceIcon.jsx';
+import DamageApplicationDialog from './DamageApplicationDialog.jsx';
+import ResolveDefenseDialog from './ResolveDefenseDialog.jsx';
+
+// Combat Automation (Phase 9, sub-phase 4 — 4.1's damage formula):
+// halfDamageSteps = floor(result / 5), damage = halfDamageSteps * 0.5.
+// Duplicated client-side rather than importing server/combatDamage.js (a
+// server-only module) — same precedent as snapshotPhaseColorAt below
+// already duplicating phaseAtTic's own logic for the same reason.
+function computeHitDamage(result) {
+  const halfDamageSteps = Math.max(0, Math.floor(result / 5));
+  return { halfDamageSteps, damage: halfDamageSteps * 0.5 };
+}
 
 const DICE_TRAY_SIZES = [4, 6, 8, 10, 12];
 
@@ -158,8 +170,10 @@ function LaneSnapshotCard({ entry, moveInfo }) {
   );
 }
 
-function Entry({ entry, character, moveInfo }) {
+function Entry({ entry, character, moveInfo, characters, defenseResolutions }) {
   const [expanded, setExpanded] = useState(false);
+  const [openDialog, setOpenDialog] = useState(null); // 'apply' | 'resolve' | null
+  const { role } = useRole();
   const time = new Date(entry.timestamp).toLocaleTimeString([], {
     hour: '2-digit',
     minute: '2-digit',
@@ -294,6 +308,77 @@ function Entry({ entry, character, moveInfo }) {
                 Total {entry.total}
               </div>
             )}
+            {entry.declaredMoveId != null && (() => {
+              // Combat Automation (Phase 9, sub-phase 4 — 4.1's damage line
+              // + Apply button, 4.2's Partial-Block/Dodge override). Only a
+              // roll carrying the reveal-time roll-context payload (see
+              // buildRollContext server-side) ever gets these — a bare Dice
+              // Tray roll or a manual Stat roll from the Moves tab never
+              // has entry.declaredMoveId set, so they render exactly as
+              // before, untouched.
+              const raw = computeHitDamage(entry.total);
+              const resolved = defenseResolutions?.get(entry.declaredMoveId);
+              // A Full Block/Dodge zeroes the damage entirely; Partial
+              // substitutes the reduced (netResult-based) figure in place
+              // of the raw roll's own damage — "the reduced damage... can
+              // still be applied... via the same Apply/Damage-Application-
+              // dialog flow" (4.2). No resolution yet, or the pick came
+              // back Failed (falls through to the plain 4.1 Hit), both
+              // just use the raw roll's own damage, unmodified.
+              const steps = resolved
+                ? resolved.outcome === 'full'
+                  ? 0
+                  : resolved.halfDamageSteps
+                : raw.halfDamageSteps;
+              const damage = steps * 0.5;
+              return (
+                <div className="mt-1.5 flex flex-wrap items-center gap-2 border-t border-zinc-800 pt-1.5">
+                  <span className="font-display text-sm text-zinc-400">
+                    Damage: <span className="font-mono font-bold text-red-400">{damage}</span>
+                  </span>
+                  {resolved && (
+                    <span className="text-xs italic text-zinc-500">
+                      ({resolved.outcome === 'full' ? 'Full' : resolved.outcome === 'partial' ? 'Partial' : 'Failed'}{' '}
+                      {resolved.defenseType === 'dodge' ? 'Dodge' : 'Block'})
+                    </span>
+                  )}
+                  <button
+                    type="button"
+                    disabled={!damage}
+                    onClick={() => setOpenDialog('apply')}
+                    className="ml-auto panel-cut-sm bg-red-800/80 px-2.5 py-1 text-xs font-semibold text-red-100 hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    Apply
+                  </button>
+                  {role === 'gm' && !resolved && (
+                    <button
+                      type="button"
+                      onClick={() => setOpenDialog('resolve')}
+                      className="panel-cut-sm border border-sky-700/50 px-2.5 py-1 text-xs font-semibold text-sky-300 hover:bg-sky-950/40"
+                    >
+                      Resolve Defense
+                    </button>
+                  )}
+                  {openDialog === 'apply' && (
+                    <DamageApplicationDialog
+                      targetCandidateIds={entry.targetCandidateIds ?? []}
+                      initialHalfDamageSteps={steps}
+                      characters={characters}
+                      onClose={() => setOpenDialog(null)}
+                    />
+                  )}
+                  {openDialog === 'resolve' && (
+                    <ResolveDefenseDialog
+                      attackerDeclaredMoveId={entry.declaredMoveId}
+                      attackerResult={entry.total}
+                      targetCandidateIds={entry.targetCandidateIds ?? []}
+                      characters={characters}
+                      onClose={() => setOpenDialog(null)}
+                    />
+                  )}
+                </div>
+              );
+            })()}
           </>
         )}
       </div>
@@ -503,6 +588,15 @@ export default function ChatPanel({ open, onClose }) {
   const [tags, setTags] = useState(null);
   const [ruleset, setRuleset] = useState(null);
   const [moveFolders, setMoveFolders] = useState(null);
+  // Combat Automation (Phase 9, sub-phase 4): combat:resolve_defense's
+  // broadcast, keyed by the attacker's own declaredMoveId so the Entry
+  // whose roll triggered it can override its damage line (Full = 0,
+  // Partial = the reduced amount) — see Entry above. Never cleared on
+  // chat:cleared: a resolution is tied to a Tic-Countdown-scoped
+  // declaredMoveId, not a chat row, and a fresh fight starts with a fresh
+  // set of declared moves anyway (new ids), so a stale entry here can never
+  // wrongly match a future roll.
+  const [defenseResolutions, setDefenseResolutions] = useState(new Map());
   const bottomRef = useRef(null);
 
   useEffect(() => {
@@ -512,17 +606,21 @@ export default function ChatPanel({ open, onClose }) {
     const onMoveReveal = (entry) => setEntries((prev) => [...prev, entry]);
     const onLaneSnapshot = (entry) => setEntries((prev) => [...prev, entry]);
     const onCleared = () => setEntries([]);
+    const onDefenseResolved = (payload) =>
+      setDefenseResolutions((prev) => new Map(prev).set(payload.attackerDeclaredMoveId, payload));
     socket.on('roll:result', onRoll);
     socket.on('chat:message', onMessage);
     socket.on('chat:move_reveal', onMoveReveal);
     socket.on('chat:lane_snapshot', onLaneSnapshot);
     socket.on('chat:cleared', onCleared);
+    socket.on('combat:defense_resolved', onDefenseResolved);
     return () => {
       socket.off('roll:result', onRoll);
       socket.off('chat:message', onMessage);
       socket.off('chat:move_reveal', onMoveReveal);
       socket.off('chat:lane_snapshot', onLaneSnapshot);
       socket.off('chat:cleared', onCleared);
+      socket.off('combat:defense_resolved', onDefenseResolved);
     };
   }, []);
 
@@ -609,6 +707,8 @@ export default function ChatPanel({ open, onClose }) {
               entry={entry}
               character={characters.get(entry.characterId)}
               moveInfo={moveInfo}
+              characters={characters}
+              defenseResolutions={defenseResolutions}
             />
           ))
         )}

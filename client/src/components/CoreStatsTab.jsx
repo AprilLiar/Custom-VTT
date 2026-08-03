@@ -1,35 +1,17 @@
 import { useEffect, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
-import { Skull, Brain, HandFist, Zap, HeartPulse, Footprints, Upload } from 'lucide-react';
+import { Upload } from 'lucide-react';
 import { useRole } from '../roleContext.jsx';
 import { socket } from '../socket.js';
 import { updateCharacter } from '../lib/api.js';
 import { fileToPortrait, portraitSrc, vitruvianSrc } from '../lib/image.js';
+import { ANATOMY } from '../lib/anatomy.js';
 import DieWidget from './DieWidget.jsx';
 import RollDialog from './RollDialog.jsx';
 import ItemList from './ItemList.jsx';
 import InjuryList from './InjuryList.jsx';
 import VitruvianFigure from './VitruvianFigure.jsx';
 import PopNumber from './PopNumber.jsx';
-
-// Where each of the 8 dice sits, overlaid on the Vitruvian figure as three
-// horizontal rows that mirror the original Head/Core/Legs pool grouping
-// (2-4-2) rather than tracing the artwork point-for-point: Skull+Brain form
-// a symmetric pair straddling the vertical midline (head row); Left Hand,
-// Stamina, Body, Right Hand share one row at the hands' height, showing
-// they're one group (core row); Left Leg+Right Leg stay a symmetric pair at
-// the spread stance (leg row). Each die carries its own low-opacity icon
-// (rendered inside the die by DieWidget) instead of a separate overlay.
-const ANATOMY = {
-  Skull: { top: '11%', left: '42%', Icon: Skull },
-  Brain: { top: '11%', left: '58%', Icon: Brain },
-  'Left Hand': { top: '32%', left: '9%', Icon: HandFist },
-  Stamina: { top: '32%', left: '36%', Icon: Zap },
-  Body: { top: '32%', left: '64%', Icon: HeartPulse },
-  'Right Hand': { top: '32%', left: '91%', Icon: HandFist },
-  'Left Leg': { top: '90%', left: '32%', Icon: Footprints },
-  'Right Leg': { top: '90%', left: '68%', Icon: Footprints },
-};
 
 function NamePortrait({ character }) {
   const fileRef = useRef(null);
