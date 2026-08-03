@@ -156,8 +156,13 @@ export default function CombatHeaderBar() {
         initialModifier={move.effective_roll_modifier ?? 0}
         onRoll={(modifier) =>
           isCustomRoll
-            ? socket.emit('dice:roll_custom', { characterId: dm.characterId, size: move.custom_roll_size, modifier })
-            : socket.emit('pool:roll', { characterId: dm.characterId, dieIds, modifier })
+            ? socket.emit('dice:roll_custom', {
+                characterId: dm.characterId,
+                size: move.custom_roll_size,
+                modifier,
+                declaredMoveId: dm.id,
+              })
+            : socket.emit('pool:roll', { characterId: dm.characterId, dieIds, modifier, declaredMoveId: dm.id })
         }
         onClose={() => setAutoRollQueue((q) => q.slice(1))}
       />

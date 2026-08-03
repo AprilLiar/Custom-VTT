@@ -697,6 +697,17 @@ export async function initDb() {
   await ensureColumn('declared_moves', 'reveal_posted', 'INTEGER NOT NULL DEFAULT 0');
   await ensureColumn('declared_moves', 'stamina_committed', 'INTEGER NOT NULL DEFAULT 0');
   await ensureColumn('declared_moves', 'appendage_choice', "TEXT CHECK(appendage_choice IN ('left','right'))");
+  // Combat Automation (Phase 9, sub-phase 3 — see vttprojectplan.md): how
+  // many extra Recovery Tics this declared move's window has been extended
+  // by. Only ever set nonzero for a successfully-Blocked defender whose
+  // Defense Frame ran out before the attacker's Active window did (4.3's
+  // "too-late" coverage — see classifyDefenseCoverage in combatDamage.js and
+  // combat:resolve_defense in index.js). Added into every place a declared
+  // move's Recovery end is computed (reveal_tic + active_tics +
+  // recovery_tics + recovery_extension_tics) so a fight that never touches
+  // Combat Automation sees no behavior change at all — this column defaults
+  // to, and stays, 0 for every other move.
+  await ensureColumn('declared_moves', 'recovery_extension_tics', 'INTEGER NOT NULL DEFAULT 0');
 
   await seedRuleset();
   await seedTells();

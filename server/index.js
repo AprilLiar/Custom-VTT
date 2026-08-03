@@ -13,6 +13,7 @@ import {
   rollDie,
   stepDie,
   applyRankPenalty,
+  applyHalfDamage,
 } from './gameLogic.js';
 import {
   clampFrame,
@@ -39,6 +40,12 @@ import {
   overlapsRoundWindow,
   computeInitiativeOverflowPenalty,
 } from './combatTiming.js';
+import {
+  computeHitDamage,
+  resolveDefenseRoll,
+  classifyDefenseCoverage,
+  computeInterruptBonus,
+} from './combatDamage.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3001;
@@ -309,6 +316,7 @@ const sqliteToIso = (ts) =>
 async function buildLaneSnapshotPayload({ pairIndex, roundNumber, roundStartTic, roundLength }) {
   const rows = await all(
     `SELECT dm.id AS declared_move_id, dm.character_id, dm.placement_tic, dm.reveal_tic,
+            dm.recovery_extension_tics,
             m.id AS move_id, m.name AS move_name, m.image_data, m.image_mime_type,
             m.active_tics, m.recovery_tics, m.defense_frame_positions, m.description, m.stamina_cost,
             ch.name AS character_name, ch.character_type,
@@ -324,7 +332,9 @@ async function buildLaneSnapshotPayload({ pairIndex, roundNumber, roundStartTic,
   const moves = [];
   for (const row of rows) {
     const activeEndTic = row.reveal_tic + row.active_tics;
-    const recoveryEndTic = activeEndTic + row.recovery_tics;
+    // + recovery_extension_tics (Combat Automation, sub-phase 3) — see
+    // fetchDeclaredMoveRows' own identical comment above.
+    const recoveryEndTic = activeEndTic + row.recovery_tics + row.recovery_extension_tics;
     if (!overlapsRoundWindow({ placementTic: row.placement_tic, recoveryEndTic, roundStartTic, roundLength })) {
       continue;
     }
@@ -398,6 +408,7 @@ async function fetchDeclaredMoveRows() {
   return all(`
     SELECT dm.id, dm.character_id, dm.round_number, dm.queue_order,
            dm.placement_tic, dm.reveal_tic, dm.stamina_committed, dm.appendage_choice,
+           dm.recovery_extension_tics,
            m.id AS move_id, m.name AS move_name, m.tell_id, m.right_tell_id,
            m.left_tell_id, m.active_tics, m.recovery_tics, m.stamina_cost,
            m.defense_frame_positions, ch.character_type
@@ -458,7 +469,10 @@ function mapDeclaredMovesForViewer(rows, currentTic, viewer, phase, roundNumber)
       placementTic: row.placement_tic,
       revealTic: row.reveal_tic,
       activeEndTic: row.reveal_tic + row.active_tics,
-      recoveryEndTic: row.reveal_tic + row.active_tics + row.recovery_tics,
+      // + recovery_extension_tics (Combat Automation, sub-phase 3): 0 for
+      // every move untouched by a Block's Recovery extension — see the
+      // column's own comment in db.js and combat:resolve_defense below.
+      recoveryEndTic: row.reveal_tic + row.active_tics + row.recovery_tics + row.recovery_extension_tics,
       // Same frame-timing precedent as activeEndTic/recoveryEndTic above:
       // fine to disclose regardless of reveal status, since it's structure
       // (when the defensive windows land), not identity. Positions are
@@ -586,8 +600,10 @@ async function applyIdleTicStaminaRegen(tic) {
   const [charRows, footprintRows, perkRows] = await Promise.all([
     all(`SELECT * FROM characters WHERE id IN (${marks})`, charIds),
     all(
+      // + dm.recovery_extension_tics (Combat Automation, sub-phase 3) — see
+      // the column's own comment in db.js.
       `SELECT dm.character_id AS characterId, dm.placement_tic AS placementTic,
-              dm.reveal_tic + m.active_tics + m.recovery_tics AS recoveryEndTic
+              dm.reveal_tic + m.active_tics + m.recovery_tics + dm.recovery_extension_tics AS recoveryEndTic
        FROM declared_moves dm JOIN moves m ON m.id = dm.move_id
        WHERE dm.character_id IN (${marks})`,
       charIds
@@ -637,13 +653,49 @@ async function applyIdleTicStaminaRegen(tic) {
   }
 }
 
-async function logRoll({ characterId, characterName, modifier, dice }) {
-  const total = dice.reduce((sum, d) => sum + d.result, 0);
-  await run('INSERT INTO chat_log (character_id, dice_rolled, modifier) VALUES (?, ?, ?)', [
-    characterId,
-    JSON.stringify(dice),
-    modifier,
+// Combat Automation (Phase 9, sub-phase 3 — see vttprojectplan.md): when a
+// roll is for a declared move's own reveal-time Roll, the caller passes
+// `declaredMoveId` back to this helper (see pool:roll/dice:roll_custom
+// below) and this resolves it into the documented chat_log.payload roll-
+// context shape — `{ declaredMoveId, moveId, pairIndex, side,
+// targetCandidateIds }` (see the payload column's own comment in db.js).
+// targetCandidateIds is every character currently seated on the opposing
+// side of the roller's own pair — trivially one id for a normal 1-on-1
+// pair, more than one under Uneven Combat. Returns null (no context — a
+// bare roll) if the declared move can't be resolved to this character or
+// they're not currently seated, rather than rejecting the roll outright;
+// the roll itself always still happens, this only ever gates whether it
+// gets an Apply button once sub-phase 4 builds one.
+async function buildRollContext(characterId, declaredMoveId) {
+  if (declaredMoveId == null) return null;
+  const [declaredMove, participant] = await Promise.all([
+    one('SELECT id, move_id FROM declared_moves WHERE id = ? AND character_id = ?', [
+      declaredMoveId,
+      characterId,
+    ]),
+    one('SELECT pair_index, side FROM combat_participants WHERE character_id = ?', [characterId]),
   ]);
+  if (!declaredMove || !participant) return null;
+  const opponentSide = participant.side === 'left' ? 'right' : 'left';
+  const targets = await all(
+    'SELECT character_id FROM combat_participants WHERE pair_index = ? AND side = ?',
+    [participant.pair_index, opponentSide]
+  );
+  return {
+    declaredMoveId: declaredMove.id,
+    moveId: declaredMove.move_id,
+    pairIndex: participant.pair_index,
+    side: participant.side,
+    targetCandidateIds: targets.map((t) => t.character_id),
+  };
+}
+
+async function logRoll({ characterId, characterName, modifier, dice, rollContext = null }) {
+  const total = dice.reduce((sum, d) => sum + d.result, 0);
+  await run(
+    'INSERT INTO chat_log (character_id, dice_rolled, modifier, payload) VALUES (?, ?, ?, ?)',
+    [characterId, JSON.stringify(dice), modifier, rollContext ? JSON.stringify(rollContext) : null]
+  );
   // Every existing caller passes a real character.id (die:roll, pool:roll,
   // combat:next_round's Brain rolls) — GM_CHAT_SENTINEL_ID only ever shows
   // up here via dice:roll_custom's "post as GM" path. Normalizing it back to
@@ -654,6 +706,11 @@ async function logRoll({ characterId, characterName, modifier, dice }) {
   const isGmPost = characterId === GM_CHAT_SENTINEL_ID;
   io.emit('roll:result', {
     kind: 'roll',
+    // Spread directly onto the broadcast (rather than nested under its own
+    // key) so a live roll and its post-refresh GET /api/chat reload render
+    // identically — same convention kind='lane_snapshot' rows already use
+    // for their own payload (see GET /api/chat below).
+    ...(rollContext ?? {}),
     characterId: isGmPost ? null : characterId,
     characterName,
     modifier,
@@ -661,6 +718,71 @@ async function logRoll({ characterId, characterName, modifier, dice }) {
     total,
     timestamp: new Date().toISOString(),
   });
+}
+
+// Combat Automation (Phase 9, sub-phase 3): a GM-authored system notice —
+// "Block/Dodge has failed," "Partial Block — 1.5 damage," a Forfeit/
+// Interruption Stamina-refund note, and so on (see the plan's 4.1-4.4). Same
+// insertion shape chat:message already uses for a GM-posted row (posts as
+// the GM_CHAT_SENTINEL_ID persona), just triggered by combat resolution
+// instead of the compose box.
+async function postSystemMessage(text) {
+  await run(
+    `INSERT INTO chat_log (kind, character_id, dice_rolled, content) VALUES ('message', ?, '[]', ?)`,
+    [GM_CHAT_SENTINEL_ID, text]
+  );
+  io.emit('chat:message', {
+    kind: 'message',
+    characterId: null,
+    characterName: 'GM',
+    message: text,
+    imageData: null,
+    imageMimeType: null,
+    timestamp: new Date().toISOString(),
+  });
+}
+
+// Combat Automation (Phase 9, sub-phase 3): the shared clamp+update+
+// broadcast a Stamina change already uses (see stamina:adjust below) —
+// factored out so Forfeit's full refund (4.3) and Interruption's half
+// refund (4.4) can reuse it instead of duplicating the clamp/broadcast
+// logic. Returns the character's new current_stamina, or null if the
+// character doesn't exist. `delta` can be negative (a cost), though every
+// current caller only ever passes a positive refund.
+async function adjustStamina(characterId, delta) {
+  const character = await getCharacter(characterId);
+  if (!character) return null;
+  const change = Math.trunc(Number(delta) || 0);
+  if (!change) return character.current_stamina;
+  const currentStamina = clamp(character.current_stamina + change, 0, character.max_stamina);
+  await run('UPDATE characters SET current_stamina = ? WHERE id = ?', [currentStamina, character.id]);
+  io.emit('character:updated', { ...character, current_stamina: currentStamina });
+  return currentStamina;
+}
+
+// Combat Automation (Phase 9, sub-phase 3): resolves a Defensive move's own
+// Roll — move_roll_slots, optionally concatenated with move_defensive_roll_
+// slots (4.2's extra pool, "on top of its own normal Roll," never deduped
+// against the base slots even if the same slot name appears in both) — to
+// one character's actual live dice. Same AMBIGUOUS_ROLL_SLOTS resolution
+// getMovesFor already uses to build a move's roll_dice/roll_choice for the
+// client, just server-triggered here: there's no roll dialog for a
+// Successful Block/Dodge (see combat:resolve_defense below), so this reads
+// the Left/Right pick straight from the declared move's own already-stored
+// appendage_choice instead of asking again. Silently drops an
+// incapacitated/missing die, same as pool:roll.
+async function resolveDefensiveRollDice(characterId, slotNames, appendageChoice) {
+  if (!slotNames.length) return [];
+  const dice = await getDice(characterId);
+  const dieBySlot = new Map(dice.map((d) => [d.slot_name, d]));
+  const resolved = [];
+  for (const slot of slotNames) {
+    const concreteSlot =
+      slot in AMBIGUOUS_ROLL_SLOTS ? AMBIGUOUS_ROLL_SLOTS[slot][appendageChoice === 'right' ? 1 : 0] : slot;
+    const die = dieBySlot.get(concreteSlot);
+    if (die) resolved.push(die);
+  }
+  return resolved.filter((d) => d.status === 'active');
 }
 
 // ---------- REST API ----------
@@ -1027,6 +1149,13 @@ app.get('/api/chat', wrap(async (_req, res) => {
         // its own embedded `full` data) — self-contained at write time (see
         // buildLaneSnapshotPayload), so no server-side joining needed here.
         ...(row.kind === 'lane_snapshot' && row.payload ? JSON.parse(row.payload) : {}),
+        // roll rows carry the same roll-context shape (Combat Automation,
+        // sub-phase 3) whenever this roll was for a declared move's own
+        // reveal-time Roll — see buildRollContext/logRoll above and the
+        // payload column's own comment in db.js. Absent (undefined) for
+        // every other roll (Dice Tray, a manual Stat roll, initiative), same
+        // as `move` above is absent for a non-move_reveal row.
+        ...(row.kind === 'roll' && row.payload ? JSON.parse(row.payload) : {}),
         timestamp: sqliteToIso(row.created_at),
       };
     })
@@ -1045,6 +1174,17 @@ const REWARD_TYPES = ['story', 'statistic', 'perk', 'move', 'combat_prowess'];
 // collide with a real row; chat_log.character_id stays NOT NULL without a
 // schema change.
 const GM_CHAT_SENTINEL_ID = 0;
+
+// Combat Automation (Phase 9, sub-phase 3): the Damage Application dialog's
+// single-level Undo (4.1 — "reverts the single most recent change made
+// inside this dialog... one level, not a full history"). Deliberately
+// module-scoped, not per-socket: the dialog's own state already lives
+// entirely in whichever GM browser tab has it open, but the *die* it last
+// touched is shared game state, not a per-connection thing (matches every
+// other piece of combat state in this app, which is one shared DB row/table,
+// never per-socket). Lost on server restart same as everything else
+// ephemeral here — nothing durable is ever built on top of an Undo buffer.
+let lastDamageChange = null; // { dieId, current_size, bonus, status, half_damage } | null
 
 io.on('connection', (socket) => {
   const on = (event, handler) => {
@@ -1100,7 +1240,11 @@ io.on('connection', (socket) => {
   // `characterId: null` posts as the generic GM persona, same convention as
   // chat:message — reasons-to-fight only applies when a real character is
   // attributed, since a GM-persona roll isn't any seated character's own.
-  on('dice:roll_custom', async ({ characterId, size, modifier }) => {
+  // `declaredMoveId` (Combat Automation, sub-phase 3, optional): passed only
+  // by the reveal-time auto-Roll dialog (CombatHeaderBar.jsx) for a
+  // Custom-Roll-type move's own Roll — see buildRollContext above. Never
+  // set for the Dice Tray or a GM-posted roll (asGm is always context-free).
+  on('dice:roll_custom', async ({ characterId, size, modifier, declaredMoveId }) => {
     const die = Number(size);
     if (!DIE_SIZES.includes(die)) return;
     const asGm = characterId == null;
@@ -1113,12 +1257,15 @@ io.on('connection', (socket) => {
       characterName: asGm ? 'GM' : character.name,
       modifier: mod,
       dice: [{ slot_name: 'Custom', size: die, bonus: 0, result }],
+      rollContext: asGm ? null : await buildRollContext(character.id, declaredMoveId),
     });
   });
 
   // Selection-based pool roll: any set of the character's dice, rolled
   // together with one shared modifier (not tied to a body section).
-  on('pool:roll', async ({ characterId, dieIds, modifier }) => {
+  // `declaredMoveId` (Combat Automation, sub-phase 3, optional) — see
+  // dice:roll_custom's identical comment just above.
+  on('pool:roll', async ({ characterId, dieIds, modifier, declaredMoveId }) => {
     const character = await getCharacter(characterId);
     if (!character || !Array.isArray(dieIds) || !dieIds.length) return;
     const ids = [...new Set(dieIds.map(Number).filter(Number.isInteger))];
@@ -1143,7 +1290,76 @@ io.on('connection', (socket) => {
         bonus: d.bonus,
         result: rollDie(d.current_size) + d.bonus + mod,
       })),
+      rollContext: await buildRollContext(character.id, declaredMoveId),
     });
+  });
+
+  // Combat Automation (Phase 9, sub-phase 3): the Damage Application
+  // dialog's Stat clicks (4.1/4.2) — applies `halfDamageSteps` half-damage
+  // steps in sequence to one target die via applyHalfDamage (gameLogic.js),
+  // exactly as 4.1 specifies ("calling applyHalfDamage that many times in
+  // sequence against that Stat's current state"). Not yet reachable from any
+  // client UI — the dialog itself (half-damage-step counter, target/
+  // Vitruvian-Man picker) is sub-phase 4's job; this is the socket-side half
+  // of that flow, ready for the dialog to call once it exists.
+  on('combat:apply_damage', async ({ dieId, halfDamageSteps }) => {
+    const die = await one('SELECT * FROM dice WHERE id = ?', [dieId]);
+    if (!die) return;
+    const steps = Math.max(0, Math.trunc(Number(halfDamageSteps) || 0));
+    if (!steps) return;
+    let next = {
+      current_size: die.current_size,
+      bonus: die.bonus,
+      status: die.status,
+      half_damage: Boolean(die.half_damage),
+    };
+    for (let i = 0; i < steps; i++) next = applyHalfDamage(next);
+
+    // Snapshot BEFORE this change, for combat:undo_damage below — overwrites
+    // whatever was previously buffered, matching the plan's single-level
+    // ("not a full history") Undo.
+    lastDamageChange = {
+      dieId: die.id,
+      current_size: die.current_size,
+      bonus: die.bonus,
+      status: die.status,
+      half_damage: die.half_damage,
+    };
+    await run('UPDATE dice SET current_size = ?, bonus = ?, status = ?, half_damage = ? WHERE id = ?', [
+      next.current_size,
+      next.bonus,
+      next.status,
+      next.half_damage ? 1 : 0,
+      die.id,
+    ]);
+    io.emit('die:updated', diePayload({ ...die, ...next, half_damage: next.half_damage ? 1 : 0 }));
+
+    // Suggested addition, 4's "Suggested additional automation points" list:
+    // a small chat audit line the moment damage is actually applied, rather
+    // than the only record of it sitting silently in the die's own state.
+    const character = await getCharacter(die.character_id);
+    if (character) {
+      await postSystemMessage(`${character.name} took ${steps * 0.5} damage to ${die.slot_name}.`);
+    }
+  });
+
+  // Undo (4.1): reverts the single most recent combat:apply_damage change,
+  // one level only — matches the Apply dialog's own "reverts the last
+  // change" (singular) behavior, not a full history. A no-op if nothing's
+  // buffered (nothing applied yet this session, or it was already undone).
+  on('combat:undo_damage', async () => {
+    const change = lastDamageChange;
+    if (!change) return;
+    lastDamageChange = null;
+    await run('UPDATE dice SET current_size = ?, bonus = ?, status = ?, half_damage = ? WHERE id = ?', [
+      change.current_size,
+      change.bonus,
+      change.status,
+      change.half_damage,
+      change.dieId,
+    ]);
+    const die = await one('SELECT * FROM dice WHERE id = ?', [change.dieId]);
+    if (die) io.emit('die:updated', diePayload(die));
   });
 
   on('die:step', async ({ dieId, direction }) => {
@@ -2274,8 +2490,10 @@ io.on('connection', (socket) => {
     // means that character has never declared a move, always a 0 penalty.
     const blockedUntilRows = charIds.length
       ? await all(
+          // + dm.recovery_extension_tics (Combat Automation, sub-phase 3) —
+          // see the column's own comment in db.js.
           `SELECT dm.character_id AS characterId,
-                  MAX(dm.reveal_tic + m.active_tics + m.recovery_tics) AS blockedUntilTic
+                  MAX(dm.reveal_tic + m.active_tics + m.recovery_tics + dm.recovery_extension_tics) AS blockedUntilTic
            FROM declared_moves dm JOIN moves m ON m.id = dm.move_id
            WHERE dm.character_id IN (${marks})
            GROUP BY dm.character_id`,
@@ -2488,7 +2706,9 @@ io.on('connection', (socket) => {
     const [pending, last] = await Promise.all([
       getPendingStaminaCost(character.id),
       one(
-        `SELECT (dm.reveal_tic + m.active_tics + m.recovery_tics) AS blocked_until_tic
+        // + dm.recovery_extension_tics (Combat Automation, sub-phase 3) —
+        // see the column's own comment in db.js.
+        `SELECT (dm.reveal_tic + m.active_tics + m.recovery_tics + dm.recovery_extension_tics) AS blocked_until_tic
          FROM declared_moves dm JOIN moves m ON m.id = dm.move_id
          WHERE dm.character_id = ?
          ORDER BY blocked_until_tic DESC LIMIT 1`,
@@ -2676,6 +2896,319 @@ io.on('connection', (socket) => {
     if (state.phase !== 'tic_countdown') return;
     const newTic = Math.max(state.round_start_tic, state.current_tic - 1);
     await run('UPDATE combat_state SET current_tic = ? WHERE id = 1', [newTic]);
+    await emitCombatUpdated();
+  });
+
+  // Combat Automation (Phase 9, sub-phase 3): the GM's 2×2 Block/Dodge ×
+  // Successful/Failed prompt (4.2), plus the frame-overlap classification
+  // that decides whether that prompt should even be trusted (4.3). Not yet
+  // reachable from any client UI — the 2×2 prompt itself is sub-phase 4 —
+  // this is the socket-side resolution math it will call.
+  // `attackerResult` is the attacker's already-rolled total (from the roll
+  // card the reveal-time auto-Roll already posted, see buildRollContext
+  // above) — this event doesn't roll for the attacker, only (when
+  // Successful) for the defender.
+  on('combat:resolve_defense', async ({
+    attackerDeclaredMoveId,
+    attackerResult,
+    defenderDeclaredMoveId,
+    defenseType,
+    outcome,
+  }) => {
+    if (!['block', 'dodge'].includes(defenseType)) return;
+    if (!['successful', 'failed'].includes(outcome)) return;
+    const result = Math.trunc(Number(attackerResult));
+    if (!Number.isFinite(result)) return;
+
+    const [attackerDM, defenderDM] = await Promise.all([
+      one(
+        `SELECT dm.id, dm.character_id, dm.reveal_tic, m.active_tics
+         FROM declared_moves dm JOIN moves m ON m.id = dm.move_id
+         WHERE dm.id = ?`,
+        [attackerDeclaredMoveId]
+      ),
+      one(
+        `SELECT dm.id, dm.character_id, dm.placement_tic, dm.reveal_tic, dm.appendage_choice,
+                dm.recovery_extension_tics AS current_extension_tics,
+                m.id AS move_id, m.active_tics, m.recovery_tics, m.defense_frame_positions,
+                m.is_defensive, m.roll_type, m.custom_roll_size, m.roll_modifier,
+                ch.name AS character_name
+         FROM declared_moves dm JOIN moves m ON m.id = dm.move_id JOIN characters ch ON ch.id = dm.character_id
+         WHERE dm.id = ?`,
+        [defenderDeclaredMoveId]
+      ),
+    ]);
+    if (!attackerDM || !defenderDM) return;
+
+    // 4.3: whether the attacker's Active window is actually covered by the
+    // defender's Defense-tagged Tic(s) at all, and if not, exactly how.
+    const defenseFramePositions = JSON.parse(defenderDM.defense_frame_positions ?? '[]');
+    const coverage = classifyDefenseCoverage({
+      attackActiveStart: attackerDM.reveal_tic,
+      attackActiveEnd: attackerDM.reveal_tic + attackerDM.active_tics,
+      defenseTics: defenseFramePositions.map((pos) => defenderDM.placement_tic + pos),
+    });
+    // The attack's very first Active Tic uncovered is automatically
+    // non-effective — treated as GM-picked Failed regardless of what was
+    // actually picked, so a stale/incorrect client can't bypass this.
+    const effectiveOutcome = coverage.coverage === 'too-early' ? 'failed' : outcome;
+    const defenseLabel = defenseType === 'block' ? 'Block' : 'Dodge';
+
+    if (effectiveOutcome === 'failed') {
+      // "the defense does nothing... resolution falls through to the plain
+      // 4.1 Hit flow exactly as if there'd been no Defense Frame at all" —
+      // the attacker's roll card (already posted) is still the Apply-button
+      // vehicle for that; nothing else to compute here.
+      await postSystemMessage(`${defenderDM.character_name}'s ${defenseLabel} has failed.`);
+      io.emit('combat:defense_resolved', {
+        attackerDeclaredMoveId,
+        defenderDeclaredMoveId,
+        defenseType,
+        outcome: 'failed',
+        coverage: coverage.coverage,
+      });
+      return;
+    }
+
+    // Successful Block/Dodge (4.2): roll the defending move's own Roll —
+    // base move_roll_slots plus, if it's is_defensive, the extra
+    // move_defensive_roll_slots pool on top — via this declared move's own
+    // stored appendage_choice (see resolveDefensiveRollDice above).
+    const [baseSlotRows, defensiveSlotRows, rollBonusRow] = await Promise.all([
+      all('SELECT slot_name FROM move_roll_slots WHERE move_id = ?', [defenderDM.move_id]),
+      defenderDM.is_defensive
+        ? all('SELECT slot_name FROM move_defensive_roll_slots WHERE move_id = ?', [defenderDM.move_id])
+        : [],
+      one(
+        'SELECT COALESCE(SUM(amount), 0) AS bonus FROM character_move_roll_bonuses WHERE character_id = ? AND move_id = ?',
+        [defenderDM.character_id, defenderDM.move_id]
+      ),
+    ]);
+    const mod =
+      defenderDM.roll_modifier + rollBonusRow.bonus + (await getReasonsToFightBonus(defenderDM.character_id));
+
+    let blockDice;
+    if (defenderDM.roll_type === 'custom' && defenderDM.custom_roll_size != null) {
+      blockDice = [
+        {
+          slot_name: 'Custom',
+          size: defenderDM.custom_roll_size,
+          bonus: 0,
+          result: rollDie(defenderDM.custom_roll_size) + mod,
+        },
+      ];
+    } else {
+      const slotNames = [...baseSlotRows, ...defensiveSlotRows].map((r) => r.slot_name);
+      const dice = await resolveDefensiveRollDice(defenderDM.character_id, slotNames, defenderDM.appendage_choice);
+      blockDice = dice.map((d) => ({
+        slot_name: d.slot_name,
+        size: d.current_size,
+        bonus: d.bonus,
+        result: rollDie(d.current_size) + d.bonus + mod,
+      }));
+    }
+    const blockResult = blockDice.reduce((sum, d) => sum + d.result, 0);
+    await logRoll({
+      characterId: defenderDM.character_id,
+      characterName: defenderDM.character_name,
+      modifier: mod,
+      dice: blockDice,
+    });
+
+    const resolution = resolveDefenseRoll({ attackerResult: result, defenderResult: blockResult });
+    await postSystemMessage(
+      resolution.outcome === 'full'
+        ? `${defenderDM.character_name} scored a Full ${defenseLabel} — no damage.`
+        : `${defenderDM.character_name} scored a Partial ${defenseLabel} — ${resolution.damage} damage.`
+    );
+
+    // 4.3: Block only — coverage running out before the attacker's Active
+    // window ends extends the blocker's own Recovery to cover the gap.
+    // Anything else this character already had declared into the newly-
+    // consumed Tics needs a Forfeit/Postpone choice (combat:move_conflict
+    // below, resolved via combat:resolve_move_conflict); a previously-free
+    // Tic is simply consumed, no event needed for that case.
+    let conflictDeclaredMoveIds = [];
+    if (defenseType === 'block' && coverage.coverage === 'too-late') {
+      const oldRecoveryEndTic =
+        defenderDM.reveal_tic + defenderDM.active_tics + defenderDM.recovery_tics + defenderDM.current_extension_tics;
+      const newRecoveryEndTic = oldRecoveryEndTic + coverage.extensionTicsNeeded;
+      await run('UPDATE declared_moves SET recovery_extension_tics = ? WHERE id = ?', [
+        defenderDM.current_extension_tics + coverage.extensionTicsNeeded,
+        defenderDM.id,
+      ]);
+      const colliding = await all(
+        'SELECT id FROM declared_moves WHERE character_id = ? AND id != ? AND placement_tic >= ? AND placement_tic < ?',
+        [defenderDM.character_id, defenderDM.id, oldRecoveryEndTic, newRecoveryEndTic]
+      );
+      conflictDeclaredMoveIds = colliding.map((r) => r.id);
+      for (const conflictId of conflictDeclaredMoveIds) {
+        io.emit('combat:move_conflict', {
+          declaredMoveId: conflictId,
+          characterId: defenderDM.character_id,
+          blockerDeclaredMoveId: defenderDM.id,
+        });
+      }
+      // The extended Recovery window is real combat state (declared_moves
+      // itself, not something new) — the existing Tic Counter/footprint
+      // rendering already reads recoveryEndTic straight off it, so this
+      // alone is enough for the extension to show up live, no new UI needed.
+      await emitCombatUpdated();
+    }
+
+    io.emit('combat:defense_resolved', {
+      attackerDeclaredMoveId,
+      defenderDeclaredMoveId,
+      defenseType,
+      outcome: resolution.outcome,
+      netResult: resolution.netResult,
+      halfDamageSteps: resolution.halfDamageSteps,
+      damage: resolution.damage,
+      coverage: coverage.coverage,
+      conflictDeclaredMoveIds,
+    });
+  });
+
+  // Combat Automation (Phase 9, sub-phase 3): Forfeit or Postpone (4.3) for
+  // a declared move that a Block's Recovery extension just ran into —
+  // `blockerDeclaredMoveId` is whichever move's (possibly itself-extended)
+  // Recovery window this one is colliding with, from the combat:move_conflict
+  // event this responds to (see combat:resolve_defense above, or the
+  // recursive re-emit below).
+  on('combat:resolve_move_conflict', async ({ declaredMoveId, blockerDeclaredMoveId, choice }) => {
+    if (!['forfeit', 'postpone'].includes(choice)) return;
+    const row = await one(
+      `SELECT dm.*, m.startup_tics, m.active_tics, m.recovery_tics, m.stamina_cost
+       FROM declared_moves dm JOIN moves m ON m.id = dm.move_id
+       WHERE dm.id = ?`,
+      [declaredMoveId]
+    );
+    if (!row) return;
+
+    if (choice === 'forfeit') {
+      // Cancel outright, full Stamina refund — mirrors move:undeclare's
+      // existing cancel-before-commit behavior, but this can fire well past
+      // that point (mid Tic Countdown, after stamina_committed already left
+      // current_stamina), so unlike move:undeclare a refund is issued here
+      // explicitly rather than relying on the spend never having happened.
+      await run('DELETE FROM declared_moves WHERE id = ?', [row.id]);
+      if (row.stamina_committed && row.stamina_cost) {
+        await adjustStamina(row.character_id, row.stamina_cost);
+        await postSystemMessage(`A declared move was Forfeited — ${row.stamina_cost} Stamina refunded.`);
+      }
+      await emitCombatUpdated();
+      return;
+    }
+
+    // Postpone: shift later along the Tic Counter by just enough Tics that
+    // the new footprint starts after the specific colliding move's own
+    // Recovery ends — recomputed fresh from the DB (not trusted from
+    // whenever this prompt first fired), in case anything shifted again in
+    // the meantime.
+    const blocker = await one(
+      `SELECT dm.reveal_tic, dm.recovery_extension_tics, m.active_tics, m.recovery_tics
+       FROM declared_moves dm JOIN moves m ON m.id = dm.move_id
+       WHERE dm.id = ?`,
+      [blockerDeclaredMoveId]
+    );
+    if (!blocker) return;
+    const blockerRecoveryEndTic =
+      blocker.reveal_tic + blocker.active_tics + blocker.recovery_tics + blocker.recovery_extension_tics;
+    const newPlacementTic = Math.max(row.placement_tic, blockerRecoveryEndTic);
+    const { revealTic } = computeMoveFootprint({
+      placementTic: newPlacementTic,
+      startupTics: row.startup_tics,
+      activeTics: row.active_tics,
+      recoveryTics: row.recovery_tics,
+    });
+    await run('UPDATE declared_moves SET placement_tic = ?, reveal_tic = ? WHERE id = ?', [
+      newPlacementTic,
+      revealTic,
+      row.id,
+    ]);
+    await emitCombatUpdated();
+
+    // Recursive cascade (4.3): the postponed footprint might now collide
+    // with yet another already-declared move of this SAME character further
+    // down the timeline — re-raise the same conflict prompt for each one
+    // found, with this move now standing in as the new blocker.
+    const recoveryEndTic = revealTic + row.active_tics + row.recovery_tics + row.recovery_extension_tics;
+    const stillColliding = await all(
+      'SELECT id FROM declared_moves WHERE character_id = ? AND id != ? AND placement_tic >= ? AND placement_tic < ?',
+      [row.character_id, row.id, newPlacementTic, recoveryEndTic]
+    );
+    for (const collision of stillColliding) {
+      io.emit('combat:move_conflict', {
+        declaredMoveId: collision.id,
+        characterId: row.character_id,
+        blockerDeclaredMoveId: row.id,
+      });
+    }
+  });
+
+  // Combat Automation (Phase 9, sub-phase 3): Interruption (4.4) — taking a
+  // Hit while still in your own move's Startup can Disrupt it.
+  // `dieId` is the attacker's own Stat chosen for the interrupt roll
+  // (see the plan's 4.4 "needs confirmation" note on whose Stat this is);
+  // `attackerDeclaredMoveId` is the attacker's own move (for
+  // computeInterruptBonus's Active-frame-elapsed count); `halfDamageSteps`
+  // is however many steps the hit that triggered this already dealt (4.1's
+  // Apply flow is unaffected/still runs independently of this event —
+  // "the hit's damage applies exactly as it would anyway"); `startupDeclaredMoveId`
+  // is the move being potentially Interrupted.
+  on('combat:check_interrupt', async ({ dieId, attackerDeclaredMoveId, halfDamageSteps, startupDeclaredMoveId }) => {
+    const [die, attackerDM, startupDM, state] = await Promise.all([
+      one('SELECT * FROM dice WHERE id = ?', [dieId]),
+      one('SELECT id, reveal_tic FROM declared_moves WHERE id = ?', [attackerDeclaredMoveId]),
+      one(
+        `SELECT dm.*, m.stamina_cost, ch.name AS character_name
+         FROM declared_moves dm JOIN moves m ON m.id = dm.move_id JOIN characters ch ON ch.id = dm.character_id
+         WHERE dm.id = ?`,
+        [startupDeclaredMoveId]
+      ),
+      one('SELECT current_tic FROM combat_state WHERE id = 1'),
+    ]);
+    if (!die || die.status !== 'active' || !attackerDM || !startupDM) return;
+    const steps = Math.max(0, Math.trunc(Number(halfDamageSteps) || 0));
+
+    const bonus = computeInterruptBonus({ revealTic: attackerDM.reveal_tic, currentTic: state.current_tic });
+    const character = await getCharacter(die.character_id);
+    if (!character) return;
+    const mod = bonus + (await getReasonsToFightBonus(die.character_id));
+    const result = rollDie(die.current_size) + die.bonus + mod;
+    await logRoll({
+      characterId: character.id,
+      characterName: character.name,
+      modifier: mod,
+      dice: [{ slot_name: die.slot_name, size: die.current_size, bonus: die.bonus, result }],
+    });
+
+    // (Needs confirmation, per the plan's own 4.4 note): threshold assumed
+    // to be `roll >= damage taken` (here, half-damage steps — the same unit
+    // the flat roll is naturally compared against).
+    const succeeded = result >= steps;
+    io.emit('combat:interrupt_resolved', {
+      startupDeclaredMoveId,
+      succeeded,
+      result,
+      threshold: steps,
+    });
+    if (!succeeded) return;
+
+    // Interrupted (decided): every remaining frame reverts to Undeclared —
+    // simply deleting the row is the same end state as never having
+    // declared it, "an implementation choice, not a design one" per the
+    // plan. Half the Stamina Cost is refunded (contrast with 4.3's Forfeit,
+    // a FULL refund — Interruption is involuntary/mid-commitment, Forfeit a
+    // voluntary trade-off, hence the different fraction).
+    await run('DELETE FROM declared_moves WHERE id = ?', [startupDM.id]);
+    const refund = startupDM.stamina_committed ? Math.trunc(startupDM.stamina_cost / 2) : 0;
+    if (refund) await adjustStamina(startupDM.character_id, refund);
+    await postSystemMessage(
+      refund
+        ? `${startupDM.character_name}'s move was Interrupted — ${refund} Stamina refunded.`
+        : `${startupDM.character_name}'s move was Interrupted.`
+    );
     await emitCombatUpdated();
   });
 });
