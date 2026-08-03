@@ -59,8 +59,22 @@ export default function CombatHeaderBar() {
 
   useEffect(() => onDraggingMoveChange(setDraggingMove), []);
 
+  // Set only once the real GET /api/combat snapshot has actually landed —
+  // see the auto-roll-queue effect below for why this matters (bugfix): a
+  // combat:updated broadcast arriving before that first fetch resolves
+  // would otherwise make `combat` go non-null early from an incomplete
+  // merge onto `null` (`{...null, ...c}` is just `c`), letting the auto-roll
+  // effect run its "seed already-revealed as seen" step against that
+  // unreliable snapshot instead of the real one.
+  const initialLoadDoneRef = useRef(false);
+
   useEffect(() => {
-    getCombat(role === 'gm' ? { role } : { role, characterId }).then(setCombat).catch(console.error);
+    getCombat(role === 'gm' ? { role } : { role, characterId })
+      .then((c) => {
+        initialLoadDoneRef.current = true;
+        setCombat(c);
+      })
+      .catch(console.error);
     // combat:updated is deliberately narrower than GET /api/combat (see its
     // own comment server-side) — it never carries characters/counters, to
     // avoid re-sending every seated character's full sheet (portraits
@@ -97,6 +111,14 @@ export default function CombatHeaderBar() {
 
   useEffect(() => {
     if (!combat) return;
+    // Bugfix: wait for the real initial snapshot (see initialLoadDoneRef
+    // above) before ever seeding or checking "already seen" — a premature
+    // partial `combat` from a socket broadcast racing ahead of the REST
+    // fetch could otherwise get treated as the initial baseline, silently
+    // marking a move "already seen" the instant it revealed live, with no
+    // prompt ever shown, exactly as if this tab had missed it before
+    // opening (it hadn't).
+    if (!initialLoadDoneRef.current) return;
     // Not scoped to combat.roundNumber: a carried-over move declared last
     // round can have a revealTic that only arrives after this round already
     // started (long Startup) — round-scoping this would exclude exactly
