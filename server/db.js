@@ -708,6 +708,16 @@ export async function initDb() {
   // Combat Automation sees no behavior change at all — this column defaults
   // to, and stays, 0 for every other move.
   await ensureColumn('declared_moves', 'recovery_extension_tics', 'INTEGER NOT NULL DEFAULT 0');
+  // Combat Automation (Phase 9, sub-phase 5 — see vttprojectplan.md): set
+  // once this declared move's own attacker-side outcome (Hit or Blocked/
+  // Dodged) has fired its move_interactions automations, so a Partial
+  // Block's later damage Apply (same combat:apply_damage flow a plain Hit
+  // uses) doesn't also re-fire the move's 'hit' trigger on top of the
+  // 'block' trigger combat:resolve_defense already fired. Only ever read/
+  // written for the attacking side's own declared move — the defending
+  // side's defense_success/defense_failure firing is unrelated and unguarded
+  // (see applyMoveInteractions/combat:resolve_defense in index.js).
+  await ensureColumn('declared_moves', 'interactions_resolved', 'INTEGER NOT NULL DEFAULT 0');
 
   await seedRuleset();
   await seedTells();

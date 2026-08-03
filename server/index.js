@@ -45,6 +45,7 @@ import {
   resolveDefenseRoll,
   classifyDefenseCoverage,
   computeInterruptBonus,
+  clampRecoveryExtension,
 } from './combatDamage.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -760,6 +761,174 @@ async function adjustStamina(characterId, delta) {
   return currentStamina;
 }
 
+// Combat Automation (Phase 9, sub-phase 5): server-side labels for the chat
+// notice below — kept separate from client/src/lib/moveDisplay.js's own
+// TRIGGER_LABELS/automationLabel (same duplication precedent as
+// ChatPanel.jsx's computeHitDamage) rather than importing client code into
+// the server.
+const TRIGGER_LABELS = {
+  hit: 'On Hit',
+  block: 'On Block',
+  miss: 'On Miss',
+  defense_success: 'On Successful Defense',
+  defense_failure: 'On Failed Defense',
+};
+
+// Combat Automation (Phase 9, sub-phase 5): actually executes a move's
+// stored On Hit/Block/Miss/Successful Defense/Failed Defense automations
+// (move_interactions.automations — self_recovery/opponent_recovery/
+// self_stamina/opponent_stamina) once that trigger's outcome is decided,
+// closing the plan's long-standing open item ("these are already fully
+// modeled... but never actually fire"). `self`/`opponent` are resolved by
+// each call site below to whichever character actually owns `moveId` for
+// this firing and whoever's on the other side of it — see combat:apply_
+// damage (hit), pool:roll/dice:roll_custom (miss), and combat:resolve_
+// defense (block/defense_success/defense_failure) for exactly who plays
+// which role at each trigger. `opponentDeclaredMoveId` is optional — a
+// plain Hit/Miss has no specific declared move of the opponent's tied to
+// the exchange, so `opponent_recovery` falls back to whichever of their
+// declared moves currently ends latest (same "most relevant in-flight
+// move" query move:declare's own placement-Tic floor already uses);
+// opponent_recovery/opponent_stamina are silently skipped (with their own
+// note in the chat line) if there's no opponent at all (declaredMoveId
+// unresolvable) or, for opponent_recovery, no declared move to extend.
+async function applyMoveInteractions({
+  moveId,
+  trigger,
+  selfCharacterId,
+  selfDeclaredMoveId,
+  opponentCharacterId = null,
+  opponentDeclaredMoveId = null,
+}) {
+  const [move, row] = await Promise.all([
+    one('SELECT id, name FROM moves WHERE id = ?', [moveId]),
+    one('SELECT text, automations FROM move_interactions WHERE move_id = ? AND trigger = ?', [moveId, trigger]),
+  ]);
+  if (!move || !row) return;
+  const [selfCharacter, opponentCharacter] = await Promise.all([
+    getCharacter(selfCharacterId),
+    opponentCharacterId != null ? getCharacter(opponentCharacterId) : null,
+  ]);
+  if (!selfCharacter) return;
+
+  let automations;
+  try {
+    automations = JSON.parse(row.automations ?? '[]');
+  } catch {
+    automations = [];
+  }
+  if (!Array.isArray(automations)) automations = [];
+
+  const effects = [];
+  let recoveryChanged = false;
+
+  const extendRecovery = async (declaredMoveId, delta) => {
+    const dm = await one(
+      `SELECT dm.id, dm.recovery_extension_tics AS current_extension_tics, m.recovery_tics
+       FROM declared_moves dm JOIN moves m ON m.id = dm.move_id WHERE dm.id = ?`,
+      [declaredMoveId]
+    );
+    if (!dm) return false;
+    const nextExtension = clampRecoveryExtension({
+      currentExtensionTics: dm.current_extension_tics,
+      recoveryTics: dm.recovery_tics,
+      delta,
+    });
+    await run('UPDATE declared_moves SET recovery_extension_tics = ? WHERE id = ?', [nextExtension, dm.id]);
+    recoveryChanged = true;
+    return true;
+  };
+
+  for (const automation of automations) {
+    const amount = Math.trunc(Number(automation?.amount) || 0);
+    if (!amount) continue;
+    switch (automation?.type) {
+      case 'self_recovery': {
+        const applied = await extendRecovery(selfDeclaredMoveId, amount);
+        if (applied) effects.push(`${amount > 0 ? '+' : '−'}${Math.abs(amount)} Recovery (${selfCharacter.name})`);
+        break;
+      }
+      case 'opponent_recovery': {
+        if (!opponentCharacter) break;
+        // No declared move known for this exchange (a plain Hit/Miss) —
+        // fall back to whichever of the opponent's own declared moves
+        // currently ends latest, same lookup move:declare's own
+        // placement floor already uses.
+        const targetId =
+          opponentDeclaredMoveId ??
+          (
+            await one(
+              `SELECT dm.id
+               FROM declared_moves dm JOIN moves m ON m.id = dm.move_id
+               WHERE dm.character_id = ?
+               ORDER BY (dm.reveal_tic + m.active_tics + m.recovery_tics + dm.recovery_extension_tics) DESC LIMIT 1`,
+              [opponentCharacterId]
+            )
+          )?.id;
+        const applied = targetId != null ? await extendRecovery(targetId, amount) : false;
+        effects.push(
+          applied
+            ? `+${amount} Recovery → ${opponentCharacter.name}`
+            : `(no declared move for ${opponentCharacter.name} to extend)`
+        );
+        break;
+      }
+      case 'self_stamina':
+        await adjustStamina(selfCharacterId, -amount);
+        effects.push(`−${amount} Stamina (${selfCharacter.name})`);
+        break;
+      case 'opponent_stamina':
+        if (!opponentCharacter) break;
+        await adjustStamina(opponentCharacterId, -amount);
+        effects.push(`−${amount} Stamina → ${opponentCharacter.name}`);
+        break;
+      default:
+        break;
+    }
+  }
+
+  if (row.text || effects.length) {
+    const parts = [row.text, effects.join(', ')].filter(Boolean);
+    await postSystemMessage(`${move.name} — ${TRIGGER_LABELS[trigger] ?? trigger}: ${parts.join(' — ')}`);
+  }
+  // The extended Recovery window is real combat state (declared_moves
+  // itself) — same as 4.3's Block-too-late extension, the existing Tic
+  // Counter/footprint rendering already reads recoveryEndTic straight off
+  // it, so a fresh combat:updated is enough for it to show up live.
+  if (recoveryChanged) await emitCombatUpdated();
+}
+
+// Combat Automation (Phase 9, sub-phase 5): fires a move's 'miss' trigger
+// the moment its own reveal-time roll comes back at 0 Half-Damage steps —
+// unlike a Hit or a Block, a Miss has no GM action to hang the firing off:
+// the chat card's Apply button is disabled at 0 damage, so nothing would
+// ever call combat:apply_damage for one (see the "Suggested additional
+// automation points" bullet's own Miss definition). Shared by pool:roll/
+// dice:roll_custom, the only two callers that ever pass rollContext.
+// Opponent-directed automations only fire when there's exactly one target
+// candidate — which of several possible Uneven Combat targets a miss
+// "affects" is a genuine ambiguity not worth guessing at, so those are
+// silently skipped there (self-only automations still fire regardless).
+// Guarded by interactions_resolved same as combat:apply_damage's Hit firing
+// below, though in practice a fresh reveal-time roll's declared move was
+// never previously resolved — defensive, not load-bearing here.
+async function fireMissIfNoDamage(character, rollContext, total) {
+  if (!rollContext) return;
+  if (computeHitDamage(total).halfDamageSteps > 0) return;
+  const dm = await one('SELECT interactions_resolved FROM declared_moves WHERE id = ?', [
+    rollContext.declaredMoveId,
+  ]);
+  if (!dm || dm.interactions_resolved) return;
+  await run('UPDATE declared_moves SET interactions_resolved = 1 WHERE id = ?', [rollContext.declaredMoveId]);
+  await applyMoveInteractions({
+    moveId: rollContext.moveId,
+    trigger: 'miss',
+    selfCharacterId: character.id,
+    selfDeclaredMoveId: rollContext.declaredMoveId,
+    opponentCharacterId: rollContext.targetCandidateIds.length === 1 ? rollContext.targetCandidateIds[0] : null,
+  });
+}
+
 // Combat Automation (Phase 9, sub-phase 3): resolves a Defensive move's own
 // Roll — move_roll_slots, optionally concatenated with move_defensive_roll_
 // slots (4.2's extra pool, "on top of its own normal Roll," never deduped
@@ -1252,13 +1421,15 @@ io.on('connection', (socket) => {
     if (!asGm && !character) return;
     const mod = clampModifier(modifier) + (asGm ? 0 : await getReasonsToFightBonus(character.id));
     const result = rollDie(die) + mod;
+    const rollContext = asGm ? null : await buildRollContext(character.id, declaredMoveId);
     await logRoll({
       characterId: asGm ? GM_CHAT_SENTINEL_ID : character.id,
       characterName: asGm ? 'GM' : character.name,
       modifier: mod,
       dice: [{ slot_name: 'Custom', size: die, bonus: 0, result }],
-      rollContext: asGm ? null : await buildRollContext(character.id, declaredMoveId),
+      rollContext,
     });
+    if (!asGm) await fireMissIfNoDamage(character, rollContext, result);
   });
 
   // Selection-based pool roll: any set of the character's dice, rolled
@@ -1280,29 +1451,37 @@ io.on('connection', (socket) => {
     );
     if (!dice.length) return;
     const mod = clampModifier(modifier) + (await getReasonsToFightBonus(character.id));
+    const rolledDice = dice.map((d) => ({
+      slot_name: d.slot_name,
+      size: d.current_size,
+      bonus: d.bonus,
+      result: rollDie(d.current_size) + d.bonus + mod,
+    }));
+    const rollContext = await buildRollContext(character.id, declaredMoveId);
     await logRoll({
       characterId: character.id,
       characterName: character.name,
       modifier: mod,
-      dice: dice.map((d) => ({
-        slot_name: d.slot_name,
-        size: d.current_size,
-        bonus: d.bonus,
-        result: rollDie(d.current_size) + d.bonus + mod,
-      })),
-      rollContext: await buildRollContext(character.id, declaredMoveId),
+      dice: rolledDice,
+      rollContext,
     });
+    const total = rolledDice.reduce((sum, d) => sum + d.result, 0);
+    await fireMissIfNoDamage(character, rollContext, total);
   });
 
-  // Combat Automation (Phase 9, sub-phase 3): the Damage Application
-  // dialog's Stat clicks (4.1/4.2) — applies `halfDamageSteps` half-damage
-  // steps in sequence to one target die via applyHalfDamage (gameLogic.js),
-  // exactly as 4.1 specifies ("calling applyHalfDamage that many times in
-  // sequence against that Stat's current state"). Not yet reachable from any
-  // client UI — the dialog itself (half-damage-step counter, target/
-  // Vitruvian-Man picker) is sub-phase 4's job; this is the socket-side half
-  // of that flow, ready for the dialog to call once it exists.
-  on('combat:apply_damage', async ({ dieId, halfDamageSteps }) => {
+  // Combat Automation (Phase 9): the Damage Application dialog's Stat
+  // clicks (4.1/4.2) — applies `halfDamageSteps` half-damage steps in
+  // sequence to one target die via applyHalfDamage (gameLogic.js), exactly
+  // as 4.1 specifies ("calling applyHalfDamage that many times in sequence
+  // against that Stat's current state"). `attackerDeclaredMoveId` (sub-phase
+  // 5, optional): the chat roll card's own declaredMoveId, passed through by
+  // DamageApplicationDialog whenever this Apply is for a roll tied to a
+  // declared move (never for ad-hoc/manual GM damage). Fires that move's
+  // own 'hit' trigger automations exactly once per declared move — guarded
+  // by interactions_resolved so a Partial Block's own reduced damage (still
+  // applied through this same event, per 4.2) doesn't also fire 'hit' on
+  // top of the 'block' trigger combat:resolve_defense already fired for it.
+  on('combat:apply_damage', async ({ dieId, halfDamageSteps, attackerDeclaredMoveId }) => {
     const die = await one('SELECT * FROM dice WHERE id = ?', [dieId]);
     if (!die) return;
     const steps = Math.max(0, Math.trunc(Number(halfDamageSteps) || 0));
@@ -1340,6 +1519,23 @@ io.on('connection', (socket) => {
     const character = await getCharacter(die.character_id);
     if (character) {
       await postSystemMessage(`${character.name} took ${steps * 0.5} damage to ${die.slot_name}.`);
+    }
+
+    if (attackerDeclaredMoveId != null) {
+      const attackerDM = await one(
+        'SELECT move_id, character_id, interactions_resolved FROM declared_moves WHERE id = ?',
+        [attackerDeclaredMoveId]
+      );
+      if (attackerDM && !attackerDM.interactions_resolved) {
+        await run('UPDATE declared_moves SET interactions_resolved = 1 WHERE id = ?', [attackerDeclaredMoveId]);
+        await applyMoveInteractions({
+          moveId: attackerDM.move_id,
+          trigger: 'hit',
+          selfCharacterId: attackerDM.character_id,
+          selfDeclaredMoveId: attackerDeclaredMoveId,
+          opponentCharacterId: die.character_id,
+        });
+      }
     }
   });
 
@@ -2899,15 +3095,18 @@ io.on('connection', (socket) => {
     await emitCombatUpdated();
   });
 
-  // Combat Automation (Phase 9, sub-phase 3): the GM's 2×2 Block/Dodge ×
-  // Successful/Failed prompt (4.2), plus the frame-overlap classification
-  // that decides whether that prompt should even be trusted (4.3). Not yet
-  // reachable from any client UI — the 2×2 prompt itself is sub-phase 4 —
-  // this is the socket-side resolution math it will call.
-  // `attackerResult` is the attacker's already-rolled total (from the roll
-  // card the reveal-time auto-Roll already posted, see buildRollContext
-  // above) — this event doesn't roll for the attacker, only (when
-  // Successful) for the defender.
+  // Combat Automation (Phase 9): the GM's 2×2 Block/Dodge × Successful/
+  // Failed prompt (4.2), plus the frame-overlap classification that decides
+  // whether that prompt should even be trusted (4.3). `attackerResult` is
+  // the attacker's already-rolled total (from the roll card the reveal-time
+  // auto-Roll already posted, see buildRollContext above) — this event
+  // doesn't roll for the attacker, only (when Successful) for the defender.
+  // Sub-phase 5: also fires move_interactions automations — the attacker's
+  // own move's 'block' trigger on a Successful resolution (guarded by
+  // interactions_resolved, same reasoning as combat:apply_damage's 'hit'
+  // firing — see its own comment), and the defender's move's
+  // defense_success/defense_failure every time this resolves, unconditional
+  // (a defensive move can legitimately defend more than once).
   on('combat:resolve_defense', async ({
     attackerDeclaredMoveId,
     attackerResult,
@@ -2922,7 +3121,7 @@ io.on('connection', (socket) => {
 
     const [attackerDM, defenderDM] = await Promise.all([
       one(
-        `SELECT dm.id, dm.character_id, dm.reveal_tic, m.active_tics
+        `SELECT dm.id, dm.character_id, dm.reveal_tic, dm.move_id, dm.interactions_resolved, m.active_tics
          FROM declared_moves dm JOIN moves m ON m.id = dm.move_id
          WHERE dm.id = ?`,
         [attackerDeclaredMoveId]
@@ -2958,8 +3157,19 @@ io.on('connection', (socket) => {
       // "the defense does nothing... resolution falls through to the plain
       // 4.1 Hit flow exactly as if there'd been no Defense Frame at all" —
       // the attacker's roll card (already posted) is still the Apply-button
-      // vehicle for that; nothing else to compute here.
+      // vehicle for that (which is what fires the attacker's own 'hit'
+      // trigger, once damage is actually applied — not here). Only the
+      // defender's own move's 'defense_failure' trigger fires from this
+      // branch.
       await postSystemMessage(`${defenderDM.character_name}'s ${defenseLabel} has failed.`);
+      await applyMoveInteractions({
+        moveId: defenderDM.move_id,
+        trigger: 'defense_failure',
+        selfCharacterId: defenderDM.character_id,
+        selfDeclaredMoveId: defenderDeclaredMoveId,
+        opponentCharacterId: attackerDM.character_id,
+        opponentDeclaredMoveId: attackerDeclaredMoveId,
+      });
       io.emit('combat:defense_resolved', {
         attackerDeclaredMoveId,
         defenderDeclaredMoveId,
@@ -3021,6 +3231,33 @@ io.on('connection', (socket) => {
         ? `${defenderDM.character_name} scored a Full ${defenseLabel} — no damage.`
         : `${defenderDM.character_name} scored a Partial ${defenseLabel} — ${resolution.damage} damage.`
     );
+
+    // Sub-phase 5: the defender's own move reacts to defending successfully
+    // every time (a defensive move can defend more than once), the
+    // attacker's own move reacts to being blocked/dodged exactly once per
+    // declared move — guarded the same way combat:apply_damage's 'hit'
+    // firing is, so a later Apply of this Partial Block's own reduced
+    // damage (still routed through that same event) doesn't also fire 'hit'
+    // on top of 'block'.
+    await applyMoveInteractions({
+      moveId: defenderDM.move_id,
+      trigger: 'defense_success',
+      selfCharacterId: defenderDM.character_id,
+      selfDeclaredMoveId: defenderDeclaredMoveId,
+      opponentCharacterId: attackerDM.character_id,
+      opponentDeclaredMoveId: attackerDeclaredMoveId,
+    });
+    if (!attackerDM.interactions_resolved) {
+      await run('UPDATE declared_moves SET interactions_resolved = 1 WHERE id = ?', [attackerDeclaredMoveId]);
+      await applyMoveInteractions({
+        moveId: attackerDM.move_id,
+        trigger: 'block',
+        selfCharacterId: attackerDM.character_id,
+        selfDeclaredMoveId: attackerDeclaredMoveId,
+        opponentCharacterId: defenderDM.character_id,
+        opponentDeclaredMoveId: defenderDeclaredMoveId,
+      });
+    }
 
     // 4.3: Block only — coverage running out before the attacker's Active
     // window ends extends the blocker's own Recovery to cover the gap.

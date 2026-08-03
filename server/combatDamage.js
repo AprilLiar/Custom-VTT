@@ -83,3 +83,14 @@ export function classifyDefenseCoverage({ attackActiveStart, attackActiveEnd, de
 export function computeInterruptBonus({ revealTic, currentTic }) {
   return Math.max(1, currentTic - revealTic + 1);
 }
+
+// Sub-phase 5 — a self_recovery automation's +/- delta applied to a declared
+// move's own recovery_extension_tics, floored so the move's Recovery window
+// can never shrink past its Active window ending (extension can go negative,
+// but recoveryTics + extension can't go below 0). Mirrors the same additive
+// recovery_extension_tics column 4.3's Block-too-late handling already
+// writes to — a self_recovery automation just adds another delta on top.
+export function clampRecoveryExtension({ currentExtensionTics, recoveryTics, delta }) {
+  const next = currentExtensionTics + delta;
+  return Math.max(-recoveryTics, next);
+}

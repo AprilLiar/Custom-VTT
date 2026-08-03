@@ -363,6 +363,7 @@ function Entry({ entry, character, moveInfo, characters, defenseResolutions }) {
                     <DamageApplicationDialog
                       targetCandidateIds={entry.targetCandidateIds ?? []}
                       initialHalfDamageSteps={steps}
+                      attackerDeclaredMoveId={entry.declaredMoveId}
                       characters={characters}
                       onClose={() => setOpenDialog(null)}
                     />
