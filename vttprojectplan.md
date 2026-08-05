@@ -202,9 +202,14 @@ Full design (locked decisions, data model, the `advancePairResolution` resolutio
 
 **Status by phase** (see Implementation Phases below for the full list; each phase's own verification step is recorded there):
 - **Phase R — Rebrand: done.** Product renamed to "Dogfight: Martial Arts TTRPG" (short "Dogfight") across every user-visible surface — title, manifest, service worker cache key, README, this plan's own title, the app header logo, the Role Modal heading, the server boot log. `package.json` "name" fields and the GitHub repo name were deliberately left untouched (internal plumbing, no user-facing effect).
-- **Phase A — Schema + pure-function groundwork: done.** `moves.defense_kind` (+ migration backfilling every pre-existing Defensive move to `'block'`, + the Move Creator's Block/Dodge toggle) — see the moves table in the Data model above. The `pair_round_resolutions` and `round_events` tables exist (see the Data model above) but aren't wired into any handler yet — that's Phase D/the resolution engine. New pure, unit-tested helpers in `combatDamage.js`/`combatTiming.js` for Uneven Combat target selection, defense-move auto-selection, and the per-Tic interrupt-eligibility walk. Zero behavior change — nothing wired yet.
+- **Phase A — Schema + pure-function groundwork: done.** `moves.defense_kind` (+ migration backfilling every pre-existing Defensive move to `'block'`, + the Move Creator's Block/Dodge toggle) — see the moves table in the Data model above. The `pair_round_resolutions` and `round_events` tables exist (see the Data model above) but aren't wired into any handler yet — that's Phase C's own job. New pure, unit-tested helpers in `combatDamage.js`/`combatTiming.js` for Uneven Combat target selection, defense-move auto-selection, and the per-Tic interrupt-eligibility walk. Zero behavior change — nothing wired yet.
 - **Phase B — Per-pair state migration, automation still off: done.** Round/phase/Tic state moved off the single arena-wide `combat_state` clock onto `combat_pairs`, one independent copy per pair (see Combat Timing above and `combat_pairs` in the Data model above) — `combat_pairs` rows now persist and are upserted round to round instead of being deleted/recreated. `combat:updated`/`GET /api/combat` reshaped: per-pair state moved into a camelCase `pairs[]` array (`shapePair` in `server/index.js`); `participants[]` is unchanged (still raw snake_case DB rows) — this asymmetry is deliberate, not a bug. Every client reader (`CombatHeaderBar.jsx`, `CombatArena.jsx`) updated to select "which one pair does this widget show" per viewer (a Player's own seat's pair; the GM's selected lane, or the first pair) — a deliberately simple placeholder pending Phase E's real per-pair switcher. **Tic stepping is still manual in this phase** — the point was proving the per-pair-independent clock in isolation before also layering automation on top in Phase C. Verified via an extended `scripts/e2e.mjs` multi-pair block (two pairs' Tic Countdowns stepped independently, confirmed neither affects the other) and a live-browser Playwright pass confirming the Arena renders correctly per-pair for both GM and Player roles, including mid-cutover (one pair Declaring while another is already Resolving).
-- **Phase C — Automatic resolution engine, no pausing yet: not started.**
+- **Phase C — Automatic resolution engine, no pausing yet: done.** `server/roundResolution.js` (new module) — `advancePairResolution(pairIndex, io)` steps one pair's own `combat_pairs` row Tic by Tic through §2.2's full algorithm (reveal, auto-roll, target selection, defense-move auto-selection, Block/Hit/Interruption), persisting a `round_events` row per event and, once the round's own last Tic is processed, marking `pair_round_resolutions.status = 'complete'` and calling `startPairDeclaration` (extracted from `combat:next_round`, now callable one pair at a time) to open that pair's next round automatically. **Deliberately lives in its own module rather than `server/index.js`** (a documented deviation from this overhaul's original plan text) — `server/index.js` boots a real server unconditionally at module load (`initDb()` + `httpServer.listen()`), so anything importing it, including a test file, would start a live server; `roundResolution.js` imports only genuinely side-effect-free modules (`db.js`/`gameLogic.js`/`moveLogic.js`/`combatDamage.js`/`combatTiming.js`/`perkAutomations.js`), which is what makes `server/test/roundResolution.test.js`'s automated coverage possible at all. A small set of DB/broadcast orchestration primitives (`postSystemMessage`/`adjustStamina`/`logRoll`/`applyMoveInteractions`/`getReasonsToFightBonus`/`resolveMoveRollDice`) are intentionally-parallel duplicates of the same-named functions already in `server/index.js` (`io` taken as an explicit parameter here instead of closed over) rather than shared imports, for the same import-safety reason — kept in sync by hand if either side changes, flagged inline at both.
+  - **Still exactly per decisions #1-#8**: Block is fully automatic math, zero prompts; damage auto-targets via `selectAutoDamageTarget`/`selectUnevenCombatTarget` (decisions #5/#6); Interruption (decision #4/#7/#8) is fully automatic, walking the attacker's Active window for the target's first Startup-window Tic via `findInterruptEligibleTic`, rolling the interrupted move's own Roll (or Body if it has none) at `+computeInterruptBonus`.
+  - **This phase's own explicit scope cut, "no pausing yet":** the two moments that Phase D turns into real GM/player pauses — a full-coverage Dodge, and a Block-too-late move conflict — are instead auto-resolved with a documented placeholder decision (Dodge auto-Fails; a conflict auto-Postpones) so the engine can run a whole round end-to-end for testing before the harder pause/resume machinery exists. Every placeholder decision still posts its own `round_events` row (`dodge_prompt`/`dodge_resolved`, `move_conflict_prompt`/`move_conflict_resolved`, each carrying `placeholder: true`) so Phase D's real implementation has an identical event shape to slot into.
+  - **Not yet wired into any live socket handler** — `combat:character_done_declaring`/`combat:start_tic_countdown`/`combat:tic_forward`/`combat:tic_backward` in `server/index.js` are completely untouched; Tic stepping is still exactly as manual as Phase B left it. `server/index.js` does not yet import `roundResolution.js` at all. Real live wiring (replacing the manual Start Tic Countdown button with the automatic trigger) is Phase D's job, once real pausing exists to wire alongside it — wiring an engine that silently auto-decides every Dodge into production first would be a real behavior regression, not a step forward.
+  - **Also deliberately does not** post the existing `chat:lane_snapshot` per-reveal chat card on a Tic's reveal step, even though the manual flow's `postMoveReveals` still does — that mechanism is explicitly slated for removal in favor of a once-per-round `round_summary` card in Phase E (§1.5/§4.2), so wiring the soon-to-be-removed one into the new engine now just to tear it back out was skipped.
+  - Verified via `server/test/roundResolution.test.js` (new, 5 integration-style scenarios against a real temp DB — plain Hit, Full Block, Partial Block, a too-early auto-fail, and an Interruption — `Math.random` mocked to a constant near 1 for the whole file, since `rollDie` isn't independently seedable, turning every scenario into deterministic arithmetic driven by which Stats/die sizes/frame data each one picks) plus the full `npm test` suite (163/163) and `scripts/e2e.mjs` (278/281, the same 3 pre-existing failures as Phase B, confirming zero regression since `server/index.js` itself was untouched this phase).
 - **Phase D — Dodge + move-conflict pausing, real resumability: not started.**
 - **Phase E — `RoundCutscene.jsx` + chat replay: not started.**
 - **Phase F — Cleanup + this plan's own "Combat Timing"/"Combat Automation" sections rewritten in full (not just appended to, since enough of the described mechanic changes that another append-only bullet would misrepresent how the system actually works): not started.**
@@ -741,22 +746,27 @@ CREATE TABLE combat_pairs (
   current_tic INTEGER NOT NULL DEFAULT 0
 );
 
--- Combat Automation overhaul, Phase A groundwork (decided, new — schema
--- only so far, not yet wired into any handler; see the mechanic section
--- below for the full design). Tracks one pair's one round's automatic
--- resolution run: 'running' while stepping through Tics, 'paused_dodge'/
--- 'paused_conflict' while waiting on the one human decision that round
--- still needs (a Dodge Successful/Failed call, or a move-conflict Forfeit/
--- Postpone), 'complete' once the round has fully resolved.
--- resolved_through_tic is the crash-safe resume point (see the mechanic
--- section's "surviving a restart mid-round" note) — reprocessing a Tic
--- from here is always idempotent, so a crash between "computed" and
--- "wrote it" just cheaply redoes that one Tic on the next boot-time sweep.
--- pending_dodge_json/pending_conflict_json hold the exact prompt payload
--- while paused (non-null only in the matching status), so a
+-- Combat Automation overhaul (decided). Tracks one pair's one round's
+-- automatic resolution run: 'running' while stepping through Tics,
+-- 'paused_dodge'/'paused_conflict' while waiting on the one human decision
+-- that round still needs (a Dodge Successful/Failed call, or a
+-- move-conflict Forfeit/Postpone), 'complete' once the round has fully
+-- resolved. **Phase C (done):** `advancePairResolution` in
+-- `server/roundResolution.js` creates/updates these rows for real, but
+-- 'paused_dodge'/'paused_conflict' aren't actually reached yet — this
+-- phase auto-resolves both pause-worthy moments with a placeholder
+-- decision instead of truly pausing (see the mechanic section's Phase C
+-- status bullet), so status only ever holds 'running'/'complete' so far;
+-- pending_dodge_json/pending_conflict_json stay unused until Phase D wires
+-- the real pause. resolved_through_tic is the crash-safe resume point (see
+-- the mechanic section's "surviving a restart mid-round" note) —
+-- reprocessing a Tic from here is always idempotent, so a crash between
+-- "computed" and "wrote it" just cheaply redoes that one Tic on the next
+-- call. pending_dodge_json/pending_conflict_json will hold the exact
+-- prompt payload while paused (non-null only in the matching status), so a
 -- reconnecting/newly-connecting GM or affected player gets it "for free"
 -- off the regular combat snapshot instead of needing separate resync
--- plumbing.
+-- plumbing — Phase D's job.
 CREATE TABLE IF NOT EXISTS pair_round_resolutions (
   id INTEGER PRIMARY KEY,
   pair_index INTEGER NOT NULL,
@@ -772,14 +782,18 @@ CREATE TABLE IF NOT EXISTS pair_round_resolutions (
   UNIQUE(pair_index, round_number)
 );
 
--- Combat Automation overhaul, Phase A groundwork (decided, new — schema
--- only so far). The replayable per-pair-per-round event log: this table
--- doubles as both the live-push source (each row broadcast the instant
--- it's persisted) and the stored-replay source (a later "Watch Round X"
--- chat button reads the exact same rows) — live playback and replay are
--- guaranteed identical by construction, never two representations kept in
--- sync by hand. pair_index/round_number are denormalized off
--- pair_round_resolutions purely to avoid a join for "this pair's log."
+-- Combat Automation overhaul (decided). The replayable per-pair-per-round
+-- event log: this table doubles as both the live-push source (each row
+-- broadcast the instant it's persisted, `combat:round_event` — see Real-
+-- time events below) and the stored-replay source (a later "Watch Round X"
+-- chat button, Phase E, reads the exact same rows) — live playback and
+-- replay are guaranteed identical by construction, never two
+-- representations kept in sync by hand. pair_index/round_number are
+-- denormalized off pair_round_resolutions purely to avoid a join for "this
+-- pair's log." **Phase C (done):** populated for real by
+-- `advancePairResolution` — every `type` in the catalogue below is
+-- actually emitted except `dodge_resolved`/`move_conflict_resolved`'s real
+-- (non-placeholder) form, which needs Phase D's actual pause/resume.
 CREATE TABLE IF NOT EXISTS round_events (
   id INTEGER PRIMARY KEY,
   resolution_id INTEGER NOT NULL REFERENCES pair_round_resolutions(id) ON DELETE CASCADE,
