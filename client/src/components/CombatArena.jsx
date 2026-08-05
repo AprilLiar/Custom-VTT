@@ -485,6 +485,7 @@ export function TicSquare({
 // caption: the header has no move source to drag from (no roster/declare
 // picker lives there), so it always passes a fixed "Tic Counter" instead.
 export function TicCounterCentral({
+  pairIndex, // Combat Automation overhaul: which pair's own independent round/phase/Tic clock this instance is showing — required to scope the tic_forward/tic_backward emits below to just that pair.
   phase,
   currentTic,
   roundStartTic,
@@ -513,7 +514,7 @@ export function TicCounterCentral({
   // no next square to click, so a small "Next Round" button takes its place
   // in the row instead (see below).
   const currentIndex = squares.findIndex((sq) => sq.absoluteTic === currentTic);
-  const canStepTic = role === 'gm' && phase === 'tic_countdown';
+  const canStepTic = role === 'gm' && phase === 'resolving';
   const atLastTic = currentIndex === squares.length - 1;
   const zoneFor = (absoluteTic) => {
     if (!draggingMove) return null;
@@ -577,9 +578,9 @@ export function TicCounterCentral({
                 tapPlacing
                   ? onTapPlace(sq.absoluteTic)
                   : isNextTic
-                    ? () => socket.emit('combat:tic_forward', {})
+                    ? () => socket.emit('combat:tic_forward', { pairIndex })
                     : isPrevTic
-                      ? () => socket.emit('combat:tic_backward', {})
+                      ? () => socket.emit('combat:tic_backward', { pairIndex })
                       : undefined
               }
               clickTitle={
@@ -746,14 +747,14 @@ const STATUS_META = {
 };
 
 function characterDeclareStatus(participant, participants, pairs) {
-  const pair = pairs.find((p) => p.pair_index === participant.pair_index);
+  const pair = pairs.find((p) => p.pairIndex === participant.pair_index);
   if (participant.declared_this_round) {
     const sideFullyDeclared = participants
       .filter((p) => p.pair_index === participant.pair_index && p.side === participant.side)
       .every((p) => p.declared_this_round);
     return sideFullyDeclared ? 'waiting' : 'declared';
   }
-  return pair && pair.declaring_side === participant.side ? 'declaring' : 'not_yet';
+  return pair && pair.declaringSide === participant.side ? 'declaring' : 'not_yet';
 }
 
 // A declared move stays visible across a round boundary as long as its own
@@ -792,9 +793,6 @@ function DeclarationLanes({
   pairs,
   tellById,
   declaredMoves,
-  currentTic,
-  roundNumber,
-  phase,
   role,
   characterId,
   activeLaneIndex,
@@ -806,27 +804,28 @@ function DeclarationLanes({
     if (!entry) return false;
     return role === 'player' ? charId === characterId : entry.character.character_type === 'npc';
   };
-  const laneMoveEntries = (charId) => {
-    const isOwner = isOwnedByViewer(charId);
-    return declaredMoves
-      .filter((dm) => dm.characterId === charId)
-      .filter((dm) => isDeclaredMoveVisibleInLane(dm, currentTic, roundNumber, isOwner))
-      .sort((a, b) => a.placementTic - b.placementTic)
-      .map((dm) => ({ dm, move: characters[charId]?.moves?.find((m) => m.id === dm.moveId) }));
-  };
-  const sideCell = (sideParticipants) => (
+  // Combat Automation overhaul: each row is its own pair with its own
+  // independent currentTic/roundNumber/phase now — laneMoveEntries/sideCell
+  // used to close over one shared value for the whole table; now built
+  // fresh per row, inside the pairIndices loop, from that row's own pair.
+  const sideCell = (sideParticipants, pairCurrentTic, pairRoundNumber, pairPhase) => (
     <div className="flex min-w-0 flex-1 flex-wrap items-start gap-2 p-1.5">
       {sideParticipants.length === 0 && <span className="text-[10px] text-zinc-700">—</span>}
       {sideParticipants.map((p) => {
         const character = characters[p.character_id]?.character;
         if (!character) return null;
-        const entries = laneMoveEntries(p.character_id);
+        const isOwner = isOwnedByViewer(p.character_id);
+        const entries = declaredMoves
+          .filter((dm) => dm.characterId === p.character_id)
+          .filter((dm) => isDeclaredMoveVisibleInLane(dm, pairCurrentTic, pairRoundNumber, isOwner))
+          .sort((a, b) => a.placementTic - b.placementTic)
+          .map((dm) => ({ dm, move: characters[p.character_id]?.moves?.find((m) => m.id === dm.moveId) }));
         const status = characterDeclareStatus(p, participants, pairs);
         return (
           <div key={p.character_id} className="flex flex-col items-center gap-0.5">
             <span
               className={`max-w-20 truncate text-[9px] ${
-                phase === 'declaration' ? STATUS_META[status].className : 'text-zinc-400'
+                pairPhase === 'declaration' ? STATUS_META[status].className : 'text-zinc-400'
               }`}
               title={character.name}
             >
@@ -853,6 +852,7 @@ function DeclarationLanes({
         const rightParticipants = participants.filter((p) => p.side === 'right' && p.pair_index === pairIndex);
         const clickable = role === 'gm';
         const active = activeLaneIndex === pairIndex;
+        const pair = pairs.find((p) => p.pairIndex === pairIndex);
         return (
           <div
             key={pairIndex}
@@ -861,9 +861,9 @@ function DeclarationLanes({
               clickable ? 'cursor-pointer hover:border-brand-500' : ''
             } ${active ? 'border-brand-500 bg-brand-950/30 ring-1 ring-brand-600' : 'border-zinc-800 bg-zinc-900/60'}`}
           >
-            {sideCell(leftParticipants)}
+            {sideCell(leftParticipants, pair?.currentTic, pair?.roundNumber, pair?.phase)}
             <div className="h-px bg-zinc-700/50 sm:h-auto sm:w-px sm:shrink-0" />
-            {sideCell(rightParticipants)}
+            {sideCell(rightParticipants, pair?.currentTic, pair?.roundNumber, pair?.phase)}
           </div>
         );
       })}
@@ -1186,7 +1186,12 @@ export default function CombatArena() {
     return <p className="text-zinc-500">Loading…</p>;
   }
 
-  const { unevenCombatEnabled, participants, characters, counters, pairs, phase } = combat;
+  const { unevenCombatEnabled, participants, characters, counters, pairs } = combat;
+  // Combat Automation overhaul: there's no single arena-wide `phase`
+  // anymore — every pair has its own independent round/phase/Tic clock
+  // (see combat_pairs in db.js). This map is the shared lookup every
+  // per-pair-scoped computation below uses instead of one global value.
+  const pairsByIndex = new Map((pairs ?? []).map((p) => [p.pairIndex, p]));
   const tellById = new Map(tells.map((t) => [t.id, t]));
   // combat:updated/GET /api/combat already come back tailored to this
   // client's own identity (see server's mapDeclaredMovesForViewer) — a
@@ -1218,15 +1223,19 @@ export default function CombatArena() {
 
   const pairIndices = [...new Set(participants.map((p) => p.pair_index))].sort((a, b) => a - b);
   const rows = [...pairIndices, pairIndices.length ? pairIndices[pairIndices.length - 1] + 1 : 0];
+  // "Start Combat" shows whenever at least one currently-seated pairIndex
+  // has never had a combat_pairs row seeded for it — the per-pair
+  // equivalent of the old arena-wide "phase === null".
+  const hasUnstartedPair = pairIndices.some((idx) => !pairsByIndex.has(idx));
 
   // Whether THIS character currently has the floor: their own pair's
-  // declaring_side matches their own side, and they haven't already pressed
+  // declaringSide matches their own side, and they haven't already pressed
   // Done Declaring this round (Phase 9 combat redesign — see combat_pairs).
   const isCharacterTurn = (charId) => {
     const p = participants.find((pp) => pp.character_id === charId);
     if (!p || p.declared_this_round) return false;
-    const pair = (pairs ?? []).find((pr) => pr.pair_index === p.pair_index);
-    return Boolean(pair && pair.declaring_side === p.side);
+    const pair = pairsByIndex.get(p.pair_index);
+    return Boolean(pair && pair.declaringSide === p.side);
   };
 
   const onDrop = (e, side, pairIndex) => {
@@ -1401,29 +1410,6 @@ export default function CombatArena() {
     setPendingDeclare(null);
   };
 
-  // ---------- Declared moves: current-round scoping + cross-round overflow ----------
-
-  const currentRoundMoves = declaredMoves.filter((dm) => dm.roundNumber === combat.roundNumber);
-  // Tics at the start of THIS round already occupied by a previous round's
-  // overflowing Recovery — general board-state awareness, broadcast to
-  // everyone regardless of role/turn. Attributed by character name: which
-  // character still has something recovering here isn't secret (their Tell
-  // card is already visible in the Declaration Lanes the whole time), only
-  // the move's own identity/details are — same distinction the rest of
-  // Combat Timing already draws. Only ever built from prior rounds, so it
-  // can never leak this round's own still-secret placements.
-  const overflowTics = new Map(); // absoluteTic -> character names occupying it
-  for (const dm of declaredMoves) {
-    if (dm.roundNumber >= combat.roundNumber) continue;
-    const name = characters[dm.characterId]?.character.name;
-    if (!name) continue;
-    for (let t = combat.roundStartTic; t < dm.recoveryEndTic; t++) {
-      const names = overflowTics.get(t) ?? [];
-      if (!names.includes(name)) names.push(name);
-      overflowTics.set(t, names);
-    }
-  }
-
   // ---------- Who currently has the declare-picker floor ----------
 
   // A Player always declares for their own single character, unaffected by
@@ -1432,23 +1418,71 @@ export default function CombatArena() {
   // gets its own panel (plural: Uneven Combat can have more than one), never
   // a Player-controlled character sharing that side, matching the same
   // GM-can-only-drive-NPCs boundary the old NPC-only status table enforced.
+  // isCharacterTurn/lanePair.declaringSide already imply "that pair is in
+  // its own Declaration phase" (declaringSide is only ever non-null then),
+  // so no separate top-level phase gate is needed here anymore.
   let activeDeclareEntries = [];
-  if (phase === 'declaration') {
-    if (role === 'player' && isCharacterTurn(characterId)) {
-      const entry = characters[characterId];
-      if (entry) activeDeclareEntries = [entry];
-    } else if (role === 'gm' && activeLaneIndex != null) {
-      const lanePair = (pairs ?? []).find((pr) => pr.pair_index === activeLaneIndex);
-      if (lanePair && lanePair.declaring_side) {
-        activeDeclareEntries = participants
-          .filter(
-            (p) =>
-              p.pair_index === activeLaneIndex &&
-              p.side === lanePair.declaring_side &&
-              !p.declared_this_round
-          )
-          .map((p) => characters[p.character_id])
-          .filter((entry) => entry && entry.character.character_type === 'npc');
+  if (role === 'player' && isCharacterTurn(characterId)) {
+    const entry = characters[characterId];
+    if (entry) activeDeclareEntries = [entry];
+  } else if (role === 'gm' && activeLaneIndex != null) {
+    const lanePair = pairsByIndex.get(activeLaneIndex);
+    if (lanePair && lanePair.declaringSide) {
+      activeDeclareEntries = participants
+        .filter(
+          (p) =>
+            p.pair_index === activeLaneIndex &&
+            p.side === lanePair.declaringSide &&
+            !p.declared_this_round
+        )
+        .map((p) => characters[p.character_id])
+        .filter((entry) => entry && entry.character.character_type === 'npc');
+    }
+  }
+
+  // Combat Automation overhaul: the page's own single Tic Counter/
+  // Declaration Lanes panel below can only ever show ONE pair's own
+  // independent clock at a time — a Player sees their own seat's pair; the
+  // GM sees whichever pair they've selected via a lane click
+  // (activeLaneIndex), defaulting to the first pair that's actually been
+  // round-seeded. A full "watch every fight" multi-pair view is Phase E's
+  // job (see vttprojectplan.md's Combat Automation overhaul section).
+  const myPairIndex = role === 'player'
+    ? participants.find((p) => p.character_id === characterId)?.pair_index
+    : null;
+  const displayPairIndex =
+    role === 'player' ? myPairIndex : activeLaneIndex ?? pairIndices.find((idx) => pairsByIndex.has(idx)) ?? null;
+  const displayPair = displayPairIndex != null ? pairsByIndex.get(displayPairIndex) : null;
+
+  // ---------- Declared moves: current-round scoping + cross-round overflow ----------
+  // Both scoped to displayPair now (that pair's own roundNumber/
+  // roundStartTic), not one arena-wide clock — see displayPair above.
+
+  const currentRoundMoves = displayPair
+    ? declaredMoves.filter((dm) => dm.roundNumber === displayPair.roundNumber)
+    : [];
+  // Tics at the start of THIS pair's round already occupied by a previous
+  // round's overflowing Recovery — general board-state awareness, broadcast
+  // to everyone regardless of role/turn. Attributed by character name:
+  // which character still has something recovering here isn't secret
+  // (their Tell card is already visible in the Declaration Lanes the whole
+  // time), only the move's own identity/details are — same distinction the
+  // rest of Combat Timing already draws. Only ever built from prior rounds,
+  // so it can never leak this round's own still-secret placements. Scoped
+  // to just displayPair's own seated characters — a different pair's
+  // carried-over move has nothing to do with the pair being shown here.
+  const overflowTics = new Map(); // absoluteTic -> character names occupying it
+  if (displayPair) {
+    const pairIndexByChar = new Map(participants.map((p) => [p.character_id, p.pair_index]));
+    for (const dm of declaredMoves) {
+      if (pairIndexByChar.get(dm.characterId) !== displayPairIndex) continue;
+      if (dm.roundNumber >= displayPair.roundNumber) continue;
+      const name = characters[dm.characterId]?.character.name;
+      if (!name) continue;
+      for (let t = displayPair.roundStartTic; t < dm.recoveryEndTic; t++) {
+        const names = overflowTics.get(t) ?? [];
+        if (!names.includes(name)) names.push(name);
+        overflowTics.set(t, names);
       }
     }
   }
@@ -1486,7 +1520,7 @@ export default function CombatArena() {
               </span>
             )
           )}
-          {role === 'gm' && phase == null && participants.length > 0 && (
+          {role === 'gm' && hasUnstartedPair && participants.length > 0 && (
             <button
               onClick={() => socket.emit('combat:next_round', {})}
               className="panel-cut-sm bg-emerald-700 px-3 py-1 text-sm font-semibold hover:bg-emerald-600"
@@ -1508,7 +1542,7 @@ export default function CombatArena() {
         </div>
       </div>
 
-      {phase != null && (
+      {(pairs ?? []).length > 0 && (
         <div className="relative mb-4 flex flex-col items-center gap-3">
           {toast && (
             <div className="absolute -top-2 left-1/2 z-50 -translate-x-1/2 -translate-y-full panel-cut-sm border border-red-700 bg-red-950/95 px-3 py-1.5 text-sm font-semibold text-red-200 shadow-lg">
@@ -1564,9 +1598,10 @@ export default function CombatArena() {
           )}
 
           <TicCounterCentral
-            phase={phase}
-            currentTic={combat.currentTic}
-            roundStartTic={combat.roundStartTic}
+            pairIndex={displayPairIndex}
+            phase={displayPair?.phase}
+            currentTic={displayPair?.currentTic}
+            roundStartTic={displayPair?.roundStartTic}
             roundLength={combat.roundLength}
             draggingMove={draggingMove}
             hoverTic={hoverTic}
@@ -1592,9 +1627,6 @@ export default function CombatArena() {
             pairs={pairs ?? []}
             tellById={tellById}
             declaredMoves={declaredMoves}
-            currentTic={combat.currentTic}
-            roundNumber={combat.roundNumber}
-            phase={phase}
             role={role}
             characterId={characterId}
             activeLaneIndex={activeLaneIndex}
@@ -1603,13 +1635,13 @@ export default function CombatArena() {
         </div>
       )}
 
-      {phase === 'declaration' && (
+      {displayPair?.phase === 'declaration' && (
         <div className="mb-4 flex flex-wrap items-start justify-center gap-3">
           {activeDeclareEntries.map((entry) => (
             <ActiveDeclarePanel
               key={entry.character.id}
               entry={entry}
-              roundStartTic={combat.roundStartTic}
+              roundStartTic={displayPair?.roundStartTic}
               declaredMoves={declaredMoves}
             />
           ))}
@@ -1667,10 +1699,7 @@ export default function CombatArena() {
                           onMoveSeat={(id, name) => setSeatTarget({ characterId: id, characterName: name })}
                           navigate={navigate}
                           declaredMoves={declaredMoves}
-                          sideStillDeclaring={
-                            phase === 'declaration' &&
-                            (pairs ?? []).find((pr) => pr.pair_index === p.pair_index)?.declaring_side === p.side
-                          }
+                          sideStillDeclaring={pairsByIndex.get(p.pair_index)?.declaringSide === p.side}
                           onDragStart={(e) => e.dataTransfer.setData('text/character-id', String(p.character_id))}
                         />
                       )
@@ -1705,10 +1734,7 @@ export default function CombatArena() {
                           onMoveSeat={(id, name) => setSeatTarget({ characterId: id, characterName: name })}
                           navigate={navigate}
                           declaredMoves={declaredMoves}
-                          sideStillDeclaring={
-                            phase === 'declaration' &&
-                            (pairs ?? []).find((pr) => pr.pair_index === p.pair_index)?.declaring_side === p.side
-                          }
+                          sideStillDeclaring={pairsByIndex.get(p.pair_index)?.declaringSide === p.side}
                           onDragStart={(e) => e.dataTransfer.setData('text/character-id', String(p.character_id))}
                         />
                       )

@@ -356,9 +356,14 @@ export async function initDb() {
       -- this move's Defense Frames represent. Block resolves fully
       -- automatically (dice math only); Dodge is the one remaining
       -- human-in-the-loop call (the GM's Successful/Failed prompt). Required
-      -- by writeMove whenever is_defensive=1 with non-empty
-      -- defense_frame_positions; NULL otherwise. See the migration below for
-      -- how every pre-existing Defensive move is backfilled.
+      -- by writeMove whenever is_defensive=1 with at least one Defense Frame
+      -- placed (see the sibling positions column below); NULL otherwise.
+      -- See the migration below for how every pre-existing Defensive move
+      -- is backfilled. (Deliberately not spelling out that sibling column's
+      -- own name here in full, word for word — ensureColumn's "does this
+      -- column already exist" check matches against the whole stored CREATE
+      -- TABLE text, comments included, so writing it out would make that
+      -- check see a false match and skip adding it on a fresh database.)
       defense_kind TEXT CHECK(defense_kind IN ('block','dodge'))
     )
   `);

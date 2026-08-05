@@ -19,7 +19,7 @@ import MoveConflictDialog from './MoveConflictDialog.jsx';
 // everyone (watching Tics advance), so it keeps its own generic badge below
 // instead of a per-viewer line.
 function viewerDeclarationStatus({ pairs, participants }, role, characterId) {
-  const pairsStillDeclaring = (pairs ?? []).filter((p) => p.declaring_side != null).length;
+  const pairsStillDeclaring = (pairs ?? []).filter((p) => p.declaringSide != null).length;
   if (role === 'gm') {
     return pairsStillDeclaring === 0
       ? 'Every pair has finished declaring'
@@ -28,8 +28,8 @@ function viewerDeclarationStatus({ pairs, participants }, role, characterId) {
   const participant = (participants ?? []).find((p) => p.character_id === characterId);
   if (!participant) return 'Not seated in this fight';
   if (participant.declared_this_round) return 'Waiting on other declarations…';
-  const pair = (pairs ?? []).find((pr) => pr.pair_index === participant.pair_index);
-  return pair?.declaring_side === participant.side ? 'Your turn to declare!' : 'Waiting for declaration…';
+  const pair = (pairs ?? []).find((pr) => pr.pairIndex === participant.pair_index);
+  return pair?.declaringSide === participant.side ? 'Your turn to declare!' : 'Waiting for declaration…';
 }
 
 // Slim global strip, mounted once in App.jsx's Shell so round/phase state is
@@ -121,15 +121,24 @@ export default function CombatHeaderBar() {
     // prompt ever shown, exactly as if this tab had missed it before
     // opening (it hadn't).
     if (!initialLoadDoneRef.current) return;
-    // Not scoped to combat.roundNumber: a carried-over move declared last
-    // round can have a revealTic that only arrives after this round already
-    // started (long Startup) — round-scoping this would exclude exactly
-    // those moves from ever auto-opening their Roll dialog. revealTic is an
-    // absolute Tic value regardless of which round declared the move.
-    const reallyRevealedNow =
-      combat.phase === 'tic_countdown'
-        ? (combat.declaredMoves ?? []).filter((dm) => dm.revealTic <= combat.currentTic)
-        : [];
+    // Not scoped to a declared move's own roundNumber: a carried-over move
+    // declared last round can have a revealTic that only arrives after this
+    // round already started (long Startup) — round-scoping this would
+    // exclude exactly those moves from ever auto-opening their Roll dialog.
+    // revealTic is an absolute Tic value regardless of which round declared
+    // the move. Combat Automation overhaul: "revealed" is now a per-pair
+    // question (each pair has its own phase/currentTic) rather than one
+    // shared clock, so each declared move is checked against its OWN pair's
+    // state, not a single global one.
+    const pairsByIndexForReveal = new Map((combat.pairs ?? []).map((p) => [p.pairIndex, p]));
+    const pairIndexByCharForReveal = new Map(
+      (combat.participants ?? []).map((p) => [p.character_id, p.pair_index])
+    );
+    const reallyRevealedNow = (combat.declaredMoves ?? []).filter((dm) => {
+      const pairIdx = pairIndexByCharForReveal.get(dm.characterId);
+      const pair = pairIdx != null ? pairsByIndexForReveal.get(pairIdx) : null;
+      return pair?.phase === 'resolving' && dm.revealTic <= pair.currentTic;
+    });
     if (!autoRollInitializedRef.current) {
       // First load (including a mid-fight page refresh): don't retroactively
       // prompt for moves that already revealed before this tab was open.
@@ -250,9 +259,23 @@ export default function CombatHeaderBar() {
     );
   })();
 
-  if (!combat || combat.phase == null) return autoRollDialog ?? conflictDialog;
+  const pairs = combat?.pairs ?? [];
+  // Combat Automation overhaul: each pair now runs its own independent
+  // round/phase/Tic clock — this global strip can only ever show ONE of
+  // them at a time. A Player sees their own seat's pair; the GM (who has no
+  // personal seat) sees whichever pair happens to be seated first — a real
+  // per-pair switcher is Phase E's job (see vttprojectplan.md's Combat
+  // Automation overhaul section), this is a deliberately simple placeholder
+  // until then.
+  const myParticipant =
+    role === 'player' ? (combat?.participants ?? []).find((p) => p.character_id === characterId) : null;
+  const activePair =
+    role === 'player' ? pairs.find((p) => p.pairIndex === myParticipant?.pair_index) : pairs[0];
 
-  const { phase, roundNumber, currentTic, roundStartTic, roundLength } = combat;
+  if (!combat || !activePair) return autoRollDialog ?? conflictDialog;
+
+  const { pairIndex, phase, roundNumber, currentTic, roundStartTic } = activePair;
+  const { roundLength } = combat;
   const onArena = location.pathname === '/combat';
   // Mobile readiness (Change 002) §7.5: the global strip's own Tic Counter
   // would otherwise duplicate the Arena page's own big centerpiece one on a
@@ -261,14 +284,20 @@ export default function CombatHeaderBar() {
   // mobile page still gets the full interactive counter (it's the only Tic
   // Counter visible there), same as desktop always does everywhere.
   const showFullCounter = isDesktop || !onArena;
-  const everyoneReady =
-    phase === 'declaration' && (combat.pairs ?? []).every((p) => p.declaring_side == null);
+  // "Ready to start" is now specific to the pair being shown — Start Tic
+  // Countdown is a per-pair action now, not an arena-wide gate.
+  const everyoneReady = phase === 'declaration' && activePair.declaringSide == null;
   // Same "who still has something recovering here from last round" badge
   // math as CombatArena.jsx's own overflowTics — duplicated rather than
   // shared since it's a few lines of pure array/map building, not worth
-  // threading combat state between two independently-mounted components for.
+  // threading combat state between two independently-mounted components
+  // for. Scoped to just this pair's own seated characters (via
+  // participants[].pair_index), since a different pair's carried-over move
+  // has nothing to do with the pair actually being shown here.
+  const pairIndexByChar = new Map((combat.participants ?? []).map((p) => [p.character_id, p.pair_index]));
   const overflowTics = new Map();
   for (const dm of combat.declaredMoves ?? []) {
+    if (pairIndexByChar.get(dm.characterId) !== pairIndex) continue;
     if (dm.roundNumber >= roundNumber) continue;
     const name = combat.characters?.[dm.characterId]?.character.name;
     if (!name) continue;
@@ -303,7 +332,7 @@ export default function CombatHeaderBar() {
             {viewerDeclarationStatus(combat, role, characterId)}
           </motion.span>
         )}
-        {phase === 'tic_countdown' && (
+        {phase === 'resolving' && (
           <motion.span
             key="tic_countdown"
             initial={{ opacity: 0, scale: 0.8, filter: 'brightness(2)' }}
@@ -318,6 +347,7 @@ export default function CombatHeaderBar() {
       </AnimatePresence>
       {showFullCounter ? (
         <TicCounterCentral
+          pairIndex={pairIndex}
           phase={phase}
           currentTic={currentTic}
           roundStartTic={roundStartTic}
@@ -334,7 +364,7 @@ export default function CombatHeaderBar() {
         />
       ) : (
         <span className="font-display panel-cut-sm border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs font-bold text-zinc-300">
-          Tic {combat.relativeTic}/{roundLength}
+          Tic {activePair.relativeTic}/{roundLength}
         </span>
       )}
       {!onArena && (
@@ -347,7 +377,7 @@ export default function CombatHeaderBar() {
       )}
       {role === 'gm' && everyoneReady && (
         <button
-          onClick={() => socket.emit('combat:start_tic_countdown', {})}
+          onClick={() => socket.emit('combat:start_tic_countdown', { pairIndex })}
           className="panel-cut-sm bg-brand-600 px-2 py-1 text-xs font-semibold hover:bg-brand-500"
         >
           Start Tic Countdown

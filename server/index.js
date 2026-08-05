@@ -376,30 +376,32 @@ async function buildLaneSnapshotPayload({ pairIndex, roundNumber, roundStartTic,
   return { pairIndex, roundNumber, roundStartTic, roundLength, moves };
 }
 
-// Posts a lane_snapshot chat card the instant the Tic counter reaches a
-// declared move's reveal_tic — automatic, per the plan's Combat Timing
-// section (only the Roll itself is manual, unchanged, via the existing
-// Roll button/dialog — this never touches rolling). reveal_posted makes
-// this idempotent: only ever fires once per declared move, even if the GM
-// steps the Tic counter back and forth across the same threshold — see
-// combat:tic_forward, the only caller (tic_backward never advances current_tic,
-// so it can never newly cross a reveal_tic). `roundNumber`/`roundStartTic`/
-// `roundLength` are the round ACTIVE AT THE TIME of this reveal (from the
-// caller's own already-fetched combat_state row) — they decide the Tic
-// window each snapshot is drawn against (see buildLaneSnapshotPayload).
-async function postMoveReveals(newTic, { roundNumber, roundStartTic, roundLength }) {
+// Posts a lane_snapshot chat card the instant a pair's own Tic counter
+// reaches a declared move's reveal_tic — automatic, per the plan's Combat
+// Timing section (only the Roll itself is manual, unchanged, via the
+// existing Roll button/dialog — this never touches rolling). reveal_posted
+// makes this idempotent: only ever fires once per declared move, even if
+// the GM steps the Tic counter back and forth across the same threshold —
+// see combat:tic_forward, the only caller (tic_backward never advances
+// current_tic, so it can never newly cross a reveal_tic). Combat Automation
+// overhaul: scoped to one `pairIndex` at a time (a JOIN, not a WHERE on
+// declared_moves alone) — each pair's own Tic clock only ever reveals that
+// pair's own declared moves, never another pair's, now that they run
+// independently. `roundNumber`/`roundStartTic`/`roundLength` are the round
+// ACTIVE AT THE TIME of this reveal (from the caller's own already-fetched
+// combat_pairs row) — they decide the Tic window each snapshot is drawn
+// against (see buildLaneSnapshotPayload).
+async function postMoveReveals(pairIndex, newTic, { roundNumber, roundStartTic, roundLength }) {
   const rows = await all(
-    'SELECT dm.id, dm.character_id FROM declared_moves dm WHERE dm.reveal_posted = 0 AND dm.reveal_tic <= ?',
-    [newTic]
+    `SELECT dm.id, dm.character_id FROM declared_moves dm
+     JOIN combat_participants cp ON cp.character_id = dm.character_id
+     WHERE dm.reveal_posted = 0 AND dm.reveal_tic <= ? AND cp.pair_index = ?`,
+    [newTic, pairIndex]
   );
   for (const row of rows) {
     await run('UPDATE declared_moves SET reveal_posted = 1 WHERE id = ?', [row.id]);
-    const participant = await one('SELECT pair_index FROM combat_participants WHERE character_id = ?', [
-      row.character_id,
-    ]);
-    if (!participant) continue; // character left the arena between declaring and revealing
     const payload = await buildLaneSnapshotPayload({
-      pairIndex: participant.pair_index,
+      pairIndex,
       roundNumber,
       roundStartTic,
       roundLength,
@@ -417,7 +419,12 @@ async function postMoveReveals(newTic, { roundNumber, roundStartTic, roundLength
 // isRevealedToViewer below). Split in two: the DB round-trip happens once
 // per broadcast regardless of how many sockets are watching (fetchDeclaredMoveRows),
 // then each connected socket's own view is a cheap in-memory map
-// (mapDeclaredMovesForViewer) — see emitCombatUpdated.
+// (mapDeclaredMovesForViewer) — see emitCombatUpdated. pair_index (Combat
+// Automation overhaul) is a LEFT JOIN, not INNER: a declared move can
+// briefly outlive its owner's seat (combat:remove_participant doesn't
+// delete declared_moves), and such an orphaned row must still render for
+// its own owner rather than silently vanishing — mapDeclaredMovesForViewer
+// falls back to "never naturally reveals" for a null pair_index.
 async function fetchDeclaredMoveRows() {
   return all(`
     SELECT dm.id, dm.character_id, dm.round_number, dm.queue_order,
@@ -425,10 +432,11 @@ async function fetchDeclaredMoveRows() {
            dm.recovery_extension_tics,
            m.id AS move_id, m.name AS move_name, m.tell_id, m.right_tell_id,
            m.left_tell_id, m.active_tics, m.recovery_tics, m.stamina_cost,
-           m.defense_frame_positions, ch.character_type
+           m.defense_frame_positions, ch.character_type, cp.pair_index
     FROM declared_moves dm
     JOIN moves m ON m.id = dm.move_id
     JOIN characters ch ON ch.id = dm.character_id
+    LEFT JOIN combat_participants cp ON cp.character_id = dm.character_id
     ORDER BY dm.id
   `);
 }
@@ -458,19 +466,31 @@ function isRevealedToViewer(row, viewer) {
   return false;
 }
 
-function mapDeclaredMovesForViewer(rows, currentTic, viewer, phase, roundNumber) {
+// Combat Automation overhaul: reveal timing is now a per-pair question —
+// each row's own pair has its own independent phase/roundNumber/currentTic
+// (combat_pairs), rather than one shared combat_state clock. `pairsByIndex`
+// maps pair_index -> that pair's combat_pairs row. A row whose pair_index
+// is null (see fetchDeclaredMoveRows' LEFT JOIN comment — an orphaned
+// declared move outliving its owner's seat) or whose pair no longer exists
+// falls back to "never naturally reveals to a non-owner" rather than
+// guessing at a clock that no longer applies to it.
+function mapDeclaredMovesForViewer(rows, pairsByIndex, viewer) {
   return rows.map((row) => {
     const viewerIsOwner = isRevealedToViewer(row, viewer);
-    // Natural (non-owner) reveal only applies once this row's own round has
-    // actually entered Tic Countdown. Without this, a 0-Startup move placed
-    // at the round's very first Tic already satisfies currentTic >=
+    const pair = row.pair_index != null ? pairsByIndex.get(row.pair_index) : null;
+    const currentTic = pair ? pair.current_tic : -Infinity;
+    const phase = pair ? pair.phase : null;
+    const roundNumber = pair ? pair.round_number : row.round_number;
+    // Natural (non-owner) reveal only applies once this row's own pair has
+    // actually entered its Resolving phase. Without this, a 0-Startup move
+    // placed at the round's very first Tic already satisfies currentTic >=
     // revealTic the instant it's declared — while still in Declaration
     // Phase, before the other side has even finished declaring — leaking
-    // its identity to everyone early. A row from an earlier round is
-    // always safe to check live: round_start_tic/current_tic only ever
-    // move forward, so this can't un-reveal something already legitimately
-    // shown.
-    const ticCountdownRanForThisRow = row.round_number < roundNumber || phase === 'tic_countdown';
+    // its identity to everyone early. A row from an earlier round (for this
+    // same pair) is always safe to check live: round_start_tic/current_tic
+    // only ever move forward, so this can't un-reveal something already
+    // legitimately shown.
+    const ticCountdownRanForThisRow = row.round_number < roundNumber || phase === 'resolving';
     const isRevealed =
       viewerIsOwner ||
       (ticCountdownRanForThisRow &&
@@ -527,6 +547,30 @@ async function getPendingStaminaCost(characterId) {
   return row.pending;
 }
 
+// Combat Automation overhaul: each pair now runs its own independent round/
+// phase/Tic clock (combat_pairs), replacing the single global one
+// combat_state used to hold — combat_state.phase/round_number/current_tic/
+// round_start_tic are now unused leftovers (see db.js's own comment on that
+// exact precedent, already true of declaring_side/pending_declare_side).
+// This shapes one raw combat_pairs row into the client-facing shape shared
+// by both GET /api/combat and combat:updated — camelCase, plus the derived
+// relativeTic/isOverflow/overflowBy every existing Tic Counter render
+// already expects (see combatTiming.js's relativeTic).
+function shapePair(row, roundLength) {
+  const tic = relativeTic({ tic: row.current_tic, roundStartTic: row.round_start_tic, roundLength });
+  return {
+    pairIndex: row.pair_index,
+    declaringSide: row.declaring_side,
+    phase: row.phase,
+    roundNumber: row.round_number,
+    currentTic: row.current_tic,
+    roundStartTic: row.round_start_tic,
+    relativeTic: tic.relative,
+    isOverflow: tic.isOverflow,
+    overflowBy: tic.overflowBy,
+  };
+}
+
 // Broadcasts the Combat Arena's full current state — seating/toggle plus
 // (Phase 7) the round/Tic timing state and every declared move — called
 // from the combat:*/move:declare socket handlers below and from character
@@ -536,64 +580,52 @@ async function getPendingStaminaCost(characterId) {
 // watching (see isRevealedToViewer above), so this is a per-socket emit
 // rather than one io.emit — the DB round-trip still only happens once.
 async function emitCombatUpdated() {
-  const [state, participants, pairs, declaredMoveRows] = await Promise.all([
+  const [state, participants, pairRows, declaredMoveRows] = await Promise.all([
     one('SELECT * FROM combat_state WHERE id = 1'),
     all('SELECT * FROM combat_participants ORDER BY side, pair_index, id'),
     all('SELECT * FROM combat_pairs ORDER BY pair_index'),
     fetchDeclaredMoveRows(),
   ]);
-  const tic = relativeTic({
-    tic: state.current_tic,
-    roundStartTic: state.round_start_tic,
-    roundLength: state.round_length,
-  });
+  const pairs = pairRows.map((row) => shapePair(row, state.round_length));
+  const pairsByIndex = new Map(pairRows.map((row) => [row.pair_index, row]));
   const base = {
     unevenCombatEnabled: Boolean(state.uneven_combat_enabled),
-    phase: state.phase,
-    roundNumber: state.round_number,
-    currentTic: state.current_tic,
-    roundStartTic: state.round_start_tic,
     roundLength: state.round_length,
-    relativeTic: tic.relative,
-    isOverflow: tic.isOverflow,
-    overflowBy: tic.overflowBy,
-    // Phase 9 combat redesign: declaration runs independently per pair now
-    // (see combat_pairs in db.js) — pairs[].declaring_side is whichever side
-    // of that pair may currently call move:declare (null once both sides of
-    // it are done); participants[].declared_this_round is the per-character
-    // status the GM's declaration table renders (see Combat Timing above).
+    // Combat Automation overhaul: declaration/round/phase/Tic state all now
+    // lives per-pair (pairs[].phase/roundNumber/currentTic/etc) — pairs[]
+    // .declaringSide is whichever side of that pair may currently call
+    // move:declare (null once both sides of it are done);
+    // participants[].declared_this_round is the per-character status the
+    // GM's declaration table renders (see Combat Timing above).
     pairs,
     participants,
   };
   for (const viewerSocket of io.sockets.sockets.values()) {
     viewerSocket.emit('combat:updated', {
       ...base,
-      declaredMoves: mapDeclaredMovesForViewer(
-        declaredMoveRows,
-        state.current_tic,
-        viewerSocket.data.identity,
-        state.phase,
-        state.round_number
-      ),
+      declaredMoves: mapDeclaredMovesForViewer(declaredMoveRows, pairsByIndex, viewerSocket.data.identity),
     });
   }
 }
 
 // "Reasons to Fight" (see combat_participants.reasons_to_fight): +1 to all
 // of a seated character's rolls per point, only while a fight is actually
-// underway (combat_state.phase set — seating for an about-to-start fight
-// doesn't count yet). Folded straight into the roll's modifier at the point
-// each roll actually executes (die:roll/pool:roll) rather than as a
-// client-side pre-fill, so it can't be bypassed by whatever a roll dialog
-// happened to pre-fill.
+// underway. Combat Automation overhaul: "underway" is now a per-pair
+// question (combat_pairs.phase set — seating for an about-to-start fight
+// doesn't count yet) rather than one global combat_state.phase, since each
+// pair now runs its own independent round clock. Folded straight into the
+// roll's modifier at the point each roll actually executes (die:roll/
+// pool:roll) rather than as a client-side pre-fill, so it can't be bypassed
+// by whatever a roll dialog happened to pre-fill.
 async function getReasonsToFightBonus(characterId) {
-  const state = await one('SELECT phase FROM combat_state WHERE id = 1');
-  if (!state || state.phase == null) return 0;
-  const participant = await one(
-    'SELECT reasons_to_fight FROM combat_participants WHERE character_id = ?',
+  const row = await one(
+    `SELECT cp.reasons_to_fight AS reasons_to_fight
+     FROM combat_participants cp
+     JOIN combat_pairs pr ON pr.pair_index = cp.pair_index
+     WHERE cp.character_id = ? AND pr.phase IS NOT NULL`,
     [characterId]
   );
-  return participant?.reasons_to_fight ?? 0;
+  return row?.reasons_to_fight ?? 0;
 }
 
 // Idle-Tic Stamina Regen (see plan + combatTiming.js's isTicIdle,
@@ -605,9 +637,12 @@ async function getReasonsToFightBonus(characterId) {
 // backward doesn't claw the Stamina back, same one-directional asymmetry
 // postMoveReveals already has for chat cards). A seated character who's
 // already at full Stamina is skipped entirely rather than silently banking
-// progress they can't spend.
-async function applyIdleTicStaminaRegen(tic) {
-  const participants = await all('SELECT * FROM combat_participants');
+// progress they can't spend. Combat Automation overhaul: scoped to one
+// `pairIndex`'s own seated participants — each pair's own Tic clock only
+// ever regenerates that pair's own characters, now that pairs run
+// independently.
+async function applyIdleTicStaminaRegen(pairIndex, tic) {
+  const participants = await all('SELECT * FROM combat_participants WHERE pair_index = ?', [pairIndex]);
   if (!participants.length) return;
   const charIds = participants.map((p) => p.character_id);
   const marks = charIds.map(() => '?').join(',');
@@ -1108,7 +1143,7 @@ app.get('/api/ruleset', wrap(async (_req, res) => {
 // and every declared move so far this fight (Tell-only until revealed).
 app.get('/api/combat', wrap(async (req, res) => {
   const viewer = viewerFromQuery(req.query);
-  const [state, participants, pairs] = await Promise.all([
+  const [state, participants, pairRows] = await Promise.all([
     one('SELECT * FROM combat_state WHERE id = 1'),
     all('SELECT * FROM combat_participants ORDER BY side, pair_index, id'),
     all('SELECT * FROM combat_pairs ORDER BY pair_index'),
@@ -1136,13 +1171,8 @@ app.get('/api/combat', wrap(async (req, res) => {
     Promise.all(charIds.map((id) => getMovesFor(id))),
     fetchDeclaredMoveRows(),
   ]);
-  const declaredMoves = mapDeclaredMovesForViewer(
-    declaredMoveRows,
-    state.current_tic,
-    viewer,
-    state.phase,
-    state.round_number
-  );
+  const pairsByIndex = new Map(pairRows.map((row) => [row.pair_index, row]));
+  const declaredMoves = mapDeclaredMovesForViewer(declaredMoveRows, pairsByIndex, viewer);
 
   const characters = {};
   for (const character of charRows) {
@@ -1154,23 +1184,10 @@ app.get('/api/combat', wrap(async (req, res) => {
     if (characters[id]) characters[id].moves = movesByChar[i];
   });
 
-  const tic = relativeTic({
-    tic: state.current_tic,
-    roundStartTic: state.round_start_tic,
-    roundLength: state.round_length,
-  });
-
   res.json({
     unevenCombatEnabled: Boolean(state.uneven_combat_enabled),
-    phase: state.phase,
-    roundNumber: state.round_number,
-    currentTic: state.current_tic,
-    roundStartTic: state.round_start_tic,
     roundLength: state.round_length,
-    relativeTic: tic.relative,
-    isOverflow: tic.isOverflow,
-    overflowBy: tic.overflowBy,
-    pairs,
+    pairs: pairRows.map((row) => shapePair(row, state.round_length)),
     participants,
     characters,
     counters,
@@ -2691,28 +2708,24 @@ io.on('connection', (socket) => {
     await run('DELETE FROM combat_participants');
     await run('DELETE FROM declared_moves');
     await run('DELETE FROM combat_pairs');
-    await run(`
-      UPDATE combat_state SET phase = NULL, round_number = 0, current_tic = 0,
-      round_start_tic = 0
-      WHERE id = 1
-    `);
+    await run('DELETE FROM pair_round_resolutions');
     await emitCombatUpdated();
   });
 
   // End Combat — the other half of the Start/End Combat toggle shown in the
-  // global Tic Counter header (visible on every page while phase is
-  // non-null). Unlike combat:clear ("Clear Arena"), this only turns the
-  // fight itself off; everyone stays seated so the GM can start a fresh
-  // fight for the same roster without re-seating.
+  // global Tic Counter header (visible on every page while any pair's own
+  // phase is non-null). Unlike combat:clear ("Clear Arena"), this only
+  // turns the fight itself off; everyone stays seated so the GM can start a
+  // fresh fight for the same roster without re-seating. Deleting every
+  // combat_pairs row (rather than just resetting their round/phase/Tic
+  // columns) is deliberate: a fresh Start Combat afterward should seed
+  // brand-new pair rows exactly like a never-before-fought roster would,
+  // not resume mid-round-5 state from the fight that just ended.
   on('combat:end', async () => {
     await run('DELETE FROM declared_moves');
     await run('DELETE FROM combat_pairs');
+    await run('DELETE FROM pair_round_resolutions');
     await run('UPDATE combat_participants SET declared_this_round = 0, idle_regen_progress = 0');
-    await run(`
-      UPDATE combat_state SET phase = NULL, round_number = 0, current_tic = 0,
-      round_start_tic = 0
-      WHERE id = 1
-    `);
     await emitCombatUpdated();
   });
 
@@ -2724,18 +2737,39 @@ io.on('connection', (socket) => {
   // move:declare and character_done_declaring are open-access, matching how
   // declaring/rolling for a character already works everywhere else.
   //
-  // Phase 9 combat redesign: initiative and declaration order are now
-  // resolved independently PER PAIR, not once across the whole arena — pair
-  // 1's losing side and pair 2's losing side can be declaring at the same
-  // time even though they might be literal opposite "sides" (see
-  // combat_pairs in db.js).
+  // Combat Automation overhaul: each pair now runs its own independent
+  // round/phase/Tic clock (combat_pairs), so "Next Round" seeds a new round
+  // for every currently-seated pair that ISN'T already mid-Declaration —
+  // fight A can be well into round 5 while fight B only just finished
+  // seating, and pressing this button doesn't disturb whichever pairs are
+  // still declaring. combat_pairs rows are no longer deleted/recreated each
+  // round (a genuinely per-pair round counter has to persist across
+  // presses) — this upserts each eligible pair's row in place instead.
+  //
+  // Phase 9 combat redesign: initiative and declaration order are resolved
+  // independently PER PAIR, not once across the whole arena — pair 1's
+  // losing side and pair 2's losing side can be declaring at the same time
+  // even though they might be literal opposite "sides" (see combat_pairs in
+  // db.js).
   on('combat:next_round', async () => {
-    const state = await one('SELECT * FROM combat_state WHERE id = 1');
-    if (state.phase === 'declaration') return;
-    const participants = await all('SELECT * FROM combat_participants');
+    const [state, participants, existingPairRows] = await Promise.all([
+      one('SELECT * FROM combat_state WHERE id = 1'),
+      all('SELECT * FROM combat_participants'),
+      all('SELECT * FROM combat_pairs'),
+    ]);
     if (!participants.length) return;
+    const existingPairByIndex = new Map(existingPairRows.map((p) => [p.pair_index, p]));
 
-    const charIds = [...new Set(participants.map((p) => p.character_id))];
+    // Skip any pair still mid-Declaration from a previous press — everyone
+    // else (brand new, or done Resolving a previous round) gets a new round
+    // seeded for them right now.
+    const allPairIndices = [...new Set(participants.map((p) => p.pair_index))];
+    const pairIndices = allPairIndices.filter((idx) => existingPairByIndex.get(idx)?.phase !== 'declaration');
+    if (!pairIndices.length) return;
+    const eligiblePairSet = new Set(pairIndices);
+    const eligibleParticipants = participants.filter((p) => eligiblePairSet.has(p.pair_index));
+
+    const charIds = [...new Set(eligibleParticipants.map((p) => p.character_id))];
     const marks = charIds.map(() => '?').join(',');
     const [charRows, brainDice, staminaDice, speedAttribute] = await Promise.all([
       all(`SELECT * FROM characters WHERE id IN (${marks})`, charIds),
@@ -2764,15 +2798,25 @@ io.on('connection', (socket) => {
       return stance.attribute_a_id === speedAttribute.id || stance.attribute_b_id === speedAttribute.id;
     };
 
-    // Computed up front (moved ahead of the Brain-roll loop below, which
-    // needs it) — see the Declaration Phase bullet in the plan for why this
-    // floor exists.
-    const nextRoundStartTic = computeNextRoundStartTic({
-      phase: state.phase,
-      currentTic: state.current_tic,
-      roundStartTic: state.round_start_tic,
-      roundLength: state.round_length,
-    });
+    // Computed per pair up front (needed by the Brain-roll loop below) —
+    // see the Declaration Phase bullet in the plan for why this floor
+    // exists. Each pair floors against its OWN previous phase/current_tic/
+    // round_start_tic now, not one shared combat_state clock — a brand new
+    // pair (no existing row) behaves exactly like the old "phase === null"
+    // first-round case.
+    const nextRoundStartTicByPair = new Map();
+    for (const pairIndex of pairIndices) {
+      const existing = existingPairByIndex.get(pairIndex);
+      nextRoundStartTicByPair.set(
+        pairIndex,
+        computeNextRoundStartTic({
+          phase: existing?.phase ?? null,
+          currentTic: existing?.current_tic ?? 0,
+          roundStartTic: existing?.round_start_tic ?? 0,
+          roundLength: state.round_length,
+        })
+      );
+    }
 
     // Initiative overflow penalty (decided, new rule): each character's own
     // last-queued move's full footprint end, across every round declared so
@@ -2794,57 +2838,70 @@ io.on('connection', (socket) => {
       : [];
     const blockedUntilByChar = new Map(blockedUntilRows.map((r) => [r.characterId, r.blockedUntilTic]));
 
-    // Start Combat (the very first round, phase was null) restores every
-    // seated character to full Stamina — a fresh fight starts fresh, even
-    // if someone was topped up mid-round from an earlier encounter. Only
-    // this one time, not on every subsequent Next Round: ongoing Stamina
-    // spend across rounds is the whole point of Stamina Cost.
-    if (state.phase === null) {
-      await Promise.all(
-        charRows
-          .filter((c) => c.current_stamina !== c.max_stamina)
-          .map((c) => run('UPDATE characters SET current_stamina = ? WHERE id = ?', [c.max_stamina, c.id]))
-      );
-      for (const c of charRows) {
-        if (c.current_stamina !== c.max_stamina) {
-          io.emit('character:updated', { ...c, current_stamina: c.max_stamina });
-        }
+    // Start Combat (a pair's own very first round, no existing combat_pairs
+    // row) restores that pair's seated characters to full Stamina — a fresh
+    // fight starts fresh, even if someone was topped up mid-round from an
+    // earlier encounter. Only that pair's first round, not every subsequent
+    // Next Round: ongoing Stamina spend across rounds is the whole point of
+    // Stamina Cost. Split per-participant now (not one global phase===null
+    // branch) since different pairs can each hit their own "first round" at
+    // different real-world times.
+    const firstRoundParticipants = eligibleParticipants.filter(
+      (p) => existingPairByIndex.get(p.pair_index) == null
+    );
+    const regenParticipants = eligibleParticipants.filter(
+      (p) => existingPairByIndex.get(p.pair_index) != null
+    );
+    const firstRoundChars = firstRoundParticipants
+      .map((p) => charById.get(p.character_id))
+      .filter(Boolean);
+    await Promise.all(
+      firstRoundChars
+        .filter((c) => c.current_stamina !== c.max_stamina)
+        .map((c) => run('UPDATE characters SET current_stamina = ? WHERE id = ?', [c.max_stamina, c.id]))
+    );
+    for (const c of firstRoundChars) {
+      if (c.current_stamina !== c.max_stamina) {
+        io.emit('character:updated', { ...c, current_stamina: c.max_stamina });
       }
-    } else {
-      // Stamina Regen (decided, new rule): every round from the 2nd on rolls
-      // each seated character's Stamina die at its current size/bonus and
-      // adds the result to current_stamina, clamped to max — same math/log
-      // shape as the manual stamina:regen button, just automatic now and for
-      // everyone at once. Round 1 is the Start Combat full-restore above
-      // instead (already at max, nothing to regen there).
-      const regenRolls = charRows
-        .map((character) => {
-          const die = staminaByChar.get(character.id);
-          if (!die || die.status !== 'active') return null;
-          const result = rollDie(die.current_size) + die.bonus;
-          const currentStamina = clamp(character.current_stamina + result, 0, character.max_stamina);
-          return { character, die, result, currentStamina };
-        })
-        .filter(Boolean);
-      await Promise.all(
-        regenRolls.map(({ character, currentStamina }) =>
-          run('UPDATE characters SET current_stamina = ? WHERE id = ?', [currentStamina, character.id])
-        )
-      );
-      for (const { character, currentStamina } of regenRolls) {
-        io.emit('character:updated', { ...character, current_stamina: currentStamina });
-      }
-      await Promise.all(
-        regenRolls.map(({ character, die, result }) =>
-          logRoll({
-            characterId: character.id,
-            characterName: character.name,
-            modifier: 0,
-            dice: [{ slot_name: 'Stamina', size: die.current_size, bonus: die.bonus, result }],
-          })
-        )
-      );
     }
+
+    // Stamina Regen (decided, new rule): every round from a pair's 2nd on
+    // rolls each of its seated characters' Stamina die at its current
+    // size/bonus and adds the result to current_stamina, clamped to max —
+    // same math/log shape as the manual stamina:regen button, just
+    // automatic now and for everyone at once. A pair's round 1 is the Start
+    // Combat full-restore above instead (already at max, nothing to regen
+    // there).
+    const regenRolls = regenParticipants
+      .map((p) => charById.get(p.character_id))
+      .filter(Boolean)
+      .map((character) => {
+        const die = staminaByChar.get(character.id);
+        if (!die || die.status !== 'active') return null;
+        const result = rollDie(die.current_size) + die.bonus;
+        const currentStamina = clamp(character.current_stamina + result, 0, character.max_stamina);
+        return { character, die, result, currentStamina };
+      })
+      .filter(Boolean);
+    await Promise.all(
+      regenRolls.map(({ character, currentStamina }) =>
+        run('UPDATE characters SET current_stamina = ? WHERE id = ?', [currentStamina, character.id])
+      )
+    );
+    for (const { character, currentStamina } of regenRolls) {
+      io.emit('character:updated', { ...character, current_stamina: currentStamina });
+    }
+    await Promise.all(
+      regenRolls.map(({ character, die, result }) =>
+        logRoll({
+          characterId: character.id,
+          characterName: character.name,
+          modifier: 0,
+          dice: [{ slot_name: 'Stamina', size: die.current_size, bonus: die.bonus, result }],
+        })
+      )
+    );
 
     // Brain rolls per PAIR per side, posted to chat as normal initiative
     // rolls exactly as before — an incapacitated/missing Brain die is
@@ -2853,7 +2910,7 @@ io.on('connection', (socket) => {
     // pooled across the whole arena, since each pair resolves its own
     // initiative independently.
     const rollsByPair = new Map(); // pair_index -> { left: [], right: [] }
-    for (const p of participants) {
+    for (const p of eligibleParticipants) {
       const die = brainByChar.get(p.character_id);
       const character = charById.get(p.character_id);
       if (!die || die.status !== 'active' || !character) continue;
@@ -2870,7 +2927,7 @@ io.on('connection', (socket) => {
       // of misattributing it to the die face.
       const modifier = (p.reasons_to_fight || 0) - computeInitiativeOverflowPenalty({
         blockedUntilTic: blockedUntilByChar.get(p.character_id) ?? null,
-        nextRoundStartTic,
+        nextRoundStartTic: nextRoundStartTicByPair.get(p.pair_index),
       });
       const result = rollDie(die.current_size) + die.bonus + modifier;
       if (!rollsByPair.has(p.pair_index)) rollsByPair.set(p.pair_index, { left: [], right: [] });
@@ -2889,10 +2946,9 @@ io.on('connection', (socket) => {
       });
     }
 
-    const pairIndices = [...new Set(participants.map((p) => p.pair_index))];
     const pairDeclaringSide = new Map();
     for (const pairIndex of pairIndices) {
-      const pairParticipants = participants.filter((p) => p.pair_index === pairIndex);
+      const pairParticipants = eligibleParticipants.filter((p) => p.pair_index === pairIndex);
       const hasLeft = pairParticipants.some((p) => p.side === 'left');
       const hasRight = pairParticipants.some((p) => p.side === 'right');
       if (hasLeft && hasRight) {
@@ -2905,51 +2961,65 @@ io.on('connection', (socket) => {
       }
     }
 
-    await run('DELETE FROM combat_pairs');
+    // Upsert (not delete-then-insert): a pair's round_number has to persist
+    // and increment across presses now that pairs advance independently.
+    // nextRoundStartTicByPair was already computed above (needed earlier,
+    // by the Brain-roll loop's overflow penalty) — floored a full
+    // round_length past that pair's own previous round start, not just set
+    // to wherever its current_tic happens to sit, so a round that never
+    // actually finished its own Tic Countdown (or only partially did) can't
+    // leave its declared moves' Tics "occupied" again in the new round.
+    // current_tic is advanced to match, keeping it in sync with the new
+    // round_start_tic.
     await Promise.all(
-      pairIndices.map((pairIndex) =>
-        run('INSERT INTO combat_pairs (pair_index, declaring_side) VALUES (?, ?)', [
-          pairIndex,
-          pairDeclaringSide.get(pairIndex),
-        ])
+      pairIndices.map((pairIndex) => {
+        const nextRoundStartTic = nextRoundStartTicByPair.get(pairIndex);
+        const existing = existingPairByIndex.get(pairIndex);
+        const nextRoundNumber = (existing?.round_number ?? 0) + 1;
+        return existing
+          ? run(
+              `UPDATE combat_pairs
+               SET declaring_side = ?, round_number = ?, phase = 'declaration',
+                   round_start_tic = ?, current_tic = ?
+               WHERE pair_index = ?`,
+              [pairDeclaringSide.get(pairIndex), nextRoundNumber, nextRoundStartTic, nextRoundStartTic, pairIndex]
+            )
+          : run(
+              `INSERT INTO combat_pairs
+                 (pair_index, declaring_side, round_number, phase, round_start_tic, current_tic)
+               VALUES (?, ?, ?, 'declaration', ?, ?)`,
+              [pairIndex, pairDeclaringSide.get(pairIndex), nextRoundNumber, nextRoundStartTic, nextRoundStartTic]
+            );
+      })
+    );
+    await Promise.all(
+      eligibleParticipants.map((p) =>
+        run('UPDATE combat_participants SET declared_this_round = 0 WHERE character_id = ?', [p.character_id])
       )
     );
-    await run('UPDATE combat_participants SET declared_this_round = 0');
 
-    // nextRoundStartTic was already computed above (needed earlier, by the
-    // Brain-roll loop's overflow penalty) — floored a full round_length past
-    // the previous round's own start, not just set to wherever current_tic
-    // happens to sit, so a round that never actually had its Tic Countdown
-    // run (or only partially did) can't leave its declared moves' Tics
-    // "occupied" again in the new round. current_tic is advanced to match,
-    // keeping it in sync with the new round_start_tic.
-    await run(
-      `UPDATE combat_state SET phase = 'declaration', round_number = round_number + 1,
-       current_tic = ?, round_start_tic = ?
-       WHERE id = 1`,
-      [nextRoundStartTic, nextRoundStartTic]
-    );
     await emitCombatUpdated();
   });
 
   on('move:declare', async ({ characterId, moveId, placementTic: requestedPlacementTic, appendageChoice }) => {
-    // The four lookups below are all independent of each other (none reads
+    // The three lookups below are all independent of each other (none reads
     // a value the others produce), so they run as one round trip instead
-    // of four sequential ones.
-    const [state, participant, character, move] = await Promise.all([
-      one('SELECT * FROM combat_state WHERE id = 1'),
+    // of three sequential ones; `pair` depends on participant.pair_index so
+    // it has to wait for that one to land first.
+    const [participant, character, move] = await Promise.all([
       one('SELECT * FROM combat_participants WHERE character_id = ?', [characterId]),
       getCharacter(characterId),
       one('SELECT * FROM moves WHERE id = ?', [moveId]),
     ]);
-    if (state.phase !== 'declaration') return;
-    // Declaration runs independently per pair now (Phase 9 combat redesign)
-    // — a character may only declare while their OWN pair's declaring_side
-    // matches their own side, and only until they themselves have pressed
-    // "done declaring" for the round (declared_this_round).
+    // Declaration runs independently per pair now (Phase 9 combat redesign,
+    // Combat Automation overhaul) — a character may only declare while
+    // their OWN pair is in its Declaration phase AND that pair's own
+    // declaring_side matches their own side, and only until they
+    // themselves have pressed "done declaring" for the round
+    // (declared_this_round).
     if (!participant || participant.declared_this_round) return;
     const pair = await one('SELECT * FROM combat_pairs WHERE pair_index = ?', [participant.pair_index]);
-    if (!pair || pair.declaring_side !== participant.side) return;
+    if (!pair || pair.phase !== 'declaration' || pair.declaring_side !== participant.side) return;
     if (!character || !move) return;
 
     // right_tell_id/left_tell_id are only ever set together, exactly when
@@ -3019,7 +3089,7 @@ io.on('connection', (socket) => {
     // version of this rule blocked only through Startup, letting a
     // still-Active/Recovering move get silently overlapped by a new one).
     const minPlacementTic = computePlacementTic({
-      roundStartTic: state.round_start_tic,
+      roundStartTic: pair.round_start_tic,
       previousBlockedUntilTic: last ? last.blocked_until_tic : null,
     });
     const placementTic = Number.isInteger(requestedPlacementTic)
@@ -3033,7 +3103,7 @@ io.on('connection', (socket) => {
     });
     const countRow = await one(
       'SELECT COUNT(*) AS count FROM declared_moves WHERE character_id = ? AND round_number = ?',
-      [character.id, state.round_number]
+      [character.id, pair.round_number]
     );
     const queueOrder = countRow.count + 1;
 
@@ -3051,7 +3121,7 @@ io.on('connection', (socket) => {
     await run(
       `INSERT INTO declared_moves (character_id, move_id, round_number, queue_order, placement_tic, reveal_tic, appendage_choice, effective_attack_targets, attack_target_source)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'move')`,
-      [character.id, move.id, state.round_number, queueOrder, placementTic, revealTic, storedAppendageChoice, JSON.stringify(effectiveAttackTargets)]
+      [character.id, move.id, pair.round_number, queueOrder, placementTic, revealTic, storedAppendageChoice, JSON.stringify(effectiveAttackTargets)]
     );
     // Every connected socket gets its own tailored view via emitCombatUpdated
     // (see isRevealedToViewer/mapDeclaredMovesForViewer) — whoever's logged
@@ -3070,10 +3140,15 @@ io.on('connection', (socket) => {
   // this event deliberately doesn't attempt, so it's simply rejected past
   // that point (a no-op, matching move:declare's own rejection pattern).
   on('move:undeclare', async ({ declaredMoveId }) => {
-    const state = await one('SELECT * FROM combat_state WHERE id = 1');
-    if (state.phase !== 'declaration') return;
     const row = await one('SELECT * FROM declared_moves WHERE id = ?', [declaredMoveId]);
     if (!row || row.stamina_committed) return;
+    const participant = await one('SELECT pair_index FROM combat_participants WHERE character_id = ?', [
+      row.character_id,
+    ]);
+    const pair = participant
+      ? await one('SELECT phase FROM combat_pairs WHERE pair_index = ?', [participant.pair_index])
+      : null;
+    if (!pair || pair.phase !== 'declaration') return;
     await run('DELETE FROM declared_moves WHERE id = ?', [row.id]);
     await emitCombatUpdated();
   });
@@ -3086,13 +3161,10 @@ io.on('connection', (socket) => {
   // character's turn (their pair's declaring_side matches their own side)
   // and they haven't already finished this round.
   on('combat:character_done_declaring', async ({ characterId }) => {
-    const [state, participant] = await Promise.all([
-      one('SELECT * FROM combat_state WHERE id = 1'),
-      one('SELECT * FROM combat_participants WHERE character_id = ?', [characterId]),
-    ]);
-    if (state.phase !== 'declaration' || !participant || participant.declared_this_round) return;
+    const participant = await one('SELECT * FROM combat_participants WHERE character_id = ?', [characterId]);
+    if (!participant || participant.declared_this_round) return;
     const pair = await one('SELECT * FROM combat_pairs WHERE pair_index = ?', [participant.pair_index]);
-    if (!pair || pair.declaring_side !== participant.side) return;
+    if (!pair || pair.phase !== 'declaration' || pair.declaring_side !== participant.side) return;
 
     // Commit this character's own pending moves' Stamina Cost now — this is
     // the one and only place cost actually leaves/returns to
@@ -3149,19 +3221,24 @@ io.on('connection', (socket) => {
     await emitCombatUpdated();
   });
 
-  on('combat:start_tic_countdown', async () => {
-    const [state, pairs] = await Promise.all([
+  // Combat Automation overhaul: Tic Countdown is now per-pair, not one
+  // shared arena-wide timeline — a pair's own countdown can start (and
+  // step) independently of every other pair's, so this and the two
+  // handlers below all take a `pairIndex` and only ever touch that one
+  // pair's own combat_pairs row. `phase: 'resolving'` is the same column
+  // value the future automatic resolution engine will use once it lands
+  // (see vttprojectplan.md) — for now (this phase) it still means "manual
+  // Tic Forward/Backward stepping," matching today's 'tic_countdown'.
+  on('combat:start_tic_countdown', async ({ pairIndex }) => {
+    const [state, pair] = await Promise.all([
       one('SELECT * FROM combat_state WHERE id = 1'),
-      all('SELECT * FROM combat_pairs'),
+      one('SELECT * FROM combat_pairs WHERE pair_index = ?', [pairIndex]),
     ]);
-    // Every pair must have finished declaring (both sides done, or trivially
-    // done for a single-sided pair) — the Tic Counter is one shared timeline
-    // for the whole arena, so it can't start counting down while any pair is
-    // still mid-Declaration (Phase 9 combat redesign: declaration itself now
-    // runs independently per pair, but the countdown that follows it is
-    // still global).
-    if (state.phase !== 'declaration' || pairs.some((p) => p.declaring_side != null)) return;
-    await run("UPDATE combat_state SET phase = 'tic_countdown' WHERE id = 1");
+    // Both sides of THIS pair must have finished declaring (declaring_side
+    // null), or trivially finished for a single-sided pair — unaffected by
+    // whatever any other pair is currently doing.
+    if (!pair || pair.phase !== 'declaration' || pair.declaring_side != null) return;
+    await run("UPDATE combat_pairs SET phase = 'resolving' WHERE pair_index = ?", [pairIndex]);
     // A move with 0 Startup Tics placed at the round's very first Tic
     // reveals immediately — its reveal_tic already equals current_tic
     // before a single Tic forward happens. postMoveReveals only otherwise
@@ -3169,36 +3246,39 @@ io.on('connection', (socket) => {
     // revealed (isMoveRevealedTo is computed live) with no lane_snapshot
     // chat card ever posted for it. Catches any other already-due reveal
     // the same way, for the same reason.
-    await postMoveReveals(state.current_tic, {
-      roundNumber: state.round_number,
-      roundStartTic: state.round_start_tic,
+    await postMoveReveals(pairIndex, pair.current_tic, {
+      roundNumber: pair.round_number,
+      roundStartTic: pair.round_start_tic,
       roundLength: state.round_length,
     });
-    await applyIdleTicStaminaRegen(state.current_tic);
+    await applyIdleTicStaminaRegen(pairIndex, pair.current_tic);
     await emitCombatUpdated();
   });
 
-  on('combat:tic_forward', async () => {
-    const state = await one('SELECT * FROM combat_state WHERE id = 1');
-    if (state.phase !== 'tic_countdown') return;
-    const maxTic = state.round_start_tic + state.round_length - 1;
-    if (state.current_tic >= maxTic) return;
-    const newTic = state.current_tic + 1;
-    await run('UPDATE combat_state SET current_tic = ? WHERE id = 1', [newTic]);
-    await postMoveReveals(newTic, {
-      roundNumber: state.round_number,
-      roundStartTic: state.round_start_tic,
+  on('combat:tic_forward', async ({ pairIndex }) => {
+    const [state, pair] = await Promise.all([
+      one('SELECT * FROM combat_state WHERE id = 1'),
+      one('SELECT * FROM combat_pairs WHERE pair_index = ?', [pairIndex]),
+    ]);
+    if (!pair || pair.phase !== 'resolving') return;
+    const maxTic = pair.round_start_tic + state.round_length - 1;
+    if (pair.current_tic >= maxTic) return;
+    const newTic = pair.current_tic + 1;
+    await run('UPDATE combat_pairs SET current_tic = ? WHERE pair_index = ?', [newTic, pairIndex]);
+    await postMoveReveals(pairIndex, newTic, {
+      roundNumber: pair.round_number,
+      roundStartTic: pair.round_start_tic,
       roundLength: state.round_length,
     });
-    await applyIdleTicStaminaRegen(newTic);
+    await applyIdleTicStaminaRegen(pairIndex, newTic);
     await emitCombatUpdated();
   });
 
-  on('combat:tic_backward', async () => {
-    const state = await one('SELECT * FROM combat_state WHERE id = 1');
-    if (state.phase !== 'tic_countdown') return;
-    const newTic = Math.max(state.round_start_tic, state.current_tic - 1);
-    await run('UPDATE combat_state SET current_tic = ? WHERE id = 1', [newTic]);
+  on('combat:tic_backward', async ({ pairIndex }) => {
+    const pair = await one('SELECT * FROM combat_pairs WHERE pair_index = ?', [pairIndex]);
+    if (!pair || pair.phase !== 'resolving') return;
+    const newTic = Math.max(pair.round_start_tic, pair.current_tic - 1);
+    await run('UPDATE combat_pairs SET current_tic = ? WHERE pair_index = ?', [newTic, pairIndex]);
     await emitCombatUpdated();
   });
 
