@@ -1,15 +1,17 @@
-// Combat Automation overhaul, Phase C — integration-style coverage for
-// server/roundResolution.js's advancePairResolution/startPairDeclaration.
-// See that module's own header comment for why this engine lives in its
-// own file (import-safety: server/index.js boots a real server on import,
-// so testing DB/broadcast-heavy orchestration means either this split, or
-// no automated coverage at all — the precedent this codebase otherwise
-// follows for that category of code, per the manual-QA notes throughout
-// Combat Automation sub-phases 3-5). Same per-file TURSO_DATABASE_URL +
-// dynamic-import trick as migrationDefenseKind.test.js, since Node's test
-// runner isolates each FILE (own process/module registry), not each test
-// within a file — every scenario below shares one temp DB, one pairIndex
-// per scenario to keep them independent.
+// Combat Automation overhaul, Phases C-D — integration-style coverage for
+// server/roundResolution.js's advancePairResolution/startPairDeclaration
+// (Phase C) and resolveDodge/resolveMoveConflict (Phase D's real Dodge/
+// move-conflict pausing and resumability). See that module's own header
+// comment for why this engine lives in its own file (import-safety:
+// server/index.js boots a real server on import, so testing DB/broadcast-
+// heavy orchestration means either this split, or no automated coverage at
+// all — the precedent this codebase otherwise follows for that category of
+// code, per the manual-QA notes throughout Combat Automation sub-phases
+// 3-5). Same per-file TURSO_DATABASE_URL + dynamic-import trick as
+// migrationDefenseKind.test.js, since Node's test runner isolates each
+// FILE (own process/module registry), not each test within a file — every
+// scenario below shares one temp DB, one pairIndex per scenario to keep
+// them independent.
 //
 // Math.random is mocked to a constant near 1 for this whole file: every
 // die roll (server/gameLogic.js's rollDie is `1 + floor(Math.random() *
@@ -28,7 +30,7 @@ process.env.TURSO_DATABASE_URL = `file:${dbPath}`;
 delete process.env.TURSO_AUTH_TOKEN;
 
 const { initDb, run, one, all } = await import('../db.js');
-const { advancePairResolution, startPairDeclaration } = await import('../roundResolution.js');
+const { advancePairResolution, startPairDeclaration, resolveDodge, resolveMoveConflict } = await import('../roundResolution.js');
 const { DICE_TEMPLATE } = await import('../gameLogic.js');
 
 const originalRandom = Math.random;
@@ -298,4 +300,288 @@ test('Interruption: taking a Hit while still in Startup disrupts the target\'s o
   const interruptEvent = events.find((e) => e.type === 'interrupt_resolved');
   assert.ok(interruptEvent);
   assert.equal(JSON.parse(interruptEvent.payload).succeeded, true);
+});
+
+// ---------------------------------------------------------------------
+// Phase D — real Dodge/move-conflict pausing and resumability.
+// ---------------------------------------------------------------------
+
+test('Dodge pause: full-coverage Dodge stops the round and persists a resumable pending decision', async () => {
+  const pairIndex = 200;
+  const attacker = await createCharacter('DodgePause Attacker');
+  const defender = await createCharacter('DodgePause Defender');
+  await setDieSize(attacker, 'Skull', 12);
+  const punch = await createMove({ name: 'DP Punch', startupTics: 1, activeTics: 2, recoveryTics: 1, rollSlots: ['Skull'] });
+  const dodge = await createMove({
+    name: 'DP Dodge',
+    startupTics: 1,
+    activeTics: 1,
+    recoveryTics: 1,
+    rollSlots: ['Hand'],
+    isDefensive: true,
+    defenseKind: 'dodge',
+    defenseFramePositions: [0, 1, 2],
+  });
+
+  await seatPair(pairIndex, attacker, defender);
+  await startPairDeclaration(mockIo, pairIndex);
+  const attackerDMId = await declareMove({ characterId: attacker, moveId: punch, placementTic: 0, startupTics: 1 });
+  const defenderDMId = await declareMove({ characterId: defender, moveId: dodge, placementTic: 0, startupTics: 1, appendageChoice: 'left' });
+  await resolvePair(pairIndex);
+
+  const resolution = await one('SELECT * FROM pair_round_resolutions WHERE pair_index = ? AND round_number = 1', [pairIndex]);
+  assert.equal(resolution.status, 'paused_dodge');
+  const pending = JSON.parse(resolution.pending_dodge_json);
+  assert.equal(pending.attackerDeclaredMoveId, attackerDMId);
+  assert.equal(pending.defenderDeclaredMoveId, defenderDMId);
+  assert.equal(pending.attackerResult, 12);
+
+  // Nothing has actually landed yet — genuinely paused, not auto-decided.
+  const skullBefore = await one("SELECT current_size FROM dice WHERE character_id = ? AND slot_name = 'Skull'", [defender]);
+  assert.equal(skullBefore.current_size, 8);
+  const events = await all('SELECT type FROM round_events WHERE pair_index = ? ORDER BY seq', [pairIndex]);
+  assert.ok(events.some((e) => e.type === 'dodge_prompt'));
+  assert.ok(!events.some((e) => e.type === 'dodge_resolved'));
+
+  // A stale/duplicate resolve for a pair that isn't actually paused is a no-op.
+  await resolveDodge(999999, { outcome: 'failed' }, mockIo);
+
+  await resolveDodge(pairIndex, { outcome: 'failed' }, mockIo);
+
+  const resolutionAfter = await one('SELECT * FROM pair_round_resolutions WHERE pair_index = ? AND round_number = 1', [pairIndex]);
+  assert.equal(resolutionAfter.status, 'complete');
+  assert.equal(resolutionAfter.pending_dodge_json, null);
+
+  // Failed Dodge falls through to a plain Hit — same math as a plain Hit.
+  const skullAfter = await one("SELECT current_size FROM dice WHERE character_id = ? AND slot_name = 'Skull'", [defender]);
+  assert.equal(skullAfter.current_size, 6);
+
+  const eventsAfter = await all('SELECT type, payload FROM round_events WHERE pair_index = ? ORDER BY seq', [pairIndex]);
+  const resolved = eventsAfter.find((e) => e.type === 'dodge_resolved');
+  assert.ok(resolved);
+  assert.equal(JSON.parse(resolved.payload).outcome, 'failed');
+});
+
+test('Dodge resume: Successful Full Dodge deals no damage anywhere', async () => {
+  const pairIndex = 201;
+  const attacker = await createCharacter('DodgeFull Attacker');
+  const defender = await createCharacter('DodgeFull Defender');
+  await setDieSize(attacker, 'Skull', 12);
+  await setDieSize(defender, 'Left Hand', 12); // matches attacker -> net 0 -> Full
+  const punch = await createMove({ name: 'DF Punch', startupTics: 1, activeTics: 2, recoveryTics: 1, rollSlots: ['Skull'] });
+  const dodge = await createMove({
+    name: 'DF Dodge',
+    startupTics: 1,
+    activeTics: 1,
+    recoveryTics: 1,
+    rollSlots: ['Hand'],
+    isDefensive: true,
+    defenseKind: 'dodge',
+    defenseFramePositions: [0, 1, 2],
+  });
+
+  await seatPair(pairIndex, attacker, defender);
+  await startPairDeclaration(mockIo, pairIndex);
+  await declareMove({ characterId: attacker, moveId: punch, placementTic: 0, startupTics: 1 });
+  await declareMove({ characterId: defender, moveId: dodge, placementTic: 0, startupTics: 1, appendageChoice: 'left' });
+  await resolvePair(pairIndex);
+
+  await resolveDodge(pairIndex, { outcome: 'successful' }, mockIo);
+
+  const skull = await one("SELECT current_size FROM dice WHERE character_id = ? AND slot_name = 'Skull'", [defender]);
+  assert.equal(skull.current_size, 8);
+  const leftHand = await one("SELECT current_size, half_damage FROM dice WHERE character_id = ? AND slot_name = 'Left Hand'", [defender]);
+  assert.equal(leftHand.current_size, 12);
+  assert.equal(leftHand.half_damage, 0);
+
+  const resolution = await one('SELECT status FROM pair_round_resolutions WHERE pair_index = ? AND round_number = 1', [pairIndex]);
+  assert.equal(resolution.status, 'complete');
+});
+
+test('Dodge resume: Successful Partial Dodge still lands reduced damage on the defender\'s own Stat', async () => {
+  const pairIndex = 202;
+  const attacker = await createCharacter('DodgePartial Attacker');
+  const defender = await createCharacter('DodgePartial Defender');
+  await setDieSize(attacker, 'Skull', 12);
+  await setDieSize(defender, 'Left Hand', 4); // weaker -> net 8 -> 1 step -> Partial
+  const punch = await createMove({ name: 'DPa Punch', startupTics: 1, activeTics: 2, recoveryTics: 1, rollSlots: ['Skull'] });
+  const dodge = await createMove({
+    name: 'DPa Dodge',
+    startupTics: 1,
+    activeTics: 1,
+    recoveryTics: 1,
+    rollSlots: ['Hand'],
+    isDefensive: true,
+    defenseKind: 'dodge',
+    defenseFramePositions: [0, 1, 2],
+  });
+
+  await seatPair(pairIndex, attacker, defender);
+  await startPairDeclaration(mockIo, pairIndex);
+  await declareMove({ characterId: attacker, moveId: punch, placementTic: 0, startupTics: 1 });
+  await declareMove({ characterId: defender, moveId: dodge, placementTic: 0, startupTics: 1, appendageChoice: 'left' });
+  await resolvePair(pairIndex);
+
+  await resolveDodge(pairIndex, { outcome: 'successful' }, mockIo);
+
+  const leftHand = await one("SELECT current_size, half_damage FROM dice WHERE character_id = ? AND slot_name = 'Left Hand'", [defender]);
+  assert.equal(leftHand.current_size, 4);
+  assert.equal(leftHand.half_damage, 1);
+});
+
+test('Move-conflict pause: a Block-too-late collision stops the round; Forfeit deletes the colliding move', async () => {
+  const pairIndex = 210;
+  const attacker = await createCharacter('ConflictForfeit Attacker');
+  const defender = await createCharacter('ConflictForfeit Defender');
+  await setDieSize(attacker, 'Skull', 12);
+  await setDieSize(defender, 'Left Hand', 12);
+  const punch = await createMove({ name: 'CF Punch', startupTics: 1, activeTics: 2, recoveryTics: 1, rollSlots: ['Skull'] });
+  // Guard's own Defense Frame only covers its own tic 1 (not tic 2) -> the
+  // attacker's Active window [1,3) is covered starting at tic 1 (not
+  // too-early) but runs out before tic 2 -> 'too-late', 1 Tic short.
+  const guard = await createMove({
+    name: 'CF Guard',
+    startupTics: 1,
+    activeTics: 1,
+    recoveryTics: 1,
+    rollSlots: ['Hand'],
+    isDefensive: true,
+    defenseKind: 'block',
+    defenseFramePositions: [1],
+  });
+  const collisionMove = await createMove({ name: 'CF Collision', startupTics: 1, activeTics: 1, recoveryTics: 0, rollSlots: [] });
+
+  await seatPair(pairIndex, attacker, defender);
+  await startPairDeclaration(mockIo, pairIndex);
+  await declareMove({ characterId: attacker, moveId: punch, placementTic: 0, startupTics: 1 });
+  const guardDMId = await declareMove({ characterId: defender, moveId: guard, placementTic: 0, startupTics: 1, appendageChoice: 'left' });
+  // Guard's own footprint (startup1/active1/recovery1, placementTic 0) ends
+  // at reveal(1)+active(1)+recovery(1)=3; the 1-Tic extension pushes that to
+  // 4 — placementTic 3 sits inside [3,4).
+  const collisionDMId = await declareMove({ characterId: defender, moveId: collisionMove, placementTic: 3, startupTics: 1 });
+  await resolvePair(pairIndex);
+
+  const resolution = await one('SELECT * FROM pair_round_resolutions WHERE pair_index = ? AND round_number = 1', [pairIndex]);
+  assert.equal(resolution.status, 'paused_conflict');
+  const pending = JSON.parse(resolution.pending_conflict_json);
+  assert.equal(pending.declaredMoveId, collisionDMId);
+  assert.equal(pending.blockerDeclaredMoveId, guardDMId);
+  assert.equal(pending.characterId, defender);
+
+  // A stale declaredMoveId (doesn't match what's actually pending) is a no-op.
+  await resolveMoveConflict(pairIndex, { declaredMoveId: 999999, choice: 'forfeit' }, mockIo);
+  const stillPaused = await one('SELECT status FROM pair_round_resolutions WHERE pair_index = ? AND round_number = 1', [pairIndex]);
+  assert.equal(stillPaused.status, 'paused_conflict');
+
+  await resolveMoveConflict(pairIndex, { declaredMoveId: collisionDMId, choice: 'forfeit' }, mockIo);
+
+  const deleted = await one('SELECT id FROM declared_moves WHERE id = ?', [collisionDMId]);
+  assert.equal(deleted, null);
+  const resolutionAfter = await one('SELECT status FROM pair_round_resolutions WHERE pair_index = ? AND round_number = 1', [pairIndex]);
+  assert.equal(resolutionAfter.status, 'complete');
+});
+
+test('Move-conflict pause: Postpone shifts the collision forward and recurses into a second collision', async () => {
+  const pairIndex = 211;
+  const attacker = await createCharacter('ConflictPostpone Attacker');
+  const defender = await createCharacter('ConflictPostpone Defender');
+  await setDieSize(attacker, 'Skull', 12);
+  await setDieSize(defender, 'Left Hand', 12);
+  const punch = await createMove({ name: 'CP Punch', startupTics: 1, activeTics: 2, recoveryTics: 1, rollSlots: ['Skull'] });
+  const guard = await createMove({
+    name: 'CP Guard',
+    startupTics: 1,
+    activeTics: 1,
+    recoveryTics: 1,
+    rollSlots: ['Hand'],
+    isDefensive: true,
+    defenseKind: 'block',
+    defenseFramePositions: [1],
+  });
+  const moveA = await createMove({ name: 'CP Collision A', startupTics: 1, activeTics: 1, recoveryTics: 0, rollSlots: [] });
+  const moveB = await createMove({ name: 'CP Collision B', startupTics: 1, activeTics: 1, recoveryTics: 0, rollSlots: [] });
+
+  await seatPair(pairIndex, attacker, defender);
+  await startPairDeclaration(mockIo, pairIndex);
+  await declareMove({ characterId: attacker, moveId: punch, placementTic: 0, startupTics: 1 });
+  const guardDMId = await declareMove({ characterId: defender, moveId: guard, placementTic: 0, startupTics: 1, appendageChoice: 'left' });
+  // Guard's extended recovery window is [3,4) — Move A sits right in it.
+  const moveADMId = await declareMove({ characterId: defender, moveId: moveA, placementTic: 3, startupTics: 1 });
+  // Move A's own footprint (before Postpone) is [3,5) — nothing collides
+  // with THAT yet. Once Postponed to placementTic 4 (Guard's new recovery
+  // end), its new footprint becomes [4,6) — Move B, placed at 5, now falls
+  // inside it, triggering the recursive re-conflict.
+  const moveBDMId = await declareMove({ characterId: defender, moveId: moveB, placementTic: 5, startupTics: 1 });
+  await resolvePair(pairIndex);
+
+  const resolution = await one('SELECT * FROM pair_round_resolutions WHERE pair_index = ? AND round_number = 1', [pairIndex]);
+  assert.equal(resolution.status, 'paused_conflict');
+  assert.equal(JSON.parse(resolution.pending_conflict_json).declaredMoveId, moveADMId);
+
+  await resolveMoveConflict(pairIndex, { declaredMoveId: moveADMId, choice: 'postpone' }, mockIo);
+
+  const moveARow = await one('SELECT placement_tic, reveal_tic FROM declared_moves WHERE id = ?', [moveADMId]);
+  assert.equal(moveARow.placement_tic, 4);
+  assert.equal(moveARow.reveal_tic, 5);
+
+  // Recursive cascade: Move A's new footprint now collides with Move B —
+  // still paused, but on the SECOND collision this time.
+  const resolutionAfterPostpone = await one(
+    'SELECT status, pending_conflict_json FROM pair_round_resolutions WHERE pair_index = ? AND round_number = 1',
+    [pairIndex]
+  );
+  assert.equal(resolutionAfterPostpone.status, 'paused_conflict');
+  const secondPending = JSON.parse(resolutionAfterPostpone.pending_conflict_json);
+  assert.equal(secondPending.declaredMoveId, moveBDMId);
+  assert.equal(secondPending.blockerDeclaredMoveId, moveADMId);
+
+  await resolveMoveConflict(pairIndex, { declaredMoveId: moveBDMId, choice: 'forfeit' }, mockIo);
+
+  const moveBDeleted = await one('SELECT id FROM declared_moves WHERE id = ?', [moveBDMId]);
+  assert.equal(moveBDeleted, null);
+  const finalResolution = await one('SELECT status FROM pair_round_resolutions WHERE pair_index = ? AND round_number = 1', [pairIndex]);
+  assert.equal(finalResolution.status, 'complete');
+});
+
+test('Restart recovery: rolling resolved_through_tic backward and re-invoking converges to the same end state', async () => {
+  const pairIndex = 220;
+  const attacker = await createCharacter('Restart Attacker');
+  const defender = await createCharacter('Restart Defender');
+  await setDieSize(attacker, 'Skull', 12);
+  const punch = await createMove({ name: 'RS Punch', startupTics: 1, activeTics: 2, recoveryTics: 1, rollSlots: ['Skull'] });
+
+  await seatPair(pairIndex, attacker, defender);
+  await startPairDeclaration(mockIo, pairIndex);
+  await declareMove({ characterId: attacker, moveId: punch, placementTic: 0, startupTics: 1 });
+  await resolvePair(pairIndex);
+
+  const skullBefore = await one("SELECT current_size, half_damage FROM dice WHERE character_id = ? AND slot_name = 'Skull'", [defender]);
+  assert.equal(skullBefore.current_size, 6); // same plain-Hit math as the very first scenario
+  const eventCountBefore = (await all('SELECT id FROM round_events WHERE pair_index = ?', [pairIndex])).length;
+
+  // Simulate a crash between finishing round 1's own Tics and the pair
+  // fully transitioning into round 2: roll combat_pairs and its
+  // resolution row back to "mid-round-1, nothing processed yet" WITHOUT
+  // touching declared_moves/dice — a real crash only ever loses the
+  // resolved_through_tic bump itself (the last write for a Tic), never the
+  // effects that already landed before it (see this module's own
+  // crash-recovery comment). Redoing from here should find nothing left to
+  // do (interactions_resolved already 1) and just cheaply re-converge.
+  await run(`UPDATE pair_round_resolutions SET status = 'running', resolved_through_tic = -1, completed_at = NULL WHERE pair_index = ? AND round_number = 1`, [pairIndex]);
+  await run(`UPDATE combat_pairs SET phase = 'resolving', round_number = 1, current_tic = 0 WHERE pair_index = ?`, [pairIndex]);
+
+  await advancePairResolution(pairIndex, mockIo);
+
+  const skullAfter = await one("SELECT current_size, half_damage FROM dice WHERE character_id = ? AND slot_name = 'Skull'", [defender]);
+  assert.equal(skullAfter.current_size, 6); // unchanged — not double-applied
+  assert.equal(skullAfter.half_damage, 0);
+
+  const resolutionAfter = await one('SELECT status FROM pair_round_resolutions WHERE pair_index = ? AND round_number = 1', [pairIndex]);
+  assert.equal(resolutionAfter.status, 'complete');
+
+  // The redo is allowed to add more round_events (a real re-derivation
+  // isn't required to produce byte-identical history, only the same
+  // derived end state) — just confirm it didn't somehow shrink or corrupt.
+  const eventCountAfter = (await all('SELECT id FROM round_events WHERE pair_index = ?', [pairIndex])).length;
+  assert.ok(eventCountAfter >= eventCountBefore);
 });

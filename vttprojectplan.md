@@ -210,7 +210,10 @@ Full design (locked decisions, data model, the `advancePairResolution` resolutio
   - **Not yet wired into any live socket handler** — `combat:character_done_declaring`/`combat:start_tic_countdown`/`combat:tic_forward`/`combat:tic_backward` in `server/index.js` are completely untouched; Tic stepping is still exactly as manual as Phase B left it. `server/index.js` does not yet import `roundResolution.js` at all. Real live wiring (replacing the manual Start Tic Countdown button with the automatic trigger) is Phase D's job, once real pausing exists to wire alongside it — wiring an engine that silently auto-decides every Dodge into production first would be a real behavior regression, not a step forward.
   - **Also deliberately does not** post the existing `chat:lane_snapshot` per-reveal chat card on a Tic's reveal step, even though the manual flow's `postMoveReveals` still does — that mechanism is explicitly slated for removal in favor of a once-per-round `round_summary` card in Phase E (§1.5/§4.2), so wiring the soon-to-be-removed one into the new engine now just to tear it back out was skipped.
   - Verified via `server/test/roundResolution.test.js` (new, 5 integration-style scenarios against a real temp DB — plain Hit, Full Block, Partial Block, a too-early auto-fail, and an Interruption — `Math.random` mocked to a constant near 1 for the whole file, since `rollDie` isn't independently seedable, turning every scenario into deterministic arithmetic driven by which Stats/die sizes/frame data each one picks) plus the full `npm test` suite (163/163) and `scripts/e2e.mjs` (278/281, the same 3 pre-existing failures as Phase B, confirming zero regression since `server/index.js` itself was untouched this phase).
-- **Phase D — Dodge + move-conflict pausing, real resumability: not started.**
+- **Phase D — Dodge + move-conflict pausing, real resumability: done (engine-level; not yet wired to a live UI).** `resolveAttack` now truly pauses at the two decision points instead of Phase C's placeholder auto-resolve: a full-coverage Dodge persists `pending_dodge_json` + `status = 'paused_dodge'` on the pair's `pair_round_resolutions` row and returns without applying any outcome; a Block-too-late collision (after the Block's own — always-automatic — roll/damage/interactions have already completed) persists `pending_conflict_json` + `status = 'paused_conflict'` for the *first* colliding move and returns, matching that column's single-slot shape. `advancePairResolution`'s own Tic loop stops immediately on either signal without bumping `resolved_through_tic`, so a resume re-enters the exact same Tic. New exported resolvers: `resolveDodge(pairIndex, { outcome }, io)` applies the GM's Successful/Failed call (Successful reuses the *"identical math to Block"* rule via a new `applySuccessfulDodge` helper; Failed reuses the same `applyFailedDefense` helper the too-early/too-late-Dodge/too-early-Block paths already share) and calls `advancePairResolution` again to continue; `resolveMoveConflict(pairIndex, { declaredMoveId, choice }, io)` applies Forfeit/Postpone (unchanged math, ported from the pre-overhaul manual `combat:resolve_move_conflict`) and recursively re-pauses if the postponed move collides with yet another already-declared move (the same cascade the manual flow already had), otherwise resumes. `resumeAllPairsOnBoot(io)` sweeps every `status = 'running'` `pair_round_resolutions` row — the actual boot-time resume sweep, not just asserted in a test.
+  - **Mid-Tic resumability, the one genuinely new piece of engine plumbing this phase needed:** revealing a move (`reveal_posted`) and finishing its resolution (`interactions_resolved`) are tracked as two separate steps specifically so a pause landing partway through a Tic's several revealed moves (this game's declared-move-secrecy model means more than one move can legitimately reveal on the same Tic) resumes correctly — re-entering `processTic` after a pause does NOT re-reveal (and therefore re-roll/re-post-to-chat) an already-revealed move, but DOES still resolve any of that Tic's revealed moves a prior call didn't reach before pausing (`processTic` now selects by `reveal_posted = 1 AND interactions_resolved = 0`, not "just revealed this call"). Every one of `resolveAttack`'s return paths — including the two that previously left `interactions_resolved` unset (a Roll-less move, and "no eligible target") — now leaves that flag in a state this query can trust.
+  - **Still not wired into any live socket handler or client UI** — `server/index.js` is still completely untouched (no `combat:dodge_prompt`/`combat:resolve_dodge` socket events exist yet, the manual Tic-stepping flow is still what's live). This is a deliberate scope cut, not an oversight: the plan's own Phase D checklist ("Wire `pair_round_resolutions` status/pending state, `combat:dodge_prompt`/`combat:resolve_dodge`, adapt `combat:resolve_move_conflict`'s trigger, boot-time resume sweep") reads as socket-level wiring, but doing that wiring now — before Phase E's cutscene UI exists for a GM to actually see and answer a Dodge prompt — would either require building throwaway UI early or silently auto-deciding every Dodge in production, a real behavior regression from today's fully-manual-but-correct flow. The socket contract (`combat:dodge_prompt`/`combat:resolve_dodge`, `combat:round_event`) is already implemented at the `io.emit`/function-signature level in `roundResolution.js` and ready for Phase E to call directly.
+  - Verified via 6 new scenarios in `server/test/roundResolution.test.js` (11 total, up from 5): a full-coverage Dodge pausing with the correct `pending_dodge_json` shape and zero damage applied before resume, Successful Full Dodge (zero damage anywhere), Successful Partial Dodge (damage lands on the *defender's own* blocking Stat, same Attack Target replacement rule Block uses), a Block-too-late collision pausing and Forfeit deleting the colliding move, the same pausing with Postpone shifting the collision forward *and* recursing into a second real collision, and a restart-simulation test (`resolved_through_tic` rolled backward on an already-`running` resolution row, `advancePairResolution` re-invoked, confirms the DB's damage/status end state converges to the identical result rather than double-applying — proving the crash-recovery property the module's own header comment claims, not just asserting it). Full regression: `npm test` (169/169) and `scripts/e2e.mjs` (278/281, the same 3 pre-existing failures as Phases B/C — zero regression, `server/index.js` itself still untouched).
 - **Phase E — `RoundCutscene.jsx` + chat replay: not started.**
 - **Phase F — Cleanup + this plan's own "Combat Timing"/"Combat Automation" sections rewritten in full (not just appended to, since enough of the described mechanic changes that another append-only bullet would misrepresent how the system actually works): not started.**
 
@@ -751,22 +754,21 @@ CREATE TABLE combat_pairs (
 -- 'paused_dodge'/'paused_conflict' while waiting on the one human decision
 -- that round still needs (a Dodge Successful/Failed call, or a
 -- move-conflict Forfeit/Postpone), 'complete' once the round has fully
--- resolved. **Phase C (done):** `advancePairResolution` in
--- `server/roundResolution.js` creates/updates these rows for real, but
--- 'paused_dodge'/'paused_conflict' aren't actually reached yet — this
--- phase auto-resolves both pause-worthy moments with a placeholder
--- decision instead of truly pausing (see the mechanic section's Phase C
--- status bullet), so status only ever holds 'running'/'complete' so far;
--- pending_dodge_json/pending_conflict_json stay unused until Phase D wires
--- the real pause. resolved_through_tic is the crash-safe resume point (see
--- the mechanic section's "surviving a restart mid-round" note) —
--- reprocessing a Tic from here is always idempotent, so a crash between
--- "computed" and "wrote it" just cheaply redoes that one Tic on the next
--- call. pending_dodge_json/pending_conflict_json will hold the exact
--- prompt payload while paused (non-null only in the matching status), so a
--- reconnecting/newly-connecting GM or affected player gets it "for free"
--- off the regular combat snapshot instead of needing separate resync
--- plumbing — Phase D's job.
+-- resolved. **Phase D (done, engine-level):** all four status values are
+-- real — `advancePairResolution`/`resolveDodge`/`resolveMoveConflict` in
+-- `server/roundResolution.js` genuinely pause at a full-coverage Dodge or a
+-- Block-too-late move conflict and persist pending_dodge_json/
+-- pending_conflict_json for exactly that reason. resolved_through_tic is
+-- the crash-safe resume point (see the mechanic section's "surviving a
+-- restart mid-round" note) — reprocessing a Tic from here is always
+-- idempotent (guarded by declared_moves.interactions_resolved), so a crash
+-- between "computed" and "wrote it" just cheaply redoes that one Tic on
+-- the next call, verified by an actual restart-simulation test, not just
+-- asserted. pending_dodge_json/pending_conflict_json hold the exact prompt
+-- payload while paused (non-null only in the matching status) — the "a
+-- reconnecting GM/player gets it for free off the regular combat snapshot"
+-- part of this design is still Phase E's job, once combat:updated actually
+-- folds a pending decision into its own payload for a live client to read.
 CREATE TABLE IF NOT EXISTS pair_round_resolutions (
   id INTEGER PRIMARY KEY,
   pair_index INTEGER NOT NULL,
@@ -790,10 +792,16 @@ CREATE TABLE IF NOT EXISTS pair_round_resolutions (
 -- replay are guaranteed identical by construction, never two
 -- representations kept in sync by hand. pair_index/round_number are
 -- denormalized off pair_round_resolutions purely to avoid a join for "this
--- pair's log." **Phase C (done):** populated for real by
--- `advancePairResolution` — every `type` in the catalogue below is
--- actually emitted except `dodge_resolved`/`move_conflict_resolved`'s real
--- (non-placeholder) form, which needs Phase D's actual pause/resume.
+-- pair's log." **Phase D (done, engine-level):** every `type` in the
+-- catalogue below is now emitted in its real, non-placeholder form,
+-- including `dodge_resolved`/`move_conflict_resolved` — `resolveDodge`/
+-- `resolveMoveConflict` in `server/roundResolution.js` post these once the
+-- GM/player's actual decision arrives, not an auto-decided stand-in.
+-- Nothing consumes these rows over a live socket yet, though —
+-- `combat:round_event` broadcasts correctly, and the REST replay endpoint
+-- (`GET /api/combat/round-replay/:resolutionId`) that reads them back for
+-- "Watch Round X" is still Phase E's job, same as the client that renders
+-- either feed.
 CREATE TABLE IF NOT EXISTS round_events (
   id INTEGER PRIMARY KEY,
   resolution_id INTEGER NOT NULL REFERENCES pair_round_resolutions(id) ON DELETE CASCADE,
