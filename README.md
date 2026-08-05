@@ -164,3 +164,6 @@ relabeled "Discipline" in the UI, and every move always shows its discipline (or
 
 **Testing:** `npm test` runs the game-logic unit tests. `scripts/e2e.mjs` is a full
 integration pass (run it against a freshly started server with a clean `local.db`).
+`npm run test:mobile` runs the Playwright mobile device-matrix specs (`e2e-mobile/`,
+`playwright.config.js`) against a running dev server — see `vttprojectplan.md`'s Mobile
+Readiness section for the covered device/viewport matrix.

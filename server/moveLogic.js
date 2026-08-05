@@ -147,3 +147,80 @@ export function sanitizeCustomRollSize(value) {
   const n = Math.trunc(Number(value));
   return CUSTOM_ROLL_SIZES.includes(n) ? n : null;
 }
+
+// Attack Target (Change 001): which Stats a Roll's damage may land on. The
+// Move template stores the same 6-slot abstract vocabulary as a Roll itself
+// (ROLL_SLOT_NAMES) — Hand/Leg only resolve to a concrete side once a
+// specific attack is declared (see expandAttackTargets below), same as a
+// Roll's own ambiguous slots resolve at roll time, not creation time.
+export const ATTACK_TARGET_NAMES = ROLL_SLOT_NAMES;
+
+// The 8 concrete Stats a die/damage application can actually target.
+export const CONCRETE_ATTACK_TARGET_NAMES = [
+  'Skull',
+  'Brain',
+  'Left Hand',
+  'Stamina',
+  'Body',
+  'Right Hand',
+  'Left Leg',
+  'Right Leg',
+];
+
+// Unlike sanitizeRollSlots (which preserves input order), this returns
+// canonical ATTACK_TARGET_NAMES order — MoveCard/MoveCreator display and the
+// Chat/Apply "effective target" line are more legible in a fixed order than
+// in whatever order the client happened to send.
+export function sanitizeAttackTargets(list) {
+  const supplied = new Set(Array.isArray(list) ? list : []);
+  return ATTACK_TARGET_NAMES.filter((name) => supplied.has(name));
+}
+
+// Expands a Move template's abstract attack_targets (or any subset of
+// ATTACK_TARGET_NAMES) into concrete Stat names, resolving Hand/Leg to one
+// or both sides via the same appendage_choice a declared move already
+// records for its own ambiguous Roll slot. appendageChoice = null expands to
+// both sides (used for the pre-Block "either side is a valid target" case);
+// 'left'/'right' narrows to just that side (used once a Successful Block's
+// own declared side is known).
+export function expandAttackTargets(list, appendageChoice = null) {
+  const slots = sanitizeAttackTargets(list);
+  const concrete = [];
+
+  for (const slot of slots) {
+    if (slot === 'Hand') {
+      concrete.push(
+        ...(appendageChoice === 'left'
+          ? ['Left Hand']
+          : appendageChoice === 'right'
+            ? ['Right Hand']
+            : ['Left Hand', 'Right Hand'])
+      );
+    } else if (slot === 'Leg') {
+      concrete.push(
+        ...(appendageChoice === 'left'
+          ? ['Left Leg']
+          : appendageChoice === 'right'
+            ? ['Right Leg']
+            : ['Left Leg', 'Right Leg'])
+      );
+    } else {
+      concrete.push(slot);
+    }
+  }
+
+  return [...new Set(concrete)];
+}
+
+// Parses a declared_moves.effective_attack_targets JSON column, dropping
+// anything that isn't a recognized concrete Stat name.
+export function parseConcreteAttackTargets(json) {
+  let list;
+  try {
+    list = JSON.parse(json);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(list)) return [];
+  return list.filter((name) => CONCRETE_ATTACK_TARGET_NAMES.includes(name));
+}

@@ -6,6 +6,7 @@ import { getCombat } from '../lib/api.js';
 import { useRole } from '../roleContext.jsx';
 import { TicCounterCentral } from './CombatArena.jsx';
 import { onDraggingMoveChange } from '../lib/dragMoveState.js';
+import { useIsDesktop } from '../lib/useMediaQuery.js';
 import RollDialog from './RollDialog.jsx';
 import MoveConflictDialog from './MoveConflictDialog.jsx';
 
@@ -53,6 +54,7 @@ function viewerDeclarationStatus({ pairs, participants }, role, characterId) {
 export default function CombatHeaderBar() {
   const { role, characterId } = useRole();
   const location = useLocation();
+  const isDesktop = useIsDesktop();
   const [combat, setCombat] = useState(null);
   const [hoverTic, setHoverTic] = useState(null);
   const [draggingMove, setDraggingMove] = useState(null);
@@ -252,6 +254,13 @@ export default function CombatHeaderBar() {
 
   const { phase, roundNumber, currentTic, roundStartTic, roundLength } = combat;
   const onArena = location.pathname === '/combat';
+  // Mobile readiness (Change 002) §7.5: the global strip's own Tic Counter
+  // would otherwise duplicate the Arena page's own big centerpiece one on a
+  // narrow screen — collapses to a compact "Tic N/L" badge below `md`
+  // whenever the Arena's own counter is already on screen; every other
+  // mobile page still gets the full interactive counter (it's the only Tic
+  // Counter visible there), same as desktop always does everywhere.
+  const showFullCounter = isDesktop || !onArena;
   const everyoneReady =
     phase === 'declaration' && (combat.pairs ?? []).every((p) => p.declaring_side == null);
   // Same "who still has something recovering here from last round" badge
@@ -307,21 +316,27 @@ export default function CombatHeaderBar() {
           </motion.span>
         )}
       </AnimatePresence>
-      <TicCounterCentral
-        phase={phase}
-        currentTic={currentTic}
-        roundStartTic={roundStartTic}
-        roundLength={roundLength}
-        draggingMove={draggingMove}
-        hoverTic={hoverTic}
-        setHoverTic={setHoverTic}
-        onDrop={() => (e) => e.preventDefault()}
-        declaredMoves={[]}
-        showDeclaredPreview={false}
-        overflowTics={overflowTics}
-        role={role}
-        label="Tic Counter"
-      />
+      {showFullCounter ? (
+        <TicCounterCentral
+          phase={phase}
+          currentTic={currentTic}
+          roundStartTic={roundStartTic}
+          roundLength={roundLength}
+          draggingMove={draggingMove}
+          hoverTic={hoverTic}
+          setHoverTic={setHoverTic}
+          onDrop={() => (e) => e.preventDefault()}
+          declaredMoves={[]}
+          showDeclaredPreview={false}
+          overflowTics={overflowTics}
+          role={role}
+          label="Tic Counter"
+        />
+      ) : (
+        <span className="font-display panel-cut-sm border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs font-bold text-zinc-300">
+          Tic {combat.relativeTic}/{roundLength}
+        </span>
+      )}
       {!onArena && (
         <Link
           to="/combat"

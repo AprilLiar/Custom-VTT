@@ -55,7 +55,7 @@ function AutomationEditor({ automations, onChange }) {
           <button
             type="button"
             onClick={() => remove(i)}
-            className="panel-cut-sm px-1 text-zinc-600 hover:text-red-400"
+            className="flex h-11 w-11 shrink-0 items-center justify-center panel-cut-sm text-zinc-600 hover:text-red-400 md:h-auto md:w-auto md:px-1"
           >
             ✕
           </button>
@@ -131,6 +131,9 @@ export default function MoveCreator({
   const [rollModifier, setRollModifier] = useState(initial?.roll_modifier ?? 0);
   const [rollType, setRollType] = useState(initial?.roll_type ?? 'stat');
   const [customRollSize, setCustomRollSize] = useState(initial?.custom_roll_size ?? null);
+  // Attack Target (Change 001): no default selection for a brand-new move —
+  // an empty array is a valid, explicit "no target" rather than unset data.
+  const [attackTargets, setAttackTargets] = useState(initial?.attack_targets ?? []);
   const [tagIds, setTagIds] = useState(initial?.tag_ids ?? []);
   const [image, setImage] = useState(undefined); // undefined = keep existing
   const [frames, setFrames] = useState({
@@ -183,6 +186,9 @@ export default function MoveCreator({
   const toggleRollSlot = (slot) =>
     setRollSlots((prev) => (prev.includes(slot) ? prev.filter((s) => s !== slot) : [...prev, slot]));
 
+  const toggleAttackTarget = (slot) =>
+    setAttackTargets((prev) => (prev.includes(slot) ? prev.filter((s) => s !== slot) : [...prev, slot]));
+
   // Mutually exclusive (decided): switching Roll type clears the other
   // type's own picks, same as toggleDefault clearing Style above — a stat
   // slot and a custom base die never coexist on the same move.
@@ -218,6 +224,7 @@ export default function MoveCreator({
       rollModifier,
       rollType,
       customRollSize,
+      attackTargets,
       tagIds,
       startupTics: frames.startup,
       activeTics: frames.active,
@@ -471,6 +478,35 @@ export default function MoveCreator({
             </div>
           </>
         )}
+      </div>
+
+      <div>
+        <p className="mb-1 text-xs font-semibold uppercase text-zinc-500">
+          Attack Target ({attackTargets.length} selected — none is valid)
+        </p>
+        <p className="mb-1.5 text-xs text-zinc-500">
+          Which Stats this move's damage may be applied to. Only meaningful when this move has a
+          Roll — a move with no Roll isn't an Attack regardless of this selection.
+        </p>
+        <div className="flex flex-wrap items-center gap-1.5">
+          {ROLL_SLOT_NAMES.map((slot) => {
+            const selected = attackTargets.includes(slot);
+            return (
+              <button
+                key={slot}
+                type="button"
+                onClick={() => toggleAttackTarget(slot)}
+                className={`panel-cut border px-2 py-1 text-xs font-semibold ${
+                  selected
+                    ? 'border-brand-500 bg-brand-600/30 text-brand-200'
+                    : 'border-zinc-700 bg-zinc-800 text-zinc-400 hover:border-zinc-500'
+                }`}
+              >
+                {ROLL_SLOT_LABELS[slot]}
+              </button>
+            );
+          })}
+        </div>
       </div>
 
       <div>

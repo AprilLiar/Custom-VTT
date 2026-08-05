@@ -100,7 +100,7 @@ export default function DieWidget({
                 ? 'Half-Damage marked — click to clear'
                 : 'Mark Half-Damage (a manual click only toggles this; the step-down effect is automated-only)'
             }
-            className={`panel-cut-sm border px-1 py-2 text-xs font-bold ${
+            className={`min-h-11 min-w-8 panel-cut-sm border px-1 py-2 text-xs font-bold md:min-h-0 ${
               die.half_damage
                 ? 'border-amber-600 bg-amber-900/40 text-amber-300'
                 : 'border-zinc-700 text-zinc-600 hover:bg-zinc-800 hover:text-zinc-300'
@@ -160,7 +160,7 @@ export default function DieWidget({
           <button
             onClick={() => step('up')}
             title={incapacitated ? 'Revive to d4' : 'Step up'}
-            className="panel-cut-sm px-1 text-green-500 hover:bg-green-900/30"
+            className="min-h-9 min-w-8 panel-cut-sm px-1 text-green-500 hover:bg-green-900/30 md:min-h-0"
           >
             ▲
           </button>
@@ -168,7 +168,7 @@ export default function DieWidget({
             onClick={() => step('down')}
             disabled={incapacitated}
             title="Step down"
-            className="panel-cut-sm px-1 text-red-500 hover:bg-red-900/30 disabled:opacity-30"
+            className="min-h-9 min-w-8 panel-cut-sm px-1 text-red-500 hover:bg-red-900/30 disabled:opacity-30 md:min-h-0"
           >
             ▼
           </button>

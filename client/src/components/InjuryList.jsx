@@ -104,14 +104,14 @@ function Row({ injury, onSave, onRemove }) {
       <button
         onClick={startEdit}
         title="Edit"
-        className="panel-cut-sm px-1.5 text-zinc-600 hover:bg-zinc-800 hover:text-zinc-300"
+        className="flex h-11 w-11 shrink-0 items-center justify-center panel-cut-sm text-zinc-600 hover:bg-zinc-800 hover:text-zinc-300 md:h-auto md:w-auto md:px-1.5"
       >
         ✎
       </button>
       <button
         onClick={onRemove}
         title="Remove"
-        className="panel-cut-sm px-1.5 text-zinc-600 hover:bg-red-900/40 hover:text-red-400"
+        className="flex h-11 w-11 shrink-0 items-center justify-center panel-cut-sm text-zinc-600 hover:bg-red-900/40 hover:text-red-400 md:h-auto md:w-auto md:px-1.5"
       >
         ✕
       </button>
@@ -157,45 +157,47 @@ export default function InjuryList({
           ))}
         </ul>
       )}
-      <form onSubmit={add} className="mt-3 flex flex-wrap gap-2">
+      <form onSubmit={add} className="mt-3 flex flex-col gap-2 sm:flex-row sm:flex-wrap">
         <input
           value={name}
           onChange={(e) => setName(e.target.value)}
           placeholder="Injury"
-          className="w-1/3 panel-cut-sm border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm outline-none focus:border-brand-500"
+          className="w-full panel-cut-sm border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm outline-none focus:border-brand-500 sm:w-1/3"
         />
         <input
           value={effect}
           onChange={(e) => setEffect(e.target.value)}
           placeholder="Effect (optional)"
-          className="min-w-0 flex-1 panel-cut-sm border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm outline-none focus:border-brand-500"
+          className="w-full min-w-0 panel-cut-sm border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm outline-none focus:border-brand-500 sm:flex-1"
         />
-        <select
-          value={slotName}
-          onChange={(e) => setSlotName(e.target.value)}
-          className="panel-cut-sm border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm text-zinc-300 outline-none focus:border-brand-500"
-        >
-          <option value="">No stat penalty</option>
-          {SLOTS.map((s) => (
-            <option key={s} value={s}>
-              {s}
-            </option>
-          ))}
-        </select>
-        {slotName && (
-          <input
-            type="number"
-            min={0}
-            value={penalty}
-            onChange={(e) => setPenalty(Math.max(0, Math.trunc(Number(e.target.value) || 0)))}
-            title="Ranks docked from this slot's base value on revert"
-            className="w-20 panel-cut-sm border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm outline-none focus:border-brand-500"
-          />
-        )}
+        <div className="flex gap-2">
+          <select
+            value={slotName}
+            onChange={(e) => setSlotName(e.target.value)}
+            className="flex-1 panel-cut-sm border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm text-zinc-300 outline-none focus:border-brand-500 sm:flex-none"
+          >
+            <option value="">No stat penalty</option>
+            {SLOTS.map((s) => (
+              <option key={s} value={s}>
+                {s}
+              </option>
+            ))}
+          </select>
+          {slotName && (
+            <input
+              type="number"
+              min={0}
+              value={penalty}
+              onChange={(e) => setPenalty(Math.max(0, Math.trunc(Number(e.target.value) || 0)))}
+              title="Ranks docked from this slot's base value on revert"
+              className="w-20 shrink-0 panel-cut-sm border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm outline-none focus:border-brand-500"
+            />
+          )}
+        </div>
         <button
           type="submit"
           disabled={!name.trim()}
-          className="panel-cut-sm bg-brand-600 px-3 text-sm font-semibold hover:bg-brand-500 disabled:opacity-40"
+          className="min-h-11 panel-cut-sm bg-brand-600 px-3 text-sm font-semibold hover:bg-brand-500 disabled:opacity-40 sm:min-h-0"
         >
           Add
         </button>

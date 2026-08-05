@@ -1,15 +1,46 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { AnimatePresence, motion } from 'framer-motion';
 import { useRole } from '../roleContext.jsx';
 import { socket } from '../socket.js';
 import { getCharacter } from '../lib/api.js';
+import { useSocketRefresh } from '../lib/connection.js';
 import CoreStatsTab from './CoreStatsTab.jsx';
 import StancesTab from './StancesTab.jsx';
 import MovesTab from './MovesTab.jsx';
 import RoleplayTab from './RoleplayTab.jsx';
 import PerksTab from './PerksTab.jsx';
 import CountersTab from './CountersTab.jsx';
+
+// Mobile readiness (Change 002) §8.1: the active tab scrolls itself into
+// view inside the row's own horizontal scroller — same pattern as the
+// Combat Arena's Tic squares (TicSquare in CombatArena.jsx).
+function TabButton({ tab: t, active, built, onClick }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    if (active) ref.current?.scrollIntoView({ inline: 'center', block: 'nearest', behavior: 'smooth' });
+  }, [active]);
+  return (
+    <button
+      ref={ref}
+      disabled={!built}
+      onClick={onClick}
+      title={!built ? `Coming in Phase ${t.phase}` : undefined}
+      className={`relative min-h-11 shrink-0 snap-center whitespace-nowrap px-4 py-2 font-display text-sm font-semibold uppercase tracking-wide transition-colors ${
+        active ? 'text-zinc-100' : 'text-zinc-600'
+      } ${!built ? 'cursor-not-allowed opacity-50' : 'hover:text-zinc-300'}`}
+    >
+      {t.label}
+      {active && (
+        <motion.span
+          layoutId="tab-underline"
+          transition={{ type: 'spring', stiffness: 500, damping: 40 }}
+          className="absolute inset-x-2 -bottom-px h-0.5 bg-gradient-to-r from-brand-500 to-brand-400"
+        />
+      )}
+    </button>
+  );
+}
 
 const TABS = [
   { key: 'core', label: 'Core Stats', phase: 1 },
@@ -40,6 +71,12 @@ export default function CharacterSheet() {
       cancelled = true;
     };
   }, [characterId, navigate]);
+
+  // Mobile readiness (Change 002) §11.2: reconnect/resume resync — the
+  // targeted socket listeners below already patch most live changes, but a
+  // broadcast missed while disconnected/backgrounded never replays, so this
+  // re-fetches the whole sheet fresh on either.
+  useSocketRefresh(() => getCharacter(characterId).then(setData).catch(() => {}));
 
   useEffect(() => {
     const onCharacterUpdated = (character) => {
@@ -209,39 +246,29 @@ export default function CharacterSheet() {
 
   return (
     <div className="mx-auto max-w-3xl">
-      <div className="mb-4 flex items-center gap-1 overflow-x-auto overflow-y-hidden border-b border-zinc-800">
-        {TABS.map((t) => {
-          const built = BUILT_TABS.includes(t.key);
-          return (
-            <button
-              key={t.key}
-              disabled={!built}
-              onClick={() => setTab(t.key)}
-              title={!built ? `Coming in Phase ${t.phase}` : undefined}
-              className={`relative whitespace-nowrap px-4 py-2 font-display text-sm font-semibold uppercase tracking-wide transition-colors ${
-                tab === t.key ? 'text-zinc-100' : 'text-zinc-600'
-              } ${!built ? 'cursor-not-allowed opacity-50' : 'hover:text-zinc-300'}`}
-            >
-              {t.label}
-              {tab === t.key && (
-                <motion.span
-                  layoutId="tab-underline"
-                  transition={{ type: 'spring', stiffness: 500, damping: 40 }}
-                  className="absolute inset-x-2 -bottom-px h-0.5 bg-gradient-to-r from-brand-500 to-brand-400"
-                />
-              )}
-            </button>
-          );
-        })}
-        {activeStance && (
+      {/* Mobile readiness (Change 002) §8.1: sticky under the mobile top
+          bar so it stays reachable while a tall tab's content scrolls;
+          scroll-snap-x makes the horizontal tab scroll land cleanly on
+          each tab instead of stopping mid-button. The active-stance badge
+          moved to its own row below (was ml-auto inside this same
+          scroller) so it can no longer widen the tab strip's own scroll
+          content on a narrow phone. */}
+      <div className="sticky top-0 z-10 -mx-2 flex items-center gap-1 overflow-x-auto overflow-y-hidden bg-zinc-950 px-2 [scrollbar-width:none] [scroll-snap-type:x_proximity] md:mx-0 md:bg-transparent md:px-0">
+        {TABS.map((t) => (
+          <TabButton key={t.key} tab={t} active={tab === t.key} built={BUILT_TABS.includes(t.key)} onClick={() => setTab(t.key)} />
+        ))}
+      </div>
+      {activeStance && (
+        <div className="mb-2 mt-1.5 flex justify-end border-b border-zinc-800 pb-2">
           <span
             title="Active stance"
-            className="ml-auto whitespace-nowrap bg-brand-600/30 px-3 py-1 text-xs font-semibold text-brand-300 [clip-path:polygon(8%_0,100%_0,92%_100%,0_100%)]"
+            className="whitespace-nowrap bg-brand-600/30 px-3 py-1 text-xs font-semibold text-brand-300 [clip-path:polygon(8%_0,100%_0,92%_100%,0_100%)]"
           >
             {activeStance.name}
           </span>
-        )}
-      </div>
+        </div>
+      )}
+      {!activeStance && <div className="mb-4 border-b border-zinc-800" />}
 
       <AnimatePresence mode="wait">
         <motion.div

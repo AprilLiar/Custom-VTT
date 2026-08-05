@@ -51,7 +51,11 @@ function Pips({ current, target }) {
 function CounterRow({ counter }) {
   return (
     <div className="panel-cut-lg border border-zinc-800 bg-zinc-900 p-3">
-      <div className="flex items-center gap-2">
+      {/* Mobile readiness (Change 002) §8.3: flex-wrap lets this row break
+          onto multiple lines on a phone instead of squeezing the reward
+          tag, pip count, checkbox, and delete button into an unreadable
+          single line — desktop stays single-line since everything fits. */}
+      <div className="flex flex-wrap items-center gap-2">
         <span className="font-bold text-zinc-100">{counter.name}</span>
         <RewardSelect counter={counter} />
         <span className="font-mono text-xs text-zinc-500">
@@ -68,7 +72,7 @@ function CounterRow({ counter }) {
         <button
           onClick={() => socket.emit('counter:delete', { counterId: counter.id })}
           title="Delete"
-          className="panel-cut-sm px-1.5 text-zinc-600 hover:bg-red-900/40 hover:text-red-400"
+          className="flex h-11 w-11 shrink-0 items-center justify-center panel-cut-sm text-zinc-600 hover:bg-red-900/40 hover:text-red-400 md:h-8 md:w-8"
         >
           ✕
         </button>
@@ -77,7 +81,7 @@ function CounterRow({ counter }) {
         <button
           onClick={() => socket.emit('counter:adjust', { counterId: counter.id, delta: -1 })}
           disabled={counter.current_pips <= 0}
-          className="h-8 w-8 shrink-0 panel-cut-sm border border-zinc-700 text-lg text-red-400 hover:bg-zinc-800 disabled:opacity-30"
+          className="h-11 w-11 shrink-0 panel-cut-sm border border-zinc-700 text-lg text-red-400 hover:bg-zinc-800 disabled:opacity-30 md:h-8 md:w-8"
         >
           −
         </button>
@@ -85,7 +89,7 @@ function CounterRow({ counter }) {
         <button
           onClick={() => socket.emit('counter:adjust', { counterId: counter.id, delta: 1 })}
           disabled={counter.current_pips >= counter.target_pips}
-          className="h-8 w-8 shrink-0 panel-cut-sm border border-zinc-700 text-lg text-green-400 hover:bg-zinc-800 disabled:opacity-30"
+          className="h-11 w-11 shrink-0 panel-cut-sm border border-zinc-700 text-lg text-green-400 hover:bg-zinc-800 disabled:opacity-30 md:h-8 md:w-8"
         >
           +
         </button>
@@ -160,7 +164,7 @@ export default function CountersTab({ data }) {
         <button
           type="submit"
           disabled={!name.trim()}
-          className="panel-cut-sm bg-brand-600 px-3 py-1.5 text-sm font-semibold hover:bg-brand-500 disabled:opacity-40"
+          className="min-h-11 panel-cut-sm bg-brand-600 px-3 py-1.5 text-sm font-semibold hover:bg-brand-500 disabled:opacity-40 md:min-h-0"
         >
           + New Counter
         </button>

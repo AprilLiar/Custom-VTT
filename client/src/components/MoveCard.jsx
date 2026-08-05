@@ -200,6 +200,17 @@ export default function MoveCard({
           </div>
         )}
 
+        {hasRoll && (
+          <div className="flex flex-wrap items-center gap-1.5 text-xs">
+            <span className="font-semibold uppercase text-zinc-500">Attack Target:</span>
+            <span className={move.attack_targets?.length ? 'text-zinc-400' : 'text-zinc-600'}>
+              {move.attack_targets?.length
+                ? move.attack_targets.map((s) => ROLL_SLOT_LABELS[s] ?? s).join(' + ')
+                : 'None'}
+            </span>
+          </div>
+        )}
+
         {(style || tags.length > 0) && (
           <div className="flex flex-wrap items-center gap-1">
             {style && (

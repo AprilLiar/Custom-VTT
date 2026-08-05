@@ -16,6 +16,11 @@ import {
   ALL_TRIGGERS,
   sanitizeRollType,
   sanitizeCustomRollSize,
+  ATTACK_TARGET_NAMES,
+  CONCRETE_ATTACK_TARGET_NAMES,
+  sanitizeAttackTargets,
+  expandAttackTargets,
+  parseConcreteAttackTargets,
 } from '../moveLogic.js';
 
 test('frames clamp to 0-10 and coerce junk', () => {
@@ -207,4 +212,78 @@ test('sanitizeCustomRollSize: only a valid die size survives, everything else is
   assert.equal(sanitizeCustomRollSize(7), null);
   assert.equal(sanitizeCustomRollSize('junk'), null);
   assert.equal(sanitizeCustomRollSize(undefined), null);
+});
+
+test('sanitizeAttackTargets: accepts all six values, always in canonical order', () => {
+  assert.deepEqual(
+    sanitizeAttackTargets(['Leg', 'Skull', 'Hand', 'Brain', 'Body', 'Stamina']),
+    ATTACK_TARGET_NAMES
+  );
+});
+
+test('sanitizeAttackTargets: dedupes', () => {
+  assert.deepEqual(sanitizeAttackTargets(['Skull', 'Skull', 'Hand']), ['Skull', 'Hand']);
+});
+
+test('sanitizeAttackTargets: drops unknown and non-array input', () => {
+  assert.deepEqual(sanitizeAttackTargets(['Skull', 'Left Hand', 'Wing']), ['Skull']);
+  assert.deepEqual(sanitizeAttackTargets(null), []);
+  assert.deepEqual(sanitizeAttackTargets(undefined), []);
+});
+
+test('sanitizeAttackTargets: empty array stays empty (a valid Attack Target value)', () => {
+  assert.deepEqual(sanitizeAttackTargets([]), []);
+});
+
+test('expandAttackTargets: Hand + Leg with no appendage choice expands to both sides', () => {
+  assert.deepEqual(expandAttackTargets(['Hand', 'Leg']), [
+    'Left Hand',
+    'Right Hand',
+    'Left Leg',
+    'Right Leg',
+  ]);
+});
+
+test("expandAttackTargets: appendageChoice = 'left' narrows to Left Hand/Left Leg only", () => {
+  assert.deepEqual(expandAttackTargets(['Hand', 'Leg'], 'left'), ['Left Hand', 'Left Leg']);
+});
+
+test("expandAttackTargets: appendageChoice = 'right' narrows to Right Hand/Right Leg only", () => {
+  assert.deepEqual(expandAttackTargets(['Hand', 'Leg'], 'right'), ['Right Hand', 'Right Leg']);
+});
+
+test('expandAttackTargets: plain slots pass through alongside a resolved appendage', () => {
+  // sanitizeAttackTargets normalizes to canonical ATTACK_TARGET_NAMES order
+  // first (Hand before Body), so the expansion reflects that order too.
+  assert.deepEqual(expandAttackTargets(['Body', 'Hand'], 'right'), ['Right Hand', 'Body']);
+});
+
+test('expandAttackTargets: empty input yields empty', () => {
+  assert.deepEqual(expandAttackTargets([]), []);
+});
+
+test('parseConcreteAttackTargets: parses valid JSON array of concrete names', () => {
+  assert.deepEqual(
+    parseConcreteAttackTargets('["Skull","Right Hand"]'),
+    ['Skull', 'Right Hand']
+  );
+});
+
+test('parseConcreteAttackTargets: drops abstract/unknown names and non-array/malformed JSON', () => {
+  assert.deepEqual(parseConcreteAttackTargets('["Skull","Hand","Wing"]'), ['Skull']);
+  assert.deepEqual(parseConcreteAttackTargets('not json'), []);
+  assert.deepEqual(parseConcreteAttackTargets('{}'), []);
+});
+
+test('CONCRETE_ATTACK_TARGET_NAMES has exactly the 8 concrete Stats', () => {
+  assert.deepEqual(CONCRETE_ATTACK_TARGET_NAMES, [
+    'Skull',
+    'Brain',
+    'Left Hand',
+    'Stamina',
+    'Body',
+    'Right Hand',
+    'Left Leg',
+    'Right Leg',
+  ]);
 });

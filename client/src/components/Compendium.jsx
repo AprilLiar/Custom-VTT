@@ -9,6 +9,7 @@ import FolderTreeNav from './FolderTreeNav.jsx';
 import MoveCard from './MoveCard.jsx';
 import MoveCreator from './MoveCreator.jsx';
 import Thumb from './Thumb.jsx';
+import DialogShell from './DialogShell.jsx';
 
 function TellManager({ tells, usedTellIds }) {
   const [editing, setEditing] = useState(null); // null | 'new' | tell
@@ -240,7 +241,7 @@ function GrantList({ move, characters, canLearn }) {
           <label
             key={c.id}
             title={!learnable && !granted ? 'No stance with this move’s style' : undefined}
-            className={`flex items-center gap-2 text-sm ${
+            className={`flex min-h-11 items-center gap-2 text-sm md:min-h-0 ${
               learnable || granted ? 'text-zinc-300' : 'text-zinc-600'
             }`}
           >
@@ -287,6 +288,7 @@ export default function MovesCompendium() {
   const [grantOpen, setGrantOpen] = useState(null);
   const [dropTarget, setDropTarget] = useState(null);
   const [currentFolder, setCurrentFolder] = useState(null); // folder id | null = root
+  const [mobileFoldersOpen, setMobileFoldersOpen] = useState(false);
   const [styleFilter, setStyleFilter] = useState(new Set()); // Set<attribute id> — OR'd together
   const toggleStyleFilter = (id) =>
     setStyleFilter((prev) => {
@@ -390,8 +392,42 @@ export default function MovesCompendium() {
   };
 
   return (
+    <div>
+      {/* Mobile readiness (Change 002) §9.2A: same fixed-sidebar-to-drawer
+          collapse as CharacterList's folder nav — see that component for
+          the full rationale. Filing a move into a Discipline already has a
+          tap-only path (Edit → Discipline dropdown in MoveCreator), so no
+          extra "move to folder" dialog is needed here, just the browse
+          drawer. */}
+      <button
+        onClick={() => setMobileFoldersOpen(true)}
+        className="mb-4 flex min-h-11 w-full items-center gap-2 panel-cut-sm border border-zinc-700 bg-zinc-900 px-3 text-left text-sm font-semibold text-zinc-300 hover:bg-zinc-800 md:hidden"
+      >
+        📁 {currentFolder == null ? 'All Moves' : folderPath(currentFolder, folders)}
+        <span className="ml-auto text-xs text-zinc-500">Change…</span>
+      </button>
+      {mobileFoldersOpen && (
+        <DialogShell title="Disciplines" onClose={() => setMobileFoldersOpen(false)} maxWidth="max-w-sm">
+          <FolderTreeNav
+            folders={folders}
+            currentFolderId={currentFolder}
+            onSelect={(id) => {
+              setCurrentFolder(id);
+              setMobileFoldersOpen(false);
+            }}
+            canManage={role === 'gm'}
+            onCreate={(name, parentFolderId) => socket.emit('folder:create', { name, parentFolderId })}
+            onRename={(folderId, name) => socket.emit('folder:rename', { folderId, name })}
+            onDelete={(folderId) => socket.emit('folder:delete', { folderId })}
+            onDropOnFolder={onDropOnFolder}
+            rootLabel="All Moves"
+            nounLabel="discipline"
+          />
+        </DialogShell>
+      )}
+
     <div className="flex gap-4">
-      <aside className="w-44 shrink-0">
+      <aside className="hidden w-44 shrink-0 md:block">
         <FolderTreeNav
           folders={folders}
           currentFolderId={currentFolder}
@@ -425,7 +461,7 @@ export default function MovesCompendium() {
                 key={attr.id}
                 onClick={() => toggleStyleFilter(attr.id)}
                 title={`Filter by ${attr.name}`}
-                className={`panel-cut-sm border p-1.5 ${
+                className={`flex h-11 w-11 shrink-0 items-center justify-center panel-cut-sm border p-1.5 md:h-auto md:w-auto ${
                   active
                     ? 'border-brand-500 bg-brand-600/30 text-brand-300'
                     : 'border-zinc-700 text-zinc-500 hover:border-zinc-500'
@@ -498,14 +534,14 @@ export default function MovesCompendium() {
                         {!move.is_default && (
                           <button
                             onClick={() => setGrantOpen(grantOpen === move.id ? null : move.id)}
-                            className="panel-cut-sm px-2 py-0.5 text-xs text-brand-400 hover:bg-brand-900/40"
+                            className="flex min-h-11 items-center panel-cut-sm px-2 py-0.5 text-xs text-brand-400 hover:bg-brand-900/40 md:min-h-0"
                           >
                             Grant… ({move.granted_character_ids.length})
                           </button>
                         )}
                         <button
                           onClick={() => setForm({ move })}
-                          className="panel-cut-sm px-2 py-0.5 text-xs text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300"
+                          className="flex min-h-11 items-center panel-cut-sm px-2 py-0.5 text-xs text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300 md:min-h-0"
                         >
                           Edit
                         </button>
@@ -515,7 +551,7 @@ export default function MovesCompendium() {
                               `Delete ${move.name}? It disappears from every character.`
                             ) && socket.emit('move:delete', { moveId: move.id })
                           }
-                          className="panel-cut-sm px-2 py-0.5 text-xs text-zinc-500 hover:bg-red-900/40 hover:text-red-400"
+                          className="flex min-h-11 items-center panel-cut-sm px-2 py-0.5 text-xs text-zinc-500 hover:bg-red-900/40 hover:text-red-400 md:min-h-0"
                         >
                           Delete
                         </button>
@@ -533,7 +569,7 @@ export default function MovesCompendium() {
       </div>
 
       {role === 'gm' && (
-        <aside className="hidden w-44 shrink-0 sm:block">
+        <aside className="hidden w-44 shrink-0 md:block">
           <h2 className="mb-2 text-xs font-bold uppercase tracking-wide text-zinc-500">
             Drag a move here
           </h2>
@@ -557,7 +593,7 @@ export default function MovesCompendium() {
                 >
                   <div className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden panel-cut-sm bg-zinc-800 text-sm font-bold text-zinc-600">
                     {src ? (
-                      <img src={src} alt="" className="h-full w-full object-cover" />
+                      <img src={src} alt="" loading="lazy" className="h-full w-full object-cover" />
                     ) : (
                       c.name.slice(0, 1).toUpperCase()
                     )}
@@ -569,6 +605,7 @@ export default function MovesCompendium() {
           </div>
         </aside>
       )}
+    </div>
     </div>
   );
 }

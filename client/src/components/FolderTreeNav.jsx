@@ -70,7 +70,7 @@ export default function FolderTreeNav({
         <button
           onClick={() => onSelect(node.id)}
           title={canManage ? `Drop a card here to file it under "${node.name}"` : undefined}
-          className={`min-w-0 flex-1 truncate panel-cut-sm px-2 py-1 text-left text-sm font-semibold ${
+          className={`min-h-11 min-w-0 flex-1 truncate panel-cut-sm px-2 py-1 text-left text-sm font-semibold md:min-h-0 ${
             currentFolderId === node.id
               ? 'bg-zinc-700 text-zinc-100'
               : 'text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200'
@@ -82,14 +82,14 @@ export default function FolderTreeNav({
           <span className="flex shrink-0 gap-0.5">
             <button
               onClick={() => renameFolder(node)}
-              className="panel-cut-sm px-1 text-xs text-zinc-600 hover:text-zinc-300"
+              className="flex h-11 w-11 shrink-0 items-center justify-center panel-cut-sm text-xs text-zinc-600 hover:text-zinc-300 md:h-auto md:w-auto md:px-1"
               title="Rename"
             >
               ✎
             </button>
             <button
               onClick={() => deleteFolder(node)}
-              className="panel-cut-sm px-1 text-xs text-zinc-600 hover:text-red-400"
+              className="flex h-11 w-11 shrink-0 items-center justify-center panel-cut-sm text-xs text-zinc-600 hover:text-red-400 md:h-auto md:w-auto md:px-1"
               title="Delete"
             >
               ✕
@@ -108,7 +108,7 @@ export default function FolderTreeNav({
       <button
         onClick={() => onSelect(null)}
         title={canManage ? 'Drop a card here to clear its folder' : undefined}
-        className={`w-full truncate panel-cut-sm px-2 py-1 text-left text-sm font-semibold ${
+        className={`min-h-11 w-full truncate panel-cut-sm px-2 py-1 text-left text-sm font-semibold md:min-h-0 ${
           currentFolderId == null
             ? 'bg-zinc-700 text-zinc-100'
             : 'text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200'
@@ -126,12 +126,12 @@ export default function FolderTreeNav({
             value={newName}
             onChange={(e) => setNewName(e.target.value)}
             placeholder={`New ${nounLabel}`}
-            className="w-0 min-w-0 flex-1 panel-cut-sm border border-zinc-700 bg-zinc-800 px-2 py-1 text-sm outline-none focus:border-brand-500"
+            className="min-h-11 w-0 min-w-0 flex-1 panel-cut-sm border border-zinc-700 bg-zinc-800 px-2 py-1 text-sm outline-none focus:border-brand-500 md:min-h-0"
           />
           <button
             type="submit"
             disabled={!newName.trim()}
-            className="shrink-0 panel-cut-sm bg-zinc-700 px-2 text-sm font-semibold text-zinc-200 hover:bg-zinc-600 disabled:opacity-40"
+            className="min-h-11 shrink-0 panel-cut-sm bg-zinc-700 px-2 text-sm font-semibold text-zinc-200 hover:bg-zinc-600 disabled:opacity-40 md:min-h-0"
           >
             +
           </button>

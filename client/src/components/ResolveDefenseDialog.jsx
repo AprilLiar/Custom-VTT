@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
-import { motion } from 'framer-motion';
 import { socket } from '../socket.js';
 import { getCombat } from '../lib/api.js';
+import DialogShell from './DialogShell.jsx';
 
 // Combat Automation (Phase 9, sub-phase 4 — 4.2's GM defense prompt).
 // GM-only, opened from the attacker's own chat roll card once the GM judges
@@ -22,6 +22,7 @@ export default function ResolveDefenseDialog({
   attackerResult,
   targetCandidateIds,
   characters,
+  moves, // flat move templates (roll_type/roll_slots) — see ChatPanel.jsx
   onClose,
 }) {
   const [targetId, setTargetId] = useState(
@@ -42,8 +43,24 @@ export default function ResolveDefenseDialog({
     (dm) => dm.characterId === targetId && dm.moveId != null
   );
 
+  // Attack Target (Change 001), rule 12: Block requires a base Stat Roll —
+  // there's no named stat on a Custom Roll (or no-Roll) move to turn into a
+  // replacement Attack Target. This mirrors the server's own authoritative
+  // rejection in combat:resolve_defense; disabling the tile here is purely a
+  // UX nicety, not the enforcement point.
+  const moveById = new Map((moves ?? []).map((m) => [m.id, m]));
+  const selectedDefenderMove = defenderDeclaredMoveId
+    ? moveById.get(defenderOptions.find((dm) => dm.id === defenderDeclaredMoveId)?.moveId)
+    : null;
+  const canBlock = Boolean(
+    selectedDefenderMove &&
+      selectedDefenderMove.roll_type === 'stat' &&
+      selectedDefenderMove.roll_slots?.length > 0
+  );
+
   const submit = () => {
     if (!defenderDeclaredMoveId || !defenseType || !outcome) return;
+    if (defenseType === 'block' && !canBlock) return;
     socket.emit('combat:resolve_defense', {
       attackerDeclaredMoveId,
       attackerResult,
@@ -64,11 +81,13 @@ export default function ResolveDefenseDialog({
     red: 'border-red-500 bg-red-900/40 text-red-300',
   };
 
-  const Tile = ({ active, onClick, children, color }) => (
+  const Tile = ({ active, onClick, children, color, disabled = false, title }) => (
     <button
       type="button"
       onClick={onClick}
-      className={`panel-cut-sm border py-4 text-center font-display text-sm font-bold uppercase tracking-wide transition-colors ${
+      disabled={disabled}
+      title={title}
+      className={`min-h-11 panel-cut-sm border py-4 text-center font-display text-sm font-bold uppercase tracking-wide transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
         active ? ACTIVE_TILE_CLASS[color] : 'border-zinc-700 text-zinc-400 hover:bg-zinc-800'
       }`}
     >
@@ -77,25 +96,8 @@ export default function ResolveDefenseDialog({
   );
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={onClose}>
-      <motion.div
-        onClick={(e) => e.stopPropagation()}
-        initial={{ scale: 0.85, opacity: 0, y: 10 }}
-        animate={{ scale: 1, opacity: 1, y: 0 }}
-        transition={{ type: 'spring', stiffness: 420, damping: 22 }}
-        className="flex w-full max-w-md flex-col gap-3 panel-cut-lg border border-zinc-700 bg-zinc-900 p-4"
-      >
-        <div className="flex items-center gap-2">
-          <h3 className="font-display font-bold uppercase tracking-wide text-zinc-100">Resolve Defense</h3>
-          <button
-            type="button"
-            onClick={onClose}
-            className="ml-auto panel-cut-sm px-2 text-zinc-500 hover:text-zinc-200"
-          >
-            ✕
-          </button>
-        </div>
-
+    <DialogShell title="Resolve Defense" onClose={onClose}>
+      <div className="flex flex-col gap-3">
         {targetId == null ? (
           <div className="space-y-2">
             <p className="text-sm text-zinc-400">Who defended?</p>
@@ -118,7 +120,12 @@ export default function ResolveDefenseDialog({
               Defending move
               <select
                 value={defenderDeclaredMoveId ?? ''}
-                onChange={(e) => setDefenderDeclaredMoveId(Number(e.target.value) || null)}
+                onChange={(e) => {
+                  setDefenderDeclaredMoveId(Number(e.target.value) || null);
+                  // A new move may no longer qualify as Block — force the GM
+                  // to re-pick rather than silently keep an invalid combo.
+                  setDefenseType(null);
+                }}
                 className="mt-1 w-full panel-cut-sm border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm text-zinc-100"
               >
                 <option value="">
@@ -137,7 +144,13 @@ export default function ResolveDefenseDialog({
             </label>
 
             <div className="grid grid-cols-2 gap-2">
-              <Tile active={defenseType === 'block'} onClick={() => setDefenseType('block')} color="sky">
+              <Tile
+                active={defenseType === 'block'}
+                onClick={() => setDefenseType('block')}
+                color="sky"
+                disabled={!canBlock}
+                title={canBlock ? undefined : 'This move has no base Stat Roll — it can’t serve as a Block'}
+              >
                 Block
               </Tile>
               <Tile active={defenseType === 'dodge'} onClick={() => setDefenseType('dodge')} color="sky">
@@ -153,9 +166,14 @@ export default function ResolveDefenseDialog({
 
             <button
               type="button"
-              disabled={!defenderDeclaredMoveId || !defenseType || !outcome}
+              disabled={
+                !defenderDeclaredMoveId ||
+                !defenseType ||
+                !outcome ||
+                (defenseType === 'block' && !canBlock)
+              }
               onClick={submit}
-              className="panel-cut-sm bg-brand-600 py-2 font-semibold text-white hover:bg-brand-500 disabled:cursor-not-allowed disabled:opacity-40"
+              className="min-h-11 panel-cut-sm bg-brand-600 py-2 font-semibold text-white hover:bg-brand-500 disabled:cursor-not-allowed disabled:opacity-40"
             >
               Resolve
             </button>
@@ -173,7 +191,7 @@ export default function ResolveDefenseDialog({
             )}
           </>
         )}
-      </motion.div>
-    </div>
+      </div>
+    </DialogShell>
   );
 }

@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react';
-import { motion } from 'framer-motion';
 import { socket } from '../socket.js';
 import { getCharacter } from '../lib/api.js';
 import { dieLabel } from '../lib/dice.js';
 import { ANATOMY } from '../lib/anatomy.js';
 import VitruvianFigure from './VitruvianFigure.jsx';
 import { portraitSrc, vitruvianSrc } from '../lib/image.js';
+import DialogShell from './DialogShell.jsx';
 
 // Combat Automation (Phase 9, sub-phase 4 — 4.1's Damage Application
 // dialog). `targetCandidateIds` is the roll's own target-candidate list
@@ -32,6 +32,8 @@ export default function DamageApplicationDialog({
   targetCandidateIds,
   initialHalfDamageSteps,
   attackerDeclaredMoveId,
+  allowedSlotNames, // Attack Target (Change 001): concrete Stat names damage may land on; undefined = unrestricted (manual GM damage)
+  attackTargetSource, // 'move' | 'block' | undefined
   characters,
   onClose,
 }) {
@@ -59,33 +61,22 @@ export default function DamageApplicationDialog({
     };
   }, [targetId]);
 
+  // Attack Target (Change 001): undefined = unrestricted (manual/ad-hoc GM
+  // damage with no attacking declared move behind it) — the server applies
+  // the exact same rule (see combat:apply_damage's own effective_attack_
+  // targets check), this is purely a UX preview of that same restriction.
+  const isAllowedTarget = (die) => allowedSlotNames == null || allowedSlotNames.includes(die.slot_name);
+
   const apply = (die) => {
-    if (!steps) return;
+    if (!steps || !isAllowedTarget(die)) return;
     socket.emit('combat:apply_damage', { dieId: die.id, halfDamageSteps: steps, attackerDeclaredMoveId });
   };
 
   const undo = () => socket.emit('combat:undo_damage');
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={onClose}>
-      <motion.div
-        onClick={(e) => e.stopPropagation()}
-        initial={{ scale: 0.85, opacity: 0, y: 10 }}
-        animate={{ scale: 1, opacity: 1, y: 0 }}
-        transition={{ type: 'spring', stiffness: 420, damping: 22 }}
-        className="flex max-h-[90vh] w-full max-w-3xl flex-col gap-3 overflow-y-auto panel-cut-lg border border-zinc-700 bg-zinc-900 p-4"
-      >
-        <div className="flex items-center gap-2">
-          <h3 className="font-display font-bold uppercase tracking-wide text-zinc-100">Apply Damage</h3>
-          <button
-            type="button"
-            onClick={onClose}
-            className="ml-auto panel-cut-sm px-2 text-zinc-500 hover:text-zinc-200"
-          >
-            ✕
-          </button>
-        </div>
-
+    <DialogShell title="Apply Damage" onClose={onClose} variant="fullscreen" maxWidth="max-w-3xl">
+      <div className="flex flex-col gap-3">
         {targetId == null ? (
           <div className="space-y-2">
             <p className="text-sm text-zinc-400">Uneven Combat — who was hit?</p>
@@ -119,7 +110,7 @@ export default function DamageApplicationDialog({
                 <button
                   type="button"
                   onClick={() => setSteps((s) => Math.max(0, s - 1))}
-                  className="h-8 w-8 panel-cut-sm border border-zinc-700 text-lg text-zinc-300 hover:bg-zinc-800"
+                  className="h-11 w-11 panel-cut-sm border border-zinc-700 text-lg text-zinc-300 hover:bg-zinc-800 md:h-8 md:w-8"
                 >
                   −
                 </button>
@@ -130,7 +121,7 @@ export default function DamageApplicationDialog({
                 <button
                   type="button"
                   onClick={() => setSteps((s) => s + 1)}
-                  className="h-8 w-8 panel-cut-sm border border-zinc-700 text-lg text-zinc-300 hover:bg-zinc-800"
+                  className="h-11 w-11 panel-cut-sm border border-zinc-700 text-lg text-zinc-300 hover:bg-zinc-800 md:h-8 md:w-8"
                 >
                   +
                 </button>
@@ -139,7 +130,7 @@ export default function DamageApplicationDialog({
               <button
                 type="button"
                 onClick={undo}
-                className="panel-cut-sm border border-zinc-700 px-3 py-1 text-xs text-zinc-400 hover:bg-zinc-800"
+                className="min-h-11 panel-cut-sm border border-zinc-700 px-3 py-1 text-xs text-zinc-400 hover:bg-zinc-800"
               >
                 Undo last
               </button>
@@ -157,38 +148,59 @@ export default function DamageApplicationDialog({
               )}
             </div>
 
-            <div className="relative aspect-square w-full flex-1 select-none">
-              <VitruvianFigure
-                className="absolute inset-0 h-full w-full text-zinc-400"
-                customSrc={vitruvianSrc(target.character)}
-              />
-              {target.dice.map((die) => {
-                const spot = ANATOMY[die.slot_name];
-                if (!spot) return null;
-                const incapacitated = die.status === 'incapacitated';
-                return (
-                  <button
-                    key={die.id}
-                    type="button"
-                    disabled={incapacitated || !steps}
-                    onClick={() => apply(die)}
-                    title={incapacitated ? 'Incapacitated' : `Apply ${steps} Half-Damage to ${die.slot_name}`}
-                    style={{ top: spot.top, left: spot.left }}
-                    className={`absolute flex h-14 w-14 -translate-x-1/2 -translate-y-1/2 flex-col items-center justify-center panel-cut-sm border font-display text-xs font-bold transition-colors ${
-                      incapacitated
-                        ? 'cursor-not-allowed border-zinc-800 bg-zinc-900 text-zinc-700'
-                        : 'border-zinc-700 bg-zinc-800/90 text-zinc-100 hover:border-red-500 hover:bg-red-900/40 disabled:cursor-not-allowed disabled:opacity-50'
-                    } ${die.half_damage ? 'ring-2 ring-amber-500' : ''}`}
-                  >
-                    <spot.Icon className="pointer-events-none h-5 w-5 opacity-50" />
-                    <span className={incapacitated ? 'line-through' : ''}>{dieLabel(die.current_size, die.bonus)}</span>
-                  </button>
-                );
-              })}
+            <div className="flex-1">
+              {allowedSlotNames != null && (
+                <p className="mb-1 text-center text-xs text-zinc-500">
+                  Effective Attack Target:{' '}
+                  <span className={allowedSlotNames.length ? 'text-zinc-300' : 'text-zinc-600'}>
+                    {allowedSlotNames.length ? allowedSlotNames.join(' + ') : 'None'}
+                  </span>
+                  {attackTargetSource === 'block' && (
+                    <span className="italic text-sky-400"> — changed by Block</span>
+                  )}
+                </p>
+              )}
+              <div className="relative aspect-square w-full select-none">
+                <VitruvianFigure
+                  className="absolute inset-0 h-full w-full text-zinc-400"
+                  customSrc={vitruvianSrc(target.character)}
+                />
+                {target.dice.map((die) => {
+                  const spot = ANATOMY[die.slot_name];
+                  if (!spot) return null;
+                  const incapacitated = die.status === 'incapacitated';
+                  const allowedTarget = isAllowedTarget(die);
+                  const disabled = incapacitated || !steps || !allowedTarget;
+                  return (
+                    <button
+                      key={die.id}
+                      type="button"
+                      disabled={disabled}
+                      onClick={() => apply(die)}
+                      title={
+                        incapacitated
+                          ? 'Incapacitated'
+                          : !allowedTarget
+                            ? 'Not an Attack Target'
+                            : `Apply ${steps} Half-Damage to ${die.slot_name}`
+                      }
+                      style={{ top: spot.top, left: spot.left }}
+                      className={`absolute flex h-14 w-14 -translate-x-1/2 -translate-y-1/2 flex-col items-center justify-center panel-cut-sm border font-display text-xs font-bold transition-colors ${
+                        incapacitated || !allowedTarget
+                          ? 'cursor-not-allowed border-zinc-800 bg-zinc-900 text-zinc-700 opacity-50'
+                          : 'border-zinc-700 bg-zinc-800/90 text-zinc-100 hover:border-red-500 hover:bg-red-900/40 disabled:cursor-not-allowed disabled:opacity-50'
+                      } ${die.half_damage ? 'ring-2 ring-amber-500' : ''}`}
+                    >
+                      <spot.Icon className="pointer-events-none h-5 w-5 opacity-50" />
+                      <span className={incapacitated ? 'line-through' : ''}>{dieLabel(die.current_size, die.bonus)}</span>
+                    </button>
+                  );
+                })}
+              </div>
             </div>
           </div>
         )}
-      </motion.div>
-    </div>
+      </div>
+    </DialogShell>
   );
 }
