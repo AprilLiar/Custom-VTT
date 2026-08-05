@@ -24,6 +24,7 @@ import {
   sanitizeRollSlots,
   hasAmbiguousRollSlot,
   sanitizeDefensePositions,
+  sanitizeDefenseKind,
   AMBIGUOUS_ROLL_SLOTS,
   sanitizeRollType,
   sanitizeCustomRollSize,
@@ -1976,6 +1977,11 @@ io.on('connection', (socket) => {
     const staminaCost = clampStaminaCost(payload.staminaCost);
     const isDefault = payload.isDefault ? 1 : 0;
     const isDefensive = payload.isDefensive ? 1 : 0;
+    const defenseKind = sanitizeDefenseKind(
+      payload.defenseKind,
+      Boolean(isDefensive),
+      defenseFramePositions.length > 0
+    );
     const description = String(payload.description ?? '').trim();
 
     // Roll is optional — a move with no slots (or no custom die picked) has
@@ -2059,13 +2065,13 @@ io.on('connection', (socket) => {
         `INSERT INTO moves (name, is_default, tell_id, startup_tics, active_tics, recovery_tics,
           stamina_cost, description, style_attribute_id, folder_id, image_data, image_mime_type,
           roll_modifier, right_tell_id, left_tell_id, is_defensive, defense_frame_positions,
-          roll_type, custom_roll_size, attack_targets)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          roll_type, custom_roll_size, attack_targets, defense_kind)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [name, isDefault, tellId, startup, active, recovery, staminaCost, description, styleId,
           folderId, payload.imageData ?? null,
           payload.imageData ? (payload.imageMimeType ?? 'image/png') : null,
           rollModifier, rightTellId, leftTellId, isDefensive, JSON.stringify(defenseFramePositions),
-          rollType, customRollSize, JSON.stringify(attackTargets)]
+          rollType, customRollSize, JSON.stringify(attackTargets), defenseKind]
       );
       id = Number(result.lastInsertRowid);
     } else {
@@ -2073,11 +2079,13 @@ io.on('connection', (socket) => {
         `UPDATE moves SET name = ?, is_default = ?, tell_id = ?, startup_tics = ?, active_tics = ?,
           recovery_tics = ?, stamina_cost = ?, description = ?, style_attribute_id = ?, folder_id = ?,
           roll_modifier = ?, right_tell_id = ?, left_tell_id = ?, is_defensive = ?,
-          defense_frame_positions = ?, roll_type = ?, custom_roll_size = ?, attack_targets = ?
+          defense_frame_positions = ?, roll_type = ?, custom_roll_size = ?, attack_targets = ?,
+          defense_kind = ?
           WHERE id = ?`,
         [name, isDefault, tellId, startup, active, recovery, staminaCost, description, styleId,
           folderId, rollModifier, rightTellId, leftTellId, isDefensive,
-          JSON.stringify(defenseFramePositions), rollType, customRollSize, JSON.stringify(attackTargets), id]
+          JSON.stringify(defenseFramePositions), rollType, customRollSize, JSON.stringify(attackTargets),
+          defenseKind, id]
       );
       // image only replaced when a new one is provided
       if (payload.imageData !== undefined) {

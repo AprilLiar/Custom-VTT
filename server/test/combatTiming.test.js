@@ -10,6 +10,7 @@ import {
   isTicIdle,
   overlapsRoundWindow,
   computeInitiativeOverflowPenalty,
+  findInterruptEligibleTic,
 } from '../combatTiming.js';
 
 const roll = (n) => ({ roll: n });
@@ -377,4 +378,46 @@ test('computeInitiativeOverflowPenalty: still-carrying move penalizes by exactly
     computeInitiativeOverflowPenalty({ blockedUntilTic: 11, nextRoundStartTic: 8 }),
     3
   );
+});
+
+const startupMove = (declaredMoveId, placementTic, revealTic) => ({
+  declaredMoveId,
+  placementTic,
+  revealTic,
+});
+
+test('findInterruptEligibleTic: fires at the first Active Tic where the target is still in Startup', () => {
+  const result = findInterruptEligibleTic({
+    attackerActiveStart: 13,
+    attackerActiveEnd: 16,
+    targetMoves: [startupMove(7, 14, 17)], // Startup covers Tics 14-16
+  });
+  assert.deepEqual(result, { tic: 14, declaredMoveId: 7 });
+});
+
+test('findInterruptEligibleTic: the target already being Active (past their own revealTic) is not interruptible', () => {
+  const result = findInterruptEligibleTic({
+    attackerActiveStart: 13,
+    attackerActiveEnd: 16,
+    targetMoves: [startupMove(7, 10, 13)], // revealTic 13 -> already past Startup by Tic 13
+  });
+  assert.equal(result, null);
+});
+
+test('findInterruptEligibleTic: null when the target has no declared move at all during the attack', () => {
+  const result = findInterruptEligibleTic({
+    attackerActiveStart: 13,
+    attackerActiveEnd: 16,
+    targetMoves: [],
+  });
+  assert.equal(result, null);
+});
+
+test('findInterruptEligibleTic: picks the earliest qualifying Tic, not just the first move in the list', () => {
+  const result = findInterruptEligibleTic({
+    attackerActiveStart: 10,
+    attackerActiveEnd: 20,
+    targetMoves: [startupMove(2, 15, 18), startupMove(1, 10, 12)],
+  });
+  assert.deepEqual(result, { tic: 10, declaredMoveId: 1 });
 });

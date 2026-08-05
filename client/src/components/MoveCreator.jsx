@@ -147,6 +147,12 @@ export default function MoveCreator({
   const [defensePositions, setDefensePositions] = useState(
     new Set(initial?.defense_frame_positions ?? [])
   );
+  // Combat Automation overhaul: which of the two defensive mechanics this
+  // move's Defense Frames represent. Block resolves fully automatically;
+  // Dodge is the one remaining human-in-the-loop call (the GM's Successful/
+  // Failed prompt) — see vttprojectplan.md. Only meaningful once at least
+  // one Defense Frame is actually placed (enforced below at submit time).
+  const [defenseKind, setDefenseKind] = useState(initial?.defense_kind ?? 'block');
   const [staminaCost, setStaminaCost] = useState(initial?.stamina_cost ?? 0);
   const [description, setDescription] = useState(initial?.description ?? '');
   const [interactions, setInteractions] = useState({
@@ -217,6 +223,7 @@ export default function MoveCreator({
       name: name.trim(),
       isDefault,
       isDefensive,
+      defenseKind: isDefensive && visibleDefensePositions.length > 0 ? defenseKind : null,
       ...(ambiguousRoll ? { rightTellId, leftTellId } : { tellId }),
       styleAttributeId: styleId,
       folderId,
@@ -571,6 +578,29 @@ export default function MoveCreator({
             onToggle={toggleDefensePosition}
           />
           {total < 1 && <p className="text-xs text-red-400">At least 1 square total</p>}
+          {isDefensive && visibleDefensePositions.length > 0 && (
+            <div className="mt-2 flex gap-1.5">
+              {['block', 'dodge'].map((kind) => (
+                <button
+                  key={kind}
+                  type="button"
+                  onClick={() => setDefenseKind(kind)}
+                  title={
+                    kind === 'block'
+                      ? 'Resolves fully automatically from dice math'
+                      : 'The one defense the GM still calls Successful/Failed by hand'
+                  }
+                  className={`panel-cut-sm border px-2 py-1 text-xs font-semibold uppercase tracking-wide ${
+                    defenseKind === kind
+                      ? 'border-green-500 bg-green-900/40 text-green-300'
+                      : 'border-zinc-700 bg-zinc-800 text-zinc-400 hover:border-zinc-600'
+                  }`}
+                >
+                  {kind}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
         <label className="text-xs font-semibold uppercase text-emerald-500">
           Stamina Cost (required)

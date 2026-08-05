@@ -351,7 +351,15 @@ export async function initDb() {
       -- move_roll_slots (writeMove enforces this), and a 'stat' move always
       -- has a NULL custom_roll_size.
       roll_type TEXT NOT NULL DEFAULT 'stat' CHECK(roll_type IN ('stat','custom')),
-      custom_roll_size INTEGER CHECK(custom_roll_size IN (4,6,8,10,12))
+      custom_roll_size INTEGER CHECK(custom_roll_size IN (4,6,8,10,12)),
+      -- Combat Automation overhaul: which of the two defensive mechanics
+      -- this move's Defense Frames represent. Block resolves fully
+      -- automatically (dice math only); Dodge is the one remaining
+      -- human-in-the-loop call (the GM's Successful/Failed prompt). Required
+      -- by writeMove whenever is_defensive=1 with non-empty
+      -- defense_frame_positions; NULL otherwise. See the migration below for
+      -- how every pre-existing Defensive move is backfilled.
+      defense_kind TEXT CHECK(defense_kind IN ('block','dodge'))
     )
   `);
   await ensureColumn('moves', 'style_attribute_id', 'INTEGER REFERENCES attributes(id)');
@@ -377,6 +385,15 @@ export async function initDb() {
   // after this column exists is written with an explicit [] by writeMove —
   // the DB default only ever fires for the migration, never for new rows.
   await ensureColumn('moves', 'attack_targets', `TEXT NOT NULL DEFAULT '["Skull"]'`);
+  await ensureColumn('moves', 'defense_kind', "TEXT CHECK(defense_kind IN ('block','dodge'))");
+  // Every move that was already Defensive before this column existed was
+  // authored back when Block/Dodge were an in-the-moment GM call rather than
+  // data on the move — migrate them all to 'block' (the fully-automatic,
+  // no-judgment-call default) since that's what most of them are; a GM
+  // reviewing a move that was narratively meant as a Dodge can flip it once.
+  await run(
+    `UPDATE moves SET defense_kind = 'block' WHERE is_defensive = 1 AND defense_kind IS NULL`
+  );
   // A Default move is usable by anyone, anytime — it never made sense for
   // one to also carry a Style gate. writeMove now refuses to set one going
   // forward; this is the one-time cleanup for any Default move that already
@@ -662,7 +679,69 @@ export async function initDb() {
   await run(`
     CREATE TABLE IF NOT EXISTS combat_pairs (
       pair_index INTEGER PRIMARY KEY,
-      declaring_side TEXT CHECK(declaring_side IN ('left','right'))
+      declaring_side TEXT CHECK(declaring_side IN ('left','right')),
+      -- Combat Automation overhaul: each pair now runs its own independent
+      -- round/phase/Tic clock instead of sharing combat_state's single
+      -- global one (see vttprojectplan.md) — fight A can be on round 5 while
+      -- fight B is still on round 3. Unlike declaring_side above, these
+      -- columns are NOT reset by combat:next_round; they're only ever
+      -- updated in place, since they must persist and increment
+      -- independently per pair across rounds. phase is NULL until this
+      -- pair's first round is seeded.
+      round_number INTEGER NOT NULL DEFAULT 0,
+      phase TEXT CHECK(phase IN ('declaration','resolving')),
+      round_start_tic INTEGER NOT NULL DEFAULT 0,
+      current_tic INTEGER NOT NULL DEFAULT 0
+    )
+  `);
+  await ensureColumn('combat_pairs', 'round_number', 'INTEGER NOT NULL DEFAULT 0');
+  await ensureColumn('combat_pairs', 'phase', "TEXT CHECK(phase IN ('declaration','resolving'))");
+  await ensureColumn('combat_pairs', 'round_start_tic', 'INTEGER NOT NULL DEFAULT 0');
+  await ensureColumn('combat_pairs', 'current_tic', 'INTEGER NOT NULL DEFAULT 0');
+
+  // Combat Automation overhaul: one row per pair-round that has started
+  // automatic resolution. Tracks the resumable stepper's progress
+  // (advancePairResolution in index.js) — resolved_through_tic is the last
+  // Tic fully computed and persisted, so a crash/restart mid-round can
+  // safely redo just that one Tic rather than needing a transaction. The
+  // pending_*_json columns hold the one piece of state that genuinely can't
+  // be recomputed: a human decision that's still outstanding.
+  await run(`
+    CREATE TABLE IF NOT EXISTS pair_round_resolutions (
+      id INTEGER PRIMARY KEY,
+      pair_index INTEGER NOT NULL,
+      round_number INTEGER NOT NULL,
+      round_start_tic INTEGER NOT NULL,
+      round_length INTEGER NOT NULL,
+      status TEXT NOT NULL DEFAULT 'running' CHECK(status IN ('running','paused_dodge','paused_conflict','complete')),
+      resolved_through_tic INTEGER NOT NULL DEFAULT 0,
+      pending_dodge_json TEXT,
+      pending_conflict_json TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      completed_at TEXT,
+      UNIQUE(pair_index, round_number)
+    )
+  `);
+
+  // Combat Automation overhaul: the replayable event log for one pair's
+  // round — the single source of truth for both the live cutscene push and
+  // any later chat "Watch Round X" replay, so the two are guaranteed
+  // identical by construction (same rows, same client renderer). pair_index/
+  // round_number are denormalized off pair_round_resolutions purely to
+  // avoid a join on "give me this pair's log." seq is this resolution's own
+  // monotonic order (independent of tic, since more than one event can
+  // share a Tic).
+  await run(`
+    CREATE TABLE IF NOT EXISTS round_events (
+      id INTEGER PRIMARY KEY,
+      resolution_id INTEGER NOT NULL REFERENCES pair_round_resolutions(id) ON DELETE CASCADE,
+      pair_index INTEGER NOT NULL,
+      round_number INTEGER NOT NULL,
+      seq INTEGER NOT NULL,
+      tic INTEGER NOT NULL,
+      type TEXT NOT NULL,
+      payload TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
     )
   `);
 
