@@ -9,7 +9,7 @@ export default function PerksTab({ data }) {
   }
 
   return (
-    <div className="grid grid-cols-2 gap-3">
+    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
       {perks.map((perk) => (
         <PerkCard key={perk.character_perk_id} perk={perk} />
       ))}

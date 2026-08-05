@@ -76,7 +76,7 @@ export default function RoleplayTab({ data }) {
                 socket.emit('roleplay:delete_question', { entryId: entry.id })
               }
               title="Delete question"
-              className="panel-cut-sm px-1 text-zinc-600 hover:bg-red-900/40 hover:text-red-400"
+              className="flex h-11 w-11 shrink-0 items-center justify-center panel-cut-sm text-zinc-600 hover:bg-red-900/40 hover:text-red-400 md:h-auto md:w-auto md:px-1"
             >
               ✕
             </button>

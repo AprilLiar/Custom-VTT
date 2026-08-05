@@ -5,6 +5,7 @@ import { getChat, getCharacters, getTells, getTags, getRuleset, getMoves } from 
 import { fileToChatImage } from '../lib/image.js';
 import { folderPath } from '../lib/folders.js';
 import { useRole } from '../roleContext.jsx';
+import { useSocketRefresh } from '../lib/connection.js';
 import Thumb from './Thumb.jsx';
 import FrameBar from './FrameBar.jsx';
 import MoveCard from './MoveCard.jsx';
@@ -500,14 +501,14 @@ function Composer({ characters }) {
     socket.emit('dice:roll_custom', { characterId: postingCharacterId, size, modifier: diceTrayMod });
 
   return (
-    <div className="border-t border-zinc-800 p-2">
+    <div style={{ paddingBottom: 'var(--safe-bottom)' }} className="border-t border-zinc-800 p-2">
       {error && <p className="mb-1 text-xs text-red-400">{error}</p>}
       {pending && (
         <div className="mb-1 flex items-center gap-2 panel-cut-sm bg-zinc-800 px-2 py-1 text-xs text-zinc-300">
           <span className="truncate">📎 {pending.previewName}</span>
           <button
             onClick={() => setPending(null)}
-            className="ml-auto text-zinc-500 hover:text-zinc-200"
+            className="ml-auto flex h-11 w-11 shrink-0 items-center justify-center text-zinc-500 hover:text-zinc-200 md:h-6 md:w-6"
           >
             ✕
           </button>
@@ -518,7 +519,7 @@ function Composer({ characters }) {
         <button
           type="button"
           onClick={() => setDiceTrayMod((m) => Math.max(-20, m - 1))}
-          className="panel-cut-sm border border-zinc-700 px-1.5 text-xs text-zinc-400 hover:bg-zinc-800"
+          className="flex h-11 min-w-11 shrink-0 items-center justify-center panel-cut-sm border border-zinc-700 px-1.5 text-xs text-zinc-400 hover:bg-zinc-800 md:h-auto md:min-w-0"
         >
           −
         </button>
@@ -528,7 +529,7 @@ function Composer({ characters }) {
         <button
           type="button"
           onClick={() => setDiceTrayMod((m) => Math.min(20, m + 1))}
-          className="panel-cut-sm border border-zinc-700 px-1.5 text-xs text-zinc-400 hover:bg-zinc-800"
+          className="flex h-11 min-w-11 shrink-0 items-center justify-center panel-cut-sm border border-zinc-700 px-1.5 text-xs text-zinc-400 hover:bg-zinc-800 md:h-auto md:min-w-0"
         >
           +
         </button>
@@ -541,7 +542,7 @@ function Composer({ characters }) {
             title={`Roll 1d${size}${
               diceTrayMod ? (diceTrayMod > 0 ? ` + ${diceTrayMod}` : ` − ${Math.abs(diceTrayMod)}`) : ''
             }`}
-            className="shrink-0 panel-cut-sm border border-zinc-700 p-1 text-zinc-400 hover:border-brand-500 hover:bg-zinc-800 hover:text-brand-300"
+            className="flex h-11 w-11 shrink-0 items-center justify-center panel-cut-sm border border-zinc-700 p-1 text-zinc-400 hover:border-brand-500 hover:bg-zinc-800 hover:text-brand-300 md:h-auto md:w-auto"
           >
             <DiceIcon size={size} />
           </button>
@@ -574,7 +575,7 @@ function Composer({ characters }) {
           type="button"
           onClick={() => fileRef.current?.click()}
           title="Attach an image — use this (not paste) for an animated GIF, since pasting flattens the animation"
-          className="shrink-0 panel-cut-sm border border-zinc-700 p-1.5 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
+          className="flex h-11 w-11 shrink-0 items-center justify-center panel-cut-sm border border-zinc-700 p-1.5 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 md:h-auto md:w-auto"
         >
           <Paperclip size={16} />
         </button>
@@ -590,7 +591,7 @@ function Composer({ characters }) {
         />
         <button
           onClick={send}
-          className="shrink-0 panel-cut-sm bg-brand-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-brand-500"
+          className="min-h-11 shrink-0 panel-cut-sm bg-brand-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-brand-500 md:min-h-0"
         >
           Send
         </button>
@@ -624,6 +625,13 @@ export default function ChatPanel({ open, onClose }) {
   // wrongly match a future roll.
   const [defenseResolutions, setDefenseResolutions] = useState(new Map());
   const bottomRef = useRef(null);
+
+  // Mobile readiness (Change 002) §11.2: a broadcast missed while the tab
+  // was backgrounded (mobile suspend) or the socket was reconnecting never
+  // replays — re-fetching the Chat tail on reconnect/resume is what closes
+  // that gap for the log itself. Live entries pushed via the socket
+  // listeners below are unaffected; this only ever replaces the base list.
+  useSocketRefresh(() => getChat().then(setEntries).catch(console.error));
 
   useEffect(() => {
     getChat().then(setEntries).catch(console.error);
@@ -721,7 +729,7 @@ export default function ChatPanel({ open, onClose }) {
         )}
         <button
           onClick={onClose}
-          className={`${role === 'gm' ? '' : 'ml-auto'} panel-cut-sm px-2 text-zinc-500 hover:text-zinc-200 md:hidden`}
+          className={`${role === 'gm' ? '' : 'ml-auto'} flex h-11 w-11 shrink-0 items-center justify-center panel-cut-sm text-zinc-500 hover:text-zinc-200 md:hidden`}
         >
           ✕
         </button>

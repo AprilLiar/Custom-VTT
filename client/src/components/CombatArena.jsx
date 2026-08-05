@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { AnimatePresence, motion } from 'framer-motion';
 import { useRole } from '../roleContext.jsx';
@@ -14,10 +14,12 @@ import { dieLabel, tintFor, POOLS } from '../lib/dice.js';
 import { buildFolderTree } from '../lib/folders.js';
 import { REWARD_LABELS, REWARD_COLORS } from '../lib/counterDisplay.js';
 import { setDraggingMove, onDraggingMoveChange } from '../lib/dragMoveState.js';
+import { useSocketRefresh } from '../lib/connection.js';
 import FrameBar from './FrameBar.jsx';
 import Thumb from './Thumb.jsx';
 import DropSlamGhost from './DropSlamGhost.jsx';
 import PopNumber from './PopNumber.jsx';
+import DialogShell from './DialogShell.jsx';
 
 const MIN_TARGET = 2;
 const MAX_TARGET = 20;
@@ -33,6 +35,7 @@ function ParticipantCard({
   participant,
   role,
   onRemove,
+  onMoveSeat,
   onDragStart,
   navigate,
   declaredMoves,
@@ -64,16 +67,28 @@ function ParticipantCard({
       className="group relative flex min-h-40 min-w-64 flex-1 cursor-pointer overflow-hidden panel-cut border border-zinc-800 bg-zinc-900 transition-colors hover:border-brand-600"
     >
       {role === 'gm' && (
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            onRemove(character.id);
-          }}
-          title="Remove from arena"
-          className="absolute right-1 top-1 z-10 panel-cut-sm px-1 text-xs text-zinc-600 opacity-0 transition group-hover:opacity-100 hover:bg-red-900/40 hover:text-red-400"
-        >
-          ✕
-        </button>
+        <div className="hover-only-action absolute right-1 top-1 z-10 flex gap-1 opacity-0 transition group-hover:opacity-100">
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onMoveSeat(character.id, character.name);
+            }}
+            title="Move seat"
+            className="flex h-8 w-8 items-center justify-center panel-cut-sm bg-zinc-900/90 text-xs text-zinc-400 hover:bg-zinc-800 hover:text-brand-300"
+          >
+            ⇄
+          </button>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onRemove(character.id);
+            }}
+            title="Remove from arena"
+            className="flex h-8 w-8 items-center justify-center panel-cut-sm bg-zinc-900/90 text-xs text-zinc-600 hover:bg-red-900/40 hover:text-red-400"
+          >
+            ✕
+          </button>
+        </div>
       )}
 
       {/* Portrait fills the card's full height edge-to-edge, no padding/gaps */}
@@ -191,7 +206,7 @@ function ArenaCounterRow({ counter, characterName }) {
         <button
           onClick={() => socket.emit('counter:adjust', { counterId: counter.id, delta: -1 })}
           disabled={counter.current_pips <= 0}
-          className="h-8 w-8 shrink-0 panel-cut-sm border border-zinc-700 text-lg text-red-400 hover:bg-zinc-800 disabled:opacity-30"
+          className="h-11 w-11 shrink-0 panel-cut-sm border border-zinc-700 text-lg text-red-400 hover:bg-zinc-800 disabled:opacity-30 md:h-8 md:w-8"
         >
           −
         </button>
@@ -213,14 +228,14 @@ function ArenaCounterRow({ counter, characterName }) {
         <button
           onClick={() => socket.emit('counter:adjust', { counterId: counter.id, delta: 1 })}
           disabled={counter.current_pips >= counter.target_pips}
-          className="h-8 w-8 shrink-0 panel-cut-sm border border-zinc-700 text-lg text-green-400 hover:bg-zinc-800 disabled:opacity-30"
+          className="h-11 w-11 shrink-0 panel-cut-sm border border-zinc-700 text-lg text-green-400 hover:bg-zinc-800 disabled:opacity-30 md:h-8 md:w-8"
         >
           +
         </button>
         <button
           onClick={() => socket.emit('counter:delete', { counterId: counter.id })}
           title="Delete"
-          className="panel-cut-sm px-1.5 text-zinc-600 hover:bg-red-900/40 hover:text-red-400"
+          className="flex h-11 w-11 shrink-0 items-center justify-center panel-cut-sm text-zinc-600 hover:bg-red-900/40 hover:text-red-400 md:h-auto md:w-auto md:px-1.5"
         >
           ✕
         </button>
@@ -280,6 +295,60 @@ function FolderRosterNode({ node, charsByFolder, collapsed, onToggle, depth, ros
   );
 }
 
+// Mobile readiness (Change 002) §7.3: the tap alternative to dropping a
+// roster card onto a pair's left/right zone, or an already-seated
+// ParticipantCard's own drag-to-a-different-zone move — same two server
+// events either way (combat:add_participant for a not-yet-seated character,
+// combat:move_participant for one already seated), picked by whether this
+// character currently appears in `participants`. Lists every existing pair
+// plus a trailing "New pair" row, mirroring the desktop drop-zone layout's
+// own row-per-pair-index shape (see the `rows` array at the call site).
+function SeatPicker({ characterId, characterName, pairIndices, participants, onClose }) {
+  const isSeated = participants.some((p) => p.character_id === characterId);
+  const eventName = isSeated ? 'combat:move_participant' : 'combat:add_participant';
+  const seatAt = (side, pairIndex) => {
+    socket.emit(eventName, { characterId, side, pairIndex });
+    onClose();
+  };
+  const nextPairIndex = pairIndices.length ? pairIndices[pairIndices.length - 1] + 1 : 0;
+  const rowClass =
+    'min-h-11 flex-1 panel-cut-sm border border-zinc-700 bg-zinc-800 text-sm font-semibold text-zinc-200 hover:border-brand-500 hover:bg-zinc-700';
+  return (
+    <DialogShell title={`Seat ${characterName}`} onClose={onClose} maxWidth="max-w-sm">
+      <div className="space-y-2">
+        {pairIndices.map((pairIndex) => (
+          <div key={pairIndex} className="flex items-center gap-2">
+            <span className="w-16 shrink-0 text-xs text-zinc-500">Pair {pairIndex + 1}</span>
+            <button type="button" onClick={() => seatAt('left', pairIndex)} className={rowClass}>
+              Left
+            </button>
+            <button type="button" onClick={() => seatAt('right', pairIndex)} className={rowClass}>
+              Right
+            </button>
+          </div>
+        ))}
+        <div className="flex items-center gap-2 border-t border-zinc-800 pt-2">
+          <span className="w-16 shrink-0 text-xs text-zinc-500">New pair</span>
+          <button
+            type="button"
+            onClick={() => seatAt('left', nextPairIndex)}
+            className="min-h-11 flex-1 panel-cut-sm bg-brand-600 text-sm font-semibold text-white hover:bg-brand-500"
+          >
+            Left
+          </button>
+          <button
+            type="button"
+            onClick={() => seatAt('right', nextPairIndex)}
+            className="min-h-11 flex-1 panel-cut-sm bg-brand-600 text-sm font-semibold text-white hover:bg-brand-500"
+          >
+            Right
+          </button>
+        </div>
+      </div>
+    </DialogShell>
+  );
+}
+
 // ---------- Tic Counter (combat redesign: now the Arena's centerpiece) ----------
 
 // One square on the Tic Counter strip. `footprint` (startup/active/recovery
@@ -334,6 +403,14 @@ export function TicSquare({
   onClick,
   clickTitle,
 }) {
+  // Mobile readiness §7.1: the current Tic scrolls itself into view inside
+  // the row's own horizontal scroller (see the overflow-x-auto wrapper in
+  // TicCounterCentral below) — 'nearest' so it's a no-op once already
+  // visible, not a jarring re-center on every render.
+  const ref = useRef(null);
+  useEffect(() => {
+    if (isCurrent) ref.current?.scrollIntoView({ inline: 'center', block: 'nearest', behavior: 'smooth' });
+  }, [isCurrent]);
   const zoneStyle = {
     startup: 'border-amber-300 bg-amber-500/80 shadow-[0_0_10px_rgba(251,191,36,0.45)]',
     active: 'border-rose-300 bg-rose-500/80 shadow-[0_0_10px_rgba(244,63,94,0.45)]',
@@ -350,6 +427,7 @@ export function TicSquare({
   }`;
   return (
     <motion.div
+      ref={ref}
       key={isCurrent ? 'current' : 'idle'}
       onDragOver={onDragOver}
       onDrop={onDrop}
@@ -415,6 +493,7 @@ export function TicCounterCentral({
   hoverTic,
   setHoverTic,
   onDrop,
+  onTapPlace, // mobile readiness (Change 002) §7.2: tap-to-declare alternative to onDrop, same curried (absoluteTic) => (e) => void shape; undefined wherever there's no move source to place from (e.g. CombatHeaderBar)
   declaredMoves,
   showDeclaredPreview,
   overflowTics,
@@ -457,10 +536,24 @@ export function TicCounterCentral({
       <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-zinc-500">
         {label ?? (phase === 'declaration' ? 'Drag a move here to declare' : 'Tic Counter')}
       </span>
-      <div className="flex flex-wrap items-center justify-center gap-1.5 py-1">
+      {/* Mobile readiness §7.1: one non-wrapping scrollable row instead of
+          flex-wrap — 7 squares plus the Next Round button usually fit
+          without ever needing to scroll on a normal phone width, but this
+          keeps the timeline a single visual line regardless (matching the
+          recommended §14.4 default) rather than reflowing to a second row.
+          The mask-image fade is a lightweight scroll affordance (§7.1's
+          "start/end fade") without a second scroll-position-tracking effect. */}
+      <div
+        className="flex max-w-full flex-nowrap items-center gap-1.5 overflow-x-auto overscroll-x-contain py-1 [mask-image:linear-gradient(to_right,transparent,black_12px,black_calc(100%-12px),transparent)]"
+      >
         {squares.map((sq, i) => {
           const isNextTic = canStepTic && i === currentIndex + 1;
           const isPrevTic = canStepTic && i === currentIndex - 1;
+          // A pending tap-to-declare placement (see onTapPlace) makes every
+          // square a valid destination, not just the GM's step neighbors —
+          // takes priority since the two modes never overlap (a Player
+          // placing their own move isn't also the GM stepping Tics).
+          const tapPlacing = Boolean(onTapPlace && draggingMove && canDrop);
           return (
             <TicSquare
               key={sq.absoluteTic}
@@ -481,18 +574,22 @@ export function TicCounterCentral({
               }
               onDrop={canDrop ? onDrop(sq.absoluteTic) : undefined}
               onClick={
-                isNextTic
-                  ? () => socket.emit('combat:tic_forward', {})
-                  : isPrevTic
-                    ? () => socket.emit('combat:tic_backward', {})
-                    : undefined
+                tapPlacing
+                  ? onTapPlace(sq.absoluteTic)
+                  : isNextTic
+                    ? () => socket.emit('combat:tic_forward', {})
+                    : isPrevTic
+                      ? () => socket.emit('combat:tic_backward', {})
+                      : undefined
               }
               clickTitle={
-                isNextTic
-                  ? `Click to advance to Tic ${sq.relative}`
-                  : isPrevTic
-                    ? `Click to go back to Tic ${sq.relative}`
-                    : undefined
+                tapPlacing
+                  ? `Place ${draggingMove.moveName} here`
+                  : isNextTic
+                    ? `Click to advance to Tic ${sq.relative}`
+                    : isPrevTic
+                      ? `Click to go back to Tic ${sq.relative}`
+                      : undefined
               }
             />
           );
@@ -760,12 +857,12 @@ function DeclarationLanes({
           <div
             key={pairIndex}
             onClick={clickable ? () => onSelectLane(pairIndex) : undefined}
-            className={`flex items-stretch panel-cut-sm border transition-colors ${
+            className={`flex flex-col items-stretch panel-cut-sm border transition-colors sm:flex-row ${
               clickable ? 'cursor-pointer hover:border-brand-500' : ''
             } ${active ? 'border-brand-500 bg-brand-950/30 ring-1 ring-brand-600' : 'border-zinc-800 bg-zinc-900/60'}`}
           >
             {sideCell(leftParticipants)}
-            <div className="w-px shrink-0 bg-zinc-700/50" />
+            <div className="h-px bg-zinc-700/50 sm:h-auto sm:w-px sm:shrink-0" />
             {sideCell(rightParticipants)}
           </div>
         );
@@ -779,52 +876,65 @@ function DeclarationLanes({
 // declared; see dragMoveState.js for why the live-drag footprint preview
 // needs that extra bit of shared state alongside the native dataTransfer
 // payload used for the eventual drop.
+// Matches computePlacementTic server-side exactly: no earlier than the
+// round's start, or the end of this character's own last-queued move's full
+// footprint (Startup+Active+Recovery, not just Startup/reveal) if later —
+// recoveryEndTic rides every declaredMoves entry regardless of whether its
+// identity is revealed to this client (see server/index.js), so this is
+// accurate even for a still-secret prior declare.
+function buildDeclarePayload(character, move, roundStartTic, declaredMoves) {
+  const priorBlockedUntil = declaredMoves
+    .filter((dm) => dm.characterId === character.id)
+    .map((dm) => dm.recoveryEndTic);
+  const minPlacementTic = priorBlockedUntil.length
+    ? Math.max(roundStartTic, ...priorBlockedUntil)
+    : roundStartTic;
+  return {
+    characterId: character.id,
+    moveId: move.id,
+    moveName: move.name,
+    startupTics: move.startup_tics,
+    activeTics: move.active_tics,
+    recoveryTics: move.recovery_tics,
+    minPlacementTic,
+    staminaCost: move.stamina_cost,
+    // right_tell_id/left_tell_id are only ever set together, exactly when
+    // this move's Roll has an ambiguous Hand/Leg slot (see db.js) — the
+    // placement handler uses this to decide whether to ask Left/Right
+    // before declaring at all.
+    ambiguous: move.right_tell_id != null,
+    appendageSlot: move.roll_slots?.find((s) => s === 'Hand' || s === 'Leg') ?? null,
+  };
+}
+
+// Mobile readiness (Change 002) §7.2: a real <button>, not just a draggable
+// div — native HTML5 drag-and-drop has no touch equivalent, so tapping this
+// (onClick) enters the same "placement mode" a drag does: it sets the exact
+// same dragMoveState.js payload a drag start would, which is what makes the
+// Tic Counter's footprint-preview machinery (zoneFor in TicCounterCentral)
+// and the tap-to-place handler (see CombatArena's handleTicTap) work
+// without any parallel state of their own. Desktop keeps native drag too —
+// the two aren't mutually exclusive, a mouse user can also just click.
 function DeclareMoveCard({ character, move, roundStartTic, declaredMoves }) {
   const cost =
     move.stamina_cost > 0 ? `-${move.stamina_cost}` : move.stamina_cost < 0 ? `+${-move.stamina_cost}` : '0';
+  const payload = buildDeclarePayload(character, move, roundStartTic, declaredMoves);
   return (
-    <div
+    <button
+      type="button"
       draggable
       onDragStart={(e) => {
-        // Matches computePlacementTic server-side exactly: no earlier than
-        // the round's start, or the end of this character's own last-queued
-        // move's full footprint (Startup+Active+Recovery, not just
-        // Startup/reveal) if later — recoveryEndTic rides every
-        // declaredMoves entry regardless of whether its identity is
-        // revealed to this client (see server/index.js), so this is
-        // accurate even for a still-secret prior declare.
-        const priorBlockedUntil = declaredMoves
-          .filter((dm) => dm.characterId === character.id)
-          .map((dm) => dm.recoveryEndTic);
-        const minPlacementTic = priorBlockedUntil.length
-          ? Math.max(roundStartTic, ...priorBlockedUntil)
-          : roundStartTic;
-        const payload = {
-          characterId: character.id,
-          moveId: move.id,
-          moveName: move.name,
-          startupTics: move.startup_tics,
-          activeTics: move.active_tics,
-          recoveryTics: move.recovery_tics,
-          minPlacementTic,
-          staminaCost: move.stamina_cost,
-          // right_tell_id/left_tell_id are only ever set together, exactly
-          // when this move's Roll has an ambiguous Hand/Leg slot (see
-          // db.js) — the drop handler uses this to decide whether to ask
-          // Left/Right before declaring at all.
-          ambiguous: move.right_tell_id != null,
-          appendageSlot: move.roll_slots?.find((s) => s === 'Hand' || s === 'Leg') ?? null,
-        };
         e.dataTransfer.setData('application/x-vtt-move', JSON.stringify(payload));
         e.dataTransfer.effectAllowed = 'copy';
         setDraggingMove(payload);
       }}
       onDragEnd={() => setDraggingMove(null)}
-      title="Drag onto the Tic Counter to declare"
-      className="cursor-grab select-none panel-cut-sm border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs text-zinc-200 transition-colors hover:border-brand-600 active:cursor-grabbing"
+      onClick={() => setDraggingMove(payload)}
+      title="Drag onto the Tic Counter, or tap then tap a Tic, to declare"
+      className="min-h-11 cursor-grab select-none panel-cut-sm border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs text-zinc-200 transition-colors hover:border-brand-600 active:cursor-grabbing"
     >
       {move.name} <span className="text-zinc-500">({cost} Stamina)</span>
-    </div>
+    </button>
   );
 }
 
@@ -926,6 +1036,14 @@ export default function CombatArena() {
   // convenience state, drives both the declare picker (see
   // DeclarationLanes above) and the Tic Counter's own-move preview scoping.
   const [activeLaneIndex, setActiveLaneIndex] = useState(null);
+  // Mobile readiness (Change 002) §7.3: single-pointer seating alternative
+  // to the desktop-only drag-a-card-onto-a-side flow. mobileRosterOpen shows
+  // the roster as a drawer (same folder tree, tap instead of drag);
+  // seatTarget ({ characterId, characterName }) then shows the Left/Right/
+  // New-pair picker — reused for both "seat a new character" (from the
+  // drawer) and "move an already-seated one" (ParticipantCard's ⇄ action).
+  const [mobileRosterOpen, setMobileRosterOpen] = useState(false);
+  const [seatTarget, setSeatTarget] = useState(null);
   // Transient "linger then slam" impact effects for a successful drop —
   // declaring a move onto the Tic Counter, or seating a character — see
   // DropSlamGhost.jsx. Keyed so more than one can be in flight at once.
@@ -978,6 +1096,14 @@ export default function CombatArena() {
       for (const ev of events) socket.off(ev, refresh);
     };
   }, [role, characterId]);
+
+  // Mobile readiness (Change 002) §11.2: a reconnect or a resumed-from-
+  // background tab isn't guaranteed to also fire one of the broadcasts the
+  // effect above already listens to — this re-fetches the same REST
+  // snapshot directly so combat/roster state can't go stale after either.
+  useSocketRefresh(() =>
+    getCombat(role === 'gm' ? { role } : { role, characterId }).then(setCombat).catch(console.error)
+  );
 
   // Live dice/stamina patching for whoever's currently seated — same
   // fine-grained approach as CharacterSheet.jsx, so a die click anywhere
@@ -1135,7 +1261,7 @@ export default function CombatArena() {
       >
         <div className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden panel-cut-sm bg-zinc-800 text-sm font-bold text-zinc-600">
           {src ? (
-            <img src={src} alt="" className="h-full w-full object-cover" />
+            <img src={src} alt="" loading="lazy" className="h-full w-full object-cover" />
           ) : (
             c.name.slice(0, 1).toUpperCase()
           )}
@@ -1147,6 +1273,37 @@ export default function CombatArena() {
           </span>
         )}
       </div>
+    );
+  };
+
+  // Tap variant of rosterCard above, for the mobile drawer (§7.3) — opens
+  // SeatPicker instead of starting a native drag.
+  const mobileRosterCard = (c) => {
+    const src = portraitSrc(c);
+    return (
+      <button
+        key={c.id}
+        type="button"
+        onClick={() => {
+          setMobileRosterOpen(false);
+          setSeatTarget({ characterId: c.id, characterName: c.name });
+        }}
+        className="flex min-h-11 w-full items-center gap-2 panel-cut border border-zinc-800 bg-zinc-900 p-2 text-left hover:border-brand-600"
+      >
+        <div className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden panel-cut-sm bg-zinc-800 text-sm font-bold text-zinc-600">
+          {src ? (
+            <img src={src} alt="" loading="lazy" className="h-full w-full object-cover" />
+          ) : (
+            c.name.slice(0, 1).toUpperCase()
+          )}
+        </div>
+        <span className="truncate text-sm text-zinc-300">{c.name}</span>
+        {c.character_type === 'npc' && (
+          <span className="ml-auto panel-cut-sm bg-purple-600/30 px-1 text-[10px] font-bold uppercase text-purple-300">
+            NPC
+          </span>
+        )}
+      </button>
     );
   };
 
@@ -1164,12 +1321,12 @@ export default function CombatArena() {
 
   // ---------- Tic Counter drag/drop handling ----------
 
-  const handleTicDrop = (absoluteTic) => (e) => {
-    e.preventDefault();
-    setHoverTic(null);
-    const raw = e.dataTransfer.getData('application/x-vtt-move');
-    if (!raw) return;
-    const { characterId: draggedCharId, moveId, moveName, staminaCost, ambiguous, appendageSlot } = JSON.parse(raw);
+  // Shared by both the native-drag drop handler and the mobile tap-to-place
+  // handler below — the two input paths differ (a DragEvent's dataTransfer
+  // vs. the dragMoveState.js payload already sitting in `draggingMove`), but
+  // once a payload is in hand, declaring it works identically either way.
+  const declareMoveAt = (absoluteTic, payload, clientX, clientY) => {
+    const { characterId: draggedCharId, moveId, moveName, staminaCost, ambiguous, appendageSlot } = payload;
     // A pre-check purely for a fast, friendly "Not enough Stamina" —
     // move:declare still enforces this authoritatively server-side (a
     // silent no-op on failure), same as ever.
@@ -1190,19 +1347,41 @@ export default function CombatArena() {
         moveName,
         absoluteTic,
         appendageSlot,
-        x: e.clientX,
-        y: e.clientY,
+        x: clientX,
+        y: clientY,
       });
       return;
     }
     spawnDropGhost(
-      e.clientX,
-      e.clientY,
+      clientX,
+      clientY,
       <div className="panel-cut-sm border border-brand-400 bg-brand-600 px-3 py-1.5 font-display text-xs font-bold uppercase tracking-wide text-white shadow-lg">
         {moveName}
       </div>
     );
     socket.emit('move:declare', { characterId: draggedCharId, moveId, placementTic: absoluteTic });
+  };
+
+  const handleTicDrop = (absoluteTic) => (e) => {
+    e.preventDefault();
+    setHoverTic(null);
+    const raw = e.dataTransfer.getData('application/x-vtt-move');
+    if (!raw) return;
+    declareMoveAt(absoluteTic, JSON.parse(raw), e.clientX, e.clientY);
+  };
+
+  // Mobile readiness (Change 002) §7.2: the tap-to-declare counterpart to
+  // handleTicDrop above — fires once a DeclareMoveCard tap has put a
+  // payload into `draggingMove` (see dragMoveState.js), on tapping ANY Tic
+  // square (see TicCounterCentral's tapPlacing branch, not just the GM's
+  // step neighbors). Always clears the pending placement afterward, even on
+  // the ambiguous-Left/Right branch — that popup carries its own copy of
+  // everything declareMoveAt needs, so there's nothing left pending here
+  // once it's up.
+  const handleTicTap = (absoluteTic) => (e) => {
+    if (!draggingMove) return;
+    declareMoveAt(absoluteTic, draggingMove, e.clientX, e.clientY);
+    setDraggingMove(null);
   };
 
   const chooseAppendage = (side) => {
@@ -1279,6 +1458,18 @@ export default function CombatArena() {
       <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
         <h1 className="text-2xl font-bold tracking-tight">Combat Arena</h1>
         <div className="flex items-center gap-3">
+          {/* Mobile readiness (Change 002) §7.3: below the width where the
+              drag-based roster aside disappears (sm:block, see it below),
+              this is the only way a GM can seat/re-seat anyone. */}
+          {role === 'gm' && (
+            <button
+              type="button"
+              onClick={() => setMobileRosterOpen(true)}
+              className="min-h-11 panel-cut-sm border border-zinc-700 px-3 text-sm font-semibold text-zinc-300 hover:bg-zinc-800 sm:hidden"
+            >
+              Roster
+            </button>
+          )}
           {role === 'gm' ? (
             <label className="flex items-center gap-1.5 text-sm text-zinc-300">
               <input
@@ -1359,6 +1550,19 @@ export default function CombatArena() {
             </div>
           )}
 
+          {draggingMove && (
+            <div className="flex items-center gap-2 panel-cut-sm border border-brand-700/50 bg-brand-950/40 px-3 py-1.5 text-xs font-semibold text-brand-200 md:hidden">
+              Choose a Tic for {draggingMove.moveName}
+              <button
+                type="button"
+                onClick={() => setDraggingMove(null)}
+                className="min-h-11 px-2 text-zinc-400 hover:text-zinc-100"
+              >
+                Cancel
+              </button>
+            </div>
+          )}
+
           <TicCounterCentral
             phase={phase}
             currentTic={combat.currentTic}
@@ -1368,6 +1572,7 @@ export default function CombatArena() {
             hoverTic={hoverTic}
             setHoverTic={setHoverTic}
             onDrop={handleTicDrop}
+            onTapPlace={handleTicTap}
             declaredMoves={
               activeDeclareEntries.length
                 ? currentRoundMoves.filter((dm) =>
@@ -1433,7 +1638,11 @@ export default function CombatArena() {
             const leftKey = `left-${rowIdx}`;
             const rightKey = `right-${rowIdx}`;
             return (
-              <div key={rowIdx} className="flex items-stretch gap-3">
+              // Mobile readiness (Change 002) §7.4/14.5: Left/Right stack
+              // vertically in portrait (a real pair-panel layout, not two
+              // half-width scrollers) with a VS divider between them;
+              // sm: and up returns to the original side-by-side row.
+              <div key={rowIdx} className="flex flex-col items-stretch gap-2 sm:flex-row sm:gap-3">
                 <div
                   onDragOver={(e) => {
                     if (role !== 'gm') return;
@@ -1455,6 +1664,7 @@ export default function CombatArena() {
                           participant={p}
                           role={role}
                           onRemove={remove}
+                          onMoveSeat={(id, name) => setSeatTarget({ characterId: id, characterName: name })}
                           navigate={navigate}
                           declaredMoves={declaredMoves}
                           sideStillDeclaring={
@@ -1466,7 +1676,11 @@ export default function CombatArena() {
                       )
                   )}
                 </div>
-                <div className="w-px shrink-0 bg-zinc-700/50" title="Pair divider" />
+                <div className="flex shrink-0 items-center justify-center sm:w-px sm:flex-col sm:bg-zinc-700/50" title="Pair divider">
+                  <span className="font-display panel-cut-sm bg-zinc-800 px-2 py-0.5 text-[10px] font-bold uppercase tracking-widest text-zinc-500 sm:hidden">
+                    VS
+                  </span>
+                </div>
                 <div
                   onDragOver={(e) => {
                     if (role !== 'gm') return;
@@ -1488,6 +1702,7 @@ export default function CombatArena() {
                           participant={p}
                           role={role}
                           onRemove={remove}
+                          onMoveSeat={(id, name) => setSeatTarget({ characterId: id, characterName: name })}
                           navigate={navigate}
                           declaredMoves={declaredMoves}
                           sideStillDeclaring={
@@ -1593,6 +1808,41 @@ export default function CombatArena() {
           </DropSlamGhost>
         ))}
       </AnimatePresence>
+
+      {mobileRosterOpen && (
+        <DialogShell title="Roster" onClose={() => setMobileRosterOpen(false)} maxWidth="max-w-sm">
+          <div className="space-y-1">
+            {rosterFolderTree.map((node) => (
+              <FolderRosterNode
+                key={node.id}
+                node={node}
+                charsByFolder={availableByFolder}
+                collapsed={collapsedFolders}
+                onToggle={toggleFolderCollapse}
+                depth={0}
+                rosterCard={mobileRosterCard}
+              />
+            ))}
+            {rootCharacters.length > 0 && (
+              <div className="pt-2">
+                <h3 className="mb-1 text-[10px] font-bold uppercase tracking-wide text-zinc-600">Folderless</h3>
+                <div className="space-y-2">{rootCharacters.map(mobileRosterCard)}</div>
+              </div>
+            )}
+            {availableCharacters.length === 0 && <p className="text-xs text-zinc-600">Everyone is seated.</p>}
+          </div>
+        </DialogShell>
+      )}
+
+      {seatTarget && (
+        <SeatPicker
+          characterId={seatTarget.characterId}
+          characterName={seatTarget.characterName}
+          pairIndices={rows}
+          participants={participants}
+          onClose={() => setSeatTarget(null)}
+        />
+      )}
     </div>
   );
 }

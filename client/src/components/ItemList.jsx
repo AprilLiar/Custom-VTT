@@ -72,14 +72,14 @@ function Row({ item, descPlaceholder, onSave, onRemove }) {
       <button
         onClick={startEdit}
         title="Edit"
-        className="panel-cut-sm px-1.5 text-zinc-600 hover:bg-zinc-800 hover:text-zinc-300"
+        className="flex h-11 w-11 shrink-0 items-center justify-center panel-cut-sm text-zinc-600 hover:bg-zinc-800 hover:text-zinc-300 md:h-auto md:w-auto md:px-1.5"
       >
         ✎
       </button>
       <button
         onClick={onRemove}
         title="Remove"
-        className="panel-cut-sm px-1.5 text-zinc-600 hover:bg-red-900/40 hover:text-red-400"
+        className="flex h-11 w-11 shrink-0 items-center justify-center panel-cut-sm text-zinc-600 hover:bg-red-900/40 hover:text-red-400 md:h-auto md:w-auto md:px-1.5"
       >
         ✕
       </button>
@@ -126,23 +126,23 @@ export default function ItemList({
           ))}
         </ul>
       )}
-      <form onSubmit={add} className="mt-3 flex gap-2">
+      <form onSubmit={add} className="mt-3 flex flex-col gap-2 sm:flex-row">
         <input
           value={name}
           onChange={(e) => setName(e.target.value)}
           placeholder={namePlaceholder}
-          className="w-1/3 panel-cut-sm border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm outline-none focus:border-brand-500"
+          className="w-full panel-cut-sm border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm outline-none focus:border-brand-500 sm:w-1/3"
         />
         <input
           value={desc}
           onChange={(e) => setDesc(e.target.value)}
           placeholder={descPlaceholder}
-          className="min-w-0 flex-1 panel-cut-sm border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm outline-none focus:border-brand-500"
+          className="w-full min-w-0 panel-cut-sm border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm outline-none focus:border-brand-500 sm:flex-1"
         />
         <button
           type="submit"
           disabled={!name.trim()}
-          className="panel-cut-sm bg-brand-600 px-3 text-sm font-semibold hover:bg-brand-500 disabled:opacity-40"
+          className="min-h-11 panel-cut-sm bg-brand-600 px-3 text-sm font-semibold hover:bg-brand-500 disabled:opacity-40 sm:min-h-0"
         >
           Add
         </button>

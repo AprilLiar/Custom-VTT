@@ -2,3 +2,5 @@ node_modules/
 client/dist/
 local.db
 .env
+test-results/
+playwright-report/

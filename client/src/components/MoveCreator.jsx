@@ -55,7 +55,7 @@ function AutomationEditor({ automations, onChange }) {
           <button
             type="button"
             onClick={() => remove(i)}
-            className="panel-cut-sm px-1 text-zinc-600 hover:text-red-400"
+            className="flex h-11 w-11 shrink-0 items-center justify-center panel-cut-sm text-zinc-600 hover:text-red-400 md:h-auto md:w-auto md:px-1"
           >
             ✕
           </button>

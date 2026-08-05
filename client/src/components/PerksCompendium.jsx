@@ -12,7 +12,7 @@ function GrantList({ perk, characters }) {
       {characters.map((c) => {
         const granted = perk.granted_character_ids.includes(c.id);
         return (
-          <label key={c.id} className="flex items-center gap-2 text-sm text-zinc-300">
+          <label key={c.id} className="flex min-h-11 items-center gap-2 text-sm text-zinc-300 md:min-h-0">
             <input
               type="checkbox"
               checked={granted}
@@ -125,19 +125,19 @@ export default function PerksCompendium() {
                       <>
                         <button
                           onClick={() => setGrantOpen(grantOpen === perk.id ? null : perk.id)}
-                          className="panel-cut-sm px-2 py-0.5 text-xs text-brand-400 hover:bg-brand-900/40"
+                          className="flex min-h-11 items-center panel-cut-sm px-2 py-0.5 text-xs text-brand-400 hover:bg-brand-900/40 md:min-h-0"
                         >
                           Grant… ({perk.granted_character_ids.length})
                         </button>
                         <button
                           onClick={() => setForm({ perk })}
-                          className="panel-cut-sm px-2 py-0.5 text-xs text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300"
+                          className="flex min-h-11 items-center panel-cut-sm px-2 py-0.5 text-xs text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300 md:min-h-0"
                         >
                           Edit
                         </button>
                         <button
                           onClick={() => deletePerk(perk)}
-                          className="panel-cut-sm px-2 py-0.5 text-xs text-zinc-500 hover:bg-red-900/40 hover:text-red-400"
+                          className="flex min-h-11 items-center panel-cut-sm px-2 py-0.5 text-xs text-zinc-500 hover:bg-red-900/40 hover:text-red-400 md:min-h-0"
                         >
                           Delete
                         </button>
@@ -153,7 +153,7 @@ export default function PerksCompendium() {
       </div>
 
       {role === 'gm' && (
-        <aside className="hidden w-44 shrink-0 sm:block">
+        <aside className="hidden w-44 shrink-0 md:block">
           <h2 className="mb-2 text-xs font-bold uppercase tracking-wide text-zinc-500">
             Drag a Perk here
           </h2>
@@ -177,7 +177,7 @@ export default function PerksCompendium() {
                 >
                   <div className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden panel-cut-sm bg-zinc-800 text-sm font-bold text-zinc-600">
                     {src ? (
-                      <img src={src} alt="" className="h-full w-full object-cover" />
+                      <img src={src} alt="" loading="lazy" className="h-full w-full object-cover" />
                     ) : (
                       c.name.slice(0, 1).toUpperCase()
                     )}

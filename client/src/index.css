@@ -121,3 +121,80 @@
 *::-webkit-scrollbar-corner {
   background: var(--color-zinc-900);
 }
+
+/* Mobile readiness (Change 002): dvh over vh so the app shell tracks the
+   real visible height as mobile browser chrome shows/hides, rather than a
+   fixed 100vh that leaves content under the address bar. 100vh stays first
+   as a fallback for browsers without dvh support — the second declaration
+   simply wins wherever dvh is understood. min-width guards against a
+   sub-320px viewport collapsing the layout entirely (see 14.3). */
+html,
+body,
+#root {
+  width: 100%;
+  min-width: 320px;
+  height: 100%;
+}
+
+.app-shell {
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+}
+
+/* Safe-area tokens (notches, home indicator) — consumed individually by
+   whichever edge actually touches the device chrome (mobile header top,
+   bottom nav/composer bottom), never applied to the whole tree at once:
+   fullscreen backgrounds should still bleed to the true edge, only
+   interactive content needs the inset. */
+:root {
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+}
+
+/* Removes the default ~300ms tap-delay/double-tap-zoom on touch controls
+   without disabling pinch-zoom or scroll anywhere else in the app (that's
+   why this is scoped to interactive elements, not applied globally as
+   touch-action: none would be). */
+button,
+[role='button'],
+a,
+input,
+select,
+textarea {
+  touch-action: manipulation;
+}
+
+@media (pointer: coarse) {
+  /* iOS auto-zooms the viewport on focusing an input whose computed
+     font-size is under 16px — this is the fix, not a design preference.
+     !important because Tailwind text-sm/text-xs utility classes carry
+     higher specificity than this plain element selector and would
+     otherwise win regardless of source order, silently re-breaking the
+     fix on every input a component styled with a text-size utility. */
+  input,
+  select,
+  textarea {
+    font-size: 16px !important;
+  }
+
+  /* A hover-only affordance (e.g. Delete Character's opacity-0
+     group-hover:opacity-100) has no hover on a touch device, so it must
+     already default visible there — see the Touch target audit. */
+  .hover-only-action {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}

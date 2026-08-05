@@ -11,6 +11,50 @@ import {
 import { portraitSrc } from '../lib/image.js';
 import { flattenFolderTree, folderPath } from '../lib/folders.js';
 import FolderTreeNav from './FolderTreeNav.jsx';
+import DialogShell from './DialogShell.jsx';
+
+// Mobile readiness (Change 002) §9: dragging a character card onto the
+// folder sidebar has no touch equivalent, so this is the tap alternative —
+// same character:set_folder event, just a picked row instead of a drop
+// target. GM-only, matching the drag gesture's own gating.
+function MoveToFolderDialog({ character, folders, onClose }) {
+  const flat = flattenFolderTree(folders);
+  const moveTo = (folderId) => {
+    socket.emit('character:set_folder', { characterId: character.id, folderId });
+    onClose();
+  };
+  return (
+    <DialogShell title={`Move ${character.name} to…`} onClose={onClose} maxWidth="max-w-sm">
+      <div className="space-y-0.5">
+        <button
+          onClick={() => moveTo(null)}
+          className={`flex min-h-11 w-full items-center truncate panel-cut-sm px-2 text-left text-sm font-semibold ${
+            (character.folder_id ?? null) == null
+              ? 'bg-zinc-700 text-zinc-100'
+              : 'text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200'
+          }`}
+        >
+          🏠 All Characters
+        </button>
+        {flat.map(({ folder, depth, path }) => (
+          <button
+            key={folder.id}
+            onClick={() => moveTo(folder.id)}
+            title={path}
+            style={{ paddingLeft: `${8 + depth * 14}px` }}
+            className={`flex min-h-11 w-full items-center truncate panel-cut-sm pr-2 text-left text-sm font-semibold ${
+              character.folder_id === folder.id
+                ? 'bg-zinc-700 text-zinc-100'
+                : 'text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200'
+            }`}
+          >
+            📁 {folder.name}
+          </button>
+        ))}
+      </div>
+    </DialogShell>
+  );
+}
 
 function AddCharacterForm({ folders, currentFolder, onDone }) {
   const { role } = useRole();
@@ -107,6 +151,8 @@ export default function CharacterList() {
   const [folders, setFolders] = useState(null);
   const [adding, setAdding] = useState(false);
   const [currentFolder, setCurrentFolder] = useState(null); // folder id | null = root
+  const [mobileFoldersOpen, setMobileFoldersOpen] = useState(false);
+  const [moveTarget, setMoveTarget] = useState(null); // character being re-filed on mobile
 
   useEffect(() => {
     const refresh = () => {
@@ -168,10 +214,52 @@ export default function CharacterList() {
         )}
       </div>
 
+      {/* Folder navigation — everyone can browse, only the GM can manage.
+          Mobile readiness (Change 002) §9.2A: a fixed sidebar squeezes the
+          card grid down to nothing on a phone, so below md it collapses
+          into a trigger button that opens the same FolderTreeNav in a
+          bottom-sheet dialog instead. */}
+      {(folders.length > 0 || role === 'gm') && (
+        <button
+          onClick={() => setMobileFoldersOpen(true)}
+          className="mb-4 flex min-h-11 w-full items-center gap-2 panel-cut-sm border border-zinc-700 bg-zinc-900 px-3 text-left text-sm font-semibold text-zinc-300 hover:bg-zinc-800 md:hidden"
+        >
+          📁 {currentFolder == null ? 'All Characters' : folderPath(currentFolder, folders)}
+          <span className="ml-auto text-xs text-zinc-500">Change…</span>
+        </button>
+      )}
+      {mobileFoldersOpen && (
+        <DialogShell title="Folders" onClose={() => setMobileFoldersOpen(false)} maxWidth="max-w-sm">
+          <FolderTreeNav
+            folders={folders}
+            currentFolderId={currentFolder}
+            onSelect={(id) => {
+              setCurrentFolder(id);
+              setMobileFoldersOpen(false);
+            }}
+            canManage={role === 'gm'}
+            onCreate={(name, parentFolderId) =>
+              socket.emit('character_folder:create', { name, parentFolderId })
+            }
+            onRename={(folderId, name) => socket.emit('character_folder:rename', { folderId, name })}
+            onDelete={(folderId) => socket.emit('character_folder:delete', { folderId })}
+            onDropOnFolder={onDropOnFolder}
+            rootLabel="All Characters"
+            nounLabel="folder"
+          />
+        </DialogShell>
+      )}
+      {moveTarget && (
+        <MoveToFolderDialog
+          character={moveTarget}
+          folders={folders}
+          onClose={() => setMoveTarget(null)}
+        />
+      )}
+
       <div className="flex gap-4">
-        {/* Folder navigation — everyone can browse, only the GM can manage */}
         {(folders.length > 0 || role === 'gm') && (
-          <aside className="w-44 shrink-0">
+          <aside className="hidden w-44 shrink-0 md:block">
             <FolderTreeNav
               folders={folders}
               currentFolderId={currentFolder}
@@ -221,7 +309,7 @@ export default function CharacterList() {
                   >
                     <div className="flex h-56 items-center justify-center bg-zinc-800">
                       {src ? (
-                        <img src={src} alt={c.name} className="h-full w-full object-cover" />
+                        <img src={src} alt={c.name} loading="lazy" className="h-full w-full object-cover" />
                       ) : (
                         <span className="flex h-full w-full items-center justify-center text-5xl font-bold text-zinc-600">
                           {c.name.slice(0, 1).toUpperCase()}
@@ -243,13 +331,25 @@ export default function CharacterList() {
                           📁 {path}
                         </span>
                       )}
+                      {role === 'gm' && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setMoveTarget(c);
+                          }}
+                          title="Move to folder"
+                          className="hover-only-action ml-auto flex h-11 w-11 shrink-0 items-center justify-center panel-cut-sm text-zinc-600 opacity-0 transition hover:bg-zinc-800 hover:text-brand-300 group-hover:opacity-100"
+                        >
+                          ⇄
+                        </button>
+                      )}
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
                           remove(c);
                         }}
                         title="Delete character"
-                        className="ml-auto shrink-0 panel-cut-sm px-1.5 text-zinc-600 opacity-0 transition group-hover:opacity-100 hover:bg-red-900/40 hover:text-red-400"
+                        className={`hover-only-action flex h-11 w-11 shrink-0 items-center justify-center panel-cut-sm text-zinc-600 opacity-0 transition hover:bg-red-900/40 hover:text-red-400 group-hover:opacity-100 md:h-auto md:w-auto md:px-1.5 ${role === 'gm' ? '' : 'ml-auto'}`}
                       >
                         ✕
                       </button>

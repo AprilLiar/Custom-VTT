@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react';
-import { motion } from 'framer-motion';
 import { socket } from '../socket.js';
 import { getCharacter } from '../lib/api.js';
 import { dieLabel } from '../lib/dice.js';
 import { ANATOMY } from '../lib/anatomy.js';
 import VitruvianFigure from './VitruvianFigure.jsx';
 import { portraitSrc, vitruvianSrc } from '../lib/image.js';
+import DialogShell from './DialogShell.jsx';
 
 // Combat Automation (Phase 9, sub-phase 4 — 4.1's Damage Application
 // dialog). `targetCandidateIds` is the roll's own target-candidate list
@@ -75,25 +75,8 @@ export default function DamageApplicationDialog({
   const undo = () => socket.emit('combat:undo_damage');
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={onClose}>
-      <motion.div
-        onClick={(e) => e.stopPropagation()}
-        initial={{ scale: 0.85, opacity: 0, y: 10 }}
-        animate={{ scale: 1, opacity: 1, y: 0 }}
-        transition={{ type: 'spring', stiffness: 420, damping: 22 }}
-        className="flex max-h-[90vh] w-full max-w-3xl flex-col gap-3 overflow-y-auto panel-cut-lg border border-zinc-700 bg-zinc-900 p-4"
-      >
-        <div className="flex items-center gap-2">
-          <h3 className="font-display font-bold uppercase tracking-wide text-zinc-100">Apply Damage</h3>
-          <button
-            type="button"
-            onClick={onClose}
-            className="ml-auto panel-cut-sm px-2 text-zinc-500 hover:text-zinc-200"
-          >
-            ✕
-          </button>
-        </div>
-
+    <DialogShell title="Apply Damage" onClose={onClose} variant="fullscreen" maxWidth="max-w-3xl">
+      <div className="flex flex-col gap-3">
         {targetId == null ? (
           <div className="space-y-2">
             <p className="text-sm text-zinc-400">Uneven Combat — who was hit?</p>
@@ -127,7 +110,7 @@ export default function DamageApplicationDialog({
                 <button
                   type="button"
                   onClick={() => setSteps((s) => Math.max(0, s - 1))}
-                  className="h-8 w-8 panel-cut-sm border border-zinc-700 text-lg text-zinc-300 hover:bg-zinc-800"
+                  className="h-11 w-11 panel-cut-sm border border-zinc-700 text-lg text-zinc-300 hover:bg-zinc-800 md:h-8 md:w-8"
                 >
                   −
                 </button>
@@ -138,7 +121,7 @@ export default function DamageApplicationDialog({
                 <button
                   type="button"
                   onClick={() => setSteps((s) => s + 1)}
-                  className="h-8 w-8 panel-cut-sm border border-zinc-700 text-lg text-zinc-300 hover:bg-zinc-800"
+                  className="h-11 w-11 panel-cut-sm border border-zinc-700 text-lg text-zinc-300 hover:bg-zinc-800 md:h-8 md:w-8"
                 >
                   +
                 </button>
@@ -147,7 +130,7 @@ export default function DamageApplicationDialog({
               <button
                 type="button"
                 onClick={undo}
-                className="panel-cut-sm border border-zinc-700 px-3 py-1 text-xs text-zinc-400 hover:bg-zinc-800"
+                className="min-h-11 panel-cut-sm border border-zinc-700 px-3 py-1 text-xs text-zinc-400 hover:bg-zinc-800"
               >
                 Undo last
               </button>
@@ -217,7 +200,7 @@ export default function DamageApplicationDialog({
             </div>
           </div>
         )}
-      </motion.div>
-    </div>
+      </div>
+    </DialogShell>
   );
 }

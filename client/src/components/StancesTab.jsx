@@ -214,7 +214,7 @@ export default function StancesTab({ data }) {
                         setForm({ mode: 'edit', stance });
                       }}
                       title="Edit"
-                      className="panel-cut-sm px-1.5 text-zinc-600 hover:bg-zinc-800 hover:text-zinc-300"
+                      className="flex h-11 w-11 shrink-0 items-center justify-center panel-cut-sm text-zinc-600 hover:bg-zinc-800 hover:text-zinc-300 md:h-auto md:w-auto md:px-1.5"
                     >
                       ✎
                     </button>
@@ -229,7 +229,7 @@ export default function StancesTab({ data }) {
                           ? 'Every character keeps at least one stance'
                           : 'Delete'
                       }
-                      className="panel-cut-sm px-1.5 text-zinc-600 hover:bg-red-900/40 hover:text-red-400 disabled:cursor-not-allowed disabled:opacity-30"
+                      className="flex h-11 w-11 shrink-0 items-center justify-center panel-cut-sm text-zinc-600 hover:bg-red-900/40 hover:text-red-400 disabled:cursor-not-allowed disabled:opacity-30 md:h-auto md:w-auto md:px-1.5"
                     >
                       ✕
                     </button>

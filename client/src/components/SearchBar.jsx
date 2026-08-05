@@ -15,12 +15,18 @@ const GROUPS = [
 // which every role can browse (read-only for Players).
 const COMPENDIUM_TAB = { moves: 'moves', perks: 'perks', tells: 'moves', tags: 'moves' };
 
-export default function SearchBar() {
+// `mobileFullWidth` (Change 002, §5.2): the mobile "More" menu renders this
+// full-width and auto-focused instead of the desktop inline `w-64` box —
+// same component, same search/results logic, just a different container
+// width/focus behavior. `onNavigate` lets that menu close itself once a
+// result (or Enter) actually navigates, same as the desktop dropdown
+// already closes itself via `setOpen(false)`.
+export default function SearchBar({ mobileFullWidth = false, onNavigate }) {
   const { role } = useRole();
   const navigate = useNavigate();
   const [query, setQuery] = useState('');
   const [results, setResults] = useState(null);
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(mobileFullWidth);
   const boxRef = useRef(null);
 
   useEffect(() => {
@@ -48,9 +54,10 @@ export default function SearchBar() {
     setQuery('');
     if (group === 'characters') {
       navigate(`/character/${item.id}`);
-      return;
+    } else {
+      navigate('/compendium', { state: { tab: COMPENDIUM_TAB[group] } });
     }
-    navigate('/compendium', { state: { tab: COMPENDIUM_TAB[group] } });
+    onNavigate?.();
   };
 
   const visibleResults = results && {
@@ -61,16 +68,21 @@ export default function SearchBar() {
   const hasAny = visibleResults && GROUPS.some((g) => visibleResults[g.key]?.length);
 
   return (
-    <div ref={boxRef} className="relative w-64">
+    <div ref={boxRef} className={`relative ${mobileFullWidth ? 'w-full' : 'w-64'}`}>
       <input
+        autoFocus={mobileFullWidth}
         value={query}
         onChange={(e) => setQuery(e.target.value)}
         onFocus={() => setOpen(true)}
         placeholder="Search…"
-        className="w-full panel-cut-sm border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm text-zinc-100 outline-none focus:border-brand-500"
+        className="min-h-11 w-full panel-cut-sm border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm text-zinc-100 outline-none focus:border-brand-500"
       />
       {open && query.trim() && (
-        <div className="absolute left-0 right-0 top-full z-50 mt-1 max-h-96 overflow-y-auto panel-cut-sm border border-zinc-700 bg-zinc-900 shadow-xl">
+        <div
+          className={`z-50 mt-1 max-h-96 overflow-y-auto panel-cut-sm border border-zinc-700 bg-zinc-900 shadow-xl ${
+            mobileFullWidth ? 'w-full' : 'absolute left-0 right-0 top-full'
+          }`}
+        >
           {!visibleResults ? (
             <p className="p-3 text-sm text-zinc-500">Searching…</p>
           ) : !hasAny ? (
@@ -88,7 +100,7 @@ export default function SearchBar() {
                     <div
                       key={item.id}
                       onClick={() => goTo(g.key, item)}
-                      className="cursor-pointer px-3 py-1.5 text-sm text-zinc-200 hover:bg-zinc-800"
+                      className="min-h-11 cursor-pointer px-3 py-1.5 text-sm text-zinc-200 hover:bg-zinc-800"
                     >
                       <div className="flex items-center gap-1.5">
                         <span className="truncate font-medium">{item.name}</span>

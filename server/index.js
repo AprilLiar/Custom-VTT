@@ -67,6 +67,14 @@ export const io = new Server(httpServer, { maxHttpBufferSize: 8 * 1024 * 1024 })
 // ---------- shared lookups ----------
 
 const getCharacter = (id) => one('SELECT * FROM characters WHERE id = ?', [id]);
+
+// Mobile readiness (Change 002) §12: vitruvian_image_data is only ever read
+// on a character's OWN Core Stats tab (CoreStatsTab.jsx, via a single-
+// character getCharacter fetch) — never in a roster/list view. Any endpoint
+// returning MULTIPLE characters at once strips it before responding, so a
+// phone on a slow connection isn't downloading a full base64 backdrop image
+// per character just to render name-and-portrait cards.
+const omitVitruvianArt = ({ vitruvian_image_data, vitruvian_image_mime_type, ...rest }) => rest;
 const getDice = (characterId) =>
   all('SELECT * FROM dice WHERE character_id = ? ORDER BY id', [characterId]);
 const getInventory = (characterId) =>
@@ -985,7 +993,7 @@ app.get('/api/health', async (_req, res) => {
 });
 
 app.get('/api/characters', wrap(async (_req, res) => {
-  res.json(await all('SELECT * FROM characters ORDER BY id'));
+  res.json((await all('SELECT * FROM characters ORDER BY id')).map(omitVitruvianArt));
 }));
 
 // Character-list folders (GM-managed) — separate from /api/characters so
@@ -1137,7 +1145,7 @@ app.get('/api/combat', wrap(async (req, res) => {
 
   const characters = {};
   for (const character of charRows) {
-    characters[character.id] = { character, dice: [], stances: [] };
+    characters[character.id] = { character: omitVitruvianArt(character), dice: [], stances: [] };
   }
   for (const die of diceRows) characters[die.character_id]?.dice.push(die);
   for (const stance of stanceRows) characters[stance.character_id]?.stances.push(stance);

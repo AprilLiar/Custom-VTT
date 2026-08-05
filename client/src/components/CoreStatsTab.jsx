@@ -102,13 +102,13 @@ function StaminaBlock({ character, staminaDie }) {
       <div className="flex gap-1">
         <button
           onClick={() => socket.emit('stamina:adjust', { characterId: character.id, delta: -1 })}
-          className="h-9 w-9 panel-cut-sm border border-zinc-700 text-lg text-red-400 hover:bg-zinc-800"
+          className="h-11 w-11 panel-cut-sm border border-zinc-700 text-lg text-red-400 hover:bg-zinc-800 md:h-9 md:w-9"
         >
           −
         </button>
         <button
           onClick={() => socket.emit('stamina:adjust', { characterId: character.id, delta: 1 })}
-          className="h-9 w-9 panel-cut-sm border border-zinc-700 text-lg text-green-400 hover:bg-zinc-800"
+          className="h-11 w-11 panel-cut-sm border border-zinc-700 text-lg text-green-400 hover:bg-zinc-800 md:h-9 md:w-9"
         >
           +
         </button>
@@ -240,7 +240,8 @@ export default function CoreStatsTab({ data }) {
         )}
       </div>
 
-      <div className="relative mx-auto aspect-square w-full max-w-2xl select-none">
+      {/* Desktop/tablet: unchanged absolute Vitruvian layout. */}
+      <div className="relative mx-auto hidden aspect-square w-full max-w-2xl select-none md:block">
         <VitruvianFigure
           className="absolute inset-0 h-full w-full text-zinc-400"
           customSrc={vitruvianSrc(character)}
@@ -286,6 +287,67 @@ export default function CoreStatsTab({ data }) {
             </div>
           );
         })}
+      </div>
+
+      {/* Mobile readiness (Change 002) §14.6A: a 2/4/2 grouped grid (head
+          row, core row, legs row — same visual grouping the Vitruvian
+          figure itself shows) instead of absolute coordinates, which get
+          cramped and overlap-prone under ~390px. A faint Vitruvian figure
+          still sits behind it as a backdrop, purely decorative (no dice are
+          positioned against it), so the character still "reads" as the
+          same body layout at a glance. */}
+      <div className="relative mx-auto w-full max-w-md select-none md:hidden">
+        <VitruvianFigure
+          className="pointer-events-none absolute inset-0 h-full w-full text-zinc-400 opacity-[0.08]"
+          customSrc={vitruvianSrc(character)}
+        />
+        {role === 'gm' && (
+          <>
+            <button
+              onClick={() => vitruvianFileRef.current?.click()}
+              disabled={uploadingVitruvian}
+              title="Upload a custom Vitruvian Man for this character"
+              className="absolute right-1 top-1 z-10 flex h-11 w-11 items-center justify-center panel-cut-sm border border-zinc-700 bg-zinc-900/80 text-zinc-400 hover:border-brand-500 hover:text-brand-300 disabled:opacity-40"
+            >
+              <Upload size={14} />
+            </button>
+            <input
+              ref={vitruvianFileRef}
+              type="file"
+              accept="image/*"
+              hidden
+              onChange={onPickVitruvian}
+            />
+          </>
+        )}
+        <div className="relative space-y-3 py-2">
+          {[
+            Object.keys(ANATOMY).slice(0, 2),
+            Object.keys(ANATOMY).slice(2, 6),
+            Object.keys(ANATOMY).slice(6, 8),
+          ].map((slots, rowIndex) => (
+            <div key={rowIndex} className="flex justify-center gap-3">
+              {slots.map((slot) => {
+                const die = dice.find((d) => d.slot_name === slot);
+                if (!die) return null;
+                const spot = ANATOMY[slot];
+                return (
+                  <DieWidget
+                    key={die.id}
+                    die={die}
+                    onRoll={rollDie}
+                    onStep={stepDie}
+                    selecting={selecting}
+                    selected={selectedIds.has(die.id)}
+                    onToggleSelect={toggleSelect}
+                    onToggleHalfDamage={toggleHalfDamage}
+                    Icon={spot.Icon}
+                  />
+                );
+              })}
+            </div>
+          ))}
+        </div>
       </div>
 
       <StaminaBlock character={character} staminaDie={staminaDie} />

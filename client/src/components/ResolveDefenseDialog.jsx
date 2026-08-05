@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
-import { motion } from 'framer-motion';
 import { socket } from '../socket.js';
 import { getCombat } from '../lib/api.js';
+import DialogShell from './DialogShell.jsx';
 
 // Combat Automation (Phase 9, sub-phase 4 — 4.2's GM defense prompt).
 // GM-only, opened from the attacker's own chat roll card once the GM judges
@@ -87,7 +87,7 @@ export default function ResolveDefenseDialog({
       onClick={onClick}
       disabled={disabled}
       title={title}
-      className={`panel-cut-sm border py-4 text-center font-display text-sm font-bold uppercase tracking-wide transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+      className={`min-h-11 panel-cut-sm border py-4 text-center font-display text-sm font-bold uppercase tracking-wide transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
         active ? ACTIVE_TILE_CLASS[color] : 'border-zinc-700 text-zinc-400 hover:bg-zinc-800'
       }`}
     >
@@ -96,25 +96,8 @@ export default function ResolveDefenseDialog({
   );
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={onClose}>
-      <motion.div
-        onClick={(e) => e.stopPropagation()}
-        initial={{ scale: 0.85, opacity: 0, y: 10 }}
-        animate={{ scale: 1, opacity: 1, y: 0 }}
-        transition={{ type: 'spring', stiffness: 420, damping: 22 }}
-        className="flex w-full max-w-md flex-col gap-3 panel-cut-lg border border-zinc-700 bg-zinc-900 p-4"
-      >
-        <div className="flex items-center gap-2">
-          <h3 className="font-display font-bold uppercase tracking-wide text-zinc-100">Resolve Defense</h3>
-          <button
-            type="button"
-            onClick={onClose}
-            className="ml-auto panel-cut-sm px-2 text-zinc-500 hover:text-zinc-200"
-          >
-            ✕
-          </button>
-        </div>
-
+    <DialogShell title="Resolve Defense" onClose={onClose}>
+      <div className="flex flex-col gap-3">
         {targetId == null ? (
           <div className="space-y-2">
             <p className="text-sm text-zinc-400">Who defended?</p>
@@ -190,7 +173,7 @@ export default function ResolveDefenseDialog({
                 (defenseType === 'block' && !canBlock)
               }
               onClick={submit}
-              className="panel-cut-sm bg-brand-600 py-2 font-semibold text-white hover:bg-brand-500 disabled:cursor-not-allowed disabled:opacity-40"
+              className="min-h-11 panel-cut-sm bg-brand-600 py-2 font-semibold text-white hover:bg-brand-500 disabled:cursor-not-allowed disabled:opacity-40"
             >
               Resolve
             </button>
@@ -208,7 +191,7 @@ export default function ResolveDefenseDialog({
             )}
           </>
         )}
-      </motion.div>
-    </div>
+      </div>
+    </DialogShell>
   );
 }
