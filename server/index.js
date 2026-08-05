@@ -27,6 +27,9 @@ import {
   AMBIGUOUS_ROLL_SLOTS,
   sanitizeRollType,
   sanitizeCustomRollSize,
+  sanitizeAttackTargets,
+  expandAttackTargets,
+  parseConcreteAttackTargets,
 } from './moveLogic.js';
 import { effectiveFrames, PERK_HOOKS, idleStaminaRegenRate } from './perkAutomations.js';
 import {
@@ -121,6 +124,7 @@ async function attachInteractions(moves) {
     tag_ids: tagsByMove.get(m.id) ?? [],
     roll_slots: rollSlotsByMove.get(m.id) ?? [],
     defense_frame_positions: JSON.parse(m.defense_frame_positions ?? '[]'),
+    attack_targets: sanitizeAttackTargets(JSON.parse(m.attack_targets ?? '[]')),
   }));
 }
 
@@ -670,10 +674,11 @@ async function applyIdleTicStaminaRegen(tic) {
 async function buildRollContext(characterId, declaredMoveId) {
   if (declaredMoveId == null) return null;
   const [declaredMove, participant] = await Promise.all([
-    one('SELECT id, move_id FROM declared_moves WHERE id = ? AND character_id = ?', [
-      declaredMoveId,
-      characterId,
-    ]),
+    one(
+      `SELECT id, move_id, effective_attack_targets, attack_target_source
+       FROM declared_moves WHERE id = ? AND character_id = ?`,
+      [declaredMoveId, characterId]
+    ),
     one('SELECT pair_index, side FROM combat_participants WHERE character_id = ?', [characterId]),
   ]);
   if (!declaredMove || !participant) return null;
@@ -688,6 +693,12 @@ async function buildRollContext(characterId, declaredMoveId) {
     pairIndex: participant.pair_index,
     side: participant.side,
     targetCandidateIds: targets.map((t) => t.character_id),
+    // Attack Target (Change 001): the declare-time snapshot — still source
+    // 'move' at this point, since a Successful Block (which can flip it to
+    // 'block') only ever happens after this attacking roll card is already
+    // posted. combat:defense_resolved separately pushes the updated value.
+    effectiveAttackTargets: parseConcreteAttackTargets(declaredMove.effective_attack_targets),
+    attackTargetSource: declaredMove.attack_target_source,
   };
 }
 
@@ -1282,6 +1293,39 @@ app.get('/api/chat', wrap(async (_req, res) => {
     );
     for (const m of fullMoves) fullMoveById.set(m.id, m);
   }
+  // Attack Target (Change 001), 6.3: a roll's payload freezes
+  // effectiveAttackTargets/attackTargetSource at roll time, but a
+  // Successful Block can update the underlying declared_moves row *after*
+  // that roll was logged — so on reload the chat feed must re-read current
+  // state rather than trust the frozen payload (in-memory defenseResolutions
+  // only covers a still-open live session). One batched query for every
+  // distinct declaredMoveId referenced by a 'roll' row, not one per row.
+  const rollDeclaredMoveIds = [...new Set(
+    rows
+      .filter((r) => r.kind === 'roll' && r.payload)
+      .map((r) => {
+        try {
+          return JSON.parse(r.payload)?.declaredMoveId;
+        } catch {
+          return null;
+        }
+      })
+      .filter((id) => id != null)
+  )];
+  const attackTargetsByDeclaredMoveId = new Map();
+  if (rollDeclaredMoveIds.length) {
+    const marks = rollDeclaredMoveIds.map(() => '?').join(',');
+    const targetRows = await all(
+      `SELECT id, effective_attack_targets, attack_target_source FROM declared_moves WHERE id IN (${marks})`,
+      rollDeclaredMoveIds
+    );
+    for (const row of targetRows) {
+      attackTargetsByDeclaredMoveId.set(row.id, {
+        effectiveAttackTargets: parseConcreteAttackTargets(row.effective_attack_targets),
+        attackTargetSource: row.attack_target_source,
+      });
+    }
+  }
   res.json(
     rows.map((row) => {
       const dice = JSON.parse(row.dice_rolled);
@@ -1325,6 +1369,20 @@ app.get('/api/chat', wrap(async (_req, res) => {
         // every other roll (Dice Tray, a manual Stat roll, initiative), same
         // as `move` above is absent for a non-move_reveal row.
         ...(row.kind === 'roll' && row.payload ? JSON.parse(row.payload) : {}),
+        // Attack Target (Change 001): override the payload's frozen
+        // effectiveAttackTargets/attackTargetSource, if any, with current
+        // declared_moves state — see attackTargetsByDeclaredMoveId above.
+        ...(row.kind === 'roll' && row.payload
+          ? (() => {
+              let declaredMoveId;
+              try {
+                declaredMoveId = JSON.parse(row.payload)?.declaredMoveId;
+              } catch {
+                declaredMoveId = null;
+              }
+              return declaredMoveId != null ? attackTargetsByDeclaredMoveId.get(declaredMoveId) ?? {} : {};
+            })()
+          : {}),
         timestamp: sqliteToIso(row.created_at),
       };
     })
@@ -1486,6 +1544,23 @@ io.on('connection', (socket) => {
     if (!die) return;
     const steps = Math.max(0, Math.trunc(Number(halfDamageSteps) || 0));
     if (!steps) return;
+
+    // Attack Target (Change 001), 6.5: server-authoritative hard restriction
+    // — checked before any die mutation, Undo buffer write, Chat audit line,
+    // or interaction automation, so a stale/manual client can't bypass it.
+    // No attackerDeclaredMoveId at all (manual GM damage) keeps prior
+    // unrestricted behavior — Attack Target only ever gates a damage
+    // Apply that's actually tied to a declared attack.
+    if (attackerDeclaredMoveId != null) {
+      const attack = await one(
+        'SELECT effective_attack_targets FROM declared_moves WHERE id = ?',
+        [attackerDeclaredMoveId]
+      );
+      if (!attack) return;
+      const allowed = new Set(parseConcreteAttackTargets(attack.effective_attack_targets));
+      if (!allowed.has(die.slot_name)) return;
+    }
+
     let next = {
       current_size: die.current_size,
       bonus: die.bonus,
@@ -1908,6 +1983,11 @@ io.on('connection', (socket) => {
     const rollSlots = rollType === 'custom' ? [] : sanitizeRollSlots(payload.rollSlots);
     const customRollSize = rollType === 'custom' ? sanitizeCustomRollSize(payload.customRollSize) : null;
     const ambiguousRoll = hasAmbiguousRollSlot(rollSlots);
+    // Attack Target (Change 001): no minimum — an empty array is a valid,
+    // explicit "no Attack Target" and is never re-filled after the fact (see
+    // db.js's own note on why the DB column default only fires once, at
+    // migration, and never again for a plain empty save).
+    const attackTargets = sanitizeAttackTargets(payload.attackTargets);
 
     let tellId;
     let rightTellId = null;
@@ -1971,13 +2051,13 @@ io.on('connection', (socket) => {
         `INSERT INTO moves (name, is_default, tell_id, startup_tics, active_tics, recovery_tics,
           stamina_cost, description, style_attribute_id, folder_id, image_data, image_mime_type,
           roll_modifier, right_tell_id, left_tell_id, is_defensive, defense_frame_positions,
-          roll_type, custom_roll_size)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          roll_type, custom_roll_size, attack_targets)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [name, isDefault, tellId, startup, active, recovery, staminaCost, description, styleId,
           folderId, payload.imageData ?? null,
           payload.imageData ? (payload.imageMimeType ?? 'image/png') : null,
           rollModifier, rightTellId, leftTellId, isDefensive, JSON.stringify(defenseFramePositions),
-          rollType, customRollSize]
+          rollType, customRollSize, JSON.stringify(attackTargets)]
       );
       id = Number(result.lastInsertRowid);
     } else {
@@ -1985,11 +2065,11 @@ io.on('connection', (socket) => {
         `UPDATE moves SET name = ?, is_default = ?, tell_id = ?, startup_tics = ?, active_tics = ?,
           recovery_tics = ?, stamina_cost = ?, description = ?, style_attribute_id = ?, folder_id = ?,
           roll_modifier = ?, right_tell_id = ?, left_tell_id = ?, is_defensive = ?,
-          defense_frame_positions = ?, roll_type = ?, custom_roll_size = ?
+          defense_frame_positions = ?, roll_type = ?, custom_roll_size = ?, attack_targets = ?
           WHERE id = ?`,
         [name, isDefault, tellId, startup, active, recovery, staminaCost, description, styleId,
           folderId, rollModifier, rightTellId, leftTellId, isDefensive,
-          JSON.stringify(defenseFramePositions), rollType, customRollSize, id]
+          JSON.stringify(defenseFramePositions), rollType, customRollSize, JSON.stringify(attackTargets), id]
       );
       // image only replaced when a new one is provided
       if (payload.imageData !== undefined) {
@@ -2941,10 +3021,21 @@ io.on('connection', (socket) => {
     );
     const queueOrder = countRow.count + 1;
 
+    // Attack Target (Change 001): snapshot the move template's attack_targets
+    // (Hand/Leg expanded to this declaration's own appendage_choice) into
+    // declared_moves at declare time — a later edit to the Move template
+    // must not retroactively change an already-declared attack. Stored
+    // regardless of whether this move even has a Roll; an attack with no
+    // Roll simply has no meaningful damage/target flow downstream.
+    const effectiveAttackTargets = expandAttackTargets(
+      JSON.parse(move.attack_targets ?? '[]'),
+      storedAppendageChoice
+    );
+
     await run(
-      `INSERT INTO declared_moves (character_id, move_id, round_number, queue_order, placement_tic, reveal_tic, appendage_choice)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [character.id, move.id, state.round_number, queueOrder, placementTic, revealTic, storedAppendageChoice]
+      `INSERT INTO declared_moves (character_id, move_id, round_number, queue_order, placement_tic, reveal_tic, appendage_choice, effective_attack_targets, attack_target_source)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'move')`,
+      [character.id, move.id, state.round_number, queueOrder, placementTic, revealTic, storedAppendageChoice, JSON.stringify(effectiveAttackTargets)]
     );
     // Every connected socket gets its own tailored view via emitCombatUpdated
     // (see isRevealedToViewer/mapDeclaredMovesForViewer) — whoever's logged
@@ -3139,6 +3230,21 @@ io.on('connection', (socket) => {
     ]);
     if (!attackerDM || !defenderDM) return;
 
+    // Attack Target (Change 001), rule 12: Block MUST have a base Stat
+    // Roll — a Custom Roll move has no named stat to turn into a
+    // replacement Attack Target, so it can never serve as a Block. This is
+    // the server-authoritative version of the same restriction
+    // ResolveDefenseDialog.jsx already enforces client-side; checked here
+    // regardless of outcome, before any defensive Roll happens.
+    if (defenseType === 'block') {
+      if (defenderDM.roll_type !== 'stat') return;
+      const baseSlotCount = await one(
+        'SELECT COUNT(*) AS count FROM move_roll_slots WHERE move_id = ?',
+        [defenderDM.move_id]
+      );
+      if (Number(baseSlotCount.count) === 0) return;
+    }
+
     // 4.3: whether the attacker's Active window is actually covered by the
     // defender's Defense-tagged Tic(s) at all, and if not, exactly how.
     const defenseFramePositions = JSON.parse(defenderDM.defense_frame_positions ?? '[]');
@@ -3196,6 +3302,31 @@ io.on('connection', (socket) => {
     ]);
     const mod =
       defenderDM.roll_modifier + rollBonusRow.bonus + (await getReasonsToFightBonus(defenderDM.character_id));
+
+    // Attack Target (Change 001), 6.4: a Successful Block (Partial or Full
+    // alike) replaces the attacker's effective target with the blocking
+    // move's own base Stat Roll — baseSlotRows only, never the extra
+    // move_defensive_roll_slots pool (that pool contributes to the Block's
+    // result total, never to what it can turn into a target). Hand/Leg
+    // narrow to whichever side this Block itself was declared with. Written
+    // before the outcome/damage chat line below and before combat:
+    // defense_resolved is emitted, per the spec's "resolved emits only
+    // after a successful target write" ordering; Dodge and Failed Block
+    // never reach this branch, so the snapshot is untouched for both.
+    let attackTargetUpdate = null;
+    if (defenseType === 'block') {
+      const effectiveAttackTargets = expandAttackTargets(
+        baseSlotRows.map((row) => row.slot_name),
+        defenderDM.appendage_choice
+      );
+      await run(
+        `UPDATE declared_moves
+         SET effective_attack_targets = ?, attack_target_source = 'block'
+         WHERE id = ?`,
+        [JSON.stringify(effectiveAttackTargets), attackerDeclaredMoveId]
+      );
+      attackTargetUpdate = { effectiveAttackTargets, attackTargetSource: 'block' };
+    }
 
     let blockDice;
     if (defenderDM.roll_type === 'custom' && defenderDM.custom_roll_size != null) {
@@ -3303,6 +3434,7 @@ io.on('connection', (socket) => {
       damage: resolution.damage,
       coverage: coverage.coverage,
       conflictDeclaredMoveIds,
+      ...(attackTargetUpdate ?? {}),
     });
   });
 

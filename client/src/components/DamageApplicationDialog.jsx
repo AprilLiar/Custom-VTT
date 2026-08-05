@@ -32,6 +32,8 @@ export default function DamageApplicationDialog({
   targetCandidateIds,
   initialHalfDamageSteps,
   attackerDeclaredMoveId,
+  allowedSlotNames, // Attack Target (Change 001): concrete Stat names damage may land on; undefined = unrestricted (manual GM damage)
+  attackTargetSource, // 'move' | 'block' | undefined
   characters,
   onClose,
 }) {
@@ -59,8 +61,14 @@ export default function DamageApplicationDialog({
     };
   }, [targetId]);
 
+  // Attack Target (Change 001): undefined = unrestricted (manual/ad-hoc GM
+  // damage with no attacking declared move behind it) — the server applies
+  // the exact same rule (see combat:apply_damage's own effective_attack_
+  // targets check), this is purely a UX preview of that same restriction.
+  const isAllowedTarget = (die) => allowedSlotNames == null || allowedSlotNames.includes(die.slot_name);
+
   const apply = (die) => {
-    if (!steps) return;
+    if (!steps || !isAllowedTarget(die)) return;
     socket.emit('combat:apply_damage', { dieId: die.id, halfDamageSteps: steps, attackerDeclaredMoveId });
   };
 
@@ -157,34 +165,55 @@ export default function DamageApplicationDialog({
               )}
             </div>
 
-            <div className="relative aspect-square w-full flex-1 select-none">
-              <VitruvianFigure
-                className="absolute inset-0 h-full w-full text-zinc-400"
-                customSrc={vitruvianSrc(target.character)}
-              />
-              {target.dice.map((die) => {
-                const spot = ANATOMY[die.slot_name];
-                if (!spot) return null;
-                const incapacitated = die.status === 'incapacitated';
-                return (
-                  <button
-                    key={die.id}
-                    type="button"
-                    disabled={incapacitated || !steps}
-                    onClick={() => apply(die)}
-                    title={incapacitated ? 'Incapacitated' : `Apply ${steps} Half-Damage to ${die.slot_name}`}
-                    style={{ top: spot.top, left: spot.left }}
-                    className={`absolute flex h-14 w-14 -translate-x-1/2 -translate-y-1/2 flex-col items-center justify-center panel-cut-sm border font-display text-xs font-bold transition-colors ${
-                      incapacitated
-                        ? 'cursor-not-allowed border-zinc-800 bg-zinc-900 text-zinc-700'
-                        : 'border-zinc-700 bg-zinc-800/90 text-zinc-100 hover:border-red-500 hover:bg-red-900/40 disabled:cursor-not-allowed disabled:opacity-50'
-                    } ${die.half_damage ? 'ring-2 ring-amber-500' : ''}`}
-                  >
-                    <spot.Icon className="pointer-events-none h-5 w-5 opacity-50" />
-                    <span className={incapacitated ? 'line-through' : ''}>{dieLabel(die.current_size, die.bonus)}</span>
-                  </button>
-                );
-              })}
+            <div className="flex-1">
+              {allowedSlotNames != null && (
+                <p className="mb-1 text-center text-xs text-zinc-500">
+                  Effective Attack Target:{' '}
+                  <span className={allowedSlotNames.length ? 'text-zinc-300' : 'text-zinc-600'}>
+                    {allowedSlotNames.length ? allowedSlotNames.join(' + ') : 'None'}
+                  </span>
+                  {attackTargetSource === 'block' && (
+                    <span className="italic text-sky-400"> — changed by Block</span>
+                  )}
+                </p>
+              )}
+              <div className="relative aspect-square w-full select-none">
+                <VitruvianFigure
+                  className="absolute inset-0 h-full w-full text-zinc-400"
+                  customSrc={vitruvianSrc(target.character)}
+                />
+                {target.dice.map((die) => {
+                  const spot = ANATOMY[die.slot_name];
+                  if (!spot) return null;
+                  const incapacitated = die.status === 'incapacitated';
+                  const allowedTarget = isAllowedTarget(die);
+                  const disabled = incapacitated || !steps || !allowedTarget;
+                  return (
+                    <button
+                      key={die.id}
+                      type="button"
+                      disabled={disabled}
+                      onClick={() => apply(die)}
+                      title={
+                        incapacitated
+                          ? 'Incapacitated'
+                          : !allowedTarget
+                            ? 'Not an Attack Target'
+                            : `Apply ${steps} Half-Damage to ${die.slot_name}`
+                      }
+                      style={{ top: spot.top, left: spot.left }}
+                      className={`absolute flex h-14 w-14 -translate-x-1/2 -translate-y-1/2 flex-col items-center justify-center panel-cut-sm border font-display text-xs font-bold transition-colors ${
+                        incapacitated || !allowedTarget
+                          ? 'cursor-not-allowed border-zinc-800 bg-zinc-900 text-zinc-700 opacity-50'
+                          : 'border-zinc-700 bg-zinc-800/90 text-zinc-100 hover:border-red-500 hover:bg-red-900/40 disabled:cursor-not-allowed disabled:opacity-50'
+                      } ${die.half_damage ? 'ring-2 ring-amber-500' : ''}`}
+                    >
+                      <spot.Icon className="pointer-events-none h-5 w-5 opacity-50" />
+                      <span className={incapacitated ? 'line-through' : ''}>{dieLabel(die.current_size, die.bonus)}</span>
+                    </button>
+                  );
+                })}
+              </div>
             </div>
           </div>
         )}

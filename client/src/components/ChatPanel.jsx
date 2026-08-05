@@ -331,6 +331,15 @@ function Entry({ entry, character, moveInfo, characters, defenseResolutions }) {
                   : resolved.halfDamageSteps
                 : raw.halfDamageSteps;
               const damage = steps * 0.5;
+              // Attack Target (Change 001): a Successful Block's own
+              // combat:defense_resolved payload (resolved) carries the
+              // post-Block replacement; otherwise fall back to this roll's
+              // own declare-time snapshot (from buildRollContext live, or
+              // GET /api/chat's batched reload enrichment — see server/
+              // index.js) — either way, always the current server state,
+              // never something derived client-side.
+              const effectiveAttackTargets = resolved?.effectiveAttackTargets ?? entry.effectiveAttackTargets ?? [];
+              const attackTargetSource = resolved?.attackTargetSource ?? entry.attackTargetSource ?? 'move';
               return (
                 <div className="mt-1.5 flex flex-wrap items-center gap-2 border-t border-zinc-800 pt-1.5">
                   <span className="font-display text-sm text-zinc-400">
@@ -342,9 +351,18 @@ function Entry({ entry, character, moveInfo, characters, defenseResolutions }) {
                       {resolved.defenseType === 'dodge' ? 'Dodge' : 'Block'})
                     </span>
                   )}
+                  <span className="w-full text-xs text-zinc-500">
+                    Effective Attack Target:{' '}
+                    <span className={effectiveAttackTargets.length ? 'text-zinc-300' : 'text-zinc-600'}>
+                      {effectiveAttackTargets.length ? effectiveAttackTargets.join(' + ') : 'None'}
+                    </span>
+                    {attackTargetSource === 'block' && (
+                      <span className="italic text-sky-400"> — changed by Block</span>
+                    )}
+                  </span>
                   <button
                     type="button"
-                    disabled={!damage}
+                    disabled={!damage || effectiveAttackTargets.length === 0}
                     onClick={() => setOpenDialog('apply')}
                     className="ml-auto panel-cut-sm bg-red-800/80 px-2.5 py-1 text-xs font-semibold text-red-100 hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-40"
                   >
@@ -364,6 +382,8 @@ function Entry({ entry, character, moveInfo, characters, defenseResolutions }) {
                       targetCandidateIds={entry.targetCandidateIds ?? []}
                       initialHalfDamageSteps={steps}
                       attackerDeclaredMoveId={entry.declaredMoveId}
+                      allowedSlotNames={effectiveAttackTargets}
+                      attackTargetSource={attackTargetSource}
                       characters={characters}
                       onClose={() => setOpenDialog(null)}
                     />
@@ -374,6 +394,7 @@ function Entry({ entry, character, moveInfo, characters, defenseResolutions }) {
                       attackerResult={entry.total}
                       targetCandidateIds={entry.targetCandidateIds ?? []}
                       characters={characters}
+                      moves={moves}
                       onClose={() => setOpenDialog(null)}
                     />
                   )}
@@ -589,6 +610,10 @@ export default function ChatPanel({ open, onClose }) {
   const [tags, setTags] = useState(null);
   const [ruleset, setRuleset] = useState(null);
   const [moveFolders, setMoveFolders] = useState(null);
+  // Attack Target (Change 001): flat move templates (roll_type/roll_slots),
+  // so ResolveDefenseDialog can enforce "Block requires a base Stat Roll"
+  // client-side without a second fetch of its own.
+  const [moves, setMoves] = useState(null);
   // Combat Automation (Phase 9, sub-phase 4): combat:resolve_defense's
   // broadcast, keyed by the attacker's own declaredMoveId so the Entry
   // whose roll triggered it can override its damage line (Full = 0,
@@ -645,7 +670,10 @@ export default function ChatPanel({ open, onClose }) {
       getTells().then(setTells).catch(console.error);
       getTags().then(setTags).catch(console.error);
       getRuleset().then(setRuleset).catch(console.error);
-      getMoves().then((d) => setMoveFolders(d.folders)).catch(console.error);
+      getMoves().then((d) => {
+        setMoveFolders(d.folders);
+        setMoves(d.moves);
+      }).catch(console.error);
     };
     refresh();
     const events = [

@@ -370,6 +370,13 @@ export async function initDb() {
   // squares also grant a defensive window — see sanitizeDefensePositions in
   // moveLogic.js. Purely a display annotation, not a timing phase.
   await ensureColumn('moves', 'defense_frame_positions', "TEXT NOT NULL DEFAULT '[]'");
+  // Attack Target (Change 001): JSON array of the abstract Stat names (see
+  // ATTACK_TARGET_NAMES in moveLogic.js) a Roll's damage may be applied to.
+  // Default '["Skull"]' is a one-time migration value for every pre-existing
+  // Move (every legacy Move gets exactly Skull); a brand-new Move created
+  // after this column exists is written with an explicit [] by writeMove —
+  // the DB default only ever fires for the migration, never for new rows.
+  await ensureColumn('moves', 'attack_targets', `TEXT NOT NULL DEFAULT '["Skull"]'`);
   // A Default move is usable by anyone, anytime — it never made sense for
   // one to also carry a Style gate. writeMove now refuses to set one going
   // forward; this is the one-time cleanup for any Default move that already
@@ -718,6 +725,21 @@ export async function initDb() {
   // side's defense_success/defense_failure firing is unrelated and unguarded
   // (see applyMoveInteractions/combat:resolve_defense in index.js).
   await ensureColumn('declared_moves', 'interactions_resolved', 'INTEGER NOT NULL DEFAULT 0');
+  // Attack Target (Change 001): snapshot of this declared attack's concrete
+  // effective targets (from moves.attack_targets, Hand/Leg expanded to the
+  // declaring character's own appendage_choice) plus where that snapshot
+  // came from. Taken once at move:declare and frozen — a later edit to the
+  // Move template in the Compendium MUST NOT retroactively change an
+  // already-declared attack. attack_target_source flips to 'block' only when
+  // combat:resolve_defense records a Successful Block replacing it with the
+  // blocking move's own base Stat Roll slots (never 'dodge' — Dodge target
+  // replacement is a deferred, separate change).
+  await ensureColumn('declared_moves', 'effective_attack_targets', `TEXT NOT NULL DEFAULT '["Skull"]'`);
+  await ensureColumn(
+    'declared_moves',
+    'attack_target_source',
+    `TEXT NOT NULL DEFAULT 'move' CHECK(attack_target_source IN ('move','block'))`
+  );
 
   await seedRuleset();
   await seedTells();
