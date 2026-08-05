@@ -3,7 +3,7 @@
 // "works offline," just faster reloads and an app-shell fallback on a flaky
 // mobile connection. Never touch /api/* or /socket.io/* (always live data);
 // only static build assets and the shell get cached.
-const CACHE_VERSION = 'custom-vtt-v1';
+const CACHE_VERSION = 'dogfight-v1';
 const SHELL_URLS = ['/', '/manifest.webmanifest', '/icon-192.png', '/icon-512.png'];
 
 self.addEventListener('install', (event) => {

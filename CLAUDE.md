@@ -1,4 +1,4 @@
-# Custom VTT — agent instructions
+# Dogfight: Martial Arts TTRPG — agent instructions
 
 **Before doing anything else, read `vttprojectplan.md` in full.** It is the single source of
 truth for this project: the game mechanics, data model, Socket.io event contract, page layout,

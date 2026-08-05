@@ -115,7 +115,7 @@ function Shell() {
           title="Combat Arena"
           className="font-display shrink-0 text-lg font-bold uppercase tracking-wide hover:text-brand-400 md:text-xl"
         >
-          Custom VTT
+          Dogfight
         </Link>
         <span
           className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-semibold uppercase ${

@@ -1,4 +1,4 @@
-# Custom VTT
+# Dogfight: Martial Arts TTRPG
 
 A small, self-hosted virtual tabletop for one group (DM + players): shared link, no login,
 real-time sync across devices. Fighting-game-styled, built around a stepped dice-pool system.
@@ -30,9 +30,9 @@ npm start                      # Express serves client/dist + Socket.io on $PORT
 
 1. **Turso:** create a free database at https://turso.tech, then grab its URL and an auth token:
    ```bash
-   turso db create custom-vtt
-   turso db show custom-vtt --url
-   turso db tokens create custom-vtt
+   turso db create dogfight
+   turso db show dogfight --url
+   turso db tokens create dogfight
    ```
 2. **Render:** create a free Web Service from this repo (the `render.yaml` blueprint
    preconfigures build/start commands), and set two environment variables:

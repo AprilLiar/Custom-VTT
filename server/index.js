@@ -3604,5 +3604,5 @@ await initDb();
 // tier, which spins the server down after inactivity.
 await run('DELETE FROM chat_log');
 httpServer.listen(PORT, () => {
-  console.log(`Custom VTT server listening on port ${PORT}`);
+  console.log(`Dogfight server listening on port ${PORT}`);
 });
