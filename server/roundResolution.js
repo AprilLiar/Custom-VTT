@@ -1378,6 +1378,20 @@ async function makeEmitEvent(io, resolution, pairIndex, roundNumber) {
     if (type === 'dodge_prompt') {
       emitToGMs(io, 'combat:dodge_prompt', { ...envelope.payload, resolutionId: resolution.id, pairIndex, roundNumber, tic });
     }
+    // The move-conflict prompt keeps its pre-overhaul event name, payload
+    // shape and delivery (decision #3): a plain broadcast that the client
+    // filters down to whoever actually controls the affected character
+    // (see CombatHeaderBar's own ownership gate). Unlike the Dodge prompt
+    // this is the *affected player's* call, not the GM's, and the engine is
+    // now its only source — the manual path that used to emit it went away
+    // with combat:resolve_defense.
+    if (type === 'move_conflict_prompt') {
+      io.emit('combat:move_conflict', {
+        declaredMoveId: payload.declaredMoveId,
+        blockerDeclaredMoveId: payload.blockerDeclaredMoveId,
+        characterId: payload.characterId,
+      });
+    }
   };
 }
 

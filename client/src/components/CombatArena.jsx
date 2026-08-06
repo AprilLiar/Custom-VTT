@@ -14,6 +14,7 @@ import { dieLabel, tintFor, POOLS } from '../lib/dice.js';
 import { buildFolderTree } from '../lib/folders.js';
 import { FRAME_PHASES, PHASE_BG, PHASE_LABEL, PHASE_ZONE, phaseBgAt } from '../lib/framePhaseColors.js';
 import RoundCutscene from './RoundCutscene.jsx';
+import DamageApplicationDialog from './DamageApplicationDialog.jsx';
 import { REWARD_LABELS, REWARD_COLORS } from '../lib/counterDisplay.js';
 import { setDraggingMove, onDraggingMoveChange } from '../lib/dragMoveState.js';
 import { useSocketRefresh } from '../lib/connection.js';
@@ -37,6 +38,7 @@ function ParticipantCard({
   participant,
   role,
   onRemove,
+  onAdHocDamage,
   onMoveSeat,
   onDragStart,
   navigate,
@@ -79,6 +81,23 @@ function ParticipantCard({
             className="flex h-8 w-8 items-center justify-center panel-cut-sm bg-zinc-900/90 text-xs text-zinc-400 hover:bg-zinc-800 hover:text-brand-300"
           >
             ⇄
+          </button>
+          {/* Combat Automation overhaul §5: in-combat damage is applied by
+              the resolution engine now, so DamageApplicationDialog lost its
+              old chat-roll-card entry point. It's still the right tool for
+              genuinely ad-hoc GM damage outside the automated flow
+              (environmental damage, a house rule) — this is that entry
+              point, opening it in its unrestricted mode (no attacking
+              declared move, so no Attack Target restriction applies). */}
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onAdHocDamage(character.id);
+            }}
+            title="Apply ad-hoc damage (outside the automated flow)"
+            className="flex h-8 w-8 items-center justify-center panel-cut-sm bg-zinc-900/90 text-xs text-zinc-500 hover:bg-red-900/40 hover:text-red-300"
+          >
+            ⚕
           </button>
           <button
             onClick={(e) => {
@@ -470,7 +489,7 @@ export function TicSquare({
 // caption: the header has no move source to drag from (no roster/declare
 // picker lives there), so it always passes a fixed "Tic Counter" instead.
 export function TicCounterCentral({
-  pairIndex, // Combat Automation overhaul: which pair's own independent round/phase/Tic clock this instance is showing — required to scope the tic_forward/tic_backward emits below to just that pair.
+  pairIndex, // Combat Automation overhaul: which pair's own independent round/phase/Tic clock this instance is showing.
   phase,
   currentTic,
   roundStartTic,
@@ -490,17 +509,12 @@ export function TicCounterCentral({
     absoluteTic: roundStartTic + i,
     relative: i + 1,
   }));
-  // Tic navigation redesign (decided): the GM steps the Tic Countdown by
-  // left-clicking the square immediately before/after the current one,
-  // instead of the header's old ◀/▶ buttons (removed — see
-  // CombatHeaderBar.jsx). Only those two immediate neighbors are ever
-  // clickable — combat:tic_forward/backward always step by exactly one Tic
-  // server-side, there's no "jump to Tic N". At the round's last Tic there's
-  // no next square to click, so a small "Next Round" button takes its place
-  // in the row instead (see below).
-  const currentIndex = squares.findIndex((sq) => sq.absoluteTic === currentTic);
-  const canStepTic = role === 'gm' && phase === 'resolving';
-  const atLastTic = currentIndex === squares.length - 1;
+  // Combat Automation overhaul §5: click-to-step and the in-strip "Next
+  // Round" button are gone. A round now resolves itself the moment both
+  // sides finish declaring, and its playback is RoundCutscene's job — the
+  // strip is a Declaration-phase drag/drop target and a read-only display,
+  // never a control that moves the clock. Nothing may advance a pair's Tic
+  // but the engine.
   const zoneFor = (absoluteTic) => {
     if (!draggingMove) return null;
     const minTic = draggingMove.minPlacementTic ?? roundStartTic;
@@ -533,12 +547,8 @@ export function TicCounterCentral({
         className="flex max-w-full flex-nowrap items-center gap-1.5 overflow-x-auto overscroll-x-contain py-1 [mask-image:linear-gradient(to_right,transparent,black_12px,black_calc(100%-12px),transparent)]"
       >
         {squares.map((sq, i) => {
-          const isNextTic = canStepTic && i === currentIndex + 1;
-          const isPrevTic = canStepTic && i === currentIndex - 1;
           // A pending tap-to-declare placement (see onTapPlace) makes every
-          // square a valid destination, not just the GM's step neighbors —
-          // takes priority since the two modes never overlap (a Player
-          // placing their own move isn't also the GM stepping Tics).
+          // square a valid destination.
           const tapPlacing = Boolean(onTapPlace && draggingMove && canDrop);
           return (
             <TicSquare
@@ -559,38 +569,11 @@ export function TicCounterCentral({
                   : undefined
               }
               onDrop={canDrop ? onDrop(sq.absoluteTic) : undefined}
-              onClick={
-                tapPlacing
-                  ? onTapPlace(sq.absoluteTic)
-                  : isNextTic
-                    ? () => socket.emit('combat:tic_forward', { pairIndex })
-                    : isPrevTic
-                      ? () => socket.emit('combat:tic_backward', { pairIndex })
-                      : undefined
-              }
-              clickTitle={
-                tapPlacing
-                  ? `Place ${draggingMove.moveName} here`
-                  : isNextTic
-                    ? `Click to advance to Tic ${sq.relative}`
-                    : isPrevTic
-                      ? `Click to go back to Tic ${sq.relative}`
-                      : undefined
-              }
+              onClick={tapPlacing ? onTapPlace(sq.absoluteTic) : undefined}
+              clickTitle={tapPlacing ? `Place ${draggingMove.moveName} here` : undefined}
             />
           );
         })}
-        {canStepTic && atLastTic && (
-          <button
-            onClick={() => socket.emit('combat:next_round', {})}
-            title="No more Tics this round — start the next one"
-            className="panel-cut-sm h-11 shrink-0 bg-emerald-700 px-2 text-[10px] font-semibold uppercase leading-tight hover:bg-emerald-600"
-          >
-            Next
-            <br />
-            Round
-          </button>
-        )}
       </div>
       {showDeclaredPreview && (
         <div className="flex flex-wrap items-center justify-center gap-2 text-[9px] text-zinc-600">
@@ -1024,6 +1007,9 @@ export default function CombatArena() {
   // drawer) and "move an already-seated one" (ParticipantCard's ⇄ action).
   const [mobileRosterOpen, setMobileRosterOpen] = useState(false);
   const [seatTarget, setSeatTarget] = useState(null);
+  // Combat Automation overhaul §5: which character (if any) the GM is
+  // applying ad-hoc, outside-the-automated-flow damage to.
+  const [adHocDamageCharId, setAdHocDamageCharId] = useState(null);
   // Transient "linger then slam" impact effects for a successful drop —
   // declaring a move onto the Tic Counter, or seating a character — see
   // DropSlamGhost.jsx. Keyed so more than one can be in flight at once.
@@ -1693,6 +1679,7 @@ export default function CombatArena() {
                           participant={p}
                           role={role}
                           onRemove={remove}
+                          onAdHocDamage={setAdHocDamageCharId}
                           onMoveSeat={(id, name) => setSeatTarget({ characterId: id, characterName: name })}
                           navigate={navigate}
                           declaredMoves={declaredMoves}
@@ -1728,6 +1715,7 @@ export default function CombatArena() {
                           participant={p}
                           role={role}
                           onRemove={remove}
+                          onAdHocDamage={setAdHocDamageCharId}
                           onMoveSeat={(id, name) => setSeatTarget({ characterId: id, characterName: name })}
                           navigate={navigate}
                           declaredMoves={declaredMoves}
@@ -1857,6 +1845,14 @@ export default function CombatArena() {
         </DialogShell>
       )}
 
+      {adHocDamageCharId != null && (
+        <DamageApplicationDialog
+          targetCandidateIds={[adHocDamageCharId]}
+          initialHalfDamageSteps={0}
+          characters={new Map(Object.values(characters).map((e) => [e.character.id, e.character]))}
+          onClose={() => setAdHocDamageCharId(null)}
+        />
+      )}
       {seatTarget && (
         <SeatPicker
           characterId={seatTarget.characterId}

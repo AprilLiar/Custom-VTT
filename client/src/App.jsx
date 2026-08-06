@@ -87,7 +87,7 @@ function Shell() {
       return;
     }
     const bump = () => setUnreadChat((n) => n + 1);
-    const events = ['roll:result', 'chat:message', 'chat:move_reveal', 'chat:lane_snapshot'];
+    const events = ['roll:result', 'chat:message', 'chat:round_summary'];
     for (const ev of events) socket.on(ev, bump);
     return () => {
       for (const ev of events) socket.off(ev, bump);

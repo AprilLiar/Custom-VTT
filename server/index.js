@@ -50,13 +50,7 @@ import {
   overlapsRoundWindow,
   computeInitiativeOverflowPenalty,
 } from './combatTiming.js';
-import {
-  computeHitDamage,
-  resolveDefenseRoll,
-  classifyDefenseCoverage,
-  computeInterruptBonus,
-  clampRecoveryExtension,
-} from './combatDamage.js';
+import { computeHitDamage, clampRecoveryExtension } from './combatDamage.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3001;
@@ -322,104 +316,6 @@ const diePayload = (die) => ({
 const sqliteToIso = (ts) =>
   ts && !ts.includes('T') ? new Date(ts.replace(' ', 'T') + 'Z').toISOString() : ts;
 
-// Every currently-public (reveal_posted = 1) move belonging to a character
-// seated in `pairIndex`, clipped to whichever moves' footprints still
-// overlap the CURRENT round's own Tic window (see overlapsRoundWindow) —
-// exactly what the live Tic Counter itself would show for that lane right
-// now. Called once per newly-revealed move (see postMoveReveals below), so
-// each lane_snapshot chat card is a full cumulative picture as of that
-// specific reveal, not a delta — "a new snapshot every reveal" is what
-// gives the chat log a full history of how the lane's Tic Counter filled in
-// over the round. `full` is embedded per move (not re-fetched at GET time)
-// so a historical row stays self-contained even after the move itself is
-// edited or deleted later.
-async function buildLaneSnapshotPayload({ pairIndex, roundNumber, roundStartTic, roundLength }) {
-  const rows = await all(
-    `SELECT dm.id AS declared_move_id, dm.character_id, dm.placement_tic, dm.reveal_tic,
-            dm.recovery_extension_tics,
-            m.id AS move_id, m.name AS move_name, m.image_data, m.image_mime_type,
-            m.active_tics, m.recovery_tics, m.defense_frame_positions, m.description, m.stamina_cost,
-            ch.name AS character_name, ch.character_type,
-            cp.side AS side
-     FROM declared_moves dm
-     JOIN moves m ON m.id = dm.move_id
-     JOIN characters ch ON ch.id = dm.character_id
-     JOIN combat_participants cp ON cp.character_id = dm.character_id
-     WHERE cp.pair_index = ? AND dm.reveal_posted = 1
-     ORDER BY dm.id`,
-    [pairIndex]
-  );
-  const moves = [];
-  for (const row of rows) {
-    const activeEndTic = row.reveal_tic + row.active_tics;
-    // + recovery_extension_tics (Combat Automation, sub-phase 3) — see
-    // fetchDeclaredMoveRows' own identical comment above.
-    const recoveryEndTic = activeEndTic + row.recovery_tics + row.recovery_extension_tics;
-    if (!overlapsRoundWindow({ placementTic: row.placement_tic, recoveryEndTic, roundStartTic, roundLength })) {
-      continue;
-    }
-    const full = await getMove(row.move_id);
-    moves.push({
-      declaredMoveId: row.declared_move_id,
-      characterId: row.character_id,
-      characterName: row.character_name,
-      characterType: row.character_type,
-      side: row.side,
-      moveId: row.move_id,
-      moveName: row.move_name,
-      imageData: row.image_data,
-      imageMimeType: row.image_mime_type,
-      placementTic: row.placement_tic,
-      revealTic: row.reveal_tic,
-      activeEndTic,
-      recoveryEndTic,
-      defenseFramePositions: JSON.parse(row.defense_frame_positions ?? '[]'),
-      description: row.description,
-      staminaCost: row.stamina_cost,
-      full,
-    });
-  }
-  return { pairIndex, roundNumber, roundStartTic, roundLength, moves };
-}
-
-// Posts a lane_snapshot chat card the instant a pair's own Tic counter
-// reaches a declared move's reveal_tic — automatic, per the plan's Combat
-// Timing section (only the Roll itself is manual, unchanged, via the
-// existing Roll button/dialog — this never touches rolling). reveal_posted
-// makes this idempotent: only ever fires once per declared move, even if
-// the GM steps the Tic counter back and forth across the same threshold —
-// see combat:tic_forward, the only caller (tic_backward never advances
-// current_tic, so it can never newly cross a reveal_tic). Combat Automation
-// overhaul: scoped to one `pairIndex` at a time (a JOIN, not a WHERE on
-// declared_moves alone) — each pair's own Tic clock only ever reveals that
-// pair's own declared moves, never another pair's, now that they run
-// independently. `roundNumber`/`roundStartTic`/`roundLength` are the round
-// ACTIVE AT THE TIME of this reveal (from the caller's own already-fetched
-// combat_pairs row) — they decide the Tic window each snapshot is drawn
-// against (see buildLaneSnapshotPayload).
-async function postMoveReveals(pairIndex, newTic, { roundNumber, roundStartTic, roundLength }) {
-  const rows = await all(
-    `SELECT dm.id, dm.character_id FROM declared_moves dm
-     JOIN combat_participants cp ON cp.character_id = dm.character_id
-     WHERE dm.reveal_posted = 0 AND dm.reveal_tic <= ? AND cp.pair_index = ?`,
-    [newTic, pairIndex]
-  );
-  for (const row of rows) {
-    await run('UPDATE declared_moves SET reveal_posted = 1 WHERE id = ?', [row.id]);
-    const payload = await buildLaneSnapshotPayload({
-      pairIndex,
-      roundNumber,
-      roundStartTic,
-      roundLength,
-    });
-    await run(
-      "INSERT INTO chat_log (kind, character_id, dice_rolled, payload) VALUES ('lane_snapshot', ?, '[]', ?)",
-      [row.character_id, JSON.stringify(payload)]
-    );
-    io.emit('chat:lane_snapshot', { kind: 'lane_snapshot', ...payload, timestamp: new Date().toISOString() });
-  }
-}
-
 // Every declared move, Tell always included (never secret) but move_id/
 // move_name withheld from anyone who isn't entitled to see it early (see
 // isRevealedToViewer below). Split in two: the DB round-trip happens once
@@ -511,7 +407,7 @@ function mapDeclaredMovesForViewer(rows, pairsByIndex, viewer) {
       activeEndTic: row.reveal_tic + row.active_tics,
       // + recovery_extension_tics (Combat Automation, sub-phase 3): 0 for
       // every move untouched by a Block's Recovery extension — see the
-      // column's own comment in db.js and combat:resolve_defense below.
+      // column's own comment in db.js — the automatic engine is what sets it now.
       recoveryEndTic: row.reveal_tic + row.active_tics + row.recovery_tics + row.recovery_extension_tics,
       // Same frame-timing precedent as activeEndTic/recoveryEndTic above:
       // fine to disclose regardless of reveal status, since it's structure
@@ -661,80 +557,6 @@ async function getReasonsToFightBonus(characterId) {
     [characterId]
   );
   return row?.reasons_to_fight ?? 0;
-}
-
-// Idle-Tic Stamina Regen (see plan + combatTiming.js's isTicIdle,
-// perkAutomations.js's idleStaminaRegenRate): called once for every Tic as
-// it becomes current (both from combat:start_tic_countdown, for the round's
-// first Tic, and from combat:tic_forward for every Tic after) — the same
-// call sites/timing postMoveReveals already uses, so every Tic gets
-// evaluated exactly once as it's reached, never on the way back (stepping
-// backward doesn't claw the Stamina back, same one-directional asymmetry
-// postMoveReveals already has for chat cards). A seated character who's
-// already at full Stamina is skipped entirely rather than silently banking
-// progress they can't spend. Combat Automation overhaul: scoped to one
-// `pairIndex`'s own seated participants — each pair's own Tic clock only
-// ever regenerates that pair's own characters, now that pairs run
-// independently.
-async function applyIdleTicStaminaRegen(pairIndex, tic) {
-  const participants = await all('SELECT * FROM combat_participants WHERE pair_index = ?', [pairIndex]);
-  if (!participants.length) return;
-  const charIds = participants.map((p) => p.character_id);
-  const marks = charIds.map(() => '?').join(',');
-  const [charRows, footprintRows, perkRows] = await Promise.all([
-    all(`SELECT * FROM characters WHERE id IN (${marks})`, charIds),
-    all(
-      // + dm.recovery_extension_tics (Combat Automation, sub-phase 3) — see
-      // the column's own comment in db.js.
-      `SELECT dm.character_id AS characterId, dm.placement_tic AS placementTic,
-              dm.reveal_tic + m.active_tics + m.recovery_tics + dm.recovery_extension_tics AS recoveryEndTic
-       FROM declared_moves dm JOIN moves m ON m.id = dm.move_id
-       WHERE dm.character_id IN (${marks})`,
-      charIds
-    ),
-    all(
-      `SELECT cp.character_id AS characterId, p.name
-       FROM character_perks cp JOIN perks p ON p.id = cp.perk_id
-       WHERE cp.character_id IN (${marks})`,
-      charIds
-    ),
-  ]);
-  const charById = new Map(charRows.map((c) => [c.id, c]));
-  const footprintsByChar = new Map();
-  for (const row of footprintRows) {
-    if (!footprintsByChar.has(row.characterId)) footprintsByChar.set(row.characterId, []);
-    footprintsByChar.get(row.characterId).push(row);
-  }
-  const perkNamesByChar = new Map();
-  for (const row of perkRows) {
-    if (!perkNamesByChar.has(row.characterId)) perkNamesByChar.set(row.characterId, []);
-    perkNamesByChar.get(row.characterId).push(row.name);
-  }
-
-  for (const p of participants) {
-    const character = charById.get(p.character_id);
-    if (!character || character.current_stamina >= character.max_stamina) continue;
-    if (!isTicIdle({ tic, footprints: footprintsByChar.get(p.character_id) ?? [] })) continue;
-
-    const ticsRequired = idleStaminaRegenRate(perkNamesByChar.get(p.character_id) ?? []);
-    const progress = p.idle_regen_progress + 1;
-    if (progress < ticsRequired) {
-      await run('UPDATE combat_participants SET idle_regen_progress = ? WHERE character_id = ?', [
-        progress,
-        p.character_id,
-      ]);
-      continue;
-    }
-    const newStamina = Math.min(character.max_stamina, character.current_stamina + 1);
-    await Promise.all([
-      run('UPDATE characters SET current_stamina = ? WHERE id = ?', [newStamina, character.id]),
-      run('UPDATE combat_participants SET idle_regen_progress = ? WHERE character_id = ?', [
-        progress - ticsRequired,
-        p.character_id,
-      ]),
-    ]);
-    io.emit('character:updated', { ...character, current_stamina: newStamina });
-  }
 }
 
 // Combat Automation (Phase 9, sub-phase 3 — see vttprojectplan.md): when a
@@ -1017,31 +839,6 @@ async function fireMissIfNoDamage(character, rollContext, total) {
     selfDeclaredMoveId: rollContext.declaredMoveId,
     opponentCharacterId: rollContext.targetCandidateIds.length === 1 ? rollContext.targetCandidateIds[0] : null,
   });
-}
-
-// Combat Automation (Phase 9, sub-phase 3): resolves a Defensive move's own
-// Roll — move_roll_slots, optionally concatenated with move_defensive_roll_
-// slots (4.2's extra pool, "on top of its own normal Roll," never deduped
-// against the base slots even if the same slot name appears in both) — to
-// one character's actual live dice. Same AMBIGUOUS_ROLL_SLOTS resolution
-// getMovesFor already uses to build a move's roll_dice/roll_choice for the
-// client, just server-triggered here: there's no roll dialog for a
-// Successful Block/Dodge (see combat:resolve_defense below), so this reads
-// the Left/Right pick straight from the declared move's own already-stored
-// appendage_choice instead of asking again. Silently drops an
-// incapacitated/missing die, same as pool:roll.
-async function resolveDefensiveRollDice(characterId, slotNames, appendageChoice) {
-  if (!slotNames.length) return [];
-  const dice = await getDice(characterId);
-  const dieBySlot = new Map(dice.map((d) => [d.slot_name, d]));
-  const resolved = [];
-  for (const slot of slotNames) {
-    const concreteSlot =
-      slot in AMBIGUOUS_ROLL_SLOTS ? AMBIGUOUS_ROLL_SLOTS[slot][appendageChoice === 'right' ? 1 : 0] : slot;
-    const die = dieBySlot.get(concreteSlot);
-    if (die) resolved.push(die);
-  }
-  return resolved.filter((d) => d.status === 'active');
 }
 
 // ---------- REST API ----------
@@ -1386,7 +1183,7 @@ app.get('/api/chat', wrap(async (_req, res) => {
     ORDER BY c.id
   `);
   // `full` (everything MoveCard needs beyond the compact fields above — see
-  // postMoveReveals) is fetched once per distinct still-existing move
+  // a move_reveal chat card) is fetched once per distinct still-existing move
   // referenced by a move_reveal row, not per chat row — a fight can post
   // the same move's reveal card many times over.
   const revealedMoveIds = [...new Set(
@@ -1464,10 +1261,10 @@ app.get('/api/chat', wrap(async (_req, res) => {
                 full: fullMoveById.get(row.move_id) ?? null,
               }
           : undefined,
-        // lane_snapshot rows carry the whole snapshot as JSON (pairIndex,
-        // round/Tic window, every currently-revealed move in the lane with
-        // its own embedded `full` data) — self-contained at write time (see
-        // buildLaneSnapshotPayload), so no server-side joining needed here.
+        // Historical lane_snapshot rows (the per-reveal card this overhaul
+        // replaced) carry their whole snapshot as JSON, self-contained at
+        // write time — nothing writes new ones any more, but a live chat log
+        // from before the cutover still renders.
         // round_summary rows (Combat Automation overhaul §1.5) spread the
         // same way — a tiny self-contained payload (pairIndex, roundNumber,
         // resolutionId, the two sides' names) that the chat card renders as
@@ -1650,9 +1447,11 @@ io.on('connection', (socket) => {
   // DamageApplicationDialog whenever this Apply is for a roll tied to a
   // declared move (never for ad-hoc/manual GM damage). Fires that move's
   // own 'hit' trigger automations exactly once per declared move — guarded
-  // by interactions_resolved so a Partial Block's own reduced damage (still
-  // applied through this same event, per 4.2) doesn't also fire 'hit' on
-  // top of the 'block' trigger combat:resolve_defense already fired for it.
+  // by interactions_resolved so a Partial Block's own reduced damage doesn't
+  // also fire 'hit' on top of the 'block' trigger already fired for it.
+  // Combat Automation overhaul: in-combat damage is applied by the engine
+  // now; this event survives only for genuinely ad-hoc/manual GM damage
+  // outside the automated flow (environmental damage, a house rule).
   on('combat:apply_damage', async ({ dieId, halfDamageSteps, attackerDeclaredMoveId }) => {
     const die = await one('SELECT * FROM dice WHERE id = ?', [dieId]);
     if (!die) return;
@@ -2820,8 +2619,8 @@ io.on('connection', (socket) => {
   // Phase 7 — Combat Timing. Uses server/combatTiming.js's pure functions
   // for all placement/reveal/overflow math; see that module + the plan's
   // Combat Timing mechanic section for the decided rules wired together
-  // here. GM-only client-side for next_round/start_tic_countdown/
-  // tic_forward/tic_backward (matching the plan's own event contract);
+  // here. GM-only client-side for next_round (matching the plan's own
+  // event contract);
   // move:declare and character_done_declaring are open-access, matching how
   // declaring/rolling for a character already works everywhere else.
   //
@@ -3331,67 +3130,6 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Combat Automation overhaul: Tic Countdown is now per-pair, not one
-  // shared arena-wide timeline — a pair's own countdown can start (and
-  // step) independently of every other pair's, so this and the two
-  // handlers below all take a `pairIndex` and only ever touch that one
-  // pair's own combat_pairs row. `phase: 'resolving'` is the same column
-  // value the future automatic resolution engine will use once it lands
-  // (see vttprojectplan.md) — for now (this phase) it still means "manual
-  // Tic Forward/Backward stepping," matching today's 'tic_countdown'.
-  on('combat:start_tic_countdown', async ({ pairIndex }) => {
-    const [state, pair] = await Promise.all([
-      one('SELECT * FROM combat_state WHERE id = 1'),
-      one('SELECT * FROM combat_pairs WHERE pair_index = ?', [pairIndex]),
-    ]);
-    // Both sides of THIS pair must have finished declaring (declaring_side
-    // null), or trivially finished for a single-sided pair — unaffected by
-    // whatever any other pair is currently doing.
-    if (!pair || pair.phase !== 'declaration' || pair.declaring_side != null) return;
-    await run("UPDATE combat_pairs SET phase = 'resolving' WHERE pair_index = ?", [pairIndex]);
-    // A move with 0 Startup Tics placed at the round's very first Tic
-    // reveals immediately — its reveal_tic already equals current_tic
-    // before a single Tic forward happens. postMoveReveals only otherwise
-    // runs from inside tic_forward, so without this it would sit fully
-    // revealed (isMoveRevealedTo is computed live) with no lane_snapshot
-    // chat card ever posted for it. Catches any other already-due reveal
-    // the same way, for the same reason.
-    await postMoveReveals(pairIndex, pair.current_tic, {
-      roundNumber: pair.round_number,
-      roundStartTic: pair.round_start_tic,
-      roundLength: state.round_length,
-    });
-    await applyIdleTicStaminaRegen(pairIndex, pair.current_tic);
-    await emitCombatUpdated();
-  });
-
-  on('combat:tic_forward', async ({ pairIndex }) => {
-    const [state, pair] = await Promise.all([
-      one('SELECT * FROM combat_state WHERE id = 1'),
-      one('SELECT * FROM combat_pairs WHERE pair_index = ?', [pairIndex]),
-    ]);
-    if (!pair || pair.phase !== 'resolving') return;
-    const maxTic = pair.round_start_tic + state.round_length - 1;
-    if (pair.current_tic >= maxTic) return;
-    const newTic = pair.current_tic + 1;
-    await run('UPDATE combat_pairs SET current_tic = ? WHERE pair_index = ?', [newTic, pairIndex]);
-    await postMoveReveals(pairIndex, newTic, {
-      roundNumber: pair.round_number,
-      roundStartTic: pair.round_start_tic,
-      roundLength: state.round_length,
-    });
-    await applyIdleTicStaminaRegen(pairIndex, newTic);
-    await emitCombatUpdated();
-  });
-
-  on('combat:tic_backward', async ({ pairIndex }) => {
-    const pair = await one('SELECT * FROM combat_pairs WHERE pair_index = ?', [pairIndex]);
-    if (!pair || pair.phase !== 'resolving') return;
-    const newTic = Math.max(pair.round_start_tic, pair.current_tic - 1);
-    await run('UPDATE combat_pairs SET current_tic = ? WHERE pair_index = ?', [newTic, pairIndex]);
-    await emitCombatUpdated();
-  });
-
   // Combat Automation overhaul §3 — the GM's answer to a full-coverage
   // Dodge prompt: the one human decision left in an otherwise fully
   // automatic round (decision #2). Block resolves itself from dice math
@@ -3409,276 +3147,20 @@ io.on('connection', (socket) => {
     await emitCombatUpdated();
   });
 
-  // Combat Automation (Phase 9): the GM's 2×2 Block/Dodge × Successful/
-  // Failed prompt (4.2), plus the frame-overlap classification that decides
-  // whether that prompt should even be trusted (4.3). `attackerResult` is
-  // the attacker's already-rolled total (from the roll card the reveal-time
-  // auto-Roll already posted, see buildRollContext above) — this event
-  // doesn't roll for the attacker, only (when Successful) for the defender.
-  // Sub-phase 5: also fires move_interactions automations — the attacker's
-  // own move's 'block' trigger on a Successful resolution (guarded by
-  // interactions_resolved, same reasoning as combat:apply_damage's 'hit'
-  // firing — see its own comment), and the defender's move's
-  // defense_success/defense_failure every time this resolves, unconditional
-  // (a defensive move can legitimately defend more than once).
-  on('combat:resolve_defense', async ({
-    attackerDeclaredMoveId,
-    attackerResult,
-    defenderDeclaredMoveId,
-    defenseType,
-    outcome,
-  }) => {
-    if (!['block', 'dodge'].includes(defenseType)) return;
-    if (!['successful', 'failed'].includes(outcome)) return;
-    const result = Math.trunc(Number(attackerResult));
-    if (!Number.isFinite(result)) return;
-
-    const [attackerDM, defenderDM] = await Promise.all([
-      one(
-        `SELECT dm.id, dm.character_id, dm.reveal_tic, dm.move_id, dm.interactions_resolved, m.active_tics
-         FROM declared_moves dm JOIN moves m ON m.id = dm.move_id
-         WHERE dm.id = ?`,
-        [attackerDeclaredMoveId]
-      ),
-      one(
-        `SELECT dm.id, dm.character_id, dm.placement_tic, dm.reveal_tic, dm.appendage_choice,
-                dm.recovery_extension_tics AS current_extension_tics,
-                m.id AS move_id, m.active_tics, m.recovery_tics, m.defense_frame_positions,
-                m.is_defensive, m.roll_type, m.custom_roll_size, m.roll_modifier,
-                ch.name AS character_name
-         FROM declared_moves dm JOIN moves m ON m.id = dm.move_id JOIN characters ch ON ch.id = dm.character_id
-         WHERE dm.id = ?`,
-        [defenderDeclaredMoveId]
-      ),
-    ]);
-    if (!attackerDM || !defenderDM) return;
-
-    // Attack Target (Change 001), rule 12: Block MUST have a base Stat
-    // Roll — a Custom Roll move has no named stat to turn into a
-    // replacement Attack Target, so it can never serve as a Block. This is
-    // the server-authoritative version of the same restriction
-    // ResolveDefenseDialog.jsx already enforces client-side; checked here
-    // regardless of outcome, before any defensive Roll happens.
-    if (defenseType === 'block') {
-      if (defenderDM.roll_type !== 'stat') return;
-      const baseSlotCount = await one(
-        'SELECT COUNT(*) AS count FROM move_roll_slots WHERE move_id = ?',
-        [defenderDM.move_id]
-      );
-      if (Number(baseSlotCount.count) === 0) return;
-    }
-
-    // 4.3: whether the attacker's Active window is actually covered by the
-    // defender's Defense-tagged Tic(s) at all, and if not, exactly how.
-    const defenseFramePositions = JSON.parse(defenderDM.defense_frame_positions ?? '[]');
-    const coverage = classifyDefenseCoverage({
-      attackActiveStart: attackerDM.reveal_tic,
-      attackActiveEnd: attackerDM.reveal_tic + attackerDM.active_tics,
-      defenseTics: defenseFramePositions.map((pos) => defenderDM.placement_tic + pos),
-    });
-    // The attack's very first Active Tic uncovered is automatically
-    // non-effective — treated as GM-picked Failed regardless of what was
-    // actually picked, so a stale/incorrect client can't bypass this.
-    const effectiveOutcome = coverage.coverage === 'too-early' ? 'failed' : outcome;
-    const defenseLabel = defenseType === 'block' ? 'Block' : 'Dodge';
-
-    if (effectiveOutcome === 'failed') {
-      // "the defense does nothing... resolution falls through to the plain
-      // 4.1 Hit flow exactly as if there'd been no Defense Frame at all" —
-      // the attacker's roll card (already posted) is still the Apply-button
-      // vehicle for that (which is what fires the attacker's own 'hit'
-      // trigger, once damage is actually applied — not here). Only the
-      // defender's own move's 'defense_failure' trigger fires from this
-      // branch.
-      await postSystemMessage(`${defenderDM.character_name}'s ${defenseLabel} has failed.`);
-      await applyMoveInteractions({
-        moveId: defenderDM.move_id,
-        trigger: 'defense_failure',
-        selfCharacterId: defenderDM.character_id,
-        selfDeclaredMoveId: defenderDeclaredMoveId,
-        opponentCharacterId: attackerDM.character_id,
-        opponentDeclaredMoveId: attackerDeclaredMoveId,
-      });
-      io.emit('combat:defense_resolved', {
-        attackerDeclaredMoveId,
-        defenderDeclaredMoveId,
-        defenseType,
-        outcome: 'failed',
-        coverage: coverage.coverage,
-      });
-      return;
-    }
-
-    // Successful Block/Dodge (4.2): roll the defending move's own Roll —
-    // base move_roll_slots plus, if it's is_defensive, the extra
-    // move_defensive_roll_slots pool on top — via this declared move's own
-    // stored appendage_choice (see resolveDefensiveRollDice above).
-    const [baseSlotRows, defensiveSlotRows, rollBonusRow] = await Promise.all([
-      all('SELECT slot_name FROM move_roll_slots WHERE move_id = ?', [defenderDM.move_id]),
-      defenderDM.is_defensive
-        ? all('SELECT slot_name FROM move_defensive_roll_slots WHERE move_id = ?', [defenderDM.move_id])
-        : [],
-      one(
-        'SELECT COALESCE(SUM(amount), 0) AS bonus FROM character_move_roll_bonuses WHERE character_id = ? AND move_id = ?',
-        [defenderDM.character_id, defenderDM.move_id]
-      ),
-    ]);
-    const mod =
-      defenderDM.roll_modifier + rollBonusRow.bonus + (await getReasonsToFightBonus(defenderDM.character_id));
-
-    // Attack Target (Change 001), 6.4: a Successful Block (Partial or Full
-    // alike) replaces the attacker's effective target with the blocking
-    // move's own base Stat Roll — baseSlotRows only, never the extra
-    // move_defensive_roll_slots pool (that pool contributes to the Block's
-    // result total, never to what it can turn into a target). Hand/Leg
-    // narrow to whichever side this Block itself was declared with. Written
-    // before the outcome/damage chat line below and before combat:
-    // defense_resolved is emitted, per the spec's "resolved emits only
-    // after a successful target write" ordering; Dodge and Failed Block
-    // never reach this branch, so the snapshot is untouched for both.
-    let attackTargetUpdate = null;
-    if (defenseType === 'block') {
-      const effectiveAttackTargets = expandAttackTargets(
-        baseSlotRows.map((row) => row.slot_name),
-        defenderDM.appendage_choice
-      );
-      await run(
-        `UPDATE declared_moves
-         SET effective_attack_targets = ?, attack_target_source = 'block'
-         WHERE id = ?`,
-        [JSON.stringify(effectiveAttackTargets), attackerDeclaredMoveId]
-      );
-      attackTargetUpdate = { effectiveAttackTargets, attackTargetSource: 'block' };
-    }
-
-    let blockDice;
-    if (defenderDM.roll_type === 'custom' && defenderDM.custom_roll_size != null) {
-      blockDice = [
-        {
-          slot_name: 'Custom',
-          size: defenderDM.custom_roll_size,
-          bonus: 0,
-          result: rollDie(defenderDM.custom_roll_size) + mod,
-        },
-      ];
-    } else {
-      const slotNames = [...baseSlotRows, ...defensiveSlotRows].map((r) => r.slot_name);
-      const dice = await resolveDefensiveRollDice(defenderDM.character_id, slotNames, defenderDM.appendage_choice);
-      blockDice = dice.map((d) => ({
-        slot_name: d.slot_name,
-        size: d.current_size,
-        bonus: d.bonus,
-        result: rollDie(d.current_size) + d.bonus + mod,
-      }));
-    }
-    const blockResult = blockDice.reduce((sum, d) => sum + d.result, 0);
-    await logRoll({
-      characterId: defenderDM.character_id,
-      characterName: defenderDM.character_name,
-      modifier: mod,
-      dice: blockDice,
-    });
-
-    const resolution = resolveDefenseRoll({ attackerResult: result, defenderResult: blockResult });
-    await postSystemMessage(
-      resolution.outcome === 'full'
-        ? `${defenderDM.character_name} scored a Full ${defenseLabel} — no damage.`
-        : `${defenderDM.character_name} scored a Partial ${defenseLabel} — ${resolution.damage} damage.`
-    );
-
-    // Sub-phase 5: the defender's own move reacts to defending successfully
-    // every time (a defensive move can defend more than once), the
-    // attacker's own move reacts to being blocked/dodged exactly once per
-    // declared move — guarded the same way combat:apply_damage's 'hit'
-    // firing is, so a later Apply of this Partial Block's own reduced
-    // damage (still routed through that same event) doesn't also fire 'hit'
-    // on top of 'block'.
-    await applyMoveInteractions({
-      moveId: defenderDM.move_id,
-      trigger: 'defense_success',
-      selfCharacterId: defenderDM.character_id,
-      selfDeclaredMoveId: defenderDeclaredMoveId,
-      opponentCharacterId: attackerDM.character_id,
-      opponentDeclaredMoveId: attackerDeclaredMoveId,
-    });
-    if (!attackerDM.interactions_resolved) {
-      await run('UPDATE declared_moves SET interactions_resolved = 1 WHERE id = ?', [attackerDeclaredMoveId]);
-      await applyMoveInteractions({
-        moveId: attackerDM.move_id,
-        trigger: 'block',
-        selfCharacterId: attackerDM.character_id,
-        selfDeclaredMoveId: attackerDeclaredMoveId,
-        opponentCharacterId: defenderDM.character_id,
-        opponentDeclaredMoveId: defenderDeclaredMoveId,
-      });
-    }
-
-    // 4.3: Block only — coverage running out before the attacker's Active
-    // window ends extends the blocker's own Recovery to cover the gap.
-    // Anything else this character already had declared into the newly-
-    // consumed Tics needs a Forfeit/Postpone choice (combat:move_conflict
-    // below, resolved via combat:resolve_move_conflict); a previously-free
-    // Tic is simply consumed, no event needed for that case.
-    let conflictDeclaredMoveIds = [];
-    if (defenseType === 'block' && coverage.coverage === 'too-late') {
-      const oldRecoveryEndTic =
-        defenderDM.reveal_tic + defenderDM.active_tics + defenderDM.recovery_tics + defenderDM.current_extension_tics;
-      const newRecoveryEndTic = oldRecoveryEndTic + coverage.extensionTicsNeeded;
-      await run('UPDATE declared_moves SET recovery_extension_tics = ? WHERE id = ?', [
-        defenderDM.current_extension_tics + coverage.extensionTicsNeeded,
-        defenderDM.id,
-      ]);
-      const colliding = await all(
-        'SELECT id FROM declared_moves WHERE character_id = ? AND id != ? AND placement_tic >= ? AND placement_tic < ?',
-        [defenderDM.character_id, defenderDM.id, oldRecoveryEndTic, newRecoveryEndTic]
-      );
-      conflictDeclaredMoveIds = colliding.map((r) => r.id);
-      for (const conflictId of conflictDeclaredMoveIds) {
-        io.emit('combat:move_conflict', {
-          declaredMoveId: conflictId,
-          characterId: defenderDM.character_id,
-          blockerDeclaredMoveId: defenderDM.id,
-        });
-      }
-      // The extended Recovery window is real combat state (declared_moves
-      // itself, not something new) — the existing Tic Counter/footprint
-      // rendering already reads recoveryEndTic straight off it, so this
-      // alone is enough for the extension to show up live, no new UI needed.
-      await emitCombatUpdated();
-    }
-
-    io.emit('combat:defense_resolved', {
-      attackerDeclaredMoveId,
-      defenderDeclaredMoveId,
-      defenseType,
-      outcome: resolution.outcome,
-      netResult: resolution.netResult,
-      halfDamageSteps: resolution.halfDamageSteps,
-      damage: resolution.damage,
-      coverage: coverage.coverage,
-      conflictDeclaredMoveIds,
-      ...(attackTargetUpdate ?? {}),
-    });
-  });
-
-  // Combat Automation (Phase 9, sub-phase 3): Forfeit or Postpone (4.3) for
-  // a declared move that a Block's Recovery extension just ran into —
-  // `blockerDeclaredMoveId` is whichever move's (possibly itself-extended)
-  // Recovery window this one is colliding with, from the combat:move_conflict
-  // event this responds to (see combat:resolve_defense above, or the
-  // recursive re-emit below).
-  on('combat:resolve_move_conflict', async ({ declaredMoveId, blockerDeclaredMoveId, choice }) => {
+  // Combat Automation overhaul §3 — Forfeit/Postpone for a declared move a
+  // Block's extended Recovery ran into. Payload shape and audience are
+  // deliberately unchanged (decision #3: this stays the *affected player's*
+  // call, not the GM's); only the trigger moved. The automatic engine is
+  // now the sole source of these prompts — the old manual path that used to
+  // live here went away with combat:resolve_defense — so this just resolves
+  // which paused pair the answer belongs to and hands off. resolveMoveConflict
+  // owns applying the choice, resuming the round, and re-pausing if the
+  // postponed move collides with yet another declared move.
+  //
+  // Parsed in JS rather than via json_extract to avoid depending on libSQL's
+  // JSON1 surface for a list that is at most one row per pair.
+  on('combat:resolve_move_conflict', async ({ declaredMoveId, choice }) => {
     if (!['forfeit', 'postpone'].includes(choice)) return;
-
-    // Combat Automation overhaul §3: this prompt's payload and its
-    // player-scoped audience are deliberately unchanged (decision #3) —
-    // only the trigger path is new, so the same choice can now arrive from
-    // either the manual flow below or the automatic engine's own pause.
-    // When the engine is the one paused on this exact move, hand off to
-    // it: it owns both applying the choice and resuming the round from
-    // where it stopped (including re-pausing on a cascading second
-    // collision). Parsed in JS rather than via json_extract to avoid
-    // depending on libSQL's JSON1 surface for a list this short.
     const pausedRows = await all(
       `SELECT pair_index, pending_conflict_json FROM pair_round_resolutions WHERE status = 'paused_conflict'`
     );
@@ -3689,144 +3171,8 @@ io.on('connection', (socket) => {
         return false;
       }
     });
-    if (pausedPair) {
-      await resolveMoveConflict(pausedPair.pair_index, { declaredMoveId, choice }, io);
-      await emitCombatUpdated();
-      return;
-    }
-
-    const row = await one(
-      `SELECT dm.*, m.startup_tics, m.active_tics, m.recovery_tics, m.stamina_cost
-       FROM declared_moves dm JOIN moves m ON m.id = dm.move_id
-       WHERE dm.id = ?`,
-      [declaredMoveId]
-    );
-    if (!row) return;
-
-    if (choice === 'forfeit') {
-      // Cancel outright, full Stamina refund — mirrors move:undeclare's
-      // existing cancel-before-commit behavior, but this can fire well past
-      // that point (mid Tic Countdown, after stamina_committed already left
-      // current_stamina), so unlike move:undeclare a refund is issued here
-      // explicitly rather than relying on the spend never having happened.
-      await run('DELETE FROM declared_moves WHERE id = ?', [row.id]);
-      if (row.stamina_committed && row.stamina_cost) {
-        await adjustStamina(row.character_id, row.stamina_cost);
-        await postSystemMessage(`A declared move was Forfeited — ${row.stamina_cost} Stamina refunded.`);
-      }
-      await emitCombatUpdated();
-      return;
-    }
-
-    // Postpone: shift later along the Tic Counter by just enough Tics that
-    // the new footprint starts after the specific colliding move's own
-    // Recovery ends — recomputed fresh from the DB (not trusted from
-    // whenever this prompt first fired), in case anything shifted again in
-    // the meantime.
-    const blocker = await one(
-      `SELECT dm.reveal_tic, dm.recovery_extension_tics, m.active_tics, m.recovery_tics
-       FROM declared_moves dm JOIN moves m ON m.id = dm.move_id
-       WHERE dm.id = ?`,
-      [blockerDeclaredMoveId]
-    );
-    if (!blocker) return;
-    const blockerRecoveryEndTic =
-      blocker.reveal_tic + blocker.active_tics + blocker.recovery_tics + blocker.recovery_extension_tics;
-    const newPlacementTic = Math.max(row.placement_tic, blockerRecoveryEndTic);
-    const { revealTic } = computeMoveFootprint({
-      placementTic: newPlacementTic,
-      startupTics: row.startup_tics,
-      activeTics: row.active_tics,
-      recoveryTics: row.recovery_tics,
-    });
-    await run('UPDATE declared_moves SET placement_tic = ?, reveal_tic = ? WHERE id = ?', [
-      newPlacementTic,
-      revealTic,
-      row.id,
-    ]);
-    await emitCombatUpdated();
-
-    // Recursive cascade (4.3): the postponed footprint might now collide
-    // with yet another already-declared move of this SAME character further
-    // down the timeline — re-raise the same conflict prompt for each one
-    // found, with this move now standing in as the new blocker.
-    const recoveryEndTic = revealTic + row.active_tics + row.recovery_tics + row.recovery_extension_tics;
-    const stillColliding = await all(
-      'SELECT id FROM declared_moves WHERE character_id = ? AND id != ? AND placement_tic >= ? AND placement_tic < ?',
-      [row.character_id, row.id, newPlacementTic, recoveryEndTic]
-    );
-    for (const collision of stillColliding) {
-      io.emit('combat:move_conflict', {
-        declaredMoveId: collision.id,
-        characterId: row.character_id,
-        blockerDeclaredMoveId: row.id,
-      });
-    }
-  });
-
-  // Combat Automation (Phase 9, sub-phase 3): Interruption (4.4) — taking a
-  // Hit while still in your own move's Startup can Disrupt it.
-  // `dieId` is the attacker's own Stat chosen for the interrupt roll
-  // (see the plan's 4.4 "needs confirmation" note on whose Stat this is);
-  // `attackerDeclaredMoveId` is the attacker's own move (for
-  // computeInterruptBonus's Active-frame-elapsed count); `halfDamageSteps`
-  // is however many steps the hit that triggered this already dealt (4.1's
-  // Apply flow is unaffected/still runs independently of this event —
-  // "the hit's damage applies exactly as it would anyway"); `startupDeclaredMoveId`
-  // is the move being potentially Interrupted.
-  on('combat:check_interrupt', async ({ dieId, attackerDeclaredMoveId, halfDamageSteps, startupDeclaredMoveId }) => {
-    const [die, attackerDM, startupDM, state] = await Promise.all([
-      one('SELECT * FROM dice WHERE id = ?', [dieId]),
-      one('SELECT id, reveal_tic FROM declared_moves WHERE id = ?', [attackerDeclaredMoveId]),
-      one(
-        `SELECT dm.*, m.stamina_cost, ch.name AS character_name
-         FROM declared_moves dm JOIN moves m ON m.id = dm.move_id JOIN characters ch ON ch.id = dm.character_id
-         WHERE dm.id = ?`,
-        [startupDeclaredMoveId]
-      ),
-      one('SELECT current_tic FROM combat_state WHERE id = 1'),
-    ]);
-    if (!die || die.status !== 'active' || !attackerDM || !startupDM) return;
-    const steps = Math.max(0, Math.trunc(Number(halfDamageSteps) || 0));
-
-    const bonus = computeInterruptBonus({ revealTic: attackerDM.reveal_tic, currentTic: state.current_tic });
-    const character = await getCharacter(die.character_id);
-    if (!character) return;
-    const mod = bonus + (await getReasonsToFightBonus(die.character_id));
-    const result = rollDie(die.current_size) + die.bonus + mod;
-    await logRoll({
-      characterId: character.id,
-      characterName: character.name,
-      modifier: mod,
-      dice: [{ slot_name: die.slot_name, size: die.current_size, bonus: die.bonus, result }],
-    });
-
-    // (Needs confirmation, per the plan's own 4.4 note): threshold assumed
-    // to be `roll >= damage taken` (here, half-damage steps — the same unit
-    // the flat roll is naturally compared against).
-    const succeeded = result >= steps;
-    io.emit('combat:interrupt_resolved', {
-      startupDeclaredMoveId,
-      succeeded,
-      result,
-      threshold: steps,
-    });
-    if (!succeeded) return;
-
-    // Interrupted (decided): every remaining frame reverts to Undeclared —
-    // simply deleting the row is the same end state as never having
-    // declared it, "an implementation choice, not a design one" per the
-    // plan. Half the Stamina Cost is refunded (contrast with 4.3's Forfeit,
-    // a FULL refund — Interruption is involuntary/mid-commitment, Forfeit a
-    // voluntary trade-off, hence the different fraction).
-    await run('DELETE FROM declared_moves WHERE id = ?', [startupDM.id]);
-    const refund = startupDM.stamina_committed ? Math.trunc(startupDM.stamina_cost / 2) : 0;
-    if (refund) await adjustStamina(startupDM.character_id, refund);
-    await postSystemMessage(
-      refund
-        ? `${startupDM.character_name}'s move was Interrupted — ${refund} Stamina refunded.`
-        : `${startupDM.character_name}'s move was Interrupted.`
-    );
+    if (!pausedPair) return;
+    await resolveMoveConflict(pausedPair.pair_index, { declaredMoveId, choice }, io);
     await emitCombatUpdated();
   });
 });

@@ -11,8 +11,6 @@ import Thumb from './Thumb.jsx';
 import FrameBar from './FrameBar.jsx';
 import MoveCard from './MoveCard.jsx';
 import DiceIcon from './DiceIcon.jsx';
-import DamageApplicationDialog from './DamageApplicationDialog.jsx';
-import ResolveDefenseDialog from './ResolveDefenseDialog.jsx';
 import DialogShell from './DialogShell.jsx';
 import RoundCutscene from './RoundCutscene.jsx';
 
@@ -38,18 +36,6 @@ const DICE_TRAY_SIZES = [4, 6, 8, 10, 12];
 // of each, one of four near-duplicates across the client.
 const snapshotPhaseColorAt = phaseBgAt;
 
-// A cumulative per-lane Tic Counter snapshot (decided, Chat Log redesign,
-// item 4): posted fresh every time any move in the lane reveals, so the
-// chat log ends up with a full history of how that lane's Tic Counter
-// filled in over the round — the LAST snapshot for a given lane/round shows
-// every move that ultimately revealed, each in its true position. PC move
-// bars sit above the shared Tic strip, NPC bars below (matches the seating
-// convention the Declaration Lanes already use — see CombatArena.jsx). Each
-// bar spans exactly the Tics its move's footprint occupies, clipped to this
-// round's own window (a carried-over move's earlier Tics belong to a past
-// snapshot, not this one — see overlapsRoundWindow server-side). Clicking a
-// bar re-uses the same Genius Observer honor-system gate the old single-move
-// card had, expanding the full MoveCard for just that move.
 // Combat Automation overhaul §4.2 — one button per pair per round,
 // replacing chat:lane_snapshot's per-reveal spam. Deliberately ungated
 // (decision #11): a resolved round is public history, so anyone can watch
@@ -71,120 +57,8 @@ function RoundSummaryCard({ entry, onWatch }) {
   );
 }
 
-function LaneSnapshotCard({ entry, moveInfo }) {
-  const [expandedId, setExpandedId] = useState(null);
-  const { roundNumber, roundStartTic, roundLength, moves } = entry;
-  const pcMoves = moves.filter((m) => m.characterType === 'pc');
-  const npcMoves = moves.filter((m) => m.characterType === 'npc');
-  const gridStyle = { gridTemplateColumns: `repeat(${roundLength}, minmax(0, 1fr))` };
-  const windowEnd = roundStartTic + roundLength;
-
-  const barStyle = (move) => {
-    const start = Math.max(move.placementTic, roundStartTic);
-    const end = Math.min(move.recoveryEndTic, windowEnd);
-    return { gridColumn: `${start - roundStartTic + 1} / ${end - roundStartTic + 1}` };
-  };
-
-  const toggleExpanded = (move) => {
-    if (expandedId === move.declaredMoveId) {
-      setExpandedId(null);
-    } else if (window.confirm('Does your character have the Genius Observer Perk?')) {
-      setExpandedId(move.declaredMoveId);
-    }
-  };
-
-  const MoveBar = ({ move }) => (
-    <button
-      type="button"
-      onClick={() => toggleExpanded(move)}
-      style={barStyle(move)}
-      title={`${move.characterName}: ${move.moveName}`}
-      className="flex min-w-0 items-center gap-1 truncate panel-cut-sm border border-zinc-700 bg-zinc-800/80 px-1 py-0.5 text-left text-[10px] text-zinc-200 hover:border-brand-600"
-    >
-      <span className="truncate font-semibold">{move.characterName}</span>
-      <span className="truncate text-zinc-400">{move.moveName}</span>
-    </button>
-  );
-
-  const expandedMove = moves.find((m) => m.declaredMoveId === expandedId);
-
-  return (
-    <div className="mt-1 w-full space-y-1 panel-cut-sm bg-zinc-800/60 p-1.5">
-      <div className="font-display text-[9px] font-bold uppercase tracking-wide text-zinc-600">
-        Round {roundNumber}
-      </div>
-      {pcMoves.length > 0 && (
-        <div className="grid gap-1" style={gridStyle}>
-          {pcMoves.map((m) => (
-            <MoveBar key={m.declaredMoveId} move={m} />
-          ))}
-        </div>
-      )}
-      <div className="grid gap-0.5" style={gridStyle}>
-        {Array.from({ length: roundLength }, (_, i) => {
-          const tic = roundStartTic + i;
-          const colors = moves.map((m) => snapshotPhaseColorAt(m, tic)).filter(Boolean);
-          return (
-            <div
-              key={tic}
-              className="flex h-5 items-stretch overflow-hidden border border-zinc-700 bg-zinc-900 text-[9px] font-bold text-zinc-500"
-            >
-              {colors.length === 0 ? (
-                <span className="flex flex-1 items-center justify-center">{i + 1}</span>
-              ) : (
-                colors.map((c, ci) => (
-                  <span key={ci} className={`flex flex-1 items-center justify-center text-zinc-950 ${c}`}>
-                    {ci === 0 ? i + 1 : ''}
-                  </span>
-                ))
-              )}
-            </div>
-          );
-        })}
-      </div>
-      {npcMoves.length > 0 && (
-        <div className="grid gap-1" style={gridStyle}>
-          {npcMoves.map((m) => (
-            <MoveBar key={m.declaredMoveId} move={m} />
-          ))}
-        </div>
-      )}
-      {expandedMove && (
-        <div className="border-t border-zinc-700 pt-1.5">
-          {expandedMove.full && moveInfo ? (
-            <MoveCard
-              move={expandedMove.full}
-              tell={moveInfo.tellById.get(expandedMove.full.tell_id)}
-              rightTell={
-                expandedMove.full.right_tell_id ? moveInfo.tellById.get(expandedMove.full.right_tell_id) : null
-              }
-              leftTell={expandedMove.full.left_tell_id ? moveInfo.tellById.get(expandedMove.full.left_tell_id) : null}
-              style={
-                expandedMove.full.style_attribute_id
-                  ? moveInfo.styleById.get(expandedMove.full.style_attribute_id)
-                  : null
-              }
-              tags={(expandedMove.full.tag_ids ?? []).map((id) => moveInfo.tagById.get(id)).filter(Boolean)}
-              folderLabel={folderPath(expandedMove.full.folder_id, moveInfo.moveFolders) ?? undefined}
-            />
-          ) : (
-            <div className="text-xs text-zinc-400">
-              {expandedMove.description ? (
-                <p className="whitespace-pre-wrap break-words">{expandedMove.description}</p>
-              ) : (
-                <p className="italic text-zinc-600">No description.</p>
-              )}
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
 function Entry({ entry, character, moveInfo, characters, defenseResolutions, onWatchRound }) {
   const [expanded, setExpanded] = useState(false);
-  const [openDialog, setOpenDialog] = useState(null); // 'apply' | 'resolve' | null
   const { role } = useRole();
   const time = new Date(entry.timestamp).toLocaleTimeString([], {
     hour: '2-digit',
@@ -219,8 +93,6 @@ function Entry({ entry, character, moveInfo, characters, defenseResolutions, onW
           </div>
         ) : entry.kind === 'round_summary' ? (
           <RoundSummaryCard entry={entry} onWatch={onWatchRound} />
-        ) : entry.kind === 'lane_snapshot' ? (
-          <LaneSnapshotCard entry={entry} moveInfo={moveInfo} />
         ) : entry.kind === 'move_reveal' ? (
           entry.move ? (
             <div className="mt-1 w-full panel-cut-sm bg-zinc-800/60 p-1.5">
@@ -374,44 +246,6 @@ function Entry({ entry, character, moveInfo, characters, defenseResolutions, onW
                       <span className="italic text-sky-400"> — changed by Block</span>
                     )}
                   </span>
-                  <button
-                    type="button"
-                    disabled={!damage || effectiveAttackTargets.length === 0}
-                    onClick={() => setOpenDialog('apply')}
-                    className="ml-auto panel-cut-sm bg-red-800/80 px-2.5 py-1 text-xs font-semibold text-red-100 hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-40"
-                  >
-                    Apply
-                  </button>
-                  {role === 'gm' && !resolved && (
-                    <button
-                      type="button"
-                      onClick={() => setOpenDialog('resolve')}
-                      className="panel-cut-sm border border-sky-700/50 px-2.5 py-1 text-xs font-semibold text-sky-300 hover:bg-sky-950/40"
-                    >
-                      Resolve Defense
-                    </button>
-                  )}
-                  {openDialog === 'apply' && (
-                    <DamageApplicationDialog
-                      targetCandidateIds={entry.targetCandidateIds ?? []}
-                      initialHalfDamageSteps={steps}
-                      attackerDeclaredMoveId={entry.declaredMoveId}
-                      allowedSlotNames={effectiveAttackTargets}
-                      attackTargetSource={attackTargetSource}
-                      characters={characters}
-                      onClose={() => setOpenDialog(null)}
-                    />
-                  )}
-                  {openDialog === 'resolve' && (
-                    <ResolveDefenseDialog
-                      attackerDeclaredMoveId={entry.declaredMoveId}
-                      attackerResult={entry.total}
-                      targetCandidateIds={entry.targetCandidateIds ?? []}
-                      characters={characters}
-                      moves={moves}
-                      onClose={() => setOpenDialog(null)}
-                    />
-                  )}
                 </div>
               );
             })()}
@@ -618,7 +452,7 @@ export default function ChatPanel({ open, onClose }) {
   const [entries, setEntries] = useState([]);
   // Which round the "Watch Round N" button opened, if any (§4.2) — the
   // replay itself is a fullscreen RoundCutscene, matching how
-  // DamageApplicationDialog already takes over the screen.
+  // a fullscreen dialog already takes over the screen elsewhere in the app.
   const [replayResolutionId, setReplayResolutionId] = useState(null);
   const [characters, setCharacters] = useState(new Map());
   // Only needed to render a move_reveal card's expanded full MoveCard (see
@@ -629,7 +463,7 @@ export default function ChatPanel({ open, onClose }) {
   const [ruleset, setRuleset] = useState(null);
   const [moveFolders, setMoveFolders] = useState(null);
   // Attack Target (Change 001): flat move templates (roll_type/roll_slots),
-  // so ResolveDefenseDialog can enforce "Block requires a base Stat Roll"
+  // (kept for the move_reveal card's expanded MoveCard)
   // client-side without a second fetch of its own.
   const [moves, setMoves] = useState(null);
   // Combat Automation (Phase 9, sub-phase 4): combat:resolve_defense's
@@ -655,7 +489,6 @@ export default function ChatPanel({ open, onClose }) {
     const onRoll = (entry) => setEntries((prev) => [...prev, entry]);
     const onMessage = (entry) => setEntries((prev) => [...prev, entry]);
     const onMoveReveal = (entry) => setEntries((prev) => [...prev, entry]);
-    const onLaneSnapshot = (entry) => setEntries((prev) => [...prev, entry]);
     const onRoundSummary = (entry) => setEntries((prev) => [...prev, entry]);
     const onCleared = () => setEntries([]);
     const onDefenseResolved = (payload) =>
@@ -663,7 +496,6 @@ export default function ChatPanel({ open, onClose }) {
     socket.on('roll:result', onRoll);
     socket.on('chat:message', onMessage);
     socket.on('chat:move_reveal', onMoveReveal);
-    socket.on('chat:lane_snapshot', onLaneSnapshot);
     socket.on('chat:round_summary', onRoundSummary);
     socket.on('chat:cleared', onCleared);
     socket.on('combat:defense_resolved', onDefenseResolved);
@@ -671,7 +503,6 @@ export default function ChatPanel({ open, onClose }) {
       socket.off('roll:result', onRoll);
       socket.off('chat:message', onMessage);
       socket.off('chat:move_reveal', onMoveReveal);
-      socket.off('chat:lane_snapshot', onLaneSnapshot);
       socket.off('chat:cleared', onCleared);
       socket.off('combat:defense_resolved', onDefenseResolved);
     };
