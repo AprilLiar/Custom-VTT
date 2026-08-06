@@ -32,6 +32,7 @@ delete process.env.TURSO_AUTH_TOKEN;
 const { initDb, run, one, all } = await import('../db.js');
 const { advancePairResolution, startPairDeclaration, resolveDodge, resolveMoveConflict } = await import('../roundResolution.js');
 const { DICE_TEMPLATE } = await import('../gameLogic.js');
+const { collapseRollSlots } = await import('../moveLogic.js');
 
 const originalRandom = Math.random;
 
@@ -118,8 +119,15 @@ async function createMove({
     ]
   );
   const moveId = Number(result.lastInsertRowid);
-  for (const slot of rollSlots) {
-    await run('INSERT INTO move_roll_slots (move_id, slot_name) VALUES (?, ?)', [moveId, slot]);
+  // One row per distinct slot with a count, matching writeMove — an
+  // appendage listed twice means both sides, and the table's
+  // UNIQUE(move_id, slot_name) can't hold it as two rows.
+  for (const { slot_name, count } of collapseRollSlots(rollSlots)) {
+    await run('INSERT INTO move_roll_slots (move_id, slot_name, count) VALUES (?, ?, ?)', [
+      moveId,
+      slot_name,
+      count,
+    ]);
   }
   return moveId;
 }
@@ -501,6 +509,107 @@ test('Move-conflict pause: a Block-too-late collision stops the round; Forfeit d
   assert.equal(deleted, null);
   const resolutionAfter = await one('SELECT status FROM pair_round_resolutions WHERE pair_index = ? AND round_number = 1', [pairIndex]);
   assert.equal(resolutionAfter.status, 'complete');
+});
+
+test('Block-too-late: the Recovery extension is announced and logged, and does not pause on its own', async () => {
+  const pairIndex = 215;
+  const attacker = await createCharacter('LateBlock Attacker');
+  const defender = await createCharacter('LateBlock Defender');
+  await setDieSize(attacker, 'Skull', 12);
+  await setDieSize(defender, 'Left Hand', 12);
+  const punch = await createMove({ name: 'LB Punch', startupTics: 1, activeTics: 2, recoveryTics: 1, rollSlots: ['Skull'] });
+  // Same shape as the Forfeit scenario above, minus the colliding move: the
+  // Guard covers the attack's Active tic 1 but not tic 2 -> 'too-late', 1
+  // Tic short. Nothing is declared in the extended window, so the round
+  // must run straight through — an extension is a rule, not a prompt.
+  const guard = await createMove({
+    name: 'LB Guard',
+    startupTics: 1,
+    activeTics: 1,
+    recoveryTics: 1,
+    rollSlots: ['Hand'],
+    isDefensive: true,
+    defenseKind: 'block',
+    defenseFramePositions: [1],
+  });
+
+  await seatPair(pairIndex, attacker, defender);
+  await startPairDeclaration(mockIo, pairIndex);
+  await declareMove({ characterId: attacker, moveId: punch, placementTic: 0, startupTics: 1 });
+  const guardDMId = await declareMove({ characterId: defender, moveId: guard, placementTic: 0, startupTics: 1, appendageChoice: 'left' });
+  await resolvePair(pairIndex);
+
+  const resolution = await one('SELECT * FROM pair_round_resolutions WHERE pair_index = ? AND round_number = 1', [pairIndex]);
+  assert.equal(resolution.status, 'complete');
+
+  const extended = await one(
+    `SELECT payload FROM round_events WHERE resolution_id = ? AND type = 'recovery_extended'`,
+    [resolution.id]
+  );
+  assert.ok(extended, 'a too-late Block must log its Recovery extension');
+  const payload = JSON.parse(extended.payload);
+  assert.equal(payload.declaredMoveId, guardDMId);
+  assert.equal(payload.extensionTics, 1);
+  // Guard's authored footprint ends at reveal(1)+active(1)+recovery(1)=3;
+  // the extension covers [3,4), which is what the cutscene paints dimmed.
+  assert.equal(payload.extendedFromTic, 3);
+  assert.equal(payload.recoveryEndTic, 4);
+
+  const stored = await one('SELECT recovery_extension_tics FROM declared_moves WHERE id = ?', [guardDMId]);
+  assert.equal(stored.recovery_extension_tics, 1);
+
+  // Announced in chat too, not just on the timeline — a Block never prompts,
+  // so this message is the only thing that tells the table it happened.
+  const announcement = await one(
+    `SELECT content FROM chat_log WHERE kind = 'message' AND content LIKE '%Recovery extended%' ORDER BY id DESC LIMIT 1`
+  );
+  assert.ok(announcement, 'the extension must be announced in chat');
+  assert.match(announcement.content, /LB Guard/);
+  assert.match(announcement.content, /extended by 1 Tic\b/);
+});
+
+test('a Roll listing an appendage twice rolls BOTH sides, ignoring the declaration\'s side choice', async () => {
+  const pairIndex = 216;
+  const attacker = await createCharacter('BothHands Attacker');
+  const defender = await createCharacter('BothHands Defender');
+  await setDieSize(attacker, 'Left Hand', 8);
+  await setDieSize(attacker, 'Right Hand', 6);
+  const doubleFist = await createMove({
+    name: 'BH Double Fist',
+    startupTics: 1,
+    activeTics: 1,
+    recoveryTics: 0,
+    rollSlots: ['Hand', 'Hand'],
+  });
+
+  await seatPair(pairIndex, attacker, defender);
+  await startPairDeclaration(mockIo, pairIndex);
+  const dmId = await declareMove({
+    characterId: attacker,
+    moveId: doubleFist,
+    placementTic: 0,
+    startupTics: 1,
+    // A doubled slot has no Left/Right question, so a real declaration never
+    // records one. Passing a stale 'left' here proves it is ignored rather
+    // than collapsing both entries onto the same die.
+    appendageChoice: 'left',
+  });
+  await resolvePair(pairIndex);
+
+  const resolution = await one('SELECT id FROM pair_round_resolutions WHERE pair_index = ? AND round_number = 1', [pairIndex]);
+  const rollRow = await one(
+    `SELECT payload FROM round_events WHERE resolution_id = ? AND type = 'roll'`,
+    [resolution.id]
+  );
+  const payload = JSON.parse(rollRow.payload);
+  assert.equal(payload.declaredMoveId, dmId);
+  assert.deepEqual(
+    payload.dice.map((d) => d.slot_name),
+    ['Left Hand', 'Right Hand']
+  );
+  // Both dice at max face (Math.random is pinned near 1 for this file), so
+  // the total is genuinely the sum of two different dice, not one twice.
+  assert.equal(payload.total, 8 + 6);
 });
 
 test('Move-conflict pause: Postpone shifts the collision forward and recurses into a second collision', async () => {

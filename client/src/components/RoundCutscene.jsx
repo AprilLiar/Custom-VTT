@@ -3,7 +3,13 @@ import { gsap } from 'gsap';
 import { AnimatePresence, motion } from 'framer-motion';
 import { socket } from '../socket.js';
 import { getRoundReplay } from '../lib/api.js';
-import { PHASE_BG, PHASE_LABEL, phaseAt } from '../lib/framePhaseColors.js';
+import {
+  PHASE_BG,
+  PHASE_BG_EXTENDED,
+  PHASE_LABEL,
+  phaseAt,
+  isExtendedRecoveryTic,
+} from '../lib/framePhaseColors.js';
 
 // Combat Automation overhaul §4.1 — a pair's round, rendered as an animated
 // "cutscene" instead of narrated through a string of manual GM clicks.
@@ -39,6 +45,7 @@ const EVENT_LABEL = {
   reveal: 'Reveal',
   roll: 'Roll',
   defense_resolved: 'Defense',
+  recovery_extended: 'Recovery extended',
   dodge_prompt: 'Dodge — awaiting GM',
   dodge_resolved: 'Dodge',
   interrupt_resolved: 'Interruption',
@@ -74,6 +81,10 @@ function eventSummary(ev) {
     case 'damage_applied':
       if (p.result === 'no-eligible-target') return 'No eligible target';
       return `${p.steps ?? 0} step${p.steps === 1 ? '' : 's'}${p.slotName ? ` → ${p.slotName}` : ''}`;
+    case 'recovery_extended':
+      return `${p.characterName ?? 'The blocker'} +${p.extensionTics ?? 0} Tic${
+        p.extensionTics === 1 ? '' : 's'
+      }`;
     case 'move_conflict_prompt':
       return 'Recovery extension collided with a declared move';
     case 'move_conflict_resolved':
@@ -133,6 +144,15 @@ function eventDetail(ev, startTic) {
       if (p.result === 'no-eligible-target') lines.push('No eligible target Stat');
       else lines.push(`${p.steps} half-damage step(s) → ${p.slotName ?? 'unknown Stat'}`);
       break;
+    case 'recovery_extended':
+      lines.push(
+        `${p.characterName}'s ${p.moveName} blocked late — Recovery extended by ${p.extensionTics} Tic(s)`
+      );
+      lines.push(
+        `Now runs through Tic ${p.recoveryEndTic - startTic} to cover the rest of ${p.attackerCharacterName}'s ${p.attackerMoveName}`
+      );
+      lines.push('Automatic — a Block is never a prompt');
+      break;
     case 'move_conflict_prompt':
       lines.push("A Block's extended Recovery collided with a declared move");
       lines.push('Waiting on the affected player: Forfeit or Postpone');
@@ -159,11 +179,32 @@ function eventDetail(ev, startTic) {
 // events themselves rather than from live combat state, so replay works
 // identically (the reveal payload carries the whole footprint, see
 // processTic's reveal block server-side).
+// A late Block's Recovery extension (recovery_extended) is folded into the
+// footprint it belongs to rather than kept as a separate overlay: the
+// extension genuinely lengthens the move's Recovery window, so the bar has
+// to grow with it. It stays keyed to the playhead like everything else —
+// the extra Tics appear at the moment the event does, not retroactively
+// from the start of the round.
 function footprintsFrom(events, upTo) {
   const out = [];
+  const byDeclaredMoveId = new Map();
   for (const ev of events.slice(0, upTo)) {
-    if (ev.type !== 'reveal') continue;
-    out.push(ev.payload);
+    if (ev.type === 'reveal') {
+      const fp = { ...ev.payload };
+      out.push(fp);
+      if (fp.declaredMoveId != null) byDeclaredMoveId.set(fp.declaredMoveId, fp);
+      continue;
+    }
+    if (ev.type !== 'recovery_extended') continue;
+    const fp = byDeclaredMoveId.get(ev.payload?.declaredMoveId);
+    if (!fp) continue;
+    fp.recoveryEndTic = ev.payload.recoveryEndTic;
+    // Earliest wins if a move is extended twice — the whole run from the
+    // first extension onward is "extended", not just the latest slice.
+    fp.recoveryExtendedFromTic = Math.min(
+      fp.recoveryExtendedFromTic ?? Infinity,
+      ev.payload.extendedFromTic
+    );
   }
   return out;
 }
@@ -177,17 +218,28 @@ function MoveBar({ fp, ticks, startTic }) {
       <div className="flex gap-0.5">
         {ticks.map((tic) => {
           const phase = phaseAt(fp, tic);
+          // An extension Tic keeps the Block's own colour, dimmed — see
+          // isExtendedRecoveryTic. phaseAt calls it plain Recovery (it is,
+          // mechanically), so the check has to come first to win the fill.
+          const extended = isExtendedRecoveryTic(fp, tic);
+          const defenseLabel = fp.defenseKind === 'dodge' ? 'Dodge' : 'Block';
           return (
             <span
               key={tic}
               title={
                 phase
-                  ? `${fp.characterName} — ${fp.moveName}\nTic ${tic - startTic + 1}: ${PHASE_LABEL[phase]}${
-                      phase === 'defense' ? ` (${fp.defenseKind === 'dodge' ? 'Dodge' : 'Block'} window)` : ''
-                    }`
+                  ? `${fp.characterName} — ${fp.moveName}\nTic ${tic - startTic + 1}: ${
+                      extended ? `${defenseLabel} extension` : PHASE_LABEL[phase]
+                    }${phase === 'defense' && !extended ? ` (${defenseLabel} window)` : ''}`
                   : undefined
               }
-              className={`h-3 w-6 border border-zinc-900 ${phase ? PHASE_BG[phase] : 'bg-zinc-800/50'}`}
+              className={`h-3 w-6 border border-zinc-900 ${
+                extended
+                  ? PHASE_BG_EXTENDED.defense
+                  : phase
+                    ? PHASE_BG[phase]
+                    : 'bg-zinc-800/50'
+              }`}
             />
           );
         })}

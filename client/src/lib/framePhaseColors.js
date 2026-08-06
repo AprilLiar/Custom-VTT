@@ -44,6 +44,31 @@ export const PHASE_ZONE = {
   blocked: 'border-zinc-600 bg-zinc-800 text-zinc-600',
 };
 
+// A Block that lands too late has its Recovery auto-extended to cover the
+// rest of the attack's Active window — a rule, not a choice (decision #1
+// keeps Block entirely out of the prompt loop), so the only way the table
+// sees it happen is here. Decided: paint those Tics in the Block's own
+// colour, dimmed, so they read as "this is the block, still running" rather
+// than as ordinary Recovery the player authored.
+export const EXTENDED_OPACITY = 0.7;
+
+export const PHASE_BG_EXTENDED = {
+  startup: 'bg-amber-500/70',
+  active: 'bg-rose-500/70',
+  recovery: 'bg-blue-500/70',
+  defense: 'bg-emerald-500/70',
+};
+
+// Half-open [extendedFromTic, recoveryEndTic), matching phaseAt's own
+// convention. A footprint only carries recoveryExtendedFromTic once a
+// recovery_extended round event has been folded into it (see
+// footprintsFrom in RoundCutscene.jsx).
+export function isExtendedRecoveryTic(footprint, tic) {
+  const from = footprint?.recoveryExtendedFromTic;
+  if (from == null) return false;
+  return tic >= from && tic < footprint.recoveryEndTic;
+}
+
 // Client-side mirror of server/combatDamage.js's phaseAtTic — same
 // half-open [placementTic, recoveryEndTic) convention, same
 // defense-frames-win-over-their-underlying-phase rule. Returns null when

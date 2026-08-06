@@ -12,6 +12,7 @@ import {
 import { portraitSrc } from '../lib/image.js';
 import { dieLabel, tintFor, POOLS } from '../lib/dice.js';
 import { buildFolderTree } from '../lib/folders.js';
+import { countRollSlot } from '../lib/diceSlots.js';
 import { FRAME_PHASES, PHASE_BG, PHASE_LABEL, PHASE_ZONE, phaseBgAt } from '../lib/framePhaseColors.js';
 import RoundCutscene from './RoundCutscene.jsx';
 import DamageApplicationDialog from './DamageApplicationDialog.jsx';
@@ -923,7 +924,11 @@ function buildDeclarePayload(character, move, roundStartTic, declaredMoves) {
     // placement handler uses this to decide whether to ask Left/Right
     // before declaring at all.
     ambiguous: move.right_tell_id != null,
-    appendageSlot: move.roll_slots?.find((s) => s === 'Hand' || s === 'Leg') ?? null,
+    // Only the slot taken exactly once poses the Left/Right question — one
+    // taken twice already means both sides (see diceSlots.js), so it must
+    // not be what the prompt asks about.
+    appendageSlot:
+      ['Hand', 'Leg'].find((s) => countRollSlot(move.roll_slots, s) === 1) ?? null,
   };
 }
 

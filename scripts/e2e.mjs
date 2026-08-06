@@ -210,10 +210,22 @@ emit('inventory:remove', { itemId: inv.items[0].id });
 inv = await waitEvent('inventory:updated', (p) => p.characterId === ch.id && p.items.length === 0);
 check('inventory remove', inv.items.length === 0);
 
-// --- ruleset: 7 styles, complete tournament, +2 edges ---
+// --- ruleset: 7 styles, complete tournament, one bonus per edge ---
 const ruleset = (await jf('/api/ruleset')).body;
 check('7 attributes seeded with icons', ruleset.attributes.length === 7 && ruleset.attributes.every((a) => a.icon));
-check('21 counter edges at +2', ruleset.counters.length === 21 && ruleset.counters.every((c) => c.bonus === 2));
+// The per-edge bonus is a balance knob (halved once already, to keep an
+// ideal counter-pick a +3/-3 tilt rather than a +6/-6 landslide), so assert
+// the shape — 21 edges, all seeded at the same positive whole number — not
+// the number itself.
+const seededBonus = ruleset.counters[0]?.bonus;
+check(
+  '21 counter edges, each a positive whole-number bonus',
+  ruleset.counters.length === 21 &&
+    Number.isInteger(seededBonus) &&
+    seededBonus > 0 &&
+    ruleset.counters.every((c) => c.bonus === seededBonus),
+  JSON.stringify(ruleset.counters.slice(0, 3))
+);
 const outDegree = new Map();
 const inDegree = new Map();
 for (const c of ruleset.counters) {
