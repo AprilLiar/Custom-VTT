@@ -84,6 +84,64 @@ export function computeInterruptBonus({ revealTic, currentTic }) {
   return Math.max(1, currentTic - revealTic + 1);
 }
 
+// Combat Automation overhaul, decision #5 — automatic damage-target
+// selection when a move's Attack Target allows more than one concrete Stat.
+// `effectiveAttackTargets` is a declared move's own already-canonicalized,
+// already-concrete list (see moveLogic.js's expandAttackTargets/
+// sanitizeAttackTargets — both already produce CONCRETE_ATTACK_TARGET_NAMES
+// order, i.e. Left before Right for both Hand and Leg), so "the move's own
+// listed order" and "canonical order" are the same list by construction —
+// this just walks it and picks the first Stat with an eligible die.
+// `dice` is the target character's own dice as `{ slot_name, status }`.
+// Returns the winning die, or null if every allowed Stat's die is
+// incapacitated (or missing).
+export function selectAutoDamageTarget({ effectiveAttackTargets, dice }) {
+  const bySlot = new Map(dice.map((d) => [d.slot_name, d]));
+  for (const slot of effectiveAttackTargets) {
+    const die = bySlot.get(slot);
+    if (die && die.status !== 'incapacitated') return die;
+  }
+  return null;
+}
+
+// Combat Automation overhaul, decision #6 — Uneven Combat's "which opposing
+// character gets hit" is no longer a GM click: deterministic, lowest
+// characterId among opposing participants who still have a
+// non-incapacitated die within the attack's own allowed target set.
+// `candidates` is every character seated on the opposing side, as
+// `{ characterId, dice: [{ slot_name, status }] }`; `allowedConcreteTargets`
+// is the attacking move's own effective (already-concrete) Attack Target
+// list. Returns the winning characterId, or null if nobody on that side has
+// any eligible die at all (the attack lands on nothing).
+export function selectUnevenCombatTarget({ candidates, allowedConcreteTargets }) {
+  const allowed = new Set(allowedConcreteTargets);
+  const eligible = candidates.filter((c) =>
+    c.dice.some((d) => allowed.has(d.slot_name) && d.status !== 'incapacitated')
+  );
+  if (!eligible.length) return null;
+  return eligible.reduce((best, c) => (c.characterId < best.characterId ? c : best)).characterId;
+}
+
+// Combat Automation overhaul, §2.2 step 4 — which (if any) of the defending
+// character's own declared moves is the one actually defending against this
+// particular attack: the FIRST declared move (in queue/placement order)
+// whose Defense Frames land anywhere inside the attacker's Active window
+// `[attackActiveStart, attackActiveEnd)`. This is a plain "any overlap at
+// all" test, distinct from (and always run before) classifyDefenseCoverage
+// above, which then classifies exactly how well the winning move's Defense
+// Frames cover that same window (full/too-early/too-late). `defenderMoves`
+// is the target's own declared moves as `{ declaredMoveId, placementTic,
+// defenseFramePositions }`, already in queue order. Returns null (plain
+// Hit, no defending move at all) when nothing overlaps.
+export function selectDefenseMove({ defenderMoves, attackActiveStart, attackActiveEnd }) {
+  for (const move of defenderMoves) {
+    const defenseTics = move.defenseFramePositions.map((pos) => move.placementTic + pos);
+    const overlaps = defenseTics.some((t) => t >= attackActiveStart && t < attackActiveEnd);
+    if (overlaps) return { declaredMoveId: move.declaredMoveId, defenseTics };
+  }
+  return null;
+}
+
 // Sub-phase 5 — a self_recovery automation's +/- delta applied to a declared
 // move's own recovery_extension_tics, floored so the move's Recovery window
 // can never shrink past its Active window ending (extension can go negative,

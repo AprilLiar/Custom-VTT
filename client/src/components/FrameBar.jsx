@@ -1,4 +1,6 @@
-// Frame data strip: adjoining squares — Startup yellow, Active red,
+import { PHASE_BG, PHASE_LABEL } from '../lib/framePhaseColors.js';
+
+// Frame data strip: adjoining squares — Startup amber, Active rose,
 // Recovery blue. Renders exactly startup+active+recovery squares, in that
 // order, 0-indexed across the whole sequence. `defensePositions` (0-based
 // indices into that same sequence — see sanitizeDefensePositions in
@@ -8,10 +10,14 @@
 // `onToggle(index)` makes the bar itself the editor (Move Creator's frame
 // preview) — click any square to flip its Defense tag; omit it for the
 // read-only display used everywhere else.
+//
+// Colors come from framePhaseColors.js (Combat Automation overhaul §4.3) —
+// this file used to hard-code its own yellow/red/blue/green, one of four
+// near-duplicate copies of the same palette.
 const SEGMENTS = [
-  { key: 'startup', label: 'Startup', className: 'bg-yellow-500' },
-  { key: 'active', label: 'Active', className: 'bg-red-500' },
-  { key: 'recovery', label: 'Recovery', className: 'bg-blue-500' },
+  { key: 'startup', label: PHASE_LABEL.startup, className: PHASE_BG.startup },
+  { key: 'active', label: PHASE_LABEL.active, className: PHASE_BG.active },
+  { key: 'recovery', label: PHASE_LABEL.recovery, className: PHASE_BG.recovery },
 ];
 
 export default function FrameBar({
@@ -45,7 +51,7 @@ export default function FrameBar({
               type={onToggle ? 'button' : undefined}
               onClick={onToggle ? () => onToggle(squareIndex) : undefined}
               title={onToggle ? `${label} ${i + 1} — click to toggle Defense` : undefined}
-              className={`${size} ${isDefense ? 'bg-green-500' : className} border border-zinc-900 first:rounded-l-sm last:rounded-r-sm ${
+              className={`${size} ${isDefense ? PHASE_BG.defense : className} border border-zinc-900 first:rounded-l-sm last:rounded-r-sm ${
                 onToggle ? 'cursor-pointer hover:opacity-75' : ''
               }`}
             />

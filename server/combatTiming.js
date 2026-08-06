@@ -152,6 +152,26 @@ export function isTicIdle({ tic, footprints }) {
   return !footprints.some(({ placementTic, recoveryEndTic }) => tic >= placementTic && tic <= recoveryEndTic);
 }
 
+// Combat Automation overhaul, decision #7 — Interruption's "moment of
+// impact." Walks the attacker's own Active window Tic by Tic
+// (`[attackerActiveStart, attackerActiveEnd)`, same half-open convention as
+// every other footprint check in this module) and returns the FIRST Tic at
+// which the target is still inside their own declared move's Startup
+// window (placementTic <= tic < that move's own revealTic) — giving
+// combatDamage.js's computeInterruptBonus real variation (more elapsed
+// Active Tics before the target's Startup is caught = a bigger bonus)
+// instead of collapsing to a flat +1 every time. `targetMoves` is the
+// target's own declared moves as `{ declaredMoveId, placementTic,
+// revealTic }`. Returns null when the target's Startup never overlaps the
+// attack at all — no Interruption fires for this attack.
+export function findInterruptEligibleTic({ attackerActiveStart, attackerActiveEnd, targetMoves }) {
+  for (let tic = attackerActiveStart; tic < attackerActiveEnd; tic++) {
+    const startupMove = targetMoves.find((m) => m.placementTic <= tic && tic < m.revealTic);
+    if (startupMove) return { tic, declaredMoveId: startupMove.declaredMoveId };
+  }
+  return null;
+}
+
 // Lane snapshot chat cards (decided, Chat Log redesign): a declared move's
 // squares only ever appear on a snapshot when its footprint overlaps the
 // round's own displayed Tic window — the snapshot mirrors the live Tic

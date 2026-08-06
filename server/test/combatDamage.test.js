@@ -7,6 +7,9 @@ import {
   classifyDefenseCoverage,
   computeInterruptBonus,
   clampRecoveryExtension,
+  selectAutoDamageTarget,
+  selectUnevenCombatTarget,
+  selectDefenseMove,
 } from '../combatDamage.js';
 
 test('computeHitDamage: every 5 points is 1 Half-Damage step (0.5 damage)', () => {
@@ -167,4 +170,103 @@ test('clampRecoveryExtension: never lets the Recovery window shrink past 0 lengt
 
 test('clampRecoveryExtension: stacks on top of an existing extension (e.g. a prior Block-too-late)', () => {
   assert.equal(clampRecoveryExtension({ currentExtensionTics: 4, recoveryTics: 2, delta: -1 }), 3);
+});
+
+const die = (slot_name, status = 'active') => ({ slot_name, status });
+
+test('selectAutoDamageTarget: picks the first eligible Stat in the move\'s own listed order', () => {
+  const dice = [die('Skull'), die('Body')];
+  const result = selectAutoDamageTarget({ effectiveAttackTargets: ['Skull', 'Body'], dice });
+  assert.equal(result.slot_name, 'Skull');
+});
+
+test('selectAutoDamageTarget: skips an incapacitated die and falls through to the next allowed Stat', () => {
+  const dice = [die('Skull', 'incapacitated'), die('Body')];
+  const result = selectAutoDamageTarget({ effectiveAttackTargets: ['Skull', 'Body'], dice });
+  assert.equal(result.slot_name, 'Body');
+});
+
+test('selectAutoDamageTarget: Left before Right, matching CONCRETE_ATTACK_TARGET_NAMES canonical order', () => {
+  const dice = [die('Right Hand'), die('Left Hand')];
+  const result = selectAutoDamageTarget({
+    effectiveAttackTargets: ['Left Hand', 'Right Hand'],
+    dice,
+  });
+  assert.equal(result.slot_name, 'Left Hand');
+});
+
+test('selectAutoDamageTarget: null when every allowed Stat is incapacitated or missing', () => {
+  const dice = [die('Skull', 'incapacitated')];
+  assert.equal(selectAutoDamageTarget({ effectiveAttackTargets: ['Skull', 'Brain'], dice }), null);
+});
+
+const candidate = (characterId, slotStatuses) => ({
+  characterId,
+  dice: Object.entries(slotStatuses).map(([slot_name, status]) => ({ slot_name, status })),
+});
+
+test('selectUnevenCombatTarget: lowest characterId among eligible candidates wins', () => {
+  const candidates = [
+    candidate(5, { Skull: 'active' }),
+    candidate(2, { Skull: 'active' }),
+    candidate(9, { Skull: 'active' }),
+  ];
+  assert.equal(
+    selectUnevenCombatTarget({ candidates, allowedConcreteTargets: ['Skull'] }),
+    2
+  );
+});
+
+test('selectUnevenCombatTarget: a candidate with only an incapacitated die in the target set is skipped', () => {
+  const candidates = [
+    candidate(1, { Skull: 'incapacitated' }),
+    candidate(3, { Skull: 'active' }),
+  ];
+  assert.equal(
+    selectUnevenCombatTarget({ candidates, allowedConcreteTargets: ['Skull'] }),
+    3
+  );
+});
+
+test('selectUnevenCombatTarget: null when nobody on that side has an eligible die', () => {
+  const candidates = [candidate(1, { Skull: 'incapacitated' })];
+  assert.equal(selectUnevenCombatTarget({ candidates, allowedConcreteTargets: ['Skull'] }), null);
+});
+
+const declaredMove = (declaredMoveId, placementTic, defenseFramePositions) => ({
+  declaredMoveId,
+  placementTic,
+  defenseFramePositions,
+});
+
+test('selectDefenseMove: the first declared move whose Defense Frames touch the attack\'s Active window wins', () => {
+  const defenderMoves = [
+    declaredMove(1, 10, []), // no Defense Frames at all
+    declaredMove(2, 10, [3]), // offset 3 = Tic 13, inside [13, 15)
+  ];
+  const result = selectDefenseMove({
+    defenderMoves,
+    attackActiveStart: 13,
+    attackActiveEnd: 15,
+  });
+  assert.deepEqual(result, { declaredMoveId: 2, defenseTics: [13] });
+});
+
+test('selectDefenseMove: a Defense Frame entirely outside the Active window doesn\'t count as overlap', () => {
+  const defenderMoves = [declaredMove(1, 10, [0])]; // offset 0 = Tic 10, before the window
+  const result = selectDefenseMove({
+    defenderMoves,
+    attackActiveStart: 13,
+    attackActiveEnd: 15,
+  });
+  assert.equal(result, null);
+});
+
+test('selectDefenseMove: null (plain Hit) when no declared move overlaps at all', () => {
+  const result = selectDefenseMove({
+    defenderMoves: [declaredMove(1, 10, [])],
+    attackActiveStart: 13,
+    attackActiveEnd: 15,
+  });
+  assert.equal(result, null);
 });

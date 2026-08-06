@@ -12,6 +12,9 @@ import {
 import { portraitSrc } from '../lib/image.js';
 import { dieLabel, tintFor, POOLS } from '../lib/dice.js';
 import { buildFolderTree } from '../lib/folders.js';
+import { FRAME_PHASES, PHASE_BG, PHASE_LABEL, PHASE_ZONE, phaseBgAt } from '../lib/framePhaseColors.js';
+import RoundCutscene from './RoundCutscene.jsx';
+import DamageApplicationDialog from './DamageApplicationDialog.jsx';
 import { REWARD_LABELS, REWARD_COLORS } from '../lib/counterDisplay.js';
 import { setDraggingMove, onDraggingMoveChange } from '../lib/dragMoveState.js';
 import { useSocketRefresh } from '../lib/connection.js';
@@ -35,6 +38,7 @@ function ParticipantCard({
   participant,
   role,
   onRemove,
+  onAdHocDamage,
   onMoveSeat,
   onDragStart,
   navigate,
@@ -77,6 +81,23 @@ function ParticipantCard({
             className="flex h-8 w-8 items-center justify-center panel-cut-sm bg-zinc-900/90 text-xs text-zinc-400 hover:bg-zinc-800 hover:text-brand-300"
           >
             ⇄
+          </button>
+          {/* Combat Automation overhaul §5: in-combat damage is applied by
+              the resolution engine now, so DamageApplicationDialog lost its
+              old chat-roll-card entry point. It's still the right tool for
+              genuinely ad-hoc GM damage outside the automated flow
+              (environmental damage, a house rule) — this is that entry
+              point, opening it in its unrestricted mode (no attacking
+              declared move, so no Attack Target restriction applies). */}
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onAdHocDamage(character.id);
+            }}
+            title="Apply ad-hoc damage (outside the automated flow)"
+            className="flex h-8 w-8 items-center justify-center panel-cut-sm bg-zinc-900/90 text-xs text-zinc-500 hover:bg-red-900/40 hover:text-red-300"
+          >
+            ⚕
           </button>
           <button
             onClick={(e) => {
@@ -359,13 +380,6 @@ function SeatPicker({ characterId, characterName, pairIndices, participants, onC
 // Startup/Active/Recovery length dictates, without ever revealing which
 // square any *other* declared move actually landed on (that stays hidden
 // until reveal).
-const DECLARED_PHASE_COLOR = {
-  startup: 'bg-yellow-500',
-  active: 'bg-red-500',
-  recovery: 'bg-blue-500',
-  defense: 'bg-green-500',
-};
-
 // Which phase (if any) each already-declared move occupies at this absolute
 // Tic — used for the small footprint-preview squares below, shown only to
 // whoever currently has the declare floor, and only for **their own**
@@ -373,17 +387,69 @@ const DECLARED_PHASE_COLOR = {
 // declaredMoves filtering at the call site) — never another character's,
 // declared or not. This is purely a self-service planning aid (don't
 // double-book your own Tics), not a window into the opponent's timing.
+//
+// phaseBgAt (framePhaseColors.js, Combat Automation overhaul §4.3) is the
+// shared client-side mirror of the server's phaseAtTic; this file used to
+// hand-roll both the phase walk and its own copy of the palette.
 function declaredPhasesAt(absoluteTic, declaredMoves) {
-  const colors = [];
-  for (const dm of declaredMoves) {
-    if (absoluteTic < dm.placementTic || absoluteTic >= dm.recoveryEndTic) continue;
-    const offset = absoluteTic - dm.placementTic;
-    if (dm.defenseFramePositions?.includes(offset)) colors.push(DECLARED_PHASE_COLOR.defense);
-    else if (absoluteTic < dm.revealTic) colors.push(DECLARED_PHASE_COLOR.startup);
-    else if (absoluteTic < dm.activeEndTic) colors.push(DECLARED_PHASE_COLOR.active);
-    else colors.push(DECLARED_PHASE_COLOR.recovery);
-  }
-  return colors;
+  return declaredMoves.map((dm) => phaseBgAt(dm, absoluteTic)).filter(Boolean);
+}
+
+// Combat Automation overhaul §4.1 — the GM's "switch between fights"
+// control. Each pair runs its own independent round clock now (decision
+// #12: fight A can be on round 5 while fight B is still on round 3), so
+// there has to be a way to say which one you're looking at. GM-only: a
+// Player only ever has one seat, and only ever watches their own pair
+// live.
+//
+// Only the selected tab mounts a live RoundCutscene — the others are a
+// cheap status badge read straight off the pair summary, rather than N
+// simultaneous GSAP timelines animating fights nobody is watching.
+function PairTabStrip({ pairIndices, pairs, participants, characters, activeIndex, onSelect }) {
+  if (pairIndices.length < 2) return null;
+  const pairsByIdx = new Map((pairs ?? []).map((p) => [p.pairIndex, p]));
+
+  const statusOf = (pair) => {
+    if (!pair?.phase) return { label: 'Not started', tone: 'text-zinc-600' };
+    if (pair.pendingDodge) return { label: 'Dodge?', tone: 'text-amber-300' };
+    if (pair.pendingConflict) return { label: 'Conflict?', tone: 'text-amber-300' };
+    if (pair.phase === 'resolving') return { label: 'Resolving…', tone: 'text-brand-300' };
+    return { label: 'Declaring', tone: 'text-zinc-400' };
+  };
+
+  return (
+    <div className="flex max-w-full flex-wrap items-center justify-center gap-1.5">
+      {pairIndices.map((idx) => {
+        const pair = pairsByIdx.get(idx);
+        const names = (participants ?? [])
+          .filter((p) => p.pair_index === idx)
+          .map((p) => characters[p.character_id]?.character.name)
+          .filter(Boolean);
+        const status = statusOf(pair);
+        const active = activeIndex === idx;
+        return (
+          <button
+            key={idx}
+            type="button"
+            onClick={() => onSelect(idx)}
+            title={`${names.join(' vs ') || `Pair ${idx + 1}`} — round ${pair?.roundNumber ?? '?'}, ${status.label}`}
+            className={`panel-cut-sm border px-2 py-1 text-left font-display text-[11px] leading-tight ${
+              active
+                ? 'border-brand-500 bg-brand-950/50 text-zinc-100'
+                : 'border-zinc-700 bg-zinc-900/60 text-zinc-400 hover:bg-zinc-800'
+            }`}
+          >
+            <span className="block truncate uppercase tracking-wide">
+              {names.length ? names.join(' vs ') : `Pair ${idx + 1}`}
+            </span>
+            <span className={`block ${status.tone}`}>
+              R{pair?.roundNumber ?? '?'} · {status.label}
+            </span>
+          </button>
+        );
+      })}
+    </div>
+  );
 }
 
 // Exported so CombatHeaderBar can render the exact same square visuals in
@@ -411,12 +477,7 @@ export function TicSquare({
   useEffect(() => {
     if (isCurrent) ref.current?.scrollIntoView({ inline: 'center', block: 'nearest', behavior: 'smooth' });
   }, [isCurrent]);
-  const zoneStyle = {
-    startup: 'border-amber-300 bg-amber-500/80 shadow-[0_0_10px_rgba(251,191,36,0.45)]',
-    active: 'border-rose-300 bg-rose-500/80 shadow-[0_0_10px_rgba(244,63,94,0.45)]',
-    recovery: 'border-blue-300 bg-blue-500/80 shadow-[0_0_10px_rgba(59,130,246,0.45)]',
-    blocked: 'border-zinc-600 bg-zinc-800 text-zinc-600',
-  }[footprintZone];
+  const zoneStyle = PHASE_ZONE[footprintZone];
   // Capped at 2 badges so they never crowd a 44px square — the tooltip
   // still lists everyone if there are more.
   const shownNames = (overflowNames ?? []).slice(0, 2);
@@ -485,6 +546,7 @@ export function TicSquare({
 // caption: the header has no move source to drag from (no roster/declare
 // picker lives there), so it always passes a fixed "Tic Counter" instead.
 export function TicCounterCentral({
+  pairIndex, // Combat Automation overhaul: which pair's own independent round/phase/Tic clock this instance is showing.
   phase,
   currentTic,
   roundStartTic,
@@ -504,17 +566,12 @@ export function TicCounterCentral({
     absoluteTic: roundStartTic + i,
     relative: i + 1,
   }));
-  // Tic navigation redesign (decided): the GM steps the Tic Countdown by
-  // left-clicking the square immediately before/after the current one,
-  // instead of the header's old ◀/▶ buttons (removed — see
-  // CombatHeaderBar.jsx). Only those two immediate neighbors are ever
-  // clickable — combat:tic_forward/backward always step by exactly one Tic
-  // server-side, there's no "jump to Tic N". At the round's last Tic there's
-  // no next square to click, so a small "Next Round" button takes its place
-  // in the row instead (see below).
-  const currentIndex = squares.findIndex((sq) => sq.absoluteTic === currentTic);
-  const canStepTic = role === 'gm' && phase === 'tic_countdown';
-  const atLastTic = currentIndex === squares.length - 1;
+  // Combat Automation overhaul §5: click-to-step and the in-strip "Next
+  // Round" button are gone. A round now resolves itself the moment both
+  // sides finish declaring, and its playback is RoundCutscene's job — the
+  // strip is a Declaration-phase drag/drop target and a read-only display,
+  // never a control that moves the clock. Nothing may advance a pair's Tic
+  // but the engine.
   const zoneFor = (absoluteTic) => {
     if (!draggingMove) return null;
     const minTic = draggingMove.minPlacementTic ?? roundStartTic;
@@ -547,12 +604,8 @@ export function TicCounterCentral({
         className="flex max-w-full flex-nowrap items-center gap-1.5 overflow-x-auto overscroll-x-contain py-1 [mask-image:linear-gradient(to_right,transparent,black_12px,black_calc(100%-12px),transparent)]"
       >
         {squares.map((sq, i) => {
-          const isNextTic = canStepTic && i === currentIndex + 1;
-          const isPrevTic = canStepTic && i === currentIndex - 1;
           // A pending tap-to-declare placement (see onTapPlace) makes every
-          // square a valid destination, not just the GM's step neighbors —
-          // takes priority since the two modes never overlap (a Player
-          // placing their own move isn't also the GM stepping Tics).
+          // square a valid destination.
           const tapPlacing = Boolean(onTapPlace && draggingMove && canDrop);
           return (
             <TicSquare
@@ -573,53 +626,21 @@ export function TicCounterCentral({
                   : undefined
               }
               onDrop={canDrop ? onDrop(sq.absoluteTic) : undefined}
-              onClick={
-                tapPlacing
-                  ? onTapPlace(sq.absoluteTic)
-                  : isNextTic
-                    ? () => socket.emit('combat:tic_forward', {})
-                    : isPrevTic
-                      ? () => socket.emit('combat:tic_backward', {})
-                      : undefined
-              }
-              clickTitle={
-                tapPlacing
-                  ? `Place ${draggingMove.moveName} here`
-                  : isNextTic
-                    ? `Click to advance to Tic ${sq.relative}`
-                    : isPrevTic
-                      ? `Click to go back to Tic ${sq.relative}`
-                      : undefined
-              }
+              onClick={tapPlacing ? onTapPlace(sq.absoluteTic) : undefined}
+              clickTitle={tapPlacing ? `Place ${draggingMove.moveName} here` : undefined}
             />
           );
         })}
-        {canStepTic && atLastTic && (
-          <button
-            onClick={() => socket.emit('combat:next_round', {})}
-            title="No more Tics this round — start the next one"
-            className="panel-cut-sm h-11 shrink-0 bg-emerald-700 px-2 text-[10px] font-semibold uppercase leading-tight hover:bg-emerald-600"
-          >
-            Next
-            <br />
-            Round
-          </button>
-        )}
       </div>
       {showDeclaredPreview && (
         <div className="flex flex-wrap items-center justify-center gap-2 text-[9px] text-zinc-600">
-          <span className="flex items-center gap-1">
-            <span className="h-1.5 w-1.5 bg-yellow-500" /> Startup
-          </span>
-          <span className="flex items-center gap-1">
-            <span className="h-1.5 w-1.5 bg-red-500" /> Active
-          </span>
-          <span className="flex items-center gap-1">
-            <span className="h-1.5 w-1.5 bg-blue-500" /> Recovery
-          </span>
-          <span className="flex items-center gap-1">
-            <span className="h-1.5 w-1.5 bg-green-500" /> Defense
-          </span>
+          {/* Driven off the shared palette so the swatches can't drift from
+              the squares they describe — they had already drifted once. */}
+          {FRAME_PHASES.map((phase) => (
+            <span key={phase} className="flex items-center gap-1">
+              <span className={`h-1.5 w-1.5 ${PHASE_BG[phase]}`} /> {PHASE_LABEL[phase]}
+            </span>
+          ))}
           <span>— your declared moves this round</span>
         </div>
       )}
@@ -746,14 +767,14 @@ const STATUS_META = {
 };
 
 function characterDeclareStatus(participant, participants, pairs) {
-  const pair = pairs.find((p) => p.pair_index === participant.pair_index);
+  const pair = pairs.find((p) => p.pairIndex === participant.pair_index);
   if (participant.declared_this_round) {
     const sideFullyDeclared = participants
       .filter((p) => p.pair_index === participant.pair_index && p.side === participant.side)
       .every((p) => p.declared_this_round);
     return sideFullyDeclared ? 'waiting' : 'declared';
   }
-  return pair && pair.declaring_side === participant.side ? 'declaring' : 'not_yet';
+  return pair && pair.declaringSide === participant.side ? 'declaring' : 'not_yet';
 }
 
 // A declared move stays visible across a round boundary as long as its own
@@ -792,9 +813,6 @@ function DeclarationLanes({
   pairs,
   tellById,
   declaredMoves,
-  currentTic,
-  roundNumber,
-  phase,
   role,
   characterId,
   activeLaneIndex,
@@ -806,27 +824,28 @@ function DeclarationLanes({
     if (!entry) return false;
     return role === 'player' ? charId === characterId : entry.character.character_type === 'npc';
   };
-  const laneMoveEntries = (charId) => {
-    const isOwner = isOwnedByViewer(charId);
-    return declaredMoves
-      .filter((dm) => dm.characterId === charId)
-      .filter((dm) => isDeclaredMoveVisibleInLane(dm, currentTic, roundNumber, isOwner))
-      .sort((a, b) => a.placementTic - b.placementTic)
-      .map((dm) => ({ dm, move: characters[charId]?.moves?.find((m) => m.id === dm.moveId) }));
-  };
-  const sideCell = (sideParticipants) => (
+  // Combat Automation overhaul: each row is its own pair with its own
+  // independent currentTic/roundNumber/phase now — laneMoveEntries/sideCell
+  // used to close over one shared value for the whole table; now built
+  // fresh per row, inside the pairIndices loop, from that row's own pair.
+  const sideCell = (sideParticipants, pairCurrentTic, pairRoundNumber, pairPhase) => (
     <div className="flex min-w-0 flex-1 flex-wrap items-start gap-2 p-1.5">
       {sideParticipants.length === 0 && <span className="text-[10px] text-zinc-700">—</span>}
       {sideParticipants.map((p) => {
         const character = characters[p.character_id]?.character;
         if (!character) return null;
-        const entries = laneMoveEntries(p.character_id);
+        const isOwner = isOwnedByViewer(p.character_id);
+        const entries = declaredMoves
+          .filter((dm) => dm.characterId === p.character_id)
+          .filter((dm) => isDeclaredMoveVisibleInLane(dm, pairCurrentTic, pairRoundNumber, isOwner))
+          .sort((a, b) => a.placementTic - b.placementTic)
+          .map((dm) => ({ dm, move: characters[p.character_id]?.moves?.find((m) => m.id === dm.moveId) }));
         const status = characterDeclareStatus(p, participants, pairs);
         return (
           <div key={p.character_id} className="flex flex-col items-center gap-0.5">
             <span
               className={`max-w-20 truncate text-[9px] ${
-                phase === 'declaration' ? STATUS_META[status].className : 'text-zinc-400'
+                pairPhase === 'declaration' ? STATUS_META[status].className : 'text-zinc-400'
               }`}
               title={character.name}
             >
@@ -853,6 +872,7 @@ function DeclarationLanes({
         const rightParticipants = participants.filter((p) => p.side === 'right' && p.pair_index === pairIndex);
         const clickable = role === 'gm';
         const active = activeLaneIndex === pairIndex;
+        const pair = pairs.find((p) => p.pairIndex === pairIndex);
         return (
           <div
             key={pairIndex}
@@ -861,9 +881,9 @@ function DeclarationLanes({
               clickable ? 'cursor-pointer hover:border-brand-500' : ''
             } ${active ? 'border-brand-500 bg-brand-950/30 ring-1 ring-brand-600' : 'border-zinc-800 bg-zinc-900/60'}`}
           >
-            {sideCell(leftParticipants)}
+            {sideCell(leftParticipants, pair?.currentTic, pair?.roundNumber, pair?.phase)}
             <div className="h-px bg-zinc-700/50 sm:h-auto sm:w-px sm:shrink-0" />
-            {sideCell(rightParticipants)}
+            {sideCell(rightParticipants, pair?.currentTic, pair?.roundNumber, pair?.phase)}
           </div>
         );
       })}
@@ -1044,6 +1064,9 @@ export default function CombatArena() {
   // drawer) and "move an already-seated one" (ParticipantCard's ⇄ action).
   const [mobileRosterOpen, setMobileRosterOpen] = useState(false);
   const [seatTarget, setSeatTarget] = useState(null);
+  // Combat Automation overhaul §5: which character (if any) the GM is
+  // applying ad-hoc, outside-the-automated-flow damage to.
+  const [adHocDamageCharId, setAdHocDamageCharId] = useState(null);
   // Transient "linger then slam" impact effects for a successful drop —
   // declaring a move onto the Tic Counter, or seating a character — see
   // DropSlamGhost.jsx. Keyed so more than one can be in flight at once.
@@ -1186,7 +1209,12 @@ export default function CombatArena() {
     return <p className="text-zinc-500">Loading…</p>;
   }
 
-  const { unevenCombatEnabled, participants, characters, counters, pairs, phase } = combat;
+  const { unevenCombatEnabled, participants, characters, counters, pairs } = combat;
+  // Combat Automation overhaul: there's no single arena-wide `phase`
+  // anymore — every pair has its own independent round/phase/Tic clock
+  // (see combat_pairs in db.js). This map is the shared lookup every
+  // per-pair-scoped computation below uses instead of one global value.
+  const pairsByIndex = new Map((pairs ?? []).map((p) => [p.pairIndex, p]));
   const tellById = new Map(tells.map((t) => [t.id, t]));
   // combat:updated/GET /api/combat already come back tailored to this
   // client's own identity (see server's mapDeclaredMovesForViewer) — a
@@ -1218,15 +1246,19 @@ export default function CombatArena() {
 
   const pairIndices = [...new Set(participants.map((p) => p.pair_index))].sort((a, b) => a - b);
   const rows = [...pairIndices, pairIndices.length ? pairIndices[pairIndices.length - 1] + 1 : 0];
+  // "Start Combat" shows whenever at least one currently-seated pairIndex
+  // has never had a combat_pairs row seeded for it — the per-pair
+  // equivalent of the old arena-wide "phase === null".
+  const hasUnstartedPair = pairIndices.some((idx) => !pairsByIndex.has(idx));
 
   // Whether THIS character currently has the floor: their own pair's
-  // declaring_side matches their own side, and they haven't already pressed
+  // declaringSide matches their own side, and they haven't already pressed
   // Done Declaring this round (Phase 9 combat redesign — see combat_pairs).
   const isCharacterTurn = (charId) => {
     const p = participants.find((pp) => pp.character_id === charId);
     if (!p || p.declared_this_round) return false;
-    const pair = (pairs ?? []).find((pr) => pr.pair_index === p.pair_index);
-    return Boolean(pair && pair.declaring_side === p.side);
+    const pair = pairsByIndex.get(p.pair_index);
+    return Boolean(pair && pair.declaringSide === p.side);
   };
 
   const onDrop = (e, side, pairIndex) => {
@@ -1401,29 +1433,6 @@ export default function CombatArena() {
     setPendingDeclare(null);
   };
 
-  // ---------- Declared moves: current-round scoping + cross-round overflow ----------
-
-  const currentRoundMoves = declaredMoves.filter((dm) => dm.roundNumber === combat.roundNumber);
-  // Tics at the start of THIS round already occupied by a previous round's
-  // overflowing Recovery — general board-state awareness, broadcast to
-  // everyone regardless of role/turn. Attributed by character name: which
-  // character still has something recovering here isn't secret (their Tell
-  // card is already visible in the Declaration Lanes the whole time), only
-  // the move's own identity/details are — same distinction the rest of
-  // Combat Timing already draws. Only ever built from prior rounds, so it
-  // can never leak this round's own still-secret placements.
-  const overflowTics = new Map(); // absoluteTic -> character names occupying it
-  for (const dm of declaredMoves) {
-    if (dm.roundNumber >= combat.roundNumber) continue;
-    const name = characters[dm.characterId]?.character.name;
-    if (!name) continue;
-    for (let t = combat.roundStartTic; t < dm.recoveryEndTic; t++) {
-      const names = overflowTics.get(t) ?? [];
-      if (!names.includes(name)) names.push(name);
-      overflowTics.set(t, names);
-    }
-  }
-
   // ---------- Who currently has the declare-picker floor ----------
 
   // A Player always declares for their own single character, unaffected by
@@ -1432,23 +1441,71 @@ export default function CombatArena() {
   // gets its own panel (plural: Uneven Combat can have more than one), never
   // a Player-controlled character sharing that side, matching the same
   // GM-can-only-drive-NPCs boundary the old NPC-only status table enforced.
+  // isCharacterTurn/lanePair.declaringSide already imply "that pair is in
+  // its own Declaration phase" (declaringSide is only ever non-null then),
+  // so no separate top-level phase gate is needed here anymore.
   let activeDeclareEntries = [];
-  if (phase === 'declaration') {
-    if (role === 'player' && isCharacterTurn(characterId)) {
-      const entry = characters[characterId];
-      if (entry) activeDeclareEntries = [entry];
-    } else if (role === 'gm' && activeLaneIndex != null) {
-      const lanePair = (pairs ?? []).find((pr) => pr.pair_index === activeLaneIndex);
-      if (lanePair && lanePair.declaring_side) {
-        activeDeclareEntries = participants
-          .filter(
-            (p) =>
-              p.pair_index === activeLaneIndex &&
-              p.side === lanePair.declaring_side &&
-              !p.declared_this_round
-          )
-          .map((p) => characters[p.character_id])
-          .filter((entry) => entry && entry.character.character_type === 'npc');
+  if (role === 'player' && isCharacterTurn(characterId)) {
+    const entry = characters[characterId];
+    if (entry) activeDeclareEntries = [entry];
+  } else if (role === 'gm' && activeLaneIndex != null) {
+    const lanePair = pairsByIndex.get(activeLaneIndex);
+    if (lanePair && lanePair.declaringSide) {
+      activeDeclareEntries = participants
+        .filter(
+          (p) =>
+            p.pair_index === activeLaneIndex &&
+            p.side === lanePair.declaringSide &&
+            !p.declared_this_round
+        )
+        .map((p) => characters[p.character_id])
+        .filter((entry) => entry && entry.character.character_type === 'npc');
+    }
+  }
+
+  // Combat Automation overhaul: the page's own single Tic Counter/
+  // Declaration Lanes panel below can only ever show ONE pair's own
+  // independent clock at a time — a Player sees their own seat's pair; the
+  // GM sees whichever pair they've selected via a lane click
+  // (activeLaneIndex), defaulting to the first pair that's actually been
+  // round-seeded. A full "watch every fight" multi-pair view is Phase E's
+  // job (see vttprojectplan.md's Combat Automation overhaul section).
+  const myPairIndex = role === 'player'
+    ? participants.find((p) => p.character_id === characterId)?.pair_index
+    : null;
+  const displayPairIndex =
+    role === 'player' ? myPairIndex : activeLaneIndex ?? pairIndices.find((idx) => pairsByIndex.has(idx)) ?? null;
+  const displayPair = displayPairIndex != null ? pairsByIndex.get(displayPairIndex) : null;
+
+  // ---------- Declared moves: current-round scoping + cross-round overflow ----------
+  // Both scoped to displayPair now (that pair's own roundNumber/
+  // roundStartTic), not one arena-wide clock — see displayPair above.
+
+  const currentRoundMoves = displayPair
+    ? declaredMoves.filter((dm) => dm.roundNumber === displayPair.roundNumber)
+    : [];
+  // Tics at the start of THIS pair's round already occupied by a previous
+  // round's overflowing Recovery — general board-state awareness, broadcast
+  // to everyone regardless of role/turn. Attributed by character name:
+  // which character still has something recovering here isn't secret
+  // (their Tell card is already visible in the Declaration Lanes the whole
+  // time), only the move's own identity/details are — same distinction the
+  // rest of Combat Timing already draws. Only ever built from prior rounds,
+  // so it can never leak this round's own still-secret placements. Scoped
+  // to just displayPair's own seated characters — a different pair's
+  // carried-over move has nothing to do with the pair being shown here.
+  const overflowTics = new Map(); // absoluteTic -> character names occupying it
+  if (displayPair) {
+    const pairIndexByChar = new Map(participants.map((p) => [p.character_id, p.pair_index]));
+    for (const dm of declaredMoves) {
+      if (pairIndexByChar.get(dm.characterId) !== displayPairIndex) continue;
+      if (dm.roundNumber >= displayPair.roundNumber) continue;
+      const name = characters[dm.characterId]?.character.name;
+      if (!name) continue;
+      for (let t = displayPair.roundStartTic; t < dm.recoveryEndTic; t++) {
+        const names = overflowTics.get(t) ?? [];
+        if (!names.includes(name)) names.push(name);
+        overflowTics.set(t, names);
       }
     }
   }
@@ -1486,7 +1543,7 @@ export default function CombatArena() {
               </span>
             )
           )}
-          {role === 'gm' && phase == null && participants.length > 0 && (
+          {role === 'gm' && hasUnstartedPair && participants.length > 0 && (
             <button
               onClick={() => socket.emit('combat:next_round', {})}
               className="panel-cut-sm bg-emerald-700 px-3 py-1 text-sm font-semibold hover:bg-emerald-600"
@@ -1508,7 +1565,7 @@ export default function CombatArena() {
         </div>
       </div>
 
-      {phase != null && (
+      {(pairs ?? []).length > 0 && (
         <div className="relative mb-4 flex flex-col items-center gap-3">
           {toast && (
             <div className="absolute -top-2 left-1/2 z-50 -translate-x-1/2 -translate-y-full panel-cut-sm border border-red-700 bg-red-950/95 px-3 py-1.5 text-sm font-semibold text-red-200 shadow-lg">
@@ -1563,10 +1620,38 @@ export default function CombatArena() {
             </div>
           )}
 
+          {role === 'gm' && (
+            <PairTabStrip
+              pairIndices={pairIndices}
+              pairs={pairs ?? []}
+              participants={participants}
+              characters={characters}
+              activeIndex={displayPairIndex}
+              onSelect={setActiveLaneIndex}
+            />
+          )}
+
+          {/* Combat Automation overhaul §4.1: once a pair drops into
+              Resolving, its round is already computed server-side and the
+              strip stops being a live/steppable control — the cutscene
+              takes over and plays the round's event log back. Every other
+              pair keeps rendering its own state independently below. */}
+          {displayPair?.phase === 'resolving' ? (
+            <RoundCutscene
+              mode="live"
+              pairIndex={displayPairIndex}
+              roundNumber={displayPair?.roundNumber}
+              roundStartTic={displayPair?.roundStartTic}
+              roundLength={combat.roundLength}
+              pendingDodge={displayPair?.pendingDodge}
+              pendingConflict={displayPair?.pendingConflict}
+            />
+          ) : (
           <TicCounterCentral
-            phase={phase}
-            currentTic={combat.currentTic}
-            roundStartTic={combat.roundStartTic}
+            pairIndex={displayPairIndex}
+            phase={displayPair?.phase}
+            currentTic={displayPair?.currentTic}
+            roundStartTic={displayPair?.roundStartTic}
             roundLength={combat.roundLength}
             draggingMove={draggingMove}
             hoverTic={hoverTic}
@@ -1584,6 +1669,7 @@ export default function CombatArena() {
             overflowTics={overflowTics}
             role={role}
           />
+          )}
 
           <DeclarationLanes
             pairIndices={pairIndices}
@@ -1592,9 +1678,6 @@ export default function CombatArena() {
             pairs={pairs ?? []}
             tellById={tellById}
             declaredMoves={declaredMoves}
-            currentTic={combat.currentTic}
-            roundNumber={combat.roundNumber}
-            phase={phase}
             role={role}
             characterId={characterId}
             activeLaneIndex={activeLaneIndex}
@@ -1603,13 +1686,13 @@ export default function CombatArena() {
         </div>
       )}
 
-      {phase === 'declaration' && (
+      {displayPair?.phase === 'declaration' && (
         <div className="mb-4 flex flex-wrap items-start justify-center gap-3">
           {activeDeclareEntries.map((entry) => (
             <ActiveDeclarePanel
               key={entry.character.id}
               entry={entry}
-              roundStartTic={combat.roundStartTic}
+              roundStartTic={displayPair?.roundStartTic}
               declaredMoves={declaredMoves}
             />
           ))}
@@ -1664,13 +1747,11 @@ export default function CombatArena() {
                           participant={p}
                           role={role}
                           onRemove={remove}
+                          onAdHocDamage={setAdHocDamageCharId}
                           onMoveSeat={(id, name) => setSeatTarget({ characterId: id, characterName: name })}
                           navigate={navigate}
                           declaredMoves={declaredMoves}
-                          sideStillDeclaring={
-                            phase === 'declaration' &&
-                            (pairs ?? []).find((pr) => pr.pair_index === p.pair_index)?.declaring_side === p.side
-                          }
+                          sideStillDeclaring={pairsByIndex.get(p.pair_index)?.declaringSide === p.side}
                           onDragStart={(e) => e.dataTransfer.setData('text/character-id', String(p.character_id))}
                         />
                       )
@@ -1702,13 +1783,11 @@ export default function CombatArena() {
                           participant={p}
                           role={role}
                           onRemove={remove}
+                          onAdHocDamage={setAdHocDamageCharId}
                           onMoveSeat={(id, name) => setSeatTarget({ characterId: id, characterName: name })}
                           navigate={navigate}
                           declaredMoves={declaredMoves}
-                          sideStillDeclaring={
-                            phase === 'declaration' &&
-                            (pairs ?? []).find((pr) => pr.pair_index === p.pair_index)?.declaring_side === p.side
-                          }
+                          sideStillDeclaring={pairsByIndex.get(p.pair_index)?.declaringSide === p.side}
                           onDragStart={(e) => e.dataTransfer.setData('text/character-id', String(p.character_id))}
                         />
                       )
@@ -1834,6 +1913,14 @@ export default function CombatArena() {
         </DialogShell>
       )}
 
+      {adHocDamageCharId != null && (
+        <DamageApplicationDialog
+          targetCandidateIds={[adHocDamageCharId]}
+          initialHalfDamageSteps={0}
+          characters={new Map(Object.values(characters).map((e) => [e.character.id, e.character]))}
+          onClose={() => setAdHocDamageCharId(null)}
+        />
+      )}
       {seatTarget && (
         <SeatPicker
           characterId={seatTarget.characterId}

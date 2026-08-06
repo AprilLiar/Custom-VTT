@@ -37,6 +37,19 @@ export function sanitizeDefensePositions(list, totalTics) {
   return [...new Set(clean)].sort((a, b) => a - b);
 }
 
+// Combat Automation overhaul: which of the two defensive mechanics a
+// Defensive move's Defense Frames represent. Block resolves fully
+// automatically from dice math alone; Dodge is the one remaining
+// human-in-the-loop call (the GM's Successful/Failed prompt) — see
+// vttprojectplan.md. Required whenever a move is Defensive with at least one
+// Defense Frame; meaningless (and always stored as null) otherwise.
+export const DEFENSE_KINDS = ['block', 'dodge'];
+
+export function sanitizeDefenseKind(value, isDefensive, hasDefenseFrames) {
+  if (!isDefensive || !hasDefenseFrames) return null;
+  return DEFENSE_KINDS.includes(value) ? value : 'block';
+}
+
 // Automation types on an interaction (the only automated effects for now):
 //   self_recovery:     add/remove Recovery on yourself (amount may be negative)
 //   opponent_recovery: add Recovery to the opponent (positive)

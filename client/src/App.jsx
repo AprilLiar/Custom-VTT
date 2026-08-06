@@ -87,7 +87,7 @@ function Shell() {
       return;
     }
     const bump = () => setUnreadChat((n) => n + 1);
-    const events = ['roll:result', 'chat:message', 'chat:move_reveal', 'chat:lane_snapshot'];
+    const events = ['roll:result', 'chat:message', 'chat:round_summary'];
     for (const ev of events) socket.on(ev, bump);
     return () => {
       for (const ev of events) socket.off(ev, bump);
@@ -115,7 +115,7 @@ function Shell() {
           title="Combat Arena"
           className="font-display shrink-0 text-lg font-bold uppercase tracking-wide hover:text-brand-400 md:text-xl"
         >
-          Custom VTT
+          Dogfight
         </Link>
         <span
           className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-semibold uppercase ${

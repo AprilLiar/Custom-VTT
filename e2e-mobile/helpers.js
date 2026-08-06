@@ -22,7 +22,7 @@ export async function goToNavLabel(page, label) {
   await page.locator(scope, { hasText: label }).first().click();
 }
 
-// The "Custom VTT" logo (App.jsx) always links to the Arena and is never
+// The "Dogfight" logo (App.jsx) always links to the Arena and is never
 // `hidden` at any breakpoint — unlike Characters/Compendium, Arena has no
 // separate text link in the desktop header, so this is the one reliable way
 // to get there regardless of viewport.
