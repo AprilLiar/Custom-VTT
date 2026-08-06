@@ -187,7 +187,11 @@ function Shell() {
 
       <CombatHeaderBar />
 
-      <div className="flex flex-1 overflow-hidden">
+      {/* `relative` so the mobile chat overlay can be absolutely positioned
+          against this row rather than the viewport — that keeps it below the
+          header and, crucially, ABOVE the bottom nav, which now stays
+          visible while chat is open (see BottomNav below). */}
+      <div className="relative flex flex-1 overflow-hidden">
         <main className="min-w-0 flex-1 overflow-y-auto p-2 md:p-4">
           <Routes>
             <Route
@@ -204,14 +208,16 @@ function Shell() {
         <ChatPanel open={chatOpen} onClose={() => setChatOpen(false)} />
       </div>
 
-      {!chatOpen && (
-        <BottomNav
-          homePath={homePath}
-          chatOpen={chatOpen}
-          onToggleChat={() => setChatOpen(true)}
-          unreadChat={unreadChat}
-        />
-      )}
+      {/* Always mounted on mobile, including while chat is open: the Chat
+          item is a toggle, so tapping it again is the way back out. It used
+          to unmount whenever chat opened, which left the ✕ in the opposite
+          corner as the only exit. */}
+      <BottomNav
+        homePath={homePath}
+        chatOpen={chatOpen}
+        onToggleChat={() => setChatOpen((v) => !v)}
+        unreadChat={unreadChat}
+      />
     </div>
   );
 }

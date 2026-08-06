@@ -422,6 +422,15 @@ export async function initDb() {
       UNIQUE(move_id, slot_name)
     )
   `);
+  // How many of that slot the Roll takes. Only ever >1 for the two ambiguous
+  // appendage slots, where 2 means "both sides at once" — a Straight Block
+  // guards with both hands (see maxRollSlotCount in moveLogic.js). Stored as
+  // a count on the existing one-row-per-slot shape rather than by relaxing
+  // the UNIQUE above, because SQLite can't drop a constraint without
+  // rebuilding the table, and every reader already groups by slot anyway.
+  // Defaulting to 1 makes every pre-existing row mean exactly what it meant
+  // before, so no data migration is needed.
+  await ensureColumn('move_roll_slots', 'count', 'INTEGER NOT NULL DEFAULT 1');
 
   // Combat Automation (Phase 9, planned — see vttprojectplan.md): an
   // additional pool of Stat slots a Defensive move rolls *only* during
@@ -441,6 +450,10 @@ export async function initDb() {
       UNIQUE(move_id, slot_name)
     )
   `);
+  // Same count column, same meaning, for the same reason as move_roll_slots'
+  // above — this table mirrors that one exactly and its readers expand it
+  // through the same helper.
+  await ensureColumn('move_defensive_roll_slots', 'count', 'INTEGER NOT NULL DEFAULT 1');
 
   // World-level Tag list, GM-managed like Tells (Phase 4 pulls in
   // per-character tag overrides; the base tables land now for Move tagging)
@@ -864,5 +877,17 @@ async function seedRuleset() {
         );
       }
     }
+  } else {
+    // The seed above only ever runs against an empty table, so a database
+    // created before COUNTER_BONUS changed still carries the old value —
+    // including the deployed one. Re-point every *unmodified* row at the
+    // current constant.
+    //
+    // Deliberately scoped to rows that still hold a previously-shipped
+    // default (2, the only value this constant has ever had besides the
+    // current one), not a blanket UPDATE: `bonus` is per-row precisely so a
+    // table can hand-tune an individual matchup, and a migration must not
+    // silently flatten that back to the default.
+    await run('UPDATE attribute_counters SET bonus = ? WHERE bonus = 2', [COUNTER_BONUS]);
   }
 }

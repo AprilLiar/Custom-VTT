@@ -566,7 +566,7 @@ export default function ChatPanel({ open, onClose }) {
   };
 
   return (
-    <aside className="fixed inset-0 z-40 flex flex-col bg-zinc-900 md:static md:z-auto md:w-80 md:border-l md:border-zinc-800">
+    <aside className="absolute inset-0 z-40 flex flex-col bg-zinc-900 md:static md:z-auto md:w-80 md:border-l md:border-zinc-800">
       <div className="flex items-center gap-2 border-b border-zinc-800 px-3 py-2">
         <h2 className="text-sm font-bold uppercase tracking-wide text-zinc-400">Chat Log</h2>
         {role === 'gm' && (

@@ -40,8 +40,13 @@ test('complete tournament: every pair has exactly one winner', () => {
   }
 });
 
-test('21 edges total at +2 each', () => {
+test('21 edges total, each worth a positive whole-number bonus', () => {
   const edges = Object.values(DEFEATS).flat().length;
   assert.equal(edges, 21);
-  assert.equal(COUNTER_BONUS, 2);
+  // Deliberately not pinned to a literal: the bonus is a balance knob (it has
+  // been halved once already) and pinning it here only ever produced a test
+  // that had to be edited in lockstep with the tuning, never one that caught
+  // a bug. What actually matters is the shape — a counter must be an
+  // advantage, and a whole number so scores stay readable at the table.
+  assert.ok(Number.isInteger(COUNTER_BONUS) && COUNTER_BONUS > 0, `${COUNTER_BONUS}`);
 });

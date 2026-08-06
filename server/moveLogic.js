@@ -130,17 +130,94 @@ export const AMBIGUOUS_ROLL_SLOTS = {
   Leg: ['Left Leg', 'Right Leg'],
 };
 
-// A move's optional Roll: which slots get rolled together. Dedupes, drops
-// unknown slot names, empty array = no Roll on this move.
-export function sanitizeRollSlots(list) {
-  if (!Array.isArray(list)) return [];
-  return [...new Set(list.map((s) => String(s)))].filter((s) => ROLL_SLOT_NAMES.includes(s));
+// An ambiguous slot may be taken TWICE, which means "both sides at once" —
+// a Straight Block guards with both hands, so it rolls Left Hand *and*
+// Right Hand (decided). Two is the hard ceiling because a character has
+// exactly two of each appendage; a concrete slot (Skull/Brain/Stamina/Body)
+// is still one-of-a-kind and stays capped at 1.
+export const MAX_AMBIGUOUS_ROLL_SLOT_COUNT = 2;
+
+export function maxRollSlotCount(slot) {
+  return slot in AMBIGUOUS_ROLL_SLOTS ? MAX_AMBIGUOUS_ROLL_SLOT_COUNT : 1;
 }
 
-// Does this Roll include an ambiguous appendage slot? If so the move needs
-// two Tells (right-choice, left-choice) instead of one.
+// A move's optional Roll: which slots get rolled together, in the order the
+// client sent them. Drops unknown slot names and anything over a slot's own
+// ceiling (see maxRollSlotCount); empty array = no Roll on this move.
+export function sanitizeRollSlots(list) {
+  if (!Array.isArray(list)) return [];
+  const taken = new Map();
+  const clean = [];
+  for (const raw of list) {
+    const slot = String(raw);
+    if (!ROLL_SLOT_NAMES.includes(slot)) continue;
+    const already = taken.get(slot) ?? 0;
+    if (already >= maxRollSlotCount(slot)) continue;
+    taken.set(slot, already + 1);
+    clean.push(slot);
+  }
+  return clean;
+}
+
+// move_roll_slots/move_defensive_roll_slots store one row per distinct slot
+// with a count (see server/db.js), but every consumer wants the flat list
+// the Roll actually rolls — so expand here rather than in each caller. Rows
+// written before the count column existed read back as 1, unchanged.
+export function expandRollSlotRows(rows) {
+  const flat = [];
+  for (const row of rows ?? []) {
+    const times = Math.min(
+      maxRollSlotCount(row.slot_name),
+      Math.max(1, Math.trunc(Number(row.count) || 1))
+    );
+    for (let i = 0; i < times; i++) flat.push(row.slot_name);
+  }
+  return flat;
+}
+
+// Inverse of expandRollSlotRows: collapses a flat Roll list back to the
+// one-row-per-slot shape the tables store, preserving first-appearance order.
+export function collapseRollSlots(rollSlots) {
+  const counts = new Map();
+  for (const slot of rollSlots) counts.set(slot, (counts.get(slot) ?? 0) + 1);
+  return [...counts].map(([slot_name, count]) => ({ slot_name, count }));
+}
+
+export function countRollSlot(rollSlots, slot) {
+  return rollSlots.reduce((n, s) => (s === slot ? n + 1 : n), 0);
+}
+
+// Does this Roll still contain an unanswered Left/Right question? If so the
+// move needs two Tells (right-choice, left-choice) instead of one, and a
+// declaration has to record an appendage_choice.
+//
+// Taking an ambiguous slot twice *answers* it — both sides are used, so
+// there is nothing left to pick. Only a slot taken exactly once is genuinely
+// ambiguous.
 export function hasAmbiguousRollSlot(rollSlots) {
-  return rollSlots.some((s) => s in AMBIGUOUS_ROLL_SLOTS);
+  return Object.keys(AMBIGUOUS_ROLL_SLOTS).some((slot) => countRollSlot(rollSlots, slot) === 1);
+}
+
+// Resolves a Roll's slot list to the concrete die slots actually rolled.
+// A concrete slot passes through; an ambiguous slot taken twice becomes both
+// sides in canonical Left-then-Right order (the same order
+// CONCRETE_ATTACK_TARGET_NAMES uses); taken once it follows the
+// declaration's own appendage_choice, defaulting to Left when there is none.
+export function resolveRollSlotNames(rollSlots, appendageChoice = null) {
+  const used = new Map();
+  const concrete = [];
+  for (const slot of rollSlots) {
+    if (!(slot in AMBIGUOUS_ROLL_SLOTS)) {
+      concrete.push(slot);
+      continue;
+    }
+    const [left, right] = AMBIGUOUS_ROLL_SLOTS[slot];
+    const nth = used.get(slot) ?? 0;
+    used.set(slot, nth + 1);
+    if (countRollSlot(rollSlots, slot) > 1) concrete.push(nth === 0 ? left : right);
+    else concrete.push(appendageChoice === 'right' ? right : left);
+  }
+  return concrete;
 }
 
 // Roll type (decided, new): 'stat' is the original body-part Roll above;

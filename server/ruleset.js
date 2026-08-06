@@ -15,7 +15,12 @@ export const STYLES = [
 
 // +2 for each style you are strong against, -2 for each you are weak towards
 // (the same edge read from the loser's side).
-export const COUNTER_BONUS = 2;
+// A stance is two Styles, so a matchup compares 4 cross-pairs; at most 3 of
+// them can be wins under DEFEATS below. At 1 per win that's a ±3 edge, i.e.
+// a 6-point total swing between the two sides in the most lopsided matchup.
+// (Decided, revised: this was 2, which made that swing 12 — a counter-pick
+// dominated the roll rather than tilting it.)
+export const COUNTER_BONUS = 1;
 
 export const DEFEATS = {
   Speed: ['Power', 'Improvisation', 'Keep-out'],

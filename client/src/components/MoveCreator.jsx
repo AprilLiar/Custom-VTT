@@ -2,7 +2,14 @@ import { useRef, useState } from 'react';
 import { AUTOMATION_OPTIONS, TRIGGER_LABELS } from '../lib/moveDisplay.js';
 import { iconFor } from '../lib/styleIcons.js';
 import { fileToSmallImage } from '../lib/image.js';
-import { ROLL_SLOT_NAMES, ROLL_SLOT_LABELS, AMBIGUOUS_ROLL_SLOTS } from '../lib/diceSlots.js';
+import {
+  ROLL_SLOT_NAMES,
+  ROLL_SLOT_LABELS,
+  ROLL_SLOT_BOTH_LABELS,
+  countRollSlot,
+  maxRollSlotCount,
+  hasAmbiguousRollSlot,
+} from '../lib/diceSlots.js';
 import { flattenFolderTree } from '../lib/folders.js';
 import FrameBar from './FrameBar.jsx';
 import Thumb from './Thumb.jsx';
@@ -175,7 +182,10 @@ export default function MoveCreator({
       else next.add(index);
       return next;
     });
-  const ambiguousRoll = rollSlots.some((s) => AMBIGUOUS_ROLL_SLOTS.has(s));
+  // Only a singly-picked appendage still poses a Left/Right question — see
+  // hasAmbiguousRollSlot. Picking it twice means both sides, which is an
+  // answer, so such a move needs one Tell like any other.
+  const ambiguousRoll = hasAmbiguousRollSlot(rollSlots);
   // A Default move is usable by anyone, anytime — it never carries a Style
   // gate, so Style stays required only for a Unique move.
   const valid =
@@ -189,8 +199,16 @@ export default function MoveCreator({
     if (checked) setStyleId(null);
   };
 
+  // Cycles how many of this slot the Roll takes. A concrete Stat is
+  // one-of-a-kind so this stays a plain on/off toggle; an appendage cycles
+  // 0 -> one (player picks a side at declare time) -> both -> 0, because a
+  // character has exactly two of each (see maxRollSlotCount).
   const toggleRollSlot = (slot) =>
-    setRollSlots((prev) => (prev.includes(slot) ? prev.filter((s) => s !== slot) : [...prev, slot]));
+    setRollSlots((prev) => {
+      const next = (countRollSlot(prev, slot) + 1) % (maxRollSlotCount(slot) + 1);
+      const without = prev.filter((s) => s !== slot);
+      return [...without, ...Array(next).fill(slot)];
+    });
 
   const toggleAttackTarget = (slot) =>
     setAttackTargets((prev) => (prev.includes(slot) ? prev.filter((s) => s !== slot) : [...prev, slot]));
@@ -406,28 +424,39 @@ export default function MoveCreator({
         </div>
         {rollType === 'stat' ? (
           <>
-            <p className="mb-1 text-xs text-zinc-500">Which body-part dice this move rolls</p>
+            <p className="mb-1 text-xs text-zinc-500">
+              Which body-part dice this move rolls. Click Hand or Leg twice to use both of them
+              at once — a Straight Block guards with both hands.
+            </p>
             {ambiguousRoll && (
               <p className="mb-1.5 text-xs text-amber-400">
                 Includes a Left/Right choice — pick which Tell shows for each side above. The
-                player chooses which appendage to roll with when the move is actually used.
+                player chooses which appendage to roll with when the move is actually used. Click
+                that slot once more to use both sides instead, and the choice goes away.
               </p>
             )}
             <div className="flex flex-wrap items-center gap-1.5">
               {ROLL_SLOT_NAMES.map((slot) => {
-                const selected = rollSlots.includes(slot);
+                const count = countRollSlot(rollSlots, slot);
+                const both = count > 1;
                 return (
                   <button
                     key={slot}
                     type="button"
+                    title={
+                      maxRollSlotCount(slot) > 1
+                        ? `Click to cycle: off -> one (side picked when declared) -> both`
+                        : undefined
+                    }
                     onClick={() => toggleRollSlot(slot)}
                     className={`panel-cut border px-2 py-1 text-xs font-semibold ${
-                      selected
+                      count > 0
                         ? 'border-brand-500 bg-brand-600/30 text-brand-200'
                         : 'border-zinc-700 bg-zinc-800 text-zinc-400 hover:border-zinc-500'
                     }`}
                   >
-                    {ROLL_SLOT_LABELS[slot]}
+                    {both ? ROLL_SLOT_BOTH_LABELS[slot] : ROLL_SLOT_LABELS[slot]}
+                    {both && <span className="ml-1 text-brand-300">x2</span>}
                   </button>
                 );
               })}
@@ -578,27 +607,46 @@ export default function MoveCreator({
             onToggle={toggleDefensePosition}
           />
           {total < 1 && <p className="text-xs text-red-400">At least 1 square total</p>}
-          {isDefensive && visibleDefensePositions.length > 0 && (
-            <div className="mt-2 flex gap-1.5">
-              {['block', 'dodge'].map((kind) => (
-                <button
-                  key={kind}
-                  type="button"
-                  onClick={() => setDefenseKind(kind)}
-                  title={
-                    kind === 'block'
-                      ? 'Resolves fully automatically from dice math'
-                      : 'The one defense the GM still calls Successful/Failed by hand'
-                  }
-                  className={`panel-cut-sm border px-2 py-1 text-xs font-semibold uppercase tracking-wide ${
-                    defenseKind === kind
-                      ? 'border-green-500 bg-green-900/40 text-green-300'
-                      : 'border-zinc-700 bg-zinc-800 text-zinc-400 hover:border-zinc-600'
-                  }`}
-                >
-                  {kind}
-                </button>
-              ))}
+          {/* Shown for every Defensive move, not just once a Defense Frame
+              already exists — it previously appeared only after the first
+              green square was set, and unlabelled, which made it read as
+              "you can't choose". It stays disabled (with the reason) until
+              there's a frame for it to apply to, since defense_kind is
+              meaningless without one. */}
+          {isDefensive && (
+            <div className="mt-2">
+              <span className="mb-1 block text-xs font-semibold uppercase text-emerald-500">
+                Defense type
+              </span>
+              <div className="flex gap-1.5">
+                {['block', 'dodge'].map((kind) => (
+                  <button
+                    key={kind}
+                    type="button"
+                    disabled={visibleDefensePositions.length === 0}
+                    onClick={() => setDefenseKind(kind)}
+                    title={
+                      kind === 'block'
+                        ? 'Resolves fully automatically from dice math — never prompts anyone'
+                        : 'The one defense a human still calls: the GM is asked Successful/Failed when it fully covers an attack'
+                    }
+                    className={`panel-cut-sm border px-2 py-1 text-xs font-semibold uppercase tracking-wide disabled:cursor-not-allowed disabled:opacity-40 ${
+                      defenseKind === kind
+                        ? 'border-green-500 bg-green-900/40 text-green-300'
+                        : 'border-zinc-700 bg-zinc-800 text-zinc-400 hover:border-zinc-600'
+                    }`}
+                  >
+                    {kind}
+                  </button>
+                ))}
+              </div>
+              <p className="mt-1 text-xs text-zinc-500">
+                {visibleDefensePositions.length === 0
+                  ? 'Click a frame square above to mark it a Defense Frame — a Defensive move needs at least one before Block or Dodge means anything.'
+                  : defenseKind === 'block'
+                    ? 'Block resolves automatically from the dice. If it covers only part of the attack, this move’s Recovery is extended to cover the rest.'
+                    : 'Dodge auto-fails unless its Defense Frames cover the attack’s whole Active window; when they do, the GM is asked whether it landed.'}
+              </p>
             </div>
           )}
         </div>

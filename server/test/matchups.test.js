@@ -20,21 +20,34 @@ const counters = Object.entries(DEFEATS).flatMap(([winner, losers]) =>
 const beats = buildBeats(counters);
 const pair = (a, b) => [idOf(a), idOf(b)];
 
-test('hand-computed score: {Speed,Power} vs {Improvisation,Technique} = +4', () => {
-  // Speed>Improv +2, Technique>Speed -2, Power>Improv +2, Power>Technique +2
-  assert.equal(pairScore(pair('Speed', 'Power'), pair('Improvisation', 'Technique'), beats), 4);
+// These are hand-computed in *edges* — how many of the 4 cross-pairs I win
+// minus how many I lose — and only then multiplied by COUNTER_BONUS. The
+// edge counts are a property of DEFEATS and never change; the bonus is a
+// tuning knob (it has already been halved once). Writing the products out as
+// literals is what made this file break when it was, so don't.
+test('hand-computed score: {Speed,Power} vs {Improvisation,Technique} = +2 edges', () => {
+  // Speed>Improv +1, Technique>Speed -1, Power>Improv +1, Power>Technique +1
+  assert.equal(
+    pairScore(pair('Speed', 'Power'), pair('Improvisation', 'Technique'), beats),
+    2 * COUNTER_BONUS
+  );
 });
 
-test('hand-computed score: {Speed,Power} vs {Technique,Close-Quarters} = -8', () => {
-  // Technique>Speed -2, CQ>Speed -2, Power>Technique +2... recheck: Power beats Technique (+2), CQ beats Power (-2)
-  // Speed vs Technique: -2; Speed vs CQ: -2; Power vs Technique: +2; Power vs CQ: -2 => -4
-  assert.equal(pairScore(pair('Speed', 'Power'), pair('Technique', 'Close-Quarters'), beats), -4);
+test('hand-computed score: {Speed,Power} vs {Technique,Close-Quarters} = -2 edges', () => {
+  // Speed vs Technique -1; Speed vs CQ -1; Power vs Technique +1; Power vs CQ -1
+  assert.equal(
+    pairScore(pair('Speed', 'Power'), pair('Technique', 'Close-Quarters'), beats),
+    -2 * COUNTER_BONUS
+  );
 });
 
 test('sharing a style contributes zero for that sub-pair', () => {
-  // {Speed,Power} vs {Speed,Improvisation}: Speed-Speed 0, Speed>Improv +2,
-  // Speed>Power (their Speed beats my Power) -2, Power>Improv +2 => +2
-  assert.equal(pairScore(pair('Speed', 'Power'), pair('Speed', 'Improvisation'), beats), 2);
+  // {Speed,Power} vs {Speed,Improvisation}: Speed-Speed 0, Speed>Improv +1,
+  // Speed>Power (their Speed beats my Power) -1, Power>Improv +1 => +1 edge
+  assert.equal(
+    pairScore(pair('Speed', 'Power'), pair('Speed', 'Improvisation'), beats),
+    COUNTER_BONUS
+  );
 });
 
 test('matchup scores are antisymmetric', () => {
@@ -49,6 +62,7 @@ test('rankMatchups covers all 21 pairs, sorted best first', () => {
   for (let i = 1; i < ranked.length; i++) {
     assert.ok(ranked[i - 1].score >= ranked[i].score);
   }
-  // Scores are bounded by +/-8 (4 cross pairs x bonus 2)
-  assert.ok(ranked[0].score <= 8 && ranked.at(-1).score >= -8);
+  // Scores are bounded by +/- (4 cross pairs x the bonus per won pair).
+  const bound = 4 * COUNTER_BONUS;
+  assert.ok(ranked[0].score <= bound && ranked.at(-1).score >= -bound);
 });

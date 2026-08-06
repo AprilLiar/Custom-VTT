@@ -45,7 +45,12 @@
 
 import { all, one, run } from './db.js';
 import { rollDie, applyHalfDamage, clamp } from './gameLogic.js';
-import { AMBIGUOUS_ROLL_SLOTS, parseConcreteAttackTargets, expandAttackTargets } from './moveLogic.js';
+import {
+  parseConcreteAttackTargets,
+  expandAttackTargets,
+  expandRollSlotRows,
+  resolveRollSlotNames,
+} from './moveLogic.js';
 import {
   computeHitDamage,
   resolveDefenseRoll,
@@ -143,19 +148,17 @@ async function getReasonsToFightBonus(characterId) {
 // name, duplicated for the reasons in the module comment above): resolves
 // a list of Roll slot names (concrete or ambiguous Hand/Leg) against one
 // character's live dice, via that declared move's own already-stored
-// appendage_choice — no dialog to ask again. Silently drops an
-// incapacitated/missing die.
+// appendage_choice — no dialog to ask again. A slot listed twice means both
+// sides (a Straight Block guards with both hands) and ignores the choice
+// entirely; see resolveRollSlotNames. Silently drops an incapacitated/
+// missing die.
 async function resolveMoveRollDice(characterId, slotNames, appendageChoice) {
   if (!slotNames.length) return [];
   const dice = await getDice(characterId);
   const dieBySlot = new Map(dice.map((d) => [d.slot_name, d]));
-  const resolved = [];
-  for (const slot of slotNames) {
-    const concreteSlot =
-      slot in AMBIGUOUS_ROLL_SLOTS ? AMBIGUOUS_ROLL_SLOTS[slot][appendageChoice === 'right' ? 1 : 0] : slot;
-    const die = dieBySlot.get(concreteSlot);
-    if (die) resolved.push(die);
-  }
+  const resolved = resolveRollSlotNames(slotNames, appendageChoice)
+    .map((slot) => dieBySlot.get(slot))
+    .filter(Boolean);
   return resolved.filter((d) => d.status === 'active');
 }
 
@@ -329,7 +332,7 @@ async function checkInterrupt(io, { targetCharacterId, attackerRevealTic, attack
   );
   if (!startupDM) return;
   const [rollSlotRows, rollBonusRow] = await Promise.all([
-    all('SELECT slot_name FROM move_roll_slots WHERE move_id = ?', [startupDM.move_id]),
+    all('SELECT slot_name, count FROM move_roll_slots WHERE move_id = ?', [startupDM.move_id]),
     one(
       'SELECT COALESCE(SUM(amount), 0) AS bonus FROM character_move_roll_bonuses WHERE character_id = ? AND move_id = ?',
       [targetCharacterId, startupDM.move_id]
@@ -346,7 +349,7 @@ async function checkInterrupt(io, { targetCharacterId, attackerRevealTic, attack
   if (startupDM.roll_type === 'custom' && startupDM.custom_roll_size != null) {
     die = { slot_name: 'Custom', current_size: startupDM.custom_roll_size, bonus: 0 };
   } else if (rollSlotRows.length) {
-    const dice = await resolveMoveRollDice(targetCharacterId, rollSlotRows.map((r) => r.slot_name), startupDM.appendage_choice);
+    const dice = await resolveMoveRollDice(targetCharacterId, expandRollSlotRows(rollSlotRows), startupDM.appendage_choice);
     die = dice[0] ?? null;
   }
   if (!die) {
@@ -492,9 +495,9 @@ async function applySuccessfulDodge(io, {
   emitEvent,
 }) {
   const [baseSlotRows, defensiveSlotRows, defRollBonusRow] = await Promise.all([
-    all('SELECT slot_name FROM move_roll_slots WHERE move_id = ?', [defenderDM.move_id]),
+    all('SELECT slot_name, count FROM move_roll_slots WHERE move_id = ?', [defenderDM.move_id]),
     defenderDM.is_defensive
-      ? all('SELECT slot_name FROM move_defensive_roll_slots WHERE move_id = ?', [defenderDM.move_id])
+      ? all('SELECT slot_name, count FROM move_defensive_roll_slots WHERE move_id = ?', [defenderDM.move_id])
       : [],
     one(
       'SELECT COALESCE(SUM(amount), 0) AS bonus FROM character_move_roll_bonuses WHERE character_id = ? AND move_id = ?',
@@ -510,7 +513,7 @@ async function applySuccessfulDodge(io, {
       { slot_name: 'Custom', size: defenderDM.custom_roll_size, bonus: 0, result: rollDie(defenderDM.custom_roll_size) + defMod },
     ];
   } else {
-    const slotNames = [...baseSlotRows, ...defensiveSlotRows].map((r) => r.slot_name);
+    const slotNames = expandRollSlotRows([...baseSlotRows, ...defensiveSlotRows]);
     const resolved = await resolveMoveRollDice(defenderDM.character_id, slotNames, defenderDM.appendage_choice);
     dodgeDice = resolved.map((d) => ({
       slot_name: d.slot_name,
@@ -582,6 +585,24 @@ async function applySuccessfulDodge(io, {
 // full-coverage Dodge) — the caller (processTic) must stop processing this
 // pair's Tic immediately when it sees this, without marking the Tic done.
 async function resolveAttack(io, { row, pairIndex, tic, emitEvent }) {
+  // A Defensive move with no Attack Target is defence-pure: it exists to be
+  // *selected as a defender* when someone attacks into it (step 4 below,
+  // driven by the attacker's own resolution), and it never attacks on its
+  // own account. It must not run the attack flow at all — doing so rolled
+  // it a second time (it already rolls as part of the attacker's Block
+  // resolution) and then reported "no eligible target", which is exactly
+  // the spurious notification a pure block used to produce. Having no
+  // Attack Target is the *correct* authoring for such a move, not an
+  // oversight, so this is a normal outcome and says nothing to chat.
+  //
+  // A Defensive move that DOES carry Attack Targets is a counter-attack —
+  // it defends and attacks — and falls through to the normal flow.
+  const attackTargets = parseConcreteAttackTargets(row.effectiveAttackTargets);
+  if (row.isDefensive && attackTargets.length === 0) {
+    await run('UPDATE declared_moves SET interactions_resolved = 1 WHERE id = ?', [row.declaredMoveId]);
+    return;
+  }
+
   const hasRoll = row.rollType === 'custom' ? row.customRollSize != null : row.rollSlotNames.length > 0;
   if (!hasRoll) {
     // A Roll-less move never enters the damage/defense flow (see Attack
@@ -658,11 +679,20 @@ async function resolveAttack(io, { row, pairIndex, tic, emitEvent }) {
     if (!candidatesByChar.has(r.characterId)) candidatesByChar.set(r.characterId, []);
     candidatesByChar.get(r.characterId).push({ slot_name: r.slotName, status: r.status });
   }
-  const allowedConcreteTargets = parseConcreteAttackTargets(row.effectiveAttackTargets);
-  const targetCharacterId = selectUnevenCombatTarget({
-    candidates: [...candidatesByChar.entries()].map(([characterId, dice]) => ({ characterId, dice })),
-    allowedConcreteTargets,
-  });
+  const allowedConcreteTargets = attackTargets;
+  const candidates = [...candidatesByChar.entries()].map(([characterId, dice]) => ({ characterId, dice }));
+  // An attack with no Attack Target of its own is still a real attack (see
+  // the Attack Target mechanic): a Successful Block replaces its effective
+  // target with the blocker's own Stat, which is the documented way such a
+  // move ever lands. Selecting by die-eligibility would return null here
+  // and bail before defence resolution ever ran, making that rule
+  // unreachable and silently skipping the Block entirely — so fall back to
+  // the same deterministic "lowest character_id among opponents" rule
+  // decision #6 uses, and let defence decide what happens next.
+  const targetCharacterId =
+    allowedConcreteTargets.length === 0
+      ? (candidates.map((c) => c.characterId).sort((a, b) => a - b)[0] ?? null)
+      : selectUnevenCombatTarget({ candidates, allowedConcreteTargets });
   if (targetCharacterId == null) {
     // Nothing eligible to hit — this move's own resolution is nonetheless
     // complete (nothing more will ever happen for it), so it must still
@@ -806,9 +836,9 @@ async function resolveAttack(io, { row, pairIndex, tic, emitEvent }) {
   // defensive pool if is_defensive), same math as the manual
   // combat:resolve_defense.
   const [baseSlotRows, defensiveSlotRows, defRollBonusRow] = await Promise.all([
-    all('SELECT slot_name FROM move_roll_slots WHERE move_id = ?', [defenderDM.move_id]),
+    all('SELECT slot_name, count FROM move_roll_slots WHERE move_id = ?', [defenderDM.move_id]),
     defenderDM.is_defensive
-      ? all('SELECT slot_name FROM move_defensive_roll_slots WHERE move_id = ?', [defenderDM.move_id])
+      ? all('SELECT slot_name, count FROM move_defensive_roll_slots WHERE move_id = ?', [defenderDM.move_id])
       : [],
     one(
       'SELECT COALESCE(SUM(amount), 0) AS bonus FROM character_move_roll_bonuses WHERE character_id = ? AND move_id = ?',
@@ -824,7 +854,7 @@ async function resolveAttack(io, { row, pairIndex, tic, emitEvent }) {
       { slot_name: 'Custom', size: defenderDM.custom_roll_size, bonus: 0, result: rollDie(defenderDM.custom_roll_size) + defMod },
     ];
   } else {
-    const slotNames = [...baseSlotRows, ...defensiveSlotRows].map((r) => r.slot_name);
+    const slotNames = expandRollSlotRows([...baseSlotRows, ...defensiveSlotRows]);
     const resolved = await resolveMoveRollDice(defenderDM.character_id, slotNames, defenderDM.appendage_choice);
     blockDice = resolved.map((d) => ({
       slot_name: d.slot_name,
@@ -917,6 +947,35 @@ async function resolveAttack(io, { row, pairIndex, tic, emitEvent }) {
       defenderDM.current_extension_tics + coverage.extensionTicsNeeded,
       defenderDM.id,
     ]);
+    // Announce it, don't ask (decided). Extending Recovery is a rule, not a
+    // choice — decision #1 puts Block fully outside the prompt loop — but it
+    // silently changed how long the blocker is committed for, which is
+    // exactly the sort of thing a table needs told. The matching
+    // round_event gives the cutscene enough to paint those extra Tics in the
+    // Block's own colour (see isExtendedRecoveryTic client-side), so the
+    // announcement and the timeline agree.
+    const tics = coverage.extensionTicsNeeded;
+    await postSystemMessage(
+      io,
+      `${defenderDM.character_name}'s ${defenderDM.move_name} blocked late — Recovery extended by ${tics} Tic${
+        tics === 1 ? '' : 's'
+      } to cover the rest of ${row.characterName}'s ${row.moveName}.`
+    );
+    await emitEvent(tic, 'recovery_extended', {
+      declaredMoveId: defenderDM.id,
+      characterId: defenderDM.character_id,
+      characterName: defenderDM.character_name,
+      moveName: defenderDM.move_name,
+      defenseKind: defenderDM.defense_kind ?? 'block',
+      extensionTics: tics,
+      // Half-open [extendedFromTic, recoveryEndTic), the same convention
+      // phaseAt uses — the client needs both to know which squares are the
+      // extension rather than the move's own authored Recovery.
+      extendedFromTic: oldRecoveryEndTic,
+      recoveryEndTic: newRecoveryEndTic,
+      attackerCharacterName: row.characterName,
+      attackerMoveName: row.moveName,
+    });
     const collision = await one(
       'SELECT id, character_id FROM declared_moves WHERE character_id = ? AND id != ? AND placement_tic >= ? AND placement_tic < ? ORDER BY id LIMIT 1',
       [defenderDM.character_id, defenderDM.id, oldRecoveryEndTic, newRecoveryEndTic]
@@ -1028,6 +1087,7 @@ async function processTic(io, { pairIndex, tic, emitEvent }) {
             dm.placement_tic AS placementTic, dm.reveal_tic AS revealTic,
             dm.appendage_choice AS appendageChoice, dm.effective_attack_targets AS effectiveAttackTargets,
             m.name AS moveName, m.active_tics AS activeTics, m.roll_type AS rollType,
+            m.is_defensive AS isDefensive,
             m.custom_roll_size AS customRollSize, m.roll_modifier AS rollModifier,
             cp.side AS side, ch.name AS characterName
      FROM declared_moves dm
@@ -1041,11 +1101,11 @@ async function processTic(io, { pairIndex, tic, emitEvent }) {
   if (toResolve.length) {
     const moveIds = [...new Set(toResolve.map((r) => r.moveId))];
     const moveMarks = moveIds.map(() => '?').join(',');
-    const slotRows = await all(`SELECT move_id, slot_name FROM move_roll_slots WHERE move_id IN (${moveMarks})`, moveIds);
+    const slotRows = await all(`SELECT move_id, slot_name, count FROM move_roll_slots WHERE move_id IN (${moveMarks})`, moveIds);
     const rollSlotsByMove = new Map();
     for (const r of slotRows) {
       if (!rollSlotsByMove.has(r.move_id)) rollSlotsByMove.set(r.move_id, []);
-      rollSlotsByMove.get(r.move_id).push(r.slot_name);
+      rollSlotsByMove.get(r.move_id).push(...expandRollSlotRows([r]));
     }
 
     for (const row of toResolve) {

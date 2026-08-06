@@ -29,6 +29,10 @@ import {
   clampStaminaCost,
   sanitizeRollSlots,
   hasAmbiguousRollSlot,
+  countRollSlot,
+  resolveRollSlotNames,
+  expandRollSlotRows,
+  collapseRollSlots,
   sanitizeDefensePositions,
   sanitizeDefenseKind,
   AMBIGUOUS_ROLL_SLOTS,
@@ -125,7 +129,7 @@ async function attachInteractions(moves) {
   const rollSlotsByMove = new Map();
   for (const row of rollSlotRows) {
     if (!rollSlotsByMove.has(row.move_id)) rollSlotsByMove.set(row.move_id, []);
-    rollSlotsByMove.get(row.move_id).push(row.slot_name);
+    rollSlotsByMove.get(row.move_id).push(...expandRollSlotRows([row]));
   }
   return moves.map((m) => ({
     ...m,
@@ -239,9 +243,20 @@ async function getMovesFor(characterId) {
       bonus: d.bonus,
       status: d.status,
     });
-    const concreteSlots = move.roll_slots.filter((s) => !(s in AMBIGUOUS_ROLL_SLOTS));
-    const rollDice = concreteSlots.map((s) => dieBySlot.get(s)).filter(Boolean).map(toDieInfo);
-    const ambiguousSlots = move.roll_slots.filter((s) => s in AMBIGUOUS_ROLL_SLOTS);
+    // An appendage slot taken TWICE means both sides are used, so there is
+    // no Left/Right question left to ask — it resolves to two concrete dice
+    // here, exactly like a concrete slot, and never reaches rollChoice
+    // below. Only a slot taken once is still ambiguous.
+    const settledSlots = move.roll_slots.filter(
+      (s) => !(s in AMBIGUOUS_ROLL_SLOTS) || countRollSlot(move.roll_slots, s) > 1
+    );
+    const rollDice = resolveRollSlotNames(settledSlots)
+      .map((s) => dieBySlot.get(s))
+      .filter(Boolean)
+      .map(toDieInfo);
+    const ambiguousSlots = move.roll_slots.filter(
+      (s) => s in AMBIGUOUS_ROLL_SLOTS && countRollSlot(move.roll_slots, s) === 1
+    );
     // Not resolved to one die — the player picks Left or Right at roll time
     // (see plan: Move Roll's Left/Right Hand/Leg choice), so both sides'
     // dice are sent and the client asks before rolling.
@@ -2006,8 +2021,15 @@ io.on('connection', (socket) => {
       await run('INSERT INTO move_tags (move_id, tag_id) VALUES (?, ?)', [id, tagId]);
     }
     await run('DELETE FROM move_roll_slots WHERE move_id = ?', [id]);
-    for (const slotName of rollSlots) {
-      await run('INSERT INTO move_roll_slots (move_id, slot_name) VALUES (?, ?)', [id, slotName]);
+    // One row per distinct slot carrying how many of it the Roll takes — the
+    // table's UNIQUE(move_id, slot_name) means a doubled Hand can't be two
+    // rows (see server/db.js's count column).
+    for (const { slot_name, count } of collapseRollSlots(rollSlots)) {
+      await run('INSERT INTO move_roll_slots (move_id, slot_name, count) VALUES (?, ?, ?)', [
+        id,
+        slot_name,
+        count,
+      ]);
     }
     for (const row of normalizeInteractions(payload.interactions, Boolean(isDefensive))) {
       await run(

@@ -2,7 +2,7 @@ import { Zap } from 'lucide-react';
 import { TRIGGER_LABELS, automationLabel } from '../lib/moveDisplay.js';
 import { iconFor } from '../lib/styleIcons.js';
 import { dieFormula } from '../lib/dice.js';
-import { ROLL_SLOT_LABELS } from '../lib/diceSlots.js';
+import { ROLL_SLOT_LABELS, describeRollSlots } from '../lib/diceSlots.js';
 import FrameBar from './FrameBar.jsx';
 import Thumb from './Thumb.jsx';
 
@@ -193,7 +193,7 @@ export default function MoveCard({
               )
             ) : (
               <span className="text-zinc-400">
-                {move.roll_slots.map((s) => ROLL_SLOT_LABELS[s] ?? s).join(' + ')}
+                {describeRollSlots(move.roll_slots).join(' + ')}
                 {move.roll_modifier ? ` (${move.roll_modifier > 0 ? '+' : ''}${move.roll_modifier})` : ''}
               </span>
             )}

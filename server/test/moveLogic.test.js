@@ -9,6 +9,10 @@ import {
   clampStaminaCost,
   sanitizeRollSlots,
   hasAmbiguousRollSlot,
+  resolveRollSlotNames,
+  expandRollSlotRows,
+  collapseRollSlots,
+  MAX_AMBIGUOUS_ROLL_SLOT_COUNT,
   sanitizeDefensePositions,
   AMBIGUOUS_ROLL_SLOTS,
   TRIGGERS,
@@ -163,22 +167,75 @@ test('stamina cost clamps to +/-20, allows 0 and negative, coerces junk', () => 
   assert.equal(clampStaminaCost('junk'), 0);
 });
 
-test('roll slots: dedupes and drops unknown slot names, empty = no Roll', () => {
+test('roll slots: caps each slot at its own ceiling, drops unknown names, empty = no Roll', () => {
   assert.deepEqual(sanitizeRollSlots(['Body', 'Body', 'Hand']), ['Body', 'Hand']);
   assert.deepEqual(sanitizeRollSlots(['Body', 'Wing', 'Leg']), ['Body', 'Leg']);
   assert.deepEqual(sanitizeRollSlots([]), []);
   assert.deepEqual(sanitizeRollSlots(null), []);
 });
 
+test('roll slots: an appendage may be taken twice (= both sides), never more', () => {
+  assert.deepEqual(sanitizeRollSlots(['Hand', 'Hand']), ['Hand', 'Hand']);
+  assert.deepEqual(sanitizeRollSlots(['Leg', 'Leg', 'Leg']), ['Leg', 'Leg']);
+  assert.deepEqual(sanitizeRollSlots(['Hand', 'Hand', 'Leg', 'Leg']), ['Hand', 'Hand', 'Leg', 'Leg']);
+  // A concrete Stat stays one-of-a-kind — a character has one Skull.
+  assert.deepEqual(sanitizeRollSlots(['Skull', 'Skull']), ['Skull']);
+  assert.equal(MAX_AMBIGUOUS_ROLL_SLOT_COUNT, 2);
+});
+
 test('roll slots: concrete Left/Right Hand and Leg names are no longer valid — only the ambiguous choice is', () => {
   assert.deepEqual(sanitizeRollSlots(['Left Hand', 'Right Hand', 'Left Leg', 'Right Leg']), []);
 });
 
-test('hasAmbiguousRollSlot: true only when Hand or Leg is present', () => {
+test('hasAmbiguousRollSlot: true only when Hand or Leg is taken exactly once', () => {
   assert.ok(hasAmbiguousRollSlot(['Body', 'Hand']));
   assert.ok(hasAmbiguousRollSlot(['Leg']));
   assert.ok(!hasAmbiguousRollSlot(['Body', 'Skull', 'Stamina', 'Brain']));
   assert.ok(!hasAmbiguousRollSlot([]));
+  // Taking it twice *is* the answer — both sides are used, so there is no
+  // Left/Right question left and the move needs only one Tell.
+  assert.ok(!hasAmbiguousRollSlot(['Hand', 'Hand']));
+  assert.ok(!hasAmbiguousRollSlot(['Hand', 'Hand', 'Leg', 'Leg']));
+  // ...but a doubled Hand alongside a single Leg still leaves the Leg open.
+  assert.ok(hasAmbiguousRollSlot(['Hand', 'Hand', 'Leg']));
+});
+
+test('resolveRollSlotNames: a doubled appendage is both sides, a single one follows the choice', () => {
+  assert.deepEqual(resolveRollSlotNames(['Hand', 'Hand']), ['Left Hand', 'Right Hand']);
+  assert.deepEqual(resolveRollSlotNames(['Leg', 'Leg']), ['Left Leg', 'Right Leg']);
+  // A doubled slot ignores appendage_choice entirely — both sides regardless.
+  assert.deepEqual(resolveRollSlotNames(['Hand', 'Hand'], 'right'), ['Left Hand', 'Right Hand']);
+  assert.deepEqual(resolveRollSlotNames(['Hand'], 'right'), ['Right Hand']);
+  assert.deepEqual(resolveRollSlotNames(['Hand'], 'left'), ['Left Hand']);
+  // No choice recorded falls back to Left, the canonical first side.
+  assert.deepEqual(resolveRollSlotNames(['Hand']), ['Left Hand']);
+  // Concrete slots pass straight through, order preserved.
+  assert.deepEqual(resolveRollSlotNames(['Body', 'Hand', 'Hand', 'Skull']), [
+    'Body',
+    'Left Hand',
+    'Right Hand',
+    'Skull',
+  ]);
+});
+
+test('roll slot rows round-trip through the stored one-row-per-slot shape', () => {
+  const slots = ['Body', 'Hand', 'Hand'];
+  const rows = collapseRollSlots(slots);
+  assert.deepEqual(rows, [
+    { slot_name: 'Body', count: 1 },
+    { slot_name: 'Hand', count: 2 },
+  ]);
+  assert.deepEqual(expandRollSlotRows(rows), slots);
+});
+
+test('expandRollSlotRows: a row written before the count column reads back as one', () => {
+  assert.deepEqual(expandRollSlotRows([{ slot_name: 'Hand' }, { slot_name: 'Body', count: null }]), [
+    'Hand',
+    'Body',
+  ]);
+  // Never trust a stored count past the slot's own ceiling.
+  assert.deepEqual(expandRollSlotRows([{ slot_name: 'Hand', count: 9 }]), ['Hand', 'Hand']);
+  assert.deepEqual(expandRollSlotRows([{ slot_name: 'Skull', count: 3 }]), ['Skull']);
 });
 
 test('AMBIGUOUS_ROLL_SLOTS resolves Hand/Leg to [left, right] die slot names', () => {
