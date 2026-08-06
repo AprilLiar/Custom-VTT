@@ -395,6 +395,63 @@ function declaredPhasesAt(absoluteTic, declaredMoves) {
   return declaredMoves.map((dm) => phaseBgAt(dm, absoluteTic)).filter(Boolean);
 }
 
+// Combat Automation overhaul §4.1 — the GM's "switch between fights"
+// control. Each pair runs its own independent round clock now (decision
+// #12: fight A can be on round 5 while fight B is still on round 3), so
+// there has to be a way to say which one you're looking at. GM-only: a
+// Player only ever has one seat, and only ever watches their own pair
+// live.
+//
+// Only the selected tab mounts a live RoundCutscene — the others are a
+// cheap status badge read straight off the pair summary, rather than N
+// simultaneous GSAP timelines animating fights nobody is watching.
+function PairTabStrip({ pairIndices, pairs, participants, characters, activeIndex, onSelect }) {
+  if (pairIndices.length < 2) return null;
+  const pairsByIdx = new Map((pairs ?? []).map((p) => [p.pairIndex, p]));
+
+  const statusOf = (pair) => {
+    if (!pair?.phase) return { label: 'Not started', tone: 'text-zinc-600' };
+    if (pair.pendingDodge) return { label: 'Dodge?', tone: 'text-amber-300' };
+    if (pair.pendingConflict) return { label: 'Conflict?', tone: 'text-amber-300' };
+    if (pair.phase === 'resolving') return { label: 'Resolving…', tone: 'text-brand-300' };
+    return { label: 'Declaring', tone: 'text-zinc-400' };
+  };
+
+  return (
+    <div className="flex max-w-full flex-wrap items-center justify-center gap-1.5">
+      {pairIndices.map((idx) => {
+        const pair = pairsByIdx.get(idx);
+        const names = (participants ?? [])
+          .filter((p) => p.pair_index === idx)
+          .map((p) => characters[p.character_id]?.character.name)
+          .filter(Boolean);
+        const status = statusOf(pair);
+        const active = activeIndex === idx;
+        return (
+          <button
+            key={idx}
+            type="button"
+            onClick={() => onSelect(idx)}
+            title={`${names.join(' vs ') || `Pair ${idx + 1}`} — round ${pair?.roundNumber ?? '?'}, ${status.label}`}
+            className={`panel-cut-sm border px-2 py-1 text-left font-display text-[11px] leading-tight ${
+              active
+                ? 'border-brand-500 bg-brand-950/50 text-zinc-100'
+                : 'border-zinc-700 bg-zinc-900/60 text-zinc-400 hover:bg-zinc-800'
+            }`}
+          >
+            <span className="block truncate uppercase tracking-wide">
+              {names.length ? names.join(' vs ') : `Pair ${idx + 1}`}
+            </span>
+            <span className={`block ${status.tone}`}>
+              R{pair?.roundNumber ?? '?'} · {status.label}
+            </span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 // Exported so CombatHeaderBar can render the exact same square visuals in
 // its own compact strip (see the plan's Tic navigation redesign) — passing
 // only relativeTic/isCurrent there and leaving every Arena-only extra
@@ -1561,6 +1618,17 @@ export default function CombatArena() {
                 Cancel
               </button>
             </div>
+          )}
+
+          {role === 'gm' && (
+            <PairTabStrip
+              pairIndices={pairIndices}
+              pairs={pairs ?? []}
+              participants={participants}
+              characters={characters}
+              activeIndex={displayPairIndex}
+              onSelect={setActiveLaneIndex}
+            />
           )}
 
           {/* Combat Automation overhaul §4.1: once a pair drops into

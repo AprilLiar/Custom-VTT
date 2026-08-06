@@ -89,6 +89,72 @@ function eventSummary(ev) {
   }
 }
 
+// The hover detail behind each event row. Every element on this timeline is
+// a real DOM node with its own real payload behind it (§4.1) — not a
+// rendered video frame — so the full outcome is inspectable rather than
+// something you had to catch while it animated past. Readable lines rather
+// than a JSON dump: this is read by a person mid-fight, not debugged.
+function eventDetail(ev, startTic) {
+  const p = ev.payload ?? {};
+  const lines = [`${EVENT_LABEL[ev.type] ?? ev.type} — Tic ${ev.tic - startTic + 1}`];
+  switch (ev.type) {
+    case 'reveal':
+      lines.push(`${p.characterName} reveals ${p.moveName}`);
+      if (p.isDefensive) lines.push(`Defensive (${p.defenseKind === 'dodge' ? 'Dodge' : 'Block'})`);
+      lines.push(
+        `Startup until Tic ${p.revealTic - startTic + 1}, Active until ${p.activeEndTic - startTic + 1}, Recovery until ${p.recoveryEndTic - startTic + 1}`
+      );
+      if (p.appendageChoice) lines.push(`Side: ${p.appendageChoice}`);
+      break;
+    case 'roll':
+      if (Array.isArray(p.dice) && p.dice.length) {
+        lines.push(p.dice.map((d) => `${d.slot_name ?? d.slotName}: ${d.result}`).join(', '));
+      }
+      if (p.modifier) lines.push(`Modifier: ${p.modifier > 0 ? '+' : ''}${p.modifier}`);
+      lines.push(`Total: ${p.total}`);
+      break;
+    case 'defense_resolved':
+      lines.push(`${p.defenseType === 'dodge' ? 'Dodge' : 'Block'}, coverage: ${p.coverage}`);
+      if (p.outcome) lines.push(`Outcome: ${p.outcome}`);
+      if (p.defenderResult != null) lines.push(`Defender rolled ${p.defenderResult}`);
+      break;
+    case 'dodge_prompt':
+      lines.push(`${p.defenderCharacterName} (${p.defenderMoveName}) fully covers ${p.attackerCharacterName}'s ${p.attackerMoveName}`);
+      lines.push(`Attacker rolled ${p.attackerResult} — waiting on the GM's call`);
+      break;
+    case 'dodge_resolved':
+      lines.push(`GM called it ${p.outcome}`);
+      break;
+    case 'interrupt_resolved':
+      lines.push(p.interrupted ? 'The move was Interrupted mid-Startup' : 'Held through the hit');
+      if (p.result != null) lines.push(`Rolled ${p.result} vs ${p.halfDamageSteps} step(s)`);
+      break;
+    case 'damage_applied':
+      if (p.result === 'no-eligible-target') lines.push('No eligible target Stat');
+      else lines.push(`${p.steps} half-damage step(s) → ${p.slotName ?? 'unknown Stat'}`);
+      break;
+    case 'move_conflict_prompt':
+      lines.push("A Block's extended Recovery collided with a declared move");
+      lines.push('Waiting on the affected player: Forfeit or Postpone');
+      break;
+    case 'move_conflict_resolved':
+      lines.push(p.choice === 'forfeit' ? 'Forfeited (Stamina refunded)' : 'Postponed past the block');
+      break;
+    case 'automation_fired':
+      lines.push(`Trigger: ${p.trigger}`);
+      break;
+    case 'stamina_regen':
+      lines.push(`Idle Tic — +${p.amount ?? 1} Stamina`);
+      break;
+    case 'round_complete':
+      lines.push('Every Tic in this round has resolved');
+      break;
+    default:
+      break;
+  }
+  return lines.join('\n');
+}
+
 // Every move revealed so far, in lane order — rebuilt from the reveal
 // events themselves rather than from live combat state, so replay works
 // identically (the reveal payload carries the whole footprint, see
@@ -102,7 +168,7 @@ function footprintsFrom(events, upTo) {
   return out;
 }
 
-function MoveBar({ fp, ticks }) {
+function MoveBar({ fp, ticks, startTic }) {
   return (
     <div className="flex items-center gap-2">
       <span className="w-24 shrink-0 truncate text-right font-display text-[11px] uppercase tracking-wide text-zinc-400">
@@ -114,7 +180,13 @@ function MoveBar({ fp, ticks }) {
           return (
             <span
               key={tic}
-              title={phase ? `Tic ${tic} — ${fp.moveName}: ${PHASE_LABEL[phase]}` : `Tic ${tic}`}
+              title={
+                phase
+                  ? `${fp.characterName} — ${fp.moveName}\nTic ${tic - startTic + 1}: ${PHASE_LABEL[phase]}${
+                      phase === 'defense' ? ` (${fp.defenseKind === 'dodge' ? 'Dodge' : 'Block'} window)` : ''
+                    }`
+                  : undefined
+              }
               className={`h-3 w-6 border border-zinc-900 ${phase ? PHASE_BG[phase] : 'bg-zinc-800/50'}`}
             />
           );
@@ -269,7 +341,7 @@ export default function RoundCutscene({
       {/* Players above the strip */}
       <div className="mb-1 space-y-1">
         {above.map((fp) => (
-          <MoveBar key={fp.declaredMoveId} fp={fp} ticks={ticks} />
+          <MoveBar key={fp.declaredMoveId} fp={fp} ticks={ticks} startTic={startTic} />
         ))}
       </div>
 
@@ -299,7 +371,7 @@ export default function RoundCutscene({
       {/* NPCs below */}
       <div className="mt-1 space-y-1">
         {below.map((fp) => (
-          <MoveBar key={fp.declaredMoveId} fp={fp} ticks={ticks} />
+          <MoveBar key={fp.declaredMoveId} fp={fp} ticks={ticks} startTic={startTic} />
         ))}
       </div>
 
@@ -313,7 +385,7 @@ export default function RoundCutscene({
               initial={{ opacity: 0, x: -8 }}
               animate={{ opacity: 1, x: 0 }}
               transition={{ duration: 0.18 }}
-              title={JSON.stringify(ev.payload, null, 2)}
+              title={eventDetail(ev, startTic)}
               className={`flex items-baseline gap-2 border-l-2 px-2 py-0.5 text-xs ${
                 PAUSE_EVENTS.has(ev.type)
                   ? 'border-amber-500 bg-amber-950/30 text-amber-200'
