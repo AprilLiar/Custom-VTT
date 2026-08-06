@@ -5,6 +5,12 @@ import { createServer } from 'node:http';
 import { Server } from 'socket.io';
 import { db, all, one, run, initDb } from './db.js';
 import {
+  advancePairResolution,
+  resolveDodge,
+  resolveMoveConflict,
+  resumeAllPairsOnBoot,
+} from './roundResolution.js';
+import {
   DICE_TEMPLATE,
   DIE_SIZES,
   clamp,
@@ -556,7 +562,7 @@ async function getPendingStaminaCost(characterId) {
 // by both GET /api/combat and combat:updated — camelCase, plus the derived
 // relativeTic/isOverflow/overflowBy every existing Tic Counter render
 // already expects (see combatTiming.js's relativeTic).
-function shapePair(row, roundLength) {
+function shapePair(row, roundLength, resolution) {
   const tic = relativeTic({ tic: row.current_tic, roundStartTic: row.round_start_tic, roundLength });
   return {
     pairIndex: row.pair_index,
@@ -568,7 +574,35 @@ function shapePair(row, roundLength) {
     relativeTic: tic.relative,
     isOverflow: tic.isOverflow,
     overflowBy: tic.overflowBy,
+    // Combat Automation overhaul §2.4 — this pair's in-flight resolution,
+    // if any, folded into the regular snapshot so a reconnecting or
+    // newly-connecting client picks up a pending Dodge/conflict prompt
+    // "for free" instead of needing its own resync plumbing. Null on a
+    // pair that's declaring or whose round already completed.
+    resolutionId: resolution?.id ?? null,
+    resolutionStatus: resolution?.status ?? null,
+    pendingDodge:
+      resolution?.status === 'paused_dodge' && resolution.pending_dodge_json
+        ? JSON.parse(resolution.pending_dodge_json)
+        : null,
+    pendingConflict:
+      resolution?.status === 'paused_conflict' && resolution.pending_conflict_json
+        ? JSON.parse(resolution.pending_conflict_json)
+        : null,
   };
+}
+
+// The in-flight (non-complete) resolution per pair, keyed by pair_index —
+// at most one row each, since pair_round_resolutions is UNIQUE(pair_index,
+// round_number) and a pair only ever has one round open at a time. Scoped
+// to non-complete rows rather than fetching the whole table, which grows by
+// one row per pair per round for the life of a fight.
+async function fetchOpenResolutionsByPair() {
+  const rows = await all(
+    `SELECT id, pair_index, round_number, status, pending_dodge_json, pending_conflict_json
+     FROM pair_round_resolutions WHERE status != 'complete'`
+  );
+  return new Map(rows.map((r) => [r.pair_index, r]));
 }
 
 // Broadcasts the Combat Arena's full current state — seating/toggle plus
@@ -580,13 +614,14 @@ function shapePair(row, roundLength) {
 // watching (see isRevealedToViewer above), so this is a per-socket emit
 // rather than one io.emit — the DB round-trip still only happens once.
 async function emitCombatUpdated() {
-  const [state, participants, pairRows, declaredMoveRows] = await Promise.all([
+  const [state, participants, pairRows, declaredMoveRows, openResolutions] = await Promise.all([
     one('SELECT * FROM combat_state WHERE id = 1'),
     all('SELECT * FROM combat_participants ORDER BY side, pair_index, id'),
     all('SELECT * FROM combat_pairs ORDER BY pair_index'),
     fetchDeclaredMoveRows(),
+    fetchOpenResolutionsByPair(),
   ]);
-  const pairs = pairRows.map((row) => shapePair(row, state.round_length));
+  const pairs = pairRows.map((row) => shapePair(row, state.round_length, openResolutions.get(row.pair_index)));
   const pairsByIndex = new Map(pairRows.map((row) => [row.pair_index, row]));
   const base = {
     unevenCombatEnabled: Boolean(state.uneven_combat_enabled),
@@ -1141,6 +1176,51 @@ app.get('/api/ruleset', wrap(async (_req, res) => {
 // picker), every counter relevant to the arena (standalone ones, plus any
 // character counter flagged Show in Combat), the round/Tic timing state,
 // and every declared move so far this fight (Tell-only until revealed).
+// Combat Automation overhaul §3 — the stored replay behind a chat log's
+// "Watch Round N between X and Y" button. Returns the same round_events
+// rows the live cutscene was fed, in seq order, so RoundCutscene renders a
+// replay and a live round through one code path (see §0: the client only
+// ever plays back an event log it did not compute).
+//
+// Deliberately unrestricted (decision #11): by the time a round_summary
+// card exists, that round is fully-resolved public history, watchable by
+// anyone — including players who weren't in the fight.
+app.get('/api/combat/round-replay/:resolutionId', wrap(async (req, res) => {
+  const resolutionId = Number(req.params.resolutionId);
+  if (!Number.isInteger(resolutionId)) return res.status(400).json({ error: 'bad resolutionId' });
+  const resolution = await one('SELECT * FROM pair_round_resolutions WHERE id = ?', [resolutionId]);
+  if (!resolution) return res.status(404).json({ error: 'not found' });
+
+  const [events, participants] = await Promise.all([
+    all('SELECT seq, tic, type, payload, created_at FROM round_events WHERE resolution_id = ? ORDER BY seq', [
+      resolutionId,
+    ]),
+    all(
+      `SELECT cp.character_id AS characterId, cp.side AS side, ch.name AS name, ch.character_type AS characterType
+       FROM combat_participants cp JOIN characters ch ON ch.id = cp.character_id
+       WHERE cp.pair_index = ? ORDER BY cp.id`,
+      [resolution.pair_index]
+    ),
+  ]);
+
+  res.json({
+    resolutionId,
+    pairIndex: resolution.pair_index,
+    roundNumber: resolution.round_number,
+    roundStartTic: resolution.round_start_tic,
+    roundLength: resolution.round_length,
+    status: resolution.status,
+    participants,
+    events: events.map((e) => ({
+      seq: e.seq,
+      tic: e.tic,
+      type: e.type,
+      payload: JSON.parse(e.payload),
+      timestamp: e.created_at,
+    })),
+  });
+}));
+
 app.get('/api/combat', wrap(async (req, res) => {
   const viewer = viewerFromQuery(req.query);
   const [state, participants, pairRows] = await Promise.all([
@@ -1158,7 +1238,7 @@ app.get('/api/combat', wrap(async (req, res) => {
   // character takes ~4 seconds"); now it's 4 total (moves is naturally one
   // per character, getMovesFor's own shape), run concurrently regardless of
   // how many are seated.
-  const [charRows, diceRows, stanceRows, counters, movesByChar, declaredMoveRows] = await Promise.all([
+  const [charRows, diceRows, stanceRows, counters, movesByChar, declaredMoveRows, openResolutions] = await Promise.all([
     charIds.length ? all(`SELECT * FROM characters WHERE id IN (${marks})`, charIds) : [],
     charIds.length ? all(`SELECT * FROM dice WHERE character_id IN (${marks}) ORDER BY id`, charIds) : [],
     charIds.length ? all(`SELECT * FROM stances WHERE character_id IN (${marks}) ORDER BY id`, charIds) : [],
@@ -1170,6 +1250,7 @@ app.get('/api/combat', wrap(async (req, res) => {
       : all('SELECT * FROM counters WHERE character_id IS NULL ORDER BY id'),
     Promise.all(charIds.map((id) => getMovesFor(id))),
     fetchDeclaredMoveRows(),
+    fetchOpenResolutionsByPair(),
   ]);
   const pairsByIndex = new Map(pairRows.map((row) => [row.pair_index, row]));
   const declaredMoves = mapDeclaredMovesForViewer(declaredMoveRows, pairsByIndex, viewer);
@@ -1187,7 +1268,7 @@ app.get('/api/combat', wrap(async (req, res) => {
   res.json({
     unevenCombatEnabled: Boolean(state.uneven_combat_enabled),
     roundLength: state.round_length,
-    pairs: pairRows.map((row) => shapePair(row, state.round_length)),
+    pairs: pairRows.map((row) => shapePair(row, state.round_length, openResolutions.get(row.pair_index))),
     participants,
     characters,
     counters,
@@ -1387,7 +1468,14 @@ app.get('/api/chat', wrap(async (_req, res) => {
         // round/Tic window, every currently-revealed move in the lane with
         // its own embedded `full` data) — self-contained at write time (see
         // buildLaneSnapshotPayload), so no server-side joining needed here.
-        ...(row.kind === 'lane_snapshot' && row.payload ? JSON.parse(row.payload) : {}),
+        // round_summary rows (Combat Automation overhaul §1.5) spread the
+        // same way — a tiny self-contained payload (pairIndex, roundNumber,
+        // resolutionId, the two sides' names) that the chat card renders as
+        // one "Watch Round N" button; the round's actual events are fetched
+        // from the replay endpoint by resolutionId, never inlined here.
+        ...((row.kind === 'lane_snapshot' || row.kind === 'round_summary') && row.payload
+          ? JSON.parse(row.payload)
+          : {}),
         // roll rows carry the same roll-context shape (Combat Automation,
         // sub-phase 3) whenever this roll was for a declared move's own
         // reveal-time Roll — see buildRollContext/logRoll above and the
@@ -3202,6 +3290,7 @@ io.on('connection', (socket) => {
       'SELECT declared_this_round FROM combat_participants WHERE pair_index = ? AND side = ?',
       [participant.pair_index, participant.side]
     );
+    let resolveNow = false;
     if (pairmates.every((p) => p.declared_this_round)) {
       const otherSide = participant.side === 'left' ? 'right' : 'left';
       const otherSideParticipants = await all(
@@ -3212,13 +3301,34 @@ io.on('connection', (socket) => {
         otherSideParticipants.length && otherSideParticipants.some((p) => !p.declared_this_round)
           ? otherSide
           : null;
-      await run('UPDATE combat_pairs SET declaring_side = ? WHERE pair_index = ?', [
+      // Combat Automation overhaul §2.1: a pair whose declaring_side just
+      // cleared is fully done declaring, so it drops straight into
+      // Resolving and its round resolves itself — this is what replaced
+      // the manual "Start Tic Countdown" button, which no longer exists.
+      resolveNow = nextDeclaringSide === null;
+      await run('UPDATE combat_pairs SET declaring_side = ?, phase = ? WHERE pair_index = ?', [
         nextDeclaringSide,
+        resolveNow ? 'resolving' : 'declaration',
         participant.pair_index,
       ]);
     }
 
     await emitCombatUpdated();
+
+    if (resolveNow) {
+      // Runs this pair's whole round synchronously — to completion, or to
+      // the first Dodge/move-conflict pause. Every round_event it produces
+      // is pushed to that pair's audience as it's persisted, so clients
+      // are already animating while this is still running; the engine
+      // itself applies no artificial pacing (all pacing is a client
+      // concern — see the plan's core architecture principle). Other pairs
+      // are untouched and keep running independently.
+      await advancePairResolution(participant.pair_index, io);
+      // The engine moves current_tic, and on a clean finish rolls this
+      // pair into its next round's Declaration phase — the snapshot every
+      // client holds is stale by now either way.
+      await emitCombatUpdated();
+    }
   });
 
   // Combat Automation overhaul: Tic Countdown is now per-pair, not one
@@ -3279,6 +3389,23 @@ io.on('connection', (socket) => {
     if (!pair || pair.phase !== 'resolving') return;
     const newTic = Math.max(pair.round_start_tic, pair.current_tic - 1);
     await run('UPDATE combat_pairs SET current_tic = ? WHERE pair_index = ?', [newTic, pairIndex]);
+    await emitCombatUpdated();
+  });
+
+  // Combat Automation overhaul §3 — the GM's answer to a full-coverage
+  // Dodge prompt: the one human decision left in an otherwise fully
+  // automatic round (decision #2). Block resolves itself from dice math
+  // and never prompts; a Dodge that isn't fully covering the attack's
+  // Active window auto-fails without prompting either. GM-only by design —
+  // this is explicitly the GM's call, so a Player socket can't answer it
+  // even if they somehow received the prompt.
+  //
+  // Applying the decision and resuming the paused round both happen inside
+  // resolveDodge, which also rejects a stale/duplicate click from a second
+  // GM tab (see its own guard).
+  on('combat:resolve_dodge', async ({ pairIndex, outcome, attackerDeclaredMoveId }) => {
+    if (socket.data.identity?.role !== 'gm') return;
+    await resolveDodge(pairIndex, { outcome, attackerDeclaredMoveId }, io);
     await emitCombatUpdated();
   });
 
@@ -3542,6 +3669,32 @@ io.on('connection', (socket) => {
   // recursive re-emit below).
   on('combat:resolve_move_conflict', async ({ declaredMoveId, blockerDeclaredMoveId, choice }) => {
     if (!['forfeit', 'postpone'].includes(choice)) return;
+
+    // Combat Automation overhaul §3: this prompt's payload and its
+    // player-scoped audience are deliberately unchanged (decision #3) —
+    // only the trigger path is new, so the same choice can now arrive from
+    // either the manual flow below or the automatic engine's own pause.
+    // When the engine is the one paused on this exact move, hand off to
+    // it: it owns both applying the choice and resuming the round from
+    // where it stopped (including re-pausing on a cascading second
+    // collision). Parsed in JS rather than via json_extract to avoid
+    // depending on libSQL's JSON1 surface for a list this short.
+    const pausedRows = await all(
+      `SELECT pair_index, pending_conflict_json FROM pair_round_resolutions WHERE status = 'paused_conflict'`
+    );
+    const pausedPair = pausedRows.find((r) => {
+      try {
+        return JSON.parse(r.pending_conflict_json)?.declaredMoveId === declaredMoveId;
+      } catch {
+        return false;
+      }
+    });
+    if (pausedPair) {
+      await resolveMoveConflict(pausedPair.pair_index, { declaredMoveId, choice }, io);
+      await emitCombatUpdated();
+      return;
+    }
+
     const row = await one(
       `SELECT dm.*, m.startup_tics, m.active_tics, m.recovery_tics, m.stamina_cost
        FROM declared_moves dm JOIN moves m ON m.id = dm.move_id
@@ -3691,6 +3844,16 @@ await initDb();
 // on every boot doubles as clearing it between sessions on Render's free
 // tier, which spins the server down after inactivity.
 await run('DELETE FROM chat_log');
+// Combat Automation overhaul §2.4 — crash recovery. Render's free tier can
+// sleep or cold-start mid-round; any pair left mid-resolution picks up from
+// its own resolved_through_tic and runs to completion (or back to a
+// genuine Dodge/conflict pause, both of which are DB-durable and so
+// survived the restart intact). Deliberately not awaited before listen():
+// a pair that can't finish resolving must not stop the server from coming
+// up, and the sweep needs no client to be connected to make progress.
+resumeAllPairsOnBoot(io).catch((err) => {
+  console.error('Failed to resume in-flight round resolutions on boot:', err);
+});
 httpServer.listen(PORT, () => {
   console.log(`Dogfight server listening on port ${PORT}`);
 });

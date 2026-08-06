@@ -713,7 +713,7 @@ async function resolveAttack(io, { row, pairIndex, tic, emitEvent }) {
   const defenderDM = await one(
     `SELECT dm.id, dm.character_id, dm.placement_tic, dm.reveal_tic, dm.appendage_choice,
             dm.recovery_extension_tics AS current_extension_tics,
-            m.id AS move_id, m.active_tics, m.recovery_tics, m.is_defensive, m.defense_kind,
+            m.id AS move_id, m.name AS move_name, m.active_tics, m.recovery_tics, m.is_defensive, m.defense_kind,
             m.roll_type, m.custom_roll_size, m.roll_modifier, ch.name AS character_name
      FROM declared_moves dm JOIN moves m ON m.id = dm.move_id JOIN characters ch ON ch.id = dm.character_id
      WHERE dm.id = ?`,
@@ -788,8 +788,10 @@ async function resolveAttack(io, { row, pairIndex, tic, emitEvent }) {
       await emitEvent(tic, 'dodge_prompt', {
         attackerDeclaredMoveId: row.declaredMoveId,
         attackerCharacterName: row.characterName,
+        attackerMoveName: row.moveName,
         defenderDeclaredMoveId: defenderDM.id,
         defenderCharacterName: defenderDM.character_name,
+        defenderMoveName: defenderDM.move_name,
         attackerResult: total,
       });
       return { paused: true };
@@ -979,9 +981,45 @@ async function processTic(io, { pairIndex, tic, emitEvent }) {
     // mechanism into the new engine now, only to tear it back out again in
     // Phase E, isn't worth it. round_events (below) is this engine's own
     // event log and the only reveal record it produces so far.
-    const revealRows = await all(`SELECT id, character_id, move_id FROM declared_moves WHERE id IN (${marks})`, ids);
+    // The reveal event carries the move's whole footprint and display
+    // identity, not just its ids — this is what makes a stored replay
+    // self-contained (§0: the client plays back a log it did not compute,
+    // and a replay watched days later must render identically to the live
+    // cutscene without re-deriving anything from current combat state,
+    // which by then describes a completely different round).
+    const revealRows = await all(
+      `SELECT dm.id, dm.character_id, dm.move_id, dm.placement_tic, dm.reveal_tic,
+              dm.recovery_extension_tics, dm.appendage_choice,
+              m.name AS move_name, m.active_tics, m.recovery_tics, m.defense_frame_positions,
+              m.is_defensive, m.defense_kind,
+              ch.name AS character_name, ch.character_type,
+              cp.side AS side
+       FROM declared_moves dm
+       JOIN moves m ON m.id = dm.move_id
+       JOIN characters ch ON ch.id = dm.character_id
+       LEFT JOIN combat_participants cp ON cp.character_id = dm.character_id
+       WHERE dm.id IN (${marks})`,
+      ids
+    );
     for (const r of revealRows) {
-      await emitEvent(tic, 'reveal', { declaredMoveId: r.id, characterId: r.character_id, moveId: r.move_id });
+      const activeEndTic = r.reveal_tic + r.active_tics;
+      await emitEvent(tic, 'reveal', {
+        declaredMoveId: r.id,
+        characterId: r.character_id,
+        characterName: r.character_name,
+        characterType: r.character_type,
+        side: r.side,
+        moveId: r.move_id,
+        moveName: r.move_name,
+        appendageChoice: r.appendage_choice,
+        isDefensive: Boolean(r.is_defensive),
+        defenseKind: r.defense_kind,
+        placementTic: r.placement_tic,
+        revealTic: r.reveal_tic,
+        activeEndTic,
+        recoveryEndTic: activeEndTic + r.recovery_tics + (r.recovery_extension_tics ?? 0),
+        defenseFramePositions: JSON.parse(r.defense_frame_positions ?? '[]'),
+      });
     }
   }
 
@@ -1233,6 +1271,67 @@ async function startPairDeclaration(io, pairIndex) {
   );
 }
 
+// §1.5 — the once-per-pair-per-round chat card that replaces
+// chat:lane_snapshot's per-reveal spam, posted exactly once as a pair's
+// resolution flips to 'complete'. It carries only what the card itself
+// renders ("Watch Round N between X and Y") plus the resolutionId the
+// replay endpoint keys off; the events themselves are NOT copied into the
+// payload, so a later replay and the live cutscene are guaranteed to be the
+// same round_events rows by construction rather than two representations
+// kept in sync.
+//
+// Unfiltered broadcast, unlike the round_events above: by the time this
+// posts, the round is fully-resolved public history, and the replay is
+// explicitly watchable by anyone (decision #11) — including players who
+// weren't in this fight.
+async function postRoundSummary(io, { pairIndex, roundNumber, resolutionId }) {
+  const rows = await all(
+    `SELECT cp.side AS side, ch.name AS name
+     FROM combat_participants cp JOIN characters ch ON ch.id = cp.character_id
+     WHERE cp.pair_index = ? ORDER BY cp.id`,
+    [pairIndex]
+  );
+  const payload = {
+    pairIndex,
+    roundNumber,
+    resolutionId,
+    leftNames: rows.filter((r) => r.side === 'left').map((r) => r.name),
+    rightNames: rows.filter((r) => r.side === 'right').map((r) => r.name),
+  };
+  await run(
+    `INSERT INTO chat_log (kind, character_id, dice_rolled, payload) VALUES ('round_summary', ?, '[]', ?)`,
+    [GM_CHAT_SENTINEL_ID, JSON.stringify(payload)]
+  );
+  io.emit('chat:round_summary', { kind: 'round_summary', ...payload, timestamp: new Date().toISOString() });
+}
+
+// §3 — who is entitled to watch this pair's cutscene: always the GM, and a
+// Player only when their own character is seated in this pair. A direct
+// extension of server/index.js's isRevealedToViewer, scoped to *pair
+// membership* rather than *move ownership*. No further per-event redaction
+// is needed on top of this: every round_event fires at-or-after its own
+// move's reveal_tic, so anyone entitled to watch this pair at all is
+// entitled to every event in its log.
+//
+// Fails closed — a socket that hasn't sent identity:set yet sees nothing,
+// rather than falling back to a broadcast. This is a secrecy boundary, and
+// an unidentified connection has no claim to any pair's fight.
+function emitToPairAudience(io, seatedCharacterIds, event, payload) {
+  for (const viewerSocket of io.sockets.sockets.values()) {
+    const viewer = viewerSocket.data?.identity;
+    if (!viewer) continue;
+    if (viewer.role === 'gm' || (viewer.role === 'player' && seatedCharacterIds.has(viewer.characterId))) {
+      viewerSocket.emit(event, payload);
+    }
+  }
+}
+
+function emitToGMs(io, event, payload) {
+  for (const viewerSocket of io.sockets.sockets.values()) {
+    if (viewerSocket.data?.identity?.role === 'gm') viewerSocket.emit(event, payload);
+  }
+}
+
 // Builds this resolution's own emitEvent(tic, type, payload) closure —
 // shared by advancePairResolution (continuing the loop) and
 // resolveDodge/resolveMoveConflict below (posting the resume's own event
@@ -1241,9 +1340,16 @@ async function startPairDeclaration(io, pairIndex) {
 // so calling this fresh each time (rather than holding one instance across
 // a pause) is safe.
 async function makeEmitEvent(io, resolution, pairIndex, roundNumber) {
-  let seq = (
-    await one('SELECT COALESCE(MAX(seq), 0) AS maxSeq FROM round_events WHERE resolution_id = ?', [resolution.id])
-  ).maxSeq;
+  const [seqRow, seatedRows] = await Promise.all([
+    one('SELECT COALESCE(MAX(seq), 0) AS maxSeq FROM round_events WHERE resolution_id = ?', [resolution.id]),
+    all('SELECT character_id FROM combat_participants WHERE pair_index = ?', [pairIndex]),
+  ]);
+  let seq = seqRow.maxSeq;
+  // Read once per advancePairResolution call rather than per event — a
+  // pair's seating cannot change while it's mid-resolution (seating is a
+  // Declaration-phase action), and this is on the hot path of every Tic.
+  const seatedIds = new Set(seatedRows.map((r) => r.character_id));
+
   return async (tic, type, payload) => {
     seq += 1;
     await run(
@@ -1251,7 +1357,7 @@ async function makeEmitEvent(io, resolution, pairIndex, roundNumber) {
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
       [resolution.id, pairIndex, roundNumber, seq, tic, type, JSON.stringify(payload)]
     );
-    io.emit('combat:round_event', {
+    const envelope = {
       pairIndex,
       roundNumber,
       resolutionId: resolution.id,
@@ -1260,7 +1366,18 @@ async function makeEmitEvent(io, resolution, pairIndex, roundNumber) {
       type,
       payload,
       timestamp: new Date().toISOString(),
-    });
+    };
+    emitToPairAudience(io, seatedIds, 'combat:round_event', envelope);
+    // §3 — the Dodge prompt additionally goes to every GM socket
+    // unconditionally, regardless of which pair that GM happens to be
+    // watching: it's a blocking decision only they can make, so it has to
+    // reach them wherever they are in the app (the client delivers it
+    // through CombatHeaderBar's global dialog queue). Sent from here, off
+    // the single dodge_prompt round_event, so the stored log and the live
+    // prompt can never disagree about what's being asked.
+    if (type === 'dodge_prompt') {
+      emitToGMs(io, 'combat:dodge_prompt', { ...envelope.payload, resolutionId: resolution.id, pairIndex, roundNumber, tic });
+    }
   };
 }
 
@@ -1328,6 +1445,7 @@ async function advancePairResolution(pairIndex, io) {
     resolution.id,
   ]);
   await emitEvent(roundEndTicExclusive - 1, 'round_complete', { pairIndex, roundNumber: pair.round_number });
+  await postRoundSummary(io, { pairIndex, roundNumber: pair.round_number, resolutionId: resolution.id });
   await startPairDeclaration(io, pairIndex);
 }
 
@@ -1336,7 +1454,7 @@ async function advancePairResolution(pairIndex, io) {
 // second tab, or the round already moved on) — rejects rather than
 // re-applying, matching the plan's own "rejects a stale/duplicate click"
 // requirement for this event.
-async function resolveDodge(pairIndex, { outcome }, io) {
+async function resolveDodge(pairIndex, { outcome, attackerDeclaredMoveId }, io) {
   if (!['successful', 'failed'].includes(outcome)) return;
   const resolution = await one(
     `SELECT * FROM pair_round_resolutions WHERE pair_index = ? AND status = 'paused_dodge'`,
@@ -1344,6 +1462,14 @@ async function resolveDodge(pairIndex, { outcome }, io) {
   );
   if (!resolution || !resolution.pending_dodge_json) return;
   const pending = JSON.parse(resolution.pending_dodge_json);
+  // Reject a stale/duplicate click from a second GM tab: the prompt being
+  // answered must be the one actually pending right now. The status check
+  // above already catches "this pause is over"; this additionally catches
+  // "the round paused again on a DIFFERENT Dodge before the stale click
+  // landed", which status alone can't distinguish. Optional (so a caller
+  // that doesn't track it still works), mirroring how resolveMoveConflict
+  // validates its own pending declaredMoveId.
+  if (attackerDeclaredMoveId != null && pending.attackerDeclaredMoveId !== attackerDeclaredMoveId) return;
 
   const defenderDM = await one(
     `SELECT dm.id, dm.character_id, dm.reveal_tic, dm.appendage_choice,

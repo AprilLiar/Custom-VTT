@@ -4,6 +4,7 @@ import { socket } from '../socket.js';
 import { getChat, getCharacters, getTells, getTags, getRuleset, getMoves } from '../lib/api.js';
 import { fileToChatImage } from '../lib/image.js';
 import { folderPath } from '../lib/folders.js';
+import { phaseBgAt } from '../lib/framePhaseColors.js';
 import { useRole } from '../roleContext.jsx';
 import { useSocketRefresh } from '../lib/connection.js';
 import Thumb from './Thumb.jsx';
@@ -12,6 +13,8 @@ import MoveCard from './MoveCard.jsx';
 import DiceIcon from './DiceIcon.jsx';
 import DamageApplicationDialog from './DamageApplicationDialog.jsx';
 import ResolveDefenseDialog from './ResolveDefenseDialog.jsx';
+import DialogShell from './DialogShell.jsx';
+import RoundCutscene from './RoundCutscene.jsx';
 
 // Combat Automation (Phase 9, sub-phase 4 — 4.1's damage formula):
 // halfDamageSteps = floor(result / 5), damage = halfDamageSteps * 0.5.
@@ -25,28 +28,15 @@ function computeHitDamage(result) {
 
 const DICE_TRAY_SIZES = [4, 6, 8, 10, 12];
 
-// Phase colors match FrameBar/the live Tic Counter's own footprint palette
-// (see CombatArena.jsx's DECLARED_PHASE_COLOR/TicSquare zoneStyle) so a
-// snapshot reads consistently with the Arena itself.
-const SNAPSHOT_PHASE_COLOR = {
-  startup: 'bg-amber-500',
-  active: 'bg-rose-500',
-  recovery: 'bg-blue-500',
-  defense: 'bg-emerald-500',
-};
-
 // Which phase(s) `move` occupies at `tic` — an array since two different
 // characters' moves in the same lane can genuinely overlap the same Tic
 // (both throwing at once); each gets its own thin colored segment in that
 // square rather than one hiding the other.
-function snapshotPhaseColorAt(move, tic) {
-  if (tic < move.placementTic || tic >= move.recoveryEndTic) return null;
-  const offset = tic - move.placementTic;
-  if (move.defenseFramePositions?.includes(offset)) return SNAPSHOT_PHASE_COLOR.defense;
-  if (tic < move.revealTic) return SNAPSHOT_PHASE_COLOR.startup;
-  if (tic < move.activeEndTic) return SNAPSHOT_PHASE_COLOR.active;
-  return SNAPSHOT_PHASE_COLOR.recovery;
-}
+//
+// The palette and the phase walk both live in framePhaseColors.js now
+// (Combat Automation overhaul §4.3) — this file used to carry its own copy
+// of each, one of four near-duplicates across the client.
+const snapshotPhaseColorAt = phaseBgAt;
 
 // A cumulative per-lane Tic Counter snapshot (decided, Chat Log redesign,
 // item 4): posted fresh every time any move in the lane reveals, so the
@@ -60,6 +50,27 @@ function snapshotPhaseColorAt(move, tic) {
 // snapshot, not this one — see overlapsRoundWindow server-side). Clicking a
 // bar re-uses the same Genius Observer honor-system gate the old single-move
 // card had, expanding the full MoveCard for just that move.
+// Combat Automation overhaul §4.2 — one button per pair per round,
+// replacing chat:lane_snapshot's per-reveal spam. Deliberately ungated
+// (decision #11): a resolved round is public history, so anyone can watch
+// any round back, including one they weren't in.
+function RoundSummaryCard({ entry, onWatch }) {
+  const left = (entry.leftNames ?? []).join(' & ') || 'Left';
+  const right = (entry.rightNames ?? []).join(' & ') || 'Right';
+  return (
+    <button
+      type="button"
+      onClick={() => onWatch?.(entry.resolutionId)}
+      className="mt-1 flex w-full items-center gap-2 panel-cut-sm border border-brand-800/60 bg-brand-950/30 p-2 text-left hover:bg-brand-950/60"
+    >
+      <span className="font-display text-xs uppercase tracking-wide text-brand-300">▶ Watch</span>
+      <span className="font-display text-xs text-zinc-300">
+        Round {entry.roundNumber} between {left} and {right}
+      </span>
+    </button>
+  );
+}
+
 function LaneSnapshotCard({ entry, moveInfo }) {
   const [expandedId, setExpandedId] = useState(null);
   const { roundNumber, roundStartTic, roundLength, moves } = entry;
@@ -171,7 +182,7 @@ function LaneSnapshotCard({ entry, moveInfo }) {
   );
 }
 
-function Entry({ entry, character, moveInfo, characters, defenseResolutions }) {
+function Entry({ entry, character, moveInfo, characters, defenseResolutions, onWatchRound }) {
   const [expanded, setExpanded] = useState(false);
   const [openDialog, setOpenDialog] = useState(null); // 'apply' | 'resolve' | null
   const { role } = useRole();
@@ -206,6 +217,8 @@ function Entry({ entry, character, moveInfo, characters, defenseResolutions }) {
               />
             )}
           </div>
+        ) : entry.kind === 'round_summary' ? (
+          <RoundSummaryCard entry={entry} onWatch={onWatchRound} />
         ) : entry.kind === 'lane_snapshot' ? (
           <LaneSnapshotCard entry={entry} moveInfo={moveInfo} />
         ) : entry.kind === 'move_reveal' ? (
@@ -603,6 +616,10 @@ function Composer({ characters }) {
 export default function ChatPanel({ open, onClose }) {
   const { role } = useRole();
   const [entries, setEntries] = useState([]);
+  // Which round the "Watch Round N" button opened, if any (§4.2) — the
+  // replay itself is a fullscreen RoundCutscene, matching how
+  // DamageApplicationDialog already takes over the screen.
+  const [replayResolutionId, setReplayResolutionId] = useState(null);
   const [characters, setCharacters] = useState(new Map());
   // Only needed to render a move_reveal card's expanded full MoveCard (see
   // Entry above) — the same lookups CombatArena.jsx/MovesTab.jsx already
@@ -639,6 +656,7 @@ export default function ChatPanel({ open, onClose }) {
     const onMessage = (entry) => setEntries((prev) => [...prev, entry]);
     const onMoveReveal = (entry) => setEntries((prev) => [...prev, entry]);
     const onLaneSnapshot = (entry) => setEntries((prev) => [...prev, entry]);
+    const onRoundSummary = (entry) => setEntries((prev) => [...prev, entry]);
     const onCleared = () => setEntries([]);
     const onDefenseResolved = (payload) =>
       setDefenseResolutions((prev) => new Map(prev).set(payload.attackerDeclaredMoveId, payload));
@@ -646,6 +664,7 @@ export default function ChatPanel({ open, onClose }) {
     socket.on('chat:message', onMessage);
     socket.on('chat:move_reveal', onMoveReveal);
     socket.on('chat:lane_snapshot', onLaneSnapshot);
+    socket.on('chat:round_summary', onRoundSummary);
     socket.on('chat:cleared', onCleared);
     socket.on('combat:defense_resolved', onDefenseResolved);
     return () => {
@@ -746,6 +765,7 @@ export default function ChatPanel({ open, onClose }) {
               moveInfo={moveInfo}
               characters={characters}
               defenseResolutions={defenseResolutions}
+              onWatchRound={setReplayResolutionId}
             />
           ))
         )}
@@ -756,6 +776,15 @@ export default function ChatPanel({ open, onClose }) {
           .filter((c) => role === 'gm' || c.character_type === 'pc')
           .sort((a, b) => a.name.localeCompare(b.name))}
       />
+      {replayResolutionId != null && (
+        <DialogShell
+          title="Round replay"
+          variant="fullscreen"
+          onClose={() => setReplayResolutionId(null)}
+        >
+          <RoundCutscene mode="replay" resolutionId={replayResolutionId} />
+        </DialogShell>
+      )}
     </aside>
   );
 }

@@ -12,6 +12,8 @@ import {
 import { portraitSrc } from '../lib/image.js';
 import { dieLabel, tintFor, POOLS } from '../lib/dice.js';
 import { buildFolderTree } from '../lib/folders.js';
+import { FRAME_PHASES, PHASE_BG, PHASE_LABEL, PHASE_ZONE, phaseBgAt } from '../lib/framePhaseColors.js';
+import RoundCutscene from './RoundCutscene.jsx';
 import { REWARD_LABELS, REWARD_COLORS } from '../lib/counterDisplay.js';
 import { setDraggingMove, onDraggingMoveChange } from '../lib/dragMoveState.js';
 import { useSocketRefresh } from '../lib/connection.js';
@@ -359,13 +361,6 @@ function SeatPicker({ characterId, characterName, pairIndices, participants, onC
 // Startup/Active/Recovery length dictates, without ever revealing which
 // square any *other* declared move actually landed on (that stays hidden
 // until reveal).
-const DECLARED_PHASE_COLOR = {
-  startup: 'bg-yellow-500',
-  active: 'bg-red-500',
-  recovery: 'bg-blue-500',
-  defense: 'bg-green-500',
-};
-
 // Which phase (if any) each already-declared move occupies at this absolute
 // Tic — used for the small footprint-preview squares below, shown only to
 // whoever currently has the declare floor, and only for **their own**
@@ -373,17 +368,12 @@ const DECLARED_PHASE_COLOR = {
 // declaredMoves filtering at the call site) — never another character's,
 // declared or not. This is purely a self-service planning aid (don't
 // double-book your own Tics), not a window into the opponent's timing.
+//
+// phaseBgAt (framePhaseColors.js, Combat Automation overhaul §4.3) is the
+// shared client-side mirror of the server's phaseAtTic; this file used to
+// hand-roll both the phase walk and its own copy of the palette.
 function declaredPhasesAt(absoluteTic, declaredMoves) {
-  const colors = [];
-  for (const dm of declaredMoves) {
-    if (absoluteTic < dm.placementTic || absoluteTic >= dm.recoveryEndTic) continue;
-    const offset = absoluteTic - dm.placementTic;
-    if (dm.defenseFramePositions?.includes(offset)) colors.push(DECLARED_PHASE_COLOR.defense);
-    else if (absoluteTic < dm.revealTic) colors.push(DECLARED_PHASE_COLOR.startup);
-    else if (absoluteTic < dm.activeEndTic) colors.push(DECLARED_PHASE_COLOR.active);
-    else colors.push(DECLARED_PHASE_COLOR.recovery);
-  }
-  return colors;
+  return declaredMoves.map((dm) => phaseBgAt(dm, absoluteTic)).filter(Boolean);
 }
 
 // Exported so CombatHeaderBar can render the exact same square visuals in
@@ -411,12 +401,7 @@ export function TicSquare({
   useEffect(() => {
     if (isCurrent) ref.current?.scrollIntoView({ inline: 'center', block: 'nearest', behavior: 'smooth' });
   }, [isCurrent]);
-  const zoneStyle = {
-    startup: 'border-amber-300 bg-amber-500/80 shadow-[0_0_10px_rgba(251,191,36,0.45)]',
-    active: 'border-rose-300 bg-rose-500/80 shadow-[0_0_10px_rgba(244,63,94,0.45)]',
-    recovery: 'border-blue-300 bg-blue-500/80 shadow-[0_0_10px_rgba(59,130,246,0.45)]',
-    blocked: 'border-zinc-600 bg-zinc-800 text-zinc-600',
-  }[footprintZone];
+  const zoneStyle = PHASE_ZONE[footprintZone];
   // Capped at 2 badges so they never crowd a 44px square — the tooltip
   // still lists everyone if there are more.
   const shownNames = (overflowNames ?? []).slice(0, 2);
@@ -609,18 +594,13 @@ export function TicCounterCentral({
       </div>
       {showDeclaredPreview && (
         <div className="flex flex-wrap items-center justify-center gap-2 text-[9px] text-zinc-600">
-          <span className="flex items-center gap-1">
-            <span className="h-1.5 w-1.5 bg-yellow-500" /> Startup
-          </span>
-          <span className="flex items-center gap-1">
-            <span className="h-1.5 w-1.5 bg-red-500" /> Active
-          </span>
-          <span className="flex items-center gap-1">
-            <span className="h-1.5 w-1.5 bg-blue-500" /> Recovery
-          </span>
-          <span className="flex items-center gap-1">
-            <span className="h-1.5 w-1.5 bg-green-500" /> Defense
-          </span>
+          {/* Driven off the shared palette so the swatches can't drift from
+              the squares they describe — they had already drifted once. */}
+          {FRAME_PHASES.map((phase) => (
+            <span key={phase} className="flex items-center gap-1">
+              <span className={`h-1.5 w-1.5 ${PHASE_BG[phase]}`} /> {PHASE_LABEL[phase]}
+            </span>
+          ))}
           <span>— your declared moves this round</span>
         </div>
       )}
@@ -1597,6 +1577,22 @@ export default function CombatArena() {
             </div>
           )}
 
+          {/* Combat Automation overhaul §4.1: once a pair drops into
+              Resolving, its round is already computed server-side and the
+              strip stops being a live/steppable control — the cutscene
+              takes over and plays the round's event log back. Every other
+              pair keeps rendering its own state independently below. */}
+          {displayPair?.phase === 'resolving' ? (
+            <RoundCutscene
+              mode="live"
+              pairIndex={displayPairIndex}
+              roundNumber={displayPair?.roundNumber}
+              roundStartTic={displayPair?.roundStartTic}
+              roundLength={combat.roundLength}
+              pendingDodge={displayPair?.pendingDodge}
+              pendingConflict={displayPair?.pendingConflict}
+            />
+          ) : (
           <TicCounterCentral
             pairIndex={displayPairIndex}
             phase={displayPair?.phase}
@@ -1619,6 +1615,7 @@ export default function CombatArena() {
             overflowTics={overflowTics}
             role={role}
           />
+          )}
 
           <DeclarationLanes
             pairIndices={pairIndices}

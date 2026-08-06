@@ -34,7 +34,29 @@ const { advancePairResolution, startPairDeclaration, resolveDodge, resolveMoveCo
 const { DICE_TEMPLATE } = await import('../gameLogic.js');
 
 const originalRandom = Math.random;
-const mockIo = { emit: () => {} };
+
+// A stand-in for the real Socket.io server. `emit` is the global broadcast
+// (chat/character/roll updates, which stay unfiltered exactly as the manual
+// flow already broadcasts them); `sockets.sockets` is the per-socket
+// registry the engine walks to deliver pair-scoped round_events and GM-only
+// Dodge prompts — the same shape server/index.js's emitCombatUpdated
+// already iterates. Each fake socket records what it received so a test can
+// assert who saw what (see the secrecy test at the bottom of this file).
+function makeIo(identities = []) {
+  const sockets = new Map();
+  identities.forEach((identity, i) => {
+    sockets.set(String(i), {
+      data: { identity },
+      received: [],
+      emit(event, payload) {
+        this.received.push({ event, payload });
+      },
+    });
+  });
+  return { emit: () => {}, sockets: { sockets } };
+}
+
+const mockIo = makeIo();
 
 let tellId;
 before(async () => {

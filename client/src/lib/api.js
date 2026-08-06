@@ -31,3 +31,9 @@ export const search = (q) => fetch(`/api/search?q=${encodeURIComponent(q)}`).the
 // declaredMoves list comes back even on this initial/refresh fetch.
 export const getCombat = (identity) =>
   fetch(`/api/combat${identity ? `?${new URLSearchParams(identity)}` : ''}`).then(json);
+
+// Combat Automation overhaul §3 — a completed round's stored event log,
+// behind the chat log's "Watch Round N" button. Takes no identity: a
+// resolved round is public history, watchable by anyone (decision #11).
+export const getRoundReplay = (resolutionId) =>
+  fetch(`/api/combat/round-replay/${resolutionId}`).then(json);

@@ -71,21 +71,23 @@ async function migrateMoveInteractionsTrigger() {
 }
 
 // chat_log.kind originally had a 2-value CHECK ('roll','message'), then grew
-// to 3 ('move_reveal'). Same rebuild pattern each time SQLite can't ALTER a
-// CHECK constraint in place — a fresh database's CREATE TABLE IF NOT EXISTS
-// above already gets the current (4-value) CHECK directly, so this only
-// fires against a database whose stored table SQL still has an older one
-// (which, as of the lane_snapshot redesign, is every database that predates
-// it — including the currently-deployed production one).
+// to 3 ('move_reveal'), then 4 ('lane_snapshot'), now 5 ('round_summary',
+// the Combat Automation overhaul's once-per-pair-per-round replay card —
+// §1.5). Same rebuild pattern each time, since SQLite can't ALTER a CHECK
+// constraint in place — a fresh database's CREATE TABLE IF NOT EXISTS below
+// already gets the current CHECK directly, so this only fires against a
+// database whose stored table SQL still has an older one (which, as of this
+// overhaul, is every database that predates it — including the
+// currently-deployed production one).
 async function migrateChatLogKind() {
   const row = await one(
     "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'chat_log'"
   );
-  if (!row || row.sql.includes('lane_snapshot')) return;
+  if (!row || row.sql.includes('round_summary')) return;
   await run(`
     CREATE TABLE chat_log_v2 (
       id INTEGER PRIMARY KEY,
-      kind TEXT NOT NULL DEFAULT 'roll' CHECK(kind IN ('roll','message','move_reveal','lane_snapshot')),
+      kind TEXT NOT NULL DEFAULT 'roll' CHECK(kind IN ('roll','message','move_reveal','lane_snapshot','round_summary')),
       character_id INTEGER NOT NULL,
       dice_rolled TEXT NOT NULL,
       modifier INTEGER NOT NULL DEFAULT 0,
@@ -262,7 +264,7 @@ export async function initDb() {
   await run(`
     CREATE TABLE IF NOT EXISTS chat_log (
       id INTEGER PRIMARY KEY,
-      kind TEXT NOT NULL DEFAULT 'roll' CHECK(kind IN ('roll','message','move_reveal','lane_snapshot')),
+      kind TEXT NOT NULL DEFAULT 'roll' CHECK(kind IN ('roll','message','move_reveal','lane_snapshot','round_summary')),
       character_id INTEGER NOT NULL,
       dice_rolled TEXT NOT NULL, -- JSON array of {slot_name, size, bonus, result}
       modifier INTEGER NOT NULL DEFAULT 0,

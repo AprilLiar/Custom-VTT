@@ -9,6 +9,7 @@ import { onDraggingMoveChange } from '../lib/dragMoveState.js';
 import { useIsDesktop } from '../lib/useMediaQuery.js';
 import RollDialog from './RollDialog.jsx';
 import MoveConflictDialog from './MoveConflictDialog.jsx';
+import DodgePromptDialog from './DodgePromptDialog.jsx';
 
 // This viewer's own current standing in the fight — "waiting for
 // declaration," "your turn," and so on (decided, Tic navigation redesign).
@@ -205,6 +206,40 @@ export default function CombatHeaderBar() {
     return () => socket.off('combat:move_conflict', onConflict);
   }, [combat, role, characterId]);
 
+  // Combat Automation overhaul §3/§4.1 — the Dodge prompt, the one human
+  // decision left in an automatic round. Unlike the conflict prompt above
+  // (scoped to whoever controls the affected character), this goes to the
+  // GM unconditionally, regardless of which pair they're viewing: the
+  // paused pair's round cannot continue until they answer, so it has to
+  // reach them wherever they are in the app. Mounted here rather than in
+  // the Arena for exactly that reason.
+  const [dodgeQueue, setDodgeQueue] = useState([]);
+  const dodgeKey = (d) => `${d.pairIndex}:${d.attackerDeclaredMoveId}`;
+  useEffect(() => {
+    if (role !== 'gm') return undefined;
+    const onDodge = (payload) =>
+      setDodgeQueue((q) => (q.some((d) => dodgeKey(d) === dodgeKey(payload)) ? q : [...q, payload]));
+    socket.on('combat:dodge_prompt', onDodge);
+    return () => socket.off('combat:dodge_prompt', onDodge);
+  }, [role]);
+
+  // §2.4 — a GM who connects (or reconnects) while a pair is already paused
+  // picks the prompt up from the regular combat snapshot, since the live
+  // push above only reached sockets connected at the moment it fired. Same
+  // dedupe key, so a socket that got both doesn't queue it twice.
+  useEffect(() => {
+    if (role !== 'gm' || !combat) return;
+    const pending = (combat.pairs ?? [])
+      .filter((p) => p.pendingDodge)
+      .map((p) => ({ ...p.pendingDodge, pairIndex: p.pairIndex, roundNumber: p.roundNumber }));
+    if (!pending.length) return;
+    setDodgeQueue((q) => {
+      const seen = new Set(q.map(dodgeKey));
+      const added = pending.filter((d) => !seen.has(dodgeKey(d)));
+      return added.length ? [...q, ...added] : q;
+    });
+  }, [combat, role]);
+
   const autoRollDialog = (() => {
     if (!autoRollQueue.length || !combat) return null;
     const dm = autoRollQueue[0];
@@ -255,6 +290,23 @@ export default function CombatHeaderBar() {
         moveName={dm?.moveName}
         characterName={entry.character.name}
         onResolve={() => setConflictQueue((q) => q.slice(1))}
+      />
+    );
+  })();
+
+  const dodgeDialog = (() => {
+    if (!dodgeQueue.length) return null;
+    const d = dodgeQueue[0];
+    return (
+      <DodgePromptDialog
+        pairIndex={d.pairIndex}
+        attackerDeclaredMoveId={d.attackerDeclaredMoveId}
+        attackerCharacterName={d.attackerCharacterName}
+        attackerMoveName={d.attackerMoveName}
+        defenderCharacterName={d.defenderCharacterName}
+        defenderMoveName={d.defenderMoveName}
+        attackerResult={d.attackerResult}
+        onResolve={() => setDodgeQueue((q) => q.slice(1))}
       />
     );
   })();
@@ -396,6 +448,7 @@ export default function CombatHeaderBar() {
       )}
       {autoRollDialog}
       {conflictDialog}
+      {dodgeDialog}
     </div>
   );
 }
