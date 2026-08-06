@@ -14,6 +14,8 @@ import CombatHeaderBar from './components/CombatHeaderBar.jsx';
 import SearchBar from './components/SearchBar.jsx';
 import SettingsPage from './components/SettingsPage.jsx';
 import ConnectionBanner from './components/ConnectionBanner.jsx';
+import GmToolsWidget from './components/GmToolsWidget.jsx';
+import RollRequestPrompt from './components/RollRequestPrompt.jsx';
 
 // Mobile readiness (Change 002) §5.1/14.2: bottom navigation is the primary
 // mobile nav (recommended default) — Arena/Character(s)/Compendium/Chat,
@@ -218,6 +220,13 @@ function Shell() {
         onToggleChat={() => setChatOpen((v) => !v)}
         unreadChat={unreadChat}
       />
+
+      {/* Both are global on purpose: the GM's tool drawer has to be reachable
+          from any page (it renders nothing for a Player), and a roll request
+          has to find its player wherever they are — the combat header bar,
+          the app's other global mount point, only exists during a fight. */}
+      <GmToolsWidget />
+      <RollRequestPrompt />
     </div>
   );
 }
