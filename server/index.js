@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { createServer } from 'node:http';
@@ -933,6 +934,23 @@ app.get('/api/search', wrap(async (req, res) => {
   );
 
   res.json({ characters, moves, perks, tells, tags });
+}));
+
+// The player-facing rule book, served straight out of game_rules.md at the
+// repo root (see the Rules mechanic in vttprojectplan.md for why it lives in
+// a Markdown file rather than the database). Read per request rather than
+// cached at boot so editing the file and refreshing is the whole authoring
+// loop in development; the file is a few KB, and this is not a hot path.
+app.get('/api/rules', wrap(async (_req, res) => {
+  try {
+    const markdown = await readFile(path.join(__dirname, '..', 'game_rules.md'), 'utf8');
+    res.json({ markdown });
+  } catch {
+    // A missing rule book is a deployment problem, not a client error — say
+    // so plainly instead of rendering an empty rules page that looks like
+    // the game simply has no rules.
+    res.status(404).json({ error: 'game_rules.md is missing from this deployment.' });
+  }
 }));
 
 // The fixed ruleset: 7 styles + the complete counter tournament (seeded once)

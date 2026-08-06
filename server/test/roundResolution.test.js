@@ -306,6 +306,90 @@ test('too-early auto-fail: defense frames start after the attack\'s first Active
   assert.equal(JSON.parse(defenseEvent.payload).coverage, 'too-early');
 });
 
+// The bug behind "Block still does not work — it was not rolled at all when
+// it was placed on the same tic as an opponent's attack". Placing a Block on
+// the attack's own Tic is not what makes it defend: what matters is where its
+// Defense Frames land. A frame on square 0 is the Block's *Startup* Tic,
+// which sits a Tic BEFORE the attacker's Active window opens (the attacker
+// has its own Startup too), so there is no overlap for classifyDefenseCoverage
+// to classify — and the engine used to fall straight through to a plain Hit
+// in complete silence, which is indistinguishable from the Block being
+// ignored. It must say so instead. It must also still roll the defender's
+// dice into the timeline in the cases where a defence DOES engage — asserted
+// separately below, since that half was invisible for the same report.
+test('no-overlap: Defense Frames that never reach the attack are reported, not silently skipped', async () => {
+  const pairIndex = 240;
+  const attacker = await createCharacter('NoOverlap Attacker');
+  const defender = await createCharacter('NoOverlap Defender');
+  await setDieSize(attacker, 'Skull', 12);
+  const punch = await createMove({ name: 'NO Punch', startupTics: 1, activeTics: 2, recoveryTics: 1, rollSlots: ['Skull'] });
+  const earlyGuard = await createMove({
+    name: 'NO Guard',
+    startupTics: 1,
+    activeTics: 1,
+    recoveryTics: 1,
+    rollSlots: ['Left Hand'],
+    isDefensive: true,
+    defenseKind: 'block',
+    defenseFramePositions: [0], // the Block's own Startup square — Tic 0, a Tic before the attack goes Active
+  });
+
+  await seatPair(pairIndex, attacker, defender);
+  await startPairDeclaration(mockIo, pairIndex);
+  // Both placed at the SAME Tic — exactly the case that was reported broken.
+  await declareMove({ characterId: attacker, moveId: punch, placementTic: 0, startupTics: 1 });
+  await declareMove({ characterId: defender, moveId: earlyGuard, placementTic: 0, startupTics: 1 });
+  await resolvePair(pairIndex);
+
+  const events = await all('SELECT type, payload FROM round_events WHERE pair_index = ? ORDER BY seq', [pairIndex]);
+  const defenseEvent = events.find((e) => e.type === 'defense_resolved');
+  assert.ok(defenseEvent, 'a defence with frames that miss must still report itself');
+  const payload = JSON.parse(defenseEvent.payload);
+  assert.equal(payload.coverage, 'no-overlap');
+  assert.equal(payload.defenseType, null);
+  assert.deepEqual(payload.defenseTics, [0]); // guarding Tic 0
+  assert.equal(payload.attackActiveStart, 1); // attack is Active from Tic 1 — hence the miss
+  // The rule itself is unchanged: no defence engaged, so the attack lands in
+  // full, same as the plain-Hit scenario at the top of this file.
+  const skull = await one("SELECT * FROM dice WHERE character_id = ? AND slot_name = 'Skull'", [defender]);
+  assert.equal(skull.current_size, 6);
+});
+
+test('a defending roll appears on the timeline, not only in the chat log', async () => {
+  const pairIndex = 241;
+  const attacker = await createCharacter('DefRoll Attacker');
+  const defender = await createCharacter('DefRoll Defender');
+  await setDieSize(attacker, 'Skull', 12);
+  await setDieSize(defender, 'Left Hand', 12);
+  const punch = await createMove({ name: 'DR Punch', startupTics: 1, activeTics: 2, recoveryTics: 1, rollSlots: ['Skull'] });
+  const guard = await createMove({
+    name: 'DR Guard',
+    startupTics: 1,
+    activeTics: 1,
+    recoveryTics: 1,
+    rollSlots: ['Hand'],
+    isDefensive: true,
+    defenseKind: 'block',
+    defenseFramePositions: [0, 1, 2],
+  });
+
+  await seatPair(pairIndex, attacker, defender);
+  await startPairDeclaration(mockIo, pairIndex);
+  await declareMove({ characterId: attacker, moveId: punch, placementTic: 0, startupTics: 1 });
+  await declareMove({ characterId: defender, moveId: guard, placementTic: 0, startupTics: 1, appendageChoice: 'left' });
+  await resolvePair(pairIndex);
+
+  const events = await all('SELECT type, payload FROM round_events WHERE pair_index = ? ORDER BY seq', [pairIndex]);
+  const defensiveRolls = events
+    .filter((e) => e.type === 'roll')
+    .map((e) => JSON.parse(e.payload))
+    .filter((p) => p.defensive);
+  assert.equal(defensiveRolls.length, 1, 'the Block rolled, so the cutscene must show it rolling');
+  assert.equal(defensiveRolls[0].characterId, defender);
+  assert.equal(defensiveRolls[0].defenseType, 'block');
+  assert.ok(defensiveRolls[0].dice.length > 0);
+});
+
 test('Insignificant Damage: a sub-5 attack lands nothing, says so, and is NOT a Miss', async () => {
   const pairIndex = 230;
   const attacker = await createCharacter('Insignificant Attacker');

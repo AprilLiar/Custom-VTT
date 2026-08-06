@@ -106,3 +106,37 @@ export function initTheme() {
   const saved = loadSavedHue();
   if (saved != null) applyBrandHue(saved);
 }
+
+// --- Cutscene playback speed (Settings) ---
+//
+// A multiplier on RoundCutscene's own per-event dwell, not an absolute
+// duration: what "too fast" means depends on how much is happening in a
+// round, so scaling the existing pace is the knob that stays meaningful if
+// that pace is ever retuned. 1 is the current speed; 0.1 is a tenth of it
+// (much slower per event) and 3 is three times it.
+//
+// Client-side and per-device on purpose — how fast you like to read a log is
+// a preference of the person watching, not a property of the fight, so it
+// deliberately does NOT go through the server or affect anyone else's view.
+const SPEED_KEY = 'vtt-cutscene-speed';
+export const CUTSCENE_SPEED_MIN = 0.1;
+export const CUTSCENE_SPEED_MAX = 3;
+export const DEFAULT_CUTSCENE_SPEED = 1;
+
+export function clampCutsceneSpeed(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return DEFAULT_CUTSCENE_SPEED;
+  return Math.min(CUTSCENE_SPEED_MAX, Math.max(CUTSCENE_SPEED_MIN, n));
+}
+
+export function loadCutsceneSpeed() {
+  const raw = localStorage.getItem(SPEED_KEY);
+  return raw == null ? DEFAULT_CUTSCENE_SPEED : clampCutsceneSpeed(raw);
+}
+
+export function saveCutsceneSpeed(value) {
+  const speed = clampCutsceneSpeed(value);
+  if (speed === DEFAULT_CUTSCENE_SPEED) localStorage.removeItem(SPEED_KEY);
+  else localStorage.setItem(SPEED_KEY, String(speed));
+  return speed;
+}

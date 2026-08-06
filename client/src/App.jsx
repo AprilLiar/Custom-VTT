@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link, Navigate, Route, Routes, useLocation } from 'react-router-dom';
-import { Cog, Menu, Search, Swords, Users, BookOpen, MessageSquare } from 'lucide-react';
+import { Cog, Menu, Scroll, Search, Swords, Users, BookOpen, MessageSquare } from 'lucide-react';
 import { RoleProvider, useRole } from './roleContext.jsx';
 import { socket } from './socket.js';
 import { useIsDesktop } from './lib/useMediaQuery.js';
@@ -13,6 +13,7 @@ import CombatArena from './components/CombatArena.jsx';
 import CombatHeaderBar from './components/CombatHeaderBar.jsx';
 import SearchBar from './components/SearchBar.jsx';
 import SettingsPage from './components/SettingsPage.jsx';
+import RulesPage from './components/RulesPage.jsx';
 import ConnectionBanner from './components/ConnectionBanner.jsx';
 import GmToolsWidget from './components/GmToolsWidget.jsx';
 import RollRequestPrompt from './components/RollRequestPrompt.jsx';
@@ -82,6 +83,19 @@ function Shell() {
   const [chatOpen, setChatOpen] = useState(() => isDesktop);
   const [unreadChat, setUnreadChat] = useState(0);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+
+  // Mobile: Chat is a tab, so leaving for another tab leaves Chat (decided).
+  // Keyed off the pathname rather than the nav links themselves so the back
+  // button and any other in-app navigation behave the same way. Desktop is
+  // untouched — there Chat is a persistent side panel beside the page, not a
+  // destination you navigate away from.
+  const location = useLocation();
+  const lastPath = useRef(location.pathname);
+  useEffect(() => {
+    if (lastPath.current === location.pathname) return;
+    lastPath.current = location.pathname;
+    if (!isDesktop) setChatOpen(false);
+  }, [location.pathname, isDesktop]);
 
   useEffect(() => {
     if (chatOpen) {
@@ -153,17 +167,25 @@ function Shell() {
           </button>
         </div>
 
-        {/* Mobile: compact search action + a small "More" menu for Settings
-            (bottom nav already covers Arena/Characters/Compendium/Chat). */}
+        {/* Mobile: compact search action + a small "More" menu for
+            Rules/Settings (bottom nav already covers
+            Arena/Characters/Compendium/Chat). */}
         <button
           type="button"
           onClick={() => setMobileMenuOpen((v) => !v)}
-          title="Search / Settings"
-          aria-label="Search / Settings"
+          title="Search / Rules / Settings"
+          aria-label="Search / Rules / Settings"
           className="flex h-11 w-11 shrink-0 items-center justify-center panel-cut-sm border border-zinc-700 text-zinc-400 hover:border-brand-500 hover:text-brand-300 md:hidden"
         >
           <Menu size={18} />
         </button>
+        <Link
+          to="/rules"
+          title="Rules"
+          className="hidden shrink-0 panel-cut-sm border border-zinc-700 p-1.5 text-zinc-400 hover:border-brand-500 hover:text-brand-300 md:block"
+        >
+          <Scroll size={18} />
+        </Link>
         <Link
           to="/settings"
           title="Settings"
@@ -176,6 +198,14 @@ function Shell() {
       {mobileMenuOpen && (
         <div className="flex shrink-0 flex-col gap-2 border-b border-zinc-800 bg-zinc-950 p-3 md:hidden">
           <SearchBar mobileFullWidth onNavigate={() => setMobileMenuOpen(false)} />
+          <Link
+            to="/rules"
+            onClick={() => setMobileMenuOpen(false)}
+            className="flex min-h-11 items-center gap-2 panel-cut-sm border border-zinc-700 px-3 text-sm font-semibold text-zinc-300 hover:bg-zinc-800"
+          >
+            <Scroll size={16} />
+            Rules
+          </Link>
           <Link
             to="/settings"
             onClick={() => setMobileMenuOpen(false)}
@@ -204,10 +234,11 @@ function Shell() {
             <Route path="/compendium" element={<CompendiumPage />} />
             <Route path="/combat" element={<CombatArena />} />
             <Route path="/settings" element={<SettingsPage />} />
+            <Route path="/rules" element={<RulesPage />} />
             <Route path="*" element={<Navigate to={homePath} replace />} />
           </Routes>
         </main>
-        <ChatPanel open={chatOpen} onClose={() => setChatOpen(false)} />
+        <ChatPanel open={chatOpen} />
       </div>
 
       {/* Always mounted on mobile, including while chat is open: the Chat

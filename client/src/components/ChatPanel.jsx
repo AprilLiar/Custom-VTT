@@ -462,7 +462,7 @@ function Composer({ characters }) {
   );
 }
 
-export default function ChatPanel({ open, onClose }) {
+export default function ChatPanel({ open }) {
   const { role } = useRole();
   const [entries, setEntries] = useState([]);
   // Which round the "Watch Round N" button opened, if any (§4.2) — the
@@ -595,12 +595,9 @@ export default function ChatPanel({ open, onClose }) {
             Clear Chat
           </button>
         )}
-        <button
-          onClick={onClose}
-          className={`${role === 'gm' ? '' : 'ml-auto'} flex h-11 w-11 shrink-0 items-center justify-center panel-cut-sm text-zinc-500 hover:text-zinc-200 md:hidden`}
-        >
-          ✕
-        </button>
+        {/* No mobile close button: Chat is a real tab now (decided), so the
+            bottom nav is the only way in and out — tap Chat again, or tap any
+            other tab. A second, differently-placed exit was the confusion. */}
       </div>
       <div className="flex-1 overflow-y-auto">
         {entries.length === 0 ? (

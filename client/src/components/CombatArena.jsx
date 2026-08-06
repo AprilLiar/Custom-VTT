@@ -20,6 +20,7 @@ import { REWARD_LABELS, REWARD_COLORS } from '../lib/counterDisplay.js';
 import { setDraggingMove, onDraggingMoveChange } from '../lib/dragMoveState.js';
 import { useSocketRefresh } from '../lib/connection.js';
 import FrameBar from './FrameBar.jsx';
+import MoveCard from './MoveCard.jsx';
 import Thumb from './Thumb.jsx';
 import DropSlamGhost from './DropSlamGhost.jsx';
 import PopNumber from './PopNumber.jsx';
@@ -589,6 +590,40 @@ export function TicCounterCentral({
     return null;
   };
   const canDrop = phase === 'declaration';
+
+  // Overflow indicator (decided, new): a move whose footprint runs past this
+  // round's last Tic carries into the next one — a real and consequential
+  // rule (it floors where that character may place next round) that the
+  // strip gave no sign of at all, because the strip stops at the round
+  // boundary. When the move currently being placed would overflow, a `+N`
+  // appears at the end; hovering it previews the next round with exactly the
+  // frames that spill into it.
+  const overflowPreview = (() => {
+    if (!draggingMove || hoverTic == null) return null;
+    const minTic = draggingMove.minPlacementTic ?? roundStartTic;
+    const effectiveTic = Math.max(hoverTic, minTic);
+    const { startupTics, activeTics, recoveryTics } = draggingMove;
+    const recoveryEnd = effectiveTic + startupTics + activeTics + recoveryTics;
+    const nextRoundStart = roundStartTic + roundLength;
+    if (recoveryEnd <= nextRoundStart) return null;
+    // Same phase math as zoneFor, walked across the NEXT round's own window.
+    const startupEnd = effectiveTic + startupTics;
+    const activeEnd = startupEnd + activeTics;
+    const phaseAt = (t) => {
+      if (t >= effectiveTic && t < startupEnd) return 'startup';
+      if (t >= startupEnd && t < activeEnd) return 'active';
+      if (t >= activeEnd && t < recoveryEnd) return 'recovery';
+      return null;
+    };
+    return {
+      tics: recoveryEnd - nextRoundStart,
+      squares: Array.from({ length: roundLength }, (_, i) => ({
+        relative: i + 1,
+        zone: phaseAt(nextRoundStart + i),
+      })),
+    };
+  })();
+
   return (
     <div className="flex flex-col items-center gap-1.5 panel-cut-lg border border-zinc-800 bg-gradient-to-b from-zinc-900 to-zinc-950 px-4 py-3 shadow-2xl shadow-black/40">
       <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-zinc-500">
@@ -632,6 +667,40 @@ export function TicCounterCentral({
             />
           );
         })}
+        {overflowPreview && (
+          <div className="group relative shrink-0">
+            <span
+              className="flex h-11 w-11 items-center justify-center panel-cut border border-amber-500/70 bg-amber-950/40 font-display text-sm font-bold text-amber-300"
+              title={`Runs ${overflowPreview.tics} Tic${
+                overflowPreview.tics === 1 ? '' : 's'
+              } into the next round`}
+            >
+              +{overflowPreview.tics}
+            </span>
+            {/* Hover reveals the next round with the spilled frames in
+                place, so "how much of my next round does this eat?" is
+                answerable before committing rather than after. */}
+            <div className="pointer-events-none absolute bottom-full left-1/2 z-50 mb-2 hidden -translate-x-1/2 panel-cut border border-amber-700/60 bg-zinc-950 p-2 shadow-2xl shadow-black/80 group-hover:block">
+              <div className="mb-1 whitespace-nowrap font-display text-[10px] uppercase tracking-widest text-amber-300">
+                Next round
+              </div>
+              <div className="flex gap-1">
+                {overflowPreview.squares.map((sq) => (
+                  <span
+                    key={sq.relative}
+                    className={`flex h-7 w-7 items-center justify-center panel-cut-sm border text-[10px] font-bold ${
+                      sq.zone
+                        ? `${PHASE_ZONE[sq.zone]} text-zinc-950`
+                        : 'border-zinc-700 bg-zinc-900 text-zinc-600'
+                    }`}
+                  >
+                    {sq.relative}
+                  </span>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
       </div>
       {showDeclaredPreview && (
         <div className="flex flex-wrap items-center justify-center gap-2 text-[9px] text-zinc-600">
@@ -703,10 +772,44 @@ function CompactTellFace({ dm, tellById }) {
 // Tic and Stamina budget to declare something else instead. Placed outside
 // the flip animation, not just on the Tell face, since the *declaring*
 // player's own view already shows the revealed back face immediately.
+// A declared move you're allowed to see, with its full card one hover (or
+// one tap) away. The compact card is deliberately tiny — it has to sit in a
+// lane beside several others — so "what does this actually do again?" had no
+// answer without leaving the Arena. The full card renders as an overlay
+// above everything rather than expanding in place, because expanding one
+// card reflows the whole lane underneath it.
 function CompactDeclaredMoveCard({ dm, move, tellById }) {
   const revealed = dm.isRevealed && move;
+  const [showCard, setShowCard] = useState(false);
   return (
-    <div style={{ perspective: 1000 }} className="relative">
+    <div
+      style={{ perspective: 1000 }}
+      className="relative"
+      onMouseEnter={() => revealed && setShowCard(true)}
+      onMouseLeave={() => setShowCard(false)}
+      onClick={() => revealed && setShowCard((v) => !v)}
+    >
+      <AnimatePresence>
+        {showCard && revealed && (
+          <motion.div
+            initial={{ opacity: 0, y: 6, scale: 0.96 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 6, scale: 0.96 }}
+            transition={{ duration: 0.14 }}
+            // z-50 + fixed-width: it deliberately covers whatever lane
+            // content sits beside and below it.
+            className="absolute bottom-full left-1/2 z-50 mb-2 w-72 -translate-x-1/2 panel-cut border border-brand-700/60 bg-zinc-950 p-2 shadow-2xl shadow-black/80"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <MoveCard
+              move={move}
+              tell={tellById.get(move.tell_id)}
+              rightTell={move.right_tell_id ? tellById.get(move.right_tell_id) : undefined}
+              leftTell={move.left_tell_id ? tellById.get(move.left_tell_id) : undefined}
+            />
+          </motion.div>
+        )}
+      </AnimatePresence>
       {!dm.staminaCommitted && (
         <button
           onClick={() => socket.emit('move:undeclare', { declaredMoveId: dm.id })}
@@ -956,9 +1059,22 @@ function DeclareMoveCard({ character, move, roundStartTic, declaredMoves }) {
       onDragEnd={() => setDraggingMove(null)}
       onClick={() => setDraggingMove(payload)}
       title="Drag onto the Tic Counter, or tap then tap a Tic, to declare"
-      className="min-h-11 cursor-grab select-none panel-cut-sm border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs text-zinc-200 transition-colors hover:border-brand-600 active:cursor-grabbing"
+      className="flex min-h-11 cursor-grab select-none flex-col items-start gap-1 panel-cut-sm border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-xs text-zinc-200 transition-colors hover:border-brand-600 active:cursor-grabbing"
     >
-      {move.name} <span className="text-zinc-500">({cost} Stamina)</span>
+      <span>
+        {move.name} <span className="text-zinc-500">({cost} Stamina)</span>
+      </span>
+      {/* The move's frame data at TIC-COUNTER scale (h-11 w-11 squares, see
+          TicSquare), not a miniature: what you are about to do is drop this
+          run of frames onto that strip, so the thing in your hand should be
+          the same size as the slot it goes into. */}
+      <FrameBar
+        startup={move.effective_startup_tics ?? move.startup_tics}
+        active={move.effective_active_tics ?? move.active_tics}
+        recovery={move.effective_recovery_tics ?? move.recovery_tics}
+        defensePositions={move.defense_frame_positions}
+        size="h-11 w-11"
+      />
     </button>
   );
 }
@@ -1762,8 +1878,16 @@ export default function CombatArena() {
                       )
                   )}
                 </div>
-                <div className="flex shrink-0 items-center justify-center sm:w-px sm:flex-col sm:bg-zinc-700/50" title="Pair divider">
-                  <span className="font-display panel-cut-sm bg-zinc-800 px-2 py-0.5 text-[10px] font-bold uppercase tracking-widest text-zinc-500 sm:hidden">
+                {/* The VS badge used to be mobile-only, with desktop getting a
+                    bare hairline — but it reads better than the line does, so
+                    it now shows at every size with the line running behind it
+                    on wider screens. */}
+                <div className="relative flex shrink-0 items-center justify-center sm:w-8" title="Pair divider">
+                  <span
+                    aria-hidden="true"
+                    className="absolute inset-y-2 left-1/2 hidden w-px -translate-x-1/2 bg-zinc-700/50 sm:block"
+                  />
+                  <span className="font-display relative panel-cut-sm bg-zinc-800 px-2 py-0.5 text-[10px] font-bold uppercase tracking-widest text-zinc-500">
                     VS
                   </span>
                 </div>

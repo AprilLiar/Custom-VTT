@@ -3,6 +3,7 @@ import { gsap } from 'gsap';
 import { AnimatePresence, motion } from 'framer-motion';
 import { socket } from '../socket.js';
 import { getRoundReplay } from '../lib/api.js';
+import { loadCutsceneSpeed } from '../lib/theme.js';
 import {
   PHASE_BG,
   PHASE_BG_EXTENDED,
@@ -38,7 +39,8 @@ import {
 
 // How long each event dwells before the next one reveals. Slow enough to
 // read a damage number, fast enough that a 7-Tic round doesn't outstay its
-// welcome.
+// welcome. Divided by the viewer's own Cutscene Speed setting (Settings —
+// 0.1x to 3x), which is per-device and affects nobody else's playback.
 const SECONDS_PER_EVENT = 0.55;
 
 // Each event's headline chip. Deliberately short — the sentence beside it
@@ -90,9 +92,23 @@ function eventNarration(ev, startTic) {
     case 'roll': {
       const parts = (p.dice ?? []).map((d) => `${d.slot_name ?? d.slotName} ${d.result}`);
       const mod = p.modifier ? ` (${p.modifier > 0 ? '+' : ''}${p.modifier})` : '';
-      return `${parts.join(' + ') || 'Rolled'}${mod} — total ${p.total ?? '?'}.`;
+      // A defensive roll names its roller: it arrives between the attacker's
+      // own roll and the Defense line, and two bare "total N" rows in a row
+      // is exactly the ambiguity that made a Block look like it never rolled.
+      const prefix = p.defensive
+        ? `${who} defends with `
+        : p.characterName
+          ? `${p.characterName} rolls `
+          : '';
+      return `${prefix}${parts.join(' + ') || 'a roll'}${mod} — total ${p.total ?? '?'}.`;
     }
     case 'defense_resolved': {
+      if (p.coverage === 'no-overlap') {
+        const guarded = (p.defenseTics ?? []).map((t) => t - startTic + 1);
+        const active = [];
+        for (let t = p.attackActiveStart; t < p.attackActiveEnd; t++) active.push(t - startTic + 1);
+        return `No defence — the guard covers Tic ${guarded.join(', ')}, but the attack is Active on ${active.join(', ')}.`;
+      }
       const kind = p.defenseType === 'dodge' ? 'Dodge' : 'Block';
       return `${kind} attempted, ${COVERAGE_PHRASE[p.coverage] ?? p.coverage ?? ''}.`;
     }
@@ -215,7 +231,7 @@ function footprintsFrom(events, upTo) {
 function MoveBar({ fp, ticks, startTic }) {
   return (
     <div className="flex items-center gap-2">
-      <span className="w-24 shrink-0 truncate text-right font-display text-[11px] uppercase tracking-wide text-zinc-400">
+      <span className="w-24 shrink-0 truncate text-right font-display text-xs uppercase tracking-wide text-zinc-400 md:w-36 md:text-sm">
         {fp.characterName}
       </span>
       <div className="flex gap-0.5">
@@ -236,7 +252,7 @@ function MoveBar({ fp, ticks, startTic }) {
                     }${phase === 'defense' && !extended ? ` (${defenseLabel} window)` : ''}`
                   : undefined
               }
-              className={`h-3 w-6 border border-zinc-900 ${
+              className={`h-4 w-8 border border-zinc-900 md:h-5 md:w-11 ${
                 extended
                   ? PHASE_BG_EXTENDED.defense
                   : phase
@@ -247,7 +263,7 @@ function MoveBar({ fp, ticks, startTic }) {
           );
         })}
       </div>
-      <span className="truncate font-display text-[11px] text-zinc-300">{fp.moveName}</span>
+      <span className="truncate font-display text-xs text-zinc-300 md:text-base">{fp.moveName}</span>
     </div>
   );
 }
@@ -266,6 +282,10 @@ export default function RoundCutscene({
   const [meta, setMeta] = useState(null);
   const [visibleCount, setVisibleCount] = useState(0);
   const [error, setError] = useState(null);
+  // Read once per mount rather than subscribed: changing the setting
+  // mid-cutscene and having the playhead lurch is worse than it taking
+  // effect on the next round you open.
+  const [speed] = useState(loadCutsceneSpeed);
   const proxy = useRef({ i: 0 });
   const tweenRef = useRef(null);
   const feedRef = useRef(null);
@@ -326,13 +346,13 @@ export default function RoundCutscene({
     }
     tweenRef.current = gsap.to(proxy.current, {
       i: events.length,
-      duration: remaining * SECONDS_PER_EVENT,
+      duration: (remaining * SECONDS_PER_EVENT) / speed,
       ease: 'none',
       onUpdate: () => setVisibleCount(Math.floor(proxy.current.i)),
       onComplete: () => setVisibleCount(events.length),
     });
     return () => tweenRef.current?.kill();
-  }, [events.length]);
+  }, [events.length, speed]);
 
   const skipToEnd = () => {
     tweenRef.current?.kill();
@@ -372,13 +392,13 @@ export default function RoundCutscene({
   return (
     <div className="panel-cut flex h-full min-h-0 flex-col border border-zinc-800 bg-zinc-950/60 p-3">
       <div className="mb-2 flex items-center justify-between gap-2">
-        <h3 className="font-display text-sm uppercase tracking-wide text-zinc-300">
+        <h3 className="font-display text-base uppercase tracking-wide text-zinc-300 md:text-xl">
           Round {meta?.roundNumber ?? roundNumber}
-          {mode === 'replay' && <span className="ml-2 text-[11px] text-zinc-500">replay</span>}
+          {mode === 'replay' && <span className="ml-2 text-xs text-zinc-500 md:text-sm">replay</span>}
         </h3>
         <div className="flex items-center gap-2">
           {paused && (
-            <span className="panel-cut-sm bg-amber-600/30 px-2 py-0.5 font-display text-[11px] uppercase text-amber-300">
+            <span className="panel-cut-sm bg-amber-600/30 px-2 py-1 font-display text-xs uppercase text-amber-300 md:text-sm">
               {pendingDodge ? 'Waiting on the GM’s Dodge call' : 'Waiting on a Forfeit/Postpone choice'}
             </span>
           )}
@@ -386,7 +406,7 @@ export default function RoundCutscene({
             type="button"
             onClick={skipToEnd}
             disabled={isCaughtUp}
-            className="panel-cut-sm border border-zinc-700 px-2 py-1 font-display text-[11px] uppercase text-zinc-300 hover:bg-zinc-800 disabled:opacity-40"
+            className="panel-cut-sm border border-zinc-700 px-3 py-1.5 font-display text-xs uppercase text-zinc-300 hover:bg-zinc-800 disabled:opacity-40 md:text-sm"
           >
             {mode === 'replay' ? 'Skip to end' : 'Catch up'}
           </button>
@@ -403,7 +423,7 @@ export default function RoundCutscene({
       {/* The Tic strip itself, driven by the playhead rather than live
           server state — during a cutscene the round is already computed. */}
       <div className="flex items-center gap-2 py-1">
-        <span className="w-24 shrink-0" />
+        <span className="w-24 shrink-0 md:w-36" />
         <div className="flex gap-0.5">
           {ticks.map((tic) => (
             <motion.span
@@ -411,7 +431,7 @@ export default function RoundCutscene({
               animate={{ scale: tic === playheadTic ? 1.15 : 1 }}
               transition={{ type: 'spring', stiffness: 400, damping: 22 }}
               title={`Tic ${tic - startTic + 1}`}
-              className={`flex h-6 w-6 items-center justify-center border font-display text-[10px] ${
+              className={`flex h-8 w-8 items-center justify-center border font-display text-xs md:h-10 md:w-11 md:text-sm ${
                 tic === playheadTic
                   ? 'border-brand-400 bg-brand-700/60 text-zinc-100'
                   : 'border-zinc-700 bg-zinc-900 text-zinc-500'
@@ -444,7 +464,7 @@ export default function RoundCutscene({
               animate={{ opacity: 1, x: 0 }}
               transition={{ duration: 0.18 }}
               title={eventDetail(ev, startTic)}
-              className={`flex items-baseline gap-2 border-l-2 px-2 py-1 text-sm ${
+              className={`flex items-baseline gap-2 border-l-2 px-2 py-1.5 text-sm md:gap-3 md:px-3 md:py-2 md:text-base ${
                 PAUSE_EVENTS.has(ev.type)
                   ? 'border-amber-500 bg-amber-950/30 text-amber-200'
                   : ev.type === 'damage_applied'
@@ -454,10 +474,10 @@ export default function RoundCutscene({
                       : 'border-zinc-700 text-zinc-300'
               }`}
             >
-              <span className="w-8 shrink-0 font-display text-[11px] text-zinc-500">
+              <span className="w-8 shrink-0 font-display text-xs text-zinc-500 md:w-12 md:text-sm">
                 T{ev.tic - startTic + 1}
               </span>
-              <span className="w-24 shrink-0 font-display text-[11px] uppercase tracking-wide text-zinc-500">
+              <span className="w-24 shrink-0 font-display text-xs uppercase tracking-wide text-zinc-500 md:w-36 md:text-sm">
                 {EVENT_LABEL[ev.type] ?? ev.type}
               </span>
               {/* The sentence, not a fragment — readable without hovering. */}
@@ -466,7 +486,7 @@ export default function RoundCutscene({
           ))}
         </AnimatePresence>
         {!events.length && (
-          <div className="px-2 py-1 text-xs text-zinc-600">Resolving…</div>
+          <div className="px-2 py-1 text-sm text-zinc-600 md:text-base">Resolving…</div>
         )}
       </div>
     </div>

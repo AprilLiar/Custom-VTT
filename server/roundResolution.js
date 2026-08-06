@@ -526,6 +526,20 @@ async function applySuccessfulDodge(io, {
   }
   const dodgeResult = dodgeDice.reduce((sum, d) => sum + d.result, 0);
   await logRoll(io, { characterId: defenderDM.character_id, characterName: defenderDM.character_name, modifier: defMod, dice: dodgeDice });
+  // Defensive rolls used to go to chat only, never to round_events — so the
+  // cutscene showed the attacker roll, then a Defense line with an outcome,
+  // and the defender's own dice nowhere. That is what "the Block was not
+  // rolled at all" looks like to someone watching the log.
+  await emitEvent(tic, 'roll', {
+    declaredMoveId: defenderDM.id,
+    characterId: defenderDM.character_id,
+    characterName: defenderDM.character_name,
+    dice: dodgeDice,
+    modifier: defMod,
+    total: dodgeResult,
+    defensive: true,
+    defenseType: 'dodge',
+  });
 
   const resolution = resolveDefenseRoll({ attackerResult, defenderResult: dodgeResult });
   await postSystemMessage(
@@ -729,6 +743,43 @@ async function resolveAttack(io, { row, pairIndex, tic, emitEvent }) {
   const defenseMatch = selectDefenseMove({ defenderMoves, attackActiveStart, attackActiveEnd });
 
   if (!defenseMatch) {
+    // A defender who declared a defensive move that simply doesn't reach this
+    // attack used to get *nothing at all* — no event, no chat line, the
+    // attack just landed. From the table that is indistinguishable from the
+    // engine ignoring the Block, which is exactly how it was reported ("Block
+    // still does not work; it was not rolled at all"). Placing a Block on the
+    // same Tic as the attack is not enough on its own: what matters is where
+    // its Defense Frames sit inside its own footprint, and a frame on the
+    // Block's Startup square lands a Tic *before* the attacker's Active
+    // window opens. Say so, rather than resolving in silence.
+    const framed = defenderMoves.filter((m) => m.defenseFramePositions.length > 0);
+    if (framed.length) {
+      // Tics are quoted the way the Tic Counter labels them — 1-based within
+      // the pair's own current round — not as the absolute timeline numbers
+      // used internally, which would stop matching the strip from round 2 on.
+      const [target, pair] = await Promise.all([
+        getCharacter(targetCharacterId),
+        one('SELECT round_start_tic AS roundStartTic FROM combat_pairs WHERE pair_index = ?', [pairIndex]),
+      ]);
+      const label = (t) => t - (pair?.roundStartTic ?? 0) + 1;
+      const covered = framed.flatMap((m) => m.defenseFramePositions.map((p) => m.placementTic + p));
+      const active = Array.from({ length: attackActiveEnd - attackActiveStart }, (_, i) => attackActiveStart + i);
+      await emitEvent(tic, 'defense_resolved', {
+        attackerDeclaredMoveId: row.declaredMoveId,
+        defenderDeclaredMoveId: null,
+        defenseType: null,
+        coverage: 'no-overlap',
+        defenseTics: covered,
+        attackActiveStart,
+        attackActiveEnd,
+      });
+      await postSystemMessage(
+        io,
+        `${target?.name ?? 'The defender'}'s Defense Frames don't cover ${row.characterName}'s ${row.moveName} ` +
+          `(guarding Tic${covered.length === 1 ? '' : 's'} ${covered.map(label).join(', ')}, ` +
+          `attack is Active on ${active.map(label).join(', ')}) — no defence.`
+      );
+    }
     // Step 7 — plain Hit, no defending move at all.
     await runInterruptAndDamage(io, {
       declaredMoveId: row.declaredMoveId,
@@ -875,6 +926,18 @@ async function resolveAttack(io, { row, pairIndex, tic, emitEvent }) {
     characterName: defenderDM.character_name,
     modifier: defMod,
     dice: blockDice,
+  });
+  // See the note on the Dodge branch's own roll event: without this the
+  // defender's dice never appear on the timeline at all.
+  await emitEvent(tic, 'roll', {
+    declaredMoveId: defenderDM.id,
+    characterId: defenderDM.character_id,
+    characterName: defenderDM.character_name,
+    dice: blockDice,
+    modifier: defMod,
+    total: blockResult,
+    defensive: true,
+    defenseType: defenderDM.defense_kind ?? 'block',
   });
 
   const resolution = resolveDefenseRoll({ attackerResult: total, defenderResult: blockResult });
