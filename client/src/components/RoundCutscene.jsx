@@ -3,6 +3,7 @@ import { gsap } from 'gsap';
 import { AnimatePresence, motion } from 'framer-motion';
 import { socket } from '../socket.js';
 import { getRoundReplay } from '../lib/api.js';
+import { loadCutsceneSpeed } from '../lib/theme.js';
 import {
   PHASE_BG,
   PHASE_BG_EXTENDED,
@@ -38,80 +39,129 @@ import {
 
 // How long each event dwells before the next one reveals. Slow enough to
 // read a damage number, fast enough that a 7-Tic round doesn't outstay its
-// welcome.
+// welcome. Divided by the viewer's own Cutscene Speed setting (Settings —
+// 0.1x to 3x), which is per-device and affects nobody else's playback.
 const SECONDS_PER_EVENT = 0.55;
 
+// Each event's headline chip. Deliberately short — the sentence beside it
+// (eventNarration) carries the meaning, so this is a scanning aid, not the
+// explanation.
 const EVENT_LABEL = {
   reveal: 'Reveal',
   roll: 'Roll',
   defense_resolved: 'Defense',
-  recovery_extended: 'Recovery extended',
-  dodge_prompt: 'Dodge — awaiting GM',
+  recovery_extended: 'Extension',
+  insignificant_damage: 'No effect',
+  dodge_prompt: 'Dodge?',
   dodge_resolved: 'Dodge',
-  interrupt_resolved: 'Interruption',
+  interrupt_resolved: 'Interrupt',
   damage_applied: 'Damage',
-  move_conflict_prompt: 'Move conflict — awaiting choice',
-  move_conflict_resolved: 'Move conflict',
+  move_conflict_prompt: 'Conflict?',
+  move_conflict_resolved: 'Conflict',
   automation_fired: 'Automation',
   stamina_regen: 'Stamina',
-  round_complete: 'Round complete',
+  round_complete: 'Round over',
 };
 
 // Events that represent the round stopping for a human decision — rendered
 // with the paused treatment, and they're where an un-skippable wait lands.
 const PAUSE_EVENTS = new Set(['dodge_prompt', 'move_conflict_prompt']);
 
-function eventSummary(ev) {
+const COVERAGE_PHRASE = {
+  full: 'covering the whole attack',
+  'too-early': 'but the guard was already down',
+  'too-late': 'but the guard came up late',
+};
+
+const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+
+// The log used to be a label plus a terse fragment, with the actual meaning
+// only reachable by hovering for a tooltip — unreadable at the table, where
+// nobody is going to hover a line to find out who hit whom. Every row now
+// states what happened in one plain sentence, naming the people involved,
+// and the hover detail (eventDetail below) is an extra rather than the only
+// way to follow a fight.
+function eventNarration(ev, startTic) {
   const p = ev.payload ?? {};
+  const who = p.characterName ?? 'Someone';
   switch (ev.type) {
     case 'reveal':
-      return `${p.characterName ?? 'Someone'} — ${p.moveName ?? 'a move'}`;
-    case 'roll':
-      return `${p.total ?? '?'}${p.modifier ? ` (${p.modifier > 0 ? '+' : ''}${p.modifier})` : ''}`;
-    case 'defense_resolved':
-      return `${p.defenseType === 'dodge' ? 'Dodge' : 'Block'} — ${p.coverage ?? ''}${
-        p.outcome ? ` → ${p.outcome}` : ''
-      }`;
-    case 'dodge_prompt':
-      return `${p.defenderCharacterName ?? 'Defender'} dodging ${p.attackerMoveName ?? 'the attack'}`;
-    case 'dodge_resolved':
-      return `${p.outcome === 'successful' ? 'Successful' : 'Failed'}`;
-    case 'interrupt_resolved':
-      return p.interrupted ? 'Interrupted!' : 'Held through it';
-    case 'damage_applied':
-      if (p.result === 'no-eligible-target') return 'No eligible target';
-      return `${p.steps ?? 0} step${p.steps === 1 ? '' : 's'}${p.slotName ? ` → ${p.slotName}` : ''}`;
+      return `${who} reveals ${p.moveName ?? 'a move'}${
+        p.isDefensive ? ` (${p.defenseKind === 'dodge' ? 'a Dodge' : 'a Block'})` : ''
+      }.`;
+    case 'roll': {
+      const parts = (p.dice ?? []).map((d) => `${d.slot_name ?? d.slotName} ${d.result}`);
+      const mod = p.modifier ? ` (${p.modifier > 0 ? '+' : ''}${p.modifier})` : '';
+      // A defensive roll names its roller: it arrives between the attacker's
+      // own roll and the Defense line, and two bare "total N" rows in a row
+      // is exactly the ambiguity that made a Block look like it never rolled.
+      const prefix = p.defensive
+        ? `${who} defends with `
+        : p.characterName
+          ? `${p.characterName} rolls `
+          : '';
+      return `${prefix}${parts.join(' + ') || 'a roll'}${mod} — total ${p.total ?? '?'}.`;
+    }
+    case 'defense_resolved': {
+      if (p.coverage === 'no-overlap') {
+        const guarded = (p.defenseTics ?? []).map((t) => t - startTic + 1);
+        const active = [];
+        for (let t = p.attackActiveStart; t < p.attackActiveEnd; t++) active.push(t - startTic + 1);
+        return `No defence — the guard covers Tic ${guarded.join(', ')}, but the attack is Active on ${active.join(', ')}.`;
+      }
+      const kind = p.defenseType === 'dodge' ? 'Dodge' : 'Block';
+      return `${kind} attempted, ${COVERAGE_PHRASE[p.coverage] ?? p.coverage ?? ''}.`;
+    }
     case 'recovery_extended':
-      return `${p.characterName ?? 'The blocker'} +${p.extensionTics ?? 0} Tic${
-        p.extensionTics === 1 ? '' : 's'
-      }`;
+      return `${who}'s ${p.moveName} blocked late — Recovery extended by ${plural(
+        p.extensionTics ?? 0,
+        'Tic',
+        'Tics'
+      )} to cover the rest of ${p.attackerCharacterName}'s ${p.attackerMoveName}.`;
+    case 'insignificant_damage':
+      return `${who}'s ${p.moveName} rolled ${p.total} — insignificant damage, nothing lands.`;
+    case 'dodge_prompt':
+      return `${p.defenderCharacterName} fully covers ${p.attackerCharacterName}'s ${p.attackerMoveName} (attack rolled ${p.attackerResult}) — waiting on the GM to call it.`;
+    case 'dodge_resolved':
+      return p.outcome === 'successful'
+        ? 'The GM called the Dodge Successful.'
+        : 'The GM called the Dodge Failed.';
+    case 'interrupt_resolved':
+      return p.interrupted
+        ? `Interrupted mid-Startup — rolled ${p.result} against ${plural(p.halfDamageSteps ?? 0, 'step', 'steps')}.`
+        : `Held through the hit — rolled ${p.result} against ${plural(p.halfDamageSteps ?? 0, 'step', 'steps')}.`;
+    case 'damage_applied':
+      if (p.result === 'no-eligible-target') return 'Nothing left to hit — every allowed Stat is out.';
+      return `${plural(p.steps ?? 0, 'step', 'steps')} of damage to ${p.slotName ?? 'an unknown Stat'}${
+        p.targetCharacterName ? ` on ${p.targetCharacterName}` : ''
+      }.`;
     case 'move_conflict_prompt':
-      return 'Recovery extension collided with a declared move';
+      return "A Block's extended Recovery ran into an already-declared move — waiting on Forfeit or Postpone.";
     case 'move_conflict_resolved':
-      return p.choice === 'forfeit' ? 'Forfeited' : 'Postponed';
+      return p.choice === 'forfeit'
+        ? 'Forfeited the colliding move; its Stamina is refunded.'
+        : 'Postponed the colliding move past the extended Recovery.';
     case 'automation_fired':
-      return p.trigger ?? '';
+      return `The move's On ${p.trigger === 'defense_success' ? 'Successful Defense' : p.trigger === 'defense_failure' ? 'Failed Defense' : (p.trigger ?? '')} effect fired.`;
     case 'stamina_regen':
-      return `+${p.amount ?? 1} Stamina`;
+      return `Idle Tic — ${who ?? 'they'} recover ${p.amount ?? 1} Stamina.`;
     case 'round_complete':
-      return '';
+      return 'Every Tic in this round has resolved.';
     default:
       return '';
   }
 }
 
-// The hover detail behind each event row. Every element on this timeline is
-// a real DOM node with its own real payload behind it (§4.1) — not a
-// rendered video frame — so the full outcome is inspectable rather than
-// something you had to catch while it animated past. Readable lines rather
-// than a JSON dump: this is read by a person mid-fight, not debugged.
+// The hover detail behind each row. Now genuinely supplementary — the raw
+// numbers behind the sentence — rather than the only place the outcome is
+// stated. Every element on this timeline is a real DOM node with its own
+// payload behind it (§4.1), not a rendered video frame, which is what makes
+// this possible at all.
 function eventDetail(ev, startTic) {
   const p = ev.payload ?? {};
-  const lines = [`${EVENT_LABEL[ev.type] ?? ev.type} — Tic ${ev.tic - startTic + 1}`];
+  const lines = [`Tic ${ev.tic - startTic + 1}`];
   switch (ev.type) {
     case 'reveal':
-      lines.push(`${p.characterName} reveals ${p.moveName}`);
-      if (p.isDefensive) lines.push(`Defensive (${p.defenseKind === 'dodge' ? 'Dodge' : 'Block'})`);
       lines.push(
         `Startup until Tic ${p.revealTic - startTic + 1}, Active until ${p.activeEndTic - startTic + 1}, Recovery until ${p.recoveryEndTic - startTic + 1}`
       );
@@ -119,55 +169,24 @@ function eventDetail(ev, startTic) {
       break;
     case 'roll':
       if (Array.isArray(p.dice) && p.dice.length) {
-        lines.push(p.dice.map((d) => `${d.slot_name ?? d.slotName}: ${d.result}`).join(', '));
+        lines.push(p.dice.map((d) => `${d.slot_name ?? d.slotName}: d${d.size} -> ${d.result}`).join('\n'));
       }
       if (p.modifier) lines.push(`Modifier: ${p.modifier > 0 ? '+' : ''}${p.modifier}`);
-      lines.push(`Total: ${p.total}`);
       break;
     case 'defense_resolved':
-      lines.push(`${p.defenseType === 'dodge' ? 'Dodge' : 'Block'}, coverage: ${p.coverage}`);
       if (p.outcome) lines.push(`Outcome: ${p.outcome}`);
       if (p.defenderResult != null) lines.push(`Defender rolled ${p.defenderResult}`);
       break;
-    case 'dodge_prompt':
-      lines.push(`${p.defenderCharacterName} (${p.defenderMoveName}) fully covers ${p.attackerCharacterName}'s ${p.attackerMoveName}`);
-      lines.push(`Attacker rolled ${p.attackerResult} — waiting on the GM's call`);
-      break;
-    case 'dodge_resolved':
-      lines.push(`GM called it ${p.outcome}`);
-      break;
-    case 'interrupt_resolved':
-      lines.push(p.interrupted ? 'The move was Interrupted mid-Startup' : 'Held through the hit');
-      if (p.result != null) lines.push(`Rolled ${p.result} vs ${p.halfDamageSteps} step(s)`);
-      break;
-    case 'damage_applied':
-      if (p.result === 'no-eligible-target') lines.push('No eligible target Stat');
-      else lines.push(`${p.steps} half-damage step(s) → ${p.slotName ?? 'unknown Stat'}`);
-      break;
     case 'recovery_extended':
-      lines.push(
-        `${p.characterName}'s ${p.moveName} blocked late — Recovery extended by ${p.extensionTics} Tic(s)`
-      );
-      lines.push(
-        `Now runs through Tic ${p.recoveryEndTic - startTic} to cover the rest of ${p.attackerCharacterName}'s ${p.attackerMoveName}`
-      );
+      lines.push(`Now runs through Tic ${p.recoveryEndTic - startTic}`);
       lines.push('Automatic — a Block is never a prompt');
       break;
-    case 'move_conflict_prompt':
-      lines.push("A Block's extended Recovery collided with a declared move");
-      lines.push('Waiting on the affected player: Forfeit or Postpone');
+    case 'insignificant_damage':
+      lines.push('Under 5 on the roll: fewer than one Half-Damage step');
+      lines.push('Not a Miss — a Miss is an attack evaded by a Dodge');
       break;
-    case 'move_conflict_resolved':
-      lines.push(p.choice === 'forfeit' ? 'Forfeited (Stamina refunded)' : 'Postponed past the block');
-      break;
-    case 'automation_fired':
-      lines.push(`Trigger: ${p.trigger}`);
-      break;
-    case 'stamina_regen':
-      lines.push(`Idle Tic — +${p.amount ?? 1} Stamina`);
-      break;
-    case 'round_complete':
-      lines.push('Every Tic in this round has resolved');
+    case 'damage_applied':
+      if (p.result !== 'no-eligible-target') lines.push(`${(p.steps ?? 0) * 0.5} damage`);
       break;
     default:
       break;
@@ -212,7 +231,7 @@ function footprintsFrom(events, upTo) {
 function MoveBar({ fp, ticks, startTic }) {
   return (
     <div className="flex items-center gap-2">
-      <span className="w-24 shrink-0 truncate text-right font-display text-[11px] uppercase tracking-wide text-zinc-400">
+      <span className="w-24 shrink-0 truncate text-right font-display text-xs uppercase tracking-wide text-zinc-400 md:w-36 md:text-sm">
         {fp.characterName}
       </span>
       <div className="flex gap-0.5">
@@ -233,7 +252,7 @@ function MoveBar({ fp, ticks, startTic }) {
                     }${phase === 'defense' && !extended ? ` (${defenseLabel} window)` : ''}`
                   : undefined
               }
-              className={`h-3 w-6 border border-zinc-900 ${
+              className={`h-4 w-8 border border-zinc-900 md:h-5 md:w-11 ${
                 extended
                   ? PHASE_BG_EXTENDED.defense
                   : phase
@@ -244,7 +263,7 @@ function MoveBar({ fp, ticks, startTic }) {
           );
         })}
       </div>
-      <span className="truncate font-display text-[11px] text-zinc-300">{fp.moveName}</span>
+      <span className="truncate font-display text-xs text-zinc-300 md:text-base">{fp.moveName}</span>
     </div>
   );
 }
@@ -263,6 +282,10 @@ export default function RoundCutscene({
   const [meta, setMeta] = useState(null);
   const [visibleCount, setVisibleCount] = useState(0);
   const [error, setError] = useState(null);
+  // Read once per mount rather than subscribed: changing the setting
+  // mid-cutscene and having the playhead lurch is worse than it taking
+  // effect on the next round you open.
+  const [speed] = useState(loadCutsceneSpeed);
   const proxy = useRef({ i: 0 });
   const tweenRef = useRef(null);
   const feedRef = useRef(null);
@@ -323,13 +346,13 @@ export default function RoundCutscene({
     }
     tweenRef.current = gsap.to(proxy.current, {
       i: events.length,
-      duration: remaining * SECONDS_PER_EVENT,
+      duration: (remaining * SECONDS_PER_EVENT) / speed,
       ease: 'none',
       onUpdate: () => setVisibleCount(Math.floor(proxy.current.i)),
       onComplete: () => setVisibleCount(events.length),
     });
     return () => tweenRef.current?.kill();
-  }, [events.length]);
+  }, [events.length, speed]);
 
   const skipToEnd = () => {
     tweenRef.current?.kill();
@@ -367,15 +390,15 @@ export default function RoundCutscene({
   }
 
   return (
-    <div className="panel-cut border border-zinc-800 bg-zinc-950/60 p-3">
+    <div className="panel-cut flex h-full min-h-0 flex-col border border-zinc-800 bg-zinc-950/60 p-3">
       <div className="mb-2 flex items-center justify-between gap-2">
-        <h3 className="font-display text-sm uppercase tracking-wide text-zinc-300">
+        <h3 className="font-display text-base uppercase tracking-wide text-zinc-300 md:text-xl">
           Round {meta?.roundNumber ?? roundNumber}
-          {mode === 'replay' && <span className="ml-2 text-[11px] text-zinc-500">replay</span>}
+          {mode === 'replay' && <span className="ml-2 text-xs text-zinc-500 md:text-sm">replay</span>}
         </h3>
         <div className="flex items-center gap-2">
           {paused && (
-            <span className="panel-cut-sm bg-amber-600/30 px-2 py-0.5 font-display text-[11px] uppercase text-amber-300">
+            <span className="panel-cut-sm bg-amber-600/30 px-2 py-1 font-display text-xs uppercase text-amber-300 md:text-sm">
               {pendingDodge ? 'Waiting on the GM’s Dodge call' : 'Waiting on a Forfeit/Postpone choice'}
             </span>
           )}
@@ -383,7 +406,7 @@ export default function RoundCutscene({
             type="button"
             onClick={skipToEnd}
             disabled={isCaughtUp}
-            className="panel-cut-sm border border-zinc-700 px-2 py-1 font-display text-[11px] uppercase text-zinc-300 hover:bg-zinc-800 disabled:opacity-40"
+            className="panel-cut-sm border border-zinc-700 px-3 py-1.5 font-display text-xs uppercase text-zinc-300 hover:bg-zinc-800 disabled:opacity-40 md:text-sm"
           >
             {mode === 'replay' ? 'Skip to end' : 'Catch up'}
           </button>
@@ -400,7 +423,7 @@ export default function RoundCutscene({
       {/* The Tic strip itself, driven by the playhead rather than live
           server state — during a cutscene the round is already computed. */}
       <div className="flex items-center gap-2 py-1">
-        <span className="w-24 shrink-0" />
+        <span className="w-24 shrink-0 md:w-36" />
         <div className="flex gap-0.5">
           {ticks.map((tic) => (
             <motion.span
@@ -408,7 +431,7 @@ export default function RoundCutscene({
               animate={{ scale: tic === playheadTic ? 1.15 : 1 }}
               transition={{ type: 'spring', stiffness: 400, damping: 22 }}
               title={`Tic ${tic - startTic + 1}`}
-              className={`flex h-6 w-6 items-center justify-center border font-display text-[10px] ${
+              className={`flex h-8 w-8 items-center justify-center border font-display text-xs md:h-10 md:w-11 md:text-sm ${
                 tic === playheadTic
                   ? 'border-brand-400 bg-brand-700/60 text-zinc-100'
                   : 'border-zinc-700 bg-zinc-900 text-zinc-500'
@@ -429,7 +452,10 @@ export default function RoundCutscene({
 
       {/* The event feed — every element is a real DOM node with its own
           payload behind it (hover for detail), not a rendered video frame. */}
-      <div ref={feedRef} className="mt-3 max-h-44 space-y-1 overflow-y-auto pr-1">
+      {/* The event feed fills whatever height it's given — in the theater
+          dialog that's most of the screen, which is the point: the log is
+          what you actually read to follow the fight. */}
+      <div ref={feedRef} className="mt-3 min-h-32 flex-1 space-y-1 overflow-y-auto pr-1">
         <AnimatePresence initial={false}>
           {shown.map((ev) => (
             <motion.div
@@ -438,26 +464,29 @@ export default function RoundCutscene({
               animate={{ opacity: 1, x: 0 }}
               transition={{ duration: 0.18 }}
               title={eventDetail(ev, startTic)}
-              className={`flex items-baseline gap-2 border-l-2 px-2 py-0.5 text-xs ${
+              className={`flex items-baseline gap-2 border-l-2 px-2 py-1.5 text-sm md:gap-3 md:px-3 md:py-2 md:text-base ${
                 PAUSE_EVENTS.has(ev.type)
                   ? 'border-amber-500 bg-amber-950/30 text-amber-200'
                   : ev.type === 'damage_applied'
                     ? 'border-rose-600 bg-rose-950/20 text-rose-200'
-                    : 'border-zinc-700 text-zinc-300'
+                    : ev.type === 'insignificant_damage'
+                      ? 'border-zinc-600 text-zinc-500'
+                      : 'border-zinc-700 text-zinc-300'
               }`}
             >
-              <span className="w-8 shrink-0 font-display text-[10px] text-zinc-500">
+              <span className="w-8 shrink-0 font-display text-xs text-zinc-500 md:w-12 md:text-sm">
                 T{ev.tic - startTic + 1}
               </span>
-              <span className="font-display text-[11px] uppercase tracking-wide">
+              <span className="w-24 shrink-0 font-display text-xs uppercase tracking-wide text-zinc-500 md:w-36 md:text-sm">
                 {EVENT_LABEL[ev.type] ?? ev.type}
               </span>
-              <span className="truncate text-zinc-400">{eventSummary(ev)}</span>
+              {/* The sentence, not a fragment — readable without hovering. */}
+              <span className="min-w-0 flex-1">{eventNarration(ev, startTic)}</span>
             </motion.div>
           ))}
         </AnimatePresence>
         {!events.length && (
-          <div className="px-2 py-1 text-xs text-zinc-600">Resolving…</div>
+          <div className="px-2 py-1 text-sm text-zinc-600 md:text-base">Resolving…</div>
         )}
       </div>
     </div>

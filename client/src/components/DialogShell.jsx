@@ -10,14 +10,17 @@ import { motion } from 'framer-motion';
 // the bottom edge with only its top corners cut and safe-bottom padding.
 // `fullscreen` is for a complex editor (Damage Application) — desktop stays
 // centered, mobile fills the whole viewport so there's room for the
-// anatomy figure plus controls. Framer Motion's animated entrance/exit is
-// unchanged from what every dialog already used (spring scale+fade), just
-// centralized here.
+// anatomy figure plus controls. `theater` goes further and fills almost the
+// whole viewport on *every* size: for the round cutscene, which is something
+// you sit and watch rather than a form you fill in, and which was unusable
+// squeezed into a centered `max-w-md` panel. Framer Motion's animated
+// entrance/exit is unchanged from what every dialog already used (spring
+// scale+fade), just centralized here.
 export default function DialogShell({
   title,
   onClose,
   dismissible = true,
-  variant = 'sheet', // 'sheet' | 'fullscreen'
+  variant = 'sheet', // 'sheet' | 'fullscreen' | 'theater'
   maxWidth = 'max-w-md',
   children,
   footer,
@@ -63,13 +66,17 @@ export default function DialogShell({
   }, [dismissible, onClose]);
 
   const sheetPanelClass =
-    variant === 'fullscreen'
-      ? 'h-full w-full md:h-auto md:max-h-[90dvh] md:w-full md:rounded-none md:panel-cut-lg'
-      : 'w-full rounded-t-2xl md:rounded-none md:panel-cut-lg md:max-h-[90dvh]';
+    variant === 'theater'
+      ? 'h-full w-full md:h-[94dvh] md:w-[96vw] md:rounded-none md:panel-cut-lg'
+      : variant === 'fullscreen'
+        ? 'h-full w-full md:h-auto md:max-h-[90dvh] md:w-full md:rounded-none md:panel-cut-lg'
+        : 'w-full rounded-t-2xl md:rounded-none md:panel-cut-lg md:max-h-[90dvh]';
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-end justify-center bg-black/60 md:items-center md:p-4"
+      className={`fixed inset-0 z-50 flex items-end justify-center bg-black/60 md:items-center ${
+        variant === 'theater' ? 'md:p-2' : 'md:p-4'
+      }`}
       onClick={dismissible ? onClose : undefined}
     >
       <motion.div
@@ -84,7 +91,9 @@ export default function DialogShell({
         exit={{ y: 24, opacity: 0 }}
         transition={{ type: 'spring', stiffness: 420, damping: 30 }}
         style={{ paddingBottom: 'var(--safe-bottom)' }}
-        className={`flex max-h-[92dvh] flex-col gap-3 border border-zinc-700 bg-zinc-900 p-4 outline-none ${sheetPanelClass} ${maxWidth} ${panelClassName}`}
+        className={`flex flex-col gap-3 border border-zinc-700 bg-zinc-900 p-4 outline-none ${
+          variant === 'theater' ? '' : 'max-h-[92dvh]'
+        } ${sheetPanelClass} ${variant === 'theater' ? 'max-w-none' : maxWidth} ${panelClassName}`}
       >
         {title && (
           <div className="flex shrink-0 items-center gap-2">

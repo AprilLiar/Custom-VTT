@@ -20,6 +20,10 @@ export const deleteCharacter = (id) =>
   fetch(`/api/characters/${id}`, { method: 'DELETE' }).then(json);
 export const getChat = () => fetch('/api/chat').then(json);
 export const getRuleset = () => fetch('/api/ruleset').then(json);
+// The rule book itself (game_rules.md at the repo root), rendered by the
+// Rules page. Distinct from getRuleset above, which is the GM-editable
+// per-table config — this one is authored text, the same for everyone.
+export const getRules = () => fetch('/api/rules').then(json);
 export const getTells = () => fetch('/api/tells').then(json);
 export const getTags = () => fetch('/api/tags').then(json);
 export const getMoves = () => fetch('/api/moves').then(json);

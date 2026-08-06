@@ -6,6 +6,28 @@ import { socket } from '../socket.js';
 import { updateCharacter } from '../lib/api.js';
 import { fileToPortrait, portraitSrc, vitruvianSrc } from '../lib/image.js';
 import { ANATOMY } from '../lib/anatomy.js';
+import { useMediaQuery } from '../lib/useMediaQuery.js';
+
+// How the 8 Stats sit around the Vitruvian figure. Wide screens keep the
+// original 2 / 4 / 2 shape, which mirrors the figure directly: head at the
+// top, arms and torso across the middle, legs at the bottom.
+//
+// A phone cannot fit that middle row — four Stat widgets side by side ran
+// straight off both edges, clipping Left Hand and Right Hand out of view
+// entirely. Narrow screens get four rows of two instead, grouped by body
+// part rather than simply wrapped: hands together, torso together, legs
+// together, so the left/right pairing still reads off the figure behind it.
+const WIDE_ROWS = [
+  ['Skull', 'Brain'],
+  ['Left Hand', 'Stamina', 'Body', 'Right Hand'],
+  ['Left Leg', 'Right Leg'],
+];
+const NARROW_ROWS = [
+  ['Skull', 'Brain'],
+  ['Left Hand', 'Right Hand'],
+  ['Stamina', 'Body'],
+  ['Left Leg', 'Right Leg'],
+];
 import DieWidget from './DieWidget.jsx';
 import RollDialog from './RollDialog.jsx';
 import ItemList from './ItemList.jsx';
@@ -132,6 +154,9 @@ function StaminaBlock({ character, staminaDie }) {
 export default function CoreStatsTab({ data }) {
   const { character, dice, inventory, injuries } = data;
   const { role } = useRole();
+  // Tailwind's own `sm` — the width below which the 4-wide middle row of
+  // Stats stops fitting at all (see NARROW_ROWS above).
+  const narrow = !useMediaQuery('(min-width: 640px)');
   const [dialog, setDialog] = useState(null); // { type: 'die', die } | { type: 'pool' }
   const [selecting, setSelecting] = useState(false);
   const [selectedIds, setSelectedIds] = useState(new Set());
@@ -321,11 +346,7 @@ export default function CoreStatsTab({ data }) {
           </>
         )}
         <div className="relative space-y-3 py-2">
-          {[
-            Object.keys(ANATOMY).slice(0, 2),
-            Object.keys(ANATOMY).slice(2, 6),
-            Object.keys(ANATOMY).slice(6, 8),
-          ].map((slots, rowIndex) => (
+          {(narrow ? NARROW_ROWS : WIDE_ROWS).map((slots, rowIndex) => (
             <div key={rowIndex} className="flex justify-center gap-3">
               {slots.map((slot) => {
                 const die = dice.find((d) => d.slot_name === slot);

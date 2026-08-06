@@ -101,11 +101,12 @@ async function createMove({
   defenseKind = null,
   defenseFramePositions = [],
   attackTargets = null,
+  rollModifier = 0,
 }) {
   const result = await run(
     `INSERT INTO moves
-       (name, tell_id, startup_tics, active_tics, recovery_tics, is_defensive, defense_kind, defense_frame_positions${attackTargets ? ', attack_targets' : ''})
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?${attackTargets ? ', ?' : ''})`,
+       (name, tell_id, startup_tics, active_tics, recovery_tics, is_defensive, defense_kind, defense_frame_positions, roll_modifier${attackTargets ? ', attack_targets' : ''})
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?${attackTargets ? ', ?' : ''})`,
     [
       name,
       tellId,
@@ -115,6 +116,7 @@ async function createMove({
       isDefensive ? 1 : 0,
       defenseKind,
       JSON.stringify(defenseFramePositions),
+      rollModifier,
       ...(attackTargets ? [JSON.stringify(attackTargets)] : []),
     ]
   );
@@ -302,6 +304,216 @@ test('too-early auto-fail: defense frames start after the attack\'s first Active
   const events = await all('SELECT type, payload FROM round_events WHERE pair_index = ? ORDER BY seq', [pairIndex]);
   const defenseEvent = events.find((e) => e.type === 'defense_resolved');
   assert.equal(JSON.parse(defenseEvent.payload).coverage, 'too-early');
+});
+
+// The bug behind "Block still does not work — it was not rolled at all when
+// it was placed on the same tic as an opponent's attack". Placing a Block on
+// the attack's own Tic is not what makes it defend: what matters is where its
+// Defense Frames land. A frame on square 0 is the Block's *Startup* Tic,
+// which sits a Tic BEFORE the attacker's Active window opens (the attacker
+// has its own Startup too), so there is no overlap for classifyDefenseCoverage
+// to classify — and the engine used to fall straight through to a plain Hit
+// in complete silence, which is indistinguishable from the Block being
+// ignored. It must say so instead. It must also still roll the defender's
+// dice into the timeline in the cases where a defence DOES engage — asserted
+// separately below, since that half was invisible for the same report.
+test('no-overlap: Defense Frames that never reach the attack are reported, not silently skipped', async () => {
+  const pairIndex = 240;
+  const attacker = await createCharacter('NoOverlap Attacker');
+  const defender = await createCharacter('NoOverlap Defender');
+  await setDieSize(attacker, 'Skull', 12);
+  const punch = await createMove({ name: 'NO Punch', startupTics: 1, activeTics: 2, recoveryTics: 1, rollSlots: ['Skull'] });
+  const earlyGuard = await createMove({
+    name: 'NO Guard',
+    startupTics: 1,
+    activeTics: 1,
+    recoveryTics: 1,
+    rollSlots: ['Left Hand'],
+    isDefensive: true,
+    defenseKind: 'block',
+    defenseFramePositions: [0], // the Block's own Startup square — Tic 0, a Tic before the attack goes Active
+  });
+
+  await seatPair(pairIndex, attacker, defender);
+  await startPairDeclaration(mockIo, pairIndex);
+  // Both placed at the SAME Tic — exactly the case that was reported broken.
+  await declareMove({ characterId: attacker, moveId: punch, placementTic: 0, startupTics: 1 });
+  await declareMove({ characterId: defender, moveId: earlyGuard, placementTic: 0, startupTics: 1 });
+  await resolvePair(pairIndex);
+
+  const events = await all('SELECT type, payload FROM round_events WHERE pair_index = ? ORDER BY seq', [pairIndex]);
+  const defenseEvent = events.find((e) => e.type === 'defense_resolved');
+  assert.ok(defenseEvent, 'a defence with frames that miss must still report itself');
+  const payload = JSON.parse(defenseEvent.payload);
+  assert.equal(payload.coverage, 'no-overlap');
+  assert.equal(payload.defenseType, null);
+  assert.deepEqual(payload.defenseTics, [0]); // guarding Tic 0
+  assert.equal(payload.attackActiveStart, 1); // attack is Active from Tic 1 — hence the miss
+  // The rule itself is unchanged: no defence engaged, so the attack lands in
+  // full, same as the plain-Hit scenario at the top of this file.
+  const skull = await one("SELECT * FROM dice WHERE character_id = ? AND slot_name = 'Skull'", [defender]);
+  assert.equal(skull.current_size, 6);
+});
+
+test('a defending roll appears on the timeline, not only in the chat log', async () => {
+  const pairIndex = 241;
+  const attacker = await createCharacter('DefRoll Attacker');
+  const defender = await createCharacter('DefRoll Defender');
+  await setDieSize(attacker, 'Skull', 12);
+  await setDieSize(defender, 'Left Hand', 12);
+  const punch = await createMove({ name: 'DR Punch', startupTics: 1, activeTics: 2, recoveryTics: 1, rollSlots: ['Skull'] });
+  const guard = await createMove({
+    name: 'DR Guard',
+    startupTics: 1,
+    activeTics: 1,
+    recoveryTics: 1,
+    rollSlots: ['Hand'],
+    isDefensive: true,
+    defenseKind: 'block',
+    defenseFramePositions: [0, 1, 2],
+  });
+
+  await seatPair(pairIndex, attacker, defender);
+  await startPairDeclaration(mockIo, pairIndex);
+  await declareMove({ characterId: attacker, moveId: punch, placementTic: 0, startupTics: 1 });
+  await declareMove({ characterId: defender, moveId: guard, placementTic: 0, startupTics: 1, appendageChoice: 'left' });
+  await resolvePair(pairIndex);
+
+  const events = await all('SELECT type, payload FROM round_events WHERE pair_index = ? ORDER BY seq', [pairIndex]);
+  const defensiveRolls = events
+    .filter((e) => e.type === 'roll')
+    .map((e) => JSON.parse(e.payload))
+    .filter((p) => p.defensive);
+  assert.equal(defensiveRolls.length, 1, 'the Block rolled, so the cutscene must show it rolling');
+  assert.equal(defensiveRolls[0].characterId, defender);
+  assert.equal(defensiveRolls[0].defenseType, 'block');
+  assert.ok(defensiveRolls[0].dice.length > 0);
+});
+
+test('Insignificant Damage: a sub-5 attack lands nothing, says so, and is NOT a Miss', async () => {
+  const pairIndex = 230;
+  const attacker = await createCharacter('Insignificant Attacker');
+  const defender = await createCharacter('Insignificant Defender');
+  // -20 against a d12 can never reach 5, so this is deterministic regardless
+  // of the forced-max die roll this file pins.
+  const feint = await createMove({
+    name: 'IS Feint',
+    startupTics: 1,
+    activeTics: 1,
+    recoveryTics: 0,
+    rollSlots: ['Skull'],
+    rollModifier: -20,
+  });
+
+  await seatPair(pairIndex, attacker, defender);
+  await startPairDeclaration(mockIo, pairIndex);
+  const dmId = await declareMove({ characterId: attacker, moveId: feint, placementTic: 0, startupTics: 1 });
+  await resolvePair(pairIndex);
+
+  const events = await all('SELECT type, payload FROM round_events WHERE pair_index = ? ORDER BY seq', [pairIndex]);
+  const types = events.map((e) => e.type);
+  assert.ok(types.includes('insignificant_damage'), JSON.stringify(types));
+  // The old behaviour fired the move's own On Miss trigger here. A Miss is
+  // now specifically a Dodge evasion, so nothing fires.
+  assert.ok(
+    !events.some((e) => e.type === 'automation_fired' && JSON.parse(e.payload).trigger === 'miss'),
+    'a sub-5 roll must not fire the On Miss trigger'
+  );
+  assert.ok(!types.includes('damage_applied'), JSON.stringify(types));
+
+  const payload = JSON.parse(events.find((e) => e.type === 'insignificant_damage').payload);
+  assert.equal(payload.declaredMoveId, dmId);
+  assert.ok(payload.total < 5, `total was ${payload.total}`);
+
+  // Announced in chat, in those words — the table has to be told the attack
+  // landed and did nothing, rather than seeing silence.
+  const notice = await one(
+    `SELECT content FROM chat_log WHERE kind = 'message' AND content LIKE '%insignificant damage%' ORDER BY id DESC LIMIT 1`
+  );
+  assert.ok(notice, 'the outcome must be announced');
+  assert.match(notice.content, /IS Feint/);
+
+  // And the move is fully resolved, so a later pass can't re-resolve it.
+  const dm = await one('SELECT interactions_resolved FROM declared_moves WHERE id = ?', [dmId]);
+  assert.equal(dm.interactions_resolved, 1);
+});
+
+test("Miss: a Full Dodge fires the attacker's On Miss trigger, a Partial one fires On Block", async () => {
+  // Both halves of the new definition, driven off the same Dodge scenario the
+  // pause tests use — the only difference is whether the defender's roll is
+  // strong enough to zero the damage.
+  const scenario = async ({ pairIndex, defenderHandSize, expectedTrigger }) => {
+    const attacker = await createCharacter(`MissDodge Attacker ${pairIndex}`);
+    const defender = await createCharacter(`MissDodge Defender ${pairIndex}`);
+    await setDieSize(attacker, 'Skull', 12);
+    await setDieSize(defender, 'Left Hand', defenderHandSize);
+    const punch = await createMove({
+      name: `MD Punch ${pairIndex}`,
+      startupTics: 1,
+      activeTics: 1,
+      recoveryTics: 1,
+      rollSlots: ['Skull'],
+    });
+    const slip = await createMove({
+      name: `MD Slip ${pairIndex}`,
+      startupTics: 1,
+      activeTics: 1,
+      recoveryTics: 1,
+      rollSlots: ['Hand'],
+      attackTargets: [],
+      isDefensive: true,
+      defenseKind: 'dodge',
+      defenseFramePositions: [0, 1, 2],
+    });
+
+    await seatPair(pairIndex, attacker, defender);
+    await startPairDeclaration(mockIo, pairIndex);
+    const attackerDM = await declareMove({ characterId: attacker, moveId: punch, placementTic: 0, startupTics: 1 });
+    // effective_attack_targets defaults to ["Skull"], so a defence-pure move
+    // has to say so explicitly here — move:declare snapshots the move's own
+    // (empty) attack_targets into this column for real declarations.
+    await declareMove({
+      characterId: defender,
+      moveId: slip,
+      placementTic: 0,
+      startupTics: 1,
+      appendageChoice: 'left',
+      effectiveAttackTargets: [],
+    });
+    await resolvePair(pairIndex);
+
+    const paused = await one('SELECT status FROM pair_round_resolutions WHERE pair_index = ? AND round_number = 1', [pairIndex]);
+    assert.equal(paused.status, 'paused_dodge');
+    await resolveDodge(pairIndex, { outcome: 'successful' }, mockIo);
+
+    const fired = await all(
+      `SELECT payload FROM round_events WHERE pair_index = ? AND type = 'automation_fired' ORDER BY seq`,
+      [pairIndex]
+    );
+    return { attackerDM, triggers: fired.map((e) => JSON.parse(e.payload).trigger) };
+  };
+
+  // A matching d12 zeroes the damage entirely: fully evaded, so a Miss.
+  const full = await scenario({ pairIndex: 231, defenderHandSize: 12, expectedTrigger: 'miss' });
+  const damageAfterFull = await all(
+    `SELECT type FROM round_events WHERE pair_index = 231 AND type = 'damage_applied'`
+  );
+  assert.equal(damageAfterFull.length, 0, 'a Full Dodge lands no damage');
+
+  // A weaker d4 lets damage through: not evaded, so not a Miss.
+  const partial = await scenario({ pairIndex: 232, defenderHandSize: 4, expectedTrigger: 'block' });
+  const damageAfterPartial = await all(
+    `SELECT type FROM round_events WHERE pair_index = 232 AND type = 'damage_applied'`
+  );
+  assert.ok(damageAfterPartial.length > 0, 'a Partial Dodge still lands damage');
+
+  // applyMoveInteractions only posts an automation_fired event when the move
+  // actually has something wired to that trigger, so assert on the stored
+  // declared move instead: both are resolved exactly once either way.
+  for (const { attackerDM } of [full, partial]) {
+    const dm = await one('SELECT interactions_resolved FROM declared_moves WHERE id = ?', [attackerDM]);
+    assert.equal(dm.interactions_resolved, 1);
+  }
 });
 
 test('Interruption: taking a Hit while still in Startup disrupts the target\'s own declared move', async () => {

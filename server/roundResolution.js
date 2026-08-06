@@ -36,8 +36,8 @@
 // extended here to a thin DB-orchestration layer too.
 //
 // A handful of small orchestration primitives below (postSystemMessage,
-// adjustStamina, logRoll, applyMoveInteractions, getReasonsToFightBonus,
-// resolveMoveRollDice) are therefore intentionally-parallel duplicates of
+// adjustStamina, logRoll, applyMoveInteractions, resolveMoveRollDice) are
+// therefore intentionally-parallel duplicates of
 // the same-named functions in server/index.js rather than shared imports —
 // `io` is taken as an explicit parameter here instead of closed over, which
 // is what keeps this module import-safe. Keep both sides' behavior in sync
@@ -69,6 +69,7 @@ import {
   findInterruptEligibleTic,
 } from './combatTiming.js';
 import { idleStaminaRegenRate } from './perkAutomations.js';
+import { getCombatRollBonus } from './combatBonuses.js';
 
 const GM_CHAT_SENTINEL_ID = 0;
 
@@ -133,16 +134,6 @@ async function logRoll(io, { characterId, characterName, modifier, dice, rollCon
   });
 }
 
-async function getReasonsToFightBonus(characterId) {
-  const row = await one(
-    `SELECT cp.reasons_to_fight AS reasons_to_fight
-     FROM combat_participants cp
-     JOIN combat_pairs pr ON pr.pair_index = cp.pair_index
-     WHERE cp.character_id = ? AND pr.phase IS NOT NULL`,
-    [characterId]
-  );
-  return row?.reasons_to_fight ?? 0;
-}
 
 // Mirrors server/index.js's resolveMoveRollDice exactly (same helper, same
 // name, duplicated for the reasons in the module comment above): resolves
@@ -339,8 +330,8 @@ async function checkInterrupt(io, { targetCharacterId, attackerRevealTic, attack
     ),
   ]);
   const bonus = computeInterruptBonus({ revealTic: attackerRevealTic, currentTic: eligible.tic });
-  const reasonsBonus = await getReasonsToFightBonus(targetCharacterId);
-  const mod = bonus + reasonsBonus + startupDM.roll_modifier + rollBonusRow.bonus;
+  const bonusMods = await getCombatRollBonus(targetCharacterId);
+  const mod = bonus + bonusMods + startupDM.roll_modifier + rollBonusRow.bonus;
 
   // Decision #8: the interrupted character rolls their own Startup move's
   // Roll if it has one, otherwise Body (generic toughness) instead of
@@ -408,7 +399,18 @@ async function runInterruptAndDamage(io, {
   emitEvent,
 }) {
   const applied = await applyAutoDamage(io, { targetCharacterId, effectiveAttackTargets, steps, attackerName: attackerCharacterName });
-  await emitEvent(tic, 'damage_applied', { declaredMoveId, targetCharacterId, slotName: applied?.slotName ?? null, steps });
+  // Names, not just ids: the cutscene log states outcomes as sentences now,
+  // and a replay must be readable without any live combat state to look them
+  // up in (§0's self-contained-payload rule).
+  const target = await getCharacter(targetCharacterId);
+  await emitEvent(tic, 'damage_applied', {
+    declaredMoveId,
+    targetCharacterId,
+    targetCharacterName: target?.name ?? null,
+    attackerCharacterName,
+    slotName: applied?.slotName ?? null,
+    steps,
+  });
   const dm = await one('SELECT interactions_resolved FROM declared_moves WHERE id = ?', [declaredMoveId]);
   if (dm && !dm.interactions_resolved) {
     await run('UPDATE declared_moves SET interactions_resolved = 1 WHERE id = ?', [declaredMoveId]);
@@ -504,8 +506,8 @@ async function applySuccessfulDodge(io, {
       [defenderDM.character_id, defenderDM.move_id]
     ),
   ]);
-  const defReasonsBonus = await getReasonsToFightBonus(defenderDM.character_id);
-  const defMod = defenderDM.roll_modifier + defRollBonusRow.bonus + defReasonsBonus;
+  const defBonusMods = await getCombatRollBonus(defenderDM.character_id);
+  const defMod = defenderDM.roll_modifier + defRollBonusRow.bonus + defBonusMods;
 
   let dodgeDice;
   if (defenderDM.roll_type === 'custom' && defenderDM.custom_roll_size != null) {
@@ -524,6 +526,20 @@ async function applySuccessfulDodge(io, {
   }
   const dodgeResult = dodgeDice.reduce((sum, d) => sum + d.result, 0);
   await logRoll(io, { characterId: defenderDM.character_id, characterName: defenderDM.character_name, modifier: defMod, dice: dodgeDice });
+  // Defensive rolls used to go to chat only, never to round_events — so the
+  // cutscene showed the attacker roll, then a Defense line with an outcome,
+  // and the defender's own dice nowhere. That is what "the Block was not
+  // rolled at all" looks like to someone watching the log.
+  await emitEvent(tic, 'roll', {
+    declaredMoveId: defenderDM.id,
+    characterId: defenderDM.character_id,
+    characterName: defenderDM.character_name,
+    dice: dodgeDice,
+    modifier: defMod,
+    total: dodgeResult,
+    defensive: true,
+    defenseType: 'dodge',
+  });
 
   const resolution = resolveDefenseRoll({ attackerResult, defenderResult: dodgeResult });
   await postSystemMessage(
@@ -544,9 +560,15 @@ async function applySuccessfulDodge(io, {
   const attackerDM = await one('SELECT interactions_resolved FROM declared_moves WHERE id = ?', [attackerDeclaredMoveId]);
   if (attackerDM && !attackerDM.interactions_resolved) {
     await run('UPDATE declared_moves SET interactions_resolved = 1 WHERE id = ?', [attackerDeclaredMoveId]);
+    // Miss (decided, revised): a Miss is an attack *evaded with a Dodge* —
+    // which is exactly a Full Dodge, where nothing lands. A Partial Dodge
+    // still puts damage through, so it stays the attacker's 'block' trigger
+    // like every other partial defence. Exactly one of the two fires, since
+    // both hang off the same interactions_resolved flag; a sub-5 roll no
+    // longer fires either (that's Insignificant Damage — see resolveAttack).
     await applyMoveInteractions(io, {
       moveId: attackerMoveId,
-      trigger: 'block',
+      trigger: resolution.outcome === 'full' ? 'miss' : 'block',
       selfCharacterId: attackerCharacterId,
       selfDeclaredMoveId: attackerDeclaredMoveId,
       opponentCharacterId: defenderDM.character_id,
@@ -571,7 +593,7 @@ async function applySuccessfulDodge(io, {
     });
   } else if (!(await one('SELECT interactions_resolved FROM declared_moves WHERE id = ?', [attackerDeclaredMoveId]))?.interactions_resolved) {
     // Full Dodge never reaches runInterruptAndDamage (0 steps), but the
-    // 'block' trigger above still needs interactions_resolved set exactly
+    // miss/block trigger above still needs interactions_resolved set exactly
     // once — mirrors the live Block-Full path's own unconditional set.
     await run('UPDATE declared_moves SET interactions_resolved = 1 WHERE id = ?', [attackerDeclaredMoveId]);
   }
@@ -615,14 +637,14 @@ async function resolveAttack(io, { row, pairIndex, tic, emitEvent }) {
   }
 
   // Step 2 — auto-roll the attacker's own move.
-  const [rollBonusRow, reasonsBonus] = await Promise.all([
+  const [rollBonusRow, bonusMods] = await Promise.all([
     one(
       'SELECT COALESCE(SUM(amount), 0) AS bonus FROM character_move_roll_bonuses WHERE character_id = ? AND move_id = ?',
       [row.characterId, row.moveId]
     ),
-    getReasonsToFightBonus(row.characterId),
+    getCombatRollBonus(row.characterId),
   ]);
-  const mod = row.rollModifier + rollBonusRow.bonus + reasonsBonus;
+  const mod = row.rollModifier + rollBonusRow.bonus + bonusMods;
   let dice;
   if (row.rollType === 'custom') {
     dice = [{ slot_name: 'Custom', size: row.customRollSize, bonus: 0, result: rollDie(row.customRollSize) + mod }];
@@ -641,27 +663,25 @@ async function resolveAttack(io, { row, pairIndex, tic, emitEvent }) {
 
   const { halfDamageSteps } = computeHitDamage(total);
   if (halfDamageSteps === 0) {
-    // Sub-phase 5 precedent: a Miss's opponent-directed automations only
-    // fire when there's exactly one target candidate on the opposing side —
-    // which of several possible Uneven Combat targets a miss "affects" is
-    // a genuine ambiguity not worth guessing at.
-    const opposingSide = row.side === 'left' ? 'right' : 'left';
-    const opponents = await all('SELECT character_id FROM combat_participants WHERE pair_index = ? AND side = ?', [
-      pairIndex,
-      opposingSide,
-    ]);
-    const dm = await one('SELECT interactions_resolved FROM declared_moves WHERE id = ?', [row.declaredMoveId]);
-    if (dm && !dm.interactions_resolved) {
-      await run('UPDATE declared_moves SET interactions_resolved = 1 WHERE id = ?', [row.declaredMoveId]);
-      await applyMoveInteractions(io, {
-        moveId: row.moveId,
-        trigger: 'miss',
-        selfCharacterId: row.characterId,
-        selfDeclaredMoveId: row.declaredMoveId,
-        opponentCharacterId: opponents.length === 1 ? opponents[0].character_id : null,
-      });
-    }
-    await emitEvent(tic, 'automation_fired', { declaredMoveId: row.declaredMoveId, trigger: 'miss' });
+    // Insignificant Damage (decided, revised) — NOT a Miss. A roll under 5
+    // is an attack that landed and did too little to matter; a Miss is
+    // specifically an attack the target *evaded with a Dodge*, which is why
+    // the move's own On Miss trigger fires from the Successful-Dodge path
+    // (applySuccessfulDodge below) and no longer from here. The two used to
+    // be the same branch, which both mislabelled a weak hit and left a real
+    // dodge firing nothing.
+    await run('UPDATE declared_moves SET interactions_resolved = 1 WHERE id = ?', [row.declaredMoveId]);
+    await postSystemMessage(
+      io,
+      `${row.characterName}'s ${row.moveName} did insignificant damage (rolled ${total}).`
+    );
+    await emitEvent(tic, 'insignificant_damage', {
+      declaredMoveId: row.declaredMoveId,
+      characterId: row.characterId,
+      characterName: row.characterName,
+      moveName: row.moveName,
+      total,
+    });
     return;
   }
 
@@ -723,6 +743,43 @@ async function resolveAttack(io, { row, pairIndex, tic, emitEvent }) {
   const defenseMatch = selectDefenseMove({ defenderMoves, attackActiveStart, attackActiveEnd });
 
   if (!defenseMatch) {
+    // A defender who declared a defensive move that simply doesn't reach this
+    // attack used to get *nothing at all* — no event, no chat line, the
+    // attack just landed. From the table that is indistinguishable from the
+    // engine ignoring the Block, which is exactly how it was reported ("Block
+    // still does not work; it was not rolled at all"). Placing a Block on the
+    // same Tic as the attack is not enough on its own: what matters is where
+    // its Defense Frames sit inside its own footprint, and a frame on the
+    // Block's Startup square lands a Tic *before* the attacker's Active
+    // window opens. Say so, rather than resolving in silence.
+    const framed = defenderMoves.filter((m) => m.defenseFramePositions.length > 0);
+    if (framed.length) {
+      // Tics are quoted the way the Tic Counter labels them — 1-based within
+      // the pair's own current round — not as the absolute timeline numbers
+      // used internally, which would stop matching the strip from round 2 on.
+      const [target, pair] = await Promise.all([
+        getCharacter(targetCharacterId),
+        one('SELECT round_start_tic AS roundStartTic FROM combat_pairs WHERE pair_index = ?', [pairIndex]),
+      ]);
+      const label = (t) => t - (pair?.roundStartTic ?? 0) + 1;
+      const covered = framed.flatMap((m) => m.defenseFramePositions.map((p) => m.placementTic + p));
+      const active = Array.from({ length: attackActiveEnd - attackActiveStart }, (_, i) => attackActiveStart + i);
+      await emitEvent(tic, 'defense_resolved', {
+        attackerDeclaredMoveId: row.declaredMoveId,
+        defenderDeclaredMoveId: null,
+        defenseType: null,
+        coverage: 'no-overlap',
+        defenseTics: covered,
+        attackActiveStart,
+        attackActiveEnd,
+      });
+      await postSystemMessage(
+        io,
+        `${target?.name ?? 'The defender'}'s Defense Frames don't cover ${row.characterName}'s ${row.moveName} ` +
+          `(guarding Tic${covered.length === 1 ? '' : 's'} ${covered.map(label).join(', ')}, ` +
+          `attack is Active on ${active.map(label).join(', ')}) — no defence.`
+      );
+    }
     // Step 7 — plain Hit, no defending move at all.
     await runInterruptAndDamage(io, {
       declaredMoveId: row.declaredMoveId,
@@ -845,8 +902,8 @@ async function resolveAttack(io, { row, pairIndex, tic, emitEvent }) {
       [defenderDM.character_id, defenderDM.move_id]
     ),
   ]);
-  const defReasonsBonus = await getReasonsToFightBonus(defenderDM.character_id);
-  const defMod = defenderDM.roll_modifier + defRollBonusRow.bonus + defReasonsBonus;
+  const defBonusMods = await getCombatRollBonus(defenderDM.character_id);
+  const defMod = defenderDM.roll_modifier + defRollBonusRow.bonus + defBonusMods;
 
   let blockDice;
   if (defenderDM.roll_type === 'custom' && defenderDM.custom_roll_size != null) {
@@ -869,6 +926,18 @@ async function resolveAttack(io, { row, pairIndex, tic, emitEvent }) {
     characterName: defenderDM.character_name,
     modifier: defMod,
     dice: blockDice,
+  });
+  // See the note on the Dodge branch's own roll event: without this the
+  // defender's dice never appear on the timeline at all.
+  await emitEvent(tic, 'roll', {
+    declaredMoveId: defenderDM.id,
+    characterId: defenderDM.character_id,
+    characterName: defenderDM.character_name,
+    dice: blockDice,
+    modifier: defMod,
+    total: blockResult,
+    defensive: true,
+    defenseType: defenderDM.defense_kind ?? 'block',
   });
 
   const resolution = resolveDefenseRoll({ attackerResult: total, defenderResult: blockResult });
@@ -1465,24 +1534,30 @@ async function advancePairResolution(pairIndex, io) {
   const pair = await one('SELECT * FROM combat_pairs WHERE pair_index = ?', [pairIndex]);
   if (!pair || pair.phase !== 'resolving') return;
 
-  const state = await one('SELECT round_length FROM combat_state WHERE id = 1');
+  const state = await one('SELECT round_length, fight_number FROM combat_state WHERE id = 1');
   const roundLength = state.round_length;
+  // Finished fights leave their completed resolutions behind so their
+  // replays stay watchable (see server/db.js's fight_number migration), and
+  // a new fight restarts each pair at round 1 — so "this pair's round N" is
+  // only unambiguous within the current fight.
+  const fightNumber = state.fight_number ?? 1;
 
-  let resolution = await one('SELECT * FROM pair_round_resolutions WHERE pair_index = ? AND round_number = ?', [
-    pairIndex,
-    pair.round_number,
-  ]);
+  const findResolution = () =>
+    one('SELECT * FROM pair_round_resolutions WHERE pair_index = ? AND round_number = ? AND fight_number = ?', [
+      pairIndex,
+      pair.round_number,
+      fightNumber,
+    ]);
+
+  let resolution = await findResolution();
   if (!resolution) {
     await run(
       `INSERT INTO pair_round_resolutions
-         (pair_index, round_number, round_start_tic, round_length, status, resolved_through_tic)
-       VALUES (?, ?, ?, ?, 'running', ?)`,
-      [pairIndex, pair.round_number, pair.round_start_tic, roundLength, pair.round_start_tic - 1]
+         (pair_index, round_number, fight_number, round_start_tic, round_length, status, resolved_through_tic)
+       VALUES (?, ?, ?, ?, ?, 'running', ?)`,
+      [pairIndex, pair.round_number, fightNumber, pair.round_start_tic, roundLength, pair.round_start_tic - 1]
     );
-    resolution = await one('SELECT * FROM pair_round_resolutions WHERE pair_index = ? AND round_number = ?', [
-      pairIndex,
-      pair.round_number,
-    ]);
+    resolution = await findResolution();
   }
   // §2.1: nothing to do while genuinely paused — only resolveDodge/
   // resolveMoveConflict (below) may advance past a pending decision.

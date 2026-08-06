@@ -12,6 +12,7 @@ import FrameBar from './FrameBar.jsx';
 import MoveCard from './MoveCard.jsx';
 import DiceIcon from './DiceIcon.jsx';
 import DialogShell from './DialogShell.jsx';
+import CounterAdjustDialog from './CounterAdjustDialog.jsx';
 import RoundCutscene from './RoundCutscene.jsx';
 
 // Combat Automation (Phase 9, sub-phase 4 — 4.1's damage formula):
@@ -57,7 +58,7 @@ function RoundSummaryCard({ entry, onWatch }) {
   );
 }
 
-function Entry({ entry, character, moveInfo, characters, defenseResolutions, onWatchRound }) {
+function Entry({ entry, character, moveInfo, characters, defenseResolutions, onWatchRound, onAdjustCounters }) {
   const [expanded, setExpanded] = useState(false);
   const { role } = useRole();
   const time = new Date(entry.timestamp).toLocaleTimeString([], {
@@ -77,6 +78,20 @@ function Entry({ entry, character, moveInfo, characters, defenseResolutions, onW
         <div className="flex items-baseline gap-2">
           <span className="font-display font-semibold text-zinc-200">{entry.characterName}</span>
           <span className="font-display ml-auto text-xs text-zinc-600">{time}</span>
+          {/* Counters, reachable from the roll that earned them (decided,
+              new). Only on a roll: a plain chat message or a replay card has
+              no "this just happened, tick something" moment behind it. */}
+          {entry.kind === 'roll' && (
+            <button
+              type="button"
+              onClick={() => onAdjustCounters?.(entry)}
+              title="Adjust a counter"
+              aria-label="Adjust a counter"
+              className="flex h-6 w-6 shrink-0 items-center justify-center panel-cut-sm border border-zinc-700 text-sm leading-none text-zinc-500 hover:border-brand-500 hover:text-brand-300"
+            >
+              +
+            </button>
+          )}
         </div>
         {entry.kind === 'message' ? (
           <div className="mt-1">
@@ -447,13 +462,16 @@ function Composer({ characters }) {
   );
 }
 
-export default function ChatPanel({ open, onClose }) {
+export default function ChatPanel({ open }) {
   const { role } = useRole();
   const [entries, setEntries] = useState([]);
   // Which round the "Watch Round N" button opened, if any (§4.2) — the
   // replay itself is a fullscreen RoundCutscene, matching how
   // a fullscreen dialog already takes over the screen elsewhere in the app.
   const [replayResolutionId, setReplayResolutionId] = useState(null);
+  // Which roll card's "+" is open, if any — the whole entry, so the dialog
+  // can name whoever made the roll.
+  const [counterEntry, setCounterEntry] = useState(null);
   const [characters, setCharacters] = useState(new Map());
   // Only needed to render a move_reveal card's expanded full MoveCard (see
   // Entry above) — the same lookups CombatArena.jsx/MovesTab.jsx already
@@ -577,12 +595,9 @@ export default function ChatPanel({ open, onClose }) {
             Clear Chat
           </button>
         )}
-        <button
-          onClick={onClose}
-          className={`${role === 'gm' ? '' : 'ml-auto'} flex h-11 w-11 shrink-0 items-center justify-center panel-cut-sm text-zinc-500 hover:text-zinc-200 md:hidden`}
-        >
-          ✕
-        </button>
+        {/* No mobile close button: Chat is a real tab now (decided), so the
+            bottom nav is the only way in and out — tap Chat again, or tap any
+            other tab. A second, differently-placed exit was the confusion. */}
       </div>
       <div className="flex-1 overflow-y-auto">
         {entries.length === 0 ? (
@@ -597,6 +612,7 @@ export default function ChatPanel({ open, onClose }) {
               characters={characters}
               defenseResolutions={defenseResolutions}
               onWatchRound={setReplayResolutionId}
+              onAdjustCounters={setCounterEntry}
             />
           ))
         )}
@@ -607,10 +623,20 @@ export default function ChatPanel({ open, onClose }) {
           .filter((c) => role === 'gm' || c.character_type === 'pc')
           .sort((a, b) => a.name.localeCompare(b.name))}
       />
+      {counterEntry && (
+        <CounterAdjustDialog
+          characterId={counterEntry.characterId}
+          characterName={counterEntry.characterName}
+          onClose={() => setCounterEntry(null)}
+        />
+      )}
+      {/* `theater`, not `fullscreen`: a replay is watched, not filled in, and
+          the fullscreen variant's centered max-w-md panel left the timeline
+          and its log squeezed into a column on desktop. */}
       {replayResolutionId != null && (
         <DialogShell
           title="Round replay"
-          variant="fullscreen"
+          variant="theater"
           onClose={() => setReplayResolutionId(null)}
         >
           <RoundCutscene mode="replay" resolutionId={replayResolutionId} />

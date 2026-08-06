@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { createServer } from 'node:http';
@@ -21,6 +22,7 @@ import {
   applyRankPenalty,
   applyHalfDamage,
 } from './gameLogic.js';
+import { getCombatRollBonus, getStanceMatchupBonus } from './combatBonuses.js';
 import {
   clampFrame,
   validFrames,
@@ -554,25 +556,9 @@ async function emitCombatUpdated() {
   }
 }
 
-// "Reasons to Fight" (see combat_participants.reasons_to_fight): +1 to all
-// of a seated character's rolls per point, only while a fight is actually
-// underway. Combat Automation overhaul: "underway" is now a per-pair
-// question (combat_pairs.phase set — seating for an about-to-start fight
-// doesn't count yet) rather than one global combat_state.phase, since each
-// pair now runs its own independent round clock. Folded straight into the
-// roll's modifier at the point each roll actually executes (die:roll/
-// pool:roll) rather than as a client-side pre-fill, so it can't be bypassed
-// by whatever a roll dialog happened to pre-fill.
-async function getReasonsToFightBonus(characterId) {
-  const row = await one(
-    `SELECT cp.reasons_to_fight AS reasons_to_fight
-     FROM combat_participants cp
-     JOIN combat_pairs pr ON pr.pair_index = cp.pair_index
-     WHERE cp.character_id = ? AND pr.phase IS NOT NULL`,
-    [characterId]
-  );
-  return row?.reasons_to_fight ?? 0;
-}
+// Reasons to Fight and the Stance matchup both live in
+// server/combatBonuses.js now — see getCombatRollBonus there for why they're
+// summed in one place rather than added per call site.
 
 // Combat Automation (Phase 9, sub-phase 3 — see vttprojectplan.md): when a
 // roll is for a declared move's own reveal-time Roll, the caller passes
@@ -825,36 +811,14 @@ async function applyMoveInteractions({
   if (recoveryChanged) await emitCombatUpdated();
 }
 
-// Combat Automation (Phase 9, sub-phase 5): fires a move's 'miss' trigger
-// the moment its own reveal-time roll comes back at 0 Half-Damage steps —
-// unlike a Hit or a Block, a Miss has no GM action to hang the firing off:
-// the chat card's Apply button is disabled at 0 damage, so nothing would
-// ever call combat:apply_damage for one (see the "Suggested additional
-// automation points" bullet's own Miss definition). Shared by pool:roll/
-// dice:roll_custom, the only two callers that ever pass rollContext.
-// Opponent-directed automations only fire when there's exactly one target
-// candidate — which of several possible Uneven Combat targets a miss
-// "affects" is a genuine ambiguity not worth guessing at, so those are
-// silently skipped there (self-only automations still fire regardless).
-// Guarded by interactions_resolved same as combat:apply_damage's Hit firing
-// below, though in practice a fresh reveal-time roll's declared move was
-// never previously resolved — defensive, not load-bearing here.
-async function fireMissIfNoDamage(character, rollContext, total) {
-  if (!rollContext) return;
-  if (computeHitDamage(total).halfDamageSteps > 0) return;
-  const dm = await one('SELECT interactions_resolved FROM declared_moves WHERE id = ?', [
-    rollContext.declaredMoveId,
-  ]);
-  if (!dm || dm.interactions_resolved) return;
-  await run('UPDATE declared_moves SET interactions_resolved = 1 WHERE id = ?', [rollContext.declaredMoveId]);
-  await applyMoveInteractions({
-    moveId: rollContext.moveId,
-    trigger: 'miss',
-    selfCharacterId: character.id,
-    selfDeclaredMoveId: rollContext.declaredMoveId,
-    opponentCharacterId: rollContext.targetCandidateIds.length === 1 ? rollContext.targetCandidateIds[0] : null,
-  });
-}
+// Combat Automation overhaul: fireMissIfNoDamage used to live here, firing
+// a move's 'miss' trigger whenever its own reveal-time roll came back under
+// 5. Both halves of that are gone. The trigger moved (a Miss is an attack
+// evaded by a Dodge now, fired from applySuccessfulDodge in
+// server/roundResolution.js; a sub-5 roll is Insignificant Damage and fires
+// nothing), and the path itself was already unreachable — every combat roll
+// is server-computed by the engine, so no client roll has carried a
+// declaredMoveId since the overhaul.
 
 // ---------- REST API ----------
 
@@ -970,6 +934,23 @@ app.get('/api/search', wrap(async (req, res) => {
   );
 
   res.json({ characters, moves, perks, tells, tags });
+}));
+
+// The player-facing rule book, served straight out of game_rules.md at the
+// repo root (see the Rules mechanic in vttprojectplan.md for why it lives in
+// a Markdown file rather than the database). Read per request rather than
+// cached at boot so editing the file and refreshing is the whole authoring
+// loop in development; the file is a few KB, and this is not a hot path.
+app.get('/api/rules', wrap(async (_req, res) => {
+  try {
+    const markdown = await readFile(path.join(__dirname, '..', 'game_rules.md'), 'utf8');
+    res.json({ markdown });
+  } catch {
+    // A missing rule book is a deployment problem, not a client error — say
+    // so plainly instead of rendering an empty rules page that looks like
+    // the game simply has no rules.
+    res.status(404).json({ error: 'game_rules.md is missing from this deployment.' });
+  }
 }));
 
 // The fixed ruleset: 7 styles + the complete counter tournament (seeded once)
@@ -1376,7 +1357,7 @@ io.on('connection', (socket) => {
     if (!die || die.status !== 'active') return;
     const character = await getCharacter(die.character_id);
     if (!character) return;
-    const mod = clampModifier(modifier) + (await getReasonsToFightBonus(character.id));
+    const mod = clampModifier(modifier) + (await getCombatRollBonus(character.id));
     const result = rollDie(die.current_size) + die.bonus + mod;
     await logRoll({
       characterId: character.id,
@@ -1403,7 +1384,7 @@ io.on('connection', (socket) => {
     const asGm = characterId == null;
     const character = asGm ? null : await getCharacter(characterId);
     if (!asGm && !character) return;
-    const mod = clampModifier(modifier) + (asGm ? 0 : await getReasonsToFightBonus(character.id));
+    const mod = clampModifier(modifier) + (asGm ? 0 : await getCombatRollBonus(character.id));
     const result = rollDie(die) + mod;
     const rollContext = asGm ? null : await buildRollContext(character.id, declaredMoveId);
     await logRoll({
@@ -1413,7 +1394,6 @@ io.on('connection', (socket) => {
       dice: [{ slot_name: 'Custom', size: die, bonus: 0, result }],
       rollContext,
     });
-    if (!asGm) await fireMissIfNoDamage(character, rollContext, result);
   });
 
   // Selection-based pool roll: any set of the character's dice, rolled
@@ -1434,7 +1414,7 @@ io.on('connection', (socket) => {
       )
     );
     if (!dice.length) return;
-    const mod = clampModifier(modifier) + (await getReasonsToFightBonus(character.id));
+    const mod = clampModifier(modifier) + (await getCombatRollBonus(character.id));
     const rolledDice = dice.map((d) => ({
       slot_name: d.slot_name,
       size: d.current_size,
@@ -1450,7 +1430,6 @@ io.on('connection', (socket) => {
       rollContext,
     });
     const total = rolledDice.reduce((sum, d) => sum + d.result, 0);
-    await fireMissIfNoDamage(character, rollContext, total);
   });
 
   // Combat Automation (Phase 9): the Damage Application dialog's Stat
@@ -2444,6 +2423,45 @@ io.on('connection', (socket) => {
 
   // Character-owned counters, or standalone (characterId null) — GM-only
   // client-side, created directly in the Combat Arena.
+  // GM Tools — Roll Requester (decided, new). The GM asks one character's
+  // player to roll one Stat; that player gets a prompt wherever they are in
+  // the app, and answering it runs an ordinary pool:roll, so the result is
+  // an ordinary chat roll with every usual bonus already folded in. No new
+  // roll mechanic — only a way to *ask*.
+  //
+  // Delivered to the character's own player socket(s) plus every GM (so the
+  // requesting GM sees their own request land, and a second GM tab doesn't
+  // sit blind). Deliberately not a broadcast: a request naming a character
+  // is that player's business, and a fail-closed filter matches how every
+  // other targeted push in this app already behaves.
+  on('roll:request', async ({ characterId, slotName }) => {
+    if (socket.data?.identity?.role !== 'gm') return;
+    if (!VALID_INJURY_SLOTS.has(slotName)) return;
+    const character = await getCharacter(characterId);
+    if (!character) return;
+    const die = await one('SELECT * FROM dice WHERE character_id = ? AND slot_name = ?', [
+      character.id,
+      slotName,
+    ]);
+    if (!die) return;
+    const payload = {
+      requestId: `${character.id}:${slotName}:${Date.now()}`,
+      characterId: character.id,
+      characterName: character.name,
+      slotName,
+      dieId: die.id,
+      size: die.current_size,
+      bonus: die.bonus,
+      status: die.status,
+    };
+    for (const viewerSocket of io.sockets.sockets.values()) {
+      const identity = viewerSocket.data?.identity;
+      if (!identity) continue;
+      const isTargetPlayer = identity.role === 'player' && identity.characterId === character.id;
+      if (identity.role === 'gm' || isTargetPlayer) viewerSocket.emit('roll:requested', payload);
+    }
+  });
+
   on('counter:create', async ({ characterId, name, targetPips, rewardType }) => {
     const counterName = String(name ?? '').trim();
     const target = Math.trunc(Number(targetPips));
@@ -2613,11 +2631,21 @@ io.on('connection', (socket) => {
     await emitCombatUpdated();
   });
 
+  // A round that finished has a stored replay someone may still want to
+  // watch — its "Watch Round N" chat card outlives the fight, and a dead
+  // button is worse than no button. Only unfinished resolutions are dropped:
+  // a half-resolved round has nothing worth replaying, and leaving one
+  // 'running' would have the boot-time sweep try to finish a fight that no
+  // longer exists. round_events cascades off whatever this deletes, so the
+  // kept rows keep their events too.
+  const discardUnfinishedResolutions = () =>
+    run(`DELETE FROM pair_round_resolutions WHERE status != 'complete'`);
+
   on('combat:clear', async () => {
     await run('DELETE FROM combat_participants');
     await run('DELETE FROM declared_moves');
     await run('DELETE FROM combat_pairs');
-    await run('DELETE FROM pair_round_resolutions');
+    await discardUnfinishedResolutions();
     await emitCombatUpdated();
   });
 
@@ -2633,7 +2661,7 @@ io.on('connection', (socket) => {
   on('combat:end', async () => {
     await run('DELETE FROM declared_moves');
     await run('DELETE FROM combat_pairs');
-    await run('DELETE FROM pair_round_resolutions');
+    await discardUnfinishedResolutions();
     await run('UPDATE combat_participants SET declared_this_round = 0, idle_regen_progress = 0');
     await emitCombatUpdated();
   });
@@ -2668,6 +2696,23 @@ io.on('connection', (socket) => {
     ]);
     if (!participants.length) return;
     const existingPairByIndex = new Map(existingPairRows.map((p) => [p.pair_index, p]));
+
+    // combat:end deletes every combat_pairs row, so no pairs at all means
+    // this press is starting a *fresh fight* rather than opening the next
+    // round of one already running. Completed resolutions from the previous
+    // fight are kept now (their replays outlive it), and this fight is about
+    // to restart each pair at round 1 — so bump the fight counter to keep
+    // "pair P, round N" unambiguous. Only when the current fight actually
+    // used the number, so a first-ever Start Combat stays on fight 1.
+    if (!existingPairRows.length) {
+      const used = await one(
+        'SELECT id FROM pair_round_resolutions WHERE fight_number = ? LIMIT 1',
+        [state.fight_number ?? 1]
+      );
+      if (used) {
+        await run('UPDATE combat_state SET fight_number = fight_number + 1 WHERE id = 1');
+      }
+    }
 
     // Skip any pair still mid-Declaration from a previous press — everyone
     // else (brand new, or done Resolving a previous round) gets a new round
@@ -2818,6 +2863,21 @@ io.on('connection', (socket) => {
     // incapacitated dice elsewhere. Grouped by pair_index now instead of
     // pooled across the whole arena, since each pair resolves its own
     // initiative independently.
+    // One lookup per fighter, up front: getStanceMatchupBonus reads the
+    // arena's Uneven Combat flag and both fighters' active stances, and
+    // doing that inside the loop below would re-query it per participant.
+    const stanceByChar = new Map(
+      await Promise.all(
+        eligibleParticipants.map(async (p) => [
+          p.character_id,
+          // requireActiveFight: false — on a fight's first round this runs
+          // before the pair's own combat_pairs row exists, since that row's
+          // declaring_side is decided BY this very roll.
+          await getStanceMatchupBonus(p.character_id, { requireActiveFight: false }),
+        ])
+      )
+    );
+
     const rollsByPair = new Map(); // pair_index -> { left: [], right: [] }
     for (const p of eligibleParticipants) {
       const die = brainByChar.get(p.character_id);
@@ -2825,7 +2885,11 @@ io.on('connection', (socket) => {
       if (!die || die.status !== 'active' || !character) continue;
       // Reasons to Fight applies to Initiative rolls too — "+1 to all rolls
       // during combat" — on every round including the first, same as any
-      // other roll. The overflow penalty (decided, new rule) subtracts
+      // other roll. The Stance matchup rides along with it for exactly the
+      // same reason (it is defined as behaving like Reasons to Fight), via
+      // stanceByChar below (see its own note on why it opts out of the
+      // "is a fight underway" gate).
+      // The overflow penalty (decided, new rule) subtracts
       // however many of this new round's own Tics are still occupied by
       // this character's own carried-over move, if any (0 on round 1, since
       // there's no previous round to overflow from). Neither ever affects
@@ -2834,10 +2898,13 @@ io.on('connection', (socket) => {
       // silently into `result`, so the chat log's dice-breakdown display
       // (raw die face + bonus/modifier = result) actually shows it instead
       // of misattributing it to the die face.
-      const modifier = (p.reasons_to_fight || 0) - computeInitiativeOverflowPenalty({
-        blockedUntilTic: blockedUntilByChar.get(p.character_id) ?? null,
-        nextRoundStartTic: nextRoundStartTicByPair.get(p.pair_index),
-      });
+      const modifier =
+        (p.reasons_to_fight || 0) +
+        (stanceByChar.get(p.character_id) ?? 0) -
+        computeInitiativeOverflowPenalty({
+          blockedUntilTic: blockedUntilByChar.get(p.character_id) ?? null,
+          nextRoundStartTic: nextRoundStartTicByPair.get(p.pair_index),
+        });
       const result = rollDie(die.current_size) + die.bonus + modifier;
       if (!rollsByPair.has(p.pair_index)) rollsByPair.set(p.pair_index, { left: [], right: [] });
       rollsByPair.get(p.pair_index)[p.side].push({

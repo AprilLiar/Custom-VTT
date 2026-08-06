@@ -58,6 +58,13 @@ const tell = await wait('tell:created');
 
 // Attacker: 1 Startup, 2 Active — so its Active window is Tics 1-2 when
 // placed at the round's first Tic.
+//
+// The +5 Roll modifier is what makes this scenario deterministic. An attack
+// that rolls under 5 is Insignificant Damage and resolves without ever
+// selecting a defender — so on an unlucky d8 the round would finish with no
+// Dodge in it and every assertion below would fail for a reason that has
+// nothing to do with what this script exists to check. A d4-or-better die
+// plus 5 always clears the threshold.
 s.emit('move:create', {
   name: 'Straight',
   isDefault: true,
@@ -68,6 +75,7 @@ s.emit('move:create', {
   description: 'A committed straight.',
   interactions: {},
   rollSlots: ['Skull'],
+  rollModifier: 5,
   attackTargets: ['Body'],
 });
 const straight = await wait('move:created', (m) => m.name === 'Straight');

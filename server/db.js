@@ -107,6 +107,58 @@ async function migrateChatLogKind() {
   await run('ALTER TABLE chat_log_v2 RENAME TO chat_log');
 }
 
+// A finished round's replay ("Watch Round N" in chat) used to die with the
+// fight: combat:end/combat:clear deleted every pair_round_resolutions row,
+// and round_events cascades off it. Those rows are kept now — but a fresh
+// fight restarts each pair at round 1, which collides with the old
+// UNIQUE(pair_index, round_number). Scoping that uniqueness to the fight
+// (combat_state.fight_number, bumped per Start Combat) is what lets both
+// coexist. A CHECK/UNIQUE can't be ALTERed in SQLite, so this rebuilds the
+// table — same shape as migrateChatLogKind above. Existing rows all belong
+// to whatever fight was last running, which is fight 1 by definition of the
+// column's own default.
+async function migratePairRoundResolutionsFightNumber() {
+  const row = await one(
+    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'pair_round_resolutions'"
+  );
+  if (!row || row.sql.includes('fight_number')) return;
+  // Foreign keys are ON in this database (unlike stock SQLite), so dropping
+  // the old table would cascade every round_events row — i.e. delete exactly
+  // the replay history this change exists to preserve. SQLite's own
+  // documented table-rebuild procedure is to turn them off for the swap;
+  // safe here because the copy below preserves `id` exactly, so every
+  // round_events.resolution_id still points at the same row afterwards.
+  await run('PRAGMA foreign_keys = OFF');
+  await run(`
+    CREATE TABLE pair_round_resolutions_v2 (
+      id INTEGER PRIMARY KEY,
+      pair_index INTEGER NOT NULL,
+      round_number INTEGER NOT NULL,
+      fight_number INTEGER NOT NULL DEFAULT 1,
+      round_start_tic INTEGER NOT NULL,
+      round_length INTEGER NOT NULL,
+      status TEXT NOT NULL DEFAULT 'running' CHECK(status IN ('running','paused_dodge','paused_conflict','complete')),
+      resolved_through_tic INTEGER NOT NULL DEFAULT 0,
+      pending_dodge_json TEXT,
+      pending_conflict_json TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      completed_at TEXT,
+      UNIQUE(pair_index, round_number, fight_number)
+    )
+  `);
+  await run(`
+    INSERT INTO pair_round_resolutions_v2
+      (id, pair_index, round_number, fight_number, round_start_tic, round_length, status,
+       resolved_through_tic, pending_dodge_json, pending_conflict_json, created_at, completed_at)
+    SELECT id, pair_index, round_number, 1, round_start_tic, round_length, status,
+           resolved_through_tic, pending_dodge_json, pending_conflict_json, created_at, completed_at
+    FROM pair_round_resolutions
+  `);
+  await run('DROP TABLE pair_round_resolutions');
+  await run('ALTER TABLE pair_round_resolutions_v2 RENAME TO pair_round_resolutions');
+  await run('PRAGMA foreign_keys = ON');
+}
+
 export async function initDb() {
   // Phase 0's demo table is no longer used.
   await run('DROP TABLE IF EXISTS pings');
@@ -624,6 +676,12 @@ export async function initDb() {
     )
   `);
   await run(`INSERT OR IGNORE INTO combat_state (id, uneven_combat_enabled) VALUES (1, 0)`);
+  // Which fight the arena is currently on. Bumped once per Start Combat, and
+  // stamped onto every pair_round_resolutions row so a finished round's
+  // stored replay stays addressable after that fight ends — see the
+  // fight_number note on that table below. Starts at 1 so a database created
+  // before this column reads as "fight 1", matching the rows already in it.
+  await ensureColumn('combat_state', 'fight_number', 'INTEGER NOT NULL DEFAULT 1');
   await ensureColumn('combat_state', 'phase', "TEXT CHECK(phase IN ('declaration','tic_countdown'))");
   await ensureColumn('combat_state', 'round_number', 'INTEGER NOT NULL DEFAULT 0');
   await ensureColumn('combat_state', 'current_tic', 'INTEGER NOT NULL DEFAULT 0');
@@ -731,6 +789,7 @@ export async function initDb() {
       id INTEGER PRIMARY KEY,
       pair_index INTEGER NOT NULL,
       round_number INTEGER NOT NULL,
+      fight_number INTEGER NOT NULL DEFAULT 1,
       round_start_tic INTEGER NOT NULL,
       round_length INTEGER NOT NULL,
       status TEXT NOT NULL DEFAULT 'running' CHECK(status IN ('running','paused_dodge','paused_conflict','complete')),
@@ -739,9 +798,10 @@ export async function initDb() {
       pending_conflict_json TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       completed_at TEXT,
-      UNIQUE(pair_index, round_number)
+      UNIQUE(pair_index, round_number, fight_number)
     )
   `);
+  await migratePairRoundResolutionsFightNumber();
 
   // Combat Automation overhaul: the replayable event log for one pair's
   // round — the single source of truth for both the live cutscene push and
