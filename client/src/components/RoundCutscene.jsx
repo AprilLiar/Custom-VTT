@@ -47,6 +47,7 @@ const SECONDS_PER_EVENT = 0.55;
 // (eventNarration) carries the meaning, so this is a scanning aid, not the
 // explanation.
 const EVENT_LABEL = {
+  windup: 'Winding up',
   reveal: 'Reveal',
   carryover: 'Carried over',
   roll: 'Roll',
@@ -96,6 +97,8 @@ function eventNarration(ev, startTic) {
       return `${who} reveals ${p.moveName ?? 'a move'}${
         p.isDefensive ? ` (${p.defenseKind === 'dodge' ? 'a Dodge' : 'a Block'})` : ''
       }.`;
+    case 'windup':
+      return `${who} starts winding something up — it comes out on Tic ${p.revealTic - startTic + 1}.`;
     case 'carryover':
       return `${who} is still in ${p.moveName ?? 'a move'} from last round.`;
     case 'roll': {
@@ -240,6 +243,9 @@ function beatEffects(events, visibleCount) {
   switch (ev.type) {
     case 'reveal':
       out.revealedMoveId = p.declaredMoveId ?? null;
+      // The bar was already standing there as a `???` wind-up; the real move
+      // drops onto it. Same beat as the Stamina flash above it.
+      if (p.declaredMoveId != null) out.byMoveId[p.declaredMoveId] = 'drop';
       break;
     case 'roll':
       if (p.declaredMoveId == null) break;
@@ -352,30 +358,52 @@ function ImpactBurst({ burst }) {
 
 function footprintsFrom(events, upTo) {
   const out = [];
-  const byDeclaredMoveId = new Map();
+  // A move gets ONE bar for its whole life. It enters as an anonymous
+  // wind-up, becomes itself at its reveal, and may end struck out — each of
+  // those replaces the bar in place rather than adding another beside it,
+  // which is what keeps the row from multiplying and what makes the reveal
+  // read as the same object filling in.
+  const slotOf = new Map();
+  const put = (fp) => {
+    const id = fp.declaredMoveId;
+    if (id != null && slotOf.has(id)) {
+      out[slotOf.get(id)] = fp;
+      return;
+    }
+    if (id != null) slotOf.set(id, out.length);
+    out.push(fp);
+  };
   for (const ev of events.slice(0, upTo)) {
+    // A declared move that hasn't revealed yet. The payload has no move
+    // identity in it at all (see the server's emitWindups), and no Active or
+    // Recovery lengths — so the footprint is closed off at the reveal Tic,
+    // which makes phaseAt draw exactly the Startup run and nothing beyond
+    // it. No special-casing in the renderer: it's an ordinary footprint that
+    // happens to end where the unknown begins.
+    if (ev.type === 'windup') {
+      const p = ev.payload;
+      put({ ...p, windup: true, activeEndTic: p.revealTic, recoveryEndTic: p.revealTic });
+      continue;
+    }
     // A carryover carries the identical footprint payload a reveal does —
     // it IS a move on this round's board, just one that started earlier.
     if (ev.type === 'reveal' || ev.type === 'carryover') {
-      const fp = { ...ev.payload };
-      out.push(fp);
-      if (fp.declaredMoveId != null) byDeclaredMoveId.set(fp.declaredMoveId, fp);
+      put({ ...ev.payload });
       continue;
     }
     // An Interrupted move is the one thing on the board that never revealed:
-    // it dies in Startup, so no reveal event ever described it and it had no
-    // bar to lose. Without this it left no trace at all — the log announced
-    // an Interruption of something the viewer had never seen. It gets a bar
-    // from the moment it's struck out, greyed and crossed through (below),
-    // drawn on exactly the Tics it had reserved. Only when the interrupt
-    // actually landed: a survived attempt leaves the move secret and intact,
-    // and striking out a move that is still coming would be a lie.
+    // it dies in Startup, so no reveal event ever described it. Its wind-up
+    // bar is already standing; this replaces it with the full footprint it
+    // had reserved, struck through (below). Only when the interrupt actually
+    // landed: a survived attempt leaves the move secret and intact, and
+    // striking out a move that is still coming would be a lie.
     if (ev.type === 'interrupt_resolved' && ev.payload?.interrupted) {
-      out.push({ ...ev.payload, interrupted: true });
+      put({ ...ev.payload, interrupted: true });
       continue;
     }
     if (ev.type !== 'recovery_extended') continue;
-    const fp = byDeclaredMoveId.get(ev.payload?.declaredMoveId);
+    const slot = slotOf.get(ev.payload?.declaredMoveId);
+    const fp = slot == null ? null : out[slot];
     if (!fp) continue;
     fp.recoveryEndTic = ev.payload.recoveryEndTic;
     // Earliest wins if a move is extended twice — the whole run from the
@@ -444,8 +472,21 @@ const HEAVY_HIT_VARIANT = {
   transition: { duration: 0.6 },
 };
 
+// The reveal itself: the move drops onto the row it had been holding open
+// as an anonymous wind-up, lands hard, and settles. Deliberately vertical
+// and deliberately unlike `attack` (which commits sideways toward the
+// opponent) — this is the move arriving, not the move doing anything yet.
+const DROP_VARIANT = {
+  y: [-34, 0, -5, 0],
+  scaleY: [1.18, 0.82, 1.05, 1],
+  opacity: [0, 1, 1, 1],
+  transition: { duration: 0.44, times: [0, 0.45, 0.72, 1], ease: 'easeIn' },
+};
+
 function barAnimation(effect, toward) {
   switch (effect) {
+    case 'drop':
+      return DROP_VARIANT;
     case 'attack':
       return attackVariant(toward);
     case 'block':
@@ -477,6 +518,11 @@ function MoveBar({ fp, ticks, startTic, effect, beat, staminaFlash }) {
   // is the entire point of drawing it — but as a wreck: no phase colours, no
   // animation, struck through, and dimmed below every live bar around it.
   const dead = Boolean(fp.interrupted);
+  // Declared, winding up, not yet revealed. Its footprint is closed off at
+  // the reveal Tic (see footprintsFrom), so the row shows the Startup run
+  // and stops — the shape of the unknown is exactly as much as anyone is
+  // entitled to see before the move comes out.
+  const windup = Boolean(fp.windup);
 
   // Driven off `beat` (the seq of the event that caused this effect), not
   // off `effect` alone: two attacks in a row are the same target values, and
@@ -542,7 +588,11 @@ function MoveBar({ fp, ticks, startTic, effect, beat, staminaFlash }) {
                     ? `${fp.characterName} — Interrupted\nTic ${
                         tic - startTic + 1
                       }: ${PHASE_LABEL[phase]}, never happened`
-                    : `${fp.characterName} — ${fp.moveName}\nTic ${tic - startTic + 1}: ${
+                    : windup
+                      ? `${fp.characterName} — winding something up\nTic ${
+                          tic - startTic + 1
+                        }: ${PHASE_LABEL[phase]}, reveals on Tic ${fp.revealTic - startTic + 1}`
+                      : `${fp.characterName} — ${fp.moveName}\nTic ${tic - startTic + 1}: ${
                         extended ? `${defenseLabel} extension` : PHASE_LABEL[phase]
                       }${phase === 'defense' && !extended ? ` (${defenseLabel} window)` : ''}`
                   : undefined
@@ -588,10 +638,14 @@ function MoveBar({ fp, ticks, startTic, effect, beat, staminaFlash }) {
             identity stays the owner's (see Combat Timing's secrecy rule). */}
         <span
           className={`block truncate font-display text-xs md:text-base ${
-            dead ? 'text-zinc-500 line-through' : 'text-zinc-300'
+            dead
+              ? 'text-zinc-500 line-through'
+              : windup
+                ? 'tracking-widest text-zinc-500'
+                : 'text-zinc-300'
           }`}
         >
-          {dead ? 'Interrupted' : fp.moveName}
+          {dead ? 'Interrupted' : windup ? '???' : fp.moveName}
         </span>
         <AnimatePresence>
           {staminaFlash && fp.staminaCost > 0 && (

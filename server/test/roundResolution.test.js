@@ -549,6 +549,27 @@ test('Interruption: taking a Hit while still in Startup disrupts the target\'s o
   assert.equal(stillDeclared, null); // Interrupted -> deleted, reverted to Undeclared
 
   const events = await all('SELECT type, payload FROM round_events WHERE pair_index = ? ORDER BY seq', [pairIndex]);
+  // The move announces itself as an anonymous wind-up when its Startup
+  // begins, so the cutscene has a bar standing there before the reveal Tic
+  // (and, here, before it is Interrupted instead of ever revealing).
+  const windups = events.filter((e) => e.type === 'windup').map((e) => JSON.parse(e.payload));
+  const windup = windups.find((w) => w.declaredMoveId === startupDMId);
+  assert.ok(windup, 'the 3-Tic Startup should have emitted a windup');
+  assert.equal(windup.placementTic, 0);
+  assert.equal(windup.revealTic, 3);
+  assert.equal(windup.characterId, defender);
+  // Nothing about the move itself is in the row: not its id, its name, nor
+  // how long its Active/Recovery run. A stored replay is public to anyone,
+  // so the safe version is to not carry the secret at all rather than to
+  // carry it and ask the client to hide it.
+  assert.equal(windup.moveId, undefined);
+  assert.equal(windup.moveName, undefined);
+  assert.equal(windup.activeEndTic, undefined);
+  assert.equal(windup.recoveryEndTic, undefined);
+  // The attacker's own move has 1 Tic of Startup and so gets one too, but
+  // never twice — processTic is re-entrant and must not restack them.
+  assert.equal(new Set(windups.map((w) => w.declaredMoveId)).size, windups.length);
+
   const interruptEvent = events.find((e) => e.type === 'interrupt_resolved');
   assert.ok(interruptEvent);
   const interruptPayload = JSON.parse(interruptEvent.payload);

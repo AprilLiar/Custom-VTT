@@ -1139,7 +1139,66 @@ async function resolveAttack(io, { row, pairIndex, tic, emitEvent }) {
 // interactions_resolved = 0) covers exactly that — see resolveAttack's own
 // interactions_resolved bookkeeping for why every one of its return paths
 // leaves that flag in a state this query can trust.
-async function processTic(io, { pairIndex, tic, emitEvent }) {
+// A declared move that hasn't reached its reveal Tic yet is already on the
+// board — the wind-up is happening, everyone at the table can see the
+// fighter loading something up — but until this event existed the cutscene
+// drew nothing at all for it, so a move simply materialised out of empty
+// space at its reveal Tic with no build-up.
+//
+// The payload deliberately carries ONLY the character and two Tics. No
+// moveId, no name, and no Active/Recovery lengths: the client renders the
+// Startup window and a `???`, and there is nothing else in the stored row
+// to leak. That is stronger than sending the whole footprint and asking the
+// client to hide most of it, which is what a replay — public to anyone,
+// decision #11 — would otherwise be carrying around.
+//
+// `alreadyEmitted` is the idempotency guard. `processTic` is re-entrant by
+// design: a pause on one move's defence lands mid-Tic and the resume
+// re-enters the same Tic, which would otherwise post a second wind-up for
+// every other move that started on it.
+async function emitWindups(emitEvent, anchorTic, rows, alreadyEmitted) {
+  for (const r of rows) {
+    if (alreadyEmitted.has(r.id)) continue;
+    alreadyEmitted.add(r.id);
+    await emitEvent(anchorTic, 'windup', {
+      declaredMoveId: r.id,
+      characterId: r.character_id,
+      characterName: r.character_name,
+      characterType: r.character_type,
+      side: r.side,
+      placementTic: r.placement_tic,
+      revealTic: r.reveal_tic,
+    });
+  }
+}
+
+// Every declared move this resolution has already announced as a wind-up.
+async function emittedWindupIds(resolutionId) {
+  const rows = await all("SELECT payload FROM round_events WHERE resolution_id = ? AND type = 'windup'", [
+    resolutionId,
+  ]);
+  return new Set(rows.map((r) => JSON.parse(r.payload).declaredMoveId));
+}
+
+async function processTic(io, { pairIndex, tic, emitEvent, resolutionId }) {
+  // Anyone whose wind-up starts on this exact Tic. Emitted before the
+  // reveals below so a 0-Startup move — placed and revealed on the same
+  // Tic — is filtered out by `reveal_tic > tic` rather than flashing a
+  // `???` for one beat and immediately replacing it.
+  const starting = await all(
+    `SELECT dm.id, dm.character_id, dm.placement_tic, dm.reveal_tic,
+            ch.name AS character_name, ch.character_type, cp.side AS side
+     FROM declared_moves dm
+     JOIN characters ch ON ch.id = dm.character_id
+     JOIN combat_participants cp ON cp.character_id = dm.character_id
+     WHERE cp.pair_index = ? AND dm.reveal_posted = 0
+       AND dm.placement_tic = ? AND dm.reveal_tic > ?`,
+    [pairIndex, tic, tic]
+  );
+  if (starting.length) {
+    await emitWindups(emitEvent, tic, starting, await emittedWindupIds(resolutionId));
+  }
+
   const toReveal = await all(
     `SELECT dm.id FROM declared_moves dm
      JOIN combat_participants cp ON cp.character_id = dm.character_id
@@ -1672,12 +1731,32 @@ async function advancePairResolution(pairIndex, io) {
         defenseFramePositions: JSON.parse(r.defense_frame_positions ?? '[]'),
       });
     }
+
+    // The same problem one step earlier in a move's life: a long Startup
+    // declared last round can still be winding up when this round opens.
+    // Its placement Tic belongs to the previous round, so the Tic loop
+    // below never reaches it and no `windup` would fire — the fighter would
+    // stand there with an empty row until the move suddenly revealed.
+    // Anchored to the round's own first Tic, alongside the carryovers.
+    const stillWinding = await all(
+      `SELECT dm.id, dm.character_id, dm.placement_tic, dm.reveal_tic,
+              ch.name AS character_name, ch.character_type, cp.side AS side
+       FROM declared_moves dm
+       JOIN characters ch ON ch.id = dm.character_id
+       JOIN combat_participants cp ON cp.character_id = dm.character_id
+       WHERE cp.pair_index = ? AND dm.reveal_posted = 0
+         AND dm.placement_tic < ? AND dm.reveal_tic >= ?`,
+      [pairIndex, pair.round_start_tic, pair.round_start_tic]
+    );
+    if (stillWinding.length) {
+      await emitWindups(emitEvent, pair.round_start_tic, stillWinding, await emittedWindupIds(resolution.id));
+    }
   }
 
   let currentTic = resolution.resolved_through_tic + 1;
 
   while (currentTic < roundEndTicExclusive) {
-    const result = await processTic(io, { pairIndex, tic: currentTic, emitEvent });
+    const result = await processTic(io, { pairIndex, tic: currentTic, emitEvent, resolutionId: resolution.id });
     // A genuine pause (Dodge/conflict) stops here without marking this Tic
     // done — status/pending_*_json were already persisted by resolveAttack
     // itself before it returned the pause signal (see that function). The
