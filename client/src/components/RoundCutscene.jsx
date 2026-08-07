@@ -417,6 +417,36 @@ function fightersFrom(events, upTo) {
   return { fighters, lastHit };
 }
 
+// Playback walks BEATS, not events. A beat is either "the clock reached
+// Tic N" or "this event happened". Before this, the playhead was simply the
+// last revealed event's Tic, so a round with nothing at Tics 4-6 jumped
+// straight from 3 to 7 and the quiet stretch of a fight — which is most of
+// it — never happened on screen. Time passing is part of what a Tic
+// timeline is for.
+//
+// Tic beats stop at the last Tic any event actually landed on. In live mode
+// that is the furthest the server has resolved, so playback walks up to the
+// present and waits there rather than racing ahead into Tics that have not
+// happened yet; in replay the round's own `round_complete` sits on the last
+// Tic, so the whole round is covered.
+function beatsFrom(events, startTic) {
+  if (!events.length) return [];
+  const byTic = new Map();
+  let maxTic = startTic;
+  for (const ev of events) {
+    const t = Math.max(startTic, ev.tic ?? startTic);
+    if (!byTic.has(t)) byTic.set(t, []);
+    byTic.get(t).push(ev);
+    if (t > maxTic) maxTic = t;
+  }
+  const beats = [];
+  for (let t = startTic; t <= maxTic; t++) {
+    beats.push({ kind: 'tic', tic: t });
+    for (const ev of byTic.get(t) ?? []) beats.push({ kind: 'event', tic: t, ev });
+  }
+  return beats;
+}
+
 function footprintsFrom(events, upTo) {
   const out = [];
   // A move gets ONE bar for its whole life. It enters as an anonymous
@@ -807,7 +837,10 @@ export default function RoundCutscene({
 }) {
   const [events, setEvents] = useState([]);
   const [meta, setMeta] = useState(null);
-  const [visibleCount, setVisibleCount] = useState(0);
+  // How many BEATS have played. Events revealed is derived from it — see
+  // beatsFrom: a beat is either a Tic arriving or an event happening, and
+  // the quiet Tics are beats too.
+  const [visibleBeats, setVisibleBeats] = useState(0);
   const [error, setError] = useState(null);
   // Read once per mount rather than subscribed: changing the setting
   // mid-cutscene and having the playhead lurch is worse than it taking
@@ -841,7 +874,7 @@ export default function RoundCutscene({
   useEffect(() => {
     if (mode !== 'live') return;
     setEvents([]);
-    setVisibleCount(0);
+    setVisibleBeats(0);
     proxy.current.i = 0;
   }, [mode, pairIndex, roundNumber]);
 
@@ -860,46 +893,53 @@ export default function RoundCutscene({
     };
   }, [mode, resolutionId]);
 
+  const startTic = meta?.roundStartTic ?? roundStartTic ?? 0;
+  const length = meta?.roundLength ?? roundLength ?? 7;
+  const beats = useMemo(() => beatsFrom(events, startTic), [events, startTic]);
+
   // --- Playback: one tween from wherever the playhead is to the newest
-  // event. Re-running as events stream in extends the run rather than
+  // beat. Re-running as events stream in extends the run rather than
   // restarting it, because gsap.to starts from the proxy's CURRENT value.
   useEffect(() => {
-    if (!events.length) return undefined;
+    if (!beats.length) return undefined;
     tweenRef.current?.kill();
-    const remaining = events.length - proxy.current.i;
+    const remaining = beats.length - proxy.current.i;
     if (remaining <= 0) {
-      setVisibleCount(events.length);
+      setVisibleBeats(beats.length);
       return undefined;
     }
     tweenRef.current = gsap.to(proxy.current, {
-      i: events.length,
+      i: beats.length,
       duration: (remaining * SECONDS_PER_EVENT) / speed,
       ease: 'none',
-      onUpdate: () => setVisibleCount(Math.floor(proxy.current.i)),
-      onComplete: () => setVisibleCount(events.length),
+      onUpdate: () => setVisibleBeats(Math.floor(proxy.current.i)),
+      onComplete: () => setVisibleBeats(beats.length),
     });
     return () => tweenRef.current?.kill();
-  }, [events.length, speed]);
+  }, [beats.length, speed]);
 
   const skipToEnd = () => {
     tweenRef.current?.kill();
-    proxy.current.i = events.length;
-    setVisibleCount(events.length);
+    proxy.current.i = beats.length;
+    setVisibleBeats(beats.length);
   };
 
   // Keep the newest revealed event in view without yanking the page.
   useEffect(() => {
     const el = feedRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [visibleCount]);
+  }, [visibleBeats]);
 
-  const startTic = meta?.roundStartTic ?? roundStartTic ?? 0;
-  const length = meta?.roundLength ?? roundLength ?? 7;
   const ticks = useMemo(
     () => Array.from({ length }, (_, i) => startTic + i),
     [startTic, length]
   );
 
+  // The beats played so far, and what they add up to. `visibleCount` (how
+  // many EVENTS have been revealed) is derived from the beats rather than
+  // driven directly — everything downstream still reasons in events.
+  const playedBeats = beats.slice(0, visibleBeats);
+  const visibleCount = playedBeats.reduce((n, b) => n + (b.kind === 'event' ? 1 : 0), 0);
   const shown = events.slice(0, visibleCount);
   const footprints = footprintsFrom(events, visibleCount);
   const { fighters, lastHit } = fightersFrom(events, visibleCount);
@@ -908,8 +948,19 @@ export default function RoundCutscene({
   // (byCharacterId) — the latter is how a character with no move of their
   // own this Tic still visibly takes the punch.
   const effectFor = (fp) => fx.byMoveId[fp.declaredMoveId] ?? fx.byCharacterId[fp.characterId] ?? null;
-  const playheadTic = shown.length ? shown[shown.length - 1].tic : startTic;
-  const isCaughtUp = visibleCount >= events.length;
+  // Straight off the beat, so the clock advances through Tics where nothing
+  // happens instead of jumping to wherever the next event landed.
+  const playheadTic = playedBeats.length ? playedBeats[playedBeats.length - 1].tic : startTic;
+  // Tics the playhead has walked through that produced nothing at all. Shown
+  // in the feed as a quiet marker so the log reads as time passing rather
+  // than as a stall — the board's own playhead is moving either way.
+  const quietTics = new Set(
+    playedBeats
+      .filter((b) => b.kind === 'tic')
+      .map((b) => b.tic)
+      .filter((t) => !events.some((e) => e.tic === t))
+  );
+  const isCaughtUp = visibleBeats >= beats.length;
   const paused = pendingDodge || pendingConflict;
 
   // Players above the strip, NPCs below — the same convention the
@@ -1024,7 +1075,35 @@ export default function RoundCutscene({
           what you actually read to follow the fight. */}
       <div ref={feedRef} className="mt-3 min-h-32 flex-1 space-y-1 overflow-y-auto pr-1">
         <AnimatePresence initial={false}>
-          {shown.map((ev) => (
+          {/* The feed walks the BEATS, not the events, so a Tic where
+              nothing happened still gets a line. The board's playhead is
+              visibly moving through those Tics, and a log that jumps from
+              T3 to T7 makes that look like a stall. Rendered as a thin
+              divider rather than a row, so it never competes with a real
+              event for attention. */}
+          {playedBeats.map((beat) => {
+            if (beat.kind === 'tic') {
+              if (!quietTics.has(beat.tic)) return null;
+              return (
+                <motion.div
+                  key={`quiet-${beat.tic}`}
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  transition={{ duration: 0.18 }}
+                  className="flex items-center gap-2 px-2 py-1 md:gap-3 md:px-3"
+                >
+                  <span className="w-8 shrink-0 font-display text-xs text-zinc-700 md:w-12 md:text-sm">
+                    T{beat.tic - startTic + 1}
+                  </span>
+                  <span className="h-px flex-1 bg-zinc-800" />
+                  <span className="shrink-0 font-display text-[10px] uppercase tracking-widest text-zinc-700 md:text-xs">
+                    nothing lands
+                  </span>
+                </motion.div>
+              );
+            }
+            const ev = beat.ev;
+            return (
             <motion.div
               key={`${ev.resolutionId ?? resolutionId}-${ev.seq}`}
               initial={{ opacity: 0, x: -8 }}
@@ -1050,7 +1129,8 @@ export default function RoundCutscene({
               {/* The sentence, not a fragment — readable without hovering. */}
               <span className="min-w-0 flex-1">{eventNarration(ev, startTic)}</span>
             </motion.div>
-          ))}
+            );
+          })}
         </AnimatePresence>
         {!events.length && (
           <div className="px-2 py-1 text-sm text-zinc-600 md:text-base">Resolving…</div>

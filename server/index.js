@@ -10,6 +10,10 @@ import {
   resolveDodge,
   resolveMoveConflict,
   resumeAllPairsOnBoot,
+  postSystemMessage,
+  adjustStamina,
+  logRoll,
+  applyMoveInteractions,
 } from './roundResolution.js';
 import {
   DICE_TEMPLATE,
@@ -610,35 +614,6 @@ async function buildRollContext(characterId, declaredMoveId) {
   };
 }
 
-async function logRoll({ characterId, characterName, modifier, dice, rollContext = null }) {
-  const total = dice.reduce((sum, d) => sum + d.result, 0);
-  await run(
-    'INSERT INTO chat_log (character_id, dice_rolled, modifier, payload) VALUES (?, ?, ?, ?)',
-    [characterId, JSON.stringify(dice), modifier, rollContext ? JSON.stringify(rollContext) : null]
-  );
-  // Every existing caller passes a real character.id (die:roll, pool:roll,
-  // combat:next_round's Brain rolls) — GM_CHAT_SENTINEL_ID only ever shows
-  // up here via dice:roll_custom's "post as GM" path. Normalizing it back to
-  // null on the live broadcast matches how GET /api/chat already reads a
-  // GM-posted row back after reload (see isGmPost there), so a live entry
-  // and its post-refresh reload render identically instead of one carrying
-  // a raw 0 the other doesn't.
-  const isGmPost = characterId === GM_CHAT_SENTINEL_ID;
-  io.emit('roll:result', {
-    kind: 'roll',
-    // Spread directly onto the broadcast (rather than nested under its own
-    // key) so a live roll and its post-refresh GET /api/chat reload render
-    // identically — same convention kind='lane_snapshot' rows already use
-    // for their own payload (see GET /api/chat below).
-    ...(rollContext ?? {}),
-    characterId: isGmPost ? null : characterId,
-    characterName,
-    modifier,
-    dice,
-    total,
-    timestamp: new Date().toISOString(),
-  });
-}
 
 // Combat Automation (Phase 9, sub-phase 3): a GM-authored system notice —
 // "Block/Dodge has failed," "Partial Block — 1.5 damage," a Forfeit/
@@ -646,21 +621,6 @@ async function logRoll({ characterId, characterName, modifier, dice, rollContext
 // insertion shape chat:message already uses for a GM-posted row (posts as
 // the GM_CHAT_SENTINEL_ID persona), just triggered by combat resolution
 // instead of the compose box.
-async function postSystemMessage(text) {
-  await run(
-    `INSERT INTO chat_log (kind, character_id, dice_rolled, content) VALUES ('message', ?, '[]', ?)`,
-    [GM_CHAT_SENTINEL_ID, text]
-  );
-  io.emit('chat:message', {
-    kind: 'message',
-    characterId: null,
-    characterName: 'GM',
-    message: text,
-    imageData: null,
-    imageMimeType: null,
-    timestamp: new Date().toISOString(),
-  });
-}
 
 // Combat Automation (Phase 9, sub-phase 3): the shared clamp+update+
 // broadcast a Stamina change already uses (see stamina:adjust below) —
@@ -669,16 +629,6 @@ async function postSystemMessage(text) {
 // logic. Returns the character's new current_stamina, or null if the
 // character doesn't exist. `delta` can be negative (a cost), though every
 // current caller only ever passes a positive refund.
-async function adjustStamina(characterId, delta) {
-  const character = await getCharacter(characterId);
-  if (!character) return null;
-  const change = Math.trunc(Number(delta) || 0);
-  if (!change) return character.current_stamina;
-  const currentStamina = clamp(character.current_stamina + change, 0, character.max_stamina);
-  await run('UPDATE characters SET current_stamina = ? WHERE id = ?', [currentStamina, character.id]);
-  io.emit('character:updated', { ...character, current_stamina: currentStamina });
-  return currentStamina;
-}
 
 // Combat Automation (Phase 9, sub-phase 5): server-side labels for the chat
 // notice below — kept separate from client/src/lib/moveDisplay.js's own
@@ -711,111 +661,6 @@ const TRIGGER_LABELS = {
 // opponent_recovery/opponent_stamina are silently skipped (with their own
 // note in the chat line) if there's no opponent at all (declaredMoveId
 // unresolvable) or, for opponent_recovery, no declared move to extend.
-async function applyMoveInteractions({
-  moveId,
-  trigger,
-  selfCharacterId,
-  selfDeclaredMoveId,
-  opponentCharacterId = null,
-  opponentDeclaredMoveId = null,
-}) {
-  const [move, row] = await Promise.all([
-    one('SELECT id, name FROM moves WHERE id = ?', [moveId]),
-    one('SELECT text, automations FROM move_interactions WHERE move_id = ? AND trigger = ?', [moveId, trigger]),
-  ]);
-  if (!move || !row) return;
-  const [selfCharacter, opponentCharacter] = await Promise.all([
-    getCharacter(selfCharacterId),
-    opponentCharacterId != null ? getCharacter(opponentCharacterId) : null,
-  ]);
-  if (!selfCharacter) return;
-
-  let automations;
-  try {
-    automations = JSON.parse(row.automations ?? '[]');
-  } catch {
-    automations = [];
-  }
-  if (!Array.isArray(automations)) automations = [];
-
-  const effects = [];
-  let recoveryChanged = false;
-
-  const extendRecovery = async (declaredMoveId, delta) => {
-    const dm = await one(
-      `SELECT dm.id, dm.recovery_extension_tics AS current_extension_tics, m.recovery_tics
-       FROM declared_moves dm JOIN moves m ON m.id = dm.move_id WHERE dm.id = ?`,
-      [declaredMoveId]
-    );
-    if (!dm) return false;
-    const nextExtension = clampRecoveryExtension({
-      currentExtensionTics: dm.current_extension_tics,
-      recoveryTics: dm.recovery_tics,
-      delta,
-    });
-    await run('UPDATE declared_moves SET recovery_extension_tics = ? WHERE id = ?', [nextExtension, dm.id]);
-    recoveryChanged = true;
-    return true;
-  };
-
-  for (const automation of automations) {
-    const amount = Math.trunc(Number(automation?.amount) || 0);
-    if (!amount) continue;
-    switch (automation?.type) {
-      case 'self_recovery': {
-        const applied = await extendRecovery(selfDeclaredMoveId, amount);
-        if (applied) effects.push(`${amount > 0 ? '+' : '−'}${Math.abs(amount)} Recovery (${selfCharacter.name})`);
-        break;
-      }
-      case 'opponent_recovery': {
-        if (!opponentCharacter) break;
-        // No declared move known for this exchange (a plain Hit/Miss) —
-        // fall back to whichever of the opponent's own declared moves
-        // currently ends latest, same lookup move:declare's own
-        // placement floor already uses.
-        const targetId =
-          opponentDeclaredMoveId ??
-          (
-            await one(
-              `SELECT dm.id
-               FROM declared_moves dm JOIN moves m ON m.id = dm.move_id
-               WHERE dm.character_id = ?
-               ORDER BY (dm.reveal_tic + m.active_tics + m.recovery_tics + dm.recovery_extension_tics) DESC LIMIT 1`,
-              [opponentCharacterId]
-            )
-          )?.id;
-        const applied = targetId != null ? await extendRecovery(targetId, amount) : false;
-        effects.push(
-          applied
-            ? `+${amount} Recovery → ${opponentCharacter.name}`
-            : `(no declared move for ${opponentCharacter.name} to extend)`
-        );
-        break;
-      }
-      case 'self_stamina':
-        await adjustStamina(selfCharacterId, -amount);
-        effects.push(`−${amount} Stamina (${selfCharacter.name})`);
-        break;
-      case 'opponent_stamina':
-        if (!opponentCharacter) break;
-        await adjustStamina(opponentCharacterId, -amount);
-        effects.push(`−${amount} Stamina → ${opponentCharacter.name}`);
-        break;
-      default:
-        break;
-    }
-  }
-
-  if (row.text || effects.length) {
-    const parts = [row.text, effects.join(', ')].filter(Boolean);
-    await postSystemMessage(`${move.name} — ${TRIGGER_LABELS[trigger] ?? trigger}: ${parts.join(' — ')}`);
-  }
-  // The extended Recovery window is real combat state (declared_moves
-  // itself) — same as 4.3's Block extension, the existing Tic
-  // Counter/footprint rendering already reads recoveryEndTic straight off
-  // it, so a fresh combat:updated is enough for it to show up live.
-  if (recoveryChanged) await emitCombatUpdated();
-}
 
 // Combat Automation overhaul: fireMissIfNoDamage used to live here, firing
 // a move's 'miss' trigger whenever its own reveal-time roll came back under
@@ -1368,7 +1213,7 @@ io.on('connection', (socket) => {
     if (!character) return;
     const mod = clampModifier(modifier) + (await getCombatRollBonus(character.id));
     const result = rollDie(die.current_size) + die.bonus + mod;
-    await logRoll({
+    await logRoll(io, {
       characterId: character.id,
       characterName: character.name,
       modifier: mod,
@@ -1396,7 +1241,7 @@ io.on('connection', (socket) => {
     const mod = clampModifier(modifier) + (asGm ? 0 : await getCombatRollBonus(character.id));
     const result = rollDie(die) + mod;
     const rollContext = asGm ? null : await buildRollContext(character.id, declaredMoveId);
-    await logRoll({
+    await logRoll(io, {
       characterId: asGm ? GM_CHAT_SENTINEL_ID : character.id,
       characterName: asGm ? 'GM' : character.name,
       modifier: mod,
@@ -1431,7 +1276,7 @@ io.on('connection', (socket) => {
       result: rollDie(d.current_size) + d.bonus + mod,
     }));
     const rollContext = await buildRollContext(character.id, declaredMoveId);
-    await logRoll({
+    await logRoll(io, {
       characterId: character.id,
       characterName: character.name,
       modifier: mod,
@@ -1448,7 +1293,7 @@ io.on('connection', (socket) => {
     if (pendingCheck && pendingCheck.characterId === character.id) {
       pendingRollChecks.delete(rollRequestId);
       const passed = total >= pendingCheck.target;
-      await postSystemMessage(
+      await postSystemMessage(io, 
         `${character.name}'s ${pendingCheck.slotName} check — ${total} vs ${pendingCheck.target}: ${
           passed ? 'PASS' : 'FAIL'
         }.`
@@ -1524,7 +1369,7 @@ io.on('connection', (socket) => {
     // than the only record of it sitting silently in the die's own state.
     const character = await getCharacter(die.character_id);
     if (character) {
-      await postSystemMessage(`${character.name} took ${steps * 0.5} damage to ${die.slot_name}.`);
+      await postSystemMessage(io, `${character.name} took ${steps * 0.5} damage to ${die.slot_name}.`);
     }
 
     if (attackerDeclaredMoveId != null) {
@@ -1534,7 +1379,7 @@ io.on('connection', (socket) => {
       );
       if (attackerDM && !attackerDM.interactions_resolved) {
         await run('UPDATE declared_moves SET interactions_resolved = 1 WHERE id = ?', [attackerDeclaredMoveId]);
-        await applyMoveInteractions({
+        await applyMoveInteractions(io, {
           moveId: attackerDM.move_id,
           trigger: 'hit',
           selfCharacterId: attackerDM.character_id,
@@ -1690,7 +1535,7 @@ io.on('connection', (socket) => {
       character.id,
     ]);
     io.emit('character:updated', { ...character, current_stamina: currentStamina });
-    await logRoll({
+    await logRoll(io, {
       characterId: character.id,
       characterName: character.name,
       modifier: 0,
@@ -2955,7 +2800,7 @@ io.on('connection', (socket) => {
         lockedBrain: die.locked_size + die.locked_bonus,
         hasSpeedStance: hasSpeedStance(character),
       });
-      await logRoll({
+      await logRoll(io, {
         characterId: character.id,
         characterName: character.name,
         modifier,
