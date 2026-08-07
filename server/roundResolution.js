@@ -1570,6 +1570,7 @@ async function advancePairResolution(pairIndex, io) {
     ]);
 
   let resolution = await findResolution();
+  const isNewResolution = !resolution;
   if (!resolution) {
     await run(
       `INSERT INTO pair_round_resolutions
@@ -1588,6 +1589,57 @@ async function advancePairResolution(pairIndex, io) {
   const emitEvent = await makeEmitEvent(io, resolution, pairIndex, pair.round_number);
 
   const roundEndTicExclusive = pair.round_start_tic + roundLength;
+
+  // A move that started in an earlier round and is still running through
+  // this one is part of this round's board, but it never emits a `reveal`
+  // here — it already revealed, last round — so the cutscene had no way to
+  // know it existed and simply drew nothing for it. It now gets a `carryover`
+  // event at the head of the round: the same footprint payload a reveal
+  // carries, so the client renders it as an ordinary move bar in ordinary
+  // phase colours (§0's self-contained rule — a replay watched later can't
+  // go looking for a move that belonged to a different round).
+  //
+  // Emitted only when the resolution row is first created, so a resume after
+  // a pause or a crash doesn't stack duplicates.
+  if (isNewResolution) {
+    const carried = await all(
+      `SELECT dm.id, dm.character_id, dm.move_id, dm.placement_tic, dm.reveal_tic,
+              dm.recovery_extension_tics, dm.appendage_choice,
+              m.name AS move_name, m.active_tics, m.recovery_tics, m.defense_frame_positions,
+              m.is_defensive, m.defense_kind, m.stamina_cost,
+              ch.name AS character_name, ch.character_type,
+              cp.side AS side
+       FROM declared_moves dm
+       JOIN moves m ON m.id = dm.move_id
+       JOIN characters ch ON ch.id = dm.character_id
+       JOIN combat_participants cp ON cp.character_id = dm.character_id
+       WHERE cp.pair_index = ? AND dm.reveal_posted = 1
+         AND dm.reveal_tic + m.active_tics + m.recovery_tics + dm.recovery_extension_tics > ?`,
+      [pairIndex, pair.round_start_tic]
+    );
+    for (const r of carried) {
+      const activeEndTic = r.reveal_tic + r.active_tics;
+      await emitEvent(pair.round_start_tic, 'carryover', {
+        declaredMoveId: r.id,
+        characterId: r.character_id,
+        characterName: r.character_name,
+        characterType: r.character_type,
+        side: r.side,
+        moveId: r.move_id,
+        moveName: r.move_name,
+        appendageChoice: r.appendage_choice,
+        isDefensive: Boolean(r.is_defensive),
+        defenseKind: r.defense_kind,
+        staminaCost: r.stamina_cost ?? 0,
+        placementTic: r.placement_tic,
+        revealTic: r.reveal_tic,
+        activeEndTic,
+        recoveryEndTic: activeEndTic + r.recovery_tics + (r.recovery_extension_tics ?? 0),
+        defenseFramePositions: JSON.parse(r.defense_frame_positions ?? '[]'),
+      });
+    }
+  }
+
   let currentTic = resolution.resolved_through_tic + 1;
 
   while (currentTic < roundEndTicExclusive) {
@@ -1726,6 +1778,7 @@ async function resolveMoveConflict(pairIndex, { declaredMoveId, choice }, io) {
     return;
   }
 
+  let postponedTo = null;
   if (choice === 'forfeit') {
     await run('DELETE FROM declared_moves WHERE id = ?', [row.id]);
     if (row.stamina_committed && row.stamina_cost) {
@@ -1753,13 +1806,32 @@ async function resolveMoveConflict(pairIndex, { declaredMoveId, choice }, io) {
         recoveryTics: row.recovery_tics,
       });
       await run('UPDATE declared_moves SET placement_tic = ?, reveal_tic = ? WHERE id = ?', [newPlacementTic, revealTic, row.id]);
+      postponedTo = { placementTic: newPlacementTic, revealTic };
     }
   }
 
+  // Say where it went. A Postpone used to report only that it happened, and
+  // the move then simply stopped being on screen: if its new placement lands
+  // past this round's last Tic it reveals in the NEXT round's cutscene, which
+  // reads at the table as the move having been quietly eaten. The payload now
+  // carries the move, its owner, and where it landed, so the log can name all
+  // three — see the narration client-side.
+  const moveRow = await one('SELECT m.name AS move_name, ch.name AS character_name FROM declared_moves dm JOIN moves m ON m.id = dm.move_id JOIN characters ch ON ch.id = dm.character_id WHERE dm.id = ?', [declaredMoveId]).catch(() => null);
   await emitEvent(pending.tic ?? resolution.resolved_through_tic + 1, 'move_conflict_resolved', {
     declaredMoveId,
     blockerDeclaredMoveId: pending.blockerDeclaredMoveId,
     choice,
+    moveName: moveRow?.move_name ?? null,
+    characterName: moveRow?.character_name ?? null,
+    ...(postponedTo
+      ? {
+          newPlacementTic: postponedTo.placementTic,
+          newRevealTic: postponedTo.revealTic,
+          // Whether it left this round entirely — the case that looked like
+          // the move disappearing.
+          intoNextRound: postponedTo.placementTic >= resolution.round_start_tic + resolution.round_length,
+        }
+      : {}),
   });
 
   // Recursive cascade: a Postponed move might now collide with yet another

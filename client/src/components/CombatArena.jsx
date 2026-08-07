@@ -13,7 +13,7 @@ import { portraitSrc } from '../lib/image.js';
 import { dieLabel, tintFor, POOLS } from '../lib/dice.js';
 import { buildFolderTree } from '../lib/folders.js';
 import { countRollSlot } from '../lib/diceSlots.js';
-import { FRAME_PHASES, PHASE_BG, PHASE_LABEL, PHASE_ZONE, phaseBgAt } from '../lib/framePhaseColors.js';
+import { FRAME_PHASES, PHASE_BG, PHASE_LABEL, PHASE_ZONE, phaseBgAt, phaseAt } from '../lib/framePhaseColors.js';
 import RoundCutscene from './RoundCutscene.jsx';
 import DamageApplicationDialog from './DamageApplicationDialog.jsx';
 import { REWARD_LABELS, REWARD_COLORS } from '../lib/counterDisplay.js';
@@ -460,14 +460,18 @@ function PairTabStrip({ pairIndices, pairs, participants, characters, activeInde
 // (footprint preview, declared-phase dots, overflow badges, drag/drop,
 // click-to-step) undefined, which each already degrade to a plain
 // non-interactive square.
-// One Tic square's footprint, in one place. The Arena used to leave most of
-// a desktop window empty because this was a flat h-11 w-11 at every size, so
-// the round's whole timeline occupied ~350px of a 1900px screen. It steps up
-// on wide viewports instead — and because the declare card's frame bar is
-// deliberately drawn at exactly this size (so a dragged move visibly slots
-// into the strip), both read from this same constant rather than repeating
-// the numbers and drifting apart.
-export const TIC_SQUARE_SIZE = 'h-11 w-11 xl:h-14 xl:w-14 2xl:h-16 2xl:w-16';
+// One Tic square's footprint, in one place — the strip's own squares and
+// the `+N` overflow marker that sits at the end of the same row, which must
+// match it exactly.
+//
+// **Fixed at every viewport, deliberately (decided).** A responsive version
+// of this was tried and reverted: scaling the squares with the window made
+// the counter feel unmoored and gained nothing — a Tic is a fixed unit of
+// game time, and its square should look like the same object on every
+// screen. Extra window width belongs to the things that actually have more
+// to say at a larger size (the roster, the lanes, the cutscene's event log),
+// not to inflating a seven-square ruler.
+export const TIC_SQUARE_SIZE = 'h-11 w-11';
 
 export function TicSquare({
   relativeTic,
@@ -489,12 +493,14 @@ export function TicSquare({
     if (isCurrent) ref.current?.scrollIntoView({ inline: 'center', block: 'nearest', behavior: 'smooth' });
   }, [isCurrent]);
   const zoneStyle = PHASE_ZONE[footprintZone];
-  // Capped at 2 badges so they never crowd a 44px square — the tooltip
-  // still lists everyone if there are more.
-  const shownNames = (overflowNames ?? []).slice(0, 2);
+  // Carried-over frames from last round, as { name, phase } — drawn in their
+  // own phase colours rather than as an anonymous badge (see overflowTics).
+  const carried = overflowNames ?? [];
   const title = clickTitle ?? `Tic ${relativeTic}${
-    overflowNames?.length
-      ? ` — occupied by ${overflowNames.join(', ')} (carryover from last round)`
+    carried.length
+      ? ` — ${carried
+          .map((c) => `${c.name}'s ${PHASE_LABEL[c.phase] ?? c.phase}`)
+          .join(', ')} (carried over from last round)`
       : ''
   }`;
   return (
@@ -508,7 +514,7 @@ export function TicSquare({
       initial={isCurrent ? { scale: 1.5 } : false}
       animate={{ scale: isCurrent && !zoneStyle ? 1.1 : 1 }}
       transition={{ duration: 0.35, ease: 'easeOut' }}
-      className={`relative flex ${TIC_SQUARE_SIZE} shrink-0 items-center justify-center panel-cut border text-sm font-bold transition-colors duration-150 xl:text-base ${
+      className={`relative flex ${TIC_SQUARE_SIZE} shrink-0 items-center justify-center panel-cut border text-sm font-bold transition-colors duration-150 ${
         onClick ? 'cursor-pointer hover:border-brand-400 hover:shadow-[0_0_10px_rgb(var(--color-brand-rgb)/45%)]' : ''
       } ${
         zoneStyle ??
@@ -518,16 +524,16 @@ export function TicSquare({
       }`}
     >
       {relativeTic}
-      {shownNames.length > 0 && (
-        <div className="absolute -right-0.5 -top-0.5 flex">
-          {shownNames.map((name, i) => (
-            <span
-              key={name}
-              className="flex h-3.5 w-3.5 items-center justify-center rounded-full bg-zinc-500 text-[8px] font-bold leading-none text-zinc-100 ring-1 ring-zinc-900"
-              style={i > 0 ? { marginLeft: '-4px' } : undefined}
-            >
-              {name.slice(0, 1).toUpperCase()}
-            </span>
+      {/* A carried-over move paints the top edge of the square in its own
+          frame colour — the same phase palette as everywhere else, so a
+          carried Recovery is the same blue here as in the cutscene. Shown to
+          everyone: this is public board state ("these Tics are spoken for"),
+          which is why it is drawn as the thing it is rather than as a grey
+          marker that it exists. */}
+      {carried.length > 0 && (
+        <div className="absolute inset-x-0 top-0 flex h-1.5 overflow-hidden">
+          {carried.slice(0, 3).map((c, i) => (
+            <span key={i} className={`h-full flex-1 ${PHASE_BG[c.phase] ?? 'bg-zinc-500'}`} />
           ))}
         </div>
       )}
@@ -644,9 +650,14 @@ export function TicCounterCentral({
           keeps the timeline a single visual line regardless (matching the
           recommended §14.4 default) rather than reflowing to a second row.
           The mask-image fade is a lightweight scroll affordance (§7.1's
-          "start/end fade") without a second scroll-position-tracking effect. */}
+          "start/end fade") without a second scroll-position-tracking effect.
+          It needs horizontal padding wider than its own 12px fade: without
+          it the gradient lands on the first and last Tic squares and fades
+          them out, which reads as the counter being cut off at both edges
+          rather than as a scroll hint. The padding gives the fade its own
+          empty space to happen in. */}
       <div
-        className="flex max-w-full flex-nowrap items-center gap-1.5 overflow-x-auto overscroll-x-contain py-1 [mask-image:linear-gradient(to_right,transparent,black_12px,black_calc(100%-12px),transparent)]"
+        className="flex max-w-full flex-nowrap items-center gap-1.5 overflow-x-auto overscroll-x-contain px-4 py-1 [mask-image:linear-gradient(to_right,transparent,black_16px,black_calc(100%-16px),transparent)]"
       >
         {squares.map((sq, i) => {
           // A pending tap-to-declare placement (see onTapPlace) makes every
@@ -725,10 +736,10 @@ export function TicCounterCentral({
       )}
       {overflowTics.size > 0 && (
         <div className="flex items-center gap-1 text-[9px] text-zinc-600">
-          <span className="flex h-3.5 w-3.5 items-center justify-center rounded-full bg-zinc-500 text-[8px] font-bold leading-none text-zinc-100 ring-1 ring-zinc-900">
-            X
+          <span className="flex h-1.5 w-4 overflow-hidden">
+            <span className="h-full flex-1 bg-blue-500" />
           </span>{' '}
-          initial = that character still has a move recovering here (carryover from last round)
+          top edge = a move carried over from last round is still running here (hover for whose)
         </div>
       )}
     </div>
@@ -1073,17 +1084,19 @@ function DeclareMoveCard({ character, move, roundStartTic, declaredMoves }) {
       <span>
         {move.name} <span className="text-zinc-500">({cost} Stamina)</span>
       </span>
-      {/* The move's frame data at TIC-COUNTER scale, not a miniature: what
-          you are about to do is drop this run of frames onto that strip, so
-          the thing in your hand should be the same size as the slot it goes
-          into — hence the shared TIC_SQUARE_SIZE rather than a repeated
-          literal, which would silently stop matching the day one changed. */}
+      {/* Small (decided, reverted). Drawing this at Tic-square scale was
+          tried — the idea being that a move in your hand should be the size
+          of the slot it drops into — and it made every card in the picker
+          enormous for no gain: you are choosing a move here, not aiming it,
+          and the Tic Counter's own live footprint preview is what shows you
+          where it lands. A compact glyph of the frame shape is all this
+          needs to be. */}
       <FrameBar
         startup={move.effective_startup_tics ?? move.startup_tics}
         active={move.effective_active_tics ?? move.active_tics}
         recovery={move.effective_recovery_tics ?? move.recovery_tics}
         defensePositions={move.defense_frame_positions}
-        size={TIC_SQUARE_SIZE}
+        size="h-2 w-2"
       />
     </button>
   );
@@ -1625,7 +1638,15 @@ export default function CombatArena() {
   // so it can never leak this round's own still-secret placements. Scoped
   // to just displayPair's own seated characters — a different pair's
   // carried-over move has nothing to do with the pair being shown here.
-  const overflowTics = new Map(); // absoluteTic -> character names occupying it
+  // A carryover is drawn as what it actually is (decided, revised): the
+  // move's own frames in their own phase colours, exactly as anyone else's
+  // move on the strip. It used to be a grey initialled badge in the corner —
+  // a marker that *something* was there rather than a picture of it, which
+  // made the one part of the board every player can legitimately see read as
+  // an anonymous smudge. The identity was never secret in the first place
+  // (its Tell has been visible since it was declared, and it revealed last
+  // round), so there is nothing to protect by greying it out.
+  const overflowTics = new Map(); // absoluteTic -> [{ name, phase }]
   if (displayPair) {
     const pairIndexByChar = new Map(participants.map((p) => [p.character_id, p.pair_index]));
     for (const dm of declaredMoves) {
@@ -1634,9 +1655,22 @@ export default function CombatArena() {
       const name = characters[dm.characterId]?.character.name;
       if (!name) continue;
       for (let t = displayPair.roundStartTic; t < dm.recoveryEndTic; t++) {
-        const names = overflowTics.get(t) ?? [];
-        if (!names.includes(name)) names.push(name);
-        overflowTics.set(t, names);
+        // Same phase classification the cutscene and the chat snapshots use,
+        // so a carried-over Recovery is the same blue everywhere.
+        const phase = phaseAt(
+          {
+            placementTic: dm.placementTic,
+            revealTic: dm.revealTic,
+            activeEndTic: dm.activeEndTic,
+            recoveryEndTic: dm.recoveryEndTic,
+            defenseFramePositions: dm.defenseFramePositions ?? [],
+          },
+          t
+        );
+        if (!phase) continue;
+        const at = overflowTics.get(t) ?? [];
+        at.push({ name, phase });
+        overflowTics.set(t, at);
       }
     }
   }
