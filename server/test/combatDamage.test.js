@@ -133,10 +133,10 @@ test('classifyDefenseCoverage: no overlap at all is too-early, same as auto-fail
   );
 });
 
-test('classifyDefenseCoverage: coverage starts in time but runs out is too-late, counting the uncovered Tics', () => {
+test('classifyDefenseCoverage: coverage starts in time but runs out is too-short, counting the uncovered Tics', () => {
   assert.deepEqual(
     classifyDefenseCoverage({ attackActiveStart: 13, attackActiveEnd: 16, defenseTics: [13] }),
-    { coverage: 'too-late', extensionTicsNeeded: 2 }
+    { coverage: 'too-short', extensionTicsNeeded: 2 }
   );
 });
 
@@ -168,7 +168,7 @@ test('clampRecoveryExtension: never lets the Recovery window shrink past 0 lengt
   assert.equal(clampRecoveryExtension({ currentExtensionTics: -2, recoveryTics: 3, delta: -5 }), -3);
 });
 
-test('clampRecoveryExtension: stacks on top of an existing extension (e.g. a prior Block-too-late)', () => {
+test('clampRecoveryExtension: stacks on top of an existing extension (e.g. a prior Block extension)', () => {
   assert.equal(clampRecoveryExtension({ currentExtensionTics: 4, recoveryTics: 2, delta: -1 }), 3);
 });
 

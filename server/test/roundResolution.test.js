@@ -82,7 +82,17 @@ async function createCharacter(name) {
   );
   const id = Number(result.lastInsertRowid);
   for (const t of DICE_TEMPLATE) {
-    await run('INSERT INTO dice (character_id, pool, slot_name) VALUES (?, ?, ?)', [id, t.pool, t.slot_name]);
+    // d8 explicitly, not the schema default. Every scenario below is
+    // hand-computed arithmetic against a d8 baseline (a 2-step hit takes a
+    // d8 to d6), so the starting size has to be a property of the test
+    // rather than of `dice.current_size`'s default — that default is a
+    // *game* decision (Character Creation starts every Stat at d4) and is
+    // free to change again without silently rewriting what these tests mean.
+    await run('INSERT INTO dice (character_id, pool, slot_name, current_size) VALUES (?, ?, ?, 8)', [
+      id,
+      t.pool,
+      t.slot_name,
+    ]);
   }
   return id;
 }
@@ -671,7 +681,7 @@ test('Dodge resume: Successful Partial Dodge still lands reduced damage on the d
   assert.equal(leftHand.half_damage, 1);
 });
 
-test('Move-conflict pause: a Block-too-late collision stops the round; Forfeit deletes the colliding move', async () => {
+test('Move-conflict pause: a Block extension collision stops the round; Forfeit deletes the colliding move', async () => {
   const pairIndex = 210;
   const attacker = await createCharacter('ConflictForfeit Attacker');
   const defender = await createCharacter('ConflictForfeit Defender');
@@ -680,7 +690,7 @@ test('Move-conflict pause: a Block-too-late collision stops the round; Forfeit d
   const punch = await createMove({ name: 'CF Punch', startupTics: 1, activeTics: 2, recoveryTics: 1, rollSlots: ['Skull'] });
   // Guard's own Defense Frame only covers its own tic 1 (not tic 2) -> the
   // attacker's Active window [1,3) is covered starting at tic 1 (not
-  // too-early) but runs out before tic 2 -> 'too-late', 1 Tic short.
+  // too-early) but runs out before tic 2 -> 'too-short', 1 Tic short.
   const guard = await createMove({
     name: 'CF Guard',
     startupTics: 1,
@@ -723,7 +733,7 @@ test('Move-conflict pause: a Block-too-late collision stops the round; Forfeit d
   assert.equal(resolutionAfter.status, 'complete');
 });
 
-test('Block-too-late: the Recovery extension is announced and logged, and does not pause on its own', async () => {
+test('Block extension: the Recovery extension is announced and logged, and does not pause on its own', async () => {
   const pairIndex = 215;
   const attacker = await createCharacter('LateBlock Attacker');
   const defender = await createCharacter('LateBlock Defender');
@@ -731,7 +741,7 @@ test('Block-too-late: the Recovery extension is announced and logged, and does n
   await setDieSize(defender, 'Left Hand', 12);
   const punch = await createMove({ name: 'LB Punch', startupTics: 1, activeTics: 2, recoveryTics: 1, rollSlots: ['Skull'] });
   // Same shape as the Forfeit scenario above, minus the colliding move: the
-  // Guard covers the attack's Active tic 1 but not tic 2 -> 'too-late', 1
+  // Guard covers the attack's Active tic 1 but not tic 2 -> 'too-short', 1
   // Tic short. Nothing is declared in the extended window, so the round
   // must run straight through — an extension is a rule, not a prompt.
   const guard = await createMove({
@@ -758,7 +768,7 @@ test('Block-too-late: the Recovery extension is announced and logged, and does n
     `SELECT payload FROM round_events WHERE resolution_id = ? AND type = 'recovery_extended'`,
     [resolution.id]
   );
-  assert.ok(extended, 'a too-late Block must log its Recovery extension');
+  assert.ok(extended, 'a Block that catches the opening frame must log its Recovery extension');
   const payload = JSON.parse(extended.payload);
   assert.equal(payload.declaredMoveId, guardDMId);
   assert.equal(payload.extensionTics, 1);

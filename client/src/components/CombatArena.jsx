@@ -460,6 +460,15 @@ function PairTabStrip({ pairIndices, pairs, participants, characters, activeInde
 // (footprint preview, declared-phase dots, overflow badges, drag/drop,
 // click-to-step) undefined, which each already degrade to a plain
 // non-interactive square.
+// One Tic square's footprint, in one place. The Arena used to leave most of
+// a desktop window empty because this was a flat h-11 w-11 at every size, so
+// the round's whole timeline occupied ~350px of a 1900px screen. It steps up
+// on wide viewports instead — and because the declare card's frame bar is
+// deliberately drawn at exactly this size (so a dragged move visibly slots
+// into the strip), both read from this same constant rather than repeating
+// the numbers and drifting apart.
+export const TIC_SQUARE_SIZE = 'h-11 w-11 xl:h-14 xl:w-14 2xl:h-16 2xl:w-16';
+
 export function TicSquare({
   relativeTic,
   isCurrent,
@@ -499,7 +508,7 @@ export function TicSquare({
       initial={isCurrent ? { scale: 1.5 } : false}
       animate={{ scale: isCurrent && !zoneStyle ? 1.1 : 1 }}
       transition={{ duration: 0.35, ease: 'easeOut' }}
-      className={`relative flex h-11 w-11 shrink-0 items-center justify-center panel-cut border text-sm font-bold transition-colors duration-150 ${
+      className={`relative flex ${TIC_SQUARE_SIZE} shrink-0 items-center justify-center panel-cut border text-sm font-bold transition-colors duration-150 xl:text-base ${
         onClick ? 'cursor-pointer hover:border-brand-400 hover:shadow-[0_0_10px_rgb(var(--color-brand-rgb)/45%)]' : ''
       } ${
         zoneStyle ??
@@ -670,7 +679,7 @@ export function TicCounterCentral({
         {overflowPreview && (
           <div className="group relative shrink-0">
             <span
-              className="flex h-11 w-11 items-center justify-center panel-cut border border-amber-500/70 bg-amber-950/40 font-display text-sm font-bold text-amber-300"
+              className={`flex ${TIC_SQUARE_SIZE} items-center justify-center panel-cut border border-amber-500/70 bg-amber-950/40 font-display text-sm font-bold text-amber-300`}
               title={`Runs ${overflowPreview.tics} Tic${
                 overflowPreview.tics === 1 ? '' : 's'
               } into the next round`}
@@ -1064,16 +1073,17 @@ function DeclareMoveCard({ character, move, roundStartTic, declaredMoves }) {
       <span>
         {move.name} <span className="text-zinc-500">({cost} Stamina)</span>
       </span>
-      {/* The move's frame data at TIC-COUNTER scale (h-11 w-11 squares, see
-          TicSquare), not a miniature: what you are about to do is drop this
-          run of frames onto that strip, so the thing in your hand should be
-          the same size as the slot it goes into. */}
+      {/* The move's frame data at TIC-COUNTER scale, not a miniature: what
+          you are about to do is drop this run of frames onto that strip, so
+          the thing in your hand should be the same size as the slot it goes
+          into — hence the shared TIC_SQUARE_SIZE rather than a repeated
+          literal, which would silently stop matching the day one changed. */}
       <FrameBar
         startup={move.effective_startup_tics ?? move.startup_tics}
         active={move.effective_active_tics ?? move.active_tics}
         recovery={move.effective_recovery_tics ?? move.recovery_tics}
         defensePositions={move.defense_frame_positions}
-        size="h-11 w-11"
+        size={TIC_SQUARE_SIZE}
       />
     </button>
   );
@@ -1632,7 +1642,11 @@ export default function CombatArena() {
   }
 
   return (
-    <div className="mx-auto max-w-6xl">
+    // The Arena is a board, not prose: it was capped at max-w-6xl (1152px),
+    // which left most of a normal desktop window empty while the Tic strip
+    // and the seating rows squeezed into a column. It now takes the width it
+    // is given, with everything inside it sized fluidly rather than fixed.
+    <div className="w-full">
       <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
         <h1 className="text-2xl font-bold tracking-tight">Combat Arena</h1>
         <div className="flex items-center gap-3">

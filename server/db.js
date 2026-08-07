@@ -204,10 +204,16 @@ export async function initDb() {
       character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
       pool TEXT NOT NULL CHECK(pool IN ('head','core','legs')),
       slot_name TEXT NOT NULL,
-      current_size INTEGER NOT NULL DEFAULT 8 CHECK(current_size IN (4,6,8,10,12)),
+      -- d4 is the ruleset's starting baseline for every Stat (Character
+      -- Creation in game_rules.md); a new character then spends a budget of
+      -- step-ups. Only affects rows inserted from here on.
+      current_size INTEGER NOT NULL DEFAULT 4 CHECK(current_size IN (4,6,8,10,12)),
       bonus INTEGER NOT NULL DEFAULT 0,
       status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','incapacitated')),
-      locked_size INTEGER NOT NULL DEFAULT 8 CHECK(locked_size IN (4,6,8,10,12)),
+      -- Matches current_size's baseline: a brand-new character must not read
+      -- as already two steps below their own locked base, and Revert Stats
+      -- must not jump every die up to a base they never had.
+      locked_size INTEGER NOT NULL DEFAULT 4 CHECK(locked_size IN (4,6,8,10,12)),
       locked_bonus INTEGER NOT NULL DEFAULT 0,
       locked_status TEXT NOT NULL DEFAULT 'active' CHECK(locked_status IN ('active','incapacitated')),
       -- Half-Damage (decided): a raw on/off flag, toggled manually (a plain
@@ -867,7 +873,7 @@ export async function initDb() {
   // many extra Recovery Tics this declared move's window has been extended
   // by. Only ever set nonzero for a successfully-Blocked defender whose
   // Defense Frame ran out before the attacker's Active window did (4.3's
-  // "too-late" coverage — see classifyDefenseCoverage in combatDamage.js and
+  // "too-short" coverage — see classifyDefenseCoverage in combatDamage.js and
   // combat:resolve_defense in index.js). Added into every place a declared
   // move's Recovery end is computed (reveal_tic + active_tics +
   // recovery_tics + recovery_extension_tics) so a fight that never touches

@@ -67,7 +67,7 @@ export default function DialogShell({
 
   const sheetPanelClass =
     variant === 'theater'
-      ? 'h-full w-full md:h-[94dvh] md:w-[96vw] md:rounded-none md:panel-cut-lg'
+      ? 'h-full w-full md:h-[96dvh] md:w-[99vw] md:rounded-none md:panel-cut-lg'
       : variant === 'fullscreen'
         ? 'h-full w-full md:h-auto md:max-h-[90dvh] md:w-full md:rounded-none md:panel-cut-lg'
         : 'w-full rounded-t-2xl md:rounded-none md:panel-cut-lg md:max-h-[90dvh]';
