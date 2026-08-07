@@ -78,7 +78,10 @@ await new Promise((r) => actor.on('connect', r));
 const created = await jpost('/api/characters', { name: 'Aaron', characterType: 'pc' });
 check('create character returns 201', created.status === 201);
 const ch = created.body;
-check('new character stamina 32/32', ch.max_stamina === 32 && ch.current_stamina === 32, JSON.stringify(ch));
+// Character Creation starts every Stat at d4 (game_rules.md), so a brand
+// new character's Max Stamina is 4 x 4. The GM then spends the creation
+// budget of step-ups from there.
+check('new character stamina 16/16', ch.max_stamina === 16 && ch.current_stamina === 16, JSON.stringify(ch));
 await waitEvent('character:created', (c) => c.id === ch.id);
 check('character:created broadcast', true);
 
@@ -88,7 +91,46 @@ check('npc type stored', npc.character_type === 'npc');
 const full = (await jf(`/api/characters/${ch.id}`)).body;
 check('8 dice auto-seeded', full.dice.length === 8, `got ${full.dice.length}`);
 check('dice pools 2/4/2', ['head', 'core', 'legs'].map((p) => full.dice.filter((d) => d.pool === p).length).join() === '2,4,2');
-check('all dice default d8 active', full.dice.every((d) => d.current_size === 8 && d.bonus === 0 && d.status === 'active' && d.locked_size === 8));
+check('all dice seed at d4 active', full.dice.every((d) => d.current_size === 4 && d.bonus === 0 && d.status === 'active' && d.locked_size === 4));
+
+// --- normalise this fixture to a d8 baseline ---
+// Character Creation starts every Stat at d4 and hands the player a budget
+// of step-ups (game_rules.md). The scenarios below are about stepping,
+// locking, damage and Stamina arithmetic, not about where a sheet starts —
+// they were all authored against d8 and stay far more readable that way. So
+// spend a notional budget up to d8 across the board, lock it in as this
+// character's base, and top Stamina up to the matching 4 x 8. The creation
+// defaults themselves are asserted above, where they belong.
+for (const d of full.dice) {
+  for (const target of [6, 8]) {
+    emit('die:step', { dieId: d.id, direction: 'up' });
+    await waitEvent('die:updated', (u) => u.dieId === d.id && u.current_size === target);
+  }
+}
+emit('character:lock_stats', { characterId: ch.id });
+await waitEvent('character:updated', (c) => c.id === ch.id && c.max_stamina === 32);
+emit('stamina:adjust', { characterId: ch.id, delta: 16 });
+await waitEvent('character:updated', (c) => c.id === ch.id && c.current_stamina === 32);
+check('fixture normalised to d8 / 32 Stamina', true);
+
+// Every fixture from here on wants the same d8 baseline, for the same
+// reason — these scenarios are about combat, Stamina costs and damage math,
+// all authored against d8, not about where character creation starts.
+async function createFighter(name, characterType = 'pc') {
+  const body = (await jpost('/api/characters', { name, characterType })).body;
+  const sheet = (await jf(`/api/characters/${body.id}`)).body;
+  for (const d of sheet.dice) {
+    for (const target of [6, 8]) {
+      emit('die:step', { dieId: d.id, direction: 'up' });
+      await waitEvent('die:updated', (u) => u.dieId === d.id && u.current_size === target);
+    }
+  }
+  emit('character:lock_stats', { characterId: body.id });
+  await waitEvent('character:updated', (c) => c.id === body.id && c.max_stamina === 32);
+  emit('stamina:adjust', { characterId: body.id, delta: 32 });
+  await waitEvent('character:updated', (c) => c.id === body.id && c.current_stamina === 32);
+  return (await jf(`/api/characters/${body.id}`)).body.character;
+}
 
 const skull = full.dice.find((d) => d.slot_name === 'Skull');
 const stamina = full.dice.find((d) => d.slot_name === 'Stamina');
@@ -133,7 +175,7 @@ events.length = 0;
 emit('character:lock_stats', { characterId: ch.id });
 const lockedChar = await waitEvent('character:updated', (c) => c.id === ch.id);
 check('lock recomputes max stamina 4x10=40', lockedChar.max_stamina === 40, JSON.stringify(lockedChar));
-check('current stamina unchanged at 32 (below new max)', lockedChar.current_stamina === 32);
+check('current stamina unchanged at 32 (below new max)', lockedChar.current_stamina === 32, JSON.stringify(lockedChar));
 await waitEvent('die:updated', (d) => d.dieId === stamina.id && d.locked_size === 10);
 check('die:updated carries locked values', true);
 
@@ -1036,7 +1078,7 @@ emit('combat:toggle_uneven', {});
 await waitEvent('combat:updated', (c) => c.unevenCombatEnabled === true);
 check('Uneven Combat toggles on', true);
 
-const sidekick = (await jpost('/api/characters', { name: 'Sidekick', characterType: 'pc' })).body;
+const sidekick = await createFighter('Sidekick', 'pc');
 events.length = 0;
 emit('combat:add_participant', { characterId: sidekick.id, side: 'left', pairIndex: 0 });
 await waitEvent('combat:updated', (c) => c.participants.some((p) => p.character_id === sidekick.id));
@@ -1103,7 +1145,7 @@ check('combat:clear empties the arena', combat.participants.length === 0);
 
 // --- Phase 7: Combat Timing (declared_moves, Declaration Phase sequencing,
 // Tic Countdown, reveal-vs-Tell, Next Round, overflow) ---
-const rightFighter = (await jpost('/api/characters', { name: 'Righty', characterType: 'pc' })).body;
+const rightFighter = await createFighter('Righty', 'pc');
 
 events.length = 0;
 emit('combat:add_participant', { characterId: ch.id, side: 'left', pairIndex: 0 });
@@ -1366,8 +1408,8 @@ check('Stamina Cost clamps to +/-20, same as roll bonus', overkill.stamina_cost 
 // Fresh, never-before-mutated characters — ch/rightFighter have been
 // through the whole script's worth of regen rolls/adjust/lock/step by this
 // point, so their Stamina can't be assumed to still be a known value.
-const staminaA = (await jpost('/api/characters', { name: 'Stamina Test A', characterType: 'pc' })).body;
-const staminaB = (await jpost('/api/characters', { name: 'Stamina Test B', characterType: 'pc' })).body;
+const staminaA = await createFighter('Stamina Test A', 'pc');
+const staminaB = await createFighter('Stamina Test B', 'pc');
 
 events.length = 0;
 emit('combat:add_participant', { characterId: staminaA.id, side: 'left', pairIndex: 0 });
@@ -1444,8 +1486,8 @@ await jf(`/api/characters/${staminaB.id}`, { method: 'DELETE' });
 // effectively declared them — but a Player's move stays exactly as hidden
 // from the GM as from anyone else, since the GM is an adversarial party
 // here, not an omniscient narrator ---
-const fairPc = (await jpost('/api/characters', { name: 'Fairness PC', characterType: 'pc' })).body;
-const fairNpc = (await jpost('/api/characters', { name: 'Fairness NPC', characterType: 'npc' })).body;
+const fairPc = await createFighter('Fairness PC', 'pc');
+const fairNpc = await createFighter('Fairness NPC', 'npc');
 
 events.length = 0;
 emit('combat:add_participant', { characterId: fairPc.id, side: 'left', pairIndex: 0 });
@@ -1528,8 +1570,8 @@ await jf(`/api/characters/${fairNpc.id}`, { method: 'DELETE' });
 // reload (unlike tellId/rightTellId/leftTellId, it's never secret, same
 // reasoning as the Tell itself: it's visible the instant the move
 // declares, whoever's watching) ---
-const ambigLeft = (await jpost('/api/characters', { name: 'Ambig Left', characterType: 'pc' })).body;
-const ambigRight = (await jpost('/api/characters', { name: 'Ambig Right', characterType: 'pc' })).body;
+const ambigLeft = await createFighter('Ambig Left', 'pc');
+const ambigRight = await createFighter('Ambig Right', 'pc');
 
 events.length = 0;
 emit('move:create', {
@@ -1600,8 +1642,8 @@ await waitEvent('combat:updated', (c) => c.participants.length === 0);
 // --- Full footprint blocking (decided, revised): a character's next move
 // can't be placed until their previous move's ENTIRE footprint (Startup +
 // Active + Recovery) ends, not just past its reveal Tic ---
-const fpLeft = (await jpost('/api/characters', { name: 'Footprint Left', characterType: 'npc' })).body;
-const fpRight = (await jpost('/api/characters', { name: 'Footprint Right', characterType: 'npc' })).body;
+const fpLeft = await createFighter('Footprint Left', 'npc');
+const fpRight = await createFighter('Footprint Right', 'npc');
 
 events.length = 0;
 emit('move:create', {
@@ -1713,10 +1755,10 @@ await jf(`/api/characters/${ambigRight.id}`, { method: 'DELETE' });
 // be mid-Declaration at the same time even though they might be literal
 // opposite "sides" — declaration is scoped per pair (combat_pairs), not one
 // shared batch across the whole arena like Phase 7 originally had it ---
-const mpA = (await jpost('/api/characters', { name: 'MultiPair A', characterType: 'pc' })).body;
-const mpB = (await jpost('/api/characters', { name: 'MultiPair B', characterType: 'pc' })).body;
-const mpC = (await jpost('/api/characters', { name: 'MultiPair C', characterType: 'pc' })).body;
-const mpD = (await jpost('/api/characters', { name: 'MultiPair D', characterType: 'pc' })).body;
+const mpA = await createFighter('MultiPair A', 'pc');
+const mpB = await createFighter('MultiPair B', 'pc');
+const mpC = await createFighter('MultiPair C', 'pc');
+const mpD = await createFighter('MultiPair D', 'pc');
 
 events.length = 0;
 emit('combat:add_participant', { characterId: mpA.id, side: 'left', pairIndex: 0 });
@@ -1878,7 +1920,7 @@ check(
 await jf(`/api/characters/${npc.id}`, { method: 'DELETE' });
 
 // --- free-text chat messages + images/GIFs + Clear Chat ---
-const chatty = (await jpost('/api/characters', { name: 'Chatty', characterType: 'pc' })).body;
+const chatty = await createFighter('Chatty', 'pc');
 
 events.length = 0;
 emit('chat:message', { characterId: chatty.id, text: 'hello table' });

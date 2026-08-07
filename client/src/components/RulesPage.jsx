@@ -4,7 +4,7 @@ import { getRules } from '../lib/api.js';
 
 // The rule book, read from game_rules.md at the repo root (see /api/rules
 // server-side). Rendered as sections rather than one long scroll, because
-// "what does a too-late Block do again?" is a lookup, not a read-through —
+// "what does a Block that catches one frame do again?" is a lookup, not a read-through —
 // and with its own search, since the browser's Ctrl-F can't see a section
 // that isn't currently open.
 //

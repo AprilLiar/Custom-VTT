@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react';
 import { socket } from '../socket.js';
 
-// The 6 canonical questions. Answers are stored keyed by this exact text
+// The 7 canonical questions. Answers are stored keyed by this exact text
 // (is_custom = 0), so edit with care — rewording orphans old answers.
+// Appending is always safe; nothing is keyed to a question that didn't
+// exist yet.
 export const FIXED_QUESTIONS = [
   'What your character absolutely loves and cannot pass by on the street?',
   'What is their biggest traumatic event or memory?',
@@ -10,6 +12,9 @@ export const FIXED_QUESTIONS = [
   'What is their favorite food?',
   'Is there something another person can do, that will infuriate them?',
   'What is their biggest vice?',
+  // The one question here with a mechanic behind it: this is where a
+  // character's Reasons to Fight counter comes from at the table.
+  'What is something they would fight for, no matter what?',
 ];
 
 const MAX_CUSTOM = 20;

@@ -805,7 +805,7 @@ async function applyMoveInteractions({
     await postSystemMessage(`${move.name} — ${TRIGGER_LABELS[trigger] ?? trigger}: ${parts.join(' — ')}`);
   }
   // The extended Recovery window is real combat state (declared_moves
-  // itself) — same as 4.3's Block-too-late extension, the existing Tic
+  // itself) — same as 4.3's Block extension, the existing Tic
   // Counter/footprint rendering already reads recoveryEndTic straight off
   // it, so a fresh combat:updated is enough for it to show up live.
   if (recoveryChanged) await emitCombatUpdated();
@@ -1080,8 +1080,11 @@ app.post('/api/characters', wrap(async (req, res) => {
     if (folder) folderId = folder.id;
   }
 
-  // Dice seed at d8, so starting Max Stamina = 4 x (8 + 0); Current starts at Max.
-  const maxStamina = computeMaxStamina(4, 8, 0);
+  // Dice seed at d4 — the ruleset's own starting baseline (see Character
+  // Creation in game_rules.md): every Stat starts at d4 and the character
+  // spends a budget of step-ups from there, using the sheet's existing
+  // step controls. Max Stamina follows from the seeded Stamina die.
+  const maxStamina = computeMaxStamina(4, 4, 0);
   const result = await run(
     'INSERT INTO characters (name, character_type, max_stamina, current_stamina, folder_id) VALUES (?, ?, ?, ?, ?)',
     [name, characterType, maxStamina, maxStamina, folderId]

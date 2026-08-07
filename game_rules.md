@@ -1,4 +1,4 @@
-# Dogfight — Rules
+# Dogfight — Martial Arts TTRPG
 
 > **This file is the rule book players read in-app.** The Rules button in the
 > app header renders it, split into sections by its `##` headings, with its own
@@ -15,218 +15,386 @@
 > them from inside a session. See "Where the rules live" in `vttprojectplan.md`
 > for the reasoning in full.
 
-## Stats
+## What This Game Is
 
-Every character has eight Stats, each a die: **Skull**, **Brain**, **Left
-Hand**, **Right Hand**, **Stamina**, **Body**, **Left Leg**, **Right Leg**.
+Dogfight is a martial-arts roleplaying game about **one fight at a time**.
 
-A die runs d4 → d6 → d8 → d10 → d12. Stepping up past d12 keeps the size at d12
-and adds a permanent **+1 bonus** instead (d12+1, d12+2, …), which is added to
-every future roll of that die. Stepping down takes the bonus off first, then
-the size; only once a die is at d4 with no bonus does the next step down
-**incapacitate** it. An incapacitated die is silently dropped from any roll
-that would have included it.
+Two fighters face each other. Both commit to what they are about to do before
+either can see the other's answer, and then those commitments play out against
+each other frame by frame. A punch is not "I attack, you defend" — it is a
+thing with a wind-up, a moment where it can hurt someone, and a recovery you
+are stuck in whether it worked or not. Most of the skill in this game is
+choosing *when*, not *what*.
 
-**Half-Damage** is a marker on a die, not a step of its own: taking half a step
-sets the marker, and taking another half clears it and steps the die down for
-real.
+Everything else — your dice, your stances, what you carry, who you are —
+exists to make that exchange mean something.
 
-**Locking in Stats** records the character's current dice as their *base*
-values. Reverting restores them. Injuries apply a structured penalty to the
-locked base rather than to the live value.
+**The app plays the fight for you.** Once both sides have committed, the round
+resolves itself: dice roll, defences resolve, damage lands. You are not asked
+to arbitrate anything, because you were meant to be watching the fight, not
+adding up numbers during it. The two exceptions are named in **Dodging** and
+**Blocking** below, and they exist because a human genuinely has to decide.
+
+### What you need
+
+One Game Master, one or more players, and the shared link. There are no
+accounts: whoever opens the link picks who they are. That is a deliberate
+trade — this is a game for a table that trusts each other.
+
+## Character Creation
+
+Every character has eight **Stats**, each of them a die:
+
+- **Skull** — taking a hit to the head, and giving one.
+- **Brain** — reading a fight; also your initiative.
+- **Left Hand** and **Right Hand** — everything you do with your arms.
+- **Stamina** — how long you last, and what you can afford.
+- **Body** — your trunk, absorbing and delivering.
+- **Left Leg** and **Right Leg** — footwork and kicks.
+
+**Start with every Stat at d4, then spend 8 step-ups.** One step-up moves one
+die one size: d4 → d6 → d8 → d10 → d12. Spend them however you like. Eight
+steps spread evenly makes every Stat a d6 — a fighter with no holes and no
+edge. Four steps into one Stat takes it to d12 and leaves five Stats at d4 —
+a specialist who is terrifying in exactly one way.
+
+There is no wrong spread. There are only fights you are built for and fights
+you are not.
+
+After that:
+
+1. **Pick or create a Stance** (see Stances and Styles). Your first one
+   activates automatically.
+2. **Lock in your Stats.** This records your starting dice as your *base*, so
+   damage and injuries have something to be measured against.
+3. **Answer the Role-play questions** on your sheet. One of them — *what is
+   something they would fight for, no matter what?* — is the one with a
+   mechanic attached: see Reasons to Fight.
+
+Your **Maximum Stamina** is four times your locked Stamina die's value, and
+your current Stamina starts there.
+
+## Stats and Dice
+
+A Stat's die runs **d4 → d6 → d8 → d10 → d12**. Rolling a Stat means rolling
+that die.
+
+Stepping **up** past d12 keeps the size at d12 and adds a permanent **+1**
+instead (d12+1, d12+2, …), added to every future roll of that die.
+
+Stepping **down** takes the bonus off first, then the size. Only once a die is
+at d4 with no bonus does the next step down **incapacitate** it. An
+incapacitated die is silently dropped from any roll that would have included
+it — you do not roll it, and you do not roll something else in its place.
+
+**Half-Damage** is a marker on a die, not a step of its own. Taking half a
+step sets the marker; taking another half clears it and steps the die down for
+real. Two halves make a whole, and nothing else does.
+
+### Locking and reverting
+
+**Locking in Stats** records your current dice as your *base* values.
+**Reverting** restores you to them. Between fights, reverting is how you heal.
+
+**Injuries** apply a structured penalty to the locked base rather than to your
+live dice, so a lasting injury survives a revert. That is the point of them.
 
 ## Stances and Styles
 
-There are seven Styles: **Speed**, **Power**, **Improvisation**, **Technique**,
-**Keep-out**, **Defensive**, **Close-Quarters**. They form a complete
-tournament — every Style beats exactly three others and loses to exactly three.
+There are seven **Styles**:
 
-A **Stance** is a named pair of two Styles. A character may have many stances
-but exactly one is **active** at a time, and everyone can see which — switching
-is public, Pokémon-style. There is no "no stance": the first stance created
-auto-activates, the last one cannot be deleted.
+**Speed**, **Power**, **Improvisation**, **Technique**, **Keep-out**,
+**Defensive**, **Close-Quarters**.
 
-### Stance matchup bonus
+They form a complete tournament: every Style beats exactly three others and
+loses to exactly three. There is no best Style, only a better answer to the
+Style in front of you.
+
+A **Stance** is a named pair of two Styles — a way of fighting, not a mood. A
+character may know many stances but exactly **one is active** at a time, and
+everyone can see which. Switching is public and immediate; you do not get to
+hide what you are doing. There is no "no stance": your first stance activates
+itself, and your last one cannot be deleted.
+
+### The Stance matchup
 
 While a fight is underway, your active stance is scored against your
-opponent's. Each of the four cross-pairs where your Style beats theirs is
-**+1**; each where theirs beats yours is **−1**; a shared Style contributes 0.
-The result is a flat bonus applied to **all** of your rolls, including the
-round's initiative roll.
+opponent's. Compare all four cross-pairs of Styles:
 
-At most three of the four cross-pairs can be wins, so the best possible
-matchup is **+3 for you and −3 for them** — a six-point swing. It tilts a
-fight; it does not decide one.
+- each pair where **your Style beats theirs**: **+1**
+- each pair where **theirs beats yours**: **−1**
+- a Style you both share: **0**
 
-**Uneven Combat turns this off entirely, for everyone in the arena.** With more
-than two fighters there is no single opposing stance to score against.
+The result is a flat bonus applied to **all** of your rolls that fight,
+including the round's initiative roll — exactly like Reasons to Fight.
+
+At most three of the four cross-pairs can be wins, so the widest possible
+matchup is **+3 for you and −3 for them**: a six-point swing. That tilts a
+fight. It does not decide one.
+
+**Uneven Combat switches this off for everyone in the arena** — with more than
+two fighters there is no single opposing stance to score against.
 
 ## Moves
 
-A Move has frame data — **Startup**, **Active**, and **Recovery** Tics — plus
-an optional **Roll**, an **Attack Target**, a **Stamina Cost**, a **Tell**, and
-up to ten Tags.
+A **Move** is one physical action with a shape in time. It has:
+
+- **Frame data** — its **Startup**, **Active**, and **Recovery** Tics
+- an optional **Roll** — which Stats you throw when it lands
+- an **Attack Target** — which Stats its damage may land on
+- a **Stamina Cost**
+- a **Tell** — the picture your opponent sees before they know what it is
+- up to ten **Tags**
 
 **Default** moves are available to everyone and never carry a Style. A
-**Unique** move carries one Style, and can only be learned by a character with
-a stance containing it, or used while that stance is active.
+**Unique** move carries one Style, and only a character with that Style in one
+of their stances can learn it.
 
 ### Rolls
 
-A Move's Roll picks from six slots: Skull, Brain, Stamina, Body, and the two
-*ambiguous* appendage choices **Hand** and **Leg**. An ambiguous slot resolves
-to a real die only when the move is used — the player picks a side.
+A Move's Roll picks from six slots: **Skull**, **Brain**, **Stamina**,
+**Body**, and the two *ambiguous* appendage choices **Hand** and **Leg**.
 
-Taking an appendage slot **twice** means *both* sides at once (a Straight Block
-guards with both hands). Two is the ceiling. Taking a slot twice answers its
-Left/Right question, so such a move needs only one Tell.
+An ambiguous slot resolves to a real die only when the move is used — you pick
+a side. Because of that, a move with a single ambiguous slot needs **two
+Tells**, a left and a right, and shows both until it is actually thrown.
 
-A Move with an ambiguous slot taken once needs **two Tells**, a Right and a
-Left, and shows both until it is actually used.
+Taking an appendage slot **twice** means *both* sides at once — a straight
+block that guards with both hands. Two is the ceiling. Taking a slot twice
+also answers its own left/right question, so such a move needs only one Tell.
 
-**Custom Roll** replaces the Stat slots with one flat die (d4–d12) belonging to
-the item rather than the wielder — for weapons.
+**Custom Roll** replaces the Stat slots with a single flat die (d4–d12)
+belonging to the *item* rather than the wielder. That is how weapons work.
 
 ### Attack Target
 
-Every Move with a Roll also lists which Stats its damage may land on. An empty
+Every Move with a Roll lists which Stats its damage may land on. An **empty**
 Attack Target is meaningful, not an oversight:
 
-- On a **Defensive** move it means the move is *defence-pure* — it exists to be
-  selected as a defender and never attacks on its own account.
-- On any other move the attack is still real, and a **Successful Block** is
-  what gives it a target (see Blocking).
+- On a **Defensive** move it means the move is **defence-pure**: it exists to
+  be selected as a defender and never attacks on its own account.
+- On any other move the attack is real, and a **successful Block** is what
+  gives it a target — see Blocking.
+
+### Defense Frames
+
+Any individual frame of a move — Startup, Active, or Recovery alike — can be
+tagged as a **Defense Frame**: a Tic during which that move can defend.
+
+This is an annotation on top of the frame's own phase, not a fourth phase. It
+never changes how long a move takes.
+
+**What matters is where those Defense Frames land on the timeline, not where
+the move was placed.** Two moves placed on the same Tic are not automatically
+in contact with each other — see Blocking.
 
 ## Combat Timing
 
-Combat runs on **Tics**. A round is seven Tics long. The Tic counter never
-resets — a round's Tics are just a window onto an absolute timeline, which is
-what lets a move overflow from one round into the next.
+Combat runs on **Tics**. A round is **seven Tics** long.
+
+The Tic counter never resets. A round's seven Tics are a window onto one
+absolute, continuous timeline — which is exactly what lets a move started near
+the end of one round go on existing into the next.
 
 Each **pair** of fighters runs its own independent clock. Fight A can be on
-round 5 while fight B is still on round 3; no fight ever waits on another.
+round 5 while fight B is still on round 3. No fight ever waits on another.
 
 A round has exactly two phases:
 
-1. **Declaration** — a human phase. Each side places its moves on the Tic
+1. **Declaration** — the human phase. Each side places its moves on the Tic
    Counter, in an order decided by initiative.
-2. **Resolution** — automatic. The moment both sides finish declaring, the
+2. **Resolution** — automatic. The instant both sides finish declaring, the
    round resolves itself Tic by Tic and plays back as a cutscene.
 
 ### Placing a move
 
-A move is placed at a Tic. It **reveals** after its Startup elapses, is
-**Active** for its Active frames, and then **Recovers**. Until a move reveals,
-opponents see only its **Tell**, not what it is.
+A move placed at a Tic **reveals** once its Startup elapses, is **Active** for
+its Active frames, then **Recovers**. Until it reveals, your opponent sees
+only its **Tell** — that a move is coming, and roughly what shape, but not
+which one.
 
-A character's next move can never be placed before their previous move's full
-footprint ends — including across a round boundary. A move whose footprint runs
-past the round's last Tic simply carries into the next round, and the strip
-marks that with a **+N** while you are placing it.
+Your next move can never be placed before your previous move's full footprint
+ends, including across a round boundary. A move whose footprint runs past the
+round's last Tic simply carries into the next round; the strip marks that with
+a **+N** while you are placing it, and you can preview exactly how much of
+your next round it eats.
+
+Placing several moves in one Declaration is allowed and often correct. You are
+writing a short plan, not answering one question.
 
 ### Initiative
 
-At the start of each round both sides roll **Brain**. The loser declares first.
-The roll takes the character's Reasons to Fight, their Stance matchup, and a
-**−1 per Tic of overflow** they are still carrying into this round.
+At the start of every round, both sides roll **Brain**. **The loser declares
+first** — being forced to commit before you have seen anything is the
+disadvantage.
 
-Ties break on: current Brain, then locked Brain, then whether the active stance
-contains Speed, then random.
+The roll takes your Reasons to Fight, your Stance matchup, and **−1 per Tic of
+overflow** you are still carrying in from last round. Being mid-move at the
+turn of a round costs you the read on the next one.
+
+Ties break, in order: current Brain, then locked Brain, then whether your
+active stance contains **Speed**, then random.
 
 ## Resolution
 
-Every Tic, in order: reveal any move whose reveal Tic has arrived → roll it if
-it has a Roll → pick the target → select the defending move by frame overlap →
-resolve Block, Dodge, or a plain Hit → check for an Interruption → apply
-Idle-Tic Stamina Regen.
+Every Tic, in order:
 
-Nobody steps a Tic by hand. Every roll is made by the engine.
+1. Reveal any move whose reveal Tic has arrived.
+2. Roll it, if it has a Roll.
+3. Pick the target.
+4. Select the defending move by frame overlap.
+5. Resolve a Block, a Dodge, or a plain Hit.
+6. Check for an Interruption.
+7. Apply Idle-Tic Stamina regeneration.
+
+Nobody steps a Tic by hand and nobody rolls anything by hand. Every roll in a
+fight is made by the engine, with every bonus already folded in.
 
 ### Damage
 
-A roll's damage is **one Half-Damage step per full 5 rolled** — 12 is two
-steps, 9 is one, 4 is none.
+A roll deals **one Half-Damage step per full 5 rolled**. A 12 is two steps, a
+9 is one, a 4 is none.
 
 A roll under 5 is **Insignificant Damage**: the attack landed and did too
 little to matter. It is *not* a Miss.
 
-**A Miss is an attack evaded with a Dodge.** Nothing else is a Miss.
+> **A Miss is an attack evaded with a Dodge.** Nothing else in this game is a
+> Miss. An attack that connects weakly still connected.
 
-Damage lands on the first Stat in the move's Attack Target order that still has
-a working die. That order is fixed: Skull, Brain, Left Hand, Stamina, Body,
-Right Hand, Left Leg, Right Leg.
+Damage lands on the first Stat in the move's Attack Target order that still
+has a working die. That order is fixed:
 
-### Defense Frames
-
-A Move can tag any of its own frames — Startup, Active, or Recovery — as a
-**Defense Frame**. That is an annotation on top of the frame's own phase, not a
-fourth phase: it never changes the move's length.
-
-**What matters is where those frames land, not where the move is placed.** A
-Block placed on the same Tic as an attack does nothing if its Defense Frames
-sit on its Startup square, because that square is a Tic *earlier* than the
-attack's Active window. The Arena says so when it happens.
+**Skull, Brain, Left Hand, Stamina, Body, Right Hand, Left Leg, Right Leg.**
 
 ### Blocking
 
 Blocks are fully automatic — pure dice, no prompts, ever.
 
-- The defender's Defense Frames must overlap the attacker's Active window.
-- **Full coverage**: the Block is rolled against the attack. The net result
-  decides Full (no damage) or Partial (reduced damage).
-- **Too early** (the guard is already down when the attack becomes Active):
-  automatic failure.
-- **Too late** (the guard comes up but runs out before the attack does): the
-  Block resolves, and the blocker's **Recovery is extended** to cover the rest
-  of the attack. That is announced, and drawn on the timeline in the Block's
-  own colour. If the extension collides with a move the blocker already
-  declared, they choose: **Forfeit** it (full Stamina refund) or **Postpone**
-  it past the extension.
+A Block engages when its Defense Frames overlap the attacker's Active window.
+There are three ways that can land:
 
-A Successful Block replaces the attack's Attack Target with the blocker's own
-rolled Stat — which is how an attack with no Attack Target of its own ever
-lands at all.
+- **Full coverage.** The Block is rolled against the attack. The net result
+  decides a **Full** Block (no damage) or a **Partial** one (reduced damage).
+- **The guard catches the opening frame and no more.** This is a *working
+  Block*, not a failed one. It resolves normally, and the blocker's own
+  **Recovery is extended** to hold the guard through the rest of the attack.
+  That is announced, and drawn on the timeline in the Block's own colour.
+  Being committed for longer is the price of catching it late, and it is a
+  fair one.
+- **Too early.** The guard was already down by the time the attack became
+  Active. Automatic failure.
+
+And one way it can fail to happen at all: **no overlap**. Placing a Block on
+the same Tic as an attack does not make it a Block. If its Defense Frames sit
+on its Startup square, those Tics fall *before* the attacker's Active window
+even opens — the attacker has a Startup too. Nothing meets, and the attack
+lands in full. The Arena says so by name when it happens, rather than leaving
+you to wonder.
+
+A **successful Block replaces the attack's Attack Target with the blocker's
+own rolled Stat** — which is how an attack with no Attack Target of its own
+ever lands anywhere. You blocked it with your arm; your arm is what took it.
 
 A Block must roll a Stat. A Custom Roll move can never serve as a Block, since
-it has no named Stat to become a replacement target.
+it has no named Stat to become that replacement target.
+
+If an extended Recovery collides with a move the blocker had already declared,
+they choose: **Forfeit** it (full Stamina refund) or **Postpone** it past the
+extension.
 
 ### Dodging
 
-Dodge is the one call left to a human. It is stricter than Block: anything less
-than **full coverage** fails automatically, with no prompt — a partly-covered
-dodge is already mechanically doomed.
+Dodge is the one call in the game left to a human.
 
-Full coverage pauses the fight and asks the **GM**: did it land? Every other
-pair keeps resolving while that one waits.
+It is stricter than Block: anything less than **full coverage** fails
+automatically, with no prompt. A dodge that only half-covers an attack is
+already mechanically doomed, and there is no judgement in confirming that.
+
+Full coverage pauses that pair's fight and asks the **GM**: did it land? Every
+other pair keeps resolving while that one waits.
 
 A **Full** Dodge is a Miss. A **Partial** Dodge still lets damage through.
 
 ### Interruption
 
-Taking a hit while still inside your own move's **Startup** can disrupt it.
+Taking a hit while you are still inside your own move's **Startup** can
+disrupt it.
+
 The engine walks the attacker's Active window for the first Tic at which the
-target is still in Startup, and the interrupted character rolls their own
-Startup move's Roll (or **Body**, if it has none) at **+1 per elapsed Active
+target is still in Startup. The interrupted character rolls their own Startup
+move's Roll — or **Body**, if that move has none — at **+1 per elapsed Active
 Tic**. Failing means the move is cancelled and half its Stamina Cost refunded.
+
+Getting caught winding up is how a fight turns over in one exchange.
 
 ## Stamina
 
-Stamina is a die like any other Stat, but also a pool: `current / max`.
+Stamina is a Stat like any other, and also a pool: `current / max`.
 
 - Declaring a move commits its **Stamina Cost**. Taking the move back before
-  committing refunds it in full.
-- **Idle Tics** — Tics in which you have nothing happening — regenerate
-  Stamina.
-- At the start of every round after the first, every seated character rolls
-  their Stamina die and adds it to the pool.
+  you finish declaring refunds it in full.
+- **Idle Tics** — Tics in which you have nothing happening at all — regenerate
+  Stamina. Doing nothing is a real option.
+- At the start of every round after the first, every fighter rolls their
+  Stamina die and adds it to the pool.
 - **Start Combat** restores everyone to full.
+
+**At zero Stamina you can still fight, but only with moves that cost nothing.**
+You are not down and you are not penalised — your good options are simply gone
+until you buy them back with idle Tics and the round-start roll. Exhaustion in
+this game narrows what you can do rather than telling you that you have lost.
 
 ## Reasons to Fight
 
-Each seated fighter carries a 0–3 counter. Each point is **+1 to all of that
-character's rolls** while the fight is underway — including initiative. It
-lives on the seat, not the character, so it resets when they are re-seated for
-a new fight.
+Each seated fighter carries a **0–3** counter. Each point is **+1 to all of
+that character's rolls** for the fight, initiative included.
+
+It lives on the *seat*, not the character, so it resets when they are seated
+for a new fight. What you were fighting for last time is not automatically
+what you are fighting for now.
+
+The GM sets it, and the honest way to set it is from the answer on that
+character's Role-play tab: *what is something they would fight for, no matter
+what?* A fighter with three points in a fight that matches that answer should
+feel like a different fighter.
+
+## Winning, Losing, and Stopping
+
+**There is no hit-point threshold in this game, and no rule that says when a
+fighter is finished. The GM calls it.**
+
+That is deliberate. The dice already tell you everything you need: a character
+with an incapacitated Skull, no Stamina, and both hands stepped down to d4 is
+plainly done, and no number needed to announce it. A character who is one bad
+Tic from that but standing in front of the person who killed their brother may
+very well not be.
+
+The app tracks the damage precisely and takes no view on what it means. A
+fight ends when the table agrees it has ended — someone yields, someone can't
+continue, someone walks away, someone is stopped.
+
+If your table wants a hard line, agree one before you start and hold to it.
+The rules will not fight you either way.
+
+## Rolling Outside a Fight
+
+Not everything is a fight. When something outside combat is uncertain and
+worth a die, the GM asks for a Stat roll — from the GM Tools widget, which
+puts the request in front of that player wherever they are in the app.
+
+**The GM names a difficulty before the roll, and you beat it.** The same
+5-point granularity damage uses:
+
+- **5** — awkward. Most people manage it.
+- **8** — genuinely difficult.
+- **12** — you should not be able to do this.
+
+Your Reasons to Fight and Stance matchup do not apply here; they are combat
+things. Your die and its bonus are what you have.
+
+Roll the Stat that fits what you are actually doing: Brain to read a room,
+Body to hold a door, a Leg to make a jump. If it is not obvious which Stat
+applies, that is usually a sign the thing does not need a roll.
 
 ## Counters
 
@@ -234,18 +402,22 @@ A Counter is a simple clock: a name, a target number of pips, and how many are
 filled. Characters own their own; the Arena can also hold standalone ones for
 the GM to track something about the fight itself.
 
-Counters can be adjusted from a character's own sheet, from the Arena, or
-directly from the `+` on any roll card in the chat log.
+Counters can be adjusted from a character's sheet, from the Arena, or directly
+from the `+` on any roll card in the chat log — the last of these being where
+you will actually use them, since counters usually tick because of something
+that just got rolled.
 
-A character's counter can carry a **reward** tag (Story, Statistic, Perk, Move,
-Combat Prowess) — purely a tracking label, with no mechanical effect.
+A character's counter can carry a **reward** tag (Story, Statistic, Perk,
+Move, Combat Prowess). That is a tracking label for the GM, with no mechanical
+effect of its own.
 
 ## Uneven Combat
 
 A toggle for fights that are not one-on-one. It changes two things:
 
-- Participant cards scale so more than one fighter fits a side.
-- **The Stance matchup bonus is switched off for everyone.**
+- Participant cards scale down so more than one fighter fits a side.
+- **The Stance matchup bonus is switched off for everyone in the arena.**
 
 The app does not otherwise enforce the toggle — it is a GM-facing flag, not a
-rule engine.
+rules engine. Everything else about an uneven fight is the same game, with
+more people in it and worse odds for somebody.

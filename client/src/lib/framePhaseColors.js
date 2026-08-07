@@ -44,7 +44,7 @@ export const PHASE_ZONE = {
   blocked: 'border-zinc-600 bg-zinc-800 text-zinc-600',
 };
 
-// A Block that lands too late has its Recovery auto-extended to cover the
+// A Block that catches only the opening frame has its Recovery auto-extended to cover the
 // rest of the attack's Active window — a rule, not a choice (decision #1
 // keeps Block entirely out of the prompt loop), so the only way the table
 // sees it happen is here. Decided: paint those Tics in the Block's own

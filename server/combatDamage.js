@@ -60,11 +60,19 @@ export function phaseAtTic({ placementTic, revealTic, activeEndTic, recoveryEndT
 //   'too-early' — the attack's very first Active Tic isn't covered (the
 //                 defense hadn't started yet, or never overlaps at all) —
 //                 automatically non-effective, treated as GM-picked Failed.
-//   'too-late'  — coverage starts in time but runs out before the Active
-//                 window ends. `extensionTicsNeeded` is exactly how many
-//                 Active Tics aren't covered — for Block, this is how many
-//                 extra Recovery Tics the blocker's move needs (4.3); Dodge
-//                 has no partial case and simply fails here too.
+//   'too-short' — the guard IS up for the attack's first Active Tic, but
+//                 runs out before the Active window ends.
+//                 `extensionTicsNeeded` is exactly how many Active Tics
+//                 aren't covered.
+//
+// **'too-short' is not a failure, and was renamed from 'too-late' because
+// that name said it was one.** Catching the opening frame of an attack is
+// how a Block is *supposed* to work: the guard connects, and the blocker's
+// own Recovery simply stretches to hold it for the rest of the attack (4.3).
+// The old name read as an error at the table for what is ordinary, correct
+// play. Dodge is the one that genuinely fails here — it has no partial case
+// at all, since a dodge that only covers part of an attack is mechanically
+// doomed either way.
 export function classifyDefenseCoverage({ attackActiveStart, attackActiveEnd, defenseTics }) {
   const defenseSet = new Set(defenseTics);
   let uncoveredCount = 0;
@@ -73,7 +81,7 @@ export function classifyDefenseCoverage({ attackActiveStart, attackActiveEnd, de
   }
   if (uncoveredCount === 0) return { coverage: 'full', extensionTicsNeeded: 0 };
   if (!defenseSet.has(attackActiveStart)) return { coverage: 'too-early', extensionTicsNeeded: 0 };
-  return { coverage: 'too-late', extensionTicsNeeded: uncoveredCount };
+  return { coverage: 'too-short', extensionTicsNeeded: uncoveredCount };
 }
 
 // 4.4 — the Interruption roll's bonus: however many of the attacker's own
@@ -129,7 +137,7 @@ export function selectUnevenCombatTarget({ candidates, allowedConcreteTargets })
 // `[attackActiveStart, attackActiveEnd)`. This is a plain "any overlap at
 // all" test, distinct from (and always run before) classifyDefenseCoverage
 // above, which then classifies exactly how well the winning move's Defense
-// Frames cover that same window (full/too-early/too-late). `defenderMoves`
+// Frames cover that same window (full/too-early/too-short). `defenderMoves`
 // is the target's own declared moves as `{ declaredMoveId, placementTic,
 // defenseFramePositions }`, already in queue order. Returns null (plain
 // Hit, no defending move at all) when nothing overlaps.
@@ -146,7 +154,7 @@ export function selectDefenseMove({ defenderMoves, attackActiveStart, attackActi
 // move's own recovery_extension_tics, floored so the move's Recovery window
 // can never shrink past its Active window ending (extension can go negative,
 // but recoveryTics + extension can't go below 0). Mirrors the same additive
-// recovery_extension_tics column 4.3's Block-too-late handling already
+// recovery_extension_tics column 4.3's Block-extension handling already
 // writes to — a self_recovery automation just adds another delta on top.
 export function clampRecoveryExtension({ currentExtensionTics, recoveryTics, delta }) {
   const next = currentExtensionTics + delta;

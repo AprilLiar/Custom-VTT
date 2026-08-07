@@ -7,7 +7,7 @@
 // pending_dodge_json/pending_conflict_json + status='paused_dodge'/
 // 'paused_conflict' on the pair's own pair_round_resolutions row) at either
 // of the two real human-decision points: a full-coverage Dodge, or a
-// Block-too-late move conflict. resolveDodge/resolveMoveConflict (exported
+// Block-extension move conflict. resolveDodge/resolveMoveConflict (exported
 // below) apply the human's answer and resume the engine from exactly where
 // it paused; resumeAllPairsOnBoot sweeps every still-'running' resolution
 // at server boot, the actual crash-recovery story.
@@ -435,7 +435,7 @@ async function runInterruptAndDamage(io, {
 }
 
 // A Failed defense (too-early coverage for either kind, or Dodge's own
-// too-late-has-no-partial-case rule) — falls straight through to a plain
+// too-short-has-no-partial-case rule) — falls straight through to a plain
 // Hit, exactly as if there'd been no Defense Frame at all. Shared by the
 // live path and (Phase D) the Dodge-resolved resume path.
 async function applyFailedDefense(io, {
@@ -484,7 +484,7 @@ async function applyFailedDefense(io, {
 // DEFENDER's own Stat (not the original attack target — same Attack Target
 // replacement rule Block already uses). Only ever reached from the Phase D
 // resume path (resolveDodge below) — Block's own Successful path stays
-// inline in resolveAttack since it's never paused, only its own too-late
+// inline in resolveAttack since it's never paused, only its own extension
 // conflict downstream is.
 async function applySuccessfulDodge(io, {
   defenderDM,
@@ -659,7 +659,18 @@ async function resolveAttack(io, { row, pairIndex, tic, emitEvent }) {
   }
   const total = dice.reduce((sum, d) => sum + d.result, 0);
   await logRoll(io, { characterId: row.characterId, characterName: row.characterName, modifier: mod, dice });
-  await emitEvent(tic, 'roll', { declaredMoveId: row.declaredMoveId, characterId: row.characterId, dice, modifier: mod, total });
+  // characterName rides along for the same §0 reason every other payload
+  // carries one: the cutscene names the roller in its own sentence, and a
+  // replay has no live combat state left to look the id up in.
+  await emitEvent(tic, 'roll', {
+    declaredMoveId: row.declaredMoveId,
+    characterId: row.characterId,
+    characterName: row.characterName,
+    moveName: row.moveName,
+    dice,
+    modifier: mod,
+    total,
+  });
 
   const { halfDamageSteps } = computeHitDamage(total);
   if (halfDamageSteps === 0) {
@@ -883,12 +894,12 @@ async function resolveAttack(io, { row, pairIndex, tic, emitEvent }) {
       });
       return { paused: true };
     }
-    // 'too-late' has no partial case for Dodge — also auto-Failed, no prompt.
+    // 'too-short' has no partial case for Dodge — also auto-Failed, no prompt.
     await applyFailedDefense(io, failedDefenseArgs);
     return;
   }
 
-  // defense_kind === 'block', coverage 'full' or 'too-late' — fully
+  // defense_kind === 'block', coverage 'full' or 'too-short' — fully
   // automatic (decision #1). Roll the defending move's own Roll (base +
   // defensive pool if is_defensive), same math as the manual
   // combat:resolve_defense.
@@ -1000,7 +1011,7 @@ async function resolveAttack(io, { row, pairIndex, tic, emitEvent }) {
     });
   }
 
-  // 'too-late': extend the blocker's own Recovery to cover the gap, then a
+  // 'too-short': extend the blocker's own Recovery to cover the gap, then a
   // real pause (decision #3, kept exactly as Forfeit/Postpone, now driven
   // by this engine's own pause/resume instead of a GM dialog) for the
   // FIRST move it now collides with — matches pending_conflict_json's
@@ -1008,7 +1019,7 @@ async function resolveAttack(io, { row, pairIndex, tic, emitEvent }) {
   // resolveMoveConflict (exported below) applies this one and re-checks —
   // the same recursive cascade the original manual
   // combat:resolve_move_conflict already had.
-  if (coverage.coverage === 'too-late') {
+  if (coverage.coverage === 'too-short') {
     const oldRecoveryEndTic =
       defenderDM.reveal_tic + defenderDM.active_tics + defenderDM.recovery_tics + defenderDM.current_extension_tics;
     const newRecoveryEndTic = oldRecoveryEndTic + coverage.extensionTicsNeeded;
@@ -1023,12 +1034,16 @@ async function resolveAttack(io, { row, pairIndex, tic, emitEvent }) {
     // round_event gives the cutscene enough to paint those extra Tics in the
     // Block's own colour (see isExtendedRecoveryTic client-side), so the
     // announcement and the timeline agree.
+    //
+    // Phrased as the success it is. This used to read "blocked late", which
+    // told the table a correct Block had gone wrong: catching an attack's
+    // opening frame and holding it is exactly how a Block is meant to work,
+    // and the extension is the rule doing its job, not a penalty.
     const tics = coverage.extensionTicsNeeded;
     await postSystemMessage(
       io,
-      `${defenderDM.character_name}'s ${defenderDM.move_name} blocked late — Recovery extended by ${tics} Tic${
-        tics === 1 ? '' : 's'
-      } to cover the rest of ${row.characterName}'s ${row.moveName}.`
+      `${defenderDM.character_name}'s ${defenderDM.move_name} catches ${row.characterName}'s ${row.moveName} — ` +
+        `Recovery extended by ${tics} Tic${tics === 1 ? '' : 's'} to hold the guard through it.`
     );
     await emitEvent(tic, 'recovery_extended', {
       declaredMoveId: defenderDM.id,
@@ -1119,7 +1134,7 @@ async function processTic(io, { pairIndex, tic, emitEvent }) {
       `SELECT dm.id, dm.character_id, dm.move_id, dm.placement_tic, dm.reveal_tic,
               dm.recovery_extension_tics, dm.appendage_choice,
               m.name AS move_name, m.active_tics, m.recovery_tics, m.defense_frame_positions,
-              m.is_defensive, m.defense_kind,
+              m.is_defensive, m.defense_kind, m.stamina_cost,
               ch.name AS character_name, ch.character_type,
               cp.side AS side
        FROM declared_moves dm
@@ -1142,6 +1157,11 @@ async function processTic(io, { pairIndex, tic, emitEvent }) {
         appendageChoice: r.appendage_choice,
         isDefensive: Boolean(r.is_defensive),
         defenseKind: r.defense_kind,
+        // What this move cost to declare. Carried on the reveal so the
+        // cutscene can flash it as the move comes out — and so a replay
+        // watched later still knows it, per §0's self-contained rule (the
+        // move's stamina_cost could be edited in the Compendium afterwards).
+        staminaCost: r.stamina_cost ?? 0,
         placementTic: r.placement_tic,
         revealTic: r.reveal_tic,
         activeEndTic,
