@@ -48,6 +48,7 @@ const SECONDS_PER_EVENT = 0.55;
 // explanation.
 const EVENT_LABEL = {
   reveal: 'Reveal',
+  carryover: 'Carried over',
   roll: 'Roll',
   defense_resolved: 'Defense',
   recovery_extended: 'Extension',
@@ -95,6 +96,8 @@ function eventNarration(ev, startTic) {
       return `${who} reveals ${p.moveName ?? 'a move'}${
         p.isDefensive ? ` (${p.defenseKind === 'dodge' ? 'a Dodge' : 'a Block'})` : ''
       }.`;
+    case 'carryover':
+      return `${who} is still in ${p.moveName ?? 'a move'} from last round.`;
     case 'roll': {
       const parts = (p.dice ?? []).map((d) => `${d.slot_name ?? d.slotName} ${d.result}`);
       const mod = p.modifier ? ` (${p.modifier > 0 ? '+' : ''}${p.modifier})` : '';
@@ -143,10 +146,21 @@ function eventNarration(ev, startTic) {
       }.`;
     case 'move_conflict_prompt':
       return "A Block's extended Recovery ran into an already-declared move — waiting on Forfeit or Postpone.";
-    case 'move_conflict_resolved':
-      return p.choice === 'forfeit'
-        ? 'Forfeited the colliding move; its Stamina is refunded.'
-        : 'Postponed the colliding move past the extended Recovery.';
+    case 'move_conflict_resolved': {
+      const what = p.moveName
+        ? `${p.characterName ? `${p.characterName}'s ` : ''}${p.moveName}`
+        : 'the colliding move';
+      if (p.choice === 'forfeit') return `Forfeited ${what}; its Stamina is refunded.`;
+      // Name the destination. Landing past this round's last Tic is why a
+      // Postpone could look like the move had been deleted — it resolves in
+      // the next round's cutscene, so say that here rather than leaving the
+      // move to silently stop existing.
+      const where =
+        p.newPlacementTic != null
+          ? ` to Tic ${p.newPlacementTic - startTic + 1}${p.intoNextRound ? ', which lands in the next round' : ''}`
+          : ' past the extended Recovery';
+      return `Postponed ${what}${where}.`;
+    }
     case 'automation_fired':
       return `The move's On ${p.trigger === 'defense_success' ? 'Successful Defense' : p.trigger === 'defense_failure' ? 'Failed Defense' : (p.trigger ?? '')} effect fired.`;
     case 'stamina_regen':
@@ -340,7 +354,9 @@ function footprintsFrom(events, upTo) {
   const out = [];
   const byDeclaredMoveId = new Map();
   for (const ev of events.slice(0, upTo)) {
-    if (ev.type === 'reveal') {
+    // A carryover carries the identical footprint payload a reveal does —
+    // it IS a move on this round's board, just one that started earlier.
+    if (ev.type === 'reveal' || ev.type === 'carryover') {
       const fp = { ...ev.payload };
       out.push(fp);
       if (fp.declaredMoveId != null) byDeclaredMoveId.set(fp.declaredMoveId, fp);
@@ -461,10 +477,14 @@ function MoveBar({ fp, ticks, startTic, effect, beat, staminaFlash }) {
       <span className="w-24 shrink-0 truncate text-right font-display text-xs uppercase tracking-wide text-zinc-400 md:w-36 md:text-sm">
         {fp.characterName}
       </span>
-      {/* The strip is fluid: cells share the row's width instead of being
-          fixed, so the timeline actually fills a wide window rather than
-          leaving most of it empty. min-w keeps it legible when it can't. */}
-      <div className="relative flex min-w-0 flex-1 gap-0.5">
+      {/* Fixed-size cells, matching the Tic Counter's own square (decided,
+          reverted). Letting these share the row's width did fill a wide
+          window, but it stretched each Tic into a ~245px slab that no longer
+          read as a square — the timeline stopped looking like a ruler. A Tic
+          is a fixed unit of game time and should look like one; the panel's
+          spare width goes to the event log below, which is what you actually
+          read. */}
+      <div className="relative flex shrink-0 gap-0.5">
         {/* Block "afterlines" — concentric glowing rings that swell out of
             the guard and fade, behind the bar rather than over it. */}
         <AnimatePresence>
@@ -497,7 +517,7 @@ function MoveBar({ fp, ticks, startTic, effect, beat, staminaFlash }) {
                     }${phase === 'defense' && !extended ? ` (${defenseLabel} window)` : ''}`
                   : undefined
               }
-              className={`h-4 min-w-2 flex-1 border border-zinc-900 md:h-5 ${
+              className={`h-4 w-8 shrink-0 border border-zinc-900 md:h-5 md:w-11 ${
                 extended
                   ? PHASE_BG_EXTENDED.defense
                   : phase
@@ -508,22 +528,28 @@ function MoveBar({ fp, ticks, startTic, effect, beat, staminaFlash }) {
           );
         })}
       </div>
-      <span className="relative w-28 shrink-0 truncate font-display text-xs text-zinc-300 md:w-44 md:text-base">
-        {fp.moveName}
-        {/* The Stamina this move cost, flashed as it comes out and floating
-            away — the one number that was previously invisible during a
-            round even though it had already been spent at declaration. */}
+      {/* The move's name, and the Stamina it cost flashed beside it. The
+          truncation lives on an INNER span on purpose: `truncate` is
+          overflow-hidden, and with it on the outer element the cost number
+          was clipped the moment it floated above the row — it read as being
+          hidden behind the other rows. The outer element clips nothing, so
+          the flash can rise out of the row, and z-50 puts it above every
+          neighbouring bar and the impact burst. */}
+      <span className="relative w-28 shrink-0 md:w-44">
+        <span className="block truncate font-display text-xs text-zinc-300 md:text-base">
+          {fp.moveName}
+        </span>
         <AnimatePresence>
           {staminaFlash && fp.staminaCost > 0 && (
             <motion.span
               key="stam"
               initial={{ opacity: 0, y: 6, scale: 0.7 }}
-              animate={{ opacity: [0, 1, 1, 0], y: -18, scale: 1.15 }}
+              animate={{ opacity: [0, 1, 1, 0], y: -20, scale: 1.15 }}
               exit={{ opacity: 0 }}
               transition={{ duration: 1.1, times: [0, 0.15, 0.6, 1] }}
-              className="pointer-events-none absolute -top-1 left-0 font-display text-sm font-bold text-amber-300 drop-shadow-[0_0_8px_rgba(252,211,77,0.95)] md:text-lg"
+              className="pointer-events-none absolute -top-1 left-0 z-50 whitespace-nowrap font-display text-sm font-bold text-amber-300 drop-shadow-[0_0_8px_rgba(252,211,77,0.95)] md:text-lg"
             >
-              −{fp.staminaCost}
+              −{fp.staminaCost} Stamina
             </motion.span>
           )}
         </AnimatePresence>
@@ -704,19 +730,18 @@ export default function RoundCutscene({
 
         {/* The Tic strip itself, driven by the playhead rather than live
             server state — during a cutscene the round is already computed.
-            Cells are fluid so the strip spans the panel: the same column
-            geometry as MoveBar above (name gutter, flex-1 cells, move-name
-            gutter), which is what keeps the two in lockstep at any width. */}
+            Same fixed cell width as the move bars above, and the same name
+            gutter, which is what keeps the two in lockstep. */}
         <div className="flex items-center gap-2 py-1">
           <span className="w-24 shrink-0 md:w-36" />
-          <div className="flex min-w-0 flex-1 gap-0.5">
+          <div className="flex shrink-0 gap-0.5">
             {ticks.map((tic) => (
               <motion.span
                 key={tic}
                 animate={{ scale: tic === playheadTic ? 1.15 : 1 }}
                 transition={{ type: 'spring', stiffness: 400, damping: 22 }}
                 title={`Tic ${tic - startTic + 1}`}
-                className={`flex h-8 min-w-0 flex-1 items-center justify-center border font-display text-xs md:h-10 md:text-sm ${
+                className={`flex h-8 w-8 shrink-0 items-center justify-center border font-display text-xs md:h-10 md:w-11 md:text-sm ${
                   tic === playheadTic
                     ? 'border-brand-400 bg-brand-700/60 text-zinc-100'
                     : 'border-zinc-700 bg-zinc-900 text-zinc-500'
@@ -726,7 +751,6 @@ export default function RoundCutscene({
               </motion.span>
             ))}
           </div>
-          <span className="w-28 shrink-0 md:w-44" />
         </div>
 
         <div className="mt-1 space-y-1">
