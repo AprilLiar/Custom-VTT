@@ -551,7 +551,22 @@ test('Interruption: taking a Hit while still in Startup disrupts the target\'s o
   const events = await all('SELECT type, payload FROM round_events WHERE pair_index = ? ORDER BY seq', [pairIndex]);
   const interruptEvent = events.find((e) => e.type === 'interrupt_resolved');
   assert.ok(interruptEvent);
-  assert.equal(JSON.parse(interruptEvent.payload).succeeded, true);
+  const interruptPayload = JSON.parse(interruptEvent.payload);
+  assert.equal(interruptPayload.interrupted, true);
+  // The payload must be self-contained enough to DRAW the killed move: it is
+  // deleted immediately above, so a cutscene one beat later — let alone a
+  // replay days later — has no row left to look up. Without this an
+  // Interrupted move left no trace on the board at all, since it dies in
+  // Startup and therefore never reveals.
+  assert.equal(interruptPayload.declaredMoveId, startupDMId);
+  assert.equal(interruptPayload.characterId, defender);
+  assert.equal(interruptPayload.placementTic, 0);
+  assert.equal(interruptPayload.revealTic, 3);
+  assert.ok(interruptPayload.recoveryEndTic > interruptPayload.revealTic);
+  // The move's NAME is deliberately absent: it never reached its reveal Tic,
+  // and a replay is public to anyone, so naming it here would disclose a
+  // move its owner never had to show.
+  assert.equal(interruptPayload.moveName, undefined);
 });
 
 // ---------------------------------------------------------------------

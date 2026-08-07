@@ -137,8 +137,8 @@ function eventNarration(ev, startTic) {
         : 'The GM called the Dodge Failed.';
     case 'interrupt_resolved':
       return p.interrupted
-        ? `Interrupted mid-Startup — rolled ${p.result} against ${plural(p.halfDamageSteps ?? 0, 'step', 'steps')}.`
-        : `Held through the hit — rolled ${p.result} against ${plural(p.halfDamageSteps ?? 0, 'step', 'steps')}.`;
+        ? `${who}'s move is Interrupted mid-Startup — rolled ${p.result} against ${plural(p.halfDamageSteps ?? 0, 'step', 'steps')}, and it never comes out.`
+        : `${who} holds through the hit — rolled ${p.result} against ${plural(p.halfDamageSteps ?? 0, 'step', 'steps')}, their move survives.`;
     case 'damage_applied':
       if (p.result === 'no-eligible-target') return 'Nothing left to hit — every allowed Stat is out.';
       return `${plural(p.steps ?? 0, 'step', 'steps')} of damage to ${p.slotName ?? 'an unknown Stat'}${
@@ -362,6 +362,18 @@ function footprintsFrom(events, upTo) {
       if (fp.declaredMoveId != null) byDeclaredMoveId.set(fp.declaredMoveId, fp);
       continue;
     }
+    // An Interrupted move is the one thing on the board that never revealed:
+    // it dies in Startup, so no reveal event ever described it and it had no
+    // bar to lose. Without this it left no trace at all — the log announced
+    // an Interruption of something the viewer had never seen. It gets a bar
+    // from the moment it's struck out, greyed and crossed through (below),
+    // drawn on exactly the Tics it had reserved. Only when the interrupt
+    // actually landed: a survived attempt leaves the move secret and intact,
+    // and striking out a move that is still coming would be a lie.
+    if (ev.type === 'interrupt_resolved' && ev.payload?.interrupted) {
+      out.push({ ...ev.payload, interrupted: true });
+      continue;
+    }
     if (ev.type !== 'recovery_extended') continue;
     const fp = byDeclaredMoveId.get(ev.payload?.declaredMoveId);
     if (!fp) continue;
@@ -461,20 +473,34 @@ function MoveBar({ fp, ticks, startTic, effect, beat, staminaFlash }) {
   // that happened — the motion is emphasis, never the only carrier.
   const reduceMotion = useReducedMotion();
   const glowing = effect === 'block' && !reduceMotion;
+  // A move knocked out of its own Startup. It still occupies the row — that
+  // is the entire point of drawing it — but as a wreck: no phase colours, no
+  // animation, struck through, and dimmed below every live bar around it.
+  const dead = Boolean(fp.interrupted);
 
   // Driven off `beat` (the seq of the event that caused this effect), not
   // off `effect` alone: two attacks in a row are the same target values, and
   // Framer only re-runs when the values change — so without the seq the
   // second punch would simply not animate.
   useEffect(() => {
-    if (!effect || reduceMotion) return;
+    // A struck-out move doesn't flinch, lunge or guard: it isn't happening.
+    // It would otherwise pick up its owner's own being-hit shake, since that
+    // is keyed by character and this bar still belongs to one.
+    if (!effect || reduceMotion || dead) return;
     controls.set({ x: 0, y: 0, scale: 1, opacity: 1 });
     controls.start(barAnimation(effect, toward));
-  }, [effect, beat, toward, controls, reduceMotion]);
+  }, [effect, beat, toward, controls, reduceMotion, dead]);
 
   return (
-    <motion.div className="relative flex items-center gap-2" animate={controls}>
-      <span className="w-24 shrink-0 truncate text-right font-display text-xs uppercase tracking-wide text-zinc-400 md:w-36 md:text-sm">
+    <motion.div
+      className={`relative flex items-center gap-2 ${dead ? 'opacity-60' : ''}`}
+      animate={controls}
+    >
+      <span
+        className={`w-24 shrink-0 truncate text-right font-display text-xs uppercase tracking-wide md:w-36 md:text-sm ${
+          dead ? 'text-zinc-500 line-through' : 'text-zinc-400'
+        }`}
+      >
         {fp.characterName}
       </span>
       {/* Fixed-size cells, matching the Tic Counter's own square (decided,
@@ -512,19 +538,39 @@ function MoveBar({ fp, ticks, startTic, effect, beat, staminaFlash }) {
               key={tic}
               title={
                 phase
-                  ? `${fp.characterName} — ${fp.moveName}\nTic ${tic - startTic + 1}: ${
-                      extended ? `${defenseLabel} extension` : PHASE_LABEL[phase]
-                    }${phase === 'defense' && !extended ? ` (${defenseLabel} window)` : ''}`
+                  ? dead
+                    ? `${fp.characterName} — Interrupted\nTic ${
+                        tic - startTic + 1
+                      }: ${PHASE_LABEL[phase]}, never happened`
+                    : `${fp.characterName} — ${fp.moveName}\nTic ${tic - startTic + 1}: ${
+                        extended ? `${defenseLabel} extension` : PHASE_LABEL[phase]
+                      }${phase === 'defense' && !extended ? ` (${defenseLabel} window)` : ''}`
                   : undefined
               }
-              className={`h-4 w-8 shrink-0 border border-zinc-900 md:h-5 md:w-11 ${
-                extended
-                  ? PHASE_BG_EXTENDED.defense
-                  : phase
-                    ? PHASE_BG[phase]
+              className={`relative h-4 w-8 shrink-0 border border-zinc-900 md:h-5 md:w-11 ${
+                dead
+                  ? // No phase colour: those say "this is happening," and it
+                    // isn't. Grey says the Tics were claimed and then weren't.
+                    phase
+                    ? 'bg-zinc-600/60'
                     : 'bg-zinc-800/50'
+                  : extended
+                    ? PHASE_BG_EXTENDED.defense
+                    : phase
+                      ? PHASE_BG[phase]
+                      : 'bg-zinc-800/50'
               } ${glowing && phase === 'defense' ? 'shadow-[0_0_14px_4px_rgba(125,211,252,0.85)]' : ''}`}
-            />
+            >
+              {/* The strike goes through the footprint itself, not just the
+                  label — the bar is the thing that got cancelled. Drawn per
+                  occupied cell rather than as one absolute span across the
+                  row, so it needs no width arithmetic and can never drift
+                  out of register with the cells; the 2px gaps read as one
+                  continuous line. */}
+              {dead && phase && (
+                <span className="pointer-events-none absolute inset-x-0 top-1/2 h-px -translate-y-1/2 bg-zinc-300" />
+              )}
+            </span>
           );
         })}
       </div>
@@ -536,8 +582,16 @@ function MoveBar({ fp, ticks, startTic, effect, beat, staminaFlash }) {
           the flash can rise out of the row, and z-50 puts it above every
           neighbouring bar and the impact burst. */}
       <span className="relative w-28 shrink-0 md:w-44">
-        <span className="block truncate font-display text-xs text-zinc-300 md:text-base">
-          {fp.moveName}
+        {/* An Interrupted move is labelled by what happened to it, not by
+            what it was. It never reached its reveal Tic, and being destroyed
+            early is not a reveal — the timing was always public, the
+            identity stays the owner's (see Combat Timing's secrecy rule). */}
+        <span
+          className={`block truncate font-display text-xs md:text-base ${
+            dead ? 'text-zinc-500 line-through' : 'text-zinc-300'
+          }`}
+        >
+          {dead ? 'Interrupted' : fp.moveName}
         </span>
         <AnimatePresence>
           {staminaFlash && fp.staminaCost > 0 && (

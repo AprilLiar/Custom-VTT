@@ -315,9 +315,19 @@ async function checkInterrupt(io, { targetCharacterId, attackerRevealTic, attack
   });
   if (!eligible) return;
 
+  // The whole footprint and display identity come along, not just the ids:
+  // an Interrupted move is deleted below, so by the time anything reads this
+  // event — a live cutscene a beat later, or a replay days later — the row it
+  // describes no longer exists to be looked up (§0's self-contained rule).
+  // The move's NAME is deliberately not among them; see the emit below.
   const startupDM = await one(
-    `SELECT dm.*, m.stamina_cost, m.roll_type, m.custom_roll_size, m.roll_modifier, ch.name AS character_name
-     FROM declared_moves dm JOIN moves m ON m.id = dm.move_id JOIN characters ch ON ch.id = dm.character_id
+    `SELECT dm.*, m.stamina_cost, m.roll_type, m.custom_roll_size, m.roll_modifier,
+            m.active_tics, m.recovery_tics, m.defense_frame_positions,
+            ch.name AS character_name, ch.character_type, cp.side AS side
+     FROM declared_moves dm
+     JOIN moves m ON m.id = dm.move_id
+     JOIN characters ch ON ch.id = dm.character_id
+     LEFT JOIN combat_participants cp ON cp.character_id = dm.character_id
      WHERE dm.id = ?`,
     [eligible.declaredMoveId]
   );
@@ -360,14 +370,38 @@ async function checkInterrupt(io, { targetCharacterId, attackerRevealTic, attack
   // (Needs confirmation, per the plan's own 4.4 note): threshold assumed to
   // be `roll >= damage taken` — the attack's own halfDamageSteps, threaded
   // in by the caller (this only ever runs once damage is about to land).
-  const succeeded = result >= halfDamageSteps;
+  const interrupted = result >= halfDamageSteps;
+  const activeEndTic = startupDM.reveal_tic + startupDM.active_tics;
   await emitEvent(tic, 'interrupt_resolved', {
     startupDeclaredMoveId: startupDM.id,
-    succeeded,
+    // Also under the key every other footprint-bearing event uses, so the
+    // cutscene can key this move's bar the same way it keys a reveal's.
+    declaredMoveId: startupDM.id,
+    interrupted,
     result,
-    threshold: halfDamageSteps,
+    halfDamageSteps,
+    characterId: startupDM.character_id,
+    characterName: startupDM.character_name,
+    characterType: startupDM.character_type,
+    side: startupDM.side,
+    // The footprint the move WOULD have had, so the cutscene can draw the
+    // Tics it had reserved and strike them out. Without this an Interrupted
+    // move left no trace at all on the board: it dies in Startup, so it
+    // never reveals, so it never got a bar in the first place — the log
+    // announced an Interruption of something nobody had ever seen.
+    placementTic: startupDM.placement_tic,
+    revealTic: startupDM.reveal_tic,
+    activeEndTic,
+    recoveryEndTic: activeEndTic + startupDM.recovery_tics + (startupDM.recovery_extension_tics ?? 0),
+    defenseFramePositions: JSON.parse(startupDM.defense_frame_positions ?? '[]'),
+    // NO moveName, deliberately. An Interrupted move never reached its
+    // reveal Tic, and Combat Timing's secrecy rule makes a move public at
+    // that Tic and not before — being destroyed early is not a reveal. The
+    // timing was always public (footprints ride combat:updated to everyone
+    // regardless of reveal state); the identity stays the owner's. The
+    // cutscene labels the struck-out bar "Interrupted" instead.
   });
-  if (!succeeded) return;
+  if (!interrupted) return;
 
   await run('DELETE FROM declared_moves WHERE id = ?', [startupDM.id]);
   const refund = startupDM.stamina_committed ? Math.trunc(startupDM.stamina_cost / 2) : 0;
