@@ -38,6 +38,11 @@ function RollRequester({ onDone }) {
   const [characters, setCharacters] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
   const [sentTo, setSentTo] = useState(null);
+  // Optional. With a number here the server resolves the roll against it
+  // and posts PASS/FAIL itself; left blank the request behaves exactly as
+  // it always did. Deliberately never sent to the player being asked — a
+  // check whose number you can see is a different thing to attempt.
+  const [targetNumber, setTargetNumber] = useState('');
 
   const load = () => getCharacters().then(setCharacters).catch(() => {});
   useEffect(load, []);
@@ -51,7 +56,12 @@ function RollRequester({ onDone }) {
   const selected = pcs.find((c) => c.id === selectedId) ?? null;
 
   const request = (slotName) => {
-    socket.emit('roll:request', { characterId: selected.id, slotName });
+    socket.emit('roll:request', {
+      characterId: selected.id,
+      slotName,
+      // Blank means "no target" — an unresolved roll, exactly as before.
+      targetNumber: targetNumber.trim() === '' ? null : Math.trunc(Number(targetNumber)),
+    });
     setSentTo(`${selected.name} — ${slotName}`);
     setSelectedId(null);
     onDone?.();
@@ -93,6 +103,17 @@ function RollRequester({ onDone }) {
         )
       ) : (
         <>
+          <label className="flex items-center gap-2 text-xs text-zinc-400">
+            <span className="shrink-0">Target number</span>
+            <input
+              type="number"
+              value={targetNumber}
+              onChange={(e) => setTargetNumber(e.target.value)}
+              placeholder="none"
+              className="w-20 panel-cut-sm border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs text-zinc-200 outline-none focus:border-brand-500"
+            />
+            <span className="text-zinc-600">resolved automatically, hidden from the player</span>
+          </label>
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
             {STAT_SLOTS.map((slot) => (
               <button

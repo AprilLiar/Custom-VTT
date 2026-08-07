@@ -61,6 +61,12 @@ import { computeHitDamage, clampRecoveryExtension } from './combatDamage.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3001;
 
+// Roll Requests that carry a target number, keyed by request id. Held here
+// rather than in the DB on purpose: nothing waits on one (unlike a Dodge
+// pause, which is why THAT is durable), so losing them to a restart costs
+// only the verdict line, and the roll itself is unaffected.
+const pendingRollChecks = new Map();
+
 const app = express();
 app.use(express.json({ limit: '3mb' })); // portraits arrive as base64 JSON
 const httpServer = createServer(app);
@@ -1403,7 +1409,7 @@ io.on('connection', (socket) => {
   // together with one shared modifier (not tied to a body section).
   // `declaredMoveId` (Combat Automation, sub-phase 3, optional) — see
   // dice:roll_custom's identical comment just above.
-  on('pool:roll', async ({ characterId, dieIds, modifier, declaredMoveId }) => {
+  on('pool:roll', async ({ characterId, dieIds, modifier, declaredMoveId, rollRequestId = null }) => {
     const character = await getCharacter(characterId);
     if (!character || !Array.isArray(dieIds) || !dieIds.length) return;
     const ids = [...new Set(dieIds.map(Number).filter(Number.isInteger))];
@@ -1433,6 +1439,21 @@ io.on('connection', (socket) => {
       rollContext,
     });
     const total = rolledDice.reduce((sum, d) => sum + d.result, 0);
+    // Out-of-combat checks resolve themselves (decided, new). If this roll
+    // is answering a Roll Request the GM gave a target number, the server —
+    // which is the only side that ever knew the number — compares and posts
+    // the verdict, instead of the GM eyeballing the total against a number
+    // they are holding in their head.
+    const pendingCheck = rollRequestId ? pendingRollChecks.get(rollRequestId) : null;
+    if (pendingCheck && pendingCheck.characterId === character.id) {
+      pendingRollChecks.delete(rollRequestId);
+      const passed = total >= pendingCheck.target;
+      await postSystemMessage(
+        `${character.name}'s ${pendingCheck.slotName} check — ${total} vs ${pendingCheck.target}: ${
+          passed ? 'PASS' : 'FAIL'
+        }.`
+      );
+    }
   });
 
   // Combat Automation (Phase 9): the Damage Application dialog's Stat
@@ -2437,7 +2458,7 @@ io.on('connection', (socket) => {
   // sit blind). Deliberately not a broadcast: a request naming a character
   // is that player's business, and a fail-closed filter matches how every
   // other targeted push in this app already behaves.
-  on('roll:request', async ({ characterId, slotName }) => {
+  on('roll:request', async ({ characterId, slotName, targetNumber = null }) => {
     if (socket.data?.identity?.role !== 'gm') return;
     if (!VALID_INJURY_SLOTS.has(slotName)) return;
     const character = await getCharacter(characterId);
@@ -2447,8 +2468,24 @@ io.on('connection', (socket) => {
       slotName,
     ]);
     if (!die) return;
+    const requestId = `${character.id}:${slotName}:${Date.now()}`;
+    // An optional target number the roll is resolved against, so the GM
+    // stops comparing totals by eye. Held SERVER-SIDE against the request
+    // id and never sent to the player being asked: a check whose number you
+    // can see is a different thing to attempt, and the verdict is posted
+    // publicly the moment they roll anyway. GMs get it back so their own
+    // widget can show what they asked for.
+    const target = Number.isFinite(Number(targetNumber)) ? Math.trunc(Number(targetNumber)) : null;
+    if (target != null) {
+      pendingRollChecks.set(requestId, { characterId: character.id, slotName, target });
+      // Bounded: a request nobody answers would otherwise pin its entry
+      // forever. Dropping it just means no verdict is posted — the roll
+      // itself is unaffected, which is why this can live in memory at all
+      // (unlike a Dodge pause, nothing waits on it).
+      setTimeout(() => pendingRollChecks.delete(requestId), 30 * 60 * 1000).unref?.();
+    }
     const payload = {
-      requestId: `${character.id}:${slotName}:${Date.now()}`,
+      requestId,
       characterId: character.id,
       characterName: character.name,
       slotName,
@@ -2461,7 +2498,8 @@ io.on('connection', (socket) => {
       const identity = viewerSocket.data?.identity;
       if (!identity) continue;
       const isTargetPlayer = identity.role === 'player' && identity.characterId === character.id;
-      if (identity.role === 'gm' || isTargetPlayer) viewerSocket.emit('roll:requested', payload);
+      if (identity.role === 'gm') viewerSocket.emit('roll:requested', { ...payload, targetNumber: target });
+      else if (isTargetPlayer) viewerSocket.emit('roll:requested', payload);
     }
   });
 

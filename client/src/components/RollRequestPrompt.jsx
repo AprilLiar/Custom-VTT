@@ -54,6 +54,7 @@ export default function RollRequestPrompt() {
           className="fixed left-1/2 z-[54] -translate-x-1/2 panel-cut-sm border border-zinc-700 bg-zinc-900/95 px-3 py-2 text-xs text-zinc-300 shadow-lg shadow-black/50"
         >
           Roll request sent — {current.characterName}: {current.slotName}
+          {current.targetNumber != null && ` (target ${current.targetNumber})`}
           <button
             type="button"
             onClick={pop}
@@ -72,6 +73,10 @@ export default function RollRequestPrompt() {
       characterId: current.characterId,
       dieIds: [current.dieId],
       modifier: clamp(modifier),
+      // Rides back so the server can resolve this roll against the target
+      // number the GM set — which only the server ever knew, so the check
+      // cannot be gamed by editing what came down the wire.
+      rollRequestId: current.requestId,
     });
     pop();
   };

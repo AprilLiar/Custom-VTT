@@ -112,6 +112,7 @@ async function createMove({
   defenseFramePositions = [],
   attackTargets = null,
   rollModifier = 0,
+  interactions = null, // [{ trigger, text, automations }]
 }) {
   const result = await run(
     `INSERT INTO moves
@@ -139,6 +140,14 @@ async function createMove({
       moveId,
       slot_name,
       count,
+    ]);
+  }
+  for (const row of interactions ?? []) {
+    await run('INSERT INTO move_interactions (move_id, trigger, text, automations) VALUES (?, ?, ?, ?)', [
+      moveId,
+      row.trigger,
+      row.text ?? '',
+      JSON.stringify(row.automations ?? []),
     ]);
   }
   return moveId;
@@ -973,4 +982,114 @@ test('Restart recovery: rolling resolved_through_tic backward and re-invoking co
   // derived end state) — just confirm it didn't somehow shrink or corrupt.
   const eventCountAfter = (await all('SELECT id FROM round_events WHERE pair_index = ?', [pairIndex])).length;
   assert.ok(eventCountAfter >= eventCountBefore);
+});
+
+
+// ---------------------------------------------------------------------
+// Automations: they always fired mechanically, but emitted no round_event,
+// so the cutscene never showed them. And On Miss used to fire only on a
+// Full Dodge, which made it nearly unreachable.
+// ---------------------------------------------------------------------
+
+test('an On Hit automation reaches the round log, not just the Chat Log', async () => {
+  const pairIndex = 300;
+  const attacker = await createCharacter('AF Attacker');
+  const defender = await createCharacter('AF Defender');
+  const punch = await createMove({
+    name: 'AF Punch',
+    startupTics: 1,
+    activeTics: 2,
+    recoveryTics: 1,
+    rollSlots: ['Skull'],
+    rollModifier: 20,
+    interactions: [
+      { trigger: 'hit', text: 'Rattles them.', automations: [{ type: 'opponent_stamina', amount: 2 }] },
+    ],
+  });
+  await seatPair(pairIndex, attacker, defender);
+  await startPairDeclaration(mockIo, pairIndex);
+  await declareMove({ characterId: attacker, moveId: punch, placementTic: 0, startupTics: 1 });
+  await resolvePair(pairIndex);
+
+  const events = await all('SELECT type, payload FROM round_events WHERE pair_index = ? ORDER BY seq', [pairIndex]);
+  const fired = events.filter((e) => e.type === 'automation_fired').map((e) => JSON.parse(e.payload));
+  assert.equal(fired.length, 1, `the On Hit automation should have posted a round_event; saw ${events.map((e) => e.type).join(',')}`);
+  assert.equal(fired[0].trigger, 'hit');
+  assert.equal(fired[0].moveName, 'AF Punch');
+  assert.equal(fired[0].text, 'Rattles them.');
+  // Pre-rendered by the server so the cutscene and the Chat Log can never
+  // describe the same effect differently.
+  assert.ok(fired[0].effects.some((e) => e.includes('Stamina')));
+  // And the Stamina movement itself is in the log, so the cutscene's
+  // fighter cards don't drift away from what the sentences say.
+  assert.ok(events.some((e) => e.type === 'stamina_changed'));
+});
+
+test('an attack that rolls under 5 fires On Miss', async () => {
+  const pairIndex = 301;
+  const attacker = await createCharacter('IM Attacker');
+  const defender = await createCharacter('IM Defender');
+  // A big negative modifier guarantees a sub-5 total: Insignificant Damage,
+  // which used to fire nothing at all.
+  const flail = await createMove({
+    name: 'IM Flail',
+    startupTics: 1,
+    activeTics: 1,
+    recoveryTics: 1,
+    rollSlots: ['Skull'],
+    rollModifier: -50,
+    interactions: [{ trigger: 'miss', text: 'Overcommits.', automations: [{ type: 'self_stamina', amount: 1 }] }],
+  });
+  await seatPair(pairIndex, attacker, defender);
+  await startPairDeclaration(mockIo, pairIndex);
+  await declareMove({ characterId: attacker, moveId: flail, placementTic: 0, startupTics: 1 });
+  await resolvePair(pairIndex);
+
+  const events = await all('SELECT type, payload FROM round_events WHERE pair_index = ? ORDER BY seq', [pairIndex]);
+  assert.ok(events.some((e) => e.type === 'insignificant_damage'));
+  const fired = events.filter((e) => e.type === 'automation_fired').map((e) => JSON.parse(e.payload));
+  assert.equal(fired.length, 1);
+  assert.equal(fired[0].trigger, 'miss');
+});
+
+test('a stat-step automation steps the named Stat and shows it as damage', async () => {
+  const pairIndex = 302;
+  const attacker = await createCharacter('SS Attacker');
+  const defender = await createCharacter('SS Defender');
+  const jab = await createMove({
+    name: 'SS Jab',
+    startupTics: 1,
+    activeTics: 2,
+    recoveryTics: 1,
+    rollSlots: ['Skull'],
+    rollModifier: 20,
+    interactions: [
+      // Two steps, not one: the first half-damage step only marks the die
+      // as half-damaged (that IS the rule — see applyHalfDamage), so a
+      // single step would leave size and status untouched and prove nothing.
+      { trigger: 'hit', text: '', automations: [{ type: 'opponent_stat_step', amount: 2, slot: 'Left Hand' }] },
+    ],
+  });
+  await seatPair(pairIndex, attacker, defender);
+  await startPairDeclaration(mockIo, pairIndex);
+  await declareMove({ characterId: attacker, moveId: jab, placementTic: 0, startupTics: 1 });
+
+  const before = await one("SELECT current_size, status FROM dice WHERE character_id = ? AND slot_name = 'Left Hand'", [defender]);
+  await resolvePair(pairIndex);
+  const after = await one("SELECT current_size, status FROM dice WHERE character_id = ? AND slot_name = 'Left Hand'", [defender]);
+  assert.notDeepEqual(
+    { size: before.current_size, status: before.status },
+    { size: after.current_size, status: after.status },
+    'the named Stat should have stepped'
+  );
+
+  const events = await all('SELECT type, payload FROM round_events WHERE pair_index = ? ORDER BY seq', [pairIndex]);
+  // Reported through damage_applied so the cutscene animates it on the
+  // fighter card exactly like ordinary damage, tagged with its source.
+  const fromAutomation = events
+    .filter((e) => e.type === 'damage_applied')
+    .map((e) => JSON.parse(e.payload))
+    .filter((p) => p.source === 'automation');
+  assert.equal(fromAutomation.length, 1);
+  assert.equal(fromAutomation[0].slotName, 'Left Hand');
 });
