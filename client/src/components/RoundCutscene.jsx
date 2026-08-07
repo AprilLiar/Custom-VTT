@@ -47,6 +47,9 @@ const SECONDS_PER_EVENT = 0.55;
 // (eventNarration) carries the meaning, so this is a scanning aid, not the
 // explanation.
 const EVENT_LABEL = {
+  roster: 'Fighters',
+  stamina_changed: 'Stamina',
+  windup: 'Winding up',
   reveal: 'Reveal',
   carryover: 'Carried over',
   roll: 'Roll',
@@ -96,6 +99,10 @@ function eventNarration(ev, startTic) {
       return `${who} reveals ${p.moveName ?? 'a move'}${
         p.isDefensive ? ` (${p.defenseKind === 'dodge' ? 'a Dodge' : 'a Block'})` : ''
       }.`;
+    case 'roster':
+      return `${(p.participants ?? []).map((f) => f.name).join(' vs ')} — Round ${ev.roundNumber ?? ''}.`.replace(' — Round .', '.');
+    case 'windup':
+      return `${who} starts winding something up — it comes out on Tic ${p.revealTic - startTic + 1}.`;
     case 'carryover':
       return `${who} is still in ${p.moveName ?? 'a move'} from last round.`;
     case 'roll': {
@@ -161,8 +168,18 @@ function eventNarration(ev, startTic) {
           : ' past the extended Recovery';
       return `Postponed ${what}${where}.`;
     }
-    case 'automation_fired':
-      return `The move's On ${p.trigger === 'defense_success' ? 'Successful Defense' : p.trigger === 'defense_failure' ? 'Failed Defense' : (p.trigger ?? '')} effect fired.`;
+    case 'automation_fired': {
+      // The server sends already-rendered phrases and the trigger's own
+      // display label, so this line and the Chat Log's can never describe
+      // the same effect differently. The old version named neither the
+      // move nor what actually happened — "an effect fired" is not a thing
+      // anyone can act on.
+      const head = `${p.moveName ?? 'A move'} — ${p.triggerLabel ?? p.trigger ?? 'effect'}`;
+      const body = [p.text, (p.effects ?? []).join(', ')].filter(Boolean).join(' — ');
+      return body ? `${head}: ${body}` : `${head} fired.`;
+    }
+    case 'stamina_changed':
+      return `${who} ${p.delta < 0 ? 'spends' : 'recovers'} ${Math.abs(p.delta ?? 0)} Stamina — now ${p.currentStamina}/${p.maxStamina}.`;
     case 'stamina_regen':
       return `Idle Tic — ${who ?? 'they'} recover ${p.amount ?? 1} Stamina.`;
     case 'round_complete':
@@ -240,6 +257,9 @@ function beatEffects(events, visibleCount) {
   switch (ev.type) {
     case 'reveal':
       out.revealedMoveId = p.declaredMoveId ?? null;
+      // The bar was already standing there as a `???` wind-up; the real move
+      // drops onto it. Same beat as the Stamina flash above it.
+      if (p.declaredMoveId != null) out.byMoveId[p.declaredMoveId] = 'drop';
       break;
     case 'roll':
       if (p.declaredMoveId == null) break;
@@ -350,32 +370,101 @@ function ImpactBurst({ burst }) {
   );
 }
 
+// The fighters in this round and the state of their dice at the playhead.
+// Built from the same event stream everything else is (§0) — the `roster`
+// event captures them as the round opened, and every damage_applied since
+// steps the die it hit. That is what makes a replay show the same fight
+// deteriorating in the same order, years after the real dice moved on.
+const DIE_ORDER = ['Skull', 'Brain', 'Left Hand', 'Right Hand', 'Body', 'Stamina', 'Left Leg', 'Right Leg'];
+
+function fightersFrom(events, upTo) {
+  let roster = null;
+  const damage = new Map(); // `${characterId}:${slotName}` -> latest applied state
+  const stamina = new Map(); // characterId -> current stamina at the playhead
+  let lastHit = null;
+  for (const ev of events.slice(0, upTo)) {
+    if (ev.type === 'roster') {
+      roster = ev.payload?.participants ?? [];
+      continue;
+    }
+    // Stamina moves during a round — automations spend it, an Interrupt
+    // refunds half, an idle Tic gives one back. Both events carry the
+    // resulting value rather than only a delta, so the card lands on the
+    // real number even if a clamp at 0/Max ate part of the change.
+    if (ev.type === 'stamina_changed' || ev.type === 'stamina_regen') {
+      const p = ev.payload ?? {};
+      if (p.characterId != null && p.currentStamina != null) stamina.set(p.characterId, p.currentStamina);
+      continue;
+    }
+    if (ev.type !== 'damage_applied') continue;
+    const p = ev.payload ?? {};
+    if (p.slotName == null || p.targetCharacterId == null) continue;
+    damage.set(`${p.targetCharacterId}:${p.slotName}`, {
+      size: p.sizeAfter,
+      bonus: p.bonusAfter,
+      status: p.statusAfter,
+    });
+    lastHit = { characterId: p.targetCharacterId, slotName: p.slotName, seq: ev.seq, steps: p.steps ?? 0 };
+  }
+  if (!roster) return { fighters: [], lastHit: null };
+  const fighters = roster.map((f) => ({
+    ...f,
+    currentStamina: stamina.get(f.characterId) ?? f.currentStamina,
+    dice: [...(f.dice ?? [])]
+      .map((d) => ({ ...d, ...(damage.get(`${f.characterId}:${d.slotName}`) ?? {}) }))
+      .sort((a, b) => DIE_ORDER.indexOf(a.slotName) - DIE_ORDER.indexOf(b.slotName)),
+  }));
+  return { fighters, lastHit };
+}
+
 function footprintsFrom(events, upTo) {
   const out = [];
-  const byDeclaredMoveId = new Map();
+  // A move gets ONE bar for its whole life. It enters as an anonymous
+  // wind-up, becomes itself at its reveal, and may end struck out — each of
+  // those replaces the bar in place rather than adding another beside it,
+  // which is what keeps the row from multiplying and what makes the reveal
+  // read as the same object filling in.
+  const slotOf = new Map();
+  const put = (fp) => {
+    const id = fp.declaredMoveId;
+    if (id != null && slotOf.has(id)) {
+      out[slotOf.get(id)] = fp;
+      return;
+    }
+    if (id != null) slotOf.set(id, out.length);
+    out.push(fp);
+  };
   for (const ev of events.slice(0, upTo)) {
+    // A declared move that hasn't revealed yet. The payload has no move
+    // identity in it at all (see the server's emitWindups), and no Active or
+    // Recovery lengths — so the footprint is closed off at the reveal Tic,
+    // which makes phaseAt draw exactly the Startup run and nothing beyond
+    // it. No special-casing in the renderer: it's an ordinary footprint that
+    // happens to end where the unknown begins.
+    if (ev.type === 'windup') {
+      const p = ev.payload;
+      put({ ...p, windup: true, activeEndTic: p.revealTic, recoveryEndTic: p.revealTic });
+      continue;
+    }
     // A carryover carries the identical footprint payload a reveal does —
     // it IS a move on this round's board, just one that started earlier.
     if (ev.type === 'reveal' || ev.type === 'carryover') {
-      const fp = { ...ev.payload };
-      out.push(fp);
-      if (fp.declaredMoveId != null) byDeclaredMoveId.set(fp.declaredMoveId, fp);
+      put({ ...ev.payload });
       continue;
     }
     // An Interrupted move is the one thing on the board that never revealed:
-    // it dies in Startup, so no reveal event ever described it and it had no
-    // bar to lose. Without this it left no trace at all — the log announced
-    // an Interruption of something the viewer had never seen. It gets a bar
-    // from the moment it's struck out, greyed and crossed through (below),
-    // drawn on exactly the Tics it had reserved. Only when the interrupt
-    // actually landed: a survived attempt leaves the move secret and intact,
-    // and striking out a move that is still coming would be a lie.
+    // it dies in Startup, so no reveal event ever described it. Its wind-up
+    // bar is already standing; this replaces it with the full footprint it
+    // had reserved, struck through (below). Only when the interrupt actually
+    // landed: a survived attempt leaves the move secret and intact, and
+    // striking out a move that is still coming would be a lie.
     if (ev.type === 'interrupt_resolved' && ev.payload?.interrupted) {
-      out.push({ ...ev.payload, interrupted: true });
+      put({ ...ev.payload, interrupted: true });
       continue;
     }
     if (ev.type !== 'recovery_extended') continue;
-    const fp = byDeclaredMoveId.get(ev.payload?.declaredMoveId);
+    const slot = slotOf.get(ev.payload?.declaredMoveId);
+    const fp = slot == null ? null : out[slot];
     if (!fp) continue;
     fp.recoveryEndTic = ev.payload.recoveryEndTic;
     // Earliest wins if a move is extended twice — the whole run from the
@@ -444,8 +533,21 @@ const HEAVY_HIT_VARIANT = {
   transition: { duration: 0.6 },
 };
 
+// The reveal itself: the move drops onto the row it had been holding open
+// as an anonymous wind-up, lands hard, and settles. Deliberately vertical
+// and deliberately unlike `attack` (which commits sideways toward the
+// opponent) — this is the move arriving, not the move doing anything yet.
+const DROP_VARIANT = {
+  y: [-34, 0, -5, 0],
+  scaleY: [1.18, 0.82, 1.05, 1],
+  opacity: [0, 1, 1, 1],
+  transition: { duration: 0.44, times: [0, 0.45, 0.72, 1], ease: 'easeIn' },
+};
+
 function barAnimation(effect, toward) {
   switch (effect) {
+    case 'drop':
+      return DROP_VARIANT;
     case 'attack':
       return attackVariant(toward);
     case 'block':
@@ -463,6 +565,74 @@ function barAnimation(effect, toward) {
   }
 }
 
+// One fighter, with every Stat they have. The theater window used to be a
+// small board over a short log and then a great deal of nothing; a hit
+// landing "on Body" meant nothing without a Body to watch it land on. The
+// die that just took damage flashes red and its value counts down to what
+// it stepped to, so damage is something you SEE happen to a person rather
+// than a sentence in a feed.
+function StatPip({ die, hit, beat }) {
+  const reduceMotion = useReducedMotion();
+  const out = die.status === 'incapacitated';
+  const controls = useAnimation();
+  useEffect(() => {
+    if (!hit || reduceMotion) return;
+    controls.set({ scale: 1 });
+    controls.start({
+      scale: [1, 1.45, 0.92, 1],
+      transition: { duration: 0.6, times: [0, 0.2, 0.6, 1], ease: 'easeOut' },
+    });
+  }, [hit, beat, controls, reduceMotion]);
+  return (
+    <motion.div
+      animate={controls}
+      title={`${die.slotName} — d${die.size}${die.bonus ? `+${die.bonus}` : ''}${out ? ' (out)' : ''}`}
+      className={`flex min-w-0 flex-col items-center gap-0.5 border px-1 py-0.5 ${
+        hit
+          ? 'border-rose-400 bg-rose-900/50 shadow-[0_0_12px_2px_rgba(251,113,133,0.6)]'
+          : out
+            ? 'border-zinc-800 bg-zinc-900/60'
+            : 'border-zinc-700 bg-zinc-900'
+      }`}
+    >
+      <span className={`truncate font-display text-[9px] uppercase tracking-wide md:text-[10px] ${
+        hit ? 'text-rose-200' : out ? 'text-zinc-600' : 'text-zinc-500'
+      }`}>
+        {die.slotName}
+      </span>
+      <span className={`font-display text-xs font-bold md:text-sm ${
+        out ? 'text-zinc-600 line-through' : hit ? 'text-rose-200' : 'text-zinc-200'
+      }`}>
+        {out ? 'OUT' : `d${die.size}${die.bonus ? `+${die.bonus}` : ''}`}
+      </span>
+    </motion.div>
+  );
+}
+
+function FighterCard({ fighter, lastHit, beat }) {
+  const hitSlot = lastHit?.characterId === fighter.characterId ? lastHit.slotName : null;
+  return (
+    <div className="panel-cut-sm min-w-0 flex-1 border border-zinc-800 bg-zinc-950/70 p-2">
+      <div className="mb-1.5 flex items-center gap-2">
+        <span className="flex h-7 w-7 shrink-0 items-center justify-center border border-zinc-700 bg-zinc-800 font-display text-sm text-zinc-300">
+          {(fighter.name ?? '?').charAt(0).toUpperCase()}
+        </span>
+        <span className="min-w-0 flex-1 truncate font-display text-sm uppercase tracking-wide text-zinc-200 md:text-base">
+          {fighter.name}
+        </span>
+        <span className="shrink-0 font-display text-xs text-amber-300 md:text-sm">
+          {fighter.currentStamina}/{fighter.maxStamina} ST
+        </span>
+      </div>
+      <div className="grid grid-cols-4 gap-1">
+        {fighter.dice.map((d) => (
+          <StatPip key={d.slotName} die={d} hit={hitSlot === d.slotName} beat={beat} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function MoveBar({ fp, ticks, startTic, effect, beat, staminaFlash }) {
   // NPCs are drawn below the strip, so their "forward" is up the screen.
   const toward = fp.characterType === 'npc' ? -1 : 1;
@@ -477,6 +647,11 @@ function MoveBar({ fp, ticks, startTic, effect, beat, staminaFlash }) {
   // is the entire point of drawing it — but as a wreck: no phase colours, no
   // animation, struck through, and dimmed below every live bar around it.
   const dead = Boolean(fp.interrupted);
+  // Declared, winding up, not yet revealed. Its footprint is closed off at
+  // the reveal Tic (see footprintsFrom), so the row shows the Startup run
+  // and stops — the shape of the unknown is exactly as much as anyone is
+  // entitled to see before the move comes out.
+  const windup = Boolean(fp.windup);
 
   // Driven off `beat` (the seq of the event that caused this effect), not
   // off `effect` alone: two attacks in a row are the same target values, and
@@ -542,7 +717,11 @@ function MoveBar({ fp, ticks, startTic, effect, beat, staminaFlash }) {
                     ? `${fp.characterName} — Interrupted\nTic ${
                         tic - startTic + 1
                       }: ${PHASE_LABEL[phase]}, never happened`
-                    : `${fp.characterName} — ${fp.moveName}\nTic ${tic - startTic + 1}: ${
+                    : windup
+                      ? `${fp.characterName} — winding something up\nTic ${
+                          tic - startTic + 1
+                        }: ${PHASE_LABEL[phase]}, reveals on Tic ${fp.revealTic - startTic + 1}`
+                      : `${fp.characterName} — ${fp.moveName}\nTic ${tic - startTic + 1}: ${
                         extended ? `${defenseLabel} extension` : PHASE_LABEL[phase]
                       }${phase === 'defense' && !extended ? ` (${defenseLabel} window)` : ''}`
                   : undefined
@@ -588,10 +767,14 @@ function MoveBar({ fp, ticks, startTic, effect, beat, staminaFlash }) {
             identity stays the owner's (see Combat Timing's secrecy rule). */}
         <span
           className={`block truncate font-display text-xs md:text-base ${
-            dead ? 'text-zinc-500 line-through' : 'text-zinc-300'
+            dead
+              ? 'text-zinc-500 line-through'
+              : windup
+                ? 'tracking-widest text-zinc-500'
+                : 'text-zinc-300'
           }`}
         >
-          {dead ? 'Interrupted' : fp.moveName}
+          {dead ? 'Interrupted' : windup ? '???' : fp.moveName}
         </span>
         <AnimatePresence>
           {staminaFlash && fp.staminaCost > 0 && (
@@ -719,6 +902,7 @@ export default function RoundCutscene({
 
   const shown = events.slice(0, visibleCount);
   const footprints = footprintsFrom(events, visibleCount);
+  const { fighters, lastHit } = fightersFrom(events, visibleCount);
   const fx = beatEffects(events, visibleCount);
   // A move's bar reacts to what it did (byMoveId) or to its owner being hit
   // (byCharacterId) — the latter is how a character with no move of their
@@ -821,6 +1005,17 @@ export default function RoundCutscene({
           ))}
         </div>
       </div>
+
+      {/* The fighters. Below the board and above the log, because that is
+          the reading order of a round: this is who is fighting, this is
+          what they did, this is what it did to them. */}
+      {fighters.length > 0 && (
+        <div className="mt-3 flex shrink-0 flex-wrap gap-2">
+          {fighters.map((f) => (
+            <FighterCard key={f.characterId} fighter={f} lastHit={lastHit} beat={fx.seq} />
+          ))}
+        </div>
+      )}
 
       {/* The event feed — every element is a real DOM node with its own
           payload behind it (hover for detail), not a rendered video frame. */}

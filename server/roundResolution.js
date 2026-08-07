@@ -44,7 +44,7 @@
 // if either one changes.
 
 import { all, one, run } from './db.js';
-import { rollDie, applyHalfDamage, clamp } from './gameLogic.js';
+import { rollDie, applyHalfDamage, clamp, stepDie } from './gameLogic.js';
 import {
   parseConcreteAttackTargets,
   expandAttackTargets,
@@ -106,7 +106,12 @@ async function postSystemMessage(io, text) {
   });
 }
 
-async function adjustStamina(io, characterId, delta) {
+// `emitEvent`/`tic` are optional and supplied by in-engine callers, so a
+// Stamina change during resolution reaches the cutscene's fighter cards as
+// well as the live Arena. Without it the cards showed the value frozen at
+// the round's start while the log said Stamina had moved — a number that
+// contradicts the sentence above it is worse than no number.
+async function adjustStamina(io, characterId, delta, { emitEvent = null, tic = null, reason = null } = {}) {
   const character = await getCharacter(characterId);
   if (!character) return null;
   const change = Math.trunc(Number(delta) || 0);
@@ -114,6 +119,18 @@ async function adjustStamina(io, characterId, delta) {
   const currentStamina = clamp(character.current_stamina + change, 0, character.max_stamina);
   await run('UPDATE characters SET current_stamina = ? WHERE id = ?', [currentStamina, character.id]);
   io.emit('character:updated', { ...character, current_stamina: currentStamina });
+  if (emitEvent && tic != null) {
+    await emitEvent(tic, 'stamina_changed', {
+      characterId: character.id,
+      characterName: character.name,
+      // The applied delta, not the requested one — clamping at 0 and at Max
+      // means "spend 3" can really be "spend 1".
+      delta: currentStamina - character.current_stamina,
+      currentStamina,
+      maxStamina: character.max_stamina,
+      reason,
+    });
+  }
   return currentStamina;
 }
 
@@ -174,6 +191,14 @@ async function applyMoveInteractions(io, {
   selfDeclaredMoveId,
   opponentCharacterId = null,
   opponentDeclaredMoveId = null,
+  // Supplied by every in-engine call site so the effect reaches the
+  // cutscene as well as the Chat Log. Automations always DID fire
+  // mechanically — Stamina moved, Recovery extended — but they emitted no
+  // round_event, so from inside the cutscene they were invisible and the
+  // whole feature read as "not automated". Optional only because the
+  // signature is shared with the pre-overhaul copy in server/index.js.
+  emitEvent = null,
+  tic = null,
 }) {
   const [move, row] = await Promise.all([
     one('SELECT id, name FROM moves WHERE id = ?', [moveId]),
@@ -242,13 +267,36 @@ async function applyMoveInteractions(io, {
         );
         break;
       }
+      case 'self_stat_step':
+      case 'opponent_stat_step': {
+        const isSelf = automation.type === 'self_stat_step';
+        const who = isSelf ? selfCharacter : opponentCharacter;
+        const whoId = isSelf ? selfCharacterId : opponentCharacterId;
+        if (!who || whoId == null) break;
+        const stepped = await stepStat(io, {
+          characterId: whoId,
+          slotName: automation.slot,
+          steps: amount,
+          emitEvent,
+          tic,
+          characterName: who.name,
+        });
+        effects.push(
+          stepped
+            ? `${automation.slot} ${amount > 0 ? 'down' : 'up'} ${Math.abs(amount)} ${
+                Math.abs(amount) === 1 ? 'step' : 'steps'
+              } (${who.name})`
+            : `(${who.name} has no ${automation.slot} to step)`
+        );
+        break;
+      }
       case 'self_stamina':
-        await adjustStamina(io, selfCharacterId, -amount);
+        await adjustStamina(io, selfCharacterId, -amount, { emitEvent, tic, reason: 'automation' });
         effects.push(`−${amount} Stamina (${selfCharacter.name})`);
         break;
       case 'opponent_stamina':
         if (!opponentCharacter) break;
-        await adjustStamina(io, opponentCharacterId, -amount);
+        await adjustStamina(io, opponentCharacterId, -amount, { emitEvent, tic, reason: 'automation' });
         effects.push(`−${amount} Stamina → ${opponentCharacter.name}`);
         break;
       default:
@@ -259,6 +307,23 @@ async function applyMoveInteractions(io, {
   if (row.text || effects.length) {
     const parts = [row.text, effects.join(', ')].filter(Boolean);
     await postSystemMessage(io, `${move.name} — ${TRIGGER_LABELS[trigger] ?? trigger}: ${parts.join(' — ')}`);
+    if (emitEvent && tic != null) {
+      await emitEvent(tic, 'automation_fired', {
+        moveId,
+        moveName: move.name,
+        trigger,
+        triggerLabel: TRIGGER_LABELS[trigger] ?? trigger,
+        characterId: selfCharacterId,
+        characterName: selfCharacter.name,
+        declaredMoveId: selfDeclaredMoveId ?? null,
+        text: row.text || null,
+        // Already-rendered phrases ("−2 Stamina (Striker)"), not raw
+        // automation rows: the wording is decided here, next to the code
+        // that actually applied each one, so the cutscene and the Chat Log
+        // can never describe the same effect differently.
+        effects,
+      });
+    }
   }
 }
 
@@ -293,7 +358,66 @@ async function applyAutoDamage(io, { targetCharacterId, effectiveAttackTargets, 
       `${character.name} took ${steps * 0.5} damage to ${die.slot_name}${attackerName ? ` from ${attackerName}` : ''}.`
     );
   }
-  return { slotName: die.slot_name, character };
+  // Before/after are carried out so the cutscene can animate the die
+  // actually stepping down on the target's card, and so a replay watched
+  // later shows the same step — by then the die is at a completely
+  // different size (§0's self-contained rule).
+  return {
+    slotName: die.slot_name,
+    character,
+    sizeBefore: die.current_size,
+    bonusBefore: die.bonus,
+    statusBefore: die.status,
+    sizeAfter: next.current_size,
+    bonusAfter: next.bonus,
+    statusAfter: next.status,
+  };
+}
+
+// Steps one named Stat by `steps` half-damage steps (negative steps it back
+// up). Shares applyAutoDamage's machinery, but targets a Stat the move's
+// author named rather than one the Attack Target rules picked — this is
+// what lets an authored On Hit say "and it wrecks their Right Hand" without
+// a human applying it afterwards. Emits the same damage_applied shape so
+// the cutscene's fighter cards animate it identically.
+async function stepStat(io, { characterId, slotName, steps, emitEvent, tic, characterName }) {
+  const dice = await getDice(characterId);
+  const die = dice.find((d) => d.slot_name === slotName);
+  if (!die) return false;
+  let next = {
+    current_size: die.current_size,
+    bonus: die.bonus,
+    status: die.status,
+    half_damage: Boolean(die.half_damage),
+  };
+  for (let i = 0; i < Math.abs(steps); i++) {
+    next = steps > 0 ? applyHalfDamage(next) : stepDie({ ...next, status: next.status }, 'up');
+  }
+  await run('UPDATE dice SET current_size = ?, bonus = ?, status = ?, half_damage = ? WHERE id = ?', [
+    next.current_size,
+    next.bonus,
+    next.status,
+    next.half_damage ? 1 : 0,
+    die.id,
+  ]);
+  io.emit('die:updated', diePayload({ ...die, ...next, half_damage: next.half_damage ? 1 : 0 }));
+  if (emitEvent && tic != null) {
+    await emitEvent(tic, 'damage_applied', {
+      declaredMoveId: null,
+      targetCharacterId: characterId,
+      targetCharacterName: characterName ?? null,
+      attackerCharacterName: null,
+      slotName,
+      steps,
+      sizeBefore: die.current_size,
+      bonusBefore: die.bonus,
+      sizeAfter: next.current_size,
+      bonusAfter: next.bonus,
+      statusAfter: next.status,
+      source: 'automation',
+    });
+  }
+  return true;
 }
 
 // Decision #4/#7/#8 — walks the attacker's own Active window for the first
@@ -405,7 +529,7 @@ async function checkInterrupt(io, { targetCharacterId, attackerRevealTic, attack
 
   await run('DELETE FROM declared_moves WHERE id = ?', [startupDM.id]);
   const refund = startupDM.stamina_committed ? Math.trunc(startupDM.stamina_cost / 2) : 0;
-  if (refund) await adjustStamina(io, startupDM.character_id, refund);
+  if (refund) await adjustStamina(io, startupDM.character_id, refund, { emitEvent, tic, reason: 'interrupt-refund' });
   await postSystemMessage(
     io,
     refund
@@ -444,6 +568,11 @@ async function runInterruptAndDamage(io, {
     attackerCharacterName,
     slotName: applied?.slotName ?? null,
     steps,
+    sizeBefore: applied?.sizeBefore ?? null,
+    bonusBefore: applied?.bonusBefore ?? null,
+    sizeAfter: applied?.sizeAfter ?? null,
+    bonusAfter: applied?.bonusAfter ?? null,
+    statusAfter: applied?.statusAfter ?? null,
   });
   const dm = await one('SELECT interactions_resolved FROM declared_moves WHERE id = ?', [declaredMoveId]);
   if (dm && !dm.interactions_resolved) {
@@ -451,6 +580,8 @@ async function runInterruptAndDamage(io, {
     await applyMoveInteractions(io, {
       moveId,
       trigger: 'hit',
+      emitEvent,
+      tic,
       selfCharacterId: attackerCharacterId,
       selfDeclaredMoveId: declaredMoveId,
       opponentCharacterId: targetCharacterId,
@@ -491,6 +622,8 @@ async function applyFailedDefense(io, {
   await applyMoveInteractions(io, {
     moveId: defenderDM.move_id,
     trigger: 'defense_failure',
+    emitEvent,
+    tic,
     selfCharacterId: defenderDM.character_id,
     selfDeclaredMoveId: defenderDM.id,
     opponentCharacterId: attackerCharacterId,
@@ -586,6 +719,8 @@ async function applySuccessfulDodge(io, {
   await applyMoveInteractions(io, {
     moveId: defenderDM.move_id,
     trigger: 'defense_success',
+    emitEvent,
+    tic,
     selfCharacterId: defenderDM.character_id,
     selfDeclaredMoveId: defenderDM.id,
     opponentCharacterId: attackerCharacterId,
@@ -603,6 +738,8 @@ async function applySuccessfulDodge(io, {
     await applyMoveInteractions(io, {
       moveId: attackerMoveId,
       trigger: resolution.outcome === 'full' ? 'miss' : 'block',
+      emitEvent,
+      tic,
       selfCharacterId: attackerCharacterId,
       selfDeclaredMoveId: attackerDeclaredMoveId,
       opponentCharacterId: defenderDM.character_id,
@@ -726,6 +863,22 @@ async function resolveAttack(io, { row, pairIndex, tic, emitEvent }) {
       characterName: row.characterName,
       moveName: row.moveName,
       total,
+    });
+    // On Miss fires here too (decided, revised). It used to fire ONLY on a
+    // Full Dodge, which made it almost unreachable: most fights never
+    // produce one, so an authored On Miss effect could sit unused for
+    // sessions. A sub-5 roll is an attack that connected with nothing, and
+    // that is what a Miss means at the table. A Full BLOCK still fires On
+    // Block rather than On Miss — something was there to stop it, which is
+    // a different event from swinging at air.
+    await run('UPDATE declared_moves SET interactions_resolved = 1 WHERE id = ?', [row.declaredMoveId]);
+    await applyMoveInteractions(io, {
+      moveId: row.moveId,
+      trigger: 'miss',
+      emitEvent,
+      tic,
+      selfCharacterId: row.characterId,
+      selfDeclaredMoveId: row.declaredMoveId,
     });
     return;
   }
@@ -1008,6 +1161,8 @@ async function resolveAttack(io, { row, pairIndex, tic, emitEvent }) {
   await applyMoveInteractions(io, {
     moveId: defenderDM.move_id,
     trigger: 'defense_success',
+    emitEvent,
+    tic,
     selfCharacterId: defenderDM.character_id,
     selfDeclaredMoveId: defenderDM.id,
     opponentCharacterId: row.characterId,
@@ -1019,6 +1174,8 @@ async function resolveAttack(io, { row, pairIndex, tic, emitEvent }) {
     await applyMoveInteractions(io, {
       moveId: row.moveId,
       trigger: 'block',
+      emitEvent,
+      tic,
       selfCharacterId: row.characterId,
       selfDeclaredMoveId: row.declaredMoveId,
       opponentCharacterId: defenderDM.character_id,
@@ -1139,7 +1296,66 @@ async function resolveAttack(io, { row, pairIndex, tic, emitEvent }) {
 // interactions_resolved = 0) covers exactly that — see resolveAttack's own
 // interactions_resolved bookkeeping for why every one of its return paths
 // leaves that flag in a state this query can trust.
-async function processTic(io, { pairIndex, tic, emitEvent }) {
+// A declared move that hasn't reached its reveal Tic yet is already on the
+// board — the wind-up is happening, everyone at the table can see the
+// fighter loading something up — but until this event existed the cutscene
+// drew nothing at all for it, so a move simply materialised out of empty
+// space at its reveal Tic with no build-up.
+//
+// The payload deliberately carries ONLY the character and two Tics. No
+// moveId, no name, and no Active/Recovery lengths: the client renders the
+// Startup window and a `???`, and there is nothing else in the stored row
+// to leak. That is stronger than sending the whole footprint and asking the
+// client to hide most of it, which is what a replay — public to anyone,
+// decision #11 — would otherwise be carrying around.
+//
+// `alreadyEmitted` is the idempotency guard. `processTic` is re-entrant by
+// design: a pause on one move's defence lands mid-Tic and the resume
+// re-enters the same Tic, which would otherwise post a second wind-up for
+// every other move that started on it.
+async function emitWindups(emitEvent, anchorTic, rows, alreadyEmitted) {
+  for (const r of rows) {
+    if (alreadyEmitted.has(r.id)) continue;
+    alreadyEmitted.add(r.id);
+    await emitEvent(anchorTic, 'windup', {
+      declaredMoveId: r.id,
+      characterId: r.character_id,
+      characterName: r.character_name,
+      characterType: r.character_type,
+      side: r.side,
+      placementTic: r.placement_tic,
+      revealTic: r.reveal_tic,
+    });
+  }
+}
+
+// Every declared move this resolution has already announced as a wind-up.
+async function emittedWindupIds(resolutionId) {
+  const rows = await all("SELECT payload FROM round_events WHERE resolution_id = ? AND type = 'windup'", [
+    resolutionId,
+  ]);
+  return new Set(rows.map((r) => JSON.parse(r.payload).declaredMoveId));
+}
+
+async function processTic(io, { pairIndex, tic, emitEvent, resolutionId }) {
+  // Anyone whose wind-up starts on this exact Tic. Emitted before the
+  // reveals below so a 0-Startup move — placed and revealed on the same
+  // Tic — is filtered out by `reveal_tic > tic` rather than flashing a
+  // `???` for one beat and immediately replacing it.
+  const starting = await all(
+    `SELECT dm.id, dm.character_id, dm.placement_tic, dm.reveal_tic,
+            ch.name AS character_name, ch.character_type, cp.side AS side
+     FROM declared_moves dm
+     JOIN characters ch ON ch.id = dm.character_id
+     JOIN combat_participants cp ON cp.character_id = dm.character_id
+     WHERE cp.pair_index = ? AND dm.reveal_posted = 0
+       AND dm.placement_tic = ? AND dm.reveal_tic > ?`,
+    [pairIndex, tic, tic]
+  );
+  if (starting.length) {
+    await emitWindups(emitEvent, tic, starting, await emittedWindupIds(resolutionId));
+  }
+
   const toReveal = await all(
     `SELECT dm.id FROM declared_moves dm
      JOIN combat_participants cp ON cp.character_id = dm.character_id
@@ -1242,14 +1458,14 @@ async function processTic(io, { pairIndex, tic, emitEvent }) {
     }
   }
 
-  await applyIdleTicStaminaRegen(io, pairIndex, tic);
+  await applyIdleTicStaminaRegen(io, pairIndex, tic, emitEvent);
   return { paused: false };
 }
 
 // Mirrors server/index.js's applyIdleTicStaminaRegen (see that function's
 // own comment for the full Idle-Tic Stamina Regen rule) — duplicated here
 // for the same import-safety reason as this module's other primitives.
-async function applyIdleTicStaminaRegen(io, pairIndex, tic) {
+async function applyIdleTicStaminaRegen(io, pairIndex, tic, emitEvent = null) {
   const participants = await all('SELECT * FROM combat_participants WHERE pair_index = ?', [pairIndex]);
   if (!participants.length) return;
   const charIds = participants.map((p) => p.character_id);
@@ -1302,6 +1518,19 @@ async function applyIdleTicStaminaRegen(io, pairIndex, tic) {
       ]),
     ]);
     io.emit('character:updated', { ...character, current_stamina: newStamina });
+    // Idle regen was the last Stamina movement with no trace in the round
+    // log at all — the cutscene's fighter cards would drift below the real
+    // value over a quiet round. `stamina_regen` already had a label and a
+    // narration client-side waiting for an emitter.
+    if (emitEvent) {
+      await emitEvent(tic, 'stamina_regen', {
+        characterId: character.id,
+        characterName: character.name,
+        amount: newStamina - character.current_stamina,
+        currentStamina: newStamina,
+        maxStamina: character.max_stamina,
+      });
+    }
   }
 }
 
@@ -1672,12 +1901,69 @@ async function advancePairResolution(pairIndex, io) {
         defenseFramePositions: JSON.parse(r.defense_frame_positions ?? '[]'),
       });
     }
+
+    // The fighters themselves, so the cutscene can show who is in this
+    // round and what shape they are in — the theater window had the board
+    // and the log and a great deal of nothing else, and a hit landing on
+    // "Body" meant nothing without a Body to watch it land on.
+    //
+    // Self-contained per §0: dice sizes and Stamina are captured as they
+    // stand at the round's start, because by the time a replay is watched
+    // they describe a completely different fight. Portraits are
+    // deliberately NOT included — they are base64 blobs and this row is
+    // stored forever; the cards use the same initial-letter placeholder
+    // the rest of the app already falls back to.
+    const seated = await all(
+      `SELECT cp.character_id AS characterId, cp.side AS side,
+              ch.name AS name, ch.character_type AS characterType,
+              ch.current_stamina AS currentStamina, ch.max_stamina AS maxStamina
+       FROM combat_participants cp JOIN characters ch ON ch.id = cp.character_id
+       WHERE cp.pair_index = ? ORDER BY cp.side, ch.id`,
+      [pairIndex]
+    );
+    if (seated.length) {
+      const diceRows = await all(
+        `SELECT d.character_id AS characterId, d.slot_name AS slotName, d.current_size AS size,
+                d.bonus AS bonus, d.status AS status
+         FROM dice d JOIN combat_participants cp ON cp.character_id = d.character_id
+         WHERE cp.pair_index = ?`,
+        [pairIndex]
+      );
+      const byChar = new Map();
+      for (const d of diceRows) {
+        if (!byChar.has(d.characterId)) byChar.set(d.characterId, []);
+        byChar.get(d.characterId).push({ slotName: d.slotName, size: d.size, bonus: d.bonus, status: d.status });
+      }
+      await emitEvent(pair.round_start_tic, 'roster', {
+        participants: seated.map((p) => ({ ...p, dice: byChar.get(p.characterId) ?? [] })),
+      });
+    }
+
+    // The same problem one step earlier in a move's life: a long Startup
+    // declared last round can still be winding up when this round opens.
+    // Its placement Tic belongs to the previous round, so the Tic loop
+    // below never reaches it and no `windup` would fire — the fighter would
+    // stand there with an empty row until the move suddenly revealed.
+    // Anchored to the round's own first Tic, alongside the carryovers.
+    const stillWinding = await all(
+      `SELECT dm.id, dm.character_id, dm.placement_tic, dm.reveal_tic,
+              ch.name AS character_name, ch.character_type, cp.side AS side
+       FROM declared_moves dm
+       JOIN characters ch ON ch.id = dm.character_id
+       JOIN combat_participants cp ON cp.character_id = dm.character_id
+       WHERE cp.pair_index = ? AND dm.reveal_posted = 0
+         AND dm.placement_tic < ? AND dm.reveal_tic >= ?`,
+      [pairIndex, pair.round_start_tic, pair.round_start_tic]
+    );
+    if (stillWinding.length) {
+      await emitWindups(emitEvent, pair.round_start_tic, stillWinding, await emittedWindupIds(resolution.id));
+    }
   }
 
   let currentTic = resolution.resolved_through_tic + 1;
 
   while (currentTic < roundEndTicExclusive) {
-    const result = await processTic(io, { pairIndex, tic: currentTic, emitEvent });
+    const result = await processTic(io, { pairIndex, tic: currentTic, emitEvent, resolutionId: resolution.id });
     // A genuine pause (Dodge/conflict) stops here without marking this Tic
     // done — status/pending_*_json were already persisted by resolveAttack
     // itself before it returned the pause signal (see that function). The

@@ -1,5 +1,11 @@
 import { useRef, useState } from 'react';
-import { AUTOMATION_OPTIONS, TRIGGER_LABELS } from '../lib/moveDisplay.js';
+import {
+  AUTOMATION_OPTIONS,
+  AUTOMATION_STAT_SLOTS,
+  SIGNED_AUTOMATION_TYPES,
+  STAT_STEP_AUTOMATION_TYPES,
+  TRIGGER_LABELS,
+} from '../lib/moveDisplay.js';
 import { iconFor } from '../lib/styleIcons.js';
 import { fileToSmallImage } from '../lib/image.js';
 import {
@@ -33,7 +39,16 @@ const DEFENSE_TRIGGERS = ['defense_success', 'defense_failure'];
 function AutomationEditor({ automations, onChange }) {
   const add = () => onChange([...automations, { type: 'self_recovery', amount: 1 }]);
   const update = (i, patch) =>
-    onChange(automations.map((a, j) => (j === i ? { ...a, ...patch } : a)));
+    onChange(
+      automations.map((a, j) => {
+        if (j !== i) return a;
+        const next = { ...a, ...patch };
+        // Switching TO a stat step needs a Stat immediately — otherwise the
+        // row looks complete in the form and vanishes on save.
+        if (STAT_STEP_AUTOMATION_TYPES.has(next.type) && !next.slot) next.slot = AUTOMATION_STAT_SLOTS[0];
+        return next;
+      })
+    );
   const remove = (i) => onChange(automations.filter((_, j) => j !== i));
 
   return (
@@ -51,9 +66,26 @@ function AutomationEditor({ automations, onChange }) {
               </option>
             ))}
           </select>
+          {/* A stat step has to say WHICH Stat, so the picker only appears
+              for those two types — an automation that names no Stat is
+              dropped server-side rather than stored as a row that could
+              never fire. */}
+          {STAT_STEP_AUTOMATION_TYPES.has(a.type) && (
+            <select
+              value={a.slot ?? AUTOMATION_STAT_SLOTS[0]}
+              onChange={(e) => update(i, { slot: e.target.value })}
+              className="min-w-0 panel-cut-sm border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs text-zinc-300 outline-none focus:border-brand-500"
+            >
+              {AUTOMATION_STAT_SLOTS.map((slot) => (
+                <option key={slot} value={slot}>
+                  {slot}
+                </option>
+              ))}
+            </select>
+          )}
           <input
             type="number"
-            min={a.type === 'self_recovery' ? -20 : 1}
+            min={SIGNED_AUTOMATION_TYPES.has(a.type) ? -20 : 1}
             max={20}
             value={a.amount}
             onChange={(e) => update(i, { amount: Number(e.target.value) })}

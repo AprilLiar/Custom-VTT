@@ -112,6 +112,7 @@ async function createMove({
   defenseFramePositions = [],
   attackTargets = null,
   rollModifier = 0,
+  interactions = null, // [{ trigger, text, automations }]
 }) {
   const result = await run(
     `INSERT INTO moves
@@ -139,6 +140,14 @@ async function createMove({
       moveId,
       slot_name,
       count,
+    ]);
+  }
+  for (const row of interactions ?? []) {
+    await run('INSERT INTO move_interactions (move_id, trigger, text, automations) VALUES (?, ?, ?, ?)', [
+      moveId,
+      row.trigger,
+      row.text ?? '',
+      JSON.stringify(row.automations ?? []),
     ]);
   }
   return moveId;
@@ -549,6 +558,27 @@ test('Interruption: taking a Hit while still in Startup disrupts the target\'s o
   assert.equal(stillDeclared, null); // Interrupted -> deleted, reverted to Undeclared
 
   const events = await all('SELECT type, payload FROM round_events WHERE pair_index = ? ORDER BY seq', [pairIndex]);
+  // The move announces itself as an anonymous wind-up when its Startup
+  // begins, so the cutscene has a bar standing there before the reveal Tic
+  // (and, here, before it is Interrupted instead of ever revealing).
+  const windups = events.filter((e) => e.type === 'windup').map((e) => JSON.parse(e.payload));
+  const windup = windups.find((w) => w.declaredMoveId === startupDMId);
+  assert.ok(windup, 'the 3-Tic Startup should have emitted a windup');
+  assert.equal(windup.placementTic, 0);
+  assert.equal(windup.revealTic, 3);
+  assert.equal(windup.characterId, defender);
+  // Nothing about the move itself is in the row: not its id, its name, nor
+  // how long its Active/Recovery run. A stored replay is public to anyone,
+  // so the safe version is to not carry the secret at all rather than to
+  // carry it and ask the client to hide it.
+  assert.equal(windup.moveId, undefined);
+  assert.equal(windup.moveName, undefined);
+  assert.equal(windup.activeEndTic, undefined);
+  assert.equal(windup.recoveryEndTic, undefined);
+  // The attacker's own move has 1 Tic of Startup and so gets one too, but
+  // never twice — processTic is re-entrant and must not restack them.
+  assert.equal(new Set(windups.map((w) => w.declaredMoveId)).size, windups.length);
+
   const interruptEvent = events.find((e) => e.type === 'interrupt_resolved');
   assert.ok(interruptEvent);
   const interruptPayload = JSON.parse(interruptEvent.payload);
@@ -952,4 +982,114 @@ test('Restart recovery: rolling resolved_through_tic backward and re-invoking co
   // derived end state) — just confirm it didn't somehow shrink or corrupt.
   const eventCountAfter = (await all('SELECT id FROM round_events WHERE pair_index = ?', [pairIndex])).length;
   assert.ok(eventCountAfter >= eventCountBefore);
+});
+
+
+// ---------------------------------------------------------------------
+// Automations: they always fired mechanically, but emitted no round_event,
+// so the cutscene never showed them. And On Miss used to fire only on a
+// Full Dodge, which made it nearly unreachable.
+// ---------------------------------------------------------------------
+
+test('an On Hit automation reaches the round log, not just the Chat Log', async () => {
+  const pairIndex = 300;
+  const attacker = await createCharacter('AF Attacker');
+  const defender = await createCharacter('AF Defender');
+  const punch = await createMove({
+    name: 'AF Punch',
+    startupTics: 1,
+    activeTics: 2,
+    recoveryTics: 1,
+    rollSlots: ['Skull'],
+    rollModifier: 20,
+    interactions: [
+      { trigger: 'hit', text: 'Rattles them.', automations: [{ type: 'opponent_stamina', amount: 2 }] },
+    ],
+  });
+  await seatPair(pairIndex, attacker, defender);
+  await startPairDeclaration(mockIo, pairIndex);
+  await declareMove({ characterId: attacker, moveId: punch, placementTic: 0, startupTics: 1 });
+  await resolvePair(pairIndex);
+
+  const events = await all('SELECT type, payload FROM round_events WHERE pair_index = ? ORDER BY seq', [pairIndex]);
+  const fired = events.filter((e) => e.type === 'automation_fired').map((e) => JSON.parse(e.payload));
+  assert.equal(fired.length, 1, `the On Hit automation should have posted a round_event; saw ${events.map((e) => e.type).join(',')}`);
+  assert.equal(fired[0].trigger, 'hit');
+  assert.equal(fired[0].moveName, 'AF Punch');
+  assert.equal(fired[0].text, 'Rattles them.');
+  // Pre-rendered by the server so the cutscene and the Chat Log can never
+  // describe the same effect differently.
+  assert.ok(fired[0].effects.some((e) => e.includes('Stamina')));
+  // And the Stamina movement itself is in the log, so the cutscene's
+  // fighter cards don't drift away from what the sentences say.
+  assert.ok(events.some((e) => e.type === 'stamina_changed'));
+});
+
+test('an attack that rolls under 5 fires On Miss', async () => {
+  const pairIndex = 301;
+  const attacker = await createCharacter('IM Attacker');
+  const defender = await createCharacter('IM Defender');
+  // A big negative modifier guarantees a sub-5 total: Insignificant Damage,
+  // which used to fire nothing at all.
+  const flail = await createMove({
+    name: 'IM Flail',
+    startupTics: 1,
+    activeTics: 1,
+    recoveryTics: 1,
+    rollSlots: ['Skull'],
+    rollModifier: -50,
+    interactions: [{ trigger: 'miss', text: 'Overcommits.', automations: [{ type: 'self_stamina', amount: 1 }] }],
+  });
+  await seatPair(pairIndex, attacker, defender);
+  await startPairDeclaration(mockIo, pairIndex);
+  await declareMove({ characterId: attacker, moveId: flail, placementTic: 0, startupTics: 1 });
+  await resolvePair(pairIndex);
+
+  const events = await all('SELECT type, payload FROM round_events WHERE pair_index = ? ORDER BY seq', [pairIndex]);
+  assert.ok(events.some((e) => e.type === 'insignificant_damage'));
+  const fired = events.filter((e) => e.type === 'automation_fired').map((e) => JSON.parse(e.payload));
+  assert.equal(fired.length, 1);
+  assert.equal(fired[0].trigger, 'miss');
+});
+
+test('a stat-step automation steps the named Stat and shows it as damage', async () => {
+  const pairIndex = 302;
+  const attacker = await createCharacter('SS Attacker');
+  const defender = await createCharacter('SS Defender');
+  const jab = await createMove({
+    name: 'SS Jab',
+    startupTics: 1,
+    activeTics: 2,
+    recoveryTics: 1,
+    rollSlots: ['Skull'],
+    rollModifier: 20,
+    interactions: [
+      // Two steps, not one: the first half-damage step only marks the die
+      // as half-damaged (that IS the rule — see applyHalfDamage), so a
+      // single step would leave size and status untouched and prove nothing.
+      { trigger: 'hit', text: '', automations: [{ type: 'opponent_stat_step', amount: 2, slot: 'Left Hand' }] },
+    ],
+  });
+  await seatPair(pairIndex, attacker, defender);
+  await startPairDeclaration(mockIo, pairIndex);
+  await declareMove({ characterId: attacker, moveId: jab, placementTic: 0, startupTics: 1 });
+
+  const before = await one("SELECT current_size, status FROM dice WHERE character_id = ? AND slot_name = 'Left Hand'", [defender]);
+  await resolvePair(pairIndex);
+  const after = await one("SELECT current_size, status FROM dice WHERE character_id = ? AND slot_name = 'Left Hand'", [defender]);
+  assert.notDeepEqual(
+    { size: before.current_size, status: before.status },
+    { size: after.current_size, status: after.status },
+    'the named Stat should have stepped'
+  );
+
+  const events = await all('SELECT type, payload FROM round_events WHERE pair_index = ? ORDER BY seq', [pairIndex]);
+  // Reported through damage_applied so the cutscene animates it on the
+  // fighter card exactly like ordinary damage, tagged with its source.
+  const fromAutomation = events
+    .filter((e) => e.type === 'damage_applied')
+    .map((e) => JSON.parse(e.payload))
+    .filter((p) => p.source === 'automation');
+  assert.equal(fromAutomation.length, 1);
+  assert.equal(fromAutomation[0].slotName, 'Left Hand');
 });

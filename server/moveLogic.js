@@ -56,12 +56,37 @@ export function sanitizeDefenseKind(value, isDefensive, hasDefenseFrames) {
 //   self_stamina:      lose additional Stamina yourself (positive = amount lost)
 //   opponent_stamina:  the opponent loses Stamina (positive = amount lost)
 // Execution happens in the combat phases; Phase 3 stores and displays them.
+//   self_stat_step:     step one of your own Stats down by `amount`
+//   opponent_stat_step: step one of the opponent's Stats down by `amount`
+// The two stat-step types carry a `slot` naming which Stat, and are the
+// first automation that reaches a character's dice rather than their
+// Stamina or their timing — the same stepping damage already uses, so a
+// move can say "and it wrecks their Right Hand" without a human applying
+// it. A negative amount steps the Stat back UP, which is how a move heals.
 export const AUTOMATION_TYPES = [
   'self_recovery',
   'opponent_recovery',
   'self_stamina',
   'opponent_stamina',
+  'self_stat_step',
+  'opponent_stat_step',
 ];
+
+// Which Stats a stat-step automation may name. Deliberately the concrete
+// slots only — an automation names one Stat outright, so the ambiguous
+// Hand/Leg vocabulary a move's Roll uses has no meaning here.
+export const AUTOMATION_STAT_SLOTS = [
+  'Skull',
+  'Brain',
+  'Left Hand',
+  'Right Hand',
+  'Body',
+  'Stamina',
+  'Left Leg',
+  'Right Leg',
+];
+
+const STAT_STEP_TYPES = new Set(['self_stat_step', 'opponent_stat_step']);
 
 const AMOUNT_LIMIT = 20;
 
@@ -74,8 +99,16 @@ export function sanitizeAutomations(list) {
     let amount = Math.trunc(Number(entry.amount) || 0);
     amount = Math.max(-AMOUNT_LIMIT, Math.min(AMOUNT_LIMIT, amount));
     if (amount === 0) continue;
-    // Only self_recovery is signed (add or remove); the rest are positive.
-    if (entry.type !== 'self_recovery') amount = Math.abs(amount);
+    // self_recovery and the stat steps are signed (a negative stat step is
+    // a heal); the rest are positive.
+    if (entry.type !== 'self_recovery' && !STAT_STEP_TYPES.has(entry.type)) amount = Math.abs(amount);
+    if (STAT_STEP_TYPES.has(entry.type)) {
+      // A stat step without a valid Stat has nothing to act on, so it is
+      // dropped rather than stored as a row that can never fire.
+      if (!AUTOMATION_STAT_SLOTS.includes(entry.slot)) continue;
+      clean.push({ type: entry.type, amount, slot: entry.slot });
+      continue;
+    }
     clean.push({ type: entry.type, amount });
   }
   return clean;
