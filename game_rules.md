@@ -255,11 +255,13 @@ fight is made by the engine, with every bonus already folded in.
 A roll deals **one Half-Damage step per full 5 rolled**. A 12 is two steps, a
 9 is one, a 4 is none.
 
-A roll under 5 is **Insignificant Damage**: the attack landed and did too
-little to matter. It is *not* a Miss.
+A roll under 5 is **Insignificant Damage**: the swing connected with nothing
+worth counting. It deals no damage and fires the move's **On Miss** trigger.
 
-> **A Miss is an attack evaded with a Dodge.** Nothing else in this game is a
-> Miss. An attack that connects weakly still connected.
+> **A Miss is an attack that connected with nothing** — either evaded by a
+> Dodge, or too weak to register at all. A **Full Block** is not a Miss:
+> something was there to stop it, which is a different event from swinging at
+> air, and it fires **On Block** instead.
 
 Damage lands on the first Stat in the move's Attack Target order that still
 has a working die. That order is fixed:

@@ -139,10 +139,19 @@ async function logRoll(io, { characterId, characterName, modifier, dice, rollCon
     'INSERT INTO chat_log (character_id, dice_rolled, modifier, payload) VALUES (?, ?, ?, ?)',
     [characterId, JSON.stringify(dice), modifier, rollContext ? JSON.stringify(rollContext) : null]
   );
+  // GM_CHAT_SENTINEL_ID only reaches here through dice:roll_custom's "post as
+  // GM" path; the engine always rolls for a real character. Normalizing it
+  // back to null on the broadcast matches how GET /api/chat reads a GM-posted
+  // row back after a reload, so a live entry and its post-refresh reload
+  // render identically instead of one carrying a raw 0 the other doesn't.
+  const isGmPost = characterId === GM_CHAT_SENTINEL_ID;
   io.emit('roll:result', {
     kind: 'roll',
+    // Spread onto the broadcast rather than nested under its own key, so a
+    // live roll and its reload render identically — the same convention
+    // kind='lane_snapshot' rows already use for their payload.
     ...(rollContext ?? {}),
-    characterId,
+    characterId: isGmPost ? null : characterId,
     characterName,
     modifier,
     dice,
@@ -2205,4 +2214,21 @@ async function resumeAllPairsOnBoot(io) {
   }
 }
 
-export { advancePairResolution, startPairDeclaration, resolveDodge, resolveMoveConflict, resumeAllPairsOnBoot };
+export {
+  advancePairResolution,
+  startPairDeclaration,
+  resolveDodge,
+  resolveMoveConflict,
+  resumeAllPairsOnBoot,
+  // Shared with server/index.js rather than duplicated there (decided,
+  // revised). These four used to exist twice — once here, once in index.js —
+  // with a comment on both saying they had to be kept in sync by hand. They
+  // drifted twice: index.js's copy never learned the stat-step automations,
+  // and this one never learned index.js's GM-sentinel normalisation. This
+  // module is import-safe by design (it pulls in no module that starts a
+  // server), which is exactly what makes it the right single home.
+  postSystemMessage,
+  adjustStamina,
+  logRoll,
+  applyMoveInteractions,
+};
