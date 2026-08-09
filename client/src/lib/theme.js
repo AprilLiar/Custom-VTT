@@ -140,3 +140,89 @@ export function saveCutsceneSpeed(value) {
   else localStorage.setItem(SPEED_KEY, String(speed));
   return speed;
 }
+
+// --- Effects quality (Settings) ---
+//
+// Visual Overhaul (Ink & Impact): the app now has a GPU tier — a WebGL ink
+// splatter layer over the cutscene and a drifting ink backdrop behind the
+// shell (Phases V3/V4). Those are genuinely expensive on a phone that is
+// going to sit in a fight for an hour, so they are gated behind a tier
+// rather than shipped unconditionally.
+//
+//   'high'   — WebGL effects on. Everything below, plus shaders.
+//   'medium' — no GL context is ever constructed; the CSS/SVG fallbacks
+//              (.speed-lines, ImpactBurst, the static .bg-arena gradients)
+//              carry the same information with none of the GPU cost.
+//   'off'    — ink materials and layout only; no effect animation at all.
+//
+// Per-device and localStorage-only, exactly like the hue and playback-speed
+// preferences above: how hard your device should work is a property of your
+// device, not of the game, so it deliberately never reaches the server.
+const QUALITY_KEY = 'vtt-effects-quality';
+export const EFFECTS_QUALITIES = ['high', 'medium', 'off'];
+
+export function prefersReducedMotion() {
+  if (typeof window === 'undefined' || !window.matchMedia) return false;
+  return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+}
+
+// Whether this device can construct a WebGL2 context at all. Probed against
+// a throwaway canvas and cached — some browsers are slow to create the
+// context, and the answer cannot change within a page load.
+let webgl2Support = null;
+export function hasWebGL2() {
+  if (webgl2Support !== null) return webgl2Support;
+  try {
+    const canvas = document.createElement('canvas');
+    webgl2Support = !!canvas.getContext('webgl2');
+  } catch {
+    webgl2Support = false;
+  }
+  return webgl2Support;
+}
+
+// The default when the user has never chosen. Errs toward 'medium': the
+// fallback tier still looks like the same app, so guessing low costs a
+// little polish, while guessing high on a weak phone costs a dropped-frame
+// cutscene in the middle of someone's fight.
+export function probeEffectsQuality() {
+  if (prefersReducedMotion()) return 'off';
+  if (!hasWebGL2()) return 'medium';
+  const coarse =
+    typeof window !== 'undefined' &&
+    window.matchMedia &&
+    window.matchMedia('(pointer: coarse)').matches;
+  if (coarse) return 'medium';
+  const cores = navigator.hardwareConcurrency ?? 4;
+  const memory = navigator.deviceMemory ?? 4; // Chromium-only; absent elsewhere
+  if (cores < 4 || memory < 4) return 'medium';
+  return 'high';
+}
+
+// The stored preference, or null if the user has never picked one. Kept
+// separate from the effective value below so Settings can show "Automatic"
+// distinctly from a deliberate choice that happens to match the probe.
+export function loadEffectsQualityPreference() {
+  const raw = localStorage.getItem(QUALITY_KEY);
+  return EFFECTS_QUALITIES.includes(raw) ? raw : null;
+}
+
+// What components should actually act on. Reduced motion wins over
+// everything, including an explicit 'high' — a stated accessibility
+// preference is not a thing a display setting gets to override.
+export function loadEffectsQuality() {
+  if (prefersReducedMotion()) return 'off';
+  const chosen = loadEffectsQualityPreference() ?? probeEffectsQuality();
+  // A device with no WebGL2 cannot honour 'high' even when it is asked for
+  // explicitly, so cap it here rather than letting every consumer discover
+  // that separately by failing to create a context.
+  if (chosen === 'high' && !hasWebGL2()) return 'medium';
+  return chosen;
+}
+
+export function saveEffectsQuality(value) {
+  if (value == null) localStorage.removeItem(QUALITY_KEY);
+  else if (EFFECTS_QUALITIES.includes(value)) localStorage.setItem(QUALITY_KEY, value);
+  window.dispatchEvent(new Event('vtt:effects-quality'));
+  return loadEffectsQuality();
+}

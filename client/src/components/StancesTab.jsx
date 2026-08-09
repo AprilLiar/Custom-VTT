@@ -43,7 +43,7 @@ function StanceForm({ attributes, counters, initial, onSubmit, onCancel }) {
   return (
     <form
       onSubmit={submit}
-      className="flex flex-col gap-3 panel-cut-lg border border-zinc-700 bg-zinc-900 p-4"
+      className="flex flex-col gap-3 ink-panel border border-zinc-700 bg-zinc-900 p-4"
     >
       <h3 className="text-sm font-bold uppercase tracking-wide text-zinc-400">
         {initial ? 'Edit Stance' : 'Stance Creator'}
@@ -150,7 +150,7 @@ export default function StancesTab({ data }) {
   return (
     <div className="space-y-4">
       {stances.length === 0 && (
-        <div className="panel-cut-lg border border-amber-700/50 bg-amber-900/20 p-3 text-sm text-amber-300">
+        <div className="ink-panel border border-amber-700/50 bg-amber-900/20 p-3 text-sm text-amber-300">
           No stances yet — every character should have at least one. Create the first below;
           it becomes the active stance automatically.
         </div>
@@ -194,7 +194,7 @@ export default function StancesTab({ data }) {
                     : { scale: 1 }
                 }
                 transition={{ duration: 0.55, ease: 'easeOut' }}
-                className={`cursor-pointer panel-cut-lg border p-3 transition-colors ${
+                className={`cursor-pointer ink-panel border p-3 transition-colors ${
                   isActive
                     ? 'border-brand-500 bg-brand-950/40'
                     : 'border-zinc-800 bg-zinc-900 hover:border-zinc-600'
@@ -262,7 +262,7 @@ export default function StancesTab({ data }) {
         </button>
       )}
 
-      <div className="panel-cut-lg border border-zinc-800 bg-zinc-900 p-4">
+      <div className="ink-panel border border-zinc-800 bg-zinc-900 p-4">
         <h3 className="mb-1 text-sm font-bold uppercase tracking-wide text-zinc-400">
           Style Counter Chart
         </h3>

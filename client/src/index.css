@@ -11,6 +11,14 @@
 @theme {
   --font-display: 'Rajdhani', ui-sans-serif, system-ui, sans-serif;
 
+  /* Visual Overhaul (Ink & Impact), Phase V1: a second face joins Rajdhani
+     rather than replacing it. Rajdhani stays the UI-chrome voice (labels,
+     buttons, badges, chat); Anton — heavy condensed caps, one weight —
+     carries the moments that need to land: page titles, fighter names,
+     damage numbers, Tic numbers, round callouts. Long-form prose is still
+     on the default readable font and is untouched by both. */
+  --font-impact: 'Anton', 'Rajdhani', ui-sans-serif, system-ui, sans-serif;
+
   --color-brand-50: #fef1f2;
   --color-brand-100: #fee2e4;
   --color-brand-200: #fecdd0;
@@ -39,6 +47,14 @@
    would swap out, rather than colors being hardcoded ad hoc per component. */
 :root {
   --color-brand-rgb: 239 63 76;
+
+  /* Default contour colour for .ink-panel's torn outline.
+     Deliberately BRIGHTER than the zinc-800 borders it replaces. A torn
+     edge only reads as a brush edge if you can see it: matched to the old
+     border value it disappeared into the background and the panels went
+     back to looking like plain rectangles, which is the exact blandness
+     this pass exists to fix. Override per-component by setting --ink-line. */
+  --ink-line: #6d5457;
 }
 
 @layer base {
@@ -63,12 +79,24 @@
 @layer components {
   /* "Arena" backdrop: near-black with a dim red glow — used on full-page
      shells instead of a flat bg-zinc-950. */
+  /* Ink grain is composited into this stack rather than mounted as its own
+     always-on overlay element: the shell already paints a fixed-attachment
+     background here, so the grain rides along for free instead of adding a
+     second full-viewport layer for the compositor to manage.
+
+     The red glows now read from --color-brand-rgb instead of the hardcoded
+     rgba() they used to carry. They predated the Settings hue picker and
+     were the last place in the app where an accent red did NOT follow it. */
   .bg-arena {
     background-color: #0a0707;
     background-image:
-      radial-gradient(ellipse 130% 55% at 50% -15%, rgba(212, 31, 44, 0.16), transparent 60%),
-      radial-gradient(ellipse 120% 50% at 10% 115%, rgba(130, 18, 28, 0.12), transparent 70%),
-      radial-gradient(ellipse 120% 50% at 90% 115%, rgba(130, 18, 28, 0.1), transparent 70%);
+      var(--ink-grain),
+      radial-gradient(ellipse 130% 55% at 50% -15%, rgb(var(--color-brand-rgb) / 0.14), transparent 60%),
+      radial-gradient(ellipse 120% 50% at 10% 115%, rgb(var(--color-brand-rgb) / 0.09), transparent 70%),
+      radial-gradient(ellipse 120% 50% at 90% 115%, rgb(var(--color-brand-rgb) / 0.08), transparent 70%);
+    background-size: 180px 180px, auto, auto, auto;
+    background-repeat: repeat, no-repeat, no-repeat, no-repeat;
+    background-blend-mode: soft-light, normal, normal, normal;
     background-attachment: fixed;
   }
 
@@ -94,6 +122,146 @@
       calc(100% - 16px) 100%, 16px 100%, 0 calc(100% - 16px), 0 16px
     );
   }
+
+}
+
+/* --- Ink surfaces (Visual Overhaul, Phase V1) ----------------------------
+   Torn brush edges replace the diagonal clip-path corners on CARDS, PANELS,
+   DIALOGS and hero surfaces. Buttons, inputs and badges keep .panel-cut-sm:
+   an irregular edge on a 28px control reads as a rendering bug, not a
+   style, so the split is by element role rather than by page.
+
+   These are `@utility`, not `@layer components` like .panel-cut* above,
+   because Tailwind v4 only generates variants for real utilities — a
+   `md:panel-cut-lg` never emitted any CSS at all, which is why DialogShell's
+   desktop panels have silently had square corners since that class was
+   written. `md:ink-panel` works.
+
+   Usage: replace `panel-cut border border-zinc-800` with `ink-panel`. Any
+   leftover border utility is inert rather than harmful — the mask is inset
+   far enough to cut the whole 1px ring uniformly (see tornRectPath in
+   lib/inkAssets.js) — but drop it when you touch a call site, since a
+   border that renders nothing is just a lie about the element. Definition
+   comes from the ::before contour instead; set --ink-line to recolour it.
+
+   Pick the variant whose aspect matches the surface (see inkAssets.js on
+   why aspect bands exist at all): ink-panel for roughly square cards,
+   ink-panel-wide for short wide bars, ink-panel-tall for columns. */
+@utility ink-panel {
+  position: relative;
+  border-width: 0;
+  -webkit-mask-image: var(--ink-edge-card);
+  mask-image: var(--ink-edge-card);
+  -webkit-mask-size: 100% 100%;
+  mask-size: 100% 100%;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+
+  /* The inked contour. Same seed as its own fill mask, so the line follows
+     the tear instead of wandering beside it; the parent's fill mask then
+     trims the stroke's outer half, leaving a crisp outer edge with a soft
+     inner one — which is what a real brush contour does. */
+  &::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background: var(--ink-line);
+    -webkit-mask-image: var(--ink-edge-line-card);
+    mask-image: var(--ink-edge-line-card);
+    -webkit-mask-size: 100% 100%;
+    mask-size: 100% 100%;
+    -webkit-mask-repeat: no-repeat;
+    mask-repeat: no-repeat;
+  }
+}
+
+@utility ink-panel-wide {
+  position: relative;
+  border-width: 0;
+  -webkit-mask-image: var(--ink-edge-wide);
+  mask-image: var(--ink-edge-wide);
+  -webkit-mask-size: 100% 100%;
+  mask-size: 100% 100%;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+
+  &::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background: var(--ink-line);
+    -webkit-mask-image: var(--ink-edge-line-wide);
+    mask-image: var(--ink-edge-line-wide);
+    -webkit-mask-size: 100% 100%;
+    mask-size: 100% 100%;
+    -webkit-mask-repeat: no-repeat;
+    mask-repeat: no-repeat;
+  }
+}
+
+@utility ink-panel-tall {
+  position: relative;
+  border-width: 0;
+  -webkit-mask-image: var(--ink-edge-tall);
+  mask-image: var(--ink-edge-tall);
+  -webkit-mask-size: 100% 100%;
+  mask-size: 100% 100%;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+
+  &::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background: var(--ink-line);
+    -webkit-mask-image: var(--ink-edge-line-tall);
+    mask-image: var(--ink-edge-line-tall);
+    -webkit-mask-size: 100% 100%;
+    mask-size: 100% 100%;
+    -webkit-mask-repeat: no-repeat;
+    mask-repeat: no-repeat;
+  }
+}
+
+/* Halftone dot field, as an overlay pseudo-element so it never fights the
+   element's own bg-* utility. Deliberately low opacity and blended rather
+   than painted flat: the frame-phase palette (amber/rose/blue/emerald, see
+   lib/framePhaseColors.js) encodes game state, and nothing in this art
+   direction is allowed to cost it contrast. */
+@utility halftone {
+  position: relative;
+
+  &::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    opacity: 0.14;
+    mix-blend-mode: overlay;
+    background-image: radial-gradient(
+      circle at center,
+      rgb(var(--color-brand-rgb) / 0.9) 0.7px,
+      transparent 0.8px
+    );
+    background-size: 5px 5px;
+  }
+}
+
+/* Manga speed lines, radiating from the centre and masked hollow in the
+   middle so the subject stays readable. This is the Medium-tier fallback
+   for Phase V3's WebGL version — it lives here, not in the cutscene, so
+   both tiers draw the same shape. */
+@utility speed-lines {
+  background-image: repeating-conic-gradient(
+    from 0deg at 50% 50%,
+    transparent 0deg 1.6deg,
+    rgb(255 255 255 / 0.55) 1.6deg 2.2deg
+  );
+  -webkit-mask-image: radial-gradient(circle at center, transparent 26%, #000 72%);
+  mask-image: radial-gradient(circle at center, transparent 26%, #000 72%);
 }
 
 /* Scrollbars everywhere, not just one component — a plain OS scrollbar

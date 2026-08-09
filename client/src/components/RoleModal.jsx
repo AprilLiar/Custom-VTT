@@ -23,7 +23,7 @@ export default function RoleModal() {
       <h1 className="font-display text-4xl font-bold uppercase tracking-wide">Dogfight: Martial Arts TTRPG</h1>
       <p className="text-zinc-400">Who are you this session?</p>
       <div className="flex w-full max-w-3xl items-stretch gap-6 px-6">
-        <div className="panel-cut flex min-w-0 flex-1 flex-col gap-2 border border-zinc-800 bg-zinc-900 p-4">
+        <div className="ink-panel flex min-w-0 flex-1 flex-col gap-2 border border-zinc-800 bg-zinc-900 p-4">
           <span className="font-display text-xs font-bold uppercase tracking-wide text-zinc-500">
             Play as…
           </span>
@@ -59,7 +59,7 @@ export default function RoleModal() {
         </div>
         <button
           onClick={chooseGm}
-          className="panel-cut-lg font-display shrink-0 bg-amber-700 px-10 py-6 text-2xl font-bold uppercase tracking-wide hover:bg-amber-600 active:scale-95 transition"
+          className="ink-panel font-display shrink-0 bg-amber-700 px-10 py-6 text-2xl font-bold uppercase tracking-wide hover:bg-amber-600 active:scale-95 transition"
         >
           GM
         </button>

@@ -970,11 +970,11 @@ export default function RoundCutscene({
   const below = footprints.filter((f) => f.characterType === 'npc');
 
   if (error) {
-    return <div className="panel-cut border border-zinc-800 p-4 text-sm text-zinc-400">{error}</div>;
+    return <div className="ink-panel border border-zinc-800 p-4 text-sm text-zinc-400">{error}</div>;
   }
 
   return (
-    <div className="panel-cut flex h-full min-h-0 flex-col border border-zinc-800 bg-zinc-950/60 p-3">
+    <div className="ink-panel flex h-full min-h-0 flex-col border border-zinc-800 bg-zinc-950/60 p-3">
       <div className="mb-2 flex items-center justify-between gap-2">
         <h3 className="font-display text-base uppercase tracking-wide text-zinc-300 md:text-xl">
           Round {meta?.roundNumber ?? roundNumber}

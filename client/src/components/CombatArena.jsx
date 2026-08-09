@@ -70,7 +70,7 @@ function ParticipantCard({
       onDragStart={onDragStart}
       onClick={() => navigate(`/character/${character.id}`)}
       title="Open full sheet"
-      className="group relative flex min-h-40 min-w-64 flex-1 cursor-pointer overflow-hidden panel-cut border border-zinc-800 bg-zinc-900 transition-colors hover:border-brand-600"
+      className="group relative flex min-h-40 min-w-64 flex-1 cursor-pointer overflow-hidden ink-panel border border-zinc-800 bg-zinc-900 transition-colors hover:border-brand-600"
     >
       {role === 'gm' && (
         <div className="hover-only-action absolute right-1 top-1 z-10 flex gap-1 opacity-0 transition group-hover:opacity-100">
@@ -213,7 +213,7 @@ function ParticipantCard({
 function ArenaCounterRow({ counter, characterName }) {
   const label = characterName ? `${characterName} - ${counter.name}` : counter.name;
   return (
-    <div className="panel-cut-lg border border-zinc-800 bg-zinc-900 p-3">
+    <div className="ink-panel-wide border border-zinc-800 bg-zinc-900 p-3">
       <span className="font-bold text-zinc-100">{label}</span>
       {/* Character-owned counters only ever carry a reward — a standalone
           counter never has one — but this stays read-only display here
@@ -514,7 +514,7 @@ export function TicSquare({
       initial={isCurrent ? { scale: 1.5 } : false}
       animate={{ scale: isCurrent && !zoneStyle ? 1.1 : 1 }}
       transition={{ duration: 0.35, ease: 'easeOut' }}
-      className={`relative flex ${TIC_SQUARE_SIZE} shrink-0 items-center justify-center panel-cut border text-sm font-bold transition-colors duration-150 ${
+      className={`relative flex ${TIC_SQUARE_SIZE} shrink-0 items-center justify-center panel-cut-sm border text-sm font-bold transition-colors duration-150 ${
         onClick ? 'cursor-pointer hover:border-brand-400 hover:shadow-[0_0_10px_rgb(var(--color-brand-rgb)/45%)]' : ''
       } ${
         zoneStyle ??
@@ -640,7 +640,7 @@ export function TicCounterCentral({
   })();
 
   return (
-    <div className="flex flex-col items-center gap-1.5 panel-cut-lg border border-zinc-800 bg-gradient-to-b from-zinc-900 to-zinc-950 px-4 py-3 shadow-2xl shadow-black/40">
+    <div className="flex flex-col items-center gap-1.5 ink-panel-wide border border-zinc-800 bg-gradient-to-b from-zinc-900 to-zinc-950 px-4 py-3 shadow-2xl shadow-black/40">
       <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-zinc-500">
         {label ?? (phase === 'declaration' ? 'Drag a move here to declare' : 'Tic Counter')}
       </span>
@@ -690,7 +690,7 @@ export function TicCounterCentral({
         {overflowPreview && (
           <div className="group relative shrink-0">
             <span
-              className={`flex ${TIC_SQUARE_SIZE} items-center justify-center panel-cut border border-amber-500/70 bg-amber-950/40 font-display text-sm font-bold text-amber-300`}
+              className={`flex ${TIC_SQUARE_SIZE} items-center justify-center panel-cut-sm border border-amber-500/70 bg-amber-950/40 font-display text-sm font-bold text-amber-300`}
               title={`Runs ${overflowPreview.tics} Tic${
                 overflowPreview.tics === 1 ? '' : 's'
               } into the next round`}
@@ -700,7 +700,7 @@ export function TicCounterCentral({
             {/* Hover reveals the next round with the spilled frames in
                 place, so "how much of my next round does this eat?" is
                 answerable before committing rather than after. */}
-            <div className="pointer-events-none absolute bottom-full left-1/2 z-50 mb-2 hidden -translate-x-1/2 panel-cut border border-amber-700/60 bg-zinc-950 p-2 shadow-2xl shadow-black/80 group-hover:block">
+            <div className="pointer-events-none absolute bottom-full left-1/2 z-50 mb-2 hidden -translate-x-1/2 ink-panel border border-amber-700/60 bg-zinc-950 p-2 shadow-2xl shadow-black/80 group-hover:block">
               <div className="mb-1 whitespace-nowrap font-display text-[10px] uppercase tracking-widest text-amber-300">
                 Next round
               </div>
@@ -762,7 +762,7 @@ function CompactTellFace({ dm, tellById }) {
   const showBoth = !chosenTell && (rightTell || leftTell);
   const shown = chosenTell ?? (showBoth ? null : tell);
   return (
-    <div className="flex w-28 items-center gap-1.5 panel-cut border border-zinc-800 bg-zinc-900/60 p-1.5 opacity-60 grayscale">
+    <div className="flex w-28 items-center gap-1.5 panel-cut-sm border border-zinc-800 bg-zinc-900/60 p-1.5 opacity-60 grayscale">
       {showBoth ? (
         <>
           <Thumb record={rightTell} name={rightTell?.name} size="h-6 w-6" />
@@ -818,7 +818,7 @@ function CompactDeclaredMoveCard({ dm, move, tellById }) {
             transition={{ duration: 0.14 }}
             // z-50 + fixed-width: it deliberately covers whatever lane
             // content sits beside and below it.
-            className="absolute bottom-full left-1/2 z-50 mb-2 w-72 -translate-x-1/2 panel-cut border border-brand-700/60 bg-zinc-950 p-2 shadow-2xl shadow-black/80"
+            className="absolute bottom-full left-1/2 z-50 mb-2 w-72 -translate-x-1/2 ink-panel border border-brand-700/60 bg-zinc-950 p-2 shadow-2xl shadow-black/80"
             onClick={(e) => e.stopPropagation()}
           >
             <MoveCard
@@ -850,7 +850,7 @@ function CompactDeclaredMoveCard({ dm, move, tellById }) {
           >
             <div
               title={move.name}
-              className="flex w-28 items-center gap-1.5 panel-cut border border-brand-800/60 bg-brand-950/30 p-1.5 text-left"
+              className="flex w-28 items-center gap-1.5 panel-cut-sm border border-brand-800/60 bg-brand-950/30 p-1.5 text-left"
             >
               <Thumb record={move} name={move.name} size="h-6 w-6" />
               <div className="min-w-0 flex-1">
@@ -1156,7 +1156,7 @@ function DeclareMovePicker({ entry, roundStartTic, declaredMoves }) {
 // button anymore.
 function ActiveDeclarePanel({ entry, roundStartTic, declaredMoves }) {
   return (
-    <div className="w-full max-w-md space-y-2 panel-cut-lg border border-brand-800/50 bg-brand-950/20 p-3">
+    <div className="w-full max-w-md space-y-2 ink-panel border border-brand-800/50 bg-brand-950/20 p-3">
       <div className="flex items-center justify-between gap-2">
         <h3 className="truncate text-sm font-bold text-brand-200">{entry.character.name}'s turn to declare</h3>
         <button
@@ -1415,7 +1415,7 @@ export default function CombatArena() {
     spawnDropGhost(
       e.clientX,
       e.clientY,
-      <div className="panel-cut border border-brand-400 bg-zinc-900 px-3 py-2 font-display text-sm font-bold uppercase tracking-wide text-white shadow-lg">
+      <div className="panel-cut-sm border border-brand-400 bg-zinc-900 px-3 py-2 font-display text-sm font-bold uppercase tracking-wide text-white shadow-lg">
         {seatedCharacterName}
       </div>
     );
@@ -1433,7 +1433,7 @@ export default function CombatArena() {
         draggable
         onDragStart={(e) => e.dataTransfer.setData('text/character-id', String(c.id))}
         title="Drag onto a side to seat them"
-        className="flex cursor-grab items-center gap-2 panel-cut border border-zinc-800 bg-zinc-900 p-2 active:cursor-grabbing"
+        className="flex cursor-grab items-center gap-2 ink-panel-wide border border-zinc-800 bg-zinc-900 p-2 active:cursor-grabbing"
       >
         <div className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden panel-cut-sm bg-zinc-800 text-sm font-bold text-zinc-600">
           {src ? (
@@ -1464,7 +1464,7 @@ export default function CombatArena() {
           setMobileRosterOpen(false);
           setSeatTarget({ characterId: c.id, characterName: c.name });
         }}
-        className="flex min-h-11 w-full items-center gap-2 panel-cut border border-zinc-800 bg-zinc-900 p-2 text-left hover:border-brand-600"
+        className="flex min-h-11 w-full items-center gap-2 ink-panel-wide border border-zinc-800 bg-zinc-900 p-2 text-left hover:border-brand-600"
       >
         <div className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden panel-cut-sm bg-zinc-800 text-sm font-bold text-zinc-600">
           {src ? (
@@ -1748,7 +1748,7 @@ export default function CombatArena() {
             >
               <div
                 onClick={(e) => e.stopPropagation()}
-                className="flex w-72 flex-col gap-3 panel-cut-lg border border-zinc-700 bg-zinc-900 p-4"
+                className="flex w-72 flex-col gap-3 ink-panel border border-zinc-700 bg-zinc-900 p-4"
               >
                 <h3 className="font-bold text-zinc-100">
                   {characters[pendingDeclare.characterId]?.character.name ?? 'Character'}: {pendingDeclare.moveName}
@@ -1866,7 +1866,7 @@ export default function CombatArena() {
             />
           ))}
           {role === 'gm' && activeDeclareEntries.length === 0 && (
-            <div className="flex max-w-md items-center panel-cut-lg border border-dashed border-zinc-800 px-4 py-6 text-sm text-zinc-600">
+            <div className="flex max-w-md items-center panel-cut border border-dashed border-zinc-800 px-4 py-6 text-sm text-zinc-600">
               {activeLaneIndex == null
                 ? 'Click a lane above to declare for its NPCs.'
                 : "Nothing to declare for this lane right now — it's not an NPC's turn here."}
@@ -1974,7 +1974,7 @@ export default function CombatArena() {
             );
           })}
 
-          <div className="panel-cut-lg border border-zinc-800 bg-zinc-900 p-4">
+          <div className="ink-panel-wide border border-zinc-800 bg-zinc-900 p-4">
             <h2 className="mb-2 text-sm font-bold uppercase tracking-wide text-zinc-400">Counters</h2>
             {counters.length === 0 ? (
               <p className="text-sm text-zinc-600">No counters shown here yet.</p>

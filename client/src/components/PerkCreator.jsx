@@ -39,7 +39,7 @@ export default function PerkCreator({ initial, onSubmit, onCancel }) {
       : initial;
 
   return (
-    <form onSubmit={submit} className="space-y-3 panel-cut-lg border border-zinc-700 bg-zinc-900 p-4">
+    <form onSubmit={submit} className="space-y-3 ink-panel border border-zinc-700 bg-zinc-900 p-4">
       <h3 className="text-sm font-bold uppercase tracking-wide text-zinc-400">
         {initial ? 'Edit Perk' : 'Perk Creator'}
       </h3>
@@ -49,9 +49,9 @@ export default function PerkCreator({ initial, onSubmit, onCancel }) {
           type="button"
           onClick={() => fileRef.current?.click()}
           title="Upload Perk art (optional)"
-          className="panel-cut border border-zinc-700 hover:border-brand-500"
+          className="ink-panel border border-zinc-700 hover:border-brand-500"
         >
-          <Thumb record={preview} name={name || '?'} size="h-12 w-12" cut="panel-cut" />
+          <Thumb record={preview} name={name || '?'} size="h-12 w-12" cut="ink-panel" />
         </button>
         <input ref={fileRef} type="file" accept="image/*" hidden onChange={pickImage} />
         <input
