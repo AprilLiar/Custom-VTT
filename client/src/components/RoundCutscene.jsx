@@ -11,6 +11,7 @@ import {
   phaseAt,
   isExtendedRecoveryTic,
 } from '../lib/framePhaseColors.js';
+import { DIE_ORDER, FighterCard } from './FighterHud.jsx';
 
 // Combat Automation overhaul §4.1 — a pair's round, rendered as an animated
 // "cutscene" instead of narrated through a string of manual GM clicks.
@@ -375,7 +376,9 @@ function ImpactBurst({ burst }) {
 // event captures them as the round opened, and every damage_applied since
 // steps the die it hit. That is what makes a replay show the same fight
 // deteriorating in the same order, years after the real dice moved on.
-const DIE_ORDER = ['Skull', 'Brain', 'Left Hand', 'Right Hand', 'Body', 'Stamina', 'Left Leg', 'Right Leg'];
+// DIE_ORDER, StatPip and FighterCard now live in FighterHud.jsx — the Arena's
+// V2 HUD bars need the same "a fighter IS eight dice plus Stamina" vocabulary,
+// and one shared module beats two that drift.
 
 function fightersFrom(events, upTo) {
   let roster = null;
@@ -601,68 +604,6 @@ function barAnimation(effect, toward) {
 // die that just took damage flashes red and its value counts down to what
 // it stepped to, so damage is something you SEE happen to a person rather
 // than a sentence in a feed.
-function StatPip({ die, hit, beat }) {
-  const reduceMotion = useReducedMotion();
-  const out = die.status === 'incapacitated';
-  const controls = useAnimation();
-  useEffect(() => {
-    if (!hit || reduceMotion) return;
-    controls.set({ scale: 1 });
-    controls.start({
-      scale: [1, 1.45, 0.92, 1],
-      transition: { duration: 0.6, times: [0, 0.2, 0.6, 1], ease: 'easeOut' },
-    });
-  }, [hit, beat, controls, reduceMotion]);
-  return (
-    <motion.div
-      animate={controls}
-      title={`${die.slotName} — d${die.size}${die.bonus ? `+${die.bonus}` : ''}${out ? ' (out)' : ''}`}
-      className={`flex min-w-0 flex-col items-center gap-0.5 border px-1 py-0.5 ${
-        hit
-          ? 'border-rose-400 bg-rose-900/50 shadow-[0_0_12px_2px_rgba(251,113,133,0.6)]'
-          : out
-            ? 'border-zinc-800 bg-zinc-900/60'
-            : 'border-zinc-700 bg-zinc-900'
-      }`}
-    >
-      <span className={`truncate font-display text-[9px] uppercase tracking-wide md:text-[10px] ${
-        hit ? 'text-rose-200' : out ? 'text-zinc-600' : 'text-zinc-500'
-      }`}>
-        {die.slotName}
-      </span>
-      <span className={`font-display text-xs font-bold md:text-sm ${
-        out ? 'text-zinc-600 line-through' : hit ? 'text-rose-200' : 'text-zinc-200'
-      }`}>
-        {out ? 'OUT' : `d${die.size}${die.bonus ? `+${die.bonus}` : ''}`}
-      </span>
-    </motion.div>
-  );
-}
-
-function FighterCard({ fighter, lastHit, beat }) {
-  const hitSlot = lastHit?.characterId === fighter.characterId ? lastHit.slotName : null;
-  return (
-    <div className="panel-cut-sm min-w-0 flex-1 border border-zinc-800 bg-zinc-950/70 p-2">
-      <div className="mb-1.5 flex items-center gap-2">
-        <span className="flex h-7 w-7 shrink-0 items-center justify-center border border-zinc-700 bg-zinc-800 font-display text-sm text-zinc-300">
-          {(fighter.name ?? '?').charAt(0).toUpperCase()}
-        </span>
-        <span className="min-w-0 flex-1 truncate font-display text-sm uppercase tracking-wide text-zinc-200 md:text-base">
-          {fighter.name}
-        </span>
-        <span className="shrink-0 font-display text-xs text-amber-300 md:text-sm">
-          {fighter.currentStamina}/{fighter.maxStamina} ST
-        </span>
-      </div>
-      <div className="grid grid-cols-4 gap-1">
-        {fighter.dice.map((d) => (
-          <StatPip key={d.slotName} die={d} hit={hitSlot === d.slotName} beat={beat} />
-        ))}
-      </div>
-    </div>
-  );
-}
-
 function MoveBar({ fp, ticks, startTic, effect, beat, staminaFlash }) {
   // NPCs are drawn below the strip, so their "forward" is up the screen.
   const toward = fp.characterType === 'npc' ? -1 : 1;

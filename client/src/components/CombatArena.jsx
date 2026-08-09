@@ -10,11 +10,11 @@ import {
   getTells,
 } from '../lib/api.js';
 import { portraitSrc } from '../lib/image.js';
-import { dieLabel, tintFor, POOLS } from '../lib/dice.js';
 import { buildFolderTree } from '../lib/folders.js';
 import { countRollSlot } from '../lib/diceSlots.js';
 import { FRAME_PHASES, PHASE_BG, PHASE_LABEL, PHASE_ZONE, phaseBgAt, phaseAt } from '../lib/framePhaseColors.js';
 import RoundCutscene from './RoundCutscene.jsx';
+import { FighterHudBar } from './FighterHud.jsx';
 import DamageApplicationDialog from './DamageApplicationDialog.jsx';
 import { REWARD_LABELS, REWARD_COLORS } from '../lib/counterDisplay.js';
 import { setDraggingMove, onDraggingMoveChange } from '../lib/dragMoveState.js';
@@ -23,189 +23,11 @@ import FrameBar from './FrameBar.jsx';
 import MoveCard from './MoveCard.jsx';
 import Thumb from './Thumb.jsx';
 import DropSlamGhost from './DropSlamGhost.jsx';
-import PopNumber from './PopNumber.jsx';
 import DialogShell from './DialogShell.jsx';
 
 const MIN_TARGET = 2;
 const MAX_TARGET = 20;
 
-// Read-only glance at a seated character: portrait, active stance, dice
-// pools, stamina — not the full sheet. Click through to the sheet to
-// actually roll/step; everything shown here stays live via the same
-// character:updated/die:updated/stance:activated broadcasts the sheet
-// itself listens to. Stance is shown because it's the one thing the plan
-// already calls strategically visible to opponents mid-fight.
-function ParticipantCard({
-  entry,
-  participant,
-  role,
-  onRemove,
-  onAdHocDamage,
-  onMoveSeat,
-  onDragStart,
-  navigate,
-  declaredMoves,
-  sideStillDeclaring,
-}) {
-  const { character, dice, stances } = entry;
-  const src = portraitSrc(character);
-  const activeStance = stances.find((s) => s.id === character.active_stance_id);
-  // Would-be Stamina after every move declared this window, purely a
-  // visual preview — the real current_stamina isn't touched until this
-  // character actually finishes declaring (see
-  // combat:character_done_declaring server-side). staminaCost only ever
-  // rides a declaredMoves entry this client is actually entitled to see
-  // (see mapDeclaredMovesForViewer server-side) — an opponent's pending
-  // cost stays exactly as hidden as the move's identity, same secrecy
-  // boundary.
-  const pendingCost = sideStillDeclaring
-    ? declaredMoves
-        .filter((dm) => dm.characterId === character.id && dm.staminaCost != null && !dm.staminaCommitted)
-        .reduce((sum, dm) => sum + dm.staminaCost, 0)
-    : 0;
-  const previewStamina = character.current_stamina - pendingCost;
-  return (
-    <div
-      draggable={role === 'gm'}
-      onDragStart={onDragStart}
-      onClick={() => navigate(`/character/${character.id}`)}
-      title="Open full sheet"
-      className="group relative flex min-h-40 min-w-64 flex-1 cursor-pointer overflow-hidden ink-panel border border-zinc-800 bg-zinc-900 transition-colors hover:border-brand-600"
-    >
-      {role === 'gm' && (
-        <div className="hover-only-action absolute right-1 top-1 z-10 flex gap-1 opacity-0 transition group-hover:opacity-100">
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              onMoveSeat(character.id, character.name);
-            }}
-            title="Move seat"
-            className="flex h-8 w-8 items-center justify-center panel-cut-sm bg-zinc-900/90 text-xs text-zinc-400 hover:bg-zinc-800 hover:text-brand-300"
-          >
-            ⇄
-          </button>
-          {/* Combat Automation overhaul §5: in-combat damage is applied by
-              the resolution engine now, so DamageApplicationDialog lost its
-              old chat-roll-card entry point. It's still the right tool for
-              genuinely ad-hoc GM damage outside the automated flow
-              (environmental damage, a house rule) — this is that entry
-              point, opening it in its unrestricted mode (no attacking
-              declared move, so no Attack Target restriction applies). */}
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              onAdHocDamage(character.id);
-            }}
-            title="Apply ad-hoc damage (outside the automated flow)"
-            className="flex h-8 w-8 items-center justify-center panel-cut-sm bg-zinc-900/90 text-xs text-zinc-500 hover:bg-red-900/40 hover:text-red-300"
-          >
-            ⚕
-          </button>
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              onRemove(character.id);
-            }}
-            title="Remove from arena"
-            className="flex h-8 w-8 items-center justify-center panel-cut-sm bg-zinc-900/90 text-xs text-zinc-600 hover:bg-red-900/40 hover:text-red-400"
-          >
-            ✕
-          </button>
-        </div>
-      )}
-
-      {/* Portrait fills the card's full height edge-to-edge, no padding/gaps */}
-      {src ? (
-        <img src={src} alt="" className="h-full w-28 shrink-0 object-cover sm:w-32" />
-      ) : (
-        <div className="flex h-full w-28 shrink-0 items-center justify-center bg-zinc-800 text-3xl font-bold text-zinc-600 sm:w-32">
-          {character.name.slice(0, 1).toUpperCase()}
-        </div>
-      )}
-
-      <div className="flex min-w-0 flex-1 flex-col gap-1.5 p-2">
-        <div className="min-w-0">
-          <div className="truncate text-sm font-semibold text-zinc-100">{character.name}</div>
-          {character.character_type === 'npc' && (
-            <span className="panel-cut-sm bg-purple-600/30 px-1 text-[10px] font-bold uppercase text-purple-300">
-              NPC
-            </span>
-          )}
-        </div>
-        {activeStance && (
-          <div className="truncate text-xs text-brand-300" title="Active stance">
-            {activeStance.name}
-          </div>
-        )}
-        <div
-          className={`text-xs ${
-            pendingCost === 0
-              ? 'text-zinc-400'
-              : pendingCost > 0
-                ? 'font-semibold text-red-400'
-                : 'font-semibold text-emerald-400'
-          }`}
-          title={
-            pendingCost !== 0
-              ? `Pending, not yet confirmed: ${pendingCost > 0 ? '-' : '+'}${Math.abs(pendingCost)} Stamina`
-              : undefined
-          }
-        >
-          Stamina {pendingCost !== 0 ? previewStamina : <PopNumber value={character.current_stamina} />}/
-          {character.max_stamina}
-        </div>
-        <div className="flex items-center gap-1 text-xs text-zinc-400" title="Reasons to Fight: +1 to all rolls per point, during combat">
-          <span className="shrink-0">Reasons to Fight</span>
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              socket.emit('combat:adjust_reasons_to_fight', { characterId: character.id, delta: -1 });
-            }}
-            disabled={(participant?.reasons_to_fight ?? 0) <= 0}
-            className="px-1 leading-none text-red-400 hover:bg-zinc-800 disabled:opacity-30"
-          >
-            ▼
-          </button>
-          <span className="w-3 text-center font-mono font-semibold text-zinc-200">
-            {participant?.reasons_to_fight ?? 0}
-          </span>
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              socket.emit('combat:adjust_reasons_to_fight', { characterId: character.id, delta: 1 });
-            }}
-            disabled={(participant?.reasons_to_fight ?? 0) >= 3}
-            className="px-1 leading-none text-green-400 hover:bg-zinc-800 disabled:opacity-30"
-          >
-            ▲
-          </button>
-        </div>
-        <div className="space-y-1">
-          {POOLS.map((pool) => {
-            const poolDice = dice.filter((d) => d.pool === pool.key);
-            if (!poolDice.length) return null;
-            return (
-              <div key={pool.key} className="flex flex-wrap gap-1">
-                {poolDice.map((d) => (
-                  <span
-                    key={d.id}
-                    title={d.slot_name}
-                    className={`panel-cut-sm px-1 py-0.5 text-[10px] font-mono ${
-                      d.status === 'incapacitated' ? 'text-zinc-700 line-through' : 'text-zinc-300'
-                    }`}
-                    style={{ backgroundColor: tintFor(d) || 'rgba(255,255,255,0.05)' }}
-                  >
-                    {dieLabel(d.current_size, d.bonus)}
-                  </span>
-                ))}
-              </div>
-            );
-          })}
-        </div>
-      </div>
-    </div>
-  );
-}
 
 // Same pips look as the character sheet's Counters tab, adapted for the
 // Arena: standalone counters show just their name, character-owned ones
@@ -320,7 +142,7 @@ function FolderRosterNode({ node, charsByFolder, collapsed, onToggle, depth, ros
 
 // Mobile readiness (Change 002) §7.3: the tap alternative to dropping a
 // roster card onto a pair's left/right zone, or an already-seated
-// ParticipantCard's own drag-to-a-different-zone move — same two server
+// the HUD bar's own drag-to-a-different-zone move — same two server
 // events either way (combat:add_participant for a not-yet-seated character,
 // combat:move_participant for one already seated), picked by whether this
 // character currently appears in `participants`. Lists every existing pair
@@ -1205,7 +1027,7 @@ export default function CombatArena() {
   // the roster as a drawer (same folder tree, tap instead of drag);
   // seatTarget ({ characterId, characterName }) then shows the Left/Right/
   // New-pair picker — reused for both "seat a new character" (from the
-  // drawer) and "move an already-seated one" (ParticipantCard's ⇄ action).
+  // drawer) and "move an already-seated one" (the HUD bar's ⇄ action).
   const [mobileRosterOpen, setMobileRosterOpen] = useState(false);
   const [seatTarget, setSeatTarget] = useState(null);
   // Combat Automation overhaul §5: which character (if any) the GM is
@@ -1903,18 +1725,22 @@ export default function CombatArena() {
                   }}
                   onDragLeave={() => setDropTarget(null)}
                   onDrop={(e) => role === 'gm' && onDrop(e, 'left', rowIdx)}
-                  className={`flex min-h-24 flex-1 gap-2 overflow-x-auto overflow-y-hidden panel-cut border border-dashed p-2 transition-colors ${
+                  className={`flex min-h-24 flex-1 flex-col gap-2 panel-cut border border-dashed p-2 transition-colors ${
                     dropTarget === leftKey ? 'border-brand-400 bg-brand-950/20' : 'border-zinc-800'
                   }`}
                 >
                   {leftOccupants.map(
                     (p) =>
                       characters[p.character_id] && (
-                        <ParticipantCard
+                        <FighterHudBar
                           key={p.character_id}
                           entry={characters[p.character_id]}
                           participant={p}
                           role={role}
+                          mirrored={p.side === 'right'}
+                          compact={
+                            (p.side === 'left' ? leftOccupants : rightOccupants).length > 1
+                          }
                           onRemove={remove}
                           onAdHocDamage={setAdHocDamageCharId}
                           onMoveSeat={(id, name) => setSeatTarget({ characterId: id, characterName: name })}
@@ -1947,18 +1773,22 @@ export default function CombatArena() {
                   }}
                   onDragLeave={() => setDropTarget(null)}
                   onDrop={(e) => role === 'gm' && onDrop(e, 'right', rowIdx)}
-                  className={`flex min-h-24 flex-1 gap-2 overflow-x-auto overflow-y-hidden panel-cut border border-dashed p-2 transition-colors ${
+                  className={`flex min-h-24 flex-1 flex-col gap-2 panel-cut border border-dashed p-2 transition-colors ${
                     dropTarget === rightKey ? 'border-brand-400 bg-brand-950/20' : 'border-zinc-800'
                   }`}
                 >
                   {rightOccupants.map(
                     (p) =>
                       characters[p.character_id] && (
-                        <ParticipantCard
+                        <FighterHudBar
                           key={p.character_id}
                           entry={characters[p.character_id]}
                           participant={p}
                           role={role}
+                          mirrored={p.side === 'right'}
+                          compact={
+                            (p.side === 'left' ? leftOccupants : rightOccupants).length > 1
+                          }
                           onRemove={remove}
                           onAdHocDamage={setAdHocDamageCharId}
                           onMoveSeat={(id, name) => setSeatTarget({ characterId: id, characterName: name })}
