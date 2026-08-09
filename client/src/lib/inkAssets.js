@@ -30,11 +30,15 @@ function rng(seed) {
   };
 }
 
-function svgUri(svg) {
+function rawSvgUri(svg) {
   // encodeURIComponent covers the characters that actually break a CSS
   // url() — notably '#', which would otherwise truncate the data URI at the
   // first fill/stop colour or fragment.
-  return `url("data:image/svg+xml,${encodeURIComponent(svg.replace(/\s+/g, ' ').trim())}")`;
+  return `data:image/svg+xml,${encodeURIComponent(svg.replace(/\s+/g, ' ').trim())}`;
+}
+
+function svgUri(svg) {
+  return `url("${rawSvgUri(svg)}")`;
 }
 
 // Trace a rectangle with per-vertex jitter, in viewBox units. `amp` is the
@@ -125,6 +129,14 @@ const BANDS = {
   wide: { w: 260, h: 60, seed: 23, amp: 0.55, step: 26 },
   // Tall columns: side panels, roster/folder rails.
   tall: { w: 60, h: 200, seed: 41, amp: 0.55, step: 20 },
+  // Big dialogs — the theater/fullscreen DialogShell variants, which run to
+  // most of the viewport. These need their OWN band rather than reusing
+  // `card`, because the tear depth is amplitude x scale: a 100-unit viewBox
+  // stretched to a 1400px dialog multiplies a 0.9-unit tear into 13-38px and
+  // eats straight through the panel's p-4 into its content. (Caught by the
+  // round-replay title rendering as "OUND REPLAY".) A wider viewBox with a
+  // smaller amplitude keeps the tear at ~4px whatever the dialog's size.
+  hero: { w: 160, h: 100, seed: 59, amp: 0.4, step: 26 },
 };
 
 // Filled silhouettes — the panel's own shape.
@@ -180,7 +192,10 @@ export const INK_GRAIN = svgUri(
 // Sumi splatter silhouette — the Medium-tier stand-in for Phase V3's WebGL
 // splatter, and the alpha texture that WebGL layer samples at High tier.
 // One shape, two consumers, so a hit looks like the same ink either way.
-export const INK_SPLAT = svgUri(
+//
+// Exported in both forms on purpose: CSS needs the `url(...)` wrapper,
+// while WebGL needs a bare URI to hand an Image element.
+export const INK_SPLAT_URI = rawSvgUri(
   `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
      <g fill="#fff">
        <circle cx="32" cy="32" r="13"/>
@@ -191,6 +206,8 @@ export const INK_SPLAT = svgUri(
      </g>
    </svg>`
 );
+
+export const INK_SPLAT = `url("${INK_SPLAT_URI}")`;
 
 // Publish every generated mask onto :root as a CSS custom property, so
 // index.css's .ink-* classes reference them by name instead of the shapes
