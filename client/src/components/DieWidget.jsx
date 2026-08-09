@@ -123,7 +123,7 @@ export default function DieWidget({
                   : 'Add to pool roll'
                 : 'Roll this die'
           }
-          className={`relative flex items-center justify-center panel-cut-lg border font-display font-bold transition-colors ${
+          className={`relative flex items-center justify-center ink-panel border font-display font-bold transition-colors ${
             compact ? 'h-14 w-14 text-base' : 'h-16 w-16 text-lg'
           } ${
             incapacitated

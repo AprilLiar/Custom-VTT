@@ -109,7 +109,7 @@ export default function ItemList({
   };
 
   return (
-    <div className="panel-cut-lg border border-zinc-800 bg-zinc-900 p-4">
+    <div className="ink-panel border border-zinc-800 bg-zinc-900 p-4">
       <h3 className="mb-3 text-sm font-bold uppercase tracking-wide text-zinc-400">{title}</h3>
       {items.length === 0 ? (
         <p className="text-sm text-zinc-600">{emptyText}</p>
