@@ -141,13 +141,81 @@ export function selectUnevenCombatTarget({ candidates, allowedConcreteTargets })
 // is the target's own declared moves as `{ declaredMoveId, placementTic,
 // defenseFramePositions }`, already in queue order. Returns null (plain
 // Hit, no defending move at all) when nothing overlaps.
-export function selectDefenseMove({ defenderMoves, attackActiveStart, attackActiveEnd }) {
+export function selectDefenseMove({ defenderMoves, attackActiveStart, attackActiveEnd, random = Math.random }) {
+  // Every declared move whose Defense Frames touch the attack's Active
+  // window at all, not just the first one found.
+  const eligible = [];
   for (const move of defenderMoves) {
     const defenseTics = move.defenseFramePositions.map((pos) => move.placementTic + pos);
-    const overlaps = defenseTics.some((t) => t >= attackActiveStart && t < attackActiveEnd);
-    if (overlaps) return { declaredMoveId: move.declaredMoveId, defenseTics };
+    if (defenseTics.some((t) => t >= attackActiveStart && t < attackActiveEnd)) {
+      eligible.push({ declaredMoveId: move.declaredMoveId, defenseTics });
+    }
   }
-  return null;
+  if (!eligible.length) return null;
+  // Random among them (decided, revised). This used to take the first in
+  // declaration order, which quietly rewarded declaration sequence over
+  // anything a fighter actually did — and meant a character with two live
+  // guards always defended with the older one even when the newer one was
+  // the better fit. Picking at random is the deliberate representation of
+  // "which guard you actually got up, in the heat of it". `random` is
+  // injectable so tests stay deterministic.
+  return eligible[Math.floor(random() * eligible.length) % eligible.length];
+}
+
+// Which frame positions of a move are its Active frames — the 0-based
+// indices into the full Startup+Active+Recovery sequence that `phaseAtTic`
+// and `defense_frame_positions` both index into.
+export function activeFramePositions({ startupTics, activeTics }) {
+  const out = [];
+  for (let i = 0; i < activeTics; i++) out.push(startupTics + i);
+  return out;
+}
+
+// Defense Frames may only sit on a move's ACTIVE frames (decided, new). A
+// guard is a thing you are doing, not a thing your wind-up or your recovery
+// does incidentally — and allowing a Defense Frame on a Startup square was
+// the direct cause of the "Block placed on the attack's own Tic does
+// nothing" confusion, since such a frame lands a Tic before the attack's
+// Active window even opens.
+export function defenseFramesWithinActive({ defenseFramePositions, startupTics, activeTics }) {
+  const allowed = new Set(activeFramePositions({ startupTics, activeTics }));
+  return defenseFramePositions.every((p) => allowed.has(p));
+}
+
+// Whether a Block that fell short may extend its Recovery to hold the guard
+// through the rest of the attack (decided, new). It may NOT if the move has
+// Active frames after its last Defense Frame — that is a defensive attack
+// (guard briefly, then strike), and stretching its Recovery would stretch a
+// move that is supposed to be going somewhere. Such a Block simply covers
+// what it covers.
+export function canExtendDefense({ defenseFramePositions, startupTics, activeTics }) {
+  if (!defenseFramePositions.length) return false;
+  const lastGuard = Math.max(...defenseFramePositions);
+  return !activeFramePositions({ startupTics, activeTics }).some((p) => p > lastGuard);
+}
+
+// A Block's Recovery extension pushes that fighter's own later declared
+// moves forward to make room, recursively — each shifted move can in turn
+// collide with the next (decided, new; replaces the old Forfeit/Postpone of
+// a single colliding move). `moves` is that character's own declared moves
+// as `{ declaredMoveId, placementTic, footprintTics }`, and `blockedUntil`
+// is the first Tic that is free again after the extension. Returns the new
+// placement for every move that has to move, in order, leaving untouched
+// anything that already sat clear.
+export function cascadeShift({ moves, blockedUntil }) {
+  const ordered = [...moves].sort((a, b) => a.placementTic - b.placementTic);
+  const shifted = [];
+  let floor = blockedUntil;
+  for (const move of ordered) {
+    if (move.placementTic >= floor) {
+      // Already clear, and it becomes the new floor for whatever follows.
+      floor = move.placementTic + move.footprintTics;
+      continue;
+    }
+    shifted.push({ declaredMoveId: move.declaredMoveId, from: move.placementTic, to: floor });
+    floor += move.footprintTics;
+  }
+  return shifted;
 }
 
 // Sub-phase 5 — a self_recovery automation's +/- delta applied to a declared

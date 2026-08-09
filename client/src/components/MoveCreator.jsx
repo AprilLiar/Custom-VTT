@@ -206,14 +206,24 @@ export default function MoveCreator({
   // Shrinking a frame count can leave a stale Defense tag pointing past the
   // new total — filtered here rather than pruned from state, so re-growing
   // the count (undoing the shrink) doesn't lose the tag.
-  const visibleDefensePositions = [...defensePositions].filter((p) => p < total);
-  const toggleDefensePosition = (index) =>
+  // Defense Frames may only sit on ACTIVE frames (decided, new — the server
+  // drops anything else, so the picker must not offer it). A guard is
+  // something the move is actively doing; a green square on a Startup
+  // sequence position lands a Tic before an attack's Active window even
+  // opens, which is exactly why "I blocked on the same Tic and nothing
+  // happened" kept coming up. Filtered rather than pruned from state, same
+  // as the `< total` rule above, so re-growing Active restores the tag.
+  const isActiveFrame = (p) => p >= frames.startup && p < frames.startup + frames.active;
+  const visibleDefensePositions = [...defensePositions].filter((p) => p < total && isActiveFrame(p));
+  const toggleDefensePosition = (index) => {
+    if (!isActiveFrame(index)) return;
     setDefensePositions((prev) => {
       const next = new Set(prev);
       if (next.has(index)) next.delete(index);
       else next.add(index);
       return next;
     });
+  };
   // Only a singly-picked appendage still poses a Left/Right question — see
   // hasAmbiguousRollSlot. Picking it twice means both sides, which is an
   // answer, so such a move needs one Tell like any other.
@@ -629,7 +639,7 @@ export default function MoveCreator({
         ))}
         <div className="pb-1">
           <p className="mb-1 text-xs font-semibold uppercase text-green-500">
-            Click a square for Defense
+            Click an <span className="text-rose-400">Active</span> square for Defense
           </p>
           <FrameBar
             startup={frames.startup}
@@ -637,6 +647,7 @@ export default function MoveCreator({
             recovery={frames.recovery}
             defensePositions={visibleDefensePositions}
             onToggle={toggleDefensePosition}
+            canToggle={isActiveFrame}
           />
           {total < 1 && <p className="text-xs text-red-400">At least 1 square total</p>}
           {/* Shown for every Defensive move, not just once a Defense Frame

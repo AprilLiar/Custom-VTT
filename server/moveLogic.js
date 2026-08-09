@@ -29,12 +29,28 @@ export function validFrames(startup, active, recovery) {
 // renders) marking that particular square as also granting a defensive
 // window; the client renders it green instead of its phase color. Can land
 // anywhere in the sequence, including mid-Startup or mid-Recovery.
-export function sanitizeDefensePositions(list, totalTics) {
+// `startupTics`/`activeTics` are optional only so an older caller that has
+// no frame shape to hand still gets the previous "anywhere in the sequence"
+// behaviour; every real caller passes them.
+//
+// **Defense Frames may only sit on ACTIVE frames (decided, new).** A guard
+// is something you are actively doing, not something your wind-up or your
+// recovery does incidentally — and allowing one on a Startup square was the
+// direct cause of the long-running "a Block placed on the attack's own Tic
+// does nothing" confusion: such a frame lands a Tic *before* the attack's
+// Active window even opens, so it could never defend anything. Positions
+// outside the Active window are dropped rather than rejecting the whole
+// move, matching how every other sanitizer in this file handles bad input.
+export function sanitizeDefensePositions(list, totalTics, { startupTics = null, activeTics = null } = {}) {
   if (!Array.isArray(list)) return [];
   const clean = list
     .map((n) => Math.trunc(Number(n)))
     .filter((n) => Number.isInteger(n) && n >= 0 && n < totalTics);
-  return [...new Set(clean)].sort((a, b) => a - b);
+  const scoped =
+    startupTics == null || activeTics == null
+      ? clean
+      : clean.filter((n) => n >= startupTics && n < startupTics + activeTics);
+  return [...new Set(scoped)].sort((a, b) => a - b);
 }
 
 // Combat Automation overhaul: which of the two defensive mechanics a
