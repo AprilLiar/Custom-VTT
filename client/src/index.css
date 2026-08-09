@@ -48,6 +48,13 @@
 :root {
   --color-brand-rgb: 239 63 76;
 
+  /* The arena's red glow layers, shared by .bg-arena and its live-backdrop
+     variant so the two can never drift apart. */
+  --arena-glows:
+    radial-gradient(ellipse 130% 55% at 50% -15%, rgb(var(--color-brand-rgb) / 0.14), transparent 60%),
+    radial-gradient(ellipse 120% 50% at 10% 115%, rgb(var(--color-brand-rgb) / 0.09), transparent 70%),
+    radial-gradient(ellipse 120% 50% at 90% 115%, rgb(var(--color-brand-rgb) / 0.08), transparent 70%);
+
   /* Default contour colour for .ink-panel's torn outline.
      Deliberately BRIGHTER than the zinc-800 borders it replaces. A torn
      edge only reads as a brush edge if you can see it: matched to the old
@@ -89,15 +96,27 @@
      were the last place in the app where an accent red did NOT follow it. */
   .bg-arena {
     background-color: #0a0707;
-    background-image:
-      var(--ink-grain),
-      radial-gradient(ellipse 130% 55% at 50% -15%, rgb(var(--color-brand-rgb) / 0.14), transparent 60%),
-      radial-gradient(ellipse 120% 50% at 10% 115%, rgb(var(--color-brand-rgb) / 0.09), transparent 70%),
-      radial-gradient(ellipse 120% 50% at 90% 115%, rgb(var(--color-brand-rgb) / 0.08), transparent 70%);
+    background-image: var(--ink-grain), var(--arena-glows);
     background-size: 180px 180px, auto, auto, auto;
     background-repeat: repeat, no-repeat, no-repeat, no-repeat;
     background-blend-mode: soft-light, normal, normal, normal;
     background-attachment: fixed;
+  }
+
+  /* While the live ink backdrop is running (Phase V4), the opaque base is
+     dropped so the canvas portalled behind <body> shows through, and the
+     GRAIN LAYER GOES WITH IT. That second part is not optional: the grain
+     is composited with `soft-light`, which needs an opaque base to blend
+     against — left in place over a transparent colour it stops being a
+     subtle texture and renders at full strength as a flat grey wash over
+     the whole app. The shader supplies the movement and texture instead;
+     only the red glows stay, compositing over the ink. */
+  :root[data-ink-backdrop] .bg-arena {
+    background-color: transparent;
+    background-image: var(--arena-glows);
+    background-size: auto;
+    background-repeat: no-repeat;
+    background-blend-mode: normal;
   }
 
   /* Cut/beveled corners in three sizes, for buttons/inputs, standard
@@ -327,6 +346,14 @@ body,
   width: 100%;
   min-width: 320px;
   height: 100%;
+}
+
+/* The app's base colour lives on <body>, not only on .bg-arena. Two reasons:
+   an overscroll bounce no longer flashes white, and the V4 ink backdrop —
+   which portals a canvas to <body> at z-index -1 — has something to sit in
+   front of. */
+body {
+  background-color: #0a0707;
 }
 
 .app-shell {
