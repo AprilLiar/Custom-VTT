@@ -159,6 +159,56 @@ async function migratePairRoundResolutionsFightNumber() {
   await run('PRAGMA foreign_keys = ON');
 }
 
+// Defences now stop for the GM (decided, revised — this reverses the
+// overhaul's own decision #1, "Block is fully automatic, zero GM clicks
+// ever"). The reason is a rule no amount of code can decide: a Straight and
+// a Haymaker can both target the head, but a front block stops one and not
+// the other. Only a human knows whether the defence that happened to overlap
+// was the RIGHT defence, so any defence covering the attack's first Active
+// frame now pauses and asks — a third pause status alongside the Dodge and
+// move-conflict ones, with its own pending payload. Same table-rebuild shape
+// as the two migrations above; a CHECK can't be ALTERed in SQLite.
+async function migratePairRoundResolutionsDefenseConfirm() {
+  const row = await one(
+    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'pair_round_resolutions'"
+  );
+  if (!row || row.sql.includes('paused_defense')) return;
+  // Same foreign-key dance and the same reason as the fight_number rebuild:
+  // round_events cascades off this table, and `id` is preserved exactly so
+  // every stored replay still points at its own resolution afterwards.
+  await run('PRAGMA foreign_keys = OFF');
+  await run(`
+    CREATE TABLE pair_round_resolutions_v3 (
+      id INTEGER PRIMARY KEY,
+      pair_index INTEGER NOT NULL,
+      round_number INTEGER NOT NULL,
+      fight_number INTEGER NOT NULL DEFAULT 1,
+      round_start_tic INTEGER NOT NULL,
+      round_length INTEGER NOT NULL,
+      status TEXT NOT NULL DEFAULT 'running'
+        CHECK(status IN ('running','paused_dodge','paused_conflict','paused_defense','complete')),
+      resolved_through_tic INTEGER NOT NULL DEFAULT 0,
+      pending_dodge_json TEXT,
+      pending_conflict_json TEXT,
+      pending_defense_json TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      completed_at TEXT,
+      UNIQUE(pair_index, round_number, fight_number)
+    )
+  `);
+  await run(`
+    INSERT INTO pair_round_resolutions_v3
+      (id, pair_index, round_number, fight_number, round_start_tic, round_length, status,
+       resolved_through_tic, pending_dodge_json, pending_conflict_json, created_at, completed_at)
+    SELECT id, pair_index, round_number, fight_number, round_start_tic, round_length, status,
+           resolved_through_tic, pending_dodge_json, pending_conflict_json, created_at, completed_at
+    FROM pair_round_resolutions
+  `);
+  await run('DROP TABLE pair_round_resolutions');
+  await run('ALTER TABLE pair_round_resolutions_v3 RENAME TO pair_round_resolutions');
+  await run('PRAGMA foreign_keys = ON');
+}
+
 export async function initDb() {
   // Phase 0's demo table is no longer used.
   await run('DROP TABLE IF EXISTS pings');
@@ -808,6 +858,7 @@ export async function initDb() {
     )
   `);
   await migratePairRoundResolutionsFightNumber();
+  await migratePairRoundResolutionsDefenseConfirm();
 
   // Combat Automation overhaul: the replayable event log for one pair's
   // round — the single source of truth for both the live cutscene push and

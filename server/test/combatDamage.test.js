@@ -10,6 +10,10 @@ import {
   selectAutoDamageTarget,
   selectUnevenCombatTarget,
   selectDefenseMove,
+  activeFramePositions,
+  defenseFramesWithinActive,
+  canExtendDefense,
+  cascadeShift,
 } from '../combatDamage.js';
 
 test('computeHitDamage: every 5 points is 1 Half-Damage step (0.5 damage)', () => {
@@ -269,4 +273,95 @@ test('selectDefenseMove: null (plain Hit) when no declared move overlaps at all'
     attackActiveEnd: 15,
   });
   assert.equal(result, null);
+});
+
+// ---------------------------------------------------------------------
+// Defence rework: random defender pick, the Active-frames-only rule, the
+// no-extending-a-defensive-attack rule, and the cascade shift.
+// ---------------------------------------------------------------------
+
+test('selectDefenseMove picks at random among every eligible move', () => {
+  const defenderMoves = [
+    { declaredMoveId: 1, placementTic: 0, defenseFramePositions: [1] },
+    { declaredMoveId: 2, placementTic: 0, defenseFramePositions: [1, 2] },
+    { declaredMoveId: 3, placementTic: 9, defenseFramePositions: [0] }, // nowhere near
+  ];
+  const args = { defenderMoves, attackActiveStart: 1, attackActiveEnd: 3 };
+  // The out-of-range move is never eligible whatever the roll says.
+  assert.equal(selectDefenseMove({ ...args, random: () => 0 }).declaredMoveId, 1);
+  assert.equal(selectDefenseMove({ ...args, random: () => 0.99 }).declaredMoveId, 2);
+  // Previously this always returned the first in declaration order; both
+  // eligible moves must now be reachable.
+  const seen = new Set([0, 0.5, 0.99].map((r) => selectDefenseMove({ ...args, random: () => r }).declaredMoveId));
+  assert.deepEqual([...seen].sort(), [1, 2]);
+});
+
+test('selectDefenseMove still returns null when nothing overlaps', () => {
+  assert.equal(
+    selectDefenseMove({
+      defenderMoves: [{ declaredMoveId: 1, placementTic: 0, defenseFramePositions: [0] }],
+      attackActiveStart: 5,
+      attackActiveEnd: 7,
+    }),
+    null
+  );
+});
+
+test('defenseFramesWithinActive accepts only Active-phase positions', () => {
+  // startup 2, active 3 -> Active frames are positions 2,3,4.
+  const shape = { startupTics: 2, activeTics: 3 };
+  assert.equal(defenseFramesWithinActive({ ...shape, defenseFramePositions: [2, 3, 4] }), true);
+  assert.equal(defenseFramesWithinActive({ ...shape, defenseFramePositions: [3] }), true);
+  assert.equal(defenseFramesWithinActive({ ...shape, defenseFramePositions: [1] }), false, 'Startup frame');
+  assert.equal(defenseFramesWithinActive({ ...shape, defenseFramePositions: [5] }), false, 'Recovery frame');
+  assert.equal(defenseFramesWithinActive({ ...shape, defenseFramePositions: [] }), true, 'no frames is vacuously fine');
+});
+
+test('canExtendDefense refuses a move that still has Active frames to come', () => {
+  // A pure guard: startup 1, active 2, both Active frames are Defense.
+  assert.equal(canExtendDefense({ defenseFramePositions: [1, 2], startupTics: 1, activeTics: 2 }), true);
+  // A defensive attack: guards on its first Active frame, then strikes on
+  // the second. Extending its Recovery would stretch a move that is going
+  // somewhere.
+  assert.equal(canExtendDefense({ defenseFramePositions: [1], startupTics: 1, activeTics: 2 }), false);
+  assert.equal(canExtendDefense({ defenseFramePositions: [], startupTics: 1, activeTics: 2 }), false);
+});
+
+test('cascadeShift pushes every later move forward, recursively', () => {
+  // The guard is busy until Tic 5. Two later moves sit at 3 and 4.
+  const shifted = cascadeShift({
+    blockedUntil: 5,
+    moves: [
+      { declaredMoveId: 10, placementTic: 3, footprintTics: 2 },
+      { declaredMoveId: 11, placementTic: 4, footprintTics: 3 },
+    ],
+  });
+  // The first slides to 5 and occupies 5-6, so the second can't just take 5
+  // either — it lands at 7. That knock-on is the whole point.
+  assert.deepEqual(shifted, [
+    { declaredMoveId: 10, from: 3, to: 5 },
+    { declaredMoveId: 11, from: 4, to: 7 },
+  ]);
+});
+
+test('cascadeShift leaves moves that already sit clear alone', () => {
+  const shifted = cascadeShift({
+    blockedUntil: 5,
+    moves: [
+      { declaredMoveId: 10, placementTic: 6, footprintTics: 2 },
+      { declaredMoveId: 11, placementTic: 9, footprintTics: 1 },
+    ],
+  });
+  assert.deepEqual(shifted, []);
+});
+
+test('cascadeShift only pushes the moves it has to', () => {
+  const shifted = cascadeShift({
+    blockedUntil: 5,
+    moves: [
+      { declaredMoveId: 10, placementTic: 4, footprintTics: 1 }, // collides -> 5, ends 6
+      { declaredMoveId: 11, placementTic: 8, footprintTics: 1 }, // already clear of 6
+    ],
+  });
+  assert.deepEqual(shifted, [{ declaredMoveId: 10, from: 4, to: 5 }]);
 });

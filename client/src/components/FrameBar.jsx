@@ -26,6 +26,10 @@ export default function FrameBar({
   recovery,
   defensePositions = [],
   onToggle,
+  // Which squares `onToggle` will actually accept. Defense Frames are
+  // Active-only now (decided), and a square that silently ignores a click
+  // is worse than one that plainly isn't a button.
+  canToggle = () => true,
   size = 'h-3.5 w-3.5',
 }) {
   const counts = { startup, active, recovery };
@@ -44,15 +48,22 @@ export default function FrameBar({
           index += 1;
           const squareIndex = index;
           const isDefense = squareIndex < total && defenseSet.has(squareIndex);
-          const Tag = onToggle ? 'button' : 'span';
+          const editable = Boolean(onToggle) && canToggle(squareIndex);
+          const Tag = editable ? 'button' : 'span';
           return (
             <Tag
               key={`${key}-${i}`}
-              type={onToggle ? 'button' : undefined}
-              onClick={onToggle ? () => onToggle(squareIndex) : undefined}
-              title={onToggle ? `${label} ${i + 1} — click to toggle Defense` : undefined}
+              type={editable ? 'button' : undefined}
+              onClick={editable ? () => onToggle(squareIndex) : undefined}
+              title={
+                editable
+                  ? `${label} ${i + 1} — click to toggle Defense`
+                  : onToggle
+                    ? `${label} ${i + 1} — only Active frames can be Defense Frames`
+                    : undefined
+              }
               className={`${size} ${isDefense ? PHASE_BG.defense : className} border border-zinc-900 first:rounded-l-sm last:rounded-r-sm ${
-                onToggle ? 'cursor-pointer hover:opacity-75' : ''
+                editable ? 'cursor-pointer hover:opacity-75' : onToggle ? 'cursor-not-allowed opacity-60' : ''
               }`}
             />
           );

@@ -1739,7 +1739,8 @@ io.on('connection', (socket) => {
     if (!validFrames(startup, active, recovery)) return null;
     const defenseFramePositions = sanitizeDefensePositions(
       payload.defenseFramePositions,
-      startup + active + recovery
+      startup + active + recovery,
+      { startupTics: startup, activeTics: active }
     );
     const staminaCost = clampStaminaCost(payload.staminaCost);
     const isDefault = payload.isDefault ? 1 : 0;
