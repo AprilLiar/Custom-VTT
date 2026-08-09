@@ -294,7 +294,7 @@ export function FighterHudBar({
       onDragStart={onDragStart}
       onClick={() => navigate(`/character/${character.id}`)}
       title="Open full sheet"
-      className={`group relative flex w-full min-w-0 shrink-0 cursor-pointer items-stretch gap-2 ink-panel-wide bg-zinc-900/80 p-2 transition-colors ${
+      className={`group relative flex w-full min-w-0 shrink-0 cursor-pointer items-stretch gap-2 ink-panel-wide bg-zinc-900/80 p-3 transition-colors ${
         mirrored ? 'flex-row-reverse' : ''
       }`}
     >

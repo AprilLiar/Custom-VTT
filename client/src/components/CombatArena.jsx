@@ -24,6 +24,8 @@ import MoveCard from './MoveCard.jsx';
 import Thumb from './Thumb.jsx';
 import DropSlamGhost from './DropSlamGhost.jsx';
 import DialogShell from './DialogShell.jsx';
+import InkHeading from './InkHeading.jsx';
+import HoverPopover from './HoverPopover.jsx';
 
 const MIN_TARGET = 2;
 const MAX_TARGET = 20;
@@ -401,6 +403,10 @@ export function TicCounterCentral({
   role,
   label,
 }) {
+  // Anchor + open state for the overflow preview, which is portalled to
+  // <body> rather than nested in the strip (see HoverPopover).
+  const overflowAnchorRef = useRef(null);
+  const [overflowOpen, setOverflowOpen] = useState(false);
   const squares = Array.from({ length: roundLength }, (_, i) => ({
     absoluteTic: roundStartTic + i,
     relative: i + 1,
@@ -510,7 +516,12 @@ export function TicCounterCentral({
           );
         })}
         {overflowPreview && (
-          <div className="group relative shrink-0">
+          <div
+            ref={overflowAnchorRef}
+            className="relative shrink-0"
+            onMouseEnter={() => setOverflowOpen(true)}
+            onMouseLeave={() => setOverflowOpen(false)}
+          >
             <span
               className={`flex ${TIC_SQUARE_SIZE} items-center justify-center panel-cut-sm border border-amber-500/70 bg-amber-950/40 font-display text-sm font-bold text-amber-300`}
               title={`Runs ${overflowPreview.tics} Tic${
@@ -521,8 +532,11 @@ export function TicCounterCentral({
             </span>
             {/* Hover reveals the next round with the spilled frames in
                 place, so "how much of my next round does this eat?" is
-                answerable before committing rather than after. */}
-            <div className="pointer-events-none absolute bottom-full left-1/2 z-50 mb-2 hidden -translate-x-1/2 ink-panel border border-amber-700/60 bg-zinc-950 p-2 shadow-2xl shadow-black/80 group-hover:block">
+                answerable before committing rather than after. Portalled
+                (see HoverPopover) so no lane's mask or stacking context can
+                clip it or paint over it. */}
+            <HoverPopover anchorRef={overflowAnchorRef} open={overflowOpen}>
+              <div className="ink-panel border border-amber-700/60 bg-zinc-950 p-3 shadow-2xl shadow-black/80">
               <div className="mb-1 whitespace-nowrap font-display text-[10px] uppercase tracking-widest text-amber-300">
                 Next round
               </div>
@@ -539,8 +553,9 @@ export function TicCounterCentral({
                     {sq.relative}
                   </span>
                 ))}
+                </div>
               </div>
-            </div>
+            </HoverPopover>
           </div>
         )}
       </div>
@@ -623,24 +638,27 @@ function CompactTellFace({ dm, tellById }) {
 function CompactDeclaredMoveCard({ dm, move, tellById }) {
   const revealed = dm.isRevealed && move;
   const [showCard, setShowCard] = useState(false);
+  const anchorRef = useRef(null);
   return (
     <div
+      ref={anchorRef}
       style={{ perspective: 1000 }}
       className="relative"
       onMouseEnter={() => revealed && setShowCard(true)}
       onMouseLeave={() => setShowCard(false)}
       onClick={() => revealed && setShowCard((v) => !v)}
     >
-      <AnimatePresence>
-        {showCard && revealed && (
+      {/* Portalled to <body> (see HoverPopover): nested in the lane it was
+          subject to every ancestor mask, clip-path and stacking context
+          around it, so a `z-50` here was never a guarantee of being on top. */}
+      <HoverPopover anchorRef={anchorRef} open={showCard && revealed} interactive>
+        <AnimatePresence>
           <motion.div
             initial={{ opacity: 0, y: 6, scale: 0.96 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 6, scale: 0.96 }}
             transition={{ duration: 0.14 }}
-            // z-50 + fixed-width: it deliberately covers whatever lane
-            // content sits beside and below it.
-            className="absolute bottom-full left-1/2 z-50 mb-2 w-72 -translate-x-1/2 ink-panel border border-brand-700/60 bg-zinc-950 p-2 shadow-2xl shadow-black/80"
+            className="w-72 ink-panel border border-brand-700/60 bg-zinc-950 p-3 shadow-2xl shadow-black/80"
             onClick={(e) => e.stopPropagation()}
           >
             <MoveCard
@@ -650,8 +668,8 @@ function CompactDeclaredMoveCard({ dm, move, tellById }) {
               leftTell={move.left_tell_id ? tellById.get(move.left_tell_id) : undefined}
             />
           </motion.div>
-        )}
-      </AnimatePresence>
+        </AnimatePresence>
+      </HoverPopover>
       {!dm.staminaCommitted && (
         <button
           onClick={() => socket.emit('move:undeclare', { declaredMoveId: dm.id })}
@@ -1255,7 +1273,7 @@ export default function CombatArena() {
         draggable
         onDragStart={(e) => e.dataTransfer.setData('text/character-id', String(c.id))}
         title="Drag onto a side to seat them"
-        className="flex cursor-grab items-center gap-2 ink-panel-wide border border-zinc-800 bg-zinc-900 p-2 active:cursor-grabbing"
+        className="flex cursor-grab items-center gap-2 ink-panel-wide border border-zinc-800 bg-zinc-900 p-3 active:cursor-grabbing"
       >
         <div className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden panel-cut-sm bg-zinc-800 text-sm font-bold text-zinc-600">
           {src ? (
@@ -1286,7 +1304,7 @@ export default function CombatArena() {
           setMobileRosterOpen(false);
           setSeatTarget({ characterId: c.id, characterName: c.name });
         }}
-        className="flex min-h-11 w-full items-center gap-2 ink-panel-wide border border-zinc-800 bg-zinc-900 p-2 text-left hover:border-brand-600"
+        className="flex min-h-11 w-full items-center gap-2 ink-panel-wide border border-zinc-800 bg-zinc-900 p-3 text-left hover:border-brand-600"
       >
         <div className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden panel-cut-sm bg-zinc-800 text-sm font-bold text-zinc-600">
           {src ? (
@@ -1504,7 +1522,7 @@ export default function CombatArena() {
     // is given, with everything inside it sized fluidly rather than fixed.
     <div className="w-full">
       <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
-        <h1 className="text-2xl font-bold tracking-tight">Combat Arena</h1>
+        <InkHeading seed={11}>Combat Arena</InkHeading>
         <div className="flex items-center gap-3">
           {/* Mobile readiness (Change 002) §7.3: below the width where the
               drag-based roster aside disappears (sm:block, see it below),
