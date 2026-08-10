@@ -585,7 +585,7 @@ export default function MovesCompendium() {
                   }}
                   onDragLeave={() => setDropTarget(null)}
                   onDrop={(e) => onDropOnCharacter(e, c)}
-                  className={`flex items-center gap-2 ink-panel border p-2 transition ${
+                  className={`flex items-center gap-2 ink-panel border p-3 transition ${
                     dropTarget === c.id
                       ? 'border-brand-500 bg-brand-950/50'
                       : 'border-zinc-800 bg-zinc-900'

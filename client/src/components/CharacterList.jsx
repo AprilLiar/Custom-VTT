@@ -12,6 +12,7 @@ import { portraitSrc } from '../lib/image.js';
 import { flattenFolderTree, folderPath } from '../lib/folders.js';
 import FolderTreeNav from './FolderTreeNav.jsx';
 import DialogShell from './DialogShell.jsx';
+import InkHeading from './InkHeading.jsx';
 
 // Mobile readiness (Change 002) §9: dragging a character card onto the
 // folder sidebar has no touch equivalent, so this is the tap alternative —
@@ -203,7 +204,7 @@ export default function CharacterList() {
   return (
     <div className="mx-auto max-w-5xl">
       <div className="mb-4 flex items-center justify-between">
-        <h1 className="text-2xl font-bold">Characters</h1>
+        <InkHeading seed={3}>Characters</InkHeading>
         {!adding && (
           <button
             onClick={() => setAdding(true)}

@@ -113,22 +113,24 @@ function edgeMask(w, h, { seed, amp, step, stroke }) {
   );
 }
 
-// Amplitudes are tuned so the tear renders at roughly 2-6px on a typical
-// element of each band's aspect. The upper end is the real constraint: a
-// mask eats that much of the panel's own content box, and the app's tightest
-// padded panels sit at p-2 (8px), so a tear deeper than that would start
-// clipping text rather than framing it.
+// Amplitudes are tuned so the tear renders at roughly 2-5px on a typical
+// element of each band's aspect. The upper end is the real constraint and it
+// is easy to get wrong: tear depth is amplitude x scale, so the SAME mask
+// bites twice as deep into an element twice as wide. At the first-pass
+// amplitudes a wide card could lose 10px+ of its own content box, which
+// showed up in practice as panel edges cutting into text. These are the
+// reduced values; anything using them still wants p-3 (12px) or more.
 //
 // Steps are deliberately long. Short segments plus jitter is a wave; long
 // segments plus occasional bites is a torn edge, and the second is what the
 // art direction is after.
 const BANDS = {
   // Roughly square panels: cards, dialogs, move/perk tiles.
-  card: { w: 100, h: 100, seed: 7, amp: 0.9, step: 17 },
+  card: { w: 100, h: 100, seed: 7, amp: 0.55, step: 17 },
   // Wide, short surfaces: HUD bars, status rows, chat cards, counter panels.
-  wide: { w: 260, h: 60, seed: 23, amp: 0.55, step: 26 },
+  wide: { w: 260, h: 60, seed: 23, amp: 0.4, step: 26 },
   // Tall columns: side panels, roster/folder rails.
-  tall: { w: 60, h: 200, seed: 41, amp: 0.55, step: 20 },
+  tall: { w: 60, h: 200, seed: 41, amp: 0.4, step: 20 },
   // Big dialogs — the theater/fullscreen DialogShell variants, which run to
   // most of the viewport. These need their OWN band rather than reusing
   // `card`, because the tear depth is amplitude x scale: a 100-unit viewBox
@@ -136,7 +138,7 @@ const BANDS = {
   // eats straight through the panel's p-4 into its content. (Caught by the
   // round-replay title rendering as "OUND REPLAY".) A wider viewBox with a
   // smaller amplitude keeps the tear at ~4px whatever the dialog's size.
-  hero: { w: 160, h: 100, seed: 59, amp: 0.4, step: 26 },
+  hero: { w: 160, h: 100, seed: 59, amp: 0.3, step: 26 },
 };
 
 // Filled silhouettes — the panel's own shape.

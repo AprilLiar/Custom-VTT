@@ -20,6 +20,7 @@ import {
   saveEffectsQuality,
 } from '../lib/theme.js';
 import { useEffectsQuality } from '../lib/useEffectsQuality.js';
+import InkHeading from './InkHeading.jsx';
 
 const QUALITY_LABEL = {
   high: 'High',
@@ -72,7 +73,7 @@ export default function SettingsPage() {
 
   return (
     <div className="mx-auto max-w-2xl space-y-4">
-      <h1 className="text-2xl font-bold tracking-tight">Settings</h1>
+      <InkHeading seed={13}>Settings</InkHeading>
 
       <div className="ink-panel space-y-3 border border-zinc-800 bg-zinc-900 p-4">
         <div>

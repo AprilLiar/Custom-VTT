@@ -114,7 +114,7 @@ function AutomationEditor({ automations, onChange }) {
 // One On Hit/Block/Miss/Defense-outcome box: free text + automation editor.
 function TriggerBox({ trigger, label, interactions, setInteractions }) {
   return (
-    <div className="ink-panel border border-zinc-800 p-2">
+    <div className="ink-panel border border-zinc-800 p-3">
       <div className="mb-1 text-xs font-bold uppercase tracking-wide text-zinc-400">{label}</div>
       <textarea
         value={interactions[trigger].text}
@@ -422,7 +422,7 @@ export default function MoveCreator({
                   key={attr.id}
                   type="button"
                   onClick={() => setStyleId(attr.id)}
-                  className={`inline-flex items-center gap-1 ink-panel border px-2 py-1 text-xs font-semibold ${
+                  className={`inline-flex items-center gap-1 ink-panel border px-3 py-1.5 text-xs font-semibold ${
                     selected
                       ? 'border-brand-500 bg-brand-600/30 text-brand-200'
                       : 'border-zinc-700 bg-zinc-800 text-zinc-400 hover:border-zinc-500'
@@ -491,7 +491,7 @@ export default function MoveCreator({
                         : undefined
                     }
                     onClick={() => toggleRollSlot(slot)}
-                    className={`ink-panel border px-2 py-1 text-xs font-semibold ${
+                    className={`ink-panel border px-3 py-1.5 text-xs font-semibold ${
                       count > 0
                         ? 'border-brand-500 bg-brand-600/30 text-brand-200'
                         : 'border-zinc-700 bg-zinc-800 text-zinc-400 hover:border-zinc-500'
@@ -529,7 +529,7 @@ export default function MoveCreator({
                   type="button"
                   onClick={() => setCustomRollSize(customRollSize === size ? null : size)}
                   title={`d${size}`}
-                  className={`ink-panel border px-2 py-1.5 ${
+                  className={`ink-panel border px-3 py-1.5.5 ${
                     customRollSize === size
                       ? 'border-brand-500 bg-brand-600/30 text-brand-200'
                       : 'border-zinc-700 bg-zinc-800 text-zinc-400 hover:border-zinc-500'
@@ -574,7 +574,7 @@ export default function MoveCreator({
                 key={slot}
                 type="button"
                 onClick={() => toggleAttackTarget(slot)}
-                className={`ink-panel border px-2 py-1 text-xs font-semibold ${
+                className={`ink-panel border px-3 py-1.5 text-xs font-semibold ${
                   selected
                     ? 'border-brand-500 bg-brand-600/30 text-brand-200'
                     : 'border-zinc-700 bg-zinc-800 text-zinc-400 hover:border-zinc-500'
