@@ -486,6 +486,14 @@ export async function initDb() {
   await ensureColumn('moves', 'left_tell_id', 'INTEGER REFERENCES tells(id)');
   await ensureColumn('moves', 'is_defensive', 'INTEGER NOT NULL DEFAULT 0');
   await ensureColumn('moves', 'stamina_cost', 'INTEGER NOT NULL DEFAULT 0');
+  // Block Stamina (decided, new — the first Tag automation): a move carrying
+  // the **Block** Tag has no up-front Stamina Cost at all. It pays at
+  // resolution instead, for exactly as much of the attack as its guard
+  // actually absorbed, scaled by this multiplier. REAL, not INTEGER: the
+  // whole point is that it can sit either side of 1 (a cheap guard at 0.5, a
+  // punishing one at 2). Never 0 or negative — see clampStaminaModifier.
+  // Meaningless on a move without the Block Tag, and simply ignored there.
+  await ensureColumn('moves', 'stamina_modifier', 'REAL NOT NULL DEFAULT 1');
   await ensureColumn('moves', 'roll_type', "TEXT NOT NULL DEFAULT 'stat' CHECK(roll_type IN ('stat','custom'))");
   await ensureColumn('moves', 'custom_roll_size', 'INTEGER CHECK(custom_roll_size IN (4,6,8,10,12))');
   // JSON array of 0-based indices into the move's full frame sequence
@@ -959,6 +967,25 @@ export async function initDb() {
 
   await seedRuleset();
   await seedTells();
+  await seedBlockTag();
+}
+
+// Block Stamina (decided, new): the **Block** Tag is the first Tag in the
+// game that does something mechanical rather than describing something — it
+// switches a move onto the absorb-based Stamina rule (see
+// server/tagAutomations.js). It is matched by NAME, case-insensitively, and
+// never by id, because the GM owns this list: a world that already has its
+// own "Block" tag keeps it, tag ids differ between databases, and a GM
+// renaming or re-creating the tag must not silently detach the mechanic.
+// Only seeded when no case-insensitive match exists at all, so this never
+// duplicates a tag the GM already made.
+async function seedBlockTag() {
+  const existing = await one("SELECT id FROM tags WHERE LOWER(name) = 'block'");
+  if (existing) return;
+  await run('INSERT INTO tags (name, description) VALUES (?, ?)', [
+    'Block',
+    "This move guards. It has no up-front Stamina Cost — instead it spends Stamina at resolution for exactly as much of the attack as it absorbed, scaled by its Stamina Modifier.",
+  ]);
 }
 
 // Two placeholder Tells so moves can be created immediately; the GM replaces

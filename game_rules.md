@@ -150,6 +150,28 @@ A **Move** is one physical action with a shape in time. It has:
 **Unique** move carries one Style, and only a character with that Style in one
 of their stances can learn it.
 
+### The Block Tag
+
+Most Tags just describe a move. The **Block** Tag changes how it is paid for.
+
+A move tagged **Block** has **no Stamina Cost**. It costs nothing to declare —
+you can always throw up a guard. It pays afterwards, for exactly as much of
+the attack as it actually **absorbed**, and never for more than the attack was
+worth: a 6 met by a guard of 20 is stopped completely and costs **6**, not 20.
+
+In place of a Cost, a Block carries a **Stamina Modifier** — a multiplier on
+that bill. Above 1 is a guard that punishes you for using it; below 1 is one
+you can hold all fight. It is never 0 or negative, so a Block is never free.
+The final figure is rounded to the nearest whole point.
+
+> **A guard only holds as much as you can pay for.** If stopping the whole
+> attack would cost more Stamina than you have left, your guard holds as much
+> as your Stamina buys and the rest gets through. Stamina *is* your defence —
+> a fighter running on empty cannot keep blocking.
+
+A **Dodge** is unaffected: it either works or it doesn't, so it has no "amount
+absorbed" to charge for and keeps an ordinary Stamina Cost.
+
 ### Rolls
 
 A Move's Roll picks from six slots: **Skull**, **Brain**, **Stamina**,

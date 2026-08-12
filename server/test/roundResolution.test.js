@@ -1162,3 +1162,147 @@ test('a stat-step automation steps the named Stat and shows it as damage', async
   assert.equal(fromAutomation.length, 1);
   assert.equal(fromAutomation[0].slotName, 'Left Hand');
 });
+
+// ---------- Block Stamina (the Block Tag's automation) ----------
+
+// Attaches a Tag by name to a move, creating the tag row on demand. Tag
+// automation is keyed by name, never by id (see server/tagAutomations.js), so
+// the test creates one exactly the way a GM would.
+async function tagMove(moveId, tagName) {
+  let tag = await one('SELECT id FROM tags WHERE LOWER(name) = LOWER(?)', [tagName]);
+  if (!tag) {
+    const result = await run('INSERT INTO tags (name, description) VALUES (?, ?)', [tagName, '']);
+    tag = { id: Number(result.lastInsertRowid) };
+  }
+  await run('INSERT INTO move_tags (move_id, tag_id) VALUES (?, ?)', [moveId, tag.id]);
+  return tag.id;
+}
+
+// The Stamina a Block actually spent, read off its own round_event rather
+// than by differencing the pool before and after. Idle-Tic Regen hands
+// Stamina back over the rest of the round, so the net difference across a
+// whole resolution is NOT the block's price — differencing would have made
+// these tests measure two rules at once.
+async function blockSpendFor(pairIndex, characterId) {
+  const rows = await all('SELECT type, payload FROM round_events WHERE pair_index = ? ORDER BY seq', [pairIndex]);
+  const spend = rows
+    .map((r) => ({ type: r.type, p: JSON.parse(r.payload) }))
+    .find((r) => r.type === 'stamina_changed' && r.p.characterId === characterId && r.p.delta < 0);
+  return spend ? { delta: spend.p.delta, reason: spend.p.reason } : null;
+}
+
+// Damage that landed on the DEFENDER specifically. A defensive move with a
+// Roll is itself a revealed move with an Active window, so it counter-attacks
+// the attacker on its own account (see the Full Block test above) — scoping
+// by target is what separates "the block failed" from "the block hit back".
+async function damageTaken(pairIndex, characterId) {
+  const rows = await all('SELECT type, payload FROM round_events WHERE pair_index = ? ORDER BY seq', [pairIndex]);
+  return rows
+    .map((r) => ({ type: r.type, p: JSON.parse(r.payload) }))
+    .find((r) => r.type === 'damage_applied' && r.p.targetCharacterId === characterId) ?? null;
+}
+
+const staminaOf = async (characterId) =>
+  (await one('SELECT current_stamina FROM characters WHERE id = ?', [characterId])).current_stamina;
+
+async function blockScenario({ pairIndex, attackModifier, attackerSkull = 8, defenderStamina = null, staminaModifier = null }) {
+  const attacker = await createCharacter(`Blk${pairIndex} Attacker`);
+  const defender = await createCharacter(`Blk${pairIndex} Defender`);
+  // Math.random is pinned near 1 for this file, so every die lands on its max
+  // face and each scenario is plain arithmetic.
+  const attack = await createMove({
+    name: `Blk${pairIndex} Attack`,
+    startupTics: 1,
+    activeTics: 1,
+    recoveryTics: 1,
+    rollSlots: ['Skull'],
+    rollModifier: attackModifier,
+    attackTargets: ['Body'],
+  });
+  const guard = await createMove({
+    name: `Blk${pairIndex} Guard`,
+    startupTics: 1,
+    activeTics: 1,
+    recoveryTics: 1,
+    isDefensive: true,
+    defenseKind: 'block',
+    defenseFramePositions: [1], // the Active square, landing on the attack's own Active Tic
+    rollSlots: ['Body'], // rolls 8
+  });
+  await tagMove(guard, 'Block');
+  if (attackerSkull !== 8) await setDieSize(attacker, 'Skull', attackerSkull);
+  if (staminaModifier != null) await run('UPDATE moves SET stamina_modifier = ? WHERE id = ?', [staminaModifier, guard]);
+
+  await seatPair(pairIndex, attacker, defender);
+  await startPairDeclaration(mockIo, pairIndex);
+  await declareMove({ characterId: attacker, moveId: attack, placementTic: 0, startupTics: 1 });
+  await declareMove({ characterId: defender, moveId: guard, placementTic: 0, startupTics: 1 });
+  // Set AFTER declaration opens: startPairDeclaration runs the round's own
+  // Stamina restore/regen, which would otherwise refill the pool this
+  // scenario is deliberately draining.
+  if (defenderStamina != null) await run('UPDATE characters SET current_stamina = ? WHERE id = ?', [defenderStamina, defender]);
+  await resolvePair(pairIndex);
+  return { attacker, defender, guard };
+}
+
+test('Block Tag: the guard is charged for what it absorbed, never more than the attack was worth', async () => {
+  // Attack rolls 5 (d8 max, -3); the guard rolls 8. It out-guards the attack
+  // outright — and is still only billed the 5 the attack was worth.
+  const pairIndex = 400;
+  const { defender } = await blockScenario({ pairIndex, attackModifier: -3 });
+  const spend = await blockSpendFor(pairIndex, defender);
+  assert.ok(spend, 'the Block must spend Stamina at resolution');
+  assert.equal(spend.delta, -5);
+  assert.match(spend.reason, /absorbed 5/);
+  assert.equal(await damageTaken(pairIndex, defender), null, 'a fully-paid guard takes nothing');
+});
+
+test('Block Tag: the Stamina Modifier scales the bill without weakening the guard', async () => {
+  // Attack rolls 6; absorbed 6 at x0.5 costs 3, and still stops all of it.
+  const pairIndex = 401;
+  const { defender } = await blockScenario({ pairIndex, attackModifier: -2, staminaModifier: 0.5 });
+  const spend = await blockSpendFor(pairIndex, defender);
+  assert.equal(spend.delta, -3);
+  assert.match(spend.reason, /absorbed 6/);
+  assert.equal(await damageTaken(pairIndex, defender), null);
+});
+
+test('Block Tag: a guard only holds as much as its Stamina pays for', async () => {
+  // A d12 Skull at +8 rolls 20. The guard would absorb its own 8, but the
+  // defender has 3 Stamina: it holds 3, and 17 gets through as 3 steps.
+  const pairIndex = 402;
+  const { defender } = await blockScenario({ pairIndex, attackModifier: 8, attackerSkull: 12, defenderStamina: 3 });
+  const spend = await blockSpendFor(pairIndex, defender);
+  assert.equal(spend.delta, -3, 'spends every point it has and not one more');
+  const damage = await damageTaken(pairIndex, defender);
+  assert.ok(damage, 'a guard that could not be paid for lets the attack through');
+  assert.equal(damage.p.steps, 3);
+  const notice = await one(
+    `SELECT content FROM chat_log WHERE kind = 'message' AND content LIKE '%ran out of Stamina mid-%' ORDER BY id DESC LIMIT 1`
+  );
+  assert.ok(notice, 'the table must be told the guard was cut short');
+});
+
+test('a defensive move WITHOUT the Block Tag is untouched by any of this', async () => {
+  // The Tag is the switch, not the Block/Dodge toggle: an untagged Block
+  // keeps its old flat-cost behaviour and spends nothing at resolution.
+  const pairIndex = 403;
+  const attacker = await createCharacter('Untagged Attacker');
+  const defender = await createCharacter('Untagged Defender');
+  const jab = await createMove({
+    name: 'UT Jab', startupTics: 1, activeTics: 1, recoveryTics: 1,
+    rollSlots: ['Skull'], rollModifier: -3, attackTargets: ['Body'],
+  });
+  const guard = await createMove({
+    name: 'UT Guard', startupTics: 1, activeTics: 1, recoveryTics: 1,
+    isDefensive: true, defenseKind: 'block', defenseFramePositions: [1], rollSlots: ['Body'],
+  });
+  await seatPair(pairIndex, attacker, defender);
+  await startPairDeclaration(mockIo, pairIndex);
+  await declareMove({ characterId: attacker, moveId: jab, placementTic: 0, startupTics: 1 });
+  await declareMove({ characterId: defender, moveId: guard, placementTic: 0, startupTics: 1 });
+  await resolvePair(pairIndex);
+
+  assert.equal(await blockSpendFor(pairIndex, defender), null, 'an untagged Block must not be charged at resolution');
+  assert.equal(await damageTaken(pairIndex, defender), null, 'and still blocks exactly as it always did');
+});

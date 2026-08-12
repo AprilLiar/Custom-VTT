@@ -1,5 +1,10 @@
 import { Zap } from 'lucide-react';
-import { TRIGGER_LABELS, automationLabel } from '../lib/moveDisplay.js';
+import {
+  TRIGGER_LABELS,
+  automationLabel,
+  carriesBlockTag,
+  staminaModifierLabel,
+} from '../lib/moveDisplay.js';
 import { iconFor } from '../lib/styleIcons.js';
 import { dieFormula } from '../lib/dice.js';
 import { ROLL_SLOT_LABELS, describeRollSlots } from '../lib/diceSlots.js';
@@ -28,6 +33,11 @@ export default function MoveCard({
   actions,
 }) {
   const StyleIcon = style ? iconFor(style.icon) : null;
+  // Block Tag (the first Tag automation — see moveDisplay.js). `tags` is
+  // already the resolved rows for this move's tag_ids, including whatever a
+  // Perk added or removed for this character, so a Perk that grants the Block
+  // Tag correctly makes the card read as a Block.
+  const isBlock = carriesBlockTag(tags.map((t) => t.id), tags);
   // Custom Roll type (item 2, decided): a flat base die, not tied to any
   // character stat/die — always "live" (no incapacitation concept for it),
   // so it renders its own single button rather than going through the
@@ -109,19 +119,34 @@ export default function MoveCard({
                 ⭐
               </span>
             )}
-            <span
-              title="Stamina Cost — subtracted once the declaring side finishes declaring"
-              className={`flex items-center gap-0.5 panel-cut-sm bg-zinc-800 px-1.5 py-0.5 text-xs font-semibold ${
-                move.stamina_cost > 0
-                  ? 'text-red-400'
-                  : move.stamina_cost < 0
-                    ? 'text-emerald-400'
-                    : 'text-zinc-500'
-              }`}
-            >
-              <Zap size={12} />
-              {move.stamina_cost > 0 ? `-${move.stamina_cost}` : move.stamina_cost < 0 ? `+${-move.stamina_cost}` : 0}
-            </span>
+            {/* Block Tag (the first Tag automation): a Block has no up-front
+                Stamina Cost to show at all — what it will cost isn't knowable
+                until it actually absorbs something — so the badge shows its
+                Stamina Modifier instead. Same slot, same shape, different
+                question answered. */}
+            {isBlock ? (
+              <span
+                title="Stamina Modifier — a Block spends Stamina at resolution for as much of the attack as it absorbed, times this"
+                className="flex items-center gap-0.5 panel-cut-sm bg-zinc-800 px-1.5 py-0.5 text-xs font-semibold text-sky-300"
+              >
+                <Zap size={12} />
+                {staminaModifierLabel(move.stamina_modifier)}
+              </span>
+            ) : (
+              <span
+                title="Stamina Cost — subtracted once the declaring side finishes declaring"
+                className={`flex items-center gap-0.5 panel-cut-sm bg-zinc-800 px-1.5 py-0.5 text-xs font-semibold ${
+                  move.stamina_cost > 0
+                    ? 'text-red-400'
+                    : move.stamina_cost < 0
+                      ? 'text-emerald-400'
+                      : 'text-zinc-500'
+                }`}
+              >
+                <Zap size={12} />
+                {move.stamina_cost > 0 ? `-${move.stamina_cost}` : move.stamina_cost < 0 ? `+${-move.stamina_cost}` : 0}
+              </span>
+            )}
             <FrameBar
               startup={move.startup_tics}
               active={move.active_tics}

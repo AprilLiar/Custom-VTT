@@ -48,7 +48,9 @@ import {
   expandAttackTargets,
   parseConcreteAttackTargets,
   isTelegraphedAttack,
+  clampStaminaModifier,
 } from './moveLogic.js';
+import { carriesBlockTag, effectiveTagNames, BLOCK_TAG } from './tagAutomations.js';
 import { effectiveFrames, PERK_HOOKS, idleStaminaRegenRate } from './perkAutomations.js';
 import {
   resolveSideInitiative,
@@ -1841,16 +1843,31 @@ io.on('connection', (socket) => {
 
     // 0-10 tags, all must exist
     let tagIds = [];
+    let tagNames = [];
     if (Array.isArray(payload.tagIds) && payload.tagIds.length) {
       const unique = [...new Set(payload.tagIds.map(Number).filter(Number.isInteger))].slice(0, 10);
       if (unique.length) {
+        // Names as well as ids now (Block Stamina): the Block Tag is what
+        // decides whether this move has an up-front Stamina Cost at all, and
+        // tag automation is keyed by name, never by id — see
+        // server/tagAutomations.js for why.
         const found = await all(
-          `SELECT id FROM tags WHERE id IN (${unique.map(() => '?').join(',')})`,
+          `SELECT id, name FROM tags WHERE id IN (${unique.map(() => '?').join(',')})`,
           unique
         );
         tagIds = found.map((t) => t.id);
+        tagNames = found.map((t) => t.name);
       }
     }
+
+    // Block Stamina (decided, new — the Block Tag's automation): a Block has
+    // no up-front Stamina Cost. Forced to 0 here regardless of what the
+    // client sent, the same server-authoritative pattern writeMove already
+    // uses for a Default move's style and for the Stat/Custom roll split — a
+    // rule the UI merely reflects, rather than one the UI enforces.
+    const isBlockTagged = carriesBlockTag(tagNames);
+    const effectiveStaminaCost = isBlockTagged ? 0 : staminaCost;
+    const staminaModifier = clampStaminaModifier(payload.staminaModifier);
 
     let id = moveId;
     if (id == null) {
@@ -1858,13 +1875,13 @@ io.on('connection', (socket) => {
         `INSERT INTO moves (name, is_default, tell_id, startup_tics, active_tics, recovery_tics,
           stamina_cost, description, style_attribute_id, folder_id, image_data, image_mime_type,
           roll_modifier, right_tell_id, left_tell_id, is_defensive, defense_frame_positions,
-          roll_type, custom_roll_size, attack_targets, defense_kind)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [name, isDefault, tellId, startup, active, recovery, staminaCost, description, styleId,
+          roll_type, custom_roll_size, attack_targets, defense_kind, stamina_modifier)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [name, isDefault, tellId, startup, active, recovery, effectiveStaminaCost, description, styleId,
           folderId, payload.imageData ?? null,
           payload.imageData ? (payload.imageMimeType ?? 'image/png') : null,
           rollModifier, rightTellId, leftTellId, isDefensive, JSON.stringify(defenseFramePositions),
-          rollType, customRollSize, JSON.stringify(attackTargets), defenseKind]
+          rollType, customRollSize, JSON.stringify(attackTargets), defenseKind, staminaModifier]
       );
       id = Number(result.lastInsertRowid);
     } else {
@@ -1873,12 +1890,12 @@ io.on('connection', (socket) => {
           recovery_tics = ?, stamina_cost = ?, description = ?, style_attribute_id = ?, folder_id = ?,
           roll_modifier = ?, right_tell_id = ?, left_tell_id = ?, is_defensive = ?,
           defense_frame_positions = ?, roll_type = ?, custom_roll_size = ?, attack_targets = ?,
-          defense_kind = ?
+          defense_kind = ?, stamina_modifier = ?
           WHERE id = ?`,
-        [name, isDefault, tellId, startup, active, recovery, staminaCost, description, styleId,
+        [name, isDefault, tellId, startup, active, recovery, effectiveStaminaCost, description, styleId,
           folderId, rollModifier, rightTellId, leftTellId, isDefensive,
           JSON.stringify(defenseFramePositions), rollType, customRollSize, JSON.stringify(attackTargets),
-          defenseKind, id]
+          defenseKind, staminaModifier, id]
       );
       // image only replaced when a new one is provided
       if (payload.imageData !== undefined) {

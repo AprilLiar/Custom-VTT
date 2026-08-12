@@ -167,6 +167,30 @@ export function clampStaminaCost(value) {
   return Math.max(-STAMINA_COST_LIMIT, Math.min(STAMINA_COST_LIMIT, n));
 }
 
+// Block Stamina (decided, new): the multiplier a Block Tag move's absorb is
+// scaled by before it is charged as Stamina. Unlike every other numeric field
+// on a move this is fractional on purpose — the whole point is that it sits
+// either side of 1: 0.5 is a cheap guard you can hold all fight, 2 is one
+// that costs you dearly for what it stops.
+//
+// **Never 0 or negative** (decided). A 0 would make blocking free, which is
+// exactly what this rule exists to stop, and a negative would pay you to be
+// hit. Anything unparseable falls back to 1 (charge exactly what you
+// absorbed) rather than to the floor, so a malformed payload is neutral
+// rather than quietly making a move the cheapest in the game.
+const STAMINA_MODIFIER_MIN = 0.1;
+const STAMINA_MODIFIER_MAX = 10;
+export const DEFAULT_STAMINA_MODIFIER = 1;
+
+export function clampStaminaModifier(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return DEFAULT_STAMINA_MODIFIER;
+  const bounded = Math.max(STAMINA_MODIFIER_MIN, Math.min(STAMINA_MODIFIER_MAX, n));
+  // One decimal place: the Move Creator's own step, and it keeps the stored
+  // value readable rather than 0.30000000000000004.
+  return Math.round(bounded * 10) / 10;
+}
+
 // A move's Roll picks from 6 slots, not the 8 concrete dice: Left/Right Hand
 // collapse into one ambiguous 'Hand' choice, Left/Right Leg into 'Leg' — the
 // player picks which side at roll time, not the GM at creation time (see

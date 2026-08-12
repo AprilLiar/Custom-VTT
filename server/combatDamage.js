@@ -34,6 +34,65 @@ export function resolveDefenseRoll({ attackerResult, defenderResult }) {
   };
 }
 
+// Block Stamina (decided, new — the Block Tag's automation). A Block has no
+// up-front Stamina Cost. It pays at resolution, for exactly as much of the
+// attack as its guard actually **absorbed**, scaled by the move's own
+// Stamina Modifier.
+//
+// **Absorbed is `min(attackerResult, defenderResult)`.** Out-guarding an
+// attack by a mile costs no more than the attack was worth: a 6 met by a 20
+// is fully negated but only ever charges for 6. That single quantity also
+// reproduces the existing damage math exactly — `netResult = attackerResult
+// - absorbed` equals the old `max(0, attackerResult - defenderResult)` in
+// both directions, so a blocker with Stamina to spare resolves identically
+// to before this rule existed.
+//
+// **The guard can only hold as much as it can pay for (decided).** If the
+// full absorb costs more Stamina than the blocker has left, the block is
+// scaled back to the largest amount they can actually afford and the rest of
+// the attack gets through. That is what stops a fighter at 0 Stamina from
+// blocking forever for free.
+//
+// Rounding is to nearest (decided), ties up — `Math.round`'s own behaviour.
+export function resolveBlockStamina({
+  attackerResult,
+  defenderResult,
+  staminaModifier = 1,
+  availableStamina = Infinity,
+}) {
+  const modifier = Number(staminaModifier) > 0 ? Number(staminaModifier) : 1;
+  // Floored at 0: a negative roll on either side absorbs nothing rather than
+  // handing someone a negative Stamina bill or a bonus to the attack.
+  const wanted = Math.max(0, Math.min(attackerResult, defenderResult));
+  const available = Math.max(0, availableStamina);
+
+  let absorbed = wanted;
+  let staminaCost = Math.round(absorbed * modifier);
+  const capped = staminaCost > available;
+  if (capped) {
+    // Largest whole absorb whose rounded cost still fits. Computed directly
+    // (round-to-nearest means anything under available + 0.5 rounds down to
+    // at most `available`), then stepped down defensively so a floating-point
+    // edge can never leave a cost one point over budget.
+    absorbed = Math.min(wanted, Math.floor((available + 0.5) / modifier));
+    while (absorbed > 0 && Math.round(absorbed * modifier) > available) absorbed -= 1;
+    absorbed = Math.max(0, absorbed);
+    staminaCost = Math.round(absorbed * modifier);
+  }
+
+  const netResult = Math.max(0, attackerResult - absorbed);
+  const { halfDamageSteps, damage } = computeHitDamage(netResult);
+  return {
+    absorbed,
+    staminaCost,
+    netResult,
+    halfDamageSteps,
+    damage,
+    outcome: halfDamageSteps > 0 ? 'partial' : 'full',
+    capped,
+  };
+}
+
 // 4.3 — which phase (if any) a single absolute Tic falls in for one move's
 // footprint. Mirrors ChatPanel.jsx's own snapshotPhaseColorAt (client-side,
 // for lane snapshot cards) exactly, extracted here as the one shared

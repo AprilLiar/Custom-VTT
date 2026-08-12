@@ -60,7 +60,29 @@ import {
   selectAutoDamageTarget,
   selectUnevenCombatTarget,
   selectDefenseMove,
+  resolveBlockStamina,
 } from './combatDamage.js';
+import { carriesBlockTag, effectiveTagNames } from './tagAutomations.js';
+
+// A move's Tag names as they apply to ONE character — the template's own tags
+// plus/minus whatever Perks have added or removed for them
+// (character_move_tags). Tag automation has to read the resolved set, or a
+// Perk that grants the Block Tag would show up on the Moves tab and change
+// nothing in a fight. Mirrors the effective_tag_ids resolution in
+// server/index.js, on names instead of ids (see tagAutomations.js on why
+// names).
+async function moveTagNamesFor(characterId, moveId) {
+  const [own, overrides] = await Promise.all([
+    all('SELECT t.name FROM move_tags mt JOIN tags t ON t.id = mt.tag_id WHERE mt.move_id = ?', [moveId]),
+    all(
+      `SELECT cmt.action, t.name AS tag_name
+       FROM character_move_tags cmt JOIN tags t ON t.id = cmt.tag_id
+       WHERE cmt.character_id = ? AND cmt.move_id = ?`,
+      [characterId, moveId]
+    ),
+  ]);
+  return effectiveTagNames({ moveTagNames: own.map((r) => r.name), overrides });
+}
 import {
   computeMoveFootprint,
   computeNextRoundStartTic,
@@ -1045,7 +1067,8 @@ async function resolveAttack(io, { row, pairIndex, tic, emitEvent }) {
     `SELECT dm.id, dm.character_id, dm.placement_tic, dm.reveal_tic, dm.appendage_choice,
             dm.recovery_extension_tics AS current_extension_tics,
             m.id AS move_id, m.name AS move_name, m.active_tics, m.recovery_tics, m.is_defensive, m.defense_kind,
-            m.roll_type, m.custom_roll_size, m.roll_modifier, ch.name AS character_name
+            m.roll_type, m.custom_roll_size, m.roll_modifier, m.stamina_modifier,
+            ch.name AS character_name
      FROM declared_moves dm JOIN moves m ON m.id = dm.move_id JOIN characters ch ON ch.id = dm.character_id
      WHERE dm.id = ?`,
     [defenseMatch.declaredMoveId]
@@ -1185,13 +1208,57 @@ async function resolveAttack(io, { row, pairIndex, tic, emitEvent }) {
     defenseType: defenderDM.defense_kind ?? 'block',
   });
 
-  const resolution = resolveDefenseRoll({ attackerResult: total, defenderResult: blockResult });
+  // Block Stamina (decided, new — the Block Tag's automation). A move
+  // carrying the **Block Tag** pays no up-front Stamina Cost and instead
+  // spends here, for exactly as much of the attack as its guard absorbed,
+  // scaled by the move's own Stamina Modifier — and can only hold as much as
+  // it can pay for. A defensive move WITHOUT the tag is untouched by all of
+  // this and keeps the old flat-cost behaviour: the Tag is the switch, not
+  // the Block/Dodge toggle (see server/tagAutomations.js).
+  const defenderTagNames = await moveTagNamesFor(defenderDM.character_id, defenderDM.move_id);
+  const blockTagged = carriesBlockTag(defenderTagNames);
+  let resolution;
+  let blockStamina = null;
+  if (blockTagged) {
+    const blocker = await getCharacter(defenderDM.character_id);
+    blockStamina = resolveBlockStamina({
+      attackerResult: total,
+      defenderResult: blockResult,
+      staminaModifier: defenderDM.stamina_modifier ?? 1,
+      availableStamina: blocker?.current_stamina ?? 0,
+    });
+    resolution = blockStamina;
+  } else {
+    resolution = resolveDefenseRoll({ attackerResult: total, defenderResult: blockResult });
+  }
   await postSystemMessage(
     io,
     resolution.outcome === 'full'
       ? `${defenderDM.character_name} scored a Full ${defenseLabel} — no damage.`
       : `${defenderDM.character_name} scored a Partial ${defenseLabel} — ${resolution.damage} damage.`
   );
+  if (blockStamina) {
+    // Spent after the outcome line so the log reads "what happened, then what
+    // it cost". adjustStamina emits its own stamina_changed round_event, so
+    // the cutscene animates the drop on the blocker's card without any extra
+    // event type here.
+    if (blockStamina.staminaCost > 0) {
+      await adjustStamina(io, defenderDM.character_id, -blockStamina.staminaCost, {
+        emitEvent,
+        tic,
+        reason: `${defenderDM.move_name} absorbed ${blockStamina.absorbed}`,
+      });
+    }
+    // Only worth a sentence when the guard was actually cut short — otherwise
+    // the Stamina line above already says everything.
+    if (blockStamina.capped) {
+      await postSystemMessage(
+        io,
+        `${defenderDM.character_name} ran out of Stamina mid-${defenseLabel} — the guard held only ` +
+          `${blockStamina.absorbed} of ${Math.min(total, blockResult)}, and the rest got through.`
+      );
+    }
+  }
 
   // Attack Target (Change 001): a Successful Block replaces the attacker's
   // effective target with the blocker's own base Stat Roll (never the
