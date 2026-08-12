@@ -315,6 +315,28 @@ export function sanitizeAttackTargets(list) {
   return ATTACK_TARGET_NAMES.filter((name) => supplied.has(name));
 }
 
+// Attack telegraph (decided, new): does this move announce its first Startup
+// Tic to everyone on the Tic Counter? Yes for anything that can actually hit
+// you, no for a pure guard — "this Tic is where something dangerous begins"
+// is the whole content of the marker, so a Block lighting one up would make
+// it mean nothing.
+//
+// **Active frames alone are not the test**, even though they are what does
+// the hitting. Defense Frames may only sit on ACTIVE positions (see
+// sanitizeDefensePositions above and the Defence rework in
+// vttprojectplan.md), so every working defence necessarily has Active frames
+// too — Front Guard and Slip Step both ship as 1/2/x. What separates them is
+// the plan's existing **defence-pure** idea: Defensive with no Attack Target
+// is a move that exists only to be guarded with, and is the one thing here
+// that never telegraphs. A Defensive move that *does* carry an Attack Target
+// is a counter-attack — it guards and strikes — so it telegraphs like any
+// other attack, because it will in fact land on someone.
+export function isTelegraphedAttack({ activeTics, isDefensive, attackTargets }) {
+  if (!(Number(activeTics) > 0)) return false;
+  const defencePure = Boolean(isDefensive) && sanitizeAttackTargets(attackTargets).length === 0;
+  return !defencePure;
+}
+
 // Expands a Move template's abstract attack_targets (or any subset of
 // ATTACK_TARGET_NAMES) into concrete Stat names, resolving Hand/Leg to one
 // or both sides via the same appendage_choice a declared move already

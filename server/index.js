@@ -47,6 +47,7 @@ import {
   sanitizeAttackTargets,
   expandAttackTargets,
   parseConcreteAttackTargets,
+  isTelegraphedAttack,
 } from './moveLogic.js';
 import { effectiveFrames, PERK_HOOKS, idleStaminaRegenRate } from './perkAutomations.js';
 import {
@@ -361,7 +362,8 @@ async function fetchDeclaredMoveRows() {
            dm.recovery_extension_tics,
            m.id AS move_id, m.name AS move_name, m.tell_id, m.right_tell_id,
            m.left_tell_id, m.active_tics, m.recovery_tics, m.stamina_cost,
-           m.defense_frame_positions, ch.character_type, cp.pair_index
+           m.defense_frame_positions, m.is_defensive, m.attack_targets,
+           ch.character_type, cp.pair_index
     FROM declared_moves dm
     JOIN moves m ON m.id = dm.move_id
     JOIN characters ch ON ch.id = dm.character_id
@@ -420,10 +422,19 @@ function mapDeclaredMovesForViewer(rows, pairsByIndex, viewer) {
     // only ever move forward, so this can't un-reveal something already
     // legitimately shown.
     const ticCountdownRanForThisRow = row.round_number < roundNumber || phase === 'resolving';
-    const isRevealed =
-      viewerIsOwner ||
-      (ticCountdownRanForThisRow &&
-        isMoveRevealedTo({ revealTic: row.reveal_tic, currentTic, viewerIsOwner: false }));
+    // Split out of isRevealed below (Attack telegraph, decided): "has this
+    // move gone public" is a property of the board, while `isRevealed` is a
+    // property of *this viewer* — the owner sees their own move from the
+    // moment they declare it. The Attack telegraph (see the Combat Timing
+    // section of the plan) has to key off the former: gating it on
+    // `isRevealed` would hide a fighter's own telegraph from themselves
+    // while every opponent still saw it, which reads as a bug rather than
+    // as secrecy. Discloses nothing new — currentTic and revealTic are both
+    // already public on every row, so any client could derive this itself.
+    const publiclyRevealed =
+      ticCountdownRanForThisRow &&
+      isMoveRevealedTo({ revealTic: row.reveal_tic, currentTic, viewerIsOwner: false });
+    const isRevealed = viewerIsOwner || publiclyRevealed;
     return {
       id: row.id,
       characterId: row.character_id,
@@ -448,6 +459,19 @@ function mapDeclaredMovesForViewer(rows, pairsByIndex, viewer) {
       leftTellId: row.left_tell_id,
       appendageChoice: row.appendage_choice,
       isRevealed,
+      publiclyRevealed,
+      // Attack telegraph (decided, new): whether this move announces its
+      // first Startup Tic to everyone — see isTelegraphedAttack for the
+      // rule. Sent as the one derived boolean rather than as is_defensive +
+      // attack_targets, so the payload discloses exactly what the marker
+      // itself already discloses ("something that can hit you starts here")
+      // and not a byte more, and so the rule lives in one place instead of
+      // being re-derived by every renderer.
+      telegraphsAttack: isTelegraphedAttack({
+        activeTics: row.active_tics,
+        isDefensive: row.is_defensive,
+        attackTargets: JSON.parse(row.attack_targets ?? '[]'),
+      }),
       moveId: isRevealed ? row.move_id : null,
       moveName: isRevealed ? row.move_name : null,
       // Fine to disclose whenever the move itself is: either it's really

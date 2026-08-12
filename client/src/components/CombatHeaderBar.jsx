@@ -6,6 +6,7 @@ import { getCombat } from '../lib/api.js';
 import { useRole } from '../roleContext.jsx';
 import { TicCounterCentral } from './CombatArena.jsx';
 import { onDraggingMoveChange } from '../lib/dragMoveState.js';
+import { attackStartsByTic } from '../lib/attackTelegraph.js';
 import { useIsDesktop } from '../lib/useMediaQuery.js';
 import MoveConflictDialog from './MoveConflictDialog.jsx';
 import DodgePromptDialog from './DodgePromptDialog.jsx';
@@ -237,6 +238,22 @@ export default function CombatHeaderBar() {
     }
   }
 
+  // Attack telegraph (decided, new): the same grey start-of-Startup glow the
+  // Arena's own counter paints, so a fight stays readable from whatever page
+  // you happen to be on — the strip already exists precisely so it does. The
+  // connector line is not repeated here: its other end is a Tell card in the
+  // Arena's Declaration Lanes, and there is no move source or lane on a
+  // Compendium or character-sheet page to point at, so this counter passes
+  // no linkAttackStarts and renders the glow as a bare marker.
+  const attackStarts = attackStartsByTic({
+    declaredMoves: combat.declaredMoves,
+    pairIndexByChar,
+    pairIndex,
+    roundStartTic,
+    roundLength,
+    nameOf: (id) => combat.characters?.[id]?.character.name ?? null,
+  });
+
   return (
     <div className="flex flex-wrap items-center gap-3 border-b border-zinc-800 bg-gradient-to-r from-zinc-950 via-zinc-900 to-zinc-950 px-4 py-2 text-sm">
       <motion.span
@@ -288,6 +305,7 @@ export default function CombatHeaderBar() {
           declaredMoves={[]}
           showDeclaredPreview={false}
           overflowTics={overflowTics}
+          attackStarts={attackStarts}
           role={role}
           label="Tic Counter"
         />
