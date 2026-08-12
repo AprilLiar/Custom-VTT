@@ -432,8 +432,8 @@ test('Insignificant Damage: a sub-5 attack lands nothing, says so, and is NOT a 
   const events = await all('SELECT type, payload FROM round_events WHERE pair_index = ? ORDER BY seq', [pairIndex]);
   const types = events.map((e) => e.type);
   assert.ok(types.includes('insignificant_damage'), JSON.stringify(types));
-  // The old behaviour fired the move's own On Miss trigger here. A Miss is
-  // now specifically a Dodge evasion, so nothing fires.
+  // A Miss is specifically an attack evaded with a Dodge. A weak swing
+  // still connected, so On Miss must never fire for it.
   assert.ok(
     !events.some((e) => e.type === 'automation_fired' && JSON.parse(e.payload).trigger === 'miss'),
     'a sub-5 roll must not fire the On Miss trigger'
@@ -1025,12 +1025,14 @@ test('an On Hit automation reaches the round log, not just the Chat Log', async 
   assert.ok(events.some((e) => e.type === 'stamina_changed'));
 });
 
-test('an attack that rolls under 5 fires On Miss', async () => {
+test('an undefended attack that rolls under 5 fires On Hit, never On Miss', async () => {
   const pairIndex = 301;
   const attacker = await createCharacter('IM Attacker');
   const defender = await createCharacter('IM Defender');
-  // A big negative modifier guarantees a sub-5 total: Insignificant Damage,
-  // which used to fire nothing at all.
+  // A big negative modifier guarantees a sub-5 total: Insignificant Damage.
+  // It connected, so it is a hit that did too little to matter — On Hit is
+  // the trigger that describes what happened, and On Miss belongs to a
+  // Dodge evasion.
   const flail = await createMove({
     name: 'IM Flail',
     startupTics: 1,
@@ -1038,7 +1040,10 @@ test('an attack that rolls under 5 fires On Miss', async () => {
     recoveryTics: 1,
     rollSlots: ['Skull'],
     rollModifier: -50,
-    interactions: [{ trigger: 'miss', text: 'Overcommits.', automations: [{ type: 'self_stamina', amount: 1 }] }],
+    interactions: [
+      { trigger: 'miss', text: 'Overcommits.', automations: [{ type: 'self_stamina', amount: 1 }] },
+      { trigger: 'hit', text: 'Grazes.', automations: [{ type: 'opponent_stamina', amount: 1 }] },
+    ],
   });
   await seatPair(pairIndex, attacker, defender);
   await startPairDeclaration(mockIo, pairIndex);
@@ -1049,7 +1054,71 @@ test('an attack that rolls under 5 fires On Miss', async () => {
   assert.ok(events.some((e) => e.type === 'insignificant_damage'));
   const fired = events.filter((e) => e.type === 'automation_fired').map((e) => JSON.parse(e.payload));
   assert.equal(fired.length, 1);
-  assert.equal(fired[0].trigger, 'miss');
+  assert.equal(fired[0].trigger, 'hit');
+});
+
+test('a weak attack is still blockable: Insignificant Damage no longer skips defence', async () => {
+  // The bug this covers: the sub-5 check used to run immediately after the
+  // attacker's roll and return, which skipped target selection and the
+  // whole defence step. A correctly-timed Block against a weak attack was
+  // never selected, never rolled, and fired none of its own triggers — the
+  // defender simply watched nothing happen.
+  const pairIndex = 305;
+  const attacker = await createCharacter('WB Attacker');
+  const defender = await createCharacter('WB Defender');
+  const feint = await createMove({
+    name: 'WB Feint',
+    startupTics: 1,
+    activeTics: 1,
+    recoveryTics: 1,
+    rollSlots: ['Skull'],
+    rollModifier: -50,
+    interactions: [
+      { trigger: 'block', text: 'Turned aside.', automations: [{ type: 'self_stamina', amount: 1 }] },
+      { trigger: 'miss', text: 'Should never fire.', automations: [{ type: 'self_stamina', amount: 2 }] },
+    ],
+  });
+  // Defense Frame on the guard's own Active square, landing on the same
+  // absolute Tic as the attack's Active window.
+  const guard = await createMove({
+    name: 'WB Guard',
+    startupTics: 1,
+    activeTics: 1,
+    recoveryTics: 1,
+    isDefensive: 1,
+    defenseKind: 'block',
+    defenseFramePositions: [1],
+    rollSlots: ['Body'],
+    interactions: [{ trigger: 'defense_success', text: 'Held.', automations: [{ type: 'self_stamina', amount: 1 }] }],
+  });
+
+  await seatPair(pairIndex, attacker, defender);
+  await startPairDeclaration(mockIo, pairIndex);
+  await declareMove({ characterId: attacker, moveId: feint, placementTic: 0, startupTics: 1 });
+  await declareMove({ characterId: defender, moveId: guard, placementTic: 0, startupTics: 1 });
+  await resolvePair(pairIndex);
+
+  const events = await all('SELECT type, payload FROM round_events WHERE pair_index = ? ORDER BY seq', [pairIndex]);
+  const types = events.map((e) => e.type);
+
+  // The defence was actually selected, classified and rolled.
+  const defence = events.find((e) => e.type === 'defense_resolved');
+  assert.ok(defence, JSON.stringify(types));
+  assert.equal(JSON.parse(defence.payload).defenseType, 'block');
+  assert.ok(
+    events.some((e) => e.type === 'roll' && JSON.parse(e.payload).defensive === true),
+    'the Block must actually roll'
+  );
+
+  // Both sides' defence triggers fired.
+  const fired = events.filter((e) => e.type === 'automation_fired').map((e) => JSON.parse(e.payload));
+  const triggers = fired.map((f) => f.trigger).sort();
+  assert.deepEqual(triggers, ['block', 'defense_success'], JSON.stringify(fired));
+
+  // The defence outcome is the story — no Insignificant Damage line on top
+  // of it, and never a Miss.
+  assert.ok(!types.includes('insignificant_damage'), JSON.stringify(types));
+  assert.ok(!triggers.includes('miss'));
 });
 
 test('a stat-step automation steps the named Stat and shows it as damage', async () => {

@@ -557,6 +557,7 @@ async function runInterruptAndDamage(io, {
   moveId,
   attackerCharacterId,
   attackerCharacterName,
+  attackerResult,
   targetCharacterId,
   effectiveAttackTargets,
   steps,
@@ -565,6 +566,64 @@ async function runInterruptAndDamage(io, {
   tic,
   emitEvent,
 }) {
+  // Insignificant Damage (decided, revised) — an attack that landed and did
+  // too little to matter.
+  //
+  // **It is never a Miss.** A Miss is an attack the target *evaded*, which
+  // means exactly one thing: a successful Dodge (applySuccessfulDodge fires
+  // `miss`). A weak swing still connected, so it fires the move's own
+  // **On Hit** — the trigger that matches what actually happened — and never
+  // On Miss.
+  //
+  // **It is decided here, not before defence resolution.** This check used
+  // to sit in resolveAttack immediately after the attacker's roll and
+  // `return` outright, which skipped target selection and the whole defence
+  // step: a sub-5 attack could not be blocked or dodged at all, so On Block,
+  // On Successful Defense and On Failed Defense never fired against one, and
+  // a defender who had correctly timed a guard saw nothing happen. An
+  // insignificant attack now runs the identical flow as any other and only
+  // reaches this point once it has actually landed — undefended, or through
+  // a defence that failed.
+  //
+  // It deliberately never reaches applyAutoDamage: stepping a die zero times
+  // rewrites the row unchanged and posts "took 0 damage to Body", which
+  // reads as a bug rather than as a rule.
+  if (steps === 0) {
+    // The move's name isn't threaded through every caller (the Dodge resume
+    // path rebuilds its arguments from persisted JSON), and this is the only
+    // branch that needs it — so it's fetched here rather than added to a
+    // payload that would then have to migrate.
+    const move = await one('SELECT name FROM moves WHERE id = ?', [moveId]);
+    const moveName = move?.name ?? null;
+    await postSystemMessage(
+      io,
+      `${attackerCharacterName}'s ${moveName ?? 'attack'} did insignificant damage (rolled ${attackerResult}).`
+    );
+    await emitEvent(tic, 'insignificant_damage', {
+      declaredMoveId,
+      characterId: attackerCharacterId,
+      characterName: attackerCharacterName,
+      moveName,
+      total: attackerResult,
+    });
+    const weak = await one('SELECT interactions_resolved FROM declared_moves WHERE id = ?', [declaredMoveId]);
+    if (weak && !weak.interactions_resolved) {
+      await run('UPDATE declared_moves SET interactions_resolved = 1 WHERE id = ?', [declaredMoveId]);
+      await applyMoveInteractions(io, {
+        moveId,
+        trigger: 'hit',
+        emitEvent,
+        tic,
+        selfCharacterId: attackerCharacterId,
+        selfDeclaredMoveId: declaredMoveId,
+        opponentCharacterId: targetCharacterId,
+      });
+    }
+    // No Interruption check either — checkInterrupt is gated on damage
+    // actually having been applied, and none was.
+    return;
+  }
+
   const applied = await applyAutoDamage(io, { targetCharacterId, effectiveAttackTargets, steps, attackerName: attackerCharacterName });
   // Names, not just ids: the cutscene log states outcomes as sentences now,
   // and a replay must be readable without any live combat state to look them
@@ -619,6 +678,7 @@ async function applyFailedDefense(io, {
   attackerMoveId,
   attackerCharacterId,
   attackerCharacterName,
+  attackerResult,
   targetCharacterId,
   effectiveAttackTargets,
   halfDamageSteps,
@@ -643,6 +703,7 @@ async function applyFailedDefense(io, {
     moveId: attackerMoveId,
     attackerCharacterId,
     attackerCharacterName,
+    attackerResult,
     targetCharacterId,
     effectiveAttackTargets,
     steps: halfDamageSteps,
@@ -738,12 +799,14 @@ async function applySuccessfulDodge(io, {
   const attackerDM = await one('SELECT interactions_resolved FROM declared_moves WHERE id = ?', [attackerDeclaredMoveId]);
   if (attackerDM && !attackerDM.interactions_resolved) {
     await run('UPDATE declared_moves SET interactions_resolved = 1 WHERE id = ?', [attackerDeclaredMoveId]);
-    // Miss (decided, revised): a Miss is an attack *evaded with a Dodge* —
-    // which is exactly a Full Dodge, where nothing lands. A Partial Dodge
-    // still puts damage through, so it stays the attacker's 'block' trigger
-    // like every other partial defence. Exactly one of the two fires, since
-    // both hang off the same interactions_resolved flag; a sub-5 roll no
-    // longer fires either (that's Insignificant Damage — see resolveAttack).
+    // Miss (decided): a Miss is an attack *evaded with a Dodge* — which is
+    // exactly a Full Dodge, where nothing lands. **This is the only place a
+    // Miss comes from.** A Partial Dodge still puts damage through, so it
+    // stays the attacker's 'block' trigger like every other partial
+    // defence, and a weak roll is Insignificant Damage, which fires On Hit
+    // rather than On Miss (see runInterruptAndDamage). Exactly one trigger
+    // fires per attack, since they all hang off the same
+    // interactions_resolved flag.
     await applyMoveInteractions(io, {
       moveId: attackerMoveId,
       trigger: resolution.outcome === 'full' ? 'miss' : 'block',
@@ -763,6 +826,9 @@ async function applySuccessfulDodge(io, {
       moveId: attackerMoveId,
       attackerCharacterId,
       attackerCharacterName,
+      // Unreachable at 0 steps (guarded above), but passed anyway so the
+      // Insignificant-Damage branch can never be reached without it.
+      attackerResult,
       targetCharacterId: defenderDM.character_id,
       effectiveAttackTargets: dodgeEffectiveTargets,
       steps: resolution.halfDamageSteps,
@@ -852,45 +918,15 @@ async function resolveAttack(io, { row, pairIndex, tic, emitEvent }) {
     total,
   });
 
+  // A sub-5 roll is Insignificant Damage, and that is decided at the END of
+  // this flow, not here (see runInterruptAndDamage). This used to bail out
+  // on the spot, which meant a weak attack skipped target selection and the
+  // whole defence step: it could not be blocked or dodged at all, so no
+  // On Block / On Successful Defense / On Failed Defense ever fired against
+  // one, and a defender who timed a guard correctly watched nothing happen.
+  // An insignificant attack is still an attack and runs the identical flow;
+  // only what it does on landing differs.
   const { halfDamageSteps } = computeHitDamage(total);
-  if (halfDamageSteps === 0) {
-    // Insignificant Damage (decided, revised) — NOT a Miss. A roll under 5
-    // is an attack that landed and did too little to matter; a Miss is
-    // specifically an attack the target *evaded with a Dodge*, which is why
-    // the move's own On Miss trigger fires from the Successful-Dodge path
-    // (applySuccessfulDodge below) and no longer from here. The two used to
-    // be the same branch, which both mislabelled a weak hit and left a real
-    // dodge firing nothing.
-    await run('UPDATE declared_moves SET interactions_resolved = 1 WHERE id = ?', [row.declaredMoveId]);
-    await postSystemMessage(
-      io,
-      `${row.characterName}'s ${row.moveName} did insignificant damage (rolled ${total}).`
-    );
-    await emitEvent(tic, 'insignificant_damage', {
-      declaredMoveId: row.declaredMoveId,
-      characterId: row.characterId,
-      characterName: row.characterName,
-      moveName: row.moveName,
-      total,
-    });
-    // On Miss fires here too (decided, revised). It used to fire ONLY on a
-    // Full Dodge, which made it almost unreachable: most fights never
-    // produce one, so an authored On Miss effect could sit unused for
-    // sessions. A sub-5 roll is an attack that connected with nothing, and
-    // that is what a Miss means at the table. A Full BLOCK still fires On
-    // Block rather than On Miss — something was there to stop it, which is
-    // a different event from swinging at air.
-    await run('UPDATE declared_moves SET interactions_resolved = 1 WHERE id = ?', [row.declaredMoveId]);
-    await applyMoveInteractions(io, {
-      moveId: row.moveId,
-      trigger: 'miss',
-      emitEvent,
-      tic,
-      selfCharacterId: row.characterId,
-      selfDeclaredMoveId: row.declaredMoveId,
-    });
-    return;
-  }
 
   // Step 3 — target-character selection (decision #6: deterministic for
   // Uneven Combat, trivial for 1v1).
@@ -993,6 +1029,7 @@ async function resolveAttack(io, { row, pairIndex, tic, emitEvent }) {
       moveId: row.moveId,
       attackerCharacterId: row.characterId,
       attackerCharacterName: row.characterName,
+      attackerResult: total,
       targetCharacterId,
       effectiveAttackTargets: allowedConcreteTargets,
       steps: halfDamageSteps,
@@ -1034,6 +1071,7 @@ async function resolveAttack(io, { row, pairIndex, tic, emitEvent }) {
     attackerMoveId: row.moveId,
     attackerCharacterId: row.characterId,
     attackerCharacterName: row.characterName,
+    attackerResult: total,
     targetCharacterId,
     effectiveAttackTargets: allowedConcreteTargets,
     halfDamageSteps,
@@ -1201,6 +1239,7 @@ async function resolveAttack(io, { row, pairIndex, tic, emitEvent }) {
       moveId: row.moveId,
       attackerCharacterId: row.characterId,
       attackerCharacterName: row.characterName,
+      attackerResult: total,
       targetCharacterId: defenderDM.character_id,
       effectiveAttackTargets: blockEffectiveTargets,
       steps: resolution.halfDamageSteps,
@@ -2054,6 +2093,7 @@ async function resolveDodge(pairIndex, { outcome, attackerDeclaredMoveId }, io) 
       attackerMoveId: pending.attackerMoveId,
       attackerCharacterId: pending.attackerCharacterId,
       attackerCharacterName: pending.attackerCharacterName,
+      attackerResult: pending.attackerResult,
       targetCharacterId: pending.targetCharacterId,
       effectiveAttackTargets: pending.allowedConcreteTargets,
       halfDamageSteps: pending.halfDamageSteps,
