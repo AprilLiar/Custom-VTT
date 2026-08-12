@@ -8,7 +8,9 @@ import {
   getCharacters,
   getCharacterFolders,
   getTells,
+  getTags,
 } from '../lib/api.js';
+import { carriesBlockTag, staminaModifierLabel } from '../lib/moveDisplay.js';
 import { portraitSrc } from '../lib/image.js';
 import { dieLabel, tintFor, POOLS } from '../lib/dice.js';
 import { buildFolderTree } from '../lib/folders.js';
@@ -1174,7 +1176,12 @@ function buildDeclarePayload(character, move, roundStartTic, declaredMoves) {
 // and the tap-to-place handler (see CombatArena's handleTicTap) work
 // without any parallel state of their own. Desktop keeps native drag too —
 // the two aren't mutually exclusive, a mouse user can also just click.
-function DeclareMoveCard({ character, move, roundStartTic, declaredMoves }) {
+function DeclareMoveCard({ character, move, roundStartTic, declaredMoves, tags }) {
+  // Block Tag (the first Tag automation): a Block has no up-front cost to
+  // quote — what it will cost depends on what it ends up absorbing — so the
+  // card advertises its multiplier instead of a number that would always
+  // read "0 Stamina" and mean "free".
+  const isBlock = carriesBlockTag(move.tag_ids, tags);
   const cost =
     move.stamina_cost > 0 ? `-${move.stamina_cost}` : move.stamina_cost < 0 ? `+${-move.stamina_cost}` : '0';
   const payload = buildDeclarePayload(character, move, roundStartTic, declaredMoves);
@@ -1193,7 +1200,10 @@ function DeclareMoveCard({ character, move, roundStartTic, declaredMoves }) {
       className="flex min-h-11 cursor-grab select-none flex-col items-start gap-1 panel-cut-sm border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-xs text-zinc-200 transition-colors hover:border-brand-600 active:cursor-grabbing"
     >
       <span>
-        {move.name} <span className="text-zinc-500">({cost} Stamina)</span>
+        {move.name}{' '}
+        <span className={isBlock ? 'text-sky-400/80' : 'text-zinc-500'}>
+          {isBlock ? `(Block ${staminaModifierLabel(move.stamina_modifier)} Stamina)` : `(${cost} Stamina)`}
+        </span>
       </span>
       {/* Small (decided, reverted). Drawing this at Tic-square scale was
           tried — the idea being that a move in your hand should be the size
@@ -1217,7 +1227,7 @@ function DeclareMoveCard({ character, move, roundStartTic, declaredMoves }) {
 // currently has the floor — Default/Unique tabs split the character's move
 // list the same way Tab 3 does; a styled move is left out of either tab
 // unless it matches one of the two styles in the character's active stance.
-function DeclareMovePicker({ entry, roundStartTic, declaredMoves }) {
+function DeclareMovePicker({ entry, roundStartTic, declaredMoves, tags }) {
   const { character, stances, moves } = entry;
   const [tab, setTab] = useState('default');
   const activeStance = stances.find((s) => s.id === character.active_stance_id);
@@ -1248,6 +1258,7 @@ function DeclareMovePicker({ entry, roundStartTic, declaredMoves }) {
               move={m}
               roundStartTic={roundStartTic}
               declaredMoves={declaredMoves}
+              tags={tags}
             />
           ))
         ) : (
@@ -1265,7 +1276,7 @@ function DeclareMovePicker({ entry, roundStartTic, declaredMoves }) {
 // Uneven Combat. Each character presses their own Done Declaring
 // individually (decided, combat redesign) — there's no shared per-side
 // button anymore.
-function ActiveDeclarePanel({ entry, roundStartTic, declaredMoves }) {
+function ActiveDeclarePanel({ entry, roundStartTic, declaredMoves, tags }) {
   return (
     <div className="w-full max-w-md space-y-2 panel-cut-lg border border-brand-800/50 bg-brand-950/20 p-3">
       <div className="flex items-center justify-between gap-2">
@@ -1277,7 +1288,7 @@ function ActiveDeclarePanel({ entry, roundStartTic, declaredMoves }) {
           ✓ Done Declaring
         </button>
       </div>
-      <DeclareMovePicker entry={entry} roundStartTic={roundStartTic} declaredMoves={declaredMoves} />
+      <DeclareMovePicker entry={entry} roundStartTic={roundStartTic} declaredMoves={declaredMoves} tags={tags} />
     </div>
   );
 }
@@ -1297,6 +1308,8 @@ export default function CombatArena() {
   const [roster, setRoster] = useState(null);
   const [folders, setFolders] = useState(null);
   const [tells, setTells] = useState(null);
+  // Tag rows, for the Block Tag's own display rule (see moveDisplay.js).
+  const [tags, setTags] = useState([]);
   const [dropTarget, setDropTarget] = useState(null); // `${side}-${pairIndex}` | null
   const [counterName, setCounterName] = useState('');
   const [counterTarget, setCounterTarget] = useState(6);
@@ -1359,6 +1372,7 @@ export default function CombatArena() {
       getCharacters().then(setRoster).catch(console.error);
       getCharacterFolders().then(setFolders).catch(console.error);
       getTells().then(setTells).catch(console.error);
+      getTags().then(setTags).catch(console.error);
     };
     refresh();
     const events = [
@@ -1997,6 +2011,7 @@ export default function CombatArena() {
               entry={entry}
               roundStartTic={displayPair?.roundStartTic}
               declaredMoves={declaredMoves}
+              tags={tags}
             />
           ))}
           {role === 'gm' && activeDeclareEntries.length === 0 && (

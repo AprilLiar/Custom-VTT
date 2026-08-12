@@ -55,3 +55,39 @@ export const SIGNED_AUTOMATION_TYPES = new Set([
 ]);
 
 export const STAT_STEP_AUTOMATION_TYPES = new Set(['self_stat_step', 'opponent_stat_step']);
+
+// ---------- Block Tag (the first Tag automation) ----------
+//
+// A move carrying the **Block** Tag has no up-front Stamina Cost. It pays at
+// resolution for exactly as much of the attack as its guard absorbed, scaled
+// by its Stamina Modifier — see server/tagAutomations.js for the rule and
+// server/combatDamage.js's resolveBlockStamina for the arithmetic.
+//
+// Matched by NAME, case-insensitively, never by id: tag ids differ between
+// databases and the GM owns this list, so the client resolves a move's
+// tag_ids against the live tag list exactly the way the server resolves its
+// own. Keeping both sides on the name is what stops the two from disagreeing
+// about which moves are Blocks.
+export const BLOCK_TAG_NAME = 'Block';
+
+const normTag = (name) => String(name ?? '').trim().toLowerCase();
+
+export function isBlockTagId(tagId, tags) {
+  const tag = (tags ?? []).find((t) => t.id === tagId);
+  return tag ? normTag(tag.name) === normTag(BLOCK_TAG_NAME) : false;
+}
+
+// `tagIds` may be a move's stored tag_ids or the Move Creator's live
+// selection — both are plain id arrays, so this covers the saved card and
+// the half-authored form alike.
+export function carriesBlockTag(tagIds, tags) {
+  return (tagIds ?? []).some((id) => isBlockTagId(id, tags));
+}
+
+// "×1.5" / "×0.5" — the multiplier as the table reads it. 1 is still shown
+// rather than hidden: "this Block charges exactly what it absorbed" is a real
+// statement about the move, not an absent value.
+export function staminaModifierLabel(modifier) {
+  const n = Number(modifier);
+  return `×${Number.isFinite(n) && n > 0 ? n : 1}`;
+}

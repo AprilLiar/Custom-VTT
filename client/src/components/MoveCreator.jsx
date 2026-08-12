@@ -5,7 +5,17 @@ import {
   SIGNED_AUTOMATION_TYPES,
   STAT_STEP_AUTOMATION_TYPES,
   TRIGGER_LABELS,
+  carriesBlockTag,
 } from '../lib/moveDisplay.js';
+
+// Mirrors clampStaminaModifier in server/moveLogic.js, which is the
+// authority — this only keeps the field from showing something the server
+// will silently change under the GM.
+function clampModifierInput(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return 1;
+  return Math.round(Math.max(0.1, Math.min(10, n)) * 10) / 10;
+}
 import { iconFor } from '../lib/styleIcons.js';
 import { fileToSmallImage } from '../lib/image.js';
 import {
@@ -193,6 +203,14 @@ export default function MoveCreator({
   // one Defense Frame is actually placed (enforced below at submit time).
   const [defenseKind, setDefenseKind] = useState(initial?.defense_kind ?? 'block');
   const [staminaCost, setStaminaCost] = useState(initial?.stamina_cost ?? 0);
+  // Kept as a string while editing so a half-typed "0." isn't snapped away
+  // mid-keystroke; clamped on blur and again server-side.
+  const [staminaModifier, setStaminaModifier] = useState(String(initial?.stamina_modifier ?? 1));
+  // Block Tag (the first Tag automation — see client/src/lib/moveDisplay.js).
+  // Driven by the live tag selection, not by the saved move, so tagging a
+  // move Block swaps the Stamina field over immediately rather than after a
+  // save.
+  const isBlockTagged = carriesBlockTag(tagIds, tags);
   const [description, setDescription] = useState(initial?.description ?? '');
   const [interactions, setInteractions] = useState({
     hit: initInteraction('hit'),
@@ -293,6 +311,7 @@ export default function MoveCreator({
       customRollSize,
       attackTargets,
       tagIds,
+      staminaModifier: clampModifierInput(staminaModifier),
       startupTics: frames.startup,
       activeTics: frames.active,
       recoveryTics: frames.recovery,
@@ -693,18 +712,44 @@ export default function MoveCreator({
             </div>
           )}
         </div>
-        <label className="text-xs font-semibold uppercase text-emerald-500">
-          Stamina Cost (required)
-          <input
-            type="number"
-            min={-20}
-            max={20}
-            value={staminaCost}
-            onChange={(e) => setStaminaCost(Math.trunc(Number(e.target.value) || 0))}
-            title="Subtracted from Current Stamina once the declaring side finishes declaring. 0 is a valid free cost; negative restores Stamina instead."
-            className="mt-1 block w-20 panel-cut-sm border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm text-zinc-100 outline-none focus:border-brand-500"
-          />
-        </label>
+        {/* Block Tag (the first Tag automation): a Block has no up-front
+            Stamina Cost, so the field is replaced rather than disabled — an
+            input you can fill in that the server then forces to 0 is worse
+            than one that isn't there. Tag the move Block above and this swaps
+            over; untag it and the Cost comes back. */}
+        {isBlockTagged ? (
+          <label className="text-xs font-semibold uppercase text-sky-400">
+            Stamina Modifier
+            <input
+              type="number"
+              min={0.1}
+              max={10}
+              step={0.1}
+              value={staminaModifier}
+              onChange={(e) => setStaminaModifier(e.target.value)}
+              onBlur={(e) => setStaminaModifier(clampModifierInput(e.target.value))}
+              title="A Block spends Stamina at resolution for as much of the attack as it absorbed, times this. Above 1 is a costly guard, below 1 a cheap one. Never 0 or negative."
+              className="mt-1 block w-20 panel-cut-sm border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm text-zinc-100 outline-none focus:border-brand-500"
+            />
+            <span className="mt-1 block max-w-48 text-[10px] font-normal normal-case text-zinc-500">
+              Tagged <b>Block</b>: no up-front cost. It spends what it absorbs
+              (never more than the attack was worth) × this.
+            </span>
+          </label>
+        ) : (
+          <label className="text-xs font-semibold uppercase text-emerald-500">
+            Stamina Cost (required)
+            <input
+              type="number"
+              min={-20}
+              max={20}
+              value={staminaCost}
+              onChange={(e) => setStaminaCost(Math.trunc(Number(e.target.value) || 0))}
+              title="Subtracted from Current Stamina once the declaring side finishes declaring. 0 is a valid free cost; negative restores Stamina instead."
+              className="mt-1 block w-20 panel-cut-sm border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm text-zinc-100 outline-none focus:border-brand-500"
+            />
+          </label>
+        )}
       </div>
 
       <textarea
