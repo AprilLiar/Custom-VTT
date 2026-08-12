@@ -27,7 +27,7 @@ export default function RollDialog({ title, onRoll, onClose, initialModifier = 0
         initial={{ scale: 0.85, opacity: 0, y: 10 }}
         animate={{ scale: 1, opacity: 1, y: 0 }}
         transition={{ type: 'spring', stiffness: 420, damping: 22 }}
-        className="flex w-64 flex-col gap-3 ink-panel border border-zinc-700 bg-zinc-900 p-4"
+        className="flex w-64 flex-col gap-3 panel-cut-lg border border-zinc-700 bg-zinc-900 p-4"
       >
         <h3 className="font-bold text-zinc-100">{title}</h3>
         <label className="text-sm text-zinc-400">

@@ -114,7 +114,7 @@ function AutomationEditor({ automations, onChange }) {
 // One On Hit/Block/Miss/Defense-outcome box: free text + automation editor.
 function TriggerBox({ trigger, label, interactions, setInteractions }) {
   return (
-    <div className="ink-panel border border-zinc-800 p-3">
+    <div className="panel-cut border border-zinc-800 p-2">
       <div className="mb-1 text-xs font-bold uppercase tracking-wide text-zinc-400">{label}</div>
       <textarea
         value={interactions[trigger].text}
@@ -311,7 +311,7 @@ export default function MoveCreator({
   return (
     <form
       onSubmit={submit}
-      className="space-y-3 ink-panel border border-zinc-700 bg-zinc-900 p-4"
+      className="space-y-3 panel-cut-lg border border-zinc-700 bg-zinc-900 p-4"
     >
       <h3 className="text-sm font-bold uppercase tracking-wide text-zinc-400">
         {initial ? 'Edit Move' : 'Move Creator'}
@@ -322,9 +322,9 @@ export default function MoveCreator({
           type="button"
           onClick={() => fileRef.current?.click()}
           title="Upload move art"
-          className="ink-panel border border-zinc-700 hover:border-brand-500"
+          className="panel-cut border border-zinc-700 hover:border-brand-500"
         >
-          <Thumb record={preview} name={name || '?'} size="h-10 w-10" cut="ink-panel" />
+          <Thumb record={preview} name={name || '?'} size="h-10 w-10" cut="panel-cut" />
         </button>
         <input ref={fileRef} type="file" accept="image/*" hidden onChange={pickImage} />
         <input
@@ -422,7 +422,7 @@ export default function MoveCreator({
                   key={attr.id}
                   type="button"
                   onClick={() => setStyleId(attr.id)}
-                  className={`inline-flex items-center gap-1 ink-panel border px-3 py-1.5 text-xs font-semibold ${
+                  className={`inline-flex items-center gap-1 panel-cut border px-2 py-1 text-xs font-semibold ${
                     selected
                       ? 'border-brand-500 bg-brand-600/30 text-brand-200'
                       : 'border-zinc-700 bg-zinc-800 text-zinc-400 hover:border-zinc-500'
@@ -491,7 +491,7 @@ export default function MoveCreator({
                         : undefined
                     }
                     onClick={() => toggleRollSlot(slot)}
-                    className={`ink-panel border px-3 py-1.5 text-xs font-semibold ${
+                    className={`panel-cut border px-2 py-1 text-xs font-semibold ${
                       count > 0
                         ? 'border-brand-500 bg-brand-600/30 text-brand-200'
                         : 'border-zinc-700 bg-zinc-800 text-zinc-400 hover:border-zinc-500'
@@ -529,7 +529,7 @@ export default function MoveCreator({
                   type="button"
                   onClick={() => setCustomRollSize(customRollSize === size ? null : size)}
                   title={`d${size}`}
-                  className={`ink-panel border px-3 py-1.5.5 ${
+                  className={`panel-cut border px-2 py-1.5 ${
                     customRollSize === size
                       ? 'border-brand-500 bg-brand-600/30 text-brand-200'
                       : 'border-zinc-700 bg-zinc-800 text-zinc-400 hover:border-zinc-500'
@@ -574,7 +574,7 @@ export default function MoveCreator({
                 key={slot}
                 type="button"
                 onClick={() => toggleAttackTarget(slot)}
-                className={`ink-panel border px-3 py-1.5 text-xs font-semibold ${
+                className={`panel-cut border px-2 py-1 text-xs font-semibold ${
                   selected
                     ? 'border-brand-500 bg-brand-600/30 text-brand-200'
                     : 'border-zinc-700 bg-zinc-800 text-zinc-400 hover:border-zinc-500'

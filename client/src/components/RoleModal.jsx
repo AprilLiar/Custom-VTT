@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react';
 import { useRole } from '../roleContext.jsx';
 import { getCharacters } from '../lib/api.js';
 import { portraitSrc } from '../lib/image.js';
-import InkHeading from './InkHeading.jsx';
 
 // Shown on every fresh load, before anything else. A display filter, not
 // auth: picking a character just tells the server (via identity:set, see
@@ -21,22 +20,10 @@ export default function RoleModal() {
 
   return (
     <div className="bg-arena flex h-screen flex-col items-center justify-center gap-8 text-zinc-100">
-      {/* The first thing every visitor sees, so it gets the full treatment
-          despite not being a combat surface (Visual Overhaul V5). */}
-      <InkHeading
-        seed={19}
-        size="text-4xl md:text-6xl"
-        className="text-center"
-        strokeClassName="mx-auto max-w-md"
-      >
-        Dogfight
-      </InkHeading>
-      <p className="font-display -mt-4 text-sm uppercase tracking-[0.35em] text-zinc-500">
-        Martial Arts TTRPG
-      </p>
+      <h1 className="font-display text-4xl font-bold uppercase tracking-wide">Dogfight: Martial Arts TTRPG</h1>
       <p className="text-zinc-400">Who are you this session?</p>
       <div className="flex w-full max-w-3xl items-stretch gap-6 px-6">
-        <div className="ink-panel flex min-w-0 flex-1 flex-col gap-2 border border-zinc-800 bg-zinc-900 p-4">
+        <div className="panel-cut flex min-w-0 flex-1 flex-col gap-2 border border-zinc-800 bg-zinc-900 p-4">
           <span className="font-display text-xs font-bold uppercase tracking-wide text-zinc-500">
             Play as…
           </span>
@@ -72,7 +59,7 @@ export default function RoleModal() {
         </div>
         <button
           onClick={chooseGm}
-          className="panel-cut font-impact shrink-0 bg-amber-700 px-10 py-6 text-3xl uppercase tracking-wide hover:bg-amber-600 active:scale-95 transition"
+          className="panel-cut-lg font-display shrink-0 bg-amber-700 px-10 py-6 text-2xl font-bold uppercase tracking-wide hover:bg-amber-600 active:scale-95 transition"
         >
           GM
         </button>

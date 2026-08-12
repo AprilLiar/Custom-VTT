@@ -204,13 +204,9 @@ function Entry({ entry, character, moveInfo, characters, defenseResolutions, onW
                 );
               })}
             </div>
-            {/* The one number in a roll card that matters gets the impact
-                face (Visual Overhaul V5); the breakdown above it stays
-                monospaced so the dice still line up column-wise. */}
             {multi && (
-              <div className="mt-1 text-right leading-none text-brand-300">
-                <span className="font-display text-xs uppercase tracking-widest text-zinc-500">Total </span>
-                <span className="font-impact text-3xl">{entry.total}</span>
+              <div className="font-display mt-1 text-right font-mono text-2xl font-black leading-none text-brand-300">
+                Total {entry.total}
               </div>
             )}
             {entry.declaredMoveId != null && (() => {
