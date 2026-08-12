@@ -135,7 +135,7 @@ function eventNarration(ev, startTic) {
         'Tics'
       )} to hold the guard through it.`;
     case 'insignificant_damage':
-      return `${who}'s ${p.moveName} rolled ${p.total} — insignificant damage, nothing lands.`;
+      return `${who}'s ${p.moveName} rolled ${p.total} — it lands, but the damage is insignificant.`;
     case 'dodge_prompt':
       return `${p.defenderCharacterName} fully covers ${p.attackerCharacterName}'s ${p.attackerMoveName} (attack rolled ${p.attackerResult}) — waiting on the GM to call it.`;
     case 'dodge_resolved':
@@ -221,6 +221,7 @@ function eventDetail(ev, startTic) {
       break;
     case 'insignificant_damage':
       lines.push('Under 5 on the roll: fewer than one Half-Damage step');
+      lines.push('It connected, so this fires On Hit');
       lines.push('Not a Miss — a Miss is an attack evaded by a Dodge');
       break;
     case 'damage_applied':

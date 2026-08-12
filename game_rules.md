@@ -255,13 +255,22 @@ fight is made by the engine, with every bonus already folded in.
 A roll deals **one Half-Damage step per full 5 rolled**. A 12 is two steps, a
 9 is one, a 4 is none.
 
-A roll under 5 is **Insignificant Damage**: the swing connected with nothing
-worth counting. It deals no damage and fires the move's **On Miss** trigger.
+A roll under 5 is **Insignificant Damage**: the swing landed but did nothing
+worth counting. It deals no damage, and because it *connected*, it fires the
+move's **On Hit** trigger.
 
-> **A Miss is an attack that connected with nothing** — either evaded by a
-> Dodge, or too weak to register at all. A **Full Block** is not a Miss:
-> something was there to stop it, which is a different event from swinging at
-> air, and it fires **On Block** instead.
+> **A Miss is an attack that was evaded — nothing else.** Only a successful
+> **Dodge** produces one, and only a Dodge fires **On Miss**. An
+> Insignificant hit is not a Miss: it touched its target. A **Full Block** is
+> not a Miss either — something was there to stop it — and fires **On Block**.
+
+**An insignificant attack is still a real attack, and can still be blocked or
+dodged.** It goes through defence exactly like any other: the defender's guard
+is selected, rolled and classified as normal, and every defensive trigger —
+**On Block**, **On Successful Defense**, **On Failed Defense** — fires just as
+it would against a heavy blow. Only when nothing defends it does the attack
+land for nothing and report Insignificant Damage; when a defence resolved it,
+the defence's own outcome is what the log reports.
 
 Damage lands on the first Stat in the move's Attack Target order that still
 has a working die. That order is fixed:

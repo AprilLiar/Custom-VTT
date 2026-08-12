@@ -689,9 +689,10 @@ const TRIGGER_LABELS = {
 // Combat Automation overhaul: fireMissIfNoDamage used to live here, firing
 // a move's 'miss' trigger whenever its own reveal-time roll came back under
 // 5. Both halves of that are gone. The trigger moved (a Miss is an attack
-// evaded by a Dodge now, fired from applySuccessfulDodge in
-// server/roundResolution.js; a sub-5 roll is Insignificant Damage and fires
-// nothing), and the path itself was already unreachable — every combat roll
+// evaded by a Dodge now, fired only from applySuccessfulDodge in
+// server/roundResolution.js; a sub-5 roll is Insignificant Damage, which is
+// a hit that did too little to matter and fires On Hit), and the path
+// itself was already unreachable — every combat roll
 // is server-computed by the engine, so no client roll has carried a
 // declaredMoveId since the overhaul.
 
