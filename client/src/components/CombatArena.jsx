@@ -18,6 +18,14 @@ import RoundCutscene from './RoundCutscene.jsx';
 import DamageApplicationDialog from './DamageApplicationDialog.jsx';
 import { REWARD_LABELS, REWARD_COLORS } from '../lib/counterDisplay.js';
 import { setDraggingMove, onDraggingMoveChange } from '../lib/dragMoveState.js';
+import {
+  attackStartsByTic,
+  registerLinkAnchor,
+  setLinkHover,
+  toggleLinkPin,
+} from '../lib/attackTelegraph.js';
+import useMoveLink, { useIsLinked } from '../lib/useMoveLink.js';
+import MoveLinkOverlay from './MoveLinkOverlay.jsx';
 import { useSocketRefresh } from '../lib/connection.js';
 import FrameBar from './FrameBar.jsx';
 import MoveCard from './MoveCard.jsx';
@@ -479,6 +487,8 @@ export function TicSquare({
   footprintZone,
   declaredPhases,
   overflowNames,
+  attackStarts,
+  linkAnchor,
   onDragOver,
   onDrop,
   onClick,
@@ -496,26 +506,59 @@ export function TicSquare({
   // Carried-over frames from last round, as { name, phase } — drawn in their
   // own phase colours rather than as an anonymous badge (see overflowTics).
   const carried = overflowNames ?? [];
-  const title = clickTitle ?? `Tic ${relativeTic}${
+
+  // Attack telegraph (see attackTelegraph.js): every declared attack whose
+  // Startup begins on this Tic. `linkAnchor` is what separates the Arena's
+  // own counter — which has the Tell cards to draw a connector to — from
+  // the header strip, where the glow is a bare marker with nothing on the
+  // page to link it to.
+  const starts = attackStarts ?? [];
+  const startIds = starts.map((s) => s.declaredMoveId);
+  const startKey = startIds.join(',');
+  const { ids: linkedIds } = useMoveLink();
+  const isLinked = startIds.some((id) => linkedIds.includes(id));
+  const glowRef = useRef(null);
+  useEffect(() => {
+    if (!linkAnchor || !startIds.length || !glowRef.current) return undefined;
+    const el = glowRef.current;
+    const offs = startIds.map((id) => registerLinkAnchor('tic', id, el));
+    return () => offs.forEach((off) => off());
+    // startKey stands in for startIds, which is a fresh array every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [linkAnchor, startKey]);
+
+  const telegraphTitle = starts.length
+    ? ` — ${starts.map((s) => s.characterName ?? 'Someone').join(', ')} start${
+        starts.length === 1 ? 's' : ''
+      } an attack here`
+    : '';
+  const title = clickTitle ?? `Tic ${relativeTic}${telegraphTitle}${
     carried.length
       ? ` — ${carried
           .map((c) => `${c.name}'s ${PHASE_LABEL[c.phase] ?? c.phase}`)
           .join(', ')} (carried over from last round)`
       : ''
   }`;
+  // Tap-to-place owns the click whenever a move is mid-placement; the
+  // telegraph's own tap-to-pin only takes over when it doesn't, so
+  // declaring a move never gets hijacked by an informational overlay.
+  const handleClick = onClick ?? (linkAnchor && startIds.length ? () => toggleLinkPin(startIds) : undefined);
   return (
     <motion.div
       ref={ref}
       key={isCurrent ? 'current' : 'idle'}
       onDragOver={onDragOver}
       onDrop={onDrop}
-      onClick={onClick}
+      onClick={handleClick}
+      onMouseEnter={linkAnchor && startIds.length ? () => setLinkHover(startIds) : undefined}
+      onMouseLeave={linkAnchor && startIds.length ? () => setLinkHover([]) : undefined}
+      data-move-link-anchor={linkAnchor && startIds.length ? '' : undefined}
       title={title}
       initial={isCurrent ? { scale: 1.5 } : false}
       animate={{ scale: isCurrent && !zoneStyle ? 1.1 : 1 }}
       transition={{ duration: 0.35, ease: 'easeOut' }}
       className={`relative flex ${TIC_SQUARE_SIZE} shrink-0 items-center justify-center panel-cut border text-sm font-bold transition-colors duration-150 ${
-        onClick ? 'cursor-pointer hover:border-brand-400 hover:shadow-[0_0_10px_rgb(var(--color-brand-rgb)/45%)]' : ''
+        handleClick ? 'cursor-pointer hover:border-brand-400 hover:shadow-[0_0_10px_rgb(var(--color-brand-rgb)/45%)]' : ''
       } ${
         zoneStyle ??
         (isCurrent
@@ -523,6 +566,34 @@ export function TicSquare({
           : 'border-zinc-700 bg-zinc-900/80 text-zinc-400 hover:border-zinc-500')
       }`}
     >
+      {/* Attack telegraph: a faint grey glow on the Tic where a declared
+          attack's first Startup frame sits — public to everyone, which is
+          the whole point (you cannot time a guard against a wind-up you
+          can't see). Its own absolutely-positioned layer rather than a
+          restyle of the square, so it composes with whatever the square
+          already is — the brand-red current-Tic state, a drag footprint
+          zone — instead of fighting it for the same properties.
+          **The glow is drawn INWARD (inset shadows), not as an outer halo.**
+          The square's own `panel-cut` clip-path clips every descendant and
+          every outer box-shadow to the cut polygon, so a halo around the
+          square is painted and then immediately thrown away — the first
+          attempt here looked correct in the DOM and was invisible on
+          screen. Inset shadows paint inside the padding box and survive
+          the clip.
+          Deliberately grey: it says "something begins here", not "look at
+          this", and it must stay clearly subordinate to the red current
+          Tic. Brightens while linked so hovering a Tell picks it out. */}
+      {starts.length > 0 && (
+        <span
+          ref={glowRef}
+          aria-hidden
+          className={`pointer-events-none absolute inset-0 transition-all duration-200 ${
+            isLinked
+              ? 'bg-zinc-100/15 shadow-[inset_0_0_0_2px_rgb(228_228_231_/_95%),inset_0_0_16px_3px_rgb(228_228_231_/_55%)]'
+              : 'bg-zinc-100/[0.06] shadow-[inset_0_0_0_1.5px_rgb(228_228_231_/_65%),inset_0_0_12px_2px_rgb(228_228_231_/_28%)]'
+          }`}
+        />
+      )}
       {relativeTic}
       {/* A carried-over move paints the top edge of the square in its own
           frame colour — the same phase palette as everywhere else, so a
@@ -576,6 +647,8 @@ export function TicCounterCentral({
   declaredMoves,
   showDeclaredPreview,
   overflowTics,
+  attackStarts, // Attack telegraph: Map<absoluteTic, marks> — built by the caller (see attackStartsByTic), like overflowTics
+  linkAttackStarts, // only the Arena's own counter has Tell cards on screen to draw a connector to
   role,
   label,
 }) {
@@ -673,6 +746,8 @@ export function TicCounterCentral({
                 showDeclaredPreview ? declaredPhasesAt(sq.absoluteTic, declaredMoves) : undefined
               }
               overflowNames={overflowTics.get(sq.absoluteTic)}
+              attackStarts={attackStarts?.get(sq.absoluteTic)}
+              linkAnchor={linkAttackStarts}
               onDragOver={
                 canDrop
                   ? (e) => {
@@ -801,13 +876,49 @@ function CompactTellFace({ dm, tellById }) {
 function CompactDeclaredMoveCard({ dm, move, tellById }) {
   const revealed = dm.isRevealed && move;
   const [showCard, setShowCard] = useState(false);
+
+  // Attack telegraph (see attackTelegraph.js): this card is the Tell end of
+  // the connector drawn to the glowing Tic where the move's Startup begins.
+  // Registered on exactly the moves that glow, so the two ends can never
+  // disagree about which moves participate.
+  const telegraphed = !dm.publiclyRevealed && Boolean(dm.telegraphsAttack);
+  const isLinked = useIsLinked(telegraphed ? dm.id : null);
+  const cardRef = useRef(null);
+  useEffect(() => {
+    if (!telegraphed || !cardRef.current) return undefined;
+    return registerLinkAnchor('tell', dm.id, cardRef.current);
+  }, [telegraphed, dm.id]);
+
+  // Hover drives the link only from the **Tell** face. On a face this
+  // viewer can already read, hover is spoken for — it pops the full
+  // MoveCard, which renders upward, straight across the path the line
+  // would take to the Tic Counter above. The anchor stays registered
+  // either way, so hovering the *Tic* still points back at an
+  // already-revealed card; only the card->Tic direction defers.
+  const linkOnHover = telegraphed && !revealed;
   return (
     <div
+      ref={cardRef}
+      data-move-link-anchor={telegraphed ? '' : undefined}
       style={{ perspective: 1000 }}
-      className="relative"
-      onMouseEnter={() => revealed && setShowCard(true)}
-      onMouseLeave={() => setShowCard(false)}
-      onClick={() => revealed && setShowCard((v) => !v)}
+      className={`relative transition-shadow duration-200 ${
+        isLinked ? 'shadow-[0_0_16px_3px_rgb(228_228_231_/_30%)]' : ''
+      }`}
+      onMouseEnter={() => {
+        if (revealed) setShowCard(true);
+        if (linkOnHover) setLinkHover([dm.id]);
+      }}
+      onMouseLeave={() => {
+        setShowCard(false);
+        if (linkOnHover) setLinkHover([]);
+      }}
+      onClick={() => {
+        if (revealed) setShowCard((v) => !v);
+        // Tap-to-pin is the touch path for the connector — there is no
+        // hover on a phone, so without this the line would simply not
+        // exist there (see toggleLinkPin).
+        else if (telegraphed) toggleLinkPin([dm.id]);
+      }}
     >
       <AnimatePresence>
         {showCard && revealed && (
@@ -1675,12 +1786,33 @@ export default function CombatArena() {
     }
   }
 
+  // Attack telegraph (decided, new): which declared attacks begin on each
+  // Tic of the displayed pair's round window. Public to every viewer — the
+  // point of the rule is that an opponent can time a guard against a
+  // wind-up they can see coming (see attackTelegraph.js for the full
+  // reasoning and for what it deliberately does and doesn't disclose).
+  // Built here and passed down, matching how overflowTics above is already
+  // handled, so the strip stays a renderer rather than a place that reasons
+  // about who may see what.
+  const attackStarts = attackStartsByTic({
+    declaredMoves,
+    pairIndexByChar: new Map(participants.map((p) => [p.character_id, p.pair_index])),
+    pairIndex: displayPairIndex,
+    roundStartTic: displayPair?.roundStartTic,
+    roundLength: combat.roundLength,
+    nameOf: (id) => characters[id]?.character.name ?? null,
+  });
+
   return (
     // The Arena is a board, not prose: it was capped at max-w-6xl (1152px),
     // which left most of a normal desktop window empty while the Tic strip
     // and the seating rows squeezed into a column. It now takes the width it
     // is given, with everything inside it sized fluidly rather than fixed.
     <div className="w-full">
+      {/* Attack telegraph: draws the Tell <-> glowing-Tic connector. Renders
+          nothing at all until something is hovered/tapped, and portals to
+          <body>, so where it sits in this tree doesn't matter. */}
+      <MoveLinkOverlay />
       <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
         <h1 className="text-2xl font-bold tracking-tight">Combat Arena</h1>
         <div className="flex items-center gap-3">
@@ -1836,6 +1968,8 @@ export default function CombatArena() {
             }
             showDeclaredPreview={activeDeclareEntries.length > 0}
             overflowTics={overflowTics}
+            attackStarts={attackStarts}
+            linkAttackStarts
             role={role}
           />
           )}
