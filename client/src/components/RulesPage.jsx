@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Search, X } from 'lucide-react';
 import { getRules } from '../lib/api.js';
-import InkHeading from './InkHeading.jsx';
 
 // The rule book, read from game_rules.md at the repo root (see /api/rules
 // server-side). Rendered as sections rather than one long scroll, because
@@ -267,7 +266,7 @@ export default function RulesPage() {
   return (
     <div className="mx-auto flex h-full max-w-5xl flex-col gap-3">
       <div className="flex flex-wrap items-center gap-3">
-        <InkHeading seed={7}>Rules</InkHeading>
+        <h1 className="font-display text-2xl font-bold uppercase tracking-wide">Rules</h1>
         <div className="relative min-w-56 flex-1">
           <Search size={14} className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-zinc-600" />
           <input
@@ -303,7 +302,7 @@ export default function RulesPage() {
               key={s.title}
               type="button"
               onClick={() => show(s.title)}
-              className="block w-full ink-panel border border-zinc-800 bg-zinc-900/60 p-3 text-left hover:border-brand-600"
+              className="block w-full panel-cut border border-zinc-800 bg-zinc-900/60 p-3 text-left hover:border-brand-600"
             >
               <div className="font-display text-sm font-bold uppercase tracking-wide text-zinc-100">
                 <Highlighted text={s.title} query={q} />
@@ -340,7 +339,7 @@ export default function RulesPage() {
           </nav>
           <article
             ref={bodyRef}
-            className="min-h-0 flex-1 space-y-3 overflow-y-auto ink-panel border border-zinc-800 bg-zinc-900/40 p-4"
+            className="min-h-0 flex-1 space-y-3 overflow-y-auto panel-cut border border-zinc-800 bg-zinc-900/40 p-4"
           >
             {open && (
               <>

@@ -3,14 +3,9 @@ import ReactDOM from 'react-dom/client';
 import { BrowserRouter } from 'react-router-dom';
 import App from './App.jsx';
 import { initTheme } from './lib/theme.js';
-import { initInk } from './lib/inkAssets.js';
 import './index.css';
 
 initTheme();
-// Publishes the generated ink masks onto :root. Before the first render for
-// the same reason initTheme() is: a mask variable that lands after the first
-// paint shows up as a visible flash of un-torn, square panels.
-initInk();
 
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>

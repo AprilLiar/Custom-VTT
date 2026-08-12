@@ -12,7 +12,6 @@ import { portraitSrc } from '../lib/image.js';
 import { flattenFolderTree, folderPath } from '../lib/folders.js';
 import FolderTreeNav from './FolderTreeNav.jsx';
 import DialogShell from './DialogShell.jsx';
-import InkHeading from './InkHeading.jsx';
 
 // Mobile readiness (Change 002) §9: dragging a character card onto the
 // folder sidebar has no touch equivalent, so this is the tap alternative —
@@ -86,7 +85,7 @@ function AddCharacterForm({ folders, currentFolder, onDone }) {
   return (
     <form
       onSubmit={submit}
-      className="flex flex-col gap-3 ink-panel border border-zinc-700 bg-zinc-900 p-4"
+      className="flex flex-col gap-3 panel-cut-lg border border-zinc-700 bg-zinc-900 p-4"
     >
       <input
         autoFocus
@@ -204,7 +203,7 @@ export default function CharacterList() {
   return (
     <div className="mx-auto max-w-5xl">
       <div className="mb-4 flex items-center justify-between">
-        <InkHeading seed={3}>Characters</InkHeading>
+        <h1 className="text-2xl font-bold">Characters</h1>
         {!adding && (
           <button
             onClick={() => setAdding(true)}
@@ -306,7 +305,7 @@ export default function CharacterList() {
                     draggable={role === 'gm'}
                     onDragStart={(e) => e.dataTransfer.setData('text/character-id', String(c.id))}
                     onClick={() => navigate(`/character/${c.id}`)}
-                    className="group flex cursor-pointer flex-col overflow-hidden ink-panel border border-zinc-800 bg-zinc-900 transition hover:border-brand-600"
+                    className="group flex cursor-pointer flex-col overflow-hidden panel-cut-lg border border-zinc-800 bg-zinc-900 transition hover:border-brand-600"
                   >
                     <div className="flex h-56 items-center justify-center bg-zinc-800">
                       {src ? (

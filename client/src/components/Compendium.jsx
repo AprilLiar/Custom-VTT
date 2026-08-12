@@ -47,7 +47,7 @@ function TellManager({ tells, usedTellIds }) {
         : null;
 
   return (
-    <div className="ink-panel border border-zinc-800 bg-zinc-900 p-4">
+    <div className="panel-cut-lg border border-zinc-800 bg-zinc-900 p-4">
       <h2 className="mb-3 text-sm font-bold uppercase tracking-wide text-zinc-400">
         Tells (world-level)
       </h2>
@@ -97,9 +97,9 @@ function TellManager({ tells, usedTellIds }) {
             type="button"
             onClick={() => fileRef.current?.click()}
             title="Upload Tell art"
-            className="ink-panel border border-zinc-700 hover:border-brand-500"
+            className="panel-cut border border-zinc-700 hover:border-brand-500"
           >
-            <Thumb record={preview} name={name || '?'} size="h-9 w-9" cut="ink-panel" />
+            <Thumb record={preview} name={name || '?'} size="h-9 w-9" cut="panel-cut" />
           </button>
           <input ref={fileRef} type="file" accept="image/*" hidden onChange={pickImage} />
           <input
@@ -156,7 +156,7 @@ function TagManager({ tags }) {
   };
 
   return (
-    <div className="ink-panel border border-zinc-800 bg-zinc-900 p-4">
+    <div className="panel-cut-lg border border-zinc-800 bg-zinc-900 p-4">
       <h2 className="mb-3 text-sm font-bold uppercase tracking-wide text-zinc-400">
         Tags (world-level)
       </h2>
@@ -585,7 +585,7 @@ export default function MovesCompendium() {
                   }}
                   onDragLeave={() => setDropTarget(null)}
                   onDrop={(e) => onDropOnCharacter(e, c)}
-                  className={`flex items-center gap-2 ink-panel border p-3 transition ${
+                  className={`flex items-center gap-2 panel-cut border p-2 transition ${
                     dropTarget === c.id
                       ? 'border-brand-500 bg-brand-950/50'
                       : 'border-zinc-800 bg-zinc-900'

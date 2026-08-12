@@ -11,9 +11,6 @@ import {
   phaseAt,
   isExtendedRecoveryTic,
 } from '../lib/framePhaseColors.js';
-import { DIE_ORDER, FighterCard } from './FighterHud.jsx';
-import InkImpactLayer from './InkImpactLayer.jsx';
-import { useEffectsQuality } from '../lib/useEffectsQuality.js';
 
 // Combat Automation overhaul §4.1 — a pair's round, rendered as an animated
 // "cutscene" instead of narrated through a string of manual GM clicks.
@@ -307,12 +304,7 @@ function beatEffects(events, visibleCount) {
 // The hit itself, over the middle of the strip. A 2+ step hit is a visibly
 // different event from a 1-step one rather than the same flash held longer —
 // "massive" was the ask, so it is bigger, redder, and shakes.
-// `shockwave` is off when the WebGL ink layer is live (Phase V3): that layer
-// throws real splatter from the same burst, and two expanding rings on top of
-// each other just muddies both. Everything else here stays on at every tier —
-// the number, the slot name, MISS — because that is information, not
-// decoration, and the GPU layer is not a substitute for it.
-function ImpactBurst({ burst, shockwave = true }) {
+function ImpactBurst({ burst }) {
   const reduceMotion = useReducedMotion();
   if (!burst) return null;
   // Reduced motion keeps the information (a hit happened, this big) and
@@ -336,7 +328,7 @@ function ImpactBurst({ burst, shockwave = true }) {
         exit={{ opacity: 0 }}
       >
         {/* Shockwave — only for a real hit; a fizzle has no force behind it */}
-        {burst.kind !== 'fizzle' && !reduceMotion && shockwave && (
+        {burst.kind !== 'fizzle' && !reduceMotion && (
           <motion.span
             className={`absolute rounded-full border-2 ${
               heavy ? 'border-rose-400' : burst.kind === 'miss' ? 'border-sky-400' : 'border-rose-500'
@@ -383,9 +375,7 @@ function ImpactBurst({ burst, shockwave = true }) {
 // event captures them as the round opened, and every damage_applied since
 // steps the die it hit. That is what makes a replay show the same fight
 // deteriorating in the same order, years after the real dice moved on.
-// DIE_ORDER, StatPip and FighterCard now live in FighterHud.jsx — the Arena's
-// V2 HUD bars need the same "a fighter IS eight dice plus Stamina" vocabulary,
-// and one shared module beats two that drift.
+const DIE_ORDER = ['Skull', 'Brain', 'Left Hand', 'Right Hand', 'Body', 'Stamina', 'Left Leg', 'Right Leg'];
 
 function fightersFrom(events, upTo) {
   let roster = null;
@@ -611,6 +601,68 @@ function barAnimation(effect, toward) {
 // die that just took damage flashes red and its value counts down to what
 // it stepped to, so damage is something you SEE happen to a person rather
 // than a sentence in a feed.
+function StatPip({ die, hit, beat }) {
+  const reduceMotion = useReducedMotion();
+  const out = die.status === 'incapacitated';
+  const controls = useAnimation();
+  useEffect(() => {
+    if (!hit || reduceMotion) return;
+    controls.set({ scale: 1 });
+    controls.start({
+      scale: [1, 1.45, 0.92, 1],
+      transition: { duration: 0.6, times: [0, 0.2, 0.6, 1], ease: 'easeOut' },
+    });
+  }, [hit, beat, controls, reduceMotion]);
+  return (
+    <motion.div
+      animate={controls}
+      title={`${die.slotName} — d${die.size}${die.bonus ? `+${die.bonus}` : ''}${out ? ' (out)' : ''}`}
+      className={`flex min-w-0 flex-col items-center gap-0.5 border px-1 py-0.5 ${
+        hit
+          ? 'border-rose-400 bg-rose-900/50 shadow-[0_0_12px_2px_rgba(251,113,133,0.6)]'
+          : out
+            ? 'border-zinc-800 bg-zinc-900/60'
+            : 'border-zinc-700 bg-zinc-900'
+      }`}
+    >
+      <span className={`truncate font-display text-[9px] uppercase tracking-wide md:text-[10px] ${
+        hit ? 'text-rose-200' : out ? 'text-zinc-600' : 'text-zinc-500'
+      }`}>
+        {die.slotName}
+      </span>
+      <span className={`font-display text-xs font-bold md:text-sm ${
+        out ? 'text-zinc-600 line-through' : hit ? 'text-rose-200' : 'text-zinc-200'
+      }`}>
+        {out ? 'OUT' : `d${die.size}${die.bonus ? `+${die.bonus}` : ''}`}
+      </span>
+    </motion.div>
+  );
+}
+
+function FighterCard({ fighter, lastHit, beat }) {
+  const hitSlot = lastHit?.characterId === fighter.characterId ? lastHit.slotName : null;
+  return (
+    <div className="panel-cut-sm min-w-0 flex-1 border border-zinc-800 bg-zinc-950/70 p-2">
+      <div className="mb-1.5 flex items-center gap-2">
+        <span className="flex h-7 w-7 shrink-0 items-center justify-center border border-zinc-700 bg-zinc-800 font-display text-sm text-zinc-300">
+          {(fighter.name ?? '?').charAt(0).toUpperCase()}
+        </span>
+        <span className="min-w-0 flex-1 truncate font-display text-sm uppercase tracking-wide text-zinc-200 md:text-base">
+          {fighter.name}
+        </span>
+        <span className="shrink-0 font-display text-xs text-amber-300 md:text-sm">
+          {fighter.currentStamina}/{fighter.maxStamina} ST
+        </span>
+      </div>
+      <div className="grid grid-cols-4 gap-1">
+        {fighter.dice.map((d) => (
+          <StatPip key={d.slotName} die={d} hit={hitSlot === d.slotName} beat={beat} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function MoveBar({ fp, ticks, startTic, effect, beat, staminaFlash }) {
   // NPCs are drawn below the strip, so their "forward" is up the screen.
   const toward = fp.characterType === 'npc' ? -1 : 1;
@@ -891,10 +943,6 @@ export default function RoundCutscene({
   const shown = events.slice(0, visibleCount);
   const footprints = footprintsFrom(events, visibleCount);
   const { fighters, lastHit } = fightersFrom(events, visibleCount);
-  // The GPU splatter layer is the 'high' tier only. At 'medium' and 'off'
-  // ImpactBurst carries the whole moment on its own, exactly as it did
-  // before this phase — no GL context is constructed at all.
-  const inkFx = useEffectsQuality() === 'high';
   const fx = beatEffects(events, visibleCount);
   // A move's bar reacts to what it did (byMoveId) or to its owner being hit
   // (byCharacterId) — the latter is how a character with no move of their
@@ -922,11 +970,11 @@ export default function RoundCutscene({
   const below = footprints.filter((f) => f.characterType === 'npc');
 
   if (error) {
-    return <div className="ink-panel p-4 text-sm text-zinc-400">{error}</div>;
+    return <div className="panel-cut border border-zinc-800 p-4 text-sm text-zinc-400">{error}</div>;
   }
 
   return (
-    <div className="ink-panel-hero flex h-full min-h-0 flex-col bg-zinc-950/60 p-3">
+    <div className="panel-cut flex h-full min-h-0 flex-col border border-zinc-800 bg-zinc-950/60 p-3">
       <div className="mb-2 flex items-center justify-between gap-2">
         <h3 className="font-display text-base uppercase tracking-wide text-zinc-300 md:text-xl">
           Round {meta?.roundNumber ?? roundNumber}
@@ -953,8 +1001,7 @@ export default function RoundCutscene({
           convention Declaration Lanes uses. `relative` so the impact burst
           can be centred over the whole board rather than over one row. */}
       <div className="relative shrink-0">
-        {inkFx && <InkImpactLayer burst={fx.burst} />}
-        <ImpactBurst burst={fx.burst} shockwave={!inkFx} />
+        <ImpactBurst burst={fx.burst} />
 
         <div className="mb-1 space-y-1">
           {above.map((fp) => (

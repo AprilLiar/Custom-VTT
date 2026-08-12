@@ -17,7 +17,6 @@ import RulesPage from './components/RulesPage.jsx';
 import ConnectionBanner from './components/ConnectionBanner.jsx';
 import GmToolsWidget from './components/GmToolsWidget.jsx';
 import RollRequestPrompt from './components/RollRequestPrompt.jsx';
-import InkBackdrop from './components/InkBackdrop.jsx';
 
 // Mobile readiness (Change 002) §5.1/14.2: bottom navigation is the primary
 // mobile nav (recommended default) — Arena/Character(s)/Compendium/Chat,
@@ -122,9 +121,6 @@ function Shell() {
 
   return (
     <div className="app-shell bg-arena flex flex-col text-zinc-100">
-      {/* Portals a fixed canvas to <body> behind everything; renders nothing
-          below the 'high' effects tier. */}
-      <InkBackdrop />
       <ConnectionBanner />
       <header
         style={{ paddingTop: 'var(--safe-top)' }}

@@ -2,7 +2,6 @@ import { useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import MovesCompendium from './Compendium.jsx';
 import PerksCompendium from './PerksCompendium.jsx';
-import InkHeading from './InkHeading.jsx';
 
 // Hosts every compendium as an internal tab, rather than a separate
 // top-level nav link per type — add future compendia (e.g. a Tags-only
@@ -26,7 +25,7 @@ export default function CompendiumPage() {
   return (
     <div className="mx-auto max-w-5xl">
       <div className="mb-4 flex items-center gap-1 border-b border-zinc-800">
-        <InkHeading seed={5} className="mr-4">Compendium</InkHeading>
+        <h1 className="mr-4 text-2xl font-bold">Compendium</h1>
         {TABS.map((t) => (
           <button
             key={t.key}

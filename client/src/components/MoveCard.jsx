@@ -55,7 +55,7 @@ export default function MoveCard({
   return (
     <div
       title={dimmed ? dimReason : undefined}
-      className={`overflow-hidden ink-panel border border-zinc-800 bg-zinc-900 ${
+      className={`overflow-hidden panel-cut-lg border border-zinc-800 bg-zinc-900 ${
         dimmed ? 'opacity-50 grayscale' : ''
       }`}
     >

@@ -10,11 +10,11 @@ import {
   getTells,
 } from '../lib/api.js';
 import { portraitSrc } from '../lib/image.js';
+import { dieLabel, tintFor, POOLS } from '../lib/dice.js';
 import { buildFolderTree } from '../lib/folders.js';
 import { countRollSlot } from '../lib/diceSlots.js';
 import { FRAME_PHASES, PHASE_BG, PHASE_LABEL, PHASE_ZONE, phaseBgAt, phaseAt } from '../lib/framePhaseColors.js';
 import RoundCutscene from './RoundCutscene.jsx';
-import { FighterHudBar } from './FighterHud.jsx';
 import DamageApplicationDialog from './DamageApplicationDialog.jsx';
 import { REWARD_LABELS, REWARD_COLORS } from '../lib/counterDisplay.js';
 import { setDraggingMove, onDraggingMoveChange } from '../lib/dragMoveState.js';
@@ -23,13 +23,189 @@ import FrameBar from './FrameBar.jsx';
 import MoveCard from './MoveCard.jsx';
 import Thumb from './Thumb.jsx';
 import DropSlamGhost from './DropSlamGhost.jsx';
+import PopNumber from './PopNumber.jsx';
 import DialogShell from './DialogShell.jsx';
-import InkHeading from './InkHeading.jsx';
-import HoverPopover from './HoverPopover.jsx';
 
 const MIN_TARGET = 2;
 const MAX_TARGET = 20;
 
+// Read-only glance at a seated character: portrait, active stance, dice
+// pools, stamina — not the full sheet. Click through to the sheet to
+// actually roll/step; everything shown here stays live via the same
+// character:updated/die:updated/stance:activated broadcasts the sheet
+// itself listens to. Stance is shown because it's the one thing the plan
+// already calls strategically visible to opponents mid-fight.
+function ParticipantCard({
+  entry,
+  participant,
+  role,
+  onRemove,
+  onAdHocDamage,
+  onMoveSeat,
+  onDragStart,
+  navigate,
+  declaredMoves,
+  sideStillDeclaring,
+}) {
+  const { character, dice, stances } = entry;
+  const src = portraitSrc(character);
+  const activeStance = stances.find((s) => s.id === character.active_stance_id);
+  // Would-be Stamina after every move declared this window, purely a
+  // visual preview — the real current_stamina isn't touched until this
+  // character actually finishes declaring (see
+  // combat:character_done_declaring server-side). staminaCost only ever
+  // rides a declaredMoves entry this client is actually entitled to see
+  // (see mapDeclaredMovesForViewer server-side) — an opponent's pending
+  // cost stays exactly as hidden as the move's identity, same secrecy
+  // boundary.
+  const pendingCost = sideStillDeclaring
+    ? declaredMoves
+        .filter((dm) => dm.characterId === character.id && dm.staminaCost != null && !dm.staminaCommitted)
+        .reduce((sum, dm) => sum + dm.staminaCost, 0)
+    : 0;
+  const previewStamina = character.current_stamina - pendingCost;
+  return (
+    <div
+      draggable={role === 'gm'}
+      onDragStart={onDragStart}
+      onClick={() => navigate(`/character/${character.id}`)}
+      title="Open full sheet"
+      className="group relative flex min-h-40 min-w-64 flex-1 cursor-pointer overflow-hidden panel-cut border border-zinc-800 bg-zinc-900 transition-colors hover:border-brand-600"
+    >
+      {role === 'gm' && (
+        <div className="hover-only-action absolute right-1 top-1 z-10 flex gap-1 opacity-0 transition group-hover:opacity-100">
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onMoveSeat(character.id, character.name);
+            }}
+            title="Move seat"
+            className="flex h-8 w-8 items-center justify-center panel-cut-sm bg-zinc-900/90 text-xs text-zinc-400 hover:bg-zinc-800 hover:text-brand-300"
+          >
+            ⇄
+          </button>
+          {/* Combat Automation overhaul §5: in-combat damage is applied by
+              the resolution engine now, so DamageApplicationDialog lost its
+              old chat-roll-card entry point. It's still the right tool for
+              genuinely ad-hoc GM damage outside the automated flow
+              (environmental damage, a house rule) — this is that entry
+              point, opening it in its unrestricted mode (no attacking
+              declared move, so no Attack Target restriction applies). */}
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onAdHocDamage(character.id);
+            }}
+            title="Apply ad-hoc damage (outside the automated flow)"
+            className="flex h-8 w-8 items-center justify-center panel-cut-sm bg-zinc-900/90 text-xs text-zinc-500 hover:bg-red-900/40 hover:text-red-300"
+          >
+            ⚕
+          </button>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onRemove(character.id);
+            }}
+            title="Remove from arena"
+            className="flex h-8 w-8 items-center justify-center panel-cut-sm bg-zinc-900/90 text-xs text-zinc-600 hover:bg-red-900/40 hover:text-red-400"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
+      {/* Portrait fills the card's full height edge-to-edge, no padding/gaps */}
+      {src ? (
+        <img src={src} alt="" className="h-full w-28 shrink-0 object-cover sm:w-32" />
+      ) : (
+        <div className="flex h-full w-28 shrink-0 items-center justify-center bg-zinc-800 text-3xl font-bold text-zinc-600 sm:w-32">
+          {character.name.slice(0, 1).toUpperCase()}
+        </div>
+      )}
+
+      <div className="flex min-w-0 flex-1 flex-col gap-1.5 p-2">
+        <div className="min-w-0">
+          <div className="truncate text-sm font-semibold text-zinc-100">{character.name}</div>
+          {character.character_type === 'npc' && (
+            <span className="panel-cut-sm bg-purple-600/30 px-1 text-[10px] font-bold uppercase text-purple-300">
+              NPC
+            </span>
+          )}
+        </div>
+        {activeStance && (
+          <div className="truncate text-xs text-brand-300" title="Active stance">
+            {activeStance.name}
+          </div>
+        )}
+        <div
+          className={`text-xs ${
+            pendingCost === 0
+              ? 'text-zinc-400'
+              : pendingCost > 0
+                ? 'font-semibold text-red-400'
+                : 'font-semibold text-emerald-400'
+          }`}
+          title={
+            pendingCost !== 0
+              ? `Pending, not yet confirmed: ${pendingCost > 0 ? '-' : '+'}${Math.abs(pendingCost)} Stamina`
+              : undefined
+          }
+        >
+          Stamina {pendingCost !== 0 ? previewStamina : <PopNumber value={character.current_stamina} />}/
+          {character.max_stamina}
+        </div>
+        <div className="flex items-center gap-1 text-xs text-zinc-400" title="Reasons to Fight: +1 to all rolls per point, during combat">
+          <span className="shrink-0">Reasons to Fight</span>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              socket.emit('combat:adjust_reasons_to_fight', { characterId: character.id, delta: -1 });
+            }}
+            disabled={(participant?.reasons_to_fight ?? 0) <= 0}
+            className="px-1 leading-none text-red-400 hover:bg-zinc-800 disabled:opacity-30"
+          >
+            ▼
+          </button>
+          <span className="w-3 text-center font-mono font-semibold text-zinc-200">
+            {participant?.reasons_to_fight ?? 0}
+          </span>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              socket.emit('combat:adjust_reasons_to_fight', { characterId: character.id, delta: 1 });
+            }}
+            disabled={(participant?.reasons_to_fight ?? 0) >= 3}
+            className="px-1 leading-none text-green-400 hover:bg-zinc-800 disabled:opacity-30"
+          >
+            ▲
+          </button>
+        </div>
+        <div className="space-y-1">
+          {POOLS.map((pool) => {
+            const poolDice = dice.filter((d) => d.pool === pool.key);
+            if (!poolDice.length) return null;
+            return (
+              <div key={pool.key} className="flex flex-wrap gap-1">
+                {poolDice.map((d) => (
+                  <span
+                    key={d.id}
+                    title={d.slot_name}
+                    className={`panel-cut-sm px-1 py-0.5 text-[10px] font-mono ${
+                      d.status === 'incapacitated' ? 'text-zinc-700 line-through' : 'text-zinc-300'
+                    }`}
+                    style={{ backgroundColor: tintFor(d) || 'rgba(255,255,255,0.05)' }}
+                  >
+                    {dieLabel(d.current_size, d.bonus)}
+                  </span>
+                ))}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
 
 // Same pips look as the character sheet's Counters tab, adapted for the
 // Arena: standalone counters show just their name, character-owned ones
@@ -37,7 +213,7 @@ const MAX_TARGET = 20;
 function ArenaCounterRow({ counter, characterName }) {
   const label = characterName ? `${characterName} - ${counter.name}` : counter.name;
   return (
-    <div className="ink-panel-wide border border-zinc-800 bg-zinc-900 p-3">
+    <div className="panel-cut-lg border border-zinc-800 bg-zinc-900 p-3">
       <span className="font-bold text-zinc-100">{label}</span>
       {/* Character-owned counters only ever carry a reward — a standalone
           counter never has one — but this stays read-only display here
@@ -144,7 +320,7 @@ function FolderRosterNode({ node, charsByFolder, collapsed, onToggle, depth, ros
 
 // Mobile readiness (Change 002) §7.3: the tap alternative to dropping a
 // roster card onto a pair's left/right zone, or an already-seated
-// the HUD bar's own drag-to-a-different-zone move — same two server
+// ParticipantCard's own drag-to-a-different-zone move — same two server
 // events either way (combat:add_participant for a not-yet-seated character,
 // combat:move_participant for one already seated), picked by whether this
 // character currently appears in `participants`. Lists every existing pair
@@ -338,7 +514,7 @@ export function TicSquare({
       initial={isCurrent ? { scale: 1.5 } : false}
       animate={{ scale: isCurrent && !zoneStyle ? 1.1 : 1 }}
       transition={{ duration: 0.35, ease: 'easeOut' }}
-      className={`relative flex ${TIC_SQUARE_SIZE} shrink-0 items-center justify-center panel-cut-sm border text-sm font-bold transition-colors duration-150 ${
+      className={`relative flex ${TIC_SQUARE_SIZE} shrink-0 items-center justify-center panel-cut border text-sm font-bold transition-colors duration-150 ${
         onClick ? 'cursor-pointer hover:border-brand-400 hover:shadow-[0_0_10px_rgb(var(--color-brand-rgb)/45%)]' : ''
       } ${
         zoneStyle ??
@@ -403,10 +579,6 @@ export function TicCounterCentral({
   role,
   label,
 }) {
-  // Anchor + open state for the overflow preview, which is portalled to
-  // <body> rather than nested in the strip (see HoverPopover).
-  const overflowAnchorRef = useRef(null);
-  const [overflowOpen, setOverflowOpen] = useState(false);
   const squares = Array.from({ length: roundLength }, (_, i) => ({
     absoluteTic: roundStartTic + i,
     relative: i + 1,
@@ -468,7 +640,7 @@ export function TicCounterCentral({
   })();
 
   return (
-    <div className="flex flex-col items-center gap-1.5 ink-panel-wide border border-zinc-800 bg-gradient-to-b from-zinc-900 to-zinc-950 px-4 py-3 shadow-2xl shadow-black/40">
+    <div className="flex flex-col items-center gap-1.5 panel-cut-lg border border-zinc-800 bg-gradient-to-b from-zinc-900 to-zinc-950 px-4 py-3 shadow-2xl shadow-black/40">
       <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-zinc-500">
         {label ?? (phase === 'declaration' ? 'Drag a move here to declare' : 'Tic Counter')}
       </span>
@@ -516,14 +688,9 @@ export function TicCounterCentral({
           );
         })}
         {overflowPreview && (
-          <div
-            ref={overflowAnchorRef}
-            className="relative shrink-0"
-            onMouseEnter={() => setOverflowOpen(true)}
-            onMouseLeave={() => setOverflowOpen(false)}
-          >
+          <div className="group relative shrink-0">
             <span
-              className={`flex ${TIC_SQUARE_SIZE} items-center justify-center panel-cut-sm border border-amber-500/70 bg-amber-950/40 font-display text-sm font-bold text-amber-300`}
+              className={`flex ${TIC_SQUARE_SIZE} items-center justify-center panel-cut border border-amber-500/70 bg-amber-950/40 font-display text-sm font-bold text-amber-300`}
               title={`Runs ${overflowPreview.tics} Tic${
                 overflowPreview.tics === 1 ? '' : 's'
               } into the next round`}
@@ -532,11 +699,8 @@ export function TicCounterCentral({
             </span>
             {/* Hover reveals the next round with the spilled frames in
                 place, so "how much of my next round does this eat?" is
-                answerable before committing rather than after. Portalled
-                (see HoverPopover) so no lane's mask or stacking context can
-                clip it or paint over it. */}
-            <HoverPopover anchorRef={overflowAnchorRef} open={overflowOpen}>
-              <div className="ink-panel border border-amber-700/60 bg-zinc-950 p-3 shadow-2xl shadow-black/80">
+                answerable before committing rather than after. */}
+            <div className="pointer-events-none absolute bottom-full left-1/2 z-50 mb-2 hidden -translate-x-1/2 panel-cut border border-amber-700/60 bg-zinc-950 p-2 shadow-2xl shadow-black/80 group-hover:block">
               <div className="mb-1 whitespace-nowrap font-display text-[10px] uppercase tracking-widest text-amber-300">
                 Next round
               </div>
@@ -553,9 +717,8 @@ export function TicCounterCentral({
                     {sq.relative}
                   </span>
                 ))}
-                </div>
               </div>
-            </HoverPopover>
+            </div>
           </div>
         )}
       </div>
@@ -599,7 +762,7 @@ function CompactTellFace({ dm, tellById }) {
   const showBoth = !chosenTell && (rightTell || leftTell);
   const shown = chosenTell ?? (showBoth ? null : tell);
   return (
-    <div className="flex w-28 items-center gap-1.5 panel-cut-sm border border-zinc-800 bg-zinc-900/60 p-1.5 opacity-60 grayscale">
+    <div className="flex w-28 items-center gap-1.5 panel-cut border border-zinc-800 bg-zinc-900/60 p-1.5 opacity-60 grayscale">
       {showBoth ? (
         <>
           <Thumb record={rightTell} name={rightTell?.name} size="h-6 w-6" />
@@ -638,27 +801,24 @@ function CompactTellFace({ dm, tellById }) {
 function CompactDeclaredMoveCard({ dm, move, tellById }) {
   const revealed = dm.isRevealed && move;
   const [showCard, setShowCard] = useState(false);
-  const anchorRef = useRef(null);
   return (
     <div
-      ref={anchorRef}
       style={{ perspective: 1000 }}
       className="relative"
       onMouseEnter={() => revealed && setShowCard(true)}
       onMouseLeave={() => setShowCard(false)}
       onClick={() => revealed && setShowCard((v) => !v)}
     >
-      {/* Portalled to <body> (see HoverPopover): nested in the lane it was
-          subject to every ancestor mask, clip-path and stacking context
-          around it, so a `z-50` here was never a guarantee of being on top. */}
-      <HoverPopover anchorRef={anchorRef} open={showCard && revealed} interactive>
-        <AnimatePresence>
+      <AnimatePresence>
+        {showCard && revealed && (
           <motion.div
             initial={{ opacity: 0, y: 6, scale: 0.96 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 6, scale: 0.96 }}
             transition={{ duration: 0.14 }}
-            className="w-72 ink-panel border border-brand-700/60 bg-zinc-950 p-3 shadow-2xl shadow-black/80"
+            // z-50 + fixed-width: it deliberately covers whatever lane
+            // content sits beside and below it.
+            className="absolute bottom-full left-1/2 z-50 mb-2 w-72 -translate-x-1/2 panel-cut border border-brand-700/60 bg-zinc-950 p-2 shadow-2xl shadow-black/80"
             onClick={(e) => e.stopPropagation()}
           >
             <MoveCard
@@ -668,8 +828,8 @@ function CompactDeclaredMoveCard({ dm, move, tellById }) {
               leftTell={move.left_tell_id ? tellById.get(move.left_tell_id) : undefined}
             />
           </motion.div>
-        </AnimatePresence>
-      </HoverPopover>
+        )}
+      </AnimatePresence>
       {!dm.staminaCommitted && (
         <button
           onClick={() => socket.emit('move:undeclare', { declaredMoveId: dm.id })}
@@ -690,7 +850,7 @@ function CompactDeclaredMoveCard({ dm, move, tellById }) {
           >
             <div
               title={move.name}
-              className="flex w-28 items-center gap-1.5 panel-cut-sm border border-brand-800/60 bg-brand-950/30 p-1.5 text-left"
+              className="flex w-28 items-center gap-1.5 panel-cut border border-brand-800/60 bg-brand-950/30 p-1.5 text-left"
             >
               <Thumb record={move} name={move.name} size="h-6 w-6" />
               <div className="min-w-0 flex-1">
@@ -996,7 +1156,7 @@ function DeclareMovePicker({ entry, roundStartTic, declaredMoves }) {
 // button anymore.
 function ActiveDeclarePanel({ entry, roundStartTic, declaredMoves }) {
   return (
-    <div className="w-full max-w-md space-y-2 ink-panel border border-brand-800/50 bg-brand-950/20 p-3">
+    <div className="w-full max-w-md space-y-2 panel-cut-lg border border-brand-800/50 bg-brand-950/20 p-3">
       <div className="flex items-center justify-between gap-2">
         <h3 className="truncate text-sm font-bold text-brand-200">{entry.character.name}'s turn to declare</h3>
         <button
@@ -1045,7 +1205,7 @@ export default function CombatArena() {
   // the roster as a drawer (same folder tree, tap instead of drag);
   // seatTarget ({ characterId, characterName }) then shows the Left/Right/
   // New-pair picker — reused for both "seat a new character" (from the
-  // drawer) and "move an already-seated one" (the HUD bar's ⇄ action).
+  // drawer) and "move an already-seated one" (ParticipantCard's ⇄ action).
   const [mobileRosterOpen, setMobileRosterOpen] = useState(false);
   const [seatTarget, setSeatTarget] = useState(null);
   // Combat Automation overhaul §5: which character (if any) the GM is
@@ -1255,7 +1415,7 @@ export default function CombatArena() {
     spawnDropGhost(
       e.clientX,
       e.clientY,
-      <div className="panel-cut-sm border border-brand-400 bg-zinc-900 px-3 py-2 font-display text-sm font-bold uppercase tracking-wide text-white shadow-lg">
+      <div className="panel-cut border border-brand-400 bg-zinc-900 px-3 py-2 font-display text-sm font-bold uppercase tracking-wide text-white shadow-lg">
         {seatedCharacterName}
       </div>
     );
@@ -1273,7 +1433,7 @@ export default function CombatArena() {
         draggable
         onDragStart={(e) => e.dataTransfer.setData('text/character-id', String(c.id))}
         title="Drag onto a side to seat them"
-        className="flex cursor-grab items-center gap-2 ink-panel-wide border border-zinc-800 bg-zinc-900 p-3 active:cursor-grabbing"
+        className="flex cursor-grab items-center gap-2 panel-cut border border-zinc-800 bg-zinc-900 p-2 active:cursor-grabbing"
       >
         <div className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden panel-cut-sm bg-zinc-800 text-sm font-bold text-zinc-600">
           {src ? (
@@ -1304,7 +1464,7 @@ export default function CombatArena() {
           setMobileRosterOpen(false);
           setSeatTarget({ characterId: c.id, characterName: c.name });
         }}
-        className="flex min-h-11 w-full items-center gap-2 ink-panel-wide border border-zinc-800 bg-zinc-900 p-3 text-left hover:border-brand-600"
+        className="flex min-h-11 w-full items-center gap-2 panel-cut border border-zinc-800 bg-zinc-900 p-2 text-left hover:border-brand-600"
       >
         <div className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden panel-cut-sm bg-zinc-800 text-sm font-bold text-zinc-600">
           {src ? (
@@ -1522,7 +1682,7 @@ export default function CombatArena() {
     // is given, with everything inside it sized fluidly rather than fixed.
     <div className="w-full">
       <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
-        <InkHeading seed={11}>Combat Arena</InkHeading>
+        <h1 className="text-2xl font-bold tracking-tight">Combat Arena</h1>
         <div className="flex items-center gap-3">
           {/* Mobile readiness (Change 002) §7.3: below the width where the
               drag-based roster aside disappears (sm:block, see it below),
@@ -1588,7 +1748,7 @@ export default function CombatArena() {
             >
               <div
                 onClick={(e) => e.stopPropagation()}
-                className="flex w-72 flex-col gap-3 ink-panel border border-zinc-700 bg-zinc-900 p-4"
+                className="flex w-72 flex-col gap-3 panel-cut-lg border border-zinc-700 bg-zinc-900 p-4"
               >
                 <h3 className="font-bold text-zinc-100">
                   {characters[pendingDeclare.characterId]?.character.name ?? 'Character'}: {pendingDeclare.moveName}
@@ -1706,7 +1866,7 @@ export default function CombatArena() {
             />
           ))}
           {role === 'gm' && activeDeclareEntries.length === 0 && (
-            <div className="flex max-w-md items-center panel-cut border border-dashed border-zinc-800 px-4 py-6 text-sm text-zinc-600">
+            <div className="flex max-w-md items-center panel-cut-lg border border-dashed border-zinc-800 px-4 py-6 text-sm text-zinc-600">
               {activeLaneIndex == null
                 ? 'Click a lane above to declare for its NPCs.'
                 : "Nothing to declare for this lane right now — it's not an NPC's turn here."}
@@ -1743,22 +1903,18 @@ export default function CombatArena() {
                   }}
                   onDragLeave={() => setDropTarget(null)}
                   onDrop={(e) => role === 'gm' && onDrop(e, 'left', rowIdx)}
-                  className={`flex min-h-24 flex-1 flex-col gap-2 panel-cut border border-dashed p-2 transition-colors ${
+                  className={`flex min-h-24 flex-1 gap-2 overflow-x-auto overflow-y-hidden panel-cut border border-dashed p-2 transition-colors ${
                     dropTarget === leftKey ? 'border-brand-400 bg-brand-950/20' : 'border-zinc-800'
                   }`}
                 >
                   {leftOccupants.map(
                     (p) =>
                       characters[p.character_id] && (
-                        <FighterHudBar
+                        <ParticipantCard
                           key={p.character_id}
                           entry={characters[p.character_id]}
                           participant={p}
                           role={role}
-                          mirrored={p.side === 'right'}
-                          compact={
-                            (p.side === 'left' ? leftOccupants : rightOccupants).length > 1
-                          }
                           onRemove={remove}
                           onAdHocDamage={setAdHocDamageCharId}
                           onMoveSeat={(id, name) => setSeatTarget({ characterId: id, characterName: name })}
@@ -1791,22 +1947,18 @@ export default function CombatArena() {
                   }}
                   onDragLeave={() => setDropTarget(null)}
                   onDrop={(e) => role === 'gm' && onDrop(e, 'right', rowIdx)}
-                  className={`flex min-h-24 flex-1 flex-col gap-2 panel-cut border border-dashed p-2 transition-colors ${
+                  className={`flex min-h-24 flex-1 gap-2 overflow-x-auto overflow-y-hidden panel-cut border border-dashed p-2 transition-colors ${
                     dropTarget === rightKey ? 'border-brand-400 bg-brand-950/20' : 'border-zinc-800'
                   }`}
                 >
                   {rightOccupants.map(
                     (p) =>
                       characters[p.character_id] && (
-                        <FighterHudBar
+                        <ParticipantCard
                           key={p.character_id}
                           entry={characters[p.character_id]}
                           participant={p}
                           role={role}
-                          mirrored={p.side === 'right'}
-                          compact={
-                            (p.side === 'left' ? leftOccupants : rightOccupants).length > 1
-                          }
                           onRemove={remove}
                           onAdHocDamage={setAdHocDamageCharId}
                           onMoveSeat={(id, name) => setSeatTarget({ characterId: id, characterName: name })}
@@ -1822,7 +1974,7 @@ export default function CombatArena() {
             );
           })}
 
-          <div className="ink-panel-wide border border-zinc-800 bg-zinc-900 p-4">
+          <div className="panel-cut-lg border border-zinc-800 bg-zinc-900 p-4">
             <h2 className="mb-2 text-sm font-bold uppercase tracking-wide text-zinc-400">Counters</h2>
             {counters.length === 0 ? (
               <p className="text-sm text-zinc-600">No counters shown here yet.</p>

@@ -50,7 +50,7 @@ function Pips({ current, target }) {
 
 function CounterRow({ counter }) {
   return (
-    <div className="ink-panel border border-zinc-800 bg-zinc-900 p-3">
+    <div className="panel-cut-lg border border-zinc-800 bg-zinc-900 p-3">
       {/* Mobile readiness (Change 002) §8.3: flex-wrap lets this row break
           onto multiple lines on a phone instead of squeezing the reward
           tag, pip count, checkbox, and delete button into an unreadable
@@ -128,7 +128,7 @@ export default function CountersTab({ data }) {
         counters.map((counter) => <CounterRow key={counter.id} counter={counter} />)
       )}
 
-      <form onSubmit={add} className="flex flex-wrap items-center gap-2 ink-panel border border-zinc-800 bg-zinc-900 p-3">
+      <form onSubmit={add} className="flex flex-wrap items-center gap-2 panel-cut-lg border border-zinc-800 bg-zinc-900 p-3">
         <input
           value={name}
           onChange={(e) => setName(e.target.value)}
