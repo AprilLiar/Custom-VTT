@@ -370,7 +370,10 @@ Stamina is a Stat like any other, and also a pool: `current / max`.
   Stamina. Doing nothing is a real option.
 - At the start of every round after the first, every fighter rolls their
   Stamina die and adds it to the pool.
-- **Start Combat** restores everyone to full.
+- **Start Combat** restores everyone to full **only if the GM ticks "Fresh"**.
+  Fresh is off for every new fight, so by default a fight begins on whatever
+  Stamina you still had — back-to-back fights wear you down. Fresh changes the
+  start of a fight only; the round-start Stamina roll above happens either way.
 
 **At zero Stamina you can still fight, but only with moves that cost nothing.**
 You are not down and you are not penalised — your good options are simply gone

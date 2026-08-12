@@ -574,6 +574,7 @@ async function emitCombatUpdated() {
   const pairsByIndex = new Map(pairRows.map((row) => [row.pair_index, row]));
   const base = {
     unevenCombatEnabled: Boolean(state.uneven_combat_enabled),
+    freshStart: Boolean(state.fresh_start),
     roundLength: state.round_length,
     // Combat Automation overhaul: declaration/round/phase/Tic state all now
     // lives per-pair (pairs[].phase/roundNumber/currentTic/etc) — pairs[]
@@ -938,6 +939,7 @@ app.get('/api/combat', wrap(async (req, res) => {
 
   res.json({
     unevenCombatEnabled: Boolean(state.uneven_combat_enabled),
+    freshStart: Boolean(state.fresh_start),
     roundLength: state.round_length,
     pairs: pairRows.map((row) => shapePair(row, state.round_length, openResolutions.get(row.pair_index))),
     participants,
@@ -2552,6 +2554,17 @@ io.on('connection', (socket) => {
     await emitCombatUpdated();
   });
 
+  // "Fresh" (decided, new): whether Start Combat restores everyone to full
+  // Stamina. Off by default and reset to off whenever a fight ends, so a run
+  // of back-to-back fights wears people down unless the GM says otherwise.
+  // Governs the first round only — the per-round Stamina Regen from round 2
+  // on is a separate rule and keeps running either way.
+  on('combat:toggle_fresh', async () => {
+    const state = await one('SELECT * FROM combat_state WHERE id = 1');
+    await run('UPDATE combat_state SET fresh_start = ? WHERE id = 1', [state.fresh_start ? 0 : 1]);
+    await emitCombatUpdated();
+  });
+
   on('combat:toggle_uneven', async () => {
     const state = await one('SELECT * FROM combat_state WHERE id = 1');
     await run('UPDATE combat_state SET uneven_combat_enabled = ? WHERE id = 1', [
@@ -2574,6 +2587,10 @@ io.on('connection', (socket) => {
     await run('DELETE FROM combat_participants');
     await run('DELETE FROM declared_moves');
     await run('DELETE FROM combat_pairs');
+    // Fresh is a per-fight choice, never a standing setting — see its own
+    // note on combat:toggle_fresh. Ending or clearing a fight puts it back
+    // off so the next one has to opt in again.
+    await run('UPDATE combat_state SET fresh_start = 0 WHERE id = 1');
     await discardUnfinishedResolutions();
     await emitCombatUpdated();
   });
@@ -2590,6 +2607,7 @@ io.on('connection', (socket) => {
   on('combat:end', async () => {
     await run('DELETE FROM declared_moves');
     await run('DELETE FROM combat_pairs');
+    await run('UPDATE combat_state SET fresh_start = 0 WHERE id = 1'); // see combat:clear
     await discardUnfinishedResolutions();
     await run('UPDATE combat_participants SET declared_this_round = 0, idle_regen_progress = 0');
     await emitCombatUpdated();
@@ -2735,9 +2753,15 @@ io.on('connection', (socket) => {
     const regenParticipants = eligibleParticipants.filter(
       (p) => existingPairByIndex.get(p.pair_index) != null
     );
-    const firstRoundChars = firstRoundParticipants
-      .map((p) => charById.get(p.character_id))
-      .filter(Boolean);
+    // "Fresh" (decided, new): the full restore only happens when the GM has
+    // turned Fresh on for this fight. Off — the default — the fight starts
+    // with whatever Stamina everyone was already carrying, so consecutive
+    // fights wear people down. Filtering to an empty list here is what turns
+    // it off: the emit and the UPDATE below are both driven by this array,
+    // so nothing else needs a branch.
+    const firstRoundChars = state.fresh_start
+      ? firstRoundParticipants.map((p) => charById.get(p.character_id)).filter(Boolean)
+      : [];
     await Promise.all(
       firstRoundChars
         .filter((c) => c.current_stamina !== c.max_stamina)

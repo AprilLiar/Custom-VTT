@@ -1306,3 +1306,55 @@ test('a defensive move WITHOUT the Block Tag is untouched by any of this', async
   assert.equal(await blockSpendFor(pairIndex, defender), null, 'an untagged Block must not be charged at resolution');
   assert.equal(await damageTaken(pairIndex, defender), null, 'and still blocks exactly as it always did');
 });
+
+// ---------- Initiative modifiers (the two-copies bugfix) ----------
+
+// Gives a character an active stance made of two named Styles, so
+// getStanceMatchupBonus has something real to score.
+async function giveStance(characterId, styleA, styleB) {
+  const ids = await all('SELECT id, name FROM attributes');
+  const byName = new Map(ids.map((r) => [r.name, r.id]));
+  const result = await run(
+    'INSERT INTO stances (character_id, name, attribute_a_id, attribute_b_id) VALUES (?, ?, ?, ?)',
+    [characterId, `${styleA}/${styleB}`, byName.get(styleA), byName.get(styleB)]
+  );
+  await run('UPDATE characters SET active_stance_id = ? WHERE id = ?', [
+    Number(result.lastInsertRowid),
+    characterId,
+  ]);
+}
+
+test('Initiative carries the Stance matchup on rounds after the first', async () => {
+  // The bug this pins: the Initiative Brain roll exists twice — once in
+  // server/index.js's combat:next_round (a fight's first round) and once in
+  // startPairDeclaration here (every round after) — and only the first had
+  // learned the Stance matchup. From round 2 on, a fighter's stance
+  // advantage silently stopped counting toward who declares first.
+  const pairIndex = 500;
+  const attacker = await createCharacter('Init Attacker');
+  const defender = await createCharacter('Init Defender');
+  await giveStance(attacker, 'Speed', 'Power');
+  await giveStance(defender, 'Technique', 'Improvisation');
+  await seatPair(pairIndex, attacker, defender);
+
+  // Round 1, then round 2 — the second is the one that goes through
+  // startPairDeclaration's own initiative roll.
+  await startPairDeclaration(mockIo, pairIndex);
+  await run('DELETE FROM chat_log');
+  await startPairDeclaration(mockIo, pairIndex);
+
+  const brainRolls = (await all("SELECT character_id, modifier, dice_rolled FROM chat_log WHERE kind = 'roll'"))
+    .filter((r) => JSON.parse(r.dice_rolled).some((d) => d.slot_name === 'Brain'));
+  assert.equal(brainRolls.length, 2, 'both fighters roll initiative');
+
+  // Whatever the chart says for this pairing, the two sides must be exact
+  // opposites and non-zero — asserting the sign rather than a hardcoded
+  // number keeps this from breaking if the counter chart is ever retuned.
+  const { getStanceMatchupBonus } = await import('../combatBonuses.js');
+  const expected = await getStanceMatchupBonus(attacker);
+  assert.notEqual(expected, 0, 'these two stances must actually counter for the test to mean anything');
+  const mine = brainRolls.find((r) => r.character_id === attacker);
+  const theirs = brainRolls.find((r) => r.character_id === defender);
+  assert.equal(mine.modifier, expected, 'the attacker\'s initiative must include their stance matchup');
+  assert.equal(theirs.modifier, -expected, 'and the defender\'s the mirror of it');
+});
