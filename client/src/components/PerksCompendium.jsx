@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useRole } from '../roleContext.jsx';
 import { socket } from '../socket.js';
-import { getCharacters, getPerks } from '../lib/api.js';
+import { getCharacters, getPerks, getPerkTags } from '../lib/api.js';
 import { portraitSrc } from '../lib/image.js';
 import PerkCard from './PerkCard.jsx';
 import PerkCreator from './PerkCreator.jsx';
@@ -35,6 +35,110 @@ function GrantList({ perk, characters }) {
   );
 }
 
+// The Perk Tag vocabulary manager — GM-only, and deliberately a separate list
+// from the Move tags managed on the Moves tab (see perk_tags in db.js).
+// Structurally a twin of Compendium.jsx's TagManager; kept as its own
+// component rather than parameterised because the two only look alike, and a
+// shared one would have to be told which of two event families, two
+// endpoints, and two delete warnings to use for no real saving.
+function PerkTagManager({ tags }) {
+  const [editing, setEditing] = useState(null); // null | 'new' | tag
+  const [name, setName] = useState('');
+  const [description, setDescription] = useState('');
+
+  const startEdit = (tag) => {
+    setEditing(tag);
+    setName(tag === 'new' ? '' : tag.name);
+    setDescription(tag === 'new' ? '' : tag.description ?? '');
+  };
+
+  const save = (e) => {
+    e.preventDefault();
+    if (!name.trim()) return;
+    if (editing === 'new') {
+      socket.emit('perk_tag:create', { name: name.trim(), description: description.trim() });
+    } else {
+      socket.emit('perk_tag:update', {
+        tagId: editing.id,
+        name: name.trim(),
+        description: description.trim(),
+      });
+    }
+    setEditing(null);
+  };
+
+  return (
+    <div className="panel-cut-lg border border-zinc-800 bg-zinc-900 p-4">
+      <h2 className="mb-3 text-sm font-bold uppercase tracking-wide text-zinc-400">
+        Perk Tags (world-level, categorisation only)
+      </h2>
+      <div className="flex flex-wrap items-center gap-2">
+        {tags.map((tag) => (
+          <span
+            key={tag.id}
+            title={tag.description || undefined}
+            className="inline-flex items-center gap-1.5 rounded-full bg-sky-900/40 px-2.5 py-0.5 text-sm font-semibold text-sky-300"
+          >
+            {tag.name}
+            <button onClick={() => startEdit(tag)} className="text-sky-700 hover:text-sky-200" title="Edit">
+              ✎
+            </button>
+            <button
+              onClick={() =>
+                window.confirm(`Delete Perk tag "${tag.name}"? It is removed from every Perk.`) &&
+                socket.emit('perk_tag:delete', { tagId: tag.id })
+              }
+              className="text-sky-700 hover:text-red-400"
+              title="Delete"
+            >
+              ✕
+            </button>
+          </span>
+        ))}
+        {!editing && (
+          <button
+            onClick={() => startEdit('new')}
+            className="rounded-full border border-dashed border-zinc-600 px-3 py-1 text-sm text-zinc-400 hover:border-brand-500 hover:text-brand-300"
+          >
+            + New Perk Tag
+          </button>
+        )}
+      </div>
+      {editing && (
+        <form onSubmit={save} className="mt-3 flex flex-wrap items-center gap-2 border-t border-zinc-800 pt-3">
+          <input
+            autoFocus
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="Tag name"
+            className="w-28 panel-cut-sm border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm text-zinc-100 outline-none focus:border-brand-500"
+          />
+          <input
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            placeholder="Description (shown as a tooltip)"
+            className="min-w-0 flex-1 panel-cut-sm border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm text-zinc-100 outline-none focus:border-brand-500"
+          />
+          <button
+            type="submit"
+            disabled={!name.trim()}
+            className="panel-cut-sm bg-brand-600 px-3 py-1.5 text-sm font-semibold hover:bg-brand-500 disabled:opacity-40"
+          >
+            Save
+          </button>
+          <button
+            type="button"
+            onClick={() => setEditing(null)}
+            className="panel-cut-sm border border-zinc-700 px-3 py-1.5 text-sm text-zinc-400 hover:bg-zinc-800"
+          >
+            Cancel
+          </button>
+        </form>
+      )}
+    </div>
+  );
+}
+
 // The Compendium page's Perks tab: persistent Perk library. Just picture/
 // name/description per spec — no folders or style filter, unlike Moves.
 // The page is open to every role (see CompendiumPage.jsx) — creation,
@@ -44,6 +148,10 @@ export default function PerksCompendium() {
   const { role } = useRole();
   const [perks, setPerks] = useState(null);
   const [characters, setCharacters] = useState([]);
+  const [tags, setTags] = useState([]);
+  // Multi-select, OR logic — the same filter semantics the Moves compendium's
+  // Style filter already uses, so the two tabs behave the same way.
+  const [tagFilter, setTagFilter] = useState(new Set());
   const [form, setForm] = useState(null); // null | { perk? }
   const [grantOpen, setGrantOpen] = useState(null);
   const [dropTarget, setDropTarget] = useState(null);
@@ -52,10 +160,12 @@ export default function PerksCompendium() {
     const refreshAll = () => {
       getPerks().then(setPerks).catch(console.error);
       getCharacters().then(setCharacters).catch(console.error);
+      getPerkTags().then(setTags).catch(console.error);
     };
     refreshAll();
     const events = [
       'perk:created', 'perk:updated', 'perk:deleted', 'perk:granted', 'perk:revoked',
+      'perk_tag:created', 'perk_tag:updated', 'perk_tag:deleted',
       'character:created', 'character:updated', 'character:deleted',
     ];
     for (const ev of events) socket.on(ev, refreshAll);
@@ -65,6 +175,21 @@ export default function PerksCompendium() {
   }, []);
 
   if (!perks) return <p className="text-zinc-500">Loading…</p>;
+
+  const tagById = new Map(tags.map((t) => [t.id, t]));
+  const toggleFilter = (id) =>
+    setTagFilter((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  // OR across selected tags: a Perk shows if it carries ANY of them. No
+  // selection means no filtering at all, rather than "match nothing".
+  const visiblePerks =
+    tagFilter.size === 0
+      ? perks
+      : perks.filter((p) => (p.tag_ids ?? []).some((id) => tagFilter.has(id)));
 
   const submitPerk = (payload) => {
     if (form?.perk) socket.emit('perk:update', { perkId: form.perk.id, ...payload });
@@ -94,6 +219,7 @@ export default function PerksCompendium() {
           (form ? (
             <PerkCreator
               initial={form.perk ?? null}
+              tags={tags}
               onSubmit={submitPerk}
               onCancel={() => setForm(null)}
             />
@@ -106,11 +232,51 @@ export default function PerksCompendium() {
             </button>
           ))}
 
+        {role === 'gm' && <PerkTagManager tags={tags} />}
+
+        {/* Filter bar — open to every role, since browsing is (a Player gets
+            the same read-only library). Hidden entirely when no tags exist,
+            rather than showing an empty row of nothing to filter by. */}
+        {tags.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Filter</span>
+            {tags.map((tag) => {
+              const on = tagFilter.has(tag.id);
+              return (
+                <button
+                  key={tag.id}
+                  type="button"
+                  onClick={() => toggleFilter(tag.id)}
+                  title={tag.description || undefined}
+                  className={`panel-cut-sm border px-2 py-1 text-xs font-semibold ${
+                    on
+                      ? 'border-sky-500 bg-sky-600/25 text-sky-200'
+                      : 'border-zinc-700 bg-zinc-900 text-zinc-400 hover:border-zinc-500'
+                  }`}
+                >
+                  {tag.name}
+                </button>
+              );
+            })}
+            {tagFilter.size > 0 && (
+              <button
+                type="button"
+                onClick={() => setTagFilter(new Set())}
+                className="panel-cut-sm px-2 py-1 text-xs text-zinc-500 hover:text-zinc-300"
+              >
+                Clear
+              </button>
+            )}
+          </div>
+        )}
+
         {perks.length === 0 ? (
           <p className="text-sm text-zinc-600">No Perks yet — create the first one.</p>
+        ) : visiblePerks.length === 0 ? (
+          <p className="text-sm text-zinc-600">No Perks carry the selected tag(s).</p>
         ) : (
           <div className="grid gap-3 sm:grid-cols-2">
-            {perks.map((perk) => (
+            {visiblePerks.map((perk) => (
               <div
                 key={perk.id}
                 draggable={role === 'gm'}
@@ -120,6 +286,7 @@ export default function PerksCompendium() {
               >
                 <PerkCard
                   perk={perk}
+                  tags={(perk.tag_ids ?? []).map((id) => tagById.get(id)).filter(Boolean)}
                   actions={
                     role === 'gm' ? (
                       <>

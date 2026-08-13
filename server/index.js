@@ -26,7 +26,7 @@ import {
   applyRankPenalty,
   applyHalfDamage,
 } from './gameLogic.js';
-import { getCombatRollBonus, getStanceMatchupBonus } from './combatBonuses.js';
+import { getCombatRollBonus, getPairStanceMatchup, getStanceMatchupBonus } from './combatBonuses.js';
 import {
   clampFrame,
   validFrames,
@@ -304,7 +304,10 @@ async function getMovesFor(characterId) {
 }
 
 async function getPerk(id) {
-  return one('SELECT * FROM perks WHERE id = ?', [id]);
+  const perk = await one('SELECT * FROM perks WHERE id = ?', [id]);
+  if (!perk) return null;
+  const tags = await all('SELECT perk_tag_id FROM perk_tag_links WHERE perk_id = ? ORDER BY id', [id]);
+  return { ...perk, tag_ids: tags.map((t) => t.perk_tag_id) };
 }
 
 // A character's granted Perks (id, name, description, picture — automation
@@ -316,6 +319,19 @@ async function getCharacterPerks(characterId) {
      WHERE cp.character_id = ? ORDER BY cp.id`,
     [characterId]
   );
+  if (!rows.length) return [];
+  const perkIds = [...new Set(rows.map((r) => r.id))];
+  const links = await all(
+    `SELECT perk_id, perk_tag_id FROM perk_tag_links WHERE perk_id IN (${perkIds
+      .map(() => '?')
+      .join(',')}) ORDER BY id`,
+    perkIds
+  );
+  const tagsBy = new Map();
+  for (const l of links) {
+    if (!tagsBy.has(l.perk_id)) tagsBy.set(l.perk_id, []);
+    tagsBy.get(l.perk_id).push(l.perk_tag_id);
+  }
   return rows.map((r) => ({
     id: r.id,
     character_perk_id: r.character_perk_id,
@@ -323,6 +339,7 @@ async function getCharacterPerks(characterId) {
     description: r.description,
     image_data: r.image_data,
     image_mime_type: r.image_mime_type,
+    tag_ids: tagsBy.get(r.id) ?? [],
   }));
 }
 
@@ -554,6 +571,19 @@ async function fetchOpenResolutionsByPair() {
   return new Map(rows.map((r) => [r.pair_index, r]));
 }
 
+// The stance matchup for every pair that currently has anyone seated, for
+// the Arena's VS divider. Keyed off combat_participants rather than
+// combat_pairs on purpose: the whole point is to show two fighters what they
+// are facing *before* the fight starts, and a pair has no combat_pairs row
+// until its first round opens. Entries the rule doesn't apply to are dropped
+// (see getPairStanceMatchup), so the UI renders nothing rather than a 0 that
+// would read as "even matchup".
+async function fetchPairStanceMatchups() {
+  const rows = await all('SELECT DISTINCT pair_index FROM combat_participants ORDER BY pair_index');
+  const results = await Promise.all(rows.map((r) => getPairStanceMatchup(r.pair_index)));
+  return results.filter(Boolean);
+}
+
 // Broadcasts the Combat Arena's full current state — seating/toggle plus
 // (Phase 7) the round/Tic timing state and every declared move — called
 // from the combat:*/move:declare socket handlers below and from character
@@ -563,13 +593,15 @@ async function fetchOpenResolutionsByPair() {
 // watching (see isRevealedToViewer above), so this is a per-socket emit
 // rather than one io.emit — the DB round-trip still only happens once.
 async function emitCombatUpdated() {
-  const [state, participants, pairRows, declaredMoveRows, openResolutions] = await Promise.all([
-    one('SELECT * FROM combat_state WHERE id = 1'),
-    all('SELECT * FROM combat_participants ORDER BY side, pair_index, id'),
-    all('SELECT * FROM combat_pairs ORDER BY pair_index'),
-    fetchDeclaredMoveRows(),
-    fetchOpenResolutionsByPair(),
-  ]);
+  const [state, participants, pairRows, declaredMoveRows, openResolutions, stanceMatchups] =
+    await Promise.all([
+      one('SELECT * FROM combat_state WHERE id = 1'),
+      all('SELECT * FROM combat_participants ORDER BY side, pair_index, id'),
+      all('SELECT * FROM combat_pairs ORDER BY pair_index'),
+      fetchDeclaredMoveRows(),
+      fetchOpenResolutionsByPair(),
+      fetchPairStanceMatchups(),
+    ]);
   const pairs = pairRows.map((row) => shapePair(row, state.round_length, openResolutions.get(row.pair_index)));
   const pairsByIndex = new Map(pairRows.map((row) => [row.pair_index, row]));
   const base = {
@@ -584,6 +616,9 @@ async function emitCombatUpdated() {
     // GM's declaration table renders (see Combat Timing above).
     pairs,
     participants,
+    // What each side of each pair's stance is worth against the other, for
+    // the Arena's VS divider (see fetchPairStanceMatchups).
+    stanceMatchups,
   };
   for (const viewerSocket of io.sockets.sockets.values()) {
     viewerSocket.emit('combat:updated', {
@@ -610,6 +645,17 @@ async function emitCombatUpdated() {
 // they're not currently seated, rather than rejecting the roll outright;
 // the roll itself always still happens, this only ever gates whether it
 // gets an Apply button once sub-phase 4 builds one.
+// Which move a manual roll belongs to, when the client said. Only the
+// reveal-time auto-Roll dialog passes a declaredMoveId; the Dice Tray and a
+// bare stat roll don't, and get null — getStanceMatchupBonus then falls back
+// to whatever the roller has in play. Combat Style needs this so a move's own
+// style still counts on the one roll path a human drives by hand.
+async function moveIdOfDeclared(declaredMoveId) {
+  if (declaredMoveId == null) return null;
+  const row = await one('SELECT move_id AS moveId FROM declared_moves WHERE id = ?', [declaredMoveId]);
+  return row?.moveId ?? null;
+}
+
 async function buildRollContext(characterId, declaredMoveId) {
   if (declaredMoveId == null) return null;
   const [declaredMove, participant] = await Promise.all([
@@ -774,14 +820,34 @@ app.get('/api/moves', wrap(async (_req, res) => {
 
 // The Perks compendium: every Perk plus who currently has it
 app.get('/api/perks', wrap(async (_req, res) => {
-  const perks = await all('SELECT * FROM perks ORDER BY id');
-  const grants = await all('SELECT * FROM character_perks');
+  const [perks, grants, tagLinks] = await Promise.all([
+    all('SELECT * FROM perks ORDER BY id'),
+    all('SELECT * FROM character_perks'),
+    all('SELECT * FROM perk_tag_links ORDER BY id'),
+  ]);
   const grantedBy = new Map();
   for (const g of grants) {
     if (!grantedBy.has(g.perk_id)) grantedBy.set(g.perk_id, []);
     grantedBy.get(g.perk_id).push(g.character_id);
   }
-  res.json(perks.map((p) => ({ ...p, granted_character_ids: grantedBy.get(p.id) ?? [] })));
+  const tagsBy = new Map();
+  for (const l of tagLinks) {
+    if (!tagsBy.has(l.perk_id)) tagsBy.set(l.perk_id, []);
+    tagsBy.get(l.perk_id).push(l.perk_tag_id);
+  }
+  res.json(
+    perks.map((p) => ({
+      ...p,
+      granted_character_ids: grantedBy.get(p.id) ?? [],
+      tag_ids: tagsBy.get(p.id) ?? [],
+    }))
+  );
+}));
+
+// The Perk Tag vocabulary (see perk_tags in db.js — deliberately separate
+// from the Move tag list at /api/tags).
+app.get('/api/perk-tags', wrap(async (_req, res) => {
+  res.json(await all('SELECT * FROM perk_tags ORDER BY id'));
 }));
 
 // Global search across named library entities only (Characters, Moves,
@@ -946,6 +1012,7 @@ app.get('/api/combat', wrap(async (req, res) => {
     characters,
     counters,
     declaredMoves,
+    stanceMatchups: await fetchPairStanceMatchups(),
   });
 }));
 
@@ -1267,7 +1334,9 @@ io.on('connection', (socket) => {
     const asGm = characterId == null;
     const character = asGm ? null : await getCharacter(characterId);
     if (!asGm && !character) return;
-    const mod = clampModifier(modifier) + (asGm ? 0 : await getCombatRollBonus(character.id));
+    const mod =
+      clampModifier(modifier) +
+      (asGm ? 0 : await getCombatRollBonus(character.id, { moveId: await moveIdOfDeclared(declaredMoveId) }));
     const result = rollDie(die) + mod;
     const rollContext = asGm ? null : await buildRollContext(character.id, declaredMoveId);
     await logRoll(io, {
@@ -1297,7 +1366,9 @@ io.on('connection', (socket) => {
       )
     );
     if (!dice.length) return;
-    const mod = clampModifier(modifier) + (await getCombatRollBonus(character.id));
+    const mod =
+      clampModifier(modifier) +
+      (await getCombatRollBonus(character.id, { moveId: await moveIdOfDeclared(declaredMoveId) }));
     const rolledDice = dice.map((d) => ({
       slot_name: d.slot_name,
       size: d.current_size,
@@ -1837,6 +1908,22 @@ io.on('connection', (socket) => {
       styleId = style.id;
     }
 
+    // Combat Style (decided, new): a separate, always-optional style that
+    // joins its user's stance when the Stance matchup is scored for this
+    // move's roll. Unlike the gate above it is NOT dropped on a Default move
+    // — a Default move is usable by anyone, which is a statement about who
+    // may throw it, not about what it is made of, and a styleless Default
+    // library would put the whole mechanic out of reach of the moves every
+    // character actually has.
+    let combatStyleId = null;
+    if (payload.combatStyleAttributeId != null) {
+      const style = await one('SELECT id FROM attributes WHERE id = ?', [
+        payload.combatStyleAttributeId,
+      ]);
+      if (!style) return null;
+      combatStyleId = style.id;
+    }
+
     let folderId = null;
     if (payload.folderId != null) {
       const folder = await one('SELECT id FROM move_folders WHERE id = ?', [payload.folderId]);
@@ -1877,13 +1964,15 @@ io.on('connection', (socket) => {
         `INSERT INTO moves (name, is_default, tell_id, startup_tics, active_tics, recovery_tics,
           stamina_cost, description, style_attribute_id, folder_id, image_data, image_mime_type,
           roll_modifier, right_tell_id, left_tell_id, is_defensive, defense_frame_positions,
-          roll_type, custom_roll_size, attack_targets, defense_kind, stamina_modifier)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          roll_type, custom_roll_size, attack_targets, defense_kind, stamina_modifier,
+          combat_style_attribute_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [name, isDefault, tellId, startup, active, recovery, effectiveStaminaCost, description, styleId,
           folderId, payload.imageData ?? null,
           payload.imageData ? (payload.imageMimeType ?? 'image/png') : null,
           rollModifier, rightTellId, leftTellId, isDefensive, JSON.stringify(defenseFramePositions),
-          rollType, customRollSize, JSON.stringify(attackTargets), defenseKind, staminaModifier]
+          rollType, customRollSize, JSON.stringify(attackTargets), defenseKind, staminaModifier,
+          combatStyleId]
       );
       id = Number(result.lastInsertRowid);
     } else {
@@ -1892,12 +1981,12 @@ io.on('connection', (socket) => {
           recovery_tics = ?, stamina_cost = ?, description = ?, style_attribute_id = ?, folder_id = ?,
           roll_modifier = ?, right_tell_id = ?, left_tell_id = ?, is_defensive = ?,
           defense_frame_positions = ?, roll_type = ?, custom_roll_size = ?, attack_targets = ?,
-          defense_kind = ?, stamina_modifier = ?
+          defense_kind = ?, stamina_modifier = ?, combat_style_attribute_id = ?
           WHERE id = ?`,
         [name, isDefault, tellId, startup, active, recovery, effectiveStaminaCost, description, styleId,
           folderId, rollModifier, rightTellId, leftTellId, isDefensive,
           JSON.stringify(defenseFramePositions), rollType, customRollSize, JSON.stringify(attackTargets),
-          defenseKind, staminaModifier, id]
+          defenseKind, staminaModifier, combatStyleId, id]
       );
       // image only replaced when a new one is provided
       if (payload.imageData !== undefined) {
@@ -2012,6 +2101,42 @@ io.on('connection', (socket) => {
     await run('DELETE FROM character_move_tags WHERE tag_id = ?', [tag.id]);
     await run('DELETE FROM tags WHERE id = ?', [tag.id]);
     io.emit('tag:deleted', { tagId: tag.id });
+  });
+
+  // Perk Tags — the same three verbs as the Move tag events above, against
+  // the separate perk_tags vocabulary. Unlike a Move tag, deleting one of
+  // these can never change how anything resolves: they carry no mechanics by
+  // design, so there is no in-use guard, just the link cleanup.
+  on('perk_tag:create', async ({ name, description }) => {
+    const tagName = String(name ?? '').trim();
+    if (!tagName) return;
+    const result = await run('INSERT INTO perk_tags (name, description) VALUES (?, ?)', [
+      tagName,
+      String(description ?? '').trim(),
+    ]);
+    io.emit('perk_tag:created', await one('SELECT * FROM perk_tags WHERE id = ?', [
+      Number(result.lastInsertRowid),
+    ]));
+  });
+
+  on('perk_tag:update', async ({ tagId, name, description }) => {
+    const tag = await one('SELECT * FROM perk_tags WHERE id = ?', [tagId]);
+    const tagName = String(name ?? '').trim();
+    if (!tag || !tagName) return;
+    await run('UPDATE perk_tags SET name = ?, description = ? WHERE id = ?', [
+      tagName,
+      String(description ?? '').trim(),
+      tag.id,
+    ]);
+    io.emit('perk_tag:updated', await one('SELECT * FROM perk_tags WHERE id = ?', [tag.id]));
+  });
+
+  on('perk_tag:delete', async ({ tagId }) => {
+    const tag = await one('SELECT * FROM perk_tags WHERE id = ?', [tagId]);
+    if (!tag) return;
+    await run('DELETE FROM perk_tag_links WHERE perk_tag_id = ?', [tag.id]);
+    await run('DELETE FROM perk_tags WHERE id = ?', [tag.id]);
+    io.emit('perk_tag:deleted', { tagId: tag.id });
   });
 
   on('folder:create', async ({ name, parentFolderId }) => {
@@ -2154,6 +2279,24 @@ io.on('connection', (socket) => {
           id,
         ]);
       }
+    }
+
+    // Perk Tags: purely categorisation, so the only validation is that each
+    // id names a real tag. Rewritten wholesale on every save, same as a
+    // move's tags — an omitted tagIds means "no tags", not "leave alone",
+    // which is what a form that always sends its full selection wants.
+    const tagIds = Array.isArray(payload.tagIds)
+      ? [...new Set(payload.tagIds.map(Number).filter(Number.isInteger))]
+      : [];
+    const knownTags = tagIds.length
+      ? (await all(
+          `SELECT id FROM perk_tags WHERE id IN (${tagIds.map(() => '?').join(',')})`,
+          tagIds
+        )).map((t) => t.id)
+      : [];
+    await run('DELETE FROM perk_tag_links WHERE perk_id = ?', [id]);
+    for (const tagId of knownTags) {
+      await run('INSERT INTO perk_tag_links (perk_id, perk_tag_id) VALUES (?, ?)', [id, tagId]);
     }
     return getPerk(id);
   };
@@ -2826,7 +2969,12 @@ io.on('connection', (socket) => {
           // requireActiveFight: false — on a fight's first round this runs
           // before the pair's own combat_pairs row exists, since that row's
           // declaring_side is decided BY this very roll.
-          await getStanceMatchupBonus(p.character_id, { requireActiveFight: false }),
+          // includeMoveStyles: false — a Brain roll for Initiative is not any
+          // move's roll (see startPairDeclaration, which must match).
+          await getStanceMatchupBonus(p.character_id, {
+            requireActiveFight: false,
+            includeMoveStyles: false,
+          }),
         ])
       )
     );

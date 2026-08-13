@@ -495,7 +495,9 @@ async function checkInterrupt(io, { targetCharacterId, attackerRevealTic, attack
     ),
   ]);
   const bonus = computeInterruptBonus({ revealTic: attackerRevealTic, currentTic: eligible.tic });
-  const bonusMods = await getCombatRollBonus(targetCharacterId);
+  // The move being interrupted is the one rolling, so its Combat Style is
+  // the one that joins the matchup here.
+  const bonusMods = await getCombatRollBonus(targetCharacterId, { moveId: startupDM.move_id, tic });
   const mod = bonus + bonusMods + startupDM.roll_modifier + rollBonusRow.bonus;
 
   // Decision #8: the interrupted character rolls their own Startup move's
@@ -765,7 +767,7 @@ async function applySuccessfulDodge(io, {
       [defenderDM.character_id, defenderDM.move_id]
     ),
   ]);
-  const defBonusMods = await getCombatRollBonus(defenderDM.character_id);
+  const defBonusMods = await getCombatRollBonus(defenderDM.character_id, { moveId: defenderDM.move_id, tic });
   const defMod = defenderDM.roll_modifier + defRollBonusRow.bonus + defBonusMods;
 
   let dodgeDice;
@@ -910,7 +912,7 @@ async function resolveAttack(io, { row, pairIndex, tic, emitEvent }) {
       'SELECT COALESCE(SUM(amount), 0) AS bonus FROM character_move_roll_bonuses WHERE character_id = ? AND move_id = ?',
       [row.characterId, row.moveId]
     ),
-    getCombatRollBonus(row.characterId),
+    getCombatRollBonus(row.characterId, { moveId: row.moveId, tic }),
   ]);
   const mod = row.rollModifier + rollBonusRow.bonus + bonusMods;
   let dice;
@@ -1170,7 +1172,7 @@ async function resolveAttack(io, { row, pairIndex, tic, emitEvent }) {
       [defenderDM.character_id, defenderDM.move_id]
     ),
   ]);
-  const defBonusMods = await getCombatRollBonus(defenderDM.character_id);
+  const defBonusMods = await getCombatRollBonus(defenderDM.character_id, { moveId: defenderDM.move_id, tic });
   const defMod = defenderDM.roll_modifier + defRollBonusRow.bonus + defBonusMods;
 
   let blockDice;
@@ -1767,7 +1769,7 @@ async function startPairDeclaration(io, pairIndex) {
     // other.
     const modifier =
       (p.reasons_to_fight || 0) +
-      (await getStanceMatchupBonus(p.character_id)) -
+      (await getStanceMatchupBonus(p.character_id, { includeMoveStyles: false })) -
       computeInitiativeOverflowPenalty({
         blockedUntilTic: blockedUntilByChar.get(p.character_id) ?? null,
         nextRoundStartTic,

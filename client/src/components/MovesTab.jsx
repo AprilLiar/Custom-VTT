@@ -63,6 +63,9 @@ export default function MovesTab({ data }) {
     <div className="grid gap-3 sm:grid-cols-2">
       {moves.map((move) => {
         const style = move.style_attribute_id ? attrById.get(move.style_attribute_id) : null;
+        const combatStyle = move.combat_style_attribute_id
+          ? attrById.get(move.combat_style_attribute_id)
+          : null;
         const isUsable = usable(move);
         // "The move copy on the character": Perk-granted frame/tag overrides
         // folded in, so this sheet shows what this character actually has.
@@ -81,6 +84,7 @@ export default function MovesTab({ data }) {
             rightTell={move.right_tell_id ? tellById.get(move.right_tell_id) : null}
             leftTell={move.left_tell_id ? tellById.get(move.left_tell_id) : null}
             style={style}
+            combatStyle={combatStyle}
             tags={effectiveTagIds.map((id) => tagById.get(id)).filter(Boolean)}
             folderLabel={folderPath(move.folder_id, folders) ?? undefined}
             perkModified={move.has_perk_overrides}

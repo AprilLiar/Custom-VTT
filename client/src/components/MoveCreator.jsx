@@ -175,6 +175,10 @@ export default function MoveCreator({
   const [rightTellId, setRightTellId] = useState(initial?.right_tell_id ?? tells[0]?.id ?? null);
   const [leftTellId, setLeftTellId] = useState(initial?.left_tell_id ?? tells[0]?.id ?? null);
   const [styleId, setStyleId] = useState(initial?.style_attribute_id ?? null);
+  // Combat Style (decided, new) — the move's own style, joined to its user's
+  // stance for the matchup. Separate from styleId above, which is a gate on
+  // who may use the move and never a modifier.
+  const [combatStyleId, setCombatStyleId] = useState(initial?.combat_style_attribute_id ?? null);
   const [folderId, setFolderId] = useState(initial?.folder_id ?? initialFolderId);
   const [rollSlots, setRollSlots] = useState(initial?.roll_slots ?? []);
   const [rollModifier, setRollModifier] = useState(initial?.roll_modifier ?? 0);
@@ -304,6 +308,7 @@ export default function MoveCreator({
       defenseKind: isDefensive && visibleDefensePositions.length > 0 ? defenseKind : null,
       ...(ambiguousRoll ? { rightTellId, leftTellId } : { tellId }),
       styleAttributeId: styleId,
+      combatStyleAttributeId: combatStyleId,
       folderId,
       rollSlots,
       rollModifier,
@@ -455,6 +460,44 @@ export default function MoveCreator({
           </div>
         </div>
       )}
+
+      {/* Combat Style (decided, new) — a different question from the Style
+          gate above, so it gets its own picker rather than sharing one and
+          hoping the label carries the distinction. Shown on Default moves
+          too: "anyone may throw this" says nothing about what it is made of.
+          Clicking the selected style again clears it, since the whole field
+          is optional and there is otherwise no way back to none. */}
+      <div>
+        <p className="mb-1 text-xs font-semibold uppercase text-zinc-500">
+          Combat Style (optional — adds to the user's stance in the matchup)
+        </p>
+        <div className="flex flex-wrap gap-1.5">
+          {attributes.map((attr) => {
+            const Icon = iconFor(attr.icon);
+            const selected = combatStyleId === attr.id;
+            return (
+              <button
+                key={attr.id}
+                type="button"
+                onClick={() => setCombatStyleId(selected ? null : attr.id)}
+                className={`inline-flex items-center gap-1 panel-cut border px-2 py-1 text-xs font-semibold ${
+                  selected
+                    ? 'border-amber-500 bg-amber-600/25 text-amber-200'
+                    : 'border-zinc-700 bg-zinc-800 text-zinc-400 hover:border-zinc-500'
+                }`}
+              >
+                <Icon size={12} />
+                {attr.name}
+              </button>
+            );
+          })}
+        </div>
+        <p className="mt-1 text-[11px] text-zinc-600">
+          {combatStyleId
+            ? 'Scored on top of the user’s two stance styles when this move rolls — if their stance already has it, it counts twice.'
+            : 'None — this move is scored on the user’s stance alone.'}
+        </p>
+      </div>
 
       <div>
         <p className="mb-1 text-xs font-semibold uppercase text-zinc-500">Roll (optional)</p>

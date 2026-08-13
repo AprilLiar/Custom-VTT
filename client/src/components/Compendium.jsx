@@ -519,6 +519,11 @@ export default function MovesCompendium() {
                   rightTell={move.right_tell_id ? tellById.get(move.right_tell_id) : null}
                   leftTell={move.left_tell_id ? tellById.get(move.left_tell_id) : null}
                   style={move.style_attribute_id ? attrById.get(move.style_attribute_id) : null}
+                  combatStyle={
+                    move.combat_style_attribute_id
+                      ? attrById.get(move.combat_style_attribute_id)
+                      : null
+                  }
                   tags={move.tag_ids.map((id) => tagById.get(id)).filter(Boolean)}
                   folderLabel={folderPath(move.folder_id, folders) ?? undefined}
                   badge={
