@@ -5,6 +5,7 @@ import { getChat, getCharacters, getTells, getTags, getRuleset, getMoves } from 
 import { fileToChatImage } from '../lib/image.js';
 import { folderPath } from '../lib/folders.js';
 import { phaseBgAt } from '../lib/framePhaseColors.js';
+import { decomposeRoll } from '../lib/dice.js';
 import { useRole } from '../roleContext.jsx';
 import { useSocketRefresh } from '../lib/connection.js';
 import Thumb from './Thumb.jsx';
@@ -185,13 +186,13 @@ function Entry({ entry, character, moveInfo, characters, defenseResolutions, onW
               {entry.dice.map((d, i) => {
                 // The physical die face isn't stored separately — result is
                 // already `rollDie(size) + bonus + modifier` (see logRoll
-                // server-side), so it's recovered exactly by subtracting the
-                // two flat additions back out. Shown as its own breakdown
-                // ("what was rolled on the d8, then summed") per the plan's
-                // decided chat-card redesign — the final result is bolder
-                // and bigger so it strikes the eye at a glance.
-                const flat = d.bonus + entry.modifier;
-                const raw = d.result - flat;
+                // server-side), so it's recovered by subtracting the two flat
+                // additions back out. Shown as its own breakdown ("what was
+                // rolled on the d8, then summed") per the plan's decided
+                // chat-card redesign — the final result is bolder and bigger
+                // so it strikes the eye at a glance. decomposeRoll is shared
+                // with the round cutscene's log so the two can't drift.
+                const { flat, raw } = decomposeRoll(d, entry.modifier);
                 return (
                   <div key={i} className="font-display flex flex-wrap items-baseline gap-x-1.5">
                     <span className="text-zinc-500">{d.slot_name}</span>

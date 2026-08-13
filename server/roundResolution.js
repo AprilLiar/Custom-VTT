@@ -91,7 +91,7 @@ import {
   findInterruptEligibleTic,
 } from './combatTiming.js';
 import { idleStaminaRegenRate } from './perkAutomations.js';
-import { getCombatRollBonus } from './combatBonuses.js';
+import { getCombatRollBonus, getStanceMatchupBonus } from './combatBonuses.js';
 
 const GM_CHAT_SENTINEL_ID = 0;
 
@@ -1720,10 +1720,16 @@ async function startPairDeclaration(io, pairIndex) {
   // makes, just scoped to one pair now instead of every eligible pair at
   // once.
   if (!existing) {
-    for (const character of charRows) {
-      if (character.current_stamina !== character.max_stamina) {
-        await run('UPDATE characters SET current_stamina = ? WHERE id = ?', [character.max_stamina, character.id]);
-        io.emit('character:updated', { ...character, current_stamina: character.max_stamina });
+    // "Fresh" (decided, new) gates the full restore, same as
+    // combat:next_round's own copy in server/index.js. Off by default, so a
+    // pair's first round starts on whatever Stamina they were carrying.
+    const combatState = await one('SELECT fresh_start FROM combat_state WHERE id = 1');
+    if (combatState?.fresh_start) {
+      for (const character of charRows) {
+        if (character.current_stamina !== character.max_stamina) {
+          await run('UPDATE characters SET current_stamina = ? WHERE id = ?', [character.max_stamina, character.id]);
+          io.emit('character:updated', { ...character, current_stamina: character.max_stamina });
+        }
       }
     }
   } else {
@@ -1748,8 +1754,20 @@ async function startPairDeclaration(io, pairIndex) {
     const die = brainByChar.get(p.character_id);
     const character = charById.get(p.character_id);
     if (!die || die.status !== 'active' || !character) continue;
+    // Reasons to Fight AND the Stance matchup both apply to an Initiative
+    // roll — the matchup is defined as "behaves exactly like Reasons to
+    // Fight", so it rides along wherever that does.
+    //
+    // **This is a bugfix.** There are two copies of the Initiative roll —
+    // combat:next_round in server/index.js opens a fight's first round, this
+    // one opens every round after it — and only the first had learned the
+    // Stance matchup. From round 2 on, a fighter's stance advantage silently
+    // stopped counting toward who declares first. Both now read the same
+    // helpers, so the next modifier added to one cannot go missing from the
+    // other.
     const modifier =
-      (p.reasons_to_fight || 0) -
+      (p.reasons_to_fight || 0) +
+      (await getStanceMatchupBonus(p.character_id)) -
       computeInitiativeOverflowPenalty({
         blockedUntilTic: blockedUntilByChar.get(p.character_id) ?? null,
         nextRoundStartTic,

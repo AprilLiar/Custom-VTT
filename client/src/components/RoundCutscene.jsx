@@ -4,6 +4,7 @@ import { AnimatePresence, motion, useAnimation, useReducedMotion } from 'framer-
 import { socket } from '../socket.js';
 import { getRoundReplay } from '../lib/api.js';
 import { loadCutsceneSpeed } from '../lib/theme.js';
+import { decomposeRoll, formatRollPart } from '../lib/dice.js';
 import {
   PHASE_BG,
   PHASE_BG_EXTENDED,
@@ -106,8 +107,14 @@ function eventNarration(ev, startTic) {
     case 'carryover':
       return `${who} is still in ${p.moveName ?? 'a move'} from last round.`;
     case 'roll': {
-      const parts = (p.dice ?? []).map((d) => `${d.slot_name ?? d.slotName} ${d.result}`);
-      const mod = p.modifier ? ` (${p.modifier > 0 ? '+' : ''}${p.modifier})` : '';
+      // Each die's stored `result` already contains its own bonus and the
+      // roll's modifier, so it is shown as the sum it is — face, addition,
+      // result — via the same decomposition the chat roll card uses. This
+      // line used to print the summed result as though it were the die face
+      // and then append the modifier in parentheses, which is why the
+      // engine's automatic rolls looked like they threw their modifiers
+      // away: a d4 read "Skull 14 (+11) — total 14".
+      const parts = (p.dice ?? []).map((d) => formatRollPart(d, p.modifier ?? 0));
       // A defensive roll names its roller: it arrives between the attacker's
       // own roll and the Defense line, and two bare "total N" rows in a row
       // is exactly the ambiguity that made a Block look like it never rolled.
@@ -116,7 +123,11 @@ function eventNarration(ev, startTic) {
         : p.characterName
           ? `${p.characterName} rolls `
           : '';
-      return `${prefix}${parts.join(' + ') || 'a roll'}${mod} — total ${p.total ?? '?'}.`;
+      // With one die the part already ends in the result; repeating it as a
+      // total would just be the same number twice.
+      const body = parts.join(' + ') || 'a roll';
+      const suffix = parts.length === 1 ? '' : ` — total ${p.total ?? '?'}`;
+      return `${prefix}${body}${suffix}.`;
     }
     case 'defense_resolved': {
       if (p.coverage === 'no-overlap') {
@@ -206,9 +217,21 @@ function eventDetail(ev, startTic) {
       break;
     case 'roll':
       if (Array.isArray(p.dice) && p.dice.length) {
-        lines.push(p.dice.map((d) => `${d.slot_name ?? d.slotName}: d${d.size} -> ${d.result}`).join('\n'));
+        // Same decomposition as the sentence above — "d4 -> 14" was not just
+        // confusing but impossible, since 14 was the post-modifier total.
+        lines.push(
+          p.dice
+            .map((d) => {
+              const { flat, raw, result } = decomposeRoll(d, p.modifier ?? 0);
+              const slot = d.slot_name ?? d.slotName;
+              return flat === 0
+                ? `${slot}: d${d.size} rolled ${result}`
+                : `${slot}: d${d.size} rolled ${raw}, ${flat > 0 ? '+' : '−'}${Math.abs(flat)} → ${result}`;
+            })
+            .join('\n')
+        );
       }
-      if (p.modifier) lines.push(`Modifier: ${p.modifier > 0 ? '+' : ''}${p.modifier}`);
+      if (p.modifier) lines.push(`Modifier: ${p.modifier > 0 ? '+' : ''}${p.modifier} (already in the result)`);
       break;
     case 'defense_resolved':
       if (p.outcome) lines.push(`Outcome: ${p.outcome}`);

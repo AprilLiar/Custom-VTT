@@ -740,6 +740,14 @@ export async function initDb() {
     )
   `);
   await run(`INSERT OR IGNORE INTO combat_state (id, uneven_combat_enabled) VALUES (1, 0)`);
+  // "Fresh" (decided, new): whether starting a fight restores every seated
+  // character to full Stamina. OFF by default and reset to off by End
+  // Combat / Clear Arena, so it is a deliberate per-fight choice rather than
+  // something that quietly carries over — a run of consecutive fights is
+  // supposed to wear people down. It governs the fight's FIRST round only;
+  // the automatic per-round Stamina Regen from round 2 on is a separate rule
+  // and is unaffected either way.
+  await ensureColumn('combat_state', 'fresh_start', 'INTEGER NOT NULL DEFAULT 0');
   // Which fight the arena is currently on. Bumped once per Start Combat, and
   // stamped onto every pair_round_resolutions row so a finished round's
   // stored replay stays addressable after that fight ends — see the

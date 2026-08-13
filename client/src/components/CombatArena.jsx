@@ -838,17 +838,24 @@ function CompactTellFace({ dm, tellById }) {
   const chosenTell = dm.appendageChoice === 'right' ? rightTell : dm.appendageChoice === 'left' ? leftTell : null;
   const showBoth = !chosenTell && (rightTell || leftTell);
   const shown = chosenTell ?? (showBoth ? null : tell);
+  // Tell names were being cut off (decided, fix): the card was a fixed w-28
+  // with a `truncate` name, which left anything past about eight characters
+  // as an ellipsis — in a panel that had plenty of unused width beside it.
+  // The card is wider now and the name **wraps** rather than truncating, so
+  // a long Tell is readable at any length instead of readable up to a
+  // guess. `break-words` covers a single long unbroken word, which wrapping
+  // alone would still overflow.
   return (
-    <div className="flex w-28 items-center gap-1.5 panel-cut border border-zinc-800 bg-zinc-900/60 p-1.5 opacity-60 grayscale">
+    <div className="flex w-44 items-center gap-2 panel-cut border border-zinc-800 bg-zinc-900/60 p-2 opacity-60 grayscale">
       {showBoth ? (
         <>
-          <Thumb record={rightTell} name={rightTell?.name} size="h-6 w-6" />
-          <Thumb record={leftTell} name={leftTell?.name} size="h-6 w-6" />
+          <Thumb record={rightTell} name={rightTell?.name} size="h-7 w-7" />
+          <Thumb record={leftTell} name={leftTell?.name} size="h-7 w-7" />
         </>
       ) : (
-        <Thumb record={shown} name={shown?.name} size="h-6 w-6" />
+        <Thumb record={shown} name={shown?.name} size="h-7 w-7" />
       )}
-      <span className="min-w-0 truncate text-[9px] font-semibold uppercase text-zinc-500">
+      <span className="min-w-0 flex-1 break-words text-[11px] font-semibold uppercase leading-tight text-zinc-400">
         {shown?.name ?? (showBoth ? `${rightTell?.name ?? '?'}/${leftTell?.name ?? '?'}` : 'Tell')}
       </span>
     </div>
@@ -963,11 +970,13 @@ function CompactDeclaredMoveCard({ dm, move, tellById }) {
           >
             <div
               title={move.name}
-              className="flex w-28 items-center gap-1.5 panel-cut border border-brand-800/60 bg-brand-950/30 p-1.5 text-left"
+              className="flex w-44 items-center gap-2 panel-cut border border-brand-800/60 bg-brand-950/30 p-2 text-left"
             >
-              <Thumb record={move} name={move.name} size="h-6 w-6" />
+              <Thumb record={move} name={move.name} size="h-7 w-7" />
               <div className="min-w-0 flex-1">
-                <div className="truncate text-[11px] font-semibold text-zinc-100">{move.name}</div>
+                {/* Same width and wrapping as the Tell face above, so a lane
+                    doesn't visibly jump when a move reveals. */}
+                <div className="break-words text-xs font-semibold leading-tight text-zinc-100">{move.name}</div>
                 <FrameBar
                   startup={move.startup_tics}
                   active={move.active_tics}
@@ -1081,7 +1090,7 @@ function DeclarationLanes({
         return (
           <div key={p.character_id} className="flex flex-col items-center gap-0.5">
             <span
-              className={`max-w-20 truncate text-[9px] ${
+              className={`max-w-44 truncate text-[10px] ${
                 pairPhase === 'declaration' ? STATUS_META[status].className : 'text-zinc-400'
               }`}
               title={character.name}
@@ -1102,8 +1111,11 @@ function DeclarationLanes({
       })}
     </div>
   );
+  // Full width, not max-w-3xl (decided, fix): the Arena around this panel
+  // takes the whole window, and the lanes were the one thing still squeezed
+  // into a column — which is exactly the unused space the Tell cards needed.
   return (
-    <div className="w-full max-w-3xl space-y-1.5">
+    <div className="w-full space-y-1.5">
       {pairIndices.map((pairIndex) => {
         const leftParticipants = participants.filter((p) => p.side === 'left' && p.pair_index === pairIndex);
         const rightParticipants = participants.filter((p) => p.side === 'right' && p.pair_index === pairIndex);
@@ -1478,7 +1490,7 @@ export default function CombatArena() {
     return <p className="text-zinc-500">Loading…</p>;
   }
 
-  const { unevenCombatEnabled, participants, characters, counters, pairs } = combat;
+  const { unevenCombatEnabled, freshStart, participants, characters, counters, pairs } = combat;
   // Combat Automation overhaul: there's no single arena-wide `phase`
   // anymore — every pair has its own independent round/phase/Tic clock
   // (see combat_pairs in db.js). This map is the shared lookup every
@@ -1857,6 +1869,26 @@ export default function CombatArena() {
                 Uneven Combat
               </span>
             )
+          )}
+          {/* "Fresh" (decided, new): only with this on does Start Combat
+              restore everyone to full Stamina. Off for every new fight, and
+              reset to off when one ends, so back-to-back fights wear people
+              down unless the GM deliberately says otherwise. Sits beside
+              Start Combat because that is the press it changes; it does
+              nothing once a fight is already running, so it hides then
+              rather than sitting there inert. */}
+          {role === 'gm' && hasUnstartedPair && participants.length > 0 && (
+            <label
+              className="flex items-center gap-1.5 text-sm text-zinc-300"
+              title="Start this fight at full Stamina. Off by default — otherwise everyone starts with whatever Stamina they still had."
+            >
+              <input
+                type="checkbox"
+                checked={freshStart}
+                onChange={() => socket.emit('combat:toggle_fresh', {})}
+              />
+              Fresh
+            </label>
           )}
           {role === 'gm' && hasUnstartedPair && participants.length > 0 && (
             <button
