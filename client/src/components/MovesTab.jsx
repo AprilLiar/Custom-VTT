@@ -80,6 +80,7 @@ export default function MovesTab({ data }) {
           <MoveCard
             key={move.id}
             move={effectiveMove}
+            allMoves={moves}
             tell={tellById.get(move.tell_id)}
             rightTell={move.right_tell_id ? tellById.get(move.right_tell_id) : null}
             leftTell={move.left_tell_id ? tellById.get(move.left_tell_id) : null}

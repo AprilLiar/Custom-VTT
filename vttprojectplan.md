@@ -1424,8 +1424,8 @@ the schema and already fell through it — a pair sitting in that state would ha
 straight past its own pending decision, resolving the round twice. The guard is now
 `status !== 'running'`, so every future pause is safe by construction.
 
-**Status — G1 groundwork shipped; G2 (the No Damage Tag) shipped.** Same shape as the Combat
-Automation overhaul's own Phase A.
+**Status — G1 (groundwork), G2 (the No Damage Tag) and G3 (authoring) shipped.** Same shape as
+the Combat Automation overhaul's own Phase A.
 - Schema: `moves.is_grappling`, `moves.success_threshold` (default 5); new `move_grapple_directions`
   and `move_resist_roll_slots` tables; `declared_moves.grapple_source_declared_move_id`;
   `combat_participants.grapple_penalty_until_tic`; a `'grapple_success'` move-interaction trigger
@@ -1438,11 +1438,45 @@ Automation overhaul's own Phase A.
   ±5 on totals, the mini-game gating, the chain placement and its knock-on shift, and the −2
   window. Three migration tests prove the rebuilds keep existing rows — including that the
   `pair_round_resolutions` rebuild does **not** cascade-delete stored round replays.
-- **Still to build:** the authoring UI for the grapple's own fields — the Grappling toggle, the
-  4-direction cross, the Resist Roll slots and the On Successful Grapple trigger (G3); the
-  engine's grapple branch and the chained declare (G4); and the two-party pause with its cross
-  pop-up (G5). No *grappling* behaviour exists yet — but the No Damage Tag it depends on is live
-  (below), and is useful on its own.
+- **G3 — authoring, shipped.** A grappling move is now fully authorable and displays everywhere a
+  move displays; the engine still ignores `is_grappling`.
+  - `moves.is_grappling`, `move_grapple_directions` and `move_resist_roll_slots` are written by
+    `writeMove` and returned by `attachInteractions` — the one read path every move surface goes
+    through, so the Compendium, a character's Moves tab and every `move:created` broadcast pick
+    them up at once. All three child tables are gated on their toggle and cleared when it goes
+    off, exactly as `normalizeInteractions` already drops the defence triggers.
+  - `normalizeGrappleDirections` (pure, in `moveLogic.js`) dedupes by direction, orders by the
+    cross, drops an id that no longer exists, and **drops a self-reference** — chaining into
+    another grappling move is allowed (below), but a move pointing at itself is an unbounded loop
+    rather than a design choice.
+  - `move:delete` clears `move_grapple_directions` **by `target_move_id` as well as by
+    `move_id`** — deleting a move some other grapple points at would otherwise leave an arrow at
+    a ghost, and the FK would refuse the delete outright.
+  - `GRAPPLE_TRIGGERS = ['grapple_success']` beside `DEFENSE_TRIGGERS`; `normalizeInteractions`
+    now takes two independent gates, so a move can be both Defensive and Grappling and get both
+    sets.
+  - **Decided while building it:** the direction picker is a **searchable overlay** grouped by
+    Discipline (`MovePickerDialog.jsx`), not a `<select>` — a flat list of every move in the game
+    does not survive a real library. It is the **only** `DialogShell` user that portals to
+    `document.body`, because it is mounted deep inside the Move Creator's form and a transformed
+    ancestor makes `fixed` resolve against *that* rather than the viewport; found by driving it in
+    a browser, where the dialog was visibly clipped at the column's edge.
+  - **Decided:** an empty Resist Roll is legal and means the target cannot contest the grab at
+    all — "a grab you can only fumble, never muscle out of" is a real authoring choice.
+  - **Decided:** a direction may point at another Grappling move, and the chained grapple resolves
+    as an ordinary move — no second mini-game, no second contest, so no depth guard is needed.
+    The picker flags such a move rather than hiding it.
+- **`move_defensive_roll_slots` was dead schema, and G3 closed it.** The table has existed since
+  the Combat Automation sub-phase 2 and `roundResolution.js` reads it on every defensive roll, but
+  **nothing had ever written to it** — no `writeMove` branch, no authoring UI, no `move:delete`
+  cleanup. Every Block and Dodge in the game had therefore been resolving with an empty extra pool
+  regardless of what the design said. Since the Resist Roll needed the same picker, both are wired
+  now: a Defensive move gains a **Defensive Roll** field for the extra dice it throws on top of its
+  own Roll. **This is the one part of G3 that is not inert** — a Block authored with defensive
+  slots now genuinely rolls more dice.
+- **Still to build:** the engine's grapple branch and the chained declare (G4), and the two-party
+  pause with its cross pop-up (G5). No *grappling* behaviour exists yet — but the No Damage Tag it
+  depends on is live (below) and useful on its own.
 
 **Open, flagged rather than invented:** whether a chained
 move that is *itself* Grappling may open a nested mini-game (recommendation: it resolves as an

@@ -6,7 +6,13 @@ export const TRIGGERS = ['hit', 'block', 'miss'];
 // move itself is flagged is_defensive (see Defensive Moves in the plan).
 export const DEFENSE_TRIGGERS = ['defense_success', 'defense_failure'];
 
-export const ALL_TRIGGERS = [...TRIGGERS, ...DEFENSE_TRIGGERS];
+// Grappling-only, gated on is_grappling exactly as the two above are gated on
+// is_defensive. A grapple has no "hit" of its own to hang things from — it
+// wins the contest or it doesn't — so this is where a grappling move's
+// consequences live.
+export const GRAPPLE_TRIGGERS = ['grapple_success'];
+
+export const ALL_TRIGGERS = [...TRIGGERS, ...DEFENSE_TRIGGERS, ...GRAPPLE_TRIGGERS];
 
 // Frame data: 0-10 squares per segment (Startup/Active/Recovery), at least
 // one square total. Startup yellow, Active red, Recovery blue (client-side).
@@ -131,15 +137,23 @@ export function sanitizeAutomations(list) {
 }
 
 // Normalizes the interactions payload {hit, block, miss, defense_success?,
-// defense_failure?} -> rows worth storing (non-empty text or at least one
-// automation). hit/block/miss are always accepted; the two defense triggers
-// are only accepted when isDefensive is true — a move switched off and
-// re-saved simply stops having them normalized in, so a plain move:update
-// (which always replaces move_interactions wholesale) drops them.
-export function normalizeInteractions(interactions, isDefensive = false) {
+// defense_failure?, grapple_success?} -> rows worth storing (non-empty text or
+// at least one automation). hit/block/miss are always accepted; the two
+// defense triggers only when isDefensive, and grapple_success only when
+// isGrappling — a move switched off and re-saved simply stops having them
+// normalized in, so a plain move:update (which always replaces
+// move_interactions wholesale) drops them.
+//
+// The two gates are independent: a move can be both Defensive and Grappling
+// (a guard that turns into a hold), and gets both sets.
+export function normalizeInteractions(interactions, isDefensive = false, isGrappling = false) {
   const rows = [];
   if (!interactions || typeof interactions !== 'object') return rows;
-  const allowedTriggers = isDefensive ? ALL_TRIGGERS : TRIGGERS;
+  const allowedTriggers = [
+    ...TRIGGERS,
+    ...(isDefensive ? DEFENSE_TRIGGERS : []),
+    ...(isGrappling ? GRAPPLE_TRIGGERS : []),
+  ];
   for (const trigger of allowedTriggers) {
     const entry = interactions[trigger];
     if (!entry) continue;
@@ -285,6 +299,41 @@ export function collapseRollSlots(rollSlots) {
 
 export function countRollSlot(rollSlots, slot) {
   return rollSlots.reduce((n, s) => (s === slot ? n + 1 : n), 0);
+}
+
+// Grappling: the four directions a grab can be taken, and which move each one
+// chains into. Kept here rather than in grappleLogic.js because this is
+// *authoring* validation — the same job as normalizeInteractions and
+// collapseRollSlots — while grappleLogic.js is the rules the engine runs.
+//
+// `validMoveIds` is the set of moves that actually exist. A direction naming
+// one that doesn't (deleted between opening the form and saving it) is
+// dropped rather than stored, the same forgiving shape writeMove already uses
+// for a missing folder: the rest of the move still saves.
+//
+// **A move may never point a direction at itself.** Chaining into another
+// grappling move is allowed and resolves as an ordinary move (decided), but a
+// self-reference is an unbounded loop rather than a design choice, and it is
+// the one case that rule doesn't cover.
+export const GRAPPLE_DIRECTIONS = ['up', 'down', 'left', 'right'];
+
+export function normalizeGrappleDirections(directions, { moveId = null, validMoveIds = null } = {}) {
+  if (!directions || typeof directions !== 'object') return [];
+  const known = validMoveIds == null ? null : new Set(validMoveIds.map(Number));
+  const out = [];
+  // Iterated in DIRECTIONS order, not payload order, so the cross always
+  // stores and renders the same way round.
+  for (const direction of GRAPPLE_DIRECTIONS) {
+    const raw = Array.isArray(directions)
+      ? directions.find((d) => d?.direction === direction)?.targetMoveId
+      : directions[direction];
+    const targetMoveId = Number(raw);
+    if (!Number.isInteger(targetMoveId)) continue;
+    if (moveId != null && targetMoveId === Number(moveId)) continue;
+    if (known && !known.has(targetMoveId)) continue;
+    out.push({ direction, targetMoveId });
+  }
+  return out;
 }
 
 // Does this Roll still contain an unanswered Left/Right question? If so the

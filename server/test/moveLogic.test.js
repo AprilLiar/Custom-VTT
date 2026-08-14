@@ -99,7 +99,18 @@ test('automation-only interaction (no text) is kept', () => {
 test('TRIGGERS/DEFENSE_TRIGGERS/ALL_TRIGGERS shape', () => {
   assert.deepEqual(TRIGGERS, ['hit', 'block', 'miss']);
   assert.deepEqual(DEFENSE_TRIGGERS, ['defense_success', 'defense_failure']);
-  assert.deepEqual(ALL_TRIGGERS, ['hit', 'block', 'miss', 'defense_success', 'defense_failure']);
+  // ALL_TRIGGERS is every trigger that exists, gated or not — the DB's CHECK
+  // constraint has to accept all of them. Which ones a given move may
+  // actually store is decided per-move by normalizeInteractions' two gates,
+  // not by this list.
+  assert.deepEqual(ALL_TRIGGERS, [
+    'hit',
+    'block',
+    'miss',
+    'defense_success',
+    'defense_failure',
+    'grapple_success',
+  ]);
 });
 
 test('normalizeInteractions: defense triggers dropped for a non-Defensive move even with content', () => {

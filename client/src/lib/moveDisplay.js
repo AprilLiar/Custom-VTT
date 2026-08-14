@@ -6,6 +6,7 @@ export const TRIGGER_LABELS = {
   miss: 'On Miss',
   defense_success: 'On Successful Defense',
   defense_failure: 'On Failed Defense',
+  grapple_success: 'On Successful Grapple',
 };
 
 export function automationLabel({ type, amount }) {

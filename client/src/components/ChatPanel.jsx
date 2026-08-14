@@ -145,6 +145,7 @@ function Entry({ entry, character, moveInfo, characters, defenseResolutions, onW
                   <div className="mt-1.5 border-t border-zinc-700 pt-1.5">
                     <MoveCard
                       move={entry.move.full}
+                      allMoves={moves ?? []}
                       tell={moveInfo.tellById.get(entry.move.full.tell_id)}
                       rightTell={entry.move.full.right_tell_id ? moveInfo.tellById.get(entry.move.full.right_tell_id) : null}
                       leftTell={entry.move.full.left_tell_id ? moveInfo.tellById.get(entry.move.full.left_tell_id) : null}

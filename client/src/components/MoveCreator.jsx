@@ -39,6 +39,64 @@ import { flattenFolderTree } from '../lib/folders.js';
 import FrameBar from './FrameBar.jsx';
 import Thumb from './Thumb.jsx';
 import DiceIcon from './DiceIcon.jsx';
+import MovePickerDialog from './MovePickerDialog.jsx';
+
+// The four directions a grapple can be taken, laid out as a cross. Order
+// matches GRAPPLE_DIRECTIONS in server/moveLogic.js, which is what the rows
+// are stored and rendered in.
+const GRAPPLE_DIRECTIONS = [
+  { key: 'up', glyph: '↑' },
+  { key: 'down', glyph: '↓' },
+  { key: 'left', glyph: '←' },
+  { key: 'right', glyph: '→' },
+];
+
+// The six body-part slot buttons, cycling off -> one -> both. Extracted from
+// the base Roll's own markup because there are three Rolls now — the move's
+// Roll, a Block/Dodge's extra Defensive pool, and a grapple's Resist Roll —
+// and three hand-copied cycling controls is how three controls quietly stop
+// behaving the same way.
+function RollSlotPicker({ slots, onChange, accent = 'brand' }) {
+  const on =
+    accent === 'brand'
+      ? 'border-brand-500 bg-brand-600/30 text-brand-200'
+      : 'border-sky-500 bg-sky-600/25 text-sky-200';
+  // Cycles off -> one -> both -> off, rebuilding the slot's entries rather
+  // than pushing/popping, so a doubled slot is always two adjacent entries.
+  // Lifted verbatim from the base Roll's own toggle so all three Rolls cycle
+  // identically — that sameness is the point of extracting this.
+  const toggle = (slot) => {
+    const next = (countRollSlot(slots, slot) + 1) % (maxRollSlotCount(slot) + 1);
+    const without = slots.filter((s) => s !== slot);
+    onChange([...without, ...Array(next).fill(slot)]);
+  };
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      {ROLL_SLOT_NAMES.map((slot) => {
+        const count = countRollSlot(slots, slot);
+        const both = count > 1;
+        return (
+          <button
+            key={slot}
+            type="button"
+            title={
+              maxRollSlotCount(slot) > 1
+                ? 'Click to cycle: off -> one (side picked when declared) -> both'
+                : undefined
+            }
+            onClick={() => toggle(slot)}
+            className={`panel-cut border px-2 py-1 text-xs font-semibold ${
+              count > 0 ? on : 'border-zinc-700 bg-zinc-800 text-zinc-400 hover:border-zinc-500'
+            }`}
+          >
+            {both ? ROLL_SLOT_BOTH_LABELS[slot] : ROLL_SLOT_LABELS[slot]}
+            {both && <span className="ml-1 opacity-80">x2</span>}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
 
 const FRAME_FIELDS = [
   { key: 'startup', label: 'Startup', color: 'text-yellow-500' },
@@ -167,6 +225,9 @@ export default function MoveCreator({
   attributes,
   tags,
   folders,
+  // The whole move library — needed only by Grappling's direction picker,
+  // which can name any move in the game as the thing a grab chains into.
+  moves = [],
   initialFolderId = null,
   initial,
   onSubmit,
@@ -180,6 +241,7 @@ export default function MoveCreator({
   const [name, setName] = useState(initial?.name ?? '');
   const [isDefault, setIsDefault] = useState(Boolean(initial?.is_default));
   const [isDefensive, setIsDefensive] = useState(Boolean(initial?.is_defensive));
+  const [isGrappling, setIsGrappling] = useState(Boolean(initial?.is_grappling));
   const [tellId, setTellId] = useState(initial?.tell_id ?? tells[0]?.id ?? null);
   const [rightTellId, setRightTellId] = useState(initial?.right_tell_id ?? tells[0]?.id ?? null);
   const [leftTellId, setLeftTellId] = useState(initial?.left_tell_id ?? tells[0]?.id ?? null);
@@ -190,6 +252,17 @@ export default function MoveCreator({
   const [combatStyleId, setCombatStyleId] = useState(initial?.combat_style_attribute_id ?? null);
   const [folderId, setFolderId] = useState(initial?.folder_id ?? initialFolderId);
   const [rollSlots, setRollSlots] = useState(initial?.roll_slots ?? []);
+  // The Block/Dodge extra pool and the grapple's Resist Roll. Both are stored
+  // as flat slot lists exactly like the base Roll above, so all three share
+  // RollSlotPicker.
+  const [defensiveRollSlots, setDefensiveRollSlots] = useState(initial?.defensive_roll_slots ?? []);
+  const [resistRollSlots, setResistRollSlots] = useState(initial?.resist_roll_slots ?? []);
+  // { up: moveId, down: moveId, ... } — only the assigned directions are keys.
+  const [grappleDirections, setGrappleDirections] = useState(() =>
+    Object.fromEntries((initial?.grapple_directions ?? []).map((d) => [d.direction, d.target_move_id]))
+  );
+  // Which direction's picker is open, or null.
+  const [pickingDirection, setPickingDirection] = useState(null);
   const [rollModifier, setRollModifier] = useState(initial?.roll_modifier ?? 0);
   const [rollType, setRollType] = useState(initial?.roll_type ?? 'stat');
   const [customRollSize, setCustomRollSize] = useState(initial?.custom_roll_size ?? null);
@@ -233,6 +306,7 @@ export default function MoveCreator({
     miss: initInteraction('miss'),
     defense_success: initInteraction('defense_success'),
     defense_failure: initInteraction('defense_failure'),
+    grapple_success: initInteraction('grapple_success'),
   });
 
   const total = frames.startup + frames.active + frames.recovery;
@@ -278,13 +352,6 @@ export default function MoveCreator({
   // one-of-a-kind so this stays a plain on/off toggle; an appendage cycles
   // 0 -> one (player picks a side at declare time) -> both -> 0, because a
   // character has exactly two of each (see maxRollSlotCount).
-  const toggleRollSlot = (slot) =>
-    setRollSlots((prev) => {
-      const next = (countRollSlot(prev, slot) + 1) % (maxRollSlotCount(slot) + 1);
-      const without = prev.filter((s) => s !== slot);
-      return [...without, ...Array(next).fill(slot)];
-    });
-
   const toggleAttackTarget = (slot) =>
     setAttackTargets((prev) => (prev.includes(slot) ? prev.filter((s) => s !== slot) : [...prev, slot]));
 
@@ -328,6 +395,12 @@ export default function MoveCreator({
       attackTargets,
       tagIds,
       staminaModifier: clampModifierInput(staminaModifier),
+      isGrappling,
+      // Sent unconditionally; the server clears whichever the matching toggle
+      // is off for, so it stays the one authority on what a saved move holds.
+      defensiveRollSlots,
+      resistRollSlots,
+      grappleDirections,
       successThreshold: clampThresholdInput(successThreshold),
       startupTics: frames.startup,
       activeTics: frames.active,
@@ -385,6 +458,14 @@ export default function MoveCreator({
             onChange={(e) => setIsDefensive(e.target.checked)}
           />
           Defensive (adds On Successful/Failed Defense)
+        </label>
+        <label className="flex items-center gap-1.5 text-sm text-zinc-300">
+          <input
+            type="checkbox"
+            checked={isGrappling}
+            onChange={(e) => setIsGrappling(e.target.checked)}
+          />
+          Grappling (adds directions, Resist Roll, On Successful Grapple)
         </label>
         {ambiguousRoll ? (
           <>
@@ -552,30 +633,7 @@ export default function MoveCreator({
               </p>
             )}
             <div className="flex flex-wrap items-center gap-1.5">
-              {ROLL_SLOT_NAMES.map((slot) => {
-                const count = countRollSlot(rollSlots, slot);
-                const both = count > 1;
-                return (
-                  <button
-                    key={slot}
-                    type="button"
-                    title={
-                      maxRollSlotCount(slot) > 1
-                        ? `Click to cycle: off -> one (side picked when declared) -> both`
-                        : undefined
-                    }
-                    onClick={() => toggleRollSlot(slot)}
-                    className={`panel-cut border px-2 py-1 text-xs font-semibold ${
-                      count > 0
-                        ? 'border-brand-500 bg-brand-600/30 text-brand-200'
-                        : 'border-zinc-700 bg-zinc-800 text-zinc-400 hover:border-zinc-500'
-                    }`}
-                  >
-                    {both ? ROLL_SLOT_BOTH_LABELS[slot] : ROLL_SLOT_LABELS[slot]}
-                    {both && <span className="ml-1 text-brand-300">x2</span>}
-                  </button>
-                );
-              })}
+              <RollSlotPicker slots={rollSlots} onChange={setRollSlots} />
               {rollSlots.length > 0 && (
                 <label className="ml-2 flex items-center gap-1.5 text-xs text-zinc-400">
                   Bonus
@@ -764,6 +822,24 @@ export default function MoveCreator({
                     ? 'Block resolves automatically from the dice. If it covers only part of the attack, this move’s Recovery is extended to cover the rest.'
                     : 'Dodge auto-fails unless its Defense Frames cover the attack’s whole Active window; when they do, the GM is asked whether it landed.'}
               </p>
+              {/* The extra dice a defence throws on top of this move's own
+                  Roll. The engine has read this pool since the Combat
+                  Automation work landed, but nothing could ever author it —
+                  so every defensive roll resolved with it empty until now. */}
+              <div className="mt-2">
+                <span className="mb-1 block text-xs font-semibold uppercase text-sky-400">
+                  Defensive Roll (extra dice, on top of the Roll above)
+                </span>
+                <RollSlotPicker
+                  slots={defensiveRollSlots}
+                  onChange={setDefensiveRollSlots}
+                  accent="sky"
+                />
+                <p className="mt-1 text-xs text-zinc-500">
+                  Added only when this move actually defends. Leave it empty and the
+                  defence rolls exactly the Roll above.
+                </p>
+              </div>
             </div>
           )}
         </div>
@@ -868,6 +944,105 @@ export default function MoveCreator({
             ))}
           </div>
         </div>
+      )}
+
+      {/* Grappling. A grab does not land or miss — it opens a four-way branch,
+          the grappler picks one in secret, the target guesses, and an opposed
+          roll settles it. Everything specific to that lives behind the toggle,
+          matching how the Defensive block above works. */}
+      {isGrappling && (
+        <div className="panel-cut border border-amber-900/60 bg-amber-950/10 p-3">
+          <div className="mb-2 text-xs font-bold uppercase tracking-wide text-amber-400">
+            Grappling
+          </div>
+          <p className="mb-3 text-xs text-zinc-500">
+            Assign a move to each direction. When this grab wins, the grappler picks
+            one of them and it is declared immediately. Two or more assigned
+            directions turn it into a guessing game with the target; fewer, and it
+            simply chains.
+          </p>
+
+          {/* The cross. Laid out as a 3x3 grid with the arrows in the compass
+              positions, so it reads as directions rather than as a list. */}
+          <div className="mx-auto grid w-full max-w-sm grid-cols-3 gap-1.5">
+            {['blank', 'up', 'blank', 'left', 'centre', 'right', 'blank', 'down', 'blank'].map(
+              (cell, i) => {
+                if (cell === 'blank') return <div key={i} />;
+                if (cell === 'centre') {
+                  return (
+                    <div
+                      key={i}
+                      className="flex items-center justify-center panel-cut-sm border border-dashed border-zinc-800 px-1 py-2 text-center text-[10px] uppercase leading-tight text-zinc-600"
+                    >
+                      the grab
+                    </div>
+                  );
+                }
+                const meta = GRAPPLE_DIRECTIONS.find((d) => d.key === cell);
+                const assignedId = grappleDirections[cell];
+                const assigned = moves.find((m) => m.id === assignedId);
+                return (
+                  <button
+                    key={i}
+                    type="button"
+                    onClick={() => setPickingDirection(cell)}
+                    title={assigned ? `${meta.glyph} ${assigned.name} — click to change` : `Assign a move to ${cell}`}
+                    className={`flex min-h-16 flex-col items-center justify-center gap-0.5 panel-cut-sm border px-1 py-2 text-center ${
+                      assigned
+                        ? 'border-amber-600 bg-amber-900/25 text-amber-200'
+                        : 'border-zinc-700 bg-zinc-800 text-zinc-500 hover:border-zinc-500'
+                    }`}
+                  >
+                    <span className="text-lg leading-none">{meta.glyph}</span>
+                    <span className="line-clamp-2 text-[10px] leading-tight">
+                      {assigned ? assigned.name : 'empty'}
+                    </span>
+                  </button>
+                );
+              }
+            )}
+          </div>
+
+          <div className="mt-3">
+            <span className="mb-1 block text-xs font-semibold uppercase text-amber-400">
+              Resist Roll (what the target throws to fight it off)
+            </span>
+            <RollSlotPicker slots={resistRollSlots} onChange={setResistRollSlots} accent="sky" />
+            <p className="mt-1 text-xs text-zinc-500">
+              Leave it empty and the target cannot contest the grab at all — it then
+              succeeds on clearing its Success Threshold alone.
+            </p>
+          </div>
+
+          <div className="mt-3 grid gap-3 sm:grid-cols-2">
+            <TriggerBox
+              trigger="grapple_success"
+              label={TRIGGER_LABELS.grapple_success}
+              interactions={interactions}
+              setInteractions={setInteractions}
+            />
+          </div>
+        </div>
+      )}
+
+      {pickingDirection && (
+        <MovePickerDialog
+          moves={moves}
+          folders={folders}
+          excludeMoveId={initial?.id ?? null}
+          title={`Move for ${pickingDirection}`}
+          onPick={(move) =>
+            setGrappleDirections((prev) => ({ ...prev, [pickingDirection]: move.id }))
+          }
+          onClear={() =>
+            setGrappleDirections((prev) => {
+              const next = { ...prev };
+              delete next[pickingDirection];
+              return next;
+            })
+          }
+          onClose={() => setPickingDirection(null)}
+        />
       )}
 
       <div className="flex gap-2">
