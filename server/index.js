@@ -9,6 +9,8 @@ import {
   advancePairResolution,
   resolveDodge,
   resolveMoveConflict,
+  answerGrapple,
+  resumeGrapple,
   resumeAllPairsOnBoot,
   postSystemMessage,
   adjustStamina,
@@ -586,6 +588,12 @@ function shapePair(row, roundLength, resolution) {
       resolution?.status === 'paused_conflict' && resolution.pending_conflict_json
         ? JSON.parse(resolution.pending_conflict_json)
         : null,
+    // Deliberately NOT included here. Grappling's prompt differs per viewer —
+    // the grappler sees the move names, the target sees four blanks — so it
+    // is built inside emitCombatUpdated's per-socket loop instead, where the
+    // viewer's identity is known. Putting it in the shared `base` object is
+    // exactly the mistake that would leak the whole mini-game.
+    pendingGrapple: undefined,
   };
 }
 
@@ -596,7 +604,8 @@ function shapePair(row, roundLength, resolution) {
 // one row per pair per round for the life of a fight.
 async function fetchOpenResolutionsByPair() {
   const rows = await all(
-    `SELECT id, pair_index, round_number, status, pending_dodge_json, pending_conflict_json
+    `SELECT id, pair_index, round_number, status, pending_dodge_json, pending_conflict_json,
+            pending_grapple_json
      FROM pair_round_resolutions WHERE status != 'complete'`
   );
   return new Map(rows.map((r) => [r.pair_index, r]));
@@ -652,11 +661,71 @@ async function emitCombatUpdated() {
     stanceMatchups,
   };
   for (const viewerSocket of io.sockets.sockets.values()) {
+    const identity = viewerSocket.data.identity;
     viewerSocket.emit('combat:updated', {
       ...base,
-      declaredMoves: mapDeclaredMovesForViewer(declaredMoveRows, pairsByIndex, viewerSocket.data.identity),
+      declaredMoves: mapDeclaredMovesForViewer(declaredMoveRows, pairsByIndex, identity),
+      pairs: pairs.map((pair) => ({
+        ...pair,
+        pendingGrapple: mapPendingGrappleForViewer(openResolutions.get(pair.pairIndex), identity, participants),
+      })),
     });
   }
+}
+
+// Grappling's prompt, as this one viewer is allowed to see it.
+//
+// **Keep the structure, null the identity** — the same rule
+// mapDeclaredMovesForViewer already follows for a secret declared move. Both
+// sides get four entries and know how many carry a move; only the grappler
+// gets the names. Nulling here rather than omitting means the target's cross
+// still renders four arrows in the right places, which is what makes the
+// guess a guess rather than a shrug.
+//
+// The GM is NOT privileged here. Whoever owns the grabbing character sees the
+// names; everyone else, GM included, sees blanks — matching
+// isRevealedToViewer's own adversarial stance, where a GM does not get to see
+// a PC's declared move either.
+function mapPendingGrappleForViewer(resolution, identity, participants) {
+  if (resolution?.status !== 'paused_grapple' || !resolution.pending_grapple_json) return null;
+  const pending = JSON.parse(resolution.pending_grapple_json);
+  const owns = (characterId) => {
+    if (!identity) return false;
+    if (identity.role === 'player') return identity.characterId === characterId;
+    // The GM owns every NPC. A pair of NPCs never reaches this function at
+    // all (shouldRunMiniGame skips the mini-game outright), so this can only
+    // put the GM on one side of a real prompt.
+    return participants.some((p) => p.character_id === characterId && p.character_type === 'npc');
+  };
+  const isGrappler = owns(pending.grapplerCharacterId);
+  const isTarget = owns(pending.targetCharacterId);
+  if (!isGrappler && !isTarget) {
+    // A bystander sees that a grapple is happening, and nothing about it.
+    return {
+      grapplerCharacterName: pending.grapplerCharacterName,
+      targetCharacterName: pending.targetCharacterName,
+      grapplerMoveName: pending.grapplerMoveName,
+      role: 'observer',
+      answered: pending.grapplerChoice != null || pending.targetGuess != null,
+      directions: [],
+    };
+  }
+  return {
+    grapplerDeclaredMoveId: pending.grapplerDeclaredMoveId,
+    grapplerCharacterName: pending.grapplerCharacterName,
+    targetCharacterName: pending.targetCharacterName,
+    grapplerMoveName: pending.grapplerMoveName,
+    role: isGrappler ? 'grappler' : 'target',
+    // Whether THIS viewer has already answered — never whether the other
+    // side has, which would be a tell in itself.
+    answered: isGrappler ? pending.grapplerChoice != null : pending.targetGuess != null,
+    directions: pending.directions.map((d) => ({
+      direction: d.direction,
+      // The target gets the shape and not the substance.
+      moveId: isGrappler ? d.moveId : null,
+      moveName: isGrappler ? d.moveName : null,
+    })),
+  };
 }
 
 // Reasons to Fight and the Stance matchup both live in
@@ -1038,7 +1107,16 @@ app.get('/api/combat', wrap(async (req, res) => {
     unevenCombatEnabled: Boolean(state.uneven_combat_enabled),
     freshStart: Boolean(state.fresh_start),
     roundLength: state.round_length,
-    pairs: pairRows.map((row) => shapePair(row, state.round_length, openResolutions.get(row.pair_index))),
+    // pendingGrapple is folded in here as well as in the socket emit, and for
+    // the same reason it exists at all: this REST snapshot is what a fresh
+    // page load (or a reload mid-prompt) builds its state from, and
+    // combat:updated only fires on the *next* event. Without it a fighter who
+    // reloaded while the cross was up would sit there with no prompt until
+    // something unrelated happened.
+    pairs: pairRows.map((row) => ({
+      ...shapePair(row, state.round_length, openResolutions.get(row.pair_index)),
+      pendingGrapple: mapPendingGrappleForViewer(openResolutions.get(row.pair_index), viewer, participants),
+    })),
     participants,
     characters,
     counters,
@@ -3434,6 +3512,51 @@ io.on('connection', (socket) => {
     await resolveDodge(pairIndex, { outcome, attackerDeclaredMoveId }, io);
     await emitCombatUpdated();
   });
+
+  // Grappling's mini-game — the app's first genuinely TWO-party pause. The
+  // grappler picks a direction in secret; the target guesses it. Two events
+  // rather than one because two different people answer, each owning their
+  // own half, and **neither half resolves anything on its own**: the contest
+  // waits until both are in, so whoever clicks first learns nothing from
+  // having clicked.
+  //
+  // Ownership is the app's canonical predicate — a Player owns their own
+  // character, the GM owns every NPC — checked here because this is the only
+  // layer that knows who a socket is. An answer from anyone else is dropped
+  // silently, the same way move:declare treats a declaration for a character
+  // the caller doesn't own.
+  const ownsCharacter = async (characterId) => {
+    const identity = socket.data.identity;
+    if (!identity || characterId == null) return false;
+    if (identity.role === 'player') return identity.characterId === characterId;
+    const ch = await getCharacter(characterId);
+    return ch?.character_type === 'npc';
+  };
+
+  const answerGrappleHalf = async (half, { pairIndex, direction, grapplerDeclaredMoveId }) => {
+    const resolution = await one(
+      `SELECT pending_grapple_json FROM pair_round_resolutions
+       WHERE pair_index = ? AND status = 'paused_grapple'`,
+      [pairIndex]
+    );
+    if (!resolution?.pending_grapple_json) return;
+    const pending = JSON.parse(resolution.pending_grapple_json);
+    const mustOwn = half === 'choice' ? pending.grapplerCharacterId : pending.targetCharacterId;
+    if (!(await ownsCharacter(mustOwn))) return;
+
+    const { ready } = await answerGrapple(pairIndex, { half, direction, grapplerDeclaredMoveId }, io);
+    // Broadcast either way: the answerer's own prompt has to stop asking, and
+    // the per-viewer mapping makes sure that does not tell the other side
+    // anything (see mapPendingGrappleForViewer).
+    await emitCombatUpdated();
+    if (ready) {
+      await resumeGrapple(pairIndex, io);
+      await emitCombatUpdated();
+    }
+  };
+
+  on('combat:grapple_choose', (payload) => answerGrappleHalf('choice', payload ?? {}));
+  on('combat:grapple_guess', (payload) => answerGrappleHalf('guess', payload ?? {}));
 
   // Combat Automation overhaul §3 — Forfeit/Postpone for a declared move a
   // Block's extended Recovery ran into. Payload shape and audience are

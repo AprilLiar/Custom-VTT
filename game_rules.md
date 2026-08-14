@@ -272,6 +272,23 @@ A grappling move is normally also tagged **No Damage** — taking someone down i
 not the same as hurting them — but the two are separate, and a grab that also
 does damage is legal.
 
+**The guess.** When **two or more** directions carry a move, the grab becomes a
+read. Both fighters are asked at the same moment, and neither answer is shown
+to the other:
+
+- **The grappler** sees the four arrows with their moves on them, and picks
+  one.
+- **The target** sees the same four arrows with the names stripped — they can
+  see *which* directions carry something, not *what* — and guesses.
+
+Guess right and the target takes **+5**; guess wrong and the grappler does.
+The dice are not thrown until both have answered, so the read is made on a
+blind grab rather than on a number already on the table.
+
+With fewer than two directions assigned, or when both fighters are NPCs, there
+is nothing to read: the grab goes straight to its contest with no bonus to
+either side.
+
 > A direction may point at *another* grappling move. That is allowed, and the
 > chained grab resolves as an ordinary move: its own frames, its own roll, but
 > no second guessing game and no second contest. A move can never point at
