@@ -480,6 +480,7 @@ export default function MovesCompendium() {
               attributes={ruleset.attributes}
               tags={tags}
               folders={folders}
+              moves={moves}
               initialFolderId={currentFolder}
               initial={form.move ?? null}
               onSubmit={submitMove}
@@ -515,6 +516,7 @@ export default function MovesCompendium() {
               >
                 <MoveCard
                   move={move}
+                  allMoves={moves}
                   tell={tellById.get(move.tell_id)}
                   rightTell={move.right_tell_id ? tellById.get(move.right_tell_id) : null}
                   leftTell={move.left_tell_id ? tellById.get(move.left_tell_id) : null}

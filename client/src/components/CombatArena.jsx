@@ -882,7 +882,7 @@ function CompactTellFace({ dm, tellById }) {
 // answer without leaving the Arena. The full card renders as an overlay
 // above everything rather than expanding in place, because expanding one
 // card reflows the whole lane underneath it.
-function CompactDeclaredMoveCard({ dm, move, tellById }) {
+function CompactDeclaredMoveCard({ dm, move, tellById, allMoves = [] }) {
   const revealed = dm.isRevealed && move;
   const [showCard, setShowCard] = useState(false);
 
@@ -943,6 +943,7 @@ function CompactDeclaredMoveCard({ dm, move, tellById }) {
           >
             <MoveCard
               move={move}
+              allMoves={allMoves}
               tell={tellById.get(move.tell_id)}
               rightTell={move.right_tell_id ? tellById.get(move.right_tell_id) : undefined}
               leftTell={move.left_tell_id ? tellById.get(move.left_tell_id) : undefined}
@@ -1093,6 +1094,10 @@ function DeclarationLanes({
   onSelectLane,
 }) {
   if (!pairIndices.length) return null;
+  // Flattened so a Grappling move's four directions can be named in the
+  // hover card. Default moves appear on every character, so this has
+  // duplicates — harmless, since it is only ever looked up by id.
+  const allMoves = Object.values(characters).flatMap((e) => e?.moves ?? []);
   const isOwnedByViewer = (charId) => {
     const entry = characters[charId];
     if (!entry) return false;
@@ -1130,7 +1135,13 @@ function DeclarationLanes({
             ) : (
               <div className="flex flex-wrap justify-center gap-1">
                 {entries.map(({ dm, move }) => (
-                  <CompactDeclaredMoveCard key={dm.id} dm={dm} move={move} tellById={tellById} />
+                  <CompactDeclaredMoveCard
+                    key={dm.id}
+                    dm={dm}
+                    move={move}
+                    tellById={tellById}
+                    allMoves={allMoves}
+                  />
                 ))}
               </div>
             )}

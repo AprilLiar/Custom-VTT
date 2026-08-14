@@ -50,6 +50,7 @@ import {
   isTelegraphedAttack,
   clampStaminaModifier,
   clampSuccessThreshold,
+  normalizeGrappleDirections,
 } from './moveLogic.js';
 import { carriesBlockTag, effectiveTagNames, BLOCK_TAG } from './tagAutomations.js';
 import { effectiveFrames, PERK_HOOKS, idleStaminaRegenRate } from './perkAutomations.js';
@@ -123,11 +124,19 @@ async function attachInteractions(moves) {
   if (!moves.length) return moves;
   const ids = moves.map((m) => m.id);
   const marks = ids.map(() => '?').join(',');
-  const [rows, tagRows, rollSlotRows] = await Promise.all([
-    all(`SELECT * FROM move_interactions WHERE move_id IN (${marks}) ORDER BY id`, ids),
-    all(`SELECT * FROM move_tags WHERE move_id IN (${marks}) ORDER BY id`, ids),
-    all(`SELECT * FROM move_roll_slots WHERE move_id IN (${marks}) ORDER BY id`, ids),
-  ]);
+  // Every extra child table is one more batched IN (...) query, not one per
+  // move — against Turso's networked connection in production each round-trip
+  // is real latency, and this is the single read path every move surface goes
+  // through (Compendium, a character's Moves tab, every move:created payload).
+  const [rows, tagRows, rollSlotRows, resistSlotRows, defensiveSlotRows, directionRows] =
+    await Promise.all([
+      all(`SELECT * FROM move_interactions WHERE move_id IN (${marks}) ORDER BY id`, ids),
+      all(`SELECT * FROM move_tags WHERE move_id IN (${marks}) ORDER BY id`, ids),
+      all(`SELECT * FROM move_roll_slots WHERE move_id IN (${marks}) ORDER BY id`, ids),
+      all(`SELECT * FROM move_resist_roll_slots WHERE move_id IN (${marks}) ORDER BY id`, ids),
+      all(`SELECT * FROM move_defensive_roll_slots WHERE move_id IN (${marks}) ORDER BY id`, ids),
+      all(`SELECT * FROM move_grapple_directions WHERE move_id IN (${marks}) ORDER BY id`, ids),
+    ]);
   const byMove = new Map();
   for (const row of rows) {
     if (!byMove.has(row.move_id)) byMove.set(row.move_id, []);
@@ -142,16 +151,37 @@ async function attachInteractions(moves) {
     if (!tagsByMove.has(row.move_id)) tagsByMove.set(row.move_id, []);
     tagsByMove.get(row.move_id).push(row.tag_id);
   }
-  const rollSlotsByMove = new Map();
-  for (const row of rollSlotRows) {
-    if (!rollSlotsByMove.has(row.move_id)) rollSlotsByMove.set(row.move_id, []);
-    rollSlotsByMove.get(row.move_id).push(...expandRollSlotRows([row]));
+  // All three slot tables share a shape, so they share a grouper — one row per
+  // distinct slot with a count, expanded to the flat list every consumer
+  // actually wants (see expandRollSlotRows).
+  const groupSlots = (slotRows) => {
+    const bySlot = new Map();
+    for (const row of slotRows) {
+      if (!bySlot.has(row.move_id)) bySlot.set(row.move_id, []);
+      bySlot.get(row.move_id).push(...expandRollSlotRows([row]));
+    }
+    return bySlot;
+  };
+  const rollSlotsByMove = groupSlots(rollSlotRows);
+  const resistSlotsByMove = groupSlots(resistSlotRows);
+  const defensiveSlotsByMove = groupSlots(defensiveSlotRows);
+
+  const directionsByMove = new Map();
+  for (const row of directionRows) {
+    if (!directionsByMove.has(row.move_id)) directionsByMove.set(row.move_id, []);
+    directionsByMove.get(row.move_id).push({
+      direction: row.direction,
+      target_move_id: row.target_move_id,
+    });
   }
   return moves.map((m) => ({
     ...m,
     interactions: byMove.get(m.id) ?? [],
     tag_ids: tagsByMove.get(m.id) ?? [],
     roll_slots: rollSlotsByMove.get(m.id) ?? [],
+    resist_roll_slots: resistSlotsByMove.get(m.id) ?? [],
+    defensive_roll_slots: defensiveSlotsByMove.get(m.id) ?? [],
+    grapple_directions: directionsByMove.get(m.id) ?? [],
     defense_frame_positions: JSON.parse(m.defense_frame_positions ?? '[]'),
     attack_targets: sanitizeAttackTargets(JSON.parse(m.attack_targets ?? '[]')),
   }));
@@ -1846,6 +1876,7 @@ io.on('connection', (socket) => {
     const staminaCost = clampStaminaCost(payload.staminaCost);
     const isDefault = payload.isDefault ? 1 : 0;
     const isDefensive = payload.isDefensive ? 1 : 0;
+    const isGrappling = payload.isGrappling ? 1 : 0;
     const defenseKind = sanitizeDefenseKind(
       payload.defenseKind,
       Boolean(isDefensive),
@@ -1866,6 +1897,25 @@ io.on('connection', (socket) => {
     const rollSlots = rollType === 'custom' ? [] : sanitizeRollSlots(payload.rollSlots);
     const customRollSize = rollType === 'custom' ? sanitizeCustomRollSize(payload.customRollSize) : null;
     const ambiguousRoll = hasAmbiguousRollSlot(rollSlots);
+    // Two extra Rolls, each gated on the toggle that gives it meaning and
+    // cleared when that toggle goes off — the same shape normalizeInteractions
+    // already uses for the defence triggers.
+    //
+    // **Resist Roll** (Grappling): what the *target* throws to contest a grab.
+    // Empty is legal and means they cannot contest at all, so the grapple only
+    // has to clear its Success Threshold — "a grab you can only fumble, never
+    // muscle out of" is a real authoring choice, not a mistake to validate.
+    //
+    // **Defensive Roll**: the extra pool a Block/Dodge adds on top of its base
+    // Roll. The table and the engine's read of it have existed since sub-phase
+    // 2 (roundResolution.js's `defensiveSlotRows`); this is the first code that
+    // ever *writes* it, so until now every defensive roll resolved with an
+    // empty extra pool no matter what the design said.
+    const resistRollSlots = isGrappling ? sanitizeRollSlots(payload.resistRollSlots) : [];
+    const defensiveRollSlots = isDefensive ? sanitizeRollSlots(payload.defensiveRollSlots) : [];
+    // Never ambiguous-Tell-forming: the Tell is about what the *opponent* sees
+    // coming, and neither of these is thrown by the person showing the Tell at
+    // the moment it is shown. Only the base Roll can raise that question.
     // Attack Target (Change 001): no minimum — an empty array is a valid,
     // explicit "no Attack Target" and is never re-filled after the fact (see
     // db.js's own note on why the DB column default only fires once, at
@@ -1973,14 +2023,14 @@ io.on('connection', (socket) => {
           stamina_cost, description, style_attribute_id, folder_id, image_data, image_mime_type,
           roll_modifier, right_tell_id, left_tell_id, is_defensive, defense_frame_positions,
           roll_type, custom_roll_size, attack_targets, defense_kind, stamina_modifier,
-          combat_style_attribute_id, success_threshold)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          combat_style_attribute_id, success_threshold, is_grappling)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [name, isDefault, tellId, startup, active, recovery, effectiveStaminaCost, description, styleId,
           folderId, payload.imageData ?? null,
           payload.imageData ? (payload.imageMimeType ?? 'image/png') : null,
           rollModifier, rightTellId, leftTellId, isDefensive, JSON.stringify(defenseFramePositions),
           rollType, customRollSize, JSON.stringify(attackTargets), defenseKind, staminaModifier,
-          combatStyleId, successThreshold]
+          combatStyleId, successThreshold, isGrappling]
       );
       id = Number(result.lastInsertRowid);
     } else {
@@ -1990,12 +2040,12 @@ io.on('connection', (socket) => {
           roll_modifier = ?, right_tell_id = ?, left_tell_id = ?, is_defensive = ?,
           defense_frame_positions = ?, roll_type = ?, custom_roll_size = ?, attack_targets = ?,
           defense_kind = ?, stamina_modifier = ?, combat_style_attribute_id = ?,
-          success_threshold = ?
+          success_threshold = ?, is_grappling = ?
           WHERE id = ?`,
         [name, isDefault, tellId, startup, active, recovery, effectiveStaminaCost, description, styleId,
           folderId, rollModifier, rightTellId, leftTellId, isDefensive,
           JSON.stringify(defenseFramePositions), rollType, customRollSize, JSON.stringify(attackTargets),
-          defenseKind, staminaModifier, combatStyleId, successThreshold, id]
+          defenseKind, staminaModifier, combatStyleId, successThreshold, isGrappling, id]
       );
       // image only replaced when a new one is provided
       if (payload.imageData !== undefined) {
@@ -2011,18 +2061,49 @@ io.on('connection', (socket) => {
     for (const tagId of tagIds) {
       await run('INSERT INTO move_tags (move_id, tag_id) VALUES (?, ?)', [id, tagId]);
     }
-    await run('DELETE FROM move_roll_slots WHERE move_id = ?', [id]);
-    // One row per distinct slot carrying how many of it the Roll takes — the
-    // table's UNIQUE(move_id, slot_name) means a doubled Hand can't be two
-    // rows (see server/db.js's count column).
-    for (const { slot_name, count } of collapseRollSlots(rollSlots)) {
-      await run('INSERT INTO move_roll_slots (move_id, slot_name, count) VALUES (?, ?, ?)', [
-        id,
-        slot_name,
-        count,
-      ]);
+    // All three Rolls store one row per distinct slot carrying how many of it
+    // the Roll takes — the tables' UNIQUE(move_id, slot_name) means a doubled
+    // Hand can't be two rows (see server/db.js's count column). Delete-then-
+    // reinsert, so an emptied Roll genuinely empties rather than leaving
+    // orphans behind.
+    const writeSlots = async (table, slots) => {
+      await run(`DELETE FROM ${table} WHERE move_id = ?`, [id]);
+      for (const { slot_name, count } of collapseRollSlots(slots)) {
+        await run(`INSERT INTO ${table} (move_id, slot_name, count) VALUES (?, ?, ?)`, [
+          id,
+          slot_name,
+          count,
+        ]);
+      }
+    };
+    await writeSlots('move_roll_slots', rollSlots);
+    await writeSlots('move_resist_roll_slots', resistRollSlots);
+    await writeSlots('move_defensive_roll_slots', defensiveRollSlots);
+
+    // Grappling directions. Validated against the moves that actually exist,
+    // so an arrow pointing at something deleted while the form was open is
+    // dropped rather than stored — the rest of the move still saves, matching
+    // how a missing folder is handled above. A self-reference is dropped by
+    // normalizeGrappleDirections itself.
+    await run('DELETE FROM move_grapple_directions WHERE move_id = ?', [id]);
+    if (isGrappling) {
+      const existingMoveIds = (await all('SELECT id FROM moves')).map((r) => r.id);
+      for (const { direction, targetMoveId } of normalizeGrappleDirections(payload.grappleDirections, {
+        moveId: id,
+        validMoveIds: existingMoveIds,
+      })) {
+        await run(
+          'INSERT INTO move_grapple_directions (move_id, direction, target_move_id) VALUES (?, ?, ?)',
+          [id, direction, targetMoveId]
+        );
+      }
     }
-    for (const row of normalizeInteractions(payload.interactions, Boolean(isDefensive))) {
+
+    for (const row of normalizeInteractions(
+      payload.interactions,
+      Boolean(isDefensive),
+      Boolean(isGrappling)
+    )) {
       await run(
         'INSERT INTO move_interactions (move_id, trigger, text, automations) VALUES (?, ?, ?, ?)',
         [id, row.trigger, row.text, JSON.stringify(row.automations)]
@@ -2049,6 +2130,14 @@ io.on('connection', (socket) => {
     await run('DELETE FROM move_interactions WHERE move_id = ?', [move.id]);
     await run('DELETE FROM move_tags WHERE move_id = ?', [move.id]);
     await run('DELETE FROM move_roll_slots WHERE move_id = ?', [move.id]);
+    await run('DELETE FROM move_resist_roll_slots WHERE move_id = ?', [move.id]);
+    await run('DELETE FROM move_defensive_roll_slots WHERE move_id = ?', [move.id]);
+    await run('DELETE FROM move_grapple_directions WHERE move_id = ?', [move.id]);
+    // **By target too, not just by owner.** A grappling move somewhere else in
+    // the library may point one of its four arrows at this move; leaving that
+    // row behind would render a direction whose move no longer exists, and the
+    // FK to moves(id) would refuse the delete outright.
+    await run('DELETE FROM move_grapple_directions WHERE target_move_id = ?', [move.id]);
     await run('DELETE FROM character_moves WHERE move_id = ?', [move.id]);
     await run('DELETE FROM character_move_tags WHERE move_id = ?', [move.id]);
     await run('DELETE FROM character_move_overrides WHERE move_id = ?', [move.id]);

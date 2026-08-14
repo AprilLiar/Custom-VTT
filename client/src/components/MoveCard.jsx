@@ -12,6 +12,8 @@ import { ROLL_SLOT_LABELS, describeRollSlots } from '../lib/diceSlots.js';
 import FrameBar from './FrameBar.jsx';
 import Thumb from './Thumb.jsx';
 
+const DIRECTION_GLYPHS = { up: '↑', down: '↓', left: '←', right: '→' };
+
 // The Move card per spec: a special header showing ONLY the Tell (art +
 // name) — or, for a move with an ambiguous Left/Right Roll slot, BOTH
 // possible Tells side by side, always, since nothing's chosen until the
@@ -29,6 +31,10 @@ export default function MoveCard({
   dimmed = false,
   dimReason,
   folderLabel = 'Without Discipline', // the martial-arts discipline (compendium folder) this move belongs to
+  // The whole move library, so a Grappling move's four directions can be
+  // rendered by name. Every caller that shows a grappling move must pass it;
+  // an empty list simply degrades the arrows to "unknown move".
+  allMoves = [],
   perkModified = false, // this character's frame/tags include Perk deltas
   rollBonus = 0, // per-character bonus on rolls with this move, from a Perk
   onRollClick, // present on the character sheet's Moves tab only; (side) => void
@@ -113,6 +119,11 @@ export default function MoveCard({
               {Boolean(move.is_defensive) && (
                 <span className="ml-1.5 panel-cut-sm bg-sky-900/50 px-1.5 text-xs font-semibold uppercase text-sky-300">
                   Defensive
+                </span>
+              )}
+              {Boolean(move.is_grappling) && (
+                <span className="ml-1.5 panel-cut-sm bg-amber-900/50 px-1.5 text-xs font-semibold uppercase text-amber-300">
+                  Grappling
                 </span>
               )}
             </span>
@@ -250,6 +261,31 @@ export default function MoveCard({
                 ? move.attack_targets.map((s) => ROLL_SLOT_LABELS[s] ?? s).join(' + ')
                 : 'None'}
             </span>
+          </div>
+        )}
+
+        {/* Grappling's own two rows. The Resist Roll is what the TARGET
+            throws to fight the grab off, so it is labelled as theirs rather
+            than sitting unlabelled beside the move's own Roll. */}
+        {Boolean(move.is_grappling) && move.resist_roll_slots?.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1.5 text-xs">
+            <span className="font-semibold uppercase text-zinc-500">Resist Roll:</span>
+            <span className="text-zinc-400">
+              {describeRollSlots(move.resist_roll_slots).join(' + ')}
+            </span>
+          </div>
+        )}
+        {Boolean(move.is_grappling) && move.grapple_directions?.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1.5 text-xs">
+            <span className="font-semibold uppercase text-zinc-500">Directions:</span>
+            {move.grapple_directions.map((d) => {
+              const target = allMoves.find((m) => m.id === d.target_move_id);
+              return (
+                <span key={d.direction} className="text-amber-300">
+                  {DIRECTION_GLYPHS[d.direction] ?? d.direction} {target?.name ?? 'unknown move'}
+                </span>
+              );
+            })}
           </div>
         )}
 

@@ -241,6 +241,42 @@ have been plenty.
 > half a point of damage is a roll too weak to have accomplished anything.
 > Raise it on a move that should be hard to pull off.
 
+### Grappling
+
+Most moves try to hurt you. A **Grappling** move tries to *take* you.
+
+A grappling move doesn't land or miss. It opens a **four-way branch**: up, down,
+left, right, each of which can carry another move. The grappler picks one of
+them in secret; the target guesses which. Whoever read the other correctly takes
+**+5** into the contest that follows. Then the grab is settled — and if it wins,
+the move on the chosen direction happens *immediately*.
+
+It is the one place in a fight where you read your opponent **during** the
+exchange rather than before it.
+
+Three parts make one up:
+
+- **The four directions.** Any move in the game can sit on any arrow, and the
+  same move may sit on more than one. You do not have to fill all four —
+  **two or more** is what turns it into a guessing game. With one, the grab
+  still works and still chains, it just arrives without the mind-game. With
+  none, it is a grab that goes nowhere.
+- **The Resist Roll.** What the *target* throws to fight it off, chosen on the
+  grappling move itself — so a headlock and an ankle pick can be resisted with
+  different Stats. Leave it empty and the target cannot contest the grab at
+  all: it then succeeds on clearing its Success Threshold alone.
+- **On Successful Grapple.** A grab has no "hit" of its own, so this is where
+  whatever it does to you is written.
+
+A grappling move is normally also tagged **No Damage** — taking someone down is
+not the same as hurting them — but the two are separate, and a grab that also
+does damage is legal.
+
+> A direction may point at *another* grappling move. That is allowed, and the
+> chained grab resolves as an ordinary move: its own frames, its own roll, but
+> no second guessing game and no second contest. A move can never point at
+> itself.
+
 ### Rolls
 
 A Move's Roll picks from six slots: **Skull**, **Brain**, **Stamina**,
