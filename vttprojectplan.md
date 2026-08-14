@@ -215,6 +215,16 @@ The Tic Countdown is still, underneath, a single **global counter that never res
 - **Matched by name, case-insensitively, never by id.** The GM owns the tag list; ids differ between databases and a tag can be renamed or re-created. `seedBlockTag` in `db.js` creates a **Block** tag only when no case-insensitive match already exists, so a world that already has one keeps it. Per-character Tag overrides count: `character_move_tags` (a Perk adding or removing a Tag for one character) is resolved before the check, so a Perk that grants the Block Tag genuinely makes that move block-costed for that character — which is the whole point of hanging mechanics off Tags.
 - **UI:** the Move Creator swaps the Stamina Cost field for a **Stamina Modifier** field the moment the Block Tag is selected (replaced, not disabled — an input you can fill in that the server then zeroes is worse than one that isn't there); `MoveCard` and the Arena's declare card show `×N` in the same slot the Cost badge occupies, since "0 Stamina" would read as "free".
 
+**The No Damage Tag — the second Tag automation (decided, new).** Not everything you do in a fight is meant to hurt: a shove, a feint, a hand closing on a wrist. A move carrying the **No Damage** Tag deals none, ever, and instead asks one question — did the roll reach the move's own **Success Threshold** (`moves.success_threshold`, default 5, 0–20 whole numbers)? It is the mechanic **Grappling** is built on (see Grappling below), but it stands alone and is useful without it.
+- **It is decided in `runInterruptAndDamage`, the single damage funnel** every landing attack already passes through — the plain Hit, a Failed defence, a Partial Block's leftovers and the Dodge resume path alike — so damage is suppressed everywhere at once rather than in a fifth near-copy. It never reaches `applyAutoDamage`, and never runs the Interruption check, since Interruption is gated on damage having actually been dealt.
+- **Checked *before* Insignificant Damage.** Both would otherwise claim the same weak roll and the wrong one would win: a No Damage move that came up short did not do "insignificant damage", it **failed**.
+- **Success fires On Hit; failure fires nothing.** On Hit is the same reasoning Insignificant Damage already uses — the move connected — and is where a No Damage move's automations hang. Failure deliberately fires **nothing**: On Miss is reserved for an attack the target *evaded*, which means a successful Dodge and nothing else (see Miss under Resolution). *This was the plan's own flagged open item; it is now decided as "nothing fires", and if the table wants a trigger for a failed No Damage move it wants a new one.*
+- **A defence still counts, and the reduced number is what has to clear the Threshold.** A **Full** Block or Dodge never reaches the funnel at all and correctly fires `block`/`miss` instead — the defender stopped it, which is a different outcome from failing on your own. A **Partial** one passes its `netResult` through as `effectiveResult`, so a half-stopped shove can fail on a roll that would otherwise have been plenty. That mirrors damage exactly: what got past the guard is what the move has left to work with.
+- **The default of 5 is the same figure as the Insignificant Damage floor, and that is deliberate but not shared.** A roll too weak to be worth half a point of damage is a roll too weak to have accomplished anything. They stay two separate constants (`DEFAULT_SUCCESS_THRESHOLD` vs `computeHitDamage`'s per-5 granularity) so raising one move's threshold to 12 can never change how damage is counted.
+- **`seedNoDamageTag()` beside `seedBlockTag()`**, same case-insensitive adopt-don't-duplicate rule, and the same per-character `character_move_tags` resolution — a Perk that grants **No Damage** genuinely makes that move harmless for that character.
+- **UI:** the Move Creator reveals a **Success Threshold** field when the tag is selected (added beside the Cost, not replacing it — a No Damage move still costs Stamina to throw); `MoveCard` shows a `N+` badge. The value is stored even when the tag is off, so untagging to compare and retagging doesn't lose it. The cutscene gains a `no_damage_resolved` event, narrated as a success or a failure against the threshold, with a failure rendered in the same muted treatment as Insignificant Damage.
+- **Verified against the running app** (`scripts/playtest-nodamage.mjs`, 19 checks): a clearing roll emits `no_damage_resolved` + `automation_fired(hit)` and no `damage_applied`; a short roll emits the failure and fires nothing, with no `insignificant_damage` stealing it; an untagged control move with identical frames still deals its damage.
+
 **Implementation note:** the placement/reveal/overflow math above started as a bare pure-function module — `server/combatTiming.js` (`resolveSideInitiative`, `computePlacementTic`, `computeMoveFootprint`, `isMoveRevealedTo`, `relativeTic`, `isTicIdle`, `overlapsRoundWindow`, `computeInitiativeOverflowPenalty`) — unit-tested in isolation before any socket/DB/Arena wiring, per the Implementation Risks section's recommended approach; it's now wired into `declared_moves` + the `combat:*`/`move:declare` events below and a real Arena UI (Tic Counter centerpiece, per-character Done Declaring, a drag-and-drop declare picker, click-to-step Tic navigation, Tell-vs-revealed badges on each seated card). None of `combatTiming.js`'s own functions needed to change for the per-pair combat redesign — `resolveSideInitiative` was already pure and side-agnostic, so the redesign just calls it once per `pair_index` instead of once for the whole roster (see `combat_pairs` in the Data model below); its tied-initiative case is now fully specified (current Brain → locked Brain → Speed stance → random, see the Declaration Phase's Initiative ties bullet above), replacing the original arbitrary `left`-declares-first default — the cascade is scoped independently within each pair, same as the rest of Initiative. Declared-move visibility is computed per-viewer server-side (`isRevealedToViewer`/`mapDeclaredMovesForViewer` in `server/index.js`, driven by `socket.data.identity` — see `identity:set` below and Roles / access model above) — `combat:updated` is therefore a per-socket emit, not a single `io.emit`, since two viewers can legitimately see different data for the same instant; this logic was also untouched by the per-pair redesign, since early-reveal entitlement was always per-character, never per-side. This replaced an earlier `declared_move:own` side-channel that only worked for "whichever exact socket clicked declare," not "whoever is logged in as that character" — a real gap the identity system above was built specifically to close.
 
 ## Game mechanic — Combat Automation (superseded in part — see the overhaul subsection below)
@@ -1414,8 +1424,8 @@ the schema and already fell through it — a pair sitting in that state would ha
 straight past its own pending decision, resolving the round twice. The guard is now
 `status !== 'running'`, so every future pause is safe by construction.
 
-**Status — G1 groundwork only, no behaviour change.** Same shape as the Combat Automation
-overhaul's own Phase A.
+**Status — G1 groundwork shipped; G2 (the No Damage Tag) shipped.** Same shape as the Combat
+Automation overhaul's own Phase A.
 - Schema: `moves.is_grappling`, `moves.success_threshold` (default 5); new `move_grapple_directions`
   and `move_resist_roll_slots` tables; `declared_moves.grapple_source_declared_move_id`;
   `combat_participants.grapple_penalty_until_tic`; a `'grapple_success'` move-interaction trigger
@@ -1428,12 +1438,13 @@ overhaul's own Phase A.
   ±5 on totals, the mini-game gating, the chain placement and its knock-on shift, and the −2
   window. Three migration tests prove the rebuilds keep existing rows — including that the
   `pair_round_resolutions` rebuild does **not** cascade-delete stored round replays.
-- **Still to build:** the No Damage damage-suppression itself (G2), the authoring UI (G3), the
-  engine's grapple branch and the chained declare (G4), and the two-party pause with its
-  cross pop-up (G5). Nothing in combat behaves differently yet.
+- **Still to build:** the authoring UI for the grapple's own fields — the Grappling toggle, the
+  4-direction cross, the Resist Roll slots and the On Successful Grapple trigger (G3); the
+  engine's grapple branch and the chained declare (G4); and the two-party pause with its cross
+  pop-up (G5). No *grappling* behaviour exists yet — but the No Damage Tag it depends on is live
+  (below), and is useful on its own.
 
-**Open, flagged rather than invented:** what fires when a **No Damage** move lands *below* its
-threshold (On Miss is wrong — the ruleset reserves a Miss for a Dodge evasion); whether a chained
+**Open, flagged rather than invented:** whether a chained
 move that is *itself* Grappling may open a nested mini-game (recommendation: it resolves as an
 ordinary move); and whether a default threshold of 5 is too low given per-die modifiers already
 clear it before the dice are read.

@@ -191,6 +191,33 @@ export function clampStaminaModifier(value) {
   return Math.round(bounded * 10) / 10;
 }
 
+// The No Damage Tag (decided, new): the roll a No Damage move has to reach to
+// have accomplished anything. Whole numbers only — it is compared against a
+// roll result, which is always an integer, so a threshold of 7.5 would just be
+// 8 wearing a disguise.
+//
+// **Bounded at 0, not below.** A negative threshold would mean a move that
+// succeeds no matter what, including on a roll it never made; if a GM wants
+// that, 0 already says it honestly. The upper bound matches Stamina Cost's
+// own ±20 range — high enough for a move that only the best stance can land,
+// low enough that a typo can't author something unreachable.
+const SUCCESS_THRESHOLD_MIN = 0;
+const SUCCESS_THRESHOLD_MAX = 20;
+export const DEFAULT_SUCCESS_THRESHOLD = 5;
+
+export function clampSuccessThreshold(value) {
+  // `null` and `''` are checked before Number(), which turns both into 0 —
+  // and 0 is a real, meaningful threshold here ("always succeeds"), so
+  // letting an absent value coerce into it would quietly author the easiest
+  // move in the game every time a client omitted the field.
+  if (value == null || value === '') return DEFAULT_SUCCESS_THRESHOLD;
+  const n = Number(value);
+  // Unparseable falls back to the default rather than to the floor, same
+  // reasoning: a malformed payload should give the move the standard rule.
+  if (!Number.isFinite(n)) return DEFAULT_SUCCESS_THRESHOLD;
+  return Math.max(SUCCESS_THRESHOLD_MIN, Math.min(SUCCESS_THRESHOLD_MAX, Math.trunc(n)));
+}
+
 // A move's Roll picks from 6 slots, not the 8 concrete dice: Left/Right Hand
 // collapse into one ambiguous 'Hand' choice, Left/Right Leg into 'Leg' — the
 // player picks which side at roll time, not the GM at creation time (see

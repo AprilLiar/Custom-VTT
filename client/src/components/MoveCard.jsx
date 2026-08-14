@@ -1,8 +1,9 @@
-import { Zap } from 'lucide-react';
+import { Target, Zap } from 'lucide-react';
 import {
   TRIGGER_LABELS,
   automationLabel,
   carriesBlockTag,
+  carriesNoDamageTag,
   staminaModifierLabel,
 } from '../lib/moveDisplay.js';
 import { iconFor } from '../lib/styleIcons.js';
@@ -40,6 +41,7 @@ export default function MoveCard({
   // Perk added or removed for this character, so a Perk that grants the Block
   // Tag correctly makes the card read as a Block.
   const isBlock = carriesBlockTag(tags.map((t) => t.id), tags);
+  const isNoDamage = carriesNoDamageTag(tags.map((t) => t.id), tags);
   // Custom Roll type (item 2, decided): a flat base die, not tied to any
   // character stat/die — always "live" (no incapacitation concept for it),
   // so it renders its own single button rather than going through the
@@ -147,6 +149,19 @@ export default function MoveCard({
               >
                 <Zap size={12} />
                 {move.stamina_cost > 0 ? `-${move.stamina_cost}` : move.stamina_cost < 0 ? `+${-move.stamina_cost}` : 0}
+              </span>
+            )}
+            {/* No Damage Tag (the second Tag automation): the move deals none,
+                so the number that decides its outcome is the Threshold. Shown
+                beside the cost rather than replacing it — a No Damage move
+                still costs Stamina to throw. */}
+            {isNoDamage && (
+              <span
+                title="Success Threshold — a No Damage move succeeds at this roll or better, and fails below it"
+                className="flex items-center gap-0.5 panel-cut-sm bg-zinc-800 px-1.5 py-0.5 text-xs font-semibold text-amber-300"
+              >
+                <Target size={12} />
+                {move.success_threshold ?? 5}+
               </span>
             )}
             <FrameBar

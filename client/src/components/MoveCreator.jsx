@@ -6,6 +6,7 @@ import {
   STAT_STEP_AUTOMATION_TYPES,
   TRIGGER_LABELS,
   carriesBlockTag,
+  carriesNoDamageTag,
 } from '../lib/moveDisplay.js';
 
 // Mirrors clampStaminaModifier in server/moveLogic.js, which is the
@@ -15,6 +16,14 @@ function clampModifierInput(value) {
   const n = Number(value);
   if (!Number.isFinite(n) || n <= 0) return 1;
   return Math.round(Math.max(0.1, Math.min(10, n)) * 10) / 10;
+}
+
+// Mirrors clampSuccessThreshold in server/moveLogic.js, same deal — the
+// server is the authority, this only keeps the field honest as it's typed.
+function clampThresholdInput(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 5;
+  return Math.max(0, Math.min(20, Math.trunc(n)));
 }
 import { iconFor } from '../lib/styleIcons.js';
 import { fileToSmallImage } from '../lib/image.js';
@@ -210,11 +219,13 @@ export default function MoveCreator({
   // Kept as a string while editing so a half-typed "0." isn't snapped away
   // mid-keystroke; clamped on blur and again server-side.
   const [staminaModifier, setStaminaModifier] = useState(String(initial?.stamina_modifier ?? 1));
+  const [successThreshold, setSuccessThreshold] = useState(String(initial?.success_threshold ?? 5));
   // Block Tag (the first Tag automation — see client/src/lib/moveDisplay.js).
   // Driven by the live tag selection, not by the saved move, so tagging a
   // move Block swaps the Stamina field over immediately rather than after a
   // save.
   const isBlockTagged = carriesBlockTag(tagIds, tags);
+  const isNoDamageTagged = carriesNoDamageTag(tagIds, tags);
   const [description, setDescription] = useState(initial?.description ?? '');
   const [interactions, setInteractions] = useState({
     hit: initInteraction('hit'),
@@ -317,6 +328,7 @@ export default function MoveCreator({
       attackTargets,
       tagIds,
       staminaModifier: clampModifierInput(staminaModifier),
+      successThreshold: clampThresholdInput(successThreshold),
       startupTics: frames.startup,
       activeTics: frames.active,
       recoveryTics: frames.recovery,
@@ -791,6 +803,30 @@ export default function MoveCreator({
               title="Subtracted from Current Stamina once the declaring side finishes declaring. 0 is a valid free cost; negative restores Stamina instead."
               className="mt-1 block w-20 panel-cut-sm border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm text-zinc-100 outline-none focus:border-brand-500"
             />
+          </label>
+        )}
+        {/* No Damage Tag (the second Tag automation): the move deals no
+            damage at all, so the only question is whether the roll reached
+            this number. Shown only when the tag is on — but the value is
+            still stored when it's off, so untagging to compare and retagging
+            doesn't lose what was set. */}
+        {isNoDamageTagged && (
+          <label className="text-xs font-semibold uppercase text-amber-400">
+            Success Threshold
+            <input
+              type="number"
+              min={0}
+              max={20}
+              value={successThreshold}
+              onChange={(e) => setSuccessThreshold(e.target.value)}
+              onBlur={(e) => setSuccessThreshold(String(clampThresholdInput(e.target.value)))}
+              title="A No Damage move succeeds if its roll reaches this number, and fails below it. Whole numbers, 0-20."
+              className="mt-1 block w-20 panel-cut-sm border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm text-zinc-100 outline-none focus:border-brand-500"
+            />
+            <span className="mt-1 block max-w-48 text-[10px] font-normal normal-case text-zinc-500">
+              Tagged <b>No Damage</b>: deals none. It succeeds at this roll or
+              better — success fires <b>On Hit</b>, failure fires nothing.
+            </span>
           </label>
         )}
       </div>

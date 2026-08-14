@@ -57,6 +57,7 @@ const EVENT_LABEL = {
   defense_resolved: 'Defense',
   recovery_extended: 'Extension',
   insignificant_damage: 'No effect',
+  no_damage_resolved: 'No Damage',
   dodge_prompt: 'Dodge?',
   dodge_resolved: 'Dodge',
   interrupt_resolved: 'Interrupt',
@@ -147,6 +148,10 @@ function eventNarration(ev, startTic) {
       )} to hold the guard through it.`;
     case 'insignificant_damage':
       return `${who}'s ${p.moveName} rolled ${p.total} — it lands, but the damage is insignificant.`;
+    case 'no_damage_resolved':
+      return p.succeeded
+        ? `${who}'s ${p.moveName} succeeded — rolled ${p.total} against a Threshold of ${p.threshold}. It deals no damage.`
+        : `${who}'s ${p.moveName} failed — rolled ${p.total}, short of its Threshold of ${p.threshold}.`;
     case 'dodge_prompt':
       return `${p.defenderCharacterName} fully covers ${p.attackerCharacterName}'s ${p.attackerMoveName} (attack rolled ${p.attackerResult}) — waiting on the GM to call it.`;
     case 'dodge_resolved':
@@ -247,6 +252,15 @@ function eventDetail(ev, startTic) {
       lines.push('It connected, so this fires On Hit');
       lines.push('Not a Miss — a Miss is an attack evaded by a Dodge');
       break;
+    case 'no_damage_resolved':
+      lines.push('Tagged No Damage: it never deals damage, whatever it rolls');
+      lines.push(
+        p.succeeded
+          ? 'It reached its Threshold, so this fires On Hit'
+          : 'It fell short of its Threshold, so nothing fires'
+      );
+      lines.push('Not a Miss either way — a Miss is an attack evaded by a Dodge');
+      break;
     case 'damage_applied':
       if (p.result !== 'no-eligible-target') lines.push(`${(p.steps ?? 0) * 0.5} damage`);
       break;
@@ -298,6 +312,14 @@ function beatEffects(events, visibleCount) {
     case 'insignificant_damage':
       if (p.declaredMoveId != null) out.byMoveId[p.declaredMoveId] = 'fizzle';
       out.burst = { kind: 'fizzle', label: 'No effect', seq: ev.seq };
+      break;
+    case 'no_damage_resolved':
+      // A success is a real beat even with no damage behind it — it gets the
+      // attack treatment. A failure fizzles, same as Insignificant Damage.
+      if (p.declaredMoveId != null) out.byMoveId[p.declaredMoveId] = p.succeeded ? 'attack' : 'fizzle';
+      out.burst = p.succeeded
+        ? { kind: 'hit', label: `${p.total}`, sub: `vs ${p.threshold}`, seq: ev.seq }
+        : { kind: 'fizzle', label: 'Failed', seq: ev.seq };
       break;
     case 'damage_applied': {
       if (p.result === 'no-eligible-target') break;
@@ -1139,7 +1161,8 @@ export default function RoundCutscene({
                   ? 'border-amber-500 bg-amber-950/30 text-amber-200'
                   : ev.type === 'damage_applied'
                     ? 'border-rose-600 bg-rose-950/20 text-rose-200'
-                    : ev.type === 'insignificant_damage'
+                    : ev.type === 'insignificant_damage' ||
+                        (ev.type === 'no_damage_resolved' && !ev.payload?.succeeded)
                       ? 'border-zinc-600 text-zinc-500'
                       : 'border-zinc-700 text-zinc-300'
               }`}
