@@ -1012,6 +1012,34 @@ const STATUS_META = {
   not_yet: { label: 'Not yet', className: 'text-zinc-700' },
 };
 
+
+// One side's Stance matchup modifier, shown either side of the Arena's VS
+// divider so both fighters can see what they are up against before anyone
+// commits (see getPairStanceMatchup server-side, which is also what feeds the
+// real roll bonus — this is the same number, not a second calculation).
+//
+// Stance-only by design: it is a standing fact about the two fighters, true
+// during Declaration when nothing has revealed. A move's own Combat Style
+// adds to it on that move's roll, which the tooltip says rather than trying
+// to animate a number that would change every reveal.
+function MatchupBadge({ value, mine, theirs }) {
+  const tone =
+    value > 0
+      ? 'border-emerald-600/60 bg-emerald-950/60 text-emerald-300'
+      : value < 0
+        ? 'border-rose-600/60 bg-rose-950/60 text-rose-300'
+        : 'border-zinc-700 bg-zinc-900 text-zinc-500';
+  const sign = value > 0 ? `+${value}` : `${value}`;
+  return (
+    <span
+      title={`Stance matchup: ${mine.join(' + ')} vs ${theirs.join(' + ')} — ${sign} on this fighter's rolls. A move's Combat Style adds to this on that move's own roll.`}
+      className={`font-display panel-cut-sm border px-1.5 py-0.5 text-[11px] font-bold leading-none tabular-nums ${tone}`}
+    >
+      {sign}
+    </span>
+  );
+}
+
 function characterDeclareStatus(participant, participants, pairs) {
   const pair = pairs.find((p) => p.pairIndex === participant.pair_index);
   if (participant.declared_this_round) {
@@ -1392,6 +1420,10 @@ export default function CombatArena() {
       'character:created', 'character:deleted',
       'counter:created', 'counter:updated', 'counter:deleted',
       'stance:created', 'stance:updated', 'stance:deleted',
+      // Switching stance changes the VS divider's matchup, which is computed
+      // server-side — the local active_stance_id patch further down keeps the
+      // card instant, but only a refetch brings the new number with it.
+      'stance:activated',
       'character_folder:created', 'character_folder:updated', 'character_folder:deleted',
       'tell:created', 'tell:updated', 'tell:deleted',
     ];
@@ -2070,6 +2102,11 @@ export default function CombatArena() {
             const rightOccupants = participants.filter((p) => p.side === 'right' && p.pair_index === rowIdx);
             const leftKey = `left-${rowIdx}`;
             const rightKey = `right-${rowIdx}`;
+            // Absent whenever the matchup rule doesn't apply at all (Uneven
+            // Combat, a side that isn't exactly one fighter, a fighter with
+            // no active stance) — the server drops those rather than sending
+            // a 0 that would read as "even".
+            const matchup = (combat.stanceMatchups ?? []).find((m) => m.pairIndex === rowIdx);
             return (
               // Mobile readiness (Change 002) §7.4/14.5: Left/Right stack
               // vertically in portrait (a real pair-panel layout, not two
@@ -2111,14 +2148,38 @@ export default function CombatArena() {
                     bare hairline — but it reads better than the line does, so
                     it now shows at every size with the line running behind it
                     on wider screens. */}
-                <div className="relative flex shrink-0 items-center justify-center sm:w-8" title="Pair divider">
+                <div
+                  className="relative flex shrink-0 items-center justify-center sm:w-auto"
+                  title="Pair divider"
+                >
                   <span
                     aria-hidden="true"
                     className="absolute inset-y-2 left-1/2 hidden w-px -translate-x-1/2 bg-zinc-700/50 sm:block"
                   />
-                  <span className="font-display relative panel-cut-sm bg-zinc-800 px-2 py-0.5 text-[10px] font-bold uppercase tracking-widest text-zinc-500">
-                    VS
-                  </span>
+                  {/* Column on mobile (where the two panels stack, so top =
+                      left side) and a row on desktop (where they sit side by
+                      side, so left = left side) — the readout has to point at
+                      the right fighter at both sizes, and one order can't do
+                      that for both layouts. */}
+                  <div className="relative flex flex-col items-center gap-1 sm:flex-row sm:gap-1.5">
+                    {matchup && (
+                      <MatchupBadge
+                        value={matchup.left}
+                        mine={matchup.leftStyleNames ?? []}
+                        theirs={matchup.rightStyleNames ?? []}
+                      />
+                    )}
+                    <span className="font-display panel-cut-sm bg-zinc-800 px-2 py-0.5 text-[10px] font-bold uppercase tracking-widest text-zinc-500">
+                      VS
+                    </span>
+                    {matchup && (
+                      <MatchupBadge
+                        value={matchup.right}
+                        mine={matchup.rightStyleNames ?? []}
+                        theirs={matchup.leftStyleNames ?? []}
+                      />
+                    )}
+                  </div>
                 </div>
                 <div
                   onDragOver={(e) => {

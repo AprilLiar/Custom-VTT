@@ -7,12 +7,17 @@ import Thumb from './Thumb.jsx';
 // server/perkAutomations.js's PERK_HOOKS, keyed by the Perk's name.
 //
 // initial is a full Perk record for edit mode; onSubmit receives the socket
-// payload minus perkId.
-export default function PerkCreator({ initial, onSubmit, onCancel }) {
+// payload minus perkId. `tags` is the Perk Tag vocabulary (its own list, not
+// the Move tag one) — optional categorisation with no mechanics behind it.
+export default function PerkCreator({ initial, tags = [], onSubmit, onCancel }) {
   const fileRef = useRef(null);
   const [name, setName] = useState(initial?.name ?? '');
   const [description, setDescription] = useState(initial?.description ?? '');
+  const [tagIds, setTagIds] = useState(initial?.tag_ids ?? []);
   const [image, setImage] = useState(undefined); // undefined = keep existing
+
+  const toggleTag = (id) =>
+    setTagIds((prev) => (prev.includes(id) ? prev.filter((t) => t !== id) : [...prev, id]));
 
   const pickImage = async (e) => {
     const file = e.target.files?.[0];
@@ -29,6 +34,7 @@ export default function PerkCreator({ initial, onSubmit, onCancel }) {
     onSubmit({
       name: name.trim(),
       description: description.trim(),
+      tagIds,
       ...(image !== undefined ? image : {}),
     });
   };
@@ -70,6 +76,38 @@ export default function PerkCreator({ initial, onSubmit, onCancel }) {
         rows={2}
         className="w-full panel-cut-sm border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-brand-500"
       />
+
+      <div>
+        <p className="mb-1 text-xs font-semibold uppercase text-zinc-500">
+          Tags ({tagIds.length}) — categorisation only
+        </p>
+        {tags.length === 0 ? (
+          <p className="text-xs text-zinc-600">
+            No Perk tags exist yet — create them in the Perk Tags section.
+          </p>
+        ) : (
+          <div className="flex flex-wrap gap-1.5">
+            {tags.map((tag) => {
+              const selected = tagIds.includes(tag.id);
+              return (
+                <button
+                  key={tag.id}
+                  type="button"
+                  onClick={() => toggleTag(tag.id)}
+                  title={tag.description || undefined}
+                  className={`panel-cut border px-2 py-1 text-xs font-semibold ${
+                    selected
+                      ? 'border-sky-500 bg-sky-600/25 text-sky-200'
+                      : 'border-zinc-700 bg-zinc-800 text-zinc-400 hover:border-zinc-500'
+                  }`}
+                >
+                  {tag.name}
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
 
       <div className="flex gap-2">
         <button

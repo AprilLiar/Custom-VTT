@@ -28,6 +28,9 @@ export const getTells = () => fetch('/api/tells').then(json);
 export const getTags = () => fetch('/api/tags').then(json);
 export const getMoves = () => fetch('/api/moves').then(json);
 export const getPerks = () => fetch('/api/perks').then(json);
+// Perk Tags are their own vocabulary, not the Move tag list above — see
+// perk_tags in server/db.js for why.
+export const getPerkTags = () => fetch('/api/perk-tags').then(json);
 export const search = (q) => fetch(`/api/search?q=${encodeURIComponent(q)}`).then(json);
 // `identity` ({ role: 'gm' } | { role: 'player', characterId }) rides as
 // query params — REST has no socket to carry it the way identity:set does

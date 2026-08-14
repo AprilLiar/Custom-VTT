@@ -509,6 +509,17 @@ export async function initDb() {
   // the DB default only ever fires for the migration, never for new rows.
   await ensureColumn('moves', 'attack_targets', `TEXT NOT NULL DEFAULT '["Skull"]'`);
   await ensureColumn('moves', 'defense_kind', "TEXT CHECK(defense_kind IN ('block','dodge'))");
+  // Combat Style (decided, new): the move's OWN style, joined onto its user's
+  // active stance when the Stance matchup is scored for that move's roll —
+  // three styles against three instead of two against two. Deliberately a
+  // second column rather than a mechanical reading of style_attribute_id
+  // above: that one is a *gate* (which characters may learn and use this move
+  // at all) and is required, this one is a *contribution* and is optional.
+  // They may be the same style or different ones, and a move may carry this
+  // and no gate style or the reverse. Duplicates are the point — a Strength
+  // move in a Strength stance counts Strength twice, doubling that style's
+  // half of the matchup in both directions. See getStanceMatchupBonus.
+  await ensureColumn('moves', 'combat_style_attribute_id', 'INTEGER REFERENCES attributes(id)');
   // Every move that was already Defensive before this column existed was
   // authored back when Block/Dodge were an in-the-moment GM call rather than
   // data on the move — migrate them all to 'block' (the fully-automatic,
@@ -648,6 +659,30 @@ export async function initDb() {
       character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
       perk_id INTEGER NOT NULL REFERENCES perks(id) ON DELETE CASCADE,
       UNIQUE(character_id, perk_id)
+    )
+  `);
+
+  // Perk Tags (decided, new): a categorisation vocabulary for Perks, and
+  // **deliberately its own list**, not the `tags` table Moves use. Move tags
+  // are no longer purely cosmetic — the Block tag drives real Stamina
+  // automation (see tagAutomations.js) — so sharing one vocabulary would put
+  // mechanically-loaded names in a Perk's picker where they mean nothing.
+  // These are optional and carry no mechanics at all, now or by design.
+  await run(`
+    CREATE TABLE IF NOT EXISTS perk_tags (
+      id INTEGER PRIMARY KEY,
+      name TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT ''
+    )
+  `);
+
+  // Join table — mirrors move_tags' shape against the vocabulary above.
+  await run(`
+    CREATE TABLE IF NOT EXISTS perk_tag_links (
+      id INTEGER PRIMARY KEY,
+      perk_id INTEGER NOT NULL REFERENCES perks(id) ON DELETE CASCADE,
+      perk_tag_id INTEGER NOT NULL REFERENCES perk_tags(id) ON DELETE CASCADE,
+      UNIQUE(perk_id, perk_tag_id)
     )
   `);
 

@@ -1358,3 +1358,102 @@ test('Initiative carries the Stance matchup on rounds after the first', async ()
   assert.equal(mine.modifier, expected, 'the attacker\'s initiative must include their stance matchup');
   assert.equal(theirs.modifier, -expected, 'and the defender\'s the mirror of it');
 });
+
+// ---------- Combat Style (decided, new) ----------
+
+// Sets a move's own Combat Style — the style added to its user's stance when
+// the matchup is scored for that move's roll.
+async function setCombatStyle(moveId, styleName) {
+  const row = await one('SELECT id FROM attributes WHERE name = ?', [styleName]);
+  await run('UPDATE moves SET combat_style_attribute_id = ? WHERE id = ?', [row.id, moveId]);
+}
+
+test("a move's Combat Style reaches BOTH fighters' rolls at the Tic it resolves on", async () => {
+  // Two bugs are pinned here at once.
+  //
+  // The mechanic: a Combat Style joins its user's stance, duplicates kept, so
+  // a Speed move thrown from a Speed stance scores Speed twice.
+  //
+  // The trap: combat_pairs.current_tic is only written AFTER a Tic finishes
+  // processing (advancePairResolution's crash-recovery ordering), so reading
+  // it to find "what is the opponent doing right now" lags a Tic behind and
+  // the attacker's just-revealed move looked like it wasn't out yet. The
+  // attacker's own roll passes its moveId explicitly and was always right —
+  // only the DEFENDER's view of the attacker was wrong, which is why the
+  // assertion that matters most is the one on the defender's modifier.
+  const pairIndex = 520;
+  const attacker = await createCharacter('CS Attacker');
+  const defender = await createCharacter('CS Defender');
+  await giveStance(attacker, 'Speed', 'Power');
+  await giveStance(defender, 'Technique', 'Improvisation');
+  await seatPair(pairIndex, attacker, defender);
+
+  const jab = await createMove({ name: 'CS Jab', activeTics: 2, recoveryTics: 1, rollSlots: ['Skull'], attackTargets: ['Body'] });
+  const guard = await createMove({
+    name: 'CS Guard', activeTics: 2, recoveryTics: 1, rollSlots: ['Body'],
+    isDefensive: true, defenseKind: 'block', defenseFramePositions: [0, 1],
+  });
+
+  // The matchup helpers only score once the pair's fight is actually
+  // underway, so open declaration before reading the expected values. The
+  // Initiative rolls it posts are cleared straight after, leaving only the
+  // move rolls below for the assertions.
+  await startPairDeclaration(mockIo, pairIndex);
+  const { getStanceMatchupBonus } = await import('../combatBonuses.js');
+  const plain = await getStanceMatchupBonus(attacker, { includeMoveStyles: false });
+  assert.notEqual(plain, 0, 'these stances must actually counter for the test to mean anything');
+
+  // Which of the attacker's own two stance styles to duplicate is *measured*
+  // rather than picked by hand: a style whose net against the defending
+  // stance happens to be 0 (Speed is exactly that against Technique/
+  // Improvisation on the shipped chart) would double to no visible effect
+  // and the test would pass while proving nothing. Retuning the counter
+  // chart can't quietly void this.
+  let styled = plain;
+  for (const style of ['Speed', 'Power']) {
+    await setCombatStyle(jab, style);
+    styled = await getStanceMatchupBonus(attacker, { moveId: jab, tic: 1 });
+    if (styled !== plain) break;
+  }
+  assert.notEqual(styled, plain, 'no stance style doubles to a visible effect — pick a different pairing');
+  await run('DELETE FROM chat_log');
+  await declareMove({ characterId: attacker, moveId: jab, placementTic: 0, startupTics: 1, effectiveAttackTargets: ['Body'] });
+  await declareMove({ characterId: defender, moveId: guard, placementTic: 0, startupTics: 1 });
+  await resolvePair(pairIndex);
+
+  const rolls = await all("SELECT character_id, modifier FROM chat_log WHERE kind = 'roll'");
+  const atkRoll = rolls.find((r) => r.character_id === attacker);
+  const defRoll = rolls.find((r) => r.character_id === defender);
+  assert.equal(atkRoll.modifier, styled, "the attacker's own roll carries their move's Combat Style");
+  // The 3-vs-3 half: the defender is scored against the attacker's stance
+  // PLUS the attacker's Combat Style, so their modifier is the exact mirror.
+  // Before the tic fix this came back as -plain, silently ignoring the style.
+  assert.equal(defRoll.modifier, -styled, "the defender is scored against the attacker's move too");
+});
+
+test('a move with no Combat Style leaves the matchup at the bare stance score', async () => {
+  const pairIndex = 521;
+  const attacker = await createCharacter('CS2 Attacker');
+  const defender = await createCharacter('CS2 Defender');
+  await giveStance(attacker, 'Speed', 'Power');
+  await giveStance(defender, 'Technique', 'Improvisation');
+  await seatPair(pairIndex, attacker, defender);
+
+  const jab = await createMove({ name: 'CS2 Jab', activeTics: 2, recoveryTics: 1, rollSlots: ['Skull'], attackTargets: ['Body'] });
+  const guard = await createMove({
+    name: 'CS2 Guard', activeTics: 2, recoveryTics: 1, rollSlots: ['Body'],
+    isDefensive: true, defenseKind: 'block', defenseFramePositions: [0, 1],
+  });
+
+  await startPairDeclaration(mockIo, pairIndex);
+  const { getStanceMatchupBonus } = await import('../combatBonuses.js');
+  const plain = await getStanceMatchupBonus(attacker, { includeMoveStyles: false });
+  await run('DELETE FROM chat_log');
+  await declareMove({ characterId: attacker, moveId: jab, placementTic: 0, startupTics: 1, effectiveAttackTargets: ['Body'] });
+  await declareMove({ characterId: defender, moveId: guard, placementTic: 0, startupTics: 1 });
+  await resolvePair(pairIndex);
+
+  const rolls = await all("SELECT character_id, modifier FROM chat_log WHERE kind = 'roll'");
+  assert.equal(rolls.find((r) => r.character_id === attacker).modifier, plain);
+  assert.equal(rolls.find((r) => r.character_id === defender).modifier, -plain);
+});

@@ -135,6 +135,44 @@ fight. It does not decide one.
 **Uneven Combat switches this off for everyone in the arena** — with more than
 two fighters there is no single opposing stance to score against.
 
+Both fighters can see this number: it sits either side of the **VS** divider in
+the Arena, one signed value per side, from the moment both are seated. You are
+never guessing at what you are walking into, and a stance is still worth
+changing while you can see the price of it.
+
+### Combat Style — a Move that brings its own Style
+
+A Move may carry a **Combat Style** of its own. It is optional, and most Moves
+will not have one.
+
+When a Move with a Combat Style rolls, **that Style is added to its user's
+stance for the matchup** — three Styles scored against three instead of two
+against two. The other fighter's own Move does the same on their side, so what
+gets compared is what both people are actually doing, not one commitment
+against a bare stance.
+
+**A Style already in your stance is counted twice.** That is the whole point. A
+Strength/Technique fighter throwing a Strength Move is scored as *Strength,
+Technique, Strength* — every comparison involving Strength happens twice, and
+Strength's half of the matchup doubles. Against a stance Strength beats, the
+Move is markedly better. Against one that beats Strength, it is markedly worse.
+Committing hard to what you are good at is a bet, not a free bonus.
+
+Two things follow that are easy to miss:
+
+- A Style whose score against the opposing stance already nets to zero doubles
+  to nothing. Doubling only pays where there was something to double.
+- A Style the opponent also holds still cancels. The duplicate is inert — it
+  never counters itself.
+
+The Combat Style is **not** the same field as the Style that gates who may
+learn and use a Move (below). A Move can have either, both, or neither, and
+they need not be the same Style. Default Moves — usable by anyone — never carry
+the gate, but they can absolutely carry a Combat Style.
+
+Combat Style applies to a **Move's own roll**. It does not touch the round's
+initiative roll, which happens before anyone has declared anything.
+
 ## Moves
 
 A **Move** is one physical action with a shape in time. It has:

@@ -21,7 +21,8 @@ export default function MoveCard({
   tell,
   rightTell, // set only when the move's Roll has a Left/Right appendage slot
   leftTell,
-  style, // attribute row for the move's style, or null
+  style, // attribute row for the move's style gate, or null
+  combatStyle, // attribute row for the move's Combat Style, or null
   tags = [], // tag rows for move.tag_ids
   badge,
   dimmed = false,
@@ -33,6 +34,7 @@ export default function MoveCard({
   actions,
 }) {
   const StyleIcon = style ? iconFor(style.icon) : null;
+  const CombatStyleIcon = combatStyle ? iconFor(combatStyle.icon) : null;
   // Block Tag (the first Tag automation — see moveDisplay.js). `tags` is
   // already the resolved rows for this move's tag_ids, including whatever a
   // Perk added or removed for this character, so a Perk that grants the Block
@@ -236,12 +238,26 @@ export default function MoveCard({
           </div>
         )}
 
-        {(style || tags.length > 0) && (
+        {(style || combatStyle || tags.length > 0) && (
           <div className="flex flex-wrap items-center gap-1">
             {style && (
               <span className="inline-flex items-center gap-1 rounded-full bg-zinc-800 px-2 py-0.5 text-xs font-semibold text-zinc-300">
                 <StyleIcon size={11} />
                 {style.name}
+              </span>
+            )}
+            {/* Combat Style reads as a modifier, not a category, so it is
+                deliberately not the same chip as the Style gate beside it —
+                one says who may throw this move, the other changes what it
+                is worth in the matchup. */}
+            {combatStyle && (
+              <span
+                title="Combat Style — added to the user's stance when this move's roll is scored against the opponent"
+                className="inline-flex items-center gap-1 rounded-full bg-amber-900/40 px-2 py-0.5 text-xs font-semibold text-amber-300"
+              >
+                <CombatStyleIcon size={11} />
+                {combatStyle.name}
+                <span className="text-amber-500/80">matchup</span>
               </span>
             )}
             {tags.map((tag) => (

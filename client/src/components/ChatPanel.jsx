@@ -149,6 +149,11 @@ function Entry({ entry, character, moveInfo, characters, defenseResolutions, onW
                       rightTell={entry.move.full.right_tell_id ? moveInfo.tellById.get(entry.move.full.right_tell_id) : null}
                       leftTell={entry.move.full.left_tell_id ? moveInfo.tellById.get(entry.move.full.left_tell_id) : null}
                       style={entry.move.full.style_attribute_id ? moveInfo.styleById.get(entry.move.full.style_attribute_id) : null}
+                      combatStyle={
+                        entry.move.full.combat_style_attribute_id
+                          ? moveInfo.styleById.get(entry.move.full.combat_style_attribute_id)
+                          : null
+                      }
                       tags={(entry.move.full.tag_ids ?? []).map((id) => moveInfo.tagById.get(id)).filter(Boolean)}
                       folderLabel={folderPath(entry.move.full.folder_id, moveInfo.moveFolders) ?? undefined}
                     />

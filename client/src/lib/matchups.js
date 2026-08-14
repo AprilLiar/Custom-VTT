@@ -13,6 +13,26 @@ export function buildBeats(counters) {
   return beats;
 }
 
+// A fighter's styles for one scored matchup: their active stance's two, plus
+// the Combat Style of the move in play, when it has one (see
+// moves.combat_style_attribute_id).
+//
+// **Duplicates are kept on purpose.** A Strength move thrown from a
+// Strength/Technique stance scores as [Strength, Technique, Strength], so
+// every cross-pair involving Strength is counted twice — that style's half of
+// the matchup doubles, for better or worse depending on what it is facing.
+// Collapsing to a Set here would silently delete the whole mechanic, so
+// nothing downstream may de-duplicate either.
+export function matchupStyles(stancePair, moveStyleId = null) {
+  const styles = [...stancePair].filter((id) => id != null);
+  if (moveStyleId != null) styles.push(moveStyleId);
+  return styles;
+}
+
+// Scores one style list against another. Both sides are arbitrary-length and
+// may repeat a style (see matchupStyles) — the cross-product below is what
+// makes a repeat count twice, so this needed no change to support Combat
+// Styles beyond being read as "styles" rather than "a pair".
 export function pairScore(myPair, enemyPair, beats) {
   let score = 0;
   for (const mine of myPair) {
