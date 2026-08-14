@@ -70,6 +70,34 @@ async function migrateMoveInteractionsTrigger() {
   await run('ALTER TABLE move_interactions_v2 RENAME TO move_interactions');
 }
 
+// Grappling (decided, new) adds a sixth trigger: **On Successful Grapple**,
+// which fires when a grapple wins its contest. Same table-rebuild shape and
+// the same reason as the migration above — SQLite cannot ALTER a CHECK.
+// Guarded on the new value rather than on a version number, so this is a
+// no-op on a database that already has it.
+async function migrateMoveInteractionsGrappleTrigger() {
+  const row = await one(
+    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'move_interactions'"
+  );
+  if (!row || row.sql.includes('grapple_success')) return;
+  await run(`
+    CREATE TABLE move_interactions_v3 (
+      id INTEGER PRIMARY KEY,
+      move_id INTEGER NOT NULL REFERENCES moves(id) ON DELETE CASCADE,
+      trigger TEXT NOT NULL
+        CHECK(trigger IN ('hit','block','miss','defense_success','defense_failure','grapple_success')),
+      text TEXT NOT NULL DEFAULT '',
+      automations TEXT NOT NULL DEFAULT '[]'
+    )
+  `);
+  await run(`
+    INSERT INTO move_interactions_v3 (id, move_id, trigger, text, automations)
+    SELECT id, move_id, trigger, text, automations FROM move_interactions
+  `);
+  await run('DROP TABLE move_interactions');
+  await run('ALTER TABLE move_interactions_v3 RENAME TO move_interactions');
+}
+
 // chat_log.kind originally had a 2-value CHECK ('roll','message'), then grew
 // to 3 ('move_reveal'), then 4 ('lane_snapshot'), now 5 ('round_summary',
 // the Combat Automation overhaul's once-per-pair-per-round replay card —
@@ -206,6 +234,58 @@ async function migratePairRoundResolutionsDefenseConfirm() {
   `);
   await run('DROP TABLE pair_round_resolutions');
   await run('ALTER TABLE pair_round_resolutions_v3 RENAME TO pair_round_resolutions');
+  await run('PRAGMA foreign_keys = ON');
+}
+
+// Grappling (decided, new) is the engine's **fourth** pause, and the first
+// that is genuinely two-party: a grapple stops and asks the grappler which
+// direction they are taking the grab AND asks the target to guess it, and
+// cannot continue until both have answered. Both halves live in one
+// pending_grapple_json, filled in independently — see resolveGrappleContest
+// and the grapple branch in roundResolution.js.
+//
+// Fourth rebuild of this table, same shape and the same foreign-key dance as
+// the two above. The dormant 'paused_defense' status (groundwork for the
+// queued Defence rework, still unwired) is carried through untouched — this
+// change must not disturb it.
+async function migratePairRoundResolutionsGrapple() {
+  const row = await one(
+    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'pair_round_resolutions'"
+  );
+  if (!row || row.sql.includes('paused_grapple')) return;
+  await run('PRAGMA foreign_keys = OFF');
+  await run(`
+    CREATE TABLE pair_round_resolutions_v4 (
+      id INTEGER PRIMARY KEY,
+      pair_index INTEGER NOT NULL,
+      round_number INTEGER NOT NULL,
+      fight_number INTEGER NOT NULL DEFAULT 1,
+      round_start_tic INTEGER NOT NULL,
+      round_length INTEGER NOT NULL,
+      status TEXT NOT NULL DEFAULT 'running'
+        CHECK(status IN ('running','paused_dodge','paused_conflict','paused_defense','paused_grapple','complete')),
+      resolved_through_tic INTEGER NOT NULL DEFAULT 0,
+      pending_dodge_json TEXT,
+      pending_conflict_json TEXT,
+      pending_defense_json TEXT,
+      pending_grapple_json TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      completed_at TEXT,
+      UNIQUE(pair_index, round_number, fight_number)
+    )
+  `);
+  await run(`
+    INSERT INTO pair_round_resolutions_v4
+      (id, pair_index, round_number, fight_number, round_start_tic, round_length, status,
+       resolved_through_tic, pending_dodge_json, pending_conflict_json, pending_defense_json,
+       created_at, completed_at)
+    SELECT id, pair_index, round_number, fight_number, round_start_tic, round_length, status,
+           resolved_through_tic, pending_dodge_json, pending_conflict_json, pending_defense_json,
+           created_at, completed_at
+    FROM pair_round_resolutions
+  `);
+  await run('DROP TABLE pair_round_resolutions');
+  await run('ALTER TABLE pair_round_resolutions_v4 RENAME TO pair_round_resolutions');
   await run('PRAGMA foreign_keys = ON');
 }
 
@@ -520,6 +600,20 @@ export async function initDb() {
   // move in a Strength stance counts Strength twice, doubling that style's
   // half of the matchup in both directions. See getStanceMatchupBonus.
   await ensureColumn('moves', 'combat_style_attribute_id', 'INTEGER REFERENCES attributes(id)');
+  // Grappling (decided, new). A grappling move does not simply land or miss:
+  // it opens a four-way branch (see move_grapple_directions below), the
+  // grappler picks a direction in secret and the target guesses it, and the
+  // whole thing is settled by an opposed roll against the target's Resist
+  // Roll rather than by the ordinary damage flow. **Dodge can evade a
+  // grapple; Block cannot** — a declared Block is never consulted against
+  // one.
+  await ensureColumn('moves', 'is_grappling', 'INTEGER NOT NULL DEFAULT 0');
+  // The floor a **No Damage** move's roll must clear to count as successful.
+  // Belongs to the No Damage tag rather than to grappling — a non-grappling
+  // No Damage move uses it on its own — but a grapple must clear it AND beat
+  // the target, so it can fail two distinct ways. Default 5 matches the
+  // Half-Damage step size, which is the only other threshold in the game.
+  await ensureColumn('moves', 'success_threshold', 'INTEGER NOT NULL DEFAULT 5');
   // Every move that was already Defensive before this column existed was
   // authored back when Block/Dodge were an in-the-moment GM call rather than
   // data on the move — migrate them all to 'block' (the fully-automatic,
@@ -582,6 +676,42 @@ export async function initDb() {
   // through the same helper.
   await ensureColumn('move_defensive_roll_slots', 'count', 'INTEGER NOT NULL DEFAULT 1');
 
+  // What the TARGET of a grapple throws to resist it (Grappling, decided).
+  // Authored on the grappling move itself, so a headlock and an ankle pick
+  // can contest different Stats. A literal mirror of the defensive table
+  // above — same columns, same UNIQUE, read through the same
+  // expandRollSlotRows helper — because it is the same idea pointed at the
+  // other fighter. Empty means the target resists with nothing and the
+  // grappler need only clear the Success Threshold.
+  await run(`
+    CREATE TABLE IF NOT EXISTS move_resist_roll_slots (
+      id INTEGER PRIMARY KEY,
+      move_id INTEGER NOT NULL REFERENCES moves(id) ON DELETE CASCADE,
+      slot_name TEXT NOT NULL,
+      UNIQUE(move_id, slot_name)
+    )
+  `);
+  await ensureColumn('move_resist_roll_slots', 'count', 'INTEGER NOT NULL DEFAULT 1');
+
+  // The four-way branch on a grappling move. Each direction may name ANY
+  // move — grappling or not — which is temporarily declared right after the
+  // grapple if that direction wins. One row per assigned direction; an
+  // unassigned direction simply has no row, so counting rows is what decides
+  // whether the mini-game runs at all (it needs at least 2).
+  //
+  // target_move_id is ON DELETE CASCADE on the *pointed-at* move: deleting a
+  // move that some grapple branches into removes that branch rather than
+  // leaving a dangling direction that would resolve into nothing.
+  await run(`
+    CREATE TABLE IF NOT EXISTS move_grapple_directions (
+      id INTEGER PRIMARY KEY,
+      move_id INTEGER NOT NULL REFERENCES moves(id) ON DELETE CASCADE,
+      direction TEXT NOT NULL CHECK(direction IN ('up','down','left','right')),
+      target_move_id INTEGER NOT NULL REFERENCES moves(id) ON DELETE CASCADE,
+      UNIQUE(move_id, direction)
+    )
+  `);
+
   // World-level Tag list, GM-managed like Tells (Phase 4 pulls in
   // per-character tag overrides; the base tables land now for Move tagging)
   await run(`
@@ -615,6 +745,7 @@ export async function initDb() {
     )
   `);
   await migrateMoveInteractionsTrigger();
+  await migrateMoveInteractionsGrappleTrigger();
 
   // Grants a Unique move to a specific character (Default moves need no row)
   await run(`
@@ -847,6 +978,12 @@ export async function initDb() {
     'INTEGER NOT NULL DEFAULT 0 CHECK(reasons_to_fight BETWEEN 0 AND 3)'
   );
   await ensureColumn('combat_participants', 'idle_regen_progress', 'INTEGER NOT NULL DEFAULT 0');
+  // Grappling (decided, new): while a grapple has hold of you, every roll you
+  // make takes -2. The window ends with the grappling move's last ACTIVE Tic
+  // (inclusive) — not its Recovery, and not the end of the round. Null means
+  // no penalty. Read by getCombatRollBonus, which every roll path already
+  // goes through and which already receives the Tic being resolved.
+  await ensureColumn('combat_participants', 'grapple_penalty_until_tic', 'INTEGER');
 
   // Phase 9 combat redesign: declaration now runs independently per pair —
   // pair 1's losing side and pair 2's losing side can be declaring
@@ -910,6 +1047,7 @@ export async function initDb() {
   `);
   await migratePairRoundResolutionsFightNumber();
   await migratePairRoundResolutionsDefenseConfirm();
+  await migratePairRoundResolutionsGrapple();
 
   // Combat Automation overhaul: the replayable event log for one pair's
   // round — the single source of truth for both the live cutscene push and
@@ -1002,6 +1140,21 @@ export async function initDb() {
   // blocking move's own base Stat Roll slots (never 'dodge' — Dodge target
   // replacement is a deferred, separate change).
   await ensureColumn('declared_moves', 'effective_attack_targets', `TEXT NOT NULL DEFAULT '["Skull"]'`);
+  // Grappling (decided, new): which grapple chained this move into being.
+  //
+  // **There is deliberately no "temporary move" and no saved prior placement.**
+  // The spec describes the chained move as temporarily declared during the
+  // contest and rolled back on failure, but nobody ever observes that state —
+  // the mini-game answers, the roll happens and the outcome lands in the same
+  // step. So the engine simply does not create it until the grapple has
+  // already won: during the pause the board shows a *ghost* drawn from the
+  // grapple's own round_event, and a failed grapple has nothing to undo.
+  //
+  // That matters because a rollback here would be the only reversible write in
+  // the engine. cascadeShift and the Postpone path are both forward-only, and
+  // nothing else in the schema remembers where a move used to sit. Not
+  // creating the row is strictly safer than creating one and restoring it.
+  await ensureColumn('declared_moves', 'grapple_source_declared_move_id', 'INTEGER');
   await ensureColumn(
     'declared_moves',
     'attack_target_source',
@@ -1011,6 +1164,7 @@ export async function initDb() {
   await seedRuleset();
   await seedTells();
   await seedBlockTag();
+  await seedNoDamageTag();
 }
 
 // Block Stamina (decided, new): the **Block** Tag is the first Tag in the
@@ -1028,6 +1182,23 @@ async function seedBlockTag() {
   await run('INSERT INTO tags (name, description) VALUES (?, ?)', [
     'Block',
     "This move guards. It has no up-front Stamina Cost — instead it spends Stamina at resolution for exactly as much of the attack as it absorbed, scaled by its Stamina Modifier.",
+  ]);
+}
+
+// The second Tag automation (Grappling, decided). A move tagged **No Damage**
+// never applies damage — it is measured against its own Success Threshold
+// instead. Grappling moves usually carry it, but nothing requires that.
+//
+// Seeded exactly like the Block tag, and for the same reason: the automation
+// matches on the tag's NAME, so the row has to exist for the rule to be
+// reachable. Guarded case-insensitively so a database that already has a
+// hand-made "No Damage" adopts it rather than ending up with two.
+async function seedNoDamageTag() {
+  const existing = await one("SELECT id FROM tags WHERE LOWER(name) = 'no damage'");
+  if (existing) return;
+  await run('INSERT INTO tags (name, description) VALUES (?, ?)', [
+    'No Damage',
+    'This move deals no damage. It succeeds if its roll reaches the move\u2019s Success Threshold (5 by default) — used on grapples, grabs and setups that move a fight without hurting anyone.',
   ]);
 }
 
