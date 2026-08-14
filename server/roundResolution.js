@@ -1980,7 +1980,17 @@ async function advancePairResolution(pairIndex, io) {
   }
   // §2.1: nothing to do while genuinely paused — only resolveDodge/
   // resolveMoveConflict (below) may advance past a pending decision.
-  if (resolution.status === 'complete' || resolution.status === 'paused_dodge' || resolution.status === 'paused_conflict') {
+  //
+  // **Tested by exclusion, not by enumeration (bugfix).** This used to name
+  // the three statuses it refused — 'complete', 'paused_dodge',
+  // 'paused_conflict' — which quietly meant any status added afterwards was
+  // treated as runnable. `paused_defense` already shipped in the schema and
+  // already fell through this guard; a pair sitting in it would have been
+  // advanced straight past its own pending decision, resolving the round
+  // twice. Grappling adds a fourth pause and would have hit the same hole.
+  // Only 'running' may advance, so every future pause is safe by
+  // construction rather than by remembering to edit this line.
+  if (resolution.status !== 'running') {
     return;
   }
 

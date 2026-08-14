@@ -1361,6 +1361,83 @@ A rule no amount of code can decide drives this: a Straight and a Haymaker can b
 - The Active-frames-only rule (#5) is **live** — it is the one behaviour change in this slice, and it is self-contained.
 - **Still to build:** the `paused_defense` pause itself in `resolveAttack`, the `defense_prompt` event and its GM dialog, the absolute-Dodge path, the extend-and-cascade prompt replacing Forfeit/Postpone, and the rules-doc rewrite. Until that lands, defences behave exactly as they did before.
 
+### Grappling — a Move that grabs (IN PROGRESS — G1 groundwork only)
+
+Every other move in the game is decided before the round starts: you commit to a Tic and find out
+afterwards whether you read your opponent right. **Grappling is the first mechanic where a decision
+is made *during* resolution**, and the first that asks two people for an answer at the same moment.
+
+A move with the **Grappling** toggle does not land or miss. It opens a four-way branch: the
+grappler picks a direction in secret, the target guesses which way the grab went, and whoever read
+the other correctly takes **+5**. Only then is the roll made, and the grab is settled by an opposed
+roll against a **Resist Roll** authored on the grappling move itself. Winning chains the move
+assigned to the chosen direction, declared right after the grapple.
+
+**Decided (confirmed explicitly — do not re-litigate):**
+1. **The −2 the target takes on their rolls lasts while the grappling move's ACTIVE frames run** —
+   not merely the contested roll, and not until they escape. A bounded window
+   (`combat_participants.grapple_penalty_until_tic`, inclusive), so no condition system is needed.
+2. **Dodge can evade a grapple; Block cannot.** A declared Block is never consulted against one.
+3. **Both success conditions apply**: the grapple must clear its **Success Threshold** *and* beat
+   the target's total. Two distinct failures — a fumbled grab reads differently from one the target
+   out-muscled — and the log says which. **A tie goes to the target**: being equally strong is not
+   enough to take someone down.
+4. **The target's Resist Roll is authored on the grappling move** (`move_resist_roll_slots`, a
+   mirror of `move_defensive_roll_slots`), so a headlock and an ankle pick contest different Stats.
+5. **An all-NPC grapple skips the mini-game entirely** — straight to the contest, no ±5. The GM is
+   never asked to guess against themselves.
+6. **Fewer than 2 assigned directions: no mini-game and no ±5**, but the contest still happens, and
+   a single assigned direction still chains on success.
+7. **The chained move's Stamina is committed when it is created.**
+8. **The chained move sits next in line and resolves normally** — no Tic jump; the round's clock is
+   untouched.
+
+**The ±5 and the −2 are TOTAL-level, not per-die (decided, and a departure).** Every other flat
+modifier in the game — a move's Roll Modifier, Perk bonuses, Reasons to Fight, the Stance matchup —
+is added to *each die separately*, so a three-die roll multiplies them. A +5 folded in there would
+quietly be worth +15. Grapple modifiers are therefore applied once, to the summed total, which
+makes them behave unlike every other modifier and is worth knowing before tuning anything.
+
+**Reversibility: solved by not needing it (decided).** The spec describes the chained move as
+"temporarily declared" and rolled back if the grapple fails. It is not implemented that way,
+because nobody ever observes that state — the answers arrive, the roll happens and the outcome
+lands in one step. **The engine does not create the chained move until the grapple has already
+won.** During the pause the board shows a *ghost* drawn from the grapple's own `round_event`, and a
+failed grapple has nothing to undo. This matters: a rollback would be the only reversible write in
+the engine — `cascadeShift` and the Postpone path are both forward-only, and nothing else in the
+schema remembers where a move used to sit.
+
+**Bugfix found while building this, shipped in G1.** `advancePairResolution`'s "don't run while
+paused" guard named the three statuses it refused rather than testing for the one it allows, so any
+pause status added afterwards was treated as *runnable*. `paused_defense` had already shipped in
+the schema and already fell through it — a pair sitting in that state would have been advanced
+straight past its own pending decision, resolving the round twice. The guard is now
+`status !== 'running'`, so every future pause is safe by construction.
+
+**Status — G1 groundwork only, no behaviour change.** Same shape as the Combat Automation
+overhaul's own Phase A.
+- Schema: `moves.is_grappling`, `moves.success_threshold` (default 5); new `move_grapple_directions`
+  and `move_resist_roll_slots` tables; `declared_moves.grapple_source_declared_move_id`;
+  `combat_participants.grapple_penalty_until_tic`; a `'grapple_success'` move-interaction trigger
+  and a `'paused_grapple'` resolution status, each via a table rebuild (SQLite cannot ALTER a
+  CHECK). The `pair_round_resolutions` rebuild is the **fourth** on that table and carries the
+  dormant `paused_defense` status through untouched.
+- `seedNoDamageTag()` beside `seedBlockTag()` — the **No Damage** tag did not exist in this
+  database. Seeded case-insensitively, so a GM's hand-made row is adopted rather than duplicated.
+- New pure `server/grappleLogic.js` + 24 unit tests: the contest and its two failure modes, the
+  ±5 on totals, the mini-game gating, the chain placement and its knock-on shift, and the −2
+  window. Three migration tests prove the rebuilds keep existing rows — including that the
+  `pair_round_resolutions` rebuild does **not** cascade-delete stored round replays.
+- **Still to build:** the No Damage damage-suppression itself (G2), the authoring UI (G3), the
+  engine's grapple branch and the chained declare (G4), and the two-party pause with its
+  cross pop-up (G5). Nothing in combat behaves differently yet.
+
+**Open, flagged rather than invented:** what fires when a **No Damage** move lands *below* its
+threshold (On Miss is wrong — the ruleset reserves a Miss for a Dodge evasion); whether a chained
+move that is *itself* Grappling may open a nested mini-game (recommendation: it resolves as an
+ordinary move); and whether a default threshold of 5 is too low given per-die modifiers already
+clear it before the dice are read.
+
 ## Implementation Risks & Recommendations
 A scope check for whoever picks this up: this grew well past "semi-simple website" over the course of design. Most of it (dice, inventory, injuries, stances, perks, counters) is standard CRUD-plus-broadcast work. Combat Timing (Tics/Startup/reveal/overflow) is the one genuinely hard piece — real software complexity, not just more forms — and it's also the most original part of the system, which is exactly why it deserves the most care rather than being rushed alongside everything else.
 
