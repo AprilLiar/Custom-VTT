@@ -18,10 +18,11 @@
 // it is attached to.
 
 export const BLOCK_TAG = 'Block';
+export const NO_DAMAGE_TAG = 'No Damage';
 
-// One entry per Tag that carries mechanics. `staminaFromAbsorbed` is the
-// only behaviour so far — see resolveBlockStamina in combatDamage.js for the
-// arithmetic and vttprojectplan.md's Block Stamina rule for the design.
+// One entry per Tag that carries mechanics. See resolveBlockStamina and
+// resolveNoDamageOutcome in combatDamage.js for the arithmetic behind each,
+// and vttprojectplan.md's Block Stamina / No Damage Tag rules for the design.
 export const TAG_HOOKS = {
   [BLOCK_TAG]: {
     // The move has no up-front Stamina Cost. writeMove forces stamina_cost
@@ -33,6 +34,19 @@ export const TAG_HOOKS = {
     staminaFromAbsorbed: true,
     // Which authoring field replaces Stamina Cost on the Move Creator.
     staminaField: 'stamina_modifier',
+  },
+  [NO_DAMAGE_TAG]: {
+    // The move never deals damage — it does not reach applyAutoDamage at all,
+    // and it never triggers an Interruption check, because Interruption is
+    // gated on damage having actually been dealt.
+    suppressesDamage: true,
+    // What it does instead: compare the roll against the move's own Success
+    // Threshold. Success fires On Hit — it connected, which is the same
+    // reasoning that makes Insignificant Damage fire On Hit rather than On
+    // Miss. Failure fires nothing (see resolveNoDamage in roundResolution.js).
+    usesSuccessThreshold: true,
+    // Which authoring field the Move Creator reveals for it.
+    thresholdField: 'success_threshold',
   },
 };
 
@@ -46,6 +60,7 @@ export function hasTagNamed(tagNames, tagName) {
 }
 
 export const carriesBlockTag = (tagNames) => hasTagNamed(tagNames, BLOCK_TAG);
+export const carriesNoDamageTag = (tagNames) => hasTagNamed(tagNames, NO_DAMAGE_TAG);
 
 // A move's tag names as they apply **to one specific character**, not as the
 // template stores them. Perks can add or remove a Tag on a move for a single

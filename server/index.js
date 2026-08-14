@@ -49,6 +49,7 @@ import {
   parseConcreteAttackTargets,
   isTelegraphedAttack,
   clampStaminaModifier,
+  clampSuccessThreshold,
 } from './moveLogic.js';
 import { carriesBlockTag, effectiveTagNames, BLOCK_TAG } from './tagAutomations.js';
 import { effectiveFrames, PERK_HOOKS, idleStaminaRegenRate } from './perkAutomations.js';
@@ -1957,6 +1958,13 @@ io.on('connection', (socket) => {
     const isBlockTagged = carriesBlockTag(tagNames);
     const effectiveStaminaCost = isBlockTagged ? 0 : staminaCost;
     const staminaModifier = clampStaminaModifier(payload.staminaModifier);
+    // The No Damage Tag's own field. Stored unconditionally rather than only
+    // when the tag is present: a GM who tags a move No Damage, sets a
+    // Threshold of 12, then unticks the tag to compare it against the
+    // damaging version should find the 12 still there when they tick it back.
+    // The engine only ever reads it on a No Damage move, so an unused value
+    // on an ordinary move is inert.
+    const successThreshold = clampSuccessThreshold(payload.successThreshold);
 
     let id = moveId;
     if (id == null) {
@@ -1965,14 +1973,14 @@ io.on('connection', (socket) => {
           stamina_cost, description, style_attribute_id, folder_id, image_data, image_mime_type,
           roll_modifier, right_tell_id, left_tell_id, is_defensive, defense_frame_positions,
           roll_type, custom_roll_size, attack_targets, defense_kind, stamina_modifier,
-          combat_style_attribute_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          combat_style_attribute_id, success_threshold)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [name, isDefault, tellId, startup, active, recovery, effectiveStaminaCost, description, styleId,
           folderId, payload.imageData ?? null,
           payload.imageData ? (payload.imageMimeType ?? 'image/png') : null,
           rollModifier, rightTellId, leftTellId, isDefensive, JSON.stringify(defenseFramePositions),
           rollType, customRollSize, JSON.stringify(attackTargets), defenseKind, staminaModifier,
-          combatStyleId]
+          combatStyleId, successThreshold]
       );
       id = Number(result.lastInsertRowid);
     } else {
@@ -1981,12 +1989,13 @@ io.on('connection', (socket) => {
           recovery_tics = ?, stamina_cost = ?, description = ?, style_attribute_id = ?, folder_id = ?,
           roll_modifier = ?, right_tell_id = ?, left_tell_id = ?, is_defensive = ?,
           defense_frame_positions = ?, roll_type = ?, custom_roll_size = ?, attack_targets = ?,
-          defense_kind = ?, stamina_modifier = ?, combat_style_attribute_id = ?
+          defense_kind = ?, stamina_modifier = ?, combat_style_attribute_id = ?,
+          success_threshold = ?
           WHERE id = ?`,
         [name, isDefault, tellId, startup, active, recovery, effectiveStaminaCost, description, styleId,
           folderId, rollModifier, rightTellId, leftTellId, isDefensive,
           JSON.stringify(defenseFramePositions), rollType, customRollSize, JSON.stringify(attackTargets),
-          defenseKind, staminaModifier, combatStyleId, id]
+          defenseKind, staminaModifier, combatStyleId, successThreshold, id]
       );
       // image only replaced when a new one is provided
       if (payload.imageData !== undefined) {

@@ -210,6 +210,37 @@ The final figure is rounded to the nearest whole point.
 A **Dodge** is unaffected: it either works or it doesn't, so it has no "amount
 absorbed" to charge for and keeps an ordinary Stamina Cost.
 
+### The No Damage Tag
+
+Not everything you do in a fight is meant to hurt. A shove, a feint, a hand
+closing on a wrist — these land or they don't, and either way nobody's Stats
+go down.
+
+A move tagged **No Damage** deals none. Ever. Whatever it rolls, no Stat is
+stepped, and it can never Interrupt anybody, because an Interruption is
+something damage does.
+
+Instead it has a **Success Threshold** — a number, 5 by default. Reach it and
+the move **succeeded**; come up short and it **failed**. That is the whole
+outcome.
+
+- **On success it fires On Hit.** The move connected and did its job, and On
+  Hit is where whatever it does is hung.
+- **On failure nothing fires.** Not On Miss — a Miss means your opponent
+  *dodged*, and nobody dodged this. It just wasn't good enough.
+
+A No Damage move still costs Stamina, still has frame data, and can still be
+Blocked or Dodged like anything else. A **Full** Block or Dodge stops it
+outright, exactly as it would an attack. A **Partial** one leaves it whatever
+got through the guard — and that reduced number is what has to reach the
+Threshold, so a half-stopped shove can fail on a roll that would otherwise
+have been plenty.
+
+> The default of **5** is the same figure that separates a real hit from
+> Insignificant Damage, and that is deliberate: a roll too weak to be worth
+> half a point of damage is a roll too weak to have accomplished anything.
+> Raise it on a move that should be hard to pull off.
+
 ### Rolls
 
 A Move's Roll picks from six slots: **Skull**, **Brain**, **Stamina**,

@@ -69,12 +69,20 @@ export const STAT_STEP_AUTOMATION_TYPES = new Set(['self_stat_step', 'opponent_s
 // own. Keeping both sides on the name is what stops the two from disagreeing
 // about which moves are Blocks.
 export const BLOCK_TAG_NAME = 'Block';
+export const NO_DAMAGE_TAG_NAME = 'No Damage';
 
 const normTag = (name) => String(name ?? '').trim().toLowerCase();
 
-export function isBlockTagId(tagId, tags) {
+// Mirrors hasTagNamed in server/tagAutomations.js, which is the authority.
+// Matched on the name, case-insensitively, never on the id — see that file
+// for why (ids differ between databases; the GM owns the tag list).
+function isTagNamed(tagId, tags, wanted) {
   const tag = (tags ?? []).find((t) => t.id === tagId);
-  return tag ? normTag(tag.name) === normTag(BLOCK_TAG_NAME) : false;
+  return tag ? normTag(tag.name) === normTag(wanted) : false;
+}
+
+export function isBlockTagId(tagId, tags) {
+  return isTagNamed(tagId, tags, BLOCK_TAG_NAME);
 }
 
 // `tagIds` may be a move's stored tag_ids or the Move Creator's live
@@ -82,6 +90,10 @@ export function isBlockTagId(tagId, tags) {
 // the half-authored form alike.
 export function carriesBlockTag(tagIds, tags) {
   return (tagIds ?? []).some((id) => isBlockTagId(id, tags));
+}
+
+export function carriesNoDamageTag(tagIds, tags) {
+  return (tagIds ?? []).some((id) => isTagNamed(id, tags, NO_DAMAGE_TAG_NAME));
 }
 
 // "×1.5" / "×0.5" — the multiplier as the table reads it. 1 is still shown

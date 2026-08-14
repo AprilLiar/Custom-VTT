@@ -14,6 +14,30 @@ export function computeHitDamage(result) {
   return { halfDamageSteps, damage: halfDamageSteps * 0.5 };
 }
 
+// The No Damage Tag (decided — the second Tag automation). A move carrying it
+// never deals damage at all. It has one question instead: did the roll reach
+// the move's **Success Threshold**? At or above, the move did what it set out
+// to do; below, it simply failed.
+//
+// **The default is 5 and that is not a coincidence — but it is not the same
+// number as the one above, either.** The 5 in computeHitDamage is a
+// granularity (every 5 points buys another Half-Damage step); this 5 is a
+// floor (anything under it accomplished nothing). They agree today because a
+// roll worth less than one step of damage is exactly the roll that should not
+// achieve anything, and that symmetry is the whole reason the default was
+// picked. They are still two separate constants: a GM raising one move's
+// threshold to 12 must not change how damage is counted anywhere.
+export const DEFAULT_SUCCESS_THRESHOLD = 5;
+
+export function resolveNoDamageOutcome({ result = 0, successThreshold = DEFAULT_SUCCESS_THRESHOLD } = {}) {
+  // `null` is checked before Number(), which would turn it into 0 — and 0 is
+  // a real threshold here ("always succeeds"), so an absent value coercing
+  // into it would make every move with no stored threshold unfailable.
+  const n = successThreshold == null ? NaN : Number(successThreshold);
+  const threshold = Number.isFinite(n) ? n : DEFAULT_SUCCESS_THRESHOLD;
+  return { threshold, result, succeeded: result >= threshold };
+}
+
 // 4.2 — a successful Block/Dodge rolls the defending move's own Roll
 // (already summed by the caller into defenderResult, including any
 // defensive-only pool) against the attacker's own roll result. netResult is

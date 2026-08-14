@@ -61,8 +61,10 @@ import {
   selectUnevenCombatTarget,
   selectDefenseMove,
   resolveBlockStamina,
+  resolveNoDamageOutcome,
+  DEFAULT_SUCCESS_THRESHOLD,
 } from './combatDamage.js';
-import { carriesBlockTag, effectiveTagNames } from './tagAutomations.js';
+import { carriesBlockTag, carriesNoDamageTag, effectiveTagNames } from './tagAutomations.js';
 
 // A move's Tag names as they apply to ONE character — the template's own tags
 // plus/minus whatever Perks have added or removed for them
@@ -571,6 +573,76 @@ async function checkInterrupt(io, { targetCharacterId, attackerRevealTic, attack
   );
 }
 
+// A move carrying the **No Damage Tag** resolving against its target. It has
+// no damage to apply and no Interruption to check (Interruption is gated on
+// damage actually having been dealt), so the only question left is whether
+// the roll reached the move's own **Success Threshold**.
+//
+// **Success fires On Hit.** The move connected and did what it was for — the
+// same reasoning that makes Insignificant Damage fire On Hit rather than On
+// Miss, and the reason a No Damage move is worth authoring at all: On Hit is
+// where its automations hang.
+//
+// **Failure fires nothing** (flagged in vttprojectplan.md, not invented here).
+// On Miss would be wrong — the ruleset is explicit that a Miss is an attack
+// the target *evaded*, which means a successful Dodge and nothing else. A
+// grab that closed on empty air was not dodged; it just wasn't good enough.
+// If the table wants a trigger for that, it wants a new one.
+async function resolveNoDamage(io, {
+  declaredMoveId,
+  moveId,
+  attackerCharacterId,
+  attackerCharacterName,
+  result,
+  targetCharacterId,
+  tic,
+  emitEvent,
+}) {
+  const move = await one('SELECT name, success_threshold FROM moves WHERE id = ?', [moveId]);
+  const { threshold, succeeded } = resolveNoDamageOutcome({
+    result,
+    successThreshold: move?.success_threshold ?? DEFAULT_SUCCESS_THRESHOLD,
+  });
+  const moveName = move?.name ?? 'attack';
+
+  await postSystemMessage(
+    io,
+    succeeded
+      ? `${attackerCharacterName}'s ${moveName} succeeded — rolled ${result} against a Threshold of ${threshold}. It deals no damage.`
+      : `${attackerCharacterName}'s ${moveName} failed — rolled ${result}, short of its Threshold of ${threshold}.`
+  );
+  // Names and numbers, not ids (§0's self-contained-payload rule): a replay
+  // months from now has to read without any live combat state to look up.
+  await emitEvent(tic, 'no_damage_resolved', {
+    declaredMoveId,
+    characterId: attackerCharacterId,
+    characterName: attackerCharacterName,
+    moveName,
+    total: result,
+    threshold,
+    succeeded,
+  });
+
+  // Set on BOTH paths. processTic re-selects any revealed move still at
+  // interactions_resolved = 0 forever, so a branch that returns without
+  // setting it hangs the round — see resolveAttack's own bookkeeping.
+  const dm = await one('SELECT interactions_resolved FROM declared_moves WHERE id = ?', [declaredMoveId]);
+  if (dm && !dm.interactions_resolved) {
+    await run('UPDATE declared_moves SET interactions_resolved = 1 WHERE id = ?', [declaredMoveId]);
+    if (succeeded) {
+      await applyMoveInteractions(io, {
+        moveId,
+        trigger: 'hit',
+        emitEvent,
+        tic,
+        selfCharacterId: attackerCharacterId,
+        selfDeclaredMoveId: declaredMoveId,
+        opponentCharacterId: targetCharacterId,
+      });
+    }
+  }
+}
+
 // Applies damage + the Interruption check for one attacking move landing on
 // one target character — shared by the plain-Hit path, the Failed-defense
 // fallback, a Successful Block/Dodge's own reduced damage, and (Phase D)
@@ -589,7 +661,43 @@ async function runInterruptAndDamage(io, {
   attackerActiveTics,
   tic,
   emitEvent,
+  effectiveResult,
 }) {
+  // The No Damage Tag (decided, new — the second Tag automation). Checked
+  // FIRST, ahead of Insignificant Damage, because the two would otherwise
+  // both claim the same weak roll and the wrong one would win: a No Damage
+  // move that came up short did not do "insignificant damage", it *failed*,
+  // and it fires nothing.
+  //
+  // This is the one funnel every damaging path in the engine goes through, so
+  // suppressing damage here suppresses it everywhere — the plain Hit, a
+  // Failed defence, a Partial Block's leftovers, and the Dodge resume path
+  // alike, with no fifth near-copy to keep in step.
+  //
+  // A **Full** Block or Dodge never reaches this function at all (the caller
+  // skips it at 0 steps and fires `block`/`miss` itself), which is the right
+  // answer for a No Damage move too: the defender stopped it, and that is a
+  // different outcome from failing to reach the threshold on your own.
+  const attackerTagNames = await moveTagNamesFor(attackerCharacterId, moveId);
+  if (carriesNoDamageTag(attackerTagNames)) {
+    await resolveNoDamage(io, {
+      declaredMoveId,
+      moveId,
+      attackerCharacterId,
+      attackerCharacterName,
+      // What the move actually brought to bear, after any defence took its
+      // cut — not the raw roll. A shove that was half-blocked has half as
+      // much left to reach the threshold with, exactly as it would have had
+      // half as much damage. Defaults to the raw result for the undefended
+      // paths, which pass no reduced figure because nothing reduced it.
+      result: effectiveResult ?? attackerResult,
+      targetCharacterId,
+      tic,
+      emitEvent,
+    });
+    return;
+  }
+
   // Insignificant Damage (decided, revised) — an attack that landed and did
   // too little to matter.
   //
@@ -860,6 +968,8 @@ async function applySuccessfulDodge(io, {
       attackerActiveTics: defenderDM.active_tics,
       tic,
       emitEvent,
+      // What the Dodge left of it — see the Block path's identical note.
+      effectiveResult: resolution.netResult,
     });
   } else if (!(await one('SELECT interactions_resolved FROM declared_moves WHERE id = ?', [attackerDeclaredMoveId]))?.interactions_resolved) {
     // Full Dodge never reaches runInterruptAndDamage (0 steps), but the
@@ -1316,6 +1426,11 @@ async function resolveAttack(io, { row, pairIndex, tic, emitEvent }) {
       attackerActiveTics: row.activeTics,
       tic,
       emitEvent,
+      // What got past the guard, which is what a No Damage move has left to
+      // reach its Threshold with. The damage steps below already come from
+      // this same figure; this only names it for the branch that needs the
+      // number rather than the step count.
+      effectiveResult: resolution.netResult,
     });
   }
 
