@@ -1424,8 +1424,8 @@ the schema and already fell through it — a pair sitting in that state would ha
 straight past its own pending decision, resolving the round twice. The guard is now
 `status !== 'running'`, so every future pause is safe by construction.
 
-**Status — G1 (groundwork), G2 (the No Damage Tag) and G3 (authoring) shipped.** Same shape as
-the Combat Automation overhaul's own Phase A.
+**Status — G1 (groundwork), G2 (the No Damage Tag), G3 (authoring) and G4 (the contest) shipped;
+only the mini-game (G5) is left.** Same shape as the Combat Automation overhaul's own Phase A.
 - Schema: `moves.is_grappling`, `moves.success_threshold` (default 5); new `move_grapple_directions`
   and `move_resist_roll_slots` tables; `declared_moves.grapple_source_declared_move_id`;
   `combat_participants.grapple_penalty_until_tic`; a `'grapple_success'` move-interaction trigger
@@ -1474,9 +1474,35 @@ the Combat Automation overhaul's own Phase A.
   now: a Defensive move gains a **Defensive Roll** field for the extra dice it throws on top of its
   own Roll. **This is the one part of G3 that is not inert** — a Block authored with defensive
   slots now genuinely rolls more dice.
-- **Still to build:** the engine's grapple branch and the chained declare (G4), and the two-party
-  pause with its cross pop-up (G5). No *grappling* behaviour exists yet — but the No Damage Tag it
-  depends on is live (below) and useful on its own.
+- **G4 — the contest, shipped.** Grappling is now playable end to end, minus the guessing.
+  - **A grapple never enters the attack flow.** `resolveAttack` hands `is_grappling` straight to
+    `resolveGrapple` and returns, so no damage machinery, no Block resolution and no Interruption
+    check ever sees a grab. Checked ahead of even the defence-pure and Roll-less guards: a grapple
+    with no Roll still has a contest to lose, and one that is also Defensive is still a grab.
+  - **Dodge evades, Block is not consulted** (decided). A Dodge needs the same `full` coverage an
+    ordinary Dodge needs; anything less and the grab closes anyway. The evade happens **before any
+    dice** — there is no contest to roll — and fires **On Miss**, which is exactly what a Miss is.
+    Unlike an ordinary full Dodge it never pauses for the GM: the contest is the roll that decides
+    a grab, so there is nothing left for a human to call.
+  - Both rolls go through one shared `rollFor`, so a grapple's dice obey the same modifier stack
+    and the same chat/timeline logging as everyone else's. The **Resist Roll is authored on the
+    grappling move**, not on anything the target declared — which hold you are in is the
+    grappler's choice.
+  - **The −2 lives in `getCombatRollBonus`**, the one place every roll path reads, and is set
+    **after** the contest and only on a win — so the Resist Roll itself is unpenalised, since the
+    grab had not landed when it was rolled. Read at the caller's own `tic`, never at
+    `combat_pairs.current_tic`, which lags a Tic during resolution.
+  - **`declareChainedMove` writes only on a win.** No `is_temporary` flag, no snapshot, no
+    rollback: a failed grab leaves the round exactly as it found it because nothing was ever
+    created. Stamina is charged outright rather than committed-and-refunded, for the same reason —
+    there is no failure path left to refund on. Only moves with `reveal_posted = 0` are shifted;
+    one already resolved is a fact, not a plan.
+  - **The mini-game is stubbed to "skipped"**: nobody guesses, neither side takes the ±5, and the
+    grappler's direction is the first assigned one in cross order. The branch sits exactly where
+    G5's pause goes — before any dice, so the read happens on a blind grab.
+  - Cutscene gains `grapple_resolved` and `grapple_chained`.
+- **Still to build (G5):** the two-party `paused_grapple` pause, the per-viewer cross pop-up, the
+  ±5, and reconnect recovery.
 
 **Open, flagged rather than invented:** whether a chained
 move that is *itself* Grappling may open a nested mini-game (recommendation: it resolves as an
