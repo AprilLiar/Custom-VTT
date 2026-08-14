@@ -65,6 +65,13 @@ import {
   DEFAULT_SUCCESS_THRESHOLD,
 } from './combatDamage.js';
 import { carriesBlockTag, carriesNoDamageTag, effectiveTagNames } from './tagAutomations.js';
+import {
+  GUESS_NONE,
+  assignedDirections,
+  grapplePenaltyWindowEnd,
+  planChainPlacement,
+  resolveGrappleContest,
+} from './grappleLogic.js';
 
 // A move's Tag names as they apply to ONE character — the template's own tags
 // plus/minus whatever Perks have added or removed for them
@@ -986,7 +993,417 @@ async function applySuccessfulDodge(io, {
 // Returns `{ paused: true }` if this move hit a genuine pause point (a
 // full-coverage Dodge) — the caller (processTic) must stop processing this
 // pair's Tic immediately when it sees this, without marking the Tic done.
+// Roll one move's dice for one character and log it, returning the total.
+// Extracted because a grapple rolls twice — the grappler's move and the
+// target's Resist Roll — and both must go through the same modifier stack and
+// the same chat/timeline logging the attack roll already uses, or a grapple's
+// dice would quietly obey different rules from everyone else's.
+async function rollFor(io, { characterId, characterName, moveId, moveName, slotNames, rollType, customRollSize, rollModifier, appendageChoice, tic, declaredMoveId, emitEvent, defensive = false }) {
+  const hasRoll = rollType === 'custom' ? customRollSize != null : slotNames.length > 0;
+  if (!hasRoll) return { total: 0, dice: [], mod: 0 };
+
+  const [rollBonusRow, bonusMods] = await Promise.all([
+    one(
+      'SELECT COALESCE(SUM(amount), 0) AS bonus FROM character_move_roll_bonuses WHERE character_id = ? AND move_id = ?',
+      [characterId, moveId]
+    ),
+    getCombatRollBonus(characterId, { moveId, tic }),
+  ]);
+  const mod = (rollModifier ?? 0) + rollBonusRow.bonus + bonusMods;
+
+  let dice;
+  if (rollType === 'custom') {
+    dice = [{ slot_name: 'Custom', size: customRollSize, bonus: 0, result: rollDie(customRollSize) + mod }];
+  } else {
+    const resolved = await resolveMoveRollDice(characterId, slotNames, appendageChoice);
+    dice = resolved.map((d) => ({
+      slot_name: d.slot_name,
+      size: d.current_size,
+      bonus: d.bonus,
+      result: rollDie(d.current_size) + d.bonus + mod,
+    }));
+  }
+  const total = dice.reduce((sum, d) => sum + d.result, 0);
+  await logRoll(io, { characterId, characterName, modifier: mod, dice });
+  await emitEvent(tic, 'roll', {
+    declaredMoveId,
+    characterId,
+    characterName,
+    moveName,
+    dice,
+    modifier: mod,
+    total,
+    ...(defensive ? { defensive: true, defenseType: 'resist' } : {}),
+  });
+  return { total, dice, mod };
+}
+
+// A grab, start to finish (Grappling — see vttprojectplan.md).
+//
+// **It never enters the attack flow.** A grapple has no damage to apply, no
+// Interruption to check and no Block to resolve — it has a contest, and the
+// contest decides one thing: does the chained move happen.
+//
+// Order matters and is the reason this lives before the roll rather than
+// after it: the direction mini-game (G5) has to run *before* anyone rolls, so
+// the read happens on a blind grab rather than on a number both sides can
+// already see. G4 stubs the mini-game to "skipped" — nobody guesses, nobody
+// gets ±5 — and the shape around it is already the shape G5 fills in.
+async function resolveGrapple(io, { row, pairIndex, tic, emitEvent }) {
+  const done = async () => {
+    const dm = await one('SELECT interactions_resolved FROM declared_moves WHERE id = ?', [row.declaredMoveId]);
+    if (dm && !dm.interactions_resolved) {
+      await run('UPDATE declared_moves SET interactions_resolved = 1 WHERE id = ?', [row.declaredMoveId]);
+      return true;
+    }
+    return false;
+  };
+
+  const targetCharacterId = await selectTargetCharacter({
+    pairIndex,
+    side: row.side,
+    allowedConcreteTargets: parseConcreteAttackTargets(row.effectiveAttackTargets),
+  });
+  if (targetCharacterId == null) {
+    // Nobody on the other side to grab. Still terminal for this move —
+    // processTic re-selects anything left at interactions_resolved = 0 forever.
+    await done();
+    return;
+  }
+  const target = await getCharacter(targetCharacterId);
+  const targetName = target?.name ?? 'their opponent';
+
+  const attackActiveStart = row.revealTic;
+  const attackActiveEnd = row.revealTic + row.activeTics;
+
+  // **Dodge can evade a grapple; Block cannot** (decided). A Block is not
+  // consulted at all — you cannot guard your way out of being grabbed, you
+  // have to not be there. A Dodge has to cover the whole grab, the same
+  // 'full' coverage an ordinary Dodge needs; anything less and the grab
+  // closes anyway.
+  //
+  // Note this never pauses for the GM the way an ordinary full Dodge does.
+  // The grapple's own contest is the roll that decides it, so there is
+  // nothing left for a human to call.
+  const defenderMoveRows = await all(
+    `SELECT dm.id AS declaredMoveId, dm.placement_tic AS placementTic,
+            m.defense_frame_positions AS defenseFramePositions, m.defense_kind AS defenseKind,
+            m.name AS moveName
+     FROM declared_moves dm JOIN moves m ON m.id = dm.move_id
+     WHERE dm.character_id = ? ORDER BY dm.queue_order`,
+    [targetCharacterId]
+  );
+  const dodgeMoves = defenderMoveRows
+    .filter((r) => r.defenseKind === 'dodge')
+    .map((r) => ({
+      declaredMoveId: r.declaredMoveId,
+      placementTic: r.placementTic,
+      moveName: r.moveName,
+      defenseFramePositions: JSON.parse(r.defenseFramePositions ?? '[]'),
+    }));
+  const dodgeMatch = selectDefenseMove({
+    defenderMoves: dodgeMoves,
+    attackActiveStart,
+    attackActiveEnd,
+  });
+  const dodgeCoverage = dodgeMatch
+    ? classifyDefenseCoverage({ attackActiveStart, attackActiveEnd, defenseTics: dodgeMatch.defenseTics })
+    : null;
+
+  if (dodgeCoverage?.coverage === 'full') {
+    const evaded = dodgeMoves.find((m) => m.declaredMoveId === dodgeMatch.declaredMoveId);
+    await postSystemMessage(
+      io,
+      `${targetName} slips out of ${row.characterName}'s ${row.moveName} — the grab closes on nothing.`
+    );
+    await emitEvent(tic, 'grapple_resolved', {
+      declaredMoveId: row.declaredMoveId,
+      characterId: row.characterId,
+      characterName: row.characterName,
+      moveName: row.moveName,
+      targetCharacterId,
+      targetCharacterName: targetName,
+      success: false,
+      reason: 'dodged',
+      dodgeMoveName: evaded?.moveName ?? null,
+    });
+    // A Dodge that evades is a Miss, and a Miss is exactly this: an attack
+    // the target got out of the way of (see applySuccessfulDodge).
+    if (await done()) {
+      await applyMoveInteractions(io, {
+        moveId: row.moveId,
+        trigger: 'miss',
+        emitEvent,
+        tic,
+        selfCharacterId: row.characterId,
+        selfDeclaredMoveId: row.declaredMoveId,
+        opponentCharacterId: targetCharacterId,
+      });
+    }
+    return;
+  }
+
+  // The mini-game would run HERE, between the direction being picked and any
+  // dice hitting the table (G5). Stubbed for now: nobody guesses, so neither
+  // side takes the ±5, and the grappler's direction is simply the first
+  // assigned one in cross order.
+  const directionRows = assignedDirections(
+    (await all(
+      'SELECT direction, target_move_id AS targetMoveId FROM move_grapple_directions WHERE move_id = ?',
+      [row.moveId]
+    ))
+  );
+  const chosen = directionRows[0] ?? null;
+  const guessOutcome = GUESS_NONE;
+
+  // Both rolls, grappler then target. The target's Resist Roll is authored on
+  // the GRAPPLING move, not on anything the target declared — a headlock and
+  // an ankle pick are resisted with different Stats, and which one you are in
+  // is the grappler's choice, not yours.
+  const grapplerRoll = await rollFor(io, {
+    characterId: row.characterId,
+    characterName: row.characterName,
+    moveId: row.moveId,
+    moveName: row.moveName,
+    slotNames: row.rollSlotNames,
+    rollType: row.rollType,
+    customRollSize: row.customRollSize,
+    rollModifier: row.rollModifier,
+    appendageChoice: row.appendageChoice,
+    tic,
+    declaredMoveId: row.declaredMoveId,
+    emitEvent,
+  });
+
+  const resistSlots = expandRollSlotRows(
+    await all('SELECT slot_name, count FROM move_resist_roll_slots WHERE move_id = ?', [row.moveId])
+  );
+  // An empty Resist Roll is legal and means the target cannot contest the grab
+  // at all (decided) — it then only has to clear its own Threshold.
+  const targetRoll = resistSlots.length
+    ? await rollFor(io, {
+        characterId: targetCharacterId,
+        characterName: targetName,
+        moveId: row.moveId,
+        moveName: `resisting ${row.moveName}`,
+        slotNames: resistSlots,
+        rollType: 'stat',
+        customRollSize: null,
+        rollModifier: 0,
+        appendageChoice: null,
+        tic,
+        declaredMoveId: row.declaredMoveId,
+        emitEvent,
+        defensive: true,
+      })
+    : { total: 0 };
+
+  const contest = resolveGrappleContest({
+    grapplerTotal: grapplerRoll.total,
+    targetTotal: targetRoll.total,
+    successThreshold: row.successThreshold ?? DEFAULT_SUCCESS_THRESHOLD,
+    guessOutcome,
+  });
+
+  const chained = contest.success && chosen
+    ? await one('SELECT id, name FROM moves WHERE id = ?', [chosen.targetMoveId])
+    : null;
+
+  await postSystemMessage(
+    io,
+    contest.success
+      ? `${row.characterName}'s ${row.moveName} takes hold of ${targetName} — ${contest.grapplerFinal} against ${contest.targetFinal}.` +
+          (chained ? ` It goes straight into ${chained.name}.` : '')
+      : contest.reason === 'below-threshold'
+        ? `${row.characterName}'s ${row.moveName} never closes — rolled ${contest.grapplerFinal}, short of ${row.successThreshold ?? DEFAULT_SUCCESS_THRESHOLD}.`
+        : `${targetName} muscles out of ${row.characterName}'s ${row.moveName} — ${contest.targetFinal} against ${contest.grapplerFinal}.`
+  );
+  await emitEvent(tic, 'grapple_resolved', {
+    declaredMoveId: row.declaredMoveId,
+    characterId: row.characterId,
+    characterName: row.characterName,
+    moveName: row.moveName,
+    targetCharacterId,
+    targetCharacterName: targetName,
+    grapplerTotal: contest.grapplerFinal,
+    targetTotal: contest.targetFinal,
+    threshold: row.successThreshold ?? DEFAULT_SUCCESS_THRESHOLD,
+    success: contest.success,
+    reason: contest.reason,
+    direction: chosen?.direction ?? null,
+    chainedMoveName: chained?.name ?? null,
+    miniGame: false,
+  });
+
+  if (!contest.success) {
+    // **Nothing to undo.** The chained move was never created and no
+    // placement was ever shifted, which is the whole point of only writing on
+    // a win (see planChainPlacement). A failed grab leaves the round exactly
+    // as it found it.
+    await done();
+    return;
+  }
+
+  // The −2 window. Set AFTER the contest and only on a win, so the Resist Roll
+  // above is unpenalised — the grab hadn't landed yet when it was rolled.
+  const penaltyUntilTic = grapplePenaltyWindowEnd({ revealTic: row.revealTic, activeTics: row.activeTics });
+  if (penaltyUntilTic != null) {
+    await run('UPDATE combat_participants SET grapple_penalty_until_tic = ? WHERE character_id = ?', [
+      penaltyUntilTic,
+      targetCharacterId,
+    ]);
+  }
+
+  if (chained) await declareChainedMove(io, { row, chained, tic, emitEvent });
+
+  if (await done()) {
+    await applyMoveInteractions(io, {
+      moveId: row.moveId,
+      trigger: 'grapple_success',
+      emitEvent,
+      tic,
+      selfCharacterId: row.characterId,
+      selfDeclaredMoveId: row.declaredMoveId,
+      opponentCharacterId: targetCharacterId,
+    });
+  }
+}
+
+// Puts the won direction's move into the grappler's own queue, immediately
+// after the grab's footprint, pushing anything they had queued there forward.
+//
+// **Not `move:declare`.** That handler hard-rejects a pair mid-resolution, and
+// rightly so — this is the engine declaring on the grappler's behalf, which is
+// a different act from a player choosing during the declaration phase.
+//
+// **Only ever called on a grapple that has already won**, so every write here
+// is terminal: there is no half-created move to roll back and no original
+// placement to restore. Stamina is charged now rather than committed and
+// refunded, for the same reason — there is no failure path left to refund on.
+async function declareChainedMove(io, { row, chained, tic, emitEvent }) {
+  const move = await one(
+    'SELECT startup_tics, active_tics, recovery_tics, stamina_cost, attack_targets FROM moves WHERE id = ?',
+    [chained.id]
+  );
+  if (!move) return;
+
+  const footprint = move.startup_tics + move.active_tics + move.recovery_tics;
+  const grappleEnd = row.revealTic + row.activeTics; // Recovery is the grappler's own to spend
+
+  // Only moves that have not yet revealed may be shifted — one already
+  // resolved is a fact, not a plan.
+  const laterMoves = (
+    await all(
+      `SELECT dm.id AS declaredMoveId, dm.placement_tic AS placementTic,
+              (m.startup_tics + m.active_tics + m.recovery_tics) AS footprintTics
+       FROM declared_moves dm JOIN moves m ON m.id = dm.move_id
+       WHERE dm.character_id = ? AND dm.reveal_posted = 0 AND dm.placement_tic >= ?`,
+      [row.characterId, grappleEnd]
+    )
+  ).map((r) => ({ ...r }));
+
+  const { placementTic, shifted } = planChainPlacement({
+    grappleFootprintEnd: grappleEnd,
+    chainedFootprintTics: footprint,
+    laterMoves,
+  });
+  for (const s of shifted) {
+    await run('UPDATE declared_moves SET placement_tic = ?, reveal_tic = reveal_tic + ? WHERE id = ?', [
+      s.to,
+      s.to - s.from,
+      s.declaredMoveId,
+    ]);
+  }
+
+  const pairRound = await one(
+    `SELECT pr.round_number AS roundNumber, dm.queue_order AS queueOrder
+     FROM declared_moves dm
+     JOIN combat_participants cp ON cp.character_id = dm.character_id
+     JOIN combat_pairs pr ON pr.pair_index = cp.pair_index
+     WHERE dm.id = ?`,
+    [row.declaredMoveId]
+  );
+
+  const result = await run(
+    `INSERT INTO declared_moves
+       (character_id, move_id, round_number, placement_tic, reveal_tic, queue_order,
+        stamina_committed, reveal_posted, interactions_resolved, effective_attack_targets,
+        grapple_source_declared_move_id)
+     VALUES (?, ?, ?, ?, ?, ?, 1, 0, 0, ?, ?)`,
+    [
+      row.characterId,
+      chained.id,
+      pairRound?.roundNumber ?? 1,
+      placementTic,
+      placementTic + move.startup_tics,
+      (pairRound?.queueOrder ?? 0) + 1,
+      move.attack_targets ?? '[]',
+      row.declaredMoveId,
+    ]
+  );
+
+  if (move.stamina_cost) {
+    await adjustStamina(io, row.characterId, -move.stamina_cost, {
+      emitEvent,
+      tic,
+      reason: `chained ${chained.name}`,
+    });
+  }
+
+  await emitEvent(tic, 'grapple_chained', {
+    declaredMoveId: Number(result.lastInsertRowid),
+    sourceDeclaredMoveId: row.declaredMoveId,
+    characterId: row.characterId,
+    characterName: row.characterName,
+    moveName: chained.name,
+    placementTic,
+    revealTic: placementTic + move.startup_tics,
+    shifted: shifted.length,
+  });
+}
+
+// Which character on the other side this move is coming for. Shared by the
+// attack flow and the grapple flow so both pick the same person by the same
+// rule (decision #6: deterministic under Uneven Combat, trivial at 1v1).
+//
+// A move with no Attack Target of its own still needs someone: for an attack
+// that is how a Successful Block's "replace the target with the blocker's own
+// Stat" rule is ever reached, and for a grapple it is the normal case, since
+// a grab takes a *person* rather than a Stat. Both fall back to the lowest
+// character_id among the opponents.
+async function selectTargetCharacter({ pairIndex, side, allowedConcreteTargets }) {
+  const opposingSide = side === 'left' ? 'right' : 'left';
+  const opponentRows = await all(
+    `SELECT cp.character_id AS characterId, d.slot_name AS slotName, d.status AS status
+     FROM combat_participants cp JOIN dice d ON d.character_id = cp.character_id
+     WHERE cp.pair_index = ? AND cp.side = ?`,
+    [pairIndex, opposingSide]
+  );
+  const candidatesByChar = new Map();
+  for (const r of opponentRows) {
+    if (!candidatesByChar.has(r.characterId)) candidatesByChar.set(r.characterId, []);
+    candidatesByChar.get(r.characterId).push({ slot_name: r.slotName, status: r.status });
+  }
+  const candidates = [...candidatesByChar.entries()].map(([characterId, dice]) => ({ characterId, dice }));
+  if (allowedConcreteTargets.length === 0) {
+    return candidates.map((c) => c.characterId).sort((a, b) => a - b)[0] ?? null;
+  }
+  return selectUnevenCombatTarget({ candidates, allowedConcreteTargets });
+}
+
 async function resolveAttack(io, { row, pairIndex, tic, emitEvent }) {
+  // Grappling (decided) — a grab is not an attack and does not run the attack
+  // flow. It is resolved entirely by resolveGrapple and returns here, so none
+  // of the damage/defence machinery below ever sees it.
+  //
+  // Checked FIRST, ahead of even the defence-pure and Roll-less guards: a
+  // grappling move with no Roll still has a contest to lose (it rolls 0 and
+  // fails its Threshold), and one that is also Defensive is still a grab.
+  if (row.isGrappling) {
+    await resolveGrapple(io, { row, pairIndex, tic, emitEvent });
+    return;
+  }
+
   // A Defensive move with no Attack Target is defence-pure: it exists to be
   // *selected as a defender* when someone attacks into it (step 4 below,
   // driven by the attacker's own resolution), and it never attacks on its
@@ -1658,7 +2075,8 @@ async function processTic(io, { pairIndex, tic, emitEvent, resolutionId }) {
             dm.placement_tic AS placementTic, dm.reveal_tic AS revealTic,
             dm.appendage_choice AS appendageChoice, dm.effective_attack_targets AS effectiveAttackTargets,
             m.name AS moveName, m.active_tics AS activeTics, m.roll_type AS rollType,
-            m.is_defensive AS isDefensive,
+            m.is_defensive AS isDefensive, m.is_grappling AS isGrappling,
+            m.success_threshold AS successThreshold,
             m.custom_roll_size AS customRollSize, m.roll_modifier AS rollModifier,
             cp.side AS side, ch.name AS characterName
      FROM declared_moves dm

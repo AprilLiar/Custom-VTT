@@ -7,6 +7,7 @@
 
 import { all, one } from './db.js';
 import { buildBeats, matchupStyles, pairScore } from '../client/src/lib/matchups.js';
+import { grapplePenaltyAt } from './grappleLogic.js';
 
 // "Reasons to Fight" (see combat_participants.reasons_to_fight): +1 per
 // point. "While a fight is underway" is a per-pair question (combat_pairs.
@@ -231,9 +232,31 @@ export async function getPairStanceMatchup(pairIndex) {
 // Combat Style joins the matchup (see getStanceMatchupBonus). Omitted by the
 // ad-hoc roll paths, which fall back to whatever the roller has in play.
 export async function getCombatRollBonus(characterId, { moveId = null, tic = null } = {}) {
-  const [reasons, stance] = await Promise.all([
+  const [reasons, stance, grapple] = await Promise.all([
     getReasonsToFightBonus(characterId),
     getStanceMatchupBonus(characterId, { moveId, tic }),
+    getGrapplePenalty(characterId, tic),
   ]);
-  return reasons + stance;
+  return reasons + stance + grapple;
+}
+
+// Grappling's −2: someone held in a grapple rolls worse for as long as the
+// grab's ACTIVE frames run (decided). The window's last Tic is stored on the
+// seat when the grapple succeeds (grapplePenaltyWindowEnd in
+// server/grappleLogic.js); null means nobody has hold of them.
+//
+// **Read at `tic`, not at combat_pairs.current_tic.** That column is only
+// written *after* a Tic finishes processing, so during resolution it lags one
+// behind — reading it here would apply the penalty a Tic late at one end of
+// the window and a Tic early at the other. Every engine roll site threads its
+// own `tic` in for exactly this reason (see getStanceMatchupBonus's note).
+//
+// A roll made outside combat has no Tic and therefore no window to be inside.
+async function getGrapplePenalty(characterId, tic) {
+  if (tic == null) return 0;
+  const seat = await one(
+    'SELECT grapple_penalty_until_tic AS untilTic FROM combat_participants WHERE character_id = ?',
+    [characterId]
+  );
+  return grapplePenaltyAt({ penaltyUntilTic: seat?.untilTic ?? null, tic });
 }

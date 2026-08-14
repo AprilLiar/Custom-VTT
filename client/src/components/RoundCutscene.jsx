@@ -58,6 +58,8 @@ const EVENT_LABEL = {
   recovery_extended: 'Extension',
   insignificant_damage: 'No effect',
   no_damage_resolved: 'No Damage',
+  grapple_resolved: 'Grapple',
+  grapple_chained: 'Chained',
   dodge_prompt: 'Dodge?',
   dodge_resolved: 'Dodge',
   interrupt_resolved: 'Interrupt',
@@ -148,6 +150,20 @@ function eventNarration(ev, startTic) {
       )} to hold the guard through it.`;
     case 'insignificant_damage':
       return `${who}'s ${p.moveName} rolled ${p.total} — it lands, but the damage is insignificant.`;
+    case 'grapple_resolved':
+      if (p.reason === 'dodged')
+        return `${p.targetCharacterName} slips out of ${who}'s ${p.moveName} — the grab closes on nothing.`;
+      if (p.success)
+        return `${who}'s ${p.moveName} takes hold of ${p.targetCharacterName} — ${p.grapplerTotal} against ${p.targetTotal}${
+          p.chainedMoveName ? `, straight into ${p.chainedMoveName}` : ''
+        }.`;
+      return p.reason === 'below-threshold'
+        ? `${who}'s ${p.moveName} never closes — rolled ${p.grapplerTotal}, short of ${p.threshold}.`
+        : `${p.targetCharacterName} muscles out of ${who}'s ${p.moveName} — ${p.targetTotal} against ${p.grapplerTotal}.`;
+    case 'grapple_chained':
+      return `${who} goes straight into ${p.moveName}, out on Tic ${p.revealTic - startTic + 1}${
+        p.shifted ? ` (${plural(p.shifted, 'later move', 'later moves')} pushed back)` : ''
+      }.`;
     case 'no_damage_resolved':
       return p.succeeded
         ? `${who}'s ${p.moveName} succeeded — rolled ${p.total} against a Threshold of ${p.threshold}. It deals no damage.`
@@ -252,6 +268,27 @@ function eventDetail(ev, startTic) {
       lines.push('It connected, so this fires On Hit');
       lines.push('Not a Miss — a Miss is an attack evaded by a Dodge');
       break;
+    case 'grapple_resolved':
+      if (p.reason === 'dodged') {
+        lines.push('A Dodge can evade a grab; a Block cannot');
+        lines.push('Evaded before any dice — there was no contest to roll');
+        lines.push('Fires On Miss: a Miss is an attack the target got out of the way of');
+      } else if (p.success) {
+        lines.push(`Cleared its Threshold of ${p.threshold} AND beat the target`);
+        lines.push(`Went ${p.direction ?? 'nowhere'} — the direction the grappler picked`);
+        lines.push('The target now rolls at -2 while this grab\'s Active frames run');
+      } else if (p.reason === 'below-threshold') {
+        lines.push(`Under its own Threshold of ${p.threshold} — fumbled outright`);
+        lines.push('Nothing fires, and nothing was ever created to undo');
+      } else {
+        lines.push('Cleared its Threshold but lost the contest — ties go to the target');
+        lines.push('Nothing fires, and nothing was ever created to undo');
+      }
+      break;
+    case 'grapple_chained':
+      lines.push('Declared by the engine, not the player — the grab won');
+      lines.push('Sits next in line after the grab; the round\'s clock is untouched');
+      break;
     case 'no_damage_resolved':
       lines.push('Tagged No Damage: it never deals damage, whatever it rolls');
       lines.push(
@@ -312,6 +349,12 @@ function beatEffects(events, visibleCount) {
     case 'insignificant_damage':
       if (p.declaredMoveId != null) out.byMoveId[p.declaredMoveId] = 'fizzle';
       out.burst = { kind: 'fizzle', label: 'No effect', seq: ev.seq };
+      break;
+    case 'grapple_resolved':
+      if (p.declaredMoveId != null) out.byMoveId[p.declaredMoveId] = p.success ? 'attack' : 'fizzle';
+      out.burst = p.success
+        ? { kind: 'heavy', label: 'GRAB', sub: p.chainedMoveName ?? '', seq: ev.seq }
+        : { kind: 'fizzle', label: p.reason === 'dodged' ? 'Slipped' : 'No hold', seq: ev.seq };
       break;
     case 'no_damage_resolved':
       // A success is a real beat even with no damage behind it — it gets the
@@ -1161,8 +1204,11 @@ export default function RoundCutscene({
                   ? 'border-amber-500 bg-amber-950/30 text-amber-200'
                   : ev.type === 'damage_applied'
                     ? 'border-rose-600 bg-rose-950/20 text-rose-200'
-                    : ev.type === 'insignificant_damage' ||
-                        (ev.type === 'no_damage_resolved' && !ev.payload?.succeeded)
+                    : ev.type === 'grapple_resolved' && ev.payload?.success
+                      ? 'border-amber-600 bg-amber-950/20 text-amber-200'
+                      : ev.type === 'insignificant_damage' ||
+                          (ev.type === 'no_damage_resolved' && !ev.payload?.succeeded) ||
+                          (ev.type === 'grapple_resolved' && !ev.payload?.success)
                       ? 'border-zinc-600 text-zinc-500'
                       : 'border-zinc-700 text-zinc-300'
               }`}
