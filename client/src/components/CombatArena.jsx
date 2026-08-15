@@ -1190,6 +1190,21 @@ function DeclarationLanes({
 // recoveryEndTic rides every declaredMoves entry regardless of whether its
 // identity is revealed to this client (see server/index.js), so this is
 // accurate even for a still-secret prior declare.
+// The move this character would be declaring right after — the queued one
+// whose footprint ends latest, which is exactly what the server's Requirement
+// gate compares against (see move:declare). Null when they have nothing
+// queued.
+//
+// `moveId` is only non-null on entries the viewer is entitled to see, but the
+// declare picker only ever renders for a character the viewer owns, and an
+// owner sees their own moves from the instant they declare them — so this is
+// never guessing at a hidden id.
+function lastQueuedMoveId(characterId, declaredMoves) {
+  const mine = declaredMoves.filter((dm) => dm.characterId === characterId);
+  if (!mine.length) return null;
+  return mine.reduce((a, b) => (b.recoveryEndTic > a.recoveryEndTic ? b : a)).moveId ?? null;
+}
+
 function buildDeclarePayload(character, move, roundStartTic, declaredMoves) {
   const priorBlockedUntil = declaredMoves
     .filter((dm) => dm.characterId === character.id)
@@ -1236,19 +1251,36 @@ function DeclareMoveCard({ character, move, roundStartTic, declaredMoves, tags }
   const cost =
     move.stamina_cost > 0 ? `-${move.stamina_cost}` : move.stamina_cost < 0 ? `+${-move.stamina_cost}` : '0';
   const payload = buildDeclarePayload(character, move, roundStartTic, declaredMoves);
+  // Requirement (decided, new): this move may only be declared immediately
+  // after the one it names. The server enforces it — this only stops the
+  // player dragging something that would be silently refused, which is the
+  // same reason an unaffordable move isn't simply left to fail.
+  const requiredId = move.requirement_move_id ?? null;
+  const blockedByRequirement =
+    requiredId != null && lastQueuedMoveId(character.id, declaredMoves) !== requiredId;
+  const requiredName = requiredId != null ? (move.requirement_move_name ?? 'another move') : null;
   return (
     <button
       type="button"
-      draggable
+      draggable={!blockedByRequirement}
+      disabled={blockedByRequirement}
       onDragStart={(e) => {
         e.dataTransfer.setData('application/x-vtt-move', JSON.stringify(payload));
         e.dataTransfer.effectAllowed = 'copy';
         setDraggingMove(payload);
       }}
       onDragEnd={() => setDraggingMove(null)}
-      onClick={() => setDraggingMove(payload)}
-      title="Drag onto the Tic Counter, or tap then tap a Tic, to declare"
-      className="flex min-h-11 cursor-grab select-none flex-col items-start gap-1 panel-cut-sm border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-xs text-zinc-200 transition-colors hover:border-brand-600 active:cursor-grabbing"
+      onClick={() => !blockedByRequirement && setDraggingMove(payload)}
+      title={
+        blockedByRequirement
+          ? `Can only be declared immediately after ${requiredName}.`
+          : 'Drag onto the Tic Counter, or tap then tap a Tic, to declare'
+      }
+      className={`flex min-h-11 select-none flex-col items-start gap-1 panel-cut-sm border px-2 py-1.5 text-xs transition-colors ${
+        blockedByRequirement
+          ? 'cursor-not-allowed border-zinc-800 bg-zinc-900 text-zinc-600'
+          : 'cursor-grab border-zinc-700 bg-zinc-800 text-zinc-200 hover:border-brand-600 active:cursor-grabbing'
+      }`}
     >
       <span>
         {move.name}{' '}

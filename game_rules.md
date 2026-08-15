@@ -366,6 +366,33 @@ your next round it eats.
 Placing several moves in one Declaration is allowed and often correct. You are
 writing a short plan, not answering one question.
 
+### Requirement — moves that only follow other moves
+
+Some moves carry a **Requirement**: the name of another move. A move with a
+Requirement can only be declared **immediately after** the move it names —
+not on its own, not later in the round, not with anything in between.
+
+It is strict in both senses. The required move must be the very last thing you
+queued, and the follow-up starts on the exact Tic that move's Recovery ends.
+You do not choose where it goes: drop it anywhere and it snaps to the one Tic
+it is allowed to occupy. If you queue something else in between, the sequence
+is broken and the follow-up is no longer available — queue the required move
+again and it opens back up.
+
+This is how **combos** are built. A Cross that requires a Jab is a Cross you
+have to earn by throwing the Jab first, and it lands on the beat the Jab
+finishes rather than whenever you please.
+
+What a Requirement does **not** check is whether the first move connected. The
+whole round is declared before any of it is resolved, so at the moment you
+commit to the follow-up nobody yet knows whether the Jab landed. A combo that
+whiffs still runs — you committed to it, and paying for a read that went wrong
+is the same bargain every other declaration makes.
+
+A move can never require itself, and deleting a move frees anything that
+required it. Moves chained by a successful **Grapple** are placed by the
+system rather than declared, so they ignore Requirements entirely.
+
 ### Initiative
 
 At the start of every round, both sides roll **Brain**. **The loser declares

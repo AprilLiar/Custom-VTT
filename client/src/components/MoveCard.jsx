@@ -289,6 +289,25 @@ export default function MoveCard({
           </div>
         )}
 
+        {/* Requirement — resolved against the same library the grapple
+            directions above resolve against. Shown on every move that has
+            one, grappling or not: "you cannot throw this cold" is the single
+            most important thing to know about such a move. */}
+        {move.requirement_move_id != null && (
+          <div className="flex flex-wrap items-center gap-1.5 text-xs">
+            <span className="font-semibold uppercase text-zinc-500">Only after:</span>
+            <span className="text-amber-300">
+              {/* Server-resolved (attachInteractions), because a Requirement
+                  can point at a move outside whatever list this card was
+                  handed — a character's own move may require one they were
+                  never granted. allMoves is only a fallback. */}
+              {move.requirement_move_name ??
+                allMoves.find((m) => m.id === move.requirement_move_id)?.name ??
+                'unknown move'}
+            </span>
+          </div>
+        )}
+
         {(style || combatStyle || tags.length > 0) && (
           <div className="flex flex-wrap items-center gap-1">
             {style && (

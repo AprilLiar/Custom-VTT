@@ -289,14 +289,21 @@ export default function MovesCompendium() {
   const [dropTarget, setDropTarget] = useState(null);
   const [currentFolder, setCurrentFolder] = useState(null); // folder id | null = root
   const [mobileFoldersOpen, setMobileFoldersOpen] = useState(false);
+  const [reorderTarget, setReorderTarget] = useState(null); // move id being hovered as a drop slot
   const [styleFilter, setStyleFilter] = useState(new Set()); // Set<attribute id> — OR'd together
-  const toggleStyleFilter = (id) =>
-    setStyleFilter((prev) => {
+  const [tagFilter, setTagFilter] = useState(new Set()); // Set<tag id> — OR'd together
+  // One toggler for both filters: they are the same multi-select-OR control
+  // over different id spaces, and two copies of this would be two places for
+  // the next change to miss.
+  const toggleIn = (setter) => (id) =>
+    setter((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
       else next.add(id);
       return next;
     });
+  const toggleStyleFilter = toggleIn(setStyleFilter);
+  const toggleTagFilter = toggleIn(setTagFilter);
 
   useEffect(() => {
     const refreshAll = () => {
@@ -321,7 +328,7 @@ export default function MovesCompendium() {
       'tag:created', 'tag:updated', 'tag:deleted',
       'folder:created', 'folder:updated',
       'move:created', 'move:updated', 'move:deleted',
-      'move:granted', 'move:revoked',
+      'move:granted', 'move:revoked', 'moves:reordered',
       'character:created', 'character:updated', 'character:deleted',
       'stance:created', 'stance:updated', 'stance:deleted',
     ];
@@ -366,9 +373,17 @@ export default function MovesCompendium() {
   // "All Moves" (currentFolder == null) shows every move regardless of
   // discipline — a specific discipline tab shows only its own moves. The
   // style filter narrows whichever of those two pools is currently showing.
+  // The two filters narrow independently and are AND'd with each other, while
+  // each is OR'd within itself: "a Strength OR Speed move that is Grab OR
+  // Feint". Selecting nothing in a filter means that filter isn't applied,
+  // which is why an empty Set is checked rather than treated as "match none".
   const folderPool = currentFolder != null ? moves.filter((m) => m.folder_id === currentFolder) : moves;
-  const visibleMoves =
+  const styleMatched =
     styleFilter.size > 0 ? folderPool.filter((m) => styleFilter.has(m.style_attribute_id)) : folderPool;
+  const visibleMoves =
+    tagFilter.size > 0
+      ? styleMatched.filter((m) => (m.tag_ids ?? []).some((id) => tagFilter.has(id)))
+      : styleMatched;
 
   const submitMove = (payload) => {
     if (form?.move) socket.emit('move:update', { moveId: form.move.id, ...payload });
@@ -389,6 +404,31 @@ export default function MovesCompendium() {
     e.preventDefault();
     const moveId = Number(e.dataTransfer.getData('text/move-id'));
     if (moveId) socket.emit('move:set_folder', { moveId, folderId: targetFolderId });
+  };
+
+  // Drag a move card onto ANOTHER move card to reorder the library (decided).
+  // The same drag that files a move into a Discipline and grants it to a
+  // character — the drop target decides which of the three happened, which is
+  // why the three drop zones never overlap: a Discipline row and a character
+  // rail card are not move cards.
+  //
+  // The reordered list sent to the server is the *currently visible* one, so
+  // dragging inside a filtered view only permutes the moves on screen (see
+  // move:reorder on the server for how positions are redistributed).
+  const onDropOnMove = (e, targetMove) => {
+    e.preventDefault();
+    e.stopPropagation(); // don't also let a parent drop zone act on this
+    setReorderTarget(null);
+    const draggedId = Number(e.dataTransfer.getData('text/move-id'));
+    if (!draggedId || draggedId === targetMove.id) return;
+    const ids = visibleMoves.map((m) => m.id);
+    if (!ids.includes(draggedId)) return; // dragged in from somewhere off-view
+    const without = ids.filter((id) => id !== draggedId);
+    const at = without.indexOf(targetMove.id);
+    if (at < 0) return;
+    socket.emit('move:reorder', {
+      moveIds: [...without.slice(0, at), draggedId, ...without.slice(at)],
+    });
   };
 
   return (
@@ -473,6 +513,41 @@ export default function MovesCompendium() {
           })}
         </div>
 
+        {/* Tag filter — the same multi-select-OR control as the style row
+            above, in words rather than icons because a Tag is GM-authored
+            free text with no icon to stand in for it. Hidden entirely when
+            the world has no Tags yet, rather than rendering a bare label. */}
+        {tags.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1">
+            <span className="mr-1 text-xs font-semibold uppercase text-zinc-500">Filter by tag:</span>
+            {tags.map((tag) => {
+              const active = tagFilter.has(tag.id);
+              return (
+                <button
+                  key={tag.id}
+                  onClick={() => toggleTagFilter(tag.id)}
+                  title={tag.description || `Filter by ${tag.name}`}
+                  className={`panel-cut-sm border px-2 py-1 text-xs ${
+                    active
+                      ? 'border-brand-500 bg-brand-600/30 text-brand-300'
+                      : 'border-zinc-700 text-zinc-500 hover:border-zinc-500'
+                  }`}
+                >
+                  {tag.name}
+                </button>
+              );
+            })}
+            {tagFilter.size > 0 && (
+              <button
+                onClick={() => setTagFilter(new Set())}
+                className="ml-1 text-xs text-zinc-500 underline hover:text-zinc-300"
+              >
+                clear
+              </button>
+            )}
+          </div>
+        )}
+
         {role === 'gm' &&
           (form ? (
             <MoveCreator
@@ -498,8 +573,8 @@ export default function MovesCompendium() {
 
         {visibleMoves.length === 0 ? (
           <p className="text-sm text-zinc-600">
-            {styleFilter.size > 0
-              ? 'No moves with this style here.'
+            {styleFilter.size > 0 || tagFilter.size > 0
+              ? 'No moves match these filters here.'
               : currentFolder != null
                 ? 'No moves in this discipline yet — assign moves to it in the Move Creator.'
                 : 'No moves here yet.'}
@@ -511,8 +586,33 @@ export default function MovesCompendium() {
                 key={move.id}
                 draggable={role === 'gm'}
                 onDragStart={role === 'gm' ? (e) => e.dataTransfer.setData('text/move-id', String(move.id)) : undefined}
-                title={role === 'gm' ? 'Drag onto a discipline to file it, or onto a character to grant it' : undefined}
-                className={role === 'gm' ? 'cursor-grab active:cursor-grabbing' : undefined}
+                onDragEnd={role === 'gm' ? () => setReorderTarget(null) : undefined}
+                // Only claim the drop when a move card is what's being
+                // dragged: types is readable during dragover where getData
+                // is not, so this is the only way to tell before the drop.
+                onDragOver={
+                  role === 'gm'
+                    ? (e) => {
+                        if (!e.dataTransfer.types.includes('text/move-id')) return;
+                        e.preventDefault();
+                        setReorderTarget(move.id);
+                      }
+                    : undefined
+                }
+                onDragLeave={
+                  role === 'gm'
+                    ? () => setReorderTarget((prev) => (prev === move.id ? null : prev))
+                    : undefined
+                }
+                onDrop={role === 'gm' ? (e) => onDropOnMove(e, move) : undefined}
+                title={
+                  role === 'gm'
+                    ? 'Drag onto another move to reorder, onto a discipline to file it, or onto a character to grant it'
+                    : undefined
+                }
+                className={`${role === 'gm' ? 'cursor-grab active:cursor-grabbing' : ''} ${
+                  reorderTarget === move.id ? 'ring-2 ring-brand-500' : ''
+                }`}
               >
                 <MoveCard
                   move={move}

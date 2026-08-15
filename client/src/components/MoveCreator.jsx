@@ -263,6 +263,11 @@ export default function MoveCreator({
   );
   // Which direction's picker is open, or null.
   const [pickingDirection, setPickingDirection] = useState(null);
+  // Requirement: the move this one may only be thrown immediately after.
+  // Optional, and unrelated to the Grappling toggle — a Combo Move uses it
+  // without ever being a grapple.
+  const [requirementMoveId, setRequirementMoveId] = useState(initial?.requirement_move_id ?? null);
+  const [pickingRequirement, setPickingRequirement] = useState(false);
   const [rollModifier, setRollModifier] = useState(initial?.roll_modifier ?? 0);
   const [rollType, setRollType] = useState(initial?.roll_type ?? 'stat');
   const [customRollSize, setCustomRollSize] = useState(initial?.custom_roll_size ?? null);
@@ -401,6 +406,7 @@ export default function MoveCreator({
       defensiveRollSlots,
       resistRollSlots,
       grappleDirections,
+      requirementMoveId,
       successThreshold: clampThresholdInput(successThreshold),
       startupTics: frames.startup,
       activeTics: frames.active,
@@ -915,6 +921,45 @@ export default function MoveCreator({
         className="w-full panel-cut-sm border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-brand-500"
       />
 
+      {/* Requirement (decided, new) — a general move property, deliberately
+          not inside the Grappling block: a Combo Move uses it without being a
+          grapple at all. Reuses the same searchable overlay the grapple
+          directions use, since "point at another move in the library" is the
+          same job. */}
+      <div>
+        <span className="text-xs font-semibold uppercase text-zinc-500">Requirement (optional)</span>
+        <div className="mt-1 flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setPickingRequirement(true)}
+            className={`panel-cut-sm border px-3 py-1.5 text-sm ${
+              requirementMoveId
+                ? 'border-amber-600 bg-amber-900/25 text-amber-200'
+                : 'border-zinc-700 bg-zinc-800 text-zinc-400 hover:border-zinc-500'
+            }`}
+          >
+            {requirementMoveId
+              ? (moves.find((m) => m.id === requirementMoveId)?.name ?? 'Unknown move')
+              : 'No requirement — can open a sequence'}
+          </button>
+          {requirementMoveId != null && (
+            <button
+              type="button"
+              onClick={() => setRequirementMoveId(null)}
+              className="text-xs text-zinc-500 underline hover:text-zinc-300"
+            >
+              clear
+            </button>
+          )}
+        </div>
+        <p className="mt-1 text-[10px] text-zinc-500">
+          Set this and the move can <b>only</b> be declared immediately after the named
+          move — never on its own, never later in the round. It starts on the exact Tic
+          that move&apos;s Recovery ends, so the dropped Tic is ignored. Grapple chains
+          are placed by the engine and are not subject to this.
+        </p>
+      </div>
+
       <div className="grid gap-3 sm:grid-cols-3">
         {BASE_TRIGGERS.map((trigger) => (
           <TriggerBox
@@ -1042,6 +1087,21 @@ export default function MoveCreator({
             })
           }
           onClose={() => setPickingDirection(null)}
+        />
+      )}
+
+      {pickingRequirement && (
+        <MovePickerDialog
+          moves={moves}
+          folders={folders}
+          // A move requiring itself could never be declared at all, so it is
+          // excluded from its own picker rather than dropped silently on save
+          // (the server drops it too — this is the visible half of that rule).
+          excludeMoveId={initial?.id ?? null}
+          title="Requires which move?"
+          onPick={(move) => setRequirementMoveId(move.id)}
+          onClear={() => setRequirementMoveId(null)}
+          onClose={() => setPickingRequirement(false)}
         />
       )}
 

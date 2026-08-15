@@ -53,6 +53,8 @@ import {
   clampStaminaModifier,
   clampSuccessThreshold,
   normalizeGrappleDirections,
+  normalizeRequirement,
+  requirementSatisfiedBy,
 } from './moveLogic.js';
 import { carriesBlockTag, effectiveTagNames, BLOCK_TAG } from './tagAutomations.js';
 import { effectiveFrames, PERK_HOOKS, idleStaminaRegenRate } from './perkAutomations.js';
@@ -168,6 +170,21 @@ async function attachInteractions(moves) {
   const resistSlotsByMove = groupSlots(resistSlotRows);
   const defensiveSlotsByMove = groupSlots(defensiveSlotRows);
 
+  // Requirement names. A move's Requirement points anywhere in the library,
+  // which may be outside the list being attached to (a character's own moves
+  // can require one they haven't been granted), so the name is resolved here
+  // rather than left for each renderer to look up in whatever move list it
+  // happens to hold. One batched query, and none at all in the common case
+  // where nothing in this list has a Requirement.
+  const requirementIds = [...new Set(moves.map((m) => m.requirement_move_id).filter((v) => v != null))];
+  const requirementNames = new Map();
+  if (requirementIds.length) {
+    const reqMarks = requirementIds.map(() => '?').join(',');
+    for (const row of await all(`SELECT id, name FROM moves WHERE id IN (${reqMarks})`, requirementIds)) {
+      requirementNames.set(row.id, row.name);
+    }
+  }
+
   const directionsByMove = new Map();
   for (const row of directionRows) {
     if (!directionsByMove.has(row.move_id)) directionsByMove.set(row.move_id, []);
@@ -184,6 +201,8 @@ async function attachInteractions(moves) {
     resist_roll_slots: resistSlotsByMove.get(m.id) ?? [],
     defensive_roll_slots: defensiveSlotsByMove.get(m.id) ?? [],
     grapple_directions: directionsByMove.get(m.id) ?? [],
+    requirement_move_name:
+      m.requirement_move_id != null ? (requirementNames.get(m.requirement_move_id) ?? null) : null,
     defense_frame_positions: JSON.parse(m.defense_frame_positions ?? '[]'),
     attack_targets: sanitizeAttackTargets(JSON.parse(m.attack_targets ?? '[]')),
   }));
@@ -905,7 +924,10 @@ app.get('/api/tags', wrap(async (_req, res) => {
 
 // Compendium view: folders + every move, with interactions, tags and grants
 app.get('/api/moves', wrap(async (_req, res) => {
-  const moves = await attachInteractions(await all('SELECT * FROM moves ORDER BY id'));
+  // (sort_order, id) — the GM's custom drag order, with id breaking ties so a
+  // library nobody has reordered yet (every sort_order still 0) comes back in
+  // exactly the order it always did.
+  const moves = await attachInteractions(await all('SELECT * FROM moves ORDER BY sort_order, id'));
   const grants = await all('SELECT * FROM character_moves');
   const byMove = new Map();
   for (const g of grants) {
@@ -2094,6 +2116,33 @@ io.on('connection', (socket) => {
     // on an ordinary move is inert.
     const successThreshold = clampSuccessThreshold(payload.successThreshold);
 
+    // Every move id that currently exists, fetched at most once per save and
+    // shared by the two fields that point at other moves (Requirement here,
+    // the grapple directions further down). Lazy because most saves set
+    // neither and shouldn't pay for the query.
+    let moveIdsPromise = null;
+    const existingMoveIds = () => {
+      moveIdsPromise ??= all('SELECT id FROM moves').then((rows) => rows.map((r) => r.id));
+      return moveIdsPromise;
+    };
+
+    // Requirement (decided, new): the move this one may only follow. Validated
+    // against the library so an arrow at something deleted while the form was
+    // open is dropped rather than stored — the rest of the move still saves,
+    // matching how a missing folder and a stale grapple direction are handled.
+    // A self-reference is dropped by normalizeRequirement itself.
+    //
+    // On a *create* there is no id yet, so `moveId` is null and the
+    // self-reference rule is vacuous — a move that doesn't exist can't be
+    // named by the form that is creating it.
+    const requirementMoveId =
+      payload.requirementMoveId == null || payload.requirementMoveId === ''
+        ? null
+        : normalizeRequirement(payload.requirementMoveId, {
+            moveId,
+            validMoveIds: await existingMoveIds(),
+          });
+
     let id = moveId;
     if (id == null) {
       const result = await run(
@@ -2101,14 +2150,14 @@ io.on('connection', (socket) => {
           stamina_cost, description, style_attribute_id, folder_id, image_data, image_mime_type,
           roll_modifier, right_tell_id, left_tell_id, is_defensive, defense_frame_positions,
           roll_type, custom_roll_size, attack_targets, defense_kind, stamina_modifier,
-          combat_style_attribute_id, success_threshold, is_grappling)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          combat_style_attribute_id, success_threshold, is_grappling, requirement_move_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [name, isDefault, tellId, startup, active, recovery, effectiveStaminaCost, description, styleId,
           folderId, payload.imageData ?? null,
           payload.imageData ? (payload.imageMimeType ?? 'image/png') : null,
           rollModifier, rightTellId, leftTellId, isDefensive, JSON.stringify(defenseFramePositions),
           rollType, customRollSize, JSON.stringify(attackTargets), defenseKind, staminaModifier,
-          combatStyleId, successThreshold, isGrappling]
+          combatStyleId, successThreshold, isGrappling, requirementMoveId]
       );
       id = Number(result.lastInsertRowid);
     } else {
@@ -2118,12 +2167,13 @@ io.on('connection', (socket) => {
           roll_modifier = ?, right_tell_id = ?, left_tell_id = ?, is_defensive = ?,
           defense_frame_positions = ?, roll_type = ?, custom_roll_size = ?, attack_targets = ?,
           defense_kind = ?, stamina_modifier = ?, combat_style_attribute_id = ?,
-          success_threshold = ?, is_grappling = ?
+          success_threshold = ?, is_grappling = ?, requirement_move_id = ?
           WHERE id = ?`,
         [name, isDefault, tellId, startup, active, recovery, effectiveStaminaCost, description, styleId,
           folderId, rollModifier, rightTellId, leftTellId, isDefensive,
           JSON.stringify(defenseFramePositions), rollType, customRollSize, JSON.stringify(attackTargets),
-          defenseKind, staminaModifier, combatStyleId, successThreshold, isGrappling, id]
+          defenseKind, staminaModifier, combatStyleId, successThreshold, isGrappling,
+          requirementMoveId, id]
       );
       // image only replaced when a new one is provided
       if (payload.imageData !== undefined) {
@@ -2165,10 +2215,9 @@ io.on('connection', (socket) => {
     // normalizeGrappleDirections itself.
     await run('DELETE FROM move_grapple_directions WHERE move_id = ?', [id]);
     if (isGrappling) {
-      const existingMoveIds = (await all('SELECT id FROM moves')).map((r) => r.id);
       for (const { direction, targetMoveId } of normalizeGrappleDirections(payload.grappleDirections, {
         moveId: id,
-        validMoveIds: existingMoveIds,
+        validMoveIds: await existingMoveIds(),
       })) {
         await run(
           'INSERT INTO move_grapple_directions (move_id, direction, target_move_id) VALUES (?, ?, ?)',
@@ -2216,6 +2265,11 @@ io.on('connection', (socket) => {
     // row behind would render a direction whose move no longer exists, and the
     // FK to moves(id) would refuse the delete outright.
     await run('DELETE FROM move_grapple_directions WHERE target_move_id = ?', [move.id]);
+    // Same reasoning for Requirement, which is a column rather than a child
+    // table: any move that could only be thrown after this one becomes freely
+    // declarable again rather than permanently unusable. Cleared, not
+    // cascaded — the requiring move is still a perfectly good move.
+    await run('UPDATE moves SET requirement_move_id = NULL WHERE requirement_move_id = ?', [move.id]);
     await run('DELETE FROM character_moves WHERE move_id = ?', [move.id]);
     await run('DELETE FROM character_move_tags WHERE move_id = ?', [move.id]);
     await run('DELETE FROM character_move_overrides WHERE move_id = ?', [move.id]);
@@ -2365,6 +2419,47 @@ io.on('connection', (socket) => {
     }
     await run('UPDATE moves SET folder_id = ? WHERE id = ?', [target, move.id]);
     io.emit('move:updated', await getMove(move.id));
+  });
+
+  // Custom Compendium ordering (decided, new). The client sends the full
+  // ordered list of move ids for the view it just rearranged, and the server
+  // writes positions across **that list only** — a Discipline is a window
+  // onto one global order, so reordering inside it must not renumber the
+  // moves that weren't on screen.
+  //
+  // Positions are taken from the sort_order values those same moves already
+  // occupy, re-sorted and handed back out in the new sequence. That keeps
+  // every reorder local: a move dragged within "Boxing" can never jump ahead
+  // of something in "Karate" that it was already behind, and "All Moves"
+  // stays consistent with every filtered view of it.
+  on('move:reorder', async ({ moveIds }) => {
+    if (!Array.isArray(moveIds) || moveIds.length < 2) return;
+    const ids = [...new Set(moveIds.map(Number).filter(Number.isInteger))];
+    if (ids.length < 2) return;
+    const marks = ids.map(() => '?').join(',');
+    // Only ids that actually exist, and their current positions. A move
+    // deleted while someone had the Compendium open is dropped rather than
+    // reintroduced by the write below.
+    const rows = await all(
+      `SELECT id, sort_order FROM moves WHERE id IN (${marks}) ORDER BY sort_order, id`,
+      ids
+    );
+    if (rows.length < 2) return;
+    const known = new Set(rows.map((r) => r.id));
+    const sequence = ids.filter((id) => known.has(id));
+    // The slots these moves collectively occupy, ascending. Ties on
+    // sort_order (an un-reordered library is all zeroes) are broken by the
+    // same (sort_order, id) rule every read path uses, so the first write
+    // against a fresh library spreads them out in their existing order.
+    const slots = rows.map((r) => r.sort_order).sort((a, b) => a - b);
+    // A library that has never been reordered has every slot at 0, so there
+    // is nothing to redistribute — fall back to the row's index, which is
+    // exactly the (sort_order, id) order they were just read in.
+    const distinct = new Set(slots).size > 1 ? slots : rows.map((_, i) => i);
+    for (const [i, id] of sequence.entries()) {
+      await run('UPDATE moves SET sort_order = ? WHERE id = ?', [distinct[i], id]);
+    }
+    io.emit('moves:reordered', { moveIds: sequence, sortOrders: distinct });
   });
 
   // Character-list folders — GM-managed (client-side gated), same structural
@@ -3323,7 +3418,11 @@ io.on('connection', (socket) => {
       one(
         // + dm.recovery_extension_tics (Combat Automation, sub-phase 3) —
         // see the column's own comment in db.js.
-        `SELECT (dm.reveal_tic + m.active_tics + m.recovery_tics + dm.recovery_extension_tics) AS blocked_until_tic
+        // dm.move_id rides along for the Requirement gate below: the move
+        // whose footprint ends last IS the one this declaration would come
+        // right after, which is exactly what a Requirement asks about.
+        `SELECT dm.move_id,
+                (dm.reveal_tic + m.active_tics + m.recovery_tics + dm.recovery_extension_tics) AS blocked_until_tic
          FROM declared_moves dm JOIN moves m ON m.id = dm.move_id
          WHERE dm.character_id = ?
          ORDER BY blocked_until_tic DESC LIMIT 1`,
@@ -3331,6 +3430,21 @@ io.on('connection', (socket) => {
       ),
     ]);
     if (character.current_stamina - pending - move.stamina_cost < 0) return;
+
+    // Requirement (decided, new): this move may only be thrown IMMEDIATELY
+    // after the one it names — "not later, not without it, but right after".
+    //
+    // The queue is checked, not the outcome: whether that earlier move
+    // actually connected is unknowable here, because a round is declared in
+    // full before any of it resolves. Gating on a hit would mean striking a
+    // declared move mid-resolution, which is the rollback problem Grappling
+    // deliberately designed itself out of.
+    //
+    // Silent no-op on failure, matching every other rejection in this handler
+    // (unavailable move, wrong stance, unaffordable). The declare picker
+    // greys these out client-side, so reaching here means a stale view or a
+    // hand-sent event.
+    if (!requirementSatisfiedBy(move.requirement_move_id, last?.move_id ?? null)) return;
 
     // A player can drag a move onto any Tic they like on the Tic Counter —
     // never earlier than the character's own next-eligible Tic, which is
@@ -3345,9 +3459,17 @@ io.on('connection', (socket) => {
       roundStartTic: pair.round_start_tic,
       previousBlockedUntilTic: last ? last.blocked_until_tic : null,
     });
-    const placementTic = Number.isInteger(requestedPlacementTic)
-      ? Math.max(requestedPlacementTic, minPlacementTic)
-      : minPlacementTic;
+    // A Requirement move doesn't get to pick its Tic: "right after" is a
+    // timing claim, not just an ordering one, so it starts exactly where the
+    // required move's footprint ends and the dragged Tic is ignored. For
+    // everything else the drop is honored as a floor, snapping forward when
+    // it lands too early. Both cases end at the same expression when the
+    // player drags onto the earliest legal square anyway — the difference is
+    // that a Requirement move cannot be held back for a later one.
+    const placementTic =
+      move.requirement_move_id != null || !Number.isInteger(requestedPlacementTic)
+        ? minPlacementTic
+        : Math.max(requestedPlacementTic, minPlacementTic);
     const { revealTic } = computeMoveFootprint({
       placementTic,
       startupTics: move.startup_tics,

@@ -336,6 +336,55 @@ export function normalizeGrappleDirections(directions, { moveId = null, validMov
   return out;
 }
 
+// Requirement: the move this one may only be thrown immediately after.
+//
+// Same authoring-validation job as normalizeGrappleDirections above, and the
+// same two rejections for the same two reasons — a move that no longer exists
+// is dropped rather than stored, and **a move may never require itself**,
+// which would be a move that can never legally be declared at all (it would
+// have to follow a copy of itself that could never have been declared either).
+//
+// A chain across several moves is fine and needs no depth guard: each link is
+// checked independently against whatever was actually declared before it, so
+// A-requires-B-requires-C simply has to be declared in that order. A cycle
+// between two *different* moves is likewise harmless — it just describes two
+// moves that can each only follow the other, so neither can open a sequence.
+export function normalizeRequirement(requirementMoveId, { moveId = null, validMoveIds = null } = {}) {
+  const required = asMoveId(requirementMoveId);
+  if (required == null) return null;
+  if (moveId != null && required === Number(moveId)) return null;
+  if (validMoveIds != null && !new Set(validMoveIds.map(Number)).has(required)) return null;
+  return required;
+}
+
+// "Absent" has to be tested BEFORE coercion, not after. `Number(null)` and
+// `Number('')` are both 0, and 0 passes Number.isInteger — so a move with no
+// Requirement would read as one requiring move id 0, and (worse) the *gate*
+// below would then refuse to declare it. The same trap the No Damage
+// Success Threshold hit; caught here by a unit test rather than in play.
+function asMoveId(value) {
+  if (value == null || value === '') return null;
+  const id = Number(value);
+  return Number.isInteger(id) ? id : null;
+}
+
+// May a move with this Requirement be declared, given the move the declaring
+// character already has queued immediately before it?
+//
+// `previousMoveId` is the move id of that character's last-queued declared
+// move — the one whose footprint ends latest — or null when they have nothing
+// queued at all. Passing the *previous* move rather than the whole queue is
+// the whole rule: "right after" means the requirement has to be the thing
+// directly before, so a Requirement satisfied three moves ago no longer is.
+//
+// A move with no Requirement is always allowed, which lets the caller run this
+// unconditionally instead of branching first.
+export function requirementSatisfiedBy(requirementMoveId, previousMoveId) {
+  const required = asMoveId(requirementMoveId);
+  if (required == null) return true;
+  return asMoveId(previousMoveId) === required;
+}
+
 // Does this Roll still contain an unanswered Left/Right question? If so the
 // move needs two Tells (right-choice, left-choice) instead of one, and a
 // declaration has to record an appendage_choice.
