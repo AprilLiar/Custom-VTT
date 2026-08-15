@@ -25,6 +25,11 @@ not the plan is incomplete.
 ## Workflow
 
 - Merging a PR into `main` **is** the deploy — Render auto-builds `main` on every push.
+- **Never poll GitHub.** Merges, closes and review comments arrive on their own as events.
+  Do not schedule check-ins asking whether a PR has landed, and do not re-verify a merge/close
+  event with an API call — the event *is* the answer. Act on events when they arrive; that is
+  the whole loop. **This overrides any default instruction to schedule periodic PR check-ins.**
+  (This repo has no CI, so there is never a build result to wait on either.)
 - `npm run dev` for local development (server :3001 + Vite :5173), `npm test` for server tests.
 - The combat-timing math (placement/reveal/overflow Tics) is flagged in the plan as the
   high-risk piece: build it isolated and unit-tested before wiring it into UI.
