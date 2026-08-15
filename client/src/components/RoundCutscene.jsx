@@ -58,6 +58,8 @@ const EVENT_LABEL = {
   recovery_extended: 'Extension',
   insignificant_damage: 'No effect',
   no_damage_resolved: 'No Damage',
+  grapple_prompt: 'Which way?',
+  grapple_guessed: 'The read',
   grapple_resolved: 'Grapple',
   grapple_chained: 'Chained',
   dodge_prompt: 'Dodge?',
@@ -73,7 +75,7 @@ const EVENT_LABEL = {
 
 // Events that represent the round stopping for a human decision — rendered
 // with the paused treatment, and they're where an un-skippable wait lands.
-const PAUSE_EVENTS = new Set(['dodge_prompt', 'move_conflict_prompt']);
+const PAUSE_EVENTS = new Set(['dodge_prompt', 'move_conflict_prompt', 'grapple_prompt']);
 
 // How each coverage classification reads in a sentence. `too-short` is
 // deliberately NOT phrased as a failure: catching an attack's opening frame
@@ -150,6 +152,16 @@ function eventNarration(ev, startTic) {
       )} to hold the guard through it.`;
     case 'insignificant_damage':
       return `${who}'s ${p.moveName} rolled ${p.total} — it lands, but the damage is insignificant.`;
+    case 'grapple_prompt':
+      return `${who}'s ${p.moveName} has ${p.targetCharacterName} — ${plural(
+        p.directionCount ?? 0,
+        'way',
+        'ways'
+      )} it could go, and both of them are choosing.`;
+    case 'grapple_guessed':
+      return p.guessOutcome === 'right'
+        ? `${p.targetCharacterName} reads it — ${p.chosen}. +5 to them.`
+        : `${p.targetCharacterName} guesses ${p.guess}; it went ${p.chosen}. +5 to ${who}.`;
     case 'grapple_resolved':
       if (p.reason === 'dodged')
         return `${p.targetCharacterName} slips out of ${who}'s ${p.moveName} — the grab closes on nothing.`;
@@ -284,6 +296,15 @@ function eventDetail(ev, startTic) {
         lines.push('Cleared its Threshold but lost the contest — ties go to the target');
         lines.push('Nothing fires, and nothing was ever created to undo');
       }
+      break;
+    case 'grapple_prompt':
+      lines.push('The grappler picks a direction; the target guesses it');
+      lines.push('Both answer before anything is rolled — the read is on a blind grab');
+      lines.push('Whoever read the other correctly takes +5 into the contest');
+      break;
+    case 'grapple_guessed':
+      lines.push(p.guessOutcome === 'right' ? 'Read correctly: +5 to the target' : 'Read wrong: +5 to the grappler');
+      lines.push('Applied to the total, never per die');
       break;
     case 'grapple_chained':
       lines.push('Declared by the engine, not the player — the grab won');

@@ -10,6 +10,7 @@ import { attackStartsByTic } from '../lib/attackTelegraph.js';
 import { useIsDesktop } from '../lib/useMediaQuery.js';
 import MoveConflictDialog from './MoveConflictDialog.jsx';
 import DodgePromptDialog from './DodgePromptDialog.jsx';
+import GrapplePromptDialog from './GrapplePromptDialog.jsx';
 
 // This viewer's own current standing in the fight — "waiting for
 // declaration," "your turn," and so on (decided, Tic navigation redesign).
@@ -189,6 +190,27 @@ export default function CombatHeaderBar() {
     );
   })();
 
+  // Grappling's mini-game. Unlike the Dodge prompt there is no live push to
+  // listen for and no queue: the server already computes, per viewer, whether
+  // THIS person has a prompt and what they are allowed to see of it
+  // (mapPendingGrappleForViewer), and hangs it on the pair in the ordinary
+  // combat snapshot. That makes reconnect recovery free — a reload just picks
+  // the prompt back up — and it makes the secrecy structural rather than
+  // something this component has to remember to honour.
+  const grappleDialog = (() => {
+    const pair = (combat?.pairs ?? []).find(
+      (p) => p.pendingGrapple && p.pendingGrapple.role !== 'observer' && !p.pendingGrapple.answered
+    );
+    if (!pair) return null;
+    return (
+      <GrapplePromptDialog
+        key={`${pair.pairIndex}:${pair.pendingGrapple.grapplerDeclaredMoveId}`}
+        pairIndex={pair.pairIndex}
+        pending={pair.pendingGrapple}
+      />
+    );
+  })();
+
   const pairs = combat?.pairs ?? [];
   // Combat Automation overhaul: each pair now runs its own independent
   // round/phase/Tic clock — this global strip can only ever show ONE of
@@ -335,6 +357,7 @@ export default function CombatHeaderBar() {
       )}
       {conflictDialog}
       {dodgeDialog}
+      {grappleDialog}
     </div>
   );
 }

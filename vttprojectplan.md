@@ -1424,8 +1424,9 @@ the schema and already fell through it — a pair sitting in that state would ha
 straight past its own pending decision, resolving the round twice. The guard is now
 `status !== 'running'`, so every future pause is safe by construction.
 
-**Status — G1 (groundwork), G2 (the No Damage Tag), G3 (authoring) and G4 (the contest) shipped;
-only the mini-game (G5) is left.** Same shape as the Combat Automation overhaul's own Phase A.
+**Status — COMPLETE. G1 (groundwork), G2 (the No Damage Tag), G3 (authoring), G4 (the contest)
+and G5 (the mini-game) are all shipped.** Same shape as the Combat Automation overhaul's own
+Phase A.
 - Schema: `moves.is_grappling`, `moves.success_threshold` (default 5); new `move_grapple_directions`
   and `move_resist_roll_slots` tables; `declared_moves.grapple_source_declared_move_id`;
   `combat_participants.grapple_penalty_until_tic`; a `'grapple_success'` move-interaction trigger
@@ -1501,8 +1502,33 @@ only the mini-game (G5) is left.** Same shape as the Combat Automation overhaul'
     grappler's direction is the first assigned one in cross order. The branch sits exactly where
     G5's pause goes — before any dice, so the read happens on a blind grab.
   - Cutscene gains `grapple_resolved` and `grapple_chained`.
-- **Still to build (G5):** the two-party `paused_grapple` pause, the per-viewer cross pop-up, the
-  ±5, and reconnect recovery.
+- **G5 — the mini-game, shipped.** The app's first genuinely **two-party** pause.
+  - `status = 'paused_grapple'` + `pending_grapple_json`, written where the mini-game belongs:
+    **before any dice**, so the read is made on a blind grab.
+  - Two socket events, `combat:grapple_choose` and `combat:grapple_guess`, each writing its own
+    half. **Neither resolves anything alone** — the contest waits for both, so whoever clicks
+    first learns nothing from having clicked. First answer per side wins; a second click from
+    another tab is a no-op.
+  - **Per-viewer secrecy, structural rather than remembered.** `mapPendingGrappleForViewer`
+    follows `mapDeclaredMovesForViewer`'s rule — *keep the structure, null the identity*. Both
+    sides get four entries in cross order; only the grappler gets `moveId`/`moveName`. The GM is
+    **not** privileged: whoever owns the grabbing character sees the names, everyone else sees
+    blanks, matching `isRevealedToViewer`'s own adversarial stance. A bystander gets `role:
+    'observer'` and no directions at all.
+  - **`answered` is per-viewer too.** A fighter is told whether *they* have answered, never
+    whether the other side has — knowing the opponent has moved is itself a tell.
+  - The `grapple_prompt` **round_event carries no move names**: replays are watched by everyone,
+    and a spoiler in the log would give the whole mini-game away to anyone scrubbing back. The
+    later `grapple_guessed` event names both the choice and the guess, since by then there is
+    nothing left to spoil.
+  - **Reconnect recovery is free** — the prompt rides on the ordinary combat snapshot, so a
+    reload picks it back up. That required folding it into **both** the socket emit *and*
+    `GET /api/combat`, which is what a fresh page load actually reads.
+  - `GrapplePromptDialog.jsx` mounts in `CombatHeaderBar` beside the Dodge and conflict prompts,
+    so it reaches a fighter anywhere in the app.
+  - **Bugfix found by driving it:** the pause did not stop `processTic`. `resolveAttack` must
+    return `{ paused: true }` for the Tic loop to halt, and the grapple branch returned
+    `undefined` — so the round prompted twice and then ran straight through its own pause.
 
 **Open, flagged rather than invented:** whether a chained
 move that is *itself* Grappling may open a nested mini-game (recommendation: it resolves as an
