@@ -614,6 +614,22 @@ export async function initDb() {
   // the target, so it can fail two distinct ways. Default 5 matches the
   // Half-Damage step size, which is the only other threshold in the game.
   await ensureColumn('moves', 'success_threshold', 'INTEGER NOT NULL DEFAULT 5');
+  // Requirement (decided, new). A non-mandatory pointer at another move: this
+  // move may only be declared **immediately** after that one — not later in
+  // the round, and never without it. Combo Moves and Grappling Chains are the
+  // motivating cases. Deliberately a plain nullable column rather than a child
+  // table: a move has at most one Requirement, so there is nothing to group.
+  //
+  // The self-referencing FK is load-bearing in the same way
+  // move_grapple_directions.target_move_id is: it makes deleting a move that
+  // something else requires fail loudly unless move:delete clears the inbound
+  // pointers first, rather than leaving a Requirement aimed at nothing.
+  await ensureColumn('moves', 'requirement_move_id', 'INTEGER REFERENCES moves(id)');
+  // Custom Compendium ordering (decided, new) — the position a GM dragged
+  // this move to. Rows created before this column read back as 0, and every
+  // read path orders by (sort_order, id), so an un-reordered library keeps
+  // its old id order exactly.
+  await ensureColumn('moves', 'sort_order', 'INTEGER NOT NULL DEFAULT 0');
   // Every move that was already Defensive before this column existed was
   // authored back when Block/Dodge were an in-the-moment GM call rather than
   // data on the move — migrate them all to 'block' (the fully-automatic,
