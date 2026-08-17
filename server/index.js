@@ -711,38 +711,61 @@ function mapPendingGrappleForViewer(resolution, identity, participants) {
   const owns = (characterId) => {
     if (!identity) return false;
     if (identity.role === 'player') return identity.characterId === characterId;
-    // The GM owns every NPC. A pair of NPCs never reaches this function at
-    // all (shouldRunMiniGame skips the mini-game outright), so this can only
-    // put the GM on one side of a real prompt.
+    // The GM owns every NPC. An all-NPC grapple never reaches this function —
+    // resolveGrapple auto-chains it rather than prompting — so this can only
+    // ever put the GM on one side of a real prompt.
     return participants.some((p) => p.character_id === characterId && p.character_type === 'npc');
   };
   const isGrappler = owns(pending.grapplerCharacterId);
   const isTarget = owns(pending.targetCharacterId);
+  // Which of the two sequential phases is open (decided, revised): the grappler
+  // picks their follow-up first, then — only if a read is happening — the
+  // defender guesses. Whoever is not being asked right now waits.
+  const phase = pending.phase ?? 'choice';
+  const waitingOn = phase === 'choice' ? pending.grapplerCharacterName : pending.targetCharacterName;
+
   if (!isGrappler && !isTarget) {
-    // A bystander sees that a grapple is happening, and nothing about it.
+    // A bystander sees that a grapple is happening, who it is waiting on, and
+    // nothing else. Naming the blocker is the difference between a round that
+    // looks broken and one that is visibly waiting for a person — which is
+    // exactly what a missing player's grapple looked like before.
     return {
       grapplerCharacterName: pending.grapplerCharacterName,
       targetCharacterName: pending.targetCharacterName,
       grapplerMoveName: pending.grapplerMoveName,
       role: 'observer',
-      answered: pending.grapplerChoice != null || pending.targetGuess != null,
+      phase,
+      waitingOn,
+      answered: true, // nothing is being asked of them
       directions: [],
     };
   }
+
+  const myTurn = (isGrappler && phase === 'choice') || (isTarget && phase === 'guess');
   return {
     grapplerDeclaredMoveId: pending.grapplerDeclaredMoveId,
     grapplerCharacterName: pending.grapplerCharacterName,
     targetCharacterName: pending.targetCharacterName,
     grapplerMoveName: pending.grapplerMoveName,
     role: isGrappler ? 'grappler' : 'target',
-    // Whether THIS viewer has already answered — never whether the other
-    // side has, which would be a tell in itself.
-    answered: isGrappler ? pending.grapplerChoice != null : pending.targetGuess != null,
+    phase,
+    waitingOn,
+    // `answered` now means "there is nothing for me to do", which covers both
+    // having answered and its not being my phase yet. Still never says whether
+    // the *other* side has answered — except that the defender being asked at
+    // all implies the grappler has, which sequencing makes unavoidable and
+    // which discloses nothing about *what* they picked.
+    answered: !myTurn,
     directions: pending.directions.map((d) => ({
       direction: d.direction,
-      // The target gets the shape and not the substance.
+      // The target gets the shape and not the substance: no ids, no names, and
+      // no availability either — which of the grappler's follow-ups they can
+      // afford is their business.
       moveId: isGrappler ? d.moveId : null,
       moveName: isGrappler ? d.moveName : null,
+      staminaCost: isGrappler ? d.staminaCost : null,
+      available: isGrappler ? d.available : null,
+      reason: isGrappler ? d.reason : null,
     })),
   };
 }

@@ -66,11 +66,14 @@ import {
 } from './combatDamage.js';
 import { carriesBlockTag, carriesNoDamageTag, effectiveTagNames } from './tagAutomations.js';
 import {
+  DECLINE_FOLLOW_UP,
   DIRECTIONS,
   GUESS_NONE,
   GUESS_RIGHT,
   GUESS_WRONG,
+  annotateFollowUps,
   assignedDirections,
+  chainRollBonusFor,
   shouldRunMiniGame,
   grapplePenaltyWindowEnd,
   planChainPlacement,
@@ -1084,103 +1087,171 @@ async function resolveGrapple(io, { row, pairIndex, tic, emitEvent }) {
     return;
   }
 
-  // **The mini-game runs HERE**, between the grab closing and any dice
-  // hitting the table. That order is the whole point: the read has to happen
-  // on a blind grab, not on a number both sides can already see.
-  const directionRows = assignedDirections(
-    await all(
-      `SELECT gd.direction, gd.target_move_id AS targetMoveId, m.name AS targetMoveName
-       FROM move_grapple_directions gd JOIN moves m ON m.id = gd.target_move_id
-       WHERE gd.move_id = ?`,
-      [row.moveId]
-    )
-  );
+  // **The contest happens FIRST now (decided, revised).** It used to run the
+  // direction mini-game before any dice, on the theory that the read should be
+  // made on a blind grab. In play that meant the grappler was asked to commit
+  // to a follow-up before knowing whether the grab even worked, and the ±5
+  // decided the grab itself. The order is now the one the fight actually has:
+  // find out if you have them, and only then choose what to do with them.
+  const contest = await runGrappleContest(io, { row, targetCharacterId, targetName, tic, emitEvent });
 
-  const [grapplerChar, targetChar] = await Promise.all([
-    getCharacter(row.characterId),
-    Promise.resolve(target),
-  ]);
-  const playMiniGame = shouldRunMiniGame({
-    assignedDirectionCount: directionRows.length,
-    grapplerIsNpc: grapplerChar?.character_type === 'npc',
-    targetIsNpc: targetChar?.character_type === 'npc',
-  });
-
-  if (playMiniGame) {
-    // A real two-party pause: BOTH answers are needed before anything
-    // resolves, and either may arrive first. Persisted rather than held in
-    // memory so a crash — or either fighter reloading mid-prompt — recovers,
-    // exactly as the Dodge pause does.
-    await run(
-      `UPDATE pair_round_resolutions SET status = 'paused_grapple', pending_grapple_json = ?
-       WHERE pair_index = ? AND status = 'running'`,
-      [
-        JSON.stringify({
-          grapplerDeclaredMoveId: row.declaredMoveId,
-          grapplerCharacterId: row.characterId,
-          grapplerCharacterName: row.characterName,
-          grapplerMoveName: row.moveName,
-          targetCharacterId,
-          targetCharacterName: targetName,
-          directions: directionRows.map((d) => ({
-            direction: d.direction,
-            moveId: d.targetMoveId,
-            moveName: d.targetMoveName,
-          })),
-          tic,
-          grapplerChoice: null,
-          targetGuess: null,
-        }),
-        pairIndex,
-      ]
-    );
-    // The event carries NO move names: round_events are replayed to everyone,
-    // and a replay that leaked what the grappler picked would give the whole
-    // mini-game away to anyone scrubbing back through it.
-    await emitEvent(tic, 'grapple_prompt', {
-      declaredMoveId: row.declaredMoveId,
-      characterName: row.characterName,
-      moveName: row.moveName,
-      targetCharacterName: targetName,
-      directionCount: directionRows.length,
-    });
-    await postSystemMessage(
-      io,
-      `${row.characterName}'s ${row.moveName} has ${targetName} — which way does it go?`
-    );
-    // interactions_resolved stays 0 until resumeGrapple finishes it, and the
-    // pause must stop processTic dead — see the caller.
-    return { paused: true };
+  if (!contest.success) {
+    // **Nothing to undo.** No follow-up was created and no placement shifted —
+    // a failed grab leaves the round exactly as it found it, and fires nothing.
+    await done();
+    return;
   }
 
-  await finishGrapple(io, {
-    row,
-    targetCharacterId,
-    targetName,
-    // No mini-game: the grappler simply takes the first assigned direction in
-    // cross order, and nobody gets the ±5.
-    chosen: directionRows[0] ?? null,
-    guessOutcome: GUESS_NONE,
-    miniGame: false,
-    tic,
-    emitEvent,
+  // Both of these are owed the moment the grab lands, independent of whatever
+  // follow-up comes next — so they happen before any prompt, and a chain that
+  // ends in "nothing" still leaves the hold and its interactions intact.
+  //
+  // The −2 window is set only AFTER the contest, so the Resist Roll above was
+  // unpenalised: the grab hadn't landed yet when it was rolled.
+  const penaltyUntilTic = grapplePenaltyWindowEnd({ revealTic: row.revealTic, activeTics: row.activeTics });
+  if (penaltyUntilTic != null) {
+    await run('UPDATE combat_participants SET grapple_penalty_until_tic = ? WHERE character_id = ?', [
+      penaltyUntilTic,
+      targetCharacterId,
+    ]);
+  }
+  if (await done()) {
+    await applyMoveInteractions(io, {
+      moveId: row.moveId,
+      trigger: 'grapple_success',
+      emitEvent,
+      tic,
+      selfCharacterId: row.characterId,
+      selfDeclaredMoveId: row.declaredMoveId,
+      opponentCharacterId: targetCharacterId,
+    });
+  }
+
+  const directionRows = await loadFollowUps(row.moveId);
+  if (!directionRows.length) return; // a grab that chains into nothing by design
+
+  const [grapplerChar, ownedMoveIds] = await Promise.all([
+    getCharacter(row.characterId),
+    ownedMoveIdsFor(row.characterId),
+  ]);
+  const annotated = annotateFollowUps(directionRows, {
+    ownedMoveIds,
+    currentStamina: grapplerChar?.current_stamina ?? 0,
   });
+
+  // **`shouldRunMiniGame` now gates only the GUESS**, not whether the grappler
+  // is asked. The grappler always chooses their own follow-up (that is the new
+  // flow); what a single direction or an all-NPC pair removes is the *read* —
+  // there is nothing to guess between one option, and the GM would be guessing
+  // against themselves. Without a guess there is no ±5.
+  const guessRuns = shouldRunMiniGame({
+    assignedDirectionCount: directionRows.length,
+    grapplerIsNpc: grapplerChar?.character_type === 'npc',
+    targetIsNpc: target?.character_type === 'npc',
+  });
+
+  // An all-NPC grapple is never prompted at all — the GM would be answering
+  // both halves — so it takes the first available direction and chains.
+  if (grapplerChar?.character_type === 'npc' && target?.character_type === 'npc') {
+    const auto = annotated.find((d) => d.available) ?? null;
+    if (auto) await chainFollowUp(io, { row, moveId: auto.moveId, chainRollBonus: 0, tic, emitEvent });
+    return;
+  }
+
+  await run(
+    `UPDATE pair_round_resolutions SET status = 'paused_grapple', pending_grapple_json = ?
+     WHERE pair_index = ? AND status = 'running'`,
+    [
+      JSON.stringify({
+        // 'choice' first, then 'guess' — two sequential pauses rather than one
+        // simultaneous two-party wait. The grappler answers, then the defender
+        // is asked; the defender still sees blank arrows, so sequencing costs
+        // them no information beyond knowing a pick has been made.
+        phase: 'choice',
+        guessRuns,
+        grapplerDeclaredMoveId: row.declaredMoveId,
+        grapplerCharacterId: row.characterId,
+        grapplerCharacterName: row.characterName,
+        grapplerMoveName: row.moveName,
+        targetCharacterId,
+        targetCharacterName: targetName,
+        directions: annotated.map((d) => ({
+          direction: d.direction,
+          moveId: d.moveId,
+          moveName: d.moveName,
+          staminaCost: d.staminaCost,
+          available: d.available,
+          reason: d.reason,
+        })),
+        tic,
+        grapplerChoice: null,
+        targetGuess: null,
+      }),
+      pairIndex,
+    ]
+  );
+  // Carries NO move names: round_events are replayed to everyone, and a replay
+  // that leaked the options would give the mini-game away to anyone scrubbing
+  // back through it.
+  await emitEvent(tic, 'grapple_prompt', {
+    declaredMoveId: row.declaredMoveId,
+    characterName: row.characterName,
+    moveName: row.moveName,
+    targetCharacterName: targetName,
+    directionCount: directionRows.length,
+    availableCount: annotated.filter((d) => d.available).length,
+  });
+  await postSystemMessage(
+    io,
+    `${row.characterName}'s ${row.moveName} has ${targetName} — waiting on ${row.characterName} to pick where it goes.`
+  );
+  return { paused: true };
+}
+
+// A grapple's authored follow-ups, with everything the availability rules and
+// the prompt need. Ordered by DIRECTIONS via assignedDirections, so the cross
+// always renders the same way round.
+async function loadFollowUps(grappleMoveId) {
+  return assignedDirections(
+    await all(
+      `SELECT gd.direction, gd.target_move_id AS targetMoveId, m.name AS targetMoveName,
+              m.stamina_cost AS staminaCost, m.is_default AS isDefault
+       FROM move_grapple_directions gd JOIN moves m ON m.id = gd.target_move_id
+       WHERE gd.move_id = ?`,
+      [grappleMoveId]
+    )
+  ).map((d) => ({
+    direction: d.direction,
+    moveId: d.targetMoveId,
+    moveName: d.targetMoveName,
+    staminaCost: d.staminaCost ?? 0,
+    isDefault: d.isDefault ?? 0,
+  }));
+}
+
+// Which non-Default moves this character actually has. Default moves are
+// available to everyone and are handled by annotateFollowUps' own isDefault
+// check, so they deliberately aren't listed here.
+async function ownedMoveIdsFor(characterId) {
+  return (await all('SELECT move_id FROM character_moves WHERE character_id = ?', [characterId])).map(
+    (r) => r.move_id
+  );
+}
+
+// Look the chosen move up and put it on the board. Split out because it is
+// reached three ways — an all-NPC auto-chain, a resumed pick with a guess, and
+// a resumed pick without one — and all three must place it identically.
+async function chainFollowUp(io, { row, moveId, chainRollBonus, tic, emitEvent }) {
+  const chained = await one('SELECT id, name FROM moves WHERE id = ?', [moveId]);
+  if (!chained) return null;
+  return declareChainedMove(io, { row, chained, tic, emitEvent, chainRollBonus });
 }
 
 // Everything after the mini-game: the two rolls, the contest, and what a win
 // does. Split out because it is reached two ways — straight through when no
 // mini-game runs, and from resumeGrapple once both answers are in — and the
 // contest must be identical either way.
-async function finishGrapple(io, { row, targetCharacterId, targetName, chosen, guessOutcome, miniGame, tic, emitEvent }) {
-  const done = async () => {
-    const dm = await one('SELECT interactions_resolved FROM declared_moves WHERE id = ?', [row.declaredMoveId]);
-    if (dm && !dm.interactions_resolved) {
-      await run('UPDATE declared_moves SET interactions_resolved = 1 WHERE id = ?', [row.declaredMoveId]);
-      return true;
-    }
-    return false;
-  };
-
+async function runGrappleContest(io, { row, targetCharacterId, targetName, tic, emitEvent }) {
   // Both rolls, grappler then target. The target's Resist Roll is authored on
   // the GRAPPLING move, not on anything the target declared — a headlock and
   // an ankle pick are resisted with different Stats, and which one you are in
@@ -1223,22 +1294,17 @@ async function finishGrapple(io, { row, targetCharacterId, targetName, chosen, g
       })
     : { total: 0 };
 
+  // No guessOutcome: the read hasn't happened yet and no longer touches this.
   const contest = resolveGrappleContest({
     grapplerTotal: grapplerRoll.total,
     targetTotal: targetRoll.total,
     successThreshold: row.successThreshold ?? DEFAULT_SUCCESS_THRESHOLD,
-    guessOutcome,
   });
-
-  const chained = contest.success && chosen
-    ? await one('SELECT id, name FROM moves WHERE id = ?', [chosen.targetMoveId])
-    : null;
 
   await postSystemMessage(
     io,
     contest.success
-      ? `${row.characterName}'s ${row.moveName} takes hold of ${targetName} — ${contest.grapplerFinal} against ${contest.targetFinal}.` +
-          (chained ? ` It goes straight into ${chained.name}.` : '')
+      ? `${row.characterName}'s ${row.moveName} takes hold of ${targetName} — ${contest.grapplerFinal} against ${contest.targetFinal}.`
       : contest.reason === 'below-threshold'
         ? `${row.characterName}'s ${row.moveName} never closes — rolled ${contest.grapplerFinal}, short of ${row.successThreshold ?? DEFAULT_SUCCESS_THRESHOLD}.`
         : `${targetName} muscles out of ${row.characterName}'s ${row.moveName} — ${contest.targetFinal} against ${contest.grapplerFinal}.`
@@ -1255,44 +1321,11 @@ async function finishGrapple(io, { row, targetCharacterId, targetName, chosen, g
     threshold: row.successThreshold ?? DEFAULT_SUCCESS_THRESHOLD,
     success: contest.success,
     reason: contest.reason,
-    direction: chosen?.direction ?? null,
-    chainedMoveName: chained?.name ?? null,
-    miniGame,
-    guessOutcome,
   });
 
-  if (!contest.success) {
-    // **Nothing to undo.** The chained move was never created and no
-    // placement was ever shifted, which is the whole point of only writing on
-    // a win (see planChainPlacement). A failed grab leaves the round exactly
-    // as it found it.
-    await done();
-    return;
-  }
-
-  // The −2 window. Set AFTER the contest and only on a win, so the Resist Roll
-  // above is unpenalised — the grab hadn't landed yet when it was rolled.
-  const penaltyUntilTic = grapplePenaltyWindowEnd({ revealTic: row.revealTic, activeTics: row.activeTics });
-  if (penaltyUntilTic != null) {
-    await run('UPDATE combat_participants SET grapple_penalty_until_tic = ? WHERE character_id = ?', [
-      penaltyUntilTic,
-      targetCharacterId,
-    ]);
-  }
-
-  if (chained) await declareChainedMove(io, { row, chained, tic, emitEvent });
-
-  if (await done()) {
-    await applyMoveInteractions(io, {
-      moveId: row.moveId,
-      trigger: 'grapple_success',
-      emitEvent,
-      tic,
-      selfCharacterId: row.characterId,
-      selfDeclaredMoveId: row.declaredMoveId,
-      opponentCharacterId: targetCharacterId,
-    });
-  }
+  // Direction, follow-up and ±5 are deliberately absent from this event: none
+  // of them exist yet. They arrive on grapple_guessed / grapple_chained.
+  return contest;
 }
 
 // Puts the won direction's move into the grappler's own queue, immediately
@@ -1306,12 +1339,36 @@ async function finishGrapple(io, { row, targetCharacterId, targetName, chosen, g
 // is terminal: there is no half-created move to roll back and no original
 // placement to restore. Stamina is charged now rather than committed and
 // refunded, for the same reason — there is no failure path left to refund on.
-async function declareChainedMove(io, { row, chained, tic, emitEvent }) {
+async function declareChainedMove(io, { row, chained, tic, emitEvent, chainRollBonus = 0 }) {
   const move = await one(
     'SELECT startup_tics, active_tics, recovery_tics, stamina_cost, attack_targets FROM moves WHERE id = ?',
     [chained.id]
   );
-  if (!move) return;
+  if (!move) return null;
+
+  // **The chain ends by itself when it cannot be paid for (decided.)** Checked
+  // here rather than only at the prompt, because the prompt's affordability
+  // read happens before this move's own Stamina has been charged — in a long
+  // chain each link spends, so the last affordable-looking link can stop being
+  // affordable by the time it is reached.
+  const grappler = await getCharacter(row.characterId);
+  const cost = move.stamina_cost ?? 0;
+  if (cost > 0 && (grappler?.current_stamina ?? 0) - cost < 0) {
+    await postSystemMessage(
+      io,
+      `${row.characterName} has hold of them but nothing left to spend — ${chained.name} never comes.`
+    );
+    await emitEvent(tic, 'grapple_chain_ended', {
+      sourceDeclaredMoveId: row.declaredMoveId,
+      characterId: row.characterId,
+      characterName: row.characterName,
+      moveName: chained.name,
+      reason: 'unaffordable',
+      staminaNeeded: cost,
+      staminaHeld: grappler?.current_stamina ?? 0,
+    });
+    return null;
+  }
 
   const footprint = move.startup_tics + move.active_tics + move.recovery_tics;
   const grappleEnd = row.revealTic + row.activeTics; // Recovery is the grappler's own to spend
@@ -1354,8 +1411,8 @@ async function declareChainedMove(io, { row, chained, tic, emitEvent }) {
     `INSERT INTO declared_moves
        (character_id, move_id, round_number, placement_tic, reveal_tic, queue_order,
         stamina_committed, reveal_posted, interactions_resolved, effective_attack_targets,
-        grapple_source_declared_move_id)
-     VALUES (?, ?, ?, ?, ?, ?, 1, 0, 0, ?, ?)`,
+        grapple_source_declared_move_id, chain_roll_bonus)
+     VALUES (?, ?, ?, ?, ?, ?, 1, 0, 0, ?, ?, ?)`,
     [
       row.characterId,
       chained.id,
@@ -1365,6 +1422,7 @@ async function declareChainedMove(io, { row, chained, tic, emitEvent }) {
       (pairRound?.queueOrder ?? 0) + 1,
       move.attack_targets ?? '[]',
       row.declaredMoveId,
+      chainRollBonus,
     ]
   );
 
@@ -1385,7 +1443,13 @@ async function declareChainedMove(io, { row, chained, tic, emitEvent }) {
     placementTic,
     revealTic: placementTic + move.startup_tics,
     shifted: shifted.length,
+    chainRollBonus,
   });
+  // The declaration is now on the board and everyone sees it as a Tell, the
+  // same as any declared move — the only difference is that it arrived
+  // mid-resolution rather than during Declaration. Returned so the caller can
+  // tell "chained" from "chain ended".
+  return { declaredMoveId: Number(result.lastInsertRowid), placementTic };
 }
 
 // Which character on the other side this move is coming for. Shared by the
@@ -1484,7 +1548,14 @@ async function resolveAttack(io, { row, pairIndex, tic, emitEvent }) {
       result: rollDie(d.current_size) + d.bonus + mod,
     }));
   }
-  const total = dice.reduce((sum, d) => sum + d.result, 0);
+  // **The chain swing is TOTAL-level** — added once, here, to the summed roll,
+  // never folded into `mod` above. `mod` is applied to every die separately, so
+  // a ±5 in there would pay out per die and a three-die follow-up would be
+  // worth ±15. Non-zero only on a move the engine declared retroactively off a
+  // won grapple; every ordinary declared move carries 0 (see
+  // declared_moves.chain_roll_bonus).
+  const chainRollBonus = row.chainRollBonus ?? 0;
+  const total = dice.reduce((sum, d) => sum + d.result, 0) + chainRollBonus;
   await logRoll(io, { characterId: row.characterId, characterName: row.characterName, modifier: mod, dice });
   // characterName rides along for the same §0 reason every other payload
   // carries one: the cutscene names the roller in its own sentence, and a
@@ -1497,6 +1568,10 @@ async function resolveAttack(io, { row, pairIndex, tic, emitEvent }) {
     dice,
     modifier: mod,
     total,
+    // Surfaced so the cutscene can show the swing as its own line rather than
+    // leaving the sum looking like arithmetic that doesn't add up — the same
+    // defect the Reasons to Fight modifier had before it was passed through.
+    chainRollBonus,
   });
 
   // A sub-5 roll is Insignificant Damage, and that is decided at the END of
@@ -2104,6 +2179,7 @@ async function processTic(io, { pairIndex, tic, emitEvent, resolutionId }) {
     `SELECT dm.id AS declaredMoveId, dm.character_id AS characterId, dm.move_id AS moveId,
             dm.placement_tic AS placementTic, dm.reveal_tic AS revealTic,
             dm.appendage_choice AS appendageChoice, dm.effective_attack_targets AS effectiveAttackTargets,
+            dm.chain_roll_bonus AS chainRollBonus,
             m.name AS moveName, m.active_tics AS activeTics, m.roll_type AS rollType,
             m.is_defensive AS isDefensive, m.is_grappling AS isGrappling,
             m.success_threshold AS successThreshold,
@@ -2914,16 +2990,24 @@ async function resumeAllPairsOnBoot(io) {
   }
 }
 
-// One half of the grapple mini-game's answer, from whoever owns that side.
-// **Resolution proceeds only when BOTH halves are in** — either may arrive
-// first, and both prompts go out at the same moment, so the order two people
-// happen to click in leaks nothing about what either of them chose.
+// One answer in the grapple's follow-up sequence, from whoever owns that side.
 //
-// Ownership is checked by the caller (server/index.js), which is the only
-// place that knows who a socket is. A stale or duplicate answer is a no-op:
-// the pause must still be open, and it must be the same grapple.
+// **Two sequential phases, not one simultaneous wait (decided, revised).** The
+// grappler is asked first — the grab has already landed, so what is left is
+// their choice of follow-up — and only then, if a read is happening at all, is
+// the defender asked to guess. `ready` means "resumeGrapple should run now",
+// which is true after the choice when no guess is coming and after the guess
+// when one was.
+//
+// Ownership is checked by the caller (server/index.js), which is the only place
+// that knows who a socket is. A stale or duplicate answer is a no-op: the pause
+// must still be open, in the right phase, and for the same grapple.
 async function answerGrapple(pairIndex, { half, direction, grapplerDeclaredMoveId }, io) {
-  if (!DIRECTIONS.includes(direction)) return { pending: null, ready: false };
+  // DECLINE_FOLLOW_UP is the grappler's explicit "take nothing" — a real answer
+  // rather than a missing one, so it is accepted where a direction would be.
+  if (direction !== DECLINE_FOLLOW_UP && !DIRECTIONS.includes(direction)) {
+    return { pending: null, ready: false };
+  }
   const resolution = await one(
     `SELECT * FROM pair_round_resolutions WHERE pair_index = ? AND status = 'paused_grapple'`,
     [pairIndex]
@@ -2933,35 +3017,54 @@ async function answerGrapple(pairIndex, { half, direction, grapplerDeclaredMoveI
   if (grapplerDeclaredMoveId != null && pending.grapplerDeclaredMoveId !== grapplerDeclaredMoveId) {
     return { pending: null, ready: false };
   }
-  // The grappler may only pick a direction that actually carries a move; the
-  // target may guess any of the four, including an empty one — guessing at a
-  // direction the grab was never going to take is a wrong guess, not an
-  // invalid input.
-  if (half === 'choice' && !pending.directions.some((d) => d.direction === direction)) {
-    return { pending: null, ready: false };
+  // An answer for the phase that isn't open is ignored outright — this is what
+  // stops a defender's guess arriving before the grappler has even picked.
+  const phase = pending.phase ?? 'choice';
+  if ((half === 'choice') !== (phase === 'choice')) return { pending, ready: false };
+
+  // The grappler may only take a direction that carries a move they can
+  // actually use; the target may guess any of the four, including an empty one
+  // — guessing at a direction the grab was never going to take is a wrong
+  // guess, not invalid input.
+  if (half === 'choice' && direction !== DECLINE_FOLLOW_UP) {
+    const picked = pending.directions.find((d) => d.direction === direction);
+    if (!picked || !picked.available) return { pending, ready: false };
   }
   // First answer wins: a second click from another tab must not overwrite a
-  // choice already made and (possibly) already acted on.
+  // choice already made and possibly already acted on.
   if (half === 'choice' && pending.grapplerChoice != null) return { pending, ready: false };
   if (half === 'guess' && pending.targetGuess != null) return { pending, ready: false };
 
-  if (half === 'choice') pending.grapplerChoice = direction;
-  else pending.targetGuess = direction;
+  if (half === 'choice') {
+    pending.grapplerChoice = direction;
+    // A read only happens if there was something to read AND the grappler
+    // actually took a direction. Declining ends it here.
+    const guessComing = pending.guessRuns && direction !== DECLINE_FOLLOW_UP;
+    pending.phase = guessComing ? 'guess' : 'done';
+    await run('UPDATE pair_round_resolutions SET pending_grapple_json = ? WHERE id = ?', [
+      JSON.stringify(pending),
+      resolution.id,
+    ]);
+    if (guessComing) {
+      await postSystemMessage(
+        io,
+        `${pending.grapplerCharacterName} has chosen. ${pending.targetCharacterName} — which way is it going?`
+      );
+    }
+    return { pending, ready: !guessComing, resolutionId: resolution.id, roundNumber: resolution.round_number };
+  }
 
+  pending.targetGuess = direction;
+  pending.phase = 'done';
   await run('UPDATE pair_round_resolutions SET pending_grapple_json = ? WHERE id = ?', [
     JSON.stringify(pending),
     resolution.id,
   ]);
-  return {
-    pending,
-    ready: pending.grapplerChoice != null && pending.targetGuess != null,
-    resolutionId: resolution.id,
-    roundNumber: resolution.round_number,
-  };
+  return { pending, ready: true, resolutionId: resolution.id, roundNumber: resolution.round_number };
 }
 
-// Both answers are in — score the read and run the contest that was waiting
-// on it.
+// The sequence is answered — score the read if there was one, put the follow-up
+// on the board, and let the round carry on.
 async function resumeGrapple(pairIndex, io) {
   const resolution = await one(
     `SELECT * FROM pair_round_resolutions WHERE pair_index = ? AND status = 'paused_grapple'`,
@@ -2969,54 +3072,73 @@ async function resumeGrapple(pairIndex, io) {
   );
   if (!resolution?.pending_grapple_json) return;
   const pending = JSON.parse(resolution.pending_grapple_json);
-  if (pending.grapplerChoice == null || pending.targetGuess == null) return;
+  if (pending.grapplerChoice == null) return;
+  if (pending.guessRuns && pending.grapplerChoice !== DECLINE_FOLLOW_UP && pending.targetGuess == null) return;
 
   const row = await loadResolutionRow(pending.grapplerDeclaredMoveId);
-  if (!row) {
-    // The grabbing move vanished from under the pause. Clear it so the pair
-    // isn't stuck forever; there is nothing left to resolve.
-    await run(
-      `UPDATE pair_round_resolutions SET status = 'running', pending_grapple_json = NULL WHERE id = ?`,
-      [resolution.id]
-    );
-    await advancePairResolution(pairIndex, io);
-    return;
-  }
-
-  const guessOutcome = pending.targetGuess === pending.grapplerChoice ? GUESS_RIGHT : GUESS_WRONG;
-  const chosen = pending.directions.find((d) => d.direction === pending.grapplerChoice);
-
   const emitEvent = await makeEmitEvent(io, resolution, pairIndex, resolution.round_number);
   await run(
     `UPDATE pair_round_resolutions SET status = 'running', pending_grapple_json = NULL WHERE id = ?`,
     [resolution.id]
   );
-  await postSystemMessage(
-    io,
-    guessOutcome === GUESS_RIGHT
-      ? `${pending.targetCharacterName} reads it — ${pending.grapplerChoice}. +5 to them.`
-      : `${pending.targetCharacterName} guesses ${pending.targetGuess}; it went ${pending.grapplerChoice}. +5 to ${pending.grapplerCharacterName}.`
-  );
-  await emitEvent(pending.tic, 'grapple_guessed', {
-    declaredMoveId: pending.grapplerDeclaredMoveId,
-    characterName: pending.grapplerCharacterName,
-    targetCharacterName: pending.targetCharacterName,
-    // Safe to replay now: the mini-game is over, so nothing is left to spoil.
-    chosen: pending.grapplerChoice,
-    guess: pending.targetGuess,
-    guessOutcome,
-  });
+  if (!row) {
+    // The grabbing move vanished from under the pause. Nothing left to chain
+    // from; clearing the pause above is what keeps the pair from sticking.
+    await advancePairResolution(pairIndex, io);
+    return;
+  }
 
-  await finishGrapple(io, {
-    row,
-    targetCharacterId: pending.targetCharacterId,
-    targetName: pending.targetCharacterName,
-    chosen: chosen ? { direction: chosen.direction, targetMoveId: chosen.moveId } : null,
-    guessOutcome,
-    miniGame: true,
-    tic: pending.tic,
-    emitEvent,
-  });
+  if (pending.grapplerChoice === DECLINE_FOLLOW_UP) {
+    await postSystemMessage(
+      io,
+      `${pending.grapplerCharacterName} holds ${pending.targetCharacterName} and takes it no further.`
+    );
+    await emitEvent(pending.tic, 'grapple_chain_ended', {
+      sourceDeclaredMoveId: pending.grapplerDeclaredMoveId,
+      characterId: pending.grapplerCharacterId,
+      characterName: pending.grapplerCharacterName,
+      reason: 'declined',
+    });
+    await advancePairResolution(pairIndex, io);
+    return;
+  }
+
+  const guessOutcome = !pending.guessRuns
+    ? GUESS_NONE
+    : pending.targetGuess === pending.grapplerChoice
+      ? GUESS_RIGHT
+      : GUESS_WRONG;
+  const chainRollBonus = chainRollBonusFor(guessOutcome);
+  const chosen = pending.directions.find((d) => d.direction === pending.grapplerChoice);
+
+  if (guessOutcome !== GUESS_NONE) {
+    await postSystemMessage(
+      io,
+      guessOutcome === GUESS_RIGHT
+        ? `${pending.targetCharacterName} reads it — ${pending.grapplerChoice}. −5 on what comes next.`
+        : `${pending.targetCharacterName} guesses ${pending.targetGuess}; it went ${pending.grapplerChoice}. +5 on what comes next.`
+    );
+    await emitEvent(pending.tic, 'grapple_guessed', {
+      declaredMoveId: pending.grapplerDeclaredMoveId,
+      characterName: pending.grapplerCharacterName,
+      targetCharacterName: pending.targetCharacterName,
+      // Safe to replay now: the read is over, so nothing is left to spoil.
+      chosen: pending.grapplerChoice,
+      guess: pending.targetGuess,
+      guessOutcome,
+      chainRollBonus,
+    });
+  }
+
+  if (chosen) {
+    await chainFollowUp(io, {
+      row,
+      moveId: chosen.moveId,
+      chainRollBonus,
+      tic: pending.tic,
+      emitEvent,
+    });
+  }
 
   await advancePairResolution(pairIndex, io);
 }
@@ -3029,6 +3151,7 @@ async function loadResolutionRow(declaredMoveId) {
     `SELECT dm.id AS declaredMoveId, dm.character_id AS characterId, dm.move_id AS moveId,
             dm.placement_tic AS placementTic, dm.reveal_tic AS revealTic,
             dm.appendage_choice AS appendageChoice, dm.effective_attack_targets AS effectiveAttackTargets,
+            dm.chain_roll_bonus AS chainRollBonus,
             m.name AS moveName, m.active_tics AS activeTics, m.roll_type AS rollType,
             m.is_defensive AS isDefensive, m.is_grappling AS isGrappling,
             m.success_threshold AS successThreshold,

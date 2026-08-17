@@ -2,26 +2,36 @@ import { useState } from 'react';
 import { socket } from '../socket.js';
 import DialogShell from './DialogShell.jsx';
 
-// Grappling's direction mini-game — the one moment in a fight where you read
+// Grappling's follow-up sequence — the one moment in a fight where you read
 // your opponent live rather than guessing in advance at declaration time.
 //
-// **The same cross, seen two ways.** The grappler gets the move names and
-// picks where the grab goes. The target gets four arrows in the same places
-// with the names stripped, and guesses which one it went. That asymmetry is
-// enforced server-side (mapPendingGrappleForViewer) — this component only
-// renders whatever it was given, so a target who opens devtools finds
-// nulls, not names.
+// **Two phases, in order (decided, revised).** The grab has already been
+// settled by the time this appears: what is left is the grappler choosing what
+// to do with the hold, and then — only if there was more than one way it could
+// go — the defender guessing which way it went. So exactly one side is being
+// asked at any moment, and the other is told who they are waiting on.
 //
-// Both prompts appear at the same moment and neither resolves anything on
-// its own: the contest waits for both answers, so clicking first tells the
-// other side nothing.
+// **The same cross, seen two ways.** The grappler gets the move names, their
+// Stamina costs, and which ones they cannot actually take. The defender gets
+// four arrows in the same places with all of that stripped. That asymmetry is
+// enforced server-side (mapPendingGrappleForViewer) — this component only
+// renders what it was given, so a defender who opens devtools finds nulls.
 
 const CROSS = ['blank', 'up', 'blank', 'left', 'centre', 'right', 'blank', 'down', 'blank'];
 const GLYPH = { up: '↑', down: '↓', left: '←', right: '→' };
+// Must match DECLINE_FOLLOW_UP in server/grappleLogic.js — deliberately not
+// 'none', which is already the "no read happened" outcome.
+const DECLINE = 'decline';
+
+const WHY_NOT = {
+  'not-owned': 'not learned',
+  unaffordable: 'no Stamina',
+};
 
 export default function GrapplePromptDialog({ pairIndex, pending, onAnswered }) {
   const [sent, setSent] = useState(null);
   const isGrappler = pending.role === 'grappler';
+  const choosing = pending.phase === 'choice';
   const byDirection = new Map((pending.directions ?? []).map((d) => [d.direction, d]));
 
   const answer = (direction) => {
@@ -37,12 +47,30 @@ export default function GrapplePromptDialog({ pairIndex, pending, onAnswered }) 
 
   const waiting = sent != null || pending.answered;
 
+  // Nothing is being asked of this viewer — either they already answered or it
+  // is not their phase. Naming who holds it up is the difference between a
+  // round that looks broken and one that is visibly waiting on a person.
+  if (waiting) {
+    return (
+      <DialogShell
+        title="The hold is on"
+        variant="fullscreen"
+        dismissible={false}
+        maxWidth="max-w-md"
+        onClose={() => {}}
+      >
+        <p className="text-center text-sm text-zinc-400">
+          {sent != null ? 'Answer in. ' : ''}
+          Waiting on <b className="text-amber-300">{pending.waitingOn}</b> to{' '}
+          {choosing ? 'choose where the grab goes' : 'guess which way it went'}.
+        </p>
+      </DialogShell>
+    );
+  }
+
   return (
     <DialogShell
-      title={isGrappler ? 'Which way?' : 'Which way is it going?'}
-      // `fullscreen`, not `theater`: theater fills the viewport on every size
-      // because the cutscene is something you sit and watch. This is a prompt
-      // you answer in two seconds, and it looked stranded in all that space.
+      title={isGrappler ? 'You have them — where does it go?' : 'Which way is it going?'}
       variant="fullscreen"
       dismissible={false}
       maxWidth="max-w-xl"
@@ -52,14 +80,16 @@ export default function GrapplePromptDialog({ pairIndex, pending, onAnswered }) 
         {isGrappler ? (
           <>
             <b className="text-amber-300">{pending.grapplerMoveName}</b> has{' '}
-            {pending.targetCharacterName}. Pick where it goes — they are guessing at
-            the same moment.
+            {pending.targetCharacterName}. Pick the follow-up — it goes on the timeline
+            straight after the grab, and they will get one guess at it.
           </>
         ) : (
           <>
             <b className="text-amber-300">{pending.grapplerCharacterName}</b> has hold of you
-            with {pending.grapplerMoveName}. Guess which way it goes. Read it right
-            and you get <b className="text-emerald-300">+5</b>; read it wrong and they do.
+            with {pending.grapplerMoveName}, and has already chosen. Guess which way it
+            goes: read it right and what comes next takes{' '}
+            <b className="text-emerald-300">−5</b>; read it wrong and it takes{' '}
+            <b className="text-red-300">+5</b>.
           </>
         )}
       </p>
@@ -73,35 +103,51 @@ export default function GrapplePromptDialog({ pairIndex, pending, onAnswered }) 
                 key={i}
                 className="flex items-center justify-center panel-cut-sm border border-dashed border-zinc-700 px-2 py-4 text-center text-[11px] uppercase leading-tight text-zinc-500"
               >
-                the grab
+                the hold
               </div>
             );
           }
           const assigned = byDirection.get(cell);
-          // The grappler may only send the grab somewhere it can actually go;
-          // the target may guess ANY of the four, including one that carries
-          // nothing — guessing at an empty direction is a wrong guess, not an
-          // invalid move.
-          const disabled = waiting || (isGrappler && !assigned);
+          // The grappler may only take a direction that carries a move they can
+          // actually use; the defender may guess ANY of the four, including one
+          // that carries nothing — guessing at an empty direction is a wrong
+          // guess, not an invalid move.
+          const usable = isGrappler ? Boolean(assigned?.available) : true;
+          const disabled = !usable;
           return (
             <button
               key={i}
               type="button"
               disabled={disabled}
               onClick={() => answer(cell)}
+              title={
+                isGrappler && assigned && !assigned.available
+                  ? `${assigned.moveName} — ${WHY_NOT[assigned.reason] ?? 'unavailable'}`
+                  : undefined
+              }
               className={`flex min-h-24 flex-col items-center justify-center gap-1 panel-cut-sm border px-2 py-3 text-center transition-colors ${
-                sent === cell
-                  ? 'border-amber-400 bg-amber-800/40 text-amber-100'
-                  : disabled
-                    ? 'border-zinc-800 bg-zinc-900 text-zinc-700'
-                    : 'border-zinc-600 bg-zinc-800 text-zinc-200 hover:border-amber-500 hover:bg-amber-900/25'
+                disabled
+                  ? 'border-zinc-800 bg-zinc-900 text-zinc-700'
+                  : 'border-zinc-600 bg-zinc-800 text-zinc-200 hover:border-amber-500 hover:bg-amber-900/25'
               }`}
             >
               <span className="text-2xl leading-none">{GLYPH[cell]}</span>
               {isGrappler ? (
-                <span className="line-clamp-2 text-[11px] leading-tight">
-                  {assigned?.moveName ?? '—'}
-                </span>
+                <>
+                  <span className="line-clamp-2 text-[11px] leading-tight">
+                    {assigned?.moveName ?? '—'}
+                  </span>
+                  {assigned && !assigned.available && (
+                    <span className="text-[10px] uppercase text-red-400/80">
+                      {WHY_NOT[assigned.reason] ?? 'unavailable'}
+                    </span>
+                  )}
+                  {assigned?.available && assigned.staminaCost ? (
+                    <span className="text-[10px] text-zinc-500">
+                      {assigned.staminaCost > 0 ? `-${assigned.staminaCost}` : `+${-assigned.staminaCost}`} Stamina
+                    </span>
+                  ) : null}
+                </>
               ) : (
                 // The app's established "something is there, but not what"
                 // grammar: the shape stays, the substance is greyed out.
@@ -118,12 +164,27 @@ export default function GrapplePromptDialog({ pairIndex, pending, onAnswered }) 
         })}
       </div>
 
+      {isGrappler && (
+        // Always offered, even when nothing is takeable — which is the whole
+        // point of still showing the cross in that case (decided): the grappler
+        // gets to see what they could not afford rather than being silently
+        // skipped. The hold and its On Successful Grapple already happened, so
+        // declining costs nothing.
+        <div className="mt-4 text-center">
+          <button
+            type="button"
+            onClick={() => answer(DECLINE)}
+            className="panel-cut-sm border border-zinc-700 bg-zinc-800 px-4 py-2 text-sm text-zinc-300 hover:border-zinc-500"
+          >
+            Take it no further
+          </button>
+        </div>
+      )}
+
       <p className="mt-4 text-center text-xs text-zinc-500">
-        {waiting
-          ? 'Answer in. Waiting for the other side…'
-          : isGrappler
-            ? 'Only directions carrying a move can be picked.'
-            : 'Any direction can be guessed — even an empty one.'}
+        {isGrappler
+          ? 'Greyed directions carry a move you have not learned or cannot pay for.'
+          : 'Any direction can be guessed — even an empty one.'}
       </p>
     </DialogShell>
   );

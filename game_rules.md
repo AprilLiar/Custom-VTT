@@ -246,10 +246,30 @@ have been plenty.
 Most moves try to hurt you. A **Grappling** move tries to *take* you.
 
 A grappling move doesn't land or miss. It opens a **four-way branch**: up, down,
-left, right, each of which can carry another move. The grappler picks one of
-them in secret; the target guesses which. Whoever read the other correctly takes
-**+5** into the contest that follows. Then the grab is settled — and if it wins,
-the move on the chosen direction happens *immediately*.
+left, right, each of which can carry another move.
+
+**You declare only the grab.** Nothing else. What follows it is decided during
+the fight, not written down beforehand, and it happens in this order:
+
+1. **The grab is settled first.** The grappler rolls, the target rolls their
+   **Resist Roll**, and the grab has to clear its Success Threshold *and* beat
+   them. Fail and nothing happens at all.
+2. **The grappler chooses the follow-up.** Only now, holding them, and only from
+   the moves on the four arrows. Anything they have not learned or cannot pay
+   for is shown but greyed out, and they may always decline and simply keep the
+   hold.
+3. **The target guesses which way it went** — if there was more than one way it
+   could have gone. Read it right and the follow-up takes **−5**; read it wrong
+   and it takes **+5**. The grab itself is already settled, so the read decides
+   how well the follow-up lands, not whether you were caught.
+4. **The follow-up appears on the timeline**, right after the grab, as a Tell
+   everyone can see. It costs its Stamina like any move, and resolves on its own
+   Tic. If it runs past the round's end it simply carries into the next one.
+
+**It chains as far as you can pay for.** If a follow-up is itself a grappling
+move, the whole sequence starts again from step 1 — grab, choose, guess, declare
+— with no limit but Stamina and the clock. Run out of Stamina and the chain
+ends there; the hold you already have stays.
 
 It is the one place in a fight where you read your opponent **during** the
 exchange rather than before it.

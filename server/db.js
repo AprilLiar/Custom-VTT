@@ -1171,6 +1171,19 @@ export async function initDb() {
   // nothing else in the schema remembers where a move used to sit. Not
   // creating the row is strictly safer than creating one and restoring it.
   await ensureColumn('declared_moves', 'grapple_source_declared_move_id', 'INTEGER');
+  // The **total-level** bonus a retroactively declared follow-up carries — the
+  // ±5 from whether the defender read the grapple's direction right (decided,
+  // revised: the ±5 now lands on the *follow-up's* roll rather than on the
+  // grapple contest, because the contest is settled before anyone is asked
+  // which way it went).
+  //
+  // Stored on the declaration rather than recomputed at roll time because by
+  // the time this move resolves — possibly in a later round, since a chain
+  // overflows like any other move — the pause that produced the number is long
+  // gone. Applied to the summed total, never folded into the per-die modifier:
+  // every other flat bonus in the game multiplies across dice, and a +5 in
+  // `mod` on a three-die Roll would quietly be worth +15.
+  await ensureColumn('declared_moves', 'chain_roll_bonus', 'INTEGER NOT NULL DEFAULT 0');
   await ensureColumn(
     'declared_moves',
     'attack_target_source',
