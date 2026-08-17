@@ -457,11 +457,14 @@ test('Insignificant Damage: a sub-5 attack lands nothing, says so, and is NOT a 
   assert.equal(dm.interactions_resolved, 1);
 });
 
-test("Miss: a Full Dodge fires the attacker's On Miss trigger, a Partial one fires On Block", async () => {
-  // Both halves of the new definition, driven off the same Dodge scenario the
-  // pause tests use — the only difference is whether the defender's roll is
-  // strong enough to zero the damage.
-  const scenario = async ({ pairIndex, defenderHandSize, expectedTrigger }) => {
+test('Dodge is binary: a successful Dodge always fully evades and always fires On Miss', async () => {
+  // Rewritten (decided, revised): Dodge used to run Block's opposed math and
+  // could come out "Partial" — damage through, and the attacker's **On Block**
+  // trigger instead of On Miss. There is no third outcome any more, so the
+  // sharpest version of this test runs the SAME scenario at two wildly
+  // different defender die sizes and asserts the result is identical: the
+  // dodger's dice cannot matter, because they are no longer rolled.
+  const scenario = async ({ pairIndex, defenderHandSize }) => {
     const attacker = await createCharacter(`MissDodge Attacker ${pairIndex}`);
     const defender = await createCharacter(`MissDodge Defender ${pairIndex}`);
     await setDieSize(attacker, 'Skull', 12);
@@ -472,6 +475,12 @@ test("Miss: a Full Dodge fires the attacker's On Miss trigger, a Partial one fir
       activeTics: 1,
       recoveryTics: 1,
       rollSlots: ['Skull'],
+      // BOTH triggers wired, so "fires miss and not block" is observable in
+      // automation_fired rather than inferred from interactions_resolved.
+      interactions: [
+        { trigger: 'miss', text: 'whiffed', automations: [{ type: 'self_stamina_loss', amount: 1 }] },
+        { trigger: 'block', text: 'guarded', automations: [{ type: 'self_stamina_loss', amount: 1 }] },
+      ],
     });
     const slip = await createMove({
       name: `MD Slip ${pairIndex}`,
@@ -512,27 +521,37 @@ test("Miss: a Full Dodge fires the attacker's On Miss trigger, a Partial one fir
     return { attackerDM, triggers: fired.map((e) => JSON.parse(e.payload).trigger) };
   };
 
-  // A matching d12 zeroes the damage entirely: fully evaded, so a Miss.
-  const full = await scenario({ pairIndex: 231, defenderHandSize: 12, expectedTrigger: 'miss' });
-  const damageAfterFull = await all(
-    `SELECT type FROM round_events WHERE pair_index = 231 AND type = 'damage_applied'`
-  );
-  assert.equal(damageAfterFull.length, 0, 'a Full Dodge lands no damage');
+  // A big defender die and a tiny one must produce the same outcome. Under
+  // the old opposed math the d4 case was the "Partial Dodge" that leaked
+  // damage and fired On Block; it is now indistinguishable from the d12.
+  const strong = await scenario({ pairIndex: 231, defenderHandSize: 12 });
+  const weak = await scenario({ pairIndex: 232, defenderHandSize: 4 });
 
-  // A weaker d4 lets damage through: not evaded, so not a Miss.
-  const partial = await scenario({ pairIndex: 232, defenderHandSize: 4, expectedTrigger: 'block' });
-  const damageAfterPartial = await all(
-    `SELECT type FROM round_events WHERE pair_index = 232 AND type = 'damage_applied'`
-  );
-  assert.ok(damageAfterPartial.length > 0, 'a Partial Dodge still lands damage');
-
-  // applyMoveInteractions only posts an automation_fired event when the move
-  // actually has something wired to that trigger, so assert on the stored
-  // declared move instead: both are resolved exactly once either way.
-  for (const { attackerDM } of [full, partial]) {
-    const dm = await one('SELECT interactions_resolved FROM declared_moves WHERE id = ?', [attackerDM]);
-    assert.equal(dm.interactions_resolved, 1);
+  for (const [label, pairIndex, result] of [
+    ['a well-rolled dodge', 231, strong],
+    ['a dodge by someone with a d4', 232, weak],
+  ]) {
+    const damage = await all(
+      `SELECT type FROM round_events WHERE pair_index = ? AND type = 'damage_applied'`,
+      [pairIndex]
+    );
+    assert.equal(damage.length, 0, `${label} lands no damage at all`);
+    assert.deepEqual(
+      result.triggers.filter((t) => t === 'miss' || t === 'block'),
+      ['miss'],
+      `${label} fires On Miss and never On Block`
+    );
+    const dm = await one('SELECT interactions_resolved FROM declared_moves WHERE id = ?', [result.attackerDM]);
+    assert.equal(dm.interactions_resolved, 1, `${label} resolves the attack exactly once`);
   }
+
+  // And the dodger takes nothing — the old Partial path applied damage to the
+  // defender's OWN Stat, which is the half that showed up in play as "a
+  // successful dodge still hurt me".
+  const defenderDamage = await all(
+    `SELECT payload FROM round_events WHERE pair_index IN (231, 232) AND type = 'damage_applied'`
+  );
+  assert.equal(defenderDamage.length, 0);
 });
 
 test('Interruption: taking a Hit while still in Startup disrupts the target\'s own declared move', async () => {
@@ -695,12 +714,17 @@ test('Dodge resume: Successful Full Dodge deals no damage anywhere', async () =>
   assert.equal(resolution.status, 'complete');
 });
 
-test('Dodge resume: Successful Partial Dodge still lands reduced damage on the defender\'s own Stat', async () => {
+test('Dodge resume: a weak dodger takes NOTHING — there is no Partial Dodge', async () => {
+  // Inverted from what it asserted before (decided, revised). This exact
+  // fixture — a d12 attack against a d4 dodger — was the "Partial Dodge" that
+  // shaved the defender's own die despite the GM having called the dodge
+  // successful. Kept as the regression guard for that behaviour being gone,
+  // rather than deleted, because it is the precise shape the bug had.
   const pairIndex = 202;
   const attacker = await createCharacter('DodgePartial Attacker');
   const defender = await createCharacter('DodgePartial Defender');
   await setDieSize(attacker, 'Skull', 12);
-  await setDieSize(defender, 'Left Hand', 4); // weaker -> net 8 -> 1 step -> Partial
+  await setDieSize(defender, 'Left Hand', 4); // would have been net 8 -> 1 step
   const punch = await createMove({ name: 'DPa Punch', startupTics: 1, activeTics: 2, recoveryTics: 1, rollSlots: ['Skull'] });
   const dodge = await createMove({
     name: 'DPa Dodge',
@@ -722,8 +746,13 @@ test('Dodge resume: Successful Partial Dodge still lands reduced damage on the d
   await resolveDodge(pairIndex, { outcome: 'successful' }, mockIo);
 
   const leftHand = await one("SELECT current_size, half_damage FROM dice WHERE character_id = ? AND slot_name = 'Left Hand'", [defender]);
-  assert.equal(leftHand.current_size, 4);
-  assert.equal(leftHand.half_damage, 1);
+  assert.equal(leftHand.current_size, 4, 'the dodger\'s own die is untouched');
+  assert.equal(leftHand.half_damage, 0, 'and takes no half-damage step either');
+  const damage = await all(
+    `SELECT type FROM round_events WHERE pair_index = ? AND type = 'damage_applied'`,
+    [pairIndex]
+  );
+  assert.equal(damage.length, 0, 'no damage event is recorded at all');
 });
 
 test('Move-conflict pause: a Block extension collision stops the round; Forfeit deletes the colliding move', async () => {

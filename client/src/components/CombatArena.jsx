@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 import { AnimatePresence, motion } from 'framer-motion';
 import { useRole } from '../roleContext.jsx';
@@ -882,6 +883,72 @@ function CompactTellFace({ dm, tellById }) {
 // answer without leaving the Arena. The full card renders as an overlay
 // above everything rather than expanding in place, because expanding one
 // card reflows the whole lane underneath it.
+// Where to put a declared move's full card so it sits fully on screen.
+//
+// **Why this is measured rather than done in CSS.** The card used to be an
+// `absolute … z-50` child of the compact card, and it was covered by other
+// Arena UI anyway: its own parent sets `perspective` for the flip animation,
+// and a non-`none` perspective establishes a stacking context, so that z-50
+// only ever competed with its siblings *inside* one small card. No z-index
+// there can beat a later stacking context — the layer has to leave the
+// subtree entirely, which means a portal, which means viewport coordinates.
+// (Exactly the failure mode DialogShell hit when a transformed ancestor
+// re-parented its `fixed`; MoveLinkOverlay and MovePickerDialog already
+// portal for the same reason.)
+//
+// Clamping is what makes it work on a phone: a fixed-width card centred on a
+// lane card near the screen edge would otherwise hang off it, and the lane
+// strip scrolls horizontally, so "near the edge" is the normal case there.
+const HOVER_CARD_WIDTH = 288; // w-72, and the max-w below keeps CSS in step
+const HOVER_CARD_GAP = 8;
+
+function useHoverCardPosition(anchorRef, open) {
+  const [pos, setPos] = useState(null);
+  useLayoutEffect(() => {
+    if (!open) {
+      setPos(null);
+      return undefined;
+    }
+    let frame = 0;
+    const measure = () => {
+      const el = anchorRef.current;
+      if (!el) return;
+      const r = el.getBoundingClientRect();
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      const width = Math.min(HOVER_CARD_WIDTH, vw - HOVER_CARD_GAP * 2);
+      // Centred on the anchor, then pulled back inside the viewport.
+      const left = Math.min(
+        Math.max(HOVER_CARD_GAP, r.left + r.width / 2 - width / 2),
+        vw - width - HOVER_CARD_GAP
+      );
+      // Above by preference — the compact card sits low in a lane and the
+      // space above it is usually empty. Flip below when it won't fit, which
+      // on a short mobile viewport is most of the time.
+      const spaceAbove = r.top;
+      const below = spaceAbove < vh / 2;
+      setPos({ left, width, below, top: below ? r.bottom + HOVER_CARD_GAP : undefined,
+        bottom: below ? undefined : vh - r.top + HOVER_CARD_GAP });
+    };
+    const remeasure = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(measure);
+    };
+    measure();
+    // Capture phase: the lane strip and the page shell are their own scroll
+    // containers and neither bubbles scroll to window (same reason
+    // MoveLinkOverlay listens this way).
+    window.addEventListener('scroll', remeasure, true);
+    window.addEventListener('resize', remeasure);
+    return () => {
+      cancelAnimationFrame(frame);
+      window.removeEventListener('scroll', remeasure, true);
+      window.removeEventListener('resize', remeasure);
+    };
+  }, [anchorRef, open]);
+  return pos;
+}
+
 function CompactDeclaredMoveCard({ dm, move, tellById, allMoves = [] }) {
   const revealed = dm.isRevealed && move;
   const [showCard, setShowCard] = useState(false);
@@ -905,6 +972,33 @@ function CompactDeclaredMoveCard({ dm, move, tellById, allMoves = [] }) {
   // either way, so hovering the *Tic* still points back at an
   // already-revealed card; only the card->Tic direction defers.
   const linkOnHover = telegraphed && !revealed;
+  const cardPos = useHoverCardPosition(cardRef, showCard && revealed);
+
+  // **How it was opened decides how it closes**, and this is the whole reason
+  // tapping appeared to do nothing on a phone. A tap emits (measured, not
+  // assumed): pointerdown → mouseenter → click → mouseout → **mouseleave**.
+  // Touch browsers synthesize a hover and then immediately drop it, so an
+  // unconditional `onMouseLeave` close fired a few milliseconds after the tap
+  // had correctly opened the card — it opened and shut inside one gesture.
+  //
+  // A ref, not state: it is read by handlers firing within the same gesture
+  // as the write, so it has to update synchronously rather than at the next
+  // render.
+  const openedByTouch = useRef(false);
+
+  // Touch gets no usable mouseleave, so the way out is tapping elsewhere —
+  // the same escape hatch MoveLinkOverlay gives a pinned connector.
+  useEffect(() => {
+    if (!showCard) return undefined;
+    const onPointerDown = (e) => {
+      if (cardRef.current?.contains(e.target)) return;
+      openedByTouch.current = false;
+      setShowCard(false);
+    };
+    document.addEventListener('pointerdown', onPointerDown);
+    return () => document.removeEventListener('pointerdown', onPointerDown);
+  }, [showCard]);
+
   return (
     <div
       ref={cardRef}
@@ -914,43 +1008,73 @@ function CompactDeclaredMoveCard({ dm, move, tellById, allMoves = [] }) {
         isLinked ? 'shadow-[0_0_16px_3px_rgb(228_228_231_/_30%)]' : ''
       }`}
       onMouseEnter={() => {
-        if (revealed) setShowCard(true);
+        // Skipped after a tap: the synthesized hover isn't a second intent.
+        if (revealed && !openedByTouch.current) setShowCard(true);
         if (linkOnHover) setLinkHover([dm.id]);
       }}
       onMouseLeave={() => {
-        setShowCard(false);
+        // The link half still runs either way — only the card's close is
+        // modality-dependent.
+        if (!openedByTouch.current) setShowCard(false);
         if (linkOnHover) setLinkHover([]);
       }}
+      // **Open, never toggle**, and the touch path is `pointerdown` rather
+      // than `click`: pointerdown is the first event of the gesture, so the
+      // card is up before the synthesized mouse events arrive to confuse it.
+      // A toggling `onClick` was the original defect — the hover had already
+      // opened the card, so the click closed it again.
+      onPointerDown={(e) => {
+        if (e.pointerType !== 'touch' || !revealed) return;
+        openedByTouch.current = true;
+        setShowCard(true);
+      }}
       onClick={() => {
-        if (revealed) setShowCard((v) => !v);
-        // Tap-to-pin is the touch path for the connector — there is no
-        // hover on a phone, so without this the line would simply not
-        // exist there (see toggleLinkPin).
-        else if (telegraphed) toggleLinkPin([dm.id]);
+        // Tap-to-pin is the touch path for the connector — there is no hover
+        // on a phone, so without this the line would simply not exist there
+        // (see toggleLinkPin). Only reachable on a card whose face this
+        // viewer can't read, which is exactly when there is no card to show.
+        if (!revealed && telegraphed) toggleLinkPin([dm.id]);
       }}
     >
-      <AnimatePresence>
-        {showCard && revealed && (
-          <motion.div
-            initial={{ opacity: 0, y: 6, scale: 0.96 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: 6, scale: 0.96 }}
-            transition={{ duration: 0.14 }}
-            // z-50 + fixed-width: it deliberately covers whatever lane
-            // content sits beside and below it.
-            className="absolute bottom-full left-1/2 z-50 mb-2 w-72 -translate-x-1/2 panel-cut border border-brand-700/60 bg-zinc-950 p-2 shadow-2xl shadow-black/80"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <MoveCard
-              move={move}
-              allMoves={allMoves}
-              tell={tellById.get(move.tell_id)}
-              rightTell={move.right_tell_id ? tellById.get(move.right_tell_id) : undefined}
-              leftTell={move.left_tell_id ? tellById.get(move.left_tell_id) : undefined}
-            />
-          </motion.div>
-        )}
-      </AnimatePresence>
+      {createPortal(
+        <AnimatePresence>
+          {showCard && revealed && cardPos && (
+            <motion.div
+              initial={{ opacity: 0, y: cardPos.below ? -6 : 6, scale: 0.96 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: cardPos.below ? -6 : 6, scale: 0.96 }}
+              transition={{ duration: 0.14 }}
+              style={{
+                left: cardPos.left,
+                top: cardPos.top,
+                bottom: cardPos.bottom,
+                width: cardPos.width,
+              }}
+              // z-[80]: above the Tell↔Tic connector line (z-[70]) — this
+              // card renders straight across the path that line takes, and
+              // it is the thing being read — but below the drag ghost
+              // (z-[100]), which should stay on top of everything mid-drag.
+              //
+              // pointer-events-none is deliberate: portalled out of the
+              // anchor's subtree, hovering onto the card would fire the
+              // anchor's own mouseleave and close it. It is a description to
+              // read, not a surface to click, so it simply doesn't take the
+              // pointer — which also means it can never swallow a click on
+              // whatever it happens to be covering.
+              className="pointer-events-none fixed z-[80] max-w-[calc(100vw-1rem)] panel-cut border border-brand-700/60 bg-zinc-950 p-2 shadow-2xl shadow-black/80"
+            >
+              <MoveCard
+                move={move}
+                allMoves={allMoves}
+                tell={tellById.get(move.tell_id)}
+                rightTell={move.right_tell_id ? tellById.get(move.right_tell_id) : undefined}
+                leftTell={move.left_tell_id ? tellById.get(move.left_tell_id) : undefined}
+              />
+            </motion.div>
+          )}
+        </AnimatePresence>,
+        document.body
+      )}
       {!dm.staminaCommitted && (
         <button
           onClick={() => socket.emit('move:undeclare', { declaredMoveId: dm.id })}

@@ -495,7 +495,23 @@ already mechanically doomed, and there is no judgement in confirming that.
 Full coverage pauses that pair's fight and asks the **GM**: did it land? Every
 other pair keeps resolving while that one waits.
 
-A **Full** Dodge is a Miss. A **Partial** Dodge still lets damage through.
+**A Dodge is binary.** The GM's answer is the whole resolution — there is no
+third outcome and no roll-off:
+
+- **Successful** — you are not there any more. No damage, none at all, and the
+  attack counts as a **Miss** for the attacker's own interactions.
+- **Failed** — the dodge does nothing whatsoever, and the attack resolves as
+  though it had never been declared as a defence.
+
+The dodger does not roll. Nothing about their dice can make a successful dodge
+partly fail or a failed one partly work, so there is nothing to roll for. This
+is the one place Dodge and Block genuinely differ: a guard is a surface that
+absorbs some of a blow and can be overwhelmed by a bigger one, which is why a
+Block *does* roll and *can* come out Partial. Empty air cannot be
+half-occupied.
+
+If the dodge does not cover the attack completely, that is simply a **failed
+dodge** — not a partial one.
 
 ### Interruption
 
