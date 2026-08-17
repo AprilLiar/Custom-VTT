@@ -857,77 +857,43 @@ async function applyFailedDefense(io, {
   });
 }
 
-// A Successful Dodge — decision #2's "identical math and identical
-// interaction-firing rules to Block" (see the mechanic section): rolls the
-// defending move's own Roll, resolves Full/Partial via resolveDefenseRoll,
-// fires defense_success/block, and applies any Partial-Dodge damage to the
-// DEFENDER's own Stat (not the original attack target — same Attack Target
-// replacement rule Block already uses). Only ever reached from the Phase D
-// resume path (resolveDodge below) — Block's own Successful path stays
-// inline in resolveAttack since it's never paused, only its own extension
-// conflict downstream is.
+// A Successful Dodge. **Dodge is binary (decided, revised — this replaces the
+// original "identical math and identical interaction-firing rules to Block").**
+//
+// You either get out of the way or you don't. Once the GM answers Successful,
+// the attack does not land: no damage, no roll-off, no Partial. There is no
+// third outcome, and "the dodge covered only part of the attack" is not one —
+// that is a *failed* dodge, and `classifyDefenseCoverage` already routes it
+// there ('too-short' is auto-Failed for Dodge, no prompt).
+//
+// What this used to do, and why both halves were wrong: it rolled the
+// defender's dice, ran `resolveDefenseRoll` (Block's opposed math), and on
+// anything short of out-rolling the attacker produced a "Partial Dodge" that
+// put damage through *and* fired the attacker's **On Block** trigger. So a
+// dodge the GM had just called successful could both hurt the dodger and fire
+// the wrong interaction. Block keeps that math — a guard genuinely absorbs
+// part of a hit — but a dodge has nothing to absorb with.
+//
+// **No defender roll at all.** With no partial case the roll cannot change the
+// outcome, and leaving it in would show a contest in the log that decides
+// nothing — exactly the kind of phantom mechanic that made "Partial Dodge"
+// unexplainable at the table.
+//
+// Only ever reached from the Phase D resume path (resolveDodge below) — a
+// Block is never paused, so its Successful path stays inline in resolveAttack.
 async function applySuccessfulDodge(io, {
   defenderDM,
   attackerDeclaredMoveId,
   attackerMoveId,
   attackerCharacterId,
-  attackerCharacterName,
-  attackerResult,
   tic,
   emitEvent,
 }) {
-  const [baseSlotRows, defensiveSlotRows, defRollBonusRow] = await Promise.all([
-    all('SELECT slot_name, count FROM move_roll_slots WHERE move_id = ?', [defenderDM.move_id]),
-    defenderDM.is_defensive
-      ? all('SELECT slot_name, count FROM move_defensive_roll_slots WHERE move_id = ?', [defenderDM.move_id])
-      : [],
-    one(
-      'SELECT COALESCE(SUM(amount), 0) AS bonus FROM character_move_roll_bonuses WHERE character_id = ? AND move_id = ?',
-      [defenderDM.character_id, defenderDM.move_id]
-    ),
-  ]);
-  const defBonusMods = await getCombatRollBonus(defenderDM.character_id, { moveId: defenderDM.move_id, tic });
-  const defMod = defenderDM.roll_modifier + defRollBonusRow.bonus + defBonusMods;
-
-  let dodgeDice;
-  if (defenderDM.roll_type === 'custom' && defenderDM.custom_roll_size != null) {
-    dodgeDice = [
-      { slot_name: 'Custom', size: defenderDM.custom_roll_size, bonus: 0, result: rollDie(defenderDM.custom_roll_size) + defMod },
-    ];
-  } else {
-    const slotNames = expandRollSlotRows([...baseSlotRows, ...defensiveSlotRows]);
-    const resolved = await resolveMoveRollDice(defenderDM.character_id, slotNames, defenderDM.appendage_choice);
-    dodgeDice = resolved.map((d) => ({
-      slot_name: d.slot_name,
-      size: d.current_size,
-      bonus: d.bonus,
-      result: rollDie(d.current_size) + d.bonus + defMod,
-    }));
-  }
-  const dodgeResult = dodgeDice.reduce((sum, d) => sum + d.result, 0);
-  await logRoll(io, { characterId: defenderDM.character_id, characterName: defenderDM.character_name, modifier: defMod, dice: dodgeDice });
-  // Defensive rolls used to go to chat only, never to round_events — so the
-  // cutscene showed the attacker roll, then a Defense line with an outcome,
-  // and the defender's own dice nowhere. That is what "the Block was not
-  // rolled at all" looks like to someone watching the log.
-  await emitEvent(tic, 'roll', {
-    declaredMoveId: defenderDM.id,
-    characterId: defenderDM.character_id,
-    characterName: defenderDM.character_name,
-    dice: dodgeDice,
-    modifier: defMod,
-    total: dodgeResult,
-    defensive: true,
-    defenseType: 'dodge',
-  });
-
-  const resolution = resolveDefenseRoll({ attackerResult, defenderResult: dodgeResult });
-  await postSystemMessage(
-    io,
-    resolution.outcome === 'full'
-      ? `${defenderDM.character_name} scored a Full Dodge — no damage.`
-      : `${defenderDM.character_name} scored a Partial Dodge — ${resolution.damage} damage.`
-  );
+  // No round_event of its own: `resolveDodge` already emitted
+  // `dodge_resolved` for both outcomes before branching here, and the cutscene
+  // narrates it ("The GM called the Dodge Successful") with a MISS burst.
+  // Emitting a second one would double-log the same fact.
+  await postSystemMessage(io, `${defenderDM.character_name} dodged it — no damage.`);
 
   await applyMoveInteractions(io, {
     moveId: defenderDM.move_id,
@@ -939,20 +905,18 @@ async function applySuccessfulDodge(io, {
     opponentCharacterId: attackerCharacterId,
     opponentDeclaredMoveId: attackerDeclaredMoveId,
   });
+
   const attackerDM = await one('SELECT interactions_resolved FROM declared_moves WHERE id = ?', [attackerDeclaredMoveId]);
   if (attackerDM && !attackerDM.interactions_resolved) {
     await run('UPDATE declared_moves SET interactions_resolved = 1 WHERE id = ?', [attackerDeclaredMoveId]);
-    // Miss (decided): a Miss is an attack *evaded with a Dodge* — which is
-    // exactly a Full Dodge, where nothing lands. **This is the only place a
-    // Miss comes from.** A Partial Dodge still puts damage through, so it
-    // stays the attacker's 'block' trigger like every other partial
-    // defence, and a weak roll is Insignificant Damage, which fires On Hit
-    // rather than On Miss (see runInterruptAndDamage). Exactly one trigger
-    // fires per attack, since they all hang off the same
-    // interactions_resolved flag.
+    // **Always On Miss, never On Block.** A Miss is an attack evaded with a
+    // Dodge, and a successful Dodge is the only thing in the game that
+    // evades — so this is still the single source of 'miss', it just no
+    // longer has a branch that can pick 'block' instead. Exactly one trigger
+    // fires per attack; they all hang off interactions_resolved.
     await applyMoveInteractions(io, {
       moveId: attackerMoveId,
-      trigger: resolution.outcome === 'full' ? 'miss' : 'block',
+      trigger: 'miss',
       emitEvent,
       tic,
       selfCharacterId: attackerCharacterId,
@@ -960,33 +924,6 @@ async function applySuccessfulDodge(io, {
       opponentCharacterId: defenderDM.character_id,
       opponentDeclaredMoveId: defenderDM.id,
     });
-  }
-
-  if (resolution.halfDamageSteps > 0) {
-    const dodgeEffectiveTargets = expandAttackTargets(baseSlotRows.map((r) => r.slot_name), defenderDM.appendage_choice);
-    await runInterruptAndDamage(io, {
-      declaredMoveId: attackerDeclaredMoveId,
-      moveId: attackerMoveId,
-      attackerCharacterId,
-      attackerCharacterName,
-      // Unreachable at 0 steps (guarded above), but passed anyway so the
-      // Insignificant-Damage branch can never be reached without it.
-      attackerResult,
-      targetCharacterId: defenderDM.character_id,
-      effectiveAttackTargets: dodgeEffectiveTargets,
-      steps: resolution.halfDamageSteps,
-      attackActiveStart: defenderDM.reveal_tic,
-      attackerActiveTics: defenderDM.active_tics,
-      tic,
-      emitEvent,
-      // What the Dodge left of it — see the Block path's identical note.
-      effectiveResult: resolution.netResult,
-    });
-  } else if (!(await one('SELECT interactions_resolved FROM declared_moves WHERE id = ?', [attackerDeclaredMoveId]))?.interactions_resolved) {
-    // Full Dodge never reaches runInterruptAndDamage (0 steps), but the
-    // miss/block trigger above still needs interactions_resolved set exactly
-    // once — mirrors the live Block-Full path's own unconditional set.
-    await run('UPDATE declared_moves SET interactions_resolved = 1 WHERE id = ?', [attackerDeclaredMoveId]);
   }
 }
 
@@ -2826,13 +2763,13 @@ async function resolveDodge(pairIndex, { outcome, attackerDeclaredMoveId }, io) 
       emitEvent,
     });
   } else {
+    // No attackerResult/attackerCharacterName: a successful Dodge no longer
+    // compares rolls or applies damage, so it needs neither.
     await applySuccessfulDodge(io, {
       defenderDM,
       attackerDeclaredMoveId: pending.attackerDeclaredMoveId,
       attackerMoveId: pending.attackerMoveId,
       attackerCharacterId: pending.attackerCharacterId,
-      attackerCharacterName: pending.attackerCharacterName,
-      attackerResult: pending.attackerResult,
       tic: pending.tic,
       emitEvent,
     });

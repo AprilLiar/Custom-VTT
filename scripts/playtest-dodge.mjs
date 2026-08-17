@@ -80,15 +80,23 @@ s.emit('move:create', {
 });
 const straight = await wait('move:created', (m) => m.name === 'Straight');
 
-// Defender: Defense Frames on squares 0,1,2 — placed at the same Tic, that
-// covers the attack's whole Active window, which is exactly the
-// full-coverage case that pauses for the GM.
+// Defender: Defense Frames covering the attack's whole Active window (Tics
+// 1-2), which is the full-coverage case that pauses for the GM.
+//
+// **Fixed (stale fixture).** This asked for frames on squares 0,1,2 of a 1/1/1
+// move, from before the Defence rework restricted Defense Frames to **ACTIVE**
+// squares — `sanitizeDefensePositions` silently dropped 0 and 2, leaving a
+// guard that covered only Tic 1 of a two-Tic Active window. That is
+// 'too-short' coverage, which for a Dodge is auto-Failed with no prompt, so
+// this script had been passing its first three checks and then failing every
+// assertion it exists to make. 1/2/1 with frames [1,2] gives two genuinely
+// ACTIVE squares that survive sanitising.
 s.emit('move:create', {
   name: 'Slip',
   isDefault: true,
   tellId: tell.id,
   startupTics: 1,
-  activeTics: 1,
+  activeTics: 2,
   recoveryTics: 1,
   description: 'Rolls off the line.',
   interactions: {},
@@ -96,7 +104,7 @@ s.emit('move:create', {
   attackTargets: ['Body'],
   isDefensive: true,
   defenseKind: 'dodge',
-  defenseFramePositions: [0, 1, 2],
+  defenseFramePositions: [1, 2],
 });
 const slip = await wait('move:created', (m) => m.name === 'Slip');
 
