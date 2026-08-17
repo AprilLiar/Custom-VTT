@@ -16,6 +16,19 @@ export const GUESS_NONE = 'none'; // no mini-game ran; nobody gets +5
 export const GUESS_WRONG = 'wrong'; // target guessed wrong -> grappler +5
 export const GUESS_RIGHT = 'right'; // target guessed right -> target +5
 
+/**
+ * The grappler's explicit "take it no further" answer. A real choice, not a
+ * missing one: the grab has already landed and its interactions have already
+ * fired, so declining costs nothing and leaves the hold in place. Kept distinct
+ * from the four directions so a decline can never be confused with a guess.
+ *
+ * Deliberately NOT `'none'`: that is already GUESS_NONE's value, and although
+ * the two live in different value spaces, sharing a literal between "the
+ * grappler declined" and "no read happened" is exactly the kind of overlap that
+ * reads as correct until one is compared against the other.
+ */
+export const DECLINE_FOLLOW_UP = 'decline';
+
 export const MINI_GAME_BONUS = 5;
 export const GRAPPLE_PENALTY = -2;
 export const DIRECTIONS = ['up', 'down', 'left', 'right'];
@@ -56,10 +69,10 @@ export function assignedDirections(directionRows = []) {
 // genuinely different failures and the log says which — a grab that was
 // fumbled outright reads differently from one the target simply out-muscled.
 //
-// The ±5 is applied HERE, to the totals, and deliberately not to the roll
-// modifier: the engine adds a roll's modifier to every die separately, so a
-// +5 folded in there would pay out once per die and a two-die grapple would
-// quietly be worth +10.
+// **The ±5 is NOT applied here any more (decided, revised).** The contest is
+// settled *before* anybody is asked which way the grab goes, so at this point
+// no read has happened yet and there is nothing to reward. The ±5 now lands on
+// the follow-up move's own roll instead — see chainRollBonusFor below.
 //
 // Ties go to the target. Being equally strong is not enough to take someone
 // down — the grappler has to win it.
@@ -67,10 +80,9 @@ export function resolveGrappleContest({
   grapplerTotal = 0,
   targetTotal = 0,
   successThreshold = 5,
-  guessOutcome = GUESS_NONE,
 } = {}) {
-  const grapplerFinal = grapplerTotal + (guessOutcome === GUESS_WRONG ? MINI_GAME_BONUS : 0);
-  const targetFinal = targetTotal + (guessOutcome === GUESS_RIGHT ? MINI_GAME_BONUS : 0);
+  const grapplerFinal = grapplerTotal;
+  const targetFinal = targetTotal;
 
   if (grapplerFinal < successThreshold) {
     return { grapplerFinal, targetFinal, success: false, reason: 'below-threshold' };
@@ -79,6 +91,56 @@ export function resolveGrappleContest({
     return { grapplerFinal, targetFinal, success: false, reason: 'outrolled' };
   }
   return { grapplerFinal, targetFinal, success: true, reason: 'success' };
+}
+
+// What the defender's read is worth, applied to the **follow-up's** roll
+// (decided, revised — it used to move the contest instead).
+//
+// It is a signed swing rather than a bonus to whoever won, because by the time
+// the follow-up rolls there is only one roll left to modify: the grappler's.
+// Reading the grab right therefore has to make that roll *worse* rather than
+// make some other roll better.
+//
+//   defender guessed WRONG -> they went the wrong way   -> follow-up +5
+//   defender guessed RIGHT -> they read it              -> follow-up −5
+//   no mini-game ran                                    -> 0
+//
+// Total-level, like every grapple modifier: applied once to the summed roll,
+// never folded into the per-die modifier (see declared_moves.chain_roll_bonus).
+export function chainRollBonusFor(guessOutcome = GUESS_NONE) {
+  if (guessOutcome === GUESS_WRONG) return MINI_GAME_BONUS;
+  if (guessOutcome === GUESS_RIGHT) return -MINI_GAME_BONUS;
+  return 0;
+}
+
+// Which of a grapple's assigned directions the grappler can actually take,
+// and why not when they can't.
+//
+// Two independent gates, both from the new flow: the grappler has to **own**
+// the follow-up (a Default move, or one granted to them — the same rule
+// getMovesFor uses), and has to be able to **afford** it right now. An
+// unaffordable follow-up is the "chain ends by itself" case, surfaced as a
+// reason rather than by silently vanishing, because the prompt shows every
+// direction greyed with an explanation (decided).
+//
+// Pure: the caller supplies what it looked up. `currentStamina` is the
+// grappler's stamina at the moment of the pick, already net of anything
+// committed earlier this round.
+export function annotateFollowUps(
+  directions = [],
+  { ownedMoveIds = [], currentStamina = 0 } = {}
+) {
+  const owned = new Set(ownedMoveIds.map(Number));
+  return directions.map((d) => {
+    const isOwned = Boolean(d.isDefault) || owned.has(Number(d.moveId));
+    const cost = Number(d.staminaCost ?? 0);
+    if (!isOwned) return { ...d, available: false, reason: 'not-owned' };
+    // A negative cost *restores* Stamina, so it is always affordable.
+    if (cost > 0 && currentStamina - cost < 0) {
+      return { ...d, available: false, reason: 'unaffordable' };
+    }
+    return { ...d, available: true, reason: 'ok' };
+  });
 }
 
 // Where the chained move goes, and what has to move out of its way.

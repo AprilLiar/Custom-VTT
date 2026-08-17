@@ -10,7 +10,9 @@ import {
   GUESS_RIGHT,
   GUESS_WRONG,
   MINI_GAME_BONUS,
+  annotateFollowUps,
   assignedDirections,
+  chainRollBonusFor,
   grapplePenaltyAt,
   grapplePenaltyWindowEnd,
   planChainPlacement,
@@ -56,42 +58,105 @@ test('the move carries its own threshold', () => {
   assert.equal(resolveGrappleContest({ grapplerTotal: 9, targetTotal: 0, successThreshold: 5 }).success, true);
 });
 
-// ---------- the mini-game's ±5 ----------
+// ---------- the contest is now clean of the ±5 ----------
 
-test('a wrong guess gives the grappler +5, on the total', () => {
-  const r = resolveGrappleContest({ grapplerTotal: 7, targetTotal: 9, guessOutcome: GUESS_WRONG });
-  assert.equal(r.grapplerFinal, 12);
-  assert.equal(r.targetFinal, 9);
-  assert.equal(r.success, true, 'the +5 is what wins it');
-});
-
-test('a right guess gives the TARGET +5', () => {
-  const r = resolveGrappleContest({ grapplerTotal: 11, targetTotal: 9, guessOutcome: GUESS_RIGHT });
-  assert.equal(r.grapplerFinal, 11);
-  assert.equal(r.targetFinal, 14);
-  assert.equal(r.success, false, 'reading it right is what saves them');
-});
-
-test('no mini-game means neither side gets anything', () => {
-  const r = resolveGrappleContest({ grapplerTotal: 7, targetTotal: 9, guessOutcome: GUESS_NONE });
+test('the contest ignores the read entirely (decided, revised)', () => {
+  // The contest is settled BEFORE anyone is asked which way the grab goes, so
+  // there is no read yet to reward. These four tests used to assert the ±5
+  // moved these totals; they now assert it cannot.
+  const r = resolveGrappleContest({ grapplerTotal: 7, targetTotal: 9 });
   assert.equal(r.grapplerFinal, 7);
   assert.equal(r.targetFinal, 9);
+  assert.equal(r.success, false, 'out-rolled, and nothing can rescue it here');
 });
 
-test('the +5 can rescue a roll that was under the threshold', () => {
-  // It is added before the threshold check, not after — a read that good
-  // turns a fumble into a hold.
+test('a guessOutcome passed in is inert — it cannot reach the contest', () => {
+  // Belt and braces against the old signature surviving somewhere: even if a
+  // caller still hands one over, the totals must not budge.
+  for (const guessOutcome of [GUESS_WRONG, GUESS_RIGHT, GUESS_NONE]) {
+    const r = resolveGrappleContest({ grapplerTotal: 11, targetTotal: 9, guessOutcome });
+    assert.equal(r.grapplerFinal, 11, `grappler total moved for ${guessOutcome}`);
+    assert.equal(r.targetFinal, 9, `target total moved for ${guessOutcome}`);
+  }
+});
+
+test('a roll under the threshold can no longer be rescued by a good read', () => {
   const r = resolveGrappleContest({ grapplerTotal: 3, targetTotal: 1, guessOutcome: GUESS_WRONG });
-  assert.equal(r.grapplerFinal, 8);
-  assert.equal(r.success, true);
+  assert.equal(r.success, false);
+  assert.equal(r.reason, 'below-threshold');
 });
 
-test('the bonus is exactly one +5, never one per die', () => {
-  // The engine adds a roll's *modifier* to every die separately, so a +5
-  // folded in there would pay out per die and a three-die grapple would
-  // quietly be worth +15. This is a total-level bonus and must stay one.
-  const r = resolveGrappleContest({ grapplerTotal: 20, targetTotal: 0, guessOutcome: GUESS_WRONG });
-  assert.equal(r.grapplerFinal - 20, MINI_GAME_BONUS);
+// ---------- ...and lands on the follow-up instead ----------
+
+test('a wrong guess is +5 on the follow-up; a right guess is −5', () => {
+  // Signed, not "whoever won gets +5": by the time the follow-up rolls there
+  // is only one roll left to modify, so reading the grab right has to make
+  // that roll worse rather than make some other roll better.
+  assert.equal(chainRollBonusFor(GUESS_WRONG), MINI_GAME_BONUS);
+  assert.equal(chainRollBonusFor(GUESS_RIGHT), -MINI_GAME_BONUS);
+});
+
+test('no mini-game means the follow-up rolls unmodified', () => {
+  assert.equal(chainRollBonusFor(GUESS_NONE), 0);
+  assert.equal(chainRollBonusFor(), 0);
+  assert.equal(chainRollBonusFor(undefined), 0);
+});
+
+test('the swing is exactly one ±5, never one per die', () => {
+  // Total-level, stored on the declaration and added to the summed roll. A +5
+  // folded into the per-die modifier would pay out once per die.
+  assert.equal(Math.abs(chainRollBonusFor(GUESS_WRONG)), 5);
+  assert.equal(Math.abs(chainRollBonusFor(GUESS_RIGHT)), 5);
+});
+
+// ---------- which follow-ups the grappler may actually take ----------
+
+const DIRS = [
+  { direction: 'up', moveId: 7, moveName: 'Armbar', staminaCost: 2, isDefault: 0 },
+  { direction: 'right', moveId: 9, moveName: 'Sweep', staminaCost: 0, isDefault: 1 },
+  { direction: 'down', moveId: 11, moveName: 'Slam', staminaCost: 6, isDefault: 0 },
+];
+
+test('a granted, affordable follow-up is available', () => {
+  const [up] = annotateFollowUps([DIRS[0]], { ownedMoveIds: [7], currentStamina: 10 });
+  assert.equal(up.available, true);
+  assert.equal(up.reason, 'ok');
+});
+
+test('a Default follow-up is available without being granted', () => {
+  const [right] = annotateFollowUps([DIRS[1]], { ownedMoveIds: [], currentStamina: 0 });
+  assert.equal(right.available, true);
+});
+
+test('a follow-up the grappler does not own is unavailable, and says why', () => {
+  const [up] = annotateFollowUps([DIRS[0]], { ownedMoveIds: [], currentStamina: 99 });
+  assert.equal(up.available, false);
+  assert.equal(up.reason, 'not-owned');
+});
+
+test('a follow-up they cannot pay for is unavailable, and says why', () => {
+  const [down] = annotateFollowUps([DIRS[2]], { ownedMoveIds: [11], currentStamina: 5 });
+  assert.equal(down.available, false);
+  assert.equal(down.reason, 'unaffordable');
+});
+
+test('exactly affordable is affordable — the floor is 0, not 1', () => {
+  const [down] = annotateFollowUps([DIRS[2]], { ownedMoveIds: [11], currentStamina: 6 });
+  assert.equal(down.available, true);
+});
+
+test('a negative cost restores Stamina and is always affordable', () => {
+  const free = { direction: 'up', moveId: 7, staminaCost: -3, isDefault: 1 };
+  const [row] = annotateFollowUps([free], { ownedMoveIds: [], currentStamina: 0 });
+  assert.equal(row.available, true);
+});
+
+test('annotating keeps every direction and its order — the prompt shows them all', () => {
+  // The grappler sees all four with the unusable ones greyed (decided), so
+  // nothing may be filtered out here.
+  const rows = annotateFollowUps(DIRS, { ownedMoveIds: [7], currentStamina: 3 });
+  assert.deepEqual(rows.map((r) => r.direction), ['up', 'right', 'down']);
+  assert.deepEqual(rows.map((r) => r.available), [true, true, false]);
 });
 
 // ---------- does the mini-game run at all ----------

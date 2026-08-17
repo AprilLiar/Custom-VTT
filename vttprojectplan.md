@@ -1402,6 +1402,47 @@ the other correctly takes **+5**. Only then is the roll made, and the grab is se
 roll against a **Resist Roll** authored on the grappling move itself. Winning chains the move
 assigned to the chosen direction, declared right after the grapple.
 
+**REWORKED (decided, revised — this supersedes the ordering below).** The first
+implementation asked for the direction *before* the contest, which meant the
+grappler committed to a follow-up without knowing whether the grab had even
+worked, and the ±5 decided the grab itself. Reported from a playtest as "nothing
+happened": the round paused for the defender's guess and waited forever, because
+the mini-game needed both answers at once and a PC grappler's half can only be
+answered by that player. The flow is now:
+
+1. **Only the grapple is declared.** The follow-up is never declared by hand.
+2. **The contest resolves first** (`runGrappleContest`), with no ±5 — there is no
+   read yet. Failure fires nothing, exactly as before.
+3. **On success** the −2 window and **On Successful Grapple** happen immediately,
+   before any prompt, so a chain that ends in "nothing" still leaves the hold.
+4. **The grappler is asked for the follow-up** — all four arrows, with anything
+   unlearned or unaffordable greyed and labelled, plus an explicit *take it no
+   further*. `annotateFollowUps` is the pure rule.
+5. **Then the defender guesses**, if there was more than one direction to guess
+   between. Two **sequential** pauses (`pending_grapple_json.phase` =
+   `'choice'` → `'guess'`), not one simultaneous two-party wait.
+6. **The ±5 lands on the FOLLOW-UP's roll**, signed: wrong guess +5, right guess
+   −5 (`chainRollBonusFor`). Stored on the declaration as
+   `declared_moves.chain_roll_bonus` and applied **once to the summed total**,
+   because by the time the follow-up resolves — possibly a round later — the
+   pause that produced it is gone.
+7. **Retroactive declaration is now an engine primitive.** `declareChainedMove`
+   places the follow-up after the grab, charges Stamina, and puts it on the board
+   as an ordinary declared move with a visible Tell. **Unaffordable ends the
+   chain by itself** (`grapple_chain_ended`), re-checked at placement because
+   each link in a chain spends.
+8. **Recursive, unbounded.** A follow-up that is itself Grappling re-enters the
+   whole flow, because a retroactively declared move is an ordinary declared move
+   and `resolveGrapple` picks it up like any other. A chain that overruns the
+   round simply overflows into the next.
+
+**Answering stays owner-only (decided, explicitly kept).** The GM cannot pick for
+a PC grappler. The consequence is that a PC's grapple genuinely cannot proceed
+without that player present — which is what the original report ran into — so the
+pause now names **who it is waiting on** (`waitingOn`) to every viewer, including
+bystanders, so a waiting round reads as waiting rather than broken. An all-NPC
+grapple is never prompted at all and auto-takes the first available direction.
+
 **Decided (confirmed explicitly — do not re-litigate):**
 1. **The −2 the target takes on their rolls lasts while the grappling move's ACTIVE frames run** —
    not merely the contested roll, and not until they escape. A bounded window
