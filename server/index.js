@@ -56,7 +56,7 @@ import {
   clampSuccessThreshold,
   normalizeGrappleDirections,
   normalizeRequirement,
-  requirementSatisfiedBy,
+  declarableByHand,
 } from './moveLogic.js';
 import {
   carriesBlockTag,
@@ -2068,6 +2068,10 @@ io.on('connection', (socket) => {
     const isDefault = payload.isDefault ? 1 : 0;
     const isDefensive = payload.isDefensive ? 1 : 0;
     const isGrappling = payload.isGrappling ? 1 : 0;
+    // Secondary (decided, new): granted and readable like any move, but never
+    // declared off the picker by hand — see declarableByHand in moveLogic.js
+    // for the whole rule and why it is one flag rather than two routes.
+    const isSecondary = payload.isSecondary ? 1 : 0;
     const defenseKind = sanitizeDefenseKind(
       payload.defenseKind,
       Boolean(isDefensive),
@@ -2250,14 +2254,15 @@ io.on('connection', (socket) => {
           stamina_cost, description, style_attribute_id, folder_id, image_data, image_mime_type,
           roll_modifier, right_tell_id, left_tell_id, is_defensive, defense_frame_positions,
           roll_type, custom_roll_size, attack_targets, defense_kind, stamina_modifier,
-          combat_style_attribute_id, success_threshold, is_grappling, requirement_move_id, sort_order)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          combat_style_attribute_id, success_threshold, is_grappling, requirement_move_id, sort_order,
+          is_secondary)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [name, isDefault, tellId, startup, active, recovery, effectiveStaminaCost, description, styleId,
           folderId, payload.imageData ?? null,
           payload.imageData ? (payload.imageMimeType ?? 'image/png') : null,
           rollModifier, rightTellId, leftTellId, isDefensive, JSON.stringify(defenseFramePositions),
           rollType, customRollSize, JSON.stringify(attackTargets), defenseKind, staminaModifier,
-          combatStyleId, successThreshold, isGrappling, requirementMoveId, sortOrder]
+          combatStyleId, successThreshold, isGrappling, requirementMoveId, sortOrder, isSecondary]
       );
       id = Number(result.lastInsertRowid);
     } else {
@@ -2267,13 +2272,13 @@ io.on('connection', (socket) => {
           roll_modifier = ?, right_tell_id = ?, left_tell_id = ?, is_defensive = ?,
           defense_frame_positions = ?, roll_type = ?, custom_roll_size = ?, attack_targets = ?,
           defense_kind = ?, stamina_modifier = ?, combat_style_attribute_id = ?,
-          success_threshold = ?, is_grappling = ?, requirement_move_id = ?
+          success_threshold = ?, is_grappling = ?, requirement_move_id = ?, is_secondary = ?
           WHERE id = ?`,
         [name, isDefault, tellId, startup, active, recovery, effectiveStaminaCost, description, styleId,
           folderId, rollModifier, rightTellId, leftTellId, isDefensive,
           JSON.stringify(defenseFramePositions), rollType, customRollSize, JSON.stringify(attackTargets),
           defenseKind, staminaModifier, combatStyleId, successThreshold, isGrappling,
-          requirementMoveId, id]
+          requirementMoveId, isSecondary, id]
       );
       // image only replaced when a new one is provided
       if (payload.imageData !== undefined) {
@@ -3547,7 +3552,15 @@ io.on('connection', (socket) => {
     // (unavailable move, wrong stance, unaffordable). The declare picker
     // greys these out client-side, so reaching here means a stale view or a
     // hand-sent event.
-    if (!requirementSatisfiedBy(move.requirement_move_id, last?.move_id ?? null)) return;
+    if (
+      !declarableByHand({
+        isSecondary: Boolean(move.is_secondary),
+        requirementMoveId: move.requirement_move_id,
+        previousMoveId: last?.move_id ?? null,
+      })
+    ) {
+      return;
+    }
 
     // A player can drag a move onto any Tic they like on the Tic Counter —
     // never earlier than the character's own next-eligible Tic, which is

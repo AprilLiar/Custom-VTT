@@ -625,6 +625,16 @@ export async function initDb() {
   // something else requires fail loudly unless move:delete clears the inbound
   // pointers first, rather than leaving a Requirement aimed at nothing.
   await ensureColumn('moves', 'requirement_move_id', 'INTEGER REFERENCES moves(id)');
+  // Secondary (decided, new) — a move that can be granted, read and seen on a
+  // character's sheet, but never declared off the picker by hand. It reaches
+  // the board only the two ways the engine puts a move there for you: as a
+  // Requirement follow-up (declarable, but only in the slot right after the
+  // move it names) or as a Grappling direction the grappler picks mid-hold.
+  //
+  // A plain flag rather than an enum of those two routes: which one applies is
+  // already implied by the rest of the move (a Requirement, or being named by
+  // some grapple's cross), and storing it twice would let the two disagree.
+  await ensureColumn('moves', 'is_secondary', 'INTEGER NOT NULL DEFAULT 0');
   // Custom Compendium ordering (decided, new) — the position a GM dragged
   // this move to. Rows created before this column read back as 0, and every
   // read path orders by (sort_order, id), so an un-reordered library keeps

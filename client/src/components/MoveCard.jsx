@@ -123,17 +123,28 @@ export default function MoveCard({
         <div className="flex items-start justify-between gap-3">
           <span className="flex min-w-0 items-center gap-2 font-bold text-zinc-100">
             <Thumb record={move} name={move.name} size="h-8 w-8" />
-            <span className="min-w-0">
-              {move.name}
+            {/* Wraps rather than clips: a move with a long name plus two badges
+                (Default + Secondary, say) used to run the second one off the
+                edge of the card and print "SECOND…". */}
+            <span className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1">
+              <span className="min-w-0 break-words">{move.name}</span>
               {badge}
               {Boolean(move.is_defensive) && (
-                <span className="ml-1.5 panel-cut-sm bg-sky-900/50 px-1.5 text-xs font-semibold uppercase text-sky-300">
+                <span className="panel-cut-sm bg-sky-900/50 px-1.5 text-xs font-semibold uppercase text-sky-300">
                   Defensive
                 </span>
               )}
               {Boolean(move.is_grappling) && (
-                <span className="ml-1.5 panel-cut-sm bg-amber-900/50 px-1.5 text-xs font-semibold uppercase text-amber-300">
+                <span className="panel-cut-sm bg-amber-900/50 px-1.5 text-xs font-semibold uppercase text-amber-300">
                   Grappling
+                </span>
+              )}
+              {Boolean(move.is_secondary) && (
+                <span
+                  title="Never declared by hand — it arrives as a Requirement follow-up or off a grapple's cross"
+                  className="panel-cut-sm bg-zinc-700/60 px-1.5 text-xs font-semibold uppercase text-zinc-400"
+                >
+                  Secondary
                 </span>
               )}
             </span>

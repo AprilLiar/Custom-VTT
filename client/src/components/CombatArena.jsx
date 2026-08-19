@@ -12,6 +12,14 @@ import {
   getTags,
 } from '../lib/api.js';
 import { carriesBlockTag, carriesFeintTag, staminaModifierLabel } from '../lib/moveDisplay.js';
+// Straight from the server's own rule module, deliberately. `declarableByHand`
+// is what `move:declare` itself checks, and this picker's greying has to mean
+// exactly the same thing — a card that looks draggable but gets silently
+// refused is the failure mode a second copy of the rule would reintroduce.
+// moveLogic.js is pure with no imports of its own (its header says so), which
+// is what makes it safe to pull across; the same argument already runs the
+// other way, with the server importing client/src/lib/matchups.js.
+import { declarableByHand } from '../../../server/moveLogic.js';
 import { portraitSrc } from '../lib/image.js';
 import { dieLabel, tintFor, POOLS } from '../lib/dice.js';
 import { buildFolderTree } from '../lib/folders.js';
@@ -1455,10 +1463,23 @@ function DeclareMoveCard({ character, move, roundStartTic, declaredMoves, tags, 
   // after the one it names. The server enforces it — this only stops the
   // player dragging something that would be silently refused, which is the
   // same reason an unaffordable move isn't simply left to fail.
+  //
+  // **Secondary (decided, new)** rides the same gate. A Secondary move with no
+  // Requirement can never be declared by hand at all — it exists to be reached
+  // off a grapple's cross, and the engine puts it there. One shared pure rule
+  // (`declarableByHand`) decides both here and in the server's own gate, so a
+  // card that looks draggable and an event that gets refused cannot disagree.
   const requiredId = move.requirement_move_id ?? null;
-  const blockedByRequirement =
-    requiredId != null && lastQueuedMoveId(character.id, declaredMoves) !== requiredId;
+  const blockedByRequirement = !declarableByHand({
+    isSecondary: Boolean(move.is_secondary),
+    requirementMoveId: requiredId,
+    previousMoveId: lastQueuedMoveId(character.id, declaredMoves),
+  });
   const requiredName = requiredId != null ? (move.requirement_move_name ?? 'another move') : null;
+  const blockedReason =
+    requiredId != null
+      ? `Can only be declared immediately after ${requiredName}.`
+      : 'Secondary — this move is reached from a grapple, never declared by hand.';
   // Combat Style (decided, new): a move carrying its own style joins it to its
   // user's stance for the matchup, which is worth a flat modifier on the roll —
   // a real, sometimes decisive number that the picker used to keep to itself.
@@ -1524,7 +1545,7 @@ function DeclareMoveCard({ character, move, roundStartTic, declaredMoves, tags, 
       }}
       title={
         blockedByRequirement
-          ? `Can only be declared immediately after ${requiredName}.`
+          ? blockedReason
           : 'Drag onto the Tic Counter, or tap then tap a Tic, to declare'
       }
       className={`flex min-h-11 select-none flex-col items-start gap-1 panel-cut-sm border px-2 py-1.5 text-xs transition-colors ${
@@ -1538,6 +1559,14 @@ function DeclareMoveCard({ character, move, roundStartTic, declaredMoves, tags, 
         <span className={isBlock ? 'text-sky-400/80' : 'text-zinc-500'}>
           {isBlock ? `(Block ${staminaModifierLabel(move.stamina_modifier)} Stamina)` : `(${cost} Stamina)`}
         </span>
+        {/* Named, not just greyed. A card that is dimmed with no word on it
+            reads as broken rather than as a rule — the same reason an
+            unaffordable grapple follow-up says "no Stamina" on its arrow. */}
+        {Boolean(move.is_secondary) && (
+          <span className="ml-1 text-[10px] font-semibold uppercase tracking-wide text-zinc-500">
+            secondary
+          </span>
+        )}
       </span>
       {/* Small (decided, reverted). Drawing this at Tic-square scale was
           tried — the idea being that a move in your hand should be the size
