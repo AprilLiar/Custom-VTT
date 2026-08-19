@@ -592,19 +592,29 @@ async function stepStat(io, { characterId, slotName, steps, emitEvent, tic, char
   ]);
   io.emit('die:updated', diePayload({ ...die, ...next, half_damage: next.half_damage ? 1 : 0 }));
   if (emitEvent && tic != null) {
-    await emitEvent(tic, 'damage_applied', {
-      declaredMoveId: null,
-      targetCharacterId: characterId,
-      targetCharacterName: characterName ?? null,
-      attackerCharacterName: null,
+    // **Its own event type, not `damage_applied` (bugfix).** A stat step is
+    // signed: positive damages, negative steps the Stat back UP. Borrowing the
+    // damage event made the log narrate a step up as "−1 steps of damage to
+    // Stamina" — reported as "stat stepping looks weird" — and left the step
+    // masquerading as an anonymous hit with no attacker and no move behind it,
+    // duplicating the `automation_fired` line that already described it
+    // properly. `stat_stepped` says what actually happened, in both directions,
+    // and the cutscene animates it as the Stat moving rather than as a blow
+    // landing.
+    await emitEvent(tic, 'stat_stepped', {
+      characterId,
+      characterName: characterName ?? null,
       slotName,
+      // Signed, deliberately: the direction is the whole point, and the
+      // renderer picks its wording from it rather than from a separate flag
+      // that could disagree.
       steps,
       sizeBefore: die.current_size,
       bonusBefore: die.bonus,
+      statusBefore: die.status,
       sizeAfter: next.current_size,
       bonusAfter: next.bonus,
       statusAfter: next.status,
-      source: 'automation',
     });
   }
   return true;

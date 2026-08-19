@@ -94,7 +94,10 @@ real. Two halves make a whole, and nothing else does.
 ### Locking and reverting
 
 **Locking in Stats** records your current dice as your *base* values.
-**Reverting** restores you to them. Between fights, reverting is how you heal.
+**Reverting** restores you to them — including clearing any **Half-Damage**
+marker, since a base value is a whole one and half a step is damage you have
+already taken. Between fights, reverting is how you heal, and it heals all of
+it.
 
 **Injuries** apply a structured penalty to the locked base rather than to your
 live dice, so a lasting injury survives a revert. That is the point of them.
@@ -268,8 +271,8 @@ What it changes is the move you declare **immediately after** it. That one
 goes onto the timeline **hidden**:
 
 - It shows **no Tell**. Nobody else sees a card for it at all.
-- It shows **no wind-up**. The grey marker that normally warns everyone which
-  Tic an attack begins on does not appear.
+- It shows **no wind-up**. The grey marking that normally shows everyone the
+  Tics an attack is winding up on does not appear.
 - It is otherwise **a completely ordinary declaration**. You pay its Stamina
   when you finish declaring, it occupies its Tics, and it resolves on its own
   frames exactly as it would have.
@@ -664,7 +667,16 @@ target is still in Startup. The interrupted character rolls their own Startup
 move's Roll — or **Body**, if that move has none — at **+1 per elapsed Active
 Tic**. Failing means the move is cancelled and half its Stamina Cost refunded.
 
-Getting caught winding up is how a fight turns over in one exchange.
+Getting caught winding up is how a fight turns over in one exchange — which is
+why a wind-up is not a secret. Every Tic an attack spends in **Startup** is
+marked on the Tic Counter for everyone: a grey square where it begins and a
+fainter one for each Tic it is still winding up on. A three-Tic wind-up
+therefore *looks* like a three-Tic wind-up, and you can see the window you are
+aiming an Interruption into rather than guessing at it.
+
+What the marking never tells you is **what** the move is, when its Active
+frames land, or how long it recovers for. That is what the Tell is for, and
+what reading one is worth.
 
 ## Stamina
 
