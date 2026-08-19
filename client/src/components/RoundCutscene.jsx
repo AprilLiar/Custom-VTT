@@ -4,7 +4,7 @@ import { AnimatePresence, motion, useAnimation, useReducedMotion } from 'framer-
 import { socket } from '../socket.js';
 import { getRoundReplay } from '../lib/api.js';
 import { loadCutsceneSpeed } from '../lib/theme.js';
-import { decomposeRoll, formatRollPart, formatRollTotal } from '../lib/dice.js';
+import { decomposeRoll, formatRollPart, formatRollBreakdown } from '../lib/dice.js';
 import {
   PHASE_BG,
   PHASE_BG_EXTENDED,
@@ -135,10 +135,13 @@ function eventNarration(ev, startTic) {
       const body = parts.join(' + ') || 'a roll';
       // The total is spelled out whenever it is not simply the one die's own
       // result — either several dice were summed, or a modifier applies.
+      // Itemised whenever the total is made of more than one named thing, so a
+      // Combat Style, a Stance matchup and a grapple read each read as their own
+      // term instead of melting into one figure (decided, new).
       const suffix =
-        parts.length === 1 && !p.modifier
+        parts.length === 1 && !p.modifier && !p.chainRollBonus
           ? ''
-          : ` — total ${formatRollTotal(p.dice, p.modifier ?? 0, p.total)}`;
+          : ` — total ${formatRollBreakdown(p.dice, p.modifierBreakdown, p.total, p.modifier ?? 0)}`;
       return `${prefix}${body}${suffix}.`;
     }
     case 'defense_resolved': {
@@ -288,7 +291,14 @@ function eventDetail(ev, startTic) {
             .join('\n')
         );
       }
-      if (p.modifier) {
+      // One line per named modifier, so the hover detail accounts for the total
+      // in full. Falls back to the bare number when the roll predates the
+      // itemised payload (stored replays are never rewritten — §0).
+      if (Array.isArray(p.modifierBreakdown) && p.modifierBreakdown.length) {
+        for (const t of p.modifierBreakdown) {
+          lines.push(`${t.label}: ${t.amount > 0 ? '+' : '−'}${Math.abs(t.amount)}`);
+        }
+      } else if (p.modifier) {
         lines.push(`Modifier: ${p.modifier > 0 ? '+' : ''}${p.modifier}, applied once to the total`);
       }
       break;

@@ -14,7 +14,7 @@
 // checked here rather than only in a browser.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { decomposeRoll, formatRollPart, formatRollTotal } from '../../client/src/lib/dice.js';
+import { decomposeRoll, formatRollPart, formatRollTotal, formatRollBreakdown } from '../../client/src/lib/dice.js';
 import { rollTotal } from '../gameLogic.js';
 
 test('decomposeRoll recovers the die face from the summed result', () => {
@@ -112,4 +112,39 @@ test('the printed parts and the printed total describe the same arithmetic', () 
   const shownFaces = dice.map((d) => decomposeRoll(d));
   const rebuilt = shownFaces.reduce((sum, f) => sum + f.raw + f.flat, 0) + modifier;
   assert.equal(rebuilt, rollTotal(dice, modifier));
+});
+
+// The itemised total the cutscene log now prints. A Combat Style is worth real
+// points and used to disappear into one unexplained figure — these pin down
+// that every named term shows up, and that the arithmetic still closes.
+test('formatRollBreakdown names each modifier and still adds up', () => {
+  const dice = [{ result: 6 }, { result: 3 }];
+  const terms = [
+    { label: 'Stance matchup', amount: 2 },
+    { label: 'Combat Style: Strength', amount: 3 },
+    { label: 'Held in a grapple', amount: -2 },
+  ];
+  assert.equal(
+    formatRollBreakdown(dice, terms, 12, 3),
+    '9 + 2 (Stance matchup) + 3 (Combat Style: Strength) − 2 (Held in a grapple) = 12'
+  );
+});
+
+test('formatRollBreakdown stays short when there is nothing to itemise', () => {
+  const dice = [{ result: 6 }];
+  // One term is not a breakdown — it falls back to the plain total line.
+  assert.equal(formatRollBreakdown(dice, [{ label: 'Stance matchup', amount: 2 }], 8, 2), '6 + 2 = 8');
+  assert.equal(formatRollBreakdown(dice, [], 6, 0), '6');
+  assert.equal(formatRollBreakdown(dice, undefined, 8, 2), '6 + 2 = 8');
+});
+
+test('formatRollBreakdown ignores zero-valued terms', () => {
+  const dice = [{ result: 4 }];
+  const terms = [
+    { label: 'Reasons to Fight', amount: 0 },
+    { label: 'Combat Style: Speed', amount: 3 },
+  ];
+  // Only one term survives the filter, so this is the plain form, not a list
+  // with a "+0" in it.
+  assert.equal(formatRollBreakdown(dice, terms, 7, 3), '4 + 3 = 7');
 });

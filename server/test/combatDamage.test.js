@@ -7,7 +7,7 @@ import {
   classifyDefenseCoverage,
   computeInterruptBonus,
   clampRecoveryExtension,
-  selectAutoDamageTarget,
+  selectAutoDamageTargets,
   selectUnevenCombatTarget,
   selectDefenseMove,
   activeFramePositions,
@@ -178,30 +178,38 @@ test('clampRecoveryExtension: stacks on top of an existing extension (e.g. a pri
 
 const die = (slot_name, status = 'active') => ({ slot_name, status });
 
-test('selectAutoDamageTarget: picks the first eligible Stat in the move\'s own listed order', () => {
+// **Every named Stat, not just the first (revised).** A move listing two Stats
+// used to hit exactly one of them, which made the second Stat decoration.
+test('selectAutoDamageTargets: every named Stat is hit, in the move\'s own listed order', () => {
   const dice = [die('Skull'), die('Body')];
-  const result = selectAutoDamageTarget({ effectiveAttackTargets: ['Skull', 'Body'], dice });
-  assert.equal(result.slot_name, 'Skull');
+  const result = selectAutoDamageTargets({ effectiveAttackTargets: ['Skull', 'Body'], dice });
+  assert.deepEqual(result.map((d) => d.slot_name), ['Skull', 'Body']);
 });
 
-test('selectAutoDamageTarget: skips an incapacitated die and falls through to the next allowed Stat', () => {
+test('selectAutoDamageTargets: an incapacitated Stat drops out, the rest still land', () => {
   const dice = [die('Skull', 'incapacitated'), die('Body')];
-  const result = selectAutoDamageTarget({ effectiveAttackTargets: ['Skull', 'Body'], dice });
-  assert.equal(result.slot_name, 'Body');
+  const result = selectAutoDamageTargets({ effectiveAttackTargets: ['Skull', 'Body'], dice });
+  assert.deepEqual(result.map((d) => d.slot_name), ['Body']);
 });
 
-test('selectAutoDamageTarget: Left before Right, matching CONCRETE_ATTACK_TARGET_NAMES canonical order', () => {
+test('selectAutoDamageTargets: Left before Right, matching CONCRETE_ATTACK_TARGET_NAMES canonical order', () => {
   const dice = [die('Right Hand'), die('Left Hand')];
-  const result = selectAutoDamageTarget({
+  const result = selectAutoDamageTargets({
     effectiveAttackTargets: ['Left Hand', 'Right Hand'],
     dice,
   });
-  assert.equal(result.slot_name, 'Left Hand');
+  assert.deepEqual(result.map((d) => d.slot_name), ['Left Hand', 'Right Hand']);
 });
 
-test('selectAutoDamageTarget: null when every allowed Stat is incapacitated or missing', () => {
+test('selectAutoDamageTargets: a Stat named twice is still hit once', () => {
+  const dice = [die('Skull')];
+  const result = selectAutoDamageTargets({ effectiveAttackTargets: ['Skull', 'Skull'], dice });
+  assert.equal(result.length, 1);
+});
+
+test('selectAutoDamageTargets: empty when every allowed Stat is incapacitated or missing', () => {
   const dice = [die('Skull', 'incapacitated')];
-  assert.equal(selectAutoDamageTarget({ effectiveAttackTargets: ['Skull', 'Brain'], dice }), null);
+  assert.deepEqual(selectAutoDamageTargets({ effectiveAttackTargets: ['Skull', 'Brain'], dice }), []);
 });
 
 const candidate = (characterId, slotStatuses) => ({

@@ -60,6 +60,23 @@ export function formatRollTotal(dice, modifier = 0, total) {
   return `${sum} ${modifier > 0 ? '+' : '−'} ${Math.abs(modifier)} = ${total ?? sum + modifier}`;
 }
 
+// The same total, itemised: `9 + 3 (Stance matchup) − 2 (Held in a grapple) = 10`.
+// Used by the cutscene log, where a modifier that appears from nowhere reads as
+// the engine making numbers up — a Combat Style in particular can be worth
+// several points and had no way to say so (decided, new).
+//
+// Falls back to formatRollTotal's plain form when there is nothing to itemise,
+// so a roll with one unremarkable modifier stays short.
+export function formatRollBreakdown(dice, terms, total, modifier = 0) {
+  const parts = (terms ?? []).filter((t) => t && t.amount);
+  if (parts.length < 2) return formatRollTotal(dice, modifier, total);
+  const sum = (dice ?? []).reduce((acc, d) => acc + (d.result ?? 0), 0);
+  const body = parts
+    .map((t) => `${t.amount > 0 ? '+' : '−'} ${Math.abs(t.amount)} (${t.label})`)
+    .join(' ');
+  return `${sum} ${body} = ${total ?? sum + parts.reduce((a, t) => a + t.amount, 0)}`;
+}
+
 // Green above locked, red below, no tint when equal; opacity scales with the gap.
 export function tintFor(die) {
   if (die.status === 'incapacitated') return null;

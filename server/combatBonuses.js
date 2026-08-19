@@ -37,15 +37,20 @@ export async function getReasonsToFightBonus(characterId) {
 //
 // Returns 0 (not null) whenever the matchup is undefined, so callers can add
 // it unconditionally:
-//   - Uneven Combat is on. Decided: omitted for *every* participant, not
-//     just the outnumbered side. With more than two fighters there is no
-//     single enemy stance to score against, and handing the lone fighter a
-//     bonus per opponent (or averaging them) would be a new rule nobody
-//     asked for.
 //   - the character isn't seated in a pair whose fight has actually started.
 //   - their side of that pair faces anything other than exactly one
-//     opponent — same reason as Uneven Combat, reached independently of the
-//     toggle since the app never enforces it.
+//     opponent. With more than one enemy there is no single stance to score
+//     against, and handing the outnumbered fighter a bonus per opponent (or
+//     averaging them) would be a new rule nobody asked for.
+//
+// **The Uneven Combat toggle is NOT one of those conditions (bugfix).** This
+// used to return 0 for everyone the moment the toggle was on, anywhere in the
+// fight — but the toggle only *permits* lopsided pairs, it does not make any
+// particular pair lopsided. A plain 1v1 with the toggle enabled has exactly
+// one stance on each side and a perfectly well-defined matchup, and silently
+// zeroing it took the modifier out of every roll in that fight as well as the
+// badge off the VS divider. The opponent count below is the real rule and
+// already answers the genuinely-uneven case on its own.
 //   - either fighter has no active stance.
 //
 // `requireActiveFight: false` drops only the first of those, for the round's
@@ -82,13 +87,24 @@ export async function getReasonsToFightBonus(characterId) {
 // move look like it wasn't out yet. Every engine roll passes its own Tic;
 // manual rolls omit it and fall back to current_tic, which is accurate
 // precisely because no resolution is mid-flight when a human clicks a die.
-export async function getStanceMatchupBonus(
+export async function getStanceMatchupBonus(characterId, opts = {}) {
+  return (await stanceMatchupParts(characterId, opts)).total;
+}
+
+// The matchup split into the two things it is actually made of: what the two
+// STANCES are worth against each other (plus whatever the opponent's own move
+// contributes, which is theirs and not attributable to this fighter's choice),
+// and what THIS roll's move added on top by carrying a Combat Style.
+//
+// Separated because the cutscene log now says so out loud (decided, new): a
+// Combat Style can swing a roll several points and it used to vanish into one
+// unexplained "Modifier: +5", which read as the engine inventing numbers. The
+// sum is unchanged — this only makes the halves nameable.
+async function stanceMatchupParts(
   characterId,
   { requireActiveFight = true, moveId = null, includeMoveStyles = true, tic = null } = {}
 ) {
-  const state = await one('SELECT uneven_combat_enabled FROM combat_state WHERE id = 1');
-  if (!state || state.uneven_combat_enabled) return 0;
-
+  const none = { total: 0, stance: 0, moveStyle: 0, moveStyleId: null };
   const seat = requireActiveFight
     ? await one(
         `SELECT cp.pair_index AS pairIndex, cp.side AS side, pr.current_tic AS currentTic
@@ -104,20 +120,20 @@ export async function getStanceMatchupBonus(
          WHERE cp.character_id = ?`,
         [characterId]
       );
-  if (!seat) return 0;
+  if (!seat) return none;
 
   const opponents = await all(
     'SELECT character_id AS characterId FROM combat_participants WHERE pair_index = ? AND side != ?',
     [seat.pairIndex, seat.side]
   );
-  if (opponents.length !== 1) return 0;
+  if (opponents.length !== 1) return none;
   const opponentId = opponents[0].characterId;
 
   const [mine, theirs] = await Promise.all([
     activeStanceOf(characterId),
     activeStanceOf(opponentId),
   ]);
-  if (!mine || !theirs) return 0;
+  if (!mine || !theirs) return none;
 
   const atTic = tic ?? seat.currentTic;
   const [myMoveStyle, theirMoveStyle] = includeMoveStyles
@@ -130,11 +146,17 @@ export async function getStanceMatchupBonus(
   const counters = await all(
     'SELECT attacker_attribute_id, defender_attribute_id, bonus FROM attribute_counters'
   );
-  return pairScore(
-    matchupStyles([mine.attribute_a_id, mine.attribute_b_id], myMoveStyle),
-    matchupStyles([theirs.attribute_a_id, theirs.attribute_b_id], theirMoveStyle),
-    buildBeats(counters)
-  );
+  const beats = buildBeats(counters);
+  const myStance = [mine.attribute_a_id, mine.attribute_b_id];
+  const theirSide = matchupStyles([theirs.attribute_a_id, theirs.attribute_b_id], theirMoveStyle);
+  const withoutMyMove = pairScore(myStance, theirSide, beats);
+  const total = pairScore(matchupStyles(myStance, myMoveStyle), theirSide, beats);
+  return {
+    total,
+    stance: withoutMyMove,
+    moveStyle: total - withoutMyMove,
+    moveStyleId: myMoveStyle ?? null,
+  };
 }
 
 function activeStanceOf(characterId) {
@@ -178,13 +200,13 @@ async function combatStyleInPlay(characterId, tic) {
 // fighters, visible during Declaration when nothing has revealed yet, and a
 // number that flickered as moves came and went would be unreadable.
 //
-// Returns null whenever the matchup rule does not apply at all (Uneven
-// Combat, a side that isn't exactly one fighter, a missing stance), so the UI
-// can render nothing rather than a misleading 0.
+// Returns null whenever the matchup rule does not apply at all (a side that
+// isn't exactly one fighter, a missing stance), so the UI can render nothing
+// rather than a misleading 0. **Not gated on the Uneven Combat toggle** — see
+// getStanceMatchupBonus above for why that gate was wrong and removed; this
+// function's own one-per-side check is the rule, and it answers the actually-
+// uneven pairs the toggle exists to allow.
 export async function getPairStanceMatchup(pairIndex) {
-  const state = await one('SELECT uneven_combat_enabled FROM combat_state WHERE id = 1');
-  if (!state || state.uneven_combat_enabled) return null;
-
   const seats = await all(
     'SELECT character_id AS characterId, side FROM combat_participants WHERE pair_index = ?',
     [pairIndex]
@@ -206,10 +228,37 @@ export async function getPairStanceMatchup(pairIndex) {
   const nameById = new Map(attributes.map((a) => [a.id, a.name]));
   const leftStyles = [leftStance.attribute_a_id, leftStance.attribute_b_id];
   const rightStyles = [rightStance.attribute_a_id, rightStance.attribute_b_id];
-  const score = pairScore(leftStyles, rightStyles, buildBeats(counters));
+  const beats = buildBeats(counters);
+  const score = pairScore(leftStyles, rightStyles, beats);
   // Names ride along so the Arena can label the matchup without fetching the
   // ruleset and re-deriving what the server just computed.
   const namesOf = (ids) => ids.map((id) => nameById.get(id)).filter(Boolean);
+
+  // **What each possible Combat Style would add, per side (new).** A move may
+  // carry a Combat Style of its own, which joins its user's stance for the
+  // scoring — so the same move is worth a different number depending on who is
+  // holding it and who they are facing, and until now the only way to find that
+  // number out was to declare the move and watch the roll.
+  //
+  // Computed here, per side, for every style in the ruleset rather than for one
+  // move: the declare picker needs it for a whole list of moves at once, the
+  // attributes table is a handful of rows, and this is the one place that
+  // already holds both stances and the counter chart. The client looks its move
+  // up by `combat_style_attribute_id` and shows the delta.
+  //
+  // **Scored against the opponent's STANCE only**, exactly like `score` itself
+  // (see this function's own comment): during Declaration nothing has revealed,
+  // so what the other side's move contributes is unknowable — and a number that
+  // changed as their moves came and went would be unreadable anyway.
+  const deltasFor = (mineStyles, theirStyles) => {
+    const base = pairScore(mineStyles, theirStyles, beats);
+    return attributes.map((a) => ({
+      attributeId: a.id,
+      name: a.name,
+      delta: pairScore(matchupStyles(mineStyles, a.id), theirStyles, beats) - base,
+    }));
+  };
+
   // pairScore is antisymmetric — scoring the other direction is exactly the
   // negation — so one call answers both sides.
   return {
@@ -220,6 +269,8 @@ export async function getPairStanceMatchup(pairIndex) {
     rightStyles,
     leftStyleNames: namesOf(leftStyles),
     rightStyleNames: namesOf(rightStyles),
+    leftStyleDeltas: deltasFor(leftStyles, rightStyles),
+    rightStyleDeltas: deltasFor(rightStyles, leftStyles),
     left: score,
     right: -score,
   };
@@ -231,13 +282,33 @@ export async function getPairStanceMatchup(pairIndex) {
 // `moveId` names the move this roll belongs to, when there is one, so its
 // Combat Style joins the matchup (see getStanceMatchupBonus). Omitted by the
 // ad-hoc roll paths, which fall back to whatever the roller has in play.
-export async function getCombatRollBonus(characterId, { moveId = null, tic = null } = {}) {
-  const [reasons, stance, grapple] = await Promise.all([
+export async function getCombatRollBonus(characterId, opts = {}) {
+  return (await getCombatRollBonusBreakdown(characterId, opts)).total;
+}
+
+// The same sum, itemised — every always-on modifier as its own named term, in
+// the order a person would read them out. Roll events carry this so the
+// cutscene log can show what a total is made of instead of one opaque number,
+// and so a Combat Style's contribution in particular is visibly its own thing
+// (decided, new). Zero-valued terms are dropped: a list that says
+// "Reasons to Fight +0" every round is noise, not transparency.
+export async function getCombatRollBonusBreakdown(characterId, { moveId = null, tic = null } = {}) {
+  const [reasons, matchup, grapple] = await Promise.all([
     getReasonsToFightBonus(characterId),
-    getStanceMatchupBonus(characterId, { moveId, tic }),
+    stanceMatchupParts(characterId, { moveId, tic }),
     getGrapplePenalty(characterId, tic),
   ]);
-  return reasons + stance + grapple;
+  const styleName =
+    matchup.moveStyleId != null
+      ? (await one('SELECT name FROM attributes WHERE id = ?', [matchup.moveStyleId]))?.name ?? null
+      : null;
+  const terms = [
+    { key: 'reasons', label: 'Reasons to Fight', amount: reasons },
+    { key: 'stance', label: 'Stance matchup', amount: matchup.stance },
+    { key: 'combat_style', label: styleName ? `Combat Style: ${styleName}` : 'Combat Style', amount: matchup.moveStyle },
+    { key: 'grapple', label: 'Held in a grapple', amount: grapple },
+  ].filter((t) => t.amount !== 0);
+  return { total: reasons + matchup.total + grapple, terms };
 }
 
 // Grappling's −2: someone held in a grapple rolls worse for as long as the
