@@ -898,14 +898,20 @@ const TRIGGER_LABELS = {
 // this firing and whoever's on the other side of it — see combat:apply_
 // damage (hit), pool:roll/dice:roll_custom (miss), and combat:resolve_
 // defense (block/defense_success/defense_failure) for exactly who plays
-// which role at each trigger. `opponentDeclaredMoveId` is optional — a
-// plain Hit/Miss has no specific declared move of the opponent's tied to
-// the exchange, so `opponent_recovery` falls back to whichever of their
-// declared moves currently ends latest (same "most relevant in-flight
-// move" query move:declare's own placement-Tic floor already uses);
-// opponent_recovery/opponent_stamina are silently skipped (with their own
-// note in the chat line) if there's no opponent at all (declaredMoveId
-// unresolvable) or, for opponent_recovery, no declared move to extend.
+// which role at each trigger.
+//
+// **Recovery is applied to the clock, not to a row (decided, new).** An
+// `opponent_recovery`/`self_recovery` no longer picks a declared move to
+// bump a counter on; it asks what that character is doing at the Tic it
+// fires on — winding up, mid-move, or between moves — puts the frames where
+// that answer says they go, and slides everything they had declared after it
+// that many Tics later. `planImposedRecovery` in server/combatTiming.js
+// holds the whole rule, and `imposeRecovery` in server/roundResolution.js
+// is the only caller. The old "whichever of their declared moves ends
+// latest" fallback is gone with it: the question was never *which* move, and
+// "between moves" is now a real answer rather than a missing one.
+// opponent_recovery/opponent_stamina are still silently skipped if there is
+// no opponent at all (declaredMoveId unresolvable).
 
 // Combat Automation overhaul: fireMissIfNoDamage used to live here, firing
 // a move's 'miss' trigger whenever its own reveal-time roll came back under

@@ -444,6 +444,32 @@ A move can never require itself, and deleting a move frees anything that
 required it. Moves chained by a successful **Grapple** are placed by the
 system rather than declared, so they ignore Requirements entirely.
 
+### Recovery somebody else puts on you
+
+Some moves do more than hurt. A move can carry an effect that **puts Recovery
+on the person it lands on** — a shove that staggers, a clinch that turns them
+around, a stamp that costs them a beat.
+
+That Recovery is not paperwork for later. It happens **the moment the move
+lands**, on the clock, and what it does depends on what you were doing right
+then:
+
+- **Caught winding up.** The extra Tics go onto that move's **Startup**. The
+  move is not ruined — it is *late*. It still comes out, further down the
+  strip than you planned.
+- **Caught mid-move.** Whatever you were doing plays out exactly as declared,
+  and the extra Tics go **on the end**, after your own Recovery. You finish
+  the punch and then you are stuck there.
+- **Caught between moves.** There is nothing to lengthen, so the cost is the
+  delay itself.
+
+In all three, **everything else you had queued slides that many Tics later**.
+A plan is a sequence, and pushing one part of it back pushes the rest.
+
+> This is the cheapest thing in the game to underestimate. Two Tics of
+> imposed Recovery on someone who had three moves lined up costs them two Tics
+> on all three — and hands you the initiative for the rest of the round.
+
 ### Initiative
 
 At the start of every round, both sides roll **Brain**. **The loser declares

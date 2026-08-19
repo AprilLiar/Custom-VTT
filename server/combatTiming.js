@@ -183,3 +183,88 @@ export function findInterruptEligibleTic({ attackerActiveStart, attackerActiveEn
 export function overlapsRoundWindow({ placementTic, recoveryEndTic, roundStartTic, roundLength }) {
   return placementTic < roundStartTic + roundLength && recoveryEndTic > roundStartTic;
 }
+
+// ---------- Imposed Recovery (decided, new) ----------
+//
+// An `opponent_recovery` (or `self_recovery`) automation used to be a purely
+// bookkeeping change: it bumped one declared move's `recovery_extension_tics`
+// and nothing on the board moved. **It lands on the clock now** — the extra
+// Recovery is applied at the Tic it fires on, and everything that character
+// had declared after it slides that many Tics later.
+//
+// Where the frames go depends on what the target is doing at that exact Tic,
+// and there are exactly three answers:
+//
+//   - **`'startup'`** — caught winding up. The extra Tics are added to that
+//     move's own Startup, so the move is *delayed*: `placementTic` stays
+//     where it is (the wind-up genuinely started there) and `revealTic`
+//     moves later, which drags Active and Recovery with it.
+//   - **`'in-flight'`** — caught mid-Active or mid-Recovery. The move plays
+//     out as declared and the extra Tics go on the end, after its own
+//     Recovery — i.e. `recoveryExtensionTics`, the same column a Block's
+//     too-late coverage already writes to.
+//   - **`'idle'`** — caught between moves. There is no move to lengthen, so
+//     the whole effect is the displacement: everything declared later slides.
+//     Nothing is drawn on the idle Tics themselves, because there is no
+//     declared move there to draw (see the plan for why this is deliberate
+//     rather than missing).
+//
+// In all three the tail is the same: **every move of that character starting
+// after the affected one moves later by `tics`.** That is what keeps the
+// timeline legal — lengthening a move without moving what follows it would
+// overlap the two, which is precisely the state `computePlacementTic` exists
+// to prevent at declare time.
+//
+// Pure: `moves` in, `updates` out, no database and no clock of its own. The
+// caller passes this character's declared moves as
+// `{ id, placementTic, revealTic, activeTics, recoveryTics, recoveryExtensionTics }`
+// and writes back whatever comes out. `updates` only ever contains rows that
+// actually changed, so an empty list is a legitimate "nothing to do".
+//
+// `tics` must be positive — a *negative* self_recovery shrinks a window, and
+// pulling later moves earlier would violate the placement floors they were
+// declared under, so that case is deliberately left to the plain
+// `clampRecoveryExtension` path and answers `{ phase: 'none' }` here.
+export function planImposedRecovery({ moves, tic, tics }) {
+  const none = { phase: 'none', affectedMoveId: null, updates: [] };
+  if (!Number.isInteger(tics) || tics <= 0) return none;
+  if (!Number.isInteger(tic)) return none;
+
+  const withEnds = (moves ?? []).map((m) => ({
+    ...m,
+    recoveryEndTic: m.revealTic + m.activeTics + m.recoveryTics + (m.recoveryExtensionTics ?? 0),
+  }));
+
+  // Half-open, like every other footprint check here: a move owns
+  // [placementTic, recoveryEndTic).
+  const hit = withEnds.find((m) => m.placementTic <= tic && tic < m.recoveryEndTic) ?? null;
+  const phase = hit == null ? 'idle' : tic < hit.revealTic ? 'startup' : 'in-flight';
+
+  const updates = [];
+  if (hit && phase === 'startup') {
+    updates.push({ id: hit.id, placementTic: hit.placementTic, revealTic: hit.revealTic + tics,
+      recoveryExtensionTics: hit.recoveryExtensionTics ?? 0 });
+  } else if (hit) {
+    updates.push({ id: hit.id, placementTic: hit.placementTic, revealTic: hit.revealTic,
+      recoveryExtensionTics: (hit.recoveryExtensionTics ?? 0) + tics });
+  }
+
+  // "After the affected one" is measured from where the affected move
+  // starts, not from `tic` — a move that begins on the same Tic the hit move
+  // begins on cannot exist (footprints never overlap), so this is an exact
+  // partition rather than a heuristic. With nothing hit, `tic` itself is the
+  // dividing line.
+  const after = hit ? hit.placementTic : tic;
+  for (const m of withEnds) {
+    if (m.placementTic <= after) continue;
+    if (hit && m.id === hit.id) continue;
+    updates.push({
+      id: m.id,
+      placementTic: m.placementTic + tics,
+      revealTic: m.revealTic + tics,
+      recoveryExtensionTics: m.recoveryExtensionTics ?? 0,
+    });
+  }
+
+  return { phase, affectedMoveId: hit?.id ?? null, updates };
+}
