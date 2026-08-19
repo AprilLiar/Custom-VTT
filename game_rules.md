@@ -361,6 +361,17 @@ also answers its own left/right question, so such a move needs only one Tell.
 **Custom Roll** replaces the Stat slots with a single flat die (d4–d12)
 belonging to the *item* rather than the wielder. That is how weapons work.
 
+**A modifier modifies the roll, not each die.** Everything that adjusts a roll
+— the move's own Roll Modifier, your Reasons to Fight, the Stance matchup, a
+Perk's bonus, whatever the GM adds by hand — is summed into one number and
+added **once**, at the end, to the whole roll.
+
+So a move rolling Skull + Body + Brain at +4 throws three dice, adds them up,
+and then adds 4. It does not add 4 three times.
+
+> The one thing that *is* per-die is a die's own bonus — the `+1`s a Stat
+> collects once it is past d12. That belongs to the die, so it rides with it.
+
 ### Attack Target
 
 Every Move with a Roll lists which Stats its damage may land on. An **empty**

@@ -1392,13 +1392,16 @@ function buildDeclarePayload(character, move, roundStartTic, declaredMoves) {
 // figure and a frame glyph and nothing else, which is not enough to choose
 // with.
 //
-// **Hover on a mouse, an explicit button on touch.** Tap is already spoken
-// for here: it is how a move gets picked up for tap-to-place (see
-// setDraggingMove below), so a tap-to-read would collide with the one gesture
-// that matters. The ⓘ opens it on any device and is the whole touch story;
-// hover is the desktop shortcut on top. Same portal, same z-[80], and the
-// same reason as CompactDeclaredMoveCard's: an ancestor with `perspective`
-// establishes a stacking context that no z-index inside it can escape.
+// **Opened only by the ⓘ, on every device (decided, revised).** Hover was
+// tried as a mouse shortcut and removed: the card covers the Tic Counter you
+// are aiming at, the pointer that opened it is already on the chip you are
+// about to drag, and it stays up until the pointer leaves — so reaching for a
+// move hid the thing you needed to see to place it. Tap was never available
+// either, since tapping a chip is how a move gets picked up for tap-to-place.
+// Reading and aiming are separate intentions; they get separate controls, and
+// starting to aim (drag or tap) closes the card. Same portal, same z-[80],
+// and the same reason as CompactDeclaredMoveCard's: an ancestor with
+// `perspective` establishes a stacking context no z-index inside it escapes.
 function DeclareMoveInfo({ move, anchorRef, open, onClose, tellById, allMoves, tags }) {
   const pos = useHoverCardPosition(anchorRef, open);
   const moveTags = (tags ?? []).filter((t) => (move.tag_ids ?? []).includes(t.id));
@@ -1483,20 +1486,31 @@ function DeclareMoveCard({ character, move, roundStartTic, declaredMoves, tags, 
       </button>
     <button
       type="button"
-      // Hover is the mouse shortcut for the same card the ⓘ opens. Closed on
-      // mouseleave only — a card opened by the button stays until it is
-      // dismissed, which is what makes it usable without a pointer.
-      onMouseEnter={() => setShowCard(true)}
-      onMouseLeave={() => setShowCard(false)}
+      // **The ⓘ is the only way in (decided, fix).** Hovering the chip used to
+      // open the card too, which sounded like a free shortcut and was not: the
+      // card pops over the Tic Counter, the pointer is already on the chip you
+      // are about to drag, and it does not close until the pointer leaves —
+      // so the moment you reached for a move you lost sight of where to put
+      // it. Reading a move and aiming it are two different intentions and now
+      // take two different actions.
       draggable={!blockedByRequirement}
       disabled={blockedByRequirement}
       onDragStart={(e) => {
+        // Picking the move up dismisses whatever you were reading,
+        // unconditionally — the card and the drop target occupy the same
+        // screen, so one has to give way, and the drag is the deliberate act.
+        setShowCard(false);
         e.dataTransfer.setData('application/x-vtt-move', JSON.stringify(payload));
         e.dataTransfer.effectAllowed = 'copy';
         setDraggingMove(payload);
       }}
       onDragEnd={() => setDraggingMove(null)}
-      onClick={() => !blockedByRequirement && setDraggingMove(payload)}
+      // The tap-to-place half of the same gesture: selecting a move to aim is
+      // the same intention as dragging one, so it closes the card too.
+      onClick={() => {
+        setShowCard(false);
+        if (!blockedByRequirement) setDraggingMove(payload);
+      }}
       title={
         blockedByRequirement
           ? `Can only be declared immediately after ${requiredName}.`

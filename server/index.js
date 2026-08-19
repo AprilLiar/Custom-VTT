@@ -28,6 +28,7 @@ import {
   stepDie,
   applyRankPenalty,
   applyHalfDamage,
+  rollTotal,
 } from './gameLogic.js';
 import { getCombatRollBonus, getPairStanceMatchup, getStanceMatchupBonus } from './combatBonuses.js';
 import {
@@ -1396,7 +1397,12 @@ app.get('/api/chat', wrap(async (_req, res) => {
         characterName: isGmPost ? 'GM' : (row.character_name ?? '(deleted)'),
         modifier: row.modifier,
         dice,
-        total: dice.reduce((sum, d) => sum + d.result, 0),
+        // Same rule as logRoll's own broadcast: a die's stored `result` is
+        // face + its own bonus, and the shared modifier is applied once here.
+        // (Rows written before that change baked the modifier into every die
+        // and would double-count — chat is wiped on every server restart, so
+        // a deploy leaves none of them behind.)
+        total: rollTotal(dice, row.modifier),
         message: row.content,
         imageData: row.image_data,
         imageMimeType: row.image_mime_type,
@@ -1517,7 +1523,11 @@ io.on('connection', (socket) => {
     const character = await getCharacter(die.character_id);
     if (!character) return;
     const mod = clampModifier(modifier) + (await getCombatRollBonus(character.id));
-    const result = rollDie(die.current_size) + die.bonus + mod;
+    // Face + the die's OWN bonus. The shared modifier is applied once to the
+    // roll, not to each die — see rollTotal in gameLogic.js. On a single-die
+    // roll that is the same number either way; it is done here too so every
+    // roll payload in the app has one shape for the client to read.
+    const result = rollDie(die.current_size) + die.bonus;
     await logRoll(io, {
       characterId: character.id,
       characterName: character.name,
@@ -1546,7 +1556,7 @@ io.on('connection', (socket) => {
     const mod =
       clampModifier(modifier) +
       (asGm ? 0 : await getCombatRollBonus(character.id, { moveId: await moveIdOfDeclared(declaredMoveId) }));
-    const result = rollDie(die) + mod;
+    const result = rollDie(die); // the modifier lands on the total — see die:roll above
     const rollContext = asGm ? null : await buildRollContext(character.id, declaredMoveId);
     await logRoll(io, {
       characterId: asGm ? GM_CHAT_SENTINEL_ID : character.id,
@@ -1578,11 +1588,14 @@ io.on('connection', (socket) => {
     const mod =
       clampModifier(modifier) +
       (await getCombatRollBonus(character.id, { moveId: await moveIdOfDeclared(declaredMoveId) }));
+    // **One modifier, applied once (decided, fix).** This used to add `mod` to
+    // every die, so a three-Stat pool at +3 collected +9 — see rollTotal in
+    // gameLogic.js for why that is not what any modifier in this game means.
     const rolledDice = dice.map((d) => ({
       slot_name: d.slot_name,
       size: d.current_size,
       bonus: d.bonus,
-      result: rollDie(d.current_size) + d.bonus + mod,
+      result: rollDie(d.current_size) + d.bonus,
     }));
     const rollContext = await buildRollContext(character.id, declaredMoveId);
     await logRoll(io, {
@@ -1592,7 +1605,7 @@ io.on('connection', (socket) => {
       dice: rolledDice,
       rollContext,
     });
-    const total = rolledDice.reduce((sum, d) => sum + d.result, 0);
+    const total = rollTotal(rolledDice, mod);
     // Out-of-combat checks resolve themselves (decided, new). If this roll
     // is answering a Roll Request the GM gave a target number, the server —
     // which is the only side that ever knew the number — compares and posts
@@ -3364,7 +3377,10 @@ io.on('connection', (socket) => {
           blockedUntilTic: blockedUntilByChar.get(p.character_id) ?? null,
           nextRoundStartTic: nextRoundStartTicByPair.get(p.pair_index),
         });
-      const result = rollDie(die.current_size) + die.bonus + modifier;
+      const brainDice = [
+        { slot_name: 'Brain', size: die.current_size, bonus: die.bonus, result: rollDie(die.current_size) + die.bonus },
+      ];
+      const result = rollTotal(brainDice, modifier);
       if (!rollsByPair.has(p.pair_index)) rollsByPair.set(p.pair_index, { left: [], right: [] });
       rollsByPair.get(p.pair_index)[p.side].push({
         characterId: character.id,
@@ -3377,7 +3393,7 @@ io.on('connection', (socket) => {
         characterId: character.id,
         characterName: character.name,
         modifier,
-        dice: [{ slot_name: 'Brain', size: die.current_size, bonus: die.bonus, result }],
+        dice: brainDice,
       });
     }
 

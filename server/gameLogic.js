@@ -104,3 +104,22 @@ export function applyHalfDamage({ current_size, bonus, status, half_damage }) {
   }
   return { current_size, bonus, status, half_damage: true };
 }
+
+// **A modifier modifies the ROLL, not each die** (decided, fix). Every
+// modifier in the game — the ad-hoc one typed into a roll dialog, Reasons to
+// Fight, the Stance matchup, a move's own Roll Modifier, a Perk's per-move
+// bonus — used to be added to each die separately, so a move rolling three
+// Stats at +3 collected +9. That is not what any of those numbers mean, and
+// it made a wide Roll worth far more than its dice.
+//
+// Each die's own `result` is therefore its face plus **its own** flat bonus
+// (the one it earned by stepping past d12, which really does belong to that
+// die), and the shared modifier lands once, here, on the sum.
+//
+// This is also the shape every roll payload now carries: `dice[].result`
+// never includes the shared modifier, and `total` always does. The client's
+// decomposeRoll relies on exactly that split to recover a die's face.
+export function rollTotal(dice, modifier = 0) {
+  const sum = (dice ?? []).reduce((acc, d) => acc + (d?.result ?? 0), 0);
+  return sum + (Number.isFinite(modifier) ? modifier : 0);
+}

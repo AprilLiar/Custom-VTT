@@ -44,7 +44,7 @@
 // if either one changes.
 
 import { all, one, run } from './db.js';
-import { rollDie, applyHalfDamage, clamp, stepDie } from './gameLogic.js';
+import { rollDie, applyHalfDamage, clamp, stepDie, rollTotal } from './gameLogic.js';
 import {
   parseConcreteAttackTargets,
   expandAttackTargets,
@@ -198,7 +198,10 @@ async function logRoll(io, { characterId, characterName, modifier, dice, rollCon
     characterName,
     modifier,
     dice,
-    total: dice.reduce((sum, d) => sum + d.result, 0),
+    // rollTotal, not a bare sum: a die's own `result` no longer carries the
+    // shared modifier (see rollTotal in gameLogic.js), so the total is where
+    // that modifier is actually applied — once, to the sum.
+    total: rollTotal(dice, modifier),
     timestamp: new Date().toISOString(),
   });
 }
@@ -645,12 +648,17 @@ async function checkInterrupt(io, { targetCharacterId, attackerRevealTic, attack
   }
   if (!die) return;
 
-  const result = rollDie(die.current_size) + (die.bonus ?? 0) + mod;
+  // The die's own line carries face + its own bonus; the shared modifier is
+  // applied once, to the roll (rollTotal in gameLogic.js). `result` is what
+  // the mechanic below compares against, so it is the total, not the face.
+  const face = rollDie(die.current_size) + (die.bonus ?? 0);
+  const dice = [{ slot_name: die.slot_name, size: die.current_size, bonus: die.bonus ?? 0, result: face }];
+  const result = rollTotal(dice, mod);
   await logRoll(io, {
     characterId: targetCharacterId,
     characterName: startupDM.character_name,
     modifier: mod,
-    dice: [{ slot_name: die.slot_name, size: die.current_size, bonus: die.bonus ?? 0, result }],
+    dice,
   });
 
   // (Needs confirmation, per the plan's own 4.4 note): threshold assumed to
@@ -1070,17 +1078,17 @@ async function rollFor(io, { characterId, characterName, moveId, moveName, slotN
 
   let dice;
   if (rollType === 'custom') {
-    dice = [{ slot_name: 'Custom', size: customRollSize, bonus: 0, result: rollDie(customRollSize) + mod }];
+    dice = [{ slot_name: 'Custom', size: customRollSize, bonus: 0, result: rollDie(customRollSize) }];
   } else {
     const resolved = await resolveMoveRollDice(characterId, slotNames, appendageChoice);
     dice = resolved.map((d) => ({
       slot_name: d.slot_name,
       size: d.current_size,
       bonus: d.bonus,
-      result: rollDie(d.current_size) + d.bonus + mod,
+      result: rollDie(d.current_size) + d.bonus,
     }));
   }
-  const total = dice.reduce((sum, d) => sum + d.result, 0);
+  const total = rollTotal(dice, mod);
   await logRoll(io, { characterId, characterName, modifier: mod, dice });
   await emitEvent(tic, 'roll', {
     declaredMoveId,
@@ -1651,24 +1659,27 @@ async function resolveAttack(io, { row, pairIndex, tic, emitEvent }) {
   const mod = row.rollModifier + rollBonusRow.bonus + bonusMods;
   let dice;
   if (row.rollType === 'custom') {
-    dice = [{ slot_name: 'Custom', size: row.customRollSize, bonus: 0, result: rollDie(row.customRollSize) + mod }];
+    dice = [{ slot_name: 'Custom', size: row.customRollSize, bonus: 0, result: rollDie(row.customRollSize) }];
   } else {
     const resolved = await resolveMoveRollDice(row.characterId, row.rollSlotNames, row.appendageChoice);
     dice = resolved.map((d) => ({
       slot_name: d.slot_name,
       size: d.current_size,
       bonus: d.bonus,
-      result: rollDie(d.current_size) + d.bonus + mod,
+      result: rollDie(d.current_size) + d.bonus,
     }));
   }
-  // **The chain swing is TOTAL-level** — added once, here, to the summed roll,
-  // never folded into `mod` above. `mod` is applied to every die separately, so
-  // a ±5 in there would pay out per die and a three-die follow-up would be
-  // worth ±15. Non-zero only on a move the engine declared retroactively off a
-  // won grapple; every ordinary declared move carries 0 (see
+  // The chain swing rides the same total-level rule every modifier now
+  // follows (rollTotal in gameLogic.js) — added once to the summed roll. It
+  // is kept out of `mod` only so the ±5 stays its own line in the cutscene
+  // rather than disappearing into the move's own modifier; the arithmetic is
+  // identical either way now that `mod` is total-level too. (It had to be
+  // separate when `mod` was applied per die: a ±5 in there paid out per die
+  // and a three-die follow-up was worth ±15.) Non-zero only on a move the
+  // engine declared retroactively off a won grapple (see
   // declared_moves.chain_roll_bonus).
   const chainRollBonus = row.chainRollBonus ?? 0;
-  const total = dice.reduce((sum, d) => sum + d.result, 0) + chainRollBonus;
+  const total = rollTotal(dice, mod + chainRollBonus);
   await logRoll(io, { characterId: row.characterId, characterName: row.characterName, modifier: mod, dice });
   // characterName rides along for the same §0 reason every other payload
   // carries one: the cutscene names the roller in its own sentence, and a
@@ -1923,7 +1934,7 @@ async function resolveAttack(io, { row, pairIndex, tic, emitEvent }) {
   let blockDice;
   if (defenderDM.roll_type === 'custom' && defenderDM.custom_roll_size != null) {
     blockDice = [
-      { slot_name: 'Custom', size: defenderDM.custom_roll_size, bonus: 0, result: rollDie(defenderDM.custom_roll_size) + defMod },
+      { slot_name: 'Custom', size: defenderDM.custom_roll_size, bonus: 0, result: rollDie(defenderDM.custom_roll_size) },
     ];
   } else {
     const slotNames = expandRollSlotRows([...baseSlotRows, ...defensiveSlotRows]);
@@ -1932,10 +1943,10 @@ async function resolveAttack(io, { row, pairIndex, tic, emitEvent }) {
       slot_name: d.slot_name,
       size: d.current_size,
       bonus: d.bonus,
-      result: rollDie(d.current_size) + d.bonus + defMod,
+      result: rollDie(d.current_size) + d.bonus,
     }));
   }
-  const blockResult = blockDice.reduce((sum, d) => sum + d.result, 0);
+  const blockResult = rollTotal(blockDice, defMod);
   await logRoll(io, {
     characterId: defenderDM.character_id,
     characterName: defenderDM.character_name,
@@ -2526,7 +2537,10 @@ async function startPairDeclaration(io, pairIndex) {
         blockedUntilTic: blockedUntilByChar.get(p.character_id) ?? null,
         nextRoundStartTic,
       });
-    const result = rollDie(die.current_size) + die.bonus + modifier;
+    const brainDice = [
+      { slot_name: 'Brain', size: die.current_size, bonus: die.bonus, result: rollDie(die.current_size) + die.bonus },
+    ];
+    const result = rollTotal(brainDice, modifier);
     rolls[p.side].push({
       characterId: character.id,
       roll: result,
@@ -2534,12 +2548,7 @@ async function startPairDeclaration(io, pairIndex) {
       lockedBrain: die.locked_size + die.locked_bonus,
       hasSpeedStance: hasSpeedStance(character),
     });
-    await logRoll(io, {
-      characterId: character.id,
-      characterName: character.name,
-      modifier,
-      dice: [{ slot_name: 'Brain', size: die.current_size, bonus: die.bonus, result }],
-    });
+    await logRoll(io, { characterId: character.id, characterName: character.name, modifier, dice: brainDice });
   }
 
   const hasLeft = participants.some((p) => p.side === 'left');
