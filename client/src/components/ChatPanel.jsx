@@ -369,8 +369,13 @@ function Composer({ characters }) {
   const rollCustomDie = (size) =>
     socket.emit('dice:roll_custom', { characterId: postingCharacterId, size, modifier: diceTrayMod });
 
+  // calc, not a bare var: the inline style beats the p-2 class, so the raw
+  // inset wiped this row's bottom padding on desktop (see DialogShell).
   return (
-    <div style={{ paddingBottom: 'var(--safe-bottom)' }} className="border-t border-zinc-800 p-2">
+    <div
+      style={{ paddingBottom: 'calc(0.5rem + var(--safe-bottom))' }}
+      className="border-t border-zinc-800 p-2"
+    >
       {error && <p className="mb-1 text-xs text-red-400">{error}</p>}
       {pending && (
         <div className="mb-1 flex items-center gap-2 panel-cut-sm bg-zinc-800 px-2 py-1 text-xs text-zinc-300">

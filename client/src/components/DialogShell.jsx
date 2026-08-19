@@ -90,7 +90,12 @@ export default function DialogShell({
         animate={{ y: 0, opacity: 1 }}
         exit={{ y: 24, opacity: 0 }}
         transition={{ type: 'spring', stiffness: 420, damping: 30 }}
-        style={{ paddingBottom: 'var(--safe-bottom)' }}
+        // calc, NOT a bare var: an inline style beats the `p-4` class, so
+        // setting this to the raw inset wiped the panel's bottom padding
+        // entirely on any device without a safe area (every desktop, where
+        // the inset is 0px). Content then sat flush against the border and
+        // read as clipped. The inset has to be ADDED to the padding.
+        style={{ paddingBottom: 'calc(1rem + var(--safe-bottom))' }}
         className={`flex flex-col gap-3 border border-zinc-700 bg-zinc-900 p-4 outline-none ${
           variant === 'theater' ? '' : 'max-h-[92dvh]'
         } ${sheetPanelClass} ${variant === 'theater' ? 'max-w-none' : maxWidth} ${panelClassName}`}

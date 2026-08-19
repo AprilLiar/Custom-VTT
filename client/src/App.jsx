@@ -31,6 +31,9 @@ function BottomNav({ homePath, chatOpen, onToggleChat, unreadChat }) {
     { to: '/compendium', label: 'Compendium', icon: BookOpen, match: (p) => p.startsWith('/compendium') },
   ];
   return (
+    // The one legitimate bare use of the inset: this nav has no padding class
+    // of its own, so the safe-area inset IS its bottom padding rather than
+    // silently replacing one (see DialogShell for the bug that caused).
     <nav
       style={{ paddingBottom: 'var(--safe-bottom)' }}
       className="grid shrink-0 grid-cols-4 border-t border-zinc-800 bg-zinc-950 md:hidden"
