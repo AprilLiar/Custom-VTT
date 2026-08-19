@@ -450,6 +450,22 @@ async function fetchDeclaredMoveRows() {
   `);
 }
 
+// Every seated character, **with the character's own type joined in**
+// (bugfix). `combat_participants` has no `character_type` column of its own,
+// and `mapPendingGrappleForViewer` asks each row for one to decide whether
+// the GM owns the character being prompted. A plain `SELECT *` therefore
+// answered `undefined` for every seat, the GM never owned anything, and an
+// NPC's grapple showed the GM a "waiting on <that same NPC>" bystander
+// screen instead of the direction cross — a deadlock that read at the table
+// as "grappling does not work". Joined here rather than fixed at the one
+// call site so any future per-viewer rule gets the same truthful rows.
+const allParticipants = () =>
+  all(
+    `SELECT cp.*, ch.character_type
+     FROM combat_participants cp JOIN characters ch ON ch.id = cp.character_id
+     ORDER BY cp.side, cp.pair_index, cp.id`
+  );
+
 // GET /api/combat has no socket to carry an identity, so the client sends
 // it as query params instead — same shape as identity:set's payload.
 function viewerFromQuery(query) {
@@ -685,7 +701,7 @@ async function emitCombatUpdated() {
   const [state, participants, pairRows, declaredMoveRows, openResolutions, stanceMatchups] =
     await Promise.all([
       one('SELECT * FROM combat_state WHERE id = 1'),
-      all('SELECT * FROM combat_participants ORDER BY side, pair_index, id'),
+      allParticipants(),
       all('SELECT * FROM combat_pairs ORDER BY pair_index'),
       fetchDeclaredMoveRows(),
       fetchOpenResolutionsByPair(),
@@ -743,7 +759,10 @@ function mapPendingGrappleForViewer(resolution, identity, participants) {
     if (identity.role === 'player') return identity.characterId === characterId;
     // The GM owns every NPC. An all-NPC grapple never reaches this function —
     // resolveGrapple auto-chains it rather than prompting — so this can only
-    // ever put the GM on one side of a real prompt.
+    // ever put the GM on one side of a real prompt. `character_type` reaches
+    // these rows through allParticipants' join; it is not a column of
+    // combat_participants, and reading it off a bare SELECT * silently made
+    // the GM a bystander at every prompt (see that helper).
     return participants.some((p) => p.character_id === characterId && p.character_type === 'npc');
   };
   const isGrappler = owns(pending.grapplerCharacterId);
@@ -1144,7 +1163,7 @@ app.get('/api/combat', wrap(async (req, res) => {
   const viewer = viewerFromQuery(req.query);
   const [state, participants, pairRows] = await Promise.all([
     one('SELECT * FROM combat_state WHERE id = 1'),
-    all('SELECT * FROM combat_participants ORDER BY side, pair_index, id'),
+    allParticipants(),
     all('SELECT * FROM combat_pairs ORDER BY pair_index'),
   ]);
 
@@ -2204,19 +2223,28 @@ io.on('connection', (socket) => {
 
     let id = moveId;
     if (id == null) {
+      // Copying a move (decided, new): a copy is filed **beside its source**
+      // rather than at position 0. The Compendium orders by (sort_order, id),
+      // so reusing the source's sort_order and letting the newer id break the
+      // tie drops the copy immediately after the original — which is where a
+      // GM making a variant is looking. Only honoured on INSERT: putting it
+      // in the UPDATE would reset the GM's drag order on every plain edit.
+      // Everything else keeps the 0 default, where the id tiebreak already
+      // appends it to the end of a library nobody has reordered.
+      const sortOrder = Number.isInteger(payload.sortOrder) ? payload.sortOrder : 0;
       const result = await run(
         `INSERT INTO moves (name, is_default, tell_id, startup_tics, active_tics, recovery_tics,
           stamina_cost, description, style_attribute_id, folder_id, image_data, image_mime_type,
           roll_modifier, right_tell_id, left_tell_id, is_defensive, defense_frame_positions,
           roll_type, custom_roll_size, attack_targets, defense_kind, stamina_modifier,
-          combat_style_attribute_id, success_threshold, is_grappling, requirement_move_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          combat_style_attribute_id, success_threshold, is_grappling, requirement_move_id, sort_order)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [name, isDefault, tellId, startup, active, recovery, effectiveStaminaCost, description, styleId,
           folderId, payload.imageData ?? null,
           payload.imageData ? (payload.imageMimeType ?? 'image/png') : null,
           rollModifier, rightTellId, leftTellId, isDefensive, JSON.stringify(defenseFramePositions),
           rollType, customRollSize, JSON.stringify(attackTargets), defenseKind, staminaModifier,
-          combatStyleId, successThreshold, isGrappling, requirementMoveId]
+          combatStyleId, successThreshold, isGrappling, requirementMoveId, sortOrder]
       );
       id = Number(result.lastInsertRowid);
     } else {
