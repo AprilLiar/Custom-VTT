@@ -385,6 +385,31 @@ export function requirementSatisfiedBy(requirementMoveId, previousMoveId) {
   return asMoveId(previousMoveId) === required;
 }
 
+// May this move be declared by hand, right now, off the declaration picker?
+//
+// Two rules, and the second is what **Secondary** means (decided, new):
+//
+//   1. A Requirement must be satisfied — the move it names has to be the last
+//      one this character queued. That is `requirementSatisfiedBy` above and
+//      applies to every move, Secondary or not.
+//   2. **A Secondary move with no Requirement is never hand-declarable at
+//      all.** It is a move that exists to be reached, not chosen: the engine
+//      puts it on the board when a grapple's cross picks it (see
+//      `declareChainedMove`), and there is no other legitimate way in. A
+//      Secondary move that *does* carry a Requirement is the combo case — it
+//      is declared by hand, but only ever in the slot right after the move it
+//      follows, which rule 1 already enforces on its own.
+//
+// So Secondary never *adds* a position a move can be declared from; it removes
+// the free one. Pure, and shared verbatim by the server's `move:declare` gate
+// and the Arena's declare picker, so a greyed-out card and a rejected event can
+// never disagree about why.
+export function declarableByHand({ isSecondary, requirementMoveId, previousMoveId } = {}) {
+  if (!requirementSatisfiedBy(requirementMoveId, previousMoveId)) return false;
+  if (isSecondary && asMoveId(requirementMoveId) == null) return false;
+  return true;
+}
+
 // Does this Roll still contain an unanswered Left/Right question? If so the
 // move needs two Tells (right-choice, left-choice) instead of one, and a
 // declaration has to record an appendage_choice.

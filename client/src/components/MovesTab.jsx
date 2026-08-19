@@ -91,8 +91,21 @@ export default function MovesTab({ data }) {
             perkModified={move.has_perk_overrides}
             rollBonus={move.roll_bonus ?? 0}
             onRollClick={(side) => setRollFor({ move, side })}
-            dimmed={!isUsable}
-            dimReason={style ? `Needs an active stance with ${style.name}` : undefined}
+            // A Secondary move is on the sheet and readable, but you cannot
+            // reach for it — the tint is the whole point of granting one
+            // (decided, new). Same treatment an unusable Style already gets,
+            // since "you have it, you just can't throw it right now" is the
+            // same statement.
+            dimmed={!isUsable || Boolean(move.is_secondary)}
+            dimReason={
+              move.is_secondary
+                ? move.requirement_move_id != null
+                  ? `Secondary — declarable only right after ${move.requirement_move_name ?? 'the move it follows'}`
+                  : 'Secondary — reached only from a grapple, never declared by hand'
+                : style
+                  ? `Needs an active stance with ${style.name}`
+                  : undefined
+            }
             badge={
               move.is_default ? (
                 <span className="ml-2 panel-cut-sm bg-zinc-700/60 px-1.5 text-xs font-semibold uppercase text-zinc-400">

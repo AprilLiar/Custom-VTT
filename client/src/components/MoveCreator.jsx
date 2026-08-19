@@ -240,6 +240,7 @@ export default function MoveCreator({
   const fileRef = useRef(null);
   const [name, setName] = useState(initial?.name ?? '');
   const [isDefault, setIsDefault] = useState(Boolean(initial?.is_default));
+  const [isSecondary, setIsSecondary] = useState(Boolean(initial?.is_secondary));
   const [isDefensive, setIsDefensive] = useState(Boolean(initial?.is_defensive));
   const [isGrappling, setIsGrappling] = useState(Boolean(initial?.is_grappling));
   const [tellId, setTellId] = useState(initial?.tell_id ?? tells[0]?.id ?? null);
@@ -267,6 +268,15 @@ export default function MoveCreator({
   // Optional, and unrelated to the Grappling toggle — a Combo Move uses it
   // without ever being a grapple.
   const [requirementMoveId, setRequirementMoveId] = useState(initial?.requirement_move_id ?? null);
+  // Which grappling moves already point a direction at this one. Only meaningful
+  // while editing an existing move — a move being created has no id for anything
+  // to point at yet.
+  const pointedAtByCross = (moves ?? [])
+    .filter((m) =>
+      initial?.id != null &&
+      (m.grapple_directions ?? []).some((d) => d.target_move_id === initial.id)
+    )
+    .map((m) => m.name);
   const [pickingRequirement, setPickingRequirement] = useState(false);
   const [rollModifier, setRollModifier] = useState(initial?.roll_modifier ?? 0);
   const [rollType, setRollType] = useState(initial?.roll_type ?? 'stat');
@@ -387,6 +397,7 @@ export default function MoveCreator({
     onSubmit({
       name: name.trim(),
       isDefault,
+      isSecondary,
       isDefensive,
       defenseKind: isDefensive && visibleDefensePositions.length > 0 ? defenseKind : null,
       ...(ambiguousRoll ? { rightTellId, leftTellId } : { tellId }),
@@ -470,6 +481,20 @@ export default function MoveCreator({
           placeholder="Move name"
           className="min-w-40 flex-1 panel-cut-sm border border-zinc-700 bg-zinc-800 px-3 py-2 text-zinc-100 outline-none focus:border-brand-500"
         />
+        {/* First of the flags on purpose: Secondary decides what the move is
+            *for* — something you throw, or something you are handed mid-combo —
+            and that is the call to make before filling anything else in. */}
+        <label
+          className="flex items-center gap-1.5 text-sm text-zinc-300"
+          title="Grantable and readable, but never declared by hand — it arrives as a Requirement follow-up or off a grapple's cross"
+        >
+          <input
+            type="checkbox"
+            checked={isSecondary}
+            onChange={(e) => setIsSecondary(e.target.checked)}
+          />
+          Secondary (not declarable by hand)
+        </label>
         <label className="flex items-center gap-1.5 text-sm text-zinc-300">
           <input
             type="checkbox"
@@ -979,6 +1004,20 @@ export default function MoveCreator({
           that move&apos;s Recovery ends, so the dropped Tic is ignored. Grapple chains
           are placed by the engine and are not subject to this.
         </p>
+        {/* Says how this particular Secondary move is actually reached, since
+            the flag on its own only says how it *isn't*. A Secondary move that
+            neither follows anything nor sits on a cross is legal to save and
+            simply unreachable — worth saying out loud rather than refusing,
+            since the cross that will point at it may not be authored yet. */}
+        {isSecondary && (
+          <p className="mt-1 text-[10px] text-amber-400/80">
+            {requirementMoveId != null
+              ? 'Secondary: this is a combo follow-up. It appears in the picker only in the slot right after the move above.'
+              : pointedAtByCross.length
+                ? `Secondary: reached only from ${pointedAtByCross.join(', ')}'s cross — the grappler picks it mid-hold.`
+                : 'Secondary with no Requirement and nothing pointing at it: nothing can reach this move yet. Give it a Requirement, or put it on some grappling move\u2019s cross.'}
+          </p>
+        )}
       </div>
 
       <div className="grid gap-3 sm:grid-cols-3">

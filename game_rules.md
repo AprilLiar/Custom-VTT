@@ -474,6 +474,31 @@ A move can never require itself, and deleting a move frees anything that
 required it. Moves chained by a successful **Grapple** are placed by the
 system rather than declared, so they ignore Requirements entirely.
 
+### Secondary — moves you are handed, not moves you reach for
+
+A move can be marked **Secondary**. You can be taught it, it sits on your
+sheet, you can read it in full — but you can never simply *choose* it. It is
+greyed on the sheet and greyed in the declaration list, and it will not go onto
+the timeline no matter how you drag it.
+
+There are exactly two ways a Secondary move arrives:
+
+- **As a combo follow-up.** Give it a Requirement, and it becomes declarable —
+  but only ever in the one slot right after the move it names. The rest of the
+  round it stays grey.
+- **As a grapple option.** Give it no Requirement, put it on some grappling
+  move's cross, and nothing can declare it at all. It reaches the board only
+  when a grappler takes hold of someone and picks that direction.
+
+That is the whole of it: Secondary never opens a new way to declare a move, it
+closes the ordinary one. A move that is Secondary with no Requirement and
+nothing pointing at it is simply unreachable — legal to write down, but nothing
+in a fight can ever produce it.
+
+The point is moves that belong to a moment rather than to your hand. The knee
+that only exists once you already have someone in a clinch is not a move you
+pick; it is a move the clinch gives you.
+
 ### Recovery somebody else puts on you
 
 Some moves do more than hurt. A move can carry an effect that **puts Recovery

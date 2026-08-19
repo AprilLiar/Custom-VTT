@@ -4,7 +4,7 @@
 // is exercised against the real server by scripts/playtest-requirement.mjs.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeRequirement, requirementSatisfiedBy } from '../moveLogic.js';
+import { normalizeRequirement, requirementSatisfiedBy, declarableByHand } from '../moveLogic.js';
 
 const LIBRARY = [1, 2, 3, 7, 9];
 
@@ -82,4 +82,48 @@ test('a Requirement satisfied earlier in the queue no longer counts', () => {
 test('ids compare by value, so a string id from the DB still matches', () => {
   assert.equal(requirementSatisfiedBy('7', 7), true);
   assert.equal(requirementSatisfiedBy(7, '7'), true);
+});
+
+// ---------- Secondary ----------
+//
+// Secondary never *adds* a place a move can be declared from — it removes the
+// free one. The two shapes a Secondary move can legitimately take are the combo
+// follow-up (it has a Requirement, so it is declarable in exactly one slot) and
+// the grapple option (no Requirement, so it is never hand-declarable at all and
+// only the engine can place it).
+
+test('an ordinary move with no Requirement is declarable by hand', () => {
+  assert.equal(declarableByHand({ isSecondary: false, requirementMoveId: null, previousMoveId: null }), true);
+});
+
+test('a Secondary move with NO Requirement is never declarable by hand', () => {
+  // Not even right after something — there is no slot that unlocks it, because
+  // the only thing that ever places it is a grapple's cross.
+  assert.equal(declarableByHand({ isSecondary: true, requirementMoveId: null, previousMoveId: null }), false);
+  assert.equal(declarableByHand({ isSecondary: true, requirementMoveId: null, previousMoveId: 7 }), false);
+});
+
+test('a Secondary move WITH a Requirement is the combo case: declarable in that one slot', () => {
+  assert.equal(declarableByHand({ isSecondary: true, requirementMoveId: 7, previousMoveId: 7 }), true);
+});
+
+test('...and nowhere else', () => {
+  assert.equal(declarableByHand({ isSecondary: true, requirementMoveId: 7, previousMoveId: 9 }), false);
+  assert.equal(declarableByHand({ isSecondary: true, requirementMoveId: 7, previousMoveId: null }), false);
+});
+
+test('a non-Secondary Requirement move behaves exactly as it did before', () => {
+  assert.equal(declarableByHand({ isSecondary: false, requirementMoveId: 7, previousMoveId: 7 }), true);
+  assert.equal(declarableByHand({ isSecondary: false, requirementMoveId: 7, previousMoveId: 9 }), false);
+});
+
+test('ids still compare by value, so a string id from the DB is fine', () => {
+  assert.equal(declarableByHand({ isSecondary: true, requirementMoveId: '7', previousMoveId: 7 }), true);
+});
+
+test('called with nothing at all it defaults to declarable', () => {
+  // The picker builds this object from a move row; a row that carries neither
+  // flag is an ordinary move and must not be greyed out by accident.
+  assert.equal(declarableByHand(), true);
+  assert.equal(declarableByHand({}), true);
 });
