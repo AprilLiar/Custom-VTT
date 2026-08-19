@@ -385,10 +385,25 @@ export default function MovesCompendium() {
       ? styleMatched.filter((m) => (m.tag_ids ?? []).some((id) => tagFilter.has(id)))
       : styleMatched;
 
+  // `form` is one of: null (closed), `{}` (blank new move), `{ move }` (edit
+  // that move in place), `{ copyOf }` (a NEW move pre-filled from that one).
+  // The copy case deliberately routes to move:create — the whole point is a
+  // second move, and `moveId` is what would otherwise overwrite the original.
   const submitMove = (payload) => {
     if (form?.move) socket.emit('move:update', { moveId: form.move.id, ...payload });
     else socket.emit('move:create', payload);
     setForm(null);
+  };
+
+  // The source move with a new name and no identity of its own. `id` is
+  // dropped so nothing downstream can mistake it for the original, and
+  // `granted_character_ids` with it — a copy is a new move nobody has learned
+  // yet, and carrying the grants over would silently hand it to everyone who
+  // had the original.
+  const copyDraft = (move) => {
+    if (!move) return null;
+    const { id, granted_character_ids: _grants, ...rest } = move;
+    return { ...rest, name: `${move.name} (copy)` };
   };
 
   const onDropOnCharacter = (e, character) => {
@@ -557,7 +572,7 @@ export default function MovesCompendium() {
               folders={folders}
               moves={moves}
               initialFolderId={currentFolder}
-              initial={form.move ?? null}
+              initial={form.move ?? copyDraft(form.copyOf) ?? null}
               onSubmit={submitMove}
               onCancel={() => setForm(null)}
             />
@@ -651,6 +666,23 @@ export default function MovesCompendium() {
                           className="flex min-h-11 items-center panel-cut-sm px-2 py-0.5 text-xs text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300 md:min-h-0"
                         >
                           Edit
+                        </button>
+                        {/* Copy (decided, new): opens the Move Creator on a
+                            full duplicate of this move — every field, both
+                            Roll pools, the interactions, the Tags, the
+                            grapple cross — with the name pre-suffixed and
+                            selected, so a variant is an edit away rather than
+                            a re-entry of twenty fields. It is deliberately a
+                            *pre-filled form* rather than an instant
+                            "duplicate": most copies exist to be changed, and
+                            a silent second identical move in the list is the
+                            thing a GM then has to hunt down and edit anyway. */}
+                        <button
+                          onClick={() => setForm({ copyOf: move })}
+                          title={`Start a new move from ${move.name}`}
+                          className="flex min-h-11 items-center panel-cut-sm px-2 py-0.5 text-xs text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300 md:min-h-0"
+                        >
+                          Copy
                         </button>
                         <button
                           onClick={() =>

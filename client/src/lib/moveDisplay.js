@@ -71,6 +71,7 @@ export const STAT_STEP_AUTOMATION_TYPES = new Set(['self_stat_step', 'opponent_s
 // about which moves are Blocks.
 export const BLOCK_TAG_NAME = 'Block';
 export const NO_DAMAGE_TAG_NAME = 'No Damage';
+export const FEINT_TAG_NAME = 'Feint';
 
 const normTag = (name) => String(name ?? '').trim().toLowerCase();
 
@@ -95,6 +96,15 @@ export function carriesBlockTag(tagIds, tags) {
 
 export function carriesNoDamageTag(tagIds, tags) {
   return (tagIds ?? []).some((id) => isTagNamed(id, tags, NO_DAMAGE_TAG_NAME));
+}
+
+// The third Tag automation: a Feint's own Tell is public, but whatever is
+// declared immediately after it goes on the timeline hidden. The server owns
+// the rule (see feint_masked in server/index.js's move:declare); the client
+// reads the same Tag only to *say so* up front — greying nothing out, just
+// telling the declaring player what their next move is about to become.
+export function carriesFeintTag(tagIds, tags) {
+  return (tagIds ?? []).some((id) => isTagNamed(id, tags, FEINT_TAG_NAME));
 }
 
 // "×1.5" / "×0.5" — the multiplier as the table reads it. 1 is still shown

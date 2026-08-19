@@ -87,7 +87,11 @@ import {
 // nothing in a fight. Mirrors the effective_tag_ids resolution in
 // server/index.js, on names instead of ids (see tagAutomations.js on why
 // names).
-async function moveTagNamesFor(characterId, moveId) {
+// Exported for server/index.js's move:declare, which has to ask the same
+// question at declaration time (does the move being declared right after
+// carry the Feint Tag?) — one resolution of add/remove Perk overrides, not
+// two that can drift.
+export async function moveTagNamesFor(characterId, moveId) {
   const [own, overrides] = await Promise.all([
     all('SELECT t.name FROM move_tags mt JOIN tags t ON t.id = mt.tag_id WHERE mt.move_id = ?', [moveId]),
     all(
@@ -105,6 +109,7 @@ import {
   computeInitiativeOverflowPenalty,
   resolveSideInitiative,
   findInterruptEligibleTic,
+  planImposedRecovery,
 } from './combatTiming.js';
 import { idleStaminaRegenRate } from './perkAutomations.js';
 import { getCombatRollBonus, getStanceMatchupBonus } from './combatBonuses.js';
@@ -225,6 +230,24 @@ const TRIGGER_LABELS = {
   defense_failure: 'On Failed Defense',
 };
 
+const IMPOSED_PHASE_PHRASE = {
+  startup: 'caught winding up',
+  'in-flight': 'caught mid-move',
+  idle: 'caught between moves',
+};
+
+// The one place the wording for an imposed Recovery is decided, so the Chat
+// Log line, the cutscene's own effect list and the round summary can never
+// describe the same displacement differently. `plan` is planImposedRecovery's
+// result, or null when there was no clock to apply it to (see imposeRecovery).
+function describeImposedRecovery(plan, amount, characterName, isOpponent) {
+  const arrow = isOpponent ? ` → ${characterName}` : ` (${characterName})`;
+  if (!plan || plan.phase === 'none') return `+${amount} Recovery${arrow}`;
+  const shifted = plan.updates.filter((u) => u.id !== plan.affectedMoveId).length;
+  const tail = shifted ? `, ${shifted} move${shifted === 1 ? '' : 's'} pushed later` : '';
+  return `+${amount} Recovery${arrow} (${IMPOSED_PHASE_PHRASE[plan.phase]}${tail})`;
+}
+
 // Mirrors server/index.js's applyMoveInteractions exactly, minus the
 // immediate emitCombatUpdated() call on a Recovery change — this engine
 // already broadcasts a fresh combat:updated once per Tic it finishes
@@ -268,7 +291,12 @@ async function applyMoveInteractions(io, {
 
   const effects = [];
 
-  const extendRecovery = async (declaredMoveId, delta) => {
+  // Shrinking a Recovery window (`self_recovery` with a negative amount) is
+  // still the old, purely-local operation: it touches one declared move's own
+  // extension and nothing else. Pulling later moves EARLIER to close the gap
+  // would drop them below the placement floors they were declared under, and
+  // nobody asked for a move to arrive sooner than it was thrown.
+  const shrinkRecovery = async (declaredMoveId, delta) => {
     const dm = await one(
       `SELECT dm.id, dm.recovery_extension_tics AS current_extension_tics, m.recovery_tics
        FROM declared_moves dm JOIN moves m ON m.id = dm.move_id WHERE dm.id = ?`,
@@ -284,34 +312,119 @@ async function applyMoveInteractions(io, {
     return true;
   };
 
+  // **Recovery imposed on the clock (decided, new).** Adding Recovery used to
+  // be pure bookkeeping on one row; it lands on the timeline now. Where the
+  // frames go is decided by what that character is doing at THIS Tic —
+  // caught in Startup, caught mid-move, or caught between moves — and
+  // everything they had declared after it slides that many Tics later. All
+  // the reasoning and all three cases live in planImposedRecovery
+  // (combatTiming.js), pure and unit-tested; this is only the read, the
+  // write-back and the announcement.
+  const imposeRecovery = async (characterId, characterName, tics, atTic) => {
+    if (characterId == null) return null;
+    // The engine always knows the Tic it is resolving. server/index.js's
+    // combat:apply_damage — the chat card's manual Apply button, the one
+    // surviving path that fires a trigger from outside the engine — does
+    // not, so the clock is read from that character's own pair instead of
+    // the effect silently not landing.
+    let clockTic = atTic;
+    if (!Number.isInteger(clockTic)) {
+      const seat = await one(
+        `SELECT cpr.current_tic AS tic
+         FROM combat_participants cp JOIN combat_pairs cpr ON cpr.pair_index = cp.pair_index
+         WHERE cp.character_id = ?`,
+        [characterId]
+      );
+      clockTic = seat?.tic;
+    }
+    if (!Number.isInteger(clockTic)) return null;
+    const rows = await all(
+      `SELECT dm.id, dm.placement_tic, dm.reveal_tic, dm.recovery_extension_tics,
+              m.active_tics, m.recovery_tics
+       FROM declared_moves dm JOIN moves m ON m.id = dm.move_id
+       WHERE dm.character_id = ?
+       ORDER BY dm.placement_tic`,
+      [characterId]
+    );
+    const plan = planImposedRecovery({
+      moves: rows.map((r) => ({
+        id: r.id,
+        placementTic: r.placement_tic,
+        revealTic: r.reveal_tic,
+        activeTics: r.active_tics,
+        recoveryTics: r.recovery_tics,
+        recoveryExtensionTics: r.recovery_extension_tics,
+      })),
+      tic: clockTic,
+      tics,
+    });
+    for (const u of plan.updates) {
+      await run(
+        'UPDATE declared_moves SET placement_tic = ?, reveal_tic = ?, recovery_extension_tics = ? WHERE id = ?',
+        [u.placementTic, u.revealTic, u.recoveryExtensionTics, u.id]
+      );
+    }
+    // Only the moves that genuinely MOVED, which is every update except the
+    // in-flight one (that one grew rather than moved). The cutscene needs the
+    // distinction to animate them differently — see moves_displaced there.
+    const shifted = plan.updates.filter((u) => u.id !== plan.affectedMoveId).map((u) => u.id);
+    if (plan.phase !== 'none' && emitEvent && tic != null) {
+      await emitEvent(tic, 'moves_displaced', {
+        characterId,
+        characterName,
+        tics,
+        // 'startup' | 'in-flight' | 'idle' — what they were caught doing.
+        phase: plan.phase,
+        affectedDeclaredMoveId: plan.affectedMoveId,
+        // Ids and a Tic count only. Deliberately NOT the new Active/Recovery
+        // ends: a still-unrevealed move's frame lengths are secret, and a
+        // round_event is replayed to everyone. "This move moved N Tics later"
+        // discloses no more than placementTic already does.
+        shiftedDeclaredMoveIds: shifted,
+      });
+    }
+    return plan;
+  };
+
+  // Where on the clock an imposed Recovery lands. The engine always knows the
+  // Tic it is resolving; server/index.js's manual copy of this function does
+  // not, and passes null, in which case nothing is displaced and the effect
+  // falls back to the plain extension it always was.
+
   for (const automation of automations) {
     const amount = Math.trunc(Number(automation?.amount) || 0);
     if (!amount) continue;
     switch (automation?.type) {
+      // Both Recovery automations go through the same door now, and the
+      // door is the clock rather than a row: `imposeRecovery` decides where
+      // the frames land from what that character is doing at this very Tic
+      // and slides everything they had declared after it. That is what
+      // "applied instantly" means — the effect is on the timeline the
+      // moment it fires, not a number that quietly changes a later
+      // subtraction.
+      //
+      // A NEGATIVE self_recovery is the one exception and keeps the old
+      // local path (see shrinkRecovery): shortening a window is not a
+      // displacement, and nothing should arrive earlier than it was thrown.
       case 'self_recovery': {
-        const applied = await extendRecovery(selfDeclaredMoveId, amount);
-        if (applied) effects.push(`${amount > 0 ? '+' : '−'}${Math.abs(amount)} Recovery (${selfCharacter.name})`);
+        if (amount < 0) {
+          const applied = await shrinkRecovery(selfDeclaredMoveId, amount);
+          if (applied) effects.push(`−${Math.abs(amount)} Recovery (${selfCharacter.name})`);
+          break;
+        }
+        const plan = await imposeRecovery(selfCharacterId, selfCharacter.name, amount, tic);
+        effects.push(describeImposedRecovery(plan, amount, selfCharacter.name, false));
         break;
       }
       case 'opponent_recovery': {
         if (!opponentCharacter) break;
-        const targetId =
-          opponentDeclaredMoveId ??
-          (
-            await one(
-              `SELECT dm.id
-               FROM declared_moves dm JOIN moves m ON m.id = dm.move_id
-               WHERE dm.character_id = ?
-               ORDER BY (dm.reveal_tic + m.active_tics + m.recovery_tics + dm.recovery_extension_tics) DESC LIMIT 1`,
-              [opponentCharacterId]
-            )
-          )?.id;
-        const applied = targetId != null ? await extendRecovery(targetId, amount) : false;
-        effects.push(
-          applied
-            ? `+${amount} Recovery → ${opponentCharacter.name}`
-            : `(no declared move for ${opponentCharacter.name} to extend)`
-        );
+        // No "whichever of their moves ends latest" fallback any more. That
+        // existed only because `miss` has no specific opponent move tied to
+        // the exchange — but the question was never "which move", it was
+        // "what are they doing right now", and the idle case is a real
+        // answer rather than a missing one.
+        const plan = await imposeRecovery(opponentCharacterId, opponentCharacter.name, amount, tic);
+        effects.push(describeImposedRecovery(plan, amount, opponentCharacter.name, true));
         break;
       }
       case 'self_stat_step':

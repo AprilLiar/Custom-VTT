@@ -56,6 +56,7 @@ const EVENT_LABEL = {
   roll: 'Roll',
   defense_resolved: 'Defense',
   recovery_extended: 'Extension',
+  moves_displaced: 'Pushed later',
   insignificant_damage: 'No effect',
   no_damage_resolved: 'No Damage',
   grapple_prompt: 'Which way?',
@@ -150,6 +151,23 @@ function eventNarration(ev, startTic) {
         'Tic',
         'Tics'
       )} to hold the guard through it.`;
+    case 'moves_displaced': {
+      // Three genuinely different sentences, because the three cases are
+      // three different things happening to a fighter, not one thing with a
+      // footnote. `tics` is always the same number in all of them.
+      const cost = plural(p.tics ?? 0, 'Tic', 'Tics');
+      const pushed = (p.shiftedDeclaredMoveIds ?? []).length;
+      const tail = pushed
+        ? ` ${plural(pushed, 'move', 'moves')} they had lined up ${pushed === 1 ? 'is' : 'are'} pushed later.`
+        : '';
+      if (p.phase === 'startup') {
+        return `${who} is caught winding up — ${cost} added to the Startup, and the move lands that much later.${tail}`;
+      }
+      if (p.phase === 'in-flight') {
+        return `${who} is caught mid-move — ${cost} of Recovery on the end of it.${tail}`;
+      }
+      return `${who} is caught between moves — ${cost} of Recovery, and nothing they do starts on time.${tail}`;
+    }
     case 'insignificant_damage':
       return `${who}'s ${p.moveName} rolled ${p.total} — it lands, but the damage is insignificant.`;
     case 'grapple_prompt':
@@ -274,6 +292,17 @@ function eventDetail(ev, startTic) {
       lines.push(`Now runs through Tic ${p.recoveryEndTic - startTic}`);
       lines.push('Automatic — a Block is never a prompt');
       lines.push('Intended: a Block that catches the opening frame holds through the attack');
+      break;
+    case 'moves_displaced':
+      lines.push(
+        p.phase === 'startup'
+          ? 'Caught in Startup: the wind-up gets longer, so the move is delayed'
+          : p.phase === 'in-flight'
+            ? 'Caught mid-Active or mid-Recovery: the frames go on the end'
+            : 'Caught between moves: there is no move to lengthen, so the cost is the delay'
+      );
+      lines.push('Applied at this Tic, not book-kept for later');
+      lines.push('Everything declared after it slides by the same amount, so nothing overlaps');
       break;
     case 'insignificant_damage':
       lines.push('Under 5 on the roll: fewer than one Half-Damage step');
@@ -404,6 +433,24 @@ function beatEffects(events, visibleCount) {
     }
     case 'dodge_resolved':
       if (p.outcome === 'successful') out.burst = { kind: 'miss', label: 'MISS', seq: ev.seq };
+      break;
+    case 'moves_displaced': {
+      // Every bar that moved slides into its new place. The lengthened one
+      // gets it too — it did not move, but its shape changed at the same
+      // instant, and animating only some of the affected bars reads as a
+      // glitch rather than as one event.
+      for (const id of p.shiftedDeclaredMoveIds ?? []) out.byMoveId[id] = 'displaced';
+      if (p.affectedDeclaredMoveId != null) out.byMoveId[p.affectedDeclaredMoveId] = 'displaced';
+      out.burst = { kind: 'fizzle', label: `+${p.tics ?? 0}`, sub: 'Recovery', seq: ev.seq };
+      break;
+    }
+    case 'move_conflict_resolved':
+      // The other place a move is pushed later — a Postpone past a Block's
+      // extended Recovery. Same thing happening, so the same animation:
+      // "moved later" should look like one gesture in this game, not two.
+      if (p.choice === 'postpone' && p.declaredMoveId != null) {
+        out.byMoveId[p.declaredMoveId] = 'displaced';
+      }
       break;
     default:
       break;
@@ -602,11 +649,81 @@ function footprintsFrom(events, upTo) {
       put({ ...ev.payload, interrupted: true });
       continue;
     }
+    // Recovery imposed on the clock (see planImposedRecovery server-side):
+    // one move grows or is delayed and everything that character had after it
+    // slides. Applied as DELTAS rather than absolute Tics on purpose — the
+    // payload deliberately carries only ids and a Tic count, because a
+    // still-unrevealed move's Active/Recovery lengths are secret and a
+    // round_event is replayed to everyone. Shifting by a delta needs no more
+    // than that, and a wind-up bar (whose ends are pinned to its reveal Tic)
+    // stays correctly closed off because all four numbers move together.
+    if (ev.type === 'moves_displaced') {
+      const p = ev.payload ?? {};
+      const by = p.tics ?? 0;
+      const shift = (fp) => {
+        fp.placementTic += by;
+        fp.revealTic += by;
+        fp.activeEndTic += by;
+        fp.recoveryEndTic += by;
+        if (fp.recoveryExtendedFromTic != null) fp.recoveryExtendedFromTic += by;
+      };
+      for (const id of p.shiftedDeclaredMoveIds ?? []) {
+        const at = slotOf.get(id);
+        if (at != null && out[at]) shift(out[at]);
+      }
+      const hitAt = slotOf.get(p.affectedDeclaredMoveId);
+      const hitFp = hitAt == null ? null : out[hitAt];
+      if (hitFp && p.phase === 'startup') {
+        // The wind-up genuinely started where it started; only everything
+        // after it moves. placementTic deliberately stays put.
+        hitFp.revealTic += by;
+        hitFp.activeEndTic += by;
+        hitFp.recoveryEndTic += by;
+        if (hitFp.recoveryExtendedFromTic != null) hitFp.recoveryExtendedFromTic += by;
+      } else if (hitFp && p.phase === 'in-flight') {
+        // Same treatment a late Block's extension already gets: the extra
+        // Tics keep the phase but render dimmed, so "declared Recovery" and
+        // "Recovery somebody put on me" are visibly different runs.
+        hitFp.recoveryExtendedFromTic = Math.min(
+          hitFp.recoveryExtendedFromTic ?? Infinity,
+          hitFp.recoveryEndTic
+        );
+        // Same dimmed-extension treatment a late Block already gets, but NOT
+        // the same colour: a Block's extension is the guard being held, so it
+        // is drawn in the defence green. These Tics are Recovery somebody
+        // else put on you, so they are drawn in Recovery blue.
+        hitFp.recoveryExtendedKind = 'imposed';
+        hitFp.recoveryEndTic += by;
+      }
+      continue;
+    }
+    // A Postpone is the other way a move ends up later on the clock, and its
+    // bar used to stay exactly where it was — the log said "postponed to Tic
+    // 6" while the picture still showed it on Tic 3. Shifted by the delta
+    // between old and new placement so a wind-up bar's closed-off ends move
+    // with it (see the moves_displaced block above for why deltas).
+    if (ev.type === 'move_conflict_resolved' && ev.payload?.choice === 'postpone') {
+      const p = ev.payload;
+      const at = slotOf.get(p.declaredMoveId);
+      const fp = at == null ? null : out[at];
+      if (fp && p.newPlacementTic != null) {
+        const by = p.newPlacementTic - fp.placementTic;
+        if (by) {
+          fp.placementTic += by;
+          fp.revealTic += by;
+          fp.activeEndTic += by;
+          fp.recoveryEndTic += by;
+          if (fp.recoveryExtendedFromTic != null) fp.recoveryExtendedFromTic += by;
+        }
+      }
+      continue;
+    }
     if (ev.type !== 'recovery_extended') continue;
     const slot = slotOf.get(ev.payload?.declaredMoveId);
     const fp = slot == null ? null : out[slot];
     if (!fp) continue;
     fp.recoveryEndTic = ev.payload.recoveryEndTic;
+    fp.recoveryExtendedKind = 'defense';
     // Earliest wins if a move is extended twice — the whole run from the
     // first extension onward is "extended", not just the latest slice.
     fp.recoveryExtendedFromTic = Math.min(
@@ -684,6 +801,17 @@ const DROP_VARIANT = {
   transition: { duration: 0.44, times: [0, 0.45, 0.72, 1], ease: 'easeIn' },
 };
 
+// Pushed later on the clock. The cells have already been redrawn one Tic
+// further right by the time this runs, so the bar arrives from where it used
+// to be and settles — the motion IS the displacement, read left to right the
+// same way the timeline is. Deliberately not a hit or a flinch: nothing
+// struck this move, it simply lost its place in the queue.
+const DISPLACED_VARIANT = {
+  x: [-22, 5, 0],
+  opacity: [0.55, 1, 1],
+  transition: { duration: 0.42, times: [0, 0.65, 1], ease: 'easeOut' },
+};
+
 function barAnimation(effect, toward) {
   switch (effect) {
     case 'drop':
@@ -700,6 +828,8 @@ function barAnimation(effect, toward) {
       return HIT_VARIANT;
     case 'heavy-hit':
       return HEAVY_HIT_VARIANT;
+    case 'displaced':
+      return DISPLACED_VARIANT;
     default:
       return { x: 0, y: 0, scale: 1, opacity: 1 };
   }
@@ -847,7 +977,9 @@ function MoveBar({ fp, ticks, startTic, effect, beat, staminaFlash }) {
           // isExtendedRecoveryTic. phaseAt calls it plain Recovery (it is,
           // mechanically), so the check has to come first to win the fill.
           const extended = isExtendedRecoveryTic(fp, tic);
+          const imposed = fp.recoveryExtendedKind === 'imposed';
           const defenseLabel = fp.defenseKind === 'dodge' ? 'Dodge' : 'Block';
+          const extensionLabel = imposed ? 'Imposed Recovery' : `${defenseLabel} extension`;
           return (
             <span
               key={tic}
@@ -862,7 +994,7 @@ function MoveBar({ fp, ticks, startTic, effect, beat, staminaFlash }) {
                           tic - startTic + 1
                         }: ${PHASE_LABEL[phase]}, reveals on Tic ${fp.revealTic - startTic + 1}`
                       : `${fp.characterName} — ${fp.moveName}\nTic ${tic - startTic + 1}: ${
-                        extended ? `${defenseLabel} extension` : PHASE_LABEL[phase]
+                        extended ? extensionLabel : PHASE_LABEL[phase]
                       }${phase === 'defense' && !extended ? ` (${defenseLabel} window)` : ''}`
                   : undefined
               }
@@ -874,7 +1006,7 @@ function MoveBar({ fp, ticks, startTic, effect, beat, staminaFlash }) {
                     ? 'bg-zinc-600/60'
                     : 'bg-zinc-800/50'
                   : extended
-                    ? PHASE_BG_EXTENDED.defense
+                    ? PHASE_BG_EXTENDED[imposed ? 'recovery' : 'defense']
                     : phase
                       ? PHASE_BG[phase]
                       : 'bg-zinc-800/50'

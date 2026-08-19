@@ -11,6 +11,7 @@ import {
   overlapsRoundWindow,
   computeInitiativeOverflowPenalty,
   findInterruptEligibleTic,
+  planImposedRecovery,
 } from '../combatTiming.js';
 
 const roll = (n) => ({ roll: n });
@@ -420,4 +421,106 @@ test('findInterruptEligibleTic: picks the earliest qualifying Tic, not just the 
     targetMoves: [startupMove(2, 15, 18), startupMove(1, 10, 12)],
   });
   assert.deepEqual(result, { tic: 10, declaredMoveId: 1 });
+});
+
+
+// ---------- planImposedRecovery ----------
+//
+// Recovery imposed by an automation lands on the clock: where the frames go
+// depends on what the target was doing at that Tic, and everything they had
+// declared after it slides.
+
+// A 2/2/2 move placed at 0: Startup 0-1, Active 2-3, Recovery 4-5, ends at 6.
+const mv = (id, placementTic, { startup = 2, active = 2, recovery = 2, ext = 0 } = {}) => ({
+  id,
+  placementTic,
+  revealTic: placementTic + startup,
+  activeTics: active,
+  recoveryTics: recovery,
+  recoveryExtensionTics: ext,
+});
+
+test('planImposedRecovery: caught in Startup, the move is delayed rather than lengthened', () => {
+  const r = planImposedRecovery({ moves: [mv(1, 0)], tic: 1, tics: 2 });
+  assert.equal(r.phase, 'startup');
+  assert.equal(r.affectedMoveId, 1);
+  assert.deepEqual(r.updates, [
+    // placementTic stays — the wind-up really did begin there — and the
+    // extra Tics go into Startup, dragging Active and Recovery later.
+    { id: 1, placementTic: 0, revealTic: 4, recoveryExtensionTics: 0 },
+  ]);
+});
+
+test('planImposedRecovery: caught mid-Active or mid-Recovery, the frames go on the END', () => {
+  for (const tic of [2, 3, 4, 5]) {
+    const r = planImposedRecovery({ moves: [mv(1, 0)], tic, tics: 3 });
+    assert.equal(r.phase, 'in-flight', `tic ${tic}`);
+    assert.deepEqual(r.updates, [{ id: 1, placementTic: 0, revealTic: 2, recoveryExtensionTics: 3 }], `tic ${tic}`);
+  }
+});
+
+test('planImposedRecovery: an existing extension is added to, not replaced', () => {
+  const r = planImposedRecovery({ moves: [mv(1, 0, { ext: 1 })], tic: 3, tics: 2 });
+  assert.equal(r.updates[0].recoveryExtensionTics, 3);
+});
+
+test('planImposedRecovery: the extension counts toward what "in flight" means', () => {
+  // Without the extension this move ends at 6, so Tic 6 would be idle.
+  assert.equal(planImposedRecovery({ moves: [mv(1, 0)], tic: 6, tics: 1 }).phase, 'idle');
+  assert.equal(planImposedRecovery({ moves: [mv(1, 0, { ext: 2 })], tic: 6, tics: 1 }).phase, 'in-flight');
+});
+
+test('planImposedRecovery: caught between moves, the whole effect is the displacement', () => {
+  const moves = [mv(1, 0), mv(2, 9)];
+  const r = planImposedRecovery({ moves, tic: 7, tics: 2 });
+  assert.equal(r.phase, 'idle');
+  assert.equal(r.affectedMoveId, null);
+  // Nothing is drawn on the idle Tics — there is no declared move there to
+  // draw — so the only change is that what came later moved later.
+  assert.deepEqual(r.updates, [{ id: 2, placementTic: 11, revealTic: 13, recoveryExtensionTics: 0 }]);
+});
+
+test('planImposedRecovery: everything declared after the affected move slides by the same amount', () => {
+  const moves = [mv(1, 0), mv(2, 6), mv(3, 12)];
+  const r = planImposedRecovery({ moves, tic: 3, tics: 2 });
+  assert.equal(r.phase, 'in-flight');
+  assert.deepEqual(r.updates, [
+    { id: 1, placementTic: 0, revealTic: 2, recoveryExtensionTics: 2 },
+    { id: 2, placementTic: 8, revealTic: 10, recoveryExtensionTics: 0 },
+    { id: 3, placementTic: 14, revealTic: 16, recoveryExtensionTics: 0 },
+  ]);
+});
+
+test('planImposedRecovery: the slide keeps the timeline legal — no move ever overlaps another', () => {
+  // The whole reason later moves move at all: lengthening one without
+  // shifting the next would put the next inside it, which is exactly the
+  // state computePlacementTic exists to prevent at declare time.
+  const moves = [mv(1, 0), mv(2, 6)];
+  const r = planImposedRecovery({ moves, tic: 4, tics: 3 });
+  const byId = new Map(r.updates.map((u) => [u.id, u]));
+  const first = byId.get(1);
+  const firstEnd = first.revealTic + 2 + 2 + first.recoveryExtensionTics;
+  assert.ok(byId.get(2).placementTic >= firstEnd, `${byId.get(2).placementTic} vs ${firstEnd}`);
+});
+
+test('planImposedRecovery: a move ALREADY past is never touched', () => {
+  const moves = [mv(1, 0), mv(2, 9)];
+  const r = planImposedRecovery({ moves, tic: 10, tics: 2 });
+  assert.equal(r.phase, 'startup'); // move 2's own Startup is 9-10
+  assert.deepEqual(r.updates, [{ id: 2, placementTic: 9, revealTic: 13, recoveryExtensionTics: 0 }]);
+});
+
+test('planImposedRecovery: zero, negative and non-integer amounts change nothing', () => {
+  const moves = [mv(1, 0), mv(2, 9)];
+  for (const tics of [0, -2, 1.5, NaN, undefined, null, '2']) {
+    const r = planImposedRecovery({ moves, tic: 3, tics });
+    assert.equal(r.phase, 'none', String(tics));
+    assert.deepEqual(r.updates, [], String(tics));
+  }
+});
+
+test('planImposedRecovery: nothing declared at all is a legitimate no-op', () => {
+  const r = planImposedRecovery({ moves: [], tic: 3, tics: 2 });
+  assert.equal(r.phase, 'idle');
+  assert.deepEqual(r.updates, []);
 });

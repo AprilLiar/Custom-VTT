@@ -11,7 +11,7 @@ import {
   getTells,
   getTags,
 } from '../lib/api.js';
-import { carriesBlockTag, staminaModifierLabel } from '../lib/moveDisplay.js';
+import { carriesBlockTag, carriesFeintTag, staminaModifierLabel } from '../lib/moveDisplay.js';
 import { portraitSrc } from '../lib/image.js';
 import { dieLabel, tintFor, POOLS } from '../lib/dice.js';
 import { buildFolderTree } from '../lib/folders.js';
@@ -974,6 +974,12 @@ function CompactDeclaredMoveCard({ dm, move, tellById, allMoves = [] }) {
   const linkOnHover = telegraphed && !revealed;
   const cardPos = useHoverCardPosition(cardRef, showCard && revealed);
 
+  // Feint Tag: this declaration is concealed from everyone but its owner
+  // until it reveals. `publiclyRevealed` is what ends the concealment, not
+  // `isRevealed` — the owner's own view is always revealed, so keying off
+  // that would mean the badge never appeared at all.
+  const hiddenByFeint = Boolean(dm.feintMasked) && !dm.publiclyRevealed;
+
   // **How it was opened decides how it closes**, and this is the whole reason
   // tapping appeared to do nothing on a phone. A tap emits (measured, not
   // assumed): pointerdown → mouseenter → click → mouseout → **mouseleave**.
@@ -1095,13 +1101,27 @@ function CompactDeclaredMoveCard({ dm, move, tellById, allMoves = [] }) {
           >
             <div
               title={move.name}
-              className="flex w-44 items-center gap-2 panel-cut border border-brand-800/60 bg-brand-950/30 p-2 text-left"
+              className={`flex w-44 items-center gap-2 panel-cut border p-2 text-left ${
+                hiddenByFeint
+                  ? 'border-violet-700/60 bg-violet-950/25'
+                  : 'border-brand-800/60 bg-brand-950/30'
+              }`}
             >
               <Thumb record={move} name={move.name} size="h-7 w-7" />
               <div className="min-w-0 flex-1">
                 {/* Same width and wrapping as the Tell face above, so a lane
                     doesn't visibly jump when a move reveals. */}
                 <div className="break-words text-xs font-semibold leading-tight text-zinc-100">{move.name}</div>
+                {/* Feint Tag: only this card's owner ever sees this face at
+                    all before the reveal — the row itself is withheld from
+                    everyone else (mapDeclaredMovesForViewer) — so the badge
+                    is a reassurance rather than a leak: "they cannot see
+                    this one." */}
+                {hiddenByFeint && (
+                  <div className="text-[9px] font-semibold uppercase tracking-wide text-violet-300">
+                    ◌ hidden — feinted into
+                  </div>
+                )}
                 <FrameBar
                   startup={move.startup_tics}
                   active={move.active_tics}
@@ -1366,7 +1386,60 @@ function buildDeclarePayload(character, move, roundStartTic, declaredMoves) {
 // and the tap-to-place handler (see CombatArena's handleTicTap) work
 // without any parallel state of their own. Desktop keeps native drag too —
 // the two aren't mutually exclusive, a mouse user can also just click.
-function DeclareMoveCard({ character, move, roundStartTic, declaredMoves, tags }) {
+// The full MoveCard for a move in the declare picker, on the front-most
+// layer (decided, new). Reading what a move actually does used to require
+// leaving the Arena for the Compendium — the picker showed a name, a Stamina
+// figure and a frame glyph and nothing else, which is not enough to choose
+// with.
+//
+// **Hover on a mouse, an explicit button on touch.** Tap is already spoken
+// for here: it is how a move gets picked up for tap-to-place (see
+// setDraggingMove below), so a tap-to-read would collide with the one gesture
+// that matters. The ⓘ opens it on any device and is the whole touch story;
+// hover is the desktop shortcut on top. Same portal, same z-[80], and the
+// same reason as CompactDeclaredMoveCard's: an ancestor with `perspective`
+// establishes a stacking context that no z-index inside it can escape.
+function DeclareMoveInfo({ move, anchorRef, open, onClose, tellById, allMoves, tags }) {
+  const pos = useHoverCardPosition(anchorRef, open);
+  const moveTags = (tags ?? []).filter((t) => (move.tag_ids ?? []).includes(t.id));
+  useEffect(() => {
+    if (!open) return undefined;
+    const onPointerDown = (e) => {
+      if (anchorRef.current?.contains(e.target)) return;
+      onClose();
+    };
+    document.addEventListener('pointerdown', onPointerDown);
+    return () => document.removeEventListener('pointerdown', onPointerDown);
+  }, [open, onClose, anchorRef]);
+  return createPortal(
+    <AnimatePresence>
+      {open && pos && (
+        <motion.div
+          initial={{ opacity: 0, y: pos.below ? -6 : 6, scale: 0.96 }}
+          animate={{ opacity: 1, y: 0, scale: 1 }}
+          exit={{ opacity: 0, y: pos.below ? -6 : 6, scale: 0.96 }}
+          transition={{ duration: 0.14 }}
+          style={{ left: pos.left, top: pos.top, bottom: pos.bottom, width: pos.width }}
+          className="pointer-events-none fixed z-[80] max-w-[calc(100vw-1rem)] panel-cut border border-brand-700/60 bg-zinc-950 p-2 shadow-2xl shadow-black/80"
+        >
+          <MoveCard
+            move={move}
+            allMoves={allMoves}
+            tags={moveTags}
+            tell={tellById?.get(move.tell_id)}
+            rightTell={move.right_tell_id ? tellById?.get(move.right_tell_id) : undefined}
+            leftTell={move.left_tell_id ? tellById?.get(move.left_tell_id) : undefined}
+          />
+        </motion.div>
+      )}
+    </AnimatePresence>,
+    document.body
+  );
+}
+
+function DeclareMoveCard({ character, move, roundStartTic, declaredMoves, tags, tellById, allMoves }) {
+  const chipRef = useRef(null);
+  const [showCard, setShowCard] = useState(false);
   // Block Tag (the first Tag automation): a Block has no up-front cost to
   // quote — what it will cost depends on what it ends up absorbing — so the
   // card advertises its multiplier instead of a number that would always
@@ -1384,8 +1457,37 @@ function DeclareMoveCard({ character, move, roundStartTic, declaredMoves, tags }
     requiredId != null && lastQueuedMoveId(character.id, declaredMoves) !== requiredId;
   const requiredName = requiredId != null ? (move.requirement_move_name ?? 'another move') : null;
   return (
+    <div ref={chipRef} className="relative">
+      <DeclareMoveInfo
+        move={move}
+        anchorRef={chipRef}
+        open={showCard}
+        onClose={() => setShowCard(false)}
+        tellById={tellById}
+        allMoves={allMoves}
+        tags={tags}
+      />
+      {/* Outside the draggable button on purpose: nested inside it, a press
+          on the ⓘ starts the drag instead of opening the card. */}
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          setShowCard((v) => !v);
+        }}
+        title={`Read ${move.name}`}
+        aria-label={`Read ${move.name}`}
+        className="absolute -right-1 -top-1 z-10 flex h-5 w-5 items-center justify-center rounded-full border border-zinc-700 bg-zinc-900 text-[10px] font-bold text-zinc-400 hover:border-brand-500 hover:text-brand-300"
+      >
+        i
+      </button>
     <button
       type="button"
+      // Hover is the mouse shortcut for the same card the ⓘ opens. Closed on
+      // mouseleave only — a card opened by the button stays until it is
+      // dismissed, which is what makes it usable without a pointer.
+      onMouseEnter={() => setShowCard(true)}
+      onMouseLeave={() => setShowCard(false)}
       draggable={!blockedByRequirement}
       disabled={blockedByRequirement}
       onDragStart={(e) => {
@@ -1427,6 +1529,7 @@ function DeclareMoveCard({ character, move, roundStartTic, declaredMoves, tags }
         size="h-2 w-2"
       />
     </button>
+    </div>
   );
 }
 
@@ -1434,15 +1537,31 @@ function DeclareMoveCard({ character, move, roundStartTic, declaredMoves, tags }
 // currently has the floor — Default/Unique tabs split the character's move
 // list the same way Tab 3 does; a styled move is left out of either tab
 // unless it matches one of the two styles in the character's active stance.
-function DeclareMovePicker({ entry, roundStartTic, declaredMoves, tags }) {
+function DeclareMovePicker({ entry, roundStartTic, declaredMoves, tags, tellById }) {
   const { character, stances, moves } = entry;
   const [tab, setTab] = useState('default');
   const activeStance = stances.find((s) => s.id === character.active_stance_id);
   const activeStyles = activeStance ? [activeStance.attribute_a_id, activeStance.attribute_b_id] : [];
   const usable = (move) => move.style_attribute_id == null || activeStyles.includes(move.style_attribute_id);
   const shown = (moves ?? []).filter((m) => Boolean(m.is_default) === (tab === 'default') && usable(m));
+  // Feint Tag (decided, new): if the move this character just queued carries
+  // the Feint Tag, whatever goes on next — on the first free Tic — is dealt
+  // out of everyone else's view entirely until it reveals. Said out loud
+  // here rather than left to be discovered, because the concealment is
+  // invisible from the declaring side by construction: their own board looks
+  // exactly the same either way. Nothing is greyed out — declaring later, or
+  // declaring nothing, are both perfectly legal, they just aren't hidden.
+  const lastId = lastQueuedMoveId(character.id, declaredMoves);
+  const feintQueued =
+    lastId != null && carriesFeintTag((moves ?? []).find((m) => m.id === lastId)?.tag_ids, tags);
   return (
     <div className="panel-cut-sm border border-zinc-800 bg-zinc-950 p-2">
+      {feintQueued && (
+        <p className="mb-1.5 panel-cut-sm border border-violet-800/60 bg-violet-950/30 px-2 py-1 text-[11px] leading-tight text-violet-300">
+          <b>Feint queued.</b> Whatever you declare on the very next free Tic goes on
+          hidden — no Tell, no wind-up — until it reveals.
+        </p>
+      )}
       <div className="mb-1.5 flex items-center gap-2">
         <div className="flex overflow-hidden panel-cut-sm border border-zinc-700 text-[11px] font-semibold uppercase">
           {['default', 'unique'].map((t) => (
@@ -1466,6 +1585,10 @@ function DeclareMovePicker({ entry, roundStartTic, declaredMoves, tags }) {
               roundStartTic={roundStartTic}
               declaredMoves={declaredMoves}
               tags={tags}
+              tellById={tellById}
+              // This character's own list, which is all a Grappling move's
+              // four direction arrows ever need to be named from.
+              allMoves={moves ?? []}
             />
           ))
         ) : (
@@ -1483,7 +1606,7 @@ function DeclareMovePicker({ entry, roundStartTic, declaredMoves, tags }) {
 // Uneven Combat. Each character presses their own Done Declaring
 // individually (decided, combat redesign) — there's no shared per-side
 // button anymore.
-function ActiveDeclarePanel({ entry, roundStartTic, declaredMoves, tags }) {
+function ActiveDeclarePanel({ entry, roundStartTic, declaredMoves, tags, tellById }) {
   return (
     <div className="w-full max-w-md space-y-2 panel-cut-lg border border-brand-800/50 bg-brand-950/20 p-3">
       <div className="flex items-center justify-between gap-2">
@@ -1495,7 +1618,13 @@ function ActiveDeclarePanel({ entry, roundStartTic, declaredMoves, tags }) {
           ✓ Done Declaring
         </button>
       </div>
-      <DeclareMovePicker entry={entry} roundStartTic={roundStartTic} declaredMoves={declaredMoves} tags={tags} />
+      <DeclareMovePicker
+        entry={entry}
+        roundStartTic={roundStartTic}
+        declaredMoves={declaredMoves}
+        tags={tags}
+        tellById={tellById}
+      />
     </div>
   );
 }
@@ -2243,6 +2372,7 @@ export default function CombatArena() {
               roundStartTic={displayPair?.roundStartTic}
               declaredMoves={declaredMoves}
               tags={tags}
+              tellById={tellById}
             />
           ))}
           {role === 'gm' && activeDeclareEntries.length === 0 && (

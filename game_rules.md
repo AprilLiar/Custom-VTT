@@ -241,6 +241,37 @@ have been plenty.
 > half a point of damage is a roll too weak to have accomplished anything.
 > Raise it on a move that should be hard to pull off.
 
+### The Feint Tag
+
+Every move you declare shows a **Tell** — everyone at the table can see the
+shape of what you are about to do, even though they cannot see which move it
+is. A **Feint** turns that against them.
+
+A move tagged **Feint** shows its Tell like anything else. Nothing about it
+looks unusual, and that is the point: it is a lie told in public.
+
+What it changes is the move you declare **immediately after** it. That one
+goes onto the timeline **hidden**:
+
+- It shows **no Tell**. Nobody else sees a card for it at all.
+- It shows **no wind-up**. The grey marker that normally warns everyone which
+  Tic an attack begins on does not appear.
+- It is otherwise **a completely ordinary declaration**. You pay its Stamina
+  when you finish declaring, it occupies its Tics, and it resolves on its own
+  frames exactly as it would have.
+- It **reveals in the fight itself**, on the Tic it was always going to
+  reveal on — and from that moment it is as public as any other move.
+
+"Immediately after" is literal, and it means the same thing it means for a
+Requirement: the hidden move must start **on the very Tic the Feint's own
+frames end**. Hold it back even one Tic and you get a normal, visible move —
+the concealment is bought by committing to the follow-up right now, in the
+same breath as the lie.
+
+> A Feint is worth what your opponent believed. Against someone who never
+> reads Tells it does nothing at all, and it still costs you a move's worth
+> of frames to throw.
+
 ### Grappling
 
 Most moves try to hurt you. A **Grappling** move tries to *take* you.
@@ -412,6 +443,32 @@ is the same bargain every other declaration makes.
 A move can never require itself, and deleting a move frees anything that
 required it. Moves chained by a successful **Grapple** are placed by the
 system rather than declared, so they ignore Requirements entirely.
+
+### Recovery somebody else puts on you
+
+Some moves do more than hurt. A move can carry an effect that **puts Recovery
+on the person it lands on** — a shove that staggers, a clinch that turns them
+around, a stamp that costs them a beat.
+
+That Recovery is not paperwork for later. It happens **the moment the move
+lands**, on the clock, and what it does depends on what you were doing right
+then:
+
+- **Caught winding up.** The extra Tics go onto that move's **Startup**. The
+  move is not ruined — it is *late*. It still comes out, further down the
+  strip than you planned.
+- **Caught mid-move.** Whatever you were doing plays out exactly as declared,
+  and the extra Tics go **on the end**, after your own Recovery. You finish
+  the punch and then you are stuck there.
+- **Caught between moves.** There is nothing to lengthen, so the cost is the
+  delay itself.
+
+In all three, **everything else you had queued slides that many Tics later**.
+A plan is a sequence, and pushing one part of it back pushes the rest.
+
+> This is the cheapest thing in the game to underestimate. Two Tics of
+> imposed Recovery on someone who had three moves lined up costs them two Tics
+> on all three — and hands you the initiative for the rest of the round.
 
 ### Initiative
 

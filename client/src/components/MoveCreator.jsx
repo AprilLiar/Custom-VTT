@@ -416,6 +416,18 @@ export default function MoveCreator({
       description: description.trim(),
       interactions,
       ...(image !== undefined ? image : {}),
+      // A copy keeps the source's art unless the GM picks a new one. `image`
+      // stays `undefined` while nobody touches the file input, which on an
+      // EDIT correctly means "leave the stored image alone" — but a create has
+      // no stored image to leave alone, so a copy would silently come out
+      // blank. Only ever sent when copying: a plain new move has nothing to
+      // inherit, and an edit must keep going through the untouched path.
+      ...(initial?.id == null && image === undefined && initial?.image_data
+        ? { imageData: initial.image_data, imageMimeType: initial.image_mime_type ?? 'image/png' }
+        : {}),
+      // Files the copy beside its source rather than at the top of a
+      // hand-ordered library — see the sort_order note in writeMove.
+      ...(initial?.id == null && initial?.sort_order != null ? { sortOrder: initial.sort_order } : {}),
     });
   };
 
@@ -423,13 +435,22 @@ export default function MoveCreator({
     ? { image_data: image?.imageData, image_mime_type: image?.imageMimeType }
     : initial;
 
+  // **Editing vs. copying.** Both arrive with a full `initial`; only an edit
+  // carries an `id`. Compendium's Copy action strips it deliberately (see
+  // copyDraft there), so every "is this an edit?" question keys off the id
+  // rather than off `initial` being truthy — otherwise a copy would title
+  // itself "Edit Move", offer "Save Move", and exclude the source from its
+  // own Requirement picker for no reason.
+  const editing = initial?.id != null;
+  const copying = Boolean(initial) && !editing;
+
   return (
     <form
       onSubmit={submit}
       className="space-y-3 panel-cut-lg border border-zinc-700 bg-zinc-900 p-4"
     >
       <h3 className="text-sm font-bold uppercase tracking-wide text-zinc-400">
-        {initial ? 'Edit Move' : 'Move Creator'}
+        {editing ? 'Edit Move' : copying ? 'New Move — copied from an existing one' : 'Move Creator'}
       </h3>
 
       <div className="flex flex-wrap items-center gap-3">
@@ -1111,7 +1132,7 @@ export default function MoveCreator({
           disabled={!valid}
           className="flex-1 panel-cut-sm bg-brand-600 py-2 font-semibold hover:bg-brand-500 disabled:opacity-40"
         >
-          {initial ? 'Save Move' : 'Create Move'}
+          {editing ? 'Save Move' : 'Create Move'}
         </button>
         <button
           type="button"

@@ -16,6 +16,7 @@ import {
   adjustStamina,
   logRoll,
   applyMoveInteractions,
+  moveTagNamesFor,
 } from './roundResolution.js';
 import {
   DICE_TEMPLATE,
@@ -56,7 +57,13 @@ import {
   normalizeRequirement,
   requirementSatisfiedBy,
 } from './moveLogic.js';
-import { carriesBlockTag, effectiveTagNames, BLOCK_TAG } from './tagAutomations.js';
+import {
+  carriesBlockTag,
+  carriesFeintTag,
+  effectiveTagNames,
+  feintMasksDeclaration,
+  BLOCK_TAG,
+} from './tagAutomations.js';
 import { effectiveFrames, PERK_HOOKS, idleStaminaRegenRate } from './perkAutomations.js';
 import {
   resolveSideInitiative,
@@ -430,7 +437,7 @@ async function fetchDeclaredMoveRows() {
   return all(`
     SELECT dm.id, dm.character_id, dm.round_number, dm.queue_order,
            dm.placement_tic, dm.reveal_tic, dm.stamina_committed, dm.appendage_choice,
-           dm.recovery_extension_tics,
+           dm.recovery_extension_tics, dm.feint_masked,
            m.id AS move_id, m.name AS move_name, m.tell_id, m.right_tell_id,
            m.left_tell_id, m.active_tics, m.recovery_tics, m.stamina_cost,
            m.defense_frame_positions, m.is_defensive, m.attack_targets,
@@ -442,6 +449,22 @@ async function fetchDeclaredMoveRows() {
     ORDER BY dm.id
   `);
 }
+
+// Every seated character, **with the character's own type joined in**
+// (bugfix). `combat_participants` has no `character_type` column of its own,
+// and `mapPendingGrappleForViewer` asks each row for one to decide whether
+// the GM owns the character being prompted. A plain `SELECT *` therefore
+// answered `undefined` for every seat, the GM never owned anything, and an
+// NPC's grapple showed the GM a "waiting on <that same NPC>" bystander
+// screen instead of the direction cross — a deadlock that read at the table
+// as "grappling does not work". Joined here rather than fixed at the one
+// call site so any future per-viewer rule gets the same truthful rows.
+const allParticipants = () =>
+  all(
+    `SELECT cp.*, ch.character_type
+     FROM combat_participants cp JOIN characters ch ON ch.id = cp.character_id
+     ORDER BY cp.side, cp.pair_index, cp.id`
+  );
 
 // GET /api/combat has no socket to carry an identity, so the client sends
 // it as query params instead — same shape as identity:set's payload.
@@ -477,7 +500,8 @@ function isRevealedToViewer(row, viewer) {
 // falls back to "never naturally reveals to a non-owner" rather than
 // guessing at a clock that no longer applies to it.
 function mapDeclaredMovesForViewer(rows, pairsByIndex, viewer) {
-  return rows.map((row) => {
+  const out = [];
+  for (const row of rows) {
     const viewerIsOwner = isRevealedToViewer(row, viewer);
     const pair = row.pair_index != null ? pairsByIndex.get(row.pair_index) : null;
     const currentTic = pair ? pair.current_tic : -Infinity;
@@ -506,7 +530,23 @@ function mapDeclaredMovesForViewer(rows, pairsByIndex, viewer) {
       ticCountdownRanForThisRow &&
       isMoveRevealedTo({ revealTic: row.reveal_tic, currentTic, viewerIsOwner: false });
     const isRevealed = viewerIsOwner || publiclyRevealed;
-    return {
+    // Feint Tag (decided, new): a move declared immediately after a Feint is
+    // not merely Tell-less to everyone else — it is not on the board at all
+    // until it reveals. Dropped from the payload rather than blanked,
+    // because every other secret in this game is protected by *absence* of
+    // data (see moveId/moveName/staminaCost below, and
+    // mapPendingGrappleForViewer): a row that said `{ placementTic: 4,
+    // feintMasked: true }` would tell an opponent with devtools exactly what
+    // the Feint exists to hide, and `telegraphsAttack` would paint a glow on
+    // that Tic for everyone regardless.
+    //
+    // Safe to reappear mid-round: `publiclyRevealed` only ever goes from
+    // false to true (current_tic only moves forward, and a row from an
+    // earlier round is always past its reveal), so a masked move pops onto
+    // the timeline exactly once, at the Tic it reveals on — which is the
+    // "revealing it during the cutscene" half of the rule.
+    if (row.feint_masked && !viewerIsOwner && !publiclyRevealed) continue;
+    out.push({
       id: row.id,
       characterId: row.character_id,
       roundNumber: row.round_number,
@@ -553,8 +593,14 @@ function mapDeclaredMovesForViewer(rows, pairsByIndex, viewer) {
       // anyway.
       staminaCost: isRevealed ? row.stamina_cost : null,
       staminaCommitted: Boolean(row.stamina_committed),
-    };
-  });
+      // Feint Tag: only ever true on a row this viewer is entitled to see —
+      // an opponent never learns a masked move exists, because the row is
+      // dropped below rather than blanked. For the owner it drives the
+      // "hidden" marker on their own Tell card.
+      feintMasked: Boolean(row.feint_masked),
+    });
+  }
+  return out;
 }
 
 // Sum of Stamina Cost across a character's declared-but-not-yet-committed
@@ -655,7 +701,7 @@ async function emitCombatUpdated() {
   const [state, participants, pairRows, declaredMoveRows, openResolutions, stanceMatchups] =
     await Promise.all([
       one('SELECT * FROM combat_state WHERE id = 1'),
-      all('SELECT * FROM combat_participants ORDER BY side, pair_index, id'),
+      allParticipants(),
       all('SELECT * FROM combat_pairs ORDER BY pair_index'),
       fetchDeclaredMoveRows(),
       fetchOpenResolutionsByPair(),
@@ -713,7 +759,10 @@ function mapPendingGrappleForViewer(resolution, identity, participants) {
     if (identity.role === 'player') return identity.characterId === characterId;
     // The GM owns every NPC. An all-NPC grapple never reaches this function —
     // resolveGrapple auto-chains it rather than prompting — so this can only
-    // ever put the GM on one side of a real prompt.
+    // ever put the GM on one side of a real prompt. `character_type` reaches
+    // these rows through allParticipants' join; it is not a column of
+    // combat_participants, and reading it off a bare SELECT * silently made
+    // the GM a bystander at every prompt (see that helper).
     return participants.some((p) => p.character_id === characterId && p.character_type === 'npc');
   };
   const isGrappler = owns(pending.grapplerCharacterId);
@@ -868,14 +917,20 @@ const TRIGGER_LABELS = {
 // this firing and whoever's on the other side of it — see combat:apply_
 // damage (hit), pool:roll/dice:roll_custom (miss), and combat:resolve_
 // defense (block/defense_success/defense_failure) for exactly who plays
-// which role at each trigger. `opponentDeclaredMoveId` is optional — a
-// plain Hit/Miss has no specific declared move of the opponent's tied to
-// the exchange, so `opponent_recovery` falls back to whichever of their
-// declared moves currently ends latest (same "most relevant in-flight
-// move" query move:declare's own placement-Tic floor already uses);
-// opponent_recovery/opponent_stamina are silently skipped (with their own
-// note in the chat line) if there's no opponent at all (declaredMoveId
-// unresolvable) or, for opponent_recovery, no declared move to extend.
+// which role at each trigger.
+//
+// **Recovery is applied to the clock, not to a row (decided, new).** An
+// `opponent_recovery`/`self_recovery` no longer picks a declared move to
+// bump a counter on; it asks what that character is doing at the Tic it
+// fires on — winding up, mid-move, or between moves — puts the frames where
+// that answer says they go, and slides everything they had declared after it
+// that many Tics later. `planImposedRecovery` in server/combatTiming.js
+// holds the whole rule, and `imposeRecovery` in server/roundResolution.js
+// is the only caller. The old "whichever of their declared moves ends
+// latest" fallback is gone with it: the question was never *which* move, and
+// "between moves" is now a real answer rather than a missing one.
+// opponent_recovery/opponent_stamina are still silently skipped if there is
+// no opponent at all (declaredMoveId unresolvable).
 
 // Combat Automation overhaul: fireMissIfNoDamage used to live here, firing
 // a move's 'miss' trigger whenever its own reveal-time roll came back under
@@ -1108,7 +1163,7 @@ app.get('/api/combat', wrap(async (req, res) => {
   const viewer = viewerFromQuery(req.query);
   const [state, participants, pairRows] = await Promise.all([
     one('SELECT * FROM combat_state WHERE id = 1'),
-    all('SELECT * FROM combat_participants ORDER BY side, pair_index, id'),
+    allParticipants(),
     all('SELECT * FROM combat_pairs ORDER BY pair_index'),
   ]);
 
@@ -2168,19 +2223,28 @@ io.on('connection', (socket) => {
 
     let id = moveId;
     if (id == null) {
+      // Copying a move (decided, new): a copy is filed **beside its source**
+      // rather than at position 0. The Compendium orders by (sort_order, id),
+      // so reusing the source's sort_order and letting the newer id break the
+      // tie drops the copy immediately after the original — which is where a
+      // GM making a variant is looking. Only honoured on INSERT: putting it
+      // in the UPDATE would reset the GM's drag order on every plain edit.
+      // Everything else keeps the 0 default, where the id tiebreak already
+      // appends it to the end of a library nobody has reordered.
+      const sortOrder = Number.isInteger(payload.sortOrder) ? payload.sortOrder : 0;
       const result = await run(
         `INSERT INTO moves (name, is_default, tell_id, startup_tics, active_tics, recovery_tics,
           stamina_cost, description, style_attribute_id, folder_id, image_data, image_mime_type,
           roll_modifier, right_tell_id, left_tell_id, is_defensive, defense_frame_positions,
           roll_type, custom_roll_size, attack_targets, defense_kind, stamina_modifier,
-          combat_style_attribute_id, success_threshold, is_grappling, requirement_move_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          combat_style_attribute_id, success_threshold, is_grappling, requirement_move_id, sort_order)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [name, isDefault, tellId, startup, active, recovery, effectiveStaminaCost, description, styleId,
           folderId, payload.imageData ?? null,
           payload.imageData ? (payload.imageMimeType ?? 'image/png') : null,
           rollModifier, rightTellId, leftTellId, isDefensive, JSON.stringify(defenseFramePositions),
           rollType, customRollSize, JSON.stringify(attackTargets), defenseKind, staminaModifier,
-          combatStyleId, successThreshold, isGrappling, requirementMoveId]
+          combatStyleId, successThreshold, isGrappling, requirementMoveId, sortOrder]
       );
       id = Number(result.lastInsertRowid);
     } else {
@@ -3505,6 +3569,30 @@ io.on('connection', (socket) => {
     );
     const queueOrder = countRow.count + 1;
 
+    // Feint Tag (decided, new): "show the Feint Tell like a normal move, then
+    // if a Move is placed RIGHT AFTER it, it is hidden." Two conditions, both
+    // required, and both asked here once rather than re-derived on every read
+    // (see the column's comment in db.js for why it is frozen):
+    //
+    //   1. the move this one comes right after carries the Feint Tag — the
+    //      same `last` row and the same "right after" the Requirement gate
+    //      above already uses, and the same per-character resolved tag set
+    //      the rest of tag automation reads (a Perk may grant or strip it);
+    //   2. it is contiguous in time — it starts exactly where the Feint's
+    //      own frames end (feintMasksDeclaration).
+    //
+    // A move with no Feint before it takes the default 0 and nothing changes.
+    // The tag lookup is skipped entirely in that overwhelmingly common case,
+    // so an ordinary declaration costs no extra query.
+    const feintMasked =
+      last != null &&
+      placementTic === last.blocked_until_tic &&
+      feintMasksDeclaration({
+        previousCarriesFeint: carriesFeintTag(await moveTagNamesFor(character.id, last.move_id)),
+        previousFootprintEndTic: last.blocked_until_tic,
+        placementTic,
+      });
+
     // Attack Target (Change 001): snapshot the move template's attack_targets
     // (Hand/Leg expanded to this declaration's own appendage_choice) into
     // declared_moves at declare time — a later edit to the Move template
@@ -3517,9 +3605,9 @@ io.on('connection', (socket) => {
     );
 
     await run(
-      `INSERT INTO declared_moves (character_id, move_id, round_number, queue_order, placement_tic, reveal_tic, appendage_choice, effective_attack_targets, attack_target_source)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'move')`,
-      [character.id, move.id, pair.round_number, queueOrder, placementTic, revealTic, storedAppendageChoice, JSON.stringify(effectiveAttackTargets)]
+      `INSERT INTO declared_moves (character_id, move_id, round_number, queue_order, placement_tic, reveal_tic, appendage_choice, effective_attack_targets, attack_target_source, feint_masked)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'move', ?)`,
+      [character.id, move.id, pair.round_number, queueOrder, placementTic, revealTic, storedAppendageChoice, JSON.stringify(effectiveAttackTargets), feintMasked ? 1 : 0]
     );
     // Every connected socket gets its own tailored view via emitCombatUpdated
     // (see isRevealedToViewer/mapDeclaredMovesForViewer) — whoever's logged
@@ -3538,7 +3626,12 @@ io.on('connection', (socket) => {
   // this event deliberately doesn't attempt, so it's simply rejected past
   // that point (a no-op, matching move:declare's own rejection pattern).
   on('move:undeclare', async ({ declaredMoveId }) => {
-    const row = await one('SELECT * FROM declared_moves WHERE id = ?', [declaredMoveId]);
+    // + the move's own Active/Recovery, for the Feint un-masking below.
+    const row = await one(
+      `SELECT dm.*, m.active_tics, m.recovery_tics
+       FROM declared_moves dm JOIN moves m ON m.id = dm.move_id WHERE dm.id = ?`,
+      [declaredMoveId]
+    );
     if (!row || row.stamina_committed) return;
     const participant = await one('SELECT pair_index FROM combat_participants WHERE character_id = ?', [
       row.character_id,
@@ -3548,6 +3641,19 @@ io.on('connection', (socket) => {
       : null;
     if (!pair || pair.phase !== 'declaration') return;
     await run('DELETE FROM declared_moves WHERE id = ?', [row.id]);
+    // Feint Tag: whatever was declared right after this one was masked BY
+    // this one (see feint_masked in move:declare — the flag is frozen at
+    // declare time, so nothing else would ever unset it). Taking the Feint
+    // back has to take its concealment back too, or a player could feint,
+    // hide their real move behind it, then undeclare the feint and keep the
+    // free invisibility. Unconditional: clearing a flag that is already 0 on
+    // a non-Feint's follow-up costs nothing.
+    const footprintEnd =
+      row.reveal_tic + row.active_tics + row.recovery_tics + row.recovery_extension_tics;
+    await run(
+      'UPDATE declared_moves SET feint_masked = 0 WHERE character_id = ? AND placement_tic = ? AND id <> ?',
+      [row.character_id, footprintEnd, row.id]
+    );
     await emitCombatUpdated();
   });
 

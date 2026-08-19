@@ -197,7 +197,8 @@ export default function GmToolsWidget() {
               exit={{ y: 16, opacity: 0 }}
               transition={{ type: 'spring', stiffness: 420, damping: 30 }}
               onClick={(e) => e.stopPropagation()}
-              style={{ paddingBottom: 'var(--safe-bottom)' }}
+              // See DialogShell: added to p-4's 1rem, not replacing it.
+              style={{ paddingBottom: 'calc(1rem + var(--safe-bottom))' }}
               className="flex max-h-[88dvh] w-full max-w-lg flex-col gap-3 rounded-t-2xl border border-zinc-700 bg-zinc-900 p-4 md:rounded-none md:panel-cut-lg"
             >
               <div className="flex shrink-0 items-center gap-2">
