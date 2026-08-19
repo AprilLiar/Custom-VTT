@@ -19,6 +19,7 @@
 
 export const BLOCK_TAG = 'Block';
 export const NO_DAMAGE_TAG = 'No Damage';
+export const FEINT_TAG = 'Feint';
 
 // One entry per Tag that carries mechanics. See resolveBlockStamina and
 // resolveNoDamageOutcome in combatDamage.js for the arithmetic behind each,
@@ -48,6 +49,14 @@ export const TAG_HOOKS = {
     // Which authoring field the Move Creator reveals for it.
     thresholdField: 'success_threshold',
   },
+  [FEINT_TAG]: {
+    // A Feint shows its own Tell exactly like any other move — that is the
+    // whole point, it is a lie told in public. What it changes is the move
+    // declared IMMEDIATELY after it: that one goes on the timeline in
+    // secret, with no Tell and no attack telegraph for anyone but its owner,
+    // and only becomes visible when it reveals during resolution.
+    masksNextMove: true,
+  },
 };
 
 const norm = (name) => String(name ?? '').trim().toLowerCase();
@@ -61,6 +70,25 @@ export function hasTagNamed(tagNames, tagName) {
 
 export const carriesBlockTag = (tagNames) => hasTagNamed(tagNames, BLOCK_TAG);
 export const carriesNoDamageTag = (tagNames) => hasTagNamed(tagNames, NO_DAMAGE_TAG);
+export const carriesFeintTag = (tagNames) => hasTagNamed(tagNames, FEINT_TAG);
+
+// Does a Feint conceal the declaration being made? "Right after" is a timing
+// claim, not just an ordering one — the same reading the Requirement gate
+// already uses ("not later, not without it, but right after"): the follow-up
+// has to start on the very Tic the Feint's own frames end. Holding it back
+// for a later Tic is a slower, different thing, and it gets no concealment.
+//
+// Pure, so the rule can be pinned by a test without a socket or a database;
+// the caller supplies the two facts that need one (whether the previous
+// declaration's move carries the Tag, and where its footprint ends).
+//
+// A null/absent previous footprint answers false rather than throwing — the
+// first move of a round has nothing in front of it to be hidden by.
+export function feintMasksDeclaration({ previousCarriesFeint, previousFootprintEndTic, placementTic }) {
+  if (!previousCarriesFeint) return false;
+  if (!Number.isInteger(previousFootprintEndTic) || !Number.isInteger(placementTic)) return false;
+  return placementTic === previousFootprintEndTic;
+}
 
 // A move's tag names as they apply **to one specific character**, not as the
 // template stores them. Perks can add or remove a Tag on a move for a single

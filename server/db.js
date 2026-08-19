@@ -1189,11 +1189,26 @@ export async function initDb() {
     'attack_target_source',
     `TEXT NOT NULL DEFAULT 'move' CHECK(attack_target_source IN ('move','block'))`
   );
+  // Feint Tag (decided, new): 1 when this declaration was made IMMEDIATELY
+  // after a move carrying the **Feint** Tag — same "right after" test the
+  // Requirement gate uses, plus contiguity in time (it starts on the Tic the
+  // Feint's own frames end). Such a move is dealt out of every non-owner's
+  // combat payload entirely until it reveals: no Tell, no attack telegraph,
+  // no row at all (see mapDeclaredMovesForViewer).
+  //
+  // Frozen at declare time rather than derived at read time on purpose. Two
+  // things would otherwise change the answer after the fact: a Block
+  // extending the Feint's Recovery (recovery_extension_tics) would break the
+  // contiguity test mid-round, and a GM adding or removing the Tag on the
+  // Move template would retroactively mask or unmask a declaration already
+  // on the board.
+  await ensureColumn('declared_moves', 'feint_masked', 'INTEGER NOT NULL DEFAULT 0');
 
   await seedRuleset();
   await seedTells();
   await seedBlockTag();
   await seedNoDamageTag();
+  await seedFeintTag();
 }
 
 // Block Stamina (decided, new): the **Block** Tag is the first Tag in the
@@ -1228,6 +1243,24 @@ async function seedNoDamageTag() {
   await run('INSERT INTO tags (name, description) VALUES (?, ?)', [
     'No Damage',
     'This move deals no damage. It succeeds if its roll reaches the move\u2019s Success Threshold (5 by default) — used on grapples, grabs and setups that move a fight without hurting anyone.',
+  ]);
+}
+
+// The third Tag automation (decided, new). A move tagged **Feint** hides the
+// move declared immediately after it: that follow-up shows no Tell and no
+// attack telegraph to anyone but its owner until it reveals in the cutscene.
+// The Feint itself is entirely public — a Tell everybody reads and nobody
+// should trust.
+//
+// Seeded exactly like Block and No Damage, and for the same reason: the
+// automation matches on the tag's NAME, so the row has to exist for the rule
+// to be reachable at all.
+async function seedFeintTag() {
+  const existing = await one("SELECT id FROM tags WHERE LOWER(name) = 'feint'");
+  if (existing) return;
+  await run('INSERT INTO tags (name, description) VALUES (?, ?)', [
+    'Feint',
+    'This move sells a lie. Its own Tell is shown as normal \u2014 but whatever you declare immediately after it goes on the timeline hidden: no Tell, no wind-up, nothing for your opponent to read until it lands.',
   ]);
 }
 

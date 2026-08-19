@@ -1,6 +1,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { carriesBlockTag, effectiveTagNames, hasTagNamed, TAG_HOOKS, BLOCK_TAG } from '../tagAutomations.js';
+import {
+  carriesBlockTag,
+  carriesFeintTag,
+  effectiveTagNames,
+  feintMasksDeclaration,
+  hasTagNamed,
+  TAG_HOOKS,
+  BLOCK_TAG,
+  FEINT_TAG,
+} from '../tagAutomations.js';
 import { resolveBlockStamina } from '../combatDamage.js';
 import { clampStaminaModifier } from '../moveLogic.js';
 
@@ -157,4 +166,56 @@ test('resolveBlockStamina: the cost never exceeds the Stamina available, at any 
       assert.ok(r.absorbed >= 0 && r.netResult >= 0);
     }
   }
+});
+
+
+// ---------- Feint (the third Tag automation) ----------
+//
+// A Feint's own Tell is public. What it changes is the move declared
+// immediately after it, which goes on the timeline concealed — no Tell, no
+// attack telegraph, no row at all in anyone else's combat payload — until it
+// reveals during resolution.
+
+test('the Feint Tag is registered and carries its hook', () => {
+  assert.equal(FEINT_TAG, 'Feint');
+  assert.equal(TAG_HOOKS[FEINT_TAG].masksNextMove, true);
+  // It changes nothing about damage or cost — those belong to the other two.
+  assert.equal(TAG_HOOKS[FEINT_TAG].suppressesDamage, undefined);
+  assert.equal(TAG_HOOKS[FEINT_TAG].noStaminaCost, undefined);
+});
+
+test('the Feint Tag matches by name like the others, and never matches a Block', () => {
+  assert.equal(carriesFeintTag(['Feint']), true);
+  assert.equal(carriesFeintTag([' feint ']), true);
+  assert.equal(carriesFeintTag(['Feinting']), false);
+  assert.equal(carriesFeintTag(['Block', 'No Damage']), false);
+  assert.equal(carriesFeintTag([]), false);
+  assert.equal(carriesFeintTag(undefined), false);
+  // And a Perk can grant it for one character, same as any other automation.
+  assert.equal(
+    carriesFeintTag(effectiveTagNames({ moveTagNames: [], overrides: [{ action: 'add', tag_name: 'feint' }] })),
+    true
+  );
+});
+
+test('feintMasksDeclaration: only the move placed RIGHT AFTER the Feint is hidden', () => {
+  const feint = { previousCarriesFeint: true, previousFootprintEndTic: 4 };
+  assert.equal(feintMasksDeclaration({ ...feint, placementTic: 4 }), true);
+  // Held back by even one Tic: a slower, different thing, and visible.
+  assert.equal(feintMasksDeclaration({ ...feint, placementTic: 5 }), false);
+  assert.equal(feintMasksDeclaration({ ...feint, placementTic: 9 }), false);
+  // Tic 0 is a real Tic, not an absent one — the guard must not treat it as
+  // falsy (the same Number()/truthiness trap the Requirement field hit).
+  assert.equal(
+    feintMasksDeclaration({ previousCarriesFeint: true, previousFootprintEndTic: 0, placementTic: 0 }),
+    true
+  );
+});
+
+test('feintMasksDeclaration: no Feint in front means nothing is hidden', () => {
+  assert.equal(feintMasksDeclaration({ previousCarriesFeint: false, previousFootprintEndTic: 4, placementTic: 4 }), false);
+  // Nothing declared before it at all — the first move of a round.
+  assert.equal(feintMasksDeclaration({ previousCarriesFeint: true, previousFootprintEndTic: null, placementTic: 0 }), false);
+  assert.equal(feintMasksDeclaration({ previousCarriesFeint: true, placementTic: 0 }), false);
+  assert.equal(feintMasksDeclaration({}), false);
 });

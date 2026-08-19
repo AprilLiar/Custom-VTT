@@ -11,7 +11,7 @@ import {
   getTells,
   getTags,
 } from '../lib/api.js';
-import { carriesBlockTag, staminaModifierLabel } from '../lib/moveDisplay.js';
+import { carriesBlockTag, carriesFeintTag, staminaModifierLabel } from '../lib/moveDisplay.js';
 import { portraitSrc } from '../lib/image.js';
 import { dieLabel, tintFor, POOLS } from '../lib/dice.js';
 import { buildFolderTree } from '../lib/folders.js';
@@ -974,6 +974,12 @@ function CompactDeclaredMoveCard({ dm, move, tellById, allMoves = [] }) {
   const linkOnHover = telegraphed && !revealed;
   const cardPos = useHoverCardPosition(cardRef, showCard && revealed);
 
+  // Feint Tag: this declaration is concealed from everyone but its owner
+  // until it reveals. `publiclyRevealed` is what ends the concealment, not
+  // `isRevealed` — the owner's own view is always revealed, so keying off
+  // that would mean the badge never appeared at all.
+  const hiddenByFeint = Boolean(dm.feintMasked) && !dm.publiclyRevealed;
+
   // **How it was opened decides how it closes**, and this is the whole reason
   // tapping appeared to do nothing on a phone. A tap emits (measured, not
   // assumed): pointerdown → mouseenter → click → mouseout → **mouseleave**.
@@ -1095,13 +1101,27 @@ function CompactDeclaredMoveCard({ dm, move, tellById, allMoves = [] }) {
           >
             <div
               title={move.name}
-              className="flex w-44 items-center gap-2 panel-cut border border-brand-800/60 bg-brand-950/30 p-2 text-left"
+              className={`flex w-44 items-center gap-2 panel-cut border p-2 text-left ${
+                hiddenByFeint
+                  ? 'border-violet-700/60 bg-violet-950/25'
+                  : 'border-brand-800/60 bg-brand-950/30'
+              }`}
             >
               <Thumb record={move} name={move.name} size="h-7 w-7" />
               <div className="min-w-0 flex-1">
                 {/* Same width and wrapping as the Tell face above, so a lane
                     doesn't visibly jump when a move reveals. */}
                 <div className="break-words text-xs font-semibold leading-tight text-zinc-100">{move.name}</div>
+                {/* Feint Tag: only this card's owner ever sees this face at
+                    all before the reveal — the row itself is withheld from
+                    everyone else (mapDeclaredMovesForViewer) — so the badge
+                    is a reassurance rather than a leak: "they cannot see
+                    this one." */}
+                {hiddenByFeint && (
+                  <div className="text-[9px] font-semibold uppercase tracking-wide text-violet-300">
+                    ◌ hidden — feinted into
+                  </div>
+                )}
                 <FrameBar
                   startup={move.startup_tics}
                   active={move.active_tics}
@@ -1441,8 +1461,24 @@ function DeclareMovePicker({ entry, roundStartTic, declaredMoves, tags }) {
   const activeStyles = activeStance ? [activeStance.attribute_a_id, activeStance.attribute_b_id] : [];
   const usable = (move) => move.style_attribute_id == null || activeStyles.includes(move.style_attribute_id);
   const shown = (moves ?? []).filter((m) => Boolean(m.is_default) === (tab === 'default') && usable(m));
+  // Feint Tag (decided, new): if the move this character just queued carries
+  // the Feint Tag, whatever goes on next — on the first free Tic — is dealt
+  // out of everyone else's view entirely until it reveals. Said out loud
+  // here rather than left to be discovered, because the concealment is
+  // invisible from the declaring side by construction: their own board looks
+  // exactly the same either way. Nothing is greyed out — declaring later, or
+  // declaring nothing, are both perfectly legal, they just aren't hidden.
+  const lastId = lastQueuedMoveId(character.id, declaredMoves);
+  const feintQueued =
+    lastId != null && carriesFeintTag((moves ?? []).find((m) => m.id === lastId)?.tag_ids, tags);
   return (
     <div className="panel-cut-sm border border-zinc-800 bg-zinc-950 p-2">
+      {feintQueued && (
+        <p className="mb-1.5 panel-cut-sm border border-violet-800/60 bg-violet-950/30 px-2 py-1 text-[11px] leading-tight text-violet-300">
+          <b>Feint queued.</b> Whatever you declare on the very next free Tic goes on
+          hidden — no Tell, no wind-up — until it reveals.
+        </p>
+      )}
       <div className="mb-1.5 flex items-center gap-2">
         <div className="flex overflow-hidden panel-cut-sm border border-zinc-700 text-[11px] font-semibold uppercase">
           {['default', 'unique'].map((t) => (

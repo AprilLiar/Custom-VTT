@@ -16,6 +16,7 @@ import {
   adjustStamina,
   logRoll,
   applyMoveInteractions,
+  moveTagNamesFor,
 } from './roundResolution.js';
 import {
   DICE_TEMPLATE,
@@ -56,7 +57,13 @@ import {
   normalizeRequirement,
   requirementSatisfiedBy,
 } from './moveLogic.js';
-import { carriesBlockTag, effectiveTagNames, BLOCK_TAG } from './tagAutomations.js';
+import {
+  carriesBlockTag,
+  carriesFeintTag,
+  effectiveTagNames,
+  feintMasksDeclaration,
+  BLOCK_TAG,
+} from './tagAutomations.js';
 import { effectiveFrames, PERK_HOOKS, idleStaminaRegenRate } from './perkAutomations.js';
 import {
   resolveSideInitiative,
@@ -430,7 +437,7 @@ async function fetchDeclaredMoveRows() {
   return all(`
     SELECT dm.id, dm.character_id, dm.round_number, dm.queue_order,
            dm.placement_tic, dm.reveal_tic, dm.stamina_committed, dm.appendage_choice,
-           dm.recovery_extension_tics,
+           dm.recovery_extension_tics, dm.feint_masked,
            m.id AS move_id, m.name AS move_name, m.tell_id, m.right_tell_id,
            m.left_tell_id, m.active_tics, m.recovery_tics, m.stamina_cost,
            m.defense_frame_positions, m.is_defensive, m.attack_targets,
@@ -477,7 +484,8 @@ function isRevealedToViewer(row, viewer) {
 // falls back to "never naturally reveals to a non-owner" rather than
 // guessing at a clock that no longer applies to it.
 function mapDeclaredMovesForViewer(rows, pairsByIndex, viewer) {
-  return rows.map((row) => {
+  const out = [];
+  for (const row of rows) {
     const viewerIsOwner = isRevealedToViewer(row, viewer);
     const pair = row.pair_index != null ? pairsByIndex.get(row.pair_index) : null;
     const currentTic = pair ? pair.current_tic : -Infinity;
@@ -506,7 +514,23 @@ function mapDeclaredMovesForViewer(rows, pairsByIndex, viewer) {
       ticCountdownRanForThisRow &&
       isMoveRevealedTo({ revealTic: row.reveal_tic, currentTic, viewerIsOwner: false });
     const isRevealed = viewerIsOwner || publiclyRevealed;
-    return {
+    // Feint Tag (decided, new): a move declared immediately after a Feint is
+    // not merely Tell-less to everyone else — it is not on the board at all
+    // until it reveals. Dropped from the payload rather than blanked,
+    // because every other secret in this game is protected by *absence* of
+    // data (see moveId/moveName/staminaCost below, and
+    // mapPendingGrappleForViewer): a row that said `{ placementTic: 4,
+    // feintMasked: true }` would tell an opponent with devtools exactly what
+    // the Feint exists to hide, and `telegraphsAttack` would paint a glow on
+    // that Tic for everyone regardless.
+    //
+    // Safe to reappear mid-round: `publiclyRevealed` only ever goes from
+    // false to true (current_tic only moves forward, and a row from an
+    // earlier round is always past its reveal), so a masked move pops onto
+    // the timeline exactly once, at the Tic it reveals on — which is the
+    // "revealing it during the cutscene" half of the rule.
+    if (row.feint_masked && !viewerIsOwner && !publiclyRevealed) continue;
+    out.push({
       id: row.id,
       characterId: row.character_id,
       roundNumber: row.round_number,
@@ -553,8 +577,14 @@ function mapDeclaredMovesForViewer(rows, pairsByIndex, viewer) {
       // anyway.
       staminaCost: isRevealed ? row.stamina_cost : null,
       staminaCommitted: Boolean(row.stamina_committed),
-    };
-  });
+      // Feint Tag: only ever true on a row this viewer is entitled to see —
+      // an opponent never learns a masked move exists, because the row is
+      // dropped below rather than blanked. For the owner it drives the
+      // "hidden" marker on their own Tell card.
+      feintMasked: Boolean(row.feint_masked),
+    });
+  }
+  return out;
 }
 
 // Sum of Stamina Cost across a character's declared-but-not-yet-committed
@@ -3505,6 +3535,30 @@ io.on('connection', (socket) => {
     );
     const queueOrder = countRow.count + 1;
 
+    // Feint Tag (decided, new): "show the Feint Tell like a normal move, then
+    // if a Move is placed RIGHT AFTER it, it is hidden." Two conditions, both
+    // required, and both asked here once rather than re-derived on every read
+    // (see the column's comment in db.js for why it is frozen):
+    //
+    //   1. the move this one comes right after carries the Feint Tag — the
+    //      same `last` row and the same "right after" the Requirement gate
+    //      above already uses, and the same per-character resolved tag set
+    //      the rest of tag automation reads (a Perk may grant or strip it);
+    //   2. it is contiguous in time — it starts exactly where the Feint's
+    //      own frames end (feintMasksDeclaration).
+    //
+    // A move with no Feint before it takes the default 0 and nothing changes.
+    // The tag lookup is skipped entirely in that overwhelmingly common case,
+    // so an ordinary declaration costs no extra query.
+    const feintMasked =
+      last != null &&
+      placementTic === last.blocked_until_tic &&
+      feintMasksDeclaration({
+        previousCarriesFeint: carriesFeintTag(await moveTagNamesFor(character.id, last.move_id)),
+        previousFootprintEndTic: last.blocked_until_tic,
+        placementTic,
+      });
+
     // Attack Target (Change 001): snapshot the move template's attack_targets
     // (Hand/Leg expanded to this declaration's own appendage_choice) into
     // declared_moves at declare time — a later edit to the Move template
@@ -3517,9 +3571,9 @@ io.on('connection', (socket) => {
     );
 
     await run(
-      `INSERT INTO declared_moves (character_id, move_id, round_number, queue_order, placement_tic, reveal_tic, appendage_choice, effective_attack_targets, attack_target_source)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'move')`,
-      [character.id, move.id, pair.round_number, queueOrder, placementTic, revealTic, storedAppendageChoice, JSON.stringify(effectiveAttackTargets)]
+      `INSERT INTO declared_moves (character_id, move_id, round_number, queue_order, placement_tic, reveal_tic, appendage_choice, effective_attack_targets, attack_target_source, feint_masked)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'move', ?)`,
+      [character.id, move.id, pair.round_number, queueOrder, placementTic, revealTic, storedAppendageChoice, JSON.stringify(effectiveAttackTargets), feintMasked ? 1 : 0]
     );
     // Every connected socket gets its own tailored view via emitCombatUpdated
     // (see isRevealedToViewer/mapDeclaredMovesForViewer) — whoever's logged
@@ -3538,7 +3592,12 @@ io.on('connection', (socket) => {
   // this event deliberately doesn't attempt, so it's simply rejected past
   // that point (a no-op, matching move:declare's own rejection pattern).
   on('move:undeclare', async ({ declaredMoveId }) => {
-    const row = await one('SELECT * FROM declared_moves WHERE id = ?', [declaredMoveId]);
+    // + the move's own Active/Recovery, for the Feint un-masking below.
+    const row = await one(
+      `SELECT dm.*, m.active_tics, m.recovery_tics
+       FROM declared_moves dm JOIN moves m ON m.id = dm.move_id WHERE dm.id = ?`,
+      [declaredMoveId]
+    );
     if (!row || row.stamina_committed) return;
     const participant = await one('SELECT pair_index FROM combat_participants WHERE character_id = ?', [
       row.character_id,
@@ -3548,6 +3607,19 @@ io.on('connection', (socket) => {
       : null;
     if (!pair || pair.phase !== 'declaration') return;
     await run('DELETE FROM declared_moves WHERE id = ?', [row.id]);
+    // Feint Tag: whatever was declared right after this one was masked BY
+    // this one (see feint_masked in move:declare — the flag is frozen at
+    // declare time, so nothing else would ever unset it). Taking the Feint
+    // back has to take its concealment back too, or a player could feint,
+    // hide their real move behind it, then undeclare the feint and keep the
+    // free invisibility. Unconditional: clearing a flag that is already 0 on
+    // a non-Feint's follow-up costs nothing.
+    const footprintEnd =
+      row.reveal_tic + row.active_tics + row.recovery_tics + row.recovery_extension_tics;
+    await run(
+      'UPDATE declared_moves SET feint_masked = 0 WHERE character_id = ? AND placement_tic = ? AND id <> ?',
+      [row.character_id, footprintEnd, row.id]
+    );
     await emitCombatUpdated();
   });
 

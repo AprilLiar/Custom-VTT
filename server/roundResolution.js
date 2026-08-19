@@ -87,7 +87,11 @@ import {
 // nothing in a fight. Mirrors the effective_tag_ids resolution in
 // server/index.js, on names instead of ids (see tagAutomations.js on why
 // names).
-async function moveTagNamesFor(characterId, moveId) {
+// Exported for server/index.js's move:declare, which has to ask the same
+// question at declaration time (does the move being declared right after
+// carry the Feint Tag?) — one resolution of add/remove Perk overrides, not
+// two that can drift.
+export async function moveTagNamesFor(characterId, moveId) {
   const [own, overrides] = await Promise.all([
     all('SELECT t.name FROM move_tags mt JOIN tags t ON t.id = mt.tag_id WHERE mt.move_id = ?', [moveId]),
     all(
