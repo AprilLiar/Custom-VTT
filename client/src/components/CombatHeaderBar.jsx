@@ -123,7 +123,12 @@ export default function CombatHeaderBar() {
   // reach them wherever they are in the app. Mounted here rather than in
   // the Arena for exactly that reason.
   const [dodgeQueue, setDodgeQueue] = useState([]);
-  const dodgeKey = (d) => `${d.pairIndex}:${d.attackerDeclaredMoveId}`;
+  // **The Stat is part of the identity (multi-target attacks).** An attack
+  // naming several Stats now asks one question per Stat, so two prompts can
+  // legitimately share a pair and an attacking move — keying on those alone
+  // deduped the second question away and left the round paused on a prompt
+  // nobody was ever shown.
+  const dodgeKey = (d) => `${d.pairIndex}:${d.attackerDeclaredMoveId}:${d.targetSlotName ?? ''}`;
   useEffect(() => {
     if (role !== 'gm') return undefined;
     const onDodge = (payload) =>
@@ -140,7 +145,16 @@ export default function CombatHeaderBar() {
     if (role !== 'gm' || !combat) return;
     const pending = (combat.pairs ?? [])
       .filter((p) => p.pendingDodge)
-      .map((p) => ({ ...p.pendingDodge, pairIndex: p.pairIndex, roundNumber: p.roundNumber }));
+      .map((p) => ({
+        ...p.pendingDodge,
+        pairIndex: p.pairIndex,
+        roundNumber: p.roundNumber,
+        // The snapshot carries the raw pause state, which names the Stats still
+        // to be called rather than the one being asked about right now — the
+        // live push spells that out and this has to agree with it, or a
+        // reconnecting GM re-queues a question they already answered.
+        targetSlotName: p.pendingDodge.remainingStats?.[0] ?? null,
+      }));
     if (!pending.length) return;
     setDodgeQueue((q) => {
       const seen = new Set(q.map(dodgeKey));
@@ -185,6 +199,8 @@ export default function CombatHeaderBar() {
         defenderCharacterName={d.defenderCharacterName}
         defenderMoveName={d.defenderMoveName}
         attackerResult={d.attackerResult}
+        targetSlotName={d.targetSlotName}
+        remainingStats={d.remainingStats}
         onResolve={() => setDodgeQueue((q) => q.slice(1))}
       />
     );

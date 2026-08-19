@@ -4,7 +4,7 @@ import { AnimatePresence, motion, useAnimation, useReducedMotion } from 'framer-
 import { socket } from '../socket.js';
 import { getRoundReplay } from '../lib/api.js';
 import { loadCutsceneSpeed } from '../lib/theme.js';
-import { decomposeRoll, formatRollPart } from '../lib/dice.js';
+import { decomposeRoll, formatRollPart, formatRollBreakdown } from '../lib/dice.js';
 import {
   PHASE_BG,
   PHASE_BG_EXTENDED,
@@ -113,14 +113,15 @@ function eventNarration(ev, startTic) {
     case 'carryover':
       return `${who} is still in ${p.moveName ?? 'a move'} from last round.`;
     case 'roll': {
-      // Each die's stored `result` already contains its own bonus and the
-      // roll's modifier, so it is shown as the sum it is — face, addition,
-      // result — via the same decomposition the chat roll card uses. This
-      // line used to print the summed result as though it were the die face
-      // and then append the modifier in parentheses, which is why the
-      // engine's automatic rolls looked like they threw their modifiers
-      // away: a d4 read "Skull 14 (+11) — total 14".
-      const parts = (p.dice ?? []).map((d) => formatRollPart(d, p.modifier ?? 0));
+      // Each die's stored `result` contains its face and its own bonus, so it
+      // is shown as the sum it is — face, addition, result — via the same
+      // decomposition the chat roll card uses. The roll's shared modifier is
+      // not in there (it modifies the roll, not each die) and lands on the
+      // total below. This line used to print the summed result as though it
+      // were the die face and then append the modifier in parentheses, which
+      // is why the engine's automatic rolls looked like they threw their
+      // modifiers away: a d4 read "Skull 14 (+11) — total 14".
+      const parts = (p.dice ?? []).map((d) => formatRollPart(d));
       // A defensive roll names its roller: it arrives between the attacker's
       // own roll and the Defense line, and two bare "total N" rows in a row
       // is exactly the ambiguity that made a Block look like it never rolled.
@@ -132,7 +133,15 @@ function eventNarration(ev, startTic) {
       // With one die the part already ends in the result; repeating it as a
       // total would just be the same number twice.
       const body = parts.join(' + ') || 'a roll';
-      const suffix = parts.length === 1 ? '' : ` — total ${p.total ?? '?'}`;
+      // The total is spelled out whenever it is not simply the one die's own
+      // result — either several dice were summed, or a modifier applies.
+      // Itemised whenever the total is made of more than one named thing, so a
+      // Combat Style, a Stance matchup and a grapple read each read as their own
+      // term instead of melting into one figure (decided, new).
+      const suffix =
+        parts.length === 1 && !p.modifier && !p.chainRollBonus
+          ? ''
+          : ` — total ${formatRollBreakdown(p.dice, p.modifierBreakdown, p.total, p.modifier ?? 0)}`;
       return `${prefix}${body}${suffix}.`;
     }
     case 'defense_resolved': {
@@ -273,7 +282,7 @@ function eventDetail(ev, startTic) {
         lines.push(
           p.dice
             .map((d) => {
-              const { flat, raw, result } = decomposeRoll(d, p.modifier ?? 0);
+              const { flat, raw, result } = decomposeRoll(d);
               const slot = d.slot_name ?? d.slotName;
               return flat === 0
                 ? `${slot}: d${d.size} rolled ${result}`
@@ -282,7 +291,16 @@ function eventDetail(ev, startTic) {
             .join('\n')
         );
       }
-      if (p.modifier) lines.push(`Modifier: ${p.modifier > 0 ? '+' : ''}${p.modifier} (already in the result)`);
+      // One line per named modifier, so the hover detail accounts for the total
+      // in full. Falls back to the bare number when the roll predates the
+      // itemised payload (stored replays are never rewritten — §0).
+      if (Array.isArray(p.modifierBreakdown) && p.modifierBreakdown.length) {
+        for (const t of p.modifierBreakdown) {
+          lines.push(`${t.label}: ${t.amount > 0 ? '+' : '−'}${Math.abs(t.amount)}`);
+        }
+      } else if (p.modifier) {
+        lines.push(`Modifier: ${p.modifier > 0 ? '+' : ''}${p.modifier}, applied once to the total`);
+      }
       break;
     case 'defense_resolved':
       if (p.outcome) lines.push(`Outcome: ${p.outcome}`);

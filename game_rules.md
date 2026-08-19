@@ -132,8 +132,11 @@ At most three of the four cross-pairs can be wins, so the widest possible
 matchup is **+3 for you and −3 for them**: a six-point swing. That tilts a
 fight. It does not decide one.
 
-**Uneven Combat switches this off for everyone in the arena** — with more than
-two fighters there is no single opposing stance to score against.
+**A side that is not exactly one fighter has no matchup** — with more than one
+opponent there is no single opposing stance to score against, so the bonus is
+simply absent for that pair. The arena-wide **Uneven Combat** toggle does not
+switch it off: that toggle only *permits* lopsided pairs, and a plain duel in a
+fight that happens to have the toggle on still has exactly one stance a side.
 
 Both fighters can see this number: it sits either side of the **VS** divider in
 the Arena, one signed value per side, from the moment both are seated. You are
@@ -172,6 +175,17 @@ the gate, but they can absolutely carry a Combat Style.
 
 Combat Style applies to a **Move's own roll**. It does not touch the round's
 initiative roll, which happens before anyone has declared anything.
+
+**You can see the price before you commit.** In the Arena's declare list, a Move
+carrying a Combat Style shows what that Style is worth against the stance across
+from you — `Strength +2 vs their stance`, green for a gain and red for a loss —
+so choosing a Move is a choice you can actually read. It is scored against their
+*stance* only, the same as the number either side of the VS divider: during
+Declaration nothing has revealed, so what their Move will bring is still unknown.
+
+Once the round resolves, the cutscene's log spells the whole total out term by
+term — `9 + 2 (Stance matchup) + 3 (Combat Style: Strength) − 2 (Held in a
+grapple) = 12` — so a modifier never has to be taken on faith.
 
 ## Moves
 
@@ -300,7 +314,10 @@ the fight, not written down beforehand, and it happens in this order:
 **It chains as far as you can pay for.** If a follow-up is itself a grappling
 move, the whole sequence starts again from step 1 — grab, choose, guess, declare
 — with no limit but Stamina and the clock. Run out of Stamina and the chain
-ends there; the hold you already have stays.
+ends there; the hold you already have stays. The read carries into the chained
+grab exactly as it would into any other follow-up: a grapple chained off a grab
+your opponent read wrong is a grapple thrown at **+5**, and one they read right
+is thrown at **−5**.
 
 It is the one place in a fight where you read your opponent **during** the
 exchange rather than before it.
@@ -361,10 +378,23 @@ also answers its own left/right question, so such a move needs only one Tell.
 **Custom Roll** replaces the Stat slots with a single flat die (d4–d12)
 belonging to the *item* rather than the wielder. That is how weapons work.
 
+**A modifier modifies the roll, not each die.** Everything that adjusts a roll
+— the move's own Roll Modifier, your Reasons to Fight, the Stance matchup, a
+Perk's bonus, whatever the GM adds by hand — is summed into one number and
+added **once**, at the end, to the whole roll.
+
+So a move rolling Skull + Body + Brain at +4 throws three dice, adds them up,
+and then adds 4. It does not add 4 three times.
+
+> The one thing that *is* per-die is a die's own bonus — the `+1`s a Stat
+> collects once it is past d12. That belongs to the die, so it rides with it.
+
 ### Attack Target
 
-Every Move with a Roll lists which Stats its damage may land on. An **empty**
-Attack Target is meaningful, not an oversight:
+Every Move with a Roll lists which Stats its damage lands on — all of them, not
+one of them. Naming two Stats is naming two places the blow arrives, each
+defended on its own (see Damage below). An **empty** Attack Target is
+meaningful, not an oversight:
 
 - On a **Defensive** move it means the move is **defence-pure**: it exists to
   be selected as a defender and never attacks on its own account.
@@ -520,10 +550,19 @@ it would against a heavy blow. Only when nothing defends it does the attack
 land for nothing and report Insignificant Damage; when a defence resolved it,
 the defence's own outcome is what the log reports.
 
-Damage lands on the first Stat in the move's Attack Target order that still
-has a working die. That order is fixed:
+Damage lands on **every** Stat in the move's Attack Target that still has a
+working die — a Move that names two Stats hits both of them. Stats are worked
+through in a fixed order:
 
 **Skull, Brain, Left Hand, Stamina, Body, Right Hand, Left Leg, Right Leg.**
+
+A Move that comes at several Stats is several lines of attack, and a defence has
+to answer each of them separately. A **Block** is rolled once per attacked Stat
+— one roll cannot guard two lines, and a Block Tag pays for each line it
+absorbs, so a guard that spent everything holding the first Stat has nothing
+left for the second. A **Dodge** is called once per attacked Stat: the GM is
+asked about each in turn, and the attack only counts as evaded if the Dodge got
+clear of all of it. Whatever gets through on a line lands on that line's Stat.
 
 ### Blocking
 

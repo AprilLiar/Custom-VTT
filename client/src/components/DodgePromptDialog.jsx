@@ -26,6 +26,13 @@ export default function DodgePromptDialog({
   defenderCharacterName,
   defenderMoveName,
   attackerResult,
+  // Multi-target attacks (decided, new): a move naming several Stats asks one
+  // question per Stat, so the prompt has to say WHICH line of the attack it is
+  // about — otherwise the GM sees the same dialog twice and has no way to tell
+  // it apart from a duplicate. Null for a move with no Attack Target of its
+  // own, which is one question about the attack as a whole.
+  targetSlotName,
+  remainingStats,
   onResolve,
 }) {
   const resolve = (outcome) => {
@@ -64,6 +71,17 @@ export default function DodgePromptDialog({
         <span className="font-semibold text-zinc-100">{attackerCharacterName ?? 'the attacker'}</span>
         {attackerMoveName ? `'s "${attackerMoveName}"` : "'s attack"}.
       </p>
+      {targetSlotName && (
+        <p className="mt-2 text-sm text-zinc-300">
+          This call is about the strike to{' '}
+          <span className="font-semibold text-amber-300">{targetSlotName}</span>
+          {/* Only counted out when there is actually more to come — on an
+              ordinary single-Stat attack the tally would be noise. */}
+          {(remainingStats?.length ?? 0) > 1
+            ? `, then ${remainingStats.length - 1} more Stat${remainingStats.length - 1 === 1 ? '' : 's'} this same attack is coming for.`
+            : '.'}
+        </p>
+      )}
       {attackerResult != null && (
         <p className="mt-2 text-xs text-zinc-500">
           Attacker rolled <span className="font-semibold text-zinc-300">{attackerResult}</span>. The rest of

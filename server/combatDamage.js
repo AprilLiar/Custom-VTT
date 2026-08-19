@@ -175,24 +175,37 @@ export function computeInterruptBonus({ revealTic, currentTic }) {
   return Math.max(1, currentTic - revealTic + 1);
 }
 
-// Combat Automation overhaul, decision #5 — automatic damage-target
-// selection when a move's Attack Target allows more than one concrete Stat.
+// Combat Automation overhaul, decision #5 — **revised: a move that names
+// several Stats hits every one of them.**
+//
+// It used to pick the first eligible Stat and drop the rest, which made
+// "Attack Target: Head, Body" a list of *candidates* rather than a list of
+// what the move does — a two-Stat move was strictly no better than a one-Stat
+// move, and the second Stat was decoration. It is now read as written: each
+// named Stat takes the attack's damage, and each is defended separately (see
+// resolveAttack's per-Stat defence loop).
+//
 // `effectiveAttackTargets` is a declared move's own already-canonicalized,
 // already-concrete list (see moveLogic.js's expandAttackTargets/
 // sanitizeAttackTargets — both already produce CONCRETE_ATTACK_TARGET_NAMES
-// order, i.e. Left before Right for both Hand and Leg), so "the move's own
-// listed order" and "canonical order" are the same list by construction —
-// this just walks it and picks the first Stat with an eligible die.
-// `dice` is the target character's own dice as `{ slot_name, status }`.
-// Returns the winning die, or null if every allowed Stat's die is
-// incapacitated (or missing).
-export function selectAutoDamageTarget({ effectiveAttackTargets, dice }) {
+// order, i.e. Left before Right for both Hand and Leg), so the returned order
+// is the canonical one by construction. `dice` is the target character's own
+// dice as `{ slot_name, status }`.
+//
+// Returns every eligible die, in that order, deduped — an empty array when
+// every allowed Stat's die is incapacitated or missing (the attack lands on
+// nothing).
+export function selectAutoDamageTargets({ effectiveAttackTargets, dice }) {
   const bySlot = new Map(dice.map((d) => [d.slot_name, d]));
+  const out = [];
+  const seen = new Set();
   for (const slot of effectiveAttackTargets) {
+    if (seen.has(slot)) continue;
+    seen.add(slot);
     const die = bySlot.get(slot);
-    if (die && die.status !== 'incapacitated') return die;
+    if (die && die.status !== 'incapacitated') out.push(die);
   }
-  return null;
+  return out;
 }
 
 // Combat Automation overhaul, decision #6 — Uneven Combat's "which opposing

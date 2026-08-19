@@ -1,13 +1,15 @@
-// Playtest: a grapple whose follow-up is ITSELF a grapple must open a second
-// cross — "all of this should be recursive and allow chain-grapples."
+// Playtest: the SAME recursion as playtest-grapple-recursion.mjs, but from the
+// other side of the table — a **player** grappler holding **granted**
+// (non-Default) moves, which is how a real fight is actually set up.
 //
-// Built on the NPC-grappler harness (playtest-grapple-gm.mjs), because that
-// is the shape a GM actually plays: the NPC grabs, the GM picks the
-// follow-up, the PC guesses. The follow-up here is another grappling move, so
-// the whole sequence has to run twice.
+// Two things differ from the NPC harness and each can break a chain on its own:
+//   - the player is the one prompted to pick, so the pause has to reach a
+//     player socket rather than the GM's;
+//   - every follow-up has to pass annotateFollowUps' ownership check, which a
+//     Default move sails through and a granted one does not.
 //
 //   npm run dev   (or node server/index.js)
-//   node scripts/playtest-grapple-recursion.mjs
+//   node scripts/playtest-grapple-recursion-pc.mjs
 import { io } from 'socket.io-client';
 
 const BASE = process.env.E2E_URL || 'http://localhost:3001';
@@ -30,7 +32,7 @@ const connect = () =>
     sock.on('connect', () => res(sock));
   });
 const gm = await connect();
-const victimSock = await connect();
+const pcSock = await connect();
 const wait = (sock, ev, pred = () => true, ms = 15000) =>
   new Promise((res, rej) => {
     const t = setTimeout(() => rej(new Error('timeout ' + ev)), ms);
@@ -47,7 +49,7 @@ const stamp = Date.now();
 
 const mk = async (name, extra = {}) => {
   gm.emit('move:create', {
-    name: `${name} ${stamp}`, isDefault: true, tellId: tell.id,
+    name: `${name} ${stamp}`, isDefault: false, tellId: tell.id,
     startupTics: 1, activeTics: 1, recoveryTics: 1,
     description: name, interactions: {}, rollSlots: ['Skull'],
     attackTargets: ['Body'], staminaCost: 0, ...extra,
@@ -79,13 +81,21 @@ const clinch = await mk('Thai Clinch', {
 
 const npc = await jpost('/api/characters', { name: `Npc${stamp}`, characterType: 'npc' });
 const pc = await jpost('/api/characters', { name: `Pc${stamp}`, characterType: 'pc' });
-victimSock.emit('identity:set', { role: 'player', characterId: pc.id });
+pcSock.emit('identity:set', { role: 'player', characterId: pc.id });
 await sleep(400);
 
-gm.emit('combat:add_participant', { characterId: npc.id, side: 'left', pairIndex: 0 });
-await wait(gm, 'combat:updated', (c) => c.participants.some((p) => p.character_id === npc.id));
-gm.emit('combat:add_participant', { characterId: pc.id, side: 'right', pairIndex: 0 });
+// **Granted, not Default.** annotateFollowUps only offers a direction whose
+// move the grappler actually has, so a chain built from granted moves exercises
+// the ownership check that a Default-move fixture never reaches.
+for (const m of [knee, sweep, bodyLock, clinch]) {
+  gm.emit('move:grant', { characterId: pc.id, moveId: m.id });
+  await wait(gm, 'move:granted', (g) => g.moveId === m.id && g.characterId === pc.id);
+}
+
+gm.emit('combat:add_participant', { characterId: pc.id, side: 'left', pairIndex: 0 });
 await wait(gm, 'combat:updated', (c) => c.participants.some((p) => p.character_id === pc.id));
+gm.emit('combat:add_participant', { characterId: npc.id, side: 'right', pairIndex: 0 });
+await wait(gm, 'combat:updated', (c) => c.participants.some((p) => p.character_id === npc.id));
 gm.emit('combat:next_round', {});
 await wait(gm, 'combat:updated', (c) => c.pairs[0]?.phase === 'declaration');
 
@@ -95,9 +105,9 @@ for (let i = 0; i < 2; i++) {
   const st = await jf('/api/combat?role=gm');
   const side = st.pairs[0].declaringSide;
   if (!side) break;
-  const who = side === 'left' ? npc : pc;
-  if (who.id === npc.id) {
-    gm.emit('move:declare', { characterId: npc.id, moveId: clinch.id, placementTic: start });
+  const who = side === 'left' ? pc : npc;
+  if (who.id === pc.id) {
+    pcSock.emit('move:declare', { characterId: pc.id, moveId: clinch.id, placementTic: start });
     await sleep(500);
   }
   gm.emit('combat:character_done_declaring', { characterId: who.id });
@@ -109,17 +119,19 @@ const pendingOf = (sock) => sock.latest?.pairs?.find((p) => p.pairIndex === 0)?.
 const paused = async () => (await jf('/api/combat?role=gm')).pairs[0]?.resolutionStatus;
 
 // ---------------------------------------------------------- the first grab
-check('the first grapple pauses for the GM', (await paused()) === 'paused_grapple', await paused());
-let p = pendingOf(gm);
-check('the GM is asked, with the second grapple among the follow-ups',
+check('the first grapple pauses for the player', (await paused()) === 'paused_grapple', await paused());
+let p = pendingOf(pcSock);
+check('the PLAYER is asked, with the second grapple among the follow-ups',
   p?.role === 'grappler' && p?.directions?.some((d) => /Body Lock/.test(d.moveName ?? '')),
   JSON.stringify({ role: p?.role, dirs: p?.directions?.map((d) => d.moveName) }));
 
-gm.emit('combat:grapple_choose', { pairIndex: 0, direction: 'up', grapplerDeclaredMoveId: p?.grapplerDeclaredMoveId });
+check('every granted follow-up is offered as available',
+  p?.directions?.every((d) => d.available), JSON.stringify(p?.directions));
+pcSock.emit('combat:grapple_choose', { pairIndex: 0, direction: 'up', grapplerDeclaredMoveId: p?.grapplerDeclaredMoveId });
 await sleep(1000);
-check('picking advances to the defender guess', pendingOf(victimSock)?.phase === 'guess',
-  JSON.stringify(pendingOf(victimSock)?.phase));
-victimSock.emit('combat:grapple_guess', { pairIndex: 0, direction: 'down', grapplerDeclaredMoveId: p?.grapplerDeclaredMoveId });
+check('picking advances to the GM guessing for the NPC', pendingOf(gm)?.phase === 'guess',
+  JSON.stringify(pendingOf(gm)?.phase));
+gm.emit('combat:grapple_guess', { pairIndex: 0, direction: 'down', grapplerDeclaredMoveId: p?.grapplerDeclaredMoveId });
 await sleep(4000);
 
 const midState = await jf('/api/combat?role=gm');
@@ -133,7 +145,7 @@ check('the second grapple is retroactively declared', lock != null,
 let secondPause = null;
 for (let i = 0; i < 40; i++) {
   if ((await paused()) === 'paused_grapple') {
-    const now = pendingOf(gm);
+    const now = pendingOf(pcSock);
     if (now?.grapplerDeclaredMoveId !== p?.grapplerDeclaredMoveId) { secondPause = now; break; }
   }
   await sleep(500);
@@ -145,11 +157,13 @@ check('...and offers its own follow-up',
   JSON.stringify(secondPause?.directions?.map((d) => d.moveName)));
 
 if (secondPause) {
-  gm.emit('combat:grapple_choose', { pairIndex: 0, direction: 'up', grapplerDeclaredMoveId: secondPause.grapplerDeclaredMoveId });
+  check('...and every follow-up of the CHAINED grapple is available too',
+    secondPause.directions?.every((d) => d.available), JSON.stringify(secondPause.directions));
+  pcSock.emit('combat:grapple_choose', { pairIndex: 0, direction: 'up', grapplerDeclaredMoveId: secondPause.grapplerDeclaredMoveId });
   await sleep(1000);
   check('the SECOND grapple also advances to a defender guess',
-    pendingOf(victimSock)?.phase === 'guess', JSON.stringify(pendingOf(victimSock)?.phase));
-  victimSock.emit('combat:grapple_guess', { pairIndex: 0, direction: 'up', grapplerDeclaredMoveId: secondPause.grapplerDeclaredMoveId });
+    pendingOf(gm)?.phase === 'guess', JSON.stringify(pendingOf(gm)?.phase));
+  gm.emit('combat:grapple_guess', { pairIndex: 0, direction: 'up', grapplerDeclaredMoveId: secondPause.grapplerDeclaredMoveId });
   await sleep(4000);
 }
 
@@ -182,5 +196,5 @@ check('the chained GRAPPLE still carries the read swing on its own contest',
   JSON.stringify({ chainRollBonus: chainedRoll?.payload?.chainRollBonus }));
 
 console.log(failures ? `\n${failures} FAILURE(S)` : '\nall probes passed');
-for (const s of [gm, victimSock]) s.close();
+for (const s of [gm, pcSock]) s.close();
 process.exit(failures ? 1 : 0);

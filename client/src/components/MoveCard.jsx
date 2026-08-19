@@ -63,15 +63,25 @@ export default function MoveCard({
     (row) => row.text || row.automations?.length > 0
   );
   const sideActive = (dice) => dice.some((d) => d.status === 'active');
-  const formulaFor = (dice) =>
-    dice
+  // Each slot prints its own die and its own bonus, and the move's Roll
+  // Modifier is appended ONCE at the end (decided, fix). It used to be folded
+  // into every slot — "Skull (d4+9) + Body (d6+9)" for a single +9 move — back
+  // when the modifier really was added per die. It is applied to the total
+  // now (rollTotal in server/gameLogic.js), and the formula has to say so or
+  // it advertises a roll the engine will not produce.
+  const rollModifier = move.effective_roll_modifier ?? 0;
+  const formulaFor = (dice) => {
+    const parts = dice
       .map(
         (d) =>
           `${d.slot_name} (${
-            d.status === 'incapacitated' ? '—' : dieFormula(d.current_size, d.bonus, move.effective_roll_modifier ?? 0)
+            d.status === 'incapacitated' ? '—' : dieFormula(d.current_size, d.bonus)
           })`
       )
       .join(' + ');
+    if (!rollModifier) return parts;
+    return `${parts} ${rollModifier > 0 ? '+' : '−'} ${Math.abs(rollModifier)}`;
+  };
   return (
     <div
       title={dimmed ? dimReason : undefined}
@@ -209,7 +219,8 @@ export default function MoveCard({
                 title="Roll this move's base die"
                 className="panel-cut-sm border border-zinc-700 bg-zinc-800 px-2 py-1 font-mono text-zinc-200 hover:border-brand-500 hover:text-brand-300 disabled:opacity-40"
               >
-                {dieFormula(move.custom_roll_size, 0, move.effective_roll_modifier ?? 0)}
+                {dieFormula(move.custom_roll_size, 0)}
+                {rollModifier ? ` ${rollModifier > 0 ? '+' : '−'} ${Math.abs(rollModifier)}` : ''}
               </button>
             ) : isLiveRoll ? (
               ambiguousRoll ? (

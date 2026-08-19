@@ -44,7 +44,7 @@
 // if either one changes.
 
 import { all, one, run } from './db.js';
-import { rollDie, applyHalfDamage, clamp, stepDie } from './gameLogic.js';
+import { rollDie, applyHalfDamage, clamp, stepDie, rollTotal } from './gameLogic.js';
 import {
   parseConcreteAttackTargets,
   expandAttackTargets,
@@ -57,7 +57,7 @@ import {
   classifyDefenseCoverage,
   computeInterruptBonus,
   clampRecoveryExtension,
-  selectAutoDamageTarget,
+  selectAutoDamageTargets,
   selectUnevenCombatTarget,
   selectDefenseMove,
   resolveBlockStamina,
@@ -112,7 +112,7 @@ import {
   planImposedRecovery,
 } from './combatTiming.js';
 import { idleStaminaRegenRate } from './perkAutomations.js';
-import { getCombatRollBonus, getStanceMatchupBonus } from './combatBonuses.js';
+import { getCombatRollBonus, getCombatRollBonusBreakdown, getStanceMatchupBonus } from './combatBonuses.js';
 
 const GM_CHAT_SENTINEL_ID = 0;
 
@@ -198,7 +198,10 @@ async function logRoll(io, { characterId, characterName, modifier, dice, rollCon
     characterName,
     modifier,
     dice,
-    total: dice.reduce((sum, d) => sum + d.result, 0),
+    // rollTotal, not a bare sum: a die's own `result` no longer carries the
+    // shared modifier (see rollTotal in gameLogic.js), so the total is where
+    // that modifier is actually applied — once, to the sum.
+    total: rollTotal(dice, modifier),
     timestamp: new Date().toISOString(),
   });
 }
@@ -487,51 +490,78 @@ async function applyMoveInteractions(io, {
   }
 }
 
-// Applies `steps` half-damage steps to whichever of `targetCharacterId`'s
-// dice selectAutoDamageTarget picks (decision #5 — the move's own
-// effectiveAttackTargets, first eligible Stat in that already-canonical
-// order). Returns the affected die's slot_name and the actual character,
-// or null if no eligible Stat was found (attack lands on nothing).
-async function applyAutoDamage(io, { targetCharacterId, effectiveAttackTargets, steps, attackerName }) {
+// Applies half-damage steps to EVERY Stat this move attacks (decision #5,
+// revised) — selectAutoDamageTargets returns them all, in the move's own
+// already-canonical order.
+//
+// `stepsBySlot` gives a Stat its own figure when its defence was resolved
+// separately (a Block that held against one line and not the other); anything
+// not named there takes the flat `steps`. A Stat whose figure comes out at 0
+// is skipped entirely rather than written back unchanged — that is a Stat the
+// guard stopped, and "took 0 damage to Body" reads as a bug rather than a rule.
+//
+// Returns one entry per Stat actually damaged, empty when the attack landed on
+// nothing.
+async function applyAutoDamage(io, { targetCharacterId, effectiveAttackTargets, steps, stepsBySlot = null, firstOnly = false, attackerName }) {
   const dice = await getDice(targetCharacterId);
-  const die = selectAutoDamageTarget({ effectiveAttackTargets, dice });
-  if (!die) return null;
-  let next = {
-    current_size: die.current_size,
-    bonus: die.bonus,
-    status: die.status,
-    half_damage: Boolean(die.half_damage),
-  };
-  for (let i = 0; i < steps; i++) next = applyHalfDamage(next);
-  await run('UPDATE dice SET current_size = ?, bonus = ?, status = ?, half_damage = ? WHERE id = ?', [
-    next.current_size,
-    next.bonus,
-    next.status,
-    next.half_damage ? 1 : 0,
-    die.id,
-  ]);
-  io.emit('die:updated', diePayload({ ...die, ...next, half_damage: next.half_damage ? 1 : 0 }));
+  let targets = selectAutoDamageTargets({ effectiveAttackTargets, dice });
+  // `firstOnly` is the Successful Block redirect and nothing else: that rule
+  // replaces the attack's target with "the blocker's own Stat", singular, and
+  // the list it is handed is the blocker's whole Roll rather than a move's
+  // authored Attack Target. Spreading the leftover across every Stat the
+  // blocker happens to roll would be a different rule nobody asked for.
+  if (firstOnly) targets = targets.slice(0, 1);
+  if (!targets.length) return [];
   const character = await getCharacter(targetCharacterId);
-  if (character) {
+  const applied = [];
+
+  for (const die of targets) {
+    const own = stepsBySlot ? stepsBySlot[die.slot_name] ?? 0 : steps;
+    if (!(own > 0)) continue;
+    let next = {
+      current_size: die.current_size,
+      bonus: die.bonus,
+      status: die.status,
+      half_damage: Boolean(die.half_damage),
+    };
+    for (let i = 0; i < own; i++) next = applyHalfDamage(next);
+    await run('UPDATE dice SET current_size = ?, bonus = ?, status = ?, half_damage = ? WHERE id = ?', [
+      next.current_size,
+      next.bonus,
+      next.status,
+      next.half_damage ? 1 : 0,
+      die.id,
+    ]);
+    io.emit('die:updated', diePayload({ ...die, ...next, half_damage: next.half_damage ? 1 : 0 }));
+    // Before/after are carried out so the cutscene can animate the die
+    // actually stepping down on the target's card, and so a replay watched
+    // later shows the same step — by then the die is at a completely
+    // different size (§0's self-contained rule).
+    applied.push({
+      slotName: die.slot_name,
+      steps: own,
+      character,
+      sizeBefore: die.current_size,
+      bonusBefore: die.bonus,
+      statusBefore: die.status,
+      sizeAfter: next.current_size,
+      bonusAfter: next.bonus,
+      statusAfter: next.status,
+    });
+  }
+
+  // One sentence for the whole attack rather than one per Stat: a move that
+  // hits three Stats would otherwise fill the log with three near-identical
+  // lines for a single blow.
+  if (character && applied.length) {
+    const each = applied.map((a) => `${a.steps * 0.5} damage to ${a.slotName}`);
+    const list = each.length === 1 ? each[0] : `${each.slice(0, -1).join(', ')} and ${each[each.length - 1]}`;
     await postSystemMessage(
       io,
-      `${character.name} took ${steps * 0.5} damage to ${die.slot_name}${attackerName ? ` from ${attackerName}` : ''}.`
+      `${character.name} took ${list}${attackerName ? ` from ${attackerName}` : ''}.`
     );
   }
-  // Before/after are carried out so the cutscene can animate the die
-  // actually stepping down on the target's card, and so a replay watched
-  // later shows the same step — by then the die is at a completely
-  // different size (§0's self-contained rule).
-  return {
-    slotName: die.slot_name,
-    character,
-    sizeBefore: die.current_size,
-    bonusBefore: die.bonus,
-    statusBefore: die.status,
-    sizeAfter: next.current_size,
-    bonusAfter: next.bonus,
-    statusAfter: next.status,
-  };
+  return applied;
 }
 
 // Steps one named Stat by `steps` half-damage steps (negative steps it back
@@ -645,12 +675,17 @@ async function checkInterrupt(io, { targetCharacterId, attackerRevealTic, attack
   }
   if (!die) return;
 
-  const result = rollDie(die.current_size) + (die.bonus ?? 0) + mod;
+  // The die's own line carries face + its own bonus; the shared modifier is
+  // applied once, to the roll (rollTotal in gameLogic.js). `result` is what
+  // the mechanic below compares against, so it is the total, not the face.
+  const face = rollDie(die.current_size) + (die.bonus ?? 0);
+  const dice = [{ slot_name: die.slot_name, size: die.current_size, bonus: die.bonus ?? 0, result: face }];
+  const result = rollTotal(dice, mod);
   await logRoll(io, {
     characterId: targetCharacterId,
     characterName: startupDM.character_name,
     modifier: mod,
-    dice: [{ slot_name: die.slot_name, size: die.current_size, bonus: die.bonus ?? 0, result }],
+    dice,
   });
 
   // (Needs confirmation, per the plan's own 4.4 note): threshold assumed to
@@ -784,6 +819,12 @@ async function runInterruptAndDamage(io, {
   targetCharacterId,
   effectiveAttackTargets,
   steps,
+  // Per-Stat figures, when the defence was resolved Stat by Stat (decided,
+  // new — see resolveAttack's defence loop). Null means "the same `steps`
+  // everywhere", which is every undefended path.
+  stepsBySlot = null,
+  // Successful Block redirect only — see applyAutoDamage.
+  firstOnly = false,
   attackActiveStart,
   attackerActiveTics,
   tic,
@@ -883,24 +924,41 @@ async function runInterruptAndDamage(io, {
     return;
   }
 
-  const applied = await applyAutoDamage(io, { targetCharacterId, effectiveAttackTargets, steps, attackerName: attackerCharacterName });
+  const applied = await applyAutoDamage(io, {
+    targetCharacterId,
+    effectiveAttackTargets,
+    steps,
+    stepsBySlot,
+    firstOnly,
+    attackerName: attackerCharacterName,
+  });
   // Names, not just ids: the cutscene log states outcomes as sentences now,
   // and a replay must be readable without any live combat state to look them
   // up in (§0's self-contained-payload rule).
   const target = await getCharacter(targetCharacterId);
-  await emitEvent(tic, 'damage_applied', {
-    declaredMoveId,
-    targetCharacterId,
-    targetCharacterName: target?.name ?? null,
-    attackerCharacterName,
-    slotName: applied?.slotName ?? null,
-    steps,
-    sizeBefore: applied?.sizeBefore ?? null,
-    bonusBefore: applied?.bonusBefore ?? null,
-    sizeAfter: applied?.sizeAfter ?? null,
-    bonusAfter: applied?.bonusAfter ?? null,
-    statusAfter: applied?.statusAfter ?? null,
-  });
+  // **One event per damaged Stat**, rather than one event carrying a list: the
+  // cutscene already animates a `damage_applied` as a single die stepping down
+  // on the target's card, so a multi-Stat attack plays as several beats with no
+  // change to the client at all — and a stored replay keeps the same shape it
+  // has always had (§0).
+  //
+  // An attack that landed on nothing still emits one blank event, exactly as
+  // before, so the log says the blow arrived and found nowhere to land.
+  for (const hit of applied.length ? applied : [null]) {
+    await emitEvent(tic, 'damage_applied', {
+      declaredMoveId,
+      targetCharacterId,
+      targetCharacterName: target?.name ?? null,
+      attackerCharacterName,
+      slotName: hit?.slotName ?? null,
+      steps: hit?.steps ?? steps,
+      sizeBefore: hit?.sizeBefore ?? null,
+      bonusBefore: hit?.bonusBefore ?? null,
+      sizeAfter: hit?.sizeAfter ?? null,
+      bonusAfter: hit?.bonusAfter ?? null,
+      statusAfter: hit?.statusAfter ?? null,
+    });
+  }
   const dm = await one('SELECT interactions_resolved FROM declared_moves WHERE id = ?', [declaredMoveId]);
   if (dm && !dm.interactions_resolved) {
     await run('UPDATE declared_moves SET interactions_resolved = 1 WHERE id = ?', [declaredMoveId]);
@@ -914,16 +972,66 @@ async function runInterruptAndDamage(io, {
       opponentCharacterId: targetCharacterId,
     });
   }
-  if (applied) {
+  // One Interruption check for the blow, not one per Stat — being hit in two
+  // places at once is still one blow, and the check reads the total damage
+  // taken. Uses the heaviest Stat's figure, which is `steps` in every case
+  // except a per-Stat defence that held better in one place than another.
+  if (applied.length) {
     await checkInterrupt(io, {
       targetCharacterId,
       attackerRevealTic: attackActiveStart,
       attackerActiveTics,
-      halfDamageSteps: steps,
+      halfDamageSteps: Math.max(...applied.map((a) => a.steps)),
       emitEvent,
       tic,
     });
   }
+}
+
+// Writes the Dodge pause and raises the prompt for whichever Stat is next in
+// line. Shared by the first pause and by every re-pause resolveDodge makes as
+// it works down `remainingStats`, so the two can never drift into asking
+// different questions.
+//
+// `targetSlotName` is null for a move with no Attack Target of its own — one
+// question about the attack as a whole, which is what a Dodge prompt has always
+// been.
+async function persistDodgePause(io, { pairIndex, pending, emitEvent, resolutionId = null }) {
+  const targetSlotName = pending.remainingStats?.[0] ?? null;
+  await run(
+    resolutionId != null
+      ? `UPDATE pair_round_resolutions SET status = 'paused_dodge', pending_dodge_json = ? WHERE id = ?`
+      : `UPDATE pair_round_resolutions SET status = 'paused_dodge', pending_dodge_json = ?
+         WHERE pair_index = ? AND status = 'running'`,
+    [JSON.stringify(pending), resolutionId != null ? resolutionId : pairIndex]
+  );
+  await emitEvent(pending.tic, 'dodge_prompt', {
+    attackerDeclaredMoveId: pending.attackerDeclaredMoveId,
+    attackerCharacterName: pending.attackerCharacterName,
+    attackerMoveName: pending.attackerMoveName ?? null,
+    defenderDeclaredMoveId: pending.defenderDeclaredMoveId,
+    defenderCharacterName: pending.defenderCharacterName ?? null,
+    defenderMoveName: pending.defenderMoveName ?? null,
+    attackerResult: pending.attackerResult,
+    // Which line of attack this particular question is about, and how many are
+    // still to come after it — so the GM can see they are part-way through a
+    // multi-Stat attack rather than being asked the same thing twice.
+    targetSlotName,
+    remainingStats: pending.remainingStats ?? [],
+  });
+}
+
+// Which of a move's Attack Target Stats this particular target can actually be
+// hit in — the same list applyAutoDamage will damage, resolved up front so the
+// defence can be settled one Stat at a time against it (decided, new).
+//
+// Empty for a move with no Attack Target of its own: nothing is being attacked
+// by name, so there is exactly one line of attack and the defence is resolved
+// once, as it always was.
+async function attackedStatsOf(targetCharacterId, effectiveAttackTargets) {
+  if (!effectiveAttackTargets?.length) return [];
+  const dice = await getDice(targetCharacterId);
+  return selectAutoDamageTargets({ effectiveAttackTargets, dice }).map((d) => d.slot_name);
 }
 
 // A Failed defense (too-early coverage for either kind, or Dodge's own
@@ -941,6 +1049,9 @@ async function applyFailedDefense(io, {
   targetCharacterId,
   effectiveAttackTargets,
   halfDamageSteps,
+  // Per-Stat figures when the defence was answered Stat by Stat — a Dodge that
+  // got clear of one line and not the other (decided, new).
+  stepsBySlot = null,
   attackActiveStart,
   attackerActiveTics,
   tic,
@@ -966,6 +1077,7 @@ async function applyFailedDefense(io, {
     targetCharacterId,
     effectiveAttackTargets,
     steps: halfDamageSteps,
+    stepsBySlot,
     attackActiveStart,
     attackerActiveTics,
     tic,
@@ -1055,32 +1167,60 @@ async function applySuccessfulDodge(io, {
 // target's Resist Roll — and both must go through the same modifier stack and
 // the same chat/timeline logging the attack roll already uses, or a grapple's
 // dice would quietly obey different rules from everyone else's.
-async function rollFor(io, { characterId, characterName, moveId, moveName, slotNames, rollType, customRollSize, rollModifier, appendageChoice, tic, declaredMoveId, emitEvent, defensive = false }) {
+// Every named piece a roll's single `modifier` number is made of, in reading
+// order, zeroes dropped. Carried on the roll event so the cutscene log can lay
+// the total out as terms rather than as one figure nobody can account for —
+// which is what a Combat Style looked like before it had a name attached
+// (decided, new). `modifier` itself is unchanged and still the whole sum, so
+// every existing consumer (the chat roll card above all) is untouched.
+function rollModifierBreakdown({ rollModifier = 0, moveRollBonus = 0, terms = [], chainRollBonus = 0 }) {
+  return [
+    { key: 'move', label: "The move's own modifier", amount: rollModifier ?? 0 },
+    { key: 'move_bonus', label: 'Perk bonus on this move', amount: moveRollBonus ?? 0 },
+    ...terms,
+    // The grapple read is not one of the always-on bonuses — it belongs to this
+    // one declared move and rides the total separately (see chain_roll_bonus) —
+    // so it is appended here rather than coming out of getCombatRollBonus.
+    { key: 'chain', label: 'Read on the grab', amount: chainRollBonus ?? 0 },
+  ].filter((t) => t.amount !== 0);
+}
+
+async function rollFor(io, { characterId, characterName, moveId, moveName, slotNames, rollType, customRollSize, rollModifier, appendageChoice, tic, declaredMoveId, emitEvent, defensive = false, chainRollBonus = 0 }) {
   const hasRoll = rollType === 'custom' ? customRollSize != null : slotNames.length > 0;
   if (!hasRoll) return { total: 0, dice: [], mod: 0 };
 
-  const [rollBonusRow, bonusMods] = await Promise.all([
+  const [rollBonusRow, bonus] = await Promise.all([
     one(
       'SELECT COALESCE(SUM(amount), 0) AS bonus FROM character_move_roll_bonuses WHERE character_id = ? AND move_id = ?',
       [characterId, moveId]
     ),
-    getCombatRollBonus(characterId, { moveId, tic }),
+    getCombatRollBonusBreakdown(characterId, { moveId, tic }),
   ]);
-  const mod = (rollModifier ?? 0) + rollBonusRow.bonus + bonusMods;
+  const mod = (rollModifier ?? 0) + rollBonusRow.bonus + bonus.total;
+  const modifierBreakdown = rollModifierBreakdown({
+    rollModifier,
+    moveRollBonus: rollBonusRow.bonus,
+    terms: bonus.terms,
+    chainRollBonus,
+  });
 
   let dice;
   if (rollType === 'custom') {
-    dice = [{ slot_name: 'Custom', size: customRollSize, bonus: 0, result: rollDie(customRollSize) + mod }];
+    dice = [{ slot_name: 'Custom', size: customRollSize, bonus: 0, result: rollDie(customRollSize) }];
   } else {
     const resolved = await resolveMoveRollDice(characterId, slotNames, appendageChoice);
     dice = resolved.map((d) => ({
       slot_name: d.slot_name,
       size: d.current_size,
       bonus: d.bonus,
-      result: rollDie(d.current_size) + d.bonus + mod,
+      result: rollDie(d.current_size) + d.bonus,
     }));
   }
-  const total = dice.reduce((sum, d) => sum + d.result, 0);
+  // The chain swing rides the total, once, exactly as resolveAttack applies it
+  // (see declared_moves.chain_roll_bonus). Kept out of `mod` so the cutscene can
+  // still show the ±5 as its own line rather than folding it into the move's own
+  // modifier; the arithmetic is identical either way.
+  const total = rollTotal(dice, mod + chainRollBonus);
   await logRoll(io, { characterId, characterName, modifier: mod, dice });
   await emitEvent(tic, 'roll', {
     declaredMoveId,
@@ -1090,6 +1230,8 @@ async function rollFor(io, { characterId, characterName, moveId, moveName, slotN
     dice,
     modifier: mod,
     total,
+    chainRollBonus,
+    modifierBreakdown,
     ...(defensive ? { defensive: true, defenseType: 'resist' } : {}),
   });
   return { total, dice, mod };
@@ -1382,6 +1524,14 @@ async function runGrappleContest(io, { row, targetCharacterId, targetName, tic, 
     tic,
     declaredMoveId: row.declaredMoveId,
     emitEvent,
+    // **A grapple chained off a won grapple keeps its ±5 (bugfix).** Every
+    // ordinary follow-up got this through resolveAttack, but a follow-up that
+    // is itself a Grappling move never enters the attack flow — it comes
+    // straight here — so the read the defender just made on the first grab
+    // silently evaporated on the second one. Reading a grab right has to make
+    // the grab that follows harder, or the mini-game stops meaning anything the
+    // moment a chain goes grapple-into-grapple.
+    chainRollBonus: row.chainRollBonus ?? 0,
   });
 
   const resistSlots = expandRollSlotRows(
@@ -1641,34 +1791,37 @@ async function resolveAttack(io, { row, pairIndex, tic, emitEvent }) {
   }
 
   // Step 2 — auto-roll the attacker's own move.
-  const [rollBonusRow, bonusMods] = await Promise.all([
+  const [rollBonusRow, bonus] = await Promise.all([
     one(
       'SELECT COALESCE(SUM(amount), 0) AS bonus FROM character_move_roll_bonuses WHERE character_id = ? AND move_id = ?',
       [row.characterId, row.moveId]
     ),
-    getCombatRollBonus(row.characterId, { moveId: row.moveId, tic }),
+    getCombatRollBonusBreakdown(row.characterId, { moveId: row.moveId, tic }),
   ]);
-  const mod = row.rollModifier + rollBonusRow.bonus + bonusMods;
+  const mod = row.rollModifier + rollBonusRow.bonus + bonus.total;
   let dice;
   if (row.rollType === 'custom') {
-    dice = [{ slot_name: 'Custom', size: row.customRollSize, bonus: 0, result: rollDie(row.customRollSize) + mod }];
+    dice = [{ slot_name: 'Custom', size: row.customRollSize, bonus: 0, result: rollDie(row.customRollSize) }];
   } else {
     const resolved = await resolveMoveRollDice(row.characterId, row.rollSlotNames, row.appendageChoice);
     dice = resolved.map((d) => ({
       slot_name: d.slot_name,
       size: d.current_size,
       bonus: d.bonus,
-      result: rollDie(d.current_size) + d.bonus + mod,
+      result: rollDie(d.current_size) + d.bonus,
     }));
   }
-  // **The chain swing is TOTAL-level** — added once, here, to the summed roll,
-  // never folded into `mod` above. `mod` is applied to every die separately, so
-  // a ±5 in there would pay out per die and a three-die follow-up would be
-  // worth ±15. Non-zero only on a move the engine declared retroactively off a
-  // won grapple; every ordinary declared move carries 0 (see
+  // The chain swing rides the same total-level rule every modifier now
+  // follows (rollTotal in gameLogic.js) — added once to the summed roll. It
+  // is kept out of `mod` only so the ±5 stays its own line in the cutscene
+  // rather than disappearing into the move's own modifier; the arithmetic is
+  // identical either way now that `mod` is total-level too. (It had to be
+  // separate when `mod` was applied per die: a ±5 in there paid out per die
+  // and a three-die follow-up was worth ±15.) Non-zero only on a move the
+  // engine declared retroactively off a won grapple (see
   // declared_moves.chain_roll_bonus).
   const chainRollBonus = row.chainRollBonus ?? 0;
-  const total = dice.reduce((sum, d) => sum + d.result, 0) + chainRollBonus;
+  const total = rollTotal(dice, mod + chainRollBonus);
   await logRoll(io, { characterId: row.characterId, characterName: row.characterName, modifier: mod, dice });
   // characterName rides along for the same §0 reason every other payload
   // carries one: the cutscene names the roller in its own sentence, and a
@@ -1685,6 +1838,12 @@ async function resolveAttack(io, { row, pairIndex, tic, emitEvent }) {
     // leaving the sum looking like arithmetic that doesn't add up — the same
     // defect the Reasons to Fight modifier had before it was passed through.
     chainRollBonus,
+    modifierBreakdown: rollModifierBreakdown({
+      rollModifier: row.rollModifier,
+      moveRollBonus: rollBonusRow.bonus,
+      terms: bonus.terms,
+      chainRollBonus,
+    }),
   });
 
   // A sub-5 roll is Insignificant Damage, and that is decided at the END of
@@ -1866,35 +2025,35 @@ async function resolveAttack(io, { row, pairIndex, tic, emitEvent }) {
     // interactions_resolved stays 0 until resolveDodge (exported below)
     // applies the GM's answer and finishes it.
     if (coverage.coverage === 'full') {
-      await run(
-        `UPDATE pair_round_resolutions SET status = 'paused_dodge', pending_dodge_json = ?
-         WHERE pair_index = ? AND status = 'running'`,
-        [
-          JSON.stringify({
-            attackerDeclaredMoveId: row.declaredMoveId,
-            attackerMoveId: row.moveId,
-            attackerCharacterId: row.characterId,
-            attackerCharacterName: row.characterName,
-            defenderDeclaredMoveId: defenderDM.id,
-            attackerResult: total,
-            targetCharacterId,
-            allowedConcreteTargets,
-            halfDamageSteps,
-            attackActiveStart,
-            attackerActiveTics: row.activeTics,
-            tic,
-          }),
-          pairIndex,
-        ]
-      );
-      await emitEvent(tic, 'dodge_prompt', {
-        attackerDeclaredMoveId: row.declaredMoveId,
-        attackerCharacterName: row.characterName,
-        attackerMoveName: row.moveName,
-        defenderDeclaredMoveId: defenderDM.id,
-        defenderCharacterName: defenderDM.character_name,
-        defenderMoveName: defenderDM.move_name,
-        attackerResult: total,
+      // **One question per Stat the attack names (decided, new).** A dodge
+      // that got the head out of the way did not necessarily get the body out
+      // of the way, and asking once for a two-Stat attack silently made the
+      // second Stat free. The remaining Stats are carried on the pause and
+      // asked for one at a time; resolveDodge re-pauses until the list is
+      // empty. A move with no Attack Target is one question, as before.
+      const dodgeLines = await attackedStatsOf(targetCharacterId, allowedConcreteTargets);
+      await persistDodgePause(io, {
+        pairIndex,
+        pending: {
+          attackerDeclaredMoveId: row.declaredMoveId,
+          attackerMoveId: row.moveId,
+          attackerCharacterId: row.characterId,
+          attackerCharacterName: row.characterName,
+          attackerMoveName: row.moveName,
+          defenderDeclaredMoveId: defenderDM.id,
+          defenderCharacterName: defenderDM.character_name,
+          defenderMoveName: defenderDM.move_name,
+          attackerResult: total,
+          targetCharacterId,
+          allowedConcreteTargets,
+          halfDamageSteps,
+          attackActiveStart,
+          attackerActiveTics: row.activeTics,
+          tic,
+          remainingStats: dodgeLines,
+          stepsBySlot: {},
+        },
+        emitEvent,
       });
       return { paused: true };
     }
@@ -1920,40 +2079,55 @@ async function resolveAttack(io, { row, pairIndex, tic, emitEvent }) {
   const defBonusMods = await getCombatRollBonus(defenderDM.character_id, { moveId: defenderDM.move_id, tic });
   const defMod = defenderDM.roll_modifier + defRollBonusRow.bonus + defBonusMods;
 
-  let blockDice;
-  if (defenderDM.roll_type === 'custom' && defenderDM.custom_roll_size != null) {
-    blockDice = [
-      { slot_name: 'Custom', size: defenderDM.custom_roll_size, bonus: 0, result: rollDie(defenderDM.custom_roll_size) + defMod },
-    ];
-  } else {
-    const slotNames = expandRollSlotRows([...baseSlotRows, ...defensiveSlotRows]);
-    const resolved = await resolveMoveRollDice(defenderDM.character_id, slotNames, defenderDM.appendage_choice);
-    blockDice = resolved.map((d) => ({
-      slot_name: d.slot_name,
-      size: d.current_size,
-      bonus: d.bonus,
-      result: rollDie(d.current_size) + d.bonus + defMod,
-    }));
-  }
-  const blockResult = blockDice.reduce((sum, d) => sum + d.result, 0);
-  await logRoll(io, {
-    characterId: defenderDM.character_id,
-    characterName: defenderDM.character_name,
-    modifier: defMod,
-    dice: blockDice,
-  });
-  // See the note on the Dodge branch's own roll event: without this the
-  // defender's dice never appear on the timeline at all.
-  await emitEvent(tic, 'roll', {
-    declaredMoveId: defenderDM.id,
-    characterId: defenderDM.character_id,
-    characterName: defenderDM.character_name,
-    dice: blockDice,
-    modifier: defMod,
-    total: blockResult,
-    defensive: true,
-    defenseType: defenderDM.defense_kind ?? 'block',
-  });
+  // **The guard is rolled once per Stat the attack names (decided, new).** A
+  // move that comes at two Stats is two lines of attack, and one roll cannot
+  // answer both — asking it to made the second Stat free. Each line gets its
+  // own roll, its own outcome, and its own Stamina bill; what gets through on
+  // each is added up, and the Successful Block rule below then puts the whole
+  // of it onto the arm that held.
+  //
+  // A move with no Attack Target of its own has no named line to split, so it
+  // resolves in exactly one pass, as it always did.
+  const blockLines = await attackedStatsOf(targetCharacterId, allowedConcreteTargets);
+  const lines = blockLines.length ? blockLines : [null];
+
+  const rollTheGuard = async () => {
+    let blockDice;
+    if (defenderDM.roll_type === 'custom' && defenderDM.custom_roll_size != null) {
+      blockDice = [
+        { slot_name: 'Custom', size: defenderDM.custom_roll_size, bonus: 0, result: rollDie(defenderDM.custom_roll_size) },
+      ];
+    } else {
+      const slotNames = expandRollSlotRows([...baseSlotRows, ...defensiveSlotRows]);
+      const resolved = await resolveMoveRollDice(defenderDM.character_id, slotNames, defenderDM.appendage_choice);
+      blockDice = resolved.map((d) => ({
+        slot_name: d.slot_name,
+        size: d.current_size,
+        bonus: d.bonus,
+        result: rollDie(d.current_size) + d.bonus,
+      }));
+    }
+    const blockResult = rollTotal(blockDice, defMod);
+    await logRoll(io, {
+      characterId: defenderDM.character_id,
+      characterName: defenderDM.character_name,
+      modifier: defMod,
+      dice: blockDice,
+    });
+    // See the note on the Dodge branch's own roll event: without this the
+    // defender's dice never appear on the timeline at all.
+    await emitEvent(tic, 'roll', {
+      declaredMoveId: defenderDM.id,
+      characterId: defenderDM.character_id,
+      characterName: defenderDM.character_name,
+      dice: blockDice,
+      modifier: defMod,
+      total: blockResult,
+      defensive: true,
+      defenseType: defenderDM.defense_kind ?? 'block',
+    });
+    return blockResult;
+  };
 
   // Block Stamina (decided, new — the Block Tag's automation). A move
   // carrying the **Block Tag** pays no up-front Stamina Cost and instead
@@ -1964,48 +2138,67 @@ async function resolveAttack(io, { row, pairIndex, tic, emitEvent }) {
   // the Block/Dodge toggle (see server/tagAutomations.js).
   const defenderTagNames = await moveTagNamesFor(defenderDM.character_id, defenderDM.move_id);
   const blockTagged = carriesBlockTag(defenderTagNames);
-  let resolution;
-  let blockStamina = null;
-  if (blockTagged) {
-    const blocker = await getCharacter(defenderDM.character_id);
-    blockStamina = resolveBlockStamina({
-      attackerResult: total,
-      defenderResult: blockResult,
-      staminaModifier: defenderDM.stamina_modifier ?? 1,
-      availableStamina: blocker?.current_stamina ?? 0,
-    });
-    resolution = blockStamina;
-  } else {
-    resolution = resolveDefenseRoll({ attackerResult: total, defenderResult: blockResult });
-  }
-  await postSystemMessage(
-    io,
-    resolution.outcome === 'full'
-      ? `${defenderDM.character_name} scored a Full ${defenseLabel} — no damage.`
-      : `${defenderDM.character_name} scored a Partial ${defenseLabel} — ${resolution.damage} damage.`
-  );
-  if (blockStamina) {
-    // Spent after the outcome line so the log reads "what happened, then what
-    // it cost". adjustStamina emits its own stamina_changed round_event, so
-    // the cutscene animates the drop on the blocker's card without any extra
-    // event type here.
-    if (blockStamina.staminaCost > 0) {
-      await adjustStamina(io, defenderDM.character_id, -blockStamina.staminaCost, {
-        emitEvent,
-        tic,
-        reason: `${defenderDM.move_name} absorbed ${blockStamina.absorbed}`,
+
+  let leftoverSteps = 0;
+  let leftoverResult = 0;
+  for (const line of lines) {
+    const blockResult = await rollTheGuard();
+    const against = line ? ` against the strike to ${line}` : '';
+    let lineOutcome;
+    let blockStamina = null;
+    if (blockTagged) {
+      // Re-read inside the loop: each line's absorption is paid for as it
+      // happens, so a guard that spent everything holding the first Stat
+      // genuinely has nothing left for the second.
+      const blocker = await getCharacter(defenderDM.character_id);
+      blockStamina = resolveBlockStamina({
+        attackerResult: total,
+        defenderResult: blockResult,
+        staminaModifier: defenderDM.stamina_modifier ?? 1,
+        availableStamina: blocker?.current_stamina ?? 0,
       });
+      lineOutcome = blockStamina;
+    } else {
+      lineOutcome = resolveDefenseRoll({ attackerResult: total, defenderResult: blockResult });
     }
-    // Only worth a sentence when the guard was actually cut short — otherwise
-    // the Stamina line above already says everything.
-    if (blockStamina.capped) {
-      await postSystemMessage(
-        io,
-        `${defenderDM.character_name} ran out of Stamina mid-${defenseLabel} — the guard held only ` +
-          `${blockStamina.absorbed} of ${Math.min(total, blockResult)}, and the rest got through.`
-      );
+    leftoverSteps += lineOutcome.halfDamageSteps;
+    leftoverResult += lineOutcome.netResult ?? 0;
+
+    await postSystemMessage(
+      io,
+      lineOutcome.outcome === 'full'
+        ? `${defenderDM.character_name} scored a Full ${defenseLabel}${against} — no damage.`
+        : `${defenderDM.character_name} scored a Partial ${defenseLabel}${against} — ${lineOutcome.damage} damage.`
+    );
+    if (blockStamina) {
+      // Spent after the outcome line so the log reads "what happened, then what
+      // it cost". adjustStamina emits its own stamina_changed round_event, so
+      // the cutscene animates the drop on the blocker's card without any extra
+      // event type here.
+      if (blockStamina.staminaCost > 0) {
+        await adjustStamina(io, defenderDM.character_id, -blockStamina.staminaCost, {
+          emitEvent,
+          tic,
+          reason: `${defenderDM.move_name} absorbed ${blockStamina.absorbed}`,
+        });
+      }
+      // Only worth a sentence when the guard was actually cut short — otherwise
+      // the Stamina line above already says everything.
+      if (blockStamina.capped) {
+        await postSystemMessage(
+          io,
+          `${defenderDM.character_name} ran out of Stamina mid-${defenseLabel}${against} — the guard held only ` +
+            `${blockStamina.absorbed} of ${Math.min(total, blockResult)}, and the rest got through.`
+        );
+      }
     }
   }
+  // One figure for everything the guard failed to hold, across every line.
+  const resolution = {
+    halfDamageSteps: leftoverSteps,
+    netResult: leftoverResult,
+    outcome: leftoverSteps > 0 ? 'partial' : 'full',
+  };
 
   // Attack Target (Change 001): a Successful Block replaces the attacker's
   // effective target with the blocker's own base Stat Roll (never the
@@ -2056,6 +2249,9 @@ async function resolveAttack(io, { row, pairIndex, tic, emitEvent }) {
       attackerResult: total,
       targetCharacterId: defenderDM.character_id,
       effectiveAttackTargets: blockEffectiveTargets,
+      // The redirect names "the blocker's own Stat", singular — see
+      // applyAutoDamage's own note on this flag.
+      firstOnly: true,
       steps: resolution.halfDamageSteps,
       attackActiveStart,
       attackerActiveTics: row.activeTics,
@@ -2526,7 +2722,10 @@ async function startPairDeclaration(io, pairIndex) {
         blockedUntilTic: blockedUntilByChar.get(p.character_id) ?? null,
         nextRoundStartTic,
       });
-    const result = rollDie(die.current_size) + die.bonus + modifier;
+    const brainDice = [
+      { slot_name: 'Brain', size: die.current_size, bonus: die.bonus, result: rollDie(die.current_size) + die.bonus },
+    ];
+    const result = rollTotal(brainDice, modifier);
     rolls[p.side].push({
       characterId: character.id,
       roll: result,
@@ -2534,12 +2733,7 @@ async function startPairDeclaration(io, pairIndex) {
       lockedBrain: die.locked_size + die.locked_bonus,
       hasSpeedStance: hasSpeedStance(character),
     });
-    await logRoll(io, {
-      characterId: character.id,
-      characterName: character.name,
-      modifier,
-      dice: [{ slot_name: 'Brain', size: die.current_size, bonus: die.bonus, result }],
-    });
+    await logRoll(io, { characterId: character.id, characterName: character.name, modifier, dice: brainDice });
   }
 
   const hasLeft = participants.some((p) => p.side === 'left');
@@ -2927,14 +3121,50 @@ async function resolveDodge(pairIndex, { outcome, attackerDeclaredMoveId }, io) 
   }
 
   const emitEvent = await makeEmitEvent(io, resolution, pairIndex, resolution.round_number);
+
+  // The Stat this particular answer is about, popped off the queue. Null for a
+  // move with no Attack Target of its own, which is a single question.
+  const answeredStat = pending.remainingStats?.[0] ?? null;
+  const remainingStats = (pending.remainingStats ?? []).slice(1);
+  const stepsBySlot = { ...(pending.stepsBySlot ?? {}) };
+  if (answeredStat) {
+    // A dodged line takes nothing; a failed one takes the attack's full weight.
+    stepsBySlot[answeredStat] = outcome === 'failed' ? pending.halfDamageSteps : 0;
+  }
+
   await run(`UPDATE pair_round_resolutions SET status = 'running', pending_dodge_json = NULL WHERE id = ?`, [resolution.id]);
   await emitEvent(pending.tic, 'dodge_resolved', {
     attackerDeclaredMoveId: pending.attackerDeclaredMoveId,
     defenderDeclaredMoveId: pending.defenderDeclaredMoveId,
     outcome,
+    // Which line of the attack was just answered, so the log and a replay read
+    // as "the strike to the Body was dodged" rather than as the same sentence
+    // repeated once per Stat.
+    targetSlotName: answeredStat,
   });
 
-  if (outcome === 'failed') {
+  // More Stats to ask about — pause again on the next one rather than resolving
+  // anything yet. Nothing has been applied at this point, so a re-pause is a
+  // clean continuation of the same decision, not a partial commit.
+  if (remainingStats.length) {
+    await persistDodgePause(io, {
+      pairIndex,
+      pending: { ...pending, remainingStats, stepsBySlot },
+      emitEvent,
+      resolutionId: resolution.id,
+    });
+    return;
+  }
+
+  // Every line answered. The attack as a whole counts as evaded only if the
+  // dodge got clear of ALL of it — anything that got through is a failed
+  // defence for the attack, and each Stat then takes exactly what its own
+  // answer earned it.
+  const anyLanded = answeredStat
+    ? Object.values(stepsBySlot).some((v) => v > 0)
+    : outcome === 'failed';
+
+  if (anyLanded) {
     await applyFailedDefense(io, {
       defenderDM,
       defenseLabel: 'Dodge',
@@ -2946,6 +3176,7 @@ async function resolveDodge(pairIndex, { outcome, attackerDeclaredMoveId }, io) 
       targetCharacterId: pending.targetCharacterId,
       effectiveAttackTargets: pending.allowedConcreteTargets,
       halfDamageSteps: pending.halfDamageSteps,
+      stepsBySlot: answeredStat ? stepsBySlot : null,
       attackActiveStart: pending.attackActiveStart,
       attackerActiveTics: pending.attackerActiveTics,
       tic: pending.tic,

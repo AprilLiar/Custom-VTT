@@ -5,7 +5,7 @@ import { getChat, getCharacters, getTells, getTags, getRuleset, getMoves } from 
 import { fileToChatImage } from '../lib/image.js';
 import { folderPath } from '../lib/folders.js';
 import { phaseBgAt } from '../lib/framePhaseColors.js';
-import { decomposeRoll } from '../lib/dice.js';
+import { decomposeRoll, formatRollTotal } from '../lib/dice.js';
 import { useRole } from '../roleContext.jsx';
 import { useSocketRefresh } from '../lib/connection.js';
 import Thumb from './Thumb.jsx';
@@ -191,29 +191,42 @@ function Entry({ entry, character, moveInfo, characters, defenseResolutions, onW
             <div className="mt-1 space-y-0.5">
               {entry.dice.map((d, i) => {
                 // The physical die face isn't stored separately — result is
-                // already `rollDie(size) + bonus + modifier` (see logRoll
-                // server-side), so it's recovered by subtracting the two flat
-                // additions back out. Shown as its own breakdown ("what was
-                // rolled on the d8, then summed") per the plan's decided
+                // `rollDie(size) + that die's own bonus` (see logRoll
+                // server-side), so it's recovered by subtracting the bonus
+                // back out. The roll's shared modifier is deliberately NOT in
+                // here: it modifies the roll, not each die, and is shown once
+                // on the total line below. Shown as its own breakdown ("what
+                // was rolled on the d8, then summed") per the plan's decided
                 // chat-card redesign — the final result is bolder and bigger
                 // so it strikes the eye at a glance. decomposeRoll is shared
                 // with the round cutscene's log so the two can't drift.
-                const { flat, raw } = decomposeRoll(d, entry.modifier);
+                const { flat, raw } = decomposeRoll(d);
                 return (
                   <div key={i} className="font-display flex flex-wrap items-baseline gap-x-1.5">
                     <span className="text-zinc-500">{d.slot_name}</span>
+                    {/* With nothing to add — the common case now that the
+                        roll's modifier lives on the total line — the face IS
+                        the result, so "d4: 2 = 2" is dropped for a plain
+                        "d4:". Only a die carrying its own bonus prints a sum. */}
                     <span className="font-mono text-xs text-zinc-400">
-                      d{d.size}: {raw}
-                      {flat !== 0 ? ` ${flat > 0 ? '+' : '−'} ${Math.abs(flat)}` : ''} =
+                      d{d.size}:{flat !== 0 ? ` ${raw} ${flat > 0 ? '+' : '−'} ${Math.abs(flat)} =` : ''}
                     </span>
                     <span className="font-mono text-xl font-black leading-none text-white">{d.result}</span>
                   </div>
                 );
               })}
             </div>
-            {multi && (
-              <div className="font-display mt-1 text-right font-mono text-2xl font-black leading-none text-brand-300">
-                Total {entry.total}
+            {/* Shown whenever there is more than one die OR a modifier to
+                apply — the modifier lands here, on the roll, and this is the
+                only place it is visible now that it is no longer folded into
+                every die. A single die with no modifier still prints nothing:
+                the total would just be the same number twice. */}
+            {(multi || Boolean(entry.modifier)) && (
+              <div className="font-display mt-1 text-right font-mono leading-none text-brand-300">
+                <span className="text-xs text-zinc-500">Total </span>
+                <span className="text-2xl font-black">
+                  {formatRollTotal(entry.dice, entry.modifier, entry.total)}
+                </span>
               </div>
             )}
             {entry.declaredMoveId != null && (() => {

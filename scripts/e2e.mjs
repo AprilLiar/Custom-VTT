@@ -140,8 +140,10 @@ events.length = 0;
 emit('die:roll', { characterId: ch.id, dieId: skull.id, modifier: 3 });
 let roll = await waitEvent('roll:result');
 check('die roll broadcast to other client', roll.characterName === 'Aaron' && roll.dice.length === 1);
-check('die roll result in [4,11] (d8+3)', roll.dice[0].result >= 4 && roll.dice[0].result <= 11, JSON.stringify(roll));
-check('roll payload has total/timestamp', roll.total === roll.dice[0].result && !!roll.timestamp);
+// The die itself is a bare d8 face — the modifier is no longer inside it.
+check('die roll result in [1,8] (a bare d8 face)', roll.dice[0].result >= 1 && roll.dice[0].result <= 8, JSON.stringify(roll));
+check('the modifier lands on the total, not on the die',
+  roll.total === roll.dice[0].result + 3 && !!roll.timestamp, JSON.stringify(roll));
 
 // --- modifier clamping ---
 events.length = 0;
@@ -156,7 +158,14 @@ events.length = 0;
 emit('pool:roll', { characterId: ch.id, dieIds: [skull.id, body.id, rightLeg.id], modifier: -2 });
 roll = await waitEvent('roll:result');
 check('pool roll rolls the 3 selected dice (cross-section)', roll.dice.length === 3, JSON.stringify(roll.dice));
-check('pool total = sum of results', roll.total === roll.dice.reduce((s, d) => s + d.result, 0));
+// **The modifier is applied ONCE.** It used to be added to every die, so
+// this same roll came out 4 lower than it should have (-2 × 3 instead of -2).
+check('pool total = summed dice + the modifier once',
+  roll.total === roll.dice.reduce((s, d) => s + d.result, 0) - 2,
+  JSON.stringify({ dice: roll.dice.map((d) => d.result), modifier: roll.modifier, total: roll.total }));
+check('no die carries the modifier inside it',
+  roll.dice.every((d) => d.result - d.bonus >= 1 && d.result - d.bonus <= d.size),
+  JSON.stringify(roll.dice));
 
 // --- stepping: d8 -> d10 -> d12 -> d12+1 -> d12+2 ---
 for (let i = 0; i < 4; i++) { events.length = 0; emit('die:step', { dieId: skull.id, direction: 'up' }); await waitEvent('die:updated', (d) => d.dieId === skull.id); }
