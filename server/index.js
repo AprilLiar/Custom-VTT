@@ -8,6 +8,7 @@ import { db, all, one, run, initDb } from './db.js';
 import {
   advancePairResolution,
   resolveDodge,
+  resolveBlock,
   resolveMoveConflict,
   answerGrapple,
   resumeGrapple,
@@ -755,6 +756,15 @@ function shapePair(row, roundLength, resolution) {
       resolution?.status === 'paused_conflict' && resolution.pending_conflict_json
         ? JSON.parse(resolution.pending_conflict_json)
         : null,
+    // The Block prompt rides the same snapshot as the Dodge prompt above, so a
+    // GM who connects (or reconnects) into an already-paused pair picks it up
+    // for free. Everything on it is already GM-visible — the payload names the
+    // two moves by name, and only GMs are ever shown it (see the client's own
+    // role gate, matching combat:block_prompt's emitToGMs delivery).
+    pendingDefense:
+      resolution?.status === 'paused_defense' && resolution.pending_defense_json
+        ? JSON.parse(resolution.pending_defense_json)
+        : null,
     // Deliberately NOT included here. Grappling's prompt differs per viewer —
     // the grappler sees the move names, the target sees four blanks — so it
     // is built inside emitCombatUpdated's per-socket loop instead, where the
@@ -772,7 +782,7 @@ function shapePair(row, roundLength, resolution) {
 async function fetchOpenResolutionsByPair() {
   const rows = await all(
     `SELECT id, pair_index, round_number, status, pending_dodge_json, pending_conflict_json,
-            pending_grapple_json
+            pending_defense_json, pending_grapple_json
      FROM pair_round_resolutions WHERE status != 'complete'`
   );
   return new Map(rows.map((r) => [r.pair_index, r]));
@@ -4191,6 +4201,15 @@ io.on('connection', (socket) => {
   on('combat:resolve_dodge', async ({ pairIndex, outcome, attackerDeclaredMoveId }) => {
     if (socket.data.identity?.role !== 'gm') return;
     await resolveDodge(pairIndex, { outcome, attackerDeclaredMoveId }, io);
+    await emitCombatUpdated();
+  });
+
+  // The same call for a Block (decided, reversed — Block used to resolve with
+  // no human input at all). Identical shape, identical GM-only gate, and
+  // resolveBlock owns the same stale-click rejection resolveDodge does.
+  on('combat:resolve_block', async ({ pairIndex, outcome, attackerDeclaredMoveId }) => {
+    if (socket.data.identity?.role !== 'gm') return;
+    await resolveBlock(pairIndex, { outcome, attackerDeclaredMoveId }, io);
     await emitCombatUpdated();
   });
 

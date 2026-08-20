@@ -188,10 +188,13 @@ test('selectAutoDamageTargets: every named Stat is hit, in the move\'s own liste
   assert.deepEqual(result.map((d) => d.slot_name), ['Skull', 'Body']);
 });
 
-test('selectAutoDamageTargets: an incapacitated Stat drops out, the rest still land', () => {
+test('selectAutoDamageTargets: an incapacitated Stat is still a target', () => {
+  // It used to be filtered out here, which deleted that whole line of attack
+  // silently — no defence asked, no roll, nothing said. It comes back as a
+  // target; applyAutoDamage is what declines to write to it, and reports it.
   const dice = [die('Skull', 'incapacitated'), die('Body')];
   const result = selectAutoDamageTargets({ effectiveAttackTargets: ['Skull', 'Body'], dice });
-  assert.deepEqual(result.map((d) => d.slot_name), ['Body']);
+  assert.deepEqual(result.map((d) => d.slot_name), ['Skull', 'Body']);
 });
 
 test('selectAutoDamageTargets: Left before Right, matching CONCRETE_ATTACK_TARGET_NAMES canonical order', () => {
@@ -209,9 +212,16 @@ test('selectAutoDamageTargets: a Stat named twice is still hit once', () => {
   assert.equal(result.length, 1);
 });
 
-test('selectAutoDamageTargets: empty when every allowed Stat is incapacitated or missing', () => {
-  const dice = [die('Skull', 'incapacitated')];
-  assert.deepEqual(selectAutoDamageTargets({ effectiveAttackTargets: ['Skull', 'Brain'], dice }), []);
+test('selectAutoDamageTargets: empty only when the target has no such die at all', () => {
+  // A missing die really is nothing to aim at. A broken one is not.
+  assert.deepEqual(selectAutoDamageTargets({ effectiveAttackTargets: ['Brain'], dice: [die('Skull')] }), []);
+  assert.deepEqual(
+    selectAutoDamageTargets({
+      effectiveAttackTargets: ['Skull', 'Brain'],
+      dice: [die('Skull', 'incapacitated')],
+    }).map((d) => d.slot_name),
+    ['Skull']
+  );
 });
 
 const candidate = (characterId, slotStatuses) => ({
@@ -231,20 +241,36 @@ test('selectUnevenCombatTarget: lowest characterId among eligible candidates win
   );
 });
 
-test('selectUnevenCombatTarget: a candidate with only an incapacitated die in the target set is skipped', () => {
+test('selectUnevenCombatTarget: a broken Stat no longer steers the attack elsewhere', () => {
+  // It used to skip such a candidate. In 1v1 that meant the attack found no
+  // target at all and did nothing, in silence — punching a wrecked arm was a
+  // no-op the table never heard about.
   const candidates = [
     candidate(1, { Skull: 'incapacitated' }),
     candidate(3, { Skull: 'active' }),
   ];
   assert.equal(
     selectUnevenCombatTarget({ candidates, allowedConcreteTargets: ['Skull'] }),
-    3
+    1
   );
 });
 
-test('selectUnevenCombatTarget: null when nobody on that side has an eligible die', () => {
-  const candidates = [candidate(1, { Skull: 'incapacitated' })];
-  assert.equal(selectUnevenCombatTarget({ candidates, allowedConcreteTargets: ['Skull'] }), null);
+test('selectUnevenCombatTarget: null only when nobody has a die in the target set', () => {
+  // Status is irrelevant now; having the Stat at all is the whole test.
+  assert.equal(
+    selectUnevenCombatTarget({
+      candidates: [candidate(1, { Skull: 'incapacitated' })],
+      allowedConcreteTargets: ['Skull'],
+    }),
+    1
+  );
+  assert.equal(
+    selectUnevenCombatTarget({
+      candidates: [candidate(1, { Body: 'active' })],
+      allowedConcreteTargets: ['Skull'],
+    }),
+    null
+  );
 });
 
 const declaredMove = (declaredMoveId, placementTic, defenseFramePositions) => ({

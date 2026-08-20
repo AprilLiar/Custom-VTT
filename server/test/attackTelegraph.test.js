@@ -75,41 +75,39 @@ test('isTelegraphedAttack: junk attack-target entries do not buy a telegraph', (
   );
 });
 
-test('attackStartsByTic: marks the WHOLE Startup run, up to but not including the reveal Tic', () => {
-  // The revision this file's helper comment describes: a 3-Tic wind-up used to
-  // light one square, so it was indistinguishable from a 1-Tic one and there
-  // was no visible window to aim an Interrupt into.
+test('attackStartsByTic: marks the first Startup Tic and nothing else', () => {
+  // Deliberately back to one square (decided, revised back): marking the whole
+  // run published the move's Startup length, and frame data is exactly what a
+  // Tell is supposed to make you guess at.
   const marks = starts([dm({ placementTic: 2, revealTic: 5 })]);
-  assert.deepEqual([...marks.keys()], [2, 3, 4]);
+  assert.deepEqual([...marks.keys()], [2]);
   assert.deepEqual(marks.get(2), [
-    { declaredMoveId: 1, characterId: 10, characterName: 'Char10', isStart: true },
+    { declaredMoveId: 1, characterId: 10, characterName: 'Char10' },
   ]);
 });
 
-test('attackStartsByTic: only the first Tic of a run is flagged isStart', () => {
-  // The Tell↔Tic connector anchors on exactly one square. Without this flag it
-  // would re-anchor on every square of the run and end up pointing at the last
-  // one — the end of the wind-up rather than its beginning.
-  const marks = starts([dm({ placementTic: 2, revealTic: 5 })]);
-  assert.deepEqual(
-    [2, 3, 4].map((t) => marks.get(t)[0].isStart),
-    [true, false, false]
-  );
+test('attackStartsByTic: a long wind-up and a short one draw identically', () => {
+  // The property the single square exists to have: you can see that something
+  // is committed on this Tic, and you cannot read off how long it runs.
+  const long = starts([dm({ id: 1, placementTic: 0, revealTic: 3 })]);
+  const short = starts([dm({ id: 2, placementTic: 0, revealTic: 1 })]);
+  assert.deepEqual([...long.keys()], [0]);
+  assert.deepEqual([...short.keys()], [0]);
 });
 
-test('attackStartsByTic: the reveal Tic itself is never marked', () => {
-  // Past that point the move is public and draws as itself; a wind-up glow
-  // there would be claiming the move is still secret.
+test('attackStartsByTic: the reveal Tic is never marked unless the move is placed on it', () => {
+  // Past the placement square the move draws as itself; a glow further along
+  // the run would be publishing frame data.
   const marks = starts([dm({ placementTic: 2, revealTic: 5 })]);
   assert.equal(marks.has(5), false);
+  assert.equal(marks.has(3), false);
 });
 
-test('attackStartsByTic: a 0-Startup move marks nothing — it never winds up', () => {
-  // It reveals on the Tic it was placed on, so there is no secret run to
-  // telegraph. (This is a deliberate change: it used to glow on that one Tic,
-  // which said "something starts here" about a move already on the table.)
+test('attackStartsByTic: a 0-Startup move still marks its placement Tic', () => {
+  // It is committed on that Tic like anything else, and the glow drops the
+  // moment it goes public anyway — so there is nothing to protect by hiding it.
   const marks = starts([dm({ placementTic: 4, revealTic: 4 })]);
-  assert.equal(marks.size, 0);
+  assert.deepEqual([...marks.keys()], [4]);
 });
 
 test('attackStartsByTic: drops pure defences and already-public moves', () => {
@@ -127,18 +125,14 @@ test('attackStartsByTic: scoped to one pair', () => {
   );
 });
 
-test('attackStartsByTic: clipped to the round window actually on screen', () => {
-  // A wind-up that began LAST round is still winding through this one, and the
-  // part of its run that lands on a visible square is drawn — clipped at the
-  // window edge, not dropped. It has no isStart square here, since the Tic it
-  // actually began on is off-screen behind the round boundary.
-  const carried = starts([dm({ placementTic: -2, revealTic: 2 })], { roundStartTic: 0 });
-  assert.deepEqual([...carried.keys()], [0, 1]);
-  assert.equal(carried.get(0)[0].isStart, false);
+test('attackStartsByTic: only Tics this round actually draws are marked', () => {
+  // A wind-up that BEGAN last round has no square here — its telegraph was
+  // shown on the round that owned its placement Tic.
+  assert.equal(starts([dm({ placementTic: -2, revealTic: 2 })], { roundStartTic: 0 }).size, 0);
 
   // Past this round's last Tic there is no square to glow on at all.
   assert.equal(starts([dm({ placementTic: 7, revealTic: 9 })], { roundStartTic: 0, roundLength: 7 }).size, 0);
-  // ...and a run that spills over the end is clipped to the squares that exist.
+  // The last square of the window is still in it.
   assert.deepEqual(
     [...starts([dm({ placementTic: 6, revealTic: 9 })], { roundStartTic: 0, roundLength: 7 }).keys()],
     [6]
@@ -146,27 +140,17 @@ test('attackStartsByTic: clipped to the round window actually on screen', () => 
   // A later round's window: absolute Tics, not relative ones.
   assert.deepEqual(
     [...starts([dm({ placementTic: 9, revealTic: 11 })], { roundStartTic: 7, roundLength: 7 }).keys()],
-    [9, 10]
+    [9]
   );
 });
 
-test('attackStartsByTic: several attacks can wind up over the same Tic', () => {
+test('attackStartsByTic: several attacks can begin on the same Tic', () => {
   const marks = starts([
     dm({ id: 1, characterId: 10, placementTic: 3, revealTic: 5 }),
     dm({ id: 2, characterId: 11, placementTic: 3, revealTic: 5 }),
   ]);
   assert.deepEqual(marks.get(3).map((m) => m.characterName), ['Char10', 'Char11']);
-  // Both runs overlap on Tic 4 as well — one square, two marks.
-  assert.deepEqual(marks.get(4).map((m) => m.characterName), ['Char10', 'Char11']);
-});
-
-test('attackStartsByTic: runs of different lengths are distinguishable, which is the point', () => {
-  // The reported case: a 3-Tic wind-up next to a 1-Tic one. Before the
-  // revision these drew identically.
-  const long = starts([dm({ id: 1, placementTic: 0, revealTic: 3 })]);
-  const short = starts([dm({ id: 2, placementTic: 0, revealTic: 1 })]);
-  assert.equal(long.size, 3);
-  assert.equal(short.size, 1);
+  assert.equal(marks.has(4), false);
 });
 
 test('attackStartsByTic: nothing to draw before a pair has a round', () => {

@@ -774,13 +774,27 @@ async function applyAutoDamage(io, { targetCharacterId, effectiveAttackTargets, 
   // authored Attack Target. Spreading the leftover across every Stat the
   // blocker happens to roll would be a different rule nobody asked for.
   if (firstOnly) targets = targets.slice(0, 1);
-  if (!targets.length) return [];
+  if (!targets.length) return { applied: [], unapplied: [] };
   const character = await getCharacter(targetCharacterId);
   const applied = [];
+  // **Damage aimed at a broken Stat (decided, new).** An incapacitated die is
+  // already at the floor: `applyHalfDamage` is a no-op on it, so stepping it
+  // "worked" and quietly threw the blow away. The line is recorded here
+  // instead and reported once at the end of the round, because a fighter
+  // taking hits on a limb that cannot get any worse is exactly the situation
+  // Injuries exist for — and the table can only weigh it if it is told.
+  //
+  // Nothing is redirected: the damage does not slide onto a neighbouring Stat.
+  // It simply does not land.
+  const unapplied = [];
 
   for (const die of targets) {
     const own = stepsBySlot ? stepsBySlot[die.slot_name] ?? 0 : steps;
     if (!(own > 0)) continue;
+    if (die.status === 'incapacitated') {
+      unapplied.push({ slotName: die.slot_name, steps: own, damage: own * 0.5 });
+      continue;
+    }
     let next = {
       current_size: die.current_size,
       bonus: die.bonus,
@@ -824,7 +838,11 @@ async function applyAutoDamage(io, { targetCharacterId, effectiveAttackTargets, 
       `${character.name} took ${list}${attackerName ? ` from ${attackerName}` : ''}.`
     );
   }
-  return applied;
+  // The unappliable half is deliberately NOT announced here. One line per blow
+  // would bury the fact under repetition in a round where a broken limb keeps
+  // getting hit; it is totalled per Stat and posted once when the round closes
+  // (see reportUnappliedDamage).
+  return { applied, unapplied };
 }
 
 // Steps one named Stat by `steps` half-damage steps (negative steps it back
@@ -1299,7 +1317,7 @@ async function runInterruptAndDamage(io, {
     return;
   }
 
-  const applied = await applyAutoDamage(io, {
+  const { applied, unapplied } = await applyAutoDamage(io, {
     targetCharacterId,
     effectiveAttackTargets,
     steps,
@@ -1332,6 +1350,23 @@ async function runInterruptAndDamage(io, {
       sizeAfter: hit?.sizeAfter ?? null,
       bonusAfter: hit?.bonusAfter ?? null,
       statusAfter: hit?.statusAfter ?? null,
+    });
+  }
+  // **Damage that had nowhere to land (decided, new).** Its own event type
+  // rather than a flag on `damage_applied`: nothing was applied, so the
+  // cutscene must not animate a die stepping down, and the end-of-round report
+  // reads these back off the round's own event log (see reportUnappliedDamage)
+  // rather than needing a column of its own. Self-contained per §0 so a replay
+  // watched later says the same thing.
+  for (const miss of unapplied) {
+    await emitEvent(tic, 'damage_unapplied', {
+      declaredMoveId,
+      targetCharacterId,
+      targetCharacterName: target?.name ?? null,
+      attackerCharacterName,
+      slotName: miss.slotName,
+      steps: miss.steps,
+      damage: miss.damage,
     });
   }
   const dm = await one('SELECT interactions_resolved FROM declared_moves WHERE id = ?', [declaredMoveId]);
@@ -2503,11 +2538,62 @@ async function resolveAttack(io, { row, pairIndex, tic, emitEvent }) {
     return;
   }
 
-  // defense_kind === 'block', coverage 'full' or 'too-short' — fully
-  // automatic (decision #1). Roll the defending move's own Roll (base +
-  // defensive pool if is_defensive), same math as the manual
-  // combat:resolve_defense.
-  const [baseSlotRows, defensiveSlotRows, defRollBonusRow] = await Promise.all([
+  // **defense_kind === 'block' — the GM is asked, exactly as for a Dodge
+  // (decided, reversed).** This reverses the overhaul's decision #1 ("Block is
+  // fully automatic, purely dice-based, zero GM clicks, ever"), and the reason
+  // is one no amount of code can decide: a Straight and a Haymaker can both
+  // come at the head, but a *front* guard stops one and a *side* guard stops
+  // the other, and nothing in the frame data knows the difference. Overlapping
+  // in time was being taken as proof the guard was the RIGHT guard.
+  //
+  // Asked on 'full' and 'too-short' alike — every Block that reaches the guard.
+  // ('too-early' never gets here; it is auto-Failed above, as it is for Dodge.)
+  // One question per Stat the attack names, for the same reason the guard is
+  // already rolled per Stat: each line is its own strike met by its own guard.
+  //
+  // The pause uses `paused_defense` / `pending_defense_json`, which have sat
+  // unused in the schema since the Defence rework's groundwork slice —
+  // this is what they were added for.
+  const blockLines = await attackedStatsOf(targetCharacterId, allowedConcreteTargets);
+  await persistBlockPause(io, {
+    pairIndex,
+    pending: {
+      attackerDeclaredMoveId: row.declaredMoveId,
+      attackerMoveId: row.moveId,
+      attackerCharacterId: row.characterId,
+      attackerCharacterName: row.characterName,
+      attackerMoveName: row.moveName,
+      attackerAppendageChoice: row.appendageChoice,
+      attackerResult: total,
+      attackerActiveTics: row.activeTics,
+      attackActiveStart,
+      defenderDeclaredMoveId: defenderDM.id,
+      defenderCharacterName: defenderDM.character_name,
+      defenderMoveName: defenderDM.move_name,
+      coverage: { coverage: coverage.coverage, extensionTicsNeeded: coverage.extensionTicsNeeded ?? 0 },
+      minimumThreshold,
+      halfDamageSteps,
+      targetCharacterId,
+      allowedConcreteTargets,
+      // A move with no Attack Target of its own has no named line to split, so
+      // it is one question, as a Dodge against the same move would be.
+      remainingStats: blockLines,
+      leftoverSteps: 0,
+      leftoverResult: 0,
+      heldAnywhere: false,
+      tic,
+    },
+    emitEvent,
+  });
+  return { paused: true };
+}
+
+// Everything a Block's guard roll needs that is not on the pause payload —
+// re-derived from the DB on every line rather than carried, so a round resumed
+// after a restart rolls against the same figures a round played straight
+// through would. Same reasoning as resolveDodge re-reading its defenderDM.
+async function loadBlockGuard(defenderDM, tic) {
+  const [baseSlotRows, defensiveSlotRows, defRollBonusRow, defenderTagNames] = await Promise.all([
     all('SELECT slot_name, count FROM move_roll_slots WHERE move_id = ?', [defenderDM.move_id]),
     defenderDM.is_defensive
       ? all('SELECT slot_name, count FROM move_defensive_roll_slots WHERE move_id = ?', [defenderDM.move_id])
@@ -2516,6 +2602,7 @@ async function resolveAttack(io, { row, pairIndex, tic, emitEvent }) {
       'SELECT COALESCE(SUM(amount), 0) AS bonus FROM character_move_roll_bonuses WHERE character_id = ? AND move_id = ?',
       [defenderDM.character_id, defenderDM.move_id]
     ),
+    moveTagNamesFor(defenderDM.character_id, defenderDM.move_id),
   ]);
   const defBonusMods = await getCombatRollBonus(defenderDM.character_id, {
     moveId: defenderDM.move_id,
@@ -2523,163 +2610,215 @@ async function resolveAttack(io, { row, pairIndex, tic, emitEvent }) {
     // Base plus defensive pool: everything this guard actually rolls.
     slotNames: [...baseSlotRows, ...defensiveSlotRows].map((r) => r.slot_name),
   });
-  const defMod = defenderDM.roll_modifier + defRollBonusRow.bonus + defBonusMods;
-
-  // **The guard is rolled once per Stat the attack names (decided, new).** A
-  // move that comes at two Stats is two lines of attack, and one roll cannot
-  // answer both — asking it to made the second Stat free. Each line gets its
-  // own roll, its own outcome, and its own Stamina bill; what gets through on
-  // each is added up, and the Successful Block rule below then puts the whole
-  // of it onto the arm that held.
-  //
-  // A move with no Attack Target of its own has no named line to split, so it
-  // resolves in exactly one pass, as it always did.
-  const blockLines = await attackedStatsOf(targetCharacterId, allowedConcreteTargets);
-  const lines = blockLines.length ? blockLines : [null];
-
-  const rollTheGuard = async () => {
-    let blockDice;
-    if (defenderDM.roll_type === 'custom' && defenderDM.custom_roll_size != null) {
-      blockDice = [
-        { slot_name: 'Custom', size: defenderDM.custom_roll_size, bonus: 0, result: rollDie(defenderDM.custom_roll_size) },
-      ];
-    } else {
-      const slotNames = expandRollSlotRows([...baseSlotRows, ...defensiveSlotRows]);
-      const resolved = await resolveMoveRollDice(defenderDM.character_id, slotNames, defenderDM.appendage_choice);
-      blockDice = resolved.map((d) => ({
-        slot_name: d.slot_name,
-        size: d.current_size,
-        bonus: d.bonus,
-        result: rollDie(d.current_size) + d.bonus,
-      }));
-    }
-    const blockResult = rollTotal(blockDice, defMod);
-    await logRoll(io, {
-      characterId: defenderDM.character_id,
-      characterName: defenderDM.character_name,
-      modifier: defMod,
-      dice: blockDice,
-    });
-    // See the note on the Dodge branch's own roll event: without this the
-    // defender's dice never appear on the timeline at all.
-    await emitEvent(tic, 'roll', {
-      declaredMoveId: defenderDM.id,
-      characterId: defenderDM.character_id,
-      characterName: defenderDM.character_name,
-      dice: blockDice,
-      modifier: defMod,
-      total: blockResult,
-      defensive: true,
-      defenseType: defenderDM.defense_kind ?? 'block',
-    });
-    return blockResult;
+  return {
+    baseSlotRows,
+    defensiveSlotRows,
+    defMod: defenderDM.roll_modifier + defRollBonusRow.bonus + defBonusMods,
+    // Block Stamina (the Block Tag's automation). A move carrying the **Block
+    // Tag** pays no up-front Stamina Cost and instead spends here, for exactly
+    // as much of the attack as its guard absorbed, scaled by the move's own
+    // Stamina Modifier — and can only hold as much as it can pay for. A
+    // defensive move WITHOUT the tag keeps the old flat-cost behaviour: the Tag
+    // is the switch, not the Block/Dodge toggle (see server/tagAutomations.js).
+    blockTagged: carriesBlockTag(defenderTagNames),
   };
+}
 
-  // Block Stamina (decided, new — the Block Tag's automation). A move
-  // carrying the **Block Tag** pays no up-front Stamina Cost and instead
-  // spends here, for exactly as much of the attack as its guard absorbed,
-  // scaled by the move's own Stamina Modifier — and can only hold as much as
-  // it can pay for. A defensive move WITHOUT the tag is untouched by all of
-  // this and keeps the old flat-cost behaviour: the Tag is the switch, not
-  // the Block/Dodge toggle (see server/tagAutomations.js).
-  const defenderTagNames = await moveTagNamesFor(defenderDM.character_id, defenderDM.move_id);
-  const blockTagged = carriesBlockTag(defenderTagNames);
+// Writes the Block pause and raises the prompt for whichever Stat is next in
+// line. Shared by the first pause and by every re-pause resolveBlock makes as
+// it works down `remainingStats`, so the two can never drift into asking
+// different questions — the same shape persistDodgePause has.
+async function persistBlockPause(io, { pairIndex, pending, emitEvent, resolutionId = null }) {
+  const targetSlotName = pending.remainingStats?.[0] ?? null;
+  await run(
+    resolutionId != null
+      ? `UPDATE pair_round_resolutions SET status = 'paused_defense', pending_defense_json = ? WHERE id = ?`
+      : `UPDATE pair_round_resolutions SET status = 'paused_defense', pending_defense_json = ?
+         WHERE pair_index = ? AND status = 'running'`,
+    [JSON.stringify(pending), resolutionId != null ? resolutionId : pairIndex]
+  );
+  await emitEvent(pending.tic, 'block_prompt', {
+    attackerDeclaredMoveId: pending.attackerDeclaredMoveId,
+    attackerCharacterName: pending.attackerCharacterName,
+    attackerMoveName: pending.attackerMoveName ?? null,
+    defenderDeclaredMoveId: pending.defenderDeclaredMoveId,
+    defenderCharacterName: pending.defenderCharacterName ?? null,
+    defenderMoveName: pending.defenderMoveName ?? null,
+    attackerResult: pending.attackerResult,
+    coverage: pending.coverage?.coverage ?? null,
+    targetSlotName,
+    remainingStats: pending.remainingStats ?? [],
+  });
+}
 
-  let leftoverSteps = 0;
-  let leftoverResult = 0;
-  for (const line of lines) {
-    const blockResult = await rollTheGuard();
-    const against = line ? ` against the strike to ${line}` : '';
-    let lineOutcome;
-    let blockStamina = null;
-    if (blockTagged) {
-      // Re-read inside the loop: each line's absorption is paid for as it
-      // happens, so a guard that spent everything holding the first Stat
-      // genuinely has nothing left for the second.
-      const blocker = await getCharacter(defenderDM.character_id);
-      blockStamina = resolveBlockStamina({
-        attackerResult: total,
-        defenderResult: blockResult,
-        staminaModifier: defenderDM.stamina_modifier ?? 1,
-        availableStamina: blocker?.current_stamina ?? 0,
-        minimumThreshold,
-      });
-      lineOutcome = blockStamina;
-    } else {
-      lineOutcome = resolveDefenseRoll({ attackerResult: total, defenderResult: blockResult, minimumThreshold });
-    }
-    leftoverSteps += lineOutcome.halfDamageSteps;
-    leftoverResult += lineOutcome.netResult ?? 0;
+// One line of a Block, once the GM has called it. Rolls the guard and resolves
+// it exactly as the old inline loop did — the arithmetic is untouched — and
+// folds what got through into the running leftover.
+async function runBlockLine(io, { pending, defenderDM, guard, line, emitEvent }) {
+  const { baseSlotRows, defensiveSlotRows, defMod, blockTagged } = guard;
+  const { tic, attackerResult: total } = pending;
+  const defenseLabel = 'Block';
+  const against = line ? ` against the strike to ${line}` : '';
 
-    // **Spiked Shell (decided, new).** Out-guard an attack and the attacker
-    // hurts themselves on you. Asked per line, because the guard is rolled per
-    // line: each is its own strike met by its own guard, and each can bite back.
-    //
-    // Gated on this line resolving **full**. A Block scaled back because the
-    // blocker ran out of Stamina comes out Partial and pays nothing — you did
-    // not out-guard them, you ran out of gas — and that falls out of the
-    // outcome rather than needing its own test.
-    if (lineOutcome.outcome === 'full') {
-      await applyBlockRiposte(io, {
-        blockerCharacterId: defenderDM.character_id,
-        blockerDeclaredMoveId: defenderDM.id,
-        attackerCharacterId: row.characterId,
-        attackerDeclaredMoveId: row.declaredMoveId,
-        attackerMoveId: row.moveId,
-        attackerAppendageChoice: row.appendageChoice,
-        attackerResult: total,
-        defenderResult: blockResult,
+  let blockDice;
+  if (defenderDM.roll_type === 'custom' && defenderDM.custom_roll_size != null) {
+    blockDice = [
+      { slot_name: 'Custom', size: defenderDM.custom_roll_size, bonus: 0, result: rollDie(defenderDM.custom_roll_size) },
+    ];
+  } else {
+    const slotNames = expandRollSlotRows([...baseSlotRows, ...defensiveSlotRows]);
+    const resolved = await resolveMoveRollDice(defenderDM.character_id, slotNames, defenderDM.appendage_choice);
+    blockDice = resolved.map((d) => ({
+      slot_name: d.slot_name,
+      size: d.current_size,
+      bonus: d.bonus,
+      result: rollDie(d.current_size) + d.bonus,
+    }));
+  }
+  const blockResult = rollTotal(blockDice, defMod);
+  await logRoll(io, {
+    characterId: defenderDM.character_id,
+    characterName: defenderDM.character_name,
+    modifier: defMod,
+    dice: blockDice,
+  });
+  // See the note on the Dodge branch's own roll event: without this the
+  // defender's dice never appear on the timeline at all.
+  await emitEvent(tic, 'roll', {
+    declaredMoveId: defenderDM.id,
+    characterId: defenderDM.character_id,
+    characterName: defenderDM.character_name,
+    dice: blockDice,
+    modifier: defMod,
+    total: blockResult,
+    defensive: true,
+    defenseType: defenderDM.defense_kind ?? 'block',
+  });
+
+  let lineOutcome;
+  let blockStamina = null;
+  if (blockTagged) {
+    // Re-read per line: each line's absorption is paid for as it happens, so a
+    // guard that spent everything holding the first Stat genuinely has nothing
+    // left for the second.
+    const blocker = await getCharacter(defenderDM.character_id);
+    blockStamina = resolveBlockStamina({
+      attackerResult: total,
+      defenderResult: blockResult,
+      staminaModifier: defenderDM.stamina_modifier ?? 1,
+      availableStamina: blocker?.current_stamina ?? 0,
+      minimumThreshold: pending.minimumThreshold,
+    });
+    lineOutcome = blockStamina;
+  } else {
+    lineOutcome = resolveDefenseRoll({
+      attackerResult: total,
+      defenderResult: blockResult,
+      minimumThreshold: pending.minimumThreshold,
+    });
+  }
+
+  // **Spiked Shell.** Out-guard an attack and the attacker hurts themselves on
+  // you. Asked per line, because the guard is rolled per line. Gated on this
+  // line resolving **full**: a Block scaled back because the blocker ran out of
+  // Stamina comes out Partial and pays nothing — you did not out-guard them,
+  // you ran out of gas.
+  if (lineOutcome.outcome === 'full') {
+    await applyBlockRiposte(io, {
+      blockerCharacterId: defenderDM.character_id,
+      blockerDeclaredMoveId: defenderDM.id,
+      attackerCharacterId: pending.attackerCharacterId,
+      attackerDeclaredMoveId: pending.attackerDeclaredMoveId,
+      attackerMoveId: pending.attackerMoveId,
+      attackerAppendageChoice: pending.attackerAppendageChoice,
+      attackerResult: total,
+      defenderResult: blockResult,
+      emitEvent,
+      tic,
+    });
+  }
+
+  await postSystemMessage(
+    io,
+    lineOutcome.outcome === 'full'
+      ? `${defenderDM.character_name} scored a Full ${defenseLabel}${against} — no damage.`
+      : `${defenderDM.character_name} scored a Partial ${defenseLabel}${against} — ${lineOutcome.damage} damage.`
+  );
+  if (blockStamina) {
+    // Spent after the outcome line so the log reads "what happened, then what
+    // it cost". adjustStamina emits its own stamina_changed round_event, so the
+    // cutscene animates the drop without any extra event type here.
+    if (blockStamina.staminaCost > 0) {
+      await adjustStamina(io, defenderDM.character_id, -blockStamina.staminaCost, {
         emitEvent,
         tic,
+        reason: `${defenderDM.move_name} absorbed ${blockStamina.absorbed}`,
       });
     }
-
-    await postSystemMessage(
-      io,
-      lineOutcome.outcome === 'full'
-        ? `${defenderDM.character_name} scored a Full ${defenseLabel}${against} — no damage.`
-        : `${defenderDM.character_name} scored a Partial ${defenseLabel}${against} — ${lineOutcome.damage} damage.`
-    );
-    if (blockStamina) {
-      // Spent after the outcome line so the log reads "what happened, then what
-      // it cost". adjustStamina emits its own stamina_changed round_event, so
-      // the cutscene animates the drop on the blocker's card without any extra
-      // event type here.
-      if (blockStamina.staminaCost > 0) {
-        await adjustStamina(io, defenderDM.character_id, -blockStamina.staminaCost, {
-          emitEvent,
-          tic,
-          reason: `${defenderDM.move_name} absorbed ${blockStamina.absorbed}`,
-        });
-      }
-      // Only worth a sentence when the guard was actually cut short — otherwise
-      // the Stamina line above already says everything.
-      if (blockStamina.capped) {
-        await postSystemMessage(
-          io,
-          `${defenderDM.character_name} ran out of Stamina mid-${defenseLabel}${against} — the guard held only ` +
-            `${blockStamina.absorbed} of ${Math.min(total, blockResult)}, and the rest got through.`
-        );
-      }
+    if (blockStamina.capped) {
+      await postSystemMessage(
+        io,
+        `${defenderDM.character_name} ran out of Stamina mid-${defenseLabel}${against} — the guard held only ` +
+          `${blockStamina.absorbed} of ${Math.min(total, blockResult)}, and the rest got through.`
+      );
     }
   }
-  // One figure for everything the guard failed to hold, across every line.
+  return lineOutcome;
+}
+
+// Every line called. Applies whatever the guard failed to hold, and — on a
+// 'too-short' Block that actually happened — extends the blocker's Recovery.
+async function finishBlock(io, { pairIndex, pending, defenderDM, guard, emitEvent }) {
+  const { tic, attackerResult: total } = pending;
+
+  // **Nothing held anywhere — the guard is discarded outright.** The attack
+  // resolves as if there had been no Defense Frame at all: damage on the Stats
+  // the attack named, `On Failed Defense` fires (parity with a failed Dodge),
+  // and crucially **no Recovery extension** — stretching a fighter's commitment
+  // to hold a guard the GM just said did not apply would be charging them for
+  // something that never happened. The move still cost its Stamina and still
+  // occupies its Tics; only its defensive effect is ignored.
+  if (!pending.heldAnywhere) {
+    await applyFailedDefense(io, {
+      defenderDM,
+      defenseLabel: 'Block',
+      attackerDeclaredMoveId: pending.attackerDeclaredMoveId,
+      attackerMoveId: pending.attackerMoveId,
+      attackerCharacterId: pending.attackerCharacterId,
+      attackerCharacterName: pending.attackerCharacterName,
+      attackerResult: total,
+      targetCharacterId: pending.targetCharacterId,
+      effectiveAttackTargets: pending.allowedConcreteTargets,
+      halfDamageSteps: pending.halfDamageSteps,
+      attackActiveStart: pending.attackActiveStart,
+      attackerActiveTics: pending.attackerActiveTics,
+      tic,
+      emitEvent,
+    });
+    return;
+  }
+
+  // The guard held somewhere, so the Block stands. One figure for everything it
+  // failed to hold across every line — including any line the GM called Failed,
+  // whose full weight was added to the pile: whatever got past a guard that WAS
+  // up lands on the arm that held it, which is the same rule a Partial has
+  // always followed.
   const resolution = {
-    halfDamageSteps: leftoverSteps,
-    netResult: leftoverResult,
-    outcome: leftoverSteps > 0 ? 'partial' : 'full',
+    halfDamageSteps: pending.leftoverSteps,
+    netResult: pending.leftoverResult,
+    outcome: pending.leftoverSteps > 0 ? 'partial' : 'full',
   };
 
   // Attack Target (Change 001): a Successful Block replaces the attacker's
   // effective target with the blocker's own base Stat Roll (never the
   // defensive-only pool).
   const blockEffectiveTargets = expandAttackTargets(
-    baseSlotRows.map((r) => r.slot_name),
+    guard.baseSlotRows.map((r) => r.slot_name),
     defenderDM.appendage_choice
   );
   await run(
     `UPDATE declared_moves SET effective_attack_targets = ?, attack_target_source = 'block' WHERE id = ?`,
-    [JSON.stringify(blockEffectiveTargets), row.declaredMoveId]
+    [JSON.stringify(blockEffectiveTargets), pending.attackerDeclaredMoveId]
   );
 
   await applyMoveInteractions(io, {
@@ -2689,33 +2828,35 @@ async function resolveAttack(io, { row, pairIndex, tic, emitEvent }) {
     tic,
     selfCharacterId: defenderDM.character_id,
     selfDeclaredMoveId: defenderDM.id,
-    opponentCharacterId: row.characterId,
-    opponentDeclaredMoveId: row.declaredMoveId,
+    opponentCharacterId: pending.attackerCharacterId,
+    opponentDeclaredMoveId: pending.attackerDeclaredMoveId,
   });
-  const attackerDM = await one('SELECT interactions_resolved FROM declared_moves WHERE id = ?', [row.declaredMoveId]);
+  const attackerDM = await one('SELECT interactions_resolved FROM declared_moves WHERE id = ?', [
+    pending.attackerDeclaredMoveId,
+  ]);
   if (attackerDM && !attackerDM.interactions_resolved) {
-    await run('UPDATE declared_moves SET interactions_resolved = 1 WHERE id = ?', [row.declaredMoveId]);
+    await run('UPDATE declared_moves SET interactions_resolved = 1 WHERE id = ?', [pending.attackerDeclaredMoveId]);
     await applyMoveInteractions(io, {
-      moveId: row.moveId,
+      moveId: pending.attackerMoveId,
       trigger: 'block',
       emitEvent,
       tic,
-      selfCharacterId: row.characterId,
-      selfDeclaredMoveId: row.declaredMoveId,
+      selfCharacterId: pending.attackerCharacterId,
+      selfDeclaredMoveId: pending.attackerDeclaredMoveId,
       opponentCharacterId: defenderDM.character_id,
       opponentDeclaredMoveId: defenderDM.id,
     });
   }
 
-  // Apply this Block's own damage (if any) before checking for a
-  // downstream conflict — the two concern different declared moves, so
-  // ordering between them doesn't matter functionally.
+  // Apply this Block's own damage (if any) before checking for a downstream
+  // conflict — the two concern different declared moves, so ordering between
+  // them doesn't matter functionally.
   if (resolution.halfDamageSteps > 0) {
     await runInterruptAndDamage(io, {
-      declaredMoveId: row.declaredMoveId,
-      moveId: row.moveId,
-      attackerCharacterId: row.characterId,
-      attackerCharacterName: row.characterName,
+      declaredMoveId: pending.attackerDeclaredMoveId,
+      moveId: pending.attackerMoveId,
+      attackerCharacterId: pending.attackerCharacterId,
+      attackerCharacterName: pending.attackerCharacterName,
       attackerResult: total,
       targetCharacterId: defenderDM.character_id,
       effectiveAttackTargets: blockEffectiveTargets,
@@ -2723,51 +2864,40 @@ async function resolveAttack(io, { row, pairIndex, tic, emitEvent }) {
       // applyAutoDamage's own note on this flag.
       firstOnly: true,
       steps: resolution.halfDamageSteps,
-      attackActiveStart,
-      attackerActiveTics: row.activeTics,
+      attackActiveStart: pending.attackActiveStart,
+      attackerActiveTics: pending.attackerActiveTics,
       tic,
       emitEvent,
       // What got past the guard, which is what a No Damage move has left to
-      // reach its Threshold with. The damage steps below already come from
-      // this same figure; this only names it for the branch that needs the
-      // number rather than the step count.
+      // reach its Threshold with.
       effectiveResult: resolution.netResult,
     });
   }
 
   // 'too-short': extend the blocker's own Recovery to cover the gap, then a
-  // real pause (decision #3, kept exactly as Forfeit/Postpone, now driven
-  // by this engine's own pause/resume instead of a GM dialog) for the
-  // FIRST move it now collides with — matches pending_conflict_json's
-  // single-slot shape; a further collision (if any) gets its own turn once
-  // resolveMoveConflict (exported below) applies this one and re-checks —
-  // the same recursive cascade the original manual
-  // combat:resolve_move_conflict already had.
-  if (coverage.coverage === 'too-short') {
+  // real pause (decision #3, kept exactly as Forfeit/Postpone) for the FIRST
+  // move it now collides with — matching pending_conflict_json's single-slot
+  // shape; a further collision gets its own turn once resolveMoveConflict
+  // applies this one and re-checks.
+  if (pending.coverage?.coverage === 'too-short') {
     const oldRecoveryEndTic =
       defenderDM.reveal_tic + defenderDM.active_tics + defenderDM.recovery_tics + defenderDM.current_extension_tics;
-    const newRecoveryEndTic = oldRecoveryEndTic + coverage.extensionTicsNeeded;
+    const extensionTicsNeeded = pending.coverage.extensionTicsNeeded ?? 0;
+    const newRecoveryEndTic = oldRecoveryEndTic + extensionTicsNeeded;
     await run('UPDATE declared_moves SET recovery_extension_tics = ? WHERE id = ?', [
-      defenderDM.current_extension_tics + coverage.extensionTicsNeeded,
+      defenderDM.current_extension_tics + extensionTicsNeeded,
       defenderDM.id,
     ]);
-    // Announce it, don't ask (decided). Extending Recovery is a rule, not a
-    // choice — decision #1 puts Block fully outside the prompt loop — but it
-    // silently changed how long the blocker is committed for, which is
-    // exactly the sort of thing a table needs told. The matching
-    // round_event gives the cutscene enough to paint those extra Tics in the
-    // Block's own colour (see isExtendedRecoveryTic client-side), so the
-    // announcement and the timeline agree.
-    //
-    // Phrased as the success it is. This used to read "blocked late", which
-    // told the table a correct Block had gone wrong: catching an attack's
-    // opening frame and holding it is exactly how a Block is meant to work,
-    // and the extension is the rule doing its job, not a penalty.
-    const tics = coverage.extensionTicsNeeded;
+    // Announce it, don't ask. Extending Recovery is a rule, not a choice, but
+    // it silently changed how long the blocker is committed for, which is
+    // exactly the sort of thing a table needs told. Phrased as the success it
+    // is — catching an attack's opening frame and holding it is how a Block is
+    // meant to work, and the extension is the rule doing its job.
     await postSystemMessage(
       io,
-      `${defenderDM.character_name}'s ${defenderDM.move_name} catches ${row.characterName}'s ${row.moveName} — ` +
-        `Recovery extended by ${tics} Tic${tics === 1 ? '' : 's'} to hold the guard through it.`
+      `${defenderDM.character_name}'s ${defenderDM.move_name} catches ${pending.attackerCharacterName}'s ` +
+        `${pending.attackerMoveName} — Recovery extended by ${extensionTicsNeeded} ` +
+        `Tic${extensionTicsNeeded === 1 ? '' : 's'} to hold the guard through it.`
     );
     await emitEvent(tic, 'recovery_extended', {
       declaredMoveId: defenderDM.id,
@@ -2775,14 +2905,14 @@ async function resolveAttack(io, { row, pairIndex, tic, emitEvent }) {
       characterName: defenderDM.character_name,
       moveName: defenderDM.move_name,
       defenseKind: defenderDM.defense_kind ?? 'block',
-      extensionTics: tics,
+      extensionTics: extensionTicsNeeded,
       // Half-open [extendedFromTic, recoveryEndTic), the same convention
       // phaseAt uses — the client needs both to know which squares are the
       // extension rather than the move's own authored Recovery.
       extendedFromTic: oldRecoveryEndTic,
       recoveryEndTic: newRecoveryEndTic,
-      attackerCharacterName: row.characterName,
-      attackerMoveName: row.moveName,
+      attackerCharacterName: pending.attackerCharacterName,
+      attackerMoveName: pending.attackerMoveName,
     });
     const collision = await one(
       'SELECT id, character_id FROM declared_moves WHERE character_id = ? AND id != ? AND placement_tic >= ? AND placement_tic < ? ORDER BY id LIMIT 1',
@@ -3377,6 +3507,51 @@ async function postMoveReveal(io, r) {
   });
 }
 
+// **The end-of-round report for damage that could not be applied (decided,
+// new).** Read back off this round's own `damage_unapplied` events rather than
+// accumulated in memory or in a column: the event log is already the durable
+// per-round store, it survives every pause the round can take, and a round
+// resumed after a restart reports exactly what a round played straight through
+// would.
+//
+// **One line per Stat, totalled.** A broken limb taking four hits in a round is
+// one fact about that limb, not four sentences; the table needs the size of what
+// it absorbed, and the GM turning that into an Injury does not care which blow
+// contributed what.
+async function reportUnappliedDamage(io, { resolutionId }) {
+  const rows = await all(
+    `SELECT payload FROM round_events WHERE resolution_id = ? AND type = 'damage_unapplied' ORDER BY seq`,
+    [resolutionId]
+  );
+  if (!rows.length) return;
+  // Keyed by character AND Stat: two fighters can each have a wrecked Left Hand.
+  const totals = new Map();
+  for (const row of rows) {
+    let payload;
+    try {
+      payload = JSON.parse(row.payload);
+    } catch {
+      continue;
+    }
+    if (!payload?.slotName || !(payload.damage > 0)) continue;
+    const key = `${payload.targetCharacterName ?? ''}\u0000${payload.slotName}`;
+    const entry = totals.get(key) ?? {
+      characterName: payload.targetCharacterName ?? null,
+      slotName: payload.slotName,
+      damage: 0,
+    };
+    entry.damage += payload.damage;
+    totals.set(key, entry);
+  }
+  for (const { characterName, slotName, damage } of totals.values()) {
+    await postSystemMessage(
+      io,
+      `${damage} damage should have been dealt to ${characterName ? `${characterName}'s ` : 'the '}` +
+        `${slotName}, but it cannot be applied. Take this into consideration for Injuries.`
+    );
+  }
+}
+
 async function postRoundSummary(io, { pairIndex, roundNumber, resolutionId }) {
   const rows = await all(
     `SELECT cp.side AS side, ch.name AS name
@@ -3470,6 +3645,12 @@ async function makeEmitEvent(io, resolution, pairIndex, roundNumber) {
     // prompt can never disagree about what's being asked.
     if (type === 'dodge_prompt') {
       emitToGMs(io, 'combat:dodge_prompt', { ...envelope.payload, resolutionId: resolution.id, pairIndex, roundNumber, tic });
+    }
+    // The Block prompt travels the identical road for the identical reason —
+    // it is the same decision asked about a different guard, and the paused
+    // pair cannot continue until a GM answers it wherever they happen to be.
+    if (type === 'block_prompt') {
+      emitToGMs(io, 'combat:block_prompt', { ...envelope.payload, resolutionId: resolution.id, pairIndex, roundNumber, tic });
     }
     // The move-conflict prompt keeps its pre-overhaul event name, payload
     // shape and delivery (decision #3): a plain broadcast that the client
@@ -3679,6 +3860,9 @@ async function advancePairResolution(pairIndex, io) {
     resolution.id,
   ]);
   await emitEvent(roundEndTicExclusive - 1, 'round_complete', { pairIndex, roundNumber: pair.round_number });
+  // Before the summary card, so the Chat Log reads "here is what the round did,
+  // and here is what it could not do" and then draws the line under it.
+  await reportUnappliedDamage(io, { resolutionId: resolution.id });
   await postRoundSummary(io, { pairIndex, roundNumber: pair.round_number, resolutionId: resolution.id });
   await startPairDeclaration(io, pairIndex);
 }
@@ -3797,6 +3981,103 @@ async function resolveDodge(pairIndex, { outcome, attackerDeclaredMoveId }, io) 
     });
   }
 
+  await advancePairResolution(pairIndex, io);
+}
+
+// The GM's answer to a Block prompt — the mirror of resolveDodge, and the
+// second half of "every defence is adjudicated" (decided, reversed; see
+// resolveAttack's Block branch for why).
+//
+// **What a Failed line means.** The guard did not apply on that line: no guard
+// roll, no Block Stamina spent, no Spiked Shell bite. Its full weight joins the
+// leftover pile. If *every* line comes back Failed the guard never happened at
+// all and finishBlock routes the attack through the plain-Hit path; if any line
+// held, the Block stands and everything that got past it — Partial line or
+// Failed one — lands on the Stat the blocker rolled, which is the rule a
+// Partial has always followed.
+//
+// A no-op if this pair isn't actually paused_defense (a stale/duplicate click
+// from a second GM tab, or the round already moved on), and it additionally
+// rejects an answer aimed at a *different* attack than the one now pending —
+// the same two guards resolveDodge uses, for the same reasons.
+async function resolveBlock(pairIndex, { outcome, attackerDeclaredMoveId }, io) {
+  if (!['successful', 'failed'].includes(outcome)) return;
+  const resolution = await one(
+    `SELECT * FROM pair_round_resolutions WHERE pair_index = ? AND status = 'paused_defense'`,
+    [pairIndex]
+  );
+  if (!resolution || !resolution.pending_defense_json) return;
+  const pending = JSON.parse(resolution.pending_defense_json);
+  if (attackerDeclaredMoveId != null && pending.attackerDeclaredMoveId !== attackerDeclaredMoveId) return;
+
+  const defenderDM = await one(
+    `SELECT dm.id, dm.character_id, dm.reveal_tic, dm.appendage_choice,
+            dm.recovery_extension_tics AS current_extension_tics,
+            m.id AS move_id, m.name AS move_name, m.active_tics, m.recovery_tics, m.is_defensive,
+            m.defense_kind, m.roll_type, m.custom_roll_size, m.roll_modifier, m.stamina_modifier,
+            ch.name AS character_name
+     FROM declared_moves dm JOIN moves m ON m.id = dm.move_id JOIN characters ch ON ch.id = dm.character_id
+     WHERE dm.id = ?`,
+    [pending.defenderDeclaredMoveId]
+  );
+  const emitEvent = await makeEmitEvent(io, resolution, pairIndex, resolution.round_number);
+  await run(`UPDATE pair_round_resolutions SET status = 'running', pending_defense_json = NULL WHERE id = ?`, [
+    resolution.id,
+  ]);
+  if (!defenderDM) {
+    // The defending declared move vanished from under the pause — clear it so
+    // the pair isn't stuck, but there's nothing left to resolve.
+    await advancePairResolution(pairIndex, io);
+    return;
+  }
+
+  const answeredStat = pending.remainingStats?.[0] ?? null;
+  const remainingStats = (pending.remainingStats ?? []).slice(1);
+  await emitEvent(pending.tic, 'block_resolved', {
+    attackerDeclaredMoveId: pending.attackerDeclaredMoveId,
+    defenderDeclaredMoveId: pending.defenderDeclaredMoveId,
+    outcome,
+    targetSlotName: answeredStat,
+  });
+
+  const next = { ...pending, remainingStats };
+  const guard = await loadBlockGuard(defenderDM, pending.tic);
+  if (outcome === 'failed') {
+    const against = answeredStat ? ` against the strike to ${answeredStat}` : '';
+    await postSystemMessage(
+      io,
+      `The GM called ${defenderDM.character_name}'s ${defenderDM.move_name} the wrong guard` +
+        `${against} — it does not apply.`
+    );
+    next.leftoverSteps += pending.halfDamageSteps;
+    next.leftoverResult += pending.attackerResult;
+  } else {
+    const lineOutcome = await runBlockLine(io, {
+      pending,
+      defenderDM,
+      guard,
+      line: answeredStat,
+      emitEvent,
+    });
+    next.leftoverSteps += lineOutcome.halfDamageSteps;
+    next.leftoverResult += lineOutcome.netResult ?? 0;
+    next.heldAnywhere = true;
+  }
+
+  // More Stats to ask about — pause again on the next one. Nothing final has
+  // been committed at this point (the per-line roll, Stamina and riposte are
+  // that line's own business and are already done), so a re-pause is a clean
+  // continuation of the same decision.
+  if (remainingStats.length) {
+    await persistBlockPause(io, { pairIndex, pending: next, emitEvent, resolutionId: resolution.id });
+    return;
+  }
+
+  const result = await finishBlock(io, { pairIndex, pending: next, defenderDM, guard, emitEvent });
+  // finishBlock can itself raise the Forfeit/Postpone pause when an extended
+  // Recovery collides with a later move — advancing past that would resolve the
+  // round straight through a decision nobody made.
+  if (result?.paused) return;
   await advancePairResolution(pairIndex, io);
 }
 
@@ -4121,6 +4402,7 @@ export {
   advancePairResolution,
   startPairDeclaration,
   resolveDodge,
+  resolveBlock,
   resolveMoveConflict,
   answerGrapple,
   resumeGrapple,

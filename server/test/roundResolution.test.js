@@ -30,7 +30,7 @@ process.env.TURSO_DATABASE_URL = `file:${dbPath}`;
 delete process.env.TURSO_AUTH_TOKEN;
 
 const { initDb, run, one, all } = await import('../db.js');
-const { advancePairResolution, startPairDeclaration, resolveDodge, resolveMoveConflict, openRoundForCharacters } =
+const { advancePairResolution, startPairDeclaration, resolveDodge, resolveBlock, resolveMoveConflict, openRoundForCharacters } =
   await import('../roundResolution.js');
 const { DICE_TEMPLATE } = await import('../gameLogic.js');
 const { collapseRollSlots } = await import('../moveLogic.js');
@@ -178,9 +178,28 @@ async function declareMove({ characterId, moveId, placementTic, startupTics, eff
   return Number(result.lastInsertRowid);
 }
 
-async function resolvePair(pairIndex) {
+// **Every Block now pauses for a GM call (decided, reversed).** These tests
+// were written when a Block resolved with no human input, and what almost all
+// of them are actually about is the guard's arithmetic — so by default this
+// answers every Block prompt "Successful", which is precisely the old
+// behaviour, and the tests keep measuring what they were written to measure.
+// Pass `blockAnswers: ['failed', ...]` to drive a specific sequence; the last
+// answer repeats if the round asks more questions than the list has entries.
+// The adjudication itself is tested on its own further down.
+async function resolvePair(pairIndex, { blockAnswers = ['successful'] } = {}) {
   await run(`UPDATE combat_pairs SET phase = 'resolving' WHERE pair_index = ?`, [pairIndex]);
   await advancePairResolution(pairIndex, mockIo);
+  // Bounded: a bug that re-raises the same prompt forever should fail the test,
+  // not hang the suite.
+  for (let i = 0; i < 20; i++) {
+    const state = await one(
+      `SELECT status FROM pair_round_resolutions WHERE pair_index = ? AND status = 'paused_defense'`,
+      [pairIndex]
+    );
+    if (!state) return;
+    await resolveBlock(pairIndex, { outcome: blockAnswers[i] ?? blockAnswers.at(-1) }, mockIo);
+  }
+  throw new Error('resolvePair: Block prompts never stopped');
 }
 
 test('plain Hit: no defending move at all, damage lands on the move\'s Attack Target', async () => {
@@ -2164,4 +2183,289 @@ test('a character with no Healing Factor keeps every marker', async () => {
   await openRoundForCharacters(mockIo, [character]);
   const body = await one("SELECT * FROM dice WHERE character_id = ? AND slot_name = 'Body'", [character]);
   assert.equal(body.half_damage, 1);
+});
+
+// ---------------------------------------------------------------------------
+// The GM adjudicates a Block (decided, reversed — this is the Defence rework's
+// decision #1 landing, and it reverses the Combat Automation overhaul's own
+// decision #1: "Block is fully automatic, purely dice-based, zero GM clicks,
+// ever"). Overlapping in time was being taken as proof the guard was the RIGHT
+// guard, and nothing in the frame data can tell a front guard from a side one.
+// ---------------------------------------------------------------------------
+
+// Attacker Skull d12 (forced max, so 12); defender Left Hand d12 guard.
+async function adjudicatedBlock({ pairIndex, attackTargets = null, defenderHandSize = 12 }) {
+  const attacker = await createCharacter(`BA${pairIndex}`);
+  const defender = await createCharacter(`BD${pairIndex}`);
+  await setDieSize(attacker, 'Skull', 12);
+  await setDieSize(defender, 'Left Hand', defenderHandSize);
+  const punch = await createMove({
+    name: `BPunch${pairIndex}`,
+    startupTics: 1,
+    activeTics: 2,
+    recoveryTics: 1,
+    rollSlots: ['Skull'],
+    attackTargets,
+  });
+  const guard = await createMove({
+    name: `BGuard${pairIndex}`,
+    startupTics: 1,
+    activeTics: 1,
+    recoveryTics: 1,
+    rollSlots: ['Hand'],
+    isDefensive: true,
+    defenseKind: 'block',
+    defenseFramePositions: [0, 1, 2],
+  });
+  await seatPair(pairIndex, attacker, defender);
+  await startPairDeclaration(mockIo, pairIndex);
+  const attackerDM = await declareMove({
+    characterId: attacker,
+    moveId: punch,
+    placementTic: 0,
+    startupTics: 1,
+    // move:declare snapshots the move's own attack_targets into this column for
+    // real declarations; this helper defaults it to ["Skull"], so a multi-Stat
+    // attack has to say so here or only the Skull line is ever asked about.
+    ...(attackTargets ? { effectiveAttackTargets: attackTargets } : {}),
+  });
+  await declareMove({ characterId: defender, moveId: guard, placementTic: 0, startupTics: 1, appendageChoice: 'left' });
+  await run(`UPDATE combat_pairs SET phase = 'resolving' WHERE pair_index = ?`, [pairIndex]);
+  await advancePairResolution(pairIndex, mockIo);
+  return { attacker, defender, attackerDM };
+}
+
+const pauseStateOf = (pairIndex) =>
+  one(
+    `SELECT status, pending_defense_json FROM pair_round_resolutions WHERE pair_index = ? AND round_number = 1`,
+    [pairIndex]
+  );
+
+test('a Block stops the round and asks the GM, instead of resolving itself', async () => {
+  const pairIndex = 460;
+  const { attackerDM } = await adjudicatedBlock({ pairIndex });
+
+  const paused = await pauseStateOf(pairIndex);
+  assert.equal(paused.status, 'paused_defense');
+  const pending = JSON.parse(paused.pending_defense_json);
+  assert.equal(pending.attackerDeclaredMoveId, attackerDM);
+  assert.equal(pending.coverage.coverage, 'full');
+
+  // The prompt is a round_event, so it reaches the GM live AND replays.
+  const prompt = await one(
+    `SELECT payload FROM round_events WHERE pair_index = ? AND type = 'block_prompt'`,
+    [pairIndex]
+  );
+  assert.ok(prompt, 'the Block prompt must be a round_event like the Dodge prompt is');
+  assert.equal(JSON.parse(prompt.payload).attackerResult, 12);
+
+  // Nothing has been applied while the question stands.
+  const skull = await one("SELECT current_size FROM dice WHERE character_id = ? AND slot_name = 'Skull'", [
+    (await one('SELECT character_id FROM combat_participants WHERE pair_index = ? AND side = ?', [pairIndex, 'right'])).character_id,
+  ]);
+  assert.equal(skull.current_size, 8, 'a paused Block must not have damaged anything yet');
+});
+
+test('Successful: the guard rolls and the Block resolves as it always did', async () => {
+  const pairIndex = 461;
+  const { defender } = await adjudicatedBlock({ pairIndex });
+  await resolveBlock(pairIndex, { outcome: 'successful' }, mockIo);
+
+  const done = await pauseStateOf(pairIndex);
+  assert.equal(done.status, 'complete');
+  // Attack 12 vs guard 12 — a Full Block, no damage anywhere.
+  const dice = await all('SELECT slot_name, current_size, half_damage FROM dice WHERE character_id = ?', [defender]);
+  assert.ok(
+    dice.every((d) => d.current_size === (d.slot_name === 'Left Hand' ? 12 : 8) && d.half_damage === 0),
+    'a Full Block leaves the blocker untouched'
+  );
+  const outcome = await one(
+    `SELECT payload FROM round_events WHERE pair_index = ? AND type = 'block_resolved'`,
+    [pairIndex]
+  );
+  assert.equal(JSON.parse(outcome.payload).outcome, 'successful');
+});
+
+test('Failed: the guard is discarded and the attack lands as if it were never declared', async () => {
+  const pairIndex = 462;
+  const { defender } = await adjudicatedBlock({ pairIndex });
+  await resolveBlock(pairIndex, { outcome: 'failed' }, mockIo);
+
+  // Damage on the Stat the ATTACK named (Skull by default), not redirected onto
+  // the blocker's own rolled Stat — that redirect is the Successful Block rule,
+  // and there was no successful Block.
+  const skull = await one("SELECT current_size FROM dice WHERE character_id = ? AND slot_name = 'Skull'", [defender]);
+  assert.equal(skull.current_size, 6, '12 -> 2 half-steps -> one full rank down from d8');
+  const hand = await one("SELECT current_size FROM dice WHERE character_id = ? AND slot_name = 'Left Hand'", [defender]);
+  assert.equal(hand.current_size, 12, "the guard's own Stat takes nothing — it never guarded");
+
+  // No guard roll happened at all. (The guard move rolls once more on its own
+  // account — it carries an Attack Target of its own, so it is a counter-attack
+  // as well as a guard — but never as a *defensive* roll.)
+  const rolls = await all(
+    `SELECT payload FROM round_events WHERE pair_index = ? AND type = 'roll' ORDER BY seq`,
+    [pairIndex]
+  );
+  assert.equal(
+    rolls.filter((r) => JSON.parse(r.payload).defensive).length,
+    0,
+    'a discarded guard must not be rolled'
+  );
+});
+
+test('a rejected Block never extends the blocker\'s Recovery', async () => {
+  // 'too-short' coverage is what triggers the extension. Confirming the guard
+  // extends it; rejecting the guard must not — stretching a fighter's
+  // commitment to hold something the GM just said did not happen would charge
+  // them for it.
+  const scenario = async (pairIndex, outcome) => {
+    const attacker = await createCharacter(`XA${pairIndex}`);
+    const defender = await createCharacter(`XD${pairIndex}`);
+    const punch = await createMove({
+      name: `XPunch${pairIndex}`,
+      startupTics: 1,
+      activeTics: 3,
+      recoveryTics: 1,
+      rollSlots: ['Skull'],
+    });
+    const guard = await createMove({
+      name: `XGuard${pairIndex}`,
+      startupTics: 1,
+      activeTics: 1,
+      recoveryTics: 1,
+      rollSlots: ['Hand'],
+      isDefensive: true,
+      defenseKind: 'block',
+      defenseFramePositions: [1], // the move's own Active frame -> Tic 1; the attack is Active 1-3
+    });
+    await seatPair(pairIndex, attacker, defender);
+    await startPairDeclaration(mockIo, pairIndex);
+    await declareMove({ characterId: attacker, moveId: punch, placementTic: 0, startupTics: 1 });
+    const guardDM = await declareMove({
+      characterId: defender,
+      moveId: guard,
+      placementTic: 0,
+      startupTics: 1,
+      appendageChoice: 'left',
+    });
+    await run(`UPDATE combat_pairs SET phase = 'resolving' WHERE pair_index = ?`, [pairIndex]);
+    await advancePairResolution(pairIndex, mockIo);
+    const paused = await pauseStateOf(pairIndex);
+    assert.equal(JSON.parse(paused.pending_defense_json).coverage.coverage, 'too-short');
+    await resolveBlock(pairIndex, { outcome }, mockIo);
+    return one('SELECT recovery_extension_tics FROM declared_moves WHERE id = ?', [guardDM]);
+  };
+
+  const confirmed = await scenario(463, 'successful');
+  assert.ok(confirmed.recovery_extension_tics > 0, 'a Block that held still extends to cover the swing');
+  const rejected = await scenario(464, 'failed');
+  assert.equal(rejected.recovery_extension_tics, 0);
+});
+
+test('one prompt per Stat: a two-Stat attack is adjudicated twice', async () => {
+  const pairIndex = 465;
+  await adjudicatedBlock({ pairIndex, attackTargets: ['Skull', 'Body'] });
+
+  const first = JSON.parse((await pauseStateOf(pairIndex)).pending_defense_json);
+  assert.deepEqual(first.remainingStats, ['Skull', 'Body']);
+
+  await resolveBlock(pairIndex, { outcome: 'successful' }, mockIo);
+  const second = await pauseStateOf(pairIndex);
+  assert.equal(second.status, 'paused_defense', 'the second Stat gets its own question');
+  assert.deepEqual(JSON.parse(second.pending_defense_json).remainingStats, ['Body']);
+
+  await resolveBlock(pairIndex, { outcome: 'successful' }, mockIo);
+  assert.equal((await pauseStateOf(pairIndex)).status, 'complete');
+});
+
+test('mixed answers: a guard that held anywhere still catches what got past it', async () => {
+  // Skull called Failed, Body called Successful. The guard WAS up, so the
+  // Successful Block redirect stands and the Failed line's full weight lands on
+  // the Stat the blocker rolled rather than on the Skull the attack named.
+  const pairIndex = 466;
+  const { defender } = await adjudicatedBlock({ pairIndex, attackTargets: ['Skull', 'Body'] });
+  await resolveBlock(pairIndex, { outcome: 'failed' }, mockIo);
+  await resolveBlock(pairIndex, { outcome: 'successful' }, mockIo);
+
+  const skull = await one("SELECT current_size FROM dice WHERE character_id = ? AND slot_name = 'Skull'", [defender]);
+  const body = await one("SELECT current_size FROM dice WHERE character_id = ? AND slot_name = 'Body'", [defender]);
+  const hand = await one(
+    "SELECT current_size, half_damage FROM dice WHERE character_id = ? AND slot_name = 'Left Hand'",
+    [defender]
+  );
+  assert.equal(skull.current_size, 8, 'the named Stats are spared — the guard was up');
+  assert.equal(body.current_size, 8);
+  assert.equal(hand.current_size, 10, "the Failed line's 12 lands on the arm that held: 2 half-steps");
+});
+
+test('a stale answer for a different attack is rejected', async () => {
+  const pairIndex = 467;
+  await adjudicatedBlock({ pairIndex });
+  await resolveBlock(pairIndex, { outcome: 'successful', attackerDeclaredMoveId: 999999 }, mockIo);
+  assert.equal((await pauseStateOf(pairIndex)).status, 'paused_defense', 'the pause must survive a stale click');
+  await resolveBlock(pairIndex, { outcome: 'successful' }, mockIo);
+  assert.equal((await pauseStateOf(pairIndex)).status, 'complete');
+});
+
+// ---------------------------------------------------------------------------
+// Damage aimed at a broken Stat (decided, new).
+// ---------------------------------------------------------------------------
+
+test('an attack on a broken Stat still resolves, and is reported at the end of the round', async () => {
+  const pairIndex = 470;
+  const attacker = await createCharacter('BrokenAtk');
+  const defender = await createCharacter('BrokenDef');
+  await setDieSize(attacker, 'Skull', 12);
+  await run(
+    `UPDATE dice SET status = 'incapacitated', current_size = 4, bonus = 0
+     WHERE character_id = ? AND slot_name = 'Skull'`,
+    [defender]
+  );
+  const punch = await createMove({
+    name: 'Broken Punch',
+    startupTics: 1,
+    activeTics: 2,
+    recoveryTics: 1,
+    rollSlots: ['Skull'],
+    attackTargets: ['Skull'],
+  });
+
+  await seatPair(pairIndex, attacker, defender);
+  await startPairDeclaration(mockIo, pairIndex);
+  await declareMove({ characterId: attacker, moveId: punch, placementTic: 0, startupTics: 1 });
+  await resolvePair(pairIndex);
+
+  // It used to bail out here — no target, no event, silence.
+  const noTarget = await all(
+    `SELECT payload FROM round_events WHERE pair_index = ? AND type = 'damage_applied'`,
+    [pairIndex]
+  );
+  assert.ok(
+    !noTarget.some((e) => JSON.parse(e.payload).result === 'no-eligible-target'),
+    'a broken Stat is no longer "nothing to hit"'
+  );
+
+  const unapplied = await all(
+    `SELECT payload FROM round_events WHERE pair_index = ? AND type = 'damage_unapplied'`,
+    [pairIndex]
+  );
+  assert.equal(unapplied.length, 1);
+  const payload = JSON.parse(unapplied[0].payload);
+  assert.equal(payload.slotName, 'Skull');
+  assert.equal(payload.damage, 1); // Skull d12 forced max = 12 -> 2 half-steps -> 1.0
+
+  // The die is untouched — nothing is redirected anywhere, it simply does not land.
+  const skull = await one("SELECT current_size, status, half_damage FROM dice WHERE character_id = ? AND slot_name = 'Skull'", [defender]);
+  assert.equal(skull.status, 'incapacitated');
+  assert.equal(skull.current_size, 4);
+  assert.equal(skull.half_damage, 0);
+
+  const said = await all(
+    `SELECT content FROM chat_log WHERE content LIKE '%should have been dealt%' ORDER BY id`
+  );
+  assert.equal(said.length, 1, 'exactly one line per Stat, at the end of the round');
+  assert.equal(
+    said[0].content,
+    "1 damage should have been dealt to BrokenDef's Skull, but it cannot be applied. Take this into consideration for Injuries."
+  );
 });

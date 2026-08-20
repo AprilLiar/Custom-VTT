@@ -262,9 +262,18 @@ export function selectRiposteTargets(rollSlotNames, random = Math.random) {
 // is the canonical one by construction. `dice` is the target character's own
 // dice as `{ slot_name, status }`.
 //
-// Returns every eligible die, in that order, deduped — an empty array when
-// every allowed Stat's die is incapacitated or missing (the attack lands on
-// nothing).
+// Returns every named die that exists, in that order, deduped — an empty array
+// only when the target has no die for any of those slots at all.
+//
+// **A broken Stat is returned like any other (decided, new).** It used to be
+// filtered out here, which silently deleted that whole line of attack: no
+// defence was asked for it, no roll happened, and nothing was said. An attack
+// aimed at an incapacitated Stat now resolves exactly like any other — it is
+// rolled, blocked or dodged, and only the *application* of the damage fails.
+// Telling the two apart is the caller's job (see applyAutoDamage, which reports
+// what could not be applied instead of writing it), because "there is nothing
+// left to break here" is a fact the table needs for Injuries, not a fact to
+// swallow.
 export function selectAutoDamageTargets({ effectiveAttackTargets, dice }) {
   const bySlot = new Map(dice.map((d) => [d.slot_name, d]));
   const out = [];
@@ -273,25 +282,30 @@ export function selectAutoDamageTargets({ effectiveAttackTargets, dice }) {
     if (seen.has(slot)) continue;
     seen.add(slot);
     const die = bySlot.get(slot);
-    if (die && die.status !== 'incapacitated') out.push(die);
+    if (die) out.push(die);
   }
   return out;
 }
 
 // Combat Automation overhaul, decision #6 — Uneven Combat's "which opposing
 // character gets hit" is no longer a GM click: deterministic, lowest
-// characterId among opposing participants who still have a
-// non-incapacitated die within the attack's own allowed target set.
-// `candidates` is every character seated on the opposing side, as
-// `{ characterId, dice: [{ slot_name, status }] }`; `allowedConcreteTargets`
-// is the attacking move's own effective (already-concrete) Attack Target
-// list. Returns the winning characterId, or null if nobody on that side has
-// any eligible die at all (the attack lands on nothing).
+// characterId among opposing participants who have a die within the attack's
+// own allowed target set. `candidates` is every character seated on the
+// opposing side, as `{ characterId, dice: [{ slot_name, status }] }`;
+// `allowedConcreteTargets` is the attacking move's own effective
+// (already-concrete) Attack Target list. Returns the winning characterId, or
+// null if nobody on that side has such a die at all.
+//
+// **Eligibility no longer looks at Stat status (decided, new).** It used to
+// skip anyone whose every named Stat was broken, which in 1v1 meant the attack
+// found no target, bailed before defence resolution, and reported
+// 'no-eligible-target' in silence — the fighter had a wrecked arm and punching
+// it did nothing at all, said nothing at all. A broken Stat is still somewhere
+// an attack lands; it is only somewhere damage cannot be *recorded*, and that
+// is reported at the end of the round instead.
 export function selectUnevenCombatTarget({ candidates, allowedConcreteTargets }) {
   const allowed = new Set(allowedConcreteTargets);
-  const eligible = candidates.filter((c) =>
-    c.dice.some((d) => allowed.has(d.slot_name) && d.status !== 'incapacitated')
-  );
+  const eligible = candidates.filter((c) => c.dice.some((d) => allowed.has(d.slot_name)));
   if (!eligible.length) return null;
   return eligible.reduce((best, c) => (c.characterId < best.characterId ? c : best)).characterId;
 }
