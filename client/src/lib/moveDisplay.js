@@ -42,6 +42,10 @@ export function automationLabel({ type, amount, slot }) {
         : `${n} step${n === 1 ? '' : 's'} up${where} → opponent`;
     case 'self_stat_increase':
       return `${n} step${n === 1 ? '' : 's'} up${where} (self)`;
+    case 'self_stat_recover':
+      // Named as healing rather than as a step up, because the ceiling is the
+      // whole difference between it and the line above.
+      return `Recover${where} ${n} step${n === 1 ? '' : 's'} (self, never past base)`;
     case 'opponent_next_roll_penalty':
       return `−${n} on the opponent's next roll`;
     default:
@@ -61,6 +65,9 @@ export const AUTOMATION_OPTIONS = [
   // affordance anybody finds, so it gets its own option with a plain positive
   // number. It is the same mechanic underneath, negated server-side.
   { type: 'self_stat_increase', label: 'Increase your own Stat' },
+  // Same upward step, with a ceiling: healing back toward where the Stat
+  // started, never past it.
+  { type: 'self_stat_recover', label: 'Recover your own Stat (never past base)' },
   { type: 'opponent_next_roll_penalty', label: "Weaken the opponent's next roll" },
 ];
 
@@ -93,6 +100,7 @@ export const STAT_STEP_AUTOMATION_TYPES = new Set([
   'self_stat_step',
   'opponent_stat_step',
   'self_stat_increase',
+  'self_stat_recover',
 ]);
 
 // ---------- Block Tag (the first Tag automation) ----------
@@ -112,6 +120,19 @@ export const NO_DAMAGE_TAG_NAME = 'No Damage';
 export const FEINT_TAG_NAME = 'Feint';
 
 const normTag = (name) => String(name ?? '').trim().toLowerCase();
+
+// A move's own Tag rows, alphabetically (decided, new).
+//
+// `/api/tags` returns the world-level list in this order already, but a MOVE
+// stores `tag_ids` in the order the GM happened to tick them, so the chips on a
+// card came out in pick order — the same "creation order" complaint one layer
+// down. Every place that resolves tag_ids into rows goes through here, so the
+// card, the Moves tab and the chat reveal all read the same way.
+export function sortTags(tags) {
+  return [...(tags ?? [])].sort((a, b) =>
+    normTag(a?.name).localeCompare(normTag(b?.name))
+  );
+}
 
 // Mirrors hasTagNamed in server/tagAutomations.js, which is the authority.
 // Matched on the name, case-insensitively, never on the id — see that file

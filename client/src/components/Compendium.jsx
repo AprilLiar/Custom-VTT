@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { sortTags } from '../lib/moveDisplay.js';
 import { useRole } from '../roleContext.jsx';
 import { socket } from '../socket.js';
 import { getCharacter, getCharacters, getMoves, getRuleset, getTags, getTells } from '../lib/api.js';
@@ -641,7 +642,7 @@ export default function MovesCompendium() {
                       ? attrById.get(move.combat_style_attribute_id)
                       : null
                   }
-                  tags={move.tag_ids.map((id) => tagById.get(id)).filter(Boolean)}
+                  tags={sortTags(move.tag_ids.map((id) => tagById.get(id)).filter(Boolean))}
                   folderLabel={folderPath(move.folder_id, folders) ?? undefined}
                   badge={
                     move.is_default ? (

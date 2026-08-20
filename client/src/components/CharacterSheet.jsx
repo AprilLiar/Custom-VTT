@@ -9,6 +9,7 @@ import CoreStatsTab from './CoreStatsTab.jsx';
 import StancesTab from './StancesTab.jsx';
 import MovesTab from './MovesTab.jsx';
 import RoleplayTab from './RoleplayTab.jsx';
+import CharacterCreationDialog from './CharacterCreationDialog.jsx';
 import PerksTab from './PerksTab.jsx';
 import CountersTab from './CountersTab.jsx';
 
@@ -54,10 +55,11 @@ const BUILT_TABS = ['core', 'stances', 'moves', 'perks', 'counters', 'roleplay']
 
 export default function CharacterSheet() {
   const { id } = useParams();
-  const { role } = useRole();
+  const { role, characterId: myCharacterId } = useRole();
   const navigate = useNavigate();
   const [data, setData] = useState(null); // { character, dice, inventory, injuries }
   const [tab, setTab] = useState('core');
+  const [creating, setCreating] = useState(false);
   const characterId = Number(id);
 
   useEffect(() => {
@@ -243,6 +245,7 @@ export default function CharacterSheet() {
   }
 
   const activeStance = data.stances.find((s) => s.id === data.character.active_stance_id);
+  const canCreate = role === 'gm' || myCharacterId === data.character.id;
 
   return (
     <div className="mx-auto max-w-3xl">
@@ -258,17 +261,33 @@ export default function CharacterSheet() {
           <TabButton key={t.key} tab={t} active={tab === t.key} built={BUILT_TABS.includes(t.key)} onClick={() => setTab(t.key)} />
         ))}
       </div>
-      {activeStance && (
-        <div className="mb-2 mt-1.5 flex justify-end border-b border-zinc-800 pb-2">
+      {/* Character Creation (decided, new) lives beside the active-stance
+          badge rather than inside a tab: it is a thing you do TO the whole
+          sheet, and every tab it touches is one it would have to be
+          duplicated into otherwise. Offered to the GM on any sheet, and to a
+          Player on their own character — building your own fighter is the
+          whole point of a guided flow, and the trust model here is the same
+          one every other control in this app uses. */}
+      <div className="mb-2 mt-1.5 flex items-center justify-end gap-2 border-b border-zinc-800 pb-2">
+        {canCreate && (
+          <button
+            type="button"
+            onClick={() => setCreating(true)}
+            title="Walk through building this character step by step"
+            className="panel-cut-sm border border-brand-700 px-3 py-1 text-xs font-bold uppercase tracking-wide text-brand-300 hover:border-brand-500 hover:text-brand-200"
+          >
+            Character Creation
+          </button>
+        )}
+        {activeStance && (
           <span
             title="Active stance"
             className="whitespace-nowrap bg-brand-600/30 px-3 py-1 text-xs font-semibold text-brand-300 [clip-path:polygon(8%_0,100%_0,92%_100%,0_100%)]"
           >
             {activeStance.name}
           </span>
-        </div>
-      )}
-      {!activeStance && <div className="mb-4 border-b border-zinc-800" />}
+        )}
+      </div>
 
       <AnimatePresence mode="wait">
         <motion.div
@@ -286,6 +305,14 @@ export default function CharacterSheet() {
           {tab === 'roleplay' && <RoleplayTab data={data} />}
         </motion.div>
       </AnimatePresence>
+
+      {creating && (
+        <CharacterCreationDialog
+          character={data.character}
+          dice={data.dice}
+          onClose={() => setCreating(false)}
+        />
+      )}
     </div>
   );
 }

@@ -44,7 +44,7 @@
 // if either one changes.
 
 import { all, one, run } from './db.js';
-import { rollDie, applyHalfDamage, clamp, stepDie, rollTotal } from './gameLogic.js';
+import { rollDie, applyHalfDamage, clamp, dieAtRank, rankOf, stepDie, rollTotal } from './gameLogic.js';
 import {
   parseConcreteAttackTargets,
   expandAttackTargets,
@@ -70,7 +70,9 @@ import {
   effectiveTagNames,
   hardToInterruptAmount,
   interrupterAmount,
+  movementPunisherApplies,
   resolveInterruptContest,
+  MOVEMENT_PUNISH_RECOVERY,
 } from './tagAutomations.js';
 import {
   DECLINE_FOLLOW_UP,
@@ -239,6 +241,9 @@ const TRIGGER_LABELS = {
   miss: 'On Miss',
   defense_success: 'On Successful Defense',
   defense_failure: 'On Failed Defense',
+  // Not an authorable trigger — a Tag's own consequence, run through the same
+  // executor so it reads and logs like every other effect.
+  movement_punished: 'Tripped',
 };
 
 const IMPOSED_PHASE_PHRASE = {
@@ -544,15 +549,20 @@ async function runAutomations(io, {
       }
       case 'self_stat_step':
       case 'self_stat_increase':
+      case 'self_stat_recover':
       case 'opponent_stat_step': {
         const isSelf = automation.type !== 'opponent_stat_step';
         const who = isSelf ? selfCharacter : opponentCharacter;
         const whoId = isSelf ? selfCharacterId : opponentCharacterId;
         if (!who || whoId == null) break;
-        // `self_stat_increase` is `self_stat_step` with its direction in its
-        // name instead of its sign — negated here, at the single point either
-        // one executes, so there is no second implementation to drift.
-        const steps = automation.type === 'self_stat_increase' ? -amount : amount;
+        // `self_stat_increase` and `self_stat_recover` are `self_stat_step`
+        // with their direction in their name instead of their sign — negated
+        // here, at the single point any of them executes, so there is no second
+        // implementation to drift. What separates the two upward ones is the
+        // ceiling: recovery stops at the locked baseline, an increase does not.
+        const upward = automation.type === 'self_stat_increase' || automation.type === 'self_stat_recover';
+        const steps = upward ? -amount : amount;
+        const capToLocked = automation.type === 'self_stat_recover';
         const stepped = await stepStat(io, {
           characterId: whoId,
           slotName: automation.slot,
@@ -560,12 +570,13 @@ async function runAutomations(io, {
           emitEvent,
           tic,
           characterName: who.name,
+          capToLocked,
         });
         effects.push(
           stepped
             ? `${automation.slot} ${steps > 0 ? 'down' : 'up'} ${Math.abs(steps)} ${
                 Math.abs(steps) === 1 ? 'step' : 'steps'
-              } (${who.name})`
+              }${capToLocked ? ' (recovered)' : ''} (${who.name})`
             : `(${who.name} has no ${automation.slot} to step)`
         );
         break;
@@ -642,6 +653,31 @@ async function runAutomations(io, {
       });
     }
   }
+}
+
+// The move this character is physically in the middle of at `tic` — whatever
+// they are doing, whether or not it is public yet.
+//
+// **Deliberately not gated on the move having revealed**, unlike
+// `combatStyleInPlay`: tripping somebody is a fact about what their body is
+// doing, not about what the room has been told. A Movement move still in its
+// wind-up is a fighter already committed to going somewhere, and catching them
+// there is the whole point of the Tag.
+//
+// The freshest one wins if several footprints overlap, matching how every other
+// "what are they doing right now" question in this engine is answered.
+async function movementMoveInPlay(characterId, tic) {
+  if (characterId == null || tic == null) return null;
+  return one(
+    `SELECT dm.id, dm.move_id
+     FROM declared_moves dm JOIN moves m ON m.id = dm.move_id
+     WHERE dm.character_id = ?
+       AND dm.placement_tic <= ?
+       AND dm.reveal_tic + m.active_tics + m.recovery_tics + dm.recovery_extension_tics > ?
+     ORDER BY dm.placement_tic DESC, dm.id DESC
+     LIMIT 1`,
+    [characterId, tic, tic]
+  );
 }
 
 // Applies half-damage steps to EVERY Stat this move attacks (decision #5,
@@ -724,7 +760,20 @@ async function applyAutoDamage(io, { targetCharacterId, effectiveAttackTargets, 
 // what lets an authored On Hit say "and it wrecks their Right Hand" without
 // a human applying it afterwards. Emits the same damage_applied shape so
 // the cutscene's fighter cards animate it identically.
-async function stepStat(io, { characterId, slotName, steps, emitEvent, tic, characterName }) {
+async function stepStat(io, {
+  characterId,
+  slotName,
+  steps,
+  emitEvent,
+  tic,
+  characterName,
+  // **Healing rather than improving (decided, new).** `self_stat_recover` puts
+  // a Stat back toward where it started and stops there: it can never take a
+  // die past its own locked baseline, which is what separates recovery from
+  // the uncapped `self_stat_increase`. A Stat already at or above its baseline
+  // has nothing to recover, so the steps simply have nowhere to go.
+  capToLocked = false,
+}) {
   const dice = await getDice(characterId);
   const die = dice.find((d) => d.slot_name === slotName);
   if (!die) return false;
@@ -734,8 +783,31 @@ async function stepStat(io, { characterId, slotName, steps, emitEvent, tic, char
     status: die.status,
     half_damage: Boolean(die.half_damage),
   };
+  // The ceiling, in the same rank unit everything else counts in. A die that
+  // was never locked has no baseline to be measured against and is left
+  // uncapped rather than pinned to a d4 it never agreed to.
+  const lockedRank =
+    capToLocked && die.locked_size != null ? rankOf(die.locked_size, die.locked_bonus ?? 0) : null;
   for (let i = 0; i < Math.abs(steps); i++) {
-    next = steps > 0 ? applyHalfDamage(next) : stepDie({ ...next, status: next.status }, 'up');
+    if (steps > 0) {
+      next = applyHalfDamage(next);
+      continue;
+    }
+    // Healing clears a pending half step before it buys a whole one — the same
+    // reading character:revert_stats uses, where a Stat put back to base must
+    // not still be carrying half a step of damage it already paid for.
+    if (capToLocked && next.half_damage) {
+      next = { ...next, half_damage: false };
+      continue;
+    }
+    if (lockedRank != null && next.status !== 'incapacitated' && rankOf(next.current_size, next.bonus) >= lockedRank) {
+      break; // already home
+    }
+    next = stepDie({ ...next, status: next.status }, 'up');
+    if (lockedRank != null && rankOf(next.current_size, next.bonus) > lockedRank) {
+      const capped = dieAtRank(lockedRank);
+      next = { ...next, current_size: capped.size, bonus: capped.bonus };
+    }
   }
   await run('UPDATE dice SET current_size = ?, bonus = ?, status = ?, half_damage = ? WHERE id = ?', [
     next.current_size,
@@ -784,10 +856,15 @@ async function checkInterrupt(io, {
   targetCharacterId,
   attackerRevealTic,
   attackerActiveTics,
-  halfDamageSteps,
-  // **Interrupter (x)** on the attacking move (decided, new). Read by the
-  // caller, which already has the attacker's resolved tag names in hand, so
-  // this function never has to know which move threw the punch.
+  // The attack's own roll — one half of the contest (decided, corrected). The
+  // blow's DAMAGE plays no part in this comparison; an earlier version compared
+  // against it, which was a misreading of the rule.
+  attackerRoll = 0,
+  // Carried for context only, so the log can still say what the blow was worth.
+  halfDamageSteps = 0,
+  // **Interrupter (x)** on the attacking move. Read by the caller, which
+  // already has the attacker's resolved tag names in hand, so this function
+  // never has to know which move threw the punch.
   interrupter = 0,
   emitEvent,
   tic,
@@ -833,11 +910,31 @@ async function checkInterrupt(io, {
     moveTagNamesFor(targetCharacterId, startupDM.move_id),
   ]);
   const hardToInterrupt = hardToInterruptAmount(startupTagNames);
-  const bonus = computeInterruptBonus({ revealTic: attackerRevealTic, currentTic: eligible.tic });
+  // +1 per Active frame of the attack already elapsed. **Kept OUT of the roll's
+  // own modifier and applied at the contest instead** — it is situational to
+  // this one comparison, exactly like Hard to Interrupt, so the roll that goes
+  // out over logRoll stays an honest roll of this move and every situational
+  // bonus is named in one place where a reader can add them up.
+  const activeFrameBonus = computeInterruptBonus({ revealTic: attackerRevealTic, currentTic: eligible.tic });
+  // Which Stats this Interruption will actually be thrown on — decided here
+  // rather than below, because the matchup rule needs to know before the
+  // modifier is built. Same three cases the die selection uses a few lines
+  // down: a Custom Roll names no Stat, the move's own slots if it has any,
+  // Body if it has none.
+  const interruptSlots =
+    startupDM.roll_type === 'custom' && startupDM.custom_roll_size != null
+      ? []
+      : rollSlotRows.length
+        ? rollSlotRows.map((r) => r.slot_name)
+        : ['Body'];
   // The move being interrupted is the one rolling, so its Combat Style is
   // the one that joins the matchup here.
-  const bonusMods = await getCombatRollBonus(targetCharacterId, { moveId: startupDM.move_id, tic });
-  const mod = bonus + bonusMods + startupDM.roll_modifier + rollBonusRow.bonus;
+  const bonusMods = await getCombatRollBonus(targetCharacterId, {
+    moveId: startupDM.move_id,
+    tic,
+    slotNames: interruptSlots,
+  });
+  const mod = bonusMods + startupDM.roll_modifier + rollBonusRow.bonus;
 
   // Decision #8: the interrupted character rolls their own Startup move's
   // Roll if it has one, otherwise Body (generic toughness) instead of
@@ -868,21 +965,21 @@ async function checkInterrupt(io, {
     dice,
   });
 
-  // (Needs confirmation, per the plan's own 4.4 note): threshold assumed to
-  // be `roll >= damage taken` — the attack's own halfDamageSteps, threaded
-  // in by the caller (this only ever runs once damage is about to land).
+  // **Two attack rolls against each other (decided, corrected).** The punch's
+  // own roll, plus Interrupter (x), against the caught move's own roll, plus
+  // Hard to Interrupt (x), plus a point for every Active frame of the attack
+  // already elapsed. The damage the blow dealt is not part of it — it is only
+  // what got us here.
   //
-  // The two Interruption Tags move this one comparison and nothing else
-  // (decided, new): Interrupter (x) adds to the roll, Hard to Interrupt (x)
-  // raises the bar. Neither touched the roll that went out over logRoll just
-  // above — that one is real and is shown at its real value, because the blow
-  // is only *considered* more disruptive for this comparison, it does not
-  // actually hit harder.
+  // Neither Tag touched a real roll: both rolls went out at their real values,
+  // and the Tags are what those rolls are *considered* to be worth for this one
+  // question. The caught fighter wins ties.
   const contest = resolveInterruptContest({
-    interruptRoll: result,
-    halfDamageSteps,
+    attackerRoll,
     interrupter,
+    defenderRoll: result,
     hardToInterrupt,
+    activeFrameBonus,
   });
   const interrupted = contest.interrupted;
   const activeEndTic = startupDM.reveal_tic + startupDM.active_tics;
@@ -892,16 +989,20 @@ async function checkInterrupt(io, {
     // cutscene can key this move's bar the same way it keys a reveal's.
     declaredMoveId: startupDM.id,
     interrupted,
+    // The caught fighter's own roll, as rolled.
     result,
+    // Context, not a term: what the blow that triggered the check was worth.
     halfDamageSteps,
-    // What the comparison actually used, so the cutscene can narrate the Tags
-    // rather than showing a roll of 4 losing to a threshold of 2. Both are 0
-    // on the overwhelming majority of moves, which is the renderer's cue to
-    // say nothing about them.
+    // Everything the contest was actually made of, so the cutscene can lay it
+    // out as two totals instead of two bare numbers. The two Tag amounts are 0
+    // on the overwhelming majority of moves, which is the renderer's cue to say
+    // nothing about them.
+    attackerRoll,
     interrupter,
     hardToInterrupt,
-    effectiveResult: contest.effectiveRoll,
-    threshold: contest.threshold,
+    activeFrameBonus,
+    attackerTotal: contest.attackerTotal,
+    defenderTotal: contest.defenderTotal,
     characterId: startupDM.character_id,
     characterName: startupDM.character_name,
     characterType: startupDM.character_type,
@@ -1177,12 +1278,52 @@ async function runInterruptAndDamage(io, {
   // places at once is still one blow, and the check reads the total damage
   // taken. Uses the heaviest Stat's figure, which is `steps` in every case
   // except a per-Stat defence that held better in one place than another.
+  // **Movement Punisher (decided, new).** A move built to catch someone moving,
+  // resolved here because here is where "did it actually connect?" is finally
+  // known — `applied` being non-empty is exactly the half-point-of-damage floor
+  // the rule asks for.
+  //
+  // The consequence runs through `runAutomations` with an ordinary
+  // `opponent_recovery`, rather than reaching for the Recovery machinery
+  // directly: that is what "works like the Add Recovery trigger" has to mean if
+  // it is going to behave identically — same displacement rules, same Chat Log
+  // line, same round event, same cutscene beat.
+  if (applied.length) {
+    const trippedMove = await movementMoveInPlay(targetCharacterId, tic);
+    if (
+      trippedMove &&
+      movementPunisherApplies({
+        punisherTagNames: attackerTagNames,
+        targetTagNames: await moveTagNamesFor(targetCharacterId, trippedMove.move_id),
+        damageSteps: Math.max(...applied.map((a) => a.steps)),
+      })
+    ) {
+      await runAutomations(io, {
+        automations: [{ type: 'opponent_recovery', amount: MOVEMENT_PUNISH_RECOVERY }],
+        text: 'caught mid-stride — they go down',
+        trigger: 'movement_punished',
+        sourceName: 'Movement Punisher',
+        sourceKind: 'tag',
+        selfCharacterId: attackerCharacterId,
+        selfDeclaredMoveId: declaredMoveId,
+        opponentCharacterId: targetCharacterId,
+        opponentDeclaredMoveId: trippedMove.id,
+        emitEvent,
+        tic,
+      });
+    }
+  }
+
   if (applied.length) {
     await checkInterrupt(io, {
       targetCharacterId,
       attackerRevealTic: attackActiveStart,
       attackerActiveTics,
       halfDamageSteps: Math.max(...applied.map((a) => a.steps)),
+      // The attack's own roll, not what was left of it after a guard took its
+      // cut: the contest asks whether the punch beat the move it caught, and
+      // the punch is what the attacker threw.
+      attackerRoll: attackerResult,
       interrupter: interrupterAmount(attackerTagNames),
       emitEvent,
       tic,
@@ -1396,7 +1537,13 @@ async function rollFor(io, { characterId, characterName, moveId, moveName, slotN
       'SELECT COALESCE(SUM(amount), 0) AS bonus FROM character_move_roll_bonuses WHERE character_id = ? AND move_id = ?',
       [characterId, moveId]
     ),
-    getCombatRollBonusBreakdown(characterId, { moveId, tic }),
+    getCombatRollBonusBreakdown(characterId, {
+      moveId,
+      tic,
+      // A Custom Roll names no Stat, so it keeps the matchup (see
+      // matchupAppliesToSlots).
+      slotNames: rollType === 'custom' ? [] : slotNames,
+    }),
   ]);
   const mod = (rollModifier ?? 0) + rollBonusRow.bonus + bonus.total;
   const modifierBreakdown = rollModifierBreakdown({
@@ -1998,7 +2145,11 @@ async function resolveAttack(io, { row, pairIndex, tic, emitEvent }) {
       'SELECT COALESCE(SUM(amount), 0) AS bonus FROM character_move_roll_bonuses WHERE character_id = ? AND move_id = ?',
       [row.characterId, row.moveId]
     ),
-    getCombatRollBonusBreakdown(row.characterId, { moveId: row.moveId, tic }),
+    getCombatRollBonusBreakdown(row.characterId, {
+      moveId: row.moveId,
+      tic,
+      slotNames: row.rollType === 'custom' ? [] : row.rollSlotNames,
+    }),
   ]);
   const mod = row.rollModifier + rollBonusRow.bonus + bonus.total;
   let dice;
@@ -2278,7 +2429,12 @@ async function resolveAttack(io, { row, pairIndex, tic, emitEvent }) {
       [defenderDM.character_id, defenderDM.move_id]
     ),
   ]);
-  const defBonusMods = await getCombatRollBonus(defenderDM.character_id, { moveId: defenderDM.move_id, tic });
+  const defBonusMods = await getCombatRollBonus(defenderDM.character_id, {
+    moveId: defenderDM.move_id,
+    tic,
+    // Base plus defensive pool: everything this guard actually rolls.
+    slotNames: [...baseSlotRows, ...defensiveSlotRows].map((r) => r.slot_name),
+  });
   const defMod = defenderDM.roll_modifier + defRollBonusRow.bonus + defBonusMods;
 
   // **The guard is rolled once per Stat the attack names (decided, new).** A
@@ -2631,14 +2787,17 @@ async function processTic(io, { pairIndex, tic, emitEvent, resolutionId }) {
     const ids = toReveal.map((r) => r.id);
     const marks = ids.map(() => '?').join(',');
     await run(`UPDATE declared_moves SET reveal_posted = 1 WHERE id IN (${marks})`, ids);
-    // Deliberately does NOT post a lane_snapshot chat card here the way
-    // server/index.js's still-current postMoveReveals does for the manual
-    // flow: chat:lane_snapshot's per-reveal spam is explicitly slated for
-    // removal in favor of a once-per-round round_summary card (§1.5/§4.2,
-    // this overhaul's removal list) — wiring the soon-to-be-removed
-    // mechanism into the new engine now, only to tear it back out again in
-    // Phase E, isn't worth it. round_events (below) is this engine's own
-    // event log and the only reveal record it produces so far.
+    // **Each reveal also posts its own chat card again (decided, restored).**
+    // The overhaul removed the per-reveal card in favour of a single
+    // once-per-round "Watch Round N" button, and the new engine was never
+    // wired to post one — which left the Chat Log with no record of a move
+    // coming out at all, and left Genius Observer with nothing to read. The
+    // card is back as `kind='move_reveal'`, the shape that was already built
+    // for exactly this: **name, picture and frame data for everyone**, with
+    // the full move behind the Perk gate. The round_summary button stays;
+    // the two answer different questions (what just came out, vs. watch the
+    // whole round back).
+    //
     // The reveal event carries the move's whole footprint and display
     // identity, not just its ids — this is what makes a stored replay
     // self-contained (§0: the client plays back a log it did not compute,
@@ -2648,7 +2807,9 @@ async function processTic(io, { pairIndex, tic, emitEvent, resolutionId }) {
     const revealRows = await all(
       `SELECT dm.id, dm.character_id, dm.move_id, dm.placement_tic, dm.reveal_tic,
               dm.recovery_extension_tics, dm.appendage_choice,
-              m.name AS move_name, m.active_tics, m.recovery_tics, m.defense_frame_positions,
+              m.name AS move_name, m.startup_tics, m.active_tics, m.recovery_tics,
+              m.defense_frame_positions,
+              m.image_data AS move_image_data, m.image_mime_type AS move_image_mime_type,
               m.is_defensive, m.defense_kind, m.stamina_cost,
               ch.name AS character_name, ch.character_type,
               cp.side AS side
@@ -2683,6 +2844,7 @@ async function processTic(io, { pairIndex, tic, emitEvent, resolutionId }) {
         recoveryEndTic: activeEndTic + r.recovery_tics + (r.recovery_extension_tics ?? 0),
         defenseFramePositions: JSON.parse(r.defense_frame_positions ?? '[]'),
       });
+      await postMoveReveal(io, r);
     }
   }
 
@@ -2922,16 +3084,16 @@ async function startPairDeclaration(io, pairIndex) {
     // roll — the matchup is defined as "behaves exactly like Reasons to
     // Fight", so it rides along wherever that does.
     //
-    // **This is a bugfix.** There are two copies of the Initiative roll —
-    // combat:next_round in server/index.js opens a fight's first round, this
-    // one opens every round after it — and only the first had learned the
-    // Stance matchup. From round 2 on, a fighter's stance advantage silently
-    // stopped counting toward who declares first. Both now read the same
-    // helpers, so the next modifier added to one cannot go missing from the
-    // other.
+    // **No Stance matchup here (decided, revised).** There are two copies of
+    // the Initiative roll — combat:next_round in server/index.js opens a
+    // fight's first round, this one opens every round after it — and keeping
+    // them in step about the matchup was once a bugfix in its own right. The
+    // rule changed underneath both: Initiative is a pure **Brain** roll, and
+    // the matchup does not reach Brain at all any more (MATCHUP_EXEMPT_SLOTS
+    // in combatBonuses.js). Both copies drop it together, which is the same
+    // discipline the bugfix was really about.
     const modifier =
-      (p.reasons_to_fight || 0) +
-      (await getStanceMatchupBonus(p.character_id, { includeMoveStyles: false })) -
+      (p.reasons_to_fight || 0) -
       computeInitiativeOverflowPenalty({
         blockedUntilTic: blockedUntilByChar.get(p.character_id) ?? null,
         nextRoundStartTic,
@@ -2991,6 +3153,61 @@ async function startPairDeclaration(io, pairIndex) {
 // posts, the round is fully-resolved public history, and the replay is
 // explicitly watchable by anyone (decision #11) — including players who
 // weren't in this fight.
+// One chat card per move as it comes out (decided, restored — see the reveal
+// loop in advancePairResolution for why it went away and why it is back).
+//
+// **What everybody gets is the name, the picture and the frame data.** That is
+// deliberately the whole public payload: by the time this posts, the move has
+// reached its reveal Tic, which is precisely the moment `publiclyRevealed`
+// flips true in mapDeclaredMovesForViewer — so the name and footprint are
+// already on every viewer's board and this card discloses nothing new. What is
+// NOT public is everything else about the move (its Roll, its Stamina Cost, its
+// Tags, its On Hit effects); the card carries `move_id` and the client fetches
+// the full card only for a viewer whose Perk entitles them to it. See
+// canSeeRevealedDetail in perkEngine.js and the Genius Observer Perk.
+//
+// Broadcast unfiltered, like round_summary and unlike the round_events beside
+// it: those are emitted to the pair's audience because a live cutscene is
+// scoped to the fight you are in, while a revealed move is simply public.
+//
+// Written as a `move_reveal` row — the kind GET /api/chat already hydrates and
+// the client already renders — so a live card and the same card after a reload
+// are the same card by construction. The emitted payload mirrors that
+// hydration field for field for the same reason.
+async function postMoveReveal(io, r) {
+  const result = await run(
+    `INSERT INTO chat_log (kind, character_id, move_id, dice_rolled) VALUES ('move_reveal', ?, ?, '[]')`,
+    [r.character_id, r.move_id]
+  );
+  io.emit('chat:move_reveal', {
+    id: Number(result.lastInsertRowid),
+    kind: 'move_reveal',
+    characterId: r.character_id,
+    characterName: r.character_name,
+    modifier: 0,
+    dice: [],
+    total: 0,
+    move: {
+      id: r.move_id,
+      name: r.move_name,
+      imageData: r.move_image_data,
+      imageMimeType: r.move_image_mime_type,
+      startupTics: r.startup_tics,
+      activeTics: r.active_tics,
+      recoveryTics: r.recovery_tics,
+      defenseFramePositions: JSON.parse(r.defense_frame_positions ?? '[]'),
+      // Stamina Cost and nothing further. The **description is deliberately
+      // not here** — it is the gated half, and this broadcast goes to every
+      // connected socket. Leaving it in was caught by
+      // scripts/playtest-reveal-cards.mjs comparing the live card against the
+      // same card refetched from GET /api/chat: the stored one already
+      // withheld it, and the two have to be the same card.
+      staminaCost: r.stamina_cost ?? 0,
+    },
+    timestamp: new Date().toISOString(),
+  });
+}
+
 async function postRoundSummary(io, { pairIndex, roundNumber, resolutionId }) {
   const rows = await all(
     `SELECT cp.side AS side, ch.name AS name
@@ -3173,7 +3390,9 @@ async function advancePairResolution(pairIndex, io) {
     const carried = await all(
       `SELECT dm.id, dm.character_id, dm.move_id, dm.placement_tic, dm.reveal_tic,
               dm.recovery_extension_tics, dm.appendage_choice,
-              m.name AS move_name, m.active_tics, m.recovery_tics, m.defense_frame_positions,
+              m.name AS move_name, m.startup_tics, m.active_tics, m.recovery_tics,
+              m.defense_frame_positions,
+              m.image_data AS move_image_data, m.image_mime_type AS move_image_mime_type,
               m.is_defensive, m.defense_kind, m.stamina_cost,
               ch.name AS character_name, ch.character_type,
               cp.side AS side

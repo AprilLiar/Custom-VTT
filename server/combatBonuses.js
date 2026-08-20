@@ -92,6 +92,34 @@ export async function getStanceMatchupBonus(characterId, opts = {}) {
   return (await stanceMatchupParts(characterId, opts)).total;
 }
 
+// **Stats the Stance matchup does not reach (decided, new).** The matchup
+// scores what two fighters' STYLES do to each other — it is a fact about an
+// exchange of blows. Two of the eight Stats are not part of that exchange:
+//
+//   - **Brain** is thinking. Reading the room, going first, keeping your head.
+//   - **Stamina** is your engine. It does not care what stance you took.
+//
+// A roll made of nothing but those two therefore gets no matchup, in either
+// direction — no stance score and no Combat Style, which are two halves of the
+// same term.
+export const MATCHUP_EXEMPT_SLOTS = ['Brain', 'Stamina'];
+
+// Does the matchup apply to a roll of these slots?
+//
+// **Only a roll made ENTIRELY of exempt Stats is exempt**, and that asymmetry
+// is the point: a move rolling Skull + Brain is still a punch, and letting it
+// shed the matchup by naming Brain would turn the exemption into a loophole
+// worth building moves around. An empty/unknown slot list (a Custom Roll, a
+// hand-thrown roll with nothing to name) keeps the matchup, which is the
+// behaviour every one of those paths already had.
+//
+// Pure, so the rule can be pinned without a socket.
+export function matchupAppliesToSlots(slotNames) {
+  const slots = (slotNames ?? []).filter(Boolean);
+  if (!slots.length) return true;
+  return !slots.every((slot) => MATCHUP_EXEMPT_SLOTS.includes(slot));
+}
+
 // The matchup split into the two things it is actually made of: what the two
 // STANCES are worth against each other (plus whatever the opponent's own move
 // contributes, which is theirs and not attributable to this fighter's choice),
@@ -293,7 +321,14 @@ export async function getCombatRollBonus(characterId, opts = {}) {
 // and so a Combat Style's contribution in particular is visibly its own thing
 // (decided, new). Zero-valued terms are dropped: a list that says
 // "Reasons to Fight +0" every round is noise, not transparency.
-export async function getCombatRollBonusBreakdown(characterId, { moveId = null, tic = null } = {}) {
+export async function getCombatRollBonusBreakdown(
+  characterId,
+  // `slotNames` is which Stats this roll is actually made of, and it exists for
+  // one rule: see matchupAppliesToSlots above. Every caller that knows its
+  // slots passes them; the ones that genuinely have none (a Custom Roll) omit
+  // it and are unaffected.
+  { moveId = null, tic = null, slotNames = null } = {}
+) {
   const [reasons, matchup, grapple, owed, perkTerms] = await Promise.all([
     getReasonsToFightBonus(characterId),
     stanceMatchupParts(characterId, { moveId, tic }),
@@ -306,20 +341,26 @@ export async function getCombatRollBonusBreakdown(characterId, { moveId = null, 
     // the resolver, so this is empty for the overwhelming majority of rolls.
     perkRollBonusTerms(characterId, { moveId, tic }),
   ]);
+  // Zeroed rather than skipped, so the shape below stays one expression and a
+  // future term cannot be added on the wrong side of an early return.
+  const matchupApplies = matchupAppliesToSlots(slotNames);
+  const stanceTerm = matchupApplies ? matchup.stance : 0;
+  const styleTerm = matchupApplies ? matchup.moveStyle : 0;
+  const matchupTotal = matchupApplies ? matchup.total : 0;
   const styleName =
     matchup.moveStyleId != null
       ? (await one('SELECT name FROM attributes WHERE id = ?', [matchup.moveStyleId]))?.name ?? null
       : null;
   const terms = [
     { key: 'reasons', label: 'Reasons to Fight', amount: reasons },
-    { key: 'stance', label: 'Stance matchup', amount: matchup.stance },
-    { key: 'combat_style', label: styleName ? `Combat Style: ${styleName}` : 'Combat Style', amount: matchup.moveStyle },
+    { key: 'stance', label: 'Stance matchup', amount: stanceTerm },
+    { key: 'combat_style', label: styleName ? `Combat Style: ${styleName}` : 'Combat Style', amount: styleTerm },
     { key: 'grapple', label: 'Held in a grapple', amount: grapple },
     { key: 'next_roll_penalty', label: 'Weakened', amount: -owed },
     ...perkTerms,
   ].filter((t) => t.amount !== 0);
   const perkTotal = perkTerms.reduce((sum, t) => sum + t.amount, 0);
-  return { total: reasons + matchup.total + grapple - owed + perkTotal, terms };
+  return { total: reasons + matchupTotal + grapple - owed + perkTotal, terms };
 }
 
 // The `opponent_next_roll_penalty` automation's debt: read it and spend it in

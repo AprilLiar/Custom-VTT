@@ -117,15 +117,34 @@ const COVERAGE_PHRASE = {
 
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 
-// "rolled 4 (+2 Interrupter) against 2 steps (+3 Hard to Interrupt)" — the
-// Interruption comparison, said out loud only where a Tag actually moved it.
-// Both amounts are 0 on almost every move, and a line that always announced
-// "+0 Interrupter" would bury the two exchanges where the Tag is the story.
+// "the punch 11 (9 +2 Interrupter) against their 13 (9 +3 held, +1 frame)" —
+// the Interruption contest, laid out as the two totals it actually is.
+//
+// Every situational term is named only when it is non-zero: both Tags are 0 on
+// almost every move, and a line that always announced "+0 Interrupter" would
+// bury the exchanges where the Tag is the story. A contest with no terms at all
+// collapses to the two bare rolls, which is the common case.
+//
+// A replay stored before this rule was corrected has no `attackerTotal` and is
+// rendered by the fallback below instead (§0 — a stored event is never
+// rewritten).
 function interruptTally(p) {
-  const roll = p.interrupter ? `${p.result} (+${p.interrupter} Interrupter)` : `${p.result}`;
-  const steps = plural(p.halfDamageSteps ?? 0, 'step', 'steps');
-  const bar = p.hardToInterrupt ? `${steps} (+${p.hardToInterrupt} Hard to Interrupt)` : steps;
-  return `rolled ${roll} against ${bar}`;
+  if (p.attackerTotal == null) {
+    // The old shape: a roll against a number of damage steps.
+    return `rolled ${p.result} against ${plural(p.halfDamageSteps ?? 0, 'step', 'steps')}`;
+  }
+  const side = (total, base, terms) => {
+    const named = terms.filter((t) => t.amount).map((t) => `+${t.amount} ${t.label}`);
+    return named.length ? `${total} (${base} ${named.join(', ')})` : `${total}`;
+  };
+  const attack = side(p.attackerTotal, p.attackerRoll ?? 0, [
+    { amount: p.interrupter, label: 'Interrupter' },
+  ]);
+  const held = side(p.defenderTotal, p.result ?? 0, [
+    { amount: p.hardToInterrupt, label: 'Hard to Interrupt' },
+    { amount: p.activeFrameBonus, label: 'frames elapsed' },
+  ]);
+  return `the attack ${attack} against their ${held}`;
 }
 
 // The log used to be a label plus a terse fragment, with the actual meaning

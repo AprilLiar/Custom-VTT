@@ -101,6 +101,11 @@ export const AUTOMATION_TYPES = [
   // it does — negated at the one point it executes, never stored negated, so
   // the two can't drift into meaning different things.
   'self_stat_increase',
+  // The same upward step with a ceiling on it: **recovery can never take a
+  // Stat past its own locked baseline**, which is what makes it healing rather
+  // than improvement. A Stat already at or above where it started has nothing
+  // to recover.
+  'self_stat_recover',
   'opponent_next_roll_penalty',
 ];
 
@@ -120,7 +125,7 @@ export const AUTOMATION_STAT_SLOTS = [
 
 // Types that name a Stat and therefore need a `slot`. `self_stat_increase`
 // belongs here for the same reason the other two do — it steps a named die.
-const STAT_STEP_TYPES = new Set(['self_stat_step', 'opponent_stat_step', 'self_stat_increase']);
+const STAT_STEP_TYPES = new Set(['self_stat_step', 'opponent_stat_step', 'self_stat_increase', 'self_stat_recover']);
 
 // Types whose amount is signed. `self_stat_increase` is deliberately NOT one:
 // its direction is in its name, so a negative would be a second way of saying

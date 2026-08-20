@@ -29,6 +29,18 @@ export const FEINT_TAG = 'Feint';
 // stacking.
 export const INTERRUPTER_TAG = 'Interrupter';
 export const HARD_TO_INTERRUPT_TAG = 'Hard to Interrupt';
+// **A pair of Tags that only mean anything about each other.** Neither does a
+// thing on its own: `Movement` is a label saying this move takes you somewhere,
+// and `Movement Punisher` is a move built to catch someone doing that. The
+// mechanic lives in the meeting of the two.
+export const MOVEMENT_TAG = 'Movement';
+export const MOVEMENT_PUNISHER_TAG = 'Movement Punisher';
+
+// How much Recovery a punished Movement move costs its owner. A flat 3 rather
+// than a number in the Tag's name: the two Interruption Tags are parameterised
+// because their whole point is scaling a contest, and this one is a single
+// consequence the table can price once.
+export const MOVEMENT_PUNISH_RECOVERY = 3;
 
 // One entry per Tag that carries mechanics. See resolveBlockStamina and
 // resolveNoDamageOutcome in combatDamage.js for the arithmetic behind each,
@@ -71,6 +83,17 @@ export const TAG_HOOKS = {
     // counts its resistance roll this much higher, for that comparison only.
     parameterised: true,
     interruptSide: 'defender',
+  },
+  [MOVEMENT_TAG]: {
+    // Pure annotation on its own — nothing reads it except the Tag below.
+    // It is a **liability**, which is unusual for a Tag: putting it on a move
+    // is telling the table what that move is vulnerable to.
+    describesMovement: true,
+  },
+  [MOVEMENT_PUNISHER_TAG]: {
+    // Fires only against a Movement move, and only on a real connection.
+    punishesTag: MOVEMENT_TAG,
+    imposesRecovery: MOVEMENT_PUNISH_RECOVERY,
   },
   [FEINT_TAG]: {
     // A Feint shows its own Tell exactly like any other move — that is the
@@ -124,33 +147,59 @@ export function tagAmount(tagNames, tagName) {
 export const interrupterAmount = (tagNames) => tagAmount(tagNames, INTERRUPTER_TAG);
 export const hardToInterruptAmount = (tagNames) => tagAmount(tagNames, HARD_TO_INTERRUPT_TAG);
 
-// The Interruption comparison, with both Tags folded in (decided, new).
+// The Interruption contest, with both Tags folded in.
 //
-// The base rule is unchanged, and it is worth stating precisely because it is
-// easy to read backwards: the **Interruption itself** is what rolls, and it
-// rolls on the caught move's own Roll — the shock is measured on the very move
-// it caught. Reaching the damage just taken means that move comes apart. A low
-// roll means the fighter held it together. (checkInterrupt in
-// roundResolution.js is the caller; `game_rules.md` used to describe this
-// outcome inverted, and was corrected in the same change that added these
-// Tags.)
+// **This is a contest of two attack rolls (decided, corrected).** An earlier
+// version compared the caught fighter's roll against the DAMAGE the blow dealt,
+// which was a misreading — the damage never enters it. What is actually being
+// asked is whether the punch beat the move it caught:
 //
-// **Interrupter (x) adds to the roll; Hard to Interrupt (x) raises the bar** —
-// each Tag moves its own side of that one comparison and nothing else. Neither
-// touches the attack's real roll or its real damage: the blow is only
-// *considered* x more disruptive, and the move caught in Startup only
-// considered x better braced.
+//   attacker's attack roll  + Interrupter (x)
+//        vs
+//   the caught move's own attack roll + Hard to Interrupt (x)
+//                                     + 1 per elapsed Active frame
 //
-// Pure, so the arithmetic can be pinned without a socket.
+// Each Tag still moves only its own side of that one comparison, and neither
+// touches the roll either fighter actually made — a real roll goes out at its
+// real value, and the Tag is what that roll is *considered* to be worth here.
+//
+// **The caught fighter wins ties.** "Failing means the move is cancelled", so a
+// draw is not a failure: the attack has to genuinely beat them to break the
+// move up.
+//
+// Pure, so the arithmetic can be pinned without a socket — and worth pinning
+// twice over, since it has already been got wrong once.
 export function resolveInterruptContest({
-  interruptRoll = 0,
-  halfDamageSteps = 0,
+  attackerRoll = 0,
   interrupter = 0,
+  defenderRoll = 0,
   hardToInterrupt = 0,
+  // +1 per Active frame of the attack that has already elapsed, including the
+  // one landing now (computeInterruptBonus in combatTiming.js). It belongs to
+  // the CAUGHT fighter: the longer the attack has been out, the more of it they
+  // have had to read.
+  activeFrameBonus = 0,
 } = {}) {
-  const effectiveRoll = interruptRoll + interrupter;
-  const threshold = halfDamageSteps + hardToInterrupt;
-  return { effectiveRoll, threshold, interrupted: effectiveRoll >= threshold };
+  const attackerTotal = attackerRoll + interrupter;
+  const defenderTotal = defenderRoll + hardToInterrupt + activeFrameBonus;
+  return { attackerTotal, defenderTotal, interrupted: attackerTotal > defenderTotal };
+}
+
+// **Movement Punisher (decided, new).** A move built to catch someone moving:
+// when it connects with a real blow against somebody whose move carries
+// **Movement**, they trip — narratively, and mechanically as Recovery imposed
+// on them exactly the way an Add Recovery effect does it.
+//
+// All three conditions are required, and the middle one is the interesting one:
+// **"connects" means at least half a point of damage actually landed.** A miss
+// does not trip anybody, and neither does a blow that a guard reduced to
+// nothing — you have to have genuinely caught them mid-stride.
+//
+// Pure, so the three-way condition can be pinned without a socket.
+export function movementPunisherApplies({ punisherTagNames, targetTagNames, damageSteps = 0 } = {}) {
+  if (!hasTagNamed(punisherTagNames, MOVEMENT_PUNISHER_TAG)) return false;
+  if (!hasTagNamed(targetTagNames, MOVEMENT_TAG)) return false;
+  return damageSteps > 0;
 }
 
 export const carriesBlockTag = (tagNames) => hasTagNamed(tagNames, BLOCK_TAG);
