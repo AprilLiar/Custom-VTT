@@ -1150,7 +1150,7 @@ test('a weak attack is still blockable: Insignificant Damage no longer skips def
   assert.ok(!triggers.includes('miss'));
 });
 
-test('a stat-step automation steps the named Stat and shows it as damage', async () => {
+test('a stat-step automation steps the named Stat and reports it as a stat step', async () => {
   const pairIndex = 302;
   const attacker = await createCharacter('SS Attacker');
   const defender = await createCharacter('SS Defender');
@@ -1182,14 +1182,59 @@ test('a stat-step automation steps the named Stat and shows it as damage', async
   );
 
   const events = await all('SELECT type, payload FROM round_events WHERE pair_index = ? ORDER BY seq', [pairIndex]);
-  // Reported through damage_applied so the cutscene animates it on the
-  // fighter card exactly like ordinary damage, tagged with its source.
-  const fromAutomation = events
+  // **Its own event, not damage_applied (revised).** A step is signed — the
+  // same automation with a negative amount steps the Stat back UP — and
+  // borrowing the damage event made the log narrate that as "−1 steps of
+  // damage". `stat_stepped` carries the direction and the before/after so the
+  // cutscene can say what happened and still move the pip.
+  const steps = events
+    .filter((e) => e.type === 'stat_stepped')
+    .map((e) => JSON.parse(e.payload));
+  assert.equal(steps.length, 1);
+  assert.equal(steps[0].slotName, 'Left Hand');
+  assert.equal(steps[0].steps, 2);
+  assert.equal(steps[0].characterId, defender);
+  assert.equal(steps[0].sizeBefore, before.current_size);
+  assert.equal(steps[0].sizeAfter, after.current_size);
+  // And it no longer masquerades as an anonymous hit.
+  const asDamage = events
     .filter((e) => e.type === 'damage_applied')
     .map((e) => JSON.parse(e.payload))
     .filter((p) => p.source === 'automation');
-  assert.equal(fromAutomation.length, 1);
-  assert.equal(fromAutomation[0].slotName, 'Left Hand');
+  assert.equal(asDamage.length, 0);
+});
+
+test('a stat-step automation with a NEGATIVE amount steps the Stat back up', async () => {
+  // The direction that used to print as negative damage. Same machinery, and
+  // the event has to carry the sign rather than a separate flag that could
+  // disagree with it.
+  const pairIndex = 303;
+  const attacker = await createCharacter('SS Up Attacker');
+  const defender = await createCharacter('SS Up Defender');
+  const jab = await createMove({
+    name: 'SS Restore',
+    startupTics: 1,
+    activeTics: 2,
+    recoveryTics: 1,
+    rollSlots: ['Skull'],
+    rollModifier: 20,
+    interactions: [
+      { trigger: 'hit', text: '', automations: [{ type: 'self_stat_step', amount: -1, slot: 'Left Hand' }] },
+    ],
+  });
+  await seatPair(pairIndex, attacker, defender);
+  await startPairDeclaration(mockIo, pairIndex);
+  await declareMove({ characterId: attacker, moveId: jab, placementTic: 0, startupTics: 1 });
+  await resolvePair(pairIndex);
+
+  const events = await all('SELECT type, payload FROM round_events WHERE pair_index = ? ORDER BY seq', [pairIndex]);
+  const steps = events
+    .filter((e) => e.type === 'stat_stepped')
+    .map((e) => JSON.parse(e.payload));
+  assert.equal(steps.length, 1);
+  assert.equal(steps[0].steps, -1, 'the sign survives onto the event');
+  assert.equal(steps[0].characterId, attacker, 'self_stat_step lands on its user');
+  assert.ok(steps[0].sizeAfter >= steps[0].sizeBefore, 'the die did not go down');
 });
 
 // ---------- Block Stamina (the Block Tag's automation) ----------

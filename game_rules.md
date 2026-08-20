@@ -94,7 +94,10 @@ real. Two halves make a whole, and nothing else does.
 ### Locking and reverting
 
 **Locking in Stats** records your current dice as your *base* values.
-**Reverting** restores you to them. Between fights, reverting is how you heal.
+**Reverting** restores you to them — including clearing any **Half-Damage**
+marker, since a base value is a whole one and half a step is damage you have
+already taken. Between fights, reverting is how you heal, and it heals all of
+it.
 
 **Injuries** apply a structured penalty to the locked base rather than to your
 live dice, so a lasting injury survives a revert. That is the point of them.
@@ -268,8 +271,8 @@ What it changes is the move you declare **immediately after** it. That one
 goes onto the timeline **hidden**:
 
 - It shows **no Tell**. Nobody else sees a card for it at all.
-- It shows **no wind-up**. The grey marker that normally warns everyone which
-  Tic an attack begins on does not appear.
+- It shows **no wind-up**. The grey marking that normally shows everyone the
+  Tics an attack is winding up on does not appear.
 - It is otherwise **a completely ordinary declaration**. You pay its Stamina
   when you finish declaring, it occupies its Tics, and it resolves on its own
   frames exactly as it would have.
@@ -285,6 +288,26 @@ same breath as the lie.
 > A Feint is worth what your opponent believed. Against someone who never
 > reads Tells it does nothing at all, and it still costs you a move's worth
 > of frames to throw.
+
+### The Interruption Tags
+
+Two Tags carry a **number in their own name**, written the way a table would
+write it on a card: **Interrupter (2)**, **Hard to Interrupt (3)**. They are
+the only Tags that do this, and both of them move exactly one comparison — the
+Interruption check — and nothing else.
+
+- **Interrupter (x)** goes on an *attack*. When that attack lands on somebody
+  still winding up, the Interruption is counted **x higher**.
+- **Hard to Interrupt (x)** goes on a move that might get *caught* winding up.
+  It raises the bar an Interruption has to clear against that move by **x**.
+
+Neither one touches a real roll or a real amount of damage. The attack does
+not hit harder; it is only *considered* more disruptive, for that one
+question. See **Interruption** under Resolution for the check itself.
+
+If you write just **Interrupter**, with no number, it counts as 1. Several of
+them on one move add up, so three different Tags worth 1, 2 and 3 sit on a
+move as a 6.
 
 ### Grappling
 
@@ -660,11 +683,48 @@ Taking a hit while you are still inside your own move's **Startup** can
 disrupt it.
 
 The engine walks the attacker's Active window for the first Tic at which the
-target is still in Startup. The interrupted character rolls their own Startup
-move's Roll — or **Body**, if that move has none — at **+1 per elapsed Active
-Tic**. Failing means the move is cancelled and half its Stamina Cost refunded.
+target is still in Startup. The Interruption is then rolled **on the caught
+move's own Roll** — or **Body**, if that move has none — at **+1 per elapsed
+Active Tic**: the shock is measured on the very move it caught. Reaching the
+damage that just landed means that move **comes apart** — it is cancelled and
+half its Stamina Cost refunded. Falling short means the fighter held it
+together and it comes out as declared.
 
-Getting caught winding up is how a fight turns over in one exchange.
+**Interrupter (x)** on the attack adds x to that roll; **Hard to Interrupt (x)**
+on the caught move adds x to the bar it has to reach. See **The Interruption
+Tags** under Moves.
+
+Getting caught winding up is how a fight turns over in one exchange — which is
+why a wind-up is not a secret. Every Tic an attack spends in **Startup** is
+marked on the Tic Counter for everyone: a grey square where it begins and a
+fainter one for each Tic it is still winding up on. A three-Tic wind-up
+therefore *looks* like a three-Tic wind-up, and you can see the window you are
+aiming an Interruption into rather than guessing at it.
+
+What the marking never tells you is **what** the move is, when its Active
+frames land, or how long it recovers for. That is what the Tell is for, and
+what reading one is worth.
+
+### What a move does besides damage
+
+A move can carry effects that fire on a specific outcome — **On Hit**, **On
+Block**, **On Miss**, **On Successful Defense**, **On Failed Defense**, **On
+Successful Grapple**. Each one is a line of description plus any number of
+mechanical effects, and they all resolve the instant that outcome is decided:
+
+- **Recovery on you or on them** — see *Recovery somebody else puts on you*
+  under Combat Timing. It lands on the clock immediately.
+- **Stamina off you or off them**, on top of whatever the move already cost.
+- **Step a Stat down** — yours or theirs. Half-Damage steps, exactly as damage
+  works, but they land wherever the move says rather than where the attack
+  was aimed.
+- **Step your own Stat up** — the same thing running backwards, a move that
+  puts something of yours back together as it lands.
+- **Weaken their next roll** — a flat penalty on the very next roll that
+  fighter makes, **of any kind**. It is a debt, not a condition: it is paid by
+  that one roll and then it is gone. Nothing else about them changes, and it
+  does not expire at the end of a round — an opponent who never rolls again
+  this round carries it into the next one.
 
 ## Stamina
 

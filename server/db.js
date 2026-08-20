@@ -635,6 +635,18 @@ export async function initDb() {
   // already implied by the rest of the move (a Requirement, or being named by
   // some grapple's cross), and storing it twice would let the two disagree.
   await ensureColumn('moves', 'is_secondary', 'INTEGER NOT NULL DEFAULT 0');
+  // The `opponent_next_roll_penalty` automation's debt (decided, new): points
+  // owed on this character's NEXT roll, of any kind, after which it is spent.
+  //
+  // **On the character, not the seat.** Every other combat modifier is a
+  // standing fact re-read at each roll (see combatBonuses.js) and lives on
+  // combat_participants, where it evaporates when the fight ends. This one is
+  // a debt someone already incurred, so it has to survive the fight ending and
+  // must not be sheddable by being re-seated.
+  //
+  // Accumulates: two moves can each leave a mark before the victim rolls, and
+  // the next roll pays both.
+  await ensureColumn('characters', 'pending_roll_penalty', 'INTEGER NOT NULL DEFAULT 0');
   // Custom Compendium ordering (decided, new) — the position a GM dragged
   // this move to. Rows created before this column read back as 0, and every
   // read path orders by (sort_order, id), so an un-reordered library keeps

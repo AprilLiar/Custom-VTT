@@ -1821,9 +1821,17 @@ io.on('connection', (socket) => {
         penaltyBySlot.get(die.slot_name) ?? 0
       ),
     }));
+    // **half_damage is cleared too (bugfix).** It is not a size, it is *half a
+    // step of damage already taken and waiting for its other half* (see
+    // applyHalfDamage in gameLogic.js) — so a Stat put back to its base while
+    // still flagged is a Stat that reads as undamaged and takes its next hit
+    // twice as hard. Reported as "revert stats to base does not heal half
+    // damage". The locked baseline has no half_damage of its own by
+    // construction: a base value is a whole value, so reverting always clears
+    // it rather than restoring some remembered flag.
     await Promise.all(
       reverted.map(({ die, next }) =>
-        run('UPDATE dice SET current_size = ?, bonus = ?, status = ? WHERE id = ?', [
+        run('UPDATE dice SET current_size = ?, bonus = ?, status = ?, half_damage = 0 WHERE id = ?', [
           next.size,
           next.bonus,
           next.status,
@@ -1834,7 +1842,13 @@ io.on('connection', (socket) => {
     for (const { die, next } of reverted) {
       io.emit(
         'die:updated',
-        diePayload({ ...die, current_size: next.size, bonus: next.bonus, status: next.status })
+        diePayload({
+          ...die,
+          current_size: next.size,
+          bonus: next.bonus,
+          status: next.status,
+          half_damage: 0,
+        })
       );
     }
   });

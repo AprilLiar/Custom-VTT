@@ -67,6 +67,8 @@ const EVENT_LABEL = {
   dodge_resolved: 'Dodge',
   interrupt_resolved: 'Interrupt',
   damage_applied: 'Damage',
+  stat_stepped: 'Stat',
+  next_roll_penalty: 'Weakened',
   move_conflict_prompt: 'Conflict?',
   move_conflict_resolved: 'Conflict',
   automation_fired: 'Automation',
@@ -77,6 +79,29 @@ const EVENT_LABEL = {
 // Events that represent the round stopping for a human decision — rendered
 // with the paused treatment, and they're where an un-skippable wait lands.
 const PAUSE_EVENTS = new Set(['dodge_prompt', 'move_conflict_prompt', 'grapple_prompt']);
+
+// The before/after behind a step, for the hover detail. Sizes are carried on
+// the event precisely so a replay watched later shows the step that happened
+// rather than the die's current size (§0).
+function statStepDetail(p) {
+  const from = p.sizeBefore != null ? `d${p.sizeBefore}${p.bonusBefore ? `+${p.bonusBefore}` : ''}` : '?';
+  const to = p.sizeAfter != null ? `d${p.sizeAfter}${p.bonusAfter ? `+${p.bonusAfter}` : ''}` : '?';
+  return `${p.slotName ?? 'Stat'}: ${from} → ${to}`;
+}
+
+// A Stat moving because a move's automation said so — in either direction.
+// Down is damage taken; **up is the Stat being restored**, which the log used
+// to render as a negative quantity of damage. Phrased as movement rather than
+// as a blow, because no attack landed: an interaction fired.
+function statStepSentence(p, who) {
+  const steps = p.steps ?? 0;
+  const slot = p.slotName ?? 'a Stat';
+  const on = who ? ` on ${who}` : '';
+  if (steps === 0) return `${slot}${on} is unchanged.`;
+  return steps > 0
+    ? `${slot}${on} steps down ${plural(steps, 'step', 'steps')}.`
+    : `${slot}${on} steps back up ${plural(-steps, 'step', 'steps')}.`;
+}
 
 // How each coverage classification reads in a sentence. `too-short` is
 // deliberately NOT phrased as a failure: catching an attack's opening frame
@@ -91,6 +116,17 @@ const COVERAGE_PHRASE = {
 };
 
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+
+// "rolled 4 (+2 Interrupter) against 2 steps (+3 Hard to Interrupt)" — the
+// Interruption comparison, said out loud only where a Tag actually moved it.
+// Both amounts are 0 on almost every move, and a line that always announced
+// "+0 Interrupter" would bury the two exchanges where the Tag is the story.
+function interruptTally(p) {
+  const roll = p.interrupter ? `${p.result} (+${p.interrupter} Interrupter)` : `${p.result}`;
+  const steps = plural(p.halfDamageSteps ?? 0, 'step', 'steps');
+  const bar = p.hardToInterrupt ? `${steps} (+${p.hardToInterrupt} Hard to Interrupt)` : steps;
+  return `rolled ${roll} against ${bar}`;
+}
 
 // The log used to be a label plus a terse fragment, with the actual meaning
 // only reachable by hovering for a tooltip — unreadable at the table, where
@@ -215,13 +251,21 @@ function eventNarration(ev, startTic) {
         : 'The GM called the Dodge Failed.';
     case 'interrupt_resolved':
       return p.interrupted
-        ? `${who}'s move is Interrupted mid-Startup — rolled ${p.result} against ${plural(p.halfDamageSteps ?? 0, 'step', 'steps')}, and it never comes out.`
-        : `${who} holds through the hit — rolled ${p.result} against ${plural(p.halfDamageSteps ?? 0, 'step', 'steps')}, their move survives.`;
+        ? `${who}'s move is Interrupted mid-Startup — ${interruptTally(p)}, and it never comes out.`
+        : `${who} holds through the hit — ${interruptTally(p)}, their move survives.`;
     case 'damage_applied':
       if (p.result === 'no-eligible-target') return 'Nothing left to hit — every allowed Stat is out.';
+      // A stored replay from before `stat_stepped` existed has its automation
+      // steps in here (source: 'automation'), including negative ones. Read
+      // them as the steps they are rather than as "−1 steps of damage" — a
+      // stored event is never rewritten (§0), so the renderer is where an old
+      // log gets to make sense.
+      if (p.source === 'automation') return statStepSentence(p, p.targetCharacterName);
       return `${plural(p.steps ?? 0, 'step', 'steps')} of damage to ${p.slotName ?? 'an unknown Stat'}${
         p.targetCharacterName ? ` on ${p.targetCharacterName}` : ''
       }.`;
+    case 'stat_stepped':
+      return statStepSentence(p, p.characterName);
     case 'move_conflict_prompt':
       return "A Block's extended Recovery ran into an already-declared move — waiting on Forfeit or Postpone.";
     case 'move_conflict_resolved': {
@@ -248,6 +292,15 @@ function eventNarration(ev, startTic) {
       const head = `${p.moveName ?? 'A move'} — ${p.triggerLabel ?? p.trigger ?? 'effect'}`;
       const body = [p.text, (p.effects ?? []).join(', ')].filter(Boolean).join(' — ');
       return body ? `${head}: ${body}` : `${head} fired.`;
+    }
+    case 'next_roll_penalty': {
+      // A debt, not a standing modifier — it is spent by the very next roll
+      // that fighter makes and is then gone, so the line says "next roll"
+      // rather than naming a duration. `pending` is the running total when
+      // several have stacked up unpaid.
+      const owed = p.pending ?? p.amount ?? 0;
+      const tail = owed > (p.amount ?? 0) ? ` (${owed} owed in all)` : '';
+      return `${who} is rattled — −${p.amount ?? 0} on their next roll, whatever it turns out to be${tail}.`;
     }
     case 'stamina_changed':
       return `${who} ${p.delta < 0 ? 'spends' : 'recovers'} ${Math.abs(p.delta ?? 0)} Stamina — now ${p.currentStamina}/${p.maxStamina}.`;
@@ -367,7 +420,15 @@ function eventDetail(ev, startTic) {
       lines.push('Not a Miss either way — a Miss is an attack evaded by a Dodge');
       break;
     case 'damage_applied':
-      if (p.result !== 'no-eligible-target') lines.push(`${(p.steps ?? 0) * 0.5} damage`);
+      if (p.result === 'no-eligible-target') break;
+      if (p.source === 'automation') {
+        lines.push(statStepDetail(p));
+        break;
+      }
+      lines.push(`${(p.steps ?? 0) * 0.5} damage`);
+      break;
+    case 'stat_stepped':
+      lines.push(statStepDetail(p));
       break;
     default:
       break;
@@ -444,6 +505,24 @@ function beatEffects(events, visibleCount) {
       out.burst = {
         kind: heavy ? 'heavy' : 'hit',
         label: `${steps * 0.5}`,
+        sub: p.slotName ?? '',
+        seq: ev.seq,
+      };
+      break;
+    }
+    case 'stat_stepped': {
+      // Deliberately NOT the hit treatment. Nothing struck anybody — a move's
+      // interaction moved a Stat, and half of those move it upward. The card
+      // reacts so the change is visible, and the burst names the Stat and the
+      // direction instead of quoting a damage figure.
+      const steps = p.steps ?? 0;
+      if (steps === 0) break;
+      // Only a downward step shakes the card. A restore is announced by the
+      // burst and by the pip's own value change — there is no blow to land.
+      if (steps > 0 && p.characterId != null) out.byCharacterId[p.characterId] = 'hit';
+      out.burst = {
+        kind: steps > 0 ? 'hit' : 'fizzle',
+        label: `${steps > 0 ? '−' : '+'}${Math.abs(steps)}`,
         sub: p.slotName ?? '',
         seq: ev.seq,
       };
@@ -571,6 +650,24 @@ function fightersFrom(events, upTo) {
       if (p.characterId != null && p.currentStamina != null) stamina.set(p.characterId, p.currentStamina);
       continue;
     }
+    // A Stat moved because an automation said so. It lands on the cards
+    // exactly like damage does — the pip has to show the new die either way —
+    // but only a DOWNWARD step counts as a `lastHit`, which is what drives the
+    // red flash. Flashing a Stat that was just restored would read as being
+    // hurt by being healed.
+    if (ev.type === 'stat_stepped') {
+      const p = ev.payload ?? {};
+      if (p.slotName == null || p.characterId == null) continue;
+      damage.set(`${p.characterId}:${p.slotName}`, {
+        size: p.sizeAfter,
+        bonus: p.bonusAfter,
+        status: p.statusAfter,
+      });
+      if ((p.steps ?? 0) > 0) {
+        lastHit = { characterId: p.characterId, slotName: p.slotName, seq: ev.seq, steps: p.steps };
+      }
+      continue;
+    }
     if (ev.type !== 'damage_applied') continue;
     const p = ev.payload ?? {};
     if (p.slotName == null || p.targetCharacterId == null) continue;
@@ -579,7 +676,11 @@ function fightersFrom(events, upTo) {
       bonus: p.bonusAfter,
       status: p.statusAfter,
     });
-    lastHit = { characterId: p.targetCharacterId, slotName: p.slotName, seq: ev.seq, steps: p.steps ?? 0 };
+    // Same rule for a stored replay's automation steps, which predate
+    // `stat_stepped` and can also be negative.
+    if (!(p.source === 'automation' && (p.steps ?? 0) < 0)) {
+      lastHit = { characterId: p.targetCharacterId, slotName: p.slotName, seq: ev.seq, steps: p.steps ?? 0 };
+    }
   }
   if (!roster) return { fighters: [], lastHit: null };
   const fighters = roster.map((f) => ({

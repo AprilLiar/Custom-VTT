@@ -27,8 +27,28 @@
 //     move is a pure guard. Also intended — seeing an opponent turtle is
 //     fair play, same as seeing them wind up.
 
-// Which declared attacks begin on each absolute Tic of one pair's current
-// round window, as `Map<absoluteTic, [{ declaredMoveId, characterId, characterName }]>`.
+// Which declared attacks are **winding up** on each absolute Tic of one pair's
+// current round window, as
+// `Map<absoluteTic, [{ declaredMoveId, characterId, characterName, isStart }]>`.
+//
+// **The whole Startup run is marked, not just its first Tic (decided,
+// revised).** It used to mark `placementTic` alone, which made a 3-2-1 move
+// and a 1-1-0 move look identical on the strip — one grey square each — and
+// left no visible window to aim an Interrupt into. Reported from play as "I
+// could not interrupt it, because it did not exist yet": the engine had the
+// wind-up occupying three Tics and the strip drew one. The run is public
+// board state in exactly the way the single square already was, and it is the
+// thing that makes the Interrupt rule playable rather than a lucky guess.
+//
+// **Identity, Active and Recovery stay secret.** This says "someone is
+// committed here, and for this long" — not what the move is or when it lands.
+// The footprint past `revealTic` is deliberately not marked: that is the half
+// a Tell is supposed to make you guess at.
+//
+// `isStart` is true only on `placementTic`. The Tell↔Tic connector anchors
+// there and nowhere else — registering the same declared move on every square
+// of its run would leave the line pointing at whichever square rendered last,
+// which is the end of the wind-up rather than its beginning.
 //
 // Scoped to a single pair (a different fight's timing is none of this
 // strip's business) and to the round window actually on screen, since a
@@ -50,14 +70,21 @@ export function attackStartsByTic({
     if (pairIndexByChar.get(dm.characterId) !== pairIndex) continue;
     if (dm.publiclyRevealed) continue;
     if (!dm.telegraphsAttack) continue;
-    if (dm.placementTic < roundStartTic || dm.placementTic >= windowEnd) continue;
-    const at = marks.get(dm.placementTic) ?? [];
-    at.push({
-      declaredMoveId: dm.id,
-      characterId: dm.characterId,
-      characterName: nameOf?.(dm.characterId) ?? null,
-    });
-    marks.set(dm.placementTic, at);
+    // Half-open [placementTic, revealTic) — the Startup run. A 0-Startup move
+    // has revealTic === placementTic and so marks nothing at all, which is
+    // right: it never winds up, it is simply out.
+    const from = Math.max(dm.placementTic, roundStartTic);
+    const until = Math.min(dm.revealTic, windowEnd);
+    for (let tic = from; tic < until; tic++) {
+      const at = marks.get(tic) ?? [];
+      at.push({
+        declaredMoveId: dm.id,
+        characterId: dm.characterId,
+        characterName: nameOf?.(dm.characterId) ?? null,
+        isStart: tic === dm.placementTic,
+      });
+      marks.set(tic, at);
+    }
   }
   return marks;
 }

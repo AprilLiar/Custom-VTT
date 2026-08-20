@@ -85,6 +85,9 @@ export function sanitizeDefenseKind(value, isDefensive, hasDefenseFrames) {
 // Stamina or their timing — the same stepping damage already uses, so a
 // move can say "and it wrecks their Right Hand" without a human applying
 // it. A negative amount steps the Stat back UP, which is how a move heals.
+//   self_stat_increase:         step one of your own Stats back UP by `amount`
+//   opponent_next_roll_penalty: the opponent's NEXT roll, of any kind, is
+//                               reduced by `amount` — then the penalty is spent
 export const AUTOMATION_TYPES = [
   'self_recovery',
   'opponent_recovery',
@@ -92,6 +95,13 @@ export const AUTOMATION_TYPES = [
   'opponent_stamina',
   'self_stat_step',
   'opponent_stat_step',
+  // Restoring a Stat was always expressible as `self_stat_step` with a
+  // negative amount, and nobody was ever going to find that. This is the same
+  // mechanic with the sign built into the name, so the authoring reads as what
+  // it does — negated at the one point it executes, never stored negated, so
+  // the two can't drift into meaning different things.
+  'self_stat_increase',
+  'opponent_next_roll_penalty',
 ];
 
 // Which Stats a stat-step automation may name. Deliberately the concrete
@@ -108,7 +118,14 @@ export const AUTOMATION_STAT_SLOTS = [
   'Right Leg',
 ];
 
-const STAT_STEP_TYPES = new Set(['self_stat_step', 'opponent_stat_step']);
+// Types that name a Stat and therefore need a `slot`. `self_stat_increase`
+// belongs here for the same reason the other two do — it steps a named die.
+const STAT_STEP_TYPES = new Set(['self_stat_step', 'opponent_stat_step', 'self_stat_increase']);
+
+// Types whose amount is signed. `self_stat_increase` is deliberately NOT one:
+// its direction is in its name, so a negative would be a second way of saying
+// the opposite thing.
+const SIGNED_TYPES = new Set(['self_recovery', 'self_stat_step', 'opponent_stat_step']);
 
 const AMOUNT_LIMIT = 20;
 
@@ -123,7 +140,7 @@ export function sanitizeAutomations(list) {
     if (amount === 0) continue;
     // self_recovery and the stat steps are signed (a negative stat step is
     // a heal); the rest are positive.
-    if (entry.type !== 'self_recovery' && !STAT_STEP_TYPES.has(entry.type)) amount = Math.abs(amount);
+    if (!SIGNED_TYPES.has(entry.type)) amount = Math.abs(amount);
     if (STAT_STEP_TYPES.has(entry.type)) {
       // A stat step without a valid Stat has nothing to act on, so it is
       // dropped rather than stored as a row that can never fire.
