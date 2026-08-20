@@ -558,8 +558,11 @@ test('Interruption: taking a Hit while still in Startup disrupts the target\'s o
   const pairIndex = 104;
   const attacker = await createCharacter('Interrupt Attacker');
   const defender = await createCharacter('Interrupt Defender');
+  // **The contest is two attack rolls**, so the fixture has to give the punch a
+  // genuine edge rather than merely landing damage. Math.random is pinned to
+  // its max for this file, so a d12 Skull rolls 12 and the wind-up's default d8
+  // Body rolls 8 — 12 beats 8 plus its one elapsed-Active-frame point.
   await setDieSize(attacker, 'Skull', 12);
-  await setDieSize(defender, 'Body', 12);
   const punch = await createMove({ name: 'IR Punch', startupTics: 1, activeTics: 2, recoveryTics: 1, rollSlots: ['Skull'] });
   // No Defense Frames at all -> plain Hit, but placed with a long Startup so
   // it's still mid-Startup when the attacker's Active window (Tics 1-2) hits.
@@ -571,8 +574,7 @@ test('Interruption: taking a Hit while still in Startup disrupts the target\'s o
   const startupDMId = await declareMove({ characterId: defender, moveId: slowWindup, placementTic: 0, startupTics: 3 });
   await resolvePair(pairIndex);
 
-  // Attacker's total 12 -> halfDamageSteps 2. Defender's own interrupt roll:
-  // Body d12 (max-forced) + computeInterruptBonus (>=1) >= 2 -> succeeds.
+  // 12 against 8 + 1 -> the punch beats the wind-up and breaks it up.
   const stillDeclared = await one('SELECT id FROM declared_moves WHERE id = ?', [startupDMId]);
   assert.equal(stillDeclared, null); // Interrupted -> deleted, reverted to Undeclared
 
@@ -621,6 +623,47 @@ test('Interruption: taking a Hit while still in Startup disrupts the target\'s o
 // ---------------------------------------------------------------------
 // Phase D — real Dodge/move-conflict pausing and resumability.
 // ---------------------------------------------------------------------
+
+test('Interruption: a wind-up that wins the contest comes out anyway', async () => {
+  // The other half of the corrected rule. Same shape as the test above, with
+  // the dice the other way round: the caught move rolls higher, so the punch
+  // lands its damage and the wind-up still happens.
+  const pairIndex = 105;
+  const attacker = await createCharacter('Held Attacker');
+  const defender = await createCharacter('Held Defender');
+  await setDieSize(defender, 'Body', 12);   // 12, plus a point per elapsed frame
+  await setDieSize(attacker, 'Skull', 6);   // 6
+  const punch = await createMove({ name: 'HL Punch', startupTics: 1, activeTics: 2, recoveryTics: 1, rollSlots: ['Skull'] });
+  const slowWindup = await createMove({ name: 'HL Windup', startupTics: 3, activeTics: 1, recoveryTics: 1, rollSlots: ['Body'] });
+
+  await seatPair(pairIndex, attacker, defender);
+  await startPairDeclaration(mockIo, pairIndex);
+  await declareMove({ characterId: attacker, moveId: punch, placementTic: 0, startupTics: 1 });
+  const startupDMId = await declareMove({ characterId: defender, moveId: slowWindup, placementTic: 0, startupTics: 3 });
+  await resolvePair(pairIndex);
+
+  const stillDeclared = await one('SELECT id FROM declared_moves WHERE id = ?', [startupDMId]);
+  assert.ok(stillDeclared, 'the wind-up beat the punch, so it survives');
+
+  const events = await all('SELECT type, payload FROM round_events WHERE pair_index = ? ORDER BY seq', [pairIndex]);
+  const resolved = events.filter((e) => e.type === 'interrupt_resolved').map((e) => JSON.parse(e.payload))[0];
+  assert.ok(resolved, 'the check still ran');
+  assert.equal(resolved.interrupted, false);
+  // Both sides of the comparison ride the event, so a replay can lay it out.
+  assert.equal(resolved.attackerRoll, 6);
+  assert.equal(resolved.attackerTotal, 6);
+  assert.equal(resolved.result, 12);
+  assert.ok(resolved.activeFrameBonus >= 1, JSON.stringify(resolved));
+  assert.equal(resolved.defenderTotal, 12 + resolved.activeFrameBonus);
+  // Damage is not part of the comparison any more, only context.
+  assert.ok(resolved.halfDamageSteps >= 0);
+
+  // ...and it did still take the hit. Which Stat the punch found is the damage
+  // system's business, not this test's — what matters here is that holding the
+  // move together is not the same as evading the blow.
+  const damage = events.filter((e) => e.type === 'damage_applied');
+  assert.ok(damage.length > 0, 'the punch still landed its damage');
+});
 
 test('Dodge pause: full-coverage Dodge stops the round and persists a resumable pending decision', async () => {
   const pairIndex = 200;
@@ -1725,4 +1768,140 @@ test('Cornered Animal contributes nothing while its condition is unmet', async (
   // Not "+0 Cornered Animal" — absent. A zero term is noise, not transparency.
   assert.equal((roll.modifierBreakdown ?? []).find((t) => t.label === 'Cornered Animal'), undefined);
   assert.equal(roll.modifier, 0);
+});
+
+// ---------- Recover Stat, and the Movement Punisher pair (decided, new) ----------
+
+test('Recover Stat heals toward the locked baseline and stops there', async () => {
+  const pairIndex = 320;
+  const attacker = await createCharacter('Recoverer');
+  const defender = await createCharacter('Recoveree');
+  await setDieSize(attacker, 'Skull', 12);
+
+  // Lock at d8 (createCharacter's default), then take the Skull down to d6 —
+  // so there is exactly one step of damage to heal and a ceiling above it.
+  await run('UPDATE dice SET locked_size = current_size, locked_bonus = bonus, locked_status = status WHERE character_id = ?', [attacker]);
+  await run("UPDATE dice SET current_size = 6, half_damage = 1 WHERE character_id = ? AND slot_name = 'Left Hand'", [attacker]);
+
+  const heal = await createMove({
+    name: 'RS Heal',
+    startupTics: 1, activeTics: 1, recoveryTics: 1,
+    rollSlots: ['Skull'],
+    rollModifier: 20,
+    interactions: [
+      { trigger: 'hit', text: 'shakes it out', automations: [{ type: 'self_stat_recover', slot: 'Left Hand', amount: 5 }] },
+    ],
+  });
+
+  await seatPair(pairIndex, attacker, defender);
+  await startPairDeclaration(mockIo, pairIndex);
+  await declareMove({ characterId: attacker, moveId: heal, placementTic: 0, startupTics: 1 });
+  await resolvePair(pairIndex);
+
+  const hand = await one("SELECT * FROM dice WHERE character_id = ? AND slot_name = 'Left Hand'", [attacker]);
+  // Five steps of recovery against one step of damage: it heals the pending
+  // half, climbs back to d8, and then stops. It must NOT run on to d12.
+  assert.equal(hand.current_size, 8);
+  assert.equal(hand.bonus, 0);
+  assert.equal(hand.half_damage, 0, 'healing clears the pending half step');
+  assert.equal(hand.locked_size, 8);
+});
+
+test('Recover Stat does nothing to a Stat already at its baseline', async () => {
+  const pairIndex = 321;
+  const attacker = await createCharacter('Healthy Healer');
+  const defender = await createCharacter('Healthy Foe');
+  await setDieSize(attacker, 'Skull', 12);
+  await run('UPDATE dice SET locked_size = current_size, locked_bonus = bonus, locked_status = status WHERE character_id = ?', [attacker]);
+
+  const heal = await createMove({
+    name: 'RS NoOp',
+    startupTics: 1, activeTics: 1, recoveryTics: 1,
+    rollSlots: ['Skull'],
+    rollModifier: 20,
+    interactions: [
+      { trigger: 'hit', text: 'nothing to fix', automations: [{ type: 'self_stat_recover', slot: 'Body', amount: 3 }] },
+    ],
+  });
+  const before = await one("SELECT * FROM dice WHERE character_id = ? AND slot_name = 'Body'", [attacker]);
+
+  await seatPair(pairIndex, attacker, defender);
+  await startPairDeclaration(mockIo, pairIndex);
+  await declareMove({ characterId: attacker, moveId: heal, placementTic: 0, startupTics: 1 });
+  await resolvePair(pairIndex);
+
+  const after = await one("SELECT * FROM dice WHERE character_id = ? AND slot_name = 'Body'", [attacker]);
+  // This is the whole difference from Increase Self Stat, which would have
+  // taken an undamaged Stat straight past where it started.
+  assert.equal(after.current_size, before.current_size);
+  assert.equal(after.bonus, before.bonus);
+});
+
+test('Movement Punisher: connecting with a Movement move imposes Recovery on it', async () => {
+  const pairIndex = 322;
+  const attacker = await createCharacter('Punisher');
+  const defender = await createCharacter('Runner');
+  await setDieSize(attacker, 'Skull', 12);
+
+  const [punisherTag, movementTag] = await Promise.all([
+    one("SELECT id FROM tags WHERE name = 'Movement Punisher'"),
+    one("SELECT id FROM tags WHERE name = 'Movement'"),
+  ]);
+  assert.ok(punisherTag && movementTag, 'both Tags are seeded at startup');
+
+  const sweep = await createMove({ name: 'MP Sweep', startupTics: 1, activeTics: 2, recoveryTics: 1, rollSlots: ['Skull'] });
+  await run('INSERT INTO move_tags (move_id, tag_id) VALUES (?, ?)', [sweep, punisherTag.id]);
+  // A long-running Movement move, so it is still on the clock when the sweep
+  // lands and there is something for the Recovery to be added to.
+  const dash = await createMove({ name: 'MP Dash', startupTics: 1, activeTics: 3, recoveryTics: 2, rollSlots: ['Body'] });
+  await run('INSERT INTO move_tags (move_id, tag_id) VALUES (?, ?)', [dash, movementTag.id]);
+
+  await seatPair(pairIndex, attacker, defender);
+  await startPairDeclaration(mockIo, pairIndex);
+  await declareMove({ characterId: attacker, moveId: sweep, placementTic: 0, startupTics: 1 });
+  const dashId = await declareMove({ characterId: defender, moveId: dash, placementTic: 0, startupTics: 1 });
+  await resolvePair(pairIndex);
+
+  const events = await all('SELECT type, payload FROM round_events WHERE pair_index = ? ORDER BY seq', [pairIndex]);
+  const fired = events
+    .filter((e) => e.type === 'automation_fired')
+    .map((e) => JSON.parse(e.payload))
+    .find((p) => p.sourceName === 'Movement Punisher');
+  assert.ok(fired, `the trip should reach the round log: ${events.map((e) => e.type).join(', ')}`);
+  assert.equal(fired.sourceKind, 'tag');
+  assert.equal(fired.trigger, 'movement_punished');
+  // It runs through the ordinary Add Recovery effect, so it reports the same
+  // way one authored on a move would.
+  assert.ok(fired.effects.some((x) => /\+3 Recovery/.test(x)), JSON.stringify(fired.effects));
+
+  // And the Recovery actually landed on the clock, not just in the log.
+  const dm = await one('SELECT reveal_tic, recovery_extension_tics FROM declared_moves WHERE id = ?', [dashId]);
+  const displaced = (dm?.recovery_extension_tics ?? 0) > 0 || dm?.reveal_tic > 1;
+  assert.ok(displaced, `the Movement move should have been pushed about: ${JSON.stringify(dm)}`);
+});
+
+test('Movement Punisher does nothing without both Tags', async () => {
+  const pairIndex = 323;
+  const attacker = await createCharacter('Plain Attacker');
+  const defender = await createCharacter('Plain Runner');
+  await setDieSize(attacker, 'Skull', 12);
+  const movementTag = await one("SELECT id FROM tags WHERE name = 'Movement'");
+
+  // The target IS moving; the attack is simply not a punisher.
+  const punch = await createMove({ name: 'MPN Punch', startupTics: 1, activeTics: 2, recoveryTics: 1, rollSlots: ['Skull'] });
+  const dash = await createMove({ name: 'MPN Dash', startupTics: 1, activeTics: 3, recoveryTics: 2, rollSlots: ['Body'] });
+  await run('INSERT INTO move_tags (move_id, tag_id) VALUES (?, ?)', [dash, movementTag.id]);
+
+  await seatPair(pairIndex, attacker, defender);
+  await startPairDeclaration(mockIo, pairIndex);
+  await declareMove({ characterId: attacker, moveId: punch, placementTic: 0, startupTics: 1 });
+  await declareMove({ characterId: defender, moveId: dash, placementTic: 0, startupTics: 1 });
+  await resolvePair(pairIndex);
+
+  const events = await all('SELECT type, payload FROM round_events WHERE pair_index = ? ORDER BY seq', [pairIndex]);
+  const fired = events
+    .filter((e) => e.type === 'automation_fired')
+    .map((e) => JSON.parse(e.payload))
+    .find((p) => p.sourceName === 'Movement Punisher');
+  assert.equal(fired, undefined, 'an ordinary punch trips nobody');
 });

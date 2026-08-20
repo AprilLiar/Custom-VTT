@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { sortTags } from '../lib/moveDisplay.js';
 import { useRole } from '../roleContext.jsx';
 import { socket } from '../socket.js';
 import { getRuleset, getTags, getTells, getMoves } from '../lib/api.js';
@@ -86,7 +87,7 @@ export default function MovesTab({ data }) {
             leftTell={move.left_tell_id ? tellById.get(move.left_tell_id) : null}
             style={style}
             combatStyle={combatStyle}
-            tags={effectiveTagIds.map((id) => tagById.get(id)).filter(Boolean)}
+            tags={sortTags(effectiveTagIds.map((id) => tagById.get(id)).filter(Boolean))}
             folderLabel={folderPath(move.folder_id, folders) ?? undefined}
             perkModified={move.has_perk_overrides}
             rollBonus={move.roll_bonus ?? 0}

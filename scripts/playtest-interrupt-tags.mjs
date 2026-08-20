@@ -1,11 +1,17 @@
 // Playtest: Interrupter (x) and Hard to Interrupt (x) — the first Tags that
 // carry a number, and the first that move a comparison without moving a roll.
 //
-// The Interruption check is `roll >= damage taken`, where the roll is the
-// Interruption's own and is thrown on the caught move's Roll. Interrupter (x)
-// adds to that roll; Hard to Interrupt (x) raises the bar. Each fight below is
-// run twice — once bare, once tagged — so what the Tag did is the difference
-// between two otherwise identical rounds rather than a number to be trusted.
+// The Interruption check is a CONTEST OF TWO ATTACK ROLLS (corrected — it was
+// built once as `roll >= damage taken`, which was a misreading):
+//
+//   the attack's roll + Interrupter (x)
+//     vs
+//   the caught move's roll + Hard to Interrupt (x) + 1 per elapsed Active frame
+//
+// The attack has to genuinely beat that; the caught fighter wins ties. Each
+// Tag moves only its own side. Each fight below is run twice — once bare, once
+// tagged — so what the Tag did is the difference between two otherwise
+// identical rounds rather than a number to be trusted.
 //
 //   npm run dev   (or node server/index.js)
 //   node scripts/playtest-interrupt-tags.mjs
@@ -57,9 +63,10 @@ if (!INTERRUPTER || !HARD) process.exit(1);
 // window lands while the other move is still in Startup — the only situation
 // an Interruption can happen in at all.
 //
-// `windupModifier` decides the baseline: +20 makes the Interruption certain,
-// -20 makes it impossible (±20 is the clamp a move's roll modifier gets). The
-// Tags then have to overturn each.
+// `windupModifier` decides the baseline, and it is the CAUGHT move's own roll
+// that it moves (±20 is the clamp a move's roll modifier gets): -20 makes the
+// Interruption certain — the caught fighter can barely roll anything — and +20
+// makes it impossible. The Tags then have to overturn each.
 const fight = async (label, { windupModifier, punchTags = [], windupTags = [] }) => {
   gm.emit('combat:clear', {});
   await sleep(700);
@@ -132,61 +139,81 @@ const fight = async (label, { windupModifier, punchTags = [], windupTags = [] })
 
 const show = (r) => JSON.stringify(r.payload && {
   interrupted: r.payload.interrupted,
-  result: r.payload.result,
-  steps: r.payload.halfDamageSteps,
+  attackerRoll: r.payload.attackerRoll,
   interrupter: r.payload.interrupter,
+  attackerTotal: r.payload.attackerTotal,
+  caughtRoll: r.payload.result,
   hardToInterrupt: r.payload.hardToInterrupt,
-  effectiveResult: r.payload.effectiveResult,
-  threshold: r.payload.threshold,
+  activeFrames: r.payload.activeFrameBonus,
+  defenderTotal: r.payload.defenderTotal,
+  steps: r.payload.halfDamageSteps,
 });
+
+// Both totals have to be exactly the sum of their own named terms — the whole
+// promise of the payload is that a reader can add it up themselves.
+const addsUp = (p) =>
+  p != null &&
+  p.attackerTotal === p.attackerRoll + p.interrupter &&
+  p.defenderTotal === p.result + p.hardToInterrupt + p.activeFrameBonus;
 
 // ============================ 1. Hard to Interrupt turns a certainty into a hold
 console.log('\n--- a wind-up that would certainly be Interrupted ---');
-const a = await fight('A', { windupModifier: 20 });
+const a = await fight('A', { windupModifier: -20 });
 console.log('  interrupt_resolved:', show(a));
 check('the check ran at all', a.payload != null, a.events.map((e) => e.type).join(', '));
 check('the bare wind-up is Interrupted', a.payload?.interrupted === true, show(a));
 check('...and it never comes out — no reveal for it this round', a.revealed === false, JSON.stringify(a.revealed));
 check('an untagged exchange reports both amounts as 0',
   a.payload?.interrupter === 0 && a.payload?.hardToInterrupt === 0, show(a));
+check('both totals are the sum of their own named terms', addsUp(a.payload), show(a));
+// The caught fighter always has at least one Active frame of the attack behind
+// them by the time this runs — the hit landing at all means one is resolving.
+check('the elapsed-Active-frame bonus is on the CAUGHT side, and is at least 1',
+  (a.payload?.activeFrameBonus ?? 0) >= 1, show(a));
+check('the damage is carried as context, never as a term',
+  a.payload?.attackerTotal !== a.payload?.halfDamageSteps ||
+    a.payload?.attackerTotal === a.payload?.attackerRoll + a.payload?.interrupter, show(a));
 
 console.log('\n--- the same wind-up carrying Hard to Interrupt (99) ---');
-const b = await fight('B', { windupModifier: 20, windupTags: [HARD.id] });
+const b = await fight('B', { windupModifier: -20, windupTags: [HARD.id] });
 console.log('  interrupt_resolved:', show(b));
 check('the Tag is read off the name as 99', b.payload?.hardToInterrupt === 99, show(b));
-check('the roll itself is untouched — only the bar moved',
-  b.payload?.effectiveResult === b.payload?.result, show(b));
-check('the bar is the damage plus the Tag',
-  b.payload?.threshold === (b.payload?.halfDamageSteps ?? 0) + 99, show(b));
+check('it lands on the caught move\'s total, not on its roll',
+  b.payload?.defenderTotal === (b.payload?.result ?? 0) + 99 + (b.payload?.activeFrameBonus ?? 0), show(b));
+check('the attacking side is untouched by it', b.payload?.interrupter === 0, show(b));
 check('the wind-up holds together (the Tag overturned the outcome)',
   b.payload?.interrupted === false, show(b));
 check('...and the move goes on to reveal as declared', b.revealed === true, JSON.stringify(b.revealed));
 
 // ============================ 2. Interrupter turns an impossibility into a hit
 console.log('\n--- a wind-up that could never be Interrupted ---');
-const c = await fight('C', { windupModifier: -20 });
+const c = await fight('C', { windupModifier: 20 });
 console.log('  interrupt_resolved:', show(c));
 check('the bare wind-up survives', c.payload?.interrupted === false, show(c));
 check('...and comes out as declared', c.revealed === true, JSON.stringify(c.revealed));
 
 console.log('\n--- the same wind-up, punched by a move with Interrupter (99) ---');
-const d = await fight('D', { windupModifier: -20, punchTags: [INTERRUPTER.id] });
+const d = await fight('D', { windupModifier: 20, punchTags: [INTERRUPTER.id] });
 console.log('  interrupt_resolved:', show(d));
 check('the Tag is read off the attacking move', d.payload?.interrupter === 99, show(d));
-check('it is added to the roll, not to the bar',
-  d.payload?.effectiveResult === (d.payload?.result ?? 0) + 99 &&
-    d.payload?.threshold === d.payload?.halfDamageSteps, show(d));
+check('it lands on the attack\'s total, not on its roll',
+  d.payload?.attackerTotal === (d.payload?.attackerRoll ?? 0) + 99, show(d));
+check('the caught side is untouched by it', d.payload?.hardToInterrupt === 0, show(d));
 check('the wind-up comes apart (the Tag overturned the outcome)',
   d.payload?.interrupted === true, show(d));
 check('...and never comes out', d.revealed === false, JSON.stringify(d.revealed));
 
 // The whole point of "only for that comparison": neither Tag may touch the
-// real attack. The punch's own roll event is the witness.
+// real attack. The punch's own roll event is the witness — and the roll the
+// contest used has to be that same number, not something recomputed.
 const punchRoll = (r) => r.events.find((e) => e.type === 'roll' && /Punch/.test(e.payload?.moveName ?? ''));
 const modOf = (r) => punchRoll(r)?.payload?.modifier;
 console.log(`  punch modifier — untagged ${modOf(c)}, Interrupter (99) ${modOf(d)}`);
 check("Interrupter does not touch the attack's own roll", modOf(c) === modOf(d),
   JSON.stringify({ untagged: modOf(c), tagged: modOf(d) }));
+check("the contest used the attack's real rolled total",
+  d.payload?.attackerRoll === punchRoll(d)?.payload?.total,
+  JSON.stringify({ contest: d.payload?.attackerRoll, rolled: punchRoll(d)?.payload?.total }));
 
 console.log(failures ? `\n${failures} FAILURE(S)` : '\nall probes passed');
 gm.close();

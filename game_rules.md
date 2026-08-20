@@ -339,18 +339,40 @@ write it on a card: **Interrupter (2)**, **Hard to Interrupt (3)**. They are
 the only Tags that do this, and both of them move exactly one comparison — the
 Interruption check — and nothing else.
 
-- **Interrupter (x)** goes on an *attack*. When that attack lands on somebody
-  still winding up, the Interruption is counted **x higher**.
+- **Interrupter (x)** goes on an *attack*. Its roll counts **x higher** when it
+  is contested against a move it caught winding up.
 - **Hard to Interrupt (x)** goes on a move that might get *caught* winding up.
-  It raises the bar an Interruption has to clear against that move by **x**.
+  Its roll counts **x higher** in that same contest.
 
-Neither one touches a real roll or a real amount of damage. The attack does
-not hit harder; it is only *considered* more disruptive, for that one
-question. See **Interruption** under Resolution for the check itself.
+Neither one touches a real roll. Both rolls go out at their real values; the Tag
+is only what that roll is *considered* to be worth for this one question. See
+**Interruption** under Resolution for the contest itself.
 
 If you write just **Interrupter**, with no number, it counts as 1. Several of
 them on one move add up, so three different Tags worth 1, 2 and 3 sit on a
 move as a 6.
+
+### The Movement Tags
+
+These two only mean anything about each other. On its own, neither does a thing.
+
+- **Movement** goes on a move that takes you somewhere — a step in, a roll out,
+  a lunge. It is the one Tag in the game that is purely a **liability**: it
+  buys the move nothing and tells the table what it is vulnerable to.
+- **Movement Punisher** goes on a move built to catch somebody doing that.
+
+If a **Movement Punisher** attack **connects** with a fighter who is in the
+middle of a **Movement** move, that fighter **trips**. The trip is narrative —
+there is no knocked-down state to get out of — and it costs them **3 Recovery**,
+added to whatever they are doing exactly the way any other imposed Recovery is.
+Three Tics later than you meant to be is what being put on the floor costs in a
+game measured in Tics.
+
+**"Connects" means at least half a point of damage actually landed.** A miss
+trips nobody, and neither does a blow a guard reduced to nothing — you have to
+have genuinely caught them mid-stride. It does not matter whether their move
+had come out yet: a Movement move still winding up is a fighter already
+committed to going somewhere.
 
 ### Grappling
 
@@ -726,16 +748,19 @@ Taking a hit while you are still inside your own move's **Startup** can
 disrupt it.
 
 The engine walks the attacker's Active window for the first Tic at which the
-target is still in Startup. The Interruption is then rolled **on the caught
-move's own Roll** — or **Body**, if that move has none — at **+1 per elapsed
-Active Tic**: the shock is measured on the very move it caught. Reaching the
-damage that just landed means that move **comes apart** — it is cancelled and
-half its Stamina Cost refunded. Falling short means the fighter held it
-together and it comes out as declared.
+target is still in Startup, and then the two moves are **contested**:
 
-**Interrupter (x)** on the attack adds x to that roll; **Hard to Interrupt (x)**
-on the caught move adds x to the bar it has to reach. See **The Interruption
-Tags** under Moves.
+- **The attack** brings its own attack roll, plus **Interrupter (x)**.
+- **The caught move** brings its own attack roll — or **Body**, if it has no
+  Roll of its own — plus **Hard to Interrupt (x)**, plus **+1 for every Active
+  Tic of the attack that has already elapsed**. The longer the attack has been
+  out, the more of it you have had to read.
+
+**Failing means the move is cancelled** and half its Stamina Cost refunded. Tie
+or beat the attack and you hold it together — it comes out exactly as declared.
+
+The damage the blow dealt is not part of this. It is what triggered the check,
+not what decides it — and either way, the hit still lands.
 
 Getting caught winding up is how a fight turns over in one exchange — which is
 why a wind-up is not a secret. Every Tic an attack spends in **Startup** is
@@ -762,7 +787,13 @@ mechanical effects, and they all resolve the instant that outcome is decided:
   works, but they land wherever the move says rather than where the attack
   was aimed.
 - **Step your own Stat up** — the same thing running backwards, a move that
-  puts something of yours back together as it lands.
+  puts something of yours back together as it lands. This one has no ceiling:
+  it can take a Stat past where it started.
+- **Recover your own Stat** — the same step up, but it **stops at your base**.
+  It is healing: it clears half a step of damage before it buys a whole one,
+  it can never carry a Stat above the value it was locked at, and used on
+  something already undamaged it simply does nothing. Whatever recovery you
+  do not need is not banked and does not spill anywhere.
 - **Weaken their next roll** — a flat penalty on the very next roll that
   fighter makes, **of any kind**. It is a debt, not a condition: it is paid by
   that one roll and then it is gone. Nothing else about them changes, and it

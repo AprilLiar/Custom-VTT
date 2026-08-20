@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { sortTags } from '../lib/moveDisplay.js';
 import { Paperclip } from 'lucide-react';
 import { socket } from '../socket.js';
 import { getChat, getCharacters, getTells, getTags, getRuleset, getMoves } from '../lib/api.js';
@@ -165,7 +166,7 @@ function Entry({ entry, character, moveInfo, characters, defenseResolutions, onW
                           ? moveInfo.styleById.get(entry.move.full.combat_style_attribute_id)
                           : null
                       }
-                      tags={(entry.move.full.tag_ids ?? []).map((id) => moveInfo.tagById.get(id)).filter(Boolean)}
+                      tags={sortTags((entry.move.full.tag_ids ?? []).map((id) => moveInfo.tagById.get(id)).filter(Boolean))}
                       folderLabel={folderPath(entry.move.full.folder_id, moveInfo.moveFolders) ?? undefined}
                     />
                   </div>

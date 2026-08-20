@@ -1043,7 +1043,13 @@ app.get('/api/tells', wrap(async (_req, res) => {
 }));
 
 app.get('/api/tags', wrap(async (_req, res) => {
-  res.json(await all('SELECT * FROM tags ORDER BY id'));
+  // Alphabetical, not creation order (decided, new). This list is a
+  // vocabulary a GM adds to over months — by the twentieth Tag, "whichever I
+  // happened to make first" is not an order anybody can find anything in.
+  // COLLATE NOCASE so 'block' and 'Block' file together rather than in two
+  // runs, which is the same case-insensitive treatment every Tag mechanic
+  // already gives names.
+  res.json(await all('SELECT * FROM tags ORDER BY name COLLATE NOCASE, id'));
 }));
 
 // Compendium view: folders + every move, with interactions, tags and grants

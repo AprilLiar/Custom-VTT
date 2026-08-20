@@ -11,7 +11,7 @@ import {
   getTells,
   getTags,
 } from '../lib/api.js';
-import { carriesBlockTag, carriesFeintTag, staminaModifierLabel } from '../lib/moveDisplay.js';
+import { carriesBlockTag, carriesFeintTag, sortTags, staminaModifierLabel } from '../lib/moveDisplay.js';
 // Straight from the server's own rule module, deliberately. `declarableByHand`
 // is what `move:declare` itself checks, and this picker's greying has to mean
 // exactly the same thing — a card that looks draggable but gets silently
@@ -1439,7 +1439,7 @@ function buildDeclarePayload(character, move, roundStartTic, declaredMoves) {
 // `perspective` establishes a stacking context no z-index inside it escapes.
 function DeclareMoveInfo({ move, anchorRef, open, onClose, tellById, allMoves, tags }) {
   const pos = useHoverCardPosition(anchorRef, open);
-  const moveTags = (tags ?? []).filter((t) => (move.tag_ids ?? []).includes(t.id));
+  const moveTags = sortTags((tags ?? []).filter((t) => (move.tag_ids ?? []).includes(t.id)));
   useEffect(() => {
     if (!open) return undefined;
     const onPointerDown = (e) => {

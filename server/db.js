@@ -1256,6 +1256,7 @@ export async function initDb() {
   await seedBlockTag();
   await seedNoDamageTag();
   await seedFeintTag();
+  await seedMovementTags();
   await seedPerks();
 }
 
@@ -1333,6 +1334,31 @@ async function seedFeintTag() {
     'Feint',
     'This move sells a lie. Its own Tell is shown as normal \u2014 but whatever you declare immediately after it goes on the timeline hidden: no Tell, no wind-up, nothing for your opponent to read until it lands.',
   ]);
+}
+
+// The Movement / Movement Punisher pair (decided, new). Seeded together
+// because neither means anything without the other: Movement is a liability a
+// move admits to, and Movement Punisher is the move built to collect on it.
+//
+// Same case-insensitive adopt-don't-duplicate guard as the Tags above, and for
+// the same reason — the mechanic matches on the NAME, so the rows have to exist
+// for it to be reachable at all.
+async function seedMovementTags() {
+  const tags = [
+    [
+      'Movement',
+      'This move takes you somewhere. Useful, and a liability: a move tagged Movement Punisher that connects with you while you are using it puts you on the floor.',
+    ],
+    [
+      'Movement Punisher',
+      'Built to catch someone mid-stride. If this connects for real damage against a move tagged Movement, its user trips — 3 Recovery, imposed on the spot.',
+    ],
+  ];
+  for (const [name, description] of tags) {
+    const existing = await one('SELECT id FROM tags WHERE LOWER(TRIM(name)) = ?', [name.toLowerCase()]);
+    if (existing) continue;
+    await run('INSERT INTO tags (name, description) VALUES (?, ?)', [name, description]);
+  }
 }
 
 // Two placeholder Tells so moves can be created immediately; the GM replaces

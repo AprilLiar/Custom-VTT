@@ -10,11 +10,15 @@ import {
   interrupterAmount,
   resolveInterruptContest,
   tagAmount,
+  movementPunisherApplies,
   TAG_HOOKS,
   BLOCK_TAG,
   FEINT_TAG,
   HARD_TO_INTERRUPT_TAG,
   INTERRUPTER_TAG,
+  MOVEMENT_TAG,
+  MOVEMENT_PUNISHER_TAG,
+  MOVEMENT_PUNISH_RECOVERY,
 } from '../tagAutomations.js';
 import { resolveBlockStamina } from '../combatDamage.js';
 import { clampStaminaModifier } from '../moveLogic.js';
@@ -267,27 +271,96 @@ test('tagAmount: absent, unrelated and near-miss names are all 0', () => {
   assert.equal(hardToInterruptAmount(['Hard to Interrupt (4)']), 4);
 });
 
-test('resolveInterruptContest: the untagged rule is unchanged', () => {
-  // The Interruption rolls on the caught move's own Roll and lands when it
-  // reaches the damage just taken. Equal is enough.
-  assert.equal(resolveInterruptContest({ interruptRoll: 5, halfDamageSteps: 2 }).interrupted, true);
-  assert.equal(resolveInterruptContest({ interruptRoll: 2, halfDamageSteps: 2 }).interrupted, true);
-  assert.equal(resolveInterruptContest({ interruptRoll: 1, halfDamageSteps: 2 }).interrupted, false);
-  assert.deepEqual(resolveInterruptContest({}), { effectiveRoll: 0, threshold: 0, interrupted: true });
+test('resolveInterruptContest: two attack rolls, and the caught fighter wins ties', () => {
+  // **The rule this file got wrong once.** It is a contest between the punch's
+  // own attack roll and the caught move's own attack roll — the damage the blow
+  // dealt is not part of it at all.
+  assert.equal(resolveInterruptContest({ attackerRoll: 9, defenderRoll: 8 }).interrupted, true);
+  assert.equal(resolveInterruptContest({ attackerRoll: 8, defenderRoll: 9 }).interrupted, false);
+  // "Failing means the move is cancelled" — so a draw is not a failure.
+  assert.equal(resolveInterruptContest({ attackerRoll: 8, defenderRoll: 8 }).interrupted, false);
+  assert.deepEqual(resolveInterruptContest({}), { attackerTotal: 0, defenderTotal: 0, interrupted: false });
 });
 
-test('resolveInterruptContest: each Tag pushes its own side, and only this comparison', () => {
-  // Interrupter (2) turns a roll that fell one short into one that lands.
-  const withInterrupter = resolveInterruptContest({ interruptRoll: 1, halfDamageSteps: 2, interrupter: 2 });
-  assert.deepEqual(withInterrupter, { effectiveRoll: 3, threshold: 2, interrupted: true });
+test('resolveInterruptContest: each Tag pushes its own side, and nothing else', () => {
+  // Interrupter (2) turns a punch that came up one short into one that lands.
+  const withInterrupter = resolveInterruptContest({ attackerRoll: 8, interrupter: 2, defenderRoll: 9 });
+  assert.deepEqual(withInterrupter, { attackerTotal: 10, defenderTotal: 9, interrupted: true });
 
-  // Hard to Interrupt (3) raises the bar out of a roll's reach.
-  const withResistance = resolveInterruptContest({ interruptRoll: 4, halfDamageSteps: 2, hardToInterrupt: 3 });
-  assert.deepEqual(withResistance, { effectiveRoll: 4, threshold: 5, interrupted: false });
+  // Hard to Interrupt (3) does the same job from the other side.
+  const withResistance = resolveInterruptContest({ attackerRoll: 11, defenderRoll: 9, hardToInterrupt: 3 });
+  assert.deepEqual(withResistance, { attackerTotal: 11, defenderTotal: 12, interrupted: false });
 
   // Both at once cancel out exactly, leaving the untagged answer.
-  const both = resolveInterruptContest({ interruptRoll: 4, halfDamageSteps: 2, interrupter: 3, hardToInterrupt: 3 });
-  assert.equal(both.interrupted, resolveInterruptContest({ interruptRoll: 4, halfDamageSteps: 2 }).interrupted);
-  assert.equal(both.effectiveRoll, 7);
-  assert.equal(both.threshold, 5);
+  const both = resolveInterruptContest({ attackerRoll: 11, interrupter: 3, defenderRoll: 9, hardToInterrupt: 3 });
+  assert.equal(both.interrupted, resolveInterruptContest({ attackerRoll: 11, defenderRoll: 9 }).interrupted);
+  assert.equal(both.attackerTotal, 14);
+  assert.equal(both.defenderTotal, 12);
+});
+
+test('resolveInterruptContest: the elapsed-Active-frame bonus is the caught fighter\'s', () => {
+  // The longer the attack has been out, the more of it they have had to read.
+  const bare = resolveInterruptContest({ attackerRoll: 10, defenderRoll: 9 });
+  assert.equal(bare.interrupted, true);
+  const read = resolveInterruptContest({ attackerRoll: 10, defenderRoll: 9, activeFrameBonus: 2 });
+  assert.deepEqual(read, { attackerTotal: 10, defenderTotal: 11, interrupted: false });
+});
+
+test('resolveInterruptContest: damage plays no part in it', () => {
+  // The blow's size is what triggers the check, never what decides it — a
+  // leftover from the version of this rule that compared against it.
+  const huge = resolveInterruptContest({ attackerRoll: 5, defenderRoll: 9, halfDamageSteps: 99 });
+  assert.equal(huge.interrupted, false);
+  assert.equal(huge.defenderTotal, 9);
+});
+
+// ---------- Movement / Movement Punisher ----------
+//
+// The first pair of Tags that only mean anything about EACH OTHER. Neither does
+// anything alone: Movement is a liability a move admits to, and Movement
+// Punisher is the move built to collect on it.
+
+test('both Movement Tags are registered, and point at each other', () => {
+  assert.equal(TAG_HOOKS[MOVEMENT_TAG].describesMovement, true);
+  assert.equal(TAG_HOOKS[MOVEMENT_PUNISHER_TAG].punishesTag, MOVEMENT_TAG);
+  assert.equal(TAG_HOOKS[MOVEMENT_PUNISHER_TAG].imposesRecovery, MOVEMENT_PUNISH_RECOVERY);
+  assert.equal(MOVEMENT_PUNISH_RECOVERY, 3);
+});
+
+test('a Movement Punisher that connects with a Movement move trips it', () => {
+  assert.equal(
+    movementPunisherApplies({
+      punisherTagNames: ['Movement Punisher'],
+      targetTagNames: ['Movement'],
+      damageSteps: 1,
+    }),
+    true
+  );
+  // Matched by name like every other Tag — case and whitespace tolerant.
+  assert.equal(
+    movementPunisherApplies({
+      punisherTagNames: [' movement punisher '],
+      targetTagNames: ['MOVEMENT'],
+      damageSteps: 3,
+    }),
+    true
+  );
+});
+
+test('all three conditions are required, and "connects" means real damage', () => {
+  const base = { punisherTagNames: ['Movement Punisher'], targetTagNames: ['Movement'], damageSteps: 1 };
+  // **The interesting one.** A blow a guard reduced to nothing did not catch
+  // anybody mid-stride, so it trips nobody — the same floor the rule states as
+  // "at least 0.5 damage", which is one half-damage step.
+  assert.equal(movementPunisherApplies({ ...base, damageSteps: 0 }), false);
+  assert.equal(movementPunisherApplies({ ...base, damageSteps: undefined }), false);
+  // The attack has to be a punisher...
+  assert.equal(movementPunisherApplies({ ...base, punisherTagNames: ['Block'] }), false);
+  assert.equal(movementPunisherApplies({ ...base, punisherTagNames: [] }), false);
+  // ...and the target has to actually be moving.
+  assert.equal(movementPunisherApplies({ ...base, targetTagNames: ['Block'] }), false);
+  assert.equal(movementPunisherApplies({ ...base, targetTagNames: [] }), false);
+  // Neither Tag does anything on its own, in either direction.
+  assert.equal(movementPunisherApplies({ punisherTagNames: ['Movement'], targetTagNames: ['Movement'], damageSteps: 2 }), false);
+  assert.equal(movementPunisherApplies({}), false);
 });
