@@ -50,8 +50,21 @@ export function applyRankPenalty({ size, bonus, status }, penalty) {
   if (status === 'incapacitated' || !penalty) return { size, bonus, status };
   const rank = rankOf(size, bonus) - penalty;
   if (rank < 0) return { size: 4, bonus: 0, status: 'incapacitated' };
-  const index = Math.min(rank, DIE_SIZES.length - 1);
-  return { size: DIE_SIZES[index], bonus: Math.max(0, rank - (DIE_SIZES.length - 1)), status: 'active' };
+  return { ...dieAtRank(rank), status: 'active' };
+}
+
+// The inverse of rankOf: rank 0 is a bare d4, rank 4 a d12, and every rank past
+// that is another +1 on a d12. Extracted from applyRankPenalty above rather
+// than written twice — Character Creation buys Stats in exactly these units
+// (one point, one rank), and two implementations of the same ladder is how the
+// two quietly disagree about what a d12+2 costs.
+//
+// A negative rank floors at a bare d4; the caller decides whether that is an
+// error or an incapacitation.
+export function dieAtRank(rank) {
+  const r = Math.max(0, Math.trunc(Number(rank) || 0));
+  const index = Math.min(r, DIE_SIZES.length - 1);
+  return { size: DIE_SIZES[index], bonus: Math.max(0, r - (DIE_SIZES.length - 1)) };
 }
 
 export function computeMaxStamina(multiplier, lockedSize, lockedBonus) {

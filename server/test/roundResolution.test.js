@@ -1398,12 +1398,18 @@ async function giveStance(characterId, styleA, styleB) {
   ]);
 }
 
-test('Initiative carries the Stance matchup on rounds after the first', async () => {
-  // The bug this pins: the Initiative Brain roll exists twice — once in
+test('Initiative does NOT carry the Stance matchup — Brain is exempt', async () => {
+  // **Rewritten, not deleted (decided, revised).** This test used to pin the
+  // opposite: the Initiative Brain roll exists twice — once in
   // server/index.js's combat:next_round (a fight's first round) and once in
-  // startPairDeclaration here (every round after) — and only the first had
-  // learned the Stance matchup. From round 2 on, a fighter's stance
-  // advantage silently stopped counting toward who declares first.
+  // startPairDeclaration here (every round after) — and keeping the two in
+  // step about the matchup was itself a bugfix.
+  //
+  // The rule underneath both changed. **Brain and Stamina are exempt from the
+  // Stance matchup entirely** (MATCHUP_EXEMPT_SLOTS in combatBonuses.js): the
+  // matchup scores an exchange of fighting styles, and Initiative is a pure
+  // Brain roll — thinking, not trading blows. What this test protects now is
+  // that the two copies still agree, which was always the real point.
   const pairIndex = 500;
   const attacker = await createCharacter('Init Attacker');
   const defender = await createCharacter('Init Defender');
@@ -1421,16 +1427,19 @@ test('Initiative carries the Stance matchup on rounds after the first', async ()
     .filter((r) => JSON.parse(r.dice_rolled).some((d) => d.slot_name === 'Brain'));
   assert.equal(brainRolls.length, 2, 'both fighters roll initiative');
 
-  // Whatever the chart says for this pairing, the two sides must be exact
-  // opposites and non-zero — asserting the sign rather than a hardcoded
-  // number keeps this from breaking if the counter chart is ever retuned.
+  // These two stances genuinely counter each other, so a matchup leaking in
+  // would show up as a non-zero modifier on one side and its mirror on the
+  // other — which is exactly what this used to assert.
   const { getStanceMatchupBonus } = await import('../combatBonuses.js');
-  const expected = await getStanceMatchupBonus(attacker);
-  assert.notEqual(expected, 0, 'these two stances must actually counter for the test to mean anything');
+  const wouldHaveBeen = await getStanceMatchupBonus(attacker);
+  assert.notEqual(wouldHaveBeen, 0, 'these two stances must actually counter for the test to mean anything');
+
   const mine = brainRolls.find((r) => r.character_id === attacker);
   const theirs = brainRolls.find((r) => r.character_id === defender);
-  assert.equal(mine.modifier, expected, 'the attacker\'s initiative must include their stance matchup');
-  assert.equal(theirs.modifier, -expected, 'and the defender\'s the mirror of it');
+  // No Reasons to Fight and no overflow here, so a clean Initiative roll is
+  // modifier 0 on both sides.
+  assert.equal(mine.modifier, 0, 'the stance advantage must not reach Initiative');
+  assert.equal(theirs.modifier, 0, 'nor its mirror on the other side');
 });
 
 // ---------- Combat Style (decided, new) ----------

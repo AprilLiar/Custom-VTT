@@ -834,9 +834,24 @@ async function checkInterrupt(io, {
   ]);
   const hardToInterrupt = hardToInterruptAmount(startupTagNames);
   const bonus = computeInterruptBonus({ revealTic: attackerRevealTic, currentTic: eligible.tic });
+  // Which Stats this Interruption will actually be thrown on — decided here
+  // rather than below, because the matchup rule needs to know before the
+  // modifier is built. Same three cases the die selection uses a few lines
+  // down: a Custom Roll names no Stat, the move's own slots if it has any,
+  // Body if it has none.
+  const interruptSlots =
+    startupDM.roll_type === 'custom' && startupDM.custom_roll_size != null
+      ? []
+      : rollSlotRows.length
+        ? rollSlotRows.map((r) => r.slot_name)
+        : ['Body'];
   // The move being interrupted is the one rolling, so its Combat Style is
   // the one that joins the matchup here.
-  const bonusMods = await getCombatRollBonus(targetCharacterId, { moveId: startupDM.move_id, tic });
+  const bonusMods = await getCombatRollBonus(targetCharacterId, {
+    moveId: startupDM.move_id,
+    tic,
+    slotNames: interruptSlots,
+  });
   const mod = bonus + bonusMods + startupDM.roll_modifier + rollBonusRow.bonus;
 
   // Decision #8: the interrupted character rolls their own Startup move's
@@ -1396,7 +1411,13 @@ async function rollFor(io, { characterId, characterName, moveId, moveName, slotN
       'SELECT COALESCE(SUM(amount), 0) AS bonus FROM character_move_roll_bonuses WHERE character_id = ? AND move_id = ?',
       [characterId, moveId]
     ),
-    getCombatRollBonusBreakdown(characterId, { moveId, tic }),
+    getCombatRollBonusBreakdown(characterId, {
+      moveId,
+      tic,
+      // A Custom Roll names no Stat, so it keeps the matchup (see
+      // matchupAppliesToSlots).
+      slotNames: rollType === 'custom' ? [] : slotNames,
+    }),
   ]);
   const mod = (rollModifier ?? 0) + rollBonusRow.bonus + bonus.total;
   const modifierBreakdown = rollModifierBreakdown({
@@ -1998,7 +2019,11 @@ async function resolveAttack(io, { row, pairIndex, tic, emitEvent }) {
       'SELECT COALESCE(SUM(amount), 0) AS bonus FROM character_move_roll_bonuses WHERE character_id = ? AND move_id = ?',
       [row.characterId, row.moveId]
     ),
-    getCombatRollBonusBreakdown(row.characterId, { moveId: row.moveId, tic }),
+    getCombatRollBonusBreakdown(row.characterId, {
+      moveId: row.moveId,
+      tic,
+      slotNames: row.rollType === 'custom' ? [] : row.rollSlotNames,
+    }),
   ]);
   const mod = row.rollModifier + rollBonusRow.bonus + bonus.total;
   let dice;
@@ -2278,7 +2303,12 @@ async function resolveAttack(io, { row, pairIndex, tic, emitEvent }) {
       [defenderDM.character_id, defenderDM.move_id]
     ),
   ]);
-  const defBonusMods = await getCombatRollBonus(defenderDM.character_id, { moveId: defenderDM.move_id, tic });
+  const defBonusMods = await getCombatRollBonus(defenderDM.character_id, {
+    moveId: defenderDM.move_id,
+    tic,
+    // Base plus defensive pool: everything this guard actually rolls.
+    slotNames: [...baseSlotRows, ...defensiveSlotRows].map((r) => r.slot_name),
+  });
   const defMod = defenderDM.roll_modifier + defRollBonusRow.bonus + defBonusMods;
 
   // **The guard is rolled once per Stat the attack names (decided, new).** A
@@ -2922,16 +2952,16 @@ async function startPairDeclaration(io, pairIndex) {
     // roll — the matchup is defined as "behaves exactly like Reasons to
     // Fight", so it rides along wherever that does.
     //
-    // **This is a bugfix.** There are two copies of the Initiative roll —
-    // combat:next_round in server/index.js opens a fight's first round, this
-    // one opens every round after it — and only the first had learned the
-    // Stance matchup. From round 2 on, a fighter's stance advantage silently
-    // stopped counting toward who declares first. Both now read the same
-    // helpers, so the next modifier added to one cannot go missing from the
-    // other.
+    // **No Stance matchup here (decided, revised).** There are two copies of
+    // the Initiative roll — combat:next_round in server/index.js opens a
+    // fight's first round, this one opens every round after it — and keeping
+    // them in step about the matchup was once a bugfix in its own right. The
+    // rule changed underneath both: Initiative is a pure **Brain** roll, and
+    // the matchup does not reach Brain at all any more (MATCHUP_EXEMPT_SLOTS
+    // in combatBonuses.js). Both copies drop it together, which is the same
+    // discipline the bugfix was really about.
     const modifier =
-      (p.reasons_to_fight || 0) +
-      (await getStanceMatchupBonus(p.character_id, { includeMoveStyles: false })) -
+      (p.reasons_to_fight || 0) -
       computeInitiativeOverflowPenalty({
         blockedUntilTic: blockedUntilByChar.get(p.character_id) ?? null,
         nextRoundStartTic,

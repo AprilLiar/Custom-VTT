@@ -28,6 +28,7 @@ import {
   stepDie,
   applyRankPenalty,
   applyHalfDamage,
+  dieAtRank,
   rollTotal,
 } from './gameLogic.js';
 import { getCombatRollBonus, getPairStanceMatchup, getStanceMatchupBonus } from './combatBonuses.js';
@@ -68,6 +69,7 @@ import {
 import { effectiveFrames, idleStaminaRegenRate } from './perkAutomations.js';
 import { clearAllPerkState, perkAllowsRevealedDetail } from './perkEngine.js';
 import { isAutomatedPerk, perkDefinition } from './perks/index.js';
+import { validateCreation } from './characterCreation.js';
 import {
   resolveSideInitiative,
   computePlacementTic,
@@ -1568,7 +1570,7 @@ io.on('connection', (socket) => {
     if (!die || die.status !== 'active') return;
     const character = await getCharacter(die.character_id);
     if (!character) return;
-    const mod = clampModifier(modifier) + (await getCombatRollBonus(character.id));
+    const mod = clampModifier(modifier) + (await getCombatRollBonus(character.id, { slotNames: [die.slot_name] }));
     // Face + the die's OWN bonus. The shared modifier is applied once to the
     // roll, not to each die — see rollTotal in gameLogic.js. On a single-die
     // roll that is the same number either way; it is done here too so every
@@ -1633,7 +1635,10 @@ io.on('connection', (socket) => {
     if (!dice.length) return;
     const mod =
       clampModifier(modifier) +
-      (await getCombatRollBonus(character.id, { moveId: await moveIdOfDeclared(declaredMoveId) }));
+      (await getCombatRollBonus(character.id, {
+        moveId: await moveIdOfDeclared(declaredMoveId),
+        slotNames: dice.map((d) => d.slot_name),
+      }));
     // **One modifier, applied once (decided, fix).** This used to add `mod` to
     // every die, so a three-Stat pool at +3 collected +9 — see rollTotal in
     // gameLogic.js for why that is not what any modifier in this game means.
@@ -1897,6 +1902,206 @@ io.on('connection', (socket) => {
         })
       );
     }
+  });
+
+
+  // **Character Creation (decided, new)** — one event that applies a whole
+  // guided build at once, rather than the wizard replaying two dozen
+  // die:step/stance:create/move:grant calls from the client.
+  //
+  // Why it is one event: the point budget is a RULE. Spending it a step at a
+  // time over the existing per-action events would leave the only enforcement
+  // in the dialog, and a dialog cannot enforce anything — it is the client.
+  // Validating the whole draft here, through the same pure module the wizard
+  // reads (server/characterCreation.js), is what makes "16 points" mean
+  // something.
+  //
+  // Applied in the order the flow asks for them, and **idempotent where it can
+  // be**: Stats are SET from their bought rank rather than stepped, so
+  // re-running the flow re-states a spread instead of stacking on top of one.
+  // Grants are additive but per-row unique, so re-granting is a no-op.
+  on('character:apply_creation', async (payload = {}) => {
+    const character = await getCharacter(payload.characterId);
+    if (!character) return;
+
+    const [moves, perks, attributes] = await Promise.all([
+      all('SELECT id FROM moves'),
+      all('SELECT id FROM perks'),
+      all('SELECT id FROM attributes'),
+    ]);
+    const result = validateCreation({
+      ...payload,
+      validMoveIds: moves.map((m) => m.id),
+      validPerkIds: perks.map((p) => p.id),
+      validAttributeIds: attributes.map((a) => a.id),
+    });
+    if (!result.ok) {
+      // Answered to the caller alone, not broadcast: a rejected draft is that
+      // one person's problem, and the wizard shows the same list inline.
+      //
+      // **Only genuine errors reach here.** Going over a preset's suggested
+      // Stat points or Perks is a warning, not a refusal — see validateCreation
+      // — so the short list that can actually block is things like a stance
+      // with one Style, which is not a stance.
+      socket.emit('character:creation_rejected', {
+        characterId: character.id,
+        errors: result.errors,
+      });
+      return;
+    }
+    const { preset, ranks, stance, moveIds, perkIds, roleplay } = result.normalized;
+
+    // ---- Stats: set, not stepped ----
+    const dice = await getDice(character.id);
+    for (const die of dice) {
+      const { size, bonus } = dieAtRank(ranks[die.slot_name] ?? 0);
+      if (die.current_size === size && die.bonus === bonus && die.status === 'active') continue;
+      await run('UPDATE dice SET current_size = ?, bonus = ?, status = ?, half_damage = 0 WHERE id = ?', [
+        size,
+        bonus,
+        'active',
+        die.id,
+      ]);
+      io.emit('die:updated', diePayload({ ...die, current_size: size, bonus, status: 'active', half_damage: 0 }));
+    }
+
+    // ---- Stance ----
+    if (stance) {
+      const created = await run(
+        'INSERT INTO stances (character_id, name, attribute_a_id, attribute_b_id) VALUES (?, ?, ?, ?)',
+        [character.id, stance.name, stance.attributeAId, stance.attributeBId]
+      );
+      const row = await one('SELECT * FROM stances WHERE id = ?', [Number(created.lastInsertRowid)]);
+      io.emit('stance:created', row);
+      // A character built through this flow ends it standing in the stance
+      // they just made — the same auto-activate rule stance:create uses for a
+      // first stance, applied here whether or not it is their first.
+      await run('UPDATE characters SET active_stance_id = ? WHERE id = ?', [row.id, character.id]);
+      io.emit('stance:activated', { characterId: character.id, stanceId: row.id });
+    }
+
+    // ---- Moves ----
+    // **Learnability still applies here (bugfix caught while building this).**
+    // move:grant refuses a styled move to a character with no stance carrying
+    // that style, and creation must not be a way around it — a flow that
+    // handed out any move in the book would make the rule optional. The stance
+    // is created above precisely so a move picked in the same sitting can be
+    // checked against the stance bought a step earlier.
+    const skippedMoves = [];
+    for (const moveId of moveIds) {
+      const move = await one('SELECT id, name, style_attribute_id FROM moves WHERE id = ?', [moveId]);
+      if (!move) continue;
+      if (move.style_attribute_id != null && !(await characterHasStyle(character.id, move.style_attribute_id))) {
+        skippedMoves.push(move.name);
+        continue;
+      }
+      const existing = await one('SELECT id FROM character_moves WHERE character_id = ? AND move_id = ?', [
+        character.id,
+        moveId,
+      ]);
+      if (existing) continue;
+      await run('INSERT INTO character_moves (character_id, move_id) VALUES (?, ?)', [character.id, moveId]);
+      io.emit('move:granted', { characterId: character.id, moveId });
+    }
+
+    // ---- Perks ----
+    // Routed through the same registry hook perk:grant uses, so a Perk with an
+    // onGrant behaves identically however it was handed out.
+    for (const perkId of perkIds) {
+      const existing = await one('SELECT id FROM character_perks WHERE character_id = ? AND perk_id = ?', [
+        character.id,
+        perkId,
+      ]);
+      if (existing) continue;
+      const granted = await run('INSERT INTO character_perks (character_id, perk_id) VALUES (?, ?)', [
+        character.id,
+        perkId,
+      ]);
+      const perk = await one('SELECT name FROM perks WHERE id = ?', [perkId]);
+      await perkDefinition(perk?.name)?.onGrant?.({
+        characterId: character.id,
+        perkId,
+        characterPerkId: Number(granted.lastInsertRowid),
+        io,
+      });
+      io.emit('perk:granted', { characterId: character.id, perkId });
+    }
+    if (perkIds.length) await refreshCapabilities(character.id);
+
+    // ---- Role-play ----
+    for (const { question, answer } of roleplay) {
+      const existing = await one(
+        'SELECT id FROM roleplay_entries WHERE character_id = ? AND question = ? AND is_custom = 0',
+        [character.id, question]
+      );
+      if (existing) await run('UPDATE roleplay_entries SET answer = ? WHERE id = ?', [answer, existing.id]);
+      else
+        await run(
+          'INSERT INTO roleplay_entries (character_id, question, answer, is_custom) VALUES (?, ?, ?, 0)',
+          [character.id, question, answer]
+        );
+    }
+    if (roleplay.length) await emitRoleplay(character.id);
+
+    // ---- Lock ----
+    // **Last, and not optional.** Locking is what turns the spread just bought
+    // into this character's baseline — it writes locked_size/bonus/status and
+    // recomputes Max Stamina from the Stamina die. A character who finished
+    // creation without it would have no baseline to revert to and a Max
+    // Stamina from whatever they were before.
+    const lockedDice = await getDice(character.id);
+    const staminaDie = lockedDice.find((d) => d.slot_name === 'Stamina');
+    const maxStamina = computeMaxStamina(
+      character.stamina_multiplier,
+      staminaDie.current_size,
+      staminaDie.bonus
+    );
+    await Promise.all([
+      run(
+        'UPDATE dice SET locked_size = current_size, locked_bonus = bonus, locked_status = status WHERE character_id = ?',
+        [character.id]
+      ),
+      run('UPDATE characters SET max_stamina = ?, current_stamina = ? WHERE id = ?', [
+        maxStamina,
+        maxStamina,
+        character.id,
+      ]),
+    ]);
+    for (const die of lockedDice) {
+      io.emit(
+        'die:updated',
+        diePayload({ ...die, locked_size: die.current_size, locked_bonus: die.bonus, locked_status: die.status })
+      );
+    }
+    io.emit('character:updated', {
+      ...(await getCharacter(character.id)),
+    });
+    await postSystemMessage(
+      io,
+      preset
+        ? `${character.name} is ready to fight — built as ${preset.name}.`
+        : `${character.name} is ready to fight — built freehand.`
+    );
+    // A build that went past its preset's suggestion is announced rather than
+    // hidden: the numbers are guidance, and the table is who decides whether a
+    // heavier fighter is fine. Nobody should have to notice it themselves.
+    for (const warning of result.warnings) {
+      await postSystemMessage(io, `${character.name}: ${warning}`);
+    }
+    // Said out loud rather than silently dropped: a move that did not stick is
+    // exactly the thing somebody would otherwise notice three sessions later.
+    if (skippedMoves.length) {
+      await postSystemMessage(
+        io,
+        `${character.name} could not learn ${skippedMoves.join(', ')} — those Moves need a stance with their Style.`
+      );
+    }
+    socket.emit('character:creation_applied', {
+      characterId: character.id,
+      presetKey: preset?.key ?? null,
+      warnings: result.warnings,
+      skippedMoves,
+    });
   });
 
   on('stamina:regen', async ({ characterId }) => {
@@ -3432,25 +3637,13 @@ io.on('connection', (socket) => {
     // incapacitated dice elsewhere. Grouped by pair_index now instead of
     // pooled across the whole arena, since each pair resolves its own
     // initiative independently.
-    // One lookup per fighter, up front: getStanceMatchupBonus reads the
-    // arena's Uneven Combat flag and both fighters' active stances, and
-    // doing that inside the loop below would re-query it per participant.
-    const stanceByChar = new Map(
-      await Promise.all(
-        eligibleParticipants.map(async (p) => [
-          p.character_id,
-          // requireActiveFight: false — on a fight's first round this runs
-          // before the pair's own combat_pairs row exists, since that row's
-          // declaring_side is decided BY this very roll.
-          // includeMoveStyles: false — a Brain roll for Initiative is not any
-          // move's roll (see startPairDeclaration, which must match).
-          await getStanceMatchupBonus(p.character_id, {
-            requireActiveFight: false,
-            includeMoveStyles: false,
-          }),
-        ])
-      )
-    );
+    // **Initiative gets NO Stance matchup (decided, revised).** It used to,
+    // and the two copies of this roll being kept in step about it was itself a
+    // bugfix — but Initiative is a pure **Brain** roll, and Brain is one of the
+    // two Stats the matchup does not reach at all now (see
+    // MATCHUP_EXEMPT_SLOTS in combatBonuses.js: the matchup scores an exchange
+    // of styles, and thinking is not part of that exchange). Reasons to Fight
+    // and the overflow penalty are untouched and still apply.
 
     const rollsByPair = new Map(); // pair_index -> { left: [], right: [] }
     for (const p of eligibleParticipants) {
@@ -3459,10 +3652,7 @@ io.on('connection', (socket) => {
       if (!die || die.status !== 'active' || !character) continue;
       // Reasons to Fight applies to Initiative rolls too — "+1 to all rolls
       // during combat" — on every round including the first, same as any
-      // other roll. The Stance matchup rides along with it for exactly the
-      // same reason (it is defined as behaving like Reasons to Fight), via
-      // stanceByChar below (see its own note on why it opts out of the
-      // "is a fight underway" gate).
+      // other roll. The Stance matchup does NOT; see the note above.
       // The overflow penalty (decided, new rule) subtracts
       // however many of this new round's own Tics are still occupied by
       // this character's own carried-over move, if any (0 on round 1, since
@@ -3473,8 +3663,7 @@ io.on('connection', (socket) => {
       // (raw die face + bonus/modifier = result) actually shows it instead
       // of misattributing it to the die face.
       const modifier =
-        (p.reasons_to_fight || 0) +
-        (stanceByChar.get(p.character_id) ?? 0) -
+        (p.reasons_to_fight || 0) -
         computeInitiativeOverflowPenalty({
           blockedUntilTic: blockedUntilByChar.get(p.character_id) ?? null,
           nextRoundStartTic: nextRoundStartTicByPair.get(p.pair_index),

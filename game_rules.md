@@ -52,27 +52,59 @@ Every character has eight **Stats**, each of them a die:
 - **Body** — your trunk, absorbing and delivering.
 - **Left Leg** and **Right Leg** — footwork and kicks.
 
-**Start with every Stat at d4, then spend 8 step-ups.** One step-up moves one
-die one size: d4 → d6 → d8 → d10 → d12. Spend them however you like. Eight
-steps spread evenly makes every Stat a d6 — a fighter with no holes and no
-edge. Four steps into one Stat takes it to d12 and leaves five Stats at d4 —
-a specialist who is terrifying in exactly one way.
+### The guided flow
 
-There is no wrong spread. There are only fights you are built for and fights
-you are not.
+There is a **Character Creation** button at the top of every character sheet. It
+walks the whole build in six steps and applies all of it at the end — you can
+also do any of it by hand on the tabs, before or after.
 
-After that:
+**Every step is a suggestion.** Each one has a **Skip** next to **Next**, and
+**Finish** is live from the first screen. Nothing here forces you to spend
+everything, pick a set number of anything, or fill in a step you would rather
+come back to.
 
-1. **Pick or create a Stance** (see Stances and Styles). Your first one
-   activates automatically.
-2. **Lock in your Stats.** This records your starting dice as your *base*, so
-   damage and injuries have something to be measured against.
-3. **Answer the Role-play questions** on your sheet. One of them — *what is
-   something they would fight for, no matter what?* — is the one with a
-   mechanic attached: see Reasons to Fight.
+**1 — How much fighting have they already done?** This is the only step that
+sets any numbers, and even it can be skipped for a free-form build.
 
-Your **Maximum Stamina** is four times your locked Stamina die's value, and
-your current Stamina starts there.
+| | Stat points | Perks |
+|---|---|---|
+| **Teenager** | 8 | 3 |
+| **Adult** | 16 | 5 |
+| **Old Master** | 24 | 7 |
+
+**2 — Stats.** Every Stat starts at **d4**, and one point raises one Stat one
+step: d4 → d6 → d8 → d10 → d12, and past that each point is another **+1**.
+Spend them however you like. Eight steps spread evenly makes every Stat a d6 — a
+fighter with no holes and no edge. Four steps into one Stat takes it to d12 and
+leaves the rest at d4 — a specialist who is terrifying in exactly one way.
+
+The number your preset suggests is guidance. Going over it is allowed; the app
+says so in the log, and the table decides whether that is fine. There is no
+wrong spread — only fights you are built for and fights you are not.
+
+**3 — Stance.** Two different Styles (see Stances and Styles). Whatever you
+build here becomes your active stance. Skipping it is fine, but note that a Move
+carrying a Style can only be learned by someone whose stance has that Style — so
+a skipped stance means the styled Moves in the next step will not stick.
+
+**4 — Moves.** Take whatever you want; there is no limit on Moves. Anything your
+stance cannot support is flagged before you pick it, and named in the log if it
+does not stick.
+
+**5 — Perks.** Your preset suggests a number. Take fewer, take more.
+
+**6 — Role-play.** Optional, and the tab is always there. One question — *what
+is something they would fight for, no matter what?* — is the one with a mechanic
+attached: see Reasons to Fight.
+
+Finishing sets the Stats, takes the stance, grants the Moves and Perks, saves any
+answers, and **locks the Stats in** — which records your starting dice as your
+*base*, so damage and injuries have something to be measured against. Your
+**Maximum Stamina** is four times your locked Stamina die's value, and your
+current Stamina starts there.
+
+Running the flow again re-states the same spread rather than stacking on top of
+it, so it is safe to reopen and adjust.
 
 ## Stats and Dice
 
@@ -128,8 +160,19 @@ opponent's. Compare all four cross-pairs of Styles:
 - each pair where **theirs beats yours**: **−1**
 - a Style you both share: **0**
 
-The result is a flat bonus applied to **all** of your rolls that fight,
-including the round's initiative roll — exactly like Reasons to Fight.
+The result is a flat bonus applied to your rolls that fight, much like Reasons
+to Fight.
+
+**Two Stats are outside it: Brain and Stamina.** The matchup scores what two
+fighting styles do to each other, and neither of those Stats is part of that
+exchange — Brain is reading a fight, Stamina is your engine, and neither cares
+what stance anybody took. A roll made of nothing but those two gets no matchup
+at all, and that includes the round's **initiative** roll, which is a pure Brain
+roll.
+
+A roll that touches anything else still gets it in full. A move that rolls Skull
+*and* Brain is still a punch — adding Brain to a Roll is not a way to step out
+of the matchup.
 
 At most three of the four cross-pairs can be wins, so the widest possible
 matchup is **+3 for you and −3 for them**: a six-point swing. That tilts a
