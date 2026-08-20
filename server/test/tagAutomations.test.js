@@ -5,10 +5,16 @@ import {
   carriesFeintTag,
   effectiveTagNames,
   feintMasksDeclaration,
+  hardToInterruptAmount,
   hasTagNamed,
+  interrupterAmount,
+  resolveInterruptContest,
+  tagAmount,
   TAG_HOOKS,
   BLOCK_TAG,
   FEINT_TAG,
+  HARD_TO_INTERRUPT_TAG,
+  INTERRUPTER_TAG,
 } from '../tagAutomations.js';
 import { resolveBlockStamina } from '../combatDamage.js';
 import { clampStaminaModifier } from '../moveLogic.js';
@@ -218,4 +224,70 @@ test('feintMasksDeclaration: no Feint in front means nothing is hidden', () => {
   assert.equal(feintMasksDeclaration({ previousCarriesFeint: true, previousFootprintEndTic: null, placementTic: 0 }), false);
   assert.equal(feintMasksDeclaration({ previousCarriesFeint: true, placementTic: 0 }), false);
   assert.equal(feintMasksDeclaration({}), false);
+});
+
+
+// ---------- Interrupter (x) / Hard to Interrupt (x) ----------
+//
+// The first Tags that carry a NUMBER, and the first that move a comparison
+// without moving a roll. Both halves are pinned: how the amount is read out of
+// the tag's own name, and which way each Tag pushes the Interruption check.
+
+test('the two Interruption Tags are registered, each on its own side', () => {
+  assert.equal(TAG_HOOKS[INTERRUPTER_TAG].parameterised, true);
+  assert.equal(TAG_HOOKS[INTERRUPTER_TAG].interruptSide, 'attacker');
+  assert.equal(TAG_HOOKS[HARD_TO_INTERRUPT_TAG].parameterised, true);
+  assert.equal(TAG_HOOKS[HARD_TO_INTERRUPT_TAG].interruptSide, 'defender');
+});
+
+test('tagAmount reads the number out of the tag name', () => {
+  assert.equal(tagAmount(['Interrupter (3)'], INTERRUPTER_TAG), 3);
+  // Whatever a GM actually types: case, padding, a plus sign, spaces inside
+  // the parentheses.
+  assert.equal(tagAmount(['  interrupter ( +2 ) '], INTERRUPTER_TAG), 2);
+  assert.equal(tagAmount(['INTERRUPTER (10)'], INTERRUPTER_TAG), 10);
+});
+
+test('tagAmount: a bare tag counts as 1, and several tags stack', () => {
+  assert.equal(tagAmount(['Interrupter'], INTERRUPTER_TAG), 1);
+  assert.equal(tagAmount(['Interrupter (2)', 'Interrupter (3)'], INTERRUPTER_TAG), 5);
+  assert.equal(tagAmount(['Interrupter', 'Interrupter (2)'], INTERRUPTER_TAG), 3);
+});
+
+test('tagAmount: absent, unrelated and near-miss names are all 0', () => {
+  assert.equal(tagAmount([], INTERRUPTER_TAG), 0);
+  assert.equal(tagAmount(undefined, INTERRUPTER_TAG), 0);
+  assert.equal(tagAmount(['Heavy', 'Block'], INTERRUPTER_TAG), 0);
+  // The prefix has to match in full — a differently-named tag that merely
+  // starts with "Interrupter" is somebody else's tag.
+  assert.equal(tagAmount(['Interrupter Killer (9)'], INTERRUPTER_TAG), 0);
+  // ...and the two Interruption Tags never read each other's numbers.
+  assert.equal(interrupterAmount(['Hard to Interrupt (4)']), 0);
+  assert.equal(hardToInterruptAmount(['Interrupter (4)']), 0);
+  assert.equal(hardToInterruptAmount(['Hard to Interrupt (4)']), 4);
+});
+
+test('resolveInterruptContest: the untagged rule is unchanged', () => {
+  // The Interruption rolls on the caught move's own Roll and lands when it
+  // reaches the damage just taken. Equal is enough.
+  assert.equal(resolveInterruptContest({ interruptRoll: 5, halfDamageSteps: 2 }).interrupted, true);
+  assert.equal(resolveInterruptContest({ interruptRoll: 2, halfDamageSteps: 2 }).interrupted, true);
+  assert.equal(resolveInterruptContest({ interruptRoll: 1, halfDamageSteps: 2 }).interrupted, false);
+  assert.deepEqual(resolveInterruptContest({}), { effectiveRoll: 0, threshold: 0, interrupted: true });
+});
+
+test('resolveInterruptContest: each Tag pushes its own side, and only this comparison', () => {
+  // Interrupter (2) turns a roll that fell one short into one that lands.
+  const withInterrupter = resolveInterruptContest({ interruptRoll: 1, halfDamageSteps: 2, interrupter: 2 });
+  assert.deepEqual(withInterrupter, { effectiveRoll: 3, threshold: 2, interrupted: true });
+
+  // Hard to Interrupt (3) raises the bar out of a roll's reach.
+  const withResistance = resolveInterruptContest({ interruptRoll: 4, halfDamageSteps: 2, hardToInterrupt: 3 });
+  assert.deepEqual(withResistance, { effectiveRoll: 4, threshold: 5, interrupted: false });
+
+  // Both at once cancel out exactly, leaving the untagged answer.
+  const both = resolveInterruptContest({ interruptRoll: 4, halfDamageSteps: 2, interrupter: 3, hardToInterrupt: 3 });
+  assert.equal(both.interrupted, resolveInterruptContest({ interruptRoll: 4, halfDamageSteps: 2 }).interrupted);
+  assert.equal(both.effectiveRoll, 7);
+  assert.equal(both.threshold, 5);
 });

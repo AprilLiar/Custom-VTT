@@ -64,7 +64,14 @@ import {
   resolveNoDamageOutcome,
   DEFAULT_SUCCESS_THRESHOLD,
 } from './combatDamage.js';
-import { carriesBlockTag, carriesNoDamageTag, effectiveTagNames } from './tagAutomations.js';
+import {
+  carriesBlockTag,
+  carriesNoDamageTag,
+  effectiveTagNames,
+  hardToInterruptAmount,
+  interrupterAmount,
+  resolveInterruptContest,
+} from './tagAutomations.js';
 import {
   DECLINE_FOLLOW_UP,
   DIRECTIONS,
@@ -431,26 +438,57 @@ async function applyMoveInteractions(io, {
         break;
       }
       case 'self_stat_step':
+      case 'self_stat_increase':
       case 'opponent_stat_step': {
-        const isSelf = automation.type === 'self_stat_step';
+        const isSelf = automation.type !== 'opponent_stat_step';
         const who = isSelf ? selfCharacter : opponentCharacter;
         const whoId = isSelf ? selfCharacterId : opponentCharacterId;
         if (!who || whoId == null) break;
+        // `self_stat_increase` is `self_stat_step` with its direction in its
+        // name instead of its sign — negated here, at the single point either
+        // one executes, so there is no second implementation to drift.
+        const steps = automation.type === 'self_stat_increase' ? -amount : amount;
         const stepped = await stepStat(io, {
           characterId: whoId,
           slotName: automation.slot,
-          steps: amount,
+          steps,
           emitEvent,
           tic,
           characterName: who.name,
         });
         effects.push(
           stepped
-            ? `${automation.slot} ${amount > 0 ? 'down' : 'up'} ${Math.abs(amount)} ${
-                Math.abs(amount) === 1 ? 'step' : 'steps'
+            ? `${automation.slot} ${steps > 0 ? 'down' : 'up'} ${Math.abs(steps)} ${
+                Math.abs(steps) === 1 ? 'step' : 'steps'
               } (${who.name})`
             : `(${who.name} has no ${automation.slot} to step)`
         );
+        break;
+      }
+      case 'opponent_next_roll_penalty': {
+        // **A debt, not a modifier.** Every other roll modifier in the game is
+        // a standing fact re-read at each roll (see combatBonuses.js); this one
+        // is spent by the very next roll that character makes, of any kind, and
+        // is then gone. Stored on the character rather than on a seat so it
+        // survives the fight ending and cannot be shed by being re-seated.
+        if (!opponentCharacter || opponentCharacterId == null) break;
+        await run('UPDATE characters SET pending_roll_penalty = pending_roll_penalty + ? WHERE id = ?', [
+          amount,
+          opponentCharacterId,
+        ]);
+        const held = await one('SELECT pending_roll_penalty AS n FROM characters WHERE id = ?', [
+          opponentCharacterId,
+        ]);
+        io.emit('character:updated', await getCharacter(opponentCharacterId));
+        if (emitEvent && tic != null) {
+          await emitEvent(tic, 'next_roll_penalty', {
+            characterId: opponentCharacterId,
+            characterName: opponentCharacter.name,
+            amount,
+            pending: held?.n ?? amount,
+          });
+        }
+        effects.push(`−${amount} on ${opponentCharacter.name}'s next roll`);
         break;
       }
       case 'self_stamina':
@@ -626,7 +664,18 @@ async function stepStat(io, { characterId, slotName, steps, emitEvent, tic, char
 // +computeInterruptBonus, and Interrupts (deletes the Startup move, refunds
 // half its committed Stamina Cost) on a successful roll-off. No-op if the
 // target has nothing in Startup during the attacker's Active window.
-async function checkInterrupt(io, { targetCharacterId, attackerRevealTic, attackerActiveTics, halfDamageSteps, emitEvent, tic }) {
+async function checkInterrupt(io, {
+  targetCharacterId,
+  attackerRevealTic,
+  attackerActiveTics,
+  halfDamageSteps,
+  // **Interrupter (x)** on the attacking move (decided, new). Read by the
+  // caller, which already has the attacker's resolved tag names in hand, so
+  // this function never has to know which move threw the punch.
+  interrupter = 0,
+  emitEvent,
+  tic,
+}) {
   const targetMoves = await all(
     `SELECT dm.id AS declaredMoveId, dm.placement_tic AS placementTic, dm.reveal_tic AS revealTic
      FROM declared_moves dm WHERE dm.character_id = ?`,
@@ -656,13 +705,18 @@ async function checkInterrupt(io, { targetCharacterId, attackerRevealTic, attack
     [eligible.declaredMoveId]
   );
   if (!startupDM) return;
-  const [rollSlotRows, rollBonusRow] = await Promise.all([
+  const [rollSlotRows, rollBonusRow, startupTagNames] = await Promise.all([
     all('SELECT slot_name, count FROM move_roll_slots WHERE move_id = ?', [startupDM.move_id]),
     one(
       'SELECT COALESCE(SUM(amount), 0) AS bonus FROM character_move_roll_bonuses WHERE character_id = ? AND move_id = ?',
       [targetCharacterId, startupDM.move_id]
     ),
+    // **Hard to Interrupt (x)** belongs to the move being caught mid-Startup —
+    // the one rolling to hold itself together — not to whoever owns the turn.
+    // Resolved per character, so a Perk that grants the Tag counts.
+    moveTagNamesFor(targetCharacterId, startupDM.move_id),
   ]);
+  const hardToInterrupt = hardToInterruptAmount(startupTagNames);
   const bonus = computeInterruptBonus({ revealTic: attackerRevealTic, currentTic: eligible.tic });
   // The move being interrupted is the one rolling, so its Combat Style is
   // the one that joins the matchup here.
@@ -701,7 +755,20 @@ async function checkInterrupt(io, { targetCharacterId, attackerRevealTic, attack
   // (Needs confirmation, per the plan's own 4.4 note): threshold assumed to
   // be `roll >= damage taken` — the attack's own halfDamageSteps, threaded
   // in by the caller (this only ever runs once damage is about to land).
-  const interrupted = result >= halfDamageSteps;
+  //
+  // The two Interruption Tags move this one comparison and nothing else
+  // (decided, new): Interrupter (x) adds to the roll, Hard to Interrupt (x)
+  // raises the bar. Neither touched the roll that went out over logRoll just
+  // above — that one is real and is shown at its real value, because the blow
+  // is only *considered* more disruptive for this comparison, it does not
+  // actually hit harder.
+  const contest = resolveInterruptContest({
+    interruptRoll: result,
+    halfDamageSteps,
+    interrupter,
+    hardToInterrupt,
+  });
+  const interrupted = contest.interrupted;
   const activeEndTic = startupDM.reveal_tic + startupDM.active_tics;
   await emitEvent(tic, 'interrupt_resolved', {
     startupDeclaredMoveId: startupDM.id,
@@ -711,6 +778,14 @@ async function checkInterrupt(io, { targetCharacterId, attackerRevealTic, attack
     interrupted,
     result,
     halfDamageSteps,
+    // What the comparison actually used, so the cutscene can narrate the Tags
+    // rather than showing a roll of 4 losing to a threshold of 2. Both are 0
+    // on the overwhelming majority of moves, which is the renderer's cue to
+    // say nothing about them.
+    interrupter,
+    hardToInterrupt,
+    effectiveResult: contest.effectiveRoll,
+    threshold: contest.threshold,
     characterId: startupDM.character_id,
     characterName: startupDM.character_name,
     characterType: startupDM.character_type,
@@ -992,6 +1067,7 @@ async function runInterruptAndDamage(io, {
       attackerRevealTic: attackActiveStart,
       attackerActiveTics,
       halfDamageSteps: Math.max(...applied.map((a) => a.steps)),
+      interrupter: interrupterAmount(attackerTagNames),
       emitEvent,
       tic,
     });

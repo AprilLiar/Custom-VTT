@@ -5,7 +5,7 @@
 // real server on import) — nothing here closes over `io` or a socket, so it
 // is import-safe and both sides can just use it.
 
-import { all, one } from './db.js';
+import { all, one, run } from './db.js';
 import { buildBeats, matchupStyles, pairScore } from '../client/src/lib/matchups.js';
 import { grapplePenaltyAt } from './grappleLogic.js';
 
@@ -293,10 +293,11 @@ export async function getCombatRollBonus(characterId, opts = {}) {
 // (decided, new). Zero-valued terms are dropped: a list that says
 // "Reasons to Fight +0" every round is noise, not transparency.
 export async function getCombatRollBonusBreakdown(characterId, { moveId = null, tic = null } = {}) {
-  const [reasons, matchup, grapple] = await Promise.all([
+  const [reasons, matchup, grapple, owed] = await Promise.all([
     getReasonsToFightBonus(characterId),
     stanceMatchupParts(characterId, { moveId, tic }),
     getGrapplePenalty(characterId, tic),
+    consumeNextRollPenalty(characterId),
   ]);
   const styleName =
     matchup.moveStyleId != null
@@ -307,8 +308,37 @@ export async function getCombatRollBonusBreakdown(characterId, { moveId = null, 
     { key: 'stance', label: 'Stance matchup', amount: matchup.stance },
     { key: 'combat_style', label: styleName ? `Combat Style: ${styleName}` : 'Combat Style', amount: matchup.moveStyle },
     { key: 'grapple', label: 'Held in a grapple', amount: grapple },
+    { key: 'next_roll_penalty', label: 'Weakened', amount: -owed },
   ].filter((t) => t.amount !== 0);
-  return { total: reasons + matchup.total + grapple, terms };
+  return { total: reasons + matchup.total + grapple - owed, terms };
+}
+
+// The `opponent_next_roll_penalty` automation's debt: read it and spend it in
+// one go (see characters.pending_roll_penalty). Returns the points owed, as a
+// positive number — the caller subtracts.
+//
+// **This is the one modifier in here that is consumed rather than re-read**,
+// which is exactly why it lives at this single funnel: every roll a character
+// actually makes comes through `getCombatRollBonusBreakdown` — the engine's
+// move rolls, the defensive roll, the Interruption roll, and the three hand-
+// thrown paths in server/index.js — and each of them calls it exactly once per
+// roll. Spending it anywhere else would mean finding all six again, and
+// spending it twice would be worse.
+//
+// **The per-round Initiative roll is deliberately NOT one of them** (assumed —
+// worth confirming). It reads getStanceMatchupBonus directly rather than this,
+// so it never sees the debt. Taken literally, "the next roll of any kind"
+// would include it, and then a penalty applied mid-round would be paid off by
+// the *next round's* Initiative before its victim ever threw a move — which
+// would make the automation almost impossible to actually feel. The reading
+// here is "the next roll they make", where Initiative is bookkeeping the round
+// does on their behalf.
+async function consumeNextRollPenalty(characterId) {
+  const row = await one('SELECT pending_roll_penalty AS n FROM characters WHERE id = ?', [characterId]);
+  const owed = row?.n ?? 0;
+  if (!owed) return 0;
+  await run('UPDATE characters SET pending_roll_penalty = 0 WHERE id = ?', [characterId]);
+  return owed;
 }
 
 // Grappling's −2: someone held in a grapple rolls worse for as long as the

@@ -68,6 +68,7 @@ const EVENT_LABEL = {
   interrupt_resolved: 'Interrupt',
   damage_applied: 'Damage',
   stat_stepped: 'Stat',
+  next_roll_penalty: 'Weakened',
   move_conflict_prompt: 'Conflict?',
   move_conflict_resolved: 'Conflict',
   automation_fired: 'Automation',
@@ -115,6 +116,17 @@ const COVERAGE_PHRASE = {
 };
 
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+
+// "rolled 4 (+2 Interrupter) against 2 steps (+3 Hard to Interrupt)" — the
+// Interruption comparison, said out loud only where a Tag actually moved it.
+// Both amounts are 0 on almost every move, and a line that always announced
+// "+0 Interrupter" would bury the two exchanges where the Tag is the story.
+function interruptTally(p) {
+  const roll = p.interrupter ? `${p.result} (+${p.interrupter} Interrupter)` : `${p.result}`;
+  const steps = plural(p.halfDamageSteps ?? 0, 'step', 'steps');
+  const bar = p.hardToInterrupt ? `${steps} (+${p.hardToInterrupt} Hard to Interrupt)` : steps;
+  return `rolled ${roll} against ${bar}`;
+}
 
 // The log used to be a label plus a terse fragment, with the actual meaning
 // only reachable by hovering for a tooltip — unreadable at the table, where
@@ -239,8 +251,8 @@ function eventNarration(ev, startTic) {
         : 'The GM called the Dodge Failed.';
     case 'interrupt_resolved':
       return p.interrupted
-        ? `${who}'s move is Interrupted mid-Startup — rolled ${p.result} against ${plural(p.halfDamageSteps ?? 0, 'step', 'steps')}, and it never comes out.`
-        : `${who} holds through the hit — rolled ${p.result} against ${plural(p.halfDamageSteps ?? 0, 'step', 'steps')}, their move survives.`;
+        ? `${who}'s move is Interrupted mid-Startup — ${interruptTally(p)}, and it never comes out.`
+        : `${who} holds through the hit — ${interruptTally(p)}, their move survives.`;
     case 'damage_applied':
       if (p.result === 'no-eligible-target') return 'Nothing left to hit — every allowed Stat is out.';
       // A stored replay from before `stat_stepped` existed has its automation
@@ -280,6 +292,15 @@ function eventNarration(ev, startTic) {
       const head = `${p.moveName ?? 'A move'} — ${p.triggerLabel ?? p.trigger ?? 'effect'}`;
       const body = [p.text, (p.effects ?? []).join(', ')].filter(Boolean).join(' — ');
       return body ? `${head}: ${body}` : `${head} fired.`;
+    }
+    case 'next_roll_penalty': {
+      // A debt, not a standing modifier — it is spent by the very next roll
+      // that fighter makes and is then gone, so the line says "next roll"
+      // rather than naming a duration. `pending` is the running total when
+      // several have stacked up unpaid.
+      const owed = p.pending ?? p.amount ?? 0;
+      const tail = owed > (p.amount ?? 0) ? ` (${owed} owed in all)` : '';
+      return `${who} is rattled — −${p.amount ?? 0} on their next roll, whatever it turns out to be${tail}.`;
     }
     case 'stamina_changed':
       return `${who} ${p.delta < 0 ? 'spends' : 'recovers'} ${Math.abs(p.delta ?? 0)} Stamina — now ${p.currentStamina}/${p.maxStamina}.`;

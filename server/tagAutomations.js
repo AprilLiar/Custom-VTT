@@ -20,6 +20,15 @@
 export const BLOCK_TAG = 'Block';
 export const NO_DAMAGE_TAG = 'No Damage';
 export const FEINT_TAG = 'Feint';
+// **The first Tags that carry a NUMBER.** Authored as `Interrupter (3)` /
+// `Hard to Interrupt (2)` — the amount lives in the tag's own name rather than
+// in a new column, because a Tag is a world-level row the GM creates and names,
+// and "Interrupter (3)" is already how a table would write it on a card. Three
+// separate tags for three strengths is also how a GM would naturally build it,
+// and `tagAmount` below sums them, so stacking works without anybody designing
+// stacking.
+export const INTERRUPTER_TAG = 'Interrupter';
+export const HARD_TO_INTERRUPT_TAG = 'Hard to Interrupt';
 
 // One entry per Tag that carries mechanics. See resolveBlockStamina and
 // resolveNoDamageOutcome in combatDamage.js for the arithmetic behind each,
@@ -49,6 +58,20 @@ export const TAG_HOOKS = {
     // Which authoring field the Move Creator reveals for it.
     thresholdField: 'success_threshold',
   },
+  [INTERRUPTER_TAG]: {
+    // Carries an amount in its name; see tagAmount. It moves ONE comparison —
+    // the Interruption check — and nothing else. The attack's own roll, its
+    // damage and every other rule are untouched: the attack is merely
+    // "considered" this much harder to hold through.
+    parameterised: true,
+    interruptSide: 'attacker',
+  },
+  [HARD_TO_INTERRUPT_TAG]: {
+    // The same knob from the other side: the move being caught in Startup
+    // counts its resistance roll this much higher, for that comparison only.
+    parameterised: true,
+    interruptSide: 'defender',
+  },
   [FEINT_TAG]: {
     // A Feint shows its own Tell exactly like any other move — that is the
     // whole point, it is a lie told in public. What it changes is the move
@@ -66,6 +89,68 @@ const norm = (name) => String(name ?? '').trim().toLowerCase();
 export function hasTagNamed(tagNames, tagName) {
   const wanted = norm(tagName);
   return (tagNames ?? []).some((n) => norm(n) === wanted);
+}
+
+// How much a parameterised Tag is worth on this move, summed across every tag
+// whose name is `<Name> (<number>)` — or the bare `<Name>`, which counts as 1
+// so a GM who writes just "Interrupter" gets the obvious thing rather than
+// nothing.
+//
+// Matched the same way `hasTagNamed` matches: case-insensitively, whitespace
+// tolerant, by NAME rather than id, because the GM owns the tag list and may
+// rename or re-create one at any time. Spaces inside the parentheses, a `+`
+// sign, and any amount of padding are all accepted — this is a name a person
+// typed, not a form field.
+//
+// Returns 0 when the Tag isn't present at all, so every caller can add it
+// unconditionally.
+export function tagAmount(tagNames, tagName) {
+  const wanted = norm(tagName);
+  let total = 0;
+  for (const raw of tagNames ?? []) {
+    const name = norm(raw);
+    if (name === wanted) {
+      total += 1;
+      continue;
+    }
+    // `interrupter (3)` — the prefix has to match exactly, so a tag called
+    // "Interrupter Killer" never counts as an Interrupter.
+    const m = name.match(/^(.*?)\s*\(\s*\+?(\d+)\s*\)$/);
+    if (m && m[1] === wanted) total += Number(m[2]);
+  }
+  return total;
+}
+
+export const interrupterAmount = (tagNames) => tagAmount(tagNames, INTERRUPTER_TAG);
+export const hardToInterruptAmount = (tagNames) => tagAmount(tagNames, HARD_TO_INTERRUPT_TAG);
+
+// The Interruption comparison, with both Tags folded in (decided, new).
+//
+// The base rule is unchanged, and it is worth stating precisely because it is
+// easy to read backwards: the **Interruption itself** is what rolls, and it
+// rolls on the caught move's own Roll — the shock is measured on the very move
+// it caught. Reaching the damage just taken means that move comes apart. A low
+// roll means the fighter held it together. (checkInterrupt in
+// roundResolution.js is the caller; `game_rules.md` used to describe this
+// outcome inverted, and was corrected in the same change that added these
+// Tags.)
+//
+// **Interrupter (x) adds to the roll; Hard to Interrupt (x) raises the bar** —
+// each Tag moves its own side of that one comparison and nothing else. Neither
+// touches the attack's real roll or its real damage: the blow is only
+// *considered* x more disruptive, and the move caught in Startup only
+// considered x better braced.
+//
+// Pure, so the arithmetic can be pinned without a socket.
+export function resolveInterruptContest({
+  interruptRoll = 0,
+  halfDamageSteps = 0,
+  interrupter = 0,
+  hardToInterrupt = 0,
+} = {}) {
+  const effectiveRoll = interruptRoll + interrupter;
+  const threshold = halfDamageSteps + hardToInterrupt;
+  return { effectiveRoll, threshold, interrupted: effectiveRoll >= threshold };
 }
 
 export const carriesBlockTag = (tagNames) => hasTagNamed(tagNames, BLOCK_TAG);

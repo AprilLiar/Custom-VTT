@@ -9,8 +9,17 @@ export const TRIGGER_LABELS = {
   grapple_success: 'On Successful Grapple',
 };
 
-export function automationLabel({ type, amount }) {
+// **Every authored automation type needs a case here (bugfix).** The fallback
+// prints the raw payload — a stat step rendered as literally
+// `opponent_stat_step 1` on the move card, which is what "it shows a string
+// instead of a proper name" meant. It is kept as a last resort rather than
+// removed, because a card must still render something for an automation saved
+// by a newer version of the app than the one displaying it.
+export function automationLabel({ type, amount, slot }) {
   const n = Math.abs(amount);
+  // The stat-step types name a Stat, and the Stat is the point — "step 1" says
+  // nothing without it.
+  const where = slot ? ` ${slot}` : '';
   switch (type) {
     case 'self_recovery':
       return `${amount > 0 ? '+' : '−'}${n} Recovery (self)`;
@@ -20,6 +29,21 @@ export function automationLabel({ type, amount }) {
       return `−${n} Stamina (self)`;
     case 'opponent_stamina':
       return `−${n} Stamina → opponent`;
+    case 'self_stat_step':
+      // A step is signed: positive damages, negative restores. Say which,
+      // rather than printing a minus sign and leaving the reader to work out
+      // that a negative amount of damage is healing.
+      return amount > 0
+        ? `${n} step${n === 1 ? '' : 's'} down${where} (self)`
+        : `${n} step${n === 1 ? '' : 's'} up${where} (self)`;
+    case 'opponent_stat_step':
+      return amount > 0
+        ? `${n} step${n === 1 ? '' : 's'} down${where} → opponent`
+        : `${n} step${n === 1 ? '' : 's'} up${where} → opponent`;
+    case 'self_stat_increase':
+      return `${n} step${n === 1 ? '' : 's'} up${where} (self)`;
+    case 'opponent_next_roll_penalty':
+      return `−${n} on the opponent's next roll`;
     default:
       return `${type} ${amount}`;
   }
@@ -30,8 +54,14 @@ export const AUTOMATION_OPTIONS = [
   { type: 'opponent_recovery', label: 'Add Recovery to opponent' },
   { type: 'self_stamina', label: 'Lose extra Stamina (self)' },
   { type: 'opponent_stamina', label: 'Opponent loses Stamina' },
-  { type: 'self_stat_step', label: 'Step your own Stat (+/-)' },
-  { type: 'opponent_stat_step', label: "Step the opponent's Stat (+/-)" },
+  { type: 'self_stat_step', label: 'Step your own Stat down' },
+  { type: 'opponent_stat_step', label: "Step the opponent's Stat down" },
+  // Restoring a Stat was always possible — `self_stat_step` with a *negative*
+  // amount does it — but "type minus two to heal two" is not an authoring
+  // affordance anybody finds, so it gets its own option with a plain positive
+  // number. It is the same mechanic underneath, negated server-side.
+  { type: 'self_stat_increase', label: 'Increase your own Stat' },
+  { type: 'opponent_next_roll_penalty', label: "Weaken the opponent's next roll" },
 ];
 
 // The two stat-step automations name one Stat outright, so they use the
@@ -55,7 +85,15 @@ export const SIGNED_AUTOMATION_TYPES = new Set([
   'opponent_stat_step',
 ]);
 
-export const STAT_STEP_AUTOMATION_TYPES = new Set(['self_stat_step', 'opponent_stat_step']);
+// Mirrors STAT_STEP_TYPES in server/moveLogic.js (the authority): which types
+// show a Stat picker in the Move Creator. `self_stat_increase` names a Stat
+// too — it just has its direction in its name rather than in its sign, which
+// is why it is absent from SIGNED_AUTOMATION_TYPES above.
+export const STAT_STEP_AUTOMATION_TYPES = new Set([
+  'self_stat_step',
+  'opponent_stat_step',
+  'self_stat_increase',
+]);
 
 // ---------- Block Tag (the first Tag automation) ----------
 //

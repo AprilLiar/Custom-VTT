@@ -289,6 +289,26 @@ same breath as the lie.
 > reads Tells it does nothing at all, and it still costs you a move's worth
 > of frames to throw.
 
+### The Interruption Tags
+
+Two Tags carry a **number in their own name**, written the way a table would
+write it on a card: **Interrupter (2)**, **Hard to Interrupt (3)**. They are
+the only Tags that do this, and both of them move exactly one comparison — the
+Interruption check — and nothing else.
+
+- **Interrupter (x)** goes on an *attack*. When that attack lands on somebody
+  still winding up, the Interruption is counted **x higher**.
+- **Hard to Interrupt (x)** goes on a move that might get *caught* winding up.
+  It raises the bar an Interruption has to clear against that move by **x**.
+
+Neither one touches a real roll or a real amount of damage. The attack does
+not hit harder; it is only *considered* more disruptive, for that one
+question. See **Interruption** under Resolution for the check itself.
+
+If you write just **Interrupter**, with no number, it counts as 1. Several of
+them on one move add up, so three different Tags worth 1, 2 and 3 sit on a
+move as a 6.
+
 ### Grappling
 
 Most moves try to hurt you. A **Grappling** move tries to *take* you.
@@ -663,9 +683,16 @@ Taking a hit while you are still inside your own move's **Startup** can
 disrupt it.
 
 The engine walks the attacker's Active window for the first Tic at which the
-target is still in Startup. The interrupted character rolls their own Startup
-move's Roll — or **Body**, if that move has none — at **+1 per elapsed Active
-Tic**. Failing means the move is cancelled and half its Stamina Cost refunded.
+target is still in Startup. The Interruption is then rolled **on the caught
+move's own Roll** — or **Body**, if that move has none — at **+1 per elapsed
+Active Tic**: the shock is measured on the very move it caught. Reaching the
+damage that just landed means that move **comes apart** — it is cancelled and
+half its Stamina Cost refunded. Falling short means the fighter held it
+together and it comes out as declared.
+
+**Interrupter (x)** on the attack adds x to that roll; **Hard to Interrupt (x)**
+on the caught move adds x to the bar it has to reach. See **The Interruption
+Tags** under Moves.
 
 Getting caught winding up is how a fight turns over in one exchange — which is
 why a wind-up is not a secret. Every Tic an attack spends in **Startup** is
@@ -677,6 +704,27 @@ aiming an Interruption into rather than guessing at it.
 What the marking never tells you is **what** the move is, when its Active
 frames land, or how long it recovers for. That is what the Tell is for, and
 what reading one is worth.
+
+### What a move does besides damage
+
+A move can carry effects that fire on a specific outcome — **On Hit**, **On
+Block**, **On Miss**, **On Successful Defense**, **On Failed Defense**, **On
+Successful Grapple**. Each one is a line of description plus any number of
+mechanical effects, and they all resolve the instant that outcome is decided:
+
+- **Recovery on you or on them** — see *Recovery somebody else puts on you*
+  under Combat Timing. It lands on the clock immediately.
+- **Stamina off you or off them**, on top of whatever the move already cost.
+- **Step a Stat down** — yours or theirs. Half-Damage steps, exactly as damage
+  works, but they land wherever the move says rather than where the attack
+  was aimed.
+- **Step your own Stat up** — the same thing running backwards, a move that
+  puts something of yours back together as it lands.
+- **Weaken their next roll** — a flat penalty on the very next roll that
+  fighter makes, **of any kind**. It is a debt, not a condition: it is paid by
+  that one roll and then it is gone. Nothing else about them changes, and it
+  does not expire at the end of a round — an opponent who never rolls again
+  this round carries it into the next one.
 
 ## Stamina
 
