@@ -65,7 +65,9 @@ import {
   feintMasksDeclaration,
   BLOCK_TAG,
 } from './tagAutomations.js';
-import { effectiveFrames, PERK_HOOKS, idleStaminaRegenRate } from './perkAutomations.js';
+import { effectiveFrames, idleStaminaRegenRate } from './perkAutomations.js';
+import { clearAllPerkState, perkAllowsRevealedDetail } from './perkEngine.js';
+import { isAutomatedPerk, perkDefinition } from './perks/index.js';
 import {
   resolveSideInitiative,
   computePlacementTic,
@@ -367,11 +369,12 @@ async function getPerk(id) {
   const perk = await one('SELECT * FROM perks WHERE id = ?', [id]);
   if (!perk) return null;
   const tags = await all('SELECT perk_tag_id FROM perk_tag_links WHERE perk_id = ? ORDER BY id', [id]);
-  return { ...perk, tag_ids: tags.map((t) => t.perk_tag_id) };
+  return { ...perk, tag_ids: tags.map((t) => t.perk_tag_id), automated: isAutomatedPerk(perk.name) };
 }
 
-// A character's granted Perks (id, name, description, picture — automation
-// is now manual per-Perk code, not stored data, see perkAutomations.js).
+// A character's granted Perks (id, name, description, picture, plus whether
+// the Perk has code behind it — mechanics are per-Perk code bound by name, see
+// server/perks/index.js, never stored automation data).
 async function getCharacterPerks(characterId) {
   const rows = await all(
     `SELECT p.*, cp.id AS character_perk_id
@@ -400,6 +403,11 @@ async function getCharacterPerks(characterId) {
     image_data: r.image_data,
     image_mime_type: r.image_mime_type,
     tag_ids: tagsBy.get(r.id) ?? [],
+    // Whether this Perk has code behind it (server/perks/index.js). A Perk's
+    // mechanics bind to its NAME, which is invisible from the outside — the
+    // card shows a badge for this so a GM can tell at a glance which of their
+    // Perks actually do something and which are pure description.
+    automated: isAutomatedPerk(r.name),
   }));
 }
 
@@ -485,6 +493,41 @@ function viewerFromQuery(query) {
 // never the GM for a Player's move, "for fairness" (decided): the GM is an
 // adversarial party in this game, not an omniscient narrator, so a Player's
 // secret stays secret from the GM exactly like it does from other Players.
+// What this viewer is allowed to do that a Perk can change (decided, new).
+//
+// **Answered here rather than in the browser**, which is the whole point of the
+// change: reading a revealed move in full used to be a `window.confirm("Does
+// your character have the Genius Observer Perk?")` — an honour-system prompt
+// that trusted the reader about the reader's own advantage. Identity is already
+// tracked per connection for exactly this class of question (see identity:set
+// and isRevealedToViewer below), so the same machinery answers this one.
+//
+// It is still the app's usual trust model — anybody can pick anybody's
+// character at the door — but it is now the *same* trust model as everything
+// else, rather than a second, weaker one layered on top.
+//
+// The GM always qualifies: they authored the move, and the gate exists to stop
+// a Player reading detail their character did not earn.
+async function capabilitiesFor(identity) {
+  if (!identity) return { canSeeRevealedDetail: false };
+  if (identity.role === 'gm') return { canSeeRevealedDetail: true };
+  return { canSeeRevealedDetail: await perkAllowsRevealedDetail(identity.characterId) };
+}
+
+// Push a fresh answer to whoever is logged in as this character. Granting a
+// Perk mid-session has to take effect at the table, not on the next reload.
+async function refreshCapabilities(characterId) {
+  const id = Number(characterId);
+  if (!Number.isInteger(id)) return;
+  let payload = null;
+  for (const socket of io.sockets.sockets.values()) {
+    const identity = socket.data?.identity;
+    if (identity?.role !== 'player' || identity.characterId !== id) continue;
+    payload = payload ?? (await capabilitiesFor(identity));
+    socket.emit('identity:capabilities', payload);
+  }
+}
+
 function isRevealedToViewer(row, viewer) {
   if (!viewer) return false;
   if (viewer.role === 'player') return viewer.characterId === row.character_id;
@@ -1041,6 +1084,7 @@ app.get('/api/perks', wrap(async (_req, res) => {
       ...p,
       granted_character_ids: grantedBy.get(p.id) ?? [],
       tag_ids: tagsBy.get(p.id) ?? [],
+      automated: isAutomatedPerk(p.name),
     }))
   );
 }));
@@ -1505,6 +1549,7 @@ io.on('connection', (socket) => {
   on('identity:set', async ({ role, characterId }) => {
     if (role === 'gm') {
       socket.data.identity = { role: 'gm' };
+      socket.emit('identity:capabilities', await capabilitiesFor(socket.data.identity));
       return;
     }
     const id = Number(characterId);
@@ -1512,6 +1557,7 @@ io.on('connection', (socket) => {
       const character = await one('SELECT id FROM characters WHERE id = ?', [id]);
       socket.data.identity = character ? { role: 'player', characterId: character.id } : null;
     }
+    socket.emit('identity:capabilities', await capabilitiesFor(socket.data.identity));
   });
 
   on('die:roll', async ({ characterId, dieId, modifier }) => {
@@ -2646,12 +2692,30 @@ io.on('connection', (socket) => {
   });
 
   // Shared validation + write path for perk create/update. Perks are just
-  // picture/name/description now — mechanical effects are handled per-Perk
-  // in server/perkAutomations.js's PERK_HOOKS, not stored automation data.
+  // picture/name/description here — mechanical effects are per-Perk code bound
+  // by name (server/perks/index.js), never stored automation data.
   const writePerk = async (perkId, payload) => {
     const name = String(payload.name ?? '').trim();
     if (!name) return null;
     const description = String(payload.description ?? '').trim();
+
+    // **An automated Perk's name is frozen (decided, new).** Its mechanics bind
+    // to that exact string, so a rename does not adjust the binding — it breaks
+    // it, silently, leaving a Perk that still looks granted and does nothing.
+    // That is the one failure mode name-keyed registries actually have, and the
+    // only place a user can trigger it. Everything else about the Perk —
+    // description, picture, Perk Tags — stays freely editable; refusing the
+    // whole save would be a worse trade.
+    if (perkId != null) {
+      const current = await one('SELECT name FROM perks WHERE id = ?', [perkId]);
+      if (current && isAutomatedPerk(current.name) && name !== current.name) {
+        await postSystemMessage(
+          io,
+          `"${current.name}" has automated rules attached to its name, so it can't be renamed. Its description, picture and tags are still editable.`
+        );
+        return null;
+      }
+    }
 
     let id = perkId;
     if (id == null) {
@@ -2728,9 +2792,19 @@ io.on('connection', (socket) => {
     ]);
     const characterPerkId = Number(result.lastInsertRowid);
 
-    await PERK_HOOKS[perk.name]?.onGrant?.({ characterId: character.id, perkId: perk.id, characterPerkId });
+    // Tier 3 of the Perk architecture — the imperative escape hatch, for a Perk
+    // whose effect is a permanent change made once at grant time. `io` is
+    // handed in rather than imported by the Perk file, so a definition never
+    // has to reach into this module (see server/perks/index.js).
+    await perkDefinition(perk.name)?.onGrant?.({
+      characterId: character.id,
+      perkId: perk.id,
+      characterPerkId,
+      io,
+    });
 
     io.emit('perk:granted', { characterId: character.id, perkId: perk.id });
+    await refreshCapabilities(character.id);
   });
 
   on('perk:revoke', async ({ characterId, perkId }) => {
@@ -2741,20 +2815,24 @@ io.on('connection', (socket) => {
     if (!characterPerk) return;
     const perk = await one('SELECT * FROM perks WHERE id = ?', [characterPerk.perk_id]);
 
-    // Move-scoped rows a manual PERK_HOOKS.onGrant may have tagged with this
-    // grant — cleaned up in bulk here rather than by the hook itself.
+    // Move-scoped rows an onGrant may have tagged with this grant — cleaned up
+    // in bulk here rather than by the hook itself. `character_perk_state` needs
+    // no line of its own: it cascades off character_perks.
     await run('DELETE FROM character_move_tags WHERE source_character_perk_id = ?', [characterPerk.id]);
     await run('DELETE FROM character_move_overrides WHERE source_character_perk_id = ?', [characterPerk.id]);
     await run('DELETE FROM character_move_roll_bonuses WHERE source_character_perk_id = ?', [characterPerk.id]);
-    await run('DELETE FROM character_perks WHERE id = ?', [characterPerk.id]);
 
-    await PERK_HOOKS[perk?.name]?.onRevoke?.({
+    // **Before the grant row goes**, so a hook can still read its own state.
+    await perkDefinition(perk?.name)?.onRevoke?.({
       characterId: characterPerk.character_id,
       perkId: characterPerk.perk_id,
       characterPerkId: characterPerk.id,
+      io,
     });
+    await run('DELETE FROM character_perks WHERE id = ?', [characterPerk.id]);
 
     io.emit('perk:revoked', { characterId: characterPerk.character_id, perkId: characterPerk.perk_id });
+    await refreshCapabilities(characterPerk.character_id);
   });
 
   const emitRoleplay = async (characterId) =>
@@ -3120,6 +3198,10 @@ io.on('connection', (socket) => {
     await run('DELETE FROM combat_participants');
     await run('DELETE FROM declared_moves');
     await run('DELETE FROM combat_pairs');
+    // Fight-scoped Perk charges. Cleared globally rather than per seat, because
+    // a fight ending here IS global — every pair and every seat goes with it —
+    // and a character who left the arena mid-fight has to lose theirs too.
+    await clearAllPerkState('fight');
     // Fresh is a per-fight choice, never a standing setting — see its own
     // note on combat:toggle_fresh. Ending or clearing a fight puts it back
     // off so the next one has to opt in again.
@@ -3140,6 +3222,7 @@ io.on('connection', (socket) => {
   on('combat:end', async () => {
     await run('DELETE FROM declared_moves');
     await run('DELETE FROM combat_pairs');
+    await clearAllPerkState('fight'); // see combat:clear
     await run('UPDATE combat_state SET fresh_start = 0 WHERE id = 1'); // see combat:clear
     await discardUnfinishedResolutions();
     await run('UPDATE combat_participants SET declared_this_round = 0, idle_regen_progress = 0');

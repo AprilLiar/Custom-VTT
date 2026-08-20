@@ -289,7 +289,11 @@ function eventNarration(ev, startTic) {
       // the same effect differently. The old version named neither the
       // move nor what actually happened — "an effect fired" is not a thing
       // anyone can act on.
-      const head = `${p.moveName ?? 'A move'} — ${p.triggerLabel ?? p.trigger ?? 'effect'}`;
+      // `sourceName` since Perks fire through the same executor — it is a
+      // move's name or a Perk's, whichever caused this. `moveName` is the
+      // fallback for every replay stored before Perks existed (§0: a stored
+      // event is never rewritten).
+      const head = `${p.sourceName ?? p.moveName ?? 'A move'} — ${p.triggerLabel ?? p.trigger ?? 'effect'}`;
       const body = [p.text, (p.effects ?? []).join(', ')].filter(Boolean).join(' — ');
       return body ? `${head}: ${body}` : `${head} fired.`;
     }

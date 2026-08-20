@@ -1,9 +1,14 @@
 import Thumb from './Thumb.jsx';
 
-// Perk display card: picture, name, description, and its Tags — automation is
-// now manual per-Perk code (server/perkAutomations.js), not stored/displayed
-// data. Used in both the Perks Compendium and the character sheet's read-only
-// Perks tab.
+// Perk display card: picture, name, description, and its Tags. Used in both the
+// Perks Compendium and the character sheet's read-only Perks tab.
+//
+// **The ⚙ badge is the one piece of mechanical information here**, and it earns
+// its place: a Perk's rules are code bound to its exact name
+// (server/perks/index.js), which is completely invisible from the outside.
+// Without the badge there is no way to tell a Perk that does something from one
+// that is pure description — they render identically. `automated` rides every
+// Perk payload the server sends for exactly this.
 //
 // `tags` is the resolved Perk Tag rows for perk.tag_ids. They are purely
 // categorisation and carry no mechanics, so they render as quiet chips below
@@ -16,7 +21,17 @@ export default function PerkCard({ perk, tags = [], actions }) {
       <div className="flex items-start gap-3">
         <Thumb record={perk} name={perk.name} size="h-12 w-12" cut="panel-cut" />
         <div className="min-w-0 flex-1">
-          <div className="font-bold text-zinc-100">{perk.name}</div>
+          <div className="flex items-center gap-1.5">
+            <span className="font-bold text-zinc-100">{perk.name}</span>
+            {perk.automated && (
+              <span
+                title="This Perk has automated rules — the engine applies it on its own."
+                className="shrink-0 rounded-full bg-emerald-900/40 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-300"
+              >
+                ⚙ Auto
+              </span>
+            )}
+          </div>
           {perk.description && <p className="mt-0.5 text-sm text-zinc-400">{perk.description}</p>}
           {tags.length > 0 && (
             <div className="mt-1.5 flex flex-wrap gap-1">

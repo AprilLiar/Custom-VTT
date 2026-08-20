@@ -8,6 +8,7 @@
 import { all, one, run } from './db.js';
 import { buildBeats, matchupStyles, pairScore } from '../client/src/lib/matchups.js';
 import { grapplePenaltyAt } from './grappleLogic.js';
+import { perkRollBonusTerms } from './perkEngine.js';
 
 // "Reasons to Fight" (see combat_participants.reasons_to_fight): +1 per
 // point. "While a fight is underway" is a per-pair question (combat_pairs.
@@ -293,11 +294,17 @@ export async function getCombatRollBonus(characterId, opts = {}) {
 // (decided, new). Zero-valued terms are dropped: a list that says
 // "Reasons to Fight +0" every round is noise, not transparency.
 export async function getCombatRollBonusBreakdown(characterId, { moveId = null, tic = null } = {}) {
-  const [reasons, matchup, grapple, owed] = await Promise.all([
+  const [reasons, matchup, grapple, owed, perkTerms] = await Promise.all([
     getReasonsToFightBonus(characterId),
     stanceMatchupParts(characterId, { moveId, tic }),
     getGrapplePenalty(characterId, tic),
     consumeNextRollPenalty(characterId),
+    // Perks (decided, new — see server/perks/index.js). One term per Perk
+    // rather than one lump, under the Perk's own name, for the same reason the
+    // Combat Style got its own line: a modifier nobody can account for reads as
+    // the engine inventing numbers. Zero contributions are already dropped by
+    // the resolver, so this is empty for the overwhelming majority of rolls.
+    perkRollBonusTerms(characterId, { moveId, tic }),
   ]);
   const styleName =
     matchup.moveStyleId != null
@@ -309,8 +316,10 @@ export async function getCombatRollBonusBreakdown(characterId, { moveId = null, 
     { key: 'combat_style', label: styleName ? `Combat Style: ${styleName}` : 'Combat Style', amount: matchup.moveStyle },
     { key: 'grapple', label: 'Held in a grapple', amount: grapple },
     { key: 'next_roll_penalty', label: 'Weakened', amount: -owed },
+    ...perkTerms,
   ].filter((t) => t.amount !== 0);
-  return { total: reasons + matchup.total + grapple - owed, terms };
+  const perkTotal = perkTerms.reduce((sum, t) => sum + t.amount, 0);
+  return { total: reasons + matchup.total + grapple - owed + perkTotal, terms };
 }
 
 // The `opponent_next_roll_penalty` automation's debt: read it and spend it in

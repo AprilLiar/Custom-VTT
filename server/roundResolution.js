@@ -119,6 +119,7 @@ import {
   planImposedRecovery,
 } from './combatTiming.js';
 import { idleStaminaRegenRate } from './perkAutomations.js';
+import { clearPerkState, consumeOnce, perkDefinitionsFor } from './perkEngine.js';
 import { getCombatRollBonus, getCombatRollBonusBreakdown, getStanceMatchupBonus } from './combatBonuses.js';
 
 const GM_CHAT_SENTINEL_ID = 0;
@@ -280,16 +281,31 @@ async function applyMoveInteractions(io, {
   emitEvent = null,
   tic = null,
 }) {
+  // **Perks fire here too, and BEFORE the move's own row is even looked up**
+  // (decided, new). A Perk that responds to a trigger is responding to the
+  // *outcome* — you were hit, your guard failed — not to the move that caused
+  // it, so it has to fire whether or not the move happens to have an On Hit of
+  // its own. Doing it inside this function rather than beside each of its call
+  // sites is deliberate: this is the single door every trigger in the game goes
+  // through (the engine's five, and combat:apply_damage's manual one), so a
+  // future trigger site cannot forget Perks. The callers' own
+  // `interactions_resolved` double-fire guard covers this too — one blow, one
+  // firing.
+  await firePerkTriggers(io, {
+    trigger,
+    selfCharacterId,
+    selfDeclaredMoveId,
+    opponentCharacterId,
+    opponentDeclaredMoveId,
+    emitEvent,
+    tic,
+  });
+
   const [move, row] = await Promise.all([
     one('SELECT id, name FROM moves WHERE id = ?', [moveId]),
     one('SELECT text, automations FROM move_interactions WHERE move_id = ? AND trigger = ?', [moveId, trigger]),
   ]);
   if (!move || !row) return;
-  const [selfCharacter, opponentCharacter] = await Promise.all([
-    getCharacter(selfCharacterId),
-    opponentCharacterId != null ? getCharacter(opponentCharacterId) : null,
-  ]);
-  if (!selfCharacter) return;
 
   let automations;
   try {
@@ -298,6 +314,95 @@ async function applyMoveInteractions(io, {
     automations = [];
   }
   if (!Array.isArray(automations)) automations = [];
+
+  await runAutomations(io, {
+    automations,
+    text: row.text,
+    trigger,
+    sourceName: move.name,
+    moveId,
+    selfCharacterId,
+    selfDeclaredMoveId,
+    opponentCharacterId,
+    opponentDeclaredMoveId,
+    emitEvent,
+    tic,
+  });
+}
+
+// "−2 Stamina" / "+2 Stamina". `amount` is how much is TAKEN, so the sign the
+// reader sees is the opposite of the sign in the data.
+const staminaLabel = (amount) => `${amount > 0 ? '−' : '+'}${Math.abs(amount)} Stamina`;
+
+// Tier 1 of the Perk architecture: a Perk's own declarative response to a
+// trigger, running through the very same executor a move's automations use.
+//
+// `once: 'round' | 'fight'` is spent per TRIGGER, not per Perk, so a Perk that
+// answers both On Hit and On Block gets one charge of each rather than the two
+// sharing one. The charge is consumed before the effects run and is not refunded
+// if they turn out to be no-ops — "once per round" means one attempt.
+async function firePerkTriggers(io, {
+  trigger,
+  selfCharacterId,
+  selfDeclaredMoveId = null,
+  opponentCharacterId = null,
+  opponentDeclaredMoveId = null,
+  emitEvent = null,
+  tic = null,
+}) {
+  const granted = await perkDefinitionsFor(selfCharacterId);
+  for (const { definition, name, characterPerkId } of granted) {
+    const block = definition.triggers?.[trigger];
+    if (!block?.automations?.length) continue;
+    if (block.once && !(await consumeOnce(characterPerkId, `trigger:${trigger}`, block.once))) continue;
+    await runAutomations(io, {
+      automations: block.automations,
+      text: block.text ?? null,
+      trigger,
+      sourceName: name,
+      sourceKind: 'perk',
+      selfCharacterId,
+      selfDeclaredMoveId,
+      opponentCharacterId,
+      opponentDeclaredMoveId,
+      emitEvent,
+      tic,
+    });
+  }
+}
+
+// The executor: a list of automations, applied.
+//
+// **Split out of applyMoveInteractions so a Perk can reach it** (decided, new).
+// A Perk that fires On Hit is doing the same thing a move's On Hit does — the
+// only difference is where the list came from — and giving Perks their own
+// copy of this switch would mean two implementations of every effect, drifting
+// apart one bugfix at a time. The vocabulary, the rendered `effects` phrases,
+// the Chat Log line, the `automation_fired` event and the cutscene's narration
+// of it are all shared as a result.
+//
+// `sourceName` is whatever should be named in the log — a move's name, or a
+// Perk's. `moveId` is null for a Perk, and `sourceKind` says which, so a
+// reader never has to infer it from a missing field.
+async function runAutomations(io, {
+  automations,
+  text = null,
+  trigger,
+  sourceName,
+  sourceKind = 'move',
+  moveId = null,
+  selfCharacterId,
+  selfDeclaredMoveId = null,
+  opponentCharacterId = null,
+  opponentDeclaredMoveId = null,
+  emitEvent = null,
+  tic = null,
+}) {
+  const [selfCharacter, opponentCharacter] = await Promise.all([
+    getCharacter(selfCharacterId),
+    opponentCharacterId != null ? getCharacter(opponentCharacterId) : null,
+  ]);
+  if (!selfCharacter) return;
 
   const effects = [];
 
@@ -491,33 +596,44 @@ async function applyMoveInteractions(io, {
         effects.push(`−${amount} on ${opponentCharacter.name}'s next roll`);
         break;
       }
+      // Signed, and the label has to follow the sign. The Move Creator can only
+      // author these positive (normalizeInteractions takes Math.abs of anything
+      // outside SIGNED_TYPES), so a NEGATIVE amount — Stamina given back rather
+      // than taken — only became reachable when Perks started feeding this
+      // executor directly. Left as-is it rendered "−-2 Stamina".
       case 'self_stamina':
         await adjustStamina(io, selfCharacterId, -amount, { emitEvent, tic, reason: 'automation' });
-        effects.push(`−${amount} Stamina (${selfCharacter.name})`);
+        effects.push(`${staminaLabel(amount)} (${selfCharacter.name})`);
         break;
       case 'opponent_stamina':
         if (!opponentCharacter) break;
         await adjustStamina(io, opponentCharacterId, -amount, { emitEvent, tic, reason: 'automation' });
-        effects.push(`−${amount} Stamina → ${opponentCharacter.name}`);
+        effects.push(`${staminaLabel(amount)} → ${opponentCharacter.name}`);
         break;
       default:
         break;
     }
   }
 
-  if (row.text || effects.length) {
-    const parts = [row.text, effects.join(', ')].filter(Boolean);
-    await postSystemMessage(io, `${move.name} — ${TRIGGER_LABELS[trigger] ?? trigger}: ${parts.join(' — ')}`);
+  if (text || effects.length) {
+    const parts = [text, effects.join(', ')].filter(Boolean);
+    await postSystemMessage(io, `${sourceName} — ${TRIGGER_LABELS[trigger] ?? trigger}: ${parts.join(' — ')}`);
     if (emitEvent && tic != null) {
       await emitEvent(tic, 'automation_fired', {
         moveId,
-        moveName: move.name,
+        // `moveName` is kept for a move, unchanged, because every stored replay
+        // already has it and a stored event is never rewritten (§0).
+        // `sourceName` is the one the renderer should prefer — it is set for a
+        // Perk too, where there is no move to name.
+        moveName: sourceKind === 'move' ? sourceName : null,
+        sourceName,
+        sourceKind,
         trigger,
         triggerLabel: TRIGGER_LABELS[trigger] ?? trigger,
         characterId: selfCharacterId,
         characterName: selfCharacter.name,
         declaredMoveId: selfDeclaredMoveId ?? null,
-        text: row.text || null,
+        text: text || null,
         // Already-rendered phrases ("−2 Stamina (Striker)"), not raw
         // automation rows: the wording is decided here, next to the code
         // that actually applied each one, so the cutscene and the Chat Log
@@ -2709,6 +2825,18 @@ async function startPairDeclaration(io, pairIndex) {
   if (!participants.length) return;
 
   const charIds = participants.map((p) => p.character_id);
+
+  // A new round for THIS pair refreshes its fighters' once-per-round Perk
+  // charges — and nobody else's.
+  //
+  // **Scoped to this pair's characters on purpose.** A round belongs to a pair,
+  // not to the arena: each pair runs its own clock and reaches its own next
+  // round whenever it gets there (see combat_pairs). A global reset here would
+  // hand a fighter their charge back because an unrelated fight across the room
+  // started a round, which is the same mistake the per-pair split has already
+  // produced twice elsewhere in this file's history.
+  await clearPerkState('round', charIds);
+
   const marks = charIds.map(() => '?').join(',');
   const [charRows, brainDice, staminaDice, speedAttribute] = await Promise.all([
     all(`SELECT * FROM characters WHERE id IN (${marks})`, charIds),
