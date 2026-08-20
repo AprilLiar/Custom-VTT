@@ -54,6 +54,7 @@ import {
 import {
   computeHitDamage,
   resolveDefenseRoll,
+  selectRiposteTargets,
   classifyDefenseCoverage,
   computeInterruptBonus,
   clampRecoveryExtension,
@@ -121,7 +122,14 @@ import {
   planImposedRecovery,
 } from './combatTiming.js';
 import { idleStaminaRegenRate } from './perkAutomations.js';
-import { clearPerkState, consumeOnce, perkDefinitionsFor } from './perkEngine.js';
+import {
+  clearPerkState,
+  consumeOnce,
+  minDamageThresholdFor,
+  perkBlockRiposteSteps,
+  perkDefinitionsFor,
+  perkRoundStartHalfHealing,
+} from './perkEngine.js';
 import { getCombatRollBonus, getCombatRollBonusBreakdown, getStanceMatchupBonus } from './combatBonuses.js';
 
 const GM_CHAT_SENTINEL_ID = 0;
@@ -244,6 +252,8 @@ const TRIGGER_LABELS = {
   // Not an authorable trigger — a Tag's own consequence, run through the same
   // executor so it reads and logs like every other effect.
   movement_punished: 'Tripped',
+  // Likewise, but a Perk's: Spiked Shell's guard biting back on a Full Block.
+  block_riposte: 'Countered',
 };
 
 const IMPOSED_PHASE_PHRASE = {
@@ -678,6 +688,69 @@ async function movementMoveInPlay(characterId, tic) {
      LIMIT 1`,
     [characterId, tic, tic]
   );
+}
+
+// **Spiked Shell's riposte (decided, new).** A guard that beat the attack it
+// met sends damage back at whoever threw it: one Half-Damage step per full 5
+// points of margin, landing on the limb they swung with.
+//
+// Two things are deliberately not decided here, and that is the whole shape of
+// it: **how much** is the Perk's own seam (`blockRiposteSteps` — so two such
+// Perks sum and neither knows about the other), and **where** is a pure
+// function (`selectRiposteTargets` — the limb rule, unit-tested without a
+// socket). This function only joins them to the board.
+//
+// It runs through `runAutomations` with ordinary `opponent_stat_step` effects
+// rather than reaching into the damage machinery directly — exactly what
+// Movement Punisher already does, and for the same reason: that is what buys
+// the Chat Log line, the `automation_fired` round event, the `stat_stepped`
+// beats and the cutscene's narration of all three, with no second
+// implementation of any of them. "Self" is the blocker, "opponent" is the
+// attacker; the roles are the other way round from an attack, which is the point.
+//
+// The attacker's Roll is resolved through `resolveMoveRollDice`, so the move's
+// own `appendage_choice` has already decided which hand, and a slot listed
+// twice has already become both. A **Custom Roll names no Stat**, so an attack
+// made on one has nothing to catch on the spikes and this returns quietly.
+async function applyBlockRiposte(io, {
+  blockerCharacterId,
+  blockerDeclaredMoveId,
+  attackerCharacterId,
+  attackerDeclaredMoveId,
+  attackerMoveId,
+  attackerAppendageChoice,
+  attackerResult,
+  defenderResult,
+  emitEvent,
+  tic,
+}) {
+  const steps = await perkBlockRiposteSteps(blockerCharacterId, { attackerResult, defenderResult });
+  if (steps <= 0) return;
+
+  const slotRows = await all('SELECT move_id, slot_name, count FROM move_roll_slots WHERE move_id = ?', [
+    attackerMoveId,
+  ]);
+  const resolved = await resolveMoveRollDice(
+    attackerCharacterId,
+    expandRollSlotRows(slotRows),
+    attackerAppendageChoice
+  );
+  const targets = selectRiposteTargets(resolved.map((d) => d.slot_name));
+  if (!targets.length) return;
+
+  await runAutomations(io, {
+    automations: targets.map((slot) => ({ type: 'opponent_stat_step', slot, amount: steps })),
+    text: 'they come off the guard worse than they went in',
+    trigger: 'block_riposte',
+    sourceName: 'Spiked Shell',
+    sourceKind: 'perk',
+    selfCharacterId: blockerCharacterId,
+    selfDeclaredMoveId: blockerDeclaredMoveId,
+    opponentCharacterId: attackerCharacterId,
+    opponentDeclaredMoveId: attackerDeclaredMoveId,
+    emitEvent,
+    tic,
+  });
 }
 
 // Applies half-damage steps to EVERY Stat this move attacks (decision #5,
@@ -2206,8 +2279,10 @@ async function resolveAttack(io, { row, pairIndex, tic, emitEvent }) {
   // On Block / On Successful Defense / On Failed Defense ever fired against
   // one, and a defender who timed a guard correctly watched nothing happen.
   // An insignificant attack is still an attack and runs the identical flow;
-  // only what it does on landing differs.
-  const { halfDamageSteps } = computeHitDamage(total);
+  // only what it does on landing differs. **The step count itself is computed
+  // below rather than here** — it depends on the Minimum Damage Threshold, and
+  // that is a fact about this attacker AND this target, so it cannot be known
+  // until the target has been picked.
 
   // Step 3 — target-character selection (decision #6: deterministic for
   // Uneven Combat, trivial for 1v1).
@@ -2246,6 +2321,19 @@ async function resolveAttack(io, { row, pairIndex, tic, emitEvent }) {
     await emitEvent(tic, 'damage_applied', { declaredMoveId: row.declaredMoveId, result: 'no-eligible-target' });
     return;
   }
+
+  // **The Minimum Damage Threshold for this exchange (decided, new).** The
+  // game's own 5, lowered by the attacker's Not Just a Scratch and raised by the
+  // target's Iron Skin — one figure, resolved once, and threaded into every
+  // branch below (plain Hit, Block, Dodge). Two things follow from it for free
+  // rather than needing rules of their own: **Insignificant Damage**, which is
+  // just `steps === 0` in runInterruptAndDamage, and the **Full/Partial** line
+  // on a defence, which is just "did the leftover deal damage".
+  const minimumThreshold = await minDamageThresholdFor({
+    attackerCharacterId: row.characterId,
+    targetCharacterId,
+  });
+  const { halfDamageSteps } = computeHitDamage(total, { minimumThreshold });
 
   const attackActiveStart = row.revealTic;
   const attackActiveEnd = row.revealTic + row.activeTics;
@@ -2514,13 +2602,37 @@ async function resolveAttack(io, { row, pairIndex, tic, emitEvent }) {
         defenderResult: blockResult,
         staminaModifier: defenderDM.stamina_modifier ?? 1,
         availableStamina: blocker?.current_stamina ?? 0,
+        minimumThreshold,
       });
       lineOutcome = blockStamina;
     } else {
-      lineOutcome = resolveDefenseRoll({ attackerResult: total, defenderResult: blockResult });
+      lineOutcome = resolveDefenseRoll({ attackerResult: total, defenderResult: blockResult, minimumThreshold });
     }
     leftoverSteps += lineOutcome.halfDamageSteps;
     leftoverResult += lineOutcome.netResult ?? 0;
+
+    // **Spiked Shell (decided, new).** Out-guard an attack and the attacker
+    // hurts themselves on you. Asked per line, because the guard is rolled per
+    // line: each is its own strike met by its own guard, and each can bite back.
+    //
+    // Gated on this line resolving **full**. A Block scaled back because the
+    // blocker ran out of Stamina comes out Partial and pays nothing — you did
+    // not out-guard them, you ran out of gas — and that falls out of the
+    // outcome rather than needing its own test.
+    if (lineOutcome.outcome === 'full') {
+      await applyBlockRiposte(io, {
+        blockerCharacterId: defenderDM.character_id,
+        blockerDeclaredMoveId: defenderDM.id,
+        attackerCharacterId: row.characterId,
+        attackerDeclaredMoveId: row.declaredMoveId,
+        attackerMoveId: row.moveId,
+        attackerAppendageChoice: row.appendageChoice,
+        attackerResult: total,
+        defenderResult: blockResult,
+        emitEvent,
+        tic,
+      });
+    }
 
     await postSystemMessage(
       io,
@@ -2978,6 +3090,72 @@ function isTicIdleLocal({ tic, footprints }) {
 // handler for why: pairs must be able to start their own next round
 // independently, on their own schedule, once this engine drives them). Does
 // nothing if this pair currently has no seated participants at all.
+// **Everything a Round Start does to a fighter's Perks, in one place
+// (decided, new).**
+//
+// There are two round-start implementations in this codebase and they are
+// near-verbatim copies: this file's startPairDeclaration opens every round
+// after a resolution completes, and server/index.js's combat:next_round opens a
+// fight's first round and re-seeds any pair that is not mid-Declaration. That
+// duplication has already produced one bug (the two drifted over whether
+// Initiative carried the Stance matchup) — and it had quietly produced a
+// second: `clearPerkState('round', …)` lived only in startPairDeclaration, so a
+// round opened through combat:next_round never refreshed a once-per-round Perk
+// charge. Both call this now, so there is no third chance.
+//
+// **Scoped to the characters passed in, never global.** A round belongs to a
+// pair, not to the arena: each pair runs its own clock and reaches its own next
+// round whenever it gets there (see combat_pairs). A global reset would hand a
+// fighter their charge back because an unrelated fight across the room started
+// a round.
+//
+// `random` is injectable so the Healing Factor pick stays deterministic under
+// test, the same convention selectDefenseMove already uses.
+export async function openRoundForCharacters(io, characterIds, { random = Math.random } = {}) {
+  const ids = (characterIds ?? []).filter((id) => Number.isInteger(Number(id)));
+  if (!ids.length) return;
+
+  await clearPerkState('round', ids);
+
+  // **Healing Factor.** The seam says how many pending Half-Damage markers this
+  // fighter sheds; picking which ones is the engine's job, and it picks at
+  // random among the Stats actually showing one.
+  //
+  // A pending marker is half a step of damage that has already been taken and is
+  // waiting for its other half (see applyHalfDamage) — clearing it is therefore
+  // exactly "one instance of Half-Damage removed", and a fighter whose damage
+  // has all resolved into whole steps has nothing here to shed. That is the
+  // narrow reading, chosen deliberately: healing whole steps is what the Recover
+  // Stat effect is for.
+  for (const characterId of ids) {
+    const count = await perkRoundStartHalfHealing(characterId);
+    if (count <= 0) continue;
+    const marked = await all(
+      'SELECT id, slot_name FROM dice WHERE character_id = ? AND half_damage = 1',
+      [characterId]
+    );
+    if (!marked.length) continue;
+    const character = await getCharacter(characterId);
+    // Shuffle-and-take rather than picking `count` times, so two markers are
+    // never the same marker twice.
+    const pool = [...marked];
+    for (let i = pool.length - 1; i > 0; i--) {
+      const j = Math.floor(random() * (i + 1)) % (i + 1);
+      [pool[i], pool[j]] = [pool[j], pool[i]];
+    }
+    for (const die of pool.slice(0, count)) {
+      await run('UPDATE dice SET half_damage = 0 WHERE id = ?', [die.id]);
+      const fresh = await one('SELECT * FROM dice WHERE id = ?', [die.id]);
+      if (fresh) io.emit('die:updated', { ...fresh, half_damage: 0 });
+      // Said out loud, per the doctrine's rule for a Perk that moves a number.
+      await postSystemMessage(
+        io,
+        `${character?.name ?? 'They'} shakes off the Half-Damage on their ${die.slot_name} (Healing Factor).`
+      );
+    }
+  }
+}
+
 async function startPairDeclaration(io, pairIndex) {
   const [state, participants, existing] = await Promise.all([
     one('SELECT * FROM combat_state WHERE id = 1'),
@@ -2988,16 +3166,7 @@ async function startPairDeclaration(io, pairIndex) {
 
   const charIds = participants.map((p) => p.character_id);
 
-  // A new round for THIS pair refreshes its fighters' once-per-round Perk
-  // charges — and nobody else's.
-  //
-  // **Scoped to this pair's characters on purpose.** A round belongs to a pair,
-  // not to the arena: each pair runs its own clock and reaches its own next
-  // round whenever it gets there (see combat_pairs). A global reset here would
-  // hand a fighter their charge back because an unrelated fight across the room
-  // started a round, which is the same mistake the per-pair split has already
-  // produced twice elsewhere in this file's history.
-  await clearPerkState('round', charIds);
+  await openRoundForCharacters(io, charIds);
 
   const marks = charIds.map(() => '?').join(',');
   const [charRows, brainDice, staminaDice, speedAttribute] = await Promise.all([

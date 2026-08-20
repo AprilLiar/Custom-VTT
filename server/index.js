@@ -17,6 +17,7 @@ import {
   logRoll,
   applyMoveInteractions,
   moveTagNamesFor,
+  openRoundForCharacters,
 } from './roundResolution.js';
 import {
   DICE_TEMPLATE,
@@ -58,6 +59,7 @@ import {
   normalizeGrappleDirections,
   normalizeRequirement,
   declarableByHand,
+  effectiveStaminaCost,
 } from './moveLogic.js';
 import {
   carriesBlockTag,
@@ -67,8 +69,8 @@ import {
   BLOCK_TAG,
 } from './tagAutomations.js';
 import { effectiveFrames, idleStaminaRegenRate } from './perkAutomations.js';
-import { clearAllPerkState, perkAllowsRevealedDetail } from './perkEngine.js';
-import { isAutomatedPerk, perkDefinition } from './perks/index.js';
+import { clearAllPerkState, perkAllowsRevealedDetail, perkStaminaCostDelta } from './perkEngine.js';
+import { isAutomatedPerk, isManualPerk, perkDefinition } from './perks/index.js';
 import { validateCreation } from './characterCreation.js';
 import {
   resolveSideInitiative,
@@ -81,7 +83,7 @@ import {
   overlapsRoundWindow,
   computeInitiativeOverflowPenalty,
 } from './combatTiming.js';
-import { computeHitDamage, clampRecoveryExtension } from './combatDamage.js';
+import { clampRecoveryExtension } from './combatDamage.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3001;
@@ -295,6 +297,13 @@ async function getMovesFor(characterId) {
 
   const dieBySlot = new Map(dice.map((d) => [d.slot_name, d]));
 
+  // What each move actually costs THIS character, Perks included (Perfect
+  // Player discounts a Dodge). Resolved here rather than left to the client
+  // because it is the same figure move:declare will check against and
+  // combat:character_done_declaring will spend — the picker must not be showing
+  // a different one. The dice this needs are already in hand above.
+  const staminaCosts = await resolveStaminaCosts(characterId, withBase);
+
   return withBase.map((move) => {
     const deltas = overrideByMove.get(move.id) ?? { startup: 0, active: 0, recovery: 0 };
     const effective = effectiveFrames(move, deltas);
@@ -363,6 +372,10 @@ async function getMovesFor(characterId) {
       roll_dice: rollDice,
       roll_choice: rollChoice,
       effective_roll_modifier: move.roll_modifier + rollBonus,
+      // Always present, and equal to stamina_cost whenever no Perk moved it —
+      // so a client can render this one field unconditionally rather than
+      // deciding for itself when the discount applies.
+      effective_stamina_cost: staminaCosts.get(move.id) ?? move.stamina_cost,
     };
   });
 }
@@ -371,7 +384,14 @@ async function getPerk(id) {
   const perk = await one('SELECT * FROM perks WHERE id = ?', [id]);
   if (!perk) return null;
   const tags = await all('SELECT perk_tag_id FROM perk_tag_links WHERE perk_id = ? ORDER BY id', [id]);
-  return { ...perk, tag_ids: tags.map((t) => t.perk_tag_id), automated: isAutomatedPerk(perk.name) };
+  return {
+    ...perk,
+    tag_ids: tags.map((t) => t.perk_tag_id),
+    automated: isAutomatedPerk(perk.name),
+    // Registered but deliberately not automated — the badge stays, its tooltip
+    // changes. See multifaceted.js.
+    manual: isManualPerk(perk.name),
+  };
 }
 
 // A character's granted Perks (id, name, description, picture, plus whether
@@ -410,6 +430,7 @@ async function getCharacterPerks(characterId) {
     // card shows a badge for this so a GM can tell at a glance which of their
     // Perks actually do something and which are pure description.
     automated: isAutomatedPerk(r.name),
+    manual: isManualPerk(r.name),
   }));
 }
 
@@ -649,18 +670,53 @@ function mapDeclaredMovesForViewer(rows, pairsByIndex, viewer) {
   return out;
 }
 
+// **What a set of moves costs THIS character (decided, new).** Perks can move a
+// move's Stamina Cost (Perfect Player discounts a Dodge by 2), so "the cost" is
+// no longer a column — it is a column plus whatever this fighter's Perks say
+// about this particular move.
+//
+// One resolver, used by every place that needs the number: the picker that
+// shows it, the affordability check that permits a declaration, and the commit
+// that actually spends it. They used to be three separate reads of
+// `m.stamina_cost`, two of them SQL SUMs; a Perk that moved the figure in only
+// some of them would show a player one number and charge them another.
+//
+// The character's dice and Injuries are fetched once and handed to every Perk,
+// rather than each seam function querying for itself — the conditions Perks want
+// here are all about the state of the fighter, and this is asked once per move.
+async function resolveStaminaCosts(characterId, moves) {
+  if (!moves.length) return new Map();
+  const [dice, injuries] = await Promise.all([getDice(characterId), getInjuries(characterId)]);
+  const out = new Map();
+  for (const move of moves) {
+    const delta = await perkStaminaCostDelta({ characterId, move, dice, injuries });
+    out.set(move.id, effectiveStaminaCost(move.stamina_cost, delta));
+  }
+  return out;
+}
+
+// One move's effective cost. The single-move shorthand over the above.
+async function getEffectiveStaminaCost(characterId, move) {
+  const costs = await resolveStaminaCosts(characterId, [move]);
+  return costs.get(move.id) ?? effectiveStaminaCost(move.stamina_cost, 0);
+}
+
 // Sum of Stamina Cost across a character's declared-but-not-yet-committed
 // moves — moves only stay uncommitted until this character themselves
 // presses "done declaring" (combat:character_done_declaring commits them
 // all at once), so this is also exactly "how much is currently pending."
+//
+// A fetch-then-fold rather than the SQL SUM it used to be, because the cost of
+// each row is now a per-character question rather than a column.
 async function getPendingStaminaCost(characterId) {
-  const row = await one(
-    `SELECT COALESCE(SUM(m.stamina_cost), 0) AS pending
-     FROM declared_moves dm JOIN moves m ON m.id = dm.move_id
+  const rows = await all(
+    `SELECT m.* FROM declared_moves dm JOIN moves m ON m.id = dm.move_id
      WHERE dm.character_id = ? AND dm.stamina_committed = 0`,
     [characterId]
   );
-  return row.pending;
+  if (!rows.length) return 0;
+  const costs = await resolveStaminaCosts(characterId, rows);
+  return rows.reduce((sum, move) => sum + (costs.get(move.id) ?? 0), 0);
 }
 
 // Combat Automation overhaul: each pair now runs its own independent round/
@@ -1093,6 +1149,7 @@ app.get('/api/perks', wrap(async (_req, res) => {
       granted_character_ids: grantedBy.get(p.id) ?? [],
       tag_ids: tagsBy.get(p.id) ?? [],
       automated: isAutomatedPerk(p.name),
+      manual: isManualPerk(p.name),
     }))
   );
 }));
@@ -3540,6 +3597,15 @@ io.on('connection', (socket) => {
     const eligibleParticipants = participants.filter((p) => eligiblePairSet.has(p.pair_index));
 
     const charIds = [...new Set(eligibleParticipants.map((p) => p.character_id))];
+
+    // Everything a Round Start does to a fighter's Perks — the once-per-round
+    // charge reset and Healing Factor — lives in one shared function, because
+    // this handler and roundResolution.js's startPairDeclaration are two copies
+    // of "open a round" and had already drifted apart over exactly this (the
+    // charge reset used to exist only in the other one). See
+    // openRoundForCharacters for the full note.
+    await openRoundForCharacters(io, charIds);
+
     const marks = charIds.map(() => '?').join(',');
     const [charRows, brainDice, staminaDice, speedAttribute] = await Promise.all([
       all(`SELECT * FROM characters WHERE id IN (${marks})`, charIds),
@@ -3871,7 +3937,11 @@ io.on('connection', (socket) => {
         [character.id]
       ),
     ]);
-    if (character.current_stamina - pending - move.stamina_cost < 0) return;
+    // The effective cost, not the column — see resolveStaminaCosts. Getting
+    // this one wrong is the visible failure: the picker would offer a Dodge as
+    // affordable and this would silently refuse it.
+    const declareCost = await getEffectiveStaminaCost(character.id, move);
+    if (character.current_stamina - pending - declareCost < 0) return;
 
     // Requirement (decided, new): this move may only be thrown IMMEDIATELY
     // after the one it names — "not later, not without it, but right after".
@@ -4039,17 +4109,14 @@ io.on('connection', (socket) => {
     // Clamped defensively to [0, max]; the up-front affordability check
     // already keeps this from going negative in the normal flow. Per
     // character now rather than batched per side, since declaring itself is.
-    const [pendingRow, character] = await Promise.all([
-      one(
-        `SELECT COALESCE(SUM(m.stamina_cost), 0) AS pending
-         FROM declared_moves dm JOIN moves m ON m.id = dm.move_id
-         WHERE dm.character_id = ? AND dm.stamina_committed = 0`,
-        [characterId]
-      ),
+    // Through the same resolver the picker and the affordability check use, so
+    // what is actually spent is the number the player was shown.
+    const [pending, character] = await Promise.all([
+      getPendingStaminaCost(characterId),
       getCharacter(characterId),
     ]);
-    if (character && pendingRow.pending !== 0) {
-      const newStamina = clamp(character.current_stamina - pendingRow.pending, 0, character.max_stamina);
+    if (character && pending !== 0) {
+      const newStamina = clamp(character.current_stamina - pending, 0, character.max_stamina);
       await run('UPDATE characters SET current_stamina = ? WHERE id = ?', [newStamina, characterId]);
       io.emit('character:updated', { ...character, current_stamina: newStamina });
     }

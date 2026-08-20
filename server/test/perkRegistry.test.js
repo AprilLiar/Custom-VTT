@@ -87,15 +87,41 @@ test('seam and lifecycle entries are actually callable', () => {
   }
 });
 
+// Whether a definition actually asks the engine to do anything.
+const declaresMechanics = (definition) =>
+  [...SEAMS, ...LIFECYCLE_KEYS].some((key) => definition[key] !== undefined) ||
+  Object.keys(definition.triggers ?? {}).length > 0;
+
 test('a definition that declares nothing mechanical is caught', () => {
   // A Perk in the registry but with no seam, no lifecycle hook and no trigger
   // is one that will show the ⚙ badge and do nothing — worse than not being
   // registered at all, because the badge is a promise to the GM.
+  //
+  // **Unless it says so.** `manual: true` is the deliberate exception: a Perk
+  // whose rule the table keeps, registered so it can still be seeded, badged
+  // and rename-guarded rather than looking forgotten. The next test is what
+  // stops that flag being a way to smuggle a broken Perk past this one.
   for (const definition of definitions()) {
-    const doesSomething =
-      [...SEAMS, ...LIFECYCLE_KEYS].some((key) => definition[key] !== undefined) ||
-      Object.keys(definition.triggers ?? {}).length > 0;
-    assert.ok(doesSomething, `Perk "${definition.name}" is registered but declares no mechanics`);
+    if (definition.manual) continue;
+    assert.ok(
+      declaresMechanics(definition),
+      `Perk "${definition.name}" is registered but declares no mechanics`
+    );
+  }
+});
+
+test('a manual Perk declares no mechanics at all', () => {
+  // The inverse, and the reason `manual` is safe to have. A definition carrying
+  // both the flag and a seam is a lie in one direction or the other: either the
+  // badge tooltip tells the GM there is nothing to automate while something
+  // fires, or a real mechanic sits under a flag saying to ignore it.
+  for (const definition of definitions()) {
+    if (!definition.manual) continue;
+    assert.equal(
+      declaresMechanics(definition),
+      false,
+      `Perk "${definition.name}" is flagged manual but declares mechanics — one of the two is wrong`
+    );
   }
 });
 

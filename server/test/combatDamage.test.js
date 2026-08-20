@@ -1,7 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  MIN_DAMAGE_THRESHOLD,
   computeHitDamage,
+  selectRiposteTargets,
   resolveDefenseRoll,
   phaseAtTic,
   classifyDefenseCoverage,
@@ -372,4 +374,94 @@ test('cascadeShift only pushes the moves it has to', () => {
     ],
   });
   assert.deepEqual(shifted, [{ declaredMoveId: 10, from: 4, to: 5 }]);
+});
+
+// ---------- The movable Minimum Damage Threshold (Iron Skin / Not Just a Scratch) ----------
+
+test('the default threshold is the game rule it has always been', () => {
+  assert.equal(MIN_DAMAGE_THRESHOLD, 5);
+  // Every existing caller passes no threshold at all, so the default is what
+  // keeps this change arithmetically invisible until a Perk moves it.
+  assert.equal(computeHitDamage(4).halfDamageSteps, 0);
+  assert.equal(computeHitDamage(5).halfDamageSteps, 1);
+  assert.equal(computeHitDamage(9).halfDamageSteps, 1);
+  assert.equal(computeHitDamage(10).halfDamageSteps, 2);
+  assert.equal(computeHitDamage(27).halfDamageSteps, 5);
+  // Defensive: a negative result still floors at nothing.
+  assert.equal(computeHitDamage(-3).halfDamageSteps, 0);
+});
+
+test('lowering the threshold moves the FIRST gate and nothing else', () => {
+  // Not Just a Scratch: 5 → 3, so the ladder reads 3-10-15-20.
+  const at = (n) => computeHitDamage(n, { minimumThreshold: 3 }).halfDamageSteps;
+  assert.equal(at(2), 0, 'still under the bar');
+  assert.equal(at(3), 1, 'the new bar deals half a point');
+  assert.equal(at(4), 1);
+  assert.equal(at(5), 1, 'the old bar is worth the same as the new one — no double step');
+  assert.equal(at(9), 1);
+  // The gates above the first are untouched: 10 is still exactly where 2 steps
+  // begin, not 8.
+  assert.equal(at(8), 1);
+  assert.equal(at(10), 2);
+  assert.equal(at(15), 3);
+});
+
+test('raising the threshold moves the FIRST gate and nothing else', () => {
+  // Iron Skin: 5 → 7, so the ladder reads 7-10-15-20.
+  const at = (n) => computeHitDamage(n, { minimumThreshold: 7 }).halfDamageSteps;
+  assert.equal(at(5), 0, 'what used to be half a point is now nothing');
+  assert.equal(at(6), 0);
+  assert.equal(at(7), 1);
+  assert.equal(at(9), 1);
+  assert.equal(at(10), 2, 'and the second gate has not moved with it');
+  assert.equal(at(20), 4);
+});
+
+test('the threshold moves the Full/Partial line too, which is the same rule', () => {
+  // A leftover of 6 is a Partial Block normally...
+  assert.equal(resolveDefenseRoll({ attackerResult: 16, defenderResult: 10 }).outcome, 'partial');
+  // ...and a Full one against Iron Skin, because Partial just means "what got
+  // through was enough to deal damage".
+  assert.equal(
+    resolveDefenseRoll({ attackerResult: 16, defenderResult: 10, minimumThreshold: 7 }).outcome,
+    'full'
+  );
+});
+
+// ---------- Spiked Shell's limb rule ----------
+
+test('a matched pair of limbs both take the riposte', () => {
+  // "2 Hands" arrives already resolved to two concrete dice, because a slot
+  // listed twice means both sides — nothing extra to do here.
+  assert.deepEqual(selectRiposteTargets(['Left Hand', 'Right Hand']), ['Left Hand', 'Right Hand']);
+  assert.deepEqual(selectRiposteTargets(['Left Leg', 'Right Leg']), ['Left Leg', 'Right Leg']);
+  // One limb on its own is trivially "all of one kind".
+  assert.deepEqual(selectRiposteTargets(['Right Hand']), ['Right Hand']);
+});
+
+test('a hand and a leg is one of them, at random', () => {
+  const slots = ['Left Hand', 'Right Leg'];
+  assert.deepEqual(selectRiposteTargets(slots, () => 0), ['Left Hand']);
+  assert.deepEqual(selectRiposteTargets(slots, () => 0.99), ['Right Leg']);
+});
+
+test('a Roll with no limb in it falls back to whatever Stat did attack', () => {
+  // A headbutt still hits the spikes with something.
+  assert.deepEqual(selectRiposteTargets(['Skull']), ['Skull']);
+  // Two different Stats are a mix of kinds, so one at random — the same rule.
+  assert.deepEqual(selectRiposteTargets(['Skull', 'Body'], () => 0), ['Skull']);
+  assert.deepEqual(selectRiposteTargets(['Skull', 'Body'], () => 0.99), ['Body']);
+});
+
+test('a limb in the Roll outranks a non-limb in it', () => {
+  // Punching with a hand while the move also rolls Body: the spikes catch the
+  // hand, and Body never enters the draw.
+  assert.deepEqual(selectRiposteTargets(['Body', 'Right Hand'], () => 0), ['Right Hand']);
+  assert.deepEqual(selectRiposteTargets(['Body', 'Right Hand'], () => 0.99), ['Right Hand']);
+});
+
+test('a Roll that names no Stat at all catches on nothing', () => {
+  // A Custom Roll — the one attack Spiked Shell cannot reach.
+  assert.deepEqual(selectRiposteTargets([]), []);
+  assert.deepEqual(selectRiposteTargets(undefined), []);
 });

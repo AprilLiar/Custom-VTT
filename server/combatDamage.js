@@ -9,8 +9,27 @@
 // damage). A result of 5-9 is 1 step (0.5 damage); 25-29 is 5 steps (2.5
 // damage). Never negative — a result below 0 (shouldn't normally happen,
 // but defensive) floors at 0 steps.
-export function computeHitDamage(result) {
-  const halfDamageSteps = Math.max(0, Math.floor(result / 5));
+//
+// **The Minimum Damage Threshold is the FIRST gate only, and it moves
+// (decided, new).** It is the smallest roll that deals anything at all, and
+// two Perks push on it from opposite sides — Iron Skin raises it for attacks
+// against you, Not Just a Scratch lowers it for attacks you make (see
+// server/perks/). Every LATER gate stays exactly where it was: with the
+// threshold at 3 the ladder is 3-10-15-20, at 7 it is 7-10-15-20. That is
+// what `Math.max(1, floor(result / 5))` buys — the division is untouched, so
+// only the bottom rung moves.
+//
+// At the default of 5 this is arithmetically identical to what it replaced,
+// which is what keeps every existing caller and test honest.
+export const MIN_DAMAGE_THRESHOLD = 5;
+
+export function computeHitDamage(result, { minimumThreshold = MIN_DAMAGE_THRESHOLD } = {}) {
+  const asked = Number(minimumThreshold);
+  const threshold = Number.isFinite(asked) ? asked : MIN_DAMAGE_THRESHOLD;
+  // Below the threshold is nothing at all, which also covers the defensive
+  // negative-result case the old Math.max(0, …) existed for.
+  if (result < threshold) return { halfDamageSteps: 0, damage: 0 };
+  const halfDamageSteps = Math.max(1, Math.floor(result / 5));
   return { halfDamageSteps, damage: halfDamageSteps * 0.5 };
 }
 
@@ -47,9 +66,14 @@ export function resolveNoDamageOutcome({ result = 0, successThreshold = DEFAULT_
 // result under 5) is a Full Block/Dodge — no damage, only the block-trigger
 // interaction fires; 1+ steps is Partial — reduced damage applies AND the
 // block-trigger interaction still fires (see the mechanic doc).
-export function resolveDefenseRoll({ attackerResult, defenderResult }) {
+//
+// `minimumThreshold` rides through to computeHitDamage, so **the Full/Partial
+// line moves with the Minimum Damage Threshold** — which is not a second rule,
+// it is the same sentence: Partial means "what got past the guard was enough to
+// deal damage". Against Iron Skin a leftover of 5-6 is therefore a Full Block.
+export function resolveDefenseRoll({ attackerResult, defenderResult, minimumThreshold = MIN_DAMAGE_THRESHOLD }) {
   const netResult = Math.max(0, attackerResult - defenderResult);
-  const { halfDamageSteps, damage } = computeHitDamage(netResult);
+  const { halfDamageSteps, damage } = computeHitDamage(netResult, { minimumThreshold });
   return {
     netResult,
     halfDamageSteps,
@@ -83,6 +107,9 @@ export function resolveBlockStamina({
   defenderResult,
   staminaModifier = 1,
   availableStamina = Infinity,
+  // Same figure resolveDefenseRoll takes, and for the same reason — see its
+  // note on the Full/Partial line.
+  minimumThreshold = MIN_DAMAGE_THRESHOLD,
 }) {
   const modifier = Number(staminaModifier) > 0 ? Number(staminaModifier) : 1;
   // Floored at 0: a negative roll on either side absorbs nothing rather than
@@ -105,7 +132,7 @@ export function resolveBlockStamina({
   }
 
   const netResult = Math.max(0, attackerResult - absorbed);
-  const { halfDamageSteps, damage } = computeHitDamage(netResult);
+  const { halfDamageSteps, damage } = computeHitDamage(netResult, { minimumThreshold });
   return {
     absorbed,
     staminaCost,
@@ -173,6 +200,49 @@ export function classifyDefenseCoverage({ attackActiveStart, attackActiveEnd, de
 // Tic is resolving right now.
 export function computeInterruptBonus({ revealTic, currentTic }) {
   return Math.max(1, currentTic - revealTic + 1);
+}
+
+// **Spiked Shell (decided, new): which of the attacker's own Stats a guard
+// bites back at.**
+//
+// The rule the table gave is about LIMBS: the spikes catch whatever came at
+// them. Both hands if they came in with both, both legs if both legs, and one
+// at random if the move mixed a hand and a leg — you only landed on one set of
+// spikes.
+//
+// Generalised by **kind** rather than by a hard-coded list of the four
+// appendages, which is what makes the fallback fall out for free: a move that
+// names no hand or leg at all (a Skull headbutt, a Body charge) still bit
+// something, so the same rule runs again over whatever Stats it did name. All
+// of one kind → all of them; a mix of kinds → one at random.
+//
+// `rollSlotNames` is expected to be **already resolved** — resolveMoveRollDice
+// has done the Left/Right work from the move's own appendage_choice, and a slot
+// listed twice has already become two concrete dice, which is exactly how "2
+// Hands" arrives here as `['Left Hand', 'Right Hand']` with nothing extra to
+// do. A Custom Roll names no Stat at all and correctly returns nothing.
+//
+// `random` is injectable so tests stay deterministic, the same convention
+// selectDefenseMove above already uses.
+const SLOT_KIND = {
+  'Left Hand': 'Hand',
+  'Right Hand': 'Hand',
+  'Left Leg': 'Leg',
+  'Right Leg': 'Leg',
+};
+
+// A Stat that is not a paired appendage is its own kind, so "all of one kind"
+// trivially holds for it and two different Stats correctly read as a mix.
+export const slotKind = (slot) => SLOT_KIND[slot] ?? slot;
+
+export function selectRiposteTargets(rollSlotNames, random = Math.random) {
+  const slots = [...new Set((rollSlotNames ?? []).filter(Boolean))];
+  if (!slots.length) return [];
+  const appendages = slots.filter((slot) => slot in SLOT_KIND);
+  const pool = appendages.length ? appendages : slots;
+  const kinds = new Set(pool.map(slotKind));
+  if (kinds.size === 1) return pool;
+  return [pool[Math.floor(random() * pool.length) % pool.length]];
 }
 
 // Combat Automation overhaul, decision #5 — **revised: a move that names

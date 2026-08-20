@@ -1399,7 +1399,13 @@ function buildDeclarePayload(character, move, roundStartTic, declaredMoves) {
     activeTics: move.active_tics,
     recoveryTics: move.recovery_tics,
     minPlacementTic,
-    staminaCost: move.stamina_cost,
+    // The cost after this character's own Perks (Perfect Player discounts a
+    // Dodge) — the server resolves it per character in getMovesFor and the
+    // affordability check and the commit both use the same figure, so quoting
+    // the raw column here would show a number nobody is ever charged. Falls
+    // back for a payload built from a move fetched somewhere that has not
+    // resolved it.
+    staminaCost: move.effective_stamina_cost ?? move.stamina_cost,
     // right_tell_id/left_tell_id are only ever set together, exactly when
     // this move's Roll has an ambiguous Hand/Leg slot (see db.js) — the
     // placement handler uses this to decide whether to ask Left/Right
@@ -1483,8 +1489,12 @@ function DeclareMoveCard({ character, move, roundStartTic, declaredMoves, tags, 
   // card advertises its multiplier instead of a number that would always
   // read "0 Stamina" and mean "free".
   const isBlock = carriesBlockTag(move.tag_ids, tags);
-  const cost =
-    move.stamina_cost > 0 ? `-${move.stamina_cost}` : move.stamina_cost < 0 ? `+${-move.stamina_cost}` : '0';
+  // See buildDeclarePayload: the per-character figure, not the template's.
+  const effectiveCost = move.effective_stamina_cost ?? move.stamina_cost;
+  const cost = effectiveCost > 0 ? `-${effectiveCost}` : effectiveCost < 0 ? `+${-effectiveCost}` : '0';
+  // Worth pointing at when a Perk actually moved it — a Dodge quoting 1 when
+  // the Compendium says 3 reads as a bug unless the card says why.
+  const discounted = effectiveCost !== move.stamina_cost;
   const payload = buildDeclarePayload(character, move, roundStartTic, declaredMoves);
   // Requirement (decided, new): this move may only be declared immediately
   // after the one it names. The server enforces it — this only stops the
@@ -1583,7 +1593,10 @@ function DeclareMoveCard({ character, move, roundStartTic, declaredMoves, tags, 
     >
       <span>
         {move.name}{' '}
-        <span className={isBlock ? 'text-sky-400/80' : 'text-zinc-500'}>
+        <span
+          className={isBlock ? 'text-sky-400/80' : discounted ? 'text-emerald-400/90' : 'text-zinc-500'}
+          title={discounted ? `A Perk of yours is moving this: normally ${move.stamina_cost} Stamina.` : undefined}
+        >
           {isBlock ? `(Block ${staminaModifierLabel(move.stamina_modifier)} Stamina)` : `(${cost} Stamina)`}
         </span>
         {/* Named, not just greyed. A card that is dimmed with no word on it

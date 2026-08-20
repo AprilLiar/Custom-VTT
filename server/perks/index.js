@@ -107,6 +107,27 @@ export const SEAMS = [
   // (ctx) -> boolean. OR-ed. Whether this character may read a publicly
   // revealed move in full from the log (Genius Observer).
   'canSeeRevealedDetail',
+  // (ctx) -> number. Summed onto the Minimum Damage Threshold for attacks
+  // THIS character makes — negative lowers the bar (Not Just a Scratch).
+  'minDamageThresholdWhenAttacking',
+  // (ctx) -> number. Summed onto the Minimum Damage Threshold for attacks
+  // made AGAINST this character — positive raises it (Iron Skin). The two are
+  // separate seams rather than one with a role flag so that an attacker and a
+  // defender both carrying a threshold Perk simply add up, which is what makes
+  // them cancel correctly when they face each other.
+  'minDamageThresholdWhenAttacked',
+  // ({ attackerResult, defenderResult, … }) -> number of Half-Damage steps the
+  // attacker takes when this character Fully Blocks them (Spiked Shell). Summed.
+  // Answers HOW MUCH only — where it lands is selectRiposteTargets' business.
+  'blockRiposteSteps',
+  // ({ character, dice, move, injuryPenaltyFor }) -> number. Summed onto one
+  // move's Stamina Cost for this character, floored at 0 by the caller
+  // (Perfect Player). Asked once per move, so a Perk that only touches Dodges
+  // answers 0 for everything else.
+  'staminaCostDelta',
+  // (ctx) -> number of pending Half-Damage markers to clear at Round Start
+  // (Healing Factor). Summed. WHICH markers is the engine's choice, at random.
+  'roundStartHalfHealing',
 ];
 
 // Tier-3 lifecycle keys — not seams (they are not folded across Perks, each
@@ -114,7 +135,14 @@ export const SEAMS = [
 export const LIFECYCLE_KEYS = ['onGrant', 'onRevoke'];
 
 // Descriptive keys carrying no behaviour.
-export const META_KEYS = ['name', 'description', 'triggers'];
+//
+// `manual: true` marks a Perk that is **deliberately** not automated — its rule
+// is one the table keeps, with nothing for the engine to do (see multifaceted.js).
+// It changes nothing at runtime; it exists so such a Perk can still be seeded,
+// badged and rename-guarded rather than looking forgotten. perkRegistry.test.js
+// asserts a manual Perk declares no seam and no lifecycle hook, so the flag can
+// never end up on a Perk that actually does something.
+export const META_KEYS = ['name', 'description', 'triggers', 'manual'];
 
 // ---------------------------------------------------------------------------
 // The Perks themselves. One import, one array entry.
@@ -122,9 +150,25 @@ export const META_KEYS = ['name', 'description', 'triggers'];
 
 import corneredAnimal from './corneredAnimal.js';
 import geniusObserver from './geniusObserver.js';
+import healingFactor from './healingFactor.js';
+import ironSkin from './ironSkin.js';
+import multifaceted from './multifaceted.js';
+import notJustAScratch from './notJustAScratch.js';
+import perfectPlayer from './perfectPlayer.js';
 import secondWind from './secondWind.js';
+import spikedShell from './spikedShell.js';
 
-const DEFINITIONS = [geniusObserver, corneredAnimal, secondWind];
+const DEFINITIONS = [
+  geniusObserver,
+  corneredAnimal,
+  secondWind,
+  ironSkin,
+  notJustAScratch,
+  spikedShell,
+  perfectPlayer,
+  healingFactor,
+  multifaceted,
+];
 
 export const PERK_REGISTRY = Object.fromEntries(
   DEFINITIONS.map((definition) => [definition.name, definition])
@@ -144,3 +188,7 @@ export function perkDefinition(name) {
 }
 
 export const isAutomatedPerk = (name) => perkDefinition(name) != null;
+
+// Registered, but with nothing for the engine to do — see `manual` in META_KEYS.
+// The badge stays (it means "accounted for"), only its tooltip changes.
+export const isManualPerk = (name) => perkDefinition(name)?.manual === true;
