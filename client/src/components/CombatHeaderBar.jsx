@@ -9,7 +9,7 @@ import { onDraggingMoveChange } from '../lib/dragMoveState.js';
 import { attackStartsByTic } from '../lib/attackTelegraph.js';
 import { useIsDesktop } from '../lib/useMediaQuery.js';
 import MoveConflictDialog from './MoveConflictDialog.jsx';
-import DodgePromptDialog from './DodgePromptDialog.jsx';
+import DefensePromptDialog from './DefensePromptDialog.jsx';
 import GrapplePromptDialog from './GrapplePromptDialog.jsx';
 
 // This viewer's own current standing in the fight — "waiting for
@@ -128,6 +128,8 @@ export default function CombatHeaderBar() {
   // legitimately share a pair and an attacking move — keying on those alone
   // deduped the second question away and left the round paused on a prompt
   // nobody was ever shown.
+  // Shared by the Block queue below too — the identity of a defence prompt is
+  // the same triple whichever kind it is.
   const dodgeKey = (d) => `${d.pairIndex}:${d.attackerDeclaredMoveId}:${d.targetSlotName ?? ''}`;
   useEffect(() => {
     if (role !== 'gm') return undefined;
@@ -163,6 +165,45 @@ export default function CombatHeaderBar() {
     });
   }, [combat, role]);
 
+  // **The Block prompt is the same decision about a different guard (decided,
+  // reversed).** Block used to resolve with no human input at all — see
+  // DefensePromptDialog for why that stopped being tenable. Everything below
+  // mirrors the Dodge queue above line for line, including the reconnect
+  // pickup and the Stat-in-the-key dedupe, because it is the same mechanism:
+  // a GM-only push, a queue so two prompts cannot silently collapse into one,
+  // and the combat snapshot as the recovery path for a GM who wasn't connected
+  // when the pause fired.
+  const [blockQueue, setBlockQueue] = useState([]);
+  useEffect(() => {
+    if (role !== 'gm') return undefined;
+    const onBlock = (payload) =>
+      setBlockQueue((q) => (q.some((d) => dodgeKey(d) === dodgeKey(payload)) ? q : [...q, payload]));
+    socket.on('combat:block_prompt', onBlock);
+    return () => socket.off('combat:block_prompt', onBlock);
+  }, [role]);
+
+  useEffect(() => {
+    if (role !== 'gm' || !combat) return;
+    const pending = (combat.pairs ?? [])
+      .filter((p) => p.pendingDefense)
+      .map((p) => ({
+        ...p.pendingDefense,
+        pairIndex: p.pairIndex,
+        roundNumber: p.roundNumber,
+        // The pause payload nests its coverage; the live push flattens it, and
+        // the two have to agree or the reconnecting GM is shown a differently
+        // worded question about the same guard.
+        coverage: p.pendingDefense.coverage?.coverage ?? null,
+        targetSlotName: p.pendingDefense.remainingStats?.[0] ?? null,
+      }));
+    if (!pending.length) return;
+    setBlockQueue((q) => {
+      const seen = new Set(q.map(dodgeKey));
+      const added = pending.filter((d) => !seen.has(dodgeKey(d)));
+      return added.length ? [...q, ...added] : q;
+    });
+  }, [combat, role]);
+
   // Combat Automation (Phase 9, sub-phase 4 — 4.3's Forfeit/Postpone
   // prompt). Same "whoever actually controls this character" ownership
   // gate as the auto-roll queue above (own PC for a Player, own NPCs for
@@ -187,21 +228,33 @@ export default function CombatHeaderBar() {
     );
   })();
 
-  const dodgeDialog = (() => {
-    if (!dodgeQueue.length) return null;
-    const d = dodgeQueue[0];
+  // One dialog at a time across BOTH defence prompts. They cannot both be
+  // pending for the same pair (a pair holds one pause), but two pairs can be
+  // paused at once on different kinds, and stacking two modals would leave the
+  // GM answering the one they cannot see. Dodge goes first only because it is
+  // the older queue — either order is correct, and the other is asked next.
+  const defenseDialog = (() => {
+    const d = dodgeQueue[0] ?? null;
+    const b = d ? null : blockQueue[0] ?? null;
+    const entry = d ?? b;
+    if (!entry) return null;
+    const isDodge = Boolean(d);
     return (
-      <DodgePromptDialog
-        pairIndex={d.pairIndex}
-        attackerDeclaredMoveId={d.attackerDeclaredMoveId}
-        attackerCharacterName={d.attackerCharacterName}
-        attackerMoveName={d.attackerMoveName}
-        defenderCharacterName={d.defenderCharacterName}
-        defenderMoveName={d.defenderMoveName}
-        attackerResult={d.attackerResult}
-        targetSlotName={d.targetSlotName}
-        remainingStats={d.remainingStats}
-        onResolve={() => setDodgeQueue((q) => q.slice(1))}
+      <DefensePromptDialog
+        defenseKind={isDodge ? 'dodge' : 'block'}
+        pairIndex={entry.pairIndex}
+        attackerDeclaredMoveId={entry.attackerDeclaredMoveId}
+        attackerCharacterName={entry.attackerCharacterName}
+        attackerMoveName={entry.attackerMoveName}
+        defenderCharacterName={entry.defenderCharacterName}
+        defenderMoveName={entry.defenderMoveName}
+        attackerResult={entry.attackerResult}
+        coverage={entry.coverage}
+        targetSlotName={entry.targetSlotName}
+        remainingStats={entry.remainingStats}
+        onResolve={() =>
+          isDodge ? setDodgeQueue((q) => q.slice(1)) : setBlockQueue((q) => q.slice(1))
+        }
       />
     );
   })();
@@ -240,7 +293,7 @@ export default function CombatHeaderBar() {
   const activePair =
     role === 'player' ? pairs.find((p) => p.pairIndex === myParticipant?.pair_index) : pairs[0];
 
-  if (!combat || !activePair) return conflictDialog ?? dodgeDialog;
+  if (!combat || !activePair) return conflictDialog ?? defenseDialog;
 
   const { pairIndex, phase, roundNumber, currentTic, roundStartTic } = activePair;
   const { roundLength } = combat;
@@ -372,7 +425,7 @@ export default function CombatHeaderBar() {
         </button>
       )}
       {conflictDialog}
-      {dodgeDialog}
+      {defenseDialog}
       {grappleDialog}
     </div>
   );

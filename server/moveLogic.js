@@ -123,7 +123,23 @@ export const AUTOMATION_STAT_SLOTS = [
   'Right Leg',
 ];
 
-// Types that name a Stat and therefore need a `slot`. `self_stat_increase`
+// What a move actually costs one character to declare, once their Perks have
+// had their say (decided, new — see the `staminaCostDelta` seam).
+//
+// **Floored at 0.** A Perk can make a move free; it can never pay you to throw
+// one. Without the floor, Perfect Player stacked with anything else would start
+// handing Stamina back at declare time, which is not a discount, it is a
+// generator.
+//
+// Pure and shared on purpose: the same figure has to be used by the picker that
+// SHOWS the cost, the affordability check that permits the declaration, and the
+// commit that actually spends it. Four call sites computing "the cost" three
+// different ways is how a player gets shown one number and charged another.
+export function effectiveStaminaCost(baseCost, delta = 0) {
+  return Math.max(0, Math.trunc(Number(baseCost) || 0) + Math.trunc(Number(delta) || 0));
+}
+
+// Types that name a Stat and therefore need a `slot`.// Types that name a Stat and therefore need a `slot`. `self_stat_increase`
 // belongs here for the same reason the other two do — it steps a named die.
 const STAT_STEP_TYPES = new Set(['self_stat_step', 'opponent_stat_step', 'self_stat_increase', 'self_stat_recover']);
 

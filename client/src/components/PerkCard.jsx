@@ -25,7 +25,16 @@ export default function PerkCard({ perk, tags = [], actions }) {
             <span className="font-bold text-zinc-100">{perk.name}</span>
             {perk.automated && (
               <span
-                title="This Perk has automated rules — the engine applies it on its own."
+                // The chip is identical either way — it means "accounted for",
+                // and a GM scanning the list wants to see at a glance which
+                // Perks are settled. The tooltip is where the two differ,
+                // because promising automation for a Perk that has none would
+                // be the badge telling a lie.
+                title={
+                  perk.manual
+                    ? 'This Perk is settled and needs no automation — its rule is one the table keeps.'
+                    : 'This Perk has automated rules — the engine applies it on its own.'
+                }
                 className="shrink-0 rounded-full bg-emerald-900/40 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-300"
               >
                 ⚙ Auto

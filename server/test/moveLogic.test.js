@@ -25,6 +25,7 @@ import {
   sanitizeAttackTargets,
   expandAttackTargets,
   parseConcreteAttackTargets,
+  effectiveStaminaCost,
 } from '../moveLogic.js';
 
 test('frames clamp to 0-10 and coerce junk', () => {
@@ -354,4 +355,31 @@ test('CONCRETE_ATTACK_TARGET_NAMES has exactly the 8 concrete Stats', () => {
     'Left Leg',
     'Right Leg',
   ]);
+});
+
+// ---------- Perk-adjusted Stamina Cost (Perfect Player) ----------
+
+test('a move with no Perk touching it costs exactly what it says', () => {
+  assert.equal(effectiveStaminaCost(3, 0), 3);
+  assert.equal(effectiveStaminaCost(0, 0), 0);
+  // No delta at all is the same as a zero one — the resolver calls it both ways.
+  assert.equal(effectiveStaminaCost(4), 4);
+});
+
+test('a discount comes off, and stops at free', () => {
+  assert.equal(effectiveStaminaCost(3, -2), 1);
+  assert.equal(effectiveStaminaCost(2, -2), 0);
+  // **The floor is the point.** A Perk can make a move free; it can never pay
+  // you to throw one, which is what stacking two discounts would otherwise do.
+  assert.equal(effectiveStaminaCost(1, -2), 0);
+  assert.equal(effectiveStaminaCost(1, -20), 0);
+});
+
+test('a surcharge adds on, and rubbish is treated as no delta', () => {
+  assert.equal(effectiveStaminaCost(3, 2), 5);
+  assert.equal(effectiveStaminaCost(3, undefined), 3);
+  assert.equal(effectiveStaminaCost(3, NaN), 3);
+  assert.equal(effectiveStaminaCost(null, -2), 0);
+  // Truncated, not rounded — a cost is a whole number of Stamina.
+  assert.equal(effectiveStaminaCost(3, -1.9), 2);
 });

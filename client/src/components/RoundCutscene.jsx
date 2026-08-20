@@ -65,8 +65,11 @@ const EVENT_LABEL = {
   grapple_chained: 'Chained',
   dodge_prompt: 'Dodge?',
   dodge_resolved: 'Dodge',
+  block_prompt: 'Block?',
+  block_resolved: 'Block',
   interrupt_resolved: 'Interrupt',
   damage_applied: 'Damage',
+  damage_unapplied: 'Nowhere to land',
   stat_stepped: 'Stat',
   next_roll_penalty: 'Weakened',
   move_conflict_prompt: 'Conflict?',
@@ -78,7 +81,7 @@ const EVENT_LABEL = {
 
 // Events that represent the round stopping for a human decision — rendered
 // with the paused treatment, and they're where an un-skippable wait lands.
-const PAUSE_EVENTS = new Set(['dodge_prompt', 'move_conflict_prompt', 'grapple_prompt']);
+const PAUSE_EVENTS = new Set(['dodge_prompt', 'block_prompt', 'move_conflict_prompt', 'grapple_prompt']);
 
 // The before/after behind a step, for the hover detail. Sizes are carried on
 // the event precisely so a replay watched later shows the step that happened
@@ -268,6 +271,14 @@ function eventNarration(ev, startTic) {
       return p.outcome === 'successful'
         ? 'The GM called the Dodge Successful.'
         : 'The GM called the Dodge Failed.';
+    case 'block_prompt':
+      return `${p.defenderCharacterName}'s guard ${
+        p.coverage === 'too-short' ? 'catches the opening of' : 'covers'
+      } ${p.attackerCharacterName}'s ${p.attackerMoveName} (attack rolled ${p.attackerResult}) — waiting on the GM to call it.`;
+    case 'block_resolved':
+      return p.outcome === 'successful'
+        ? `The GM called the Block Successful${p.targetSlotName ? ` for the strike to ${p.targetSlotName}` : ''} — now it rolls.`
+        : `The GM called the Block the wrong guard${p.targetSlotName ? ` for the strike to ${p.targetSlotName}` : ''} — it does not apply.`;
     case 'interrupt_resolved':
       return p.interrupted
         ? `${who}'s move is Interrupted mid-Startup — ${interruptTally(p)}, and it never comes out.`
@@ -283,6 +294,13 @@ function eventNarration(ev, startTic) {
       return `${plural(p.steps ?? 0, 'step', 'steps')} of damage to ${p.slotName ?? 'an unknown Stat'}${
         p.targetCharacterName ? ` on ${p.targetCharacterName}` : ''
       }.`;
+    case 'damage_unapplied':
+      // Deliberately not phrased as a miss: the blow landed, there was simply
+      // nothing left to break. The Injury call is the table's, and the totalled
+      // version of this goes to the Chat Log when the round closes.
+      return `${p.damage ?? 0} damage lands on ${
+        p.targetCharacterName ? `${p.targetCharacterName}'s ` : 'a '
+      }${p.slotName ?? 'Stat'} — already broken, so nothing can be applied.`;
     case 'stat_stepped':
       return statStepSentence(p, p.characterName);
     case 'move_conflict_prompt':
@@ -449,6 +467,10 @@ function eventDetail(ev, startTic) {
         break;
       }
       lines.push(`${(p.steps ?? 0) * 0.5} damage`);
+      break;
+    case 'damage_unapplied':
+      lines.push(`${p.damage ?? 0} damage, unapplied`);
+      lines.push(`${p.slotName ?? 'That Stat'} is incapacitated — consider it for Injuries`);
       break;
     case 'stat_stepped':
       lines.push(statStepDetail(p));

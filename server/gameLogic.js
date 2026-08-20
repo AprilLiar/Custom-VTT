@@ -46,6 +46,21 @@ export function rankOf(size, bonus) {
 // a penalty that would push the rank below d4 incapacitates the die outright
 // rather than going negative, the same floor stepping down manually past a
 // bare d4 already hits.
+// How many ranks each slot is penalized by, summed — more than one Injury can
+// target the same Stat. Pure, and extracted rather than written twice: it was
+// inline in character:revert_stats, and Perfect Player needs the identical
+// figure to decide whether a fighter is standing on everything they should be
+// (see server/perks/perfectPlayer.js). Two copies of "what is this fighter's
+// real baseline" is exactly how the two quietly disagree.
+export function injuryPenaltyBySlot(injuries) {
+  const bySlot = new Map();
+  for (const injury of injuries ?? []) {
+    if (!injury?.slot_name || !injury.penalty) continue;
+    bySlot.set(injury.slot_name, (bySlot.get(injury.slot_name) ?? 0) + injury.penalty);
+  }
+  return bySlot;
+}
+
 export function applyRankPenalty({ size, bonus, status }, penalty) {
   if (status === 'incapacitated' || !penalty) return { size, bonus, status };
   const rank = rankOf(size, bonus) - penalty;

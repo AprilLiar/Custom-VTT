@@ -14,6 +14,8 @@
 // receives it through its ctx rather than importing it.
 
 import { all, one, run } from './db.js';
+import { injuryPenaltyBySlot } from './gameLogic.js';
+import { MIN_DAMAGE_THRESHOLD } from './combatDamage.js';
 import { perkDefinition } from './perks/index.js';
 
 // A character's granted Perks that actually have code behind them, paired with
@@ -84,6 +86,68 @@ export async function perkAllowsRevealedDetail(characterId, extra = {}) {
     if (await definition.canSeeRevealedDetail({ ...ctx, characterPerkId })) return true;
   }
   return false;
+}
+
+// The shared shape of every numeric seam that just sums: ask each granted Perk,
+// truncate, add up. Written once rather than five near-identical loops, because
+// five copies is how one of them quietly stops truncating.
+async function sumSeam(characterId, seam, extra = {}) {
+  const granted = await perkDefinitionsFor(characterId);
+  const withSeam = granted.filter((g) => typeof g.definition[seam] === 'function');
+  if (!withSeam.length) return 0;
+  const ctx = await seamContext(characterId, extra);
+  let total = 0;
+  for (const { definition, characterPerkId } of withSeam) {
+    total += Math.trunc(Number(await definition[seam]({ ...ctx, characterPerkId })) || 0);
+  }
+  return total;
+}
+
+// The Minimum Damage Threshold for one exchange: the game's own 5, plus what
+// the attacker's Perks say about attacks they make, plus what the target's say
+// about attacks made against them.
+//
+// **Both halves in one call, deliberately.** They are the same number to every
+// caller downstream — one figure threaded into computeHitDamage — and asking
+// for them separately is how a call site ends up applying one and forgetting
+// the other. Iron Skin (+2) facing Not Just a Scratch (−2) therefore lands back
+// on the plain 5 with no rule of its own for the meeting.
+export async function minDamageThresholdFor({ attackerCharacterId, targetCharacterId }) {
+  const [attacking, attacked] = await Promise.all([
+    attackerCharacterId == null ? 0 : sumSeam(attackerCharacterId, 'minDamageThresholdWhenAttacking'),
+    targetCharacterId == null ? 0 : sumSeam(targetCharacterId, 'minDamageThresholdWhenAttacked'),
+  ]);
+  // Floored at 1: a pile of Not Just a Scratch must not make a roll of 0 — or a
+  // negative one — deal damage. Something still has to land.
+  return Math.max(1, MIN_DAMAGE_THRESHOLD + attacking + attacked);
+}
+
+// How many Half-Damage steps a Full Block sends back at the attacker (Spiked
+// Shell). Summed across Perks; 0 when nobody has one, which is the overwhelming
+// majority of blocks.
+export async function perkBlockRiposteSteps(characterId, { attackerResult, defenderResult }) {
+  return Math.max(0, await sumSeam(characterId, 'blockRiposteSteps', { attackerResult, defenderResult }));
+}
+
+// How many pending Half-Damage markers this character sheds at Round Start
+// (Healing Factor). Which ones is not decided here — see openRoundForCharacters.
+export async function perkRoundStartHalfHealing(characterId) {
+  return Math.max(0, await sumSeam(characterId, 'roundStartHalfHealing'));
+}
+
+// What one move costs this character beyond its authored Stamina Cost — a
+// negative number is a discount (Perfect Player). Summed.
+//
+// The context carries the character's live dice and an injury-penalty lookup
+// because the conditions Perks want here are about the state of the fighter, and
+// making every Perk fetch them itself would be a query per Perk per move.
+export async function perkStaminaCostDelta({ characterId, move, dice, injuries }) {
+  const penalties = injuryPenaltyBySlot(injuries);
+  return sumSeam(characterId, 'staminaCostDelta', {
+    move,
+    dice,
+    injuryPenaltyFor: (slotName) => penalties.get(slotName) ?? 0,
+  });
 }
 
 // How many qualifying idle Tics this character needs per point of Stamina

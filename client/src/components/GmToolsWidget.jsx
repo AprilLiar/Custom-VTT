@@ -45,7 +45,19 @@ function RollRequester({ onDone }) {
   const [targetNumber, setTargetNumber] = useState('');
 
   const load = () => getCharacters().then(setCharacters).catch(() => {});
-  useEffect(load, []);
+  // `useEffect(load, [])` — what this used to be — hands React the Promise
+  // `load` returns and React files it as the effect's CLEANUP function. Tearing
+  // the effect down then calls it: `TypeError: destroy is not a function`,
+  // thrown from inside React's commit phase, which unmounts the entire tree.
+  // Reported as "closing the Roll Requester makes the whole screen white",
+  // and that is exactly what it was — the teardown happens when this component
+  // unmounts, i.e. when the GM closes the tool.
+  useEffect(() => {
+    load();
+    // load is stable enough for a mount-only fetch; useSocketRefresh below owns
+    // every re-fetch after that.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   useSocketRefresh(load);
 
   // Players play PCs; asking an NPC's "player" to roll would be asking the

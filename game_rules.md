@@ -650,6 +650,13 @@ A roll under 5 is **Insignificant Damage**: the swing landed but did nothing
 worth counting. It deals no damage, and because it *connected*, it fires the
 move's **On Hit** trigger.
 
+> **That 5 is the Minimum Damage Threshold, and it is the one gate that can
+> move.** A couple of Perks push on it — up for attacks against them, down for
+> attacks they make (see **Perks**) — and only the *smallest* gate shifts:
+> raised to 7 the ladder reads 7-10-15-20, lowered to 3 it reads 3-10-15-20.
+> Everything above the first rung stays where it is. Two fighters pushing it in
+> opposite directions cancel out.
+
 > **A Miss is an attack that was evaded — nothing else.** Only a successful
 > **Dodge** produces one, and only a Dodge fires **On Miss**. An
 > Insignificant hit is not a Miss: it touched its target. A **Full Block** is
@@ -663,9 +670,8 @@ it would against a heavy blow. Only when nothing defends it does the attack
 land for nothing and report Insignificant Damage; when a defence resolved it,
 the defence's own outcome is what the log reports.
 
-Damage lands on **every** Stat in the move's Attack Target that still has a
-working die — a Move that names two Stats hits both of them. Stats are worked
-through in a fixed order:
+Damage lands on **every** Stat in the move's Attack Target — a Move that names
+two Stats hits both of them. Stats are worked through in a fixed order:
 
 **Skull, Brain, Left Hand, Stamina, Body, Right Hand, Left Leg, Right Leg.**
 
@@ -677,23 +683,64 @@ left for the second. A **Dodge** is called once per attacked Stat: the GM is
 asked about each in turn, and the attack only counts as evaded if the Dodge got
 clear of all of it. Whatever gets through on a line lands on that line's Stat.
 
-### Blocking
+#### Hitting a Stat that is already broken
 
-Blocks are fully automatic — pure dice, no prompts, ever.
+A broken Stat is at the floor. There is nothing left to step down, so damage
+aimed at one **cannot be applied** — but the blow itself is real, and the
+attack resolves in full: it rolls, it can be blocked or dodged, and every
+trigger fires as it would anywhere else.
+
+Nothing is redirected. The damage does not slide onto a neighbouring Stat; it
+simply does not land.
+
+At the end of the round the Chat Log says so, once per Stat, with everything
+that failed to land on it added up:
+
+> *1.5 damage should have been dealt to Roy's Left Hand, but it cannot be
+> applied. Take this into consideration for Injuries.*
+
+That is the GM's cue. The rules have run out of room, and what happens to an
+arm that keeps getting hit after it has already been wrecked is a call for the
+table to make — as an **Injury**, or however else the fiction wants it.
+
+### Blocking
 
 A Block engages when its Defense Frames overlap the attacker's Active window.
 There are three ways that can land:
 
-- **Full coverage.** The Block is rolled against the attack. The net result
-  decides a **Full** Block (no damage) or a **Partial** one (reduced damage).
+- **Full coverage.** The GM is asked whether the guard applies (below). If it
+  does, the Block is rolled against the attack, and the net result decides a
+  **Full** Block (no damage) or a **Partial** one (reduced damage).
 - **The guard catches the opening frame and no more.** This is a *working
-  Block*, not a failed one. It resolves normally, and the blocker's own
-  **Recovery is extended** to hold the guard through the rest of the attack.
-  That is announced, and drawn on the timeline in the Block's own colour.
-  Being committed for longer is the price of catching it late, and it is a
-  fair one.
+  Block*, not a failed one. The GM is asked the same question; if the guard
+  applies, it resolves normally and the blocker's own **Recovery is extended**
+  to hold the guard through the rest of the attack. That is announced, and
+  drawn on the timeline in the Block's own colour. Being committed for longer
+  is the price of catching it late, and it is a fair one.
 - **Too early.** The guard was already down by the time the attack became
-  Active. Automatic failure.
+  Active. Automatic failure, no question asked.
+
+#### The GM calls the guard
+
+Overlapping in time is not proof the guard was the *right* guard. A Straight
+and a Haymaker can both come at your head, but a front block stops one and a
+side block stops the other, and no amount of frame data knows the difference.
+So a Block that reaches the guard stops that pair's fight and asks the **GM**:
+did it hold? Every other pair keeps resolving while that one waits.
+
+- **Successful** — the guard applies. It rolls, and can still come out Partial.
+- **Failed** — the guard is discarded entirely. The attack lands as though
+  nothing had been declared against it: damage on the Stats the attack itself
+  named, and **no Recovery extension**, because nothing was held. The move
+  still cost its Stamina and still occupies its Tics; only its defensive
+  effect is ignored.
+
+An attack that names several Stats is **one question per Stat** — a guard that
+got your head out of the way did not necessarily get your body out of it. If
+every line comes back Failed the guard never happened. If any line held, the
+Block stands, and everything that got past it — on a Partial line or a Failed
+one — lands on the Stat that did the blocking, exactly as a Partial always
+has.
 
 And one way it can fail to happen at all: **no overlap**. Placing a Block on
 the same Tic as an attack does not make it a Block. If its Defense Frames sit
@@ -714,8 +761,6 @@ they choose: **Forfeit** it (full Stamina refund) or **Postpone** it past the
 extension.
 
 ### Dodging
-
-Dodge is the one call in the game left to a human.
 
 It is stricter than Block: anything less than **full coverage** fails
 automatically, with no prompt. A dodge that only half-covers an attack is
@@ -906,6 +951,31 @@ way tables always have.
 - **Second Wind.** Getting hit wakes you up. The first time your guard fails in a
   round, you recover 2 Stamina. Once per round — it comes back when your fight
   reaches its next round, not when somebody else's does.
+- **Iron Skin.** Hitting you is like hitting a wall. The **Minimum Damage
+  Threshold** for attacks against you goes up by 2 — the smallest gate only, so
+  damage against you reads 7-10-15-20. A blow under it does nothing at all, and
+  a guard that lets less than that through counts as a Full Block.
+- **Not Just a Scratch.** Nothing you land is nothing. The Minimum Damage
+  Threshold against your attacks drops by 2 — again the smallest gate only, so
+  your damage reads 3-10-15-20. Facing an Iron Skin the two cancel out and the
+  threshold is the usual 5.
+- **Spiked Shell.** Your guard is not a soft place to land. When you
+  **Successfully Block**, the attacker takes 0.5 damage for every 5 points your
+  guard beat their Attack roll by, and it lands on the **limb they attacked
+  with** — both hands if they came in with both, one at random if they mixed a
+  hand and a leg. Beat them by less than 5 and nothing comes back, and a guard
+  that ran out of Stamina mid-block did not successfully block.
+- **Perfect Player.** You are only untouchable while you are untouched. While no
+  Stat of yours has dropped below its current Locked Value, any **Dodge** costs
+  2 less Stamina. Half a step of damage does not break it; a Stat actually
+  losing a die size does.
+- **Healing Factor.** You knit back together faster than you come apart. At
+  **Round Start**, one instance of Half-Damage is removed from you at random. It
+  clears a *pending* half — the marked half-step still waiting for its other
+  half — so if nothing of yours is showing one, nothing heals that round.
+- **Multifaceted.** You are not one fighter but two. You may build and keep a
+  second Stance, switching between them as any fighter switches Stance. Nothing
+  automates this one — the table simply lets you make the second Stance.
 
 ## Counters
 

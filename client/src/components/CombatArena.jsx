@@ -525,43 +525,26 @@ export function TicSquare({
   // page to link it to.
   const starts = attackStarts ?? [];
   const startIds = starts.map((s) => s.declaredMoveId);
-  // **Only the run's FIRST Tic anchors the connector and answers a click.**
-  // The telegraph marks every Tic of a wind-up now (see attackStartsByTic), and
-  // `registerLinkAnchor` is keyed by declared move — registering the same move
-  // from three squares would leave the line pointing at whichever rendered
-  // last, i.e. the end of the wind-up instead of its beginning.
-  const beginningIds = starts.filter((s) => s.isStart !== false).map((s) => s.declaredMoveId);
-  const startKey = beginningIds.join(',');
+  const startKey = startIds.join(',');
   const { ids: linkedIds } = useMoveLink();
   const isLinked = startIds.some((id) => linkedIds.includes(id));
   const glowRef = useRef(null);
   useEffect(() => {
-    if (!linkAnchor || !beginningIds.length || !glowRef.current) return undefined;
+    if (!linkAnchor || !startIds.length || !glowRef.current) return undefined;
     const el = glowRef.current;
-    const offs = beginningIds.map((id) => registerLinkAnchor('tic', id, el));
+    const offs = startIds.map((id) => registerLinkAnchor('tic', id, el));
     return () => offs.forEach((off) => off());
-    // startKey stands in for beginningIds, which is a fresh array every render.
+    // startKey stands in for startIds, which is a fresh array every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [linkAnchor, startKey]);
 
-  // Says which it is: a wind-up beginning here, or one already running through
-  // this square. Both are the same public fact ("this Tic is committed"), but
-  // the difference is exactly what tells you how much of the window is left to
-  // interrupt into.
-  const beginningHere = starts.filter((s) => s.isStart !== false);
-  const continuingHere = starts.filter((s) => s.isStart === false);
-  const nameList = (list) => list.map((s) => s.characterName ?? 'Someone').join(', ');
-  const telegraphTitle = [
-    beginningHere.length
-      ? `${nameList(beginningHere)} start${beginningHere.length === 1 ? 's' : ''} an attack here`
-      : null,
-    continuingHere.length
-      ? `${nameList(continuingHere)} ${continuingHere.length === 1 ? 'is' : 'are'} still winding up`
-      : null,
-  ]
-    .filter(Boolean)
-    .map((part) => ` — ${part}`)
-    .join('');
+  // One square per wind-up, so there is only ever the one sentence to write —
+  // see attackStartsByTic on why the run's length is not published.
+  const telegraphTitle = starts.length
+    ? ` — ${starts.map((s) => s.characterName ?? 'Someone').join(', ')} start${
+        starts.length === 1 ? 's' : ''
+      } an attack here`
+    : '';
   const title = clickTitle ?? `Tic ${relativeTic}${telegraphTitle}${
     carried.length
       ? ` — ${carried
@@ -572,9 +555,6 @@ export function TicSquare({
   // Tap-to-place owns the click whenever a move is mid-placement; the
   // telegraph's own tap-to-pin only takes over when it doesn't, so
   // declaring a move never gets hijacked by an informational overlay.
-  // Hover and pin still work from ANY square of the run — the connector is
-  // anchored at the head, but pointing at the middle of a wind-up to ask "what
-  // is this?" is the natural gesture.
   const handleClick = onClick ?? (linkAnchor && startIds.length ? () => toggleLinkPin(startIds) : undefined);
   return (
     <motion.div
@@ -620,15 +600,10 @@ export function TicSquare({
         <span
           ref={glowRef}
           aria-hidden
-          // A continuation square is drawn a shade fainter than the one the
-          // wind-up begins on — the run reads as a run, with a head and a
-          // tail, rather than as several equally-loud "starts here" markers.
           className={`pointer-events-none absolute inset-0 transition-all duration-200 ${
             isLinked
               ? 'bg-zinc-100/15 shadow-[inset_0_0_0_2px_rgb(228_228_231_/_95%),inset_0_0_16px_3px_rgb(228_228_231_/_55%)]'
-              : beginningHere.length
-                ? 'bg-zinc-100/[0.06] shadow-[inset_0_0_0_1.5px_rgb(228_228_231_/_65%),inset_0_0_12px_2px_rgb(228_228_231_/_28%)]'
-                : 'bg-zinc-100/[0.03] shadow-[inset_0_0_0_1px_rgb(228_228_231_/_35%),inset_0_0_10px_2px_rgb(228_228_231_/_16%)]'
+              : 'bg-zinc-100/[0.06] shadow-[inset_0_0_0_1.5px_rgb(228_228_231_/_65%),inset_0_0_12px_2px_rgb(228_228_231_/_28%)]'
           }`}
         />
       )}
@@ -1399,7 +1374,13 @@ function buildDeclarePayload(character, move, roundStartTic, declaredMoves) {
     activeTics: move.active_tics,
     recoveryTics: move.recovery_tics,
     minPlacementTic,
-    staminaCost: move.stamina_cost,
+    // The cost after this character's own Perks (Perfect Player discounts a
+    // Dodge) — the server resolves it per character in getMovesFor and the
+    // affordability check and the commit both use the same figure, so quoting
+    // the raw column here would show a number nobody is ever charged. Falls
+    // back for a payload built from a move fetched somewhere that has not
+    // resolved it.
+    staminaCost: move.effective_stamina_cost ?? move.stamina_cost,
     // right_tell_id/left_tell_id are only ever set together, exactly when
     // this move's Roll has an ambiguous Hand/Leg slot (see db.js) — the
     // placement handler uses this to decide whether to ask Left/Right
@@ -1483,8 +1464,12 @@ function DeclareMoveCard({ character, move, roundStartTic, declaredMoves, tags, 
   // card advertises its multiplier instead of a number that would always
   // read "0 Stamina" and mean "free".
   const isBlock = carriesBlockTag(move.tag_ids, tags);
-  const cost =
-    move.stamina_cost > 0 ? `-${move.stamina_cost}` : move.stamina_cost < 0 ? `+${-move.stamina_cost}` : '0';
+  // See buildDeclarePayload: the per-character figure, not the template's.
+  const effectiveCost = move.effective_stamina_cost ?? move.stamina_cost;
+  const cost = effectiveCost > 0 ? `-${effectiveCost}` : effectiveCost < 0 ? `+${-effectiveCost}` : '0';
+  // Worth pointing at when a Perk actually moved it — a Dodge quoting 1 when
+  // the Compendium says 3 reads as a bug unless the card says why.
+  const discounted = effectiveCost !== move.stamina_cost;
   const payload = buildDeclarePayload(character, move, roundStartTic, declaredMoves);
   // Requirement (decided, new): this move may only be declared immediately
   // after the one it names. The server enforces it — this only stops the
@@ -1583,7 +1568,10 @@ function DeclareMoveCard({ character, move, roundStartTic, declaredMoves, tags, 
     >
       <span>
         {move.name}{' '}
-        <span className={isBlock ? 'text-sky-400/80' : 'text-zinc-500'}>
+        <span
+          className={isBlock ? 'text-sky-400/80' : discounted ? 'text-emerald-400/90' : 'text-zinc-500'}
+          title={discounted ? `A Perk of yours is moving this: normally ${move.stamina_cost} Stamina.` : undefined}
+        >
           {isBlock ? `(Block ${staminaModifierLabel(move.stamina_modifier)} Stamina)` : `(${cost} Stamina)`}
         </span>
         {/* Named, not just greyed. A card that is dimmed with no word on it

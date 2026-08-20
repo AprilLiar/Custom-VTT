@@ -3,7 +3,10 @@ import { Skull, Brain, HandFist, Zap, HeartPulse, Footprints } from 'lucide-reac
 // Where each of the 8 dice sits, overlaid on the Vitruvian figure as three
 // horizontal rows that mirror the original Head/Core/Legs pool grouping
 // (2-4-2) rather than tracing the artwork point-for-point: Skull+Brain form
-// a symmetric pair straddling the vertical midline (head row); Left Hand,
+// a symmetric pair straddling the vertical midline (head row) **on the same
+// two verticals as Stamina and Body below them** — they used to sit at
+// 42%/58%, close enough that the two widgets' Stat-step arrows and
+// Half-Damage toggles overlapped and fought for the same pixels; Left Hand,
 // Stamina, Body, Right Hand share one row at the hands' height, showing
 // they're one group (core row); Left Leg+Right Leg stay a symmetric pair at
 // the spread stance (leg row). Extracted from CoreStatsTab.jsx (its original
@@ -12,8 +15,8 @@ import { Skull, Brain, HandFist, Zap, HeartPulse, Footprints } from 'lucide-reac
 // the plan, without a second copy of these pixel positions drifting out of
 // sync with Tab 1's own.
 export const ANATOMY = {
-  Skull: { top: '11%', left: '42%', Icon: Skull },
-  Brain: { top: '11%', left: '58%', Icon: Brain },
+  Skull: { top: '11%', left: '36%', Icon: Skull },
+  Brain: { top: '11%', left: '64%', Icon: Brain },
   'Left Hand': { top: '32%', left: '9%', Icon: HandFist },
   Stamina: { top: '32%', left: '36%', Icon: Zap },
   Body: { top: '32%', left: '64%', Icon: HeartPulse },
