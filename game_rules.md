@@ -798,6 +798,39 @@ Roll the Stat that fits what you are actually doing: Brain to read a room,
 Body to hold a door, a Leg to make a jump. If it is not obvious which Stat
 applies, that is usually a sign the thing does not need a roll.
 
+## Perks
+
+A **Perk** is something your character is, rather than something they do. Moves
+are choices you make in a round; a Perk is standing, always there, and you never
+declare it.
+
+Your GM writes them and hands them out. A Perk has a picture, a name and a
+description, and that description is the rule — most Perks in a world are exactly
+that, a line of text the table reads and applies between them, which is a
+perfectly good Perk.
+
+Some Perks do more: the app knows them by name and applies them itself. Those
+carry a small **⚙ Auto** badge on their card, and it means you can stop tracking
+them. They fire on their own, and when one changes a number it says so — a Perk
+that adds to a roll appears on that roll's own breakdown under its own name, and
+a Perk that fires in the middle of a round gets its own line in the log, exactly
+like a move's On Hit would.
+
+A Perk with no badge is not a lesser Perk. It just means the table applies it, the
+way tables always have.
+
+### The Perks in play
+
+- **Genius Observer.** You read a fight faster than anyone should. Any move that
+  has publicly revealed can be opened in full from the Chat Log — its
+  description, its frames, everything it does — instead of just its name and
+  shape. Without it, a revealed move shows you what everyone can see and no more.
+- **Cornered Animal.** You fight hardest with your back to the wall. While your
+  Stamina is at a quarter of its maximum or below, every roll you make counts +2.
+- **Second Wind.** Getting hit wakes you up. The first time your guard fails in a
+  round, you recover 2 Stamina. Once per round — it comes back when your fight
+  reaches its next round, not when somebody else's does.
+
 ## Counters
 
 A Counter is a simple clock: a name, a target number of pips, and how many are

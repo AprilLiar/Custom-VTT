@@ -1,5 +1,6 @@
 import { createClient } from '@libsql/client';
 import { STYLES, COUNTER_BONUS, DEFEATS } from './ruleset.js';
+import { PERK_REGISTRY } from './perks/index.js';
 
 // Turso in production (TURSO_DATABASE_URL + TURSO_AUTH_TOKEN env vars);
 // a local libSQL file otherwise — same client, same SQL.
@@ -831,6 +832,30 @@ export async function initDb() {
     )
   `);
 
+  // One grant's private scratch space — charges, cooldowns, "once per round"
+  // (decided, new; see server/perks/index.js for the whole Perk architecture).
+  //
+  // **This is data storage, not an effect system**, which is the distinction
+  // that keeps it clear of the generic Perk-automation registry that was built
+  // and removed. Nothing here describes what a Perk *does*; a Perk's code says
+  // that, and uses this to remember what it has already done.
+  //
+  // `scope` is when the row is wiped, and it is the whole reason the column
+  // exists — "once per round" and "once per fight" are the two shapes almost
+  // every stateful Perk turns out to want, and neither can be expressed by a
+  // value alone. Keyed on character_perk_id, not character_id: revoking the
+  // Perk takes its state with it, which is what ON DELETE CASCADE is for.
+  await run(`
+    CREATE TABLE IF NOT EXISTS character_perk_state (
+      id INTEGER PRIMARY KEY,
+      character_perk_id INTEGER NOT NULL REFERENCES character_perks(id) ON DELETE CASCADE,
+      key TEXT NOT NULL,
+      value INTEGER NOT NULL DEFAULT 0,
+      scope TEXT NOT NULL DEFAULT 'round' CHECK(scope IN ('round','fight','permanent')),
+      UNIQUE(character_perk_id, key)
+    )
+  `);
+
   // Perk Tags (decided, new): a categorisation vocabulary for Perks, and
   // **deliberately its own list**, not the `tags` table Moves use. Move tags
   // are no longer purely cosmetic — the Block tag drives real Stamina
@@ -1231,6 +1256,30 @@ export async function initDb() {
   await seedBlockTag();
   await seedNoDamageTag();
   await seedFeintTag();
+  await seedPerks();
+}
+
+// Every Perk that has code behind it gets its compendium row created here if
+// the world does not already have one (decided, new).
+//
+// A Perk's mechanics bind to its **name** (see server/perks/index.js for why),
+// which leaves one obvious way for the whole thing to quietly not work: the GM
+// never creates the row, or creates it under a slightly different spelling, and
+// the Perk is ungrantable or inert. Seeding removes that failure entirely — the
+// same reasoning, and the same case-insensitive adopt-don't-duplicate guard, as
+// seedBlockTag above. A world that already has its own "Genius Observer" keeps
+// it, description and picture and all.
+async function seedPerks() {
+  for (const definition of Object.values(PERK_REGISTRY)) {
+    const existing = await one('SELECT id FROM perks WHERE LOWER(TRIM(name)) = ?', [
+      definition.name.trim().toLowerCase(),
+    ]);
+    if (existing) continue;
+    await run('INSERT INTO perks (name, description) VALUES (?, ?)', [
+      definition.name,
+      definition.description ?? '',
+    ]);
+  }
 }
 
 // Block Stamina (decided, new): the **Block** Tag is the first Tag in the

@@ -61,7 +61,7 @@ function RoundSummaryCard({ entry, onWatch }) {
 
 function Entry({ entry, character, moveInfo, characters, defenseResolutions, onWatchRound, onAdjustCounters }) {
   const [expanded, setExpanded] = useState(false);
-  const { role } = useRole();
+  const { role, capabilities } = useRole();
   const time = new Date(entry.timestamp).toLocaleTimeString([], {
     hour: '2-digit',
     minute: '2-digit',
@@ -115,18 +115,28 @@ function Entry({ entry, character, moveInfo, characters, defenseResolutions, onW
               <button
                 type="button"
                 onClick={() => {
-                  // Interim honor-system gate (decided) — asks rather than
-                  // checking real Perk ownership automatically; a later pass
-                  // is expected to replace this with an actual check against
-                  // the logged-in character's granted Perks.
-                  if (expanded) {
-                    setExpanded(false);
-                  } else if (window.confirm('Does your character have the Genius Observer Perk?')) {
-                    setExpanded(true);
-                  }
+                  // **A real check now, not the honour-system prompt it
+                  // replaced.** This used to be a window.confirm asking "Does
+                  // your character have the Genius Observer Perk?" — a gate
+                  // that trusted the reader about the reader's own advantage.
+                  // The answer comes from the server against the logged-in
+                  // character's granted Perks (see capabilitiesFor in
+                  // server/index.js); the button simply isn't offered to a
+                  // viewer who hasn't earned it.
+                  if (!capabilities.canSeeRevealedDetail) return;
+                  setExpanded((prev) => !prev);
                 }}
-                title={expanded ? 'Click to collapse' : 'Click to show the full move'}
-                className="flex w-full items-center gap-2 text-left hover:opacity-80"
+                disabled={!capabilities.canSeeRevealedDetail}
+                title={
+                  capabilities.canSeeRevealedDetail
+                    ? expanded
+                      ? 'Click to collapse'
+                      : 'Click to show the full move'
+                    : 'Reading a move in full takes the Genius Observer Perk.'
+                }
+                className={`flex w-full items-center gap-2 text-left ${
+                  capabilities.canSeeRevealedDetail ? 'hover:opacity-80' : 'cursor-default'
+                }`}
               >
                 <Thumb record={{ image_data: entry.move.imageData, image_mime_type: entry.move.imageMimeType }} name={entry.move.name} size="h-8 w-8" />
                 <div className="min-w-0 flex-1">

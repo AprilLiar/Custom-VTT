@@ -1531,3 +1531,189 @@ test('a move with no Combat Style leaves the matchup at the bare stance score', 
   assert.equal(rolls.find((r) => r.character_id === attacker).modifier, plain);
   assert.equal(rolls.find((r) => r.character_id === defender).modifier, -plain);
 });
+
+// ---------------------------------------------------------------------------
+// Perks (see server/perks/index.js for the architecture)
+// ---------------------------------------------------------------------------
+
+// Grants a Perk that seedPerks already created at initDb time — the same
+// three-way alignment production has: a definition in the registry, a row in
+// `perks` under the same name, and a `character_perks` grant.
+async function grantPerk(characterId, perkName) {
+  const perk = await one('SELECT id FROM perks WHERE name = ?', [perkName]);
+  assert.ok(perk, `${perkName} should have been seeded from the registry`);
+  const result = await run('INSERT INTO character_perks (character_id, perk_id) VALUES (?, ?)', [
+    characterId,
+    perk.id,
+  ]);
+  return Number(result.lastInsertRowid);
+}
+
+// One failed-defence round. `withPerk` decides whether the defender carries
+// Second Wind; everything else is identical, and Math.random is pinned for this
+// whole file, so the two runs differ by exactly the Perk. Stamina cannot be
+// asserted absolutely — Idle-Tic Regen moves it several points over a round —
+// so what the Perk did is the difference between the two.
+async function runFailedDefenceRound(pairIndex, label, { withPerk }) {
+  const attacker = await createCharacter(`${label} Attacker`);
+  const defender = await createCharacter(`${label} Defender`);
+  await setDieSize(attacker, 'Skull', 12);
+  // Well below max, or +2 Stamina would be clamped away and prove nothing.
+  await run('UPDATE characters SET current_stamina = 10 WHERE id = ?', [defender]);
+  const characterPerkId = withPerk ? await grantPerk(defender, 'Second Wind') : null;
+
+  const punch = await createMove({ name: `${label} Punch`, startupTics: 1, activeTics: 2, recoveryTics: 1, rollSlots: ['Skull'] });
+  // The too-early guard shape: its only Defense Frame sits past the attack's
+  // first Active Tic, so the defence is force-failed and fires defense_failure.
+  const lateGuard = await createMove({
+    name: `${label} Guard`,
+    startupTics: 1,
+    activeTics: 1,
+    recoveryTics: 1,
+    rollSlots: ['Left Hand'],
+    isDefensive: true,
+    defenseKind: 'block',
+    defenseFramePositions: [2],
+  });
+
+  await seatPair(pairIndex, attacker, defender);
+  await startPairDeclaration(mockIo, pairIndex);
+  await declareMove({ characterId: attacker, moveId: punch, placementTic: 0, startupTics: 1 });
+  await declareMove({ characterId: defender, moveId: lateGuard, placementTic: 0, startupTics: 1 });
+  await resolvePair(pairIndex);
+
+  const after = await one('SELECT current_stamina FROM characters WHERE id = ?', [defender]);
+  return { defender, characterPerkId, stamina: after.current_stamina };
+}
+
+test('Second Wind: a Perk fires on a trigger, through the same executor a move uses', async () => {
+  const pairIndex = 310;
+  const control = await runFailedDefenceRound(315, 'SWC', { withPerk: false });
+  const { defender, characterPerkId, stamina } = await runFailedDefenceRound(pairIndex, 'SW', { withPerk: true });
+
+  // A negative self_stamina GIVES Stamina back. The Move Creator cannot author
+  // that (normalizeInteractions takes the absolute value of anything outside
+  // SIGNED_TYPES), so this direction only became reachable through a Perk.
+  assert.equal(stamina, control.stamina + 2);
+
+  const events = await all('SELECT type, payload FROM round_events WHERE pair_index = ? ORDER BY seq', [pairIndex]);
+  const fired = events
+    .filter((e) => e.type === 'automation_fired')
+    .map((e) => JSON.parse(e.payload))
+    .find((p) => p.sourceName === 'Second Wind');
+  assert.ok(fired, 'the Perk should reach the round log, not only the Chat Log');
+  assert.equal(fired.sourceKind, 'perk');
+  assert.equal(fired.trigger, 'defense_failure');
+  assert.equal(fired.characterId, defender);
+  // No move to name — moveName is a move's field and stays null for a Perk, so
+  // a reader is never told a move did this.
+  assert.equal(fired.moveName, null);
+  assert.equal(fired.moveId, null);
+  assert.ok(fired.effects.some((x) => /\+2 Stamina/.test(x)), JSON.stringify(fired.effects));
+
+  // Fired once for the one failed defence. That the SECOND attempt inside a
+  // round is refused is `consumeOnce`'s own contract, unit-tested in
+  // perkEngine.test.js — reaching it here would need a second attacker.
+  const allFirings = events
+    .filter((e) => e.type === 'automation_fired')
+    .map((e) => JSON.parse(e.payload))
+    .filter((p) => p.sourceName === 'Second Wind');
+  assert.equal(allFirings.length, 1);
+
+  // **The charge is already back**, and that is the engine working, not a gap:
+  // finishing a round auto-opens the pair's next one in the same call
+  // (advancePairResolution → startPairDeclaration), and opening a round is
+  // exactly when a round-scoped charge refreshes. The scoping itself — that
+  // only THIS pair's fighters are refreshed — is the next test.
+  const afterRound = await one(
+    "SELECT value FROM character_perk_state WHERE character_perk_id = ? AND key = 'trigger:defense_failure'",
+    [characterPerkId]
+  );
+  assert.equal(afterRound, null);
+});
+
+test("Second Wind's round charge is NOT refreshed by an unrelated pair's round", async () => {
+  // Rounds belong to a pair, not to the arena. A fighter standing in one fight
+  // must not get their once-per-round back because a different fight across the
+  // room happened to advance.
+  const mine = await createCharacter('SW Mine');
+  const theirs = await createCharacter('SW Theirs');
+  const otherA = await createCharacter('SW Other A');
+  const otherB = await createCharacter('SW Other B');
+  const characterPerkId = await grantPerk(mine, 'Second Wind');
+  await seatPair(311, mine, theirs);
+  await seatPair(312, otherA, otherB);
+
+  await run(
+    "INSERT INTO character_perk_state (character_perk_id, key, value, scope) VALUES (?, 'trigger:defense_failure', 1, 'round')",
+    [characterPerkId]
+  );
+  await startPairDeclaration(mockIo, 312);
+  const stillSpent = await one(
+    "SELECT value FROM character_perk_state WHERE character_perk_id = ? AND key = 'trigger:defense_failure'",
+    [characterPerkId]
+  );
+  assert.equal(stillSpent?.value, 1);
+
+  await startPairDeclaration(mockIo, 311);
+  const refreshed = await one(
+    "SELECT value FROM character_perk_state WHERE character_perk_id = ? AND key = 'trigger:defense_failure'",
+    [characterPerkId]
+  );
+  assert.equal(refreshed, null);
+});
+
+test('Cornered Animal: the bonus is conditional, and it is named on the roll it changes', async () => {
+  const pairIndex = 313;
+  const attacker = await createCharacter('CA Attacker');
+  const defender = await createCharacter('CA Defender');
+  await grantPerk(attacker, 'Cornered Animal');
+  // A quarter of max or below is the condition; 32 max, so 8 qualifies.
+  await run('UPDATE characters SET current_stamina = 8 WHERE id = ?', [attacker]);
+
+  const punch = await createMove({ name: 'CA Punch', startupTics: 1, activeTics: 2, recoveryTics: 1, rollSlots: ['Skull'] });
+  await seatPair(pairIndex, attacker, defender);
+  await startPairDeclaration(mockIo, pairIndex);
+  await declareMove({ characterId: attacker, moveId: punch, placementTic: 0, startupTics: 1 });
+  await declareMove({ characterId: defender, moveId: punch, placementTic: 0, startupTics: 1 });
+  await resolvePair(pairIndex);
+
+  const rolls = (await all('SELECT type, payload FROM round_events WHERE pair_index = ? ORDER BY seq', [pairIndex]))
+    .filter((e) => e.type === 'roll')
+    .map((e) => JSON.parse(e.payload));
+  const mine = rolls.find((r) => r.characterId === attacker);
+  const theirs = rolls.find((r) => r.characterId === defender);
+
+  // Its own named term, not a lump folded into the modifier — a Perk that moves
+  // a total has to be accountable in the breakdown.
+  const term = (mine.modifierBreakdown ?? []).find((t) => t.label === 'Cornered Animal');
+  assert.ok(term, JSON.stringify(mine.modifierBreakdown));
+  assert.equal(term.amount, 2);
+  assert.equal(term.key, 'perk:Cornered Animal');
+  assert.equal(mine.modifier, 2);
+
+  // The fighter without the Perk, throwing the identical move, is untouched.
+  assert.equal(theirs.modifier, 0);
+  assert.equal((theirs.modifierBreakdown ?? []).length, 0);
+});
+
+test('Cornered Animal contributes nothing while its condition is unmet', async () => {
+  const pairIndex = 314;
+  const attacker = await createCharacter('CA Healthy');
+  const defender = await createCharacter('CA Healthy Foe');
+  await grantPerk(attacker, 'Cornered Animal');
+  // Full Stamina — well above a quarter.
+  const punch = await createMove({ name: 'CAH Punch', startupTics: 1, activeTics: 2, recoveryTics: 1, rollSlots: ['Skull'] });
+  await seatPair(pairIndex, attacker, defender);
+  await startPairDeclaration(mockIo, pairIndex);
+  await declareMove({ characterId: attacker, moveId: punch, placementTic: 0, startupTics: 1 });
+  await resolvePair(pairIndex);
+
+  const roll = (await all('SELECT type, payload FROM round_events WHERE pair_index = ? ORDER BY seq', [pairIndex]))
+    .filter((e) => e.type === 'roll')
+    .map((e) => JSON.parse(e.payload))
+    .find((r) => r.characterId === attacker);
+  // Not "+0 Cornered Animal" — absent. A zero term is noise, not transparency.
+  assert.equal((roll.modifierBreakdown ?? []).find((t) => t.label === 'Cornered Animal'), undefined);
+  assert.equal(roll.modifier, 0);
+});
