@@ -1384,27 +1384,23 @@ app.get('/api/chat', wrap(async (_req, res) => {
            m.id AS move_id, m.name AS move_name, m.image_data AS move_image_data,
            m.image_mime_type AS move_image_mime_type, m.startup_tics AS move_startup_tics,
            m.active_tics AS move_active_tics, m.recovery_tics AS move_recovery_tics,
-           m.description AS move_description, m.stamina_cost AS move_stamina_cost
+           m.defense_frame_positions AS move_defense_frame_positions,
+           m.stamina_cost AS move_stamina_cost
     FROM chat_log c
     LEFT JOIN characters ch ON ch.id = c.character_id
     LEFT JOIN moves m ON m.id = c.move_id
     ORDER BY c.id
   `);
-  // `full` (everything MoveCard needs beyond the compact fields above — see
-  // a move_reveal chat card) is fetched once per distinct still-existing move
-  // referenced by a move_reveal row, not per chat row — a fight can post
-  // the same move's reveal card many times over.
-  const revealedMoveIds = [...new Set(
-    rows.filter((r) => r.kind === 'move_reveal' && r.move_id != null).map((r) => r.move_id)
-  )];
-  const fullMoveById = new Map();
-  if (revealedMoveIds.length) {
-    const marks = revealedMoveIds.map(() => '?').join(',');
-    const fullMoves = await attachInteractions(
-      await all(`SELECT * FROM moves WHERE id IN (${marks})`, revealedMoveIds)
-    );
-    for (const m of fullMoves) fullMoveById.set(m.id, m);
-  }
+  // **`full` is deliberately NOT attached here any more (decided, revised).**
+  // It used to be: every move_reveal row's whole move — Roll, Tags, Stamina
+  // Cost, On Hit effects — was fetched and sent to every client, and the
+  // Genius Observer gate was only the expand button being disabled. That is
+  // the same honour-system weakness the server-side capability check was
+  // built to replace, just wearing a different coat: anybody with devtools
+  // could read the payload. The gated half is now served on request, per
+  // socket, by `move:request_detail` below — see the reveal card's own
+  // comment there. This also stops a long chat log re-fetching every revealed
+  // move in full on every page load.
   // Attack Target (Change 001), 6.3: a roll's payload freezes
   // effectiveAttackTargets/attackTargetSource at roll time, but a
   // Successful Block can update the underlying declared_moves row *after*
@@ -1469,9 +1465,14 @@ app.get('/api/chat', wrap(async (_req, res) => {
                 startupTics: row.move_startup_tics,
                 activeTics: row.move_active_tics,
                 recoveryTics: row.move_recovery_tics,
-                description: row.move_description,
+                defenseFramePositions: JSON.parse(row.move_defense_frame_positions ?? '[]'),
+                // Stamina Cost is public here because it is already public
+                // elsewhere: mapDeclaredMovesForViewer sends it to everyone
+                // the moment a move is `publiclyRevealed`, so withholding it
+                // on this card would be theatre. The **description** is not —
+                // reading what a move actually does is the thing the Perk
+                // buys — so it rides `full` with everything else.
                 staminaCost: row.move_stamina_cost,
-                full: fullMoveById.get(row.move_id) ?? null,
               }
           : undefined,
         // Historical lane_snapshot rows (the per-reveal card this overhaul
@@ -1566,6 +1567,47 @@ io.on('connection', (socket) => {
       socket.data.identity = character ? { role: 'player', characterId: character.id } : null;
     }
     socket.emit('identity:capabilities', await capabilitiesFor(socket.data.identity));
+  });
+
+  // **The gated half of a move-reveal chat card (decided, new).** The card
+  // itself carries name, picture, frame data and Stamina Cost to everyone —
+  // all of it already public on `combat:updated` the moment the move reveals.
+  // Everything else about the move is what the **Genius Observer** Perk buys,
+  // and it is served here, per socket, rather than attached to GET /api/chat
+  // for every viewer alike (which is what it used to do, leaving the gate as
+  // nothing but a disabled button over a payload anybody could read).
+  //
+  // Two checks, both necessary:
+  //
+  //  1. **Does this socket's identity qualify?** `capabilitiesFor` — the same
+  //     answer the client was already given for whether to offer the button,
+  //     re-asked here because the button is a courtesy and this is the gate.
+  //  2. **Has this move actually been revealed in the log?** The Perk reads a
+  //     *publicly revealed* move; without this an entitled Player could ask
+  //     for any move id in the world and read the GM's unrevealed library.
+  //     A `move_reveal` row existing for it is exactly "it came out in front
+  //     of everyone", since that is the only thing that writes one.
+  //
+  // Answers on the requesting socket alone, and answers even when refused, so
+  // a client waiting on it never hangs.
+  on('move:request_detail', async ({ moveId } = {}) => {
+    const id = Number(moveId);
+    if (!Number.isInteger(id)) return;
+    const { canSeeRevealedDetail } = await capabilitiesFor(socket.data.identity);
+    if (!canSeeRevealedDetail) {
+      socket.emit('move:detail', { moveId: id, move: null, reason: 'perk' });
+      return;
+    }
+    const revealed = await one(
+      "SELECT 1 AS ok FROM chat_log WHERE kind = 'move_reveal' AND move_id = ? LIMIT 1",
+      [id]
+    );
+    if (!revealed) {
+      socket.emit('move:detail', { moveId: id, move: null, reason: 'not_revealed' });
+      return;
+    }
+    const [move] = await attachInteractions(await all('SELECT * FROM moves WHERE id = ?', [id]));
+    socket.emit('move:detail', { moveId: id, move: move ?? null, reason: move ? null : 'deleted' });
   });
 
   on('die:roll', async ({ characterId, dieId, modifier }) => {

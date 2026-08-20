@@ -60,7 +60,7 @@ function RoundSummaryCard({ entry, onWatch }) {
   );
 }
 
-function Entry({ entry, character, moveInfo, characters, defenseResolutions, onWatchRound, onAdjustCounters }) {
+function Entry({ entry, character, moveInfo, characters, defenseResolutions, onWatchRound, onAdjustCounters, moveDetail, onRequestDetail }) {
   const [expanded, setExpanded] = useState(false);
   const { role, capabilities } = useRole();
   const time = new Date(entry.timestamp).toLocaleTimeString([], {
@@ -125,6 +125,13 @@ function Entry({ entry, character, moveInfo, characters, defenseResolutions, onW
                   // server/index.js); the button simply isn't offered to a
                   // viewer who hasn't earned it.
                   if (!capabilities.canSeeRevealedDetail) return;
+                  // The full move is fetched the first time it is actually
+                  // asked for, not shipped with the card — see
+                  // move:request_detail server-side. Requested on every open
+                  // rather than once ever: the GM can edit a move between
+                  // rounds, and a card re-opened after that should show what
+                  // the move is now.
+                  if (!expanded) onRequestDetail?.(entry.move.id);
                   setExpanded((prev) => !prev);
                 }}
                 disabled={!capabilities.canSeeRevealedDetail}
@@ -142,54 +149,63 @@ function Entry({ entry, character, moveInfo, characters, defenseResolutions, onW
                 <Thumb record={{ image_data: entry.move.imageData, image_mime_type: entry.move.imageMimeType }} name={entry.move.name} size="h-8 w-8" />
                 <div className="min-w-0 flex-1">
                   <div className="font-display truncate text-sm font-semibold text-zinc-100">{entry.move.name}</div>
-                  <FrameBar
-                    startup={entry.move.startupTics}
-                    active={entry.move.activeTics}
-                    recovery={entry.move.recoveryTics}
-                    defensePositions={entry.move.defenseFramePositions}
-                    size="h-2.5 w-2.5"
-                  />
+                  {/* The public half of the card: what came out, and how long
+                      it takes. The bar is the picture of it and the numbers
+                      are the same fact said plainly — frame data is read as
+                      "1 / 2 / 1" at a table, and a row of coloured squares
+                      alone makes you count. */}
+                  <div className="mt-0.5 flex items-center gap-1.5">
+                    <FrameBar
+                      startup={entry.move.startupTics}
+                      active={entry.move.activeTics}
+                      recovery={entry.move.recoveryTics}
+                      defensePositions={entry.move.defenseFramePositions}
+                      size="h-2.5 w-2.5"
+                    />
+                    <span className="font-mono text-[10px] leading-none text-zinc-500">
+                      {entry.move.startupTics} / {entry.move.activeTics} / {entry.move.recoveryTics}
+                    </span>
+                  </div>
                 </div>
+                {/* Says which of the two cards this is, rather than leaving a
+                    Player to discover by clicking that nothing happens. */}
+                <span className="shrink-0 self-start font-display text-[10px] uppercase leading-none text-zinc-600">
+                  {capabilities.canSeeRevealedDetail ? (expanded ? 'Hide' : 'Read') : 'Locked'}
+                </span>
               </button>
               {expanded && (
-                entry.move.full && moveInfo ? (
+                moveDetail?.move && moveInfo ? (
                   <div className="mt-1.5 border-t border-zinc-700 pt-1.5">
                     <MoveCard
-                      move={entry.move.full}
-                      allMoves={moves ?? []}
-                      tell={moveInfo.tellById.get(entry.move.full.tell_id)}
-                      rightTell={entry.move.full.right_tell_id ? moveInfo.tellById.get(entry.move.full.right_tell_id) : null}
-                      leftTell={entry.move.full.left_tell_id ? moveInfo.tellById.get(entry.move.full.left_tell_id) : null}
-                      style={entry.move.full.style_attribute_id ? moveInfo.styleById.get(entry.move.full.style_attribute_id) : null}
+                      move={moveDetail.move}
+                      allMoves={moveInfo.moves}
+                      tell={moveInfo.tellById.get(moveDetail.move.tell_id)}
+                      rightTell={moveDetail.move.right_tell_id ? moveInfo.tellById.get(moveDetail.move.right_tell_id) : null}
+                      leftTell={moveDetail.move.left_tell_id ? moveInfo.tellById.get(moveDetail.move.left_tell_id) : null}
+                      style={moveDetail.move.style_attribute_id ? moveInfo.styleById.get(moveDetail.move.style_attribute_id) : null}
                       combatStyle={
-                        entry.move.full.combat_style_attribute_id
-                          ? moveInfo.styleById.get(entry.move.full.combat_style_attribute_id)
+                        moveDetail.move.combat_style_attribute_id
+                          ? moveInfo.styleById.get(moveDetail.move.combat_style_attribute_id)
                           : null
                       }
-                      tags={sortTags((entry.move.full.tag_ids ?? []).map((id) => moveInfo.tagById.get(id)).filter(Boolean))}
-                      folderLabel={folderPath(entry.move.full.folder_id, moveInfo.moveFolders) ?? undefined}
+                      tags={sortTags((moveDetail.move.tag_ids ?? []).map((id) => moveInfo.tagById.get(id)).filter(Boolean))}
+                      folderLabel={folderPath(moveDetail.move.folder_id, moveInfo.moveFolders) ?? undefined}
                     />
                   </div>
                 ) : (
-                  // Auxiliary move data hasn't loaded yet, or this move was
-                  // itself deleted after revealing — falls back to the
-                  // compact fields every move_reveal card always carries.
-                  <div className="mt-1.5 border-t border-zinc-700 pt-1.5 text-xs text-zinc-400">
-                    {entry.move.description ? (
-                      <p className="whitespace-pre-wrap break-words">{entry.move.description}</p>
-                    ) : (
-                      <p className="italic text-zinc-600">No description.</p>
-                    )}
-                    {entry.move.staminaCost != null && (
-                      <p className="mt-1 text-zinc-500">
-                        Stamina Cost:{' '}
-                        {entry.move.staminaCost > 0
-                          ? `-${entry.move.staminaCost}`
-                          : entry.move.staminaCost < 0
-                          ? `+${-entry.move.staminaCost}`
-                          : '0'}
-                      </p>
-                    )}
+                  // Nothing to fall back to on purpose. The compact card
+                  // carries no description any more — that is the gated half,
+                  // and a half-card would quietly hand out some of what the
+                  // Perk is for. So this says which of the three things
+                  // happened instead of showing a stub.
+                  <div className="mt-1.5 border-t border-zinc-700 pt-1.5 text-xs italic text-zinc-600">
+                    {moveDetail?.reason === 'deleted'
+                      ? 'This move has since been deleted.'
+                      : moveDetail?.reason === 'not_revealed'
+                      ? 'That move has not been revealed.'
+                      : moveDetail?.reason === 'perk'
+                      ? 'Reading a move in full takes the Genius Observer Perk.'
+                      : 'Reading…'}
                   </div>
                 )
               )}
@@ -529,6 +545,14 @@ export default function ChatPanel({ open }) {
   // set of declared moves anyway (new ids), so a stale entry here can never
   // wrongly match a future roll.
   const [defenseResolutions, setDefenseResolutions] = useState(new Map());
+  // The gated half of a move-reveal card, keyed by moveId — answers to
+  // `move:request_detail`, which the server only fills in for a socket whose
+  // identity passes canSeeRevealedDetail. Kept here rather than per-Entry so
+  // the same move revealed three times this fight is fetched once per open
+  // rather than three times, and so a refusal is remembered too (a `move`
+  // of null with a `reason`), which is what stops a denied card retrying
+  // forever.
+  const [moveDetails, setMoveDetails] = useState(new Map());
   const bottomRef = useRef(null);
 
   // Mobile readiness (Change 002) §11.2: a broadcast missed while the tab
@@ -547,18 +571,30 @@ export default function ChatPanel({ open }) {
     const onCleared = () => setEntries([]);
     const onDefenseResolved = (payload) =>
       setDefenseResolutions((prev) => new Map(prev).set(payload.attackerDeclaredMoveId, payload));
+    const onMoveDetail = (payload) =>
+      setMoveDetails((prev) => new Map(prev).set(payload.moveId, payload));
+    // A Perk granted mid-session changes the answer to every refusal already
+    // cached above, so the cache is dropped whenever capabilities move.
+    const onCapabilities = () => setMoveDetails(new Map());
     socket.on('roll:result', onRoll);
     socket.on('chat:message', onMessage);
     socket.on('chat:move_reveal', onMoveReveal);
     socket.on('chat:round_summary', onRoundSummary);
     socket.on('chat:cleared', onCleared);
     socket.on('combat:defense_resolved', onDefenseResolved);
+    socket.on('move:detail', onMoveDetail);
+    socket.on('identity:capabilities', onCapabilities);
     return () => {
       socket.off('roll:result', onRoll);
       socket.off('chat:message', onMessage);
       socket.off('chat:move_reveal', onMoveReveal);
+      // Was missing, so an unmounted panel kept appending round summaries to
+      // a dead setState — the other four were always cleaned up.
+      socket.off('chat:round_summary', onRoundSummary);
       socket.off('chat:cleared', onCleared);
       socket.off('combat:defense_resolved', onDefenseResolved);
+      socket.off('move:detail', onMoveDetail);
+      socket.off('identity:capabilities', onCapabilities);
     };
   }, []);
 
@@ -599,6 +635,10 @@ export default function ChatPanel({ open }) {
     };
   }, []);
 
+  // `moves` is in here because MoveCard needs the whole library to name a
+  // move's Requirement and its grapple branches. It used to be read as a bare
+  // `moves` from inside Entry, which is a different scope — the expanded card
+  // would have thrown a ReferenceError the first time anybody opened one.
   const moveInfo =
     tells && tags && ruleset && moveFolders
       ? {
@@ -606,8 +646,22 @@ export default function ChatPanel({ open }) {
           tagById: new Map(tags.map((t) => [t.id, t])),
           styleById: new Map(ruleset.attributes.map((a) => [a.id, a])),
           moveFolders,
+          moves: moves ?? [],
         }
       : null;
+
+  const requestMoveDetail = (moveId) => {
+    if (moveId == null) return;
+    // Drop any cached answer first so a reopen genuinely re-asks, and the
+    // card shows "Reading…" rather than a stale copy of an edited move.
+    setMoveDetails((prev) => {
+      if (!prev.has(moveId)) return prev;
+      const next = new Map(prev);
+      next.delete(moveId);
+      return next;
+    });
+    socket.emit('move:request_detail', { moveId });
+  };
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -649,6 +703,8 @@ export default function ChatPanel({ open }) {
               defenseResolutions={defenseResolutions}
               onWatchRound={setReplayResolutionId}
               onAdjustCounters={setCounterEntry}
+              moveDetail={entry.move ? moveDetails.get(entry.move.id) : undefined}
+              onRequestDetail={requestMoveDetail}
             />
           ))
         )}

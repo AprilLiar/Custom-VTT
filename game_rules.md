@@ -895,10 +895,12 @@ way tables always have.
 
 ### The Perks in play
 
-- **Genius Observer.** You read a fight faster than anyone should. Any move that
-  has publicly revealed can be opened in full from the Chat Log — its
-  description, its frames, everything it does — instead of just its name and
-  shape. Without it, a revealed move shows you what everyone can see and no more.
+- **Genius Observer.** You read a fight faster than anyone should. Every move
+  that reveals posts a card to the Chat Log, and everyone gets the same thing on
+  it: **the move's name, its picture, its frame data and what it cost**. With
+  this Perk you can open that card and read the whole move — its description,
+  what it rolls, what it is aimed at, its Tags, and everything it does on a hit.
+  Without it, the card is as far as you get.
 - **Cornered Animal.** You fight hardest with your back to the wall. While your
   Stamina is at a quarter of its maximum or below, every roll you make counts +2.
 - **Second Wind.** Getting hit wakes you up. The first time your guard fails in a

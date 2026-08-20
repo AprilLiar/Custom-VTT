@@ -2787,14 +2787,17 @@ async function processTic(io, { pairIndex, tic, emitEvent, resolutionId }) {
     const ids = toReveal.map((r) => r.id);
     const marks = ids.map(() => '?').join(',');
     await run(`UPDATE declared_moves SET reveal_posted = 1 WHERE id IN (${marks})`, ids);
-    // Deliberately does NOT post a lane_snapshot chat card here the way
-    // server/index.js's still-current postMoveReveals does for the manual
-    // flow: chat:lane_snapshot's per-reveal spam is explicitly slated for
-    // removal in favor of a once-per-round round_summary card (§1.5/§4.2,
-    // this overhaul's removal list) — wiring the soon-to-be-removed
-    // mechanism into the new engine now, only to tear it back out again in
-    // Phase E, isn't worth it. round_events (below) is this engine's own
-    // event log and the only reveal record it produces so far.
+    // **Each reveal also posts its own chat card again (decided, restored).**
+    // The overhaul removed the per-reveal card in favour of a single
+    // once-per-round "Watch Round N" button, and the new engine was never
+    // wired to post one — which left the Chat Log with no record of a move
+    // coming out at all, and left Genius Observer with nothing to read. The
+    // card is back as `kind='move_reveal'`, the shape that was already built
+    // for exactly this: **name, picture and frame data for everyone**, with
+    // the full move behind the Perk gate. The round_summary button stays;
+    // the two answer different questions (what just came out, vs. watch the
+    // whole round back).
+    //
     // The reveal event carries the move's whole footprint and display
     // identity, not just its ids — this is what makes a stored replay
     // self-contained (§0: the client plays back a log it did not compute,
@@ -2804,7 +2807,9 @@ async function processTic(io, { pairIndex, tic, emitEvent, resolutionId }) {
     const revealRows = await all(
       `SELECT dm.id, dm.character_id, dm.move_id, dm.placement_tic, dm.reveal_tic,
               dm.recovery_extension_tics, dm.appendage_choice,
-              m.name AS move_name, m.active_tics, m.recovery_tics, m.defense_frame_positions,
+              m.name AS move_name, m.startup_tics, m.active_tics, m.recovery_tics,
+              m.defense_frame_positions,
+              m.image_data AS move_image_data, m.image_mime_type AS move_image_mime_type,
               m.is_defensive, m.defense_kind, m.stamina_cost,
               ch.name AS character_name, ch.character_type,
               cp.side AS side
@@ -2839,6 +2844,7 @@ async function processTic(io, { pairIndex, tic, emitEvent, resolutionId }) {
         recoveryEndTic: activeEndTic + r.recovery_tics + (r.recovery_extension_tics ?? 0),
         defenseFramePositions: JSON.parse(r.defense_frame_positions ?? '[]'),
       });
+      await postMoveReveal(io, r);
     }
   }
 
@@ -3147,6 +3153,61 @@ async function startPairDeclaration(io, pairIndex) {
 // posts, the round is fully-resolved public history, and the replay is
 // explicitly watchable by anyone (decision #11) — including players who
 // weren't in this fight.
+// One chat card per move as it comes out (decided, restored — see the reveal
+// loop in advancePairResolution for why it went away and why it is back).
+//
+// **What everybody gets is the name, the picture and the frame data.** That is
+// deliberately the whole public payload: by the time this posts, the move has
+// reached its reveal Tic, which is precisely the moment `publiclyRevealed`
+// flips true in mapDeclaredMovesForViewer — so the name and footprint are
+// already on every viewer's board and this card discloses nothing new. What is
+// NOT public is everything else about the move (its Roll, its Stamina Cost, its
+// Tags, its On Hit effects); the card carries `move_id` and the client fetches
+// the full card only for a viewer whose Perk entitles them to it. See
+// canSeeRevealedDetail in perkEngine.js and the Genius Observer Perk.
+//
+// Broadcast unfiltered, like round_summary and unlike the round_events beside
+// it: those are emitted to the pair's audience because a live cutscene is
+// scoped to the fight you are in, while a revealed move is simply public.
+//
+// Written as a `move_reveal` row — the kind GET /api/chat already hydrates and
+// the client already renders — so a live card and the same card after a reload
+// are the same card by construction. The emitted payload mirrors that
+// hydration field for field for the same reason.
+async function postMoveReveal(io, r) {
+  const result = await run(
+    `INSERT INTO chat_log (kind, character_id, move_id, dice_rolled) VALUES ('move_reveal', ?, ?, '[]')`,
+    [r.character_id, r.move_id]
+  );
+  io.emit('chat:move_reveal', {
+    id: Number(result.lastInsertRowid),
+    kind: 'move_reveal',
+    characterId: r.character_id,
+    characterName: r.character_name,
+    modifier: 0,
+    dice: [],
+    total: 0,
+    move: {
+      id: r.move_id,
+      name: r.move_name,
+      imageData: r.move_image_data,
+      imageMimeType: r.move_image_mime_type,
+      startupTics: r.startup_tics,
+      activeTics: r.active_tics,
+      recoveryTics: r.recovery_tics,
+      defenseFramePositions: JSON.parse(r.defense_frame_positions ?? '[]'),
+      // Stamina Cost and nothing further. The **description is deliberately
+      // not here** — it is the gated half, and this broadcast goes to every
+      // connected socket. Leaving it in was caught by
+      // scripts/playtest-reveal-cards.mjs comparing the live card against the
+      // same card refetched from GET /api/chat: the stored one already
+      // withheld it, and the two have to be the same card.
+      staminaCost: r.stamina_cost ?? 0,
+    },
+    timestamp: new Date().toISOString(),
+  });
+}
+
 async function postRoundSummary(io, { pairIndex, roundNumber, resolutionId }) {
   const rows = await all(
     `SELECT cp.side AS side, ch.name AS name
@@ -3329,7 +3390,9 @@ async function advancePairResolution(pairIndex, io) {
     const carried = await all(
       `SELECT dm.id, dm.character_id, dm.move_id, dm.placement_tic, dm.reveal_tic,
               dm.recovery_extension_tics, dm.appendage_choice,
-              m.name AS move_name, m.active_tics, m.recovery_tics, m.defense_frame_positions,
+              m.name AS move_name, m.startup_tics, m.active_tics, m.recovery_tics,
+              m.defense_frame_positions,
+              m.image_data AS move_image_data, m.image_mime_type AS move_image_mime_type,
               m.is_defensive, m.defense_kind, m.stamina_cost,
               ch.name AS character_name, ch.character_type,
               cp.side AS side

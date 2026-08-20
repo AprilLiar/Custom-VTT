@@ -32,7 +32,11 @@ export default function PerkCard({ perk, tags = [], actions }) {
               </span>
             )}
           </div>
-          {perk.description && <p className="mt-0.5 text-sm text-zinc-400">{perk.description}</p>}
+          {perk.description && (
+            // Same as a Move's description: authored in a textarea, so the
+            // line breaks the GM typed have to render.
+            <p className="mt-0.5 whitespace-pre-wrap break-words text-sm text-zinc-400">{perk.description}</p>
+          )}
           {tags.length > 0 && (
             <div className="mt-1.5 flex flex-wrap gap-1">
               {tags.map((tag) => (

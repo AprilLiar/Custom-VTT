@@ -412,7 +412,9 @@ export default function CharacterCreationDialog({ character, dice, onClose }) {
                           </span>
                         )}
                       </div>
-                      {perk.description && <p className="text-xs text-zinc-400">{perk.description}</p>}
+                      {perk.description && (
+                        <p className="whitespace-pre-wrap break-words text-xs text-zinc-400">{perk.description}</p>
+                      )}
                     </div>
                   </label>
                 );

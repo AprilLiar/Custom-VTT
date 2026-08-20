@@ -1905,3 +1905,60 @@ test('Movement Punisher does nothing without both Tags', async () => {
     .find((p) => p.sourceName === 'Movement Punisher');
   assert.equal(fired, undefined, 'an ordinary punch trips nobody');
 });
+
+// ---------- The move-reveal chat card, restored (decided, new) ----------
+
+test('a move reaching its reveal Tic posts its own chat card', async () => {
+  const pairIndex = 324;
+  const attacker = await createCharacter('Card Thrower');
+  const defender = await createCharacter('Card Watcher');
+  const jab = await createMove({
+    name: 'Card Jab',
+    startupTics: 1, activeTics: 1, recoveryTics: 1,
+    rollSlots: ['Skull'],
+  });
+
+  await seatPair(pairIndex, attacker, defender);
+  await startPairDeclaration(mockIo, pairIndex);
+  await declareMove({ characterId: attacker, moveId: jab, placementTic: 0, startupTics: 1 });
+  await resolvePair(pairIndex);
+
+  const cards = await all(
+    "SELECT * FROM chat_log WHERE kind = 'move_reveal' AND move_id = ?",
+    [jab]
+  );
+  // Exactly one — `reveal_posted` makes the reveal loop idempotent, so
+  // stepping the same Tic twice must not post the card twice.
+  assert.equal(cards.length, 1, 'one card per reveal, not one per Tic');
+  assert.equal(cards[0].character_id, attacker, 'attributed to whoever threw it');
+  // The card carries no content of its own: everything it renders is joined
+  // from the move row at read time (see GET /api/chat), which is what lets a
+  // GM fix a typo in a move name and have the log say the right thing.
+  assert.equal(cards[0].content, null);
+});
+
+test('the reveal card is the only thing that entitles a move to be read in full', async () => {
+  // The gate `move:request_detail` applies has two halves, and this pins the
+  // second one: a move nobody has revealed has no move_reveal row, so even a
+  // Genius Observer asking for its id by hand gets nothing. Without this, the
+  // Perk would read the GM's whole unrevealed library.
+  const pairIndex = 325;
+  const attacker = await createCharacter('Secretive');
+  const defender = await createCharacter('Onlooker');
+  const shown = await createMove({
+    name: 'Shown Move', startupTics: 1, activeTics: 1, recoveryTics: 1, rollSlots: ['Skull'],
+  });
+  const hidden = await createMove({
+    name: 'Never Declared', startupTics: 1, activeTics: 1, recoveryTics: 1, rollSlots: ['Skull'],
+  });
+
+  await seatPair(pairIndex, attacker, defender);
+  await startPairDeclaration(mockIo, pairIndex);
+  await declareMove({ characterId: attacker, moveId: shown, placementTic: 0, startupTics: 1 });
+  await resolvePair(pairIndex);
+
+  const revealed = async (moveId) =>
+    Boolean(await one("SELECT 1 AS ok FROM chat_log WHERE kind = 'move_reveal' AND move_id = ? LIMIT 1", [moveId]));
+  assert.equal(await revealed(shown), true);
+  assert.equal(await revealed(hidden), false, 'a move never declared was never revealed');
+});

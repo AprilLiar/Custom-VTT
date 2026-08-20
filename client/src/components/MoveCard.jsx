@@ -364,7 +364,13 @@ export default function MoveCard({
           </div>
         )}
 
-        {move.description && <p className="text-sm text-zinc-400">{move.description}</p>}
+        {move.description && (
+          // whitespace-pre-wrap because the field is authored in a textarea:
+          // pressing Enter there has to survive to the card, or the break the
+          // GM typed silently disappears. break-words so a long unbroken
+          // string can't widen the card past its column.
+          <p className="whitespace-pre-wrap break-words text-sm text-zinc-400">{move.description}</p>
+        )}
 
         {visibleInteractions.length > 0 && (
           <div className="space-y-1 border-t border-zinc-800 pt-2">
