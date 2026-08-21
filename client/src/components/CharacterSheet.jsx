@@ -307,11 +307,7 @@ export default function CharacterSheet() {
       </AnimatePresence>
 
       {creating && (
-        <CharacterCreationDialog
-          character={data.character}
-          dice={data.dice}
-          onClose={() => setCreating(false)}
-        />
+        <CharacterCreationDialog character={data.character} onClose={() => setCreating(false)} />
       )}
     </div>
   );

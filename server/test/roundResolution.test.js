@@ -98,6 +98,17 @@ async function createCharacter(name) {
   return id;
 }
 
+const getCharacterRow = (characterId) => one('SELECT * FROM characters WHERE id = ?', [characterId]);
+
+// The Stamina change a cascade handed back, found by the reason it carries.
+async function refundEvent(pairIndex, reasonPattern) {
+  const rows = await all(
+    `SELECT payload FROM round_events WHERE pair_index = ? AND type = 'stamina_changed' ORDER BY seq`,
+    [pairIndex]
+  );
+  return rows.map((r) => JSON.parse(r.payload)).find((p) => reasonPattern.test(p.reason ?? ''));
+}
+
 async function setDieSize(characterId, slotName, size) {
   await run('UPDATE dice SET current_size = ? WHERE character_id = ? AND slot_name = ?', [size, characterId, slotName]);
 }
@@ -971,66 +982,131 @@ test('a Roll listing an appendage twice rolls BOTH sides, ignoring the declarati
   assert.equal(payload.total, 8 + 6);
 });
 
-test('Move-conflict pause: Postpone shifts the collision forward and recurses into a second collision', async () => {
-  const pairIndex = 211;
-  const attacker = await createCharacter('ConflictPostpone Attacker');
-  const defender = await createCharacter('ConflictPostpone Defender');
+// A blocker whose guard falls short, with `queue` placed behind it. Returns the
+// declared-move ids so a test can drive the one conflict prompt the cascade
+// raises. Shared by the three below, which differ only in what they answer.
+async function cascadeFixture(pairIndex, tag, queue) {
+  const attacker = await createCharacter(`${tag} Attacker`);
+  const defender = await createCharacter(`${tag} Defender`);
   await setDieSize(attacker, 'Skull', 12);
   await setDieSize(defender, 'Left Hand', 12);
-  const punch = await createMove({ name: 'CP Punch', startupTics: 1, activeTics: 2, recoveryTics: 1, rollSlots: ['Skull'] });
+  const punch = await createMove({ name: `${tag} Punch`, startupTics: 1, activeTics: 2, recoveryTics: 1, rollSlots: ['Skull'] });
   const guard = await createMove({
-    name: 'CP Guard',
-    startupTics: 1,
-    activeTics: 1,
-    recoveryTics: 1,
-    rollSlots: ['Hand'],
-    isDefensive: true,
-    defenseKind: 'block',
-    defenseFramePositions: [1],
+    name: `${tag} Guard`, startupTics: 1, activeTics: 1, recoveryTics: 1,
+    rollSlots: ['Hand'], isDefensive: true, defenseKind: 'block', defenseFramePositions: [1],
   });
-  const moveA = await createMove({ name: 'CP Collision A', startupTics: 1, activeTics: 1, recoveryTics: 0, rollSlots: [] });
-  const moveB = await createMove({ name: 'CP Collision B', startupTics: 1, activeTics: 1, recoveryTics: 0, rollSlots: [] });
 
   await seatPair(pairIndex, attacker, defender);
   await startPairDeclaration(mockIo, pairIndex);
   await declareMove({ characterId: attacker, moveId: punch, placementTic: 0, startupTics: 1 });
-  const guardDMId = await declareMove({ characterId: defender, moveId: guard, placementTic: 0, startupTics: 1, appendageChoice: 'left' });
-  // Guard's extended recovery window is [3,4) — Move A sits right in it.
-  const moveADMId = await declareMove({ characterId: defender, moveId: moveA, placementTic: 3, startupTics: 1 });
-  // Move A's own footprint (before Postpone) is [3,5) — nothing collides
-  // with THAT yet. Once Postponed to placementTic 4 (Guard's new recovery
-  // end), its new footprint becomes [4,6) — Move B, placed at 5, now falls
-  // inside it, triggering the recursive re-conflict.
-  const moveBDMId = await declareMove({ characterId: defender, moveId: moveB, placementTic: 5, startupTics: 1 });
+  await declareMove({ characterId: defender, moveId: guard, placementTic: 0, startupTics: 1, appendageChoice: 'left' });
+
+  const declaredIds = [];
+  for (const q of queue) {
+    const moveId = await createMove({
+      name: `${tag} ${q.name}`, startupTics: 1, activeTics: q.activeTics ?? 1,
+      recoveryTics: q.recoveryTics ?? 0, rollSlots: [],
+    });
+    if (q.staminaCost) await run('UPDATE moves SET stamina_cost = ? WHERE id = ?', [q.staminaCost, moveId]);
+    const dmId = await declareMove({ characterId: defender, moveId, placementTic: q.at, startupTics: 1 });
+    // Committed, as a real declaration is once its owner presses done —
+    // otherwise the refund branch has nothing to give back.
+    if (q.staminaCost) await run('UPDATE declared_moves SET stamina_committed = 1 WHERE id = ?', [dmId]);
+    declaredIds.push(dmId);
+  }
   await resolvePair(pairIndex);
+  return { attacker, defender, declaredIds };
+}
+
+test('the cascade is ONE prompt carrying the whole tail, not one per collision', async () => {
+  const pairIndex = 211;
+  const { declaredIds } = await cascadeFixture(pairIndex, 'CP', [
+    { name: 'Collision A', at: 3 },
+    { name: 'Collision B', at: 5 },
+  ]);
+  const [moveA, moveB] = declaredIds;
 
   const resolution = await one('SELECT * FROM pair_round_resolutions WHERE pair_index = ? AND round_number = 1', [pairIndex]);
   assert.equal(resolution.status, 'paused_conflict');
-  assert.equal(JSON.parse(resolution.pending_conflict_json).declaredMoveId, moveADMId);
-
-  await resolveMoveConflict(pairIndex, { declaredMoveId: moveADMId, choice: 'postpone' }, mockIo);
-
-  const moveARow = await one('SELECT placement_tic, reveal_tic FROM declared_moves WHERE id = ?', [moveADMId]);
-  assert.equal(moveARow.placement_tic, 4);
-  assert.equal(moveARow.reveal_tic, 5);
-
-  // Recursive cascade: Move A's new footprint now collides with Move B —
-  // still paused, but on the SECOND collision this time.
-  const resolutionAfterPostpone = await one(
-    'SELECT status, pending_conflict_json FROM pair_round_resolutions WHERE pair_index = ? AND round_number = 1',
-    [pairIndex]
+  const pending = JSON.parse(resolution.pending_conflict_json);
+  // The guard's extension runs to Tic 4. A sits at 3 and moves to 4, taking
+  // 4-5; B at 5 is then in A's way and moves to 6. Both in one question —
+  // the old flow asked about A, applied it, then asked about B.
+  assert.equal(pending.declaredMoveId, moveA, 'the first collision is the one Forfeit would give up');
+  assert.deepEqual(
+    pending.shifts.map((sh) => [sh.declaredMoveId, sh.from, sh.to]),
+    [[moveA, 3, 4], [moveB, 5, 6]]
   );
-  assert.equal(resolutionAfterPostpone.status, 'paused_conflict');
-  const secondPending = JSON.parse(resolutionAfterPostpone.pending_conflict_json);
-  assert.equal(secondPending.declaredMoveId, moveBDMId);
-  assert.equal(secondPending.blockerDeclaredMoveId, moveADMId);
 
-  await resolveMoveConflict(pairIndex, { declaredMoveId: moveBDMId, choice: 'forfeit' }, mockIo);
+  await resolveMoveConflict(pairIndex, { declaredMoveId: moveA, choice: 'extend' }, mockIo);
 
-  const moveBDeleted = await one('SELECT id FROM declared_moves WHERE id = ?', [moveBDMId]);
-  assert.equal(moveBDeleted, null);
+  const a = await one('SELECT placement_tic, reveal_tic FROM declared_moves WHERE id = ?', [moveA]);
+  assert.deepEqual([a.placement_tic, a.reveal_tic], [4, 5]);
+  const b = await one('SELECT placement_tic, reveal_tic FROM declared_moves WHERE id = ?', [moveB]);
+  assert.deepEqual([b.placement_tic, b.reveal_tic], [6, 7], 'the knock-on move moved too, unasked');
+
+  const finalResolution = await one('SELECT status FROM pair_round_resolutions WHERE pair_index = ? AND round_number = 1', [pairIndex]);
+  assert.equal(finalResolution.status, 'complete', 'one answer finishes it — no second prompt');
+});
+
+test('Forfeit drops the move the guard ran into, and the rest still cascade', async () => {
+  const pairIndex = 212;
+  const { defender, declaredIds } = await cascadeFixture(pairIndex, 'CF', [
+    { name: 'Collision A', at: 3, staminaCost: 4 },
+    { name: 'Collision B', at: 5 },
+  ]);
+  const [moveA, moveB] = declaredIds;
+  // Spent down first: Stamina clamps at max, so a refund onto a full bar is
+  // invisible.
+  await run('UPDATE characters SET current_stamina = 10 WHERE id = ?', [defender]);
+
+  await resolveMoveConflict(pairIndex, { declaredMoveId: moveA, choice: 'forfeit' }, mockIo);
+
+  assert.equal(await one('SELECT id FROM declared_moves WHERE id = ?', [moveA]), null, 'A is off the board');
+  // Read off the refund's own event rather than the bar: answering the prompt
+  // resumes the round, which finishes and runs its Stamina regen before this
+  // line — so the bar has moved on for reasons that are nothing to do with us.
+  const refund = await refundEvent(pairIndex, /forfeited/);
+  assert.ok(refund, 'the refund should be announced as its own Stamina change');
+  assert.equal(refund.delta, 4, 'and its Stamina came back');
+
+  // B was never the collision, but the guard still runs to Tic 4 and B sat at
+  // 5 — with A gone there is nothing in front of it, so it stays put.
+  const b = await one('SELECT placement_tic FROM declared_moves WHERE id = ?', [moveB]);
+  assert.equal(b.placement_tic, 5);
+
   const finalResolution = await one('SELECT status FROM pair_round_resolutions WHERE pair_index = ? AND round_number = 1', [pairIndex]);
   assert.equal(finalResolution.status, 'complete');
+});
+
+test('a move pushed clear out of the round is refunded and handed back uncommitted', async () => {
+  const pairIndex = 213;
+  // A is long enough that shifting it shoves B past the round's last Tic.
+  const { defender, declaredIds } = await cascadeFixture(pairIndex, 'CR', [
+    { name: 'Long A', at: 3, activeTics: 2, recoveryTics: 2 },
+    { name: 'Spilled B', at: 5, staminaCost: 3 },
+  ]);
+  const [moveA, moveB] = declaredIds;
+  const resolution = await one('SELECT * FROM pair_round_resolutions WHERE pair_index = ? AND round_number = 1', [pairIndex]);
+  const roundEnd = resolution.round_start_tic + resolution.round_length;
+  await run('UPDATE characters SET current_stamina = 10 WHERE id = ?', [defender]);
+
+  await resolveMoveConflict(pairIndex, { declaredMoveId: moveA, choice: 'extend' }, mockIo);
+
+  const b = await one('SELECT placement_tic, stamina_committed FROM declared_moves WHERE id = ?', [moveB]);
+  assert.ok(b.placement_tic >= roundEnd, `B should have left the round: ${b.placement_tic} vs ${roundEnd}`);
+  // **The decided rule.** It is next round's move now, so it stops being a
+  // commitment: Stamina back, declaration uncommitted, still sitting where the
+  // cascade put it — which is the state a freshly-dragged move is in, and what
+  // makes it cancellable again when Declaration reopens.
+  assert.equal(b.stamina_committed, 0, 'it is no longer a commitment');
+  const refund = await refundEvent(pairIndex, /pushed into the next round/);
+  assert.ok(refund, 'the refund should be announced as its own Stamina change');
+  assert.equal(refund.delta, 3, 'its Stamina came back');
+
+  // A stayed inside the round, so it keeps its commitment.
+  const a = await one('SELECT placement_tic, stamina_committed FROM declared_moves WHERE id = ?', [moveA]);
+  assert.ok(a.placement_tic < roundEnd);
 });
 
 test('Restart recovery: rolling resolved_through_tic backward and re-invoking converges to the same end state', async () => {

@@ -3,14 +3,14 @@ import DialogShell from './DialogShell.jsx';
 import StanceGraph from './StanceGraph.jsx';
 import Thumb from './Thumb.jsx';
 import { socket } from '../socket.js';
-import { getMoves, getPerks, getRuleset } from '../lib/api.js';
+import { getMoves, getPerkTags, getPerks, getRuleset, getTags } from '../lib/api.js';
 import { dieLabel } from '../lib/dice.js';
 import { FIXED_QUESTIONS } from './RoleplayTab.jsx';
 import {
+  BASE_RANK,
   CREATION_SLOTS,
   PRESETS,
   presetByKey,
-  rankOfDie,
   statPointsSpent,
   validateCreation,
 } from '../../../server/characterCreation.js';
@@ -48,34 +48,103 @@ const STEPS = [
   { key: 'roleplay', label: 'Role-play' },
 ];
 
-export default function CharacterCreationDialog({ character, dice, onClose }) {
+// One multi-select-OR filter row, in the Compendium's own chip styling — the
+// point of these controls being here at all is that they are the ones a player
+// has already used, so they have to look and behave the same.
+//
+// An empty selection means no filtering rather than "match nothing", and the
+// whole row is hidden when there is nothing to filter by, rather than rendering
+// a bare label over an empty space.
+function FilterRow({ label, options, selected, onToggle, onClear }) {
+  if (!options.length) return null;
+  return (
+    <div className="flex flex-wrap items-center gap-1">
+      <span className="mr-1 text-xs font-semibold uppercase text-zinc-500">{label}</span>
+      {options.map((option) => {
+        const active = selected.has(option.id);
+        return (
+          <button
+            key={option.id}
+            type="button"
+            onClick={() => onToggle(option.id)}
+            title={option.description || `Filter by ${option.name}`}
+            className={`panel-cut-sm border px-2 py-1 text-xs ${
+              active
+                ? 'border-brand-500 bg-brand-600/30 text-brand-300'
+                : 'border-zinc-700 text-zinc-500 hover:border-zinc-500'
+            }`}
+          >
+            {option.name}
+          </button>
+        );
+      })}
+      {selected.size > 0 && (
+        <button
+          type="button"
+          onClick={onClear}
+          className="ml-1 text-xs text-zinc-500 underline hover:text-zinc-300"
+        >
+          clear
+        </button>
+      )}
+    </div>
+  );
+}
+
+export default function CharacterCreationDialog({ character, onClose }) {
   const [stepIndex, setStepIndex] = useState(0);
   const [presetKey, setPresetKey] = useState(null);
-  // Seeded from the Stats the character already has, so re-running the flow
-  // shows the spread that exists rather than silently proposing to wipe it.
+  // **Every Stat starts at a bare d4, whatever the character already has
+  // (decided, revised).** This used to seed from the existing spread so that
+  // re-running the flow showed what was there — but the budget is the whole
+  // point of this screen, and a character who already sat at d8s opened it with
+  // most of the points apparently already spent and no sense of what they had
+  // bought. Starting flat means the counter runs from the full budget down, and
+  // every step of it is a choice the player watches themselves make.
   const [ranks, setRanks] = useState(() =>
-    Object.fromEntries(CREATION_SLOTS.map((slot) => [slot, rankOfDie((dice ?? []).find((d) => d.slot_name === slot))]))
+    Object.fromEntries(CREATION_SLOTS.map((slot) => [slot, BASE_RANK]))
   );
   const [stance, setStance] = useState({ name: '', pair: [] });
   const [moveIds, setMoveIds] = useState([]);
   const [perkIds, setPerkIds] = useState([]);
   const [answers, setAnswers] = useState({});
-  const [library, setLibrary] = useState({ moves: [], perks: [], attributes: [], counters: [] });
-  const [moveFilter, setMoveFilter] = useState('');
+  const [library, setLibrary] = useState({
+    moves: [], perks: [], attributes: [], counters: [], moveTags: [], perkTags: [],
+  });
+  // **The same three controls the Compendium already has (decided, new)**, so a
+  // player who has browsed the library recognises this screen: a name Search,
+  // and multi-select OR filters by Style and by Tag. Kept as Sets for the same
+  // reason the Compendium does — an empty Set means "no filtering", never
+  // "match nothing".
+  const [moveSearch, setMoveSearch] = useState('');
+  const [moveStyleFilter, setMoveStyleFilter] = useState(new Set());
+  const [moveTagFilter, setMoveTagFilter] = useState(new Set());
+  const [perkTagFilter, setPerkTagFilter] = useState(new Set());
+  const toggleInSet = (setter) => (id) =>
+    setter((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
   const [serverErrors, setServerErrors] = useState([]);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     let alive = true;
-    Promise.all([getMoves(), getPerks(), getRuleset()]).then(([moveData, perks, ruleset]) => {
-      if (!alive) return;
-      setLibrary({
-        moves: moveData.moves ?? [],
-        perks,
-        attributes: ruleset.attributes,
-        counters: ruleset.counters,
-      });
-    });
+    Promise.all([getMoves(), getPerks(), getRuleset(), getTags(), getPerkTags()]).then(
+      ([moveData, perks, ruleset, moveTags, perkTags]) => {
+        if (!alive) return;
+        setLibrary({
+          moves: moveData.moves ?? [],
+          perks,
+          attributes: ruleset.attributes,
+          counters: ruleset.counters,
+          moveTags: moveTags ?? [],
+          perkTags: perkTags ?? [],
+        });
+      }
+    );
     return () => {
       alive = false;
     };
@@ -154,9 +223,18 @@ export default function CharacterCreationDialog({ character, dice, onClose }) {
   const unlearnable = (move) =>
     move.style_attribute_id != null && !ownedStyles.has(move.style_attribute_id);
 
+  // Search on the name, then Style, then Tag — each an independent narrowing,
+  // exactly as the Compendium applies them.
   const visibleMoves = library.moves
     .filter((m) => !m.is_default)
-    .filter((m) => !moveFilter || m.name.toLowerCase().includes(moveFilter.toLowerCase()));
+    .filter((m) => !moveSearch || m.name.toLowerCase().includes(moveSearch.toLowerCase()))
+    .filter((m) => moveStyleFilter.size === 0 || moveStyleFilter.has(m.style_attribute_id))
+    .filter((m) => moveTagFilter.size === 0 || (m.tag_ids ?? []).some((id) => moveTagFilter.has(id)));
+
+  const visiblePerks =
+    perkTagFilter.size === 0
+      ? library.perks
+      : library.perks.filter((p) => (p.tag_ids ?? []).some((id) => perkTagFilter.has(id)));
 
   const finish = () => {
     setServerErrors([]);
@@ -348,10 +426,25 @@ export default function CharacterCreationDialog({ character, dice, onClose }) {
               are not listed.
             </p>
             <input
-              value={moveFilter}
-              onChange={(e) => setMoveFilter(e.target.value)}
-              placeholder="Filter Moves…"
+              value={moveSearch}
+              onChange={(e) => setMoveSearch(e.target.value)}
+              placeholder="Search Moves…"
+              aria-label="Search Moves"
               className="w-full panel-cut-sm border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-200 outline-none focus:border-brand-500"
+            />
+            <FilterRow
+              label="Filter by style:"
+              options={library.attributes}
+              selected={moveStyleFilter}
+              onToggle={toggleInSet(setMoveStyleFilter)}
+              onClear={() => setMoveStyleFilter(new Set())}
+            />
+            <FilterRow
+              label="Filter by tag:"
+              options={library.moveTags}
+              selected={moveTagFilter}
+              onToggle={toggleInSet(setMoveTagFilter)}
+              onClear={() => setMoveTagFilter(new Set())}
             />
             <div className="max-h-80 space-y-1 overflow-y-auto">
               {visibleMoves.map((move) => {
@@ -379,7 +472,7 @@ export default function CharacterCreationDialog({ character, dice, onClose }) {
                   </label>
                 );
               })}
-              {!visibleMoves.length && <p className="text-sm text-zinc-600">No Moves to show.</p>}
+              {!visibleMoves.length && <p className="text-sm text-zinc-600">No Moves match that.</p>}
             </div>
           </div>
         )}
@@ -387,8 +480,15 @@ export default function CharacterCreationDialog({ character, dice, onClose }) {
         {step.key === 'perks' && (
           <div className="space-y-3">
             <Budget left={perksLeft} total={preset?.perkCount ?? null} noun="Perk" />
+            <FilterRow
+              label="Filter by tag:"
+              options={library.perkTags}
+              selected={perkTagFilter}
+              onToggle={toggleInSet(setPerkTagFilter)}
+              onClear={() => setPerkTagFilter(new Set())}
+            />
             <div className="max-h-80 space-y-1 overflow-y-auto">
-              {library.perks.map((perk) => {
+              {visiblePerks.map((perk) => {
                 const picked = perkIds.includes(perk.id);
                 return (
                   <label

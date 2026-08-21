@@ -16,6 +16,7 @@ import {
   defenseFramesWithinActive,
   canExtendDefense,
   cascadeShift,
+  planCascade,
 } from '../combatDamage.js';
 
 test('computeHitDamage: every 5 points is 1 Half-Damage step (0.5 damage)', () => {
@@ -490,4 +491,57 @@ test('a Roll that names no Stat at all catches on nothing', () => {
   // A Custom Roll — the one attack Spiked Shell cannot reach.
   assert.deepEqual(selectRiposteTargets([]), []);
   assert.deepEqual(selectRiposteTargets(undefined), []);
+});
+
+
+// ---------------------------------------------------------------------------
+// planCascade — the cascade as the table sees it (Defence rework decision #4)
+// ---------------------------------------------------------------------------
+
+test('planCascade carries the shift AND whether the move left the round', () => {
+  // A 7-Tic round starting at 10, so Tics 10-16 are this round and 17 is the
+  // first Tic of the next. The guard runs until 14; two moves sit behind it.
+  const plan = planCascade({
+    blockedUntil: 14,
+    roundStartTic: 10,
+    roundLength: 7,
+    moves: [
+      { declaredMoveId: 10, placementTic: 12, footprintTics: 4 }, // -> 14, ends 18: starts inside
+      { declaredMoveId: 11, placementTic: 13, footprintTics: 3 }, // -> 18, entirely next round
+    ],
+  });
+  assert.deepEqual(plan, [
+    { declaredMoveId: 10, from: 12, to: 14, footprintTics: 4, leavesRound: false },
+    { declaredMoveId: 11, from: 13, to: 18, footprintTics: 3, leavesRound: true },
+  ]);
+});
+
+test('planCascade: a move that merely overflows has NOT left the round', () => {
+  // Placed at 16 — the round's last Tic — running to 19. It starts inside the
+  // window, so it is still this round's move and keeps its commitment; only a
+  // move with nothing at all inside the window is refunded.
+  const plan = planCascade({
+    blockedUntil: 16,
+    roundStartTic: 10,
+    roundLength: 7,
+    moves: [{ declaredMoveId: 10, placementTic: 12, footprintTics: 3 }],
+  });
+  assert.equal(plan[0].to, 16);
+  assert.equal(plan[0].leavesRound, false, 'it starts on the round\'s last Tic, so it is still in play');
+});
+
+test('planCascade is empty when the extension collides with nothing', () => {
+  assert.deepEqual(
+    planCascade({
+      blockedUntil: 14,
+      roundStartTic: 10,
+      roundLength: 7,
+      moves: [{ declaredMoveId: 10, placementTic: 15, footprintTics: 1 }],
+    }),
+    []
+  );
+  assert.deepEqual(
+    planCascade({ blockedUntil: 14, roundStartTic: 10, roundLength: 7, moves: [] }),
+    []
+  );
 });

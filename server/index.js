@@ -4278,7 +4278,10 @@ io.on('connection', (socket) => {
   // Parsed in JS rather than via json_extract to avoid depending on libSQL's
   // JSON1 surface for a list that is at most one row per pair.
   on('combat:resolve_move_conflict', async ({ declaredMoveId, choice }) => {
-    if (!['forfeit', 'postpone'].includes(choice)) return;
+    // Defence rework decision #4 renamed the two answers: 'postpone' became
+    // 'extend', because it no longer slides one move — it wears the guard's
+    // extension and pushes the whole queue back.
+    if (!['forfeit', 'extend'].includes(choice)) return;
     const pausedRows = await all(
       `SELECT pair_index, pending_conflict_json FROM pair_round_resolutions WHERE status = 'paused_conflict'`
     );
