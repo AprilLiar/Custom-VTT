@@ -98,21 +98,53 @@ export default function CombatHeaderBar() {
   // the affected character (own PC for a Player, own NPCs for the GM), so
   // this doesn't interrupt an unrelated viewer's screen with someone else's
   // decision to make.
+  // One pause per pair holds one conflict, and it is identified by the guard
+  // that caused it plus the move it ran into — enough to tell a re-pushed
+  // prompt from a genuinely new one.
+  const conflictKey = (c) => `${c.blockerDeclaredMoveId}:${c.declaredMoveId}`;
+  // **Read off `participants`, not `characters` (bugfix).** This used to look
+  // the fighter up in `combat.characters` — which the REST snapshot carries but
+  // the `combat:updated` socket broadcast does NOT (see emitCombatUpdated: it
+  // sends pairs/participants/declaredMoves and no per-character detail). So the
+  // moment any combat broadcast landed, the map went empty and every live
+  // conflict prompt was silently dropped; only a page reload, which re-fetches
+  // the REST snapshot, ever showed one. `participants` is in both payloads and
+  // already carries `character_type`, which is the only field this needs.
+  const ownsConflict = (payload) => {
+    const seat = (combat?.participants ?? []).find((p) => p.character_id === payload.characterId);
+    if (!seat) return false;
+    if (role === 'player') return payload.characterId === characterId;
+    if (role === 'gm') return seat.character_type === 'npc';
+    return false;
+  };
   const [conflictQueue, setConflictQueue] = useState([]);
   useEffect(() => {
     const onConflict = (payload) => {
-      const entry = combat?.characters?.[payload.characterId];
-      if (!entry) return;
-      const isMine =
-        role === 'player'
-          ? payload.characterId === characterId
-          : role === 'gm'
-            ? entry.character.character_type === 'npc'
-            : false;
-      if (isMine) setConflictQueue((q) => [...q, payload]);
+      if (ownsConflict(payload)) setConflictQueue((q) => [...q, payload]);
     };
     socket.on('combat:move_conflict', onConflict);
     return () => socket.off('combat:move_conflict', onConflict);
+  }, [combat, role, characterId]);
+
+  // **Reconnect recovery for the conflict prompt (new).** The Dodge and Block
+  // queues below have always had this; the conflict prompt never did, and the
+  // live push above only reaches sockets connected at the moment it fires — so
+  // a player who reloaded while it was pending was never asked again, and their
+  // pair sat paused with nothing on screen to answer. It matters more now that
+  // one answer covers the whole cascade rather than the round re-asking. Same
+  // ownership gate and the same dedupe key as the live push.
+  useEffect(() => {
+    if (!combat) return;
+    const pending = (combat.pairs ?? [])
+      .filter((p) => p.pendingConflict)
+      .map((p) => ({ ...p.pendingConflict, pairIndex: p.pairIndex }))
+      .filter(ownsConflict);
+    if (!pending.length) return;
+    setConflictQueue((q) => {
+      const seen = new Set(q.map(conflictKey));
+      const added = pending.filter((c) => !seen.has(conflictKey(c)));
+      return added.length ? [...q, ...added] : q;
+    });
   }, [combat, role, characterId]);
 
   // Combat Automation overhaul §3/§4.1 — the Dodge prompt, the one human
@@ -214,15 +246,16 @@ export default function CombatHeaderBar() {
   const conflictDialog = (() => {
     if (!conflictQueue.length || !combat) return null;
     const conflict = conflictQueue[0];
-    const entry = combat.characters?.[conflict.characterId];
-    if (!entry) return null; // pruned below on the next render
-    const dm = (combat.declaredMoves ?? []).find((d) => d.id === conflict.declaredMoveId);
     return (
       <MoveConflictDialog
         declaredMoveId={conflict.declaredMoveId}
         blockerDeclaredMoveId={conflict.blockerDeclaredMoveId}
-        moveName={dm?.moveName}
-        characterName={entry.character.name}
+        blockerMoveName={conflict.blockerMoveName}
+        // The whole cascade, named and priced by the server — the dialog lists
+        // it rather than re-deriving it from `combat`, so what the player is
+        // shown is exactly the plan resolveMoveConflict will apply.
+        shifts={conflict.shifts ?? []}
+        characterName={conflict.characterName}
         onResolve={() => setConflictQueue((q) => q.slice(1))}
       />
     );

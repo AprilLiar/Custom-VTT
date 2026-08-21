@@ -303,22 +303,42 @@ function eventNarration(ev, startTic) {
       }${p.slotName ?? 'Stat'} — already broken, so nothing can be applied.`;
     case 'stat_stepped':
       return statStepSentence(p, p.characterName);
-    case 'move_conflict_prompt':
-      return "A Block's extended Recovery ran into an already-declared move — waiting on Forfeit or Postpone.";
+    case 'move_conflict_prompt': {
+      const n = (p.shifts ?? []).length;
+      return n
+        ? `The extended guard runs into ${n === 1 ? 'the next declared move' : `${n} declared moves`} — waiting on the call.`
+        : "A Block's extended Recovery ran into an already-declared move — waiting on the call.";
+    }
     case 'move_conflict_resolved': {
-      const what = p.moveName
-        ? `${p.characterName ? `${p.characterName}'s ` : ''}${p.moveName}`
-        : 'the colliding move';
-      if (p.choice === 'forfeit') return `Forfeited ${what}; its Stamina is refunded.`;
-      // Name the destination. Landing past this round's last Tic is why a
-      // Postpone could look like the move had been deleted — it resolves in
-      // the next round's cutscene, so say that here rather than leaving the
-      // move to silently stop existing.
-      const where =
-        p.newPlacementTic != null
-          ? ` to Tic ${p.newPlacementTic - startTic + 1}${p.intoNextRound ? ', which lands in the next round' : ''}`
-          : ' past the extended Recovery';
-      return `Postponed ${what}${where}.`;
+      // **Two payload shapes (§0).** The current one carries the whole cascade
+      // (`shifts`, `forfeited`); replays stored before decision #4 carry a
+      // single `moveName`/`newPlacementTic`, and are never rewritten — so the
+      // old shape is read as a one-move cascade rather than dropped.
+      const who = p.characterName ? `${p.characterName}'s ` : '';
+      const legacy = p.shifts == null;
+      if (legacy) {
+        const what = p.moveName ? `${who}${p.moveName}` : 'the colliding move';
+        if (p.choice === 'forfeit') return `Forfeited ${what}; its Stamina is refunded.`;
+        const where =
+          p.newPlacementTic != null
+            ? ` to Tic ${p.newPlacementTic - startTic + 1}${p.intoNextRound ? ', which lands in the next round' : ''}`
+            : ' past the extended Recovery';
+        return `Postponed ${what}${where}.`;
+      }
+      const parts = [];
+      if (p.forfeited) {
+        parts.push(
+          `forfeits ${who}${p.forfeited.moveName ?? 'the colliding move'}` +
+            (p.forfeited.staminaRefunded ? ` (${p.forfeited.staminaRefunded} Stamina back)` : '')
+        );
+      }
+      for (const sh of p.shifts ?? []) {
+        parts.push(
+          `${sh.moveName ?? 'a move'} slides to Tic ${sh.to - startTic + 1}` +
+            (sh.leftRound ? ' — into the next round, Stamina refunded' : '')
+        );
+      }
+      return parts.length ? `${parts.join('; ')}.` : 'The guard extended with nothing in its way.';
     }
     case 'automation_fired': {
       // The server sends already-rendered phrases and the trigger's own
@@ -861,17 +881,26 @@ function footprintsFrom(events, upTo) {
       }
       continue;
     }
-    // A Postpone is the other way a move ends up later on the clock, and its
-    // bar used to stay exactly where it was — the log said "postponed to Tic
-    // 6" while the picture still showed it on Tic 3. Shifted by the delta
-    // between old and new placement so a wind-up bar's closed-off ends move
-    // with it (see the moves_displaced block above for why deltas).
-    if (ev.type === 'move_conflict_resolved' && ev.payload?.choice === 'postpone') {
-      const p = ev.payload;
-      const at = slotOf.get(p.declaredMoveId);
-      const fp = at == null ? null : out[at];
-      if (fp && p.newPlacementTic != null) {
-        const by = p.newPlacementTic - fp.placementTic;
+    // A cascade is the other way a move ends up later on the clock, and its bar
+    // used to stay exactly where it was — the log said "postponed to Tic 6"
+    // while the picture still showed it on Tic 3. Shifted by the delta between
+    // old and new placement so a wind-up bar's closed-off ends move with it
+    // (see the moves_displaced block above for why deltas).
+    // The cascade moves a LIST now, not one move (decision #4). Same delta
+    // arithmetic per entry; a pre-#4 replay still carries the single-move shape
+    // and is normalised into a one-entry list rather than dropped (§0).
+    if (ev.type === 'move_conflict_resolved') {
+      const p = ev.payload ?? {};
+      const moved =
+        p.shifts ??
+        (p.choice === 'postpone' && p.newPlacementTic != null
+          ? [{ declaredMoveId: p.declaredMoveId, to: p.newPlacementTic }]
+          : []);
+      for (const sh of moved) {
+        const at = slotOf.get(sh.declaredMoveId);
+        const fp = at == null ? null : out[at];
+        if (!fp || sh.to == null) continue;
+        const by = sh.to - fp.placementTic;
         if (by) {
           fp.placementTic += by;
           fp.revealTic += by;
@@ -1389,7 +1418,7 @@ export default function RoundCutscene({
         <div className="flex items-center gap-2">
           {paused && (
             <span className="panel-cut-sm bg-amber-600/30 px-2 py-1 font-display text-xs uppercase text-amber-300 md:text-sm">
-              {pendingDodge ? 'Waiting on the GM’s Dodge call' : 'Waiting on a Forfeit/Postpone choice'}
+              {pendingDodge ? 'Waiting on the GM’s Dodge call' : 'Waiting on a guard-extension choice'}
             </span>
           )}
           <button

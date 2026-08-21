@@ -5,6 +5,8 @@
 // kept just as free of I/O so it's independently unit-testable before any
 // schema/socket/UI wiring, same methodology combatTiming.js itself used.
 
+import { overlapsRoundWindow } from './combatTiming.js';
+
 // 4.1 — every 5 points of a roll's result is 1 Half-Damage step (0.5
 // damage). A result of 5-9 is 1 step (0.5 damage); 25-29 is 5 steps (2.5
 // damage). Never negative — a result below 0 (shouldn't normally happen,
@@ -382,6 +384,10 @@ export function canExtendDefense({ defenseFramePositions, startupTics, activeTic
 // is the first Tic that is free again after the extension. Returns the new
 // placement for every move that has to move, in order, leaving untouched
 // anything that already sat clear.
+//
+// **Pure and shared:** `finishBlock` builds the plan to *ask* about, and
+// `resolveMoveConflict` rebuilds it to *apply* — from the same function, so the
+// tail a player was shown is the tail that actually moves.
 export function cascadeShift({ moves, blockedUntil }) {
   const ordered = [...moves].sort((a, b) => a.placementTic - b.placementTic);
   const shifted = [];
@@ -407,4 +413,38 @@ export function cascadeShift({ moves, blockedUntil }) {
 export function clampRecoveryExtension({ currentExtensionTics, recoveryTics, delta }) {
   const next = currentExtensionTics + delta;
   return Math.max(-recoveryTics, next);
+}
+
+
+// The cascade as the table has to see it: every move that shifts, plus whether
+// the shift pushed it **clear out of this round** (decided, new).
+//
+// That last flag is the whole reason this exists rather than callers using
+// `cascadeShift` raw. A move shoved past the round's last Tic is no longer a
+// move happening this round — it is a move happening *next* round, and the
+// decided rule is that it goes back to being an ordinary undeclared-but-placed
+// declaration: **Stamina refunded, cancellable again**, sitting at the spot the
+// cascade put it. Without the flag the engine cannot tell that case from a move
+// that merely slid a Tic or two and is still in play.
+//
+// `roundStartTic`/`roundLength` describe the round the cascade happens in. A
+// move still overlapping that window is in play and keeps its commitment;
+// anything else has left. `overlapsRoundWindow` is the same half-open test the
+// Tic Counter and the lane snapshots already use, so "is it in this round" has
+// exactly one answer everywhere.
+export function planCascade({ moves, blockedUntil, roundStartTic, roundLength }) {
+  const byId = new Map((moves ?? []).map((m) => [m.declaredMoveId, m]));
+  return cascadeShift({ moves: moves ?? [], blockedUntil }).map((shift) => {
+    const footprintTics = byId.get(shift.declaredMoveId)?.footprintTics ?? 0;
+    return {
+      ...shift,
+      footprintTics,
+      leavesRound: !overlapsRoundWindow({
+        placementTic: shift.to,
+        recoveryEndTic: shift.to + footprintTics,
+        roundStartTic,
+        roundLength,
+      }),
+    };
+  });
 }

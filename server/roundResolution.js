@@ -62,6 +62,7 @@ import {
   selectUnevenCombatTarget,
   selectDefenseMove,
   resolveBlockStamina,
+  planCascade,
   resolveNoDamageOutcome,
   DEFAULT_SUCCESS_THRESHOLD,
 } from './combatDamage.js';
@@ -2957,31 +2958,83 @@ async function finishBlock(io, { pairIndex, pending, defenderDM, guard, emitEven
       attackerCharacterName: pending.attackerCharacterName,
       attackerMoveName: pending.attackerMoveName,
     });
-    const collision = await one(
-      'SELECT id, character_id FROM declared_moves WHERE character_id = ? AND id != ? AND placement_tic >= ? AND placement_tic < ? ORDER BY id LIMIT 1',
-      [defenderDM.character_id, defenderDM.id, oldRecoveryEndTic, newRecoveryEndTic]
-    );
-    if (collision) {
+    // **The cascade (Defence rework decision #4).** The extension does not just
+    // collide with the next move — it pushes the fighter's whole remaining
+    // queue back, each shifted move becoming the floor for the one after it.
+    // Built here to be ASKED about and rebuilt in resolveMoveConflict to be
+    // APPLIED, from the same pure `planCascade`, so the tail a player is shown
+    // is the tail that actually moves.
+    const plan = await planCascadeFor(defenderDM.character_id, {
+      excludeDeclaredMoveId: defenderDM.id,
+      blockedUntil: newRecoveryEndTic,
+      pairIndex,
+    });
+    if (plan.length) {
+      // **One question for the whole cascade (decided).** Not one per collision:
+      // the fighter is being asked whether to wear the extension at all, and
+      // answering the same question three times as the knock-on works down the
+      // queue is the same decision asked in instalments.
+      const moveNames = await declaredMoveLabels(plan.map((p) => p.declaredMoveId));
+      const payload = {
+        blockerDeclaredMoveId: defenderDM.id,
+        characterId: defenderDM.character_id,
+        // Named on the payload rather than looked up client-side: the prompt has
+        // to be readable from the event alone (§0), and the socket's combat
+        // broadcast does not carry per-character detail at all.
+        characterName: defenderDM.character_name,
+        blockerMoveName: defenderDM.move_name,
+        // The first move the guard actually ran into — the one Forfeit gives up.
+        declaredMoveId: plan[0].declaredMoveId,
+        shifts: plan.map((p) => ({ ...p, ...(moveNames.get(p.declaredMoveId) ?? {}) })),
+      };
       await run(
         `UPDATE pair_round_resolutions SET status = 'paused_conflict', pending_conflict_json = ?
          WHERE pair_index = ? AND status = 'running'`,
-        [
-          JSON.stringify({
-            declaredMoveId: collision.id,
-            blockerDeclaredMoveId: defenderDM.id,
-            characterId: collision.character_id,
-          }),
-          pairIndex,
-        ]
+        [JSON.stringify({ ...payload, blockedUntil: newRecoveryEndTic, tic }), pairIndex]
       );
-      await emitEvent(tic, 'move_conflict_prompt', {
-        declaredMoveId: collision.id,
-        characterId: collision.character_id,
-        blockerDeclaredMoveId: defenderDM.id,
-      });
+      await emitEvent(tic, 'move_conflict_prompt', payload);
       return { paused: true };
     }
   }
+}
+
+// This character's own still-unrevealed declared moves, as the shape
+// `planCascade` wants, run through it.
+//
+// **Unrevealed only.** A move already on the board has happened — its Tell is
+// out, its frames are running, and sliding it would rewrite the past. The
+// blocker's own move is excluded by the caller for the same reason.
+async function planCascadeFor(characterId, { excludeDeclaredMoveId, blockedUntil, pairIndex }) {
+  const [rows, window] = await Promise.all([
+    all(
+      `SELECT dm.id AS declaredMoveId, dm.placement_tic AS placementTic,
+              (m.startup_tics + m.active_tics + m.recovery_tics + dm.recovery_extension_tics) AS footprintTics
+       FROM declared_moves dm JOIN moves m ON m.id = dm.move_id
+       WHERE dm.character_id = ? AND dm.id != ? AND dm.reveal_posted = 0
+       ORDER BY dm.placement_tic, dm.id`,
+      [characterId, excludeDeclaredMoveId]
+    ),
+    one('SELECT round_start_tic AS roundStartTic, round_length AS roundLength FROM pair_round_resolutions WHERE pair_index = ? ORDER BY id DESC LIMIT 1', [pairIndex]),
+  ]);
+  return planCascade({
+    moves: rows,
+    blockedUntil,
+    roundStartTic: window?.roundStartTic ?? 0,
+    roundLength: window?.roundLength ?? 0,
+  });
+}
+
+// Names for a set of declared moves, so a prompt and a log line can say what is
+// moving rather than quoting row ids at a player.
+async function declaredMoveLabels(declaredMoveIds) {
+  const ids = [...new Set(declaredMoveIds ?? [])];
+  if (!ids.length) return new Map();
+  const rows = await all(
+    `SELECT dm.id AS id, m.name AS moveName FROM declared_moves dm JOIN moves m ON m.id = dm.move_id
+     WHERE dm.id IN (${ids.map(() => '?').join(',')})`,
+    ids
+  );
+  return new Map(rows.map((r) => [r.id, { moveName: r.moveName }]));
 }
 
 // §2.2 — processes one absolute Tic for one pair: reveal, then resolve
@@ -3703,11 +3756,12 @@ async function makeEmitEvent(io, resolution, pairIndex, roundNumber) {
     // now its only source — the manual path that used to emit it went away
     // with combat:resolve_defense.
     if (type === 'move_conflict_prompt') {
-      io.emit('combat:move_conflict', {
-        declaredMoveId: payload.declaredMoveId,
-        blockerDeclaredMoveId: payload.blockerDeclaredMoveId,
-        characterId: payload.characterId,
-      });
+      // **The whole payload, not three hand-picked fields (fix).** It used to
+      // forward only the two move ids and the character, which was enough when
+      // the prompt was "forfeit this one move or slide it" — but the cascade
+      // prompt has to show the tail it is about, and a client that got this
+      // live push rather than the snapshot would have rendered an empty list.
+      io.emit('combat:move_conflict', payload);
     }
   };
 }
@@ -4151,116 +4205,147 @@ async function resolveBlock(pairIndex, { outcome, attackerDeclaredMoveId }, io) 
 // this specific declaredMoveId isn't the one currently pending (a stale
 // click from a second tab).
 async function resolveMoveConflict(pairIndex, { declaredMoveId, choice }, io) {
-  if (!['forfeit', 'postpone'].includes(choice)) return;
+  if (!['extend', 'forfeit'].includes(choice)) return;
   const resolution = await one(
     `SELECT * FROM pair_round_resolutions WHERE pair_index = ? AND status = 'paused_conflict'`,
     [pairIndex]
   );
   if (!resolution || !resolution.pending_conflict_json) return;
   const pending = JSON.parse(resolution.pending_conflict_json);
-  if (pending.declaredMoveId !== declaredMoveId) return;
+  // Reject a stale click from a second tab: the prompt being answered must be
+  // the one actually pending. Optional, matching resolveDodge/resolveBlock.
+  if (declaredMoveId != null && pending.declaredMoveId !== declaredMoveId) return;
 
   const emitEvent = await makeEmitEvent(io, resolution, pairIndex, resolution.round_number);
-  const row = await one(
-    `SELECT dm.*, m.startup_tics, m.active_tics, m.recovery_tics, m.stamina_cost
-     FROM declared_moves dm JOIN moves m ON m.id = dm.move_id
-     WHERE dm.id = ?`,
-    [declaredMoveId]
-  );
-  if (!row) {
-    await run(`UPDATE pair_round_resolutions SET status = 'running', pending_conflict_json = NULL WHERE id = ?`, [resolution.id]);
-    await advancePairResolution(pairIndex, io);
-    return;
-  }
+  const characterId = pending.characterId;
+  const character = await getCharacter(characterId);
 
-  let postponedTo = null;
+  // **Forfeit gives up the move the guard actually ran into**, and only that
+  // one — Stamina back, off the board. Whatever was queued behind it is not
+  // punished for being behind it; it still cascades below, against a floor that
+  // no longer has the forfeited move in the way.
+  let forfeited = null;
   if (choice === 'forfeit') {
-    await run('DELETE FROM declared_moves WHERE id = ?', [row.id]);
-    if (row.stamina_committed && row.stamina_cost) {
-      await adjustStamina(io, row.character_id, row.stamina_cost);
-      await postSystemMessage(io, `A declared move was Forfeited — ${row.stamina_cost} Stamina refunded.`);
-    }
-  } else {
-    // Postpone: recompute the blocker's own current Recovery end fresh
-    // from the DB (not trusted from whenever the prompt first fired), and
-    // floor this move's placement there.
-    const blocker = await one(
-      `SELECT dm.reveal_tic, dm.recovery_extension_tics, m.active_tics, m.recovery_tics
-       FROM declared_moves dm JOIN moves m ON m.id = dm.move_id
-       WHERE dm.id = ?`,
-      [pending.blockerDeclaredMoveId]
+    const row = await one(
+      `SELECT dm.*, m.name AS move_name, m.stamina_cost, m.active_tics, m.recovery_tics
+       FROM declared_moves dm JOIN moves m ON m.id = dm.move_id WHERE dm.id = ?`,
+      [pending.declaredMoveId]
     );
-    if (blocker) {
-      const blockerRecoveryEndTic =
-        blocker.reveal_tic + blocker.active_tics + blocker.recovery_tics + blocker.recovery_extension_tics;
-      const newPlacementTic = Math.max(row.placement_tic, blockerRecoveryEndTic);
-      const { revealTic } = computeMoveFootprint({
-        placementTic: newPlacementTic,
-        startupTics: row.startup_tics,
-        activeTics: row.active_tics,
-        recoveryTics: row.recovery_tics,
-      });
-      await run('UPDATE declared_moves SET placement_tic = ?, reveal_tic = ? WHERE id = ?', [newPlacementTic, revealTic, row.id]);
-      postponedTo = { placementTic: newPlacementTic, revealTic };
+    if (row) {
+      await run('DELETE FROM declared_moves WHERE id = ?', [row.id]);
+      // Feint Tag: whatever was declared right after this one was masked BY it
+      // (see move:undeclare, which does the same for a hand-cancelled move).
+      // Taking the move off the board has to take its concealment with it.
+      const footprintEnd =
+        row.reveal_tic + row.active_tics + row.recovery_tics + row.recovery_extension_tics;
+      await run(
+        'UPDATE declared_moves SET feint_masked = 0 WHERE character_id = ? AND placement_tic = ? AND id <> ?',
+        [row.character_id, footprintEnd, row.id]
+      );
+      if (row.stamina_committed && row.stamina_cost) {
+        await adjustStamina(io, row.character_id, row.stamina_cost, {
+          emitEvent,
+          tic: pending.tic,
+          reason: `${row.move_name} forfeited`,
+        });
+      }
+      forfeited = { declaredMoveId: row.id, moveName: row.move_name, staminaRefunded: row.stamina_committed ? row.stamina_cost : 0 };
     }
   }
 
-  // Say where it went. A Postpone used to report only that it happened, and
-  // the move then simply stopped being on screen: if its new placement lands
-  // past this round's last Tic it reveals in the NEXT round's cutscene, which
-  // reads at the table as the move having been quietly eaten. The payload now
-  // carries the move, its owner, and where it landed, so the log can name all
-  // three — see the narration client-side.
-  const moveRow = await one('SELECT m.name AS move_name, ch.name AS character_name FROM declared_moves dm JOIN moves m ON m.id = dm.move_id JOIN characters ch ON ch.id = dm.character_id WHERE dm.id = ?', [declaredMoveId]).catch(() => null);
-  await emitEvent(pending.tic ?? resolution.resolved_through_tic + 1, 'move_conflict_resolved', {
-    declaredMoveId,
-    blockerDeclaredMoveId: pending.blockerDeclaredMoveId,
-    choice,
-    moveName: moveRow?.move_name ?? null,
-    characterName: moveRow?.character_name ?? null,
-    ...(postponedTo
-      ? {
-          newPlacementTic: postponedTo.placementTic,
-          newRevealTic: postponedTo.revealTic,
-          // Whether it left this round entirely — the case that looked like
-          // the move disappearing.
-          intoNextRound: postponedTo.placementTic >= resolution.round_start_tic + resolution.round_length,
-        }
-      : {}),
+  // **Re-planned, never replayed.** The plan stored on the pause was built to
+  // ask a question; between then and now a Forfeit may have removed a move from
+  // the middle of it. Rebuilding from the live board through the same pure
+  // function is what keeps the two honest — and it is why Forfeit needs no
+  // second prompt (decided: one question for the whole cascade).
+  const plan = await planCascadeFor(characterId, {
+    excludeDeclaredMoveId: pending.blockerDeclaredMoveId,
+    blockedUntil: pending.blockedUntil,
+    pairIndex,
   });
+  const labels = await declaredMoveLabels(plan.map((p) => p.declaredMoveId));
 
-  // Recursive cascade: a Postponed move might now collide with yet another
-  // already-declared move of this same character — re-check and pause
-  // again if so, exactly as the original manual flow's own recursion did.
-  if (choice === 'postpone') {
-    const updatedRow = await one('SELECT reveal_tic, recovery_extension_tics FROM declared_moves WHERE id = ?', [row.id]);
-    if (updatedRow) {
-      const recoveryEndTic = updatedRow.reveal_tic + row.active_tics + row.recovery_tics + updatedRow.recovery_extension_tics;
-      const stillColliding = await one(
-        'SELECT id, character_id FROM declared_moves WHERE character_id = ? AND id != ? AND placement_tic >= ? AND placement_tic < ? ORDER BY id LIMIT 1',
-        [row.character_id, row.id, updatedRow.reveal_tic, recoveryEndTic]
-      );
-      if (stillColliding) {
-        await run(
-          `UPDATE pair_round_resolutions SET status = 'paused_conflict', pending_conflict_json = ? WHERE id = ?`,
-          [
-            JSON.stringify({
-              declaredMoveId: stillColliding.id,
-              blockerDeclaredMoveId: row.id,
-              characterId: stillColliding.character_id,
-            }),
-            resolution.id,
-          ]
-        );
-        await emitEvent(pending.tic ?? resolution.resolved_through_tic + 1, 'move_conflict_prompt', {
-          declaredMoveId: stillColliding.id,
-          characterId: stillColliding.character_id,
-          blockerDeclaredMoveId: row.id,
+  const applied = [];
+  for (const shift of plan) {
+    const row = await one(
+      `SELECT dm.*, m.startup_tics, m.active_tics, m.recovery_tics, m.stamina_cost, m.name AS move_name
+       FROM declared_moves dm JOIN moves m ON m.id = dm.move_id WHERE dm.id = ?`,
+      [shift.declaredMoveId]
+    );
+    if (!row) continue;
+    const { revealTic } = computeMoveFootprint({
+      placementTic: shift.to,
+      startupTics: row.startup_tics,
+      activeTics: row.active_tics,
+      recoveryTics: row.recovery_tics,
+    });
+    await run('UPDATE declared_moves SET placement_tic = ?, reveal_tic = ? WHERE id = ?', [
+      shift.to,
+      revealTic,
+      row.id,
+    ]);
+
+    // **Pushed clear out of this round — hand it back (decided).** A move with
+    // no frames left inside the round is not this round's move any more, so it
+    // stops being a commitment: the Stamina is refunded and the declaration
+    // goes back to uncommitted, sitting at the spot the cascade put it. That is
+    // exactly the state a freshly-dragged declaration is in, which is what
+    // makes it cancellable again when the next Declaration opens — and what
+    // makes it charge again if the player keeps it.
+    let refunded = 0;
+    if (shift.leavesRound && row.stamina_committed) {
+      refunded = row.stamina_cost ?? 0;
+      await run('UPDATE declared_moves SET stamina_committed = 0 WHERE id = ?', [row.id]);
+      if (refunded) {
+        await adjustStamina(io, characterId, refunded, {
+          emitEvent,
+          tic: pending.tic,
+          reason: `${row.move_name} pushed into the next round`,
         });
-        return;
       }
     }
+    applied.push({
+      declaredMoveId: row.id,
+      moveName: labels.get(row.id)?.moveName ?? row.move_name,
+      from: shift.from,
+      to: shift.to,
+      revealTic,
+      leftRound: Boolean(shift.leavesRound),
+      staminaRefunded: refunded,
+    });
   }
+
+  // One line for the whole cascade, not one per move — it is one decision and
+  // one consequence, and a queue of four would otherwise fill the log.
+  const who = character?.name ?? 'A fighter';
+  const parts = [];
+  if (forfeited) {
+    parts.push(
+      `forfeits ${forfeited.moveName}` +
+        (forfeited.staminaRefunded ? ` (${forfeited.staminaRefunded} Stamina back)` : '')
+    );
+  }
+  if (applied.length) {
+    parts.push(
+      `pushes ${applied.map((a) => a.moveName).join(', ')} back` +
+        (applied.some((a) => a.leftRound) ? ' — some of it into the next round' : '')
+    );
+  }
+  await postSystemMessage(
+    io,
+    parts.length
+      ? `${who} ${parts.join(' and ')} to wear the extended guard.`
+      : `${who} wears the extended guard — nothing else had to move.`
+  );
+
+  await emitEvent(pending.tic ?? resolution.resolved_through_tic + 1, 'move_conflict_resolved', {
+    characterId,
+    characterName: character?.name ?? null,
+    blockerDeclaredMoveId: pending.blockerDeclaredMoveId,
+    choice,
+    forfeited,
+    shifts: applied,
+  });
 
   await run(`UPDATE pair_round_resolutions SET status = 'running', pending_conflict_json = NULL WHERE id = ?`, [resolution.id]);
   await advancePairResolution(pairIndex, io);

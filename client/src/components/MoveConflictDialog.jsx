@@ -1,22 +1,26 @@
 import { socket } from '../socket.js';
 import DialogShell from './DialogShell.jsx';
 
-// Combat Automation (Phase 9, sub-phase 4 — 4.3's Forfeit/Postpone prompt).
-// Fires whenever a Block's Recovery extension runs into a character's own
-// already-declared move (combat:move_conflict — see CombatHeaderBar.jsx,
-// which queues these the same way it already queues the reveal-time
-// auto-Roll dialog, scoped to whoever actually controls this character).
-// No "current footprint" preview is shown here — the choice itself doesn't
-// depend on exactly where things land, just Forfeit-it-outright vs.
-// Postpone-it-past-the-blocker, so the dialog stays this simple. Closing
-// without choosing is deliberately not offered (unlike a Roll dialog, which
-// can just be skipped for later): the conflict is real game state that
-// needs *a* resolution before the round can keep making sense, so both
-// buttons that update state, no bare dismiss button.
+// The Block-extension prompt (Defence rework decision #4 — this replaces the
+// old Forfeit/Postpone dialog).
+//
+// **The question changed shape, so the dialog did too.** It used to ask about
+// one colliding move at a time and re-ask as the knock-on worked down the
+// queue. Now the whole cascade is computed server-side and asked about once, so
+// the choice is a real one — and the tail is listed, because "push everything
+// back" is not a decision anyone can make without seeing what everything is.
+//
+// Goes to whoever controls the affected character (their own player, or the GM
+// for an NPC — see CombatHeaderBar's ownership gate), not to the GM at large:
+// it is that fighter's commitment being spent.
+//
+// Closing without choosing is deliberately not offered. The round is paused on
+// this answer, and a dismissed prompt would strand it.
 export default function MoveConflictDialog({
   declaredMoveId,
   blockerDeclaredMoveId,
-  moveName,
+  blockerMoveName,
+  shifts = [],
   characterName,
   onResolve,
 }) {
@@ -24,12 +28,14 @@ export default function MoveConflictDialog({
     socket.emit('combat:resolve_move_conflict', { declaredMoveId, blockerDeclaredMoveId, choice });
     onResolve();
   };
+  const first = shifts[0];
+  const spills = shifts.filter((s) => s.leavesRound);
 
   return (
     <DialogShell
-      title="Move Blocked"
+      title="The Guard Held Longer"
       dismissible={false}
-      maxWidth="max-w-sm"
+      maxWidth="max-w-md"
       panelClassName="border-amber-700/50"
       footer={
         <div className="flex gap-2">
@@ -38,22 +44,49 @@ export default function MoveConflictDialog({
             onClick={() => resolve('forfeit')}
             className="min-h-11 flex-1 panel-cut-sm border border-red-700/50 bg-red-950/40 py-2 font-semibold text-red-300 hover:bg-red-900/40"
           >
-            Forfeit
+            Forfeit {first?.moveName ? `“${first.moveName}”` : 'it'}
           </button>
           <button
             type="button"
-            onClick={() => resolve('postpone')}
+            onClick={() => resolve('extend')}
             className="min-h-11 flex-1 panel-cut-sm bg-brand-600 py-2 font-semibold text-white hover:bg-brand-500"
           >
-            Postpone
+            Push Everything Back
           </button>
         </div>
       }
     >
       <p className="text-sm text-zinc-300">
-        A Block's extended Recovery has run into {characterName ? `${characterName}'s ` : ''}
-        {moveName ? `declared "${moveName}"` : 'another declared move'}. Forfeit it, or postpone it
-        until after the block clears?
+        {characterName ? `${characterName}'s ` : 'Your '}
+        {blockerMoveName ? `“${blockerMoveName}”` : 'guard'} held through the attack, and the extra
+        Recovery runs into what came next.
+      </p>
+
+      {shifts.length > 0 && (
+        <ul className="mt-3 space-y-1 text-sm">
+          {shifts.map((s) => (
+            <li key={s.declaredMoveId} className="flex items-baseline justify-between gap-3">
+              <span className="text-zinc-200">{s.moveName ?? 'A declared move'}</span>
+              <span className="shrink-0 font-mono text-xs text-zinc-400">
+                Tic {s.from} → {s.to}
+                {s.leavesRound && <span className="ml-2 text-amber-400">next round</span>}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {spills.length > 0 && (
+        <p className="mt-3 text-xs text-amber-300/90">
+          {spills.length === 1 ? 'That last one lands' : 'Those land'} entirely in the next round, so{' '}
+          {spills.length === 1 ? 'its' : 'their'} Stamina comes back and you can cancel or re-place{' '}
+          {spills.length === 1 ? 'it' : 'them'} when Declaration reopens.
+        </p>
+      )}
+
+      <p className="mt-3 text-xs text-zinc-500">
+        Forfeiting gives up only the first move — its Stamina is refunded, and anything behind it
+        still slides forward to clear the guard.
       </p>
     </DialogShell>
   );

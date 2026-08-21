@@ -757,8 +757,21 @@ A Block must roll a Stat. A Custom Roll move can never serve as a Block, since
 it has no named Stat to become that replacement target.
 
 If an extended Recovery collides with a move the blocker had already declared,
-they choose: **Forfeit** it (full Stamina refund) or **Postpone** it past the
-extension.
+the fighter is asked once — by their own player, or by the GM for an NPC — and
+the question covers **everything the extension runs into**, not just the first
+move. It lists each move and where it would land, and you pick:
+
+- **Push Everything Back.** The queue slides forward to clear the guard, each
+  shifted move making room for the one behind it.
+- **Forfeit.** Give up only the move the guard actually ran into — its Stamina
+  comes back — and everything behind it still slides forward.
+
+Either way, a move shoved so far that **none of it is left in this round** stops
+being a commitment: its Stamina is refunded and it goes back to being an
+ordinary declaration sitting at its new Tic, which you can cancel or re-place
+when the next Declaration opens. A move that merely runs past the last Tic while
+still starting inside the round is unaffected — that is ordinary overflow, and
+it resolves next round as it always has.
 
 ### Dodging
 
