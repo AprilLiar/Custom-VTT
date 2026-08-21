@@ -2469,3 +2469,297 @@ test('an attack on a broken Stat still resolves, and is reported at the end of t
     "1 damage should have been dealt to BrokenDef's Skull, but it cannot be applied. Take this into consideration for Injuries."
   );
 });
+
+// ---------- Second playtest Perk batch: tempo, the Jab, and feeding on pain ----------
+
+const { perkStaminaCostDeltas, previousDeclaredMoveFacts } = await import('../perkEngine.js');
+
+// The declare-time seam, exercised directly. `move:declare` itself lives in
+// server/index.js, which boots a real HTTP server on import — but
+// perkStaminaCostDeltas is import-safe and IS the whole rule, so the discount
+// can be pinned here rather than only in a live playtest.
+const deltaFor = async (characterId, move) =>
+  (await perkStaminaCostDeltas({ characterId, moves: [move], dice: [], injuries: [] })).get(move.id) ?? 0;
+
+const moveRow = (id) => one('SELECT * FROM moves WHERE id = ?', [id]);
+
+test('Punches in Bunches: a punch after a punch, and nothing else', async () => {
+  const fighter = await createCharacter('PiB Fighter');
+  await grantPerk(fighter, 'Punches in Bunches');
+  const straight = await createMove({ name: 'PiB Straight', rollSlots: ['Hand'], attackTargets: ['Skull'] });
+  const kick = await createMove({ name: 'PiB Kick', rollSlots: ['Leg'], attackTargets: ['Body'] });
+
+  // Nothing queued yet — there is no punch to be following.
+  assert.equal(await deltaFor(fighter, await moveRow(straight)), 0, 'the first punch of a round is full price');
+
+  await declareMove({ characterId: fighter, moveId: straight, placementTic: 0, startupTics: 1 });
+  assert.equal(await deltaFor(fighter, await moveRow(straight)), -1, 'a punch behind a punch is a Stamina cheaper');
+  // The Perk is about what you throw, not just what you threw: a kick behind a
+  // punch is still a kick.
+  assert.equal(await deltaFor(fighter, await moveRow(kick)), 0);
+
+  // ...and a punch behind a KICK gets nothing either, which is the half of the
+  // rule a "did I punch recently?" implementation would have got wrong.
+  const other = await createCharacter('PiB Kicker');
+  await grantPerk(other, 'Punches in Bunches');
+  await declareMove({ characterId: other, moveId: kick, placementTic: 0, startupTics: 1 });
+  assert.equal(await deltaFor(other, await moveRow(straight)), 0);
+});
+
+test('Punches in Bunches does nothing for a fighter who does not have it', async () => {
+  const fighter = await createCharacter('PiB Nobody');
+  const straight = await createMove({ name: 'PiB2 Straight', rollSlots: ['Hand'], attackTargets: ['Skull'] });
+  await declareMove({ characterId: fighter, moveId: straight, placementTic: 0, startupTics: 1 });
+  assert.equal(await deltaFor(fighter, await moveRow(straight)), 0);
+});
+
+test('The Simplest Tool discounts the Jab, and only a move actually called Jab', async () => {
+  const fighter = await createCharacter('TST Fighter');
+  await grantPerk(fighter, 'The Simplest Tool');
+  const jab = await createMove({ name: 'Jab', rollSlots: ['Hand'], attackTargets: ['Skull'] });
+  const almost = await createMove({ name: 'Power Jab', rollSlots: ['Hand'], attackTargets: ['Skull'] });
+
+  assert.equal(await deltaFor(fighter, await moveRow(jab)), -1);
+  assert.equal(await deltaFor(fighter, await moveRow(almost)), 0, 'exact names only');
+});
+
+test('the two discounts stack, because every seam is folded additively', async () => {
+  // A Jab thrown behind another punch is both things at once. Nobody wrote a
+  // rule for the meeting — the seam simply sums, which is the whole point of
+  // the doctrine in perks/index.js.
+  const fighter = await createCharacter('Stack Fighter');
+  await grantPerk(fighter, 'The Simplest Tool');
+  await grantPerk(fighter, 'Punches in Bunches');
+  const jab = await createMove({ name: 'Jab', rollSlots: ['Hand'], attackTargets: ['Skull'] });
+  const straight = await createMove({ name: 'Stack Straight', rollSlots: ['Hand'], attackTargets: ['Skull'] });
+
+  assert.equal(await deltaFor(fighter, await moveRow(jab)), -1, 'a lone Jab is the Jab discount only');
+  await declareMove({ characterId: fighter, moveId: straight, placementTic: 0, startupTics: 1 });
+  assert.equal(await deltaFor(fighter, await moveRow(jab)), -2, 'a Jab behind a punch is both');
+});
+
+test('a queued move is priced against ITS OWN predecessor, not the last one declared', async () => {
+  // **The regression this batch's live playtest caught.** getPendingStaminaCost
+  // totals up a whole Declaration's worth of already-queued moves, and a single
+  // shared "previous move" measured every one of them against whatever went
+  // down LAST — so the punch that was quoted at full price came out discounted
+  // at commit, and a combo was charged a figure nobody was ever shown.
+  const fighter = await createCharacter('Queue Fighter');
+  await grantPerk(fighter, 'Punches in Bunches');
+  const first = await createMove({ name: 'Q First', rollSlots: ['Hand'], attackTargets: ['Skull'] });
+  const second = await createMove({ name: 'Q Second', rollSlots: ['Hand'], attackTargets: ['Skull'] });
+
+  const dm1 = await declareMove({ characterId: fighter, moveId: first, placementTic: 0, startupTics: 1 });
+  const dm2 = await declareMove({ characterId: fighter, moveId: second, placementTic: 3, startupTics: 1 });
+
+  const rows = [
+    { ...(await moveRow(first)), declared_move_id: dm1 },
+    { ...(await moveRow(second)), declared_move_id: dm2 },
+  ];
+  const deltas = await perkStaminaCostDeltas({ characterId: fighter, moves: rows, dice: [], injuries: [] });
+  assert.equal(deltas.get(first), 0, 'the first punch of the round follows nothing and is full price');
+  assert.equal(deltas.get(second), -1, 'the second follows the first and is a Stamina cheaper');
+});
+
+test('previousDeclaredMoveFacts orders by footprint end, not by when it was declared', async () => {
+  // The trap this exists to avoid: a short move declared LATER can still finish
+  // before a long one declared earlier, so reveal_tic is the wrong key.
+  const fighter = await createCharacter('Order Fighter');
+  const long = await createMove({ name: 'Order Long', activeTics: 4, recoveryTics: 2, rollSlots: ['Hand'] });
+  const short = await createMove({ name: 'Order Short', activeTics: 1, recoveryTics: 0, rollSlots: ['Leg'] });
+  await declareMove({ characterId: fighter, moveId: long, placementTic: 0, startupTics: 1 });
+  await declareMove({ characterId: fighter, moveId: short, placementTic: 0, startupTics: 1 });
+
+  const previous = await previousDeclaredMoveFacts(fighter);
+  assert.equal(previous.name, 'Order Long', 'the move that ends last is the one you are coming off');
+});
+
+test('Deadly Pendulum: +2 on the attack behind a Dodge the GM called Successful', async () => {
+  const pairIndex = 360;
+  const attacker = await createCharacter('DP Swinger');
+  const opponent = await createCharacter('DP Opponent');
+  await grantPerk(attacker, 'Deadly Pendulum');
+
+  // The opponent's punch, which the Dodge will get out of the way of.
+  const punch = await createMove({ name: 'DP Punch', startupTics: 1, activeTics: 2, recoveryTics: 1, rollSlots: ['Skull'], attackTargets: ['Body'] });
+  // Two Active Tics guarded on both — the shape writeMove would actually store
+  // (sanitizeDefensePositions drops a Defense Frame outside the Active window),
+  // and enough to cover the attack's own two Active Tics rather than coming out
+  // 'too-short' and auto-Failing with no prompt.
+  const dodge = await createMove({
+    name: 'DP Slip', startupTics: 1, activeTics: 2, recoveryTics: 1,
+    rollSlots: ['Body'], isDefensive: true, defenseKind: 'dodge', defenseFramePositions: [1, 2],
+  });
+  // The counter, queued behind the Dodge so its footprint ends later.
+  const counter = await createMove({ name: 'DP Counter', startupTics: 1, activeTics: 1, recoveryTics: 0, rollSlots: ['Skull'], attackTargets: ['Body'] });
+
+  await seatPair(pairIndex, attacker, opponent);
+  await startPairDeclaration(mockIo, pairIndex);
+  await declareMove({ characterId: opponent, moveId: punch, placementTic: 0, startupTics: 1 });
+  const dodgeDM = await declareMove({ characterId: attacker, moveId: dodge, placementTic: 0, startupTics: 1 });
+  await declareMove({ characterId: attacker, moveId: counter, placementTic: 4, startupTics: 1 });
+  await resolvePair(pairIndex);
+  await resolveDodge(pairIndex, { outcome: 'successful' }, mockIo);
+
+  // The verdict is on the row, which is what the Perk reads back.
+  const dodged = await one('SELECT defense_outcome FROM declared_moves WHERE id = ?', [dodgeDM]);
+  assert.equal(dodged.defense_outcome, 'success');
+
+  const events = await all('SELECT type, payload FROM round_events WHERE pair_index = ? ORDER BY seq', [pairIndex]);
+  const counterRoll = events
+    .map((e) => ({ type: e.type, payload: JSON.parse(e.payload) }))
+    .find((e) => e.type === 'roll' && e.payload.moveName === 'DP Counter');
+  assert.ok(counterRoll, `the counter should have rolled: ${events.map((e) => e.type).join(', ')}`);
+  const term = (counterRoll.payload.modifierBreakdown ?? []).find((t) => t.label === 'Deadly Pendulum');
+  assert.ok(term, `the Perk has to be named in the breakdown: ${JSON.stringify(counterRoll.payload.modifierBreakdown)}`);
+  assert.equal(term.amount, 2);
+});
+
+test('Deadly Pendulum pays nothing when the Dodge failed', async () => {
+  const pairIndex = 361;
+  const attacker = await createCharacter('DP2 Swinger');
+  const opponent = await createCharacter('DP2 Opponent');
+  await grantPerk(attacker, 'Deadly Pendulum');
+  const punch = await createMove({ name: 'DP2 Punch', startupTics: 1, activeTics: 2, recoveryTics: 1, rollSlots: ['Skull'], attackTargets: ['Body'] });
+  // Two Active Tics guarded on both — the shape writeMove would actually store
+  // (sanitizeDefensePositions drops a Defense Frame outside the Active window),
+  // and enough to cover the attack's own two Active Tics rather than coming out
+  // 'too-short' and auto-Failing with no prompt.
+  const dodge = await createMove({
+    name: 'DP2 Slip', startupTics: 1, activeTics: 2, recoveryTics: 1,
+    rollSlots: ['Body'], isDefensive: true, defenseKind: 'dodge', defenseFramePositions: [1, 2],
+  });
+  const counter = await createMove({ name: 'DP2 Counter', startupTics: 1, activeTics: 1, recoveryTics: 0, rollSlots: ['Skull'], attackTargets: ['Body'] });
+
+  await seatPair(pairIndex, attacker, opponent);
+  await startPairDeclaration(mockIo, pairIndex);
+  await declareMove({ characterId: opponent, moveId: punch, placementTic: 0, startupTics: 1 });
+  const dodgeDM = await declareMove({ characterId: attacker, moveId: dodge, placementTic: 0, startupTics: 1 });
+  await declareMove({ characterId: attacker, moveId: counter, placementTic: 4, startupTics: 1 });
+  await resolvePair(pairIndex);
+  await resolveDodge(pairIndex, { outcome: 'failed' }, mockIo);
+
+  const dodged = await one('SELECT defense_outcome FROM declared_moves WHERE id = ?', [dodgeDM]);
+  assert.equal(dodged.defense_outcome, 'failed');
+
+  const events = await all('SELECT type, payload FROM round_events WHERE pair_index = ? ORDER BY seq', [pairIndex]);
+  const counterRoll = events
+    .map((e) => ({ type: e.type, payload: JSON.parse(e.payload) }))
+    .find((e) => e.type === 'roll' && e.payload.moveName === 'DP2 Counter');
+  assert.ok(counterRoll);
+  assert.ok(
+    !(counterRoll.payload.modifierBreakdown ?? []).some((t) => t.label === 'Deadly Pendulum'),
+    'a dodge that did not work is not a pendulum'
+  );
+});
+
+test('a Dodge the GM called Failed reads as failed even when the attack was too feeble to hurt', async () => {
+  // **Caught live, by the failed-Dodge arm of the playtest collecting its +2.**
+  // resolveDodge routes on whether any damage got through, and an attack under
+  // the Minimum Damage Threshold gets through for zero — which correctly sends
+  // it down the no-damage path, but does NOT mean the guard worked. Taking the
+  // verdict from that figure wrote 'success' onto a Dodge the GM had just
+  // rejected, and Deadly Pendulum paid out on it.
+  const pairIndex = 364;
+  const attacker = await createCharacter('Feeble Attacker');
+  const defender = await createCharacter('Feeble Defender');
+  await grantPerk(defender, 'Deadly Pendulum');
+  // 8 − 5 = 3, under the threshold: a hit that deals nothing whatever the GM says.
+  const poke = await createMove({
+    name: 'Feeble Poke', startupTics: 1, activeTics: 2, recoveryTics: 1,
+    rollSlots: ['Skull'], rollModifier: -5, attackTargets: ['Body'],
+  });
+  const dodge = await createMove({
+    name: 'Feeble Slip', startupTics: 1, activeTics: 2, recoveryTics: 1,
+    rollSlots: ['Body'], isDefensive: true, defenseKind: 'dodge', defenseFramePositions: [1, 2],
+  });
+  const counter = await createMove({
+    name: 'Feeble Counter', startupTics: 1, activeTics: 1, recoveryTics: 0,
+    rollSlots: ['Skull'], attackTargets: ['Body'],
+  });
+
+  await seatPair(pairIndex, attacker, defender);
+  await startPairDeclaration(mockIo, pairIndex);
+  await declareMove({ characterId: attacker, moveId: poke, placementTic: 0, startupTics: 1 });
+  const dodgeDM = await declareMove({ characterId: defender, moveId: dodge, placementTic: 0, startupTics: 1 });
+  await declareMove({ characterId: defender, moveId: counter, placementTic: 4, startupTics: 1 });
+  await resolvePair(pairIndex);
+  await resolveDodge(pairIndex, { outcome: 'failed' }, mockIo);
+
+  const row = await one('SELECT defense_outcome FROM declared_moves WHERE id = ?', [dodgeDM]);
+  assert.equal(row.defense_outcome, 'failed', 'the GM said Failed; nothing about the damage changes that');
+
+  const events = (await all('SELECT type, payload FROM round_events WHERE pair_index = ? ORDER BY seq', [pairIndex]))
+    .map((e) => ({ type: e.type, payload: JSON.parse(e.payload) }));
+  const counterRoll = events.find((e) => e.type === 'roll' && e.payload.moveName === 'Feeble Counter');
+  assert.ok(counterRoll);
+  assert.ok(
+    !(counterRoll.payload.modifierBreakdown ?? []).some((t) => t.label === 'Deadly Pendulum'),
+    'and so the counter behind it is not a pendulum'
+  );
+});
+
+test('Baron of Suffering: Stamina back for every half-point that lands', async () => {
+  const pairIndex = 362;
+  const attacker = await createCharacter('BoS Attacker');
+  const defender = await createCharacter('BoS Defender');
+  await grantPerk(attacker, 'Baron of Suffering');
+  await run('UPDATE characters SET current_stamina = 10 WHERE id = ?', [attacker]);
+
+  // d8 top face, +2 = 10 → two Half-Damage steps → 2 Stamina.
+  const punch = await createMove({
+    name: 'BoS Punch', startupTics: 1, activeTics: 1, recoveryTics: 0,
+    rollSlots: ['Skull'], rollModifier: 2, attackTargets: ['Body'],
+  });
+  await seatPair(pairIndex, attacker, defender);
+  await startPairDeclaration(mockIo, pairIndex);
+  await declareMove({
+    characterId: attacker, moveId: punch, placementTic: 0, startupTics: 1,
+    effectiveAttackTargets: ['Body'],
+  });
+  await resolvePair(pairIndex);
+
+  const events = (await all('SELECT type, payload FROM round_events WHERE pair_index = ? ORDER BY seq', [pairIndex]))
+    .map((e) => ({ type: e.type, payload: JSON.parse(e.payload) }));
+  const hit = events.find((e) => e.type === 'damage_applied' && e.payload.slotName);
+  assert.ok(hit, 'the fixture has to actually land');
+  assert.equal(hit.payload.steps, 2);
+
+  const gain = events.find((e) => e.type === 'stamina_changed' && e.payload.characterId === attacker);
+  assert.ok(gain, `the attacker should have gained Stamina: ${events.map((e) => e.type).join(', ')}`);
+  assert.equal(gain.payload.delta, 2, 'one Stamina per half-point of the two that landed');
+});
+
+test('Baron of Suffering pays nothing for damage that cannot be applied', async () => {
+  // Damage aimed at a Stat already broken lands nowhere and is reported at the
+  // end of the round instead — so there is nothing to feed on. This is the
+  // half of "damage dealt" a naive reading off the ROLL would have got wrong.
+  const pairIndex = 363;
+  const attacker = await createCharacter('BoS2 Attacker');
+  const defender = await createCharacter('BoS2 Defender');
+  await grantPerk(attacker, 'Baron of Suffering');
+  await run(
+    "UPDATE dice SET status = 'incapacitated', current_size = 4 WHERE character_id = ? AND slot_name = 'Body'",
+    [defender]
+  );
+
+  const punch = await createMove({
+    name: 'BoS2 Punch', startupTics: 1, activeTics: 1, recoveryTics: 0,
+    rollSlots: ['Skull'], rollModifier: 2, attackTargets: ['Body'],
+  });
+  await seatPair(pairIndex, attacker, defender);
+  await startPairDeclaration(mockIo, pairIndex);
+  await declareMove({
+    characterId: attacker, moveId: punch, placementTic: 0, startupTics: 1,
+    effectiveAttackTargets: ['Body'],
+  });
+  await resolvePair(pairIndex);
+
+  const events = (await all('SELECT type, payload FROM round_events WHERE pair_index = ? ORDER BY seq', [pairIndex]))
+    .map((e) => ({ type: e.type, payload: JSON.parse(e.payload) }));
+  assert.ok(events.some((e) => e.type === 'damage_unapplied'), 'the fixture has to hit the broken Stat');
+  assert.ok(
+    !events.some((e) => e.type === 'stamina_changed' && e.payload.characterId === attacker && e.payload.delta > 0),
+    'no damage was dealt, so nothing is owed'
+  );
+});

@@ -1251,6 +1251,28 @@ export async function initDb() {
   // on the board.
   await ensureColumn('declared_moves', 'feint_masked', 'INTEGER NOT NULL DEFAULT 0');
 
+  // **How this move's guard was judged (decided, new).** 'success' or 'failed'
+  // once a defence has been adjudicated, NULL for every move that never was one
+  // — which is most of them.
+  //
+  // Written by the three funnels that carry a verdict for a whole move:
+  // applySuccessfulDodge, applyFailedDefense (a failed Dodge, or a Block the GM
+  // said applied nowhere), and finishBlock's held path. A Block is adjudicated
+  // one Stat at a time and its individual lines have no single answer, so the
+  // column records the move-level one finishBlock already computes
+  // (`heldAnywhere`) rather than the last line's.
+  //
+  // Added for Deadly Pendulum, which needs to know whether the Dodge you threw
+  // right before this attack actually worked. Stored on the row rather than in
+  // that Perk's private state because "did that guard hold?" is a plain fact
+  // about the fight, not a thing one Perk gets to know — the round log already
+  // says it out loud, this just makes it queryable.
+  await ensureColumn(
+    'declared_moves',
+    'defense_outcome',
+    "TEXT CHECK(defense_outcome IN ('success','failed'))"
+  );
+
   await seedRuleset();
   await seedTells();
   await seedBlockTag();

@@ -597,3 +597,62 @@ export function parseConcreteAttackTargets(json) {
   if (!Array.isArray(list)) return [];
   return list.filter((name) => CONCRETE_ATTACK_TARGET_NAMES.includes(name));
 }
+
+// ---------------------------------------------------------------------------
+// What a move IS, asked of the small "facts" shape a Perk is handed
+// ---------------------------------------------------------------------------
+//
+// Perks ask questions about moves that the engine has never needed to ask —
+// "is this a punch?", "is this the Jab?" — and they ask them about a move the
+// asker may not be holding a full row for (the one declared just before this
+// one, say). `moveFacts` in perkEngine.js normalises both into one shape:
+//
+//   { id, name, rollSlots, activeTics, isDefensive, attackTargets, defenseKind }
+//
+// These three predicates read that shape and nothing else. Pure, so the rules
+// they encode can be pinned by a unit test rather than by a live fight.
+
+// Is this move an attack — something that will actually land on somebody?
+//
+// **Deliberately the same test the telegraph already uses**, rather than a
+// second definition of "attack" living next to the first. `isTelegraphedAttack`
+// answers "does this move announce itself as incoming?", and the reason it says
+// yes is precisely that the move has Active frames and is not defence-pure —
+// which is the same fact. A move that guards *and* strikes (Defensive with an
+// Attack Target of its own) is an attack under both, which is right: it will
+// hit someone.
+export function isAttackingMove(move) {
+  if (!move) return false;
+  return isTelegraphedAttack({
+    activeTics: move.activeTics,
+    isDefensive: move.isDefensive,
+    attackTargets: move.attackTargets,
+  });
+}
+
+// Is this an attack thrown with a hand (Punches in Bunches)?
+//
+// **The Roll is what decides, not the Attack Target** (decided). "Making a Hand
+// Attack" is about what you hit *with*, and the Roll is the only place a move
+// says that — a Straight rolls a Hand, a kick rolls a Leg. The Attack Target is
+// the opposite question (what you are aiming AT), and reading it here would
+// have made a hook to the opponent's wrist count as a punch while a punch to
+// the head did not.
+//
+// A move rolling Hand twice (both fists) is as much a Hand Attack as one
+// rolling it once, so this is `includes`, not a count.
+export function isHandAttack(move) {
+  return isAttackingMove(move) && (move.rollSlots ?? []).includes('Hand');
+}
+
+// Does this move go by exactly this name?
+//
+// Case- and whitespace-insensitive, matching `perkDefinition`'s own `norm` and
+// `hasTagNamed` — a GM typing a trailing space must not silently lose a
+// mechanic. **Exact otherwise (decided):** "Jab" is the Jab; "Power Jab" and
+// "Jab!" are different moves and get nothing. A Perk that named a substring
+// would quietly attach itself to every move a GM ever wrote with that word in
+// it.
+export function moveNameIs(move, name) {
+  return String(move?.name ?? '').trim().toLowerCase() === String(name ?? '').trim().toLowerCase();
+}
