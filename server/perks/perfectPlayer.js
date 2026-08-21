@@ -20,7 +20,9 @@ export default {
     'You are only untouchable while you are untouched. While no Stat of yours is below its current Locked Value, any Dodge move costs 2 less Stamina.',
 
   staminaCostDelta: ({ move, dice, injuryPenaltyFor }) => {
-    if (move?.defense_kind !== 'dodge') return 0;
+    // `move` is the facts shape the seam hands every Perk (see moveFacts in
+    // perkEngine.js), not the raw row — hence defenseKind, not defense_kind.
+    if (move?.defenseKind !== 'dodge') return 0;
     const flawless = (dice ?? []).every((die) => {
       if (die.status === 'incapacitated') return false;
       // A die that was never locked has no baseline to fall below.

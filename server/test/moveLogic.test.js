@@ -14,6 +14,9 @@ import {
   collapseRollSlots,
   MAX_AMBIGUOUS_ROLL_SLOT_COUNT,
   sanitizeDefensePositions,
+  isAttackingMove,
+  isHandAttack,
+  moveNameIs,
   AMBIGUOUS_ROLL_SLOTS,
   TRIGGERS,
   DEFENSE_TRIGGERS,
@@ -382,4 +385,66 @@ test('a surcharge adds on, and rubbish is treated as no delta', () => {
   assert.equal(effectiveStaminaCost(null, -2), 0);
   // Truncated, not rounded — a cost is a whole number of Stamina.
   assert.equal(effectiveStaminaCost(3, -1.9), 2);
+});
+
+// ---------------------------------------------------------------------------
+// The move predicates a Perk asks with (Punches in Bunches, The Simplest Tool,
+// Deadly Pendulum). They read the "facts" shape — see moveFacts in perkEngine.
+// ---------------------------------------------------------------------------
+
+const facts = (over = {}) => ({
+  id: 1,
+  name: 'Straight',
+  rollSlots: ['Hand'],
+  activeTics: 1,
+  isDefensive: false,
+  attackTargets: [],
+  defenseKind: null,
+  defenseOutcome: null,
+  ...over,
+});
+
+test('isAttackingMove: anything that will land on somebody', () => {
+  assert.equal(isAttackingMove(facts()), true);
+  // No Active frames — nothing to hit with.
+  assert.equal(isAttackingMove(facts({ activeTics: 0 })), false);
+  // Defence-pure: Defensive with no Attack Target of its own. The one move
+  // that exists only to be guarded with.
+  assert.equal(isAttackingMove(facts({ isDefensive: true, attackTargets: [] })), false);
+  // A counter-attack guards AND strikes, so it is an attack under this and
+  // under the telegraph rule it shares.
+  assert.equal(isAttackingMove(facts({ isDefensive: true, attackTargets: ['Body'] })), true);
+  assert.equal(isAttackingMove(null), false);
+});
+
+test('isHandAttack: the ROLL decides, not the Attack Target', () => {
+  assert.equal(isHandAttack(facts({ rollSlots: ['Hand'] })), true);
+  // Both fists is still a punch.
+  assert.equal(isHandAttack(facts({ rollSlots: ['Hand', 'Hand'] })), true);
+  // Rolls a Hand alongside something else — still thrown with a hand.
+  assert.equal(isHandAttack(facts({ rollSlots: ['Skull', 'Hand'] })), true);
+  // A kick.
+  assert.equal(isHandAttack(facts({ rollSlots: ['Leg'] })), false);
+  // **Aiming at their hand is not punching.** This is the case that would have
+  // been wrong had the predicate read attack_targets.
+  assert.equal(isHandAttack(facts({ rollSlots: ['Leg'], attackTargets: ['Hand'] })), false);
+  // A guard that rolls both hands is not an attack at all.
+  assert.equal(
+    isHandAttack(facts({ rollSlots: ['Hand', 'Hand'], isDefensive: true, attackTargets: [] })),
+    false
+  );
+  assert.equal(isHandAttack(null), false);
+});
+
+test('moveNameIs: exact, but forgiving about case and stray spaces', () => {
+  assert.equal(moveNameIs(facts({ name: 'Jab' }), 'Jab'), true);
+  assert.equal(moveNameIs(facts({ name: '  jab ' }), 'Jab'), true);
+  assert.equal(moveNameIs(facts({ name: 'JAB' }), 'Jab'), true);
+  // Exact otherwise — a Perk that matched a substring would attach itself to
+  // every move a GM ever wrote the word into.
+  assert.equal(moveNameIs(facts({ name: 'Power Jab' }), 'Jab'), false);
+  assert.equal(moveNameIs(facts({ name: 'Jab!' }), 'Jab'), false);
+  assert.equal(moveNameIs(facts({ name: 'Jabs' }), 'Jab'), false);
+  // A roll that belongs to no move at all must never match.
+  assert.equal(moveNameIs(null, 'Jab'), false);
 });

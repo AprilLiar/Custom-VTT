@@ -976,6 +976,32 @@ way tables always have.
 - **Multifaceted.** You are not one fighter but two. You may build and keep a
   second Stance, switching between them as any fighter switches Stance. Nothing
   automates this one — the table simply lets you make the second Stance.
+- **Punches in Bunches.** You throw in combinations, not singles. A **Hand
+  Attack** thrown right after another Hand Attack costs 1 less Stamina. A Hand
+  Attack is one that *rolls* a Hand — what you are hitting with, not what you
+  are aiming at, so a kick aimed at their wrist is not one. "Right after" means
+  the move you queued immediately before it, and there is no limit: a third
+  punch off a second is still a punch off a punch. What stops you is the clock —
+  every punch you string together is a Tic you are not guarding with.
+- **The Simplest Tool.** The jab is the whole game. Your **Jab** costs 1 less
+  Stamina and rolls with a +1 Bonus to the Attack. It finds the move named
+  exactly `Jab` — a "Power Jab" is a different move and gets nothing — so if
+  your table wants this Perk, someone writes a Jab into the Compendium.
+- **Deadly Pendulum.** You hit hardest coming back. An **Attack** declared right
+  after a **Dodge** gets +2 to the Attack, provided the GM called that Dodge
+  Successful. You are betting when you declare it: the whole round goes down
+  before any of it resolves, so you queue the counter-punch behind the sway and
+  find out afterwards whether you earned it. Only a Dodge — a Block that held is
+  not a swing away from anything.
+- **Baron of Suffering.** You feed on what you do to people. You regain 1
+  Stamina for each 0.5 Damage you **deal** — 1 at a 5, 2 at a 10, and every Stat
+  a multi-target attack wrecks pays separately. Damage that lands nowhere pays
+  nothing: a blow aimed at a Stat already broken is reported at the end of the
+  round rather than applied, and there is nothing there to feed on.
+- **Wounded Wolf.** What the wound took, it paid for. Lose 1 Step in one Stat
+  and gain 3 Steps in another. Nothing automates this one either — you and your
+  GM set the two Stats when you take the Perk, and from then on it is simply
+  what your sheet says.
 
 ## Counters
 

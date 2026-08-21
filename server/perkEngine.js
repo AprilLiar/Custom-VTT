@@ -16,7 +16,120 @@
 import { all, one, run } from './db.js';
 import { injuryPenaltyBySlot } from './gameLogic.js';
 import { MIN_DAMAGE_THRESHOLD } from './combatDamage.js';
+import { expandRollSlotRows, sanitizeAttackTargets } from './moveLogic.js';
 import { perkDefinition } from './perks/index.js';
+
+// ---------------------------------------------------------------------------
+// What a Perk is allowed to know about a move
+// ---------------------------------------------------------------------------
+
+// The facts shape (see the predicates in moveLogic.js that consume it). One
+// normalised object, whether it was built from a full getMovesFor row or from a
+// bare `SELECT * FROM moves` — those two disagree about `attack_targets` (an
+// array on one, a JSON string on the other), and a Perk reading the wrong one
+// would silently answer "no Attack Target" for every move in the game.
+//
+// Deliberately small. A Perk gets what it needs to recognise a move, not a
+// handle on the row: nothing here can be written back through.
+export function moveFacts(row, rollSlots = null) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    name: row.name ?? null,
+    rollSlots: rollSlots ?? (Array.isArray(row.roll_slots) ? row.roll_slots : []),
+    activeTics: row.active_tics ?? 0,
+    isDefensive: Boolean(row.is_defensive),
+    attackTargets: sanitizeAttackTargets(
+      Array.isArray(row.attack_targets) ? row.attack_targets : JSON.parse(row.attack_targets ?? '[]')
+    ),
+    defenseKind: row.defense_kind ?? null,
+    // Only ever set on a DECLARED move (see declared_moves.defense_outcome).
+    // Null on a Compendium template, which has not been thrown yet and so has
+    // no verdict — which is exactly what Deadly Pendulum needs it to say.
+    defenseOutcome: row.defense_outcome ?? null,
+  };
+}
+
+// Roll slots for a set of move ids, flattened, in one batched query. The picker
+// asks about twenty moves at once; twenty queries for it would be twenty
+// round-trips to Turso.
+async function rollSlotsByMove(moveIds) {
+  const ids = [...new Set((moveIds ?? []).filter((id) => id != null))];
+  const out = new Map(ids.map((id) => [id, []]));
+  if (!ids.length) return out;
+  const rows = await all(
+    `SELECT * FROM move_roll_slots WHERE move_id IN (${ids.map(() => '?').join(',')}) ORDER BY id`,
+    ids
+  );
+  for (const row of rows) out.get(row.move_id)?.push(...expandRollSlotRows([row]));
+  return out;
+}
+
+// One move, as facts, roll slots included.
+export async function loadMoveFacts(moveId) {
+  if (moveId == null) return null;
+  const row = await one('SELECT * FROM moves WHERE id = ?', [moveId]);
+  if (!row) return null;
+  return moveFacts(row, (await rollSlotsByMove([moveId])).get(moveId) ?? []);
+}
+
+// A declared move's footprint end — reveal plus everything that follows it.
+// The ordering key for "what did this fighter do before that?", and the same
+// expression move:declare's own placement floor uses.
+const ENDS_AT = '(dm.reveal_tic + m.active_tics + m.recovery_tics + dm.recovery_extension_tics)';
+
+// **The move this character threw immediately before — the whole of what "right
+// after" means in this game** (Punches in Bunches, Deadly Pendulum, and the
+// same rule Requirements already run on; see requirementSatisfiedBy).
+//
+// Two callers, two moments, one answer:
+//
+//   - **At declare time** there is no row for the move being declared yet, so
+//     `beforeDeclaredMoveId` is null and this is simply the last thing queued —
+//     identical to the `last` lookup move:declare already does for Requirements.
+//   - **At roll time** the move is on the board, so it is passed in and skipped
+//     over: the answer is the queued move that ends nearest before it.
+//
+// Ordered by footprint end and not by reveal_tic, because a short move declared
+// later can still finish earlier than a long one declared before it — and by id
+// on a tie, so two moves ending on the same Tic still have a definite order.
+export async function previousDeclaredMoveFacts(characterId, { beforeDeclaredMoveId = null } = {}) {
+  if (characterId == null) return null;
+  const select =
+    `SELECT dm.id AS declared_move_id, dm.defense_outcome, m.*, ${ENDS_AT} AS ends_at
+     FROM declared_moves dm JOIN moves m ON m.id = dm.move_id
+     WHERE dm.character_id = ?`;
+
+  let row;
+  if (beforeDeclaredMoveId == null) {
+    row = await one(`${select} ORDER BY ends_at DESC, dm.id DESC LIMIT 1`, [characterId]);
+  } else {
+    const self = await one(
+      `SELECT ${ENDS_AT} AS ends_at FROM declared_moves dm JOIN moves m ON m.id = dm.move_id WHERE dm.id = ?`,
+      [beforeDeclaredMoveId]
+    );
+    if (!self) return null;
+    row = await one(
+      `${select} AND (${ENDS_AT} < ? OR (${ENDS_AT} = ? AND dm.id < ?))
+       ORDER BY ends_at DESC, dm.id DESC LIMIT 1`,
+      [characterId, self.ends_at, self.ends_at, beforeDeclaredMoveId]
+    );
+  }
+  if (!row) return null;
+  return moveFacts(row, (await rollSlotsByMove([row.id])).get(row.id) ?? []);
+}
+
+// A thunk that runs at most once, however many Perks call it.
+//
+// **This is what keeps the seam context cheap.** `perkRollBonusTerms` runs on
+// every roll in the game, and the facts below cost two or three queries to
+// build — so they are not built unless a Perk actually asks. Cornered Animal
+// never calls them and pays nothing; Deadly Pendulum calls them and pays once,
+// even if three Perks ask on the same roll.
+function once(fn) {
+  let promise = null;
+  return () => (promise ??= Promise.resolve().then(fn));
+}
 
 // A character's granted Perks that actually have code behind them, paired with
 // their own `character_perks.id` — the key their private state hangs off.
@@ -48,6 +161,23 @@ async function seamContext(characterId, extra = {}) {
   return { characterId, character, ...extra };
 }
 
+// The two move questions a roll-time Perk may want, as thunks (see `once`):
+// **what am I throwing**, and **what did I throw right before it**. Neither
+// costs anything until a Perk calls it.
+//
+// `getMove()` answers null for a roll that belongs to no move at all — a hand
+// thrown die, the round's Initiative roll — which is the correct answer rather
+// than a missing one, and is what stops a move-scoped Perk (The Simplest Tool)
+// from paying out on a roll that is not a move's.
+function rollMoveContext(characterId, { moveId = null, declaredMoveId = null } = {}) {
+  return {
+    getMove: once(() => loadMoveFacts(moveId)),
+    getPreviousMove: once(() =>
+      previousDeclaredMoveFacts(characterId, { beforeDeclaredMoveId: declaredMoveId })
+    ),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Seam resolvers
 //
@@ -66,7 +196,7 @@ export async function perkRollBonusTerms(characterId, extra = {}) {
   const granted = await perkDefinitionsFor(characterId);
   const withSeam = granted.filter((g) => typeof g.definition.rollBonus === 'function');
   if (!withSeam.length) return [];
-  const ctx = await seamContext(characterId, extra);
+  const ctx = await seamContext(characterId, { ...extra, ...rollMoveContext(characterId, extra) });
   const terms = [];
   for (const { definition, name, characterPerkId } of withSeam) {
     const amount = Math.trunc(Number(await definition.rollBonus({ ...ctx, characterPerkId })) || 0);
@@ -135,19 +265,81 @@ export async function perkRoundStartHalfHealing(characterId) {
   return Math.max(0, await sumSeam(characterId, 'roundStartHalfHealing'));
 }
 
+// Stamina back per Half-Damage step this character deals (Baron of Suffering).
+// Summed; 0 for everybody else, which is every fighter in almost every fight.
+export async function perkStaminaPerHalfDamage(characterId) {
+  return Math.max(0, await sumSeam(characterId, 'staminaPerHalfDamage'));
+}
+
 // What one move costs this character beyond its authored Stamina Cost — a
 // negative number is a discount (Perfect Player). Summed.
 //
 // The context carries the character's live dice and an injury-penalty lookup
 // because the conditions Perks want here are about the state of the fighter, and
 // making every Perk fetch them itself would be a query per Perk per move.
-export async function perkStaminaCostDelta({ characterId, move, dice, injuries }) {
+// **A whole list of moves in one pass**, because that is how every caller
+// actually asks: the declare picker wants a figure for twenty moves at once, and
+// the previous version answered them one at a time — re-reading the granted Perk
+// list and the character row for each, twenty round-trips for one screen.
+//
+// Returns a Map of move id -> delta. The character-level facts (dice, Injuries,
+// the move thrown right before) are gathered once and shared by every move in
+// the list, since none of them vary per move.
+export async function perkStaminaCostDeltas({ characterId, moves, dice, injuries }) {
+  const out = new Map();
+  const list = moves ?? [];
+  if (!list.length) return out;
+  const granted = await perkDefinitionsFor(characterId);
+  const withSeam = granted.filter((g) => typeof g.definition.staminaCostDelta === 'function');
+  if (!withSeam.length) return out;
+
   const penalties = injuryPenaltyBySlot(injuries);
-  return sumSeam(characterId, 'staminaCostDelta', {
-    move,
+  const slots = await rollSlotsByMove(list.map((m) => m.id));
+  const base = await seamContext(characterId, {
     dice,
     injuryPenaltyFor: (slotName) => penalties.get(slotName) ?? 0,
   });
+
+  // **"The previous move" is per entry, not per batch (bugfix).** The two
+  // callers ask fundamentally different questions and the difference is only
+  // visible once a Perk reads the queue:
+  //
+  //   - The **declare picker** prices moves that are not on the board. None of
+  //     them has a predecessor of its own, so every one is measured against
+  //     this character's last-queued move — one lookup, shared.
+  //   - **getPendingStaminaCost** prices moves that ARE on the board, to total
+  //     up what this Declaration will cost. Each one has its own place in the
+  //     queue, so each is measured against whatever it personally comes after.
+  //
+  // A shared answer looked right against the picker and then quietly overcharged
+  // at commit: every already-queued move was compared to the LAST one declared
+  // rather than to its own predecessor, so a two-move combo was billed a
+  // different figure from the one it had just been quoted. Callers signal which
+  // case they are in by putting `declared_move_id` on the rows they pass.
+  const lastQueued = once(() => previousDeclaredMoveFacts(characterId));
+  const previousFor = (move) =>
+    move.declared_move_id == null
+      ? lastQueued
+      : once(() => previousDeclaredMoveFacts(characterId, { beforeDeclaredMoveId: move.declared_move_id }));
+
+  for (const move of list) {
+    const facts = moveFacts(move, slots.get(move.id) ?? []);
+    const getPreviousMove = previousFor(move);
+    let total = 0;
+    for (const { definition, characterPerkId } of withSeam) {
+      total += Math.trunc(
+        Number(await definition.staminaCostDelta({ ...base, move: facts, getPreviousMove, characterPerkId })) || 0
+      );
+    }
+    out.set(move.id, total);
+  }
+  return out;
+}
+
+// One move's delta. The single-move shorthand over the batch above.
+export async function perkStaminaCostDelta({ characterId, move, dice, injuries }) {
+  const deltas = await perkStaminaCostDeltas({ characterId, moves: [move], dice, injuries });
+  return deltas.get(move?.id) ?? 0;
 }
 
 // How many qualifying idle Tics this character needs per point of Stamina

@@ -129,6 +129,7 @@ import {
   perkBlockRiposteSteps,
   perkDefinitionsFor,
   perkRoundStartHalfHealing,
+  perkStaminaPerHalfDamage,
 } from './perkEngine.js';
 import { getCombatRollBonus, getCombatRollBonusBreakdown, getStanceMatchupBonus } from './combatBonuses.js';
 
@@ -1382,6 +1383,33 @@ async function runInterruptAndDamage(io, {
       opponentCharacterId: targetCharacterId,
     });
   }
+  // **Baron of Suffering.** Hurting people is what keeps you going: Stamina
+  // back, per half-point that actually landed.
+  //
+  // Read off `applied` and nothing else — that array is the engine's own record
+  // of damage it wrote to a die. Damage that found a broken Stat is in
+  // `unapplied` instead and pays nothing, which is the answer the rule asks for
+  // ("damage dealt") and the one consistent with the round's own report saying
+  // that damage could not be applied.
+  //
+  // Paid once for the whole blow rather than once per Stat, because it is one
+  // blow; the multi-Stat case just makes the total bigger.
+  const perStep = await perkStaminaPerHalfDamage(attackerCharacterId);
+  if (perStep > 0 && applied.length) {
+    const landed = applied.reduce((sum, a) => sum + a.steps, 0);
+    if (landed > 0) {
+      await adjustStamina(io, attackerCharacterId, perStep * landed, {
+        emitEvent,
+        tic,
+        reason: `${landed * 0.5} damage dealt`,
+      });
+      await postSystemMessage(
+        io,
+        `${attackerCharacterName} draws ${perStep * landed} Stamina from the damage they dealt.`
+      );
+    }
+  }
+
   // One Interruption check for the blow, not one per Stat — being hit in two
   // places at once is still one blow, and the check reads the total damage
   // taken. Uses the heaviest Stat's figure, which is `steps` in every case
@@ -1509,6 +1537,15 @@ async function applyFailedDefense(io, {
   emitEvent,
 }) {
   await postSystemMessage(io, `${defenderDM.character_name}'s ${defenseLabel} has failed.`);
+  // The verdict, on the row (see declared_moves.defense_outcome) — for the
+  // guards that never reached a GM at all: a defence auto-Failed for landing
+  // too early or covering too little, and a Block the GM said applied nowhere.
+  // `COALESCE`-style guard rather than a plain write, because resolveDodge
+  // records the GM's own answer before calling in here and that answer is the
+  // more truthful one; this must not overwrite it.
+  await run(`UPDATE declared_moves SET defense_outcome = 'failed' WHERE id = ? AND defense_outcome IS NULL`, [
+    defenderDM.id,
+  ]);
   await applyMoveInteractions(io, {
     moveId: defenderDM.move_id,
     trigger: 'defense_failure',
@@ -1648,6 +1685,7 @@ async function rollFor(io, { characterId, characterName, moveId, moveName, slotN
     getCombatRollBonusBreakdown(characterId, {
       moveId,
       tic,
+      declaredMoveId,
       // A Custom Roll names no Stat, so it keeps the matchup (see
       // matchupAppliesToSlots).
       slotNames: rollType === 'custom' ? [] : slotNames,
@@ -2256,6 +2294,7 @@ async function resolveAttack(io, { row, pairIndex, tic, emitEvent }) {
     getCombatRollBonusBreakdown(row.characterId, {
       moveId: row.moveId,
       tic,
+      declaredMoveId: row.declaredMoveId,
       slotNames: row.rollType === 'custom' ? [] : row.rollSlotNames,
     }),
   ]);
@@ -2606,6 +2645,7 @@ async function loadBlockGuard(defenderDM, tic) {
   ]);
   const defBonusMods = await getCombatRollBonus(defenderDM.character_id, {
     moveId: defenderDM.move_id,
+    declaredMoveId: defenderDM.id,
     tic,
     // Base plus defensive pool: everything this guard actually rolls.
     slotNames: [...baseSlotRows, ...defensiveSlotRows].map((r) => r.slot_name),
@@ -2808,6 +2848,9 @@ async function finishBlock(io, { pairIndex, pending, defenderDM, guard, emitEven
     netResult: pending.leftoverResult,
     outcome: pending.leftoverSteps > 0 ? 'partial' : 'full',
   };
+  // The guard stood, whether it held everything (Full) or only some of it
+  // (Partial) — both are a Block that applied, which is what the column means.
+  await run(`UPDATE declared_moves SET defense_outcome = 'success' WHERE id = ?`, [defenderDM.id]);
 
   // Attack Target (Change 001): a Successful Block replaces the attacker's
   // effective target with the blocker's own base Stat Roll (never the
@@ -3913,6 +3956,11 @@ async function resolveDodge(pairIndex, { outcome, attackerDeclaredMoveId }, io) 
   const answeredStat = pending.remainingStats?.[0] ?? null;
   const remainingStats = (pending.remainingStats ?? []).slice(1);
   const stepsBySlot = { ...(pending.stepsBySlot ?? {}) };
+  // **The GM's own tally, kept apart from the damage math** (see
+  // declared_moves.defense_outcome). A Dodge is asked about one Stat at a time
+  // and re-pauses between, so the answers have to ride the pause to be counted
+  // at the end.
+  const failedAnswers = (pending.failedAnswers ?? 0) + (outcome === 'failed' ? 1 : 0);
   if (answeredStat) {
     // A dodged line takes nothing; a failed one takes the attack's full weight.
     stepsBySlot[answeredStat] = outcome === 'failed' ? pending.halfDamageSteps : 0;
@@ -3935,12 +3983,27 @@ async function resolveDodge(pairIndex, { outcome, attackerDeclaredMoveId }, io) 
   if (remainingStats.length) {
     await persistDodgePause(io, {
       pairIndex,
-      pending: { ...pending, remainingStats, stepsBySlot },
+      pending: { ...pending, remainingStats, stepsBySlot, failedAnswers },
       emitEvent,
       resolutionId: resolution.id,
     });
     return;
   }
+
+  // **What the GM actually said, recorded before either branch runs.**
+  //
+  // Deliberately NOT read off `anyLanded` below. That figure asks whether any
+  // damage got through, and a Dodge the GM called Failed against an attack too
+  // feeble to clear the Minimum Damage Threshold gets through for zero — which
+  // routes it, correctly, down the no-damage path, but does not make it a Dodge
+  // that worked. Taking the verdict from the damage would have written
+  // 'success' onto a guard the GM had just rejected, and Deadly Pendulum would
+  // have paid out on it. (Caught live: the failed-Dodge arm of the playtest
+  // collected its +2.)
+  await run(`UPDATE declared_moves SET defense_outcome = ? WHERE id = ?`, [
+    failedAnswers > 0 ? 'failed' : 'success',
+    defenderDM.id,
+  ]);
 
   // Every line answered. The attack as a whole counts as evaded only if the
   // dodge got clear of ALL of it — anything that got through is a failed

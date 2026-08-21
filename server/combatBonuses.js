@@ -327,7 +327,13 @@ export async function getCombatRollBonusBreakdown(
   // one rule: see matchupAppliesToSlots above. Every caller that knows its
   // slots passes them; the ones that genuinely have none (a Custom Roll) omit
   // it and are unaffected.
-  { moveId = null, tic = null, slotNames = null } = {}
+  //
+  // `declaredMoveId` names the row on the board this roll belongs to, when
+  // there is one. Nothing in here reads it — it is forwarded straight to the
+  // Perk seam, which needs it to answer "what did this fighter throw right
+  // before this?" (Deadly Pendulum). Omitted by the hand-thrown paths, whose
+  // rolls belong to no declaration.
+  { moveId = null, tic = null, slotNames = null, declaredMoveId = null } = {}
 ) {
   const [reasons, matchup, grapple, owed, perkTerms] = await Promise.all([
     getReasonsToFightBonus(characterId),
@@ -339,7 +345,7 @@ export async function getCombatRollBonusBreakdown(
     // Combat Style got its own line: a modifier nobody can account for reads as
     // the engine inventing numbers. Zero contributions are already dropped by
     // the resolver, so this is empty for the overwhelming majority of rolls.
-    perkRollBonusTerms(characterId, { moveId, tic }),
+    perkRollBonusTerms(characterId, { moveId, tic, declaredMoveId }),
   ]);
   // Zeroed rather than skipped, so the shape below stays one expression and a
   // future term cannot be added on the wrong side of an early return.

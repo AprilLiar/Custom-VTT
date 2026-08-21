@@ -128,6 +128,14 @@ export const SEAMS = [
   // (ctx) -> number of pending Half-Damage markers to clear at Round Start
   // (Healing Factor). Summed. WHICH markers is the engine's choice, at random.
   'roundStartHalfHealing',
+  // (ctx) -> Stamina returned to this character per Half-Damage step their
+  // attack actually LANDS (Baron of Suffering). Summed.
+  //
+  // "Landed" is the whole rule: the figure comes off the damage the engine
+  // wrote to a die, not off what the attack rolled — so a blow aimed at a Stat
+  // already broken pays nothing, matching the same "it cannot be applied"
+  // reading the end-of-round report uses.
+  'staminaPerHalfDamage',
 ];
 
 // Tier-3 lifecycle keys — not seams (they are not folded across Perks, each
@@ -148,15 +156,20 @@ export const META_KEYS = ['name', 'description', 'triggers', 'manual'];
 // The Perks themselves. One import, one array entry.
 // ---------------------------------------------------------------------------
 
+import baronOfSuffering from './baronOfSuffering.js';
 import corneredAnimal from './corneredAnimal.js';
+import deadlyPendulum from './deadlyPendulum.js';
 import geniusObserver from './geniusObserver.js';
 import healingFactor from './healingFactor.js';
 import ironSkin from './ironSkin.js';
 import multifaceted from './multifaceted.js';
 import notJustAScratch from './notJustAScratch.js';
 import perfectPlayer from './perfectPlayer.js';
+import punchesInBunches from './punchesInBunches.js';
 import secondWind from './secondWind.js';
 import spikedShell from './spikedShell.js';
+import theSimplestTool from './theSimplestTool.js';
+import woundedWolf from './woundedWolf.js';
 
 const DEFINITIONS = [
   geniusObserver,
@@ -168,6 +181,11 @@ const DEFINITIONS = [
   perfectPlayer,
   healingFactor,
   multifaceted,
+  punchesInBunches,
+  theSimplestTool,
+  deadlyPendulum,
+  baronOfSuffering,
+  woundedWolf,
 ];
 
 export const PERK_REGISTRY = Object.fromEntries(

@@ -70,7 +70,7 @@ import {
   BLOCK_TAG,
 } from './tagAutomations.js';
 import { effectiveFrames, idleStaminaRegenRate } from './perkAutomations.js';
-import { clearAllPerkState, perkAllowsRevealedDetail, perkStaminaCostDelta } from './perkEngine.js';
+import { clearAllPerkState, perkAllowsRevealedDetail, perkStaminaCostDeltas } from './perkEngine.js';
 import { isAutomatedPerk, isManualPerk, perkDefinition } from './perks/index.js';
 import { validateCreation } from './characterCreation.js';
 import {
@@ -688,10 +688,12 @@ function mapDeclaredMovesForViewer(rows, pairsByIndex, viewer) {
 async function resolveStaminaCosts(characterId, moves) {
   if (!moves.length) return new Map();
   const [dice, injuries] = await Promise.all([getDice(characterId), getInjuries(characterId)]);
+  // One batched pass, not one per move — see perkStaminaCostDeltas. The picker
+  // asks about a character's whole move list at once.
+  const deltas = await perkStaminaCostDeltas({ characterId, moves, dice, injuries });
   const out = new Map();
   for (const move of moves) {
-    const delta = await perkStaminaCostDelta({ characterId, move, dice, injuries });
-    out.set(move.id, effectiveStaminaCost(move.stamina_cost, delta));
+    out.set(move.id, effectiveStaminaCost(move.stamina_cost, deltas.get(move.id) ?? 0));
   }
   return out;
 }
@@ -710,8 +712,12 @@ async function getEffectiveStaminaCost(characterId, move) {
 // A fetch-then-fold rather than the SQL SUM it used to be, because the cost of
 // each row is now a per-character question rather than a column.
 async function getPendingStaminaCost(characterId) {
+  // `dm.id` rides along so each row is priced against ITS OWN predecessor in the
+  // queue rather than against whatever was declared last — see the bugfix note
+  // in perkStaminaCostDeltas. Without it a combo is charged a different figure
+  // from the one the picker quoted for it.
   const rows = await all(
-    `SELECT m.* FROM declared_moves dm JOIN moves m ON m.id = dm.move_id
+    `SELECT m.*, dm.id AS declared_move_id FROM declared_moves dm JOIN moves m ON m.id = dm.move_id
      WHERE dm.character_id = ? AND dm.stamina_committed = 0`,
     [characterId]
   );
@@ -1718,7 +1724,7 @@ io.on('connection', (socket) => {
     if (!asGm && !character) return;
     const mod =
       clampModifier(modifier) +
-      (asGm ? 0 : await getCombatRollBonus(character.id, { moveId: await moveIdOfDeclared(declaredMoveId) }));
+      (asGm ? 0 : await getCombatRollBonus(character.id, { moveId: await moveIdOfDeclared(declaredMoveId), declaredMoveId }));
     const result = rollDie(die); // the modifier lands on the total — see die:roll above
     const rollContext = asGm ? null : await buildRollContext(character.id, declaredMoveId);
     await logRoll(io, {
@@ -1752,6 +1758,7 @@ io.on('connection', (socket) => {
       clampModifier(modifier) +
       (await getCombatRollBonus(character.id, {
         moveId: await moveIdOfDeclared(declaredMoveId),
+        declaredMoveId,
         slotNames: dice.map((d) => d.slot_name),
       }));
     // **One modifier, applied once (decided, fix).** This used to add `mod` to
