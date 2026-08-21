@@ -59,7 +59,7 @@ function FilterRow({ label, options, selected, onToggle, onClear }) {
   if (!options.length) return null;
   return (
     <div className="flex flex-wrap items-center gap-1">
-      <span className="mr-1 text-xs font-semibold uppercase text-zinc-500">{label}</span>
+      <span className="w-full text-xs font-semibold uppercase text-zinc-500">{label}</span>
       {options.map((option) => {
         const active = selected.has(option.id);
         return (
@@ -425,28 +425,37 @@ export default function CharacterCreationDialog({ character, onClose }) {
               Take whatever you want — there is no budget on Moves. Default Moves everybody already has
               are not listed.
             </p>
-            <input
-              value={moveSearch}
-              onChange={(e) => setMoveSearch(e.target.value)}
-              placeholder="Search Moves…"
-              aria-label="Search Moves"
-              className="w-full panel-cut-sm border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-200 outline-none focus:border-brand-500"
-            />
-            <FilterRow
-              label="Filter by style:"
-              options={library.attributes}
-              selected={moveStyleFilter}
-              onToggle={toggleInSet(setMoveStyleFilter)}
-              onClear={() => setMoveStyleFilter(new Set())}
-            />
-            <FilterRow
-              label="Filter by tag:"
-              options={library.moveTags}
-              selected={moveTagFilter}
-              onToggle={toggleInSet(setMoveTagFilter)}
-              onClear={() => setMoveTagFilter(new Set())}
-            />
-            <div className="max-h-80 space-y-1 overflow-y-auto">
+            {/* **The controls sit beside the list, not above it.** Stacked, the
+                Search box and two filter rows ate a third of the window and
+                left three or four Moves visible — which is the wrong way round
+                on the screen whose whole job is browsing a library. On a narrow
+                screen they go back to stacking, where there is no width to
+                spend instead. */}
+            <div className="flex flex-col gap-3 md:flex-row">
+              <aside className="shrink-0 space-y-3 md:w-52">
+                <input
+                  value={moveSearch}
+                  onChange={(e) => setMoveSearch(e.target.value)}
+                  placeholder="Search Moves…"
+                  aria-label="Search Moves"
+                  className="w-full panel-cut-sm border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-200 outline-none focus:border-brand-500"
+                />
+                <FilterRow
+                  label="Filter by style:"
+                  options={library.attributes}
+                  selected={moveStyleFilter}
+                  onToggle={toggleInSet(setMoveStyleFilter)}
+                  onClear={() => setMoveStyleFilter(new Set())}
+                />
+                <FilterRow
+                  label="Filter by tag:"
+                  options={library.moveTags}
+                  selected={moveTagFilter}
+                  onToggle={toggleInSet(setMoveTagFilter)}
+                  onClear={() => setMoveTagFilter(new Set())}
+                />
+              </aside>
+              <div className="min-w-0 flex-1 max-h-[30rem] space-y-1 overflow-y-auto">
               {visibleMoves.map((move) => {
                 const blocked = unlearnable(move);
                 return (
@@ -472,7 +481,8 @@ export default function CharacterCreationDialog({ character, onClose }) {
                   </label>
                 );
               })}
-              {!visibleMoves.length && <p className="text-sm text-zinc-600">No Moves match that.</p>}
+                {!visibleMoves.length && <p className="text-sm text-zinc-600">No Moves match that.</p>}
+              </div>
             </div>
           </div>
         )}
@@ -480,14 +490,17 @@ export default function CharacterCreationDialog({ character, onClose }) {
         {step.key === 'perks' && (
           <div className="space-y-3">
             <Budget left={perksLeft} total={preset?.perkCount ?? null} noun="Perk" />
-            <FilterRow
-              label="Filter by tag:"
-              options={library.perkTags}
-              selected={perkTagFilter}
-              onToggle={toggleInSet(setPerkTagFilter)}
-              onClear={() => setPerkTagFilter(new Set())}
-            />
-            <div className="max-h-80 space-y-1 overflow-y-auto">
+            <div className="flex flex-col gap-3 md:flex-row">
+              <aside className="shrink-0 md:w-52">
+                <FilterRow
+                  label="Filter by tag:"
+                  options={library.perkTags}
+                  selected={perkTagFilter}
+                  onToggle={toggleInSet(setPerkTagFilter)}
+                  onClear={() => setPerkTagFilter(new Set())}
+                />
+              </aside>
+              <div className="min-w-0 flex-1 max-h-[30rem] space-y-1 overflow-y-auto">
               {visiblePerks.map((perk) => {
                 const picked = perkIds.includes(perk.id);
                 return (
@@ -519,7 +532,12 @@ export default function CharacterCreationDialog({ character, onClose }) {
                   </label>
                 );
               })}
-              {!library.perks.length && <p className="text-sm text-zinc-600">No Perks in the compendium yet.</p>}
+                {!visiblePerks.length && (
+                  <p className="text-sm text-zinc-600">
+                    {library.perks.length ? 'No Perks match that.' : 'No Perks in the compendium yet.'}
+                  </p>
+                )}
+              </div>
             </div>
           </div>
         )}
