@@ -118,6 +118,7 @@ export const STAT_STEP_AUTOMATION_TYPES = new Set([
 export const BLOCK_TAG_NAME = 'Block';
 export const NO_DAMAGE_TAG_NAME = 'No Damage';
 export const FEINT_TAG_NAME = 'Feint';
+const MOVEMENT_TAG_NAME = 'Movement';
 
 const normTag = (name) => String(name ?? '').trim().toLowerCase();
 
@@ -162,6 +163,15 @@ export function carriesNoDamageTag(tagIds, tags) {
 // the rule (see feint_masked in server/index.js's move:declare); the client
 // reads the same Tag only to *say so* up front — greying nothing out, just
 // telling the declaring player what their next move is about to become.
+// The Movement Tag, read client-side for one reason: a move that needs legs
+// cannot be declared on a broken one (see movementBlockedByLegs server-side,
+// which is the authority). The picker greys it and says why rather than letting
+// the player drag something the server will silently refuse — the same
+// treatment a Requirement or a Secondary already gets.
+export function carriesMovementTag(tagIds, tags) {
+  return (tagIds ?? []).some((id) => isTagNamed(id, tags, MOVEMENT_TAG_NAME));
+}
+
 export function carriesFeintTag(tagIds, tags) {
   return (tagIds ?? []).some((id) => isTagNamed(id, tags, FEINT_TAG_NAME));
 }

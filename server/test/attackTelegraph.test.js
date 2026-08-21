@@ -20,7 +20,6 @@ const dm = ({
   revealTic = 5,
   activeTics = 2,
   publiclyRevealed = false,
-  telegraphsAttack = true,
 } = {}) => ({
   id,
   characterId,
@@ -28,7 +27,6 @@ const dm = ({
   revealTic,
   activeEndTic: revealTic + activeTics,
   publiclyRevealed,
-  telegraphsAttack,
 });
 
 const starts = (declaredMoves, overrides = {}) =>
@@ -110,9 +108,17 @@ test('attackStartsByTic: a 0-Startup move still marks its placement Tic', () => 
   assert.deepEqual([...marks.keys()], [4]);
 });
 
-test('attackStartsByTic: drops pure defences and already-public moves', () => {
-  assert.equal(starts([dm({ telegraphsAttack: false })]).size, 0);
+test('attackStartsByTic: a move that has gone public no longer glows', () => {
   assert.equal(starts([dm({ publiclyRevealed: true })]).size, 0);
+});
+
+test('attackStartsByTic: a pure guard glows too (decided, revised)', () => {
+  // The gate used to be "can this move hit you", which made the ABSENCE of a
+  // glow a free and perfectly reliable read that the opponent was turtling.
+  // There is no longer any such field to pass — every unrevealed declared move
+  // in the pair marks its placement Tic, whatever it turns out to be.
+  const guard = dm({ id: 7, placementTic: 2 });
+  assert.deepEqual([...starts([guard]).keys()], [2]);
 });
 
 test('attackStartsByTic: scoped to one pair', () => {

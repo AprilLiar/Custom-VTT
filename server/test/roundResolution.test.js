@@ -3181,3 +3181,116 @@ test('a pause raised while NOBODY is connected is still waiting when someone com
   const skullAfter = await one("SELECT current_size FROM dice WHERE character_id = ? AND slot_name = 'Skull'", [defender]);
   assert.equal(skullAfter.current_size, 6);
 });
+
+// --- A Movement move on a broken Leg fizzles --------------------------------
+
+test('a Movement move whose owner lost a Leg mid-round is lost, and refunded', async () => {
+  const pairIndex = 270;
+  const io = makeIo();
+  const runner = await createCharacter('Fizzle Runner');
+  const other = await createCharacter('Fizzle Other');
+  await setDieSize(runner, 'Skull', 12);
+
+  // The Tag has to exist and be on the move for the rule to see it.
+  const tagResult = await run("INSERT INTO tags (name, description) VALUES ('Movement', 'footwork')");
+  const tagId = Number(tagResult.lastInsertRowid);
+  const dash = await createMove({
+    name: 'Fizzle Dash',
+    startupTics: 1,
+    activeTics: 2,
+    recoveryTics: 1,
+    rollSlots: ['Skull'],
+  });
+  await run('INSERT INTO move_tags (move_id, tag_id) VALUES (?, ?)', [dash, tagId]);
+  // A cost to refund, and room to refund it into — adjustStamina clamps to Max,
+  // so a fighter already at full would show no change however correct the rule.
+  await run('UPDATE moves SET stamina_cost = 4 WHERE id = ?', [dash]);
+
+  await seatPair(pairIndex, runner, other);
+  await startPairDeclaration(io, pairIndex);
+  const dmId = await declareMove({ characterId: runner, moveId: dash, placementTic: 0, startupTics: 1 });
+  // Charged, as Done Declaring would have.
+  await run('UPDATE declared_moves SET stamina_committed = 1 WHERE id = ?', [dmId]);
+  await run('UPDATE characters SET current_stamina = 5 WHERE id = ?', [runner]);
+  const before = (await getCharacterRow(runner)).current_stamina;
+
+  // The leg goes between declaring and resolving — which is the whole case.
+  await run(
+    "UPDATE dice SET status = 'incapacitated' WHERE character_id = ? AND slot_name = 'Left Leg'",
+    [runner]
+  );
+  await resolvePair(pairIndex);
+
+  const events = await all('SELECT type, payload FROM round_events WHERE pair_index = ? ORDER BY seq', [pairIndex]);
+  const fizzled = events.find((e) => e.type === 'move_fizzled');
+  assert.ok(fizzled, 'the move should have been reported lost, not silently skipped');
+  assert.equal(JSON.parse(fizzled.payload).reason, 'broken-leg');
+
+  // Nothing was rolled for it, and nobody was hit by it.
+  assert.ok(!events.some((e) => e.type === 'roll' && JSON.parse(e.payload).declaredMoveId === dmId));
+  const otherSkull = await one("SELECT current_size FROM dice WHERE character_id = ? AND slot_name = 'Skull'", [other]);
+  assert.equal(otherSkull.current_size, 8);
+
+  // And the Stamina came back — the fighter did not choose this.
+  const after = (await getCharacterRow(runner)).current_stamina;
+  assert.ok(after > before, `expected a refund, ${before} -> ${after}`);
+});
+
+// --- A move pushed wholly into the next round is that round's declaration ---
+
+test('a move whose whole footprint left its round is re-homed, uncommitted and refunded', async () => {
+  const pairIndex = 271;
+  const io = makeIo();
+  const a = await createCharacter('Rehome A');
+  const b = await createCharacter('Rehome B');
+  const punch = await createMove({ name: 'Rehome Punch', startupTics: 1, activeTics: 1, recoveryTics: 1, rollSlots: ['Skull'] });
+  await run('UPDATE moves SET stamina_cost = 3 WHERE id = ?', [punch]);
+
+  await seatPair(pairIndex, a, b);
+  await startPairDeclaration(io, pairIndex);
+  const roundOne = await one('SELECT round_number, round_start_tic FROM combat_pairs WHERE pair_index = ?', [pairIndex]);
+
+  // Declared for round 1, then shoved bodily past the end of it — which is
+  // what a Block's extended Recovery or an imposed Recovery does.
+  const dmId = await declareMove({ characterId: a, moveId: punch, placementTic: 0, startupTics: 1 });
+  const pushedTo = roundOne.round_start_tic + 8; // past a 7-Tic round
+  await run(
+    'UPDATE declared_moves SET placement_tic = ?, reveal_tic = ?, stamina_committed = 1 WHERE id = ?',
+    [pushedTo, pushedTo + 1, dmId]
+  );
+  await run('UPDATE characters SET current_stamina = 5 WHERE id = ?', [a]);
+  const before = (await getCharacterRow(a)).current_stamina;
+
+  // Finish the round and open the next one.
+  await run(`UPDATE combat_pairs SET phase = 'resolving' WHERE pair_index = ?`, [pairIndex]);
+  await startPairDeclaration(io, pairIndex);
+
+  const moved = await one('SELECT round_number, stamina_committed FROM declared_moves WHERE id = ?', [dmId]);
+  assert.equal(moved.round_number, roundOne.round_number + 1, 'it should belong to the round it now sits in');
+  assert.equal(moved.stamina_committed, 0, 'and be pending again, so it can be cancelled');
+  const after = (await getCharacterRow(a)).current_stamina;
+  assert.ok(after > before, `expected a refund, ${before} -> ${after}`);
+});
+
+test('an ordinary carryover is left exactly where it is', async () => {
+  const pairIndex = 272;
+  const io = makeIo();
+  const a = await createCharacter('Carry A');
+  const b = await createCharacter('Carry B');
+  // Long enough to still be running when the next round opens, but it STARTED
+  // in its own round — that is a carryover, not a move that was pushed out.
+  const slow = await createMove({ name: 'Carry Slow', startupTics: 1, activeTics: 1, recoveryTics: 9, rollSlots: ['Skull'] });
+
+  await seatPair(pairIndex, a, b);
+  await startPairDeclaration(io, pairIndex);
+  const roundOne = await one('SELECT round_number FROM combat_pairs WHERE pair_index = ?', [pairIndex]);
+  const dmId = await declareMove({ characterId: a, moveId: slow, placementTic: 0, startupTics: 1 });
+  await run('UPDATE declared_moves SET stamina_committed = 1 WHERE id = ?', [dmId]);
+
+  await run(`UPDATE combat_pairs SET phase = 'resolving' WHERE pair_index = ?`, [pairIndex]);
+  await startPairDeclaration(io, pairIndex);
+
+  const still = await one('SELECT round_number, stamina_committed FROM declared_moves WHERE id = ?', [dmId]);
+  assert.equal(still.round_number, roundOne.round_number, 'a carryover keeps its own round');
+  assert.equal(still.stamina_committed, 1, 'and stays paid for');
+});

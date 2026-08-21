@@ -144,6 +144,29 @@ No map or tokens. Instead, a dedicated shared Combat Arena page (built in Phase 
 - Arena state (who's in it, sides, pairing, the Uneven Combat toggle) is persisted like everything else, so it survives reloads mid-fight. Deleting a seated character removes them from the arena too (explicit cascade, same pattern as the rest of a character's owned records).
 - **Counters in the Arena (decided, pulled forward from the Counters mechanic):** the page also lists every counter relevant to the fight — any character's counter flagged Show in Combat (only while that character is actually seated), plus standalone counters. Standalone counters are **created** GM-only (a small form on the page), but **adjusting** pips or deleting any counter shown here follows the same open-access rule as the character sheet's own Counters tab (no per-counter ownership check anywhere in this app) — only creation of a new standalone one is gated.
 
+### A broken Leg forbids Movement (decided, new)
+
+`movementBlockedByLegs({ tagNames, legStatuses })` in `server/tagAutomations.js` — a
+move carrying the **Movement** Tag cannot be declared, and cannot resolve, while
+**either** Leg is incapacitated. Either, not both: the Tag says the move is
+footwork, footwork on one leg is not footwork, and "a broken leg stops you
+moving" needs no follow-up question at the table. An empty `legStatuses` blocks
+nothing — this rule refuses moves, so a missing row must not be read as evidence
+of a break.
+
+Gated in **both** places, from the one pure rule: `move:declare` refuses it
+outright (silent, like every other rejection there), and the declare picker greys
+the card and names the reason, so nothing that looks draggable is silently
+ignored.
+
+**A move already declared when a Leg breaks FIZZLES, and its Stamina is refunded
+(decided).** Checked at the top of `resolveAttack`, ahead of even the grapple
+branch — a grab you cannot step into is no more throwable than a strike you
+cannot step into. The fighter did not choose this; the leg went under them
+mid-round, and the rule that ends the move should not also charge for it. Posts a
+`move_fizzled` round_event and a chat line, because a declared move that simply
+never comes out reads as a bug unless the round says why.
+
 ## Game mechanic — Combat Timing (Initiative, Tells, Tics)
 **Rewritten in full after the Combat Automation overhaul (Phase F).** A round now has exactly two phases — **Declaration** (human, unchanged) and **Resolution** (fully automatic). Nobody steps a Tic by hand any more; there is no Start Tic Countdown button, no Tic Forward/Backward, and no Next Round button. Finishing the last declaration in a pair is what starts that pair's Resolution, and finishing Resolution is what opens its next Declaration. The moments a human is still asked anything are a **Dodge** at full coverage and a **Block** at full or too-short coverage (both the GM's call — see the Defence rework subsection), and a Block-too-late **move conflict** (the affected *player's* Forfeit/Postpone call). Everything else, including every roll, resolves server-side from the rules.
 
@@ -179,6 +202,7 @@ The Tic Countdown is still, underneath, a single **global counter that never res
 - **Who sees a declared move early (decided):** the player logged in as the declaring character (see Roles / access model above) sees their own move's real identity and Stamina Cost immediately, on every `combat:updated` from the moment it's declared — no more waiting for the natural reveal Tic. The GM sees an NPC's declared move immediately too (the GM effectively declared it — no secrecy needed between the GM and themselves), but does **not** get early sight of a Player's move, "for fairness": the GM is an adversarial party in this fight, not an omniscient narrator, so a Player's secret stays exactly as hidden from the GM as it is from any other Player. Everyone else, regardless of role, sees only the Tell until the move's real reveal Tic passes — at which point it's public to everyone, always. This is enforced server-side (see `identity:set`/`isRevealedToViewer` below), closing what used to be an accepted "no-login" gap where only the exact socket that clicked declare could see its own move. This rule is unaffected by the per-pair redesign above — it was always per-character, not per-side.
 - A character can queue more than one move for the round during this phase, but once the Tic countdown starts, no new declarations can be made or changed.
 - **Declaring is drag-and-drop (decided):** the declare picker lists whichever character currently has the floor's moves under **Default**/**Unique** tabs (a card per move, its Stamina Cost shown) — a Player's own character when it's their turn, or one of the GM's currently-selected lane's not-yet-declared NPCs (see the Declaration Lanes bullet above); dragging a card onto the Tic Counter (the Arena page's centerpiece — see Pages / views below) declares it. The strip is exactly `round_length` squares — the current round's own Tics, nothing more (**decided**, revisited after playtesting: no lookahead squares past the round's own window). While dragging, any square before that character's own next-eligible Tic (e.g. still finishing a move carried over from last round) shades as **blocked**; the Tic Counter also live-previews the move's footprint — amber Startup, red Active, blue Recovery squares — clamped to wherever the drop would actually land (never earlier than that blocked boundary), so the *declaring player* sees exactly how much of the timeline it'll occupy and exactly where it'll really start, even if they're hovering over a too-early square. This preview is purely local to that client's own drag interaction (never broadcast), so it can't leak a move's position to an opponent. The Tic actually dropped on is honored as the move's `placement_tic` when it's at or after the character's own next-eligible Tic; dropping earlier than that (or past the visible strip, for an overflowing follow-up move) silently **snaps forward** to the earliest legal Tic rather than rejecting the drop, so a player never has to fuss with finding the exact minimum by hand. This is also how a character queues several moves ahead of time in one go — drop each one at whatever future Tic makes sense, rather than being limited to the single next available slot.
+  - **The held move is highlighted (decided, new).** Tap-to-declare picks a move up and waits for a Tic, but the chip gave no sign it was the one being held — on a phone, where there is no drag to watch, the whole gesture was invisible. The held chip is now lit, and tapping it again puts it down, so a mis-tap does not have to be undone from the banner at the other end of the screen.
   - **A long move name no longer breaks its own card (bugfix).** The picker chip is content-sized, so its first line always ran right into the top-right corner — where two things sit: the ⓘ "read this move" badge, positioned half outside the chip, and `panel-cut-sm`'s bevel, which shaves the last few pixels of whatever reaches it. Every name lost its closing bracket and a long one lost more, which is how it was reported ("the move card in the Arena is corrupted with longer names"). The chip now reserves that corner (`pr-6`), caps itself at the panel's width (`min-w-0 max-w-full` — a flex item's default `min-width: auto` had let it walk out of the panel entirely), wraps rather than truncating, and sets `text-left` explicitly, since a `<button>` centres its text and that only showed once a name was long enough to wrap.
   - **The picker card's frame data is a compact dot row (decided, reverted).** It was briefly drawn at exactly Tic-square size, on the theory that a move you are about to drag should read as the piece of timeline it will become. In practice it did the opposite: a long move's bar dominated its own card, pushed the name and Stamina Cost around, and made the picker a wall of squares to scan through. Frame data on a *card* is a summary — "this is a 2/1/3" — not a ruler; the strip itself is where a footprint gets measured, and the live drag preview already draws it there at true scale. The `FrameBar` on a `DeclareMoveCard` is back to small (`h-2 w-2` cells), and `TIC_SQUARE_SIZE` is no longer shared with it.
   - **A declared move's own card is available as a full overlay (decided, new):** hovering (or tapping) *your own* compact declared-move card raises the complete `MoveCard` above every other element, rather than expanding in place and reflowing the lane. "What exactly did I commit to here?" is a question you ask mid-declaration, and the compact card deliberately doesn't have room to answer it. Unchanged secrecy: this is your own already-declared move, so nothing is revealed that the viewer didn't already author.
@@ -227,6 +251,7 @@ The Tic Countdown is still, underneath, a single **global counter that never res
 - **What matters is where the Defense Frames land, not where the move was placed (decided, new — this was a real bug).** Placing a Block on the *same Tic* as an incoming attack does not make it defend: if its Defense Frames sit on its Startup square, those absolute Tics fall a Tic *earlier* than the attack's Active window, and there is no overlap to classify at all. The engine used to treat this exactly like "the defender declared nothing" — silence, no roll, full damage — which reads at the table as "Block is broken" rather than "you guarded a Tic too early." Now, whenever the defender **did** have Defense Frames somewhere and none of them overlapped, resolution emits a `defense_resolved` event with `coverage: 'no-overlap'` (`defenseType: null`, plus the exact Tics that *were* covered against the attack's own Active window) and posts a chat line saying so by name. The attack still lands in full — the rule is unchanged, only its legibility is. See also **Defense Frames** under Moves & Tells for the authoring side of the same fact.
 - **Every defensive roll reaches the cutscene (decided, new — the same bug's second half).** A defender's Block/Dodge roll was going to the Chat Log via `logRoll` but was never appended to `round_events`, so the replay showed the attacker rolling into a defence that appeared to roll nothing. Both defensive-roll paths now emit a `roll` event carrying `defensive: true` and the `defenseType`, so a round with a Block in it shows two rolls where two dice were actually thrown.
 - **The Recovery extension is announced, never asked (decided, new).** Decision #1 keeps Block outside the prompt loop, so extending the blocker's Recovery used to happen entirely silently — the table only found out by noticing the blocker was committed longer than they authored. It now does two visible things, neither of them a prompt: a GM chat line naming who blocked late, by how many Tics their Recovery grew, and whose attack it is covering; and a `recovery_extended` `round_events` row carrying `{ declaredMoveId, characterName, moveName, defenseKind, extensionTics, extendedFromTic, recoveryEndTic, attackerCharacterName, attackerMoveName }`. The cutscene folds that row into the move's own footprint (so the bar genuinely grows at the moment the event plays, not retroactively) and paints those Tics **in the Block's own defence colour at 30% lower opacity** — visibly "the block, still running" rather than ordinary authored Recovery. The move-conflict pause below is unchanged and still fires on top when the extension collides with something.
+- **Every move telegraphs its first frame, guards included (decided, revised).** The Tic Counter's grey glow used to mark only moves that *could hit you* (`isTelegraphedAttack`), which made the **absence** of a glow a free and perfectly reliable read: it said "they are turtling", and it made a pure guard the one move an opponent could identify without reading anything. Every declared move now marks its placement Tic. The `telegraphsAttack` field is gone from the wire entirely — it existed to gate this glow and there is no gate any more; `isTelegraphedAttack` itself stays, because `isAttackingMove` (the Perk seam) asks a genuinely different question with the same words. A Feint-masked move still glows on nothing, since its row is dropped from the payload outright rather than blanked.
 - **Every defence asks the GM** (decision #2, extended — see the Defence rework subsection below, whose decision #1 reversed this overhaul's "Block is fully automatic, zero GM clicks, ever"). A **Dodge** that doesn't fully cover the attack's Active window auto-fails without asking — there's no judgment call in a mechanically-doomed dodge — so only full coverage pauses, with `status = 'paused_dodge'` and `combat:dodge_prompt`. A **Block** pauses on `full` *and* `too-short` coverage, with `status = 'paused_defense'` and `combat:block_prompt`. `too-early` is auto-Failed for both. Either prompt reaches **every GM, wherever they are in the app and whenever they next connect** — it rides the ordinary combat snapshot rather than a one-shot push (see *Pause delivery* below); answering it (`combat:resolve_dodge` / `combat:resolve_block`, GM-only) applies the call and resumes that pair from the exact Tic it stopped at. Every other pair keeps resolving throughout — nothing about one pair's pause touches another's.
 - **Move conflict stays the affected player's call** (decision #3), not the GM's: Forfeit or Postpone, same prompt and payload as before the overhaul. Only its trigger moved — the engine raises it now. Postponing can cascade into a fresh collision, which simply re-pauses.
   - **A Postpone says where the move went (decided, new — this was a reporting gap, not an engine bug).** Postponing looked at the table like the move had been deleted: it vanished from its Tic and the log's only line was a bare "Move conflict resolved," so nobody could tell whether it was still coming. Two reproductions (a postpone landing inside the same round, and one pushed past the round's end) confirmed the engine was already correct — the move re-reveals, rolls and resolves at its new placement, in this round's resolution when it still fits and in the next round's when it doesn't. What was missing was the sentence. The `move_conflict_resolved` event now carries `moveName`/`characterName` and, for a Postpone, `newPlacementTic`/`newRevealTic`/`intoNextRound`, and the cutscene renders it as *"Postponed Striker's Haymaker to Tic 5"* — or *"…to Tic 2, which lands in the next round"* when it was pushed past this round's window. A Forfeit names the move too, and says its Stamina was refunded.
@@ -430,6 +455,61 @@ Full design (locked decisions, data model, the `advancePairResolution` resolutio
 - **Phase F — Cleanup + this plan's own mechanic sections rewritten: done.** The dead server handlers were deleted during Phase E, and the "Combat Timing" section above has been rewritten rather than appended to: its old "Tic Countdown Phase" is replaced by the **Resolution Phase (automatic)**, and the Start Combat / per-pair-clock / Idle-Tic Regen paragraphs no longer describe controls that don't exist. The "Combat Automation" section is retained deliberately as the statement of the *rules* — the damage formula, coverage classification, Full/Partial thresholds and interaction automations are all still exactly what the engine applies — with a header note making clear that everything it says about *who presses what* is superseded. Its sub-phase build-order narrative is left intact as history, not current description.
   - **Also built in this pass:** the GM's per-pair cutscene tab strip (§4.1) and readable per-event hover detail replacing the earlier raw-JSON tooltip.
   - **Final regression:** `npm test` 169/169; `scripts/e2e.mjs` 281/281; client build clean; `scripts/playtest-dodge.mjs` (new) 17/17 — a two-browser test of the one human-in-the-loop step, covering the claim no socket test can make: the Dodge prompt reaches a GM sitting on a **non-Arena page**, names both fighters and their moves, is **not** shown to the Player (who instead sees their own pair waiting on the GM), and once answered resumes the round to completion with the GM's actual call recorded in the stored log.
+
+### Uneven Combat: choosing your target (decided, new)
+
+`declared_moves.target_character_id`, written once at declare time. With one
+opponent there is nothing to choose and it stays NULL — as it does on every row
+written before the column existed — and the engine's own deterministic rule
+(lowest `character_id` among the opposing side) remains the fallback for NULL, for
+a target who has since left the pair, and for anything else unexpected. A fighter
+commits to a target with the same information they commit to a Tic with.
+
+- **`move:declare` validates it**, accepting only someone actually seated on the
+  other side of that pair, and storing NULL otherwise. Not a rejection: a stale
+  pick is a worse reason to refuse a declaration than it is to ignore.
+- **The engine prefers it** in both target-selection paths — the attack flow's own
+  inline selection and `selectTargetCharacter` (the grapple path) — whenever the
+  named person is still a candidate.
+- **It is public on the wire**, for the same reason `placementTic` is: squaring up
+  to someone is visible at the table, and it is what lets everyone's matchup
+  plaque show the right number rather than only the fighter who picked.
+- **The picker appears only when the pair is genuinely uneven.** The choice rides
+  on every move declared after it, so a round can be split between two enemies by
+  changing it partway through.
+
+**The Stance matchup follows the chosen target.** `getPairStanceMatchup` used to
+return null outright unless each side held exactly one person — so an Uneven
+Combat displayed no matchup anywhere, though the rule still applied to the rolls.
+It now also returns `byCharacter[characterId][opponentId]`, every facing in the
+pair, and the client reads the entry for whoever that fighter is currently coming
+for. The original 1v1 fields are unchanged and still present only for a real duel,
+so every existing reader kept working: a duel shows its number once on the VS
+divider exactly as before, and an uneven pair shows each fighter's own number on
+their own card, named ("vs Bartholomew") because a badge on a card has to say who
+it is against.
+
+### A move pushed wholly out of its round belongs to the next one (decided, new)
+
+Several things slide a declared move forward — a Block's extended Recovery
+cascading through the queue, an imposed Recovery from a Movement Punisher — and
+any of them can push one so far that **not one of its frames is left in the round
+it was declared for**. Such a move used to sit in limbo: still stamped with the
+old round, so the new round's lane never showed it, and still carrying whatever
+Stamina state it was left in.
+
+`rehomePushedMoves`, run at round-open from `startPairDeclaration`, re-stamps it
+with the round it actually occupies, clears `stamina_committed` and refunds what
+was charged — making it an ordinary pending declaration of that round: in the
+lane, cancellable with the same ✕ as anything else, and charged again at Done
+Declaring.
+
+**One rule at round-open rather than one per path that can shift a move.** Every
+way a move can be pushed ends up here, including ones not written yet, and the
+test is `overlapsRoundWindow` — the same pure helper the lane rendering already
+uses to decide whether a move belongs to a round at all. An ordinary carryover,
+which *started* in its own round and merely runs long, is untouched: the
+placement Tic still being behind the new round's start is what separates the two.
 
 ## Game mechanic — Attack Target (Change 001, implemented)
 **Status: fully built and wired end-to-end.** Every Move template now carries an **Attack Target**: which of the 6 abstract Stat slots (same vocabulary as a Roll — see Roll slot vocabulary under Moves & Tells above) its damage is allowed to land on. This is purely a *restriction* layered on top of Combat Automation's existing damage flow (4.1/4.2 above) — it doesn't touch the damage formula, Block/Dodge result math, or Full/Partial thresholds.
@@ -2009,6 +2089,20 @@ Verified by 481 unit tests, a clean build, and a browser pass driving each one: 
 the sheet and clearing back, a Tell filter doing the same, Learn turning into Forget and the move
 appearing on the sheet, and a 3× crop of the declare picker with four deliberately long names — every
 one now readable in full, inside the panel, with nothing overlapping.
+
+**A six-item batch off the table — done.** Each documented in its own mechanic section above:
+- **The held move is highlighted in the picker** — tap-to-declare was invisible on a phone.
+- **Every move telegraphs its first frame, guards included.** The absence of a glow was a free
+  read that the opponent was turtling.
+- **A broken Leg forbids Movement moves**, and fizzles one already declared, refunding it.
+- **Uneven Combat lets you pick who each move is for**, per move, at declaration.
+- **The Stance matchup follows that choice** — an uneven fight showed no matchup at all before,
+  though the rule was still applying to the rolls.
+- **A move pushed wholly into the next round becomes that round's declaration** — refunded,
+  visible in the lane, cancellable.
+
+Verified by 487 unit tests (including the new `movementBlockedByLegs` rule, the mid-round fizzle
+with its refund, the re-homing, and a carryover proving it is left alone) and a clean build.
 
 ## Implementation Risks & Recommendations
 A scope check for whoever picks this up: this grew well past "semi-simple website" over the course of design. Most of it (dice, inventory, injuries, stances, perks, counters) is standard CRUD-plus-broadcast work. Combat Timing (Tics/Startup/reveal/overflow) is the one genuinely hard piece — real software complexity, not just more forms — and it's also the most original part of the system, which is exactly why it deserves the most care rather than being rushed alongside everything else.

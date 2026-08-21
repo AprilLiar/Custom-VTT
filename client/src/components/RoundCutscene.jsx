@@ -70,6 +70,7 @@ const EVENT_LABEL = {
   interrupt_resolved: 'Interrupt',
   damage_applied: 'Damage',
   damage_unapplied: 'Nowhere to land',
+  move_fizzled: 'The move is lost',
   stat_stepped: 'Stat',
   next_roll_penalty: 'Weakened',
   move_conflict_prompt: 'Conflict?',
@@ -301,6 +302,12 @@ function eventNarration(ev, startTic) {
       return `${p.damage ?? 0} damage lands on ${
         p.targetCharacterName ? `${p.targetCharacterName}'s ` : 'a '
       }${p.slotName ?? 'Stat'} — already broken, so nothing can be applied.`;
+    case 'move_fizzled':
+      // Named, not silently dropped: a declared move that simply never comes
+      // out reads as a bug unless the round says why it went.
+      return `${p.characterName ?? 'They'} cannot throw ${p.moveName ?? 'the move'} on a broken leg — it is lost${
+        p.refund ? `, ${p.refund} Stamina refunded` : ''
+      }.`;
     case 'stat_stepped':
       return statStepSentence(p, p.characterName);
     case 'move_conflict_prompt': {

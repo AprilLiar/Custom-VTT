@@ -11,7 +11,13 @@ import {
   getTells,
   getTags,
 } from '../lib/api.js';
-import { carriesBlockTag, carriesFeintTag, sortTags, staminaModifierLabel } from '../lib/moveDisplay.js';
+import {
+  carriesBlockTag,
+  carriesFeintTag,
+  carriesMovementTag,
+  sortTags,
+  staminaModifierLabel,
+} from '../lib/moveDisplay.js';
 // Straight from the server's own rule module, deliberately. `declarableByHand`
 // is what `move:declare` itself checks, and this picker's greying has to mean
 // exactly the same thing — a card that looks draggable but gets silently
@@ -66,6 +72,12 @@ function ParticipantCard({
   navigate,
   declaredMoves,
   sideStillDeclaring,
+  // **Uneven Combat: this fighter's own matchup (decided, new).** The VS
+  // divider's pair of badges only makes sense one-against-one; with several
+  // fighters a side there is no single facing for a divider to describe. Passed
+  // (and rendered) only when the pair is genuinely uneven, so a duel still
+  // shows its number once, on the divider, exactly as before.
+  matchup = null,
 }) {
   const { character, dice, stances } = entry;
   const src = portraitSrc(character);
@@ -149,6 +161,18 @@ function ParticipantCard({
           {character.character_type === 'npc' && (
             <span className="panel-cut-sm bg-purple-600/30 px-1 text-[10px] font-bold uppercase text-purple-300">
               NPC
+            </span>
+          )}
+          {matchup && (
+            <span className="ml-1 inline-flex items-center gap-1">
+              <MatchupBadge
+                value={matchup.score}
+                mine={matchup.myStyleNames ?? []}
+                theirs={matchup.theirStyleNames ?? []}
+              />
+              {matchup.opponentName && (
+                <span className="text-[10px] text-zinc-500">vs {matchup.opponentName}</span>
+              )}
             </span>
           )}
         </div>
@@ -979,11 +1003,13 @@ function CompactDeclaredMoveCard({ dm, move, tellById, allMoves = [] }) {
   const revealed = dm.isRevealed && move;
   const [showCard, setShowCard] = useState(false);
 
-  // Attack telegraph (see attackTelegraph.js): this card is the Tell end of
-  // the connector drawn to the glowing Tic where the move's Startup begins.
-  // Registered on exactly the moves that glow, so the two ends can never
-  // disagree about which moves participate.
-  const telegraphed = !dm.publiclyRevealed && Boolean(dm.telegraphsAttack);
+  // Move telegraph (see attackTelegraph.js): this card is the Tell end of the
+  // connector drawn to the glowing Tic where the move's Startup begins. Every
+  // move that has not gone public yet glows — guards included, since the
+  // absence of a glow was itself a free read that the opponent was turtling —
+  // and the same condition drives both ends, so they can never disagree about
+  // which moves participate.
+  const telegraphed = !dm.publiclyRevealed;
   const isLinked = useIsLinked(telegraphed ? dm.id : null);
   const cardRef = useRef(null);
   useEffect(() => {
@@ -1472,7 +1498,7 @@ function DeclareMoveInfo({ move, anchorRef, open, onClose, tellById, allMoves, t
   );
 }
 
-function DeclareMoveCard({ character, move, roundStartTic, declaredMoves, tags, tellById, allMoves, styleDeltas }) {
+function DeclareMoveCard({ character, move, roundStartTic, declaredMoves, tags, tellById, allMoves, styleDeltas, held = false, legsBroken = false }) {
   const chipRef = useRef(null);
   const [showCard, setShowCard] = useState(false);
   // Block Tag (the first Tag automation): a Block has no up-front cost to
@@ -1504,10 +1530,16 @@ function DeclareMoveCard({ character, move, roundStartTic, declaredMoves, tags, 
     previousMoveId: lastQueuedMoveId(character.id, declaredMoves),
   });
   const requiredName = requiredId != null ? (move.requirement_move_name ?? 'another move') : null;
-  const blockedReason =
-    requiredId != null
+  // A second, independent reason a card can be closed: footwork on a broken
+  // leg. Checked after the Requirement gate so a move that is blocked by both
+  // reports the one the player can actually do something about first.
+  const blockedByLeg = legsBroken && carriesMovementTag(move.tag_ids, tags);
+  const blocked = blockedByRequirement || blockedByLeg;
+  const blockedReason = blockedByRequirement
+    ? requiredId != null
       ? `Can only be declared immediately after ${requiredName}.`
-      : 'Secondary — this move is reached from a grapple, never declared by hand.';
+      : 'Secondary — this move is reached from a grapple, never declared by hand.'
+    : 'A broken Leg — this move is Movement, and you cannot move on it.';
   // Combat Style (decided, new): a move carrying its own style joins it to its
   // user's stance for the matchup, which is worth a flat modifier on the roll —
   // a real, sometimes decisive number that the picker used to keep to itself.
@@ -1559,8 +1591,8 @@ function DeclareMoveCard({ character, move, roundStartTic, declaredMoves, tags, 
       // so the moment you reached for a move you lost sight of where to put
       // it. Reading a move and aiming it are two different intentions and now
       // take two different actions.
-      draggable={!blockedByRequirement}
-      disabled={blockedByRequirement}
+      draggable={!blocked}
+      disabled={blocked}
       onDragStart={(e) => {
         // Picking the move up dismisses whatever you were reading,
         // unconditionally — the card and the drop target occupy the same
@@ -1575,10 +1607,14 @@ function DeclareMoveCard({ character, move, roundStartTic, declaredMoves, tags, 
       // the same intention as dragging one, so it closes the card too.
       onClick={() => {
         setShowCard(false);
-        if (!blockedByRequirement) setDraggingMove(payload);
+        if (blocked) return;
+        // Tapping the one you are already holding puts it down. Without this
+        // the only way out of a mis-tap is the banner's Cancel, which sits at
+        // the other end of the screen on a phone.
+        setDraggingMove(held ? null : payload);
       }}
       title={
-        blockedByRequirement
+        blocked
           ? blockedReason
           : 'Drag onto the Tic Counter, or tap then tap a Tic, to declare'
       }
@@ -1592,9 +1628,11 @@ function DeclareMoveCard({ character, move, roundStartTic, declaredMoves, tags, 
       // the first line always ran right up to that corner — every name lost
       // its closing bracket, and a long one lost more.
       className={`flex min-h-11 min-w-0 max-w-full select-none flex-col items-start gap-1 panel-cut-sm border py-1.5 pl-2 pr-6 text-left text-xs transition-colors ${
-        blockedByRequirement
+        blocked
           ? 'cursor-not-allowed border-zinc-800 bg-zinc-900 text-zinc-600'
-          : 'cursor-grab border-zinc-700 bg-zinc-800 text-zinc-200 hover:border-brand-600 active:cursor-grabbing'
+          : held
+            ? 'cursor-grab border-brand-400 bg-brand-800/50 text-white ring-1 ring-brand-400/60'
+            : 'cursor-grab border-zinc-700 bg-zinc-800 text-zinc-200 hover:border-brand-600 active:cursor-grabbing'
       }`}
     >
       <span className="block min-w-0 break-words">
@@ -1650,8 +1688,15 @@ function DeclareMoveCard({ character, move, roundStartTic, declaredMoves, tags, 
 // currently has the floor — Default/Unique tabs split the character's move
 // list the same way Tab 3 does; a styled move is left out of either tab
 // unless it matches one of the two styles in the character's active stance.
-function DeclareMovePicker({ entry, roundStartTic, declaredMoves, tags, tellById, styleDeltas }) {
-  const { character, stances, moves } = entry;
+function DeclareMovePicker({ entry, roundStartTic, declaredMoves, tags, tellById, styleDeltas, heldMove }) {
+  const { character, stances, moves, dice } = entry;
+  // **A Movement move needs both Legs (decided, new).** The server refuses one
+  // outright (movementBlockedByLegs); this is the same rule read client-side so
+  // the card greys and says why, rather than looking draggable and being
+  // silently ignored — the same treatment a Requirement already gets.
+  const legsBroken = (dice ?? []).some(
+    (d) => (d.slot_name === 'Left Leg' || d.slot_name === 'Right Leg') && d.status === 'incapacitated'
+  );
   const [tab, setTab] = useState('default');
   const activeStance = stances.find((s) => s.id === character.active_stance_id);
   const activeStyles = activeStance ? [activeStance.attribute_a_id, activeStance.attribute_b_id] : [];
@@ -1703,6 +1748,12 @@ function DeclareMovePicker({ entry, roundStartTic, declaredMoves, tags, tellById
               // four direction arrows ever need to be named from.
               allMoves={moves ?? []}
               styleDeltas={styleDeltas}
+              // Tap-to-declare holds a move until a Tic is tapped; without
+              // this the chip gave no sign it was the one being held, which on
+              // a phone (where there is no drag to watch) left the whole
+              // gesture invisible.
+              held={heldMove?.characterId === character.id && heldMove?.moveId === m.id}
+              legsBroken={legsBroken}
             />
           ))
         ) : (
@@ -1720,7 +1771,7 @@ function DeclareMovePicker({ entry, roundStartTic, declaredMoves, tags, tellById
 // Uneven Combat. Each character presses their own Done Declaring
 // individually (decided, combat redesign) — there's no shared per-side
 // button anymore.
-function ActiveDeclarePanel({ entry, roundStartTic, declaredMoves, tags, tellById, styleDeltas }) {
+function ActiveDeclarePanel({ entry, roundStartTic, declaredMoves, tags, tellById, styleDeltas, heldMove, opponents = [], aimId = null, onAim }) {
   return (
     <div className="w-full max-w-md space-y-2 panel-cut-lg border border-brand-800/50 bg-brand-950/20 p-3">
       <div className="flex items-center justify-between gap-2">
@@ -1732,6 +1783,30 @@ function ActiveDeclarePanel({ entry, roundStartTic, declaredMoves, tags, tellByI
           ✓ Done Declaring
         </button>
       </div>
+      {/* **Uneven Combat: pick who you are coming for (decided, new).** Only
+          shown when there is genuinely a choice — with one opponent opposite
+          there is nothing to ask, and the engine's own rule already names them.
+          The pick rides on every move declared after it, so a round can be
+          split between two enemies by changing it between declarations. */}
+      {opponents.length > 1 && (
+        <div className="flex flex-wrap items-center gap-1">
+          <span className="mr-1 text-xs font-semibold uppercase text-zinc-500">Coming for:</span>
+          {opponents.map((opponent) => (
+            <button
+              key={opponent.id}
+              type="button"
+              onClick={() => onAim?.(opponent.id)}
+              className={`min-h-11 panel-cut-sm border px-2 py-1 text-xs md:min-h-0 ${
+                aimId === opponent.id
+                  ? 'border-brand-500 bg-brand-600/30 text-brand-300'
+                  : 'border-zinc-700 text-zinc-500 hover:border-zinc-500'
+              }`}
+            >
+              {opponent.name}
+            </button>
+          ))}
+        </div>
+      )}
       <DeclareMovePicker
         entry={entry}
         roundStartTic={roundStartTic}
@@ -1739,6 +1814,7 @@ function ActiveDeclarePanel({ entry, roundStartTic, declaredMoves, tags, tellByI
         tags={tags}
         tellById={tellById}
         styleDeltas={styleDeltas}
+        heldMove={heldMove}
       />
     </div>
   );
@@ -1767,6 +1843,13 @@ export default function CombatArena() {
   const [collapsedFolders, setCollapsedFolders] = useState(new Set()); // roster folder ids, collapsed
   const [hoverTic, setHoverTic] = useState(null);
   const [draggingMove, setDraggingMoveLocal] = useState(null);
+  // **Uneven Combat: who each fighter is aiming at (decided, new).** Held here
+  // rather than inside the declare panel because two very distant things read
+  // it — the declaration itself, and the matchup badge on the fighter's card —
+  // and a selection that only the panel knew would leave the badge guessing.
+  // characterId -> chosen opponent id; absent means "the default", which is the
+  // first opponent seated opposite and also what the server falls back to.
+  const [aimByChar, setAimByChar] = useState({});
   const [toast, setToast] = useState(null);
   // A move with an ambiguous Left/Right Roll slot doesn't declare on drop —
   // it holds here until the popup below records a choice (or is cancelled).
@@ -2115,7 +2198,12 @@ export default function CombatArena() {
         {moveName}
       </div>
     );
-    socket.emit('move:declare', { characterId: draggedCharId, moveId, placementTic: absoluteTic });
+    socket.emit('move:declare', {
+      characterId: draggedCharId,
+      moveId,
+      placementTic: absoluteTic,
+      targetCharacterId: aimOf(draggedCharId),
+    });
   };
 
   const handleTicDrop = (absoluteTic) => (e) => {
@@ -2153,6 +2241,7 @@ export default function CombatArena() {
       moveId: pendingDeclare.moveId,
       placementTic: pendingDeclare.absoluteTic,
       appendageChoice: side,
+      targetCharacterId: aimOf(pendingDeclare.characterId),
     });
     setPendingDeclare(null);
   };
@@ -2192,12 +2281,45 @@ export default function CombatArena() {
   // whenever the matchup rule doesn't apply to that pair at all — the same
   // condition that leaves the VS divider's badge off — so a move's style row
   // simply doesn't render rather than claiming a misleading 0.
-  const styleDeltasFor = (charId) => {
+  // Everyone seated opposite this fighter, in seating order — the list the
+  // target picker offers and the default is taken from.
+  const opponentsOf = (charId) => {
     const seat = participants.find((p) => p.character_id === charId);
     if (!seat) return [];
-    const matchup = (combat.stanceMatchups ?? []).find((m) => m.pairIndex === seat.pair_index);
-    if (!matchup) return [];
-    return (seat.side === 'left' ? matchup.leftStyleDeltas : matchup.rightStyleDeltas) ?? [];
+    const otherSide = seat.side === 'left' ? 'right' : 'left';
+    return participants.filter((p) => p.pair_index === seat.pair_index && p.side === otherSide);
+  };
+  // Who this fighter is currently coming for: their own pick if it is still
+  // someone they face, otherwise the first opponent — which is also what the
+  // engine falls back to, so the badge never claims a facing the round will
+  // not use.
+  const aimOf = (charId) => {
+    const opponents = opponentsOf(charId);
+    const picked = aimByChar[charId];
+    if (picked != null && opponents.some((p) => p.character_id === picked)) return picked;
+    return opponents[0]?.character_id ?? null;
+  };
+  // What this fighter's facing is worth, and what each Combat Style would add
+  // to it. Read per-opponent (see getPairStanceMatchup's byCharacter), so it
+  // answers in an uneven fight as well as a duel.
+  const matchupFor = (charId) => {
+    const seat = participants.find((p) => p.character_id === charId);
+    if (!seat) return null;
+    const pairMatchup = (combat.stanceMatchups ?? []).find((m) => m.pairIndex === seat.pair_index);
+    const against = aimOf(charId);
+    if (!pairMatchup || against == null) return null;
+    return pairMatchup.byCharacter?.[charId]?.[against] ?? null;
+  };
+  const styleDeltasFor = (charId) => {
+    return matchupFor(charId)?.styleDeltas ?? [];
+  };
+  // The same facing, with the opponent named — a badge on a card has to say
+  // WHO the number is against, which the divider never had to.
+  const matchupNamedFor = (charId) => {
+    const m = matchupFor(charId);
+    if (!m) return null;
+    const against = aimOf(charId);
+    return { ...m, opponentName: characters[against]?.character.name ?? null };
   };
 
   // Combat Automation overhaul: the page's own single Tic Counter/
@@ -2502,6 +2624,10 @@ export default function CombatArena() {
               tags={tags}
               tellById={tellById}
               styleDeltas={styleDeltasFor(entry.character.id)}
+              heldMove={draggingMove}
+              opponents={opponentsOf(entry.character.id).map((p) => characters[p.character_id]?.character).filter(Boolean)}
+              aimId={aimOf(entry.character.id)}
+              onAim={(id) => setAimByChar((prev) => ({ ...prev, [entry.character.id]: id }))}
             />
           ))}
           {role === 'gm' && activeDeclareEntries.length === 0 && (
@@ -2565,6 +2691,11 @@ export default function CombatArena() {
                           navigate={navigate}
                           declaredMoves={declaredMoves}
                           sideStillDeclaring={pairsByIndex.get(p.pair_index)?.declaringSide === p.side}
+                          matchup={
+                            leftOccupants.length > 1 || rightOccupants.length > 1
+                              ? matchupNamedFor(p.character_id)
+                              : null
+                          }
                           onDragStart={(e) => e.dataTransfer.setData('text/character-id', String(p.character_id))}
                         />
                       )
@@ -2633,6 +2764,11 @@ export default function CombatArena() {
                           navigate={navigate}
                           declaredMoves={declaredMoves}
                           sideStillDeclaring={pairsByIndex.get(p.pair_index)?.declaringSide === p.side}
+                          matchup={
+                            leftOccupants.length > 1 || rightOccupants.length > 1
+                              ? matchupNamedFor(p.character_id)
+                              : null
+                          }
                           onDragStart={(e) => e.dataTransfer.setData('text/character-id', String(p.character_id))}
                         />
                       )

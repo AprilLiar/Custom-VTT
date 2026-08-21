@@ -196,6 +196,24 @@ export function resolveInterruptContest({
 // nothing — you have to have genuinely caught them mid-stride.
 //
 // Pure, so the three-way condition can be pinned without a socket.
+// **A Movement move needs legs to move with (decided, new).** A move carrying
+// the Movement Tag cannot be declared, and cannot resolve, while either of its
+// user's Legs is incapacitated — you do not step, slip or lunge on a broken
+// leg, whichever one it is.
+//
+// Either leg, not both: the Tag says the move is footwork, and footwork on one
+// leg is not footwork. It is also the reading that keeps the rule legible at
+// the table — "a broken leg stops you moving" needs no follow-up question.
+//
+// `legStatuses` is whatever the two Leg dice's `status` columns currently say.
+// Passing an empty list (a character somehow without Leg dice) blocks nothing,
+// which is the safe direction: this refuses moves, and a missing row is not
+// evidence of a break.
+export function movementBlockedByLegs({ tagNames, legStatuses } = {}) {
+  if (!hasTagNamed(tagNames, MOVEMENT_TAG)) return false;
+  return (legStatuses ?? []).some((status) => status === 'incapacitated');
+}
+
 export function movementPunisherApplies({ punisherTagNames, targetTagNames, damageSteps = 0 } = {}) {
   if (!hasTagNamed(punisherTagNames, MOVEMENT_PUNISHER_TAG)) return false;
   if (!hasTagNamed(targetTagNames, MOVEMENT_TAG)) return false;
