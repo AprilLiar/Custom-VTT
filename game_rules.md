@@ -1015,6 +1015,29 @@ way tables always have.
   and gain 3 Steps in another. Nothing automates this one either — you and your
   GM set the two Stats when you take the Perk, and from then on it is simply
   what your sheet says.
+- **Piercing Headache.** You hit hard enough to rattle what is behind the bone.
+  For every **Full Damage** — a whole point, two half-steps — your Attack deals
+  to the target's **Skull**, half a point goes into their **Brain**. Half a
+  point on the Skull is not a Full Damage and splashes nothing; 1.0 buys 0.5,
+  2.5 buys 1.0. It is counted per Attack, so two separate half-point hits in a
+  round never add up into one.
+- **Last Breath Taker.** You knock the air out of people. The same rule one Stat
+  over: every Full Damage to the **Body** sends half a point into their
+  **Stamina** — the Stamina *Stat*, not their Stamina pool.
+- **Grounded.** You are never off balance. All your moves ignore the **Movement
+  Punisher** Tag: a fighter who catches you mid-stride does not trip you, and
+  the Arena says so when it happens.
+- **Dogfighter.** You do not come apart when someone lands one. All your Moves
+  count as having **Hard to Interrupt (2)** — and a Move that already had Hard
+  to Interrupt (x) has it increased by 2 instead. It only makes you harder to
+  break up; it does nothing for your own attempts to break up somebody else.
+
+> **Splash damage lands like any other damage.** If the second Stat is already
+> broken, the splash cannot be applied and is reported at the end of the round
+> with everything else that had nowhere to land. And because it is priced off
+> what actually landed, a Successful Block that redirects an attack onto the
+> blocker's own Skull still splashes — damage to the Skull is damage to the
+> Skull, however it got there.
 
 ## Counters
 

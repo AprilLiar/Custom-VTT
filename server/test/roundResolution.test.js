@@ -2839,3 +2839,187 @@ test('Baron of Suffering pays nothing for damage that cannot be applied', async 
     'no damage was dealt, so nothing is owed'
   );
 });
+
+// ---------- Third playtest Perk batch: splash, Grounded, Dogfighter ----------
+
+// An attack whose damage all lands on one named Stat, so a splash Perk has a
+// clean figure to price off. `rollModifier` sets how much lands.
+const splashFight = async (pairIndex, tag, { perk, rollModifier, target, breakSlot = null }) => {
+  const attacker = await createCharacter(`${tag} Attacker`);
+  const defender = await createCharacter(`${tag} Defender`);
+  if (perk) await grantPerk(attacker, perk);
+  if (breakSlot) {
+    await run("UPDATE dice SET status = 'incapacitated', current_size = 4 WHERE character_id = ? AND slot_name = ?", [
+      defender,
+      breakSlot,
+    ]);
+  }
+  const punch = await createMove({
+    name: `${tag} Punch`, startupTics: 1, activeTics: 1, recoveryTics: 0,
+    rollSlots: ['Skull'], rollModifier, attackTargets: [target],
+  });
+  await seatPair(pairIndex, attacker, defender);
+  await startPairDeclaration(mockIo, pairIndex);
+  await declareMove({
+    characterId: attacker, moveId: punch, placementTic: 0, startupTics: 1,
+    effectiveAttackTargets: [target],
+  });
+  await resolvePair(pairIndex);
+  const events = (await all('SELECT type, payload FROM round_events WHERE pair_index = ? ORDER BY seq', [pairIndex]))
+    .map((e) => ({ type: e.type, payload: JSON.parse(e.payload) }));
+  return { attacker, defender, events };
+};
+
+test('Piercing Headache splashes the Brain once per FULL point on the Skull', async () => {
+  // d8 top face + 2 = 10, which is two Half-Damage steps — one whole point —
+  // so exactly one half-step reaches the Brain.
+  const { defender, events } = await splashFight(370, 'PH', {
+    perk: 'Piercing Headache', rollModifier: 2, target: 'Skull',
+  });
+  const skull = events.find((e) => e.type === 'damage_applied' && e.payload.slotName === 'Skull');
+  assert.ok(skull, `the blow has to land on the Skull: ${events.map((e) => e.type).join(', ')}`);
+  assert.equal(skull.payload.steps, 2, 'two half-steps is one Full Damage');
+
+  const brain = events.find((e) => e.type === 'damage_applied' && e.payload.slotName === 'Brain');
+  assert.ok(brain, 'the splash should reach the Brain');
+  assert.equal(brain.payload.steps, 1, 'one Full Damage buys one half-step');
+
+  const die = await one("SELECT current_size, half_damage FROM dice WHERE character_id = ? AND slot_name = 'Brain'", [defender]);
+  assert.equal(die.current_size, 8, 'a single half-step does not drop the die');
+  assert.equal(die.half_damage, 1, 'it leaves the pending marker');
+});
+
+test('half a point on the Skull splashes nothing', async () => {
+  // 8 − 2 = 6: one half-step, which is not a Full Damage.
+  const { events } = await splashFight(371, 'PH2', {
+    perk: 'Piercing Headache', rollModifier: -2, target: 'Skull',
+  });
+  const skull = events.find((e) => e.type === 'damage_applied' && e.payload.slotName === 'Skull');
+  assert.equal(skull?.payload.steps, 1);
+  assert.ok(
+    !events.some((e) => e.type === 'damage_applied' && e.payload.slotName === 'Brain'),
+    'half a point is not a Full Damage'
+  );
+});
+
+test('a splash onto a broken Stat is reported, not silently dropped', async () => {
+  const { events } = await splashFight(372, 'PH3', {
+    perk: 'Piercing Headache', rollModifier: 2, target: 'Skull', breakSlot: 'Brain',
+  });
+  assert.ok(
+    events.some((e) => e.type === 'damage_applied' && e.payload.slotName === 'Skull'),
+    'the blow itself still lands'
+  );
+  const unapplied = events.find((e) => e.type === 'damage_unapplied' && e.payload.slotName === 'Brain');
+  assert.ok(unapplied, 'the splash the Brain could not take has to be reported');
+  assert.equal(unapplied.payload.damage, 0.5);
+});
+
+test('Last Breath Taker is the same rule, Body to Stamina', async () => {
+  const { events } = await splashFight(373, 'LBT', {
+    perk: 'Last Breath Taker', rollModifier: 2, target: 'Body',
+  });
+  const body = events.find((e) => e.type === 'damage_applied' && e.payload.slotName === 'Body');
+  assert.equal(body?.payload.steps, 2);
+  const stamina = events.find((e) => e.type === 'damage_applied' && e.payload.slotName === 'Stamina');
+  assert.ok(stamina, 'the Stamina Stat should take the splash');
+  assert.equal(stamina.payload.steps, 1);
+});
+
+test('the splash Perks do not fire for each other', async () => {
+  // Piercing Headache reads the Skull; a blow to the Body is none of its
+  // business, and vice versa.
+  const { events } = await splashFight(374, 'PH4', {
+    perk: 'Piercing Headache', rollModifier: 2, target: 'Body',
+  });
+  assert.ok(events.some((e) => e.type === 'damage_applied' && e.payload.slotName === 'Body'));
+  assert.ok(!events.some((e) => e.type === 'damage_applied' && e.payload.slotName === 'Brain'));
+});
+
+test('Baron of Suffering is paid for the splash as well as the blow', async () => {
+  // Decided: damage dealt is damage dealt, wherever on the body it ended up.
+  // Two steps on the Skull plus one splashed onto the Brain is three.
+  const pairIndex = 375;
+  const attacker = await createCharacter('BSP Attacker');
+  const defender = await createCharacter('BSP Defender');
+  await grantPerk(attacker, 'Piercing Headache');
+  await grantPerk(attacker, 'Baron of Suffering');
+  await run('UPDATE characters SET current_stamina = 10 WHERE id = ?', [attacker]);
+  const punch = await createMove({
+    name: 'BSP Punch', startupTics: 1, activeTics: 1, recoveryTics: 0,
+    rollSlots: ['Skull'], rollModifier: 2, attackTargets: ['Skull'],
+  });
+  await seatPair(pairIndex, attacker, defender);
+  await startPairDeclaration(mockIo, pairIndex);
+  await declareMove({
+    characterId: attacker, moveId: punch, placementTic: 0, startupTics: 1,
+    effectiveAttackTargets: ['Skull'],
+  });
+  await resolvePair(pairIndex);
+
+  const gain = await refundEvent(pairIndex, /damage dealt/);
+  assert.ok(gain, 'the Baron should have been paid');
+  assert.equal(gain.delta, 3, '2 steps on the Skull + 1 splashed on the Brain');
+});
+
+test('Dogfighter makes a move harder to break up, by exactly 2', async () => {
+  const { perkInterruptAmounts } = await import('../perkEngine.js');
+  const fighter = await createCharacter('DF Fighter');
+  assert.deepEqual(await perkInterruptAmounts(fighter), { interrupter: 0, hardToInterrupt: 0 });
+  await grantPerk(fighter, 'Dogfighter');
+  assert.deepEqual(
+    await perkInterruptAmounts(fighter),
+    { interrupter: 0, hardToInterrupt: 2 },
+    'it defends only — a Dogfighter is no better at interrupting others'
+  );
+});
+
+test('Grounded is asked of the fighter who would be tripped', async () => {
+  const { perkIgnoresMovementPunisher } = await import('../perkEngine.js');
+  const mover = await createCharacter('GR Mover');
+  assert.equal(await perkIgnoresMovementPunisher(mover), false);
+  await grantPerk(mover, 'Grounded');
+  assert.equal(await perkIgnoresMovementPunisher(mover), true);
+});
+
+test('Grounded keeps a fighter on their feet through a Movement Punisher', async () => {
+  // The same fixture as the Movement Punisher test above, with the runner
+  // carrying Grounded — so the trip is set up in full and then refused.
+  const pairIndex = 376;
+  const attacker = await createCharacter('GRP Punisher');
+  const defender = await createCharacter('GRP Runner');
+  await grantPerk(defender, 'Grounded');
+  await setDieSize(attacker, 'Skull', 12);
+
+  const [punisherTag, movementTag] = await Promise.all([
+    one("SELECT id FROM tags WHERE name = 'Movement Punisher'"),
+    one("SELECT id FROM tags WHERE name = 'Movement'"),
+  ]);
+  const sweep = await createMove({ name: 'GRP Sweep', startupTics: 1, activeTics: 2, recoveryTics: 1, rollSlots: ['Skull'] });
+  await run('INSERT INTO move_tags (move_id, tag_id) VALUES (?, ?)', [sweep, punisherTag.id]);
+  const dash = await createMove({ name: 'GRP Dash', startupTics: 1, activeTics: 3, recoveryTics: 2, rollSlots: ['Body'] });
+  await run('INSERT INTO move_tags (move_id, tag_id) VALUES (?, ?)', [dash, movementTag.id]);
+
+  await seatPair(pairIndex, attacker, defender);
+  await startPairDeclaration(mockIo, pairIndex);
+  await declareMove({ characterId: attacker, moveId: sweep, placementTic: 0, startupTics: 1 });
+  const dashId = await declareMove({ characterId: defender, moveId: dash, placementTic: 0, startupTics: 1 });
+  await resolvePair(pairIndex);
+
+  const fired = (await all('SELECT type, payload FROM round_events WHERE pair_index = ? ORDER BY seq', [pairIndex]))
+    .filter((e) => e.type === 'automation_fired')
+    .map((e) => JSON.parse(e.payload))
+    .find((p) => p.sourceName === 'Movement Punisher');
+  assert.ok(!fired, 'the trip must not fire against a Grounded fighter');
+
+  const dm = await one('SELECT recovery_extension_tics FROM declared_moves WHERE id = ?', [dashId]);
+  assert.equal(dm?.recovery_extension_tics ?? 0, 0, 'and no Recovery is imposed');
+
+  // Said out loud, so a table watching the punisher connect knows why nothing
+  // happened.
+  const said = await one(
+    `SELECT content FROM chat_log WHERE content LIKE '%keeps their feet%' ORDER BY id DESC LIMIT 1`
+  );
+  assert.ok(said, 'the refusal should be announced');
+  assert.match(said.content, /GRP Runner/);
+});

@@ -448,3 +448,15 @@ export function planCascade({ moves, blockedUntil, roundStartTic, roundLength })
     };
   });
 }
+
+
+// **Full Damage, in the unit the engine actually counts.** Damage is measured
+// in Half-Damage steps, and two halves make a whole (see game_rules.md's Damage
+// section) — so "for every Full Damage dealt" means every SECOND step, and the
+// splash it buys is one step per pair.
+//
+// Its own function, tiny as it is, because two Perks share it (Piercing
+// Headache and Last Breath Taker) and a second copy is how they drift.
+export function splashSteps(appliedSteps) {
+  return Math.max(0, Math.floor((Math.trunc(Number(appliedSteps) || 0)) / 2));
+}

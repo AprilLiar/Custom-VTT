@@ -130,6 +130,9 @@ import {
   perkBlockRiposteSteps,
   perkDefinitionsFor,
   perkRoundStartHalfHealing,
+  perkIgnoresMovementPunisher,
+  perkInterruptAmounts,
+  perkSplashDamage,
   perkStaminaPerHalfDamage,
 } from './perkEngine.js';
 import { getCombatRollBonus, getCombatRollBonusBreakdown, getStanceMatchupBonus } from './combatBonuses.js';
@@ -1002,7 +1005,10 @@ async function checkInterrupt(io, {
     // Resolved per character, so a Perk that grants the Tag counts.
     moveTagNamesFor(targetCharacterId, startupDM.move_id),
   ]);
-  const hardToInterrupt = hardToInterruptAmount(startupTagNames);
+  // **Dogfighter** and anything else on the `interruptAmounts` seam, on the side
+  // of the fighter being caught — their moves are simply harder to break up.
+  const hardToInterrupt =
+    hardToInterruptAmount(startupTagNames) + (await perkInterruptAmounts(targetCharacterId)).hardToInterrupt;
   // +1 per Active frame of the attack already elapsed. **Kept OUT of the roll's
   // own modifier and applied at the contest instead** — it is situational to
   // this one comparison, exactly like Hard to Interrupt, so the roll that goes
@@ -1384,6 +1390,56 @@ async function runInterruptAndDamage(io, {
       opponentCharacterId: targetCharacterId,
     });
   }
+  // **Splash damage (Piercing Headache, Last Breath Taker).** Extra damage this
+  // blow deals on a second Stat, priced off what it actually put on the first.
+  //
+  // Fed from `applied` and nothing else, which settles two cases at once: a
+  // blow that found a broken Stat and went nowhere splashes nothing, and a
+  // Successful Block's redirect DOES splash, because by then the damage
+  // genuinely landed on the guard's Stat (decided).
+  //
+  // Applied through `applyAutoDamage` rather than a private write, so the
+  // splash obeys every rule ordinary damage does — above all the broken-Stat
+  // rule, which reports what could not be applied instead of swallowing it.
+  const appliedBySlot = {};
+  for (const hit of applied) appliedBySlot[hit.slotName] = (appliedBySlot[hit.slotName] ?? 0) + hit.steps;
+  let splashSteps = 0;
+  for (const splash of await perkSplashDamage(attackerCharacterId, { appliedBySlot })) {
+    const result = await applyAutoDamage(io, {
+      targetCharacterId,
+      effectiveAttackTargets: [splash.slotName],
+      steps: splash.steps,
+      attackerName: attackerCharacterName,
+    });
+    for (const hit of result.applied) {
+      splashSteps += hit.steps;
+      await emitEvent(tic, 'damage_applied', {
+        declaredMoveId,
+        targetCharacterId,
+        targetCharacterName: target?.name ?? null,
+        attackerCharacterName,
+        slotName: hit.slotName,
+        steps: hit.steps,
+        sizeBefore: hit.sizeBefore,
+        bonusBefore: hit.bonusBefore,
+        sizeAfter: hit.sizeAfter,
+        bonusAfter: hit.bonusAfter,
+        statusAfter: hit.statusAfter,
+      });
+    }
+    for (const miss of result.unapplied) {
+      await emitEvent(tic, 'damage_unapplied', {
+        declaredMoveId,
+        targetCharacterId,
+        targetCharacterName: target?.name ?? null,
+        attackerCharacterName,
+        slotName: miss.slotName,
+        steps: miss.steps,
+        damage: miss.damage,
+      });
+    }
+  }
+
   // **Baron of Suffering.** Hurting people is what keeps you going: Stamina
   // back, per half-point that actually landed.
   //
@@ -1395,9 +1451,11 @@ async function runInterruptAndDamage(io, {
   //
   // Paid once for the whole blow rather than once per Stat, because it is one
   // blow; the multi-Stat case just makes the total bigger.
+  // Splash counts (decided): damage dealt is damage dealt, wherever on the body
+  // it ended up.
   const perStep = await perkStaminaPerHalfDamage(attackerCharacterId);
-  if (perStep > 0 && applied.length) {
-    const landed = applied.reduce((sum, a) => sum + a.steps, 0);
+  if (perStep > 0 && (applied.length || splashSteps)) {
+    const landed = applied.reduce((sum, a) => sum + a.steps, 0) + splashSteps;
     if (landed > 0) {
       await adjustStamina(io, attackerCharacterId, perStep * landed, {
         emitEvent,
@@ -1427,14 +1485,24 @@ async function runInterruptAndDamage(io, {
   // line, same round event, same cutscene beat.
   if (applied.length) {
     const trippedMove = await movementMoveInPlay(targetCharacterId, tic);
-    if (
+    const punished =
       trippedMove &&
       movementPunisherApplies({
         punisherTagNames: attackerTagNames,
         targetTagNames: await moveTagNamesFor(targetCharacterId, trippedMove.move_id),
         damageSteps: Math.max(...applied.map((a) => a.steps)),
-      })
-    ) {
+      });
+    // **Grounded.** Checked only once the punish would otherwise land, so a
+    // fighter who was never going to be tripped is not told they shrugged
+    // something off. Announced rather than silent: a table watching a Movement
+    // Punisher connect is expecting the trip, and its absence needs a reason.
+    if (punished && (await perkIgnoresMovementPunisher(targetCharacterId))) {
+      const grounded = await getCharacter(targetCharacterId);
+      await postSystemMessage(
+        io,
+        `${grounded?.name ?? 'The target'} keeps their feet — the Movement Punisher does not trip them.`
+      );
+    } else if (punished) {
       await runAutomations(io, {
         automations: [{ type: 'opponent_recovery', amount: MOVEMENT_PUNISH_RECOVERY }],
         text: 'caught mid-stride — they go down',
@@ -1461,7 +1529,10 @@ async function runInterruptAndDamage(io, {
       // cut: the contest asks whether the punch beat the move it caught, and
       // the punch is what the attacker threw.
       attackerRoll: attackerResult,
-      interrupter: interrupterAmount(attackerTagNames),
+      // The attacker's own half of the same seam, folded in beside the Tag.
+      interrupter:
+        interrupterAmount(attackerTagNames) +
+        (await perkInterruptAmounts(attackerCharacterId)).interrupter,
       emitEvent,
       tic,
     });
