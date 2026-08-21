@@ -22,6 +22,7 @@ import { carriesBlockTag, carriesFeintTag, sortTags, staminaModifierLabel } from
 import { declarableByHand } from '../../../server/moveLogic.js';
 import { portraitSrc } from '../lib/image.js';
 import { dieLabel, tintFor, POOLS } from '../lib/dice.js';
+import { ANATOMY } from '../lib/anatomy.js';
 import { buildFolderTree } from '../lib/folders.js';
 import { countRollSlot } from '../lib/diceSlots.js';
 import { FRAME_PHASES, PHASE_BG, PHASE_LABEL, PHASE_ZONE, phaseBgAt, phaseAt } from '../lib/framePhaseColors.js';
@@ -205,18 +206,33 @@ function ParticipantCard({
             if (!poolDice.length) return null;
             return (
               <div key={pool.key} className="flex flex-wrap gap-1">
-                {poolDice.map((d) => (
-                  <span
-                    key={d.id}
-                    title={d.slot_name}
-                    className={`panel-cut-sm px-1 py-0.5 text-[10px] font-mono ${
-                      d.status === 'incapacitated' ? 'text-zinc-700 line-through' : 'text-zinc-300'
-                    }`}
-                    style={{ backgroundColor: tintFor(d) || 'rgba(255,255,255,0.05)' }}
-                  >
-                    {dieLabel(d.current_size, d.bonus)}
-                  </span>
-                ))}
+                {poolDice.map((d) => {
+                  // **Which Stat is this? (decided, new)** The Arena card used
+                  // to show eight bare `d4` chips whose only identification was
+                  // a hover title — unreadable at a glance, in the one view
+                  // where glancing is the whole point. The icon is the same one
+                  // the Vitruvian figure and the Damage dialog already use for
+                  // that Stat (ANATOMY), so a fighter's Skull looks the same
+                  // wherever you meet it.
+                  //
+                  // Left and Right share an icon, as they do everywhere else —
+                  // the pair is always drawn in that order, and the title still
+                  // names the side outright.
+                  const Icon = ANATOMY[d.slot_name]?.Icon;
+                  return (
+                    <span
+                      key={d.id}
+                      title={d.slot_name}
+                      className={`flex items-center gap-0.5 panel-cut-sm px-1 py-0.5 font-mono text-[10px] ${
+                        d.status === 'incapacitated' ? 'text-zinc-700 line-through' : 'text-zinc-300'
+                      }`}
+                      style={{ backgroundColor: tintFor(d) || 'rgba(255,255,255,0.05)' }}
+                    >
+                      {Icon && <Icon size={10} className="shrink-0 opacity-70" aria-hidden="true" />}
+                      {dieLabel(d.current_size, d.bonus)}
+                    </span>
+                  );
+                })}
               </div>
             );
           })}
@@ -1504,7 +1520,13 @@ function DeclareMoveCard({ character, move, roundStartTic, declaredMoves, tags, 
       ? (styleDeltas ?? []).find((d) => d.attributeId === move.combat_style_attribute_id) ?? null
       : null;
   return (
-    <div ref={chipRef} className="relative">
+    // **`min-w-0 max-w-full` or a long name walks out of the panel (fix).**
+    // A flex item defaults to `min-width: auto`, which means it refuses to
+    // shrink below its content's own width — so a move called "Descending
+    // Thunderclap of the Iron Mountain School" made this chip wider than the
+    // declare panel and the Stamina cost was clipped off at the panel's edge,
+    // with the ⓘ badge left floating out in the margin.
+    <div ref={chipRef} className="relative min-w-0 max-w-full">
       <DeclareMoveInfo
         move={move}
         anchorRef={chipRef}
@@ -1560,13 +1582,22 @@ function DeclareMoveCard({ character, move, roundStartTic, declaredMoves, tags, 
           ? blockedReason
           : 'Drag onto the Tic Counter, or tap then tap a Tic, to declare'
       }
-      className={`flex min-h-11 select-none flex-col items-start gap-1 panel-cut-sm border px-2 py-1.5 text-xs transition-colors ${
+      // `text-left` because a <button> centres its text by default, which only
+      // showed once a name was long enough to wrap onto a second line — a
+      // centred fragment under a left-aligned one reads as a broken card.
+      // `pr-6` reserves the top-right corner for two things that were sitting
+      // on top of the text: the ⓘ badge (absolutely positioned half outside
+      // this button) and `panel-cut-sm`'s own bevel, which shaves the last few
+      // pixels of whatever reaches the corner. The chip is content-sized, so
+      // the first line always ran right up to that corner — every name lost
+      // its closing bracket, and a long one lost more.
+      className={`flex min-h-11 min-w-0 max-w-full select-none flex-col items-start gap-1 panel-cut-sm border py-1.5 pl-2 pr-6 text-left text-xs transition-colors ${
         blockedByRequirement
           ? 'cursor-not-allowed border-zinc-800 bg-zinc-900 text-zinc-600'
           : 'cursor-grab border-zinc-700 bg-zinc-800 text-zinc-200 hover:border-brand-600 active:cursor-grabbing'
       }`}
     >
-      <span>
+      <span className="block min-w-0 break-words">
         {move.name}{' '}
         <span
           className={isBlock ? 'text-sky-400/80' : discounted ? 'text-emerald-400/90' : 'text-zinc-500'}

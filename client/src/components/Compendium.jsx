@@ -278,7 +278,7 @@ function GrantList({ move, characters, canLearn }) {
 // folder management, drag-and-drop) is gated to role === 'gm' below; a
 // Player gets a read-only browse of the same cards.
 export default function MovesCompendium() {
-  const { role } = useRole();
+  const { role, characterId } = useRole();
   const [tells, setTells] = useState(null);
   const [tags, setTags] = useState(null);
   const [ruleset, setRuleset] = useState(null);
@@ -360,6 +360,11 @@ export default function MovesCompendium() {
     if (m.right_tell_id) usedTellIds.add(m.right_tell_id);
     if (m.left_tell_id) usedTellIds.add(m.left_tell_id);
   }
+
+  // Who "me" is, for the Player-facing Learn button. `characters` is fetched
+  // for every viewer already (the roster endpoint was never role-gated — only
+  // the Characters *page* is hidden from Players), so this needs no new fetch.
+  const myCharacter = role === 'player' ? characters.find((c) => c.id === characterId) ?? null : null;
 
   const canLearn = (character, move) => {
     if (move.style_attribute_id == null) return true;
@@ -652,7 +657,48 @@ export default function MovesCompendium() {
                     ) : null
                   }
                   actions={
-                    role === 'gm' ? (
+                    // **A Player can teach themselves a move (decided, new).**
+                    // The Compendium has been readable to Players since it was
+                    // opened to them, and "ask the GM to tick a box for you"
+                    // was the only way to act on what you read. Default moves
+                    // are already everyone's, so only a Unique one offers this.
+                    //
+                    // The style-learnability rule is the GM's, unchanged and
+                    // enforced server-side either way; the button says why it
+                    // is closed rather than simply refusing.
+                    role === 'player' && myCharacter && !move.is_default ? (
+                      (() => {
+                        const has = move.granted_character_ids.includes(myCharacter.id);
+                        const learnable = canLearn(myCharacter, move);
+                        return (
+                          <button
+                            disabled={!has && !learnable}
+                            title={
+                              has
+                                ? `Drop ${move.name} from your sheet`
+                                : learnable
+                                  ? `Add ${move.name} to your sheet`
+                                  : 'None of your stances carries this move’s style'
+                            }
+                            onClick={() =>
+                              socket.emit(has ? 'move:revoke' : 'move:grant', {
+                                characterId: myCharacter.id,
+                                moveId: move.id,
+                              })
+                            }
+                            className={`flex min-h-11 items-center panel-cut-sm px-2 py-0.5 text-xs md:min-h-0 ${
+                              has
+                                ? 'text-zinc-500 hover:bg-red-900/40 hover:text-red-400'
+                                : learnable
+                                  ? 'text-brand-400 hover:bg-brand-900/40'
+                                  : 'cursor-not-allowed text-zinc-700'
+                            }`}
+                          >
+                            {has ? 'Forget' : 'Learn'}
+                          </button>
+                        );
+                      })()
+                    ) : role === 'gm' ? (
                       <>
                         {!move.is_default && (
                           <button
