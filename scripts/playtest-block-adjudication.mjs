@@ -21,12 +21,31 @@ const jpost = (u, b) =>
   fetch(BASE + u, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b) })
     .then((r) => r.json());
 
+// **The prompt is read off the combat snapshot, not off a one-shot push
+// (reworked).** `combat:block_prompt` / `combat:dodge_prompt` used to be
+// separate GM-only events; they are gone, because a one-shot event only ever
+// reaches the sockets connected at that instant and a paused pair sends nothing
+// afterwards — which is how a GM who locked their phone came back to a fight
+// nobody could advance. Every pending question now rides the ordinary snapshot,
+// so this collects them from there and asserts exactly what it always did.
+function collectPrompts(sock) {
+  sock.prompts = [];
+  const seen = new Set();
+  sock.on('combat:updated', (c) => {
+    for (const pair of c?.pairs ?? []) {
+      const p = pair.pendingDodge ?? pair.pendingDefense;
+      if (!p) continue;
+      const key = `${pair.pairIndex}:${p.defenseKind}:${p.attackerDeclaredMoveId}:${p.targetSlotName ?? ''}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      sock.prompts.push({ ...p, pairIndex: pair.pairIndex });
+    }
+  });
+}
+
 const gm = await new Promise((res) => {
   const sock = io(BASE);
-  sock.blockPrompts = [];
-  sock.dodgePrompts = [];
-  sock.on('combat:block_prompt', (p) => sock.blockPrompts.push(p));
-  sock.on('combat:dodge_prompt', (p) => sock.dodgePrompts.push(p));
+  collectPrompts(sock);
   sock.on('connect', () => res(sock));
 });
 const wait = (ev, pred = () => true, ms = 15000) =>
@@ -108,8 +127,8 @@ console.log('\n— Round 1: the Block asks, and Failed discards the guard —');
 // ---------------------------------------------------------------------------
 await playRound();
 check('a Block pauses the round for the GM', (await statusOf()) === 'paused_defense', await statusOf());
-check('the GM receives combat:block_prompt', gm.blockPrompts.length === 1, JSON.stringify(gm.blockPrompts));
-const prompt = gm.blockPrompts.at(-1);
+check('the GM is asked, through the combat snapshot', gm.prompts.length === 1, JSON.stringify(gm.prompts));
+const prompt = gm.prompts.at(-1);
 check('...naming both fighters and the attack roll',
   prompt?.defenderCharacterName === holder.name && Number.isFinite(prompt?.attackerResult),
   JSON.stringify(prompt));
@@ -148,10 +167,10 @@ check('a discarded guard is never resolved as a Block',
 // ---------------------------------------------------------------------------
 console.log('\n— Round 2: Successful runs the guard math as before —');
 // ---------------------------------------------------------------------------
-const promptsBefore = gm.blockPrompts.length;
+const promptsBefore = gm.prompts.length;
 await playRound();
-check('the second round asks again', gm.blockPrompts.length === promptsBefore + 1,
-  `${promptsBefore} -> ${gm.blockPrompts.length}`);
+check('the second round asks again', gm.prompts.length === promptsBefore + 1,
+  `${promptsBefore} -> ${gm.prompts.length}`);
 const beforeOk = await diceOf(holder.id);
 gm.emit('combat:resolve_block', { pairIndex: 0, outcome: 'successful' });
 await sleep(4000);

@@ -30,8 +30,15 @@ process.env.TURSO_DATABASE_URL = `file:${dbPath}`;
 delete process.env.TURSO_AUTH_TOKEN;
 
 const { initDb, run, one, all } = await import('../db.js');
-const { advancePairResolution, startPairDeclaration, resolveDodge, resolveBlock, resolveMoveConflict, openRoundForCharacters } =
-  await import('../roundResolution.js');
+const {
+  advancePairResolution,
+  startPairDeclaration,
+  resolveDodge,
+  resolveBlock,
+  resolveMoveConflict,
+  openRoundForCharacters,
+  defensePromptPayload,
+} = await import('../roundResolution.js');
 const { DICE_TEMPLATE } = await import('../gameLogic.js');
 const { collapseRollSlots } = await import('../moveLogic.js');
 
@@ -55,7 +62,19 @@ function makeIo(identities = []) {
       },
     });
   });
-  return { emit: () => {}, sockets: { sockets } };
+  return {
+    emit: () => {},
+    sockets: { sockets },
+    // The snapshot broadcaster the real server hangs on this object (see
+    // server/index.js's `io.emitCombatUpdated = emitCombatUpdated`). Counted
+    // rather than stubbed to nothing, so a test can hold the engine to the rule
+    // that raising a pause always broadcasts it — the rule the "GM locked their
+    // phone and the fight died" report turned out to be about.
+    snapshotBroadcasts: 0,
+    async emitCombatUpdated() {
+      this.snapshotBroadcasts += 1;
+    },
+  };
 }
 
 const mockIo = makeIo();
@@ -2838,4 +2857,327 @@ test('Baron of Suffering pays nothing for damage that cannot be applied', async 
     !events.some((e) => e.type === 'stamina_changed' && e.payload.characterId === attacker && e.payload.delta > 0),
     'no damage was dealt, so nothing is owed'
   );
+});
+
+// ---------- Third playtest Perk batch: splash, Grounded, Dogfighter ----------
+
+// An attack whose damage all lands on one named Stat, so a splash Perk has a
+// clean figure to price off. `rollModifier` sets how much lands.
+const splashFight = async (pairIndex, tag, { perk, rollModifier, target, breakSlot = null }) => {
+  const attacker = await createCharacter(`${tag} Attacker`);
+  const defender = await createCharacter(`${tag} Defender`);
+  if (perk) await grantPerk(attacker, perk);
+  if (breakSlot) {
+    await run("UPDATE dice SET status = 'incapacitated', current_size = 4 WHERE character_id = ? AND slot_name = ?", [
+      defender,
+      breakSlot,
+    ]);
+  }
+  const punch = await createMove({
+    name: `${tag} Punch`, startupTics: 1, activeTics: 1, recoveryTics: 0,
+    rollSlots: ['Skull'], rollModifier, attackTargets: [target],
+  });
+  await seatPair(pairIndex, attacker, defender);
+  await startPairDeclaration(mockIo, pairIndex);
+  await declareMove({
+    characterId: attacker, moveId: punch, placementTic: 0, startupTics: 1,
+    effectiveAttackTargets: [target],
+  });
+  await resolvePair(pairIndex);
+  const events = (await all('SELECT type, payload FROM round_events WHERE pair_index = ? ORDER BY seq', [pairIndex]))
+    .map((e) => ({ type: e.type, payload: JSON.parse(e.payload) }));
+  return { attacker, defender, events };
+};
+
+test('Piercing Headache splashes the Brain once per FULL point on the Skull', async () => {
+  // d8 top face + 2 = 10, which is two Half-Damage steps — one whole point —
+  // so exactly one half-step reaches the Brain.
+  const { defender, events } = await splashFight(370, 'PH', {
+    perk: 'Piercing Headache', rollModifier: 2, target: 'Skull',
+  });
+  const skull = events.find((e) => e.type === 'damage_applied' && e.payload.slotName === 'Skull');
+  assert.ok(skull, `the blow has to land on the Skull: ${events.map((e) => e.type).join(', ')}`);
+  assert.equal(skull.payload.steps, 2, 'two half-steps is one Full Damage');
+
+  const brain = events.find((e) => e.type === 'damage_applied' && e.payload.slotName === 'Brain');
+  assert.ok(brain, 'the splash should reach the Brain');
+  assert.equal(brain.payload.steps, 1, 'one Full Damage buys one half-step');
+
+  const die = await one("SELECT current_size, half_damage FROM dice WHERE character_id = ? AND slot_name = 'Brain'", [defender]);
+  assert.equal(die.current_size, 8, 'a single half-step does not drop the die');
+  assert.equal(die.half_damage, 1, 'it leaves the pending marker');
+});
+
+test('half a point on the Skull splashes nothing', async () => {
+  // 8 − 2 = 6: one half-step, which is not a Full Damage.
+  const { events } = await splashFight(371, 'PH2', {
+    perk: 'Piercing Headache', rollModifier: -2, target: 'Skull',
+  });
+  const skull = events.find((e) => e.type === 'damage_applied' && e.payload.slotName === 'Skull');
+  assert.equal(skull?.payload.steps, 1);
+  assert.ok(
+    !events.some((e) => e.type === 'damage_applied' && e.payload.slotName === 'Brain'),
+    'half a point is not a Full Damage'
+  );
+});
+
+test('a splash onto a broken Stat is reported, not silently dropped', async () => {
+  const { events } = await splashFight(372, 'PH3', {
+    perk: 'Piercing Headache', rollModifier: 2, target: 'Skull', breakSlot: 'Brain',
+  });
+  assert.ok(
+    events.some((e) => e.type === 'damage_applied' && e.payload.slotName === 'Skull'),
+    'the blow itself still lands'
+  );
+  const unapplied = events.find((e) => e.type === 'damage_unapplied' && e.payload.slotName === 'Brain');
+  assert.ok(unapplied, 'the splash the Brain could not take has to be reported');
+  assert.equal(unapplied.payload.damage, 0.5);
+});
+
+test('Last Breath Taker is the same rule, Body to Stamina', async () => {
+  const { events } = await splashFight(373, 'LBT', {
+    perk: 'Last Breath Taker', rollModifier: 2, target: 'Body',
+  });
+  const body = events.find((e) => e.type === 'damage_applied' && e.payload.slotName === 'Body');
+  assert.equal(body?.payload.steps, 2);
+  const stamina = events.find((e) => e.type === 'damage_applied' && e.payload.slotName === 'Stamina');
+  assert.ok(stamina, 'the Stamina Stat should take the splash');
+  assert.equal(stamina.payload.steps, 1);
+});
+
+test('the splash Perks do not fire for each other', async () => {
+  // Piercing Headache reads the Skull; a blow to the Body is none of its
+  // business, and vice versa.
+  const { events } = await splashFight(374, 'PH4', {
+    perk: 'Piercing Headache', rollModifier: 2, target: 'Body',
+  });
+  assert.ok(events.some((e) => e.type === 'damage_applied' && e.payload.slotName === 'Body'));
+  assert.ok(!events.some((e) => e.type === 'damage_applied' && e.payload.slotName === 'Brain'));
+});
+
+test('Baron of Suffering is paid for the splash as well as the blow', async () => {
+  // Decided: damage dealt is damage dealt, wherever on the body it ended up.
+  // Two steps on the Skull plus one splashed onto the Brain is three.
+  const pairIndex = 375;
+  const attacker = await createCharacter('BSP Attacker');
+  const defender = await createCharacter('BSP Defender');
+  await grantPerk(attacker, 'Piercing Headache');
+  await grantPerk(attacker, 'Baron of Suffering');
+  await run('UPDATE characters SET current_stamina = 10 WHERE id = ?', [attacker]);
+  const punch = await createMove({
+    name: 'BSP Punch', startupTics: 1, activeTics: 1, recoveryTics: 0,
+    rollSlots: ['Skull'], rollModifier: 2, attackTargets: ['Skull'],
+  });
+  await seatPair(pairIndex, attacker, defender);
+  await startPairDeclaration(mockIo, pairIndex);
+  await declareMove({
+    characterId: attacker, moveId: punch, placementTic: 0, startupTics: 1,
+    effectiveAttackTargets: ['Skull'],
+  });
+  await resolvePair(pairIndex);
+
+  const gain = await refundEvent(pairIndex, /damage dealt/);
+  assert.ok(gain, 'the Baron should have been paid');
+  assert.equal(gain.delta, 3, '2 steps on the Skull + 1 splashed on the Brain');
+});
+
+test('Dogfighter makes a move harder to break up, by exactly 2', async () => {
+  const { perkInterruptAmounts } = await import('../perkEngine.js');
+  const fighter = await createCharacter('DF Fighter');
+  assert.deepEqual(await perkInterruptAmounts(fighter), { interrupter: 0, hardToInterrupt: 0 });
+  await grantPerk(fighter, 'Dogfighter');
+  assert.deepEqual(
+    await perkInterruptAmounts(fighter),
+    { interrupter: 0, hardToInterrupt: 2 },
+    'it defends only — a Dogfighter is no better at interrupting others'
+  );
+});
+
+test('Grounded is asked of the fighter who would be tripped', async () => {
+  const { perkIgnoresMovementPunisher } = await import('../perkEngine.js');
+  const mover = await createCharacter('GR Mover');
+  assert.equal(await perkIgnoresMovementPunisher(mover), false);
+  await grantPerk(mover, 'Grounded');
+  assert.equal(await perkIgnoresMovementPunisher(mover), true);
+});
+
+test('Grounded keeps a fighter on their feet through a Movement Punisher', async () => {
+  // The same fixture as the Movement Punisher test above, with the runner
+  // carrying Grounded — so the trip is set up in full and then refused.
+  const pairIndex = 376;
+  const attacker = await createCharacter('GRP Punisher');
+  const defender = await createCharacter('GRP Runner');
+  await grantPerk(defender, 'Grounded');
+  await setDieSize(attacker, 'Skull', 12);
+
+  const [punisherTag, movementTag] = await Promise.all([
+    one("SELECT id FROM tags WHERE name = 'Movement Punisher'"),
+    one("SELECT id FROM tags WHERE name = 'Movement'"),
+  ]);
+  const sweep = await createMove({ name: 'GRP Sweep', startupTics: 1, activeTics: 2, recoveryTics: 1, rollSlots: ['Skull'] });
+  await run('INSERT INTO move_tags (move_id, tag_id) VALUES (?, ?)', [sweep, punisherTag.id]);
+  const dash = await createMove({ name: 'GRP Dash', startupTics: 1, activeTics: 3, recoveryTics: 2, rollSlots: ['Body'] });
+  await run('INSERT INTO move_tags (move_id, tag_id) VALUES (?, ?)', [dash, movementTag.id]);
+
+  await seatPair(pairIndex, attacker, defender);
+  await startPairDeclaration(mockIo, pairIndex);
+  await declareMove({ characterId: attacker, moveId: sweep, placementTic: 0, startupTics: 1 });
+  const dashId = await declareMove({ characterId: defender, moveId: dash, placementTic: 0, startupTics: 1 });
+  await resolvePair(pairIndex);
+
+  const fired = (await all('SELECT type, payload FROM round_events WHERE pair_index = ? ORDER BY seq', [pairIndex]))
+    .filter((e) => e.type === 'automation_fired')
+    .map((e) => JSON.parse(e.payload))
+    .find((p) => p.sourceName === 'Movement Punisher');
+  assert.ok(!fired, 'the trip must not fire against a Grounded fighter');
+
+  const dm = await one('SELECT recovery_extension_tics FROM declared_moves WHERE id = ?', [dashId]);
+  assert.equal(dm?.recovery_extension_tics ?? 0, 0, 'and no Recovery is imposed');
+
+  // Said out loud, so a table watching the punisher connect knows why nothing
+  // happened.
+  const said = await one(
+    `SELECT content FROM chat_log WHERE content LIKE '%keeps their feet%' ORDER BY id DESC LIMIT 1`
+  );
+  assert.ok(said, 'the refusal should be announced');
+  assert.match(said.content, /GRP Runner/);
+});
+
+
+// --- Pause delivery -------------------------------------------------------
+//
+// Reported from play: "all GM prompts break if the GM is not present at the
+// exact moment of resolution. If the GM was using a phone and locked it, the
+// prompt is never shown and the fight becomes corrupted, without the ability to
+// proceed further." The pause itself was always durable; what was not was
+// getting the question in front of anyone afterwards.
+
+test('the defence prompt is worded once, and the same way for both kinds', () => {
+  const pending = {
+    attackerDeclaredMoveId: 7,
+    attackerCharacterName: 'Attacker',
+    attackerMoveName: 'Straight',
+    defenderDeclaredMoveId: 9,
+    defenderCharacterName: 'Defender',
+    defenderMoveName: 'Guard',
+    attackerResult: 14,
+    coverage: { coverage: 'too-short' },
+    remainingStats: ['Skull', 'Body'],
+    tic: 3,
+    // Pause bookkeeping the question has no business carrying.
+    stepsBySlot: { Skull: 2 },
+    leftoverResult: 4,
+  };
+
+  const block = defensePromptPayload(pending, 'block');
+  assert.equal(block.defenseKind, 'block');
+  // Flattened, not nested: the client used to unwrap this itself, in two
+  // different places, and only one of them agreed with the live push.
+  assert.equal(block.coverage, 'too-short');
+  // The question is about the Stat at the head of the queue.
+  assert.equal(block.targetSlotName, 'Skull');
+  assert.deepEqual(block.remainingStats, ['Skull', 'Body']);
+  assert.equal(block.attackerResult, 14);
+  // Pause internals stay in the pause.
+  assert.equal(block.stepsBySlot, undefined);
+  assert.equal(block.leftoverResult, undefined);
+
+  // A Dodge only ever reaches a person on full coverage, so it reports none.
+  const dodge = defensePromptPayload(pending, 'dodge');
+  assert.equal(dodge.defenseKind, 'dodge');
+  assert.equal(dodge.coverage, null);
+
+  // A move with no Attack Target of its own is one question about the attack.
+  const whole = defensePromptPayload({ ...pending, remainingStats: [] }, 'dodge');
+  assert.equal(whole.targetSlotName, null);
+  assert.deepEqual(whole.remainingStats, []);
+
+  assert.equal(defensePromptPayload(null, 'dodge'), null);
+});
+
+test('raising a pause broadcasts it, so it reaches more than whoever was watching', async () => {
+  const pairIndex = 260;
+  const io = makeIo();
+  const attacker = await createCharacter('Broadcast Attacker');
+  const defender = await createCharacter('Broadcast Defender');
+  await setDieSize(attacker, 'Skull', 12);
+  const punch = await createMove({ name: 'BC Punch', startupTics: 1, activeTics: 2, recoveryTics: 1, rollSlots: ['Skull'] });
+  const dodge = await createMove({
+    name: 'BC Dodge',
+    startupTics: 1,
+    activeTics: 1,
+    recoveryTics: 1,
+    rollSlots: ['Hand'],
+    isDefensive: true,
+    defenseKind: 'dodge',
+    defenseFramePositions: [0, 1, 2],
+  });
+
+  await seatPair(pairIndex, attacker, defender);
+  await startPairDeclaration(io, pairIndex);
+  await declareMove({ characterId: attacker, moveId: punch, placementTic: 0, startupTics: 1 });
+  await declareMove({ characterId: defender, moveId: dodge, placementTic: 0, startupTics: 1, appendageChoice: 'left' });
+
+  const before = io.snapshotBroadcasts;
+  await run(`UPDATE combat_pairs SET phase = 'resolving' WHERE pair_index = ?`, [pairIndex]);
+  await advancePairResolution(pairIndex, io);
+
+  const resolution = await one('SELECT status FROM pair_round_resolutions WHERE pair_index = ? AND round_number = 1', [pairIndex]);
+  assert.equal(resolution.status, 'paused_dodge');
+  assert.ok(
+    io.snapshotBroadcasts > before,
+    'the pause was raised without broadcasting — nobody who was not already listening can learn about it'
+  );
+
+  await resolveDodge(pairIndex, { outcome: 'failed' }, io);
+});
+
+test('a pause raised while NOBODY is connected is still waiting when someone comes back', async () => {
+  const pairIndex = 261;
+  // Not one socket in the registry: the GM locked their phone before the round
+  // even reached the guard, so every live push in the world lands nowhere.
+  const empty = makeIo([]);
+  const attacker = await createCharacter('Absent Attacker');
+  const defender = await createCharacter('Absent Defender');
+  await setDieSize(attacker, 'Skull', 12);
+  const punch = await createMove({ name: 'AB Punch', startupTics: 1, activeTics: 2, recoveryTics: 1, rollSlots: ['Skull'] });
+  const dodge = await createMove({
+    name: 'AB Dodge',
+    startupTics: 1,
+    activeTics: 1,
+    recoveryTics: 1,
+    rollSlots: ['Hand'],
+    isDefensive: true,
+    defenseKind: 'dodge',
+    defenseFramePositions: [0, 1, 2],
+  });
+
+  await seatPair(pairIndex, attacker, defender);
+  await startPairDeclaration(empty, pairIndex);
+  const attackerDMId = await declareMove({ characterId: attacker, moveId: punch, placementTic: 0, startupTics: 1 });
+  await declareMove({ characterId: defender, moveId: dodge, placementTic: 0, startupTics: 1, appendageChoice: 'left' });
+  await run(`UPDATE combat_pairs SET phase = 'resolving' WHERE pair_index = ?`, [pairIndex]);
+  await advancePairResolution(pairIndex, empty);
+
+  // The question is on the row, fully worded, waiting. This is what the
+  // reconnecting GM is handed off the combat snapshot.
+  const paused = await one('SELECT * FROM pair_round_resolutions WHERE pair_index = ? AND round_number = 1', [pairIndex]);
+  assert.equal(paused.status, 'paused_dodge');
+  const prompt = defensePromptPayload(JSON.parse(paused.pending_dodge_json), 'dodge');
+  assert.equal(prompt.attackerDeclaredMoveId, attackerDMId);
+  assert.equal(prompt.attackerResult, 12);
+
+  // Nothing was decided in their absence.
+  const skullDuring = await one("SELECT current_size FROM dice WHERE character_id = ? AND slot_name = 'Skull'", [defender]);
+  assert.equal(skullDuring.current_size, 8);
+
+  // They come back on an entirely new connection and answer.
+  const reconnected = makeIo();
+  await resolveDodge(pairIndex, { outcome: 'failed' }, reconnected);
+
+  const after = await one('SELECT status, pending_dodge_json FROM pair_round_resolutions WHERE pair_index = ? AND round_number = 1', [pairIndex]);
+  assert.equal(after.status, 'complete');
+  assert.equal(after.pending_dodge_json, null);
+  const skullAfter = await one("SELECT current_size FROM dice WHERE character_id = ? AND slot_name = 'Skull'", [defender]);
+  assert.equal(skullAfter.current_size, 6);
 });

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { socket } from '../socket.js';
@@ -8,6 +8,8 @@ import { TicCounterCentral } from './CombatArena.jsx';
 import { onDraggingMoveChange } from '../lib/dragMoveState.js';
 import { attackStartsByTic } from '../lib/attackTelegraph.js';
 import { useIsDesktop } from '../lib/useMediaQuery.js';
+import { useSocketRefresh } from '../lib/connection.js';
+import { clearSummonedPrompt, onSummonedPrompt } from '../lib/pausePrompts.js';
 import MoveConflictDialog from './MoveConflictDialog.jsx';
 import DefensePromptDialog from './DefensePromptDialog.jsx';
 import GrapplePromptDialog from './GrapplePromptDialog.jsx';
@@ -59,19 +61,14 @@ export default function CombatHeaderBar() {
 
   useEffect(() => onDraggingMoveChange(setDraggingMove), []);
 
-  // Set only once the real GET /api/combat snapshot has actually landed, so
-  // effects that need `combat.characters` don't run against an incomplete
-  // merge onto `null` (`{...null, ...c}` is just `c`) from a combat:updated
-  // broadcast that raced ahead of the first fetch.
-  const initialLoadDoneRef = useRef(false);
+  const refresh = useCallback(() => {
+    getCombat(role === 'gm' ? { role } : { role, characterId })
+      .then(setCombat)
+      .catch(console.error);
+  }, [role, characterId]);
 
   useEffect(() => {
-    getCombat(role === 'gm' ? { role } : { role, characterId })
-      .then((c) => {
-        initialLoadDoneRef.current = true;
-        setCombat(c);
-      })
-      .catch(console.error);
+    refresh();
     // combat:updated is deliberately narrower than GET /api/combat (see its
     // own comment server-side) — it never carries characters/counters, to
     // avoid re-sending every seated character's full sheet (portraits
@@ -83,7 +80,16 @@ export default function CombatHeaderBar() {
     const onUpdated = (c) => setCombat((prev) => ({ ...prev, ...c }));
     socket.on('combat:updated', onUpdated);
     return () => socket.off('combat:updated', onUpdated);
-  }, [role, characterId]);
+  }, [refresh]);
+
+  // **This bar never re-read the snapshot after mount, and that is most of the
+  // bug (fix).** A missed broadcast never replays on its own, and a *paused*
+  // pair broadcasts nothing further by definition — so a GM whose phone locked
+  // while a Dodge or Block prompt went out came back to a silent screen and a
+  // fight no one could advance. Re-reads on a genuine reconnect and whenever
+  // the tab returns from the background; the server covers the same ground from
+  // its end by pushing a fresh snapshot the moment this socket identifies.
+  useSocketRefresh(refresh);
 
   // Combat Automation overhaul §5: the reveal-time auto-Roll dialog queue
   // that used to live here is gone. Every roll in a round is now rolled
@@ -93,22 +99,31 @@ export default function CombatHeaderBar() {
   // outside the automated flow (a character sheet's own dice, the chat
   // Dice Tray).
 
-  // Combat Automation (Phase 9, sub-phase 4): queues combat:move_conflict
-  // events (4.3's Forfeit/Postpone prompt) — scoped to whoever actually controls
-  // the affected character (own PC for a Player, own NPCs for the GM), so
-  // this doesn't interrupt an unrelated viewer's screen with someone else's
-  // decision to make.
-  // One pause per pair holds one conflict, and it is identified by the guard
-  // that caused it plus the move it ran into — enough to tell a re-pushed
-  // prompt from a genuinely new one.
-  const conflictKey = (c) => `${c.blockerDeclaredMoveId}:${c.declaredMoveId}`;
+  // **Every prompt below is a function of server state, and of nothing else
+  // (decided, reworked).** They used to arrive as one-shot socket pushes that
+  // this component queued into local arrays, with the combat snapshot as a
+  // mount-time recovery path. Three things were wrong with that, and live play
+  // found all three: a one-shot event only reaches sockets connected at that
+  // instant; a paused pair sends nothing afterwards to catch anyone up; and the
+  // queues were shifted the moment a button was *clicked*, so an answer that
+  // never reached the server took the question away with it.
+  //
+  // Now: the pause is read off `combat.pairs`, already shaped into the question
+  // by the server (see defensePromptPayload). It survives a reload and a
+  // reconnect because it was never held here in the first place, and it goes
+  // away when the server says the pause is answered.
+  const [summoned, setSummoned] = useState(null);
+  useEffect(() => onSummonedPrompt(setSummoned), []);
+
+  // The conflict prompt is the affected *fighter's* call, not the GM's at large
+  // — their own PC for a Player, their own NPCs for the GM.
+  //
   // **Read off `participants`, not `characters` (bugfix).** This used to look
   // the fighter up in `combat.characters` — which the REST snapshot carries but
-  // the `combat:updated` socket broadcast does NOT (see emitCombatUpdated: it
+  // the `combat:updated` socket broadcast does NOT (see combatUpdateFor: it
   // sends pairs/participants/declaredMoves and no per-character detail). So the
   // moment any combat broadcast landed, the map went empty and every live
-  // conflict prompt was silently dropped; only a page reload, which re-fetches
-  // the REST snapshot, ever showed one. `participants` is in both payloads and
+  // conflict prompt was silently dropped. `participants` is in both payloads and
   // already carries `character_type`, which is the only field this needs.
   const ownsConflict = (payload) => {
     const seat = (combat?.participants ?? []).find((p) => p.character_id === payload.characterId);
@@ -117,190 +132,82 @@ export default function CombatHeaderBar() {
     if (role === 'gm') return seat.character_type === 'npc';
     return false;
   };
-  const [conflictQueue, setConflictQueue] = useState([]);
-  useEffect(() => {
-    const onConflict = (payload) => {
-      if (ownsConflict(payload)) setConflictQueue((q) => [...q, payload]);
-    };
-    socket.on('combat:move_conflict', onConflict);
-    return () => socket.off('combat:move_conflict', onConflict);
-  }, [combat, role, characterId]);
 
-  // **Reconnect recovery for the conflict prompt (new).** The Dodge and Block
-  // queues below have always had this; the conflict prompt never did, and the
-  // live push above only reaches sockets connected at the moment it fires — so
-  // a player who reloaded while it was pending was never asked again, and their
-  // pair sat paused with nothing on screen to answer. It matters more now that
-  // one answer covers the whole cascade rather than the round re-asking. Same
-  // ownership gate and the same dedupe key as the live push.
-  useEffect(() => {
-    if (!combat) return;
-    const pending = (combat.pairs ?? [])
-      .filter((p) => p.pendingConflict)
-      .map((p) => ({ ...p.pendingConflict, pairIndex: p.pairIndex }))
-      .filter(ownsConflict);
-    if (!pending.length) return;
-    setConflictQueue((q) => {
-      const seen = new Set(q.map(conflictKey));
-      const added = pending.filter((c) => !seen.has(conflictKey(c)));
-      return added.length ? [...q, ...added] : q;
-    });
-  }, [combat, role, characterId]);
+  const pairs = combat?.pairs ?? [];
 
-  // Combat Automation overhaul §3/§4.1 — the Dodge prompt, the one human
-  // decision left in an automatic round. Unlike the conflict prompt above
-  // (scoped to whoever controls the affected character), this goes to the
-  // GM unconditionally, regardless of which pair they're viewing: the
-  // paused pair's round cannot continue until they answer, so it has to
-  // reach them wherever they are in the app. Mounted here rather than in
-  // the Arena for exactly that reason.
-  const [dodgeQueue, setDodgeQueue] = useState([]);
-  // **The Stat is part of the identity (multi-target attacks).** An attack
-  // naming several Stats now asks one question per Stat, so two prompts can
-  // legitimately share a pair and an attacking move — keying on those alone
-  // deduped the second question away and left the round paused on a prompt
-  // nobody was ever shown.
-  // Shared by the Block queue below too — the identity of a defence prompt is
-  // the same triple whichever kind it is.
-  const dodgeKey = (d) => `${d.pairIndex}:${d.attackerDeclaredMoveId}:${d.targetSlotName ?? ''}`;
-  useEffect(() => {
-    if (role !== 'gm') return undefined;
-    const onDodge = (payload) =>
-      setDodgeQueue((q) => (q.some((d) => dodgeKey(d) === dodgeKey(payload)) ? q : [...q, payload]));
-    socket.on('combat:dodge_prompt', onDodge);
-    return () => socket.off('combat:dodge_prompt', onDodge);
-  }, [role]);
-
-  // §2.4 — a GM who connects (or reconnects) while a pair is already paused
-  // picks the prompt up from the regular combat snapshot, since the live
-  // push above only reached sockets connected at the moment it fired. Same
-  // dedupe key, so a socket that got both doesn't queue it twice.
-  useEffect(() => {
-    if (role !== 'gm' || !combat) return;
-    const pending = (combat.pairs ?? [])
-      .filter((p) => p.pendingDodge)
-      .map((p) => ({
-        ...p.pendingDodge,
-        pairIndex: p.pairIndex,
-        roundNumber: p.roundNumber,
-        // The snapshot carries the raw pause state, which names the Stats still
-        // to be called rather than the one being asked about right now — the
-        // live push spells that out and this has to agree with it, or a
-        // reconnecting GM re-queues a question they already answered.
-        targetSlotName: p.pendingDodge.remainingStats?.[0] ?? null,
-      }));
-    if (!pending.length) return;
-    setDodgeQueue((q) => {
-      const seen = new Set(q.map(dodgeKey));
-      const added = pending.filter((d) => !seen.has(dodgeKey(d)));
-      return added.length ? [...q, ...added] : q;
-    });
-  }, [combat, role]);
-
-  // **The Block prompt is the same decision about a different guard (decided,
-  // reversed).** Block used to resolve with no human input at all — see
-  // DefensePromptDialog for why that stopped being tenable. Everything below
-  // mirrors the Dodge queue above line for line, including the reconnect
-  // pickup and the Stat-in-the-key dedupe, because it is the same mechanism:
-  // a GM-only push, a queue so two prompts cannot silently collapse into one,
-  // and the combat snapshot as the recovery path for a GM who wasn't connected
-  // when the pause fired.
-  const [blockQueue, setBlockQueue] = useState([]);
-  useEffect(() => {
-    if (role !== 'gm') return undefined;
-    const onBlock = (payload) =>
-      setBlockQueue((q) => (q.some((d) => dodgeKey(d) === dodgeKey(payload)) ? q : [...q, payload]));
-    socket.on('combat:block_prompt', onBlock);
-    return () => socket.off('combat:block_prompt', onBlock);
-  }, [role]);
-
-  useEffect(() => {
-    if (role !== 'gm' || !combat) return;
-    const pending = (combat.pairs ?? [])
-      .filter((p) => p.pendingDefense)
-      .map((p) => ({
-        ...p.pendingDefense,
-        pairIndex: p.pairIndex,
-        roundNumber: p.roundNumber,
-        // The pause payload nests its coverage; the live push flattens it, and
-        // the two have to agree or the reconnecting GM is shown a differently
-        // worded question about the same guard.
-        coverage: p.pendingDefense.coverage?.coverage ?? null,
-        targetSlotName: p.pendingDefense.remainingStats?.[0] ?? null,
-      }));
-    if (!pending.length) return;
-    setBlockQueue((q) => {
-      const seen = new Set(q.map(dodgeKey));
-      const added = pending.filter((d) => !seen.has(dodgeKey(d)));
-      return added.length ? [...q, ...added] : q;
-    });
-  }, [combat, role]);
-
-  // Combat Automation (Phase 9, sub-phase 4 — 4.3's Forfeit/Postpone
-  // prompt). Same "whoever actually controls this character" ownership
-  // gate as the auto-roll queue above (own PC for a Player, own NPCs for
-  // the GM — see isMine there), and the same queue-one-at-a-time pattern:
-  // combat:resolve_move_conflict's own recursive re-emit (see server-side)
-  // just appends another entry here, no special recursion handling needed
-  // client-side.
-  const conflictDialog = (() => {
-    if (!conflictQueue.length || !combat) return null;
-    const conflict = conflictQueue[0];
-    return (
-      <MoveConflictDialog
-        declaredMoveId={conflict.declaredMoveId}
-        blockerDeclaredMoveId={conflict.blockerDeclaredMoveId}
-        blockerMoveName={conflict.blockerMoveName}
-        // The whole cascade, named and priced by the server — the dialog lists
-        // it rather than re-deriving it from `combat`, so what the player is
-        // shown is exactly the plan resolveMoveConflict will apply.
-        shifts={conflict.shifts ?? []}
-        characterName={conflict.characterName}
-        onResolve={() => setConflictQueue((q) => q.slice(1))}
-      />
-    );
+  // One defence question at a time. Two pairs can be paused at once on
+  // different guards, and stacking two modals would leave the GM answering the
+  // one they cannot see; the other is asked as soon as this one is answered.
+  // Withheld from Players by the server, not just hidden here — the payload
+  // carries the attacker's roll total.
+  const snapshotDefense = (() => {
+    if (role !== 'gm') return null;
+    const pair = pairs.find((p) => p.pendingDodge || p.pendingDefense);
+    if (!pair) return null;
+    return { ...(pair.pendingDodge ?? pair.pendingDefense), pairIndex: pair.pairIndex };
   })();
 
-  // One dialog at a time across BOTH defence prompts. They cannot both be
-  // pending for the same pair (a pair holds one pause), but two pairs can be
-  // paused at once on different kinds, and stacking two modals would leave the
-  // GM answering the one they cannot see. Dodge goes first only because it is
-  // the older queue — either order is correct, and the other is asked next.
-  const defenseDialog = (() => {
-    const d = dodgeQueue[0] ?? null;
-    const b = d ? null : blockQueue[0] ?? null;
-    const entry = d ?? b;
-    if (!entry) return null;
-    const isDodge = Boolean(d);
-    return (
-      <DefensePromptDialog
-        defenseKind={isDodge ? 'dodge' : 'block'}
-        pairIndex={entry.pairIndex}
-        attackerDeclaredMoveId={entry.attackerDeclaredMoveId}
-        attackerCharacterName={entry.attackerCharacterName}
-        attackerMoveName={entry.attackerMoveName}
-        defenderCharacterName={entry.defenderCharacterName}
-        defenderMoveName={entry.defenderMoveName}
-        attackerResult={entry.attackerResult}
-        coverage={entry.coverage}
-        targetSlotName={entry.targetSlotName}
-        remainingStats={entry.remainingStats}
-        onResolve={() =>
-          isDodge ? setDodgeQueue((q) => q.slice(1)) : setBlockQueue((q) => q.slice(1))
-        }
-      />
-    );
+  const snapshotConflict = (() => {
+    const pair = pairs.find((p) => p.pendingConflict && ownsConflict(p.pendingConflict));
+    return pair ? { ...pair.pendingConflict, pairIndex: pair.pairIndex } : null;
   })();
 
-  // Grappling's mini-game. Unlike the Dodge prompt there is no live push to
-  // listen for and no queue: the server already computes, per viewer, whether
-  // THIS person has a prompt and what they are allowed to see of it
-  // (mapPendingGrappleForViewer), and hangs it on the pair in the ordinary
-  // combat snapshot. That makes reconnect recovery free — a reload just picks
-  // the prompt back up — and it makes the secrecy structural rather than
-  // something this component has to remember to honour.
+  // A hand-summoned prompt steps aside the moment the ordinary path produces
+  // the same question — it exists for when that path is silent, not to compete
+  // with it, and leaving it up would strand a stale copy after the answer lands.
+  const summonedIsConflict = summoned?.kind === 'conflict';
+  useEffect(() => {
+    if (!summoned) return;
+    if (summonedIsConflict ? snapshotConflict : snapshotDefense) clearSummonedPrompt();
+  }, [summoned, summonedIsConflict, snapshotDefense, snapshotConflict]);
+
+  // Spread rather than named through prop by prop: the server authors this
+  // shape (defensePromptPayload) precisely so the live question and the
+  // recovered one cannot be worded differently, and re-listing the fields here
+  // would put a third copy of that shape in the codebase.
+  const defenseEntry =
+    snapshotDefense ??
+    (summoned && !summonedIsConflict ? { ...summoned.prompt, pairIndex: summoned.pairIndex } : null);
+
+  const defenseDialog = defenseEntry ? (
+    <DefensePromptDialog
+      // Re-keyed per question, so answering one Stat of a multi-Stat attack
+      // hands the next one a dialog with its own fresh submit state.
+      key={`defense:${defenseEntry.pairIndex}:${defenseEntry.attackerDeclaredMoveId}:${
+        defenseEntry.targetSlotName ?? ''
+      }`}
+      {...defenseEntry}
+      onAnswered={clearSummonedPrompt}
+    />
+  ) : null;
+
+  const conflictEntry =
+    snapshotConflict ??
+    (summoned && summonedIsConflict ? { ...summoned.conflict, pairIndex: summoned.pairIndex } : null);
+
+  const conflictDialog = conflictEntry ? (
+    <MoveConflictDialog
+      key={`conflict:${conflictEntry.blockerDeclaredMoveId}:${conflictEntry.declaredMoveId}`}
+      declaredMoveId={conflictEntry.declaredMoveId}
+      blockerDeclaredMoveId={conflictEntry.blockerDeclaredMoveId}
+      blockerMoveName={conflictEntry.blockerMoveName}
+      // The whole cascade, named and priced by the server — the dialog lists
+      // it rather than re-deriving it from `combat`, so what the player is
+      // shown is exactly the plan resolveMoveConflict will apply.
+      shifts={conflictEntry.shifts ?? []}
+      characterName={conflictEntry.characterName}
+      onAnswered={clearSummonedPrompt}
+    />
+  ) : null;
+
+  // Grappling's mini-game, which has read off the snapshot from the day it was
+  // built — the server works out per viewer whether THIS person has a prompt
+  // and what they are allowed to see of it (mapPendingGrappleForViewer). That
+  // is the shape everything above has now been rebuilt into: reconnect recovery
+  // comes free, and the secrecy is structural rather than something this
+  // component has to remember to honour.
   const grappleDialog = (() => {
-    const pair = (combat?.pairs ?? []).find(
+    const pair = pairs.find(
       (p) => p.pendingGrapple && p.pendingGrapple.role !== 'observer' && !p.pendingGrapple.answered
     );
     if (!pair) return null;
@@ -313,7 +220,6 @@ export default function CombatHeaderBar() {
     );
   })();
 
-  const pairs = combat?.pairs ?? [];
   // Combat Automation overhaul: each pair now runs its own independent
   // round/phase/Tic clock — this global strip can only ever show ONE of
   // them at a time. A Player sees their own seat's pair; the GM (who has no
@@ -326,7 +232,18 @@ export default function CombatHeaderBar() {
   const activePair =
     role === 'player' ? pairs.find((p) => p.pairIndex === myParticipant?.pair_index) : pairs[0];
 
-  if (!combat || !activePair) return conflictDialog ?? defenseDialog;
+  if (!combat || !activePair) {
+    // Still render whatever prompts we do have — a pause can be open before
+    // this viewer has a pair to show (a Player not seated in this fight, a GM
+    // on a page with no active pair), and the answer is what unsticks it.
+    return (
+      <>
+        {conflictDialog}
+        {defenseDialog}
+        {grappleDialog}
+      </>
+    );
+  }
 
   const { pairIndex, phase, roundNumber, currentTic, roundStartTic } = activePair;
   const { roundLength } = combat;

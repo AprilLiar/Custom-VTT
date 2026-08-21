@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import { socket } from '../socket.js';
 import DialogShell from './DialogShell.jsx';
 
@@ -15,19 +16,35 @@ import DialogShell from './DialogShell.jsx';
 // it is that fighter's commitment being spent.
 //
 // Closing without choosing is deliberately not offered. The round is paused on
-// this answer, and a dismissed prompt would strand it.
+// this answer, and a dismissed prompt would strand it — which is also why the
+// dialog no longer takes itself down on click (decided, reworked): it is
+// rendered from the pause as the server reports it and stays up until the server
+// stops reporting it. Clicking used to remove it on the spot, so an answer that
+// never arrived took the question with it. See DefensePromptDialog, which was
+// reworked the same way and for the same reason.
 export default function MoveConflictDialog({
   declaredMoveId,
   blockerDeclaredMoveId,
   blockerMoveName,
   shifts = [],
   characterName,
-  onResolve,
+  // Called on click, purely so a hand-summoned copy of this prompt can stand
+  // down (see lib/pausePrompts.js). It does NOT dismiss this dialog.
+  onAnswered,
 }) {
+  const [submit, setSubmit] = useState('idle');
+  useEffect(() => {
+    if (submit !== 'sent') return undefined;
+    const timer = setTimeout(() => setSubmit('stalled'), 8000);
+    return () => clearTimeout(timer);
+  }, [submit]);
+
   const resolve = (choice) => {
     socket.emit('combat:resolve_move_conflict', { declaredMoveId, blockerDeclaredMoveId, choice });
-    onResolve();
+    setSubmit('sent');
+    onAnswered?.();
   };
+  const busy = submit === 'sent';
   const first = shifts[0];
   const spills = shifts.filter((s) => s.leavesRound);
 
@@ -42,14 +59,16 @@ export default function MoveConflictDialog({
           <button
             type="button"
             onClick={() => resolve('forfeit')}
-            className="min-h-11 flex-1 panel-cut-sm border border-red-700/50 bg-red-950/40 py-2 font-semibold text-red-300 hover:bg-red-900/40"
+            disabled={busy}
+            className="min-h-11 flex-1 panel-cut-sm border border-red-700/50 bg-red-950/40 py-2 font-semibold text-red-300 hover:bg-red-900/40 disabled:opacity-50"
           >
             Forfeit {first?.moveName ? `“${first.moveName}”` : 'it'}
           </button>
           <button
             type="button"
             onClick={() => resolve('extend')}
-            className="min-h-11 flex-1 panel-cut-sm bg-brand-600 py-2 font-semibold text-white hover:bg-brand-500"
+            disabled={busy}
+            className="min-h-11 flex-1 panel-cut-sm bg-brand-600 py-2 font-semibold text-white hover:bg-brand-500 disabled:opacity-50"
           >
             Push Everything Back
           </button>
@@ -88,6 +107,13 @@ export default function MoveConflictDialog({
         Forfeiting gives up only the first move — its Stamina is refunded, and anything behind it
         still slides forward to clear the guard.
       </p>
+      {submit === 'sent' && <p className="mt-2 text-xs text-zinc-500">Sending your choice…</p>}
+      {submit === 'stalled' && (
+        <p className="mt-2 text-xs text-amber-300/90">
+          No answer came back. The choice may not have reached the table — the buttons are live
+          again, so try once more.
+        </p>
+      )}
     </DialogShell>
   );
 }

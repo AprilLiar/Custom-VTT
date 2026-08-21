@@ -19,6 +19,7 @@ import {
   applyMoveInteractions,
   moveTagNamesFor,
   openRoundForCharacters,
+  defensePromptPayload,
 } from './roundResolution.js';
 import {
   DICE_TEMPLATE,
@@ -735,7 +736,7 @@ async function getPendingStaminaCost(characterId) {
 // by both GET /api/combat and combat:updated — camelCase, plus the derived
 // relativeTic/isOverflow/overflowBy every existing Tic Counter render
 // already expects (see combatTiming.js's relativeTic).
-function shapePair(row, roundLength, resolution) {
+function shapePair(row, roundLength, resolution, viewer) {
   const tic = relativeTic({ tic: row.current_tic, roundStartTic: row.round_start_tic, roundLength });
   return {
     pairIndex: row.pair_index,
@@ -754,10 +755,20 @@ function shapePair(row, roundLength, resolution) {
     // pair that's declaring or whose round already completed.
     resolutionId: resolution?.id ?? null,
     resolutionStatus: resolution?.status ?? null,
+    //
+    // **Already shaped into the question, and GM-only (revised).** These used
+    // to be handed over as the raw pause row for the client to re-derive
+    // `coverage` and `targetSlotName` from — in two places, differently from
+    // how the live push worded it. `defensePromptPayload` is now the single
+    // author of both, and the prompt is withheld from a Player socket outright:
+    // it carries the attacker's roll total, and nothing but a GM has any
+    // business reading that mid-round.
     pendingDodge:
-      resolution?.status === 'paused_dodge' && resolution.pending_dodge_json
-        ? JSON.parse(resolution.pending_dodge_json)
+      viewer?.role === 'gm' && resolution?.status === 'paused_dodge' && resolution.pending_dodge_json
+        ? defensePromptPayload(JSON.parse(resolution.pending_dodge_json), 'dodge')
         : null,
+    // The conflict prompt is the affected *fighter's* call, not the GM's, so it
+    // stays on the shared shape and the client filters it by ownership.
     pendingConflict:
       resolution?.status === 'paused_conflict' && resolution.pending_conflict_json
         ? JSON.parse(resolution.pending_conflict_json)
@@ -768,8 +779,8 @@ function shapePair(row, roundLength, resolution) {
     // two moves by name, and only GMs are ever shown it (see the client's own
     // role gate, matching combat:block_prompt's emitToGMs delivery).
     pendingDefense:
-      resolution?.status === 'paused_defense' && resolution.pending_defense_json
-        ? JSON.parse(resolution.pending_defense_json)
+      viewer?.role === 'gm' && resolution?.status === 'paused_defense' && resolution.pending_defense_json
+        ? defensePromptPayload(JSON.parse(resolution.pending_defense_json), 'block')
         : null,
     // Deliberately NOT included here. Grappling's prompt differs per viewer —
     // the grappler sees the move names, the target sees four blanks — so it
@@ -815,7 +826,11 @@ async function fetchPairStanceMatchups() {
 // already used before Phase 7. declaredMoves' visibility depends on who's
 // watching (see isRevealedToViewer above), so this is a per-socket emit
 // rather than one io.emit — the DB round-trip still only happens once.
-async function emitCombatUpdated() {
+// Everything a combat snapshot is built from, read once. Split out from the
+// emit below because the pair shape is now **viewer-dependent** — the defence
+// prompts are GM-only (see shapePair) — and because a single socket sometimes
+// needs resyncing on its own without a broadcast (see identity:set).
+async function buildCombatUpdate() {
   const [state, participants, pairRows, declaredMoveRows, openResolutions, stanceMatchups] =
     await Promise.all([
       one('SELECT * FROM combat_state WHERE id = 1'),
@@ -825,9 +840,21 @@ async function emitCombatUpdated() {
       fetchOpenResolutionsByPair(),
       fetchPairStanceMatchups(),
     ]);
-  const pairs = pairRows.map((row) => shapePair(row, state.round_length, openResolutions.get(row.pair_index)));
-  const pairsByIndex = new Map(pairRows.map((row) => [row.pair_index, row]));
-  const base = {
+  return {
+    state,
+    participants,
+    pairRows,
+    declaredMoveRows,
+    openResolutions,
+    stanceMatchups,
+    pairsByIndex: new Map(pairRows.map((row) => [row.pair_index, row])),
+  };
+}
+
+function combatUpdateFor(built, viewer) {
+  const { state, participants, pairRows, declaredMoveRows, openResolutions, stanceMatchups, pairsByIndex } =
+    built;
+  return {
     unevenCombatEnabled: Boolean(state.uneven_combat_enabled),
     freshStart: Boolean(state.fresh_start),
     roundLength: state.round_length,
@@ -837,23 +864,48 @@ async function emitCombatUpdated() {
     // move:declare (null once both sides of it are done);
     // participants[].declared_this_round is the per-character status the
     // GM's declaration table renders (see Combat Timing above).
-    pairs,
+    //
+    // Every pending prompt a pair can be holding rides along: the defence
+    // prompts (GM-only), the conflict prompt (ownership-filtered client-side),
+    // and grappling's per-viewer mini-game. This snapshot is the ONLY delivery
+    // path the client trusts for them — see the plan's "Pause delivery" note.
+    pairs: pairRows.map((row) => ({
+      ...shapePair(row, state.round_length, openResolutions.get(row.pair_index), viewer),
+      // Deliberately built per viewer: the grappler sees the move names, the
+      // target sees four blanks. Putting it on a shared object is exactly the
+      // mistake that would leak the whole mini-game.
+      pendingGrapple: mapPendingGrappleForViewer(openResolutions.get(row.pair_index), viewer, participants),
+    })),
     participants,
     // What each side of each pair's stance is worth against the other, for
     // the Arena's VS divider (see fetchPairStanceMatchups).
     stanceMatchups,
+    declaredMoves: mapDeclaredMovesForViewer(declaredMoveRows, pairsByIndex, viewer),
   };
+}
+
+async function emitCombatUpdated() {
+  const built = await buildCombatUpdate();
   for (const viewerSocket of io.sockets.sockets.values()) {
-    const identity = viewerSocket.data.identity;
-    viewerSocket.emit('combat:updated', {
-      ...base,
-      declaredMoves: mapDeclaredMovesForViewer(declaredMoveRows, pairsByIndex, identity),
-      pairs: pairs.map((pair) => ({
-        ...pair,
-        pendingGrapple: mapPendingGrappleForViewer(openResolutions.get(pair.pairIndex), identity, participants),
-      })),
-    });
+    viewerSocket.emit('combat:updated', combatUpdateFor(built, viewerSocket.data.identity));
   }
+}
+
+// Handed to the resolution engine on the one object it already holds. It cannot
+// import this module — server/index.js starts a listening HTTP server at module
+// load, so importing it from the engine would boot a second server — and the
+// engine genuinely needs it: raising a pause has to broadcast, or the prompt
+// reaches nobody who wasn't already looking. See broadcastPause there.
+io.emitCombatUpdated = emitCombatUpdated;
+
+// One socket, on its own. The reason this exists: a paused pair produces no
+// further broadcasts — that is what being paused means — so a client that was
+// disconnected when the pause fired has nothing to catch up on and no event
+// coming. Sending it the snapshot the moment it identifies is what closes that
+// hole, and identity is re-sent on every reconnect (roleContext.jsx).
+async function emitCombatUpdatedTo(viewerSocket) {
+  const built = await buildCombatUpdate();
+  viewerSocket.emit('combat:updated', combatUpdateFor(built, viewerSocket.data?.identity));
 }
 
 // Grappling's prompt, as this one viewer is allowed to see it.
@@ -1340,7 +1392,7 @@ app.get('/api/combat', wrap(async (req, res) => {
     // reloaded while the cross was up would sit there with no prompt until
     // something unrelated happened.
     pairs: pairRows.map((row) => ({
-      ...shapePair(row, state.round_length, openResolutions.get(row.pair_index)),
+      ...shapePair(row, state.round_length, openResolutions.get(row.pair_index), viewer),
       pendingGrapple: mapPendingGrappleForViewer(openResolutions.get(row.pair_index), viewer, participants),
     })),
     participants,
@@ -1632,6 +1684,7 @@ io.on('connection', (socket) => {
     if (role === 'gm') {
       socket.data.identity = { role: 'gm' };
       socket.emit('identity:capabilities', await capabilitiesFor(socket.data.identity));
+      await emitCombatUpdatedTo(socket);
       return;
     }
     const id = Number(characterId);
@@ -1640,6 +1693,13 @@ io.on('connection', (socket) => {
       socket.data.identity = character ? { role: 'player', characterId: character.id } : null;
     }
     socket.emit('identity:capabilities', await capabilitiesFor(socket.data.identity));
+    // **Answer every identity with a fresh snapshot (bugfix).** Identity is
+    // re-sent on every reconnect, which makes this the one moment the server
+    // reliably hears "someone is back". It matters because a *paused* pair
+    // emits nothing further on its own: a GM whose phone locked while a Dodge
+    // or Block prompt went out used to come back to a silent screen and a fight
+    // that could not be advanced by anyone. Now reconnecting is the resync.
+    await emitCombatUpdatedTo(socket);
   });
 
   // **The gated half of a move-reveal chat card (decided, new).** The card
@@ -4218,6 +4278,97 @@ io.on('connection', (socket) => {
     if (socket.data.identity?.role !== 'gm') return;
     await resolveBlock(pairIndex, { outcome, attackerDeclaredMoveId }, io);
     await emitCombatUpdated();
+  });
+
+  // **The manual way back to a pause (decided, new).** Everything around this
+  // is automatic and, after the delivery rework, should never need it — but
+  // "should never" is how a table ends up with a fight paused, no prompt on any
+  // screen, and nobody able to go on, which is exactly what was reported from
+  // play. GM Tools' **Fight Pauses** reads this.
+  //
+  // Read-only: it re-sends and re-describes, and resolves nothing. It answers
+  // with every pause currently open, each already shaped into the question it
+  // is asking, so the tool can put the dialog back up from the server's own
+  // answer *without going through the combat snapshot at all*. That
+  // independence is the whole point — a fallback that shares its plumbing with
+  // the thing it is backing up is not a fallback.
+  //
+  // Grappling's pause is listed but never carries its payload: the directions
+  // are the mini-game, they differ per viewer, and this is one socket asking.
+  on('combat:resummon_pause', async () => {
+    if (socket.data.identity?.role !== 'gm') return;
+    const rows = await all(
+      `SELECT id, pair_index, round_number, status, pending_dodge_json, pending_defense_json,
+              pending_conflict_json, pending_grapple_json
+         FROM pair_round_resolutions
+        WHERE status LIKE 'paused_%'
+        ORDER BY pair_index`
+    );
+    const parse = (json) => {
+      try {
+        return json ? JSON.parse(json) : null;
+      } catch {
+        return null;
+      }
+    };
+    const pauses = [];
+    for (const row of rows) {
+      const base = { pairIndex: row.pair_index, roundNumber: row.round_number, status: row.status };
+      if (row.status === 'paused_dodge' || row.status === 'paused_defense') {
+        const kind = row.status === 'paused_dodge' ? 'dodge' : 'block';
+        const stored = parse(kind === 'dodge' ? row.pending_dodge_json : row.pending_defense_json);
+        const prompt = defensePromptPayload(stored, kind);
+        if (!prompt) continue;
+        const line = prompt.targetSlotName ? ` — the strike to ${prompt.targetSlotName}` : '';
+        pauses.push({
+          ...base,
+          kind,
+          answeredBy: 'gm',
+          gmCanAnswer: true,
+          prompt,
+          summary: `${prompt.defenderCharacterName ?? 'The defender'} ${
+            kind === 'dodge' ? 'dodging' : 'blocking'
+          } ${prompt.attackerCharacterName ?? 'the attacker'}${line}`,
+        });
+      } else if (row.status === 'paused_conflict') {
+        const conflict = parse(row.pending_conflict_json);
+        if (!conflict) continue;
+        // Whose call it is decides whether the tool offers to summon it at all:
+        // the GM runs the NPCs, but a PC's commitment is that player's to spend.
+        // Worked out here because this is the layer that knows what a character
+        // is — the tool would only be guessing.
+        const fighter = conflict.characterId != null ? await getCharacter(conflict.characterId) : null;
+        pauses.push({
+          ...base,
+          kind: 'conflict',
+          answeredBy: 'fighter',
+          gmCanAnswer: fighter?.character_type === 'npc',
+          conflict,
+          summary: `${conflict.characterName ?? 'A fighter'} — ${
+            conflict.blockerMoveName ? `“${conflict.blockerMoveName}”` : 'a guard'
+          } held longer and ran into what came next`,
+        });
+      } else if (row.status === 'paused_grapple') {
+        const grapple = parse(row.pending_grapple_json);
+        pauses.push({
+          ...base,
+          kind: 'grapple',
+          answeredBy: 'fighter',
+          // Never summonable: the directions are the mini-game and they differ
+          // per viewer, so there is no single prompt to hand to one socket.
+          gmCanAnswer: false,
+          summary:
+            grapple?.phase === 'guess'
+              ? `${grapple?.targetCharacterName ?? 'The target'} still has to guess where the grapple goes`
+              : `${grapple?.grapplerCharacterName ?? 'The grappler'} still has to pick where the grapple goes`,
+        });
+      }
+    }
+    // The ordinary path gets first refusal: re-push the snapshot, so if it was
+    // only ever a missed broadcast the dialog is back before the GM reads the
+    // list at all.
+    await emitCombatUpdatedTo(socket);
+    socket.emit('combat:pauses', { pauses });
   });
 
   // Grappling's mini-game — the app's first genuinely TWO-party pause. The

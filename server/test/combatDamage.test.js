@@ -17,6 +17,7 @@ import {
   canExtendDefense,
   cascadeShift,
   planCascade,
+  splashSteps,
 } from '../combatDamage.js';
 
 test('computeHitDamage: every 5 points is 1 Half-Damage step (0.5 damage)', () => {
@@ -544,4 +545,28 @@ test('planCascade is empty when the extension collides with nothing', () => {
     planCascade({ blockedUntil: 14, roundStartTic: 10, roundLength: 7, moves: [] }),
     []
   );
+});
+
+
+// ---------------------------------------------------------------------------
+// splashSteps — "for every Full Damage dealt" (Piercing Headache, Last Breath)
+// ---------------------------------------------------------------------------
+
+test('splashSteps pays one step per FULL point, and nothing for a lone half', () => {
+  // Two Half-Damage steps make a whole point, and only a whole point buys a
+  // splash — which is what "for every Full Damage dealt" says.
+  assert.equal(splashSteps(0), 0);
+  assert.equal(splashSteps(1), 0, 'half a point is not a Full Damage');
+  assert.equal(splashSteps(2), 1);
+  assert.equal(splashSteps(3), 1, 'the leftover half does not round up');
+  assert.equal(splashSteps(4), 2);
+  assert.equal(splashSteps(5), 2);
+  assert.equal(splashSteps(6), 3);
+});
+
+test('splashSteps never returns a negative or a fraction', () => {
+  assert.equal(splashSteps(-4), 0);
+  assert.equal(splashSteps(null), 0);
+  assert.equal(splashSteps(undefined), 0);
+  assert.equal(splashSteps('3'), 1);
 });

@@ -42,7 +42,14 @@ export function useConnectionState() {
 export function useSocketRefresh(refresh) {
   const refreshRef = useRef(refresh);
   refreshRef.current = refresh;
-  const hasConnectedOnceRef = useRef(false);
+  // **Seeded from the socket's CURRENT state, not from false (bugfix).** The
+  // rule this implements is "skip the first connect, because the component's own
+  // mount-time fetch already covers it" — but a component mounted while the
+  // socket is *already* connected never sees that first connect. Starting at
+  // false made it treat the next one — a genuine reconnect — as the first and
+  // skip it, so anything opened mid-session (a GM Tools panel, say) silently
+  // refused to resync exactly once, which is the once that matters.
+  const hasConnectedOnceRef = useRef(socket.connected);
   const debounceRef = useRef(null);
 
   useEffect(() => {

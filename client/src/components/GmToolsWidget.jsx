@@ -1,10 +1,11 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { Dices, Wrench, X } from 'lucide-react';
+import { Dices, PauseOctagon, Wrench, X } from 'lucide-react';
 import { useRole } from '../roleContext.jsx';
 import { socket } from '../socket.js';
 import { getCharacters } from '../lib/api.js';
 import { useSocketRefresh } from '../lib/connection.js';
+import { summonPausePrompt } from '../lib/pausePrompts.js';
 
 // GM Tools (decided, new) — a small circular widget the GM can reach from
 // anywhere in the app, overlaid above every page's own content. Opening it
@@ -151,6 +152,104 @@ function RollRequester({ onDone }) {
   );
 }
 
+// **Fight Pauses (decided, new) — the manual way back to a prompt.**
+//
+// A paused pair cannot advance until somebody answers it, and every automatic
+// path that carries the question is now snapshot-driven and self-healing. This
+// exists because "automatic and self-healing" is exactly what the old delivery
+// was believed to be, right up until a GM locked their phone mid-round and the
+// fight could not be continued by anyone at the table.
+//
+// It asks the SERVER what is paused rather than reading the combat snapshot the
+// dialogs normally come from, and summons the prompt out of that answer — so it
+// shares no plumbing with the path it is backing up. That is the whole value of
+// it; a fallback wired through the same pipe is just a second go at the same
+// failure.
+const KIND_LABEL = {
+  dodge: 'Dodge call',
+  block: 'Block call',
+  conflict: 'Guard held longer',
+  grapple: 'Grapple',
+};
+
+function FightPauses({ onDone }) {
+  // null until the server has answered once — "nothing is paused" and "we have
+  // not asked yet" are different things to show.
+  const [pauses, setPauses] = useState(null);
+
+  const ask = useCallback(() => socket.emit('combat:resummon_pause'), []);
+
+  useEffect(() => {
+    const receive = (payload) => setPauses(payload?.pauses ?? []);
+    socket.on('combat:pauses', receive);
+    ask();
+    return () => socket.off('combat:pauses', receive);
+  }, [ask]);
+  useSocketRefresh(ask);
+
+  const summon = (pause) => {
+    summonPausePrompt(pause);
+    onDone?.();
+  };
+
+  return (
+    <div className="flex flex-col gap-3">
+      <p className="text-sm text-zinc-400">
+        Anything the fight is currently waiting on. Summon puts the prompt back on your screen — use
+        it if a pause is listed here but no dialog ever appeared.
+      </p>
+
+      {pauses === null ? (
+        <p className="text-sm text-zinc-600">Asking the server…</p>
+      ) : pauses.length === 0 ? (
+        <p className="panel-cut-sm bg-zinc-800/60 px-3 py-2 text-sm text-zinc-400">
+          Nothing is paused. Every pair is either declaring or resolving on its own.
+        </p>
+      ) : (
+        <div className="flex flex-col gap-2">
+          {pauses.map((pause) => (
+            <div
+              key={`${pause.pairIndex}:${pause.kind}:${pause.roundNumber}`}
+              className="panel-cut-sm border border-zinc-700 bg-zinc-800 px-3 py-2"
+            >
+              <div className="flex items-baseline gap-2">
+                <span className="font-display text-sm font-semibold text-brand-200">
+                  {KIND_LABEL[pause.kind] ?? pause.kind}
+                </span>
+                <span className="text-xs text-zinc-500">
+                  Pair {pause.pairIndex + 1} · Round {pause.roundNumber}
+                </span>
+              </div>
+              <p className="mt-1 text-sm text-zinc-300">{pause.summary}</p>
+              {pause.gmCanAnswer ? (
+                <button
+                  type="button"
+                  onClick={() => summon(pause)}
+                  className="mt-2 min-h-11 w-full panel-cut-sm border border-brand-600/60 bg-brand-900/40 px-3 py-2 font-display text-sm font-semibold text-brand-200 hover:bg-brand-800/50 md:min-h-0 md:w-auto md:py-1"
+                >
+                  Summon the prompt
+                </button>
+              ) : (
+                <p className="mt-1 text-xs text-zinc-500">
+                  Not yours to answer — this one is waiting on the fighter it belongs to.
+                </p>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      <button
+        type="button"
+        onClick={ask}
+        className="min-h-11 self-start panel-cut-sm border border-zinc-700 px-3 py-2 text-xs font-semibold text-zinc-400 hover:bg-zinc-800 md:min-h-0 md:py-1"
+      >
+        Re-check
+      </button>
+    </div>
+  );
+}
+
 const TOOLS = [
   {
     id: 'roll-requester',
@@ -158,6 +257,13 @@ const TOOLS = [
     blurb: 'Ask a player to roll one of their Stats.',
     icon: Dices,
     render: (props) => <RollRequester {...props} />,
+  },
+  {
+    id: 'fight-pauses',
+    name: 'Fight Pauses',
+    blurb: 'See what the fight is waiting on, and summon the prompt by hand.',
+    icon: PauseOctagon,
+    render: (props) => <FightPauses {...props} />,
   },
 ];
 
@@ -229,7 +335,7 @@ export default function GmToolsWidget() {
 
               <div className="min-h-0 flex-1 overflow-y-auto">
                 {tool ? (
-                  tool.render({ onDone: () => {} })
+                  tool.render({ onDone: close })
                 ) : (
                   <div className="flex flex-col gap-2">
                     {TOOLS.map(({ id, name, blurb, icon: Icon }) => (

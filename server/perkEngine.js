@@ -265,6 +265,57 @@ export async function perkRoundStartHalfHealing(characterId) {
   return Math.max(0, await sumSeam(characterId, 'roundStartHalfHealing'));
 }
 
+// Extra damage this character's blow deals beyond what it just landed (Piercing
+// Headache, Last Breath Taker). Concatenated, not summed — see the seam's own
+// note. Empty for every fighter without one, which is almost every blow.
+export async function perkSplashDamage(characterId, { appliedBySlot }) {
+  const granted = await perkDefinitionsFor(characterId);
+  const withSeam = granted.filter((g) => typeof g.definition.splashDamage === 'function');
+  if (!withSeam.length) return [];
+  const ctx = await seamContext(characterId, { appliedBySlot });
+  const out = [];
+  for (const { definition, characterPerkId } of withSeam) {
+    const entries = (await definition.splashDamage({ ...ctx, characterPerkId })) ?? [];
+    for (const entry of entries) {
+      const steps = Math.trunc(Number(entry?.steps) || 0);
+      if (entry?.slotName && steps > 0) out.push({ slotName: entry.slotName, steps });
+    }
+  }
+  return out;
+}
+
+// Does this character's own move shrug off an opponent's Movement Punisher
+// (Grounded)? Asked of the fighter who would be tripped.
+export async function perkIgnoresMovementPunisher(characterId, extra = {}) {
+  const granted = await perkDefinitionsFor(characterId);
+  const withSeam = granted.filter((g) => typeof g.definition.ignoresMovementPunisher === 'function');
+  if (!withSeam.length) return false;
+  const ctx = await seamContext(characterId, extra);
+  for (const { definition, characterPerkId } of withSeam) {
+    if (await definition.ignoresMovementPunisher({ ...ctx, characterPerkId })) return true;
+  }
+  return false;
+}
+
+// What this character's Perks are worth to the Interruption contest
+// (Dogfighter). Both halves in one call, folded field by field — the seam was
+// designed this way (see vttprojectplan.md's register) because the two numbers
+// are the two sides of one comparison and a Perk that moves one usually has an
+// opinion about the other.
+export async function perkInterruptAmounts(characterId, extra = {}) {
+  const granted = await perkDefinitionsFor(characterId);
+  const withSeam = granted.filter((g) => typeof g.definition.interruptAmounts === 'function');
+  const total = { interrupter: 0, hardToInterrupt: 0 };
+  if (!withSeam.length) return total;
+  const ctx = await seamContext(characterId, extra);
+  for (const { definition, characterPerkId } of withSeam) {
+    const part = (await definition.interruptAmounts({ ...ctx, characterPerkId })) ?? {};
+    total.interrupter += Math.trunc(Number(part.interrupter) || 0);
+    total.hardToInterrupt += Math.trunc(Number(part.hardToInterrupt) || 0);
+  }
+  return total;
+}
+
 // Stamina back per Half-Damage step this character deals (Baron of Suffering).
 // Summed; 0 for everybody else, which is every fighter in almost every fight.
 export async function perkStaminaPerHalfDamage(characterId) {

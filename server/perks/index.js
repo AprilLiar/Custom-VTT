@@ -128,6 +128,26 @@ export const SEAMS = [
   // (ctx) -> number of pending Half-Damage markers to clear at Round Start
   // (Healing Factor). Summed. WHICH markers is the engine's choice, at random.
   'roundStartHalfHealing',
+  // ({ appliedBySlot }) -> [{ slotName, steps }] of EXTRA damage this
+  // character's attack deals on top of what it just landed (Piercing Headache,
+  // Last Breath Taker). Concatenated across Perks rather than summed, which is
+  // the list-shaped version of the same additive rule: each entry is applied
+  // independently and their order cannot matter.
+  //
+  // `appliedBySlot` is what the blow ACTUALLY put on a die this exchange, keyed
+  // by concrete Stat name — not what it rolled, and not what it aimed at. So a
+  // splash never fires off damage that found a broken Stat and went nowhere,
+  // and it does fire off damage a Successful Block redirected onto the guard
+  // (decided): damage to the Skull is damage to the Skull, however it got there.
+  'splashDamage',
+  // (ctx) -> boolean. OR-ed. Whether this character's moves ignore an
+  // opponent's Movement Punisher Tag (Grounded).
+  'ignoresMovementPunisher',
+  // (ctx) -> { interrupter, hardToInterrupt }. Folded field by field, additively.
+  // The two halves of the Interruption contest (Dogfighter). Designed with this
+  // shape long before anything used it — see the seam register in
+  // vttprojectplan.md — and this is the first Perk to take it up.
+  'interruptAmounts',
   // (ctx) -> Stamina returned to this character per Half-Damage step their
   // attack actually LANDS (Baron of Suffering). Summed.
   //
@@ -159,12 +179,16 @@ export const META_KEYS = ['name', 'description', 'triggers', 'manual'];
 import baronOfSuffering from './baronOfSuffering.js';
 import corneredAnimal from './corneredAnimal.js';
 import deadlyPendulum from './deadlyPendulum.js';
+import dogfighter from './dogfighter.js';
 import geniusObserver from './geniusObserver.js';
+import grounded from './grounded.js';
 import healingFactor from './healingFactor.js';
 import ironSkin from './ironSkin.js';
+import lastBreathTaker from './lastBreathTaker.js';
 import multifaceted from './multifaceted.js';
 import notJustAScratch from './notJustAScratch.js';
 import perfectPlayer from './perfectPlayer.js';
+import piercingHeadache from './piercingHeadache.js';
 import punchesInBunches from './punchesInBunches.js';
 import secondWind from './secondWind.js';
 import spikedShell from './spikedShell.js';
@@ -186,6 +210,10 @@ const DEFINITIONS = [
   deadlyPendulum,
   baronOfSuffering,
   woundedWolf,
+  piercingHeadache,
+  lastBreathTaker,
+  grounded,
+  dogfighter,
 ];
 
 export const PERK_REGISTRY = Object.fromEntries(
