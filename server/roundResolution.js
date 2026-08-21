@@ -1539,6 +1539,40 @@ async function runInterruptAndDamage(io, {
   }
 }
 
+// **The one place a defence pause becomes the question a GM is shown.** Both
+// pause writers push it live off this, and `shapePair` (server/index.js) hangs
+// the identical object on the pair in every combat snapshot — so the live push
+// and the reconnect pickup can never word the same pause differently. The
+// client used to re-derive `coverage` and `targetSlotName` from the raw pause
+// JSON itself, in two places, which is exactly the drift this closes.
+//
+// Reads only the stored pause, so it is safe to call on a pause written by an
+// older build and on one raised a second ago alike.
+export function defensePromptPayload(pending, defenseKind) {
+  if (!pending) return null;
+  const remainingStats = pending.remainingStats ?? [];
+  return {
+    defenseKind,
+    attackerDeclaredMoveId: pending.attackerDeclaredMoveId,
+    attackerCharacterName: pending.attackerCharacterName ?? null,
+    attackerMoveName: pending.attackerMoveName ?? null,
+    defenderDeclaredMoveId: pending.defenderDeclaredMoveId,
+    defenderCharacterName: pending.defenderCharacterName ?? null,
+    defenderMoveName: pending.defenderMoveName ?? null,
+    attackerResult: pending.attackerResult,
+    // A Dodge only ever reaches a person on full coverage, so it has no
+    // coverage to report; a Block is asked on 'full' and 'too-short' alike and
+    // those are different questions.
+    coverage: defenseKind === 'block' ? pending.coverage?.coverage ?? null : null,
+    // Which line of attack this particular question is about, and how many are
+    // still to come after it — so the GM can see they are part-way through a
+    // multi-Stat attack rather than being asked the same thing twice.
+    targetSlotName: remainingStats[0] ?? null,
+    remainingStats,
+    tic: pending.tic ?? null,
+  };
+}
+
 // Writes the Dodge pause and raises the prompt for whichever Stat is next in
 // line. Shared by the first pause and by every re-pause resolveDodge makes as
 // it works down `remainingStats`, so the two can never drift into asking
@@ -1548,7 +1582,6 @@ async function runInterruptAndDamage(io, {
 // question about the attack as a whole, which is what a Dodge prompt has always
 // been.
 async function persistDodgePause(io, { pairIndex, pending, emitEvent, resolutionId = null }) {
-  const targetSlotName = pending.remainingStats?.[0] ?? null;
   await run(
     resolutionId != null
       ? `UPDATE pair_round_resolutions SET status = 'paused_dodge', pending_dodge_json = ? WHERE id = ?`
@@ -1556,20 +1589,8 @@ async function persistDodgePause(io, { pairIndex, pending, emitEvent, resolution
          WHERE pair_index = ? AND status = 'running'`,
     [JSON.stringify(pending), resolutionId != null ? resolutionId : pairIndex]
   );
-  await emitEvent(pending.tic, 'dodge_prompt', {
-    attackerDeclaredMoveId: pending.attackerDeclaredMoveId,
-    attackerCharacterName: pending.attackerCharacterName,
-    attackerMoveName: pending.attackerMoveName ?? null,
-    defenderDeclaredMoveId: pending.defenderDeclaredMoveId,
-    defenderCharacterName: pending.defenderCharacterName ?? null,
-    defenderMoveName: pending.defenderMoveName ?? null,
-    attackerResult: pending.attackerResult,
-    // Which line of attack this particular question is about, and how many are
-    // still to come after it — so the GM can see they are part-way through a
-    // multi-Stat attack rather than being asked the same thing twice.
-    targetSlotName,
-    remainingStats: pending.remainingStats ?? [],
-  });
+  await emitEvent(pending.tic, 'dodge_prompt', defensePromptPayload(pending, 'dodge'));
+  await broadcastPause(io);
 }
 
 // Which of a move's Attack Target Stats this particular target can actually be
@@ -2027,6 +2048,7 @@ async function resolveGrapple(io, { row, pairIndex, tic, emitEvent }) {
     io,
     `${row.characterName}'s ${row.moveName} has ${targetName} — waiting on ${row.characterName} to pick where it goes.`
   );
+  await broadcastPause(io);
   return { paused: true };
 }
 
@@ -2741,7 +2763,6 @@ async function loadBlockGuard(defenderDM, tic) {
 // it works down `remainingStats`, so the two can never drift into asking
 // different questions — the same shape persistDodgePause has.
 async function persistBlockPause(io, { pairIndex, pending, emitEvent, resolutionId = null }) {
-  const targetSlotName = pending.remainingStats?.[0] ?? null;
   await run(
     resolutionId != null
       ? `UPDATE pair_round_resolutions SET status = 'paused_defense', pending_defense_json = ? WHERE id = ?`
@@ -2749,18 +2770,8 @@ async function persistBlockPause(io, { pairIndex, pending, emitEvent, resolution
          WHERE pair_index = ? AND status = 'running'`,
     [JSON.stringify(pending), resolutionId != null ? resolutionId : pairIndex]
   );
-  await emitEvent(pending.tic, 'block_prompt', {
-    attackerDeclaredMoveId: pending.attackerDeclaredMoveId,
-    attackerCharacterName: pending.attackerCharacterName,
-    attackerMoveName: pending.attackerMoveName ?? null,
-    defenderDeclaredMoveId: pending.defenderDeclaredMoveId,
-    defenderCharacterName: pending.defenderCharacterName ?? null,
-    defenderMoveName: pending.defenderMoveName ?? null,
-    attackerResult: pending.attackerResult,
-    coverage: pending.coverage?.coverage ?? null,
-    targetSlotName,
-    remainingStats: pending.remainingStats ?? [],
-  });
+  await emitEvent(pending.tic, 'block_prompt', defensePromptPayload(pending, 'block'));
+  await broadcastPause(io);
 }
 
 // One line of a Block, once the GM has called it. Rolls the guard and resolves
@@ -3064,6 +3075,7 @@ async function finishBlock(io, { pairIndex, pending, defenderDM, guard, emitEven
         [JSON.stringify({ ...payload, blockedUntil: newRecoveryEndTic, tic }), pairIndex]
       );
       await emitEvent(tic, 'move_conflict_prompt', payload);
+      await broadcastPause(io);
       return { paused: true };
     }
   }
@@ -3761,10 +3773,19 @@ function emitToPairAudience(io, seatedCharacterIds, event, payload) {
   }
 }
 
-function emitToGMs(io, event, payload) {
-  for (const viewerSocket of io.sockets.sockets.values()) {
-    if (viewerSocket.data?.identity?.role === 'gm') viewerSocket.emit(event, payload);
-  }
+// **Raising a pause is not finished until the snapshot has gone out.** A paused
+// pair emits nothing further of its own accord — that is what being paused
+// means — so the broadcast that carries the prompt is the last chance anyone
+// has to learn about it until they reconnect. Every pause writer below calls
+// this, rather than trusting whichever socket handler happens to be on the
+// stack to remember afterwards.
+//
+// `io.emitCombatUpdated` is hung on the Socket.io server by server/index.js at
+// boot (this module cannot import it — index.js starts a listening server at
+// module load). Optional-called so the unit tests, which drive the engine with
+// a stub io, are not required to provide it.
+async function broadcastPause(io) {
+  await io?.emitCombatUpdated?.();
 }
 
 // Builds this resolution's own emitEvent(tic, type, payload) closure —
@@ -3803,37 +3824,17 @@ async function makeEmitEvent(io, resolution, pairIndex, roundNumber) {
       timestamp: new Date().toISOString(),
     };
     emitToPairAudience(io, seatedIds, 'combat:round_event', envelope);
-    // §3 — the Dodge prompt additionally goes to every GM socket
-    // unconditionally, regardless of which pair that GM happens to be
-    // watching: it's a blocking decision only they can make, so it has to
-    // reach them wherever they are in the app (the client delivers it
-    // through CombatHeaderBar's global dialog queue). Sent from here, off
-    // the single dodge_prompt round_event, so the stored log and the live
-    // prompt can never disagree about what's being asked.
-    if (type === 'dodge_prompt') {
-      emitToGMs(io, 'combat:dodge_prompt', { ...envelope.payload, resolutionId: resolution.id, pairIndex, roundNumber, tic });
-    }
-    // The Block prompt travels the identical road for the identical reason —
-    // it is the same decision asked about a different guard, and the paused
-    // pair cannot continue until a GM answers it wherever they happen to be.
-    if (type === 'block_prompt') {
-      emitToGMs(io, 'combat:block_prompt', { ...envelope.payload, resolutionId: resolution.id, pairIndex, roundNumber, tic });
-    }
-    // The move-conflict prompt keeps its pre-overhaul event name, payload
-    // shape and delivery (decision #3): a plain broadcast that the client
-    // filters down to whoever actually controls the affected character
-    // (see CombatHeaderBar's own ownership gate). Unlike the Dodge prompt
-    // this is the *affected player's* call, not the GM's, and the engine is
-    // now its only source — the manual path that used to emit it went away
-    // with combat:resolve_defense.
-    if (type === 'move_conflict_prompt') {
-      // **The whole payload, not three hand-picked fields (fix).** It used to
-      // forward only the two move ids and the character, which was enough when
-      // the prompt was "forfeit this one move or slide it" — but the cascade
-      // prompt has to show the tail it is about, and a client that got this
-      // live push rather than the snapshot would have rendered an empty list.
-      io.emit('combat:move_conflict', payload);
-    }
+    // **No second delivery path for a prompt (decided, revised).** `dodge_prompt`,
+    // `block_prompt` and `move_conflict_prompt` used to ALSO go out here as
+    // their own one-shot socket events — `combat:dodge_prompt` to every GM,
+    // `combat:move_conflict` to everyone — which the client queued up locally.
+    // That is the shape the "GM locked their phone and the fight died" bug came
+    // in: a one-shot event reaches only the sockets connected at that instant,
+    // and a paused pair sends nothing after it. The prompts now travel on the
+    // combat snapshot and nowhere else (see broadcastPause and shapePair), so
+    // there is exactly one place they can be got from and exactly one place
+    // they can be wrong. They remain round_events, which is what the cutscene
+    // and the stored replay read.
   };
 }
 
