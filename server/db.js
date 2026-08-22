@@ -7,7 +7,60 @@ import { PERK_REGISTRY } from './perks/index.js';
 const url = process.env.TURSO_DATABASE_URL || 'file:local.db';
 const authToken = process.env.TURSO_AUTH_TOKEN;
 
-export const db = createClient(authToken ? { url, authToken } : { url });
+// **Reads are local; only writes cross the network (decided, new — Phase 0 of
+// the round-trip work).**
+//
+// Every helper below sends one statement per call, so against a plain remote
+// Turso connection an action costs (its await-chain length) x (the round-trip
+// to the database). That is the whole of the reported 3-5 second delay:
+// declaring a move is 26 queries in a 14-deep chain, and resolving a round is
+// 210 queries 145 deep. Nothing was slow — the trips were.
+//
+// An **embedded replica** keeps a full copy of the database on this server's
+// own disk. Reads are answered from that file in microseconds and never leave
+// the process; writes still go to the primary and are pulled straight back.
+// This app is overwhelmingly read-heavy, so the depth that costs anything
+// collapses to the handful of writes an action actually makes.
+//
+// Three properties make it safe here rather than merely fast:
+//
+//  - **`readYourWrites` defaults to true** in the libsql binding, so a write
+//    is visible to the very next local read. The engine reads back what it
+//    just wrote constantly (declare -> re-read the pair, resolve -> re-read the
+//    resolution row) and would be incorrect, not just stale, without this.
+//  - **One instance.** Render's free tier runs a single web service, so there
+//    is no second writer whose frames this replica would need to chase.
+//  - **The local file is disposable.** It is a cache of the primary, rebuilt on
+//    boot, so Render's ephemeral disk costs nothing. The primary is still the
+//    only durable copy.
+//
+// The initial sync is mandatory (see syncReplica below) — starting up against
+// an empty replica would let the seed functions decide the world is unpopulated
+// and re-seed it into the primary.
+const REMOTE_SCHEMES = /^(libsql|https?|wss?):/i;
+const usingRemote = REMOTE_SCHEMES.test(url);
+const replicaPath = process.env.TURSO_REPLICA_PATH || 'replica.db';
+// Off by default: with one instance and read-your-writes there is no frame to
+// chase. Set it (in seconds) only if something outside this server writes to
+// the primary — a `turso db shell` session, a second deployment.
+const syncInterval = Number(process.env.TURSO_SYNC_SECONDS) || undefined;
+
+export const db = usingRemote
+  ? createClient({ url: `file:${replicaPath}`, syncUrl: url, authToken, syncInterval })
+  : createClient(authToken ? { url, authToken } : { url });
+
+export const replicaMode = usingRemote;
+
+// Pull the primary into the local replica. Called once before initDb (see
+// server/index.js) and deliberately allowed to throw: a server that came up
+// against a half-synced replica would re-seed the ruleset, the Tells and the
+// Perks into the primary as duplicates. Better to die and let Render restart.
+export async function syncReplica() {
+  if (!usingRemote) return null;
+  const started = Date.now();
+  await db.sync();
+  return Date.now() - started;
+}
 
 // Safe helpers that always return plain objects keyed by column name.
 export async function all(sql, args = []) {

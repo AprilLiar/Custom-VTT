@@ -39,6 +39,19 @@ npm start                      # Express serves client/dist + Socket.io on $PORT
    - `TURSO_DATABASE_URL` — the `libsql://...` URL from step 1
    - `TURSO_AUTH_TOKEN` — the token from step 1
 
+**The server runs Turso as an embedded replica, not as a network connection.** It keeps a full
+copy of the database on its own disk (`replica.db`, gitignored and rebuilt on every boot), answers
+every read locally, and sends only writes to the primary. That is what keeps declaring a move fast:
+one statement per network trip against a remote Turso meant an action cost its whole await-chain
+length in round-trips. Nothing in the app's own code changed — same client, same SQL.
+
+Two optional env vars: `TURSO_REPLICA_PATH` moves the local file, and `TURSO_SYNC_SECONDS` turns on
+background syncing (off by default — with one instance and read-your-writes there is nothing to
+chase, so it is only for when something *outside* the server writes to the primary).
+
+Worth checking once: `turso db show dogfight` reports the database's region. The closer it is to the
+Render service's region, the cheaper every write is.
+
 Note: Render's free tier sleeps after inactivity — the first load of a session takes
 ~30–60s to wake the server. One-time per session, not ongoing.
 

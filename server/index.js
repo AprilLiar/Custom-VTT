@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { createServer } from 'node:http';
 import { Server } from 'socket.io';
-import { db, all, one, run, initDb } from './db.js';
+import { db, all, one, run, initDb, syncReplica } from './db.js';
 import {
   advancePairResolution,
   resolveDodge,
@@ -4582,6 +4582,32 @@ app.use(express.static(clientDist));
 app.get('*', (_req, res) => {
   res.sendFile(path.join(clientDist, 'index.html'));
 });
+
+// Pull the embedded replica up to date before touching the schema — see
+// syncReplica in db.js for why an unsynced replica must never reach initDb.
+// A no-op (and instant) when running against a plain local file.
+//
+// Deliberately fatal. The alternative is a server that came up holding an
+// empty replica, whose seed functions would then look at a world with no
+// ruleset, no Tells and no Perks and helpfully write a second copy of all
+// three into the primary.
+let syncMs = null;
+try {
+  syncMs = await syncReplica();
+} catch (err) {
+  console.error(
+    'Could not sync the embedded replica from the Turso primary, so the server is stopping ' +
+      'rather than starting against an empty database.\n' +
+      'Check TURSO_DATABASE_URL and TURSO_AUTH_TOKEN, and that the primary is reachable.\n',
+    err
+  );
+  process.exit(1);
+}
+console.log(
+  syncMs == null
+    ? 'Database: local file (no replica)'
+    : `Database: embedded replica, synced from the primary in ${syncMs}ms — reads are local`
+);
 
 await initDb();
 // Chat is intentionally ephemeral — see chat:clear below — and clearing it

@@ -15,10 +15,74 @@ On every fresh page load, a modal asks who's playing: a **GM** button (unchanged
 - **Frontend:** React + Vite, Tailwind CSS, Framer Motion (transitions/layout), GSAP (impact/roll effects)
 - **Backend:** Node.js + Express — also serves the built frontend (single deployable app)
 - **Real-time:** Socket.io
-- **Database:** Turso — free, hosted, SQLite-compatible (libSQL), no credit card required. Used instead of a local SQLite file because Render's free tier has no persistent disk; same SQL, same schema, just accessed over network instead of a local file.
+- **Database:** Turso — free, hosted, SQLite-compatible (libSQL), no credit card required. Used instead of a local SQLite file because Render's free tier has no persistent disk; same SQL, same schema. **Accessed through an embedded replica, not over the network (decided, new — see Database round-trips below).**
 - **Hosting:** Render — free web service tier, no credit card required. Supports WebSockets natively while active. Tradeoff: the free tier sleeps after inactivity, so the first connection after a quiet period takes ~30-60 seconds to wake up (a one-time delay at the start of a session, not an ongoing issue).
 - **Access:** one shared URL, no auth, no per-player restrictions
 - **Mobile:** installable PWA (manifest + service worker, see Mobile Readiness below); Playwright (`@playwright/test`) drives a 5-project mobile device matrix (`playwright.config.js`, `e2e-mobile/`) alongside the existing `node --test` server suite
+
+## Database round-trips (decided, new)
+**Status: Phase 0 shipped.** Reported from the table as "every operation of declaring, granting or
+choosing takes 3-5 seconds". It was measured rather than guessed: `all`/`one`/`run` were wrapped in
+an `AsyncLocalStorage` counter and each socket handler and REST route made to report its query count
+and wall time, run twice against a fresh database — once bare, once with 40ms injected before every
+query so that **serialization depth** (how many queries an action runs *in a row*) could be read off
+directly as `wall / 40`.
+
+**Nothing was slow. The trips were.** The database answers in single-digit milliseconds; what costs
+seconds is that `server/db.js` sends one statement per call, so an action's wall time is
+`depth x round-trip`:
+
+| Operation | Queries | Depth | @40ms |
+| --- | --- | --- | --- |
+| `combat:character_done_declaring` (2nd side — resolves the round) | 210 | **145** | 5808ms |
+| `initDb()` (warm database, **every** boot) | 148 | 148 | ~5900ms |
+| `GET /api/combat` | 46 | 10 | 415ms |
+| `combat:next_round` | 29 | 15 | 620ms |
+| `move:declare` | 26 | **14** | 573ms |
+| `combat:character_done_declaring` (1st side) | 24 | 15 | 599ms |
+| `GET /api/characters/:id` | 24 | 6 | 248ms |
+| `POST /api/characters` | 10 | 10 | 419ms |
+| `move:grant` | 3 | 3 | 125ms |
+
+At a cross-region round-trip of 150-250ms a 14-deep declare lands at 2.1-3.5s, which is exactly the
+reported band.
+
+**Phase 0 — the embedded replica (shipped).** `createClient({ url: 'file:replica.db', syncUrl:
+TURSO_DATABASE_URL, authToken })` keeps a full copy of the database on the server's own disk. Reads
+are answered locally in microseconds and never leave the process; only writes go to the primary.
+Three properties make this safe rather than merely fast, and all three were verified against the
+installed client before it was wired in:
+
+- **`readYourWrites` defaults to `true`** (`node_modules/libsql/index.js` — `opts?.readYourWrites ?? true`),
+  so a write is visible to the very next local read. The engine reads back what it just wrote
+  constantly, and would be *incorrect* rather than merely stale without this.
+- **One instance.** Render's free tier runs a single web service, so no second writer's frames need
+  chasing. `syncInterval` is therefore off by default and opt-in via `TURSO_SYNC_SECONDS`, for the
+  case where something outside the server writes to the primary (a `turso db shell` session).
+- **The local file is disposable** — a cache of the primary, rebuilt on boot, so Render's ephemeral
+  disk costs nothing and the primary stays the only durable copy. It is gitignored
+  (`replica.db`, `replica.db-*`) and its location is overridable with `TURSO_REPLICA_PATH`.
+
+`syncReplica()` runs once before `initDb()` and is **deliberately fatal on failure**: a server that
+came up holding an empty replica would let the seed functions conclude the world has no ruleset, no
+Tells and no Perks, and write a second copy of all three into the primary. The failure path was
+exercised against an unreachable primary — it stops before `initDb` with a message naming the two
+env vars to check.
+
+Nothing else changed: with no `TURSO_DATABASE_URL`, or one that is already a `file:` URL, the client
+is constructed exactly as before and the boot log says `Database: local file (no replica)`.
+
+**Remaining phases** (the replica removes the multiplier from these; it does not make them correct):
+1. The Compendium refetches the world on twenty event types, including `character:updated`, which
+   `adjustStamina` fires on every Stamina change — and it fetches a full character sheet per
+   character in the game to read their stances.
+2. Batch the fan-out reads through `db.batch()`, and cache the ruleset constants
+   (`attributes`/`attribute_counters`) that every combat snapshot re-reads.
+3. The round engine re-reads its own invariants (participants, characters, perks, stances) on every
+   Tic, and blocks the socket for the whole resolution.
+4. Standing costs: a schema-version guard so `initDb` stops re-running 148 queries per boot, indexes
+   on the queried foreign keys (the schema currently has **none**), and a `LIMIT` on `GET /api/chat`,
+   which returns the entire log including every pasted image.
 
 ## Game mechanic — Dice Pools (Core Stats tab)
 Each character has 3 fixed dice pools, always the same slot names for every character:
