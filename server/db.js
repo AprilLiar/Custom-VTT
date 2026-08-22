@@ -76,7 +76,13 @@ function rowsOf(result) {
 }
 
 // Safe helpers that always return plain objects keyed by column name.
+//
+// Both of them first drain anything `initDb` has queued (see `ddl` below), so
+// no caller can ever read or write against a half-built schema — the queue is
+// an optimisation of *when* the DDL is sent, never of whether it has landed
+// before the next statement that might depend on it.
 export async function all(sql, args = []) {
+  if (ddlQueue?.length) await flushDdl();
   return rowsOf(await db.execute({ sql, args }));
 }
 
@@ -86,6 +92,7 @@ export async function one(sql, args = []) {
 }
 
 export async function run(sql, args = []) {
+  if (ddlQueue?.length) await flushDdl();
   return db.execute({ sql, args });
 }
 
@@ -105,6 +112,7 @@ export async function run(sql, args = []) {
 export async function readMany(statements) {
   const list = statements.filter(Boolean);
   if (!list.length) return [];
+  if (ddlQueue?.length) await flushDdl();
   // One statement is not worth a batch — it is the same trip either way, and
   // this keeps callers from having to special-case an empty or single group.
   if (list.length === 1) {
@@ -124,6 +132,7 @@ export async function readMany(statements) {
 export async function writeMany(statements) {
   const list = statements.filter(Boolean);
   if (!list.length) return [];
+  if (ddlQueue?.length) await flushDdl();
   if (list.length === 1) {
     const [sql, args = []] = list[0];
     return [await run(sql, args)];
@@ -134,15 +143,107 @@ export async function writeMany(statements) {
   );
 }
 
+// **`initDb`'s schema work, collected and sent in one trip (decided, new —
+// Phase 4 of the round-trip work).**
+//
+// Booting used to cost 148 statements against a warm database, every one of
+// them awaited on its own: ~65 reads of `sqlite_master` (one per
+// `ensureColumn`, one per migration guard), 38 `CREATE TABLE IF NOT EXISTS`
+// that find the table already there, a handful of idempotent `UPDATE`s, and
+// ~26 seed lookups. None of it does any work on a database that is already
+// current — but the depth is real, and Render's free tier cold-starts often
+// enough that it is paid over and over.
+//
+// Two things fix it without changing a single outcome:
+//
+//  - **One snapshot of `sqlite_master`** instead of one read per column
+//    (`schemaTables` below). Every `ensureColumn` and every migration guard
+//    then answers from memory.
+//  - **A queue.** `ddl()` collects statements instead of sending them; the
+//    queue is drained in a single `db.batch` the moment anything needs the
+//    database to be current — which `all`, `run`, `readMany` and `writeMany`
+//    all do for themselves, so a migration or a seed added later gets the
+//    flush automatically without knowing this queue exists.
+//
+// The point is that nothing here decides the schema is *probably* fine and
+// skips it. A version stamp would be simpler and much more dangerous: a Perk
+// added to the registry, a Tag renamed, a seed row a GM deleted — all of them
+// would silently stop being repaired, and the failure would show up as a
+// missing mechanic weeks later. This runs the whole of `initDb`, every boot,
+// exactly as before. It just stops paying a round trip per line to do it.
+let ddlQueue = null;
+let schemaSnapshot = null;
+// `table.column` for every ALTER already queued but not yet flushed, so a
+// second `ensureColumn` for the same column does not queue it twice. Kept
+// beside the snapshot rather than spliced into it: the snapshot holds real
+// `CREATE TABLE` text that the migration guards match against, and editing
+// that text to fake a column in would be a trap for the next guard added.
+const pendingColumns = new Set();
+// `CREATE TABLE` text for every table this boot has queued but not yet sent.
+// The snapshot is taken before any of them go out, so on a fresh database this
+// is the only place the table exists — see `tableSql`.
+const queuedTables = new Map();
+
+function ddl(sql, args = []) {
+  if (!ddlQueue) throw new Error('ddl() is only valid while initDb is running');
+  const created = /^\s*CREATE TABLE(?: IF NOT EXISTS)?\s+([A-Za-z_][A-Za-z0-9_]*)/.exec(sql);
+  if (created) queuedTables.set(created[1], sql);
+  ddlQueue.push([sql, args]);
+}
+
+async function flushDdl() {
+  if (!ddlQueue?.length) return;
+  const pending = ddlQueue;
+  // Reset before awaiting: writeMany re-enters this file, and anything queued
+  // while the batch is in flight belongs to the *next* flush.
+  ddlQueue = [];
+  await writeMany(pending);
+}
+
+// The database's own `CREATE TABLE` text, read once per boot. Invalidated by
+// the table-rebuilding migrations below, which are the only things that change
+// it out from under us.
+async function schemaTables() {
+  if (!schemaSnapshot) {
+    const rows = await all("SELECT name, sql FROM sqlite_master WHERE type = 'table'");
+    schemaSnapshot = new Map(rows.map((r) => [r.name, r.sql || '']));
+  }
+  return schemaSnapshot;
+}
+
+// The `CREATE TABLE` text a table will have once this boot's queue has landed.
+//
+// The snapshot first, then the queue: on an existing database the stored text
+// is the truth and a queued `IF NOT EXISTS` will not touch it; on a fresh one
+// the table exists only in the queue, and the queued statement is exactly what
+// it is about to become. Both callers below need that composite answer rather
+// than the snapshot alone, and for the same reason — the base CREATEs are
+// frozen at their historical shape, so a brand-new database is born needing
+// most of the column work and all of the rebuilds beneath them.
+async function tableSql(table) {
+  return (await schemaTables()).get(table) ?? queuedTables.get(table) ?? null;
+}
+
+function invalidateSchemaSnapshot() {
+  schemaSnapshot = null;
+  pendingColumns.clear();
+}
+
 // Column-adding migration that works on both local files and Turso:
 // checks the table's stored CREATE statement rather than PRAGMA.
-async function ensureColumn(table, column, ddl) {
-  const row = await one(
-    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
-    [table]
-  );
-  if (row && !new RegExp(`\\b${column}\\b`).test(row.sql)) {
-    await run(`ALTER TABLE ${table} ADD COLUMN ${column} ${ddl}`);
+//
+// It reads `tableSql`, not the snapshot, and the difference matters: nearly
+// every column below is one that *only* this function ever adds, because the
+// base CREATEs are frozen at their historical shape. Consulting the snapshot
+// alone would find no table on a brand-new database, skip the ALTER, and leave
+// a fresh world missing three dozen columns until its second boot.
+async function ensureColumn(table, column, columnDdl) {
+  const key = `${table}.${column}`;
+  if (pendingColumns.has(key)) return;
+  const sql = await tableSql(table);
+  if (sql && !new RegExp(`\\b${column}\\b`).test(sql)) {
+    pendingColumns.add(key);
+    ddl(`ALTER TABLE ${table} ADD COLUMN ${column} ${columnDdl}`);
   }
 }
 
@@ -154,10 +255,8 @@ async function ensureColumn(table, column, ddl) {
 // above already gets the expanded CHECK directly, so this only fires
 // against a database created before defense_success/defense_failure existed.
 async function migrateMoveInteractionsTrigger() {
-  const row = await one(
-    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'move_interactions'"
-  );
-  if (!row || row.sql.includes('defense_success')) return;
+  const sql = await tableSql('move_interactions');
+  if (!sql || sql.includes('defense_success')) return;
   await run(`
     CREATE TABLE move_interactions_v2 (
       id INTEGER PRIMARY KEY,
@@ -173,6 +272,7 @@ async function migrateMoveInteractionsTrigger() {
   `);
   await run('DROP TABLE move_interactions');
   await run('ALTER TABLE move_interactions_v2 RENAME TO move_interactions');
+  invalidateSchemaSnapshot();
 }
 
 // Grappling (decided, new) adds a sixth trigger: **On Successful Grapple**,
@@ -181,10 +281,8 @@ async function migrateMoveInteractionsTrigger() {
 // Guarded on the new value rather than on a version number, so this is a
 // no-op on a database that already has it.
 async function migrateMoveInteractionsGrappleTrigger() {
-  const row = await one(
-    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'move_interactions'"
-  );
-  if (!row || row.sql.includes('grapple_success')) return;
+  const sql = await tableSql('move_interactions');
+  if (!sql || sql.includes('grapple_success')) return;
   await run(`
     CREATE TABLE move_interactions_v3 (
       id INTEGER PRIMARY KEY,
@@ -201,6 +299,7 @@ async function migrateMoveInteractionsGrappleTrigger() {
   `);
   await run('DROP TABLE move_interactions');
   await run('ALTER TABLE move_interactions_v3 RENAME TO move_interactions');
+  invalidateSchemaSnapshot();
 }
 
 // chat_log.kind originally had a 2-value CHECK ('roll','message'), then grew
@@ -213,10 +312,8 @@ async function migrateMoveInteractionsGrappleTrigger() {
 // overhaul, is every database that predates it — including the
 // currently-deployed production one).
 async function migrateChatLogKind() {
-  const row = await one(
-    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'chat_log'"
-  );
-  if (!row || row.sql.includes('round_summary')) return;
+  const sql = await tableSql('chat_log');
+  if (!sql || sql.includes('round_summary')) return;
   await run(`
     CREATE TABLE chat_log_v2 (
       id INTEGER PRIMARY KEY,
@@ -238,6 +335,7 @@ async function migrateChatLogKind() {
   `);
   await run('DROP TABLE chat_log');
   await run('ALTER TABLE chat_log_v2 RENAME TO chat_log');
+  invalidateSchemaSnapshot();
 }
 
 // A finished round's replay ("Watch Round N" in chat) used to die with the
@@ -251,10 +349,8 @@ async function migrateChatLogKind() {
 // to whatever fight was last running, which is fight 1 by definition of the
 // column's own default.
 async function migratePairRoundResolutionsFightNumber() {
-  const row = await one(
-    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'pair_round_resolutions'"
-  );
-  if (!row || row.sql.includes('fight_number')) return;
+  const sql = await tableSql('pair_round_resolutions');
+  if (!sql || sql.includes('fight_number')) return;
   // Foreign keys are ON in this database (unlike stock SQLite), so dropping
   // the old table would cascade every round_events row — i.e. delete exactly
   // the replay history this change exists to preserve. SQLite's own
@@ -289,6 +385,7 @@ async function migratePairRoundResolutionsFightNumber() {
   `);
   await run('DROP TABLE pair_round_resolutions');
   await run('ALTER TABLE pair_round_resolutions_v2 RENAME TO pair_round_resolutions');
+  invalidateSchemaSnapshot();
   await run('PRAGMA foreign_keys = ON');
 }
 
@@ -302,10 +399,8 @@ async function migratePairRoundResolutionsFightNumber() {
 // move-conflict ones, with its own pending payload. Same table-rebuild shape
 // as the two migrations above; a CHECK can't be ALTERed in SQLite.
 async function migratePairRoundResolutionsDefenseConfirm() {
-  const row = await one(
-    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'pair_round_resolutions'"
-  );
-  if (!row || row.sql.includes('paused_defense')) return;
+  const sql = await tableSql('pair_round_resolutions');
+  if (!sql || sql.includes('paused_defense')) return;
   // Same foreign-key dance and the same reason as the fight_number rebuild:
   // round_events cascades off this table, and `id` is preserved exactly so
   // every stored replay still points at its own resolution afterwards.
@@ -339,6 +434,7 @@ async function migratePairRoundResolutionsDefenseConfirm() {
   `);
   await run('DROP TABLE pair_round_resolutions');
   await run('ALTER TABLE pair_round_resolutions_v3 RENAME TO pair_round_resolutions');
+  invalidateSchemaSnapshot();
   await run('PRAGMA foreign_keys = ON');
 }
 
@@ -354,10 +450,8 @@ async function migratePairRoundResolutionsDefenseConfirm() {
 // queued Defence rework, still unwired) is carried through untouched — this
 // change must not disturb it.
 async function migratePairRoundResolutionsGrapple() {
-  const row = await one(
-    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'pair_round_resolutions'"
-  );
-  if (!row || row.sql.includes('paused_grapple')) return;
+  const sql = await tableSql('pair_round_resolutions');
+  if (!sql || sql.includes('paused_grapple')) return;
   await run('PRAGMA foreign_keys = OFF');
   await run(`
     CREATE TABLE pair_round_resolutions_v4 (
@@ -391,14 +485,24 @@ async function migratePairRoundResolutionsGrapple() {
   `);
   await run('DROP TABLE pair_round_resolutions');
   await run('ALTER TABLE pair_round_resolutions_v4 RENAME TO pair_round_resolutions');
+  invalidateSchemaSnapshot();
   await run('PRAGMA foreign_keys = ON');
 }
 
 export async function initDb() {
-  // Phase 0's demo table is no longer used.
-  await run('DROP TABLE IF EXISTS pings');
+  ddlQueue = [];
+  queuedTables.clear();
+  invalidateSchemaSnapshot();
+  // Read `sqlite_master` once, before anything is queued, so all ~60
+  // `ensureColumn` checks and all six migration guards below are answered from
+  // memory. See the note above `ddlQueue` for why this is a queue rather than
+  // a version stamp that skips the work.
+  await schemaTables();
 
-  await run(`
+  // Phase 0's demo table is no longer used.
+  ddl('DROP TABLE IF EXISTS pings');
+
+  ddl(`
     CREATE TABLE IF NOT EXISTS characters (
       id INTEGER PRIMARY KEY,
       name TEXT NOT NULL,
@@ -424,7 +528,7 @@ export async function initDb() {
   // self-reference (NULL = root); ON DELETE SET NULL is metadata only — the
   // actual reparenting-on-delete logic is explicit in character_folder:delete
   // (promote to the deleted folder's own parent, not unconditionally to root).
-  await run(`
+  ddl(`
     CREATE TABLE IF NOT EXISTS character_folders (
       id INTEGER PRIMARY KEY,
       name TEXT NOT NULL,
@@ -433,7 +537,7 @@ export async function initDb() {
   `);
   await ensureColumn('character_folders', 'parent_id', 'INTEGER REFERENCES character_folders(id) ON DELETE SET NULL');
 
-  await run(`
+  ddl(`
     CREATE TABLE IF NOT EXISTS dice (
       id INTEGER PRIMARY KEY,
       character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
@@ -461,7 +565,7 @@ export async function initDb() {
   `);
   await ensureColumn('dice', 'half_damage', 'INTEGER NOT NULL DEFAULT 0');
 
-  await run(`
+  ddl(`
     CREATE TABLE IF NOT EXISTS inventory_items (
       id INTEGER PRIMARY KEY,
       character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
@@ -472,7 +576,7 @@ export async function initDb() {
   // Existing deployments predate the description field
   await ensureColumn('inventory_items', 'description', "TEXT NOT NULL DEFAULT ''");
 
-  await run(`
+  ddl(`
     CREATE TABLE IF NOT EXISTS attributes (
       id INTEGER PRIMARY KEY,
       name TEXT NOT NULL UNIQUE,
@@ -480,7 +584,7 @@ export async function initDb() {
     )
   `);
 
-  await run(`
+  ddl(`
     CREATE TABLE IF NOT EXISTS attribute_counters (
       id INTEGER PRIMARY KEY,
       attacker_attribute_id INTEGER NOT NULL REFERENCES attributes(id),
@@ -489,7 +593,7 @@ export async function initDb() {
     )
   `);
 
-  await run(`
+  ddl(`
     CREATE TABLE IF NOT EXISTS stances (
       id INTEGER PRIMARY KEY,
       character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
@@ -499,7 +603,7 @@ export async function initDb() {
     )
   `);
 
-  await run(`
+  ddl(`
     CREATE TABLE IF NOT EXISTS injuries (
       id INTEGER PRIMARY KEY,
       character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
@@ -554,7 +658,7 @@ export async function initDb() {
   // side of the roller's own pair at roll time — trivially one id for a
   // normal 1-on-1 pair, more than one under Uneven Combat, where the future
   // Apply-damage flow will need to ask which target(s) it actually hit.
-  await run(`
+  ddl(`
     CREATE TABLE IF NOT EXISTS chat_log (
       id INTEGER PRIMARY KEY,
       kind TEXT NOT NULL DEFAULT 'roll' CHECK(kind IN ('roll','message','move_reveal','lane_snapshot','round_summary')),
@@ -583,7 +687,7 @@ export async function initDb() {
   // World-level Tell list, GM-editable at any time (unlike the fixed styles).
   // Tells carry small uploaded images (commissioned art), not icons — the
   // legacy icon column remains on old deployments but is unused.
-  await run(`
+  ddl(`
     CREATE TABLE IF NOT EXISTS tells (
       id INTEGER PRIMARY KEY,
       name TEXT NOT NULL,
@@ -596,7 +700,7 @@ export async function initDb() {
 
   // GM-created folders for organizing the Moves compendium. Nested, same
   // parent_id self-reference pattern as character_folders above.
-  await run(`
+  ddl(`
     CREATE TABLE IF NOT EXISTS move_folders (
       id INTEGER PRIMARY KEY,
       name TEXT NOT NULL,
@@ -606,7 +710,7 @@ export async function initDb() {
   await ensureColumn('move_folders', 'parent_id', 'INTEGER REFERENCES move_folders(id) ON DELETE SET NULL');
 
   // The compendium: master list of move templates with frame data
-  await run(`
+  ddl(`
     CREATE TABLE IF NOT EXISTS moves (
       id INTEGER PRIMARY KEY,
       name TEXT NOT NULL,
@@ -762,14 +866,14 @@ export async function initDb() {
   // data on the move — migrate them all to 'block' (the fully-automatic,
   // no-judgment-call default) since that's what most of them are; a GM
   // reviewing a move that was narratively meant as a Dodge can flip it once.
-  await run(
+  ddl(
     `UPDATE moves SET defense_kind = 'block' WHERE is_defensive = 1 AND defense_kind IS NULL`
   );
   // A Default move is usable by anyone, anytime — it never made sense for
   // one to also carry a Style gate. writeMove now refuses to set one going
   // forward; this is the one-time cleanup for any Default move that already
   // had one from before that rule existed.
-  await run(
+  ddl(
     `UPDATE moves SET style_attribute_id = NULL WHERE is_default = 1 AND style_attribute_id IS NOT NULL`
   );
 
@@ -778,7 +882,7 @@ export async function initDb() {
   // (Skull/Brain/Stamina/Body) or one of the two ambiguous appendage
   // choices, 'Hand' or 'Leg' — resolved to the character's actual Left or
   // Right die only at roll time, per the player's choice (see moveLogic.js).
-  await run(`
+  ddl(`
     CREATE TABLE IF NOT EXISTS move_roll_slots (
       id INTEGER PRIMARY KEY,
       move_id INTEGER NOT NULL REFERENCES moves(id) ON DELETE CASCADE,
@@ -806,7 +910,7 @@ export async function initDb() {
   // is_defensive = 1 (enforced in writeMove, same pattern move_roll_slots'
   // ambiguous-Tell requirement already uses) — not yet wired up; this table
   // exists ahead of the socket-event/UI work that will actually populate it.
-  await run(`
+  ddl(`
     CREATE TABLE IF NOT EXISTS move_defensive_roll_slots (
       id INTEGER PRIMARY KEY,
       move_id INTEGER NOT NULL REFERENCES moves(id) ON DELETE CASCADE,
@@ -826,7 +930,7 @@ export async function initDb() {
   // expandRollSlotRows helper — because it is the same idea pointed at the
   // other fighter. Empty means the target resists with nothing and the
   // grappler need only clear the Success Threshold.
-  await run(`
+  ddl(`
     CREATE TABLE IF NOT EXISTS move_resist_roll_slots (
       id INTEGER PRIMARY KEY,
       move_id INTEGER NOT NULL REFERENCES moves(id) ON DELETE CASCADE,
@@ -845,7 +949,7 @@ export async function initDb() {
   // target_move_id is ON DELETE CASCADE on the *pointed-at* move: deleting a
   // move that some grapple branches into removes that branch rather than
   // leaving a dangling direction that would resolve into nothing.
-  await run(`
+  ddl(`
     CREATE TABLE IF NOT EXISTS move_grapple_directions (
       id INTEGER PRIMARY KEY,
       move_id INTEGER NOT NULL REFERENCES moves(id) ON DELETE CASCADE,
@@ -857,7 +961,7 @@ export async function initDb() {
 
   // World-level Tag list, GM-managed like Tells (Phase 4 pulls in
   // per-character tag overrides; the base tables land now for Move tagging)
-  await run(`
+  ddl(`
     CREATE TABLE IF NOT EXISTS tags (
       id INTEGER PRIMARY KEY,
       name TEXT NOT NULL,
@@ -866,7 +970,7 @@ export async function initDb() {
   `);
   await ensureColumn('tags', 'description', "TEXT NOT NULL DEFAULT ''");
 
-  await run(`
+  ddl(`
     CREATE TABLE IF NOT EXISTS move_tags (
       id INTEGER PRIMARY KEY,
       move_id INTEGER NOT NULL REFERENCES moves(id) ON DELETE CASCADE,
@@ -878,7 +982,7 @@ export async function initDb() {
   // On Hit / On Block / On Miss (every move) plus On Successful Defense /
   // On Failed Defense (Defensive moves only, gated client + server side by
   // moves.is_defensive) — text plus optional automations (JSON).
-  await run(`
+  ddl(`
     CREATE TABLE IF NOT EXISTS move_interactions (
       id INTEGER PRIMARY KEY,
       move_id INTEGER NOT NULL REFERENCES moves(id) ON DELETE CASCADE,
@@ -891,7 +995,7 @@ export async function initDb() {
   await migrateMoveInteractionsGrappleTrigger();
 
   // Grants a Unique move to a specific character (Default moves need no row)
-  await run(`
+  ddl(`
     CREATE TABLE IF NOT EXISTS character_moves (
       id INTEGER PRIMARY KEY,
       character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
@@ -903,7 +1007,7 @@ export async function initDb() {
   // Role-play tab: per-character question/answer entries. The 6 canonical
   // questions live in client code; their answers are upserted here keyed by
   // question text (is_custom = 0). Custom questions are rows with is_custom = 1.
-  await run(`
+  ddl(`
     CREATE TABLE IF NOT EXISTS roleplay_entries (
       id INTEGER PRIMARY KEY,
       character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
@@ -917,7 +1021,7 @@ export async function initDb() {
   // and description — no generic automation system (removed; see
   // server/perkAutomations.js for the manual per-Perk hook skeleton that
   // replaced it) and no folders/style filter, unlike Moves.
-  await run(`
+  ddl(`
     CREATE TABLE IF NOT EXISTS perks (
       id INTEGER PRIMARY KEY,
       name TEXT NOT NULL,
@@ -927,7 +1031,7 @@ export async function initDb() {
     )
   `);
 
-  await run(`
+  ddl(`
     CREATE TABLE IF NOT EXISTS character_perks (
       id INTEGER PRIMARY KEY,
       character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
@@ -949,7 +1053,7 @@ export async function initDb() {
   // every stateful Perk turns out to want, and neither can be expressed by a
   // value alone. Keyed on character_perk_id, not character_id: revoking the
   // Perk takes its state with it, which is what ON DELETE CASCADE is for.
-  await run(`
+  ddl(`
     CREATE TABLE IF NOT EXISTS character_perk_state (
       id INTEGER PRIMARY KEY,
       character_perk_id INTEGER NOT NULL REFERENCES character_perks(id) ON DELETE CASCADE,
@@ -966,7 +1070,7 @@ export async function initDb() {
   // automation (see tagAutomations.js) — so sharing one vocabulary would put
   // mechanically-loaded names in a Perk's picker where they mean nothing.
   // These are optional and carry no mechanics at all, now or by design.
-  await run(`
+  ddl(`
     CREATE TABLE IF NOT EXISTS perk_tags (
       id INTEGER PRIMARY KEY,
       name TEXT NOT NULL,
@@ -975,7 +1079,7 @@ export async function initDb() {
   `);
 
   // Join table — mirrors move_tags' shape against the vocabulary above.
-  await run(`
+  ddl(`
     CREATE TABLE IF NOT EXISTS perk_tag_links (
       id INTEGER PRIMARY KEY,
       perk_id INTEGER NOT NULL REFERENCES perks(id) ON DELETE CASCADE,
@@ -988,7 +1092,7 @@ export async function initDb() {
   // global — the shared move_tags template is untouched). A character's
   // effective tags on a move = move_tags, plus 'add' rows, minus 'remove'
   // rows here.
-  await run(`
+  ddl(`
     CREATE TABLE IF NOT EXISTS character_move_tags (
       id INTEGER PRIMARY KEY,
       character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
@@ -1002,7 +1106,7 @@ export async function initDb() {
   // Per-character frame-data deltas on a specific move, granted by a Perk —
   // "the move copy on the character," not the shared template. Multiple
   // Perks can each contribute deltas to the same move; they sum.
-  await run(`
+  ddl(`
     CREATE TABLE IF NOT EXISTS character_move_overrides (
       id INTEGER PRIMARY KEY,
       character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
@@ -1018,7 +1122,7 @@ export async function initDb() {
   // move. Stored and displayed now; there is no move-triggered roll yet to
   // apply it to (that's Phase 7's declared-move reveal-and-roll) — see the
   // plan's open items.
-  await run(`
+  ddl(`
     CREATE TABLE IF NOT EXISTS character_move_roll_bonuses (
       id INTEGER PRIMARY KEY,
       character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
@@ -1046,7 +1150,7 @@ export async function initDb() {
   // `durability` is a positive integer, spent only by USING the weapon in a
   // Move — see spendWeaponDurability in server/weapons.js. Rolling it on its own
   // costs nothing.
-  await run(`
+  ddl(`
     CREATE TABLE IF NOT EXISTS weapons (
       id INTEGER PRIMARY KEY,
       character_id INTEGER NOT NULL UNIQUE REFERENCES characters(id) ON DELETE CASCADE,
@@ -1057,7 +1161,7 @@ export async function initDb() {
     )
   `);
 
-  await run(`
+  ddl(`
     CREATE TABLE IF NOT EXISTS counters (
       id INTEGER PRIMARY KEY,
       character_id INTEGER REFERENCES characters(id) ON DELETE CASCADE,
@@ -1085,7 +1189,7 @@ export async function initDb() {
   // instead of as one global side-vs-side batch. The columns stay (SQLite
   // migrations in this app are additive-only) but nothing reads/writes them
   // anymore.
-  await run(`
+  ddl(`
     CREATE TABLE IF NOT EXISTS combat_state (
       id INTEGER PRIMARY KEY CHECK (id = 1),
       uneven_combat_enabled INTEGER NOT NULL DEFAULT 0,
@@ -1098,7 +1202,7 @@ export async function initDb() {
       pending_declare_side TEXT CHECK(pending_declare_side IN ('left','right'))
     )
   `);
-  await run(`INSERT OR IGNORE INTO combat_state (id, uneven_combat_enabled) VALUES (1, 0)`);
+  ddl(`INSERT OR IGNORE INTO combat_state (id, uneven_combat_enabled) VALUES (1, 0)`);
   // "Fresh" (decided, new): whether starting a fight restores every seated
   // character to full Stamina. OFF by default and reset to off by End
   // Combat / Clear Arena, so it is a deliberate per-fight choice rather than
@@ -1121,7 +1225,7 @@ export async function initDb() {
   // Round length was extended from 5 to 7 Tics after playtesting — bump any
   // existing singleton row still sitting at the old default (a GM who has
   // since customized it, if that's ever exposed, is left alone).
-  await run(`UPDATE combat_state SET round_length = 7 WHERE id = 1 AND round_length = 5`);
+  ddl(`UPDATE combat_state SET round_length = 7 WHERE id = 1 AND round_length = 5`);
   await ensureColumn(
     'combat_state',
     'declaring_side',
@@ -1142,7 +1246,7 @@ export async function initDb() {
   // combat_state.round_number — declaration is per-character now, not a
   // single batched press for a whole side (see combat_pairs below). Reset to
   // 0 for everyone at combat:next_round/clear/end.
-  await run(`
+  ddl(`
     CREATE TABLE IF NOT EXISTS combat_participants (
       id INTEGER PRIMARY KEY,
       character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
@@ -1191,7 +1295,7 @@ export async function initDb() {
   // declared_this_round (both trivially "done" if a pair has only one side
   // seated). Rows are cleared and recreated by combat:next_round, and wiped
   // entirely by combat:clear/combat:end.
-  await run(`
+  ddl(`
     CREATE TABLE IF NOT EXISTS combat_pairs (
       pair_index INTEGER PRIMARY KEY,
       declaring_side TEXT CHECK(declaring_side IN ('left','right')),
@@ -1221,7 +1325,7 @@ export async function initDb() {
   // safely redo just that one Tic rather than needing a transaction. The
   // pending_*_json columns hold the one piece of state that genuinely can't
   // be recomputed: a human decision that's still outstanding.
-  await run(`
+  ddl(`
     CREATE TABLE IF NOT EXISTS pair_round_resolutions (
       id INTEGER PRIMARY KEY,
       pair_index INTEGER NOT NULL,
@@ -1250,7 +1354,7 @@ export async function initDb() {
   // avoid a join on "give me this pair's log." seq is this resolution's own
   // monotonic order (independent of tic, since more than one event can
   // share a Tic).
-  await run(`
+  ddl(`
     CREATE TABLE IF NOT EXISTS round_events (
       id INTEGER PRIMARY KEY,
       resolution_id INTEGER NOT NULL REFERENCES pair_round_resolutions(id) ON DELETE CASCADE,
@@ -1274,7 +1378,7 @@ export async function initDb() {
   // reveal_posted tracks whether this row's move_reveal chat card has
   // already gone out, since reveal state itself is recomputed live (stepping
   // the Tic counter back and forth must not re-post — see combat:tic_forward).
-  await run(`
+  ddl(`
     CREATE TABLE IF NOT EXISTS declared_moves (
       id INTEGER PRIMARY KEY,
       character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
@@ -1420,14 +1524,101 @@ export async function initDb() {
   // request — never touches Durability and never reaches this column.
   await ensureColumn('declared_moves', 'weapon_spent', 'INTEGER NOT NULL DEFAULT 0');
 
-  await seedRuleset();
-  await seedTells();
-  await seedBlockTag();
-  await seedNoDamageTag();
-  await seedFeintTag();
-  await seedMovementTags();
-  await seedPerks();
+  await ensureIndexes();
+
+  await seedWorld();
+
+  // Everything above only queued; the seeds' own reads will have drained most
+  // of it, but a database that needed nothing seeded leaves the tail here.
+  await flushDdl();
+  ddlQueue = null;
 }
+
+// **Indexes on the foreign keys this app actually looks rows up by (decided,
+// new).** The schema had none at all — every `WHERE character_id = ?` was a
+// full table scan, and SQLite only indexes `INTEGER PRIMARY KEY` for free.
+//
+// Honest about the size of the win: most of these tables hold tens of rows,
+// where a scan and a seek are indistinguishable, and reads are answered from
+// the local replica anyway. Two of them are not like that — `chat_log` and
+// `round_events` grow for the life of a world and are read on every page load
+// and every replay — and the per-character ones are each fanned out over once
+// per fighter in every combat payload. They are declared here rather than
+// inside each CREATE TABLE so that adding one later needs no table rebuild,
+// and they ride the same batch as the rest of the schema, so the whole set
+// costs nothing extra at boot.
+async function ensureIndexes() {
+  const indexes = [
+    // Grow without bound.
+    ['round_events', 'resolution_id'],
+    ['chat_log', 'move_id'],
+    ['declared_moves', 'character_id'],
+    ['declared_moves', 'move_id'],
+    ['pair_round_resolutions', 'pair_index'],
+    // Read once per fighter, per combat payload.
+    ['dice', 'character_id'],
+    ['counters', 'character_id'],
+    ['stances', 'character_id'],
+    ['weapons', 'character_id'],
+    ['injuries', 'character_id'],
+    ['combat_participants', 'character_id'],
+    ['combat_participants', 'pair_index'],
+    ['character_moves', 'character_id'],
+    ['character_perks', 'character_id'],
+    ['character_perk_state', 'character_perk_id'],
+    ['character_move_roll_bonuses', 'character_id'],
+    ['roleplay_entries', 'character_id'],
+    ['inventory_items', 'character_id'],
+    // Read once per move, and a move sheet reads a lot of moves.
+    ['move_roll_slots', 'move_id'],
+    ['move_defensive_roll_slots', 'move_id'],
+    ['move_resist_roll_slots', 'move_id'],
+    ['move_grapple_directions', 'move_id'],
+    ['move_interactions', 'move_id'],
+    ['move_tags', 'move_id'],
+    ['character_move_overrides', 'character_id'],
+    ['character_move_tags', 'character_id'],
+    ['perk_tag_links', 'perk_id'],
+  ];
+  for (const [table, column] of indexes) {
+    ddl(`CREATE INDEX IF NOT EXISTS idx_${table}_${column} ON ${table}(${column})`);
+  }
+}
+
+// **Every seed's "is it already there?" question, asked in one read (decided,
+// new — Phase 4 of the round-trip work).**
+//
+// The seven seeds below used to ask individually: a COUNT for the attributes,
+// another for the counters, another for the Tells, one SELECT per Tag, and one
+// SELECT per registered Perk. That is 27 awaited statements on a database
+// where the answer is "yes, all of it" every single time — the single largest
+// remaining block of boot depth once the schema was batched.
+//
+// Nothing about *what* they seed changes: same case-insensitive
+// adopt-don't-duplicate guards, same rows, same order. The lookups are now one
+// batched read, and the inserts one batched write, because none of them
+// depends on another's result. The one exception is the counter tournament,
+// which needs the attribute ids the attribute insert hands out, so it stays a
+// separate step below.
+async function seedWorld() {
+  const [attributeCount, counterCount, tellCount, tagRows, perkRows] = await readMany([
+    ['SELECT COUNT(*) AS count FROM attributes'],
+    ['SELECT COUNT(*) AS count FROM attribute_counters'],
+    ['SELECT COUNT(*) AS count FROM tells'],
+    ['SELECT name FROM tags'],
+    ['SELECT name FROM perks'],
+  ]);
+
+  const writes = [];
+  seedTells(Number(tellCount[0].count), writes);
+  seedTags(tagRows, writes);
+  seedPerks(perkRows, writes);
+  await writeMany(writes);
+
+  await seedRuleset(Number(attributeCount[0].count), Number(counterCount[0].count));
+}
+
+const normalise = (name) => String(name ?? '').trim().toLowerCase();
 
 // Every Perk that has code behind it gets its compendium row created here if
 // the world does not already have one (decided, new).
@@ -1437,134 +1628,98 @@ export async function initDb() {
 // never creates the row, or creates it under a slightly different spelling, and
 // the Perk is ungrantable or inert. Seeding removes that failure entirely — the
 // same reasoning, and the same case-insensitive adopt-don't-duplicate guard, as
-// seedBlockTag above. A world that already has its own "Genius Observer" keeps
+// the Tags below. A world that already has its own "Genius Observer" keeps
 // it, description and picture and all.
-async function seedPerks() {
+function seedPerks(existingRows, writes) {
+  const have = new Set(existingRows.map((row) => normalise(row.name)));
   for (const definition of Object.values(PERK_REGISTRY)) {
-    const existing = await one('SELECT id FROM perks WHERE LOWER(TRIM(name)) = ?', [
-      definition.name.trim().toLowerCase(),
-    ]);
-    if (existing) continue;
-    await run('INSERT INTO perks (name, description) VALUES (?, ?)', [
-      definition.name,
-      definition.description ?? '',
+    if (have.has(normalise(definition.name))) continue;
+    writes.push([
+      'INSERT INTO perks (name, description) VALUES (?, ?)',
+      [definition.name, definition.description ?? ''],
     ]);
   }
 }
 
-// Block Stamina (decided, new): the **Block** Tag is the first Tag in the
-// game that does something mechanical rather than describing something — it
+// The Tags that mechanics bind to by NAME (decided).
+//
+// Block Stamina came first: the **Block** Tag is the first Tag in the game
+// that does something mechanical rather than describing something — it
 // switches a move onto the absorb-based Stamina rule (see
-// server/tagAutomations.js). It is matched by NAME, case-insensitively, and
-// never by id, because the GM owns this list: a world that already has its
-// own "Block" tag keeps it, tag ids differ between databases, and a GM
-// renaming or re-creating the tag must not silently detach the mechanic.
-// Only seeded when no case-insensitive match exists at all, so this never
-// duplicates a tag the GM already made.
-async function seedBlockTag() {
-  const existing = await one("SELECT id FROM tags WHERE LOWER(name) = 'block'");
-  if (existing) return;
-  await run('INSERT INTO tags (name, description) VALUES (?, ?)', [
+// server/tagAutomations.js). **No Damage** was the second: a move tagged with
+// it never applies damage, and is measured against its own Success Threshold
+// instead — grappling moves usually carry it, but nothing requires that. Then
+// **Feint**, which hides the move declared immediately after it: that
+// follow-up shows no Tell and no attack telegraph to anyone but its owner
+// until it reveals in the cutscene, while the Feint itself is entirely public
+// — a Tell everybody reads and nobody should trust. And finally **Movement**
+// and **Movement Punisher**, seeded together because neither means anything
+// without the other: Movement is a liability a move admits to, and Movement
+// Punisher is the move built to collect on it.
+//
+// Every one of them is matched by NAME, case-insensitively, and never by id,
+// because the GM owns this list: a world that already has its own "Block" tag
+// keeps it, tag ids differ between databases, and a GM renaming or re-creating
+// a tag must not silently detach the mechanic. Only seeded when no
+// case-insensitive match exists at all, so this never duplicates a tag the GM
+// already made.
+const SEEDED_TAGS = [
+  [
     'Block',
-    "This move guards. It has no up-front Stamina Cost — instead it spends Stamina at resolution for exactly as much of the attack as it absorbed, scaled by its Stamina Modifier.",
-  ]);
-}
-
-// The second Tag automation (Grappling, decided). A move tagged **No Damage**
-// never applies damage — it is measured against its own Success Threshold
-// instead. Grappling moves usually carry it, but nothing requires that.
-//
-// Seeded exactly like the Block tag, and for the same reason: the automation
-// matches on the tag's NAME, so the row has to exist for the rule to be
-// reachable. Guarded case-insensitively so a database that already has a
-// hand-made "No Damage" adopts it rather than ending up with two.
-async function seedNoDamageTag() {
-  const existing = await one("SELECT id FROM tags WHERE LOWER(name) = 'no damage'");
-  if (existing) return;
-  await run('INSERT INTO tags (name, description) VALUES (?, ?)', [
+    'This move guards. It has no up-front Stamina Cost — instead it spends Stamina at resolution for exactly as much of the attack as it absorbed, scaled by its Stamina Modifier.',
+  ],
+  [
     'No Damage',
-    'This move deals no damage. It succeeds if its roll reaches the move\u2019s Success Threshold (5 by default) — used on grapples, grabs and setups that move a fight without hurting anyone.',
-  ]);
-}
-
-// The third Tag automation (decided, new). A move tagged **Feint** hides the
-// move declared immediately after it: that follow-up shows no Tell and no
-// attack telegraph to anyone but its owner until it reveals in the cutscene.
-// The Feint itself is entirely public — a Tell everybody reads and nobody
-// should trust.
-//
-// Seeded exactly like Block and No Damage, and for the same reason: the
-// automation matches on the tag's NAME, so the row has to exist for the rule
-// to be reachable at all.
-async function seedFeintTag() {
-  const existing = await one("SELECT id FROM tags WHERE LOWER(name) = 'feint'");
-  if (existing) return;
-  await run('INSERT INTO tags (name, description) VALUES (?, ?)', [
+    'This move deals no damage. It succeeds if its roll reaches the move’s Success Threshold (5 by default) — used on grapples, grabs and setups that move a fight without hurting anyone.',
+  ],
+  [
     'Feint',
-    'This move sells a lie. Its own Tell is shown as normal \u2014 but whatever you declare immediately after it goes on the timeline hidden: no Tell, no wind-up, nothing for your opponent to read until it lands.',
-  ]);
-}
+    'This move sells a lie. Its own Tell is shown as normal — but whatever you declare immediately after it goes on the timeline hidden: no Tell, no wind-up, nothing for your opponent to read until it lands.',
+  ],
+  [
+    'Movement',
+    'This move takes you somewhere. Useful, and a liability: a move tagged Movement Punisher that connects with you while you are using it puts you on the floor.',
+  ],
+  [
+    'Movement Punisher',
+    'Built to catch someone mid-stride. If this connects for real damage against a move tagged Movement, its user trips — 3 Recovery, imposed on the spot.',
+  ],
+];
 
-// The Movement / Movement Punisher pair (decided, new). Seeded together
-// because neither means anything without the other: Movement is a liability a
-// move admits to, and Movement Punisher is the move built to collect on it.
-//
-// Same case-insensitive adopt-don't-duplicate guard as the Tags above, and for
-// the same reason — the mechanic matches on the NAME, so the rows have to exist
-// for it to be reachable at all.
-async function seedMovementTags() {
-  const tags = [
-    [
-      'Movement',
-      'This move takes you somewhere. Useful, and a liability: a move tagged Movement Punisher that connects with you while you are using it puts you on the floor.',
-    ],
-    [
-      'Movement Punisher',
-      'Built to catch someone mid-stride. If this connects for real damage against a move tagged Movement, its user trips — 3 Recovery, imposed on the spot.',
-    ],
-  ];
-  for (const [name, description] of tags) {
-    const existing = await one('SELECT id FROM tags WHERE LOWER(TRIM(name)) = ?', [name.toLowerCase()]);
-    if (existing) continue;
-    await run('INSERT INTO tags (name, description) VALUES (?, ?)', [name, description]);
+function seedTags(existingRows, writes) {
+  const have = new Set(existingRows.map((row) => normalise(row.name)));
+  for (const [name, description] of SEEDED_TAGS) {
+    if (have.has(normalise(name))) continue;
+    writes.push(['INSERT INTO tags (name, description) VALUES (?, ?)', [name, description]]);
   }
 }
 
 // Two placeholder Tells so moves can be created immediately; the GM replaces
 // them with real Tells (name + icon) in the Compendium.
-async function seedTells() {
-  const { count } = await one('SELECT COUNT(*) AS count FROM tells');
-  if (Number(count) === 0) {
-    await run("INSERT INTO tells (name) VALUES ('Tell 1')");
-    await run("INSERT INTO tells (name) VALUES ('Tell 2')");
-  }
+function seedTells(existingCount, writes) {
+  if (existingCount > 0) return;
+  writes.push(["INSERT INTO tells (name) VALUES ('Tell 1')", []]);
+  writes.push(["INSERT INTO tells (name) VALUES ('Tell 2')", []]);
 }
 
 // Seed the 7 styles and their complete counter tournament exactly once.
-async function seedRuleset() {
-  const { count } = await one('SELECT COUNT(*) AS count FROM attributes');
-  if (Number(count) === 0) {
-    for (const style of STYLES) {
-      await run('INSERT INTO attributes (name, icon) VALUES (?, ?)', [
-        style.name,
-        style.icon,
-      ]);
-    }
+//
+// The only seed that cannot ride seedWorld's single batch: the tournament rows
+// reference the attribute ids the insert above hands out, so the ids have to be
+// read back in between. On any database that has already been seeded — which is
+// every boot after the first — this costs exactly the one UPDATE below.
+async function seedRuleset(attributeCount, counterCount) {
+  if (attributeCount === 0) {
+    await writeMany(
+      STYLES.map((style) => [
+        'INSERT INTO attributes (name, icon) VALUES (?, ?)',
+        [style.name, style.icon],
+      ])
+    );
   }
-  const counters = await one('SELECT COUNT(*) AS count FROM attribute_counters');
-  if (Number(counters.count) === 0) {
-    const rows = await all('SELECT id, name FROM attributes');
-    const idByName = Object.fromEntries(rows.map((r) => [r.name, r.id]));
-    for (const [winner, losers] of Object.entries(DEFEATS)) {
-      for (const loser of losers) {
-        await run(
-          'INSERT INTO attribute_counters (attacker_attribute_id, defender_attribute_id, bonus) VALUES (?, ?, ?)',
-          [idByName[winner], idByName[loser], COUNTER_BONUS]
-        );
-      }
-    }
-  } else {
-    // The seed above only ever runs against an empty table, so a database
+
+  if (counterCount > 0) {
+    // The seed below only ever runs against an empty table, so a database
     // created before COUNTER_BONUS changed still carries the old value —
     // including the deployed one. Re-point every *unmodified* row at the
     // current constant.
@@ -1575,5 +1730,19 @@ async function seedRuleset() {
     // table can hand-tune an individual matchup, and a migration must not
     // silently flatten that back to the default.
     await run('UPDATE attribute_counters SET bonus = ? WHERE bonus = 2', [COUNTER_BONUS]);
+    return;
   }
+
+  const rows = await all('SELECT id, name FROM attributes');
+  const idByName = Object.fromEntries(rows.map((r) => [r.name, r.id]));
+  const tournament = [];
+  for (const [winner, losers] of Object.entries(DEFEATS)) {
+    for (const loser of losers) {
+      tournament.push([
+        'INSERT INTO attribute_counters (attacker_attribute_id, defender_attribute_id, bonus) VALUES (?, ?, ?)',
+        [idByName[winner], idByName[loser], COUNTER_BONUS],
+      ]);
+    }
+  }
+  await writeMany(tournament);
 }

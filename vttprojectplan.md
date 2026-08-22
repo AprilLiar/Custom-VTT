@@ -173,9 +173,48 @@ for a cost the embedded replica has already removed: 140 local reads is not a nu
 **So the shape of the whole exercise is:** Phase 0 removed the cost, Phases 1–3 removed the waste.
 The remaining depth only matters again if the replica is ever turned off.
 
-**Phase 4 — standing costs (next).** A schema-version guard so `initDb` stops re-running 148 queries
-per boot, indexes on the queried foreign keys (the schema currently has **none**), and a `LIMIT` on
-`GET /api/chat`, which returns the entire log including every pasted image.
+**Phase 4 — standing costs (shipped).** The costs nobody triggers, paid on every boot and every page
+load. `initDb` re-ran 148 awaited statements against a database that needed nothing done — ~65 reads
+of `sqlite_master` (one per `ensureColumn`, one per migration guard), 38 `CREATE TABLE IF NOT EXISTS`
+that find the table already there, and ~26 seed lookups — and Render's free tier cold-starts often
+enough that it is paid over and over.
+
+- **One `sqlite_master` snapshot, and a DDL queue.** `ddl()` collects statements instead of sending
+  them; the queue drains in a single `db.batch` the moment anything needs the database to be current,
+  which `all`, `run`, `readMany` and `writeMany` each do for themselves — so a migration or a seed
+  added later gets the flush without knowing the queue exists.
+- **The seeds' guards became one batched read** and one batched write, instead of a `COUNT` per table
+  and a `SELECT` per Tag and per registered Perk.
+- **Indexes on the foreign keys the app looks rows up by.** The schema had *none*: every
+  `WHERE character_id = ?` was a full scan, since SQLite only indexes `INTEGER PRIMARY KEY` for free.
+  Honest about the size of this one — most of these tables hold tens of rows, and reads are local
+  now; it matters for `chat_log`, `round_events` and `declared_moves`, which grow for the life of a
+  world.
+- **`GET /api/chat` returns the last 300 entries**, not the entire log. That endpoint is where pasted
+  images live (base64, in `chat_log.image_data`), so an unbounded fetch dragged megabytes across on
+  every reload and reconnect. One query either way — this is about the size of the answer, not trips.
+  The cost: scrollback older than 300 entries does not survive a reload. Nothing in the UI pages
+  further back, and the GM clears the log between fights.
+
+**Result: 148 trips → 4 on a warm boot; 243 → 30 on a brand-new database.**
+
+**No version stamp, deliberately.** The obvious fix — stamp a schema version and skip `initDb` when
+it matches — is simpler and much more dangerous: a Perk added to the registry, a Tag renamed, a seed
+row a GM deleted would all silently stop being repaired, and the failure would surface as a missing
+mechanic weeks later. Phase 4 runs the whole of `initDb` every boot, exactly as before; it just stops
+paying a round trip per line to do it.
+
+**Two regressions caught by comparing schemas rather than by reading the diff.** Both were invisible
+on a second boot, which is why `server/test/initDbSchema.test.js` tests the *first* one. (a) The
+snapshot is taken before this boot's CREATEs are sent, so on a fresh database the table `ensureColumn`
+is about to alter is not in it — reading the snapshot alone skipped every ALTER, and a new world came
+up missing three dozen columns. (b) The table-rebuilding migrations exist *because* the base CREATE
+above them still declares the old shape, so a fresh database is born needing the rebuild; a guard
+reading the pre-CREATE snapshot skipped it and left the new world with the old CHECK constraint. Both
+are fixed by `tableSql` answering from the snapshot **or** the pending queue — the queued statement
+is exactly what the table is about to become. Verified by diffing `sqlite_master` and the seeded rows
+against the old `initDb`: identical on a fresh database, on repeat boots, and on three vintages of
+legacy database upgraded forward.
 
 ## Game mechanic — Dice Pools (Core Stats tab)
 Each character has 3 fixed dice pools, always the same slot names for every character:
@@ -750,6 +789,13 @@ A single shared feed for the whole game (what was "roll log" earlier — renamed
   - **Two bugs found while wiring it up**, both latent and both only reachable once cards existed again: `ChatPanel`'s expanded card read a bare `moves` from inside `Entry`, a different scope — the first person to open a card would have hit a `ReferenceError` (it is on `moveInfo` now); and the `chat:round_summary` listener was never unsubscribed on unmount while the other four were.
 - **A description keeps the line breaks it was typed with (decided, new).** Move and Perk descriptions are authored in `<textarea>`s, so pressing Enter has always *stored* a newline — and `.trim()` only ever touched the ends — but every display site rendered it in a plain `<p>`, which collapses whitespace, so the break silently disappeared between typing it and reading it. `whitespace-pre-wrap break-words` on `MoveCard`, `PerkCard` and the Character Creation wizard's Perk list fixes it wherever a description is read at length. The one deliberate exception is the search dropdown, whose result rows are single-line by design.
 
+- **A page load fetches the last 300 entries, not the whole log (decided, new — see Database
+  round-trips above).** `GET /api/chat` was unbounded, and `chat_log.image_data` is where pasted
+  images live as base64, so a session with a dozen shared pictures dragged megabytes across on every
+  reload and every reconnect. Live entries still arrive over the socket regardless of the limit; what
+  is lost is scrollback older than 300 entries after a reload, which nothing in the UI pages back to
+  anyway. Deliberately generous — a fight produces far fewer than 300 — and the log is cleared
+  between fights in any case, which is the next bullet.
 - Nothing chat-related is kept for long: clears automatically on server restart (an actual `DELETE FROM chat_log` at boot, not just an incidental side effect of Render's free tier spinning the server down between quiet periods) and via a manual **Clear Chat** button, GM-only (decided — matches every other admin-style control in the app; the server itself doesn't enforce this, same as everywhere else in this no-auth app).
 
 ## Game mechanic — Character Creation (decided, new)
@@ -842,6 +888,18 @@ Every page's header carries a **Search bar**, available to all roles. Typing deb
   should be reintroduced deliberately and piecemeal, not as another whole-app pass.
 
 ## Data model
+
+**Indexes are declared separately, in `ensureIndexes()` (decided, new).** The tables below carry no
+`CREATE INDEX` of their own — every one is created by name (`idx_<table>_<column>`) in a single list
+at the end of `initDb`, so adding one later needs no table rebuild and the whole set rides the same
+batch as the schema. They cover the foreign keys the app actually looks rows up by: the per-character
+fan-out every combat payload does (`dice`, `counters`, `stances`, `weapons`, `injuries`,
+`combat_participants`, `character_moves`, `character_perks`, …), the per-move one a Move sheet does
+(`move_roll_slots` and its siblings, `move_tags`, `move_interactions`), and the three tables that grow
+for the life of a world (`round_events.resolution_id`, `chat_log.move_id`,
+`declared_moves.character_id`). SQLite indexes `INTEGER PRIMARY KEY` for free and nothing else, so
+before this every `WHERE character_id = ?` was a full scan.
+
 ```sql
 CREATE TABLE characters (
   id INTEGER PRIMARY KEY,

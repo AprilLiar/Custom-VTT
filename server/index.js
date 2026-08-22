@@ -1595,6 +1595,24 @@ app.delete('/api/characters/:id', wrap(async (req, res) => {
   res.json({ ok: true });
 }));
 
+// **How much of the log a page load fetches (decided, new — Phase 4 of the
+// round-trip work).**
+//
+// This used to be the whole thing, every time, with no bound at all — and
+// `chat_log` is where pasted images live, base64 in `image_data`, so a session
+// with a dozen shared pictures made every reload and every reconnect drag
+// several megabytes across the wire before the Chat tab could paint. It is one
+// query either way, so this is not about round trips; it is about the size of
+// the answer.
+//
+// Deliberately generous, and deliberately the *tail*: 300 entries is far more
+// than a fight produces, the GM clears the log between fights anyway
+// (`chat:cleared`), and live entries arrive over the socket regardless of this
+// number. The cost is that scrollback older than 300 entries does not come
+// back after a reload — nothing in the UI pages further back, so an unbounded
+// fetch was only ever serving the part of the log nobody scrolled to.
+const CHAT_HISTORY_LIMIT = 300;
+
 app.get('/api/chat', wrap(async (_req, res) => {
   const rows = await all(`
     SELECT c.id, c.kind, c.character_id, c.modifier, c.dice_rolled, c.content,
@@ -1605,7 +1623,7 @@ app.get('/api/chat', wrap(async (_req, res) => {
            m.active_tics AS move_active_tics, m.recovery_tics AS move_recovery_tics,
            m.defense_frame_positions AS move_defense_frame_positions,
            m.stamina_cost AS move_stamina_cost
-    FROM chat_log c
+    FROM (SELECT * FROM chat_log ORDER BY id DESC LIMIT ${CHAT_HISTORY_LIMIT}) c
     LEFT JOIN characters ch ON ch.id = c.character_id
     LEFT JOIN moves m ON m.id = c.move_id
     ORDER BY c.id
