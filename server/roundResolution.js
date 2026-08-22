@@ -43,7 +43,7 @@
 // is what keeps this module import-safe. Keep both sides' behavior in sync
 // if either one changes.
 
-import { all, one, run } from './db.js';
+import { all, one, run, readMany, writeMany } from './db.js';
 import { rollDie, applyHalfDamage, clamp, dieAtRank, rankOf, stepDie, rollTotal } from './gameLogic.js';
 import {
   parseConcreteAttackTargets,
@@ -132,6 +132,7 @@ import {
   minDamageThresholdFor,
   perkBlockRiposteSteps,
   perkDefinitionsFor,
+  withPerkCache,
   perkRoundStartHalfHealing,
   perkIgnoresMovementPunisher,
   perkInterruptAmounts,
@@ -3595,21 +3596,23 @@ async function applyIdleTicStaminaRegen(io, pairIndex, tic, emitEvent = null) {
   if (!participants.length) return;
   const charIds = participants.map((p) => p.character_id);
   const marks = charIds.map(() => '?').join(',');
-  const [charRows, footprintRows, perkRows] = await Promise.all([
-    all(`SELECT * FROM characters WHERE id IN (${marks})`, charIds),
-    all(
+  // One trip for all three. This runs once per Tic, so four separate reads
+  // here was four x every Tic of every round.
+  const [charRows, footprintRows, perkRows] = await readMany([
+    [`SELECT * FROM characters WHERE id IN (${marks})`, charIds],
+    [
       `SELECT dm.character_id AS characterId, dm.placement_tic AS placementTic,
               dm.reveal_tic + m.active_tics + m.recovery_tics + dm.recovery_extension_tics AS recoveryEndTic
        FROM declared_moves dm JOIN moves m ON m.id = dm.move_id
        WHERE dm.character_id IN (${marks})`,
-      charIds
-    ),
-    all(
+      charIds,
+    ],
+    [
       `SELECT cp.character_id AS characterId, p.name
        FROM character_perks cp JOIN perks p ON p.id = cp.perk_id
        WHERE cp.character_id IN (${marks})`,
-      charIds
-    ),
+      charIds,
+    ],
   ]);
   const charById = new Map(charRows.map((c) => [c.id, c]));
   const footprintsByChar = new Map();
@@ -4185,7 +4188,15 @@ async function makeEmitEvent(io, resolution, pairIndex, roundNumber) {
 // it's starting fresh. Returns (without doing anything) while genuinely
 // paused — resolveDodge/resolveMoveConflict below are the only way past a
 // pending decision; both call this again once they've applied it.
-async function advancePairResolution(pairIndex, io) {
+// Wrapped in `withPerkCache` so the whole resolution asks "who holds which
+// Perk" once per fighter instead of once per roll, trigger and threshold —
+// eleven reads for a single round before this. The memo lives and dies with
+// this call; see perkEngine.js for why the lifetime has to be bounded.
+function advancePairResolution(pairIndex, io) {
+  return withPerkCache(() => resolvePairRound(pairIndex, io));
+}
+
+async function resolvePairRound(pairIndex, io) {
   const pair = await one('SELECT * FROM combat_pairs WHERE pair_index = ?', [pairIndex]);
   if (!pair || pair.phase !== 'resolving') return;
 
@@ -4359,9 +4370,13 @@ async function advancePairResolution(pairIndex, io) {
     // thing that happens for this Tic (see this module's header comment on
     // crash-recovery) — a crash before this point just means the next
     // advancePairResolution call cheaply redoes this Tic from scratch.
-    await Promise.all([
-      run('UPDATE pair_round_resolutions SET resolved_through_tic = ? WHERE id = ?', [currentTic, resolution.id]),
-      run('UPDATE combat_pairs SET current_tic = ? WHERE pair_index = ?', [currentTic, pairIndex]),
+    // Both progress markers in one round trip. They are written together on
+    // purpose — the pair of them IS the "this Tic is finished" record, and a
+    // crash between the two would leave the two halves disagreeing about how
+    // far the round got.
+    await writeMany([
+      ['UPDATE pair_round_resolutions SET resolved_through_tic = ? WHERE id = ?', [currentTic, resolution.id]],
+      ['UPDATE combat_pairs SET current_tic = ? WHERE pair_index = ?', [currentTic, pairIndex]],
     ]);
     currentTic += 1;
   }

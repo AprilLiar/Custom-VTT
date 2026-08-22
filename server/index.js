@@ -4444,6 +4444,15 @@ io.on('connection', (socket) => {
       // itself applies no artificial pacing (all pacing is a client
       // concern — see the plan's core architecture principle). Other pairs
       // are untouched and keep running independently.
+      //
+      // **Awaiting this costs the caller nothing, which is worth writing down
+      // because it looks like it should.** Socket.io does not serialise a
+      // socket's handlers — it invokes each one and ignores the returned
+      // promise — so a long `await` here has never held up the next event from
+      // this or any other client. Detaching it was tried and reverted: it
+      // bought no responsiveness and opened a window for two resolutions of
+      // the same pair to overlap. The way to make this faster is to make the
+      // round shorter, not to look away while it runs.
       await advancePairResolution(participant.pair_index, io);
       // The engine moves current_tic, and on a clean finish rolls this
       // pair into its next round's Declaration phase — the snapshot every

@@ -136,13 +136,46 @@ on the connection and much more headroom under the libSQL client's 20-request co
 which `GET /api/combat` at 46 was liable to queue behind. **The depth that costs seconds is in the
 declare gate and the round engine, which is Phase 3.**
 
-**Remaining phases** (the replica removes the multiplier from these; it does not make them correct): through `db.batch()`, and cache the ruleset constants
-   (`attributes`/`attribute_counters`) that every combat snapshot re-reads.
-3. The round engine re-reads its own invariants (participants, characters, perks, stances) on every
-   Tic, and blocks the socket for the whole resolution.
-4. Standing costs: a schema-version guard so `initDb` stops re-running 148 queries per boot, indexes
-   on the queried foreign keys (the schema currently has **none**), and a `LIMIT` on `GET /api/chat`,
-   which returns the entire log including every pasted image.
+**Phase 3 — the round engine (shipped, and it settles what is left).** Resolving one round issued 210
+queries across 75 distinct statements, re-fetching the pair's invariants at every one of its seven
+Tics. Three things changed:
+
+- **`withPerkCache` in `perkEngine.js`.** "Who holds which Perk" was asked eleven times per round —
+  it is on the path of every roll, trigger and threshold, for both fighters — and cannot change
+  within a resolution. Memoised through an `AsyncLocalStorage` scoped to one `advancePairResolution`
+  call, deliberately *not* a module-level cache: Node yields at every await, so a `perk:grant`
+  arriving between Tics would leave a process-wide map stale for the rest of the session.
+- **The two per-Tic progress writes go together** through `writeMany`. They are one record — "this
+  Tic is finished" — and a crash between them would leave the halves disagreeing.
+- **`applyIdleTicStaminaRegen`'s three reads batch into one**, and it runs once per Tic.
+
+Result: **210 → 176 trips**, and the round still resolves correctly end to end (pair back to
+Declaration, round 2, the same chat output).
+
+**Two findings worth more than the numbers.**
+
+**Awaiting the resolution never blocked anything.** The plan for this phase said to acknowledge the
+click and resolve asynchronously. That was written on the assumption that Socket.io serialises a
+socket's handlers. **It does not** — measured directly: it invokes each handler and ignores the
+returned promise, so a slow handler does not delay the next event from that or any other client.
+Detaching the call was implemented, measured, and **reverted**: it bought no responsiveness and
+opened a window for two resolutions of the same pair to overlap. The comment at that call site now
+says so, because the code looks like it should block and does not.
+
+**Depth is structural now, and Phase 0 is what pays for it.** At 40ms a trip the round went 5808ms →
+5600ms: 176 trips but still ~140 of them one after another. What was removed had been running inside
+`Promise.all` groups already, and parallel requests cost count, not depth. What remains is genuinely
+sequential — roughly twenty ordered DB steps per Tic, each depending on the last, which is what
+resolving a fight Tic by Tic *is*. Collapsing it would mean threading one loaded context through
+every helper in the engine, which `CLAUDE.md` flags as the high-risk module, and it is not worth that
+for a cost the embedded replica has already removed: 140 local reads is not a number anybody can feel.
+
+**So the shape of the whole exercise is:** Phase 0 removed the cost, Phases 1–3 removed the waste.
+The remaining depth only matters again if the replica is ever turned off.
+
+**Phase 4 — standing costs (next).** A schema-version guard so `initDb` stops re-running 148 queries
+per boot, indexes on the queried foreign keys (the schema currently has **none**), and a `LIMIT` on
+`GET /api/chat`, which returns the entire log including every pasted image.
 
 ## Game mechanic — Dice Pools (Core Stats tab)
 Each character has 3 fixed dice pools, always the same slot names for every character:
