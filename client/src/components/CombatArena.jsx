@@ -1498,7 +1498,7 @@ function DeclareMoveInfo({ move, anchorRef, open, onClose, tellById, allMoves, t
   );
 }
 
-function DeclareMoveCard({ character, move, roundStartTic, declaredMoves, tags, tellById, allMoves, styleDeltas, held = false, legsBroken = false }) {
+function DeclareMoveCard({ character, move, roundStartTic, declaredMoves, tags, tellById, allMoves, styleDeltas, held = false, legsBroken = false, unarmed = false }) {
   const chipRef = useRef(null);
   const [showCard, setShowCard] = useState(false);
   // Block Tag (the first Tag automation): a Block has no up-front cost to
@@ -1534,12 +1534,19 @@ function DeclareMoveCard({ character, move, roundStartTic, declaredMoves, tags, 
   // leg. Checked after the Requirement gate so a move that is blocked by both
   // reports the one the player can actually do something about first.
   const blockedByLeg = legsBroken && carriesMovementTag(move.tag_ids, tags);
-  const blocked = blockedByRequirement || blockedByLeg;
+  // A third: a Move whose Roll names the Weapon slot, in the hands of somebody
+  // carrying nothing. Refused server-side for the same reason it is greyed
+  // here — such a move would otherwise roll one die fewer than it advertises
+  // and quietly be worth less than it says.
+  const blockedByWeapon = unarmed && (move.roll_slots ?? []).includes('Weapon');
+  const blocked = blockedByRequirement || blockedByLeg || blockedByWeapon;
   const blockedReason = blockedByRequirement
     ? requiredId != null
       ? `Can only be declared immediately after ${requiredName}.`
       : 'Secondary — this move is reached from a grapple, never declared by hand.'
-    : 'A broken Leg — this move is Movement, and you cannot move on it.';
+    : blockedByLeg
+      ? 'A broken Leg — this move is Movement, and you cannot move on it.'
+      : 'No weapon in hand — this move rolls one, so there is nothing to swing.';
   // Combat Style (decided, new): a move carrying its own style joins it to its
   // user's stance for the matchup, which is worth a flat modifier on the roll —
   // a real, sometimes decisive number that the picker used to keep to itself.
@@ -1689,7 +1696,7 @@ function DeclareMoveCard({ character, move, roundStartTic, declaredMoves, tags, 
 // list the same way Tab 3 does; a styled move is left out of either tab
 // unless it matches one of the two styles in the character's active stance.
 function DeclareMovePicker({ entry, roundStartTic, declaredMoves, tags, tellById, styleDeltas, heldMove }) {
-  const { character, stances, moves, dice } = entry;
+  const { character, stances, moves, dice, weapon } = entry;
   // **A Movement move needs both Legs (decided, new).** The server refuses one
   // outright (movementBlockedByLegs); this is the same rule read client-side so
   // the card greys and says why, rather than looking draggable and being
@@ -1754,6 +1761,7 @@ function DeclareMovePicker({ entry, roundStartTic, declaredMoves, tags, tellById
               // gesture invisible.
               held={heldMove?.characterId === character.id && heldMove?.moveId === m.id}
               legsBroken={legsBroken}
+              unarmed={!weapon}
             />
           ))
         ) : (
@@ -1993,10 +2001,25 @@ export default function CombatArena() {
         };
       });
     };
+    // Picked up, put down, worn out or broken — all one event carrying the new
+    // state (or null). The Arena cares because a Move whose Roll names the
+    // Weapon is closed to anyone carrying nothing.
+    const onWeaponUpdated = ({ characterId, weapon }) => {
+      setCombat((prev) => {
+        const entry = prev?.characters[characterId];
+        if (!entry) return prev;
+        return {
+          ...prev,
+          characters: { ...prev.characters, [characterId]: { ...entry, weapon } },
+        };
+      });
+    };
     socket.on('character:updated', onCharacterUpdated);
     socket.on('die:updated', onDieUpdated);
     socket.on('stance:activated', onStanceActivated);
+    socket.on('weapon:updated', onWeaponUpdated);
     return () => {
+      socket.off('weapon:updated', onWeaponUpdated);
       socket.off('character:updated', onCharacterUpdated);
       socket.off('die:updated', onDieUpdated);
       socket.off('stance:activated', onStanceActivated);

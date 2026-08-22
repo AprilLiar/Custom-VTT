@@ -1,7 +1,13 @@
-// Mirrors server/moveLogic.js's Move Roll vocabulary: 6 slots, not the 8
+// Mirrors server/moveLogic.js's Move Roll vocabulary: seven slots, not the 8
 // concrete dice — Left/Right Hand collapse into one ambiguous 'Hand' choice,
 // Left/Right Leg into 'Leg', resolved to a real die only at roll time.
-export const ROLL_SLOT_NAMES = ['Skull', 'Brain', 'Hand', 'Stamina', 'Body', 'Leg'];
+//
+// **'Weapon' is the seventh and names no die at all (decided, new)**: it
+// resolves to whatever the character is carrying, which for most of them is
+// nothing. A Move that rolls it cannot be declared unarmed — refused by the
+// server, and greyed out on the sheet and in the Arena picker so nobody has to
+// find that out the hard way.
+export const ROLL_SLOT_NAMES = ['Skull', 'Brain', 'Hand', 'Stamina', 'Body', 'Leg', 'Weapon'];
 
 export const ROLL_SLOT_LABELS = {
   Skull: 'Skull',
@@ -10,6 +16,7 @@ export const ROLL_SLOT_LABELS = {
   Stamina: 'Stamina',
   Body: 'Body',
   Leg: 'Left/Right Leg',
+  Weapon: 'Weapon',
 };
 
 export const AMBIGUOUS_ROLL_SLOTS = new Set(['Hand', 'Leg']);

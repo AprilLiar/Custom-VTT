@@ -286,9 +286,9 @@ test('sanitizeCustomRollSize: only a valid die size survives, everything else is
   assert.equal(sanitizeCustomRollSize(undefined), null);
 });
 
-test('sanitizeAttackTargets: accepts all six values, always in canonical order', () => {
+test('sanitizeAttackTargets: accepts every value, always in canonical order', () => {
   assert.deepEqual(
-    sanitizeAttackTargets(['Leg', 'Skull', 'Hand', 'Brain', 'Body', 'Stamina']),
+    sanitizeAttackTargets(['Leg', 'Skull', 'Weapon', 'Hand', 'Brain', 'Body', 'Stamina']),
     ATTACK_TARGET_NAMES
   );
 });
@@ -347,7 +347,12 @@ test('parseConcreteAttackTargets: drops abstract/unknown names and non-array/mal
   assert.deepEqual(parseConcreteAttackTargets('{}'), []);
 });
 
-test('CONCRETE_ATTACK_TARGET_NAMES has exactly the 8 concrete Stats', () => {
+test('CONCRETE_ATTACK_TARGET_NAMES: the 8 concrete Stats, plus Weapon', () => {
+  // Weapon is on this list so it survives the round trip through
+  // `effective_attack_targets`, which filters to exactly these names — but it is
+  // not a Stat and names no die. Every reader that maps a target onto a
+  // character's dice finds nothing for it, which is correct: the engine resolves
+  // the Weapon line explicitly, before any of that.
   assert.deepEqual(CONCRETE_ATTACK_TARGET_NAMES, [
     'Skull',
     'Brain',
@@ -357,6 +362,7 @@ test('CONCRETE_ATTACK_TARGET_NAMES has exactly the 8 concrete Stats', () => {
     'Right Hand',
     'Left Leg',
     'Right Leg',
+    'Weapon',
   ]);
 });
 
