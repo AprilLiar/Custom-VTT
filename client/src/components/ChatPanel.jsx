@@ -1,14 +1,15 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { sortTags } from '../lib/moveDisplay.js';
 import { Paperclip } from 'lucide-react';
 import { socket } from '../socket.js';
-import { getChat, getCharacters, getTells, getTags, getRuleset, getMoves } from '../lib/api.js';
+import { getChat, getTells, getTags, getRuleset, getMoves } from '../lib/api.js';
 import { fileToChatImage } from '../lib/image.js';
 import { folderPath } from '../lib/folders.js';
 import { phaseBgAt } from '../lib/framePhaseColors.js';
 import { decomposeRoll, formatRollTotal } from '../lib/dice.js';
 import { useRole } from '../roleContext.jsx';
 import { useSocketRefresh } from '../lib/connection.js';
+import { useRoster } from '../lib/useRoster.js';
 import Thumb from './Thumb.jsx';
 import FrameBar from './FrameBar.jsx';
 import MoveCard from './MoveCard.jsx';
@@ -524,7 +525,7 @@ export default function ChatPanel({ open }) {
   // Which roll card's "+" is open, if any — the whole entry, so the dialog
   // can name whoever made the roll.
   const [counterEntry, setCounterEntry] = useState(null);
-  const [characters, setCharacters] = useState(new Map());
+  const roster = useRoster();
   // Only needed to render a move_reveal card's expanded full MoveCard (see
   // Entry above) — the same lookups CombatArena.jsx/MovesTab.jsx already
   // fetch independently for the same purpose, no shared cache between them.
@@ -598,20 +599,11 @@ export default function ChatPanel({ open }) {
     };
   }, []);
 
-  useEffect(() => {
-    // Avatars for the feed — unfiltered by role, same as the rolls/messages
-    // themselves (everyone sees everyone's chat activity, NPCs included).
-    const refresh = () =>
-      getCharacters()
-        .then((list) => setCharacters(new Map(list.map((c) => [c.id, c]))))
-        .catch(console.error);
-    refresh();
-    const events = ['character:created', 'character:updated', 'character:deleted'];
-    for (const ev of events) socket.on(ev, refresh);
-    return () => {
-      for (const ev of events) socket.off(ev, refresh);
-    };
-  }, []);
+  // Avatars for the feed — unfiltered by role, same as the rolls/messages
+  // themselves (everyone sees everyone's chat activity, NPCs included).
+  // Through useRoster because this panel is mounted on *every* page, so it was
+  // the widest-reaching copy of the refetch-on-every-Stamina-change bug.
+  const characters = useMemo(() => new Map((roster ?? []).map((c) => [c.id, c])), [roster]);
 
   useEffect(() => {
     const refresh = () => {

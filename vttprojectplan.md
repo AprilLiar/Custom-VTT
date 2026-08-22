@@ -72,10 +72,38 @@ env vars to check.
 Nothing else changed: with no `TURSO_DATABASE_URL`, or one that is already a `file:` URL, the client
 is constructed exactly as before and the boot log says `Database: local file (no replica)`.
 
+**Phase 1 — the client refetch storm (shipped).** `move:grant` costs the server three queries; the
+delay was never the grant, it was what every connected browser did when the broadcast landed. Four
+components each kept their own roster copy and all four wrote the same wrong rule — refetch
+`/api/characters` on `character:created`, `character:updated` **and** `character:deleted` — and
+`character:updated` is what `adjustStamina` emits every time a fighter's Stamina moves. `ChatPanel`
+is mounted on every page, so one Stamina tick had every browser in the session re-fetching. The
+Compendium was worse: one `refreshAll` bound to twenty event names that refetched Tells, Tags, the
+ruleset, every Move, every Character **and a full character sheet per character in the game**
+(24 queries each) purely to read their stances.
+
+- **`client/src/lib/useRoster.js` (new)** owns the one copy of the rule: refetch only on a real
+  membership change, and **patch a `character:updated` in place from its own payload** — it already
+  carries the whole character, so it costs no request at all. Merging rather than replacing is what
+  keeps the `stances` that only the roster fetch supplies. Returns `null` until the first fetch so
+  callers can still tell "loading" from "no characters". Used by `ChatPanel`, `CharacterList`,
+  `Compendium` and `PerksCompendium`.
+- **`GET /api/characters` now returns each character's `stances`** — two queries for the whole
+  roster, replacing the per-character sheet fetch the Compendium was doing in a loop. Additive, so
+  callers that only want the flat roster are untouched.
+- **The Compendium's `refreshAll` is four narrow refetchers** mapped to the events that actually
+  invalidate their data (Tells / Tags / library / roster), instead of one function on twenty events.
+- **`CharacterSheet` fetches once per Perk event, not twice.** `perk:granted`/`perk:revoked` were
+  bound to both `refetchMoves` and `refetchPerks`, each running its own `getCharacter` and throwing
+  half the result away.
+
+Measured in a real browser against a live server: five `character:updated` broadcasts (confirmed
+received) now cause **0** API requests where they previously caused five roster refetches, and one
+grant causes **one** request — `/api/moves`, 9 queries — where it previously caused five endpoint
+fetches plus a full sheet per character. A whole Compendium refresh is now 15 queries and **flat in
+roster size**; it used to be 14 + 24n.
+
 **Remaining phases** (the replica removes the multiplier from these; it does not make them correct):
-1. The Compendium refetches the world on twenty event types, including `character:updated`, which
-   `adjustStamina` fires on every Stamina change — and it fetches a full character sheet per
-   character in the game to read their stances.
 2. Batch the fan-out reads through `db.batch()`, and cache the ruleset constants
    (`attributes`/`attribute_counters`) that every combat snapshot re-reads.
 3. The round engine re-reads its own invariants (participants, characters, perks, stances) on every

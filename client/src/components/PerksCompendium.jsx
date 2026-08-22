@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import { useRole } from '../roleContext.jsx';
 import { socket } from '../socket.js';
-import { getCharacters, getPerks, getPerkTags } from '../lib/api.js';
+import { getPerks, getPerkTags } from '../lib/api.js';
+import { useRoster } from '../lib/useRoster.js';
 import { portraitSrc } from '../lib/image.js';
 import PerkCard from './PerkCard.jsx';
 import PerkCreator from './PerkCreator.jsx';
@@ -147,7 +148,6 @@ function PerkTagManager({ tags }) {
 export default function PerksCompendium() {
   const { role } = useRole();
   const [perks, setPerks] = useState(null);
-  const [characters, setCharacters] = useState([]);
   const [tags, setTags] = useState([]);
   // Multi-select, OR logic — the same filter semantics the Moves compendium's
   // Style filter already uses, so the two tabs behave the same way.
@@ -156,21 +156,23 @@ export default function PerksCompendium() {
   const [grantOpen, setGrantOpen] = useState(null);
   const [dropTarget, setDropTarget] = useState(null);
 
+  // The roster comes from useRoster, which patches a `character:updated` in
+  // place instead of refetching — this list used to reload every Perk, every
+  // Tag and every character on each one, and Stamina fires that constantly.
+  const characters = useRoster() ?? [];
+
   useEffect(() => {
-    const refreshAll = () => {
-      getPerks().then(setPerks).catch(console.error);
-      getCharacters().then(setCharacters).catch(console.error);
-      getPerkTags().then(setTags).catch(console.error);
-    };
-    refreshAll();
-    const events = [
-      'perk:created', 'perk:updated', 'perk:deleted', 'perk:granted', 'perk:revoked',
-      'perk_tag:created', 'perk_tag:updated', 'perk_tag:deleted',
-      'character:created', 'character:updated', 'character:deleted',
-    ];
-    for (const ev of events) socket.on(ev, refreshAll);
+    const refetchPerks = () => getPerks().then(setPerks).catch(console.error);
+    const refetchTags = () => getPerkTags().then(setTags).catch(console.error);
+    refetchPerks();
+    refetchTags();
+    const perkEvents = ['perk:created', 'perk:updated', 'perk:deleted', 'perk:granted', 'perk:revoked'];
+    const tagEvents = ['perk_tag:created', 'perk_tag:updated', 'perk_tag:deleted'];
+    for (const ev of perkEvents) socket.on(ev, refetchPerks);
+    for (const ev of tagEvents) socket.on(ev, refetchTags);
     return () => {
-      for (const ev of events) socket.off(ev, refreshAll);
+      for (const ev of perkEvents) socket.off(ev, refetchPerks);
+      for (const ev of tagEvents) socket.off(ev, refetchTags);
     };
   }, []);
 

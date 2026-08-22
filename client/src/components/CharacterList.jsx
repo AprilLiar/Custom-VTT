@@ -2,10 +2,10 @@ import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useRole } from '../roleContext.jsx';
 import { socket } from '../socket.js';
+import { useRoster } from '../lib/useRoster.js';
 import {
   createCharacter,
   deleteCharacter,
-  getCharacters,
   getCharacterFolders,
 } from '../lib/api.js';
 import { portraitSrc } from '../lib/image.js';
@@ -147,7 +147,7 @@ function AddCharacterForm({ folders, currentFolder, onDone }) {
 export default function CharacterList() {
   const { role } = useRole();
   const navigate = useNavigate();
-  const [characters, setCharacters] = useState(null);
+  const characters = useRoster();
   const [folders, setFolders] = useState(null);
   const [adding, setAdding] = useState(false);
   const [currentFolder, setCurrentFolder] = useState(null); // folder id | null = root
@@ -155,26 +155,23 @@ export default function CharacterList() {
   const [moveTarget, setMoveTarget] = useState(null); // character being re-filed on mobile
 
   useEffect(() => {
-    const refresh = () => {
-      getCharacters().then(setCharacters).catch(console.error);
-      getCharacterFolders().then(setFolders).catch(console.error);
-    };
-    refresh();
-    const events = [
-      'character:created', 'character:updated', 'character:deleted',
-      'character_folder:created', 'character_folder:updated',
-    ];
-    for (const ev of events) socket.on(ev, refresh);
+    // Folders only. The roster itself is useRoster's job — refetching it on
+    // `character:updated` meant reloading the whole list on every Stamina
+    // change, and a character's own re-filing arrives on that same payload.
+    const refetchFolders = () => getCharacterFolders().then(setFolders).catch(console.error);
+    refetchFolders();
+    const events = ['character_folder:created', 'character_folder:updated'];
+    for (const ev of events) socket.on(ev, refetchFolders);
     // If the folder currently being viewed is the one that just got deleted,
     // follow it up to its parent (or root) rather than showing a stale
     // "This folder is empty" for a folder id that no longer exists.
     const onFolderDeleted = ({ folderId, parentFolderId }) => {
-      refresh();
+      refetchFolders();
       setCurrentFolder((prev) => (prev === folderId ? parentFolderId ?? null : prev));
     };
     socket.on('character_folder:deleted', onFolderDeleted);
     return () => {
-      for (const ev of events) socket.off(ev, refresh);
+      for (const ev of events) socket.off(ev, refetchFolders);
       socket.off('character_folder:deleted', onFolderDeleted);
     };
   }, []);

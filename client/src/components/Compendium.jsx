@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import { sortTags } from '../lib/moveDisplay.js';
 import { useRole } from '../roleContext.jsx';
 import { socket } from '../socket.js';
-import { getCharacter, getCharacters, getMoves, getRuleset, getTags, getTells } from '../lib/api.js';
+import { getMoves, getRuleset, getTags, getTells } from '../lib/api.js';
+import { useRoster } from '../lib/useRoster.js';
 import { iconFor } from '../lib/styleIcons.js';
 import { fileToSmallImage, portraitSrc } from '../lib/image.js';
 import { folderPath } from '../lib/folders.js';
@@ -283,8 +284,12 @@ export default function MovesCompendium() {
   const [tags, setTags] = useState(null);
   const [ruleset, setRuleset] = useState(null);
   const [data, setData] = useState(null); // { folders, moves }
-  const [characters, setCharacters] = useState([]);
-  const [characterStances, setCharacterStances] = useState(new Map()); // charId -> stances
+  // Roster and each character's stances both come from useRoster — it holds
+  // the one copy of "refetch on a real membership change, patch a
+  // `character:updated` in place", which four components used to get wrong
+  // independently. Stances ride on the same payload (see GET /api/characters),
+  // which is what removed the per-character sheet fetch this page used to do.
+  const characters = useRoster() ?? [];
   const [form, setForm] = useState(null); // null | { move? }
   const [grantOpen, setGrantOpen] = useState(null);
   const [dropTarget, setDropTarget] = useState(null);
@@ -306,44 +311,55 @@ export default function MovesCompendium() {
   const toggleStyleFilter = toggleIn(setStyleFilter);
   const toggleTagFilter = toggleIn(setTagFilter);
 
+  // **Each event refetches only what it invalidates (decided, revised).**
+  //
+  // This used to be one `refreshAll` bound to twenty event names, which
+  // refetched Tells, Tags, the ruleset, every Move, every Character *and a full
+  // character sheet per character in the game* — 24 queries each — just to read
+  // their stances. `character:updated` was among those twenty, and
+  // `adjustStamina` fires it on every Stamina change, so a single round of
+  // combat re-fetched the entire library and every sheet a dozen times over, in
+  // every browser that happened to have this page open. That, not the grant
+  // itself, is why granting a move took seconds.
+  //
+  // Four narrow refetchers now, mapped to the events that actually change their
+  // data. Stances arrive with the roster (see GET /api/characters), so the
+  // per-character sheet fetch is gone entirely.
   useEffect(() => {
-    const refreshAll = () => {
-      getTells().then(setTells).catch(console.error);
-      getTags().then(setTags).catch(console.error);
-      getRuleset().then(setRuleset).catch(console.error);
-      getMoves().then(setData).catch(console.error);
-      getCharacters()
-        .then(async (chars) => {
-          setCharacters(chars);
-          // stances are needed for the learnability gate in the grant list
-          const entries = await Promise.all(
-            chars.map(async (c) => [c.id, (await getCharacter(c.id)).stances])
-          );
-          setCharacterStances(new Map(entries));
-        })
-        .catch(console.error);
-    };
-    refreshAll();
-    const events = [
-      'tell:created', 'tell:updated', 'tell:deleted',
-      'tag:created', 'tag:updated', 'tag:deleted',
-      'folder:created', 'folder:updated',
-      'move:created', 'move:updated', 'move:deleted',
-      'move:granted', 'move:revoked', 'moves:reordered',
-      'character:created', 'character:updated', 'character:deleted',
-      'stance:created', 'stance:updated', 'stance:deleted',
+    const refetchTells = () => getTells().then(setTells).catch(console.error);
+    const refetchTags = () => getTags().then(setTags).catch(console.error);
+    const refetchLibrary = () => getMoves().then(setData).catch(console.error);
+    refetchTells();
+    refetchTags();
+    refetchLibrary();
+    getRuleset().then(setRuleset).catch(console.error);
+
+    const BY_EVENT = [
+      [['tell:created', 'tell:updated', 'tell:deleted'], refetchTells],
+      [['tag:created', 'tag:updated', 'tag:deleted'], refetchTags],
+      // Folders and moves both come back from getMoves, so they share one.
+      [
+        [
+          'folder:created', 'folder:updated',
+          'move:created', 'move:updated', 'move:deleted',
+          'move:granted', 'move:revoked', 'moves:reordered',
+        ],
+        refetchLibrary,
+      ],
     ];
-    for (const ev of events) socket.on(ev, refreshAll);
+
+    for (const [events, handler] of BY_EVENT) for (const ev of events) socket.on(ev, handler);
+
     // If the discipline currently being viewed is the one that just got
     // deleted, follow it up to its parent (or root) instead of showing a
     // stale "no moves" view for a folder id that no longer exists.
     const onFolderDeleted = ({ folderId, parentFolderId }) => {
-      refreshAll();
+      refetchLibrary();
       setCurrentFolder((prev) => (prev === folderId ? parentFolderId ?? null : prev));
     };
     socket.on('folder:deleted', onFolderDeleted);
     return () => {
-      for (const ev of events) socket.off(ev, refreshAll);
+      for (const [events, handler] of BY_EVENT) for (const ev of events) socket.off(ev, handler);
       socket.off('folder:deleted', onFolderDeleted);
     };
   }, []);
@@ -368,7 +384,7 @@ export default function MovesCompendium() {
 
   const canLearn = (character, move) => {
     if (move.style_attribute_id == null) return true;
-    const stances = characterStances.get(character.id) ?? [];
+    const stances = character.stances ?? [];
     return stances.some(
       (s) =>
         s.attribute_a_id === move.style_attribute_id ||

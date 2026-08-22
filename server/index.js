@@ -1142,8 +1142,29 @@ app.get('/api/health', async (_req, res) => {
   }
 });
 
+// **Stances ride along (decided, new).** The Compendium needs every
+// character's stances to decide which styled moves each of them could ever
+// learn, and its only way to get them was to fetch a whole character sheet per
+// character — `getCharacter(c.id)` in a loop, 24 queries each, re-run on every
+// one of the twenty events it listened to. Two queries here replace all of
+// that, and nothing else on this endpoint changes: `stances` is additive, so
+// callers that only want the flat roster are untouched.
 app.get('/api/characters', wrap(async (_req, res) => {
-  res.json((await all('SELECT * FROM characters ORDER BY id')).map(omitVitruvianArt));
+  const [characters, stanceRows] = await Promise.all([
+    all('SELECT * FROM characters ORDER BY id'),
+    all('SELECT * FROM stances ORDER BY character_id, id'),
+  ]);
+  const stancesByCharacter = new Map();
+  for (const stance of stanceRows) {
+    if (!stancesByCharacter.has(stance.character_id)) stancesByCharacter.set(stance.character_id, []);
+    stancesByCharacter.get(stance.character_id).push(stance);
+  }
+  res.json(
+    characters.map((character) => ({
+      ...omitVitruvianArt(character),
+      stances: stancesByCharacter.get(character.id) ?? [],
+    }))
+  );
 }));
 
 // Character-list folders (GM-managed) — separate from /api/characters so
