@@ -172,10 +172,7 @@ async function stanceMatchupParts(
       ])
     : [null, null];
 
-  const counters = await all(
-    'SELECT attacker_attribute_id, defender_attribute_id, bonus FROM attribute_counters'
-  );
-  const beats = buildBeats(counters);
+  const { beats } = await rulesetTables();
   const myStance = [mine.attribute_a_id, mine.attribute_b_id];
   const theirSide = matchupStyles([theirs.attribute_a_id, theirs.attribute_b_id], theirMoveStyle);
   const withoutMyMove = pairScore(myStance, theirSide, beats);
@@ -186,6 +183,34 @@ async function stanceMatchupParts(
     moveStyle: total - withoutMyMove,
     moveStyleId: myMoveStyle ?? null,
   };
+}
+
+// **The ruleset's own two tables, read once per process (decided, new).**
+//
+// `attributes` and `attribute_counters` are the seven Styles and the counter
+// grid between them. Every combat snapshot read both of them — twice, in the
+// case of a snapshot that also scores a pair — and they are the one thing in
+// this database that genuinely cannot change while the server is running:
+// `seedRuleset` in db.js is the only writer, and it runs at boot before
+// anything can ask.
+//
+// So this is a memo rather than a cache: there is no invalidation, because
+// there is no second writer to invalidate against. Restarting the server is
+// what picks up a ruleset change, which is already true of the seed itself.
+let rulesetPromise = null;
+
+function rulesetTables() {
+  rulesetPromise ??= (async () => {
+    const [counters, attributes] = await Promise.all([
+      all('SELECT attacker_attribute_id, defender_attribute_id, bonus FROM attribute_counters'),
+      all('SELECT id, name FROM attributes'),
+    ]);
+    return {
+      beats: buildBeats(counters),
+      nameById: new Map(attributes.map((a) => [a.id, a.name])),
+    };
+  })();
+  return rulesetPromise;
 }
 
 function activeStanceOf(characterId) {
@@ -257,12 +282,7 @@ export async function getPairStanceMatchup(pairIndex) {
     )
   );
 
-  const [counters, attributes] = await Promise.all([
-    all('SELECT attacker_attribute_id, defender_attribute_id, bonus FROM attribute_counters'),
-    all('SELECT id, name FROM attributes'),
-  ]);
-  const nameById = new Map(attributes.map((a) => [a.id, a.name]));
-  const beats = buildBeats(counters);
+  const { beats, nameById } = await rulesetTables();
   const stylesOf = (characterId) => {
     const stance = stanceByChar.get(characterId);
     return stance ? [stance.attribute_a_id, stance.attribute_b_id] : null;

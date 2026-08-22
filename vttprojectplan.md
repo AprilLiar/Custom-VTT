@@ -103,8 +103,40 @@ grant causes **one** request — `/api/moves`, 9 queries — where it previously
 fetches plus a full sheet per character. A whole Compendium refresh is now 15 queries and **flat in
 roster size**; it used to be 14 + 24n.
 
-**Remaining phases** (the replica removes the multiplier from these; it does not make them correct):
-2. Batch the fan-out reads through `db.batch()`, and cache the ruleset constants
+**Phase 2 — a batched read/write seam (shipped, with a caveat worth recording).**
+`readMany`/`writeMany` in `db.js` wrap `db.batch`, which posts a whole array of statements together
+and returns one result set each: many statements, **one** round trip. They take the same
+`[sql, args]` pairs the plain helpers take and return rows in the same order, so converting a
+`Promise.all` of reads is mechanical. Pinned by `server/test/dbBatch.test.js`, which asserts a
+batched read returns *exactly* what the same reads return one at a time, plus the two edge cases
+every call site meets — an empty group and a group of one.
+
+Converted: `attachInteractions` (six sub-table reads, 6 trips to 1), `getMovesFor` (five, to 1),
+`resolveStaminaCosts`, `GET /api/combat`'s bulk reads, and character creation's eight dice inserts.
+Both `getMovesFor` and `resolveStaminaCosts` also take a `knownDice` option now, so the combat
+snapshot hands down the dice it has already read — that is what stopped one request reading the same
+character's dice **three** times. `attributes` and `attribute_counters` are memoised for the life of
+the process in `combatBonuses.js`: `seedRuleset` is their only writer and it runs at boot, so there
+is no invalidation problem to have.
+
+**The caveat, because it changes what to expect from the rest of this work.** Measured at 40ms a
+trip, total trips fell hard but wall time mostly did not:
+
+| | trips | wall @40ms |
+| --- | --- | --- |
+| `POST /api/characters` | 10 → **3** | 419ms → **128ms** |
+| `GET /api/combat` | 46 → **20** | 415ms → 416ms |
+| `move:declare` | 26 → **23** | 573ms → 538ms |
+| resolve a round | 210 → **205** | 5808ms → 5810ms |
+
+Batching only shortens the critical path where the statements were **sequential**. Most of what was
+converted already ran inside a `Promise.all`, and parallel requests cost count, not depth — so the
+real win here is character creation (genuinely a `for await` loop, now one trip), plus far less load
+on the connection and much more headroom under the libSQL client's 20-request concurrency limit,
+which `GET /api/combat` at 46 was liable to queue behind. **The depth that costs seconds is in the
+declare gate and the round engine, which is Phase 3.**
+
+**Remaining phases** (the replica removes the multiplier from these; it does not make them correct): through `db.batch()`, and cache the ruleset constants
    (`attributes`/`attribute_counters`) that every combat snapshot re-reads.
 3. The round engine re-reads its own invariants (participants, characters, perks, stances) on every
    Tic, and blocks the socket for the whole resolution.

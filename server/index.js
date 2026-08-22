@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { createServer } from 'node:http';
 import { Server } from 'socket.io';
-import { db, all, one, run, initDb, syncReplica } from './db.js';
+import { db, all, one, run, readMany, writeMany, initDb, syncReplica } from './db.js';
 import {
   advancePairResolution,
   resolveDodge,
@@ -156,13 +156,13 @@ async function attachInteractions(moves) {
   // is real latency, and this is the single read path every move surface goes
   // through (Compendium, a character's Moves tab, every move:created payload).
   const [rows, tagRows, rollSlotRows, resistSlotRows, defensiveSlotRows, directionRows] =
-    await Promise.all([
-      all(`SELECT * FROM move_interactions WHERE move_id IN (${marks}) ORDER BY id`, ids),
-      all(`SELECT * FROM move_tags WHERE move_id IN (${marks}) ORDER BY id`, ids),
-      all(`SELECT * FROM move_roll_slots WHERE move_id IN (${marks}) ORDER BY id`, ids),
-      all(`SELECT * FROM move_resist_roll_slots WHERE move_id IN (${marks}) ORDER BY id`, ids),
-      all(`SELECT * FROM move_defensive_roll_slots WHERE move_id IN (${marks}) ORDER BY id`, ids),
-      all(`SELECT * FROM move_grapple_directions WHERE move_id IN (${marks}) ORDER BY id`, ids),
+    await readMany([
+      [`SELECT * FROM move_interactions WHERE move_id IN (${marks}) ORDER BY id`, ids],
+      [`SELECT * FROM move_tags WHERE move_id IN (${marks}) ORDER BY id`, ids],
+      [`SELECT * FROM move_roll_slots WHERE move_id IN (${marks}) ORDER BY id`, ids],
+      [`SELECT * FROM move_resist_roll_slots WHERE move_id IN (${marks}) ORDER BY id`, ids],
+      [`SELECT * FROM move_defensive_roll_slots WHERE move_id IN (${marks}) ORDER BY id`, ids],
+      [`SELECT * FROM move_grapple_directions WHERE move_id IN (${marks}) ORDER BY id`, ids],
     ]);
   const byMove = new Map();
   for (const row of rows) {
@@ -249,7 +249,7 @@ const getMove = async (id) => {
 // with Perk-granted per-character overrides folded in (effective frame
 // data, effective tags, and any roll bonus) — "the move copy on the
 // character," distinct from the shared Compendium template.
-async function getMovesFor(characterId) {
+async function getMovesFor(characterId, { knownDice = null } = {}) {
   const moves = await all(
     `SELECT m.*, CASE WHEN cm.id IS NULL THEN 0 ELSE 1 END AS is_granted
      FROM moves m
@@ -264,28 +264,40 @@ async function getMovesFor(characterId) {
   const ids = withBase.map((m) => m.id);
   const marks = ids.map(() => '?').join(',');
 
-  // Four independent lookups — fired concurrently rather than one after
-  // another, since none of them depend on each other's results.
-  const [overrideRows, tagOverrideRows, bonusRows, dice, weapon] = await Promise.all([
-    all(
+  // Five independent lookups in **one** round trip. They were already
+  // concurrent, which is the right shape — but `Promise.all` still puts five
+  // requests on the wire, and this function runs once per character on the
+  // combat snapshot.
+  //
+  // `knownDice` lets a caller that has already read this character's dice hand
+  // them in rather than making this read them a second time: `GET /api/combat`
+  // fetches every seated character's dice in one bulk query up front and then
+  // called through here, which is how the same character's dice ended up being
+  // read three times in a single request.
+  const [overrideRows, tagOverrideRows, bonusRows, weaponRows, diceRows] = await readMany([
+    [
       `SELECT * FROM character_move_overrides WHERE character_id = ? AND move_id IN (${marks})`,
-      [characterId, ...ids]
-    ),
-    all(
+      [characterId, ...ids],
+    ],
+    [
       `SELECT * FROM character_move_tags WHERE character_id = ? AND move_id IN (${marks})`,
-      [characterId, ...ids]
-    ),
-    all(
+      [characterId, ...ids],
+    ],
+    [
       `SELECT * FROM character_move_roll_bonuses WHERE character_id = ? AND move_id IN (${marks})`,
-      [characterId, ...ids]
-    ),
-    // Live dice, keyed by body-part slot below, to resolve each move's Roll
-    // to the character's actual current dice (not the shared template).
-    getDice(characterId),
+      [characterId, ...ids],
+    ],
     // The Weapon, so a Move whose Roll names it can quote what it will actually
     // throw. Null for almost everybody (see server/weapons.js).
-    getWeapon(characterId),
+    ['SELECT * FROM weapons WHERE character_id = ?', [characterId]],
+    // Live dice, keyed by body-part slot below, to resolve each move's Roll to
+    // the character's actual current dice (not the shared template). Optional,
+    // and therefore LAST: readMany drops falsy entries, so a conditional in the
+    // middle would shift every index after it.
+    knownDice ? null : ['SELECT * FROM dice WHERE character_id = ? ORDER BY id', [characterId]],
   ]);
+  const dice = knownDice ?? diceRows;
+  const weapon = weaponRows?.[0] ?? null;
 
   const overrideByMove = new Map();
   for (const row of overrideRows) {
@@ -320,7 +332,7 @@ async function getMovesFor(characterId) {
   // because it is the same figure move:declare will check against and
   // combat:character_done_declaring will spend — the picker must not be showing
   // a different one. The dice this needs are already in hand above.
-  const staminaCosts = await resolveStaminaCosts(characterId, withBase);
+  const staminaCosts = await resolveStaminaCosts(characterId, withBase, { knownDice: dice });
 
   return withBase.map((move) => {
     const deltas = overrideByMove.get(move.id) ?? { startup: 0, active: 0, recovery: 0 };
@@ -697,9 +709,19 @@ function mapDeclaredMovesForViewer(rows, pairsByIndex, viewer) {
 // The character's dice and Injuries are fetched once and handed to every Perk,
 // rather than each seam function querying for itself — the conditions Perks want
 // here are all about the state of the fighter, and this is asked once per move.
-async function resolveStaminaCosts(characterId, moves) {
+async function resolveStaminaCosts(characterId, moves, { knownDice = null } = {}) {
   if (!moves.length) return new Map();
-  const [dice, injuries] = await Promise.all([getDice(characterId), getInjuries(characterId)]);
+  // `knownDice` for the same reason getMovesFor takes it: the combat snapshot
+  // already read every seated character's dice in bulk, and this used to make
+  // it read them again per character.
+  // The optional statement goes LAST so the required ones keep fixed indices —
+  // readMany drops falsy entries, and a conditional in the middle would shift
+  // everything after it.
+  const [injuries, diceRows] = await readMany([
+    ['SELECT * FROM injuries WHERE character_id = ? ORDER BY id', [characterId]],
+    knownDice ? null : ['SELECT * FROM dice WHERE character_id = ? ORDER BY id', [characterId]],
+  ]);
+  const dice = knownDice ?? diceRows;
   // One batched pass, not one per move — see perkStaminaCostDeltas. The picker
   // asks about a character's whole move list at once.
   const deltas = await perkStaminaCostDeltas({ characterId, moves, dice, injuries });
@@ -1389,24 +1411,51 @@ app.get('/api/combat', wrap(async (req, res) => {
   // character takes ~4 seconds"); now it's 4 total (moves is naturally one
   // per character, getMovesFor's own shape), run concurrently regardless of
   // how many are seated.
-  const [charRows, diceRows, stanceRows, counters, movesByChar, declaredMoveRows, openResolutions, weaponRows] = await Promise.all([
-    charIds.length ? all(`SELECT * FROM characters WHERE id IN (${marks})`, charIds) : [],
-    charIds.length ? all(`SELECT * FROM dice WHERE character_id IN (${marks}) ORDER BY id`, charIds) : [],
-    charIds.length ? all(`SELECT * FROM stances WHERE character_id IN (${marks}) ORDER BY id`, charIds) : [],
-    charIds.length
-      ? all(
+  // **Everything that depends on nothing else, in one round trip.**
+  //
+  // This was already batched by IN-clause rather than looping per participant,
+  // which is the right shape — but seven concurrent `all()` calls are still
+  // seven requests, and `getMovesFor` sat inside the same group, so it could
+  // not be handed the dice this query had just read. That is how one request
+  // came to read the same character's dice three times: here in bulk, again
+  // inside getMovesFor, and again inside resolveStaminaCosts.
+  //
+  // One batched read, then the per-character move lists with those dice passed
+  // in. Two steps rather than one, but each is a single trip and the duplicate
+  // reads are gone.
+  // Nobody seated is a real state, and it is written out as its own branch
+  // rather than as four conditionals inside the batch: readMany drops falsy
+  // entries, so a `null` in the middle of the list would silently shift every
+  // result after it onto the wrong name.
+  const [charRows, diceRows, stanceRows, weaponRows, counters] = charIds.length
+    ? await readMany([
+        [`SELECT * FROM characters WHERE id IN (${marks})`, charIds],
+        [`SELECT * FROM dice WHERE character_id IN (${marks}) ORDER BY id`, charIds],
+        [`SELECT * FROM stances WHERE character_id IN (${marks}) ORDER BY id`, charIds],
+        // Who is holding what. Being armed is a plain visible fact — you can see
+        // what someone is carrying — and the Arena has to act on it: a Move whose
+        // Roll names the Weapon is closed to anyone carrying nothing, greyed
+        // exactly as a Movement move is greyed on a broken leg.
+        [`SELECT * FROM weapons WHERE character_id IN (${marks})`, charIds],
+        [
           `SELECT * FROM counters WHERE character_id IS NULL OR (show_in_combat = 1 AND character_id IN (${marks})) ORDER BY id`,
-          charIds
-        )
-      : all('SELECT * FROM counters WHERE character_id IS NULL ORDER BY id'),
-    Promise.all(charIds.map((id) => getMovesFor(id))),
+          charIds,
+        ],
+      ])
+    : [[], [], [], [], await all('SELECT * FROM counters WHERE character_id IS NULL ORDER BY id')];
+
+  // Dice grouped per character, so each getMovesFor below is handed the rows
+  // this request is already holding instead of re-reading them.
+  const diceByCharacter = new Map();
+  for (const die of diceRows ?? []) {
+    if (!diceByCharacter.has(die.character_id)) diceByCharacter.set(die.character_id, []);
+    diceByCharacter.get(die.character_id).push(die);
+  }
+
+  const [movesByChar, declaredMoveRows, openResolutions] = await Promise.all([
+    Promise.all(charIds.map((id) => getMovesFor(id, { knownDice: diceByCharacter.get(id) ?? [] }))),
     fetchDeclaredMoveRows(),
     fetchOpenResolutionsByPair(),
-    // Who is holding what. Being armed is a plain visible fact — you can see
-    // what someone is carrying — and the Arena has to act on it: a Move whose
-    // Roll names the Weapon is closed to anyone carrying nothing, greyed
-    // exactly as a Movement move is greyed on a broken leg.
-    charIds.length ? all(`SELECT * FROM weapons WHERE character_id IN (${marks})`, charIds) : [],
   ]);
   const pairsByIndex = new Map(pairRows.map((row) => [row.pair_index, row]));
   const declaredMoves = mapDeclaredMovesForViewer(declaredMoveRows, pairsByIndex, viewer);
@@ -1468,13 +1517,15 @@ app.post('/api/characters', wrap(async (req, res) => {
   );
   const id = Number(result.lastInsertRowid);
 
-  for (const t of DICE_TEMPLATE) {
-    await run('INSERT INTO dice (character_id, pool, slot_name) VALUES (?, ?, ?)', [
-      id,
-      t.pool,
-      t.slot_name,
-    ]);
-  }
+  // The eight Stat dice in one round trip rather than eight. They were written
+  // one at a time in a `for await` loop, which is the most sequential shape
+  // there is — and creating a character is the first thing anyone does.
+  await writeMany(
+    DICE_TEMPLATE.map((t) => [
+      'INSERT INTO dice (character_id, pool, slot_name) VALUES (?, ?, ?)',
+      [id, t.pool, t.slot_name],
+    ])
+  );
 
   const character = await getCharacter(id);
   io.emit('character:created', character);

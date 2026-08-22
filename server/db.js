@@ -62,9 +62,10 @@ export async function syncReplica() {
   return Date.now() - started;
 }
 
-// Safe helpers that always return plain objects keyed by column name.
-export async function all(sql, args = []) {
-  const result = await db.execute({ sql, args });
+// One libSQL result set as plain objects keyed by column name. Shared by `all`
+// and by `readMany` below, so a batched read and a lone one hand back exactly
+// the same shape.
+function rowsOf(result) {
   return result.rows.map((row) => {
     const obj = {};
     result.columns.forEach((col, i) => {
@@ -74,6 +75,11 @@ export async function all(sql, args = []) {
   });
 }
 
+// Safe helpers that always return plain objects keyed by column name.
+export async function all(sql, args = []) {
+  return rowsOf(await db.execute({ sql, args }));
+}
+
 export async function one(sql, args = []) {
   const rows = await all(sql, args);
   return rows[0] ?? null;
@@ -81,6 +87,51 @@ export async function one(sql, args = []) {
 
 export async function run(sql, args = []) {
   return db.execute({ sql, args });
+}
+
+// **Many statements, one round trip (decided, new — Phase 2 of the round-trip
+// work).**
+//
+// `db.batch` posts a whole array of statements together and hands back one
+// result set each, so a group of independent reads costs what a single read
+// costs. `Promise.all([all(...), all(...)])` looks concurrent and is the shape
+// most of this codebase already uses, but it still puts N requests on the wire;
+// against the embedded replica that is cheap, and against a plain remote
+// connection it was most of the delay.
+//
+// Takes the same `[sql, args]` pairs the helpers take and returns an array of
+// row arrays in the same order, so converting a `Promise.all` of reads is a
+// mechanical change with the destructuring left alone.
+export async function readMany(statements) {
+  const list = statements.filter(Boolean);
+  if (!list.length) return [];
+  // One statement is not worth a batch — it is the same trip either way, and
+  // this keeps callers from having to special-case an empty or single group.
+  if (list.length === 1) {
+    const [sql, args = []] = list[0];
+    return [await all(sql, args)];
+  }
+  const results = await db.batch(
+    list.map(([sql, args = []]) => ({ sql, args })),
+    'read'
+  );
+  return results.map(rowsOf);
+}
+
+// The write-side twin: every statement lands, in order, in one round trip and
+// one implicit transaction. Use it where a handler writes several independent
+// rows — a new character's eight dice, a Tic's round events.
+export async function writeMany(statements) {
+  const list = statements.filter(Boolean);
+  if (!list.length) return [];
+  if (list.length === 1) {
+    const [sql, args = []] = list[0];
+    return [await run(sql, args)];
+  }
+  return db.batch(
+    list.map(([sql, args = []]) => ({ sql, args })),
+    'write'
+  );
 }
 
 // Column-adding migration that works on both local files and Turso:
