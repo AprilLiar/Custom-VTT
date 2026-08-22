@@ -10,6 +10,7 @@ import {
   interrupterAmount,
   resolveInterruptContest,
   tagAmount,
+  movementBlockedByLegs,
   movementPunisherApplies,
   TAG_HOOKS,
   BLOCK_TAG,
@@ -363,4 +364,26 @@ test('all three conditions are required, and "connects" means real damage', () =
   // Neither Tag does anything on its own, in either direction.
   assert.equal(movementPunisherApplies({ punisherTagNames: ['Movement'], targetTagNames: ['Movement'], damageSteps: 2 }), false);
   assert.equal(movementPunisherApplies({}), false);
+});
+
+// --- A Movement move needs legs to move with -------------------------------
+
+test('movementBlockedByLegs: a broken Leg closes a Movement move', () => {
+  const movement = ['Movement'];
+  assert.equal(movementBlockedByLegs({ tagNames: movement, legStatuses: ['active', 'active'] }), false);
+  assert.equal(movementBlockedByLegs({ tagNames: movement, legStatuses: ['incapacitated', 'active'] }), true);
+  // Either leg, not both — footwork on one leg is not footwork.
+  assert.equal(movementBlockedByLegs({ tagNames: movement, legStatuses: ['active', 'incapacitated'] }), true);
+});
+
+test('movementBlockedByLegs: it closes nothing else', () => {
+  // A move without the Tag is untouched however broken its owner is.
+  assert.equal(
+    movementBlockedByLegs({ tagNames: ['Block', 'Fast'], legStatuses: ['incapacitated', 'incapacitated'] }),
+    false
+  );
+  // And a missing Leg row is not evidence of a break: this refuses moves, so
+  // the safe direction is to refuse nothing on absent data.
+  assert.equal(movementBlockedByLegs({ tagNames: ['Movement'], legStatuses: [] }), false);
+  assert.equal(movementBlockedByLegs({}), false);
 });

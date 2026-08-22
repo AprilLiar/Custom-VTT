@@ -1,33 +1,37 @@
-// Attack telegraph (decided, new) — "this Tic is where something that can
-// hit you begins."
+// Move telegraph (decided, widened) — "this Tic is where something begins."
 //
-// A declared move's Tell has always been public, but *when* it starts was
-// not shown to anyone but its owner, so an opponent could see that a punch
-// was coming and had no way to time a guard against it. The Tic Counter now
-// paints a faint grey glow on the first Startup Tic of every declared
-// **attack** that hasn't gone public yet, for everyone, and the Arena draws
-// a connector line between that glow and the move's own Tell card so the
-// two read as one fact rather than two unrelated markers.
+// A declared move's Tell has always been public, but *when* it starts was not
+// shown to anyone but its owner, so an opponent could see that something was
+// coming and had no way to time against it. The Tic Counter paints a faint grey
+// glow on the first Startup Tic of every declared move that hasn't gone public
+// yet, for everyone, and the Arena draws a connector line between that glow and
+// the move's own Tell card so the two read as one fact rather than two
+// unrelated markers.
+//
+// **Every move, guards included (decided, revised).** This used to mark only
+// moves that could hit you — a pure Block or Dodge glowed on nothing. The
+// absence of a glow was therefore a perfectly reliable read: it said "they are
+// turtling", handed over for free, and it made a guard the one move you could
+// identify without reading anything. Every declared move now marks its
+// placement Tic, so the glow says only "they have committed to something here",
+// which is the fact this marker exists to publish.
 //
 // **`placementTic` was already on the wire** for every viewer regardless of
-// entitlement (see mapDeclaredMovesForViewer in server/index.js — Tic
-// geometry is structure, not identity); it was simply never drawn for
-// anyone but the move's own owner. The one genuinely new field is
-// `telegraphsAttack`, the server's own answer to "can this move hit you"
-// (`isTelegraphedAttack` in moveLogic.js) — deliberately a single derived
-// boolean rather than the raw is_defensive/attack_targets it comes from, so
-// the payload discloses exactly what the glow itself discloses.
+// entitlement (see mapDeclaredMovesForViewer in server/index.js — Tic geometry
+// is structure, not identity); it was simply never drawn for anyone but the
+// move's own owner. There is no accompanying "is this an attack" field any
+// more: it existed to gate this glow, and the gate is gone.
 //
-// Two consequences worth naming, both intended rather than accidental:
-//   - A prepared opponent can pair the visible Tell with the start Tic and
-//     look the move's real frame data up in the Compendium (Players browse
-//     it read-only). That *is* the mechanic — reading a Tell is how you
-//     counter, and this is what makes reading it actionable.
-//   - The absence of a glow is itself information: it says the declared
-//     move is a pure guard. Also intended — seeing an opponent turtle is
-//     fair play, same as seeing them wind up.
+// A Feint-masked move still glows on nothing, because its row is dropped from
+// the payload outright rather than blanked — see the Feint note server-side.
+//
+// One consequence worth naming, intended rather than accidental: a prepared
+// opponent can pair the visible Tell with the start Tic and look the move's
+// real frame data up in the Compendium (Players browse it read-only). That *is*
+// the mechanic — reading a Tell is how you counter, and this is what makes
+// reading it actionable.
 
-// Which declared attacks **begin winding up** on each absolute Tic of one pair's
+// Which declared moves **begin winding up** on each absolute Tic of one pair's
 // current round window, as
 // `Map<absoluteTic, [{ declaredMoveId, characterId, characterName }]>`.
 //
@@ -36,8 +40,8 @@
 // a 1-Tic one drew differently, and that is exactly the problem: the length of
 // a wind-up is frame data, and frame data is what a Tell is supposed to make
 // you guess at. Painting the run handed every opponent the move's Startup
-// count for free. One square says "something that can hit you is committed
-// here" and stops there, which is the fact this glow exists to publish.
+// count for free. One square says "something is committed here" and stops
+// there, which is the fact this glow exists to publish.
 //
 // **Identity, Startup length, Active and Recovery all stay secret.** The
 // square anchors the Tell<->Tic connector, and hover/tap-to-pin work from it.
@@ -61,7 +65,6 @@ export function attackStartsByTic({
   for (const dm of declaredMoves ?? []) {
     if (pairIndexByChar.get(dm.characterId) !== pairIndex) continue;
     if (dm.publiclyRevealed) continue;
-    if (!dm.telegraphsAttack) continue;
     // A 0-Startup move has revealTic === placementTic and still marks its
     // placement square: it is committed there just the same, and the glow drops
     // the moment it goes public anyway.

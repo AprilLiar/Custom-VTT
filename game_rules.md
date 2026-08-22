@@ -374,6 +374,16 @@ have genuinely caught them mid-stride. It does not matter whether their move
 had come out yet: a Movement move still winding up is a fighter already
 committed to going somewhere.
 
+**A broken Leg forbids Movement moves entirely.** Either Leg — you do not step,
+slip or lunge on one leg, and the rule needs no follow-up question. A Movement
+move cannot be declared while a Leg is out, and the picker greys it and says so
+rather than letting you commit to something that will be refused.
+
+If a Leg breaks **after** you declared one, the move is **lost** and its Stamina
+comes back. You did not choose that; the leg went under you mid-round, and the
+rule that ends the move should not also charge you for it. The round says so
+when it happens, so a move that simply never comes out is never a mystery.
+
 ### Grappling
 
 Most moves try to hurt you. A **Grappling** move tries to *take* you.
@@ -526,14 +536,45 @@ its Active frames, then **Recovers**. Until it reveals, your opponent sees
 only its **Tell** — that a move is coming, and roughly what shape, but not
 which one.
 
+**Every move marks the Tic it begins on, for everybody.** One square glows on
+the Tic Counter, joined by a line to the Tell it belongs to: "something is
+committed here." That is all it says — not what the move is, not how long its
+wind-up runs, not whether it can hurt you. **Guards included**: a Block or a
+Dodge glows exactly like a strike does. It used to be only attacks that glowed,
+which meant the *absence* of a glow was a free and perfectly reliable read that
+your opponent was turtling — the one move in the game you could identify without
+reading anything.
+
+A move hidden by a **Feint** glows on nothing, because it is not on the board at
+all until it reveals.
+
 Your next move can never be placed before your previous move's full footprint
 ends, including across a round boundary. A move whose footprint runs past the
 round's last Tic simply carries into the next round; the strip marks that with
 a **+N** while you are placing it, and you can preview exactly how much of
 your next round it eats.
 
+If something pushes a move so far that **not one of its frames is left in the
+round it was declared for** — an extended guard cascading through your queue, an
+imposed Recovery — it stops being that round's business at all. It becomes a
+declaration of the round it now sits in: your Stamina comes back, it appears in
+that round's lane, and you can cancel it or leave it exactly like anything else
+you declared there. A plan that got shoved into next week is a plan you get to
+reconsider.
+
 Placing several moves in one Declaration is allowed and often correct. You are
 writing a short plan, not answering one question.
+
+**Facing more than one opponent, you choose who each move is for.** The declare
+panel asks — only when there is genuinely a choice — and the pick rides on every
+move you declare after it, so one round can be split between two enemies by
+changing it partway through. Your **Stance matchup** follows that choice: the
+number on your card is what your stance is worth against the person you are
+currently coming for, not an average and not nothing at all.
+
+Change your mind before the round runs and the moves already declared keep the
+target they were declared with. You committed to them; commitment is what a
+declaration is.
 
 ### Requirement — moves that only follow other moves
 

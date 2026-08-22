@@ -55,7 +55,6 @@ import {
   sanitizeAttackTargets,
   expandAttackTargets,
   parseConcreteAttackTargets,
-  isTelegraphedAttack,
   clampStaminaModifier,
   clampSuccessThreshold,
   normalizeGrappleDirections,
@@ -68,6 +67,7 @@ import {
   carriesFeintTag,
   effectiveTagNames,
   feintMasksDeclaration,
+  movementBlockedByLegs,
   BLOCK_TAG,
 } from './tagAutomations.js';
 import { effectiveFrames, idleStaminaRegenRate } from './perkAutomations.js';
@@ -471,7 +471,7 @@ async function fetchDeclaredMoveRows() {
   return all(`
     SELECT dm.id, dm.character_id, dm.round_number, dm.queue_order,
            dm.placement_tic, dm.reveal_tic, dm.stamina_committed, dm.appendage_choice,
-           dm.recovery_extension_tics, dm.feint_masked,
+           dm.recovery_extension_tics, dm.feint_masked, dm.target_character_id,
            m.id AS move_id, m.name AS move_name, m.tell_id, m.right_tell_id,
            m.left_tell_id, m.active_tics, m.recovery_tics, m.stamina_cost,
            m.defense_frame_positions, m.is_defensive, m.attack_targets,
@@ -606,8 +606,8 @@ function mapDeclaredMovesForViewer(rows, pairsByIndex, viewer) {
     // data (see moveId/moveName/staminaCost below, and
     // mapPendingGrappleForViewer): a row that said `{ placementTic: 4,
     // feintMasked: true }` would tell an opponent with devtools exactly what
-    // the Feint exists to hide, and `telegraphsAttack` would paint a glow on
-    // that Tic for everyone regardless.
+    // the Feint exists to hide, and the telegraph would paint a glow on that
+    // Tic for everyone regardless.
     //
     // Safe to reappear mid-round: `publiclyRevealed` only ever goes from
     // false to true (current_tic only moves forward, and a row from an
@@ -638,20 +638,13 @@ function mapDeclaredMovesForViewer(rows, pairsByIndex, viewer) {
       rightTellId: row.right_tell_id,
       leftTellId: row.left_tell_id,
       appendageChoice: row.appendage_choice,
+      // Uneven Combat: who this move is coming for. Public for the same reason
+      // placementTic is — squaring up to someone is visible at the table, and
+      // it is what lets the matchup plaque show the right number for everyone
+      // rather than only for the fighter who picked. NULL in a 1v1.
+      targetCharacterId: row.target_character_id ?? null,
       isRevealed,
       publiclyRevealed,
-      // Attack telegraph (decided, new): whether this move announces its
-      // first Startup Tic to everyone — see isTelegraphedAttack for the
-      // rule. Sent as the one derived boolean rather than as is_defensive +
-      // attack_targets, so the payload discloses exactly what the marker
-      // itself already discloses ("something that can hit you starts here")
-      // and not a byte more, and so the rule lives in one place instead of
-      // being re-derived by every renderer.
-      telegraphsAttack: isTelegraphedAttack({
-        activeTics: row.active_tics,
-        isDefensive: row.is_defensive,
-        attackTargets: JSON.parse(row.attack_targets ?? '[]'),
-      }),
       moveId: isRevealed ? row.move_id : null,
       moveName: isRevealed ? row.move_name : null,
       // Fine to disclose whenever the move itself is: either it's really
@@ -3934,7 +3927,7 @@ io.on('connection', (socket) => {
     await emitCombatUpdated();
   });
 
-  on('move:declare', async ({ characterId, moveId, placementTic: requestedPlacementTic, appendageChoice }) => {
+  on('move:declare', async ({ characterId, moveId, placementTic: requestedPlacementTic, appendageChoice, targetCharacterId }) => {
     // The three lookups below are all independent of each other (none reads
     // a value the others produce), so they run as one round trip instead
     // of three sequential ones; `pair` depends on participant.pair_index so
@@ -3986,6 +3979,31 @@ io.on('connection', (socket) => {
       ) {
         return;
       }
+    }
+
+    // **Uneven Combat: who this move is coming for (decided, new).** Accepted
+    // only when it names someone actually seated on the other side of this
+    // pair; anything else is stored as NULL and the engine falls back to its
+    // own deterministic rule. Not a rejection — a stale pick is a worse reason
+    // to refuse a declaration than it is to ignore.
+    const opposingSide = participant.side === 'left' ? 'right' : 'left';
+    const targetSeat = Number.isInteger(targetCharacterId)
+      ? await one(
+          'SELECT character_id FROM combat_participants WHERE character_id = ? AND pair_index = ? AND side = ?',
+          [targetCharacterId, participant.pair_index, opposingSide]
+        )
+      : null;
+    const storedTargetId = targetSeat ? targetSeat.character_id : null;
+
+    // **A Movement move needs both Legs (decided, new).** Silent no-op like
+    // every other rejection here; the picker greys it and says why, so reaching
+    // this line means a stale view or a hand-sent event.
+    const legStatuses = (await all(
+      "SELECT status FROM dice WHERE character_id = ? AND slot_name IN ('Left Leg', 'Right Leg')",
+      [character.id]
+    )).map((d) => d.status);
+    if (movementBlockedByLegs({ tagNames: await moveTagNamesFor(character.id, move.id), legStatuses })) {
+      return;
     }
 
     // Affordability is checked up front, against current_stamina minus
@@ -4115,9 +4133,9 @@ io.on('connection', (socket) => {
     );
 
     await run(
-      `INSERT INTO declared_moves (character_id, move_id, round_number, queue_order, placement_tic, reveal_tic, appendage_choice, effective_attack_targets, attack_target_source, feint_masked)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'move', ?)`,
-      [character.id, move.id, pair.round_number, queueOrder, placementTic, revealTic, storedAppendageChoice, JSON.stringify(effectiveAttackTargets), feintMasked ? 1 : 0]
+      `INSERT INTO declared_moves (character_id, move_id, round_number, queue_order, placement_tic, reveal_tic, appendage_choice, effective_attack_targets, attack_target_source, feint_masked, target_character_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'move', ?, ?)`,
+      [character.id, move.id, pair.round_number, queueOrder, placementTic, revealTic, storedAppendageChoice, JSON.stringify(effectiveAttackTargets), feintMasked ? 1 : 0, storedTargetId]
     );
     // Every connected socket gets its own tailored view via emitCombatUpdated
     // (see isRevealedToViewer/mapDeclaredMovesForViewer) — whoever's logged

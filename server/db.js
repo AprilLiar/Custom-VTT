@@ -1172,6 +1172,14 @@ export async function initDb() {
   await ensureColumn('declared_moves', 'reveal_posted', 'INTEGER NOT NULL DEFAULT 0');
   await ensureColumn('declared_moves', 'stamina_committed', 'INTEGER NOT NULL DEFAULT 0');
   await ensureColumn('declared_moves', 'appendage_choice', "TEXT CHECK(appendage_choice IN ('left','right'))");
+  // **Uneven Combat: who this move is coming for (decided, new).** NULL on
+  // every move in a 1v1 and on every row written before this existed, which is
+  // exactly right — with one opponent there is nothing to choose, and the
+  // engine's own deterministic rule (lowest character_id among the opposing
+  // side) is still the fallback whenever this is NULL or names someone no
+  // longer seated opposite. Recorded once at declare time; the fighter commits
+  // to a target with the same information they commit to a Tic with.
+  await ensureColumn('declared_moves', 'target_character_id', 'INTEGER');
   // Combat Automation (Phase 9, sub-phase 3 — see vttprojectplan.md): how
   // many extra Recovery Tics this declared move's window has been extended
   // by. Only ever set nonzero for a successfully-Blocked defender whose

@@ -72,6 +72,7 @@ import {
   effectiveTagNames,
   hardToInterruptAmount,
   interrupterAmount,
+  movementBlockedByLegs,
   movementPunisherApplies,
   resolveInterruptContest,
   MOVEMENT_PUNISH_RECOVERY,
@@ -118,6 +119,7 @@ import {
   computeMoveFootprint,
   computeNextRoundStartTic,
   computeInitiativeOverflowPenalty,
+  overlapsRoundWindow,
   resolveSideInitiative,
   findInterruptEligibleTic,
   planImposedRecovery,
@@ -1850,6 +1852,7 @@ async function resolveGrapple(io, { row, pairIndex, tic, emitEvent }) {
     pairIndex,
     side: row.side,
     allowedConcreteTargets: parseConcreteAttackTargets(row.effectiveAttackTargets),
+    declaredTargetId: row.targetCharacterId ?? null,
   });
   if (targetCharacterId == null) {
     // Nobody on the other side to grab. Still terminal for this move —
@@ -2313,7 +2316,7 @@ async function declareChainedMove(io, { row, chained, tic, emitEvent, chainRollB
 // Stat" rule is ever reached, and for a grapple it is the normal case, since
 // a grab takes a *person* rather than a Stat. Both fall back to the lowest
 // character_id among the opponents.
-async function selectTargetCharacter({ pairIndex, side, allowedConcreteTargets }) {
+async function selectTargetCharacter({ pairIndex, side, allowedConcreteTargets, declaredTargetId = null }) {
   const opposingSide = side === 'left' ? 'right' : 'left';
   const opponentRows = await all(
     `SELECT cp.character_id AS characterId, d.slot_name AS slotName, d.status AS status
@@ -2327,13 +2330,78 @@ async function selectTargetCharacter({ pairIndex, side, allowedConcreteTargets }
     candidatesByChar.get(r.characterId).push({ slot_name: r.slotName, status: r.status });
   }
   const candidates = [...candidatesByChar.entries()].map(([characterId, dice]) => ({ characterId, dice }));
+  // **The fighter's own choice comes first (decided, new).** Under Uneven
+  // Combat a move records who it is coming for; honoured here whenever that
+  // person is still seated opposite. Everything else — a 1v1, a row from
+  // before the column existed, a target who has since left the pair — falls
+  // through to the deterministic rule below, which is what it always was.
+  if (declaredTargetId != null && candidates.some((c) => c.characterId === declaredTargetId)) {
+    return declaredTargetId;
+  }
   if (allowedConcreteTargets.length === 0) {
     return candidates.map((c) => c.characterId).sort((a, b) => a - b)[0] ?? null;
   }
   return selectUnevenCombatTarget({ candidates, allowedConcreteTargets });
 }
 
+// Whether this move is footwork its owner can no longer manage, and if so,
+// ending it: the row is marked resolved so nothing re-attempts it, the Stamina
+// it was charged is handed back, and the round log says what happened rather
+// than leaving a move that simply never went off.
+//
+// Returns true when it fizzled, so the caller can stop.
+async function fizzleOnBrokenLeg(io, { row, tic, emitEvent }) {
+  const [tagNames, legs] = await Promise.all([
+    moveTagNamesFor(row.characterId, row.moveId),
+    all(
+      "SELECT status FROM dice WHERE character_id = ? AND slot_name IN ('Left Leg', 'Right Leg')",
+      [row.characterId]
+    ),
+  ]);
+  if (!movementBlockedByLegs({ tagNames, legStatuses: legs.map((d) => d.status) })) return false;
+
+  // The template's cost, which is the basis every other refund in this engine
+  // already uses (see the Interrupt refund) — the *effective* per-character
+  // figure a Perk may have discounted is not recorded per declared move.
+  const dm = await one(
+    `SELECT dm.stamina_committed, m.stamina_cost
+     FROM declared_moves dm JOIN moves m ON m.id = dm.move_id WHERE dm.id = ?`,
+    [row.declaredMoveId]
+  );
+  const refund = dm?.stamina_committed ? Number(dm.stamina_cost) || 0 : 0;
+  await run('UPDATE declared_moves SET interactions_resolved = 1 WHERE id = ?', [row.declaredMoveId]);
+  if (refund) {
+    await adjustStamina(io, row.characterId, refund, { emitEvent, tic, reason: 'movement-fizzle-refund' });
+  }
+  await emitEvent(tic, 'move_fizzled', {
+    declaredMoveId: row.declaredMoveId,
+    characterName: row.characterName,
+    moveName: row.moveName,
+    reason: 'broken-leg',
+    refund,
+  });
+  await postSystemMessage(
+    io,
+    refund
+      ? `${row.characterName} cannot throw ${row.moveName} on a broken leg — the move is lost and ${refund} Stamina refunded.`
+      : `${row.characterName} cannot throw ${row.moveName} on a broken leg — the move is lost.`
+  );
+  return true;
+}
+
 async function resolveAttack(io, { row, pairIndex, tic, emitEvent }) {
+  // **A Movement move on a broken Leg fizzles (decided, new).** Declaring one
+  // is already refused (see move:declare), but a Leg can break *between* the
+  // declaration and the Tic it comes out on — and a move that is footwork
+  // cannot resolve on a leg that no longer works. Checked before anything else,
+  // including the grapple branch: a grab you cannot step into is no more
+  // throwable than a strike you cannot step into.
+  //
+  // The Stamina comes back. The fighter did not choose this — the leg broke
+  // under them mid-round — and the rule that ends the move should not also
+  // charge for it.
+  if (await fizzleOnBrokenLeg(io, { row, tic, emitEvent })) return;
+
   // Grappling (decided) — a grab is not an attack and does not run the attack
   // flow. It is resolved entirely by resolveGrapple and returns here, so none
   // of the damage/defence machinery below ever sees it.
@@ -2476,10 +2544,16 @@ async function resolveAttack(io, { row, pairIndex, tic, emitEvent }) {
   // unreachable and silently skipping the Block entirely — so fall back to
   // the same deterministic "lowest character_id among opponents" rule
   // decision #6 uses, and let defence decide what happens next.
+  // The fighter's own declared target first, exactly as selectTargetCharacter
+  // does for a grapple — one rule, asked in two places because the attack path
+  // has already loaded these candidates for its own reasons.
+  const declaredTargetId = row.targetCharacterId ?? null;
   const targetCharacterId =
-    allowedConcreteTargets.length === 0
-      ? (candidates.map((c) => c.characterId).sort((a, b) => a - b)[0] ?? null)
-      : selectUnevenCombatTarget({ candidates, allowedConcreteTargets });
+    declaredTargetId != null && candidates.some((c) => c.characterId === declaredTargetId)
+      ? declaredTargetId
+      : allowedConcreteTargets.length === 0
+        ? (candidates.map((c) => c.characterId).sort((a, b) => a - b)[0] ?? null)
+        : selectUnevenCombatTarget({ candidates, allowedConcreteTargets });
   if (targetCharacterId == null) {
     // Nothing eligible to hit — this move's own resolution is nonetheless
     // complete (nothing more will ever happen for it), so it must still
@@ -3273,7 +3347,7 @@ async function processTic(io, { pairIndex, tic, emitEvent, resolutionId }) {
     `SELECT dm.id AS declaredMoveId, dm.character_id AS characterId, dm.move_id AS moveId,
             dm.placement_tic AS placementTic, dm.reveal_tic AS revealTic,
             dm.appendage_choice AS appendageChoice, dm.effective_attack_targets AS effectiveAttackTargets,
-            dm.chain_roll_bonus AS chainRollBonus,
+            dm.chain_roll_bonus AS chainRollBonus, dm.target_character_id AS targetCharacterId,
             m.name AS moveName, m.active_tics AS activeTics, m.roll_type AS rollType,
             m.is_defensive AS isDefensive, m.is_grappling AS isGrappling,
             m.success_threshold AS successThreshold,
@@ -3616,6 +3690,72 @@ async function startPairDeclaration(io, pairIndex) {
   await Promise.all(
     participants.map((p) => run('UPDATE combat_participants SET declared_this_round = 0 WHERE character_id = ?', [p.character_id]))
   );
+
+  // Anything the last round pushed clear of itself now belongs to this one.
+  // Run after the pair row is written, so it can read the round it is moving
+  // moves INTO rather than being told about it.
+  await rehomePushedMoves(io, { pairIndex, charIds, roundNumber: nextRoundNumber, roundStartTic: nextRoundStartTic, roundLength: state.round_length });
+}
+
+// **A move pushed wholly out of its round becomes the next round's declaration
+// (decided, new).** Several things can slide a declared move forward — a
+// Block's extended Recovery cascading through the queue, an imposed Recovery
+// from a Movement Punisher — and any of them can push one so far that not one
+// of its frames is left in the round it was declared for.
+//
+// Such a move used to sit in limbo: still stamped with the old round, so the
+// new round's lane did not show it, and still carrying whatever Stamina state
+// it was left in. It is now simply re-homed — stamped with the round it
+// actually occupies, uncommitted, and refunded if it had already been charged
+// — which makes it an ordinary pending declaration of this round: visible in
+// the lane, cancellable with the same ✕ as anything else, and charged again
+// when its owner presses Done Declaring.
+//
+// **One rule at round-open rather than one per path that can shift a move.**
+// Every way a move can be pushed ends here, including ones not written yet, and
+// `overlapsRoundWindow` is the same pure test the lane rendering already uses to
+// decide whether a move belongs to a round at all.
+async function rehomePushedMoves(io, { pairIndex, charIds, roundNumber, roundStartTic, roundLength }) {
+  if (!charIds.length) return;
+  const marks = charIds.map(() => '?').join(',');
+  const rows = await all(
+    `SELECT dm.id, dm.character_id, dm.round_number, dm.placement_tic, dm.stamina_committed, m.stamina_cost,
+            ch.name AS character_name, m.name AS move_name,
+            (dm.reveal_tic + m.active_tics + m.recovery_tics + dm.recovery_extension_tics) AS recovery_end_tic
+     FROM declared_moves dm
+     JOIN moves m ON m.id = dm.move_id
+     JOIN characters ch ON ch.id = dm.character_id
+     WHERE dm.character_id IN (${marks}) AND dm.round_number < ? AND dm.interactions_resolved = 0`,
+    [...charIds, roundNumber]
+  );
+
+  for (const row of rows) {
+    // Still has a frame in an earlier round? Then it is an ordinary carryover,
+    // which is a different thing entirely and stays exactly as it is.
+    const inThisRound = overlapsRoundWindow({
+      placementTic: row.placement_tic,
+      recoveryEndTic: row.recovery_end_tic,
+      roundStartTic,
+      roundLength,
+    });
+    if (!inThisRound || row.placement_tic < roundStartTic) continue;
+
+    const refund = row.stamina_committed ? Number(row.stamina_cost) || 0 : 0;
+    await run(
+      'UPDATE declared_moves SET round_number = ?, stamina_committed = 0 WHERE id = ?',
+      [roundNumber, row.id]
+    );
+    if (refund) {
+      await adjustStamina(io, row.character_id, refund, { reason: 'pushed-into-next-round-refund' });
+    }
+    await postSystemMessage(
+      io,
+      refund
+        ? `${row.character_name}'s ${row.move_name} was pushed entirely into this round — ${refund} Stamina refunded, and it can be cancelled or left as declared.`
+        : `${row.character_name}'s ${row.move_name} was pushed entirely into this round — it can be cancelled or left as declared.`
+    );
+  }
+  if (rows.length) await io?.emitCombatUpdated?.();
 }
 
 // §1.5 — the once-per-pair-per-round chat card that replaces

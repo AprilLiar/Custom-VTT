@@ -242,23 +242,31 @@ export async function getPairStanceMatchup(pairIndex) {
   );
   const left = seats.filter((s) => s.side === 'left');
   const right = seats.filter((s) => s.side === 'right');
-  if (left.length !== 1 || right.length !== 1) return null;
+  if (!left.length || !right.length) return null;
 
-  const [leftStance, rightStance] = await Promise.all([
-    activeStanceOf(left[0].characterId),
-    activeStanceOf(right[0].characterId),
-  ]);
-  if (!leftStance || !rightStance) return null;
+  // **Every fighter against every opponent, not just the 1v1 pair (decided,
+  // widened).** This used to return null outright unless each side held exactly
+  // one person, which meant an Uneven Combat showed no matchup anywhere — the
+  // rule still applied to the rolls, it was simply never displayed. Stances are
+  // read for everyone seated here and the per-opponent scores are built below;
+  // the 1v1 fields at the bottom are unchanged and still only present when the
+  // pair really is one against one, so nothing that reads them had to change.
+  const stanceByChar = new Map(
+    await Promise.all(
+      seats.map(async (seat) => [seat.characterId, await activeStanceOf(seat.characterId)])
+    )
+  );
 
   const [counters, attributes] = await Promise.all([
     all('SELECT attacker_attribute_id, defender_attribute_id, bonus FROM attribute_counters'),
     all('SELECT id, name FROM attributes'),
   ]);
   const nameById = new Map(attributes.map((a) => [a.id, a.name]));
-  const leftStyles = [leftStance.attribute_a_id, leftStance.attribute_b_id];
-  const rightStyles = [rightStance.attribute_a_id, rightStance.attribute_b_id];
   const beats = buildBeats(counters);
-  const score = pairScore(leftStyles, rightStyles, beats);
+  const stylesOf = (characterId) => {
+    const stance = stanceByChar.get(characterId);
+    return stance ? [stance.attribute_a_id, stance.attribute_b_id] : null;
+  };
   // Names ride along so the Arena can label the matchup without fetching the
   // ruleset and re-deriving what the server just computed.
   const namesOf = (ids) => ids.map((id) => nameById.get(id)).filter(Boolean);
@@ -288,21 +296,52 @@ export async function getPairStanceMatchup(pairIndex) {
     }));
   };
 
-  // pairScore is antisymmetric — scoring the other direction is exactly the
-  // negation — so one call answers both sides.
-  return {
-    pairIndex,
-    leftCharacterId: left[0].characterId,
-    rightCharacterId: right[0].characterId,
-    leftStyles,
-    rightStyles,
-    leftStyleNames: namesOf(leftStyles),
-    rightStyleNames: namesOf(rightStyles),
-    leftStyleDeltas: deltasFor(leftStyles, rightStyles),
-    rightStyleDeltas: deltasFor(rightStyles, leftStyles),
-    left: score,
-    right: -score,
-  };
+  // characterId -> opponentId -> what that specific facing is worth to them.
+  // A fighter with no active stance, or an opponent without one, simply has no
+  // entry for that facing — the same "drop it rather than send a 0 that reads
+  // as even" rule the 1v1 shape has always followed.
+  const byCharacter = {};
+  for (const seat of seats) {
+    const mine = stylesOf(seat.characterId);
+    if (!mine) continue;
+    const opponents = seat.side === 'left' ? right : left;
+    for (const other of opponents) {
+      const theirs = stylesOf(other.characterId);
+      if (!theirs) continue;
+      byCharacter[seat.characterId] ??= {};
+      byCharacter[seat.characterId][other.characterId] = {
+        score: pairScore(mine, theirs, beats),
+        myStyleNames: namesOf(mine),
+        theirStyleNames: namesOf(theirs),
+        styleDeltas: deltasFor(mine, theirs),
+      };
+    }
+  }
+
+  // The original 1v1 shape, unchanged and still only present when the pair is
+  // genuinely one against one — every existing reader keeps working, and an
+  // uneven pair reads `byCharacter` instead. pairScore is antisymmetric, so one
+  // call answers both sides.
+  const isDuel = left.length === 1 && right.length === 1;
+  const leftStyles = isDuel ? stylesOf(left[0].characterId) : null;
+  const rightStyles = isDuel ? stylesOf(right[0].characterId) : null;
+  const duel =
+    leftStyles && rightStyles
+      ? {
+          leftCharacterId: left[0].characterId,
+          rightCharacterId: right[0].characterId,
+          leftStyles,
+          rightStyles,
+          leftStyleNames: namesOf(leftStyles),
+          rightStyleNames: namesOf(rightStyles),
+          leftStyleDeltas: deltasFor(leftStyles, rightStyles),
+          rightStyleDeltas: deltasFor(rightStyles, leftStyles),
+          left: pairScore(leftStyles, rightStyles, beats),
+          right: -pairScore(leftStyles, rightStyles, beats),
+        }
+      : {};
+
+  return { pairIndex, byCharacter, ...duel };
 }
 
 // Every always-on combat modifier for one character, summed. The one place
