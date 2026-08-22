@@ -274,7 +274,14 @@ export function clampSuccessThreshold(value) {
 // collapse into one ambiguous 'Hand' choice, Left/Right Leg into 'Leg' — the
 // player picks which side at roll time, not the GM at creation time (see
 // AMBIGUOUS_ROLL_SLOTS below for how each resolves to a real die).
-export const ROLL_SLOT_NAMES = ['Skull', 'Brain', 'Hand', 'Stamina', 'Body', 'Leg'];
+// **'Weapon' is the seventh (decided, new).** Not a body part — it resolves to
+// whatever weapon its roller is carrying (see server/weapons.js), and to nothing
+// at all when they are carrying none, which is why a Move that names it is
+// closed to an unarmed fighter. It is in this list rather than beside it because
+// every mechanism that reads a Roll — the Creator's picker, the reveal-time
+// roll, the Attack Target vocabulary below — should treat it as one more slot
+// and not as a special case to be remembered.
+export const ROLL_SLOT_NAMES = ['Skull', 'Brain', 'Hand', 'Stamina', 'Body', 'Leg', 'Weapon'];
 
 // left/right resolution for each ambiguous Roll slot, in [left, right] order.
 export const AMBIGUOUS_ROLL_SLOTS = {
@@ -516,6 +523,13 @@ export const CONCRETE_ATTACK_TARGET_NAMES = [
   'Right Hand',
   'Left Leg',
   'Right Leg',
+  // **'Weapon' is concrete but names no die (decided, new).** It is here so it
+  // survives the round trip through `effective_attack_targets` — the storage
+  // filters to this list — and it costs nothing elsewhere, because every reader
+  // that turns a target into a die looks the name up among the character's dice
+  // and simply finds nothing. The engine handles the Weapon line explicitly,
+  // before any of that: see resolveWeaponTarget in roundResolution.js.
+  'Weapon',
 ];
 
 // Unlike sanitizeRollSlots (which preserves input order), this returns
@@ -587,6 +601,18 @@ export function expandAttackTargets(list, appendageChoice = null) {
 
 // Parses a declared_moves.effective_attack_targets JSON column, dropping
 // anything that isn't a recognized concrete Stat name.
+// The same canonical-order idea as sanitizeAttackTargets, one step further
+// along: a list that is ALREADY concrete, put back into CONCRETE_ATTACK_TARGET_NAMES
+// order and de-duplicated. Needed because the engine sometimes adds a target to
+// an expanded list after the fact — the Hand a Weapon attack falls back to when
+// its target turns out to be unarmed — and everything downstream reads the list
+// in order (selectAutoDamageTargets damages Stats in exactly the order it is
+// handed them).
+export function orderConcreteTargets(list) {
+  const supplied = new Set(Array.isArray(list) ? list : []);
+  return CONCRETE_ATTACK_TARGET_NAMES.filter((name) => supplied.has(name));
+}
+
 export function parseConcreteAttackTargets(json) {
   let list;
   try {

@@ -70,6 +70,13 @@ import {
   movementBlockedByLegs,
   BLOCK_TAG,
 } from './tagAutomations.js';
+import {
+  getWeapon,
+  grantWeapon,
+  removeWeapon,
+  weaponDie,
+  WEAPON_SLOT,
+} from './weapons.js';
 import { effectiveFrames, idleStaminaRegenRate } from './perkAutomations.js';
 import { clearAllPerkState, perkAllowsRevealedDetail, perkStaminaCostDeltas } from './perkEngine.js';
 import { isAutomatedPerk, isManualPerk, perkDefinition } from './perks/index.js';
@@ -259,7 +266,7 @@ async function getMovesFor(characterId) {
 
   // Four independent lookups — fired concurrently rather than one after
   // another, since none of them depend on each other's results.
-  const [overrideRows, tagOverrideRows, bonusRows, dice] = await Promise.all([
+  const [overrideRows, tagOverrideRows, bonusRows, dice, weapon] = await Promise.all([
     all(
       `SELECT * FROM character_move_overrides WHERE character_id = ? AND move_id IN (${marks})`,
       [characterId, ...ids]
@@ -275,6 +282,9 @@ async function getMovesFor(characterId) {
     // Live dice, keyed by body-part slot below, to resolve each move's Roll
     // to the character's actual current dice (not the shared template).
     getDice(characterId),
+    // The Weapon, so a Move whose Roll names it can quote what it will actually
+    // throw. Null for almost everybody (see server/weapons.js).
+    getWeapon(characterId),
   ]);
 
   const overrideByMove = new Map();
@@ -298,6 +308,12 @@ async function getMovesFor(characterId) {
   }
 
   const dieBySlot = new Map(dice.map((d) => [d.slot_name, d]));
+  // The Weapon slot resolves to whatever is in hand, shaped like a die row so
+  // every reader below treats it as one. Absent when they are carrying nothing,
+  // which is exactly what makes such a move show as unrollable — and the
+  // declare gate refuses it outright.
+  const armed = weaponDie(weapon);
+  if (armed) dieBySlot.set(WEAPON_SLOT, armed);
 
   // What each move actually costs THIS character, Perks included (Perfect
   // Player discounts a Dodge). Resolved here rather than left to the client
@@ -327,7 +343,9 @@ async function getMovesFor(characterId) {
     // Perk-granted per-move roll_bonus into one suggested modifier — the
     // "specified bonus" the Roll dialog pre-fills, editable manually from there.
     const toDieInfo = (d) => ({
-      dieId: d.id,
+      // Null for the Weapon: it is not a row in `dice`, so it has no die id to
+      // send back. pool:roll takes it as its own `includeWeapon` flag instead.
+      dieId: d.id ?? null,
       slot_name: d.slot_name,
       current_size: d.current_size,
       bonus: d.bonus,
@@ -1142,7 +1160,7 @@ app.get('/api/characters/:id', wrap(async (req, res) => {
   // is fine against a local SQLite file, but against Turso's networked
   // connection in production every await is a real round-trip, and eight in
   // a row is exactly the "a few seconds to open a character" symptom.
-  const [dice, inventory, injuries, stances, moves, roleplay, perks, counters] = await Promise.all([
+  const [dice, inventory, injuries, stances, moves, roleplay, perks, counters, weapon] = await Promise.all([
     getDice(character.id),
     getInventory(character.id),
     getInjuries(character.id),
@@ -1151,8 +1169,11 @@ app.get('/api/characters/:id', wrap(async (req, res) => {
     getRoleplay(character.id),
     getCharacterPerks(character.id),
     getCounters(character.id),
+    // Null for almost everyone — a weapon is something a character acquires,
+    // not something they are created with (see server/weapons.js).
+    getWeapon(character.id),
   ]);
-  res.json({ character, dice, inventory, injuries, stances, moves, roleplay, perks, counters });
+  res.json({ character, dice, inventory, injuries, stances, moves, roleplay, perks, counters, weapon });
 }));
 
 app.get('/api/tells', wrap(async (_req, res) => {
@@ -1347,7 +1368,7 @@ app.get('/api/combat', wrap(async (req, res) => {
   // character takes ~4 seconds"); now it's 4 total (moves is naturally one
   // per character, getMovesFor's own shape), run concurrently regardless of
   // how many are seated.
-  const [charRows, diceRows, stanceRows, counters, movesByChar, declaredMoveRows, openResolutions] = await Promise.all([
+  const [charRows, diceRows, stanceRows, counters, movesByChar, declaredMoveRows, openResolutions, weaponRows] = await Promise.all([
     charIds.length ? all(`SELECT * FROM characters WHERE id IN (${marks})`, charIds) : [],
     charIds.length ? all(`SELECT * FROM dice WHERE character_id IN (${marks}) ORDER BY id`, charIds) : [],
     charIds.length ? all(`SELECT * FROM stances WHERE character_id IN (${marks}) ORDER BY id`, charIds) : [],
@@ -1360,13 +1381,21 @@ app.get('/api/combat', wrap(async (req, res) => {
     Promise.all(charIds.map((id) => getMovesFor(id))),
     fetchDeclaredMoveRows(),
     fetchOpenResolutionsByPair(),
+    // Who is holding what. Being armed is a plain visible fact — you can see
+    // what someone is carrying — and the Arena has to act on it: a Move whose
+    // Roll names the Weapon is closed to anyone carrying nothing, greyed
+    // exactly as a Movement move is greyed on a broken leg.
+    charIds.length ? all(`SELECT * FROM weapons WHERE character_id IN (${marks})`, charIds) : [],
   ]);
   const pairsByIndex = new Map(pairRows.map((row) => [row.pair_index, row]));
   const declaredMoves = mapDeclaredMovesForViewer(declaredMoveRows, pairsByIndex, viewer);
 
   const characters = {};
   for (const character of charRows) {
-    characters[character.id] = { character: omitVitruvianArt(character), dice: [], stances: [] };
+    characters[character.id] = { character: omitVitruvianArt(character), dice: [], stances: [], weapon: null };
+  }
+  for (const weapon of weaponRows) {
+    if (characters[weapon.character_id]) characters[weapon.character_id].weapon = weapon;
   }
   for (const die of diceRows) characters[die.character_id]?.dice.push(die);
   for (const stance of stanceRows) characters[stance.character_id]?.stances.push(stance);
@@ -1758,6 +1787,59 @@ io.on('connection', (socket) => {
     });
   });
 
+  // ---------------------------------------------------------------------
+  // The Weapon (decided, new — see server/weapons.js)
+  // ---------------------------------------------------------------------
+  //
+  // A character carries one weapon or none, and none is the default. These
+  // three events are the whole player-facing surface; the mechanics live in
+  // weapons.js and the engine, and a Perk arming its holder calls the SAME
+  // `grantWeapon` these do rather than writing its own row.
+  //
+  // No ownership check, matching every other sheet edit in this app — the
+  // trust-based no-login model is a decided constraint, not an oversight.
+  on('weapon:create', async ({ characterId, name, dieSize, bonus, durability }) => {
+    const character = await getCharacter(characterId);
+    if (!character) return;
+    const weapon = await grantWeapon(io, character.id, { name, dieSize, bonus, durability });
+    if (!weapon) return;
+    await postSystemMessage(io, `${character.name} takes up the ${weapon.name}.`);
+  });
+
+  on('weapon:delete', async ({ characterId }) => {
+    const character = await getCharacter(characterId);
+    if (!character) return;
+    const weapon = await getWeapon(character.id);
+    if (!(await removeWeapon(io, character.id))) return;
+    await postSystemMessage(io, `${character.name} puts down the ${weapon.name}.`);
+  });
+
+  // **Rolling the weapon costs nothing (decided).** This is the sheet's own die
+  // widget and a GM's roll request — a check, a flourish, a contest. Durability
+  // is spent by USING the weapon in a Move, which happens in the engine
+  // (spendWeaponForDeclaredMove), never here.
+  on('weapon:roll', async ({ characterId, modifier }) => {
+    const [character, weapon] = await Promise.all([getCharacter(characterId), getWeapon(characterId)]);
+    if (!character || !weapon) return;
+    const die = weaponDie(weapon);
+    const mod = clampModifier(modifier) + (await getCombatRollBonus(character.id, { slotNames: [WEAPON_SLOT] }));
+    await logRoll(io, {
+      characterId: character.id,
+      characterName: character.name,
+      modifier: mod,
+      // Same die shape every other roll payload uses, so the chat card renders
+      // it without knowing a weapon from a Stat.
+      dice: [
+        {
+          slot_name: WEAPON_SLOT,
+          size: die.current_size,
+          bonus: die.bonus,
+          result: rollDie(die.current_size) + die.bonus,
+        },
+      ],
+    });
+  });
+
   // A raw ad-hoc roll of one die size (d4-d12) plus a modifier, not tied to
   // any character's own die — the chat Dice Tray (item 1) and a move's
   // Custom Roll type (item 2, base die instead of a Stat) both funnel
@@ -1793,19 +1875,30 @@ io.on('connection', (socket) => {
   // together with one shared modifier (not tied to a body section).
   // `declaredMoveId` (Combat Automation, sub-phase 3, optional) — see
   // dice:roll_custom's identical comment just above.
-  on('pool:roll', async ({ characterId, dieIds, modifier, declaredMoveId, rollRequestId = null }) => {
+  //
+  // `includeWeapon` (decided, new): the Weapon is not a die row, so it cannot
+  // ride in `dieIds` with the rest. A Move whose Roll names it sends this flag
+  // instead and the weapon joins the pool here. Rolling costs no Durability —
+  // that is what USING it in a Move costs, and this is not one (see
+  // server/weapons.js).
+  on('pool:roll', async ({ characterId, dieIds, modifier, declaredMoveId, rollRequestId = null, includeWeapon = false }) => {
     const character = await getCharacter(characterId);
-    if (!character || !Array.isArray(dieIds) || !dieIds.length) return;
+    if (!character || !Array.isArray(dieIds)) return;
     const ids = [...new Set(dieIds.map(Number).filter(Number.isInteger))];
-    if (!ids.length) return;
-    const dice = (
-      await all(
-        `SELECT * FROM dice WHERE character_id = ? AND status = 'active' AND id IN (${ids
-          .map(() => '?')
-          .join(',')}) ORDER BY id`,
-        [character.id, ...ids]
-      )
-    );
+    if (!ids.length && !includeWeapon) return;
+    const [statDice, armed] = await Promise.all([
+      ids.length
+        ? all(
+            `SELECT * FROM dice WHERE character_id = ? AND status = 'active' AND id IN (${ids
+              .map(() => '?')
+              .join(',')}) ORDER BY id`,
+            [character.id, ...ids]
+          )
+        : [],
+      includeWeapon ? getWeapon(character.id) : null,
+    ]);
+    const weaponInPool = weaponDie(armed);
+    const dice = weaponInPool ? [...statDice, weaponInPool] : statDice;
     if (!dice.length) return;
     const mod =
       clampModifier(modifier) +
@@ -4004,6 +4097,21 @@ io.on('connection', (socket) => {
     )).map((d) => d.status);
     if (movementBlockedByLegs({ tagNames: await moveTagNamesFor(character.id, move.id), legStatuses })) {
       return;
+    }
+
+    // **A Move that swings a weapon needs one in hand (decided, new).** The
+    // Weapon Roll slot resolves to whatever the character is carrying, and a
+    // fighter carrying nothing would simply roll one die fewer — a move quietly
+    // worth less than it says it is, which is exactly the kind of silence this
+    // engine keeps having to be taught not to do. Refused instead, and the
+    // picker greys the card the same way it greys a Movement move on a broken
+    // leg, so this line is only ever reached by a stale view.
+    if (move.roll_type !== 'custom') {
+      const rollsWeapon = await one(
+        'SELECT 1 AS yes FROM move_roll_slots WHERE move_id = ? AND slot_name = ?',
+        [move.id, WEAPON_SLOT]
+      );
+      if (rollsWeapon && !(await getWeapon(character.id))) return;
     }
 
     // Affordability is checked up front, against current_stamina minus

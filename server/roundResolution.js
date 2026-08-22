@@ -49,6 +49,7 @@ import {
   parseConcreteAttackTargets,
   expandAttackTargets,
   expandRollSlotRows,
+  orderConcreteTargets,
   resolveRollSlotNames,
 } from './moveLogic.js';
 import {
@@ -138,6 +139,14 @@ import {
   perkStaminaPerHalfDamage,
 } from './perkEngine.js';
 import { getCombatRollBonus, getCombatRollBonusBreakdown, getStanceMatchupBonus } from './combatBonuses.js';
+import {
+  getWeapon,
+  removeWeapon,
+  spendWeaponDurability,
+  weaponBreaks,
+  weaponDie,
+  WEAPON_SLOT,
+} from './weapons.js';
 
 const GM_CHAT_SENTINEL_ID = 0;
 
@@ -242,12 +251,141 @@ async function logRoll(io, { characterId, characterName, modifier, dice, rollCon
 // missing die.
 async function resolveMoveRollDice(characterId, slotNames, appendageChoice) {
   if (!slotNames.length) return [];
-  const dice = await getDice(characterId);
+  // **The Weapon slot resolves to whatever they are carrying (decided, new).**
+  // Not a die row — see server/weapons.js for why — so it is looked up
+  // separately and handed over in the shape every roll path already speaks. An
+  // unarmed fighter simply contributes nothing for it, which is the same
+  // "silently dropped" treatment an incapacitated Stat already gets; declaring
+  // such a move is refused up front anyway (see move:declare).
+  const [dice, weapon] = await Promise.all([
+    getDice(characterId),
+    slotNames.includes(WEAPON_SLOT) ? getWeapon(characterId) : null,
+  ]);
   const dieBySlot = new Map(dice.map((d) => [d.slot_name, d]));
+  const armed = weaponDie(weapon);
+  if (armed) dieBySlot.set(WEAPON_SLOT, armed);
   const resolved = resolveRollSlotNames(slotNames, appendageChoice)
     .map((slot) => dieBySlot.get(slot))
     .filter(Boolean);
   return resolved.filter((d) => d.status === 'active');
+}
+
+// **Using a weapon in a Move costs 1 Durability (decided, new).** Rolling the
+// weapon on its own — the sheet's own die widget, a GM roll request — costs
+// nothing; it is the Move that wears the thing out.
+//
+// Once per DECLARATION, not once per roll. Several paths can roll the same
+// declaration's Roll — a Block is rolled once per attacked Stat, a grapple
+// follow-up re-rolls the move it chained into — and a guard that happened to be
+// swung at two limbs must not cost twice as much as the same guard swung at
+// one. `declared_moves.weapon_spent` is the flag that makes it once, and it
+// survives a pause, which matters because a Block's second line is often rolled
+// on the far side of one.
+//
+// Returns the `{ weapon, destroyed }` of the spend, or null when nothing was
+// spent (no Weapon in the Roll, no weapon in hand, or already paid).
+async function spendWeaponForDeclaredMove(io, { declaredMoveId, characterId, characterName, slotNames, emitEvent, tic }) {
+  if (!slotNames?.includes(WEAPON_SLOT)) return null;
+  const row = await one('SELECT weapon_spent FROM declared_moves WHERE id = ?', [declaredMoveId]);
+  // A declaration the engine invented on the fly (a retroactive grapple chain)
+  // is a real row; one that has already been deleted is not, and neither pays.
+  if (!row || row.weapon_spent) return null;
+  await run('UPDATE declared_moves SET weapon_spent = 1 WHERE id = ?', [declaredMoveId]);
+
+  const spent = await spendWeaponDurability(io, characterId, 1);
+  if (!spent.weapon) return null;
+
+  await postSystemMessage(
+    io,
+    spent.destroyed
+      ? `${characterName}'s ${spent.weapon.name} gives out and is destroyed.`
+      : `${characterName}'s ${spent.weapon.name} is down to ${spent.weapon.durability} Durability.`
+  );
+  // Self-contained per §0: a replay watched later has no weapons table to look
+  // any of this up in, and the row may well be gone by then.
+  if (emitEvent && tic != null) {
+    await emitEvent(tic, 'weapon_durability', {
+      declaredMoveId,
+      characterId,
+      characterName,
+      weaponName: spent.weapon.name,
+      durability: spent.destroyed ? 0 : spent.weapon.durability,
+      destroyed: spent.destroyed,
+    });
+  }
+  return spent;
+}
+
+// **The Weapon as an Attack Target (decided, new).** Not a Stat, so it is not a
+// line of damage and no guard stands between it and the blow: it is settled by
+// one roll-off, the attack's own already-made total against the weapon's own
+// die. Winning destroys the weapon outright; a tie holds it (see weaponBreaks).
+//
+// **Against an unarmed target it becomes a random Hand instead** — the swing
+// was aimed at what they were holding, so it arrives at the hand that should
+// have been holding it. That substituted Stat is an ordinary target from there
+// on: blockable, dodgeable, damaged like any other.
+//
+// Returns the Attack Target list the rest of the resolution should use.
+// `stop` is true when the whole attack is spent on a weapon that held —
+// nothing lands, which is the answer when the weapon was all it was aimed at.
+async function resolveWeaponTargetLine(io, {
+  statTargets,
+  attackerCharacterId,
+  attackerCharacterName,
+  attackerDeclaredMoveId,
+  attackerTotal,
+  targetCharacterId,
+  emitEvent,
+  tic,
+}) {
+  const [weapon, target] = await Promise.all([getWeapon(targetCharacterId), getCharacter(targetCharacterId)]);
+  const targetName = target?.name ?? 'the defender';
+
+  if (!weapon) {
+    const substitute = Math.random() < 0.5 ? 'Left Hand' : 'Right Hand';
+    await postSystemMessage(
+      io,
+      `${attackerCharacterName} swings at a weapon ${targetName} is not holding — it lands on the ${substitute} instead.`
+    );
+    await emitEvent(tic, 'weapon_target', {
+      declaredMoveId: attackerDeclaredMoveId,
+      attackerCharacterName,
+      targetCharacterId,
+      targetCharacterName: targetName,
+      armed: false,
+      substituteSlotName: substitute,
+    });
+    return { effectiveAttackTargets: orderConcreteTargets([...statTargets, substitute]), stop: false };
+  }
+
+  const die = weaponDie(weapon);
+  const dice = [{ slot_name: WEAPON_SLOT, size: die.current_size, bonus: die.bonus, result: rollDie(die.current_size) + die.bonus }];
+  const weaponTotal = rollTotal(dice, 0);
+  await logRoll(io, { characterId: targetCharacterId, characterName: targetName, modifier: 0, dice });
+  const broke = weaponBreaks({ attackerTotal, weaponTotal });
+  if (broke) await removeWeapon(io, targetCharacterId);
+
+  await postSystemMessage(
+    io,
+    broke
+      ? `${attackerCharacterName} (${attackerTotal}) breaks ${targetName}'s ${weapon.name} (${weaponTotal}) — it is destroyed.`
+      : `${targetName}'s ${weapon.name} (${weaponTotal}) turns ${attackerCharacterName}'s ${attackerTotal} aside and holds.`
+  );
+  await emitEvent(tic, 'weapon_target', {
+    declaredMoveId: attackerDeclaredMoveId,
+    attackerCharacterId,
+    attackerCharacterName,
+    attackerResult: attackerTotal,
+    targetCharacterId,
+    targetCharacterName: targetName,
+    armed: true,
+    weaponName: weapon.name,
+    weaponResult: weaponTotal,
+    destroyed: broke,
+  });
+
+  return { effectiveAttackTargets: statTargets, stop: statTargets.length === 0 };
 }
 
 const TRIGGER_LABELS = {
@@ -1824,6 +1962,16 @@ async function rollFor(io, { characterId, characterName, moveId, moveName, slotN
     modifierBreakdown,
     ...(defensive ? { defensive: true, defenseType: 'resist' } : {}),
   });
+  // Using a weapon in a Move costs 1 Durability, charged once per declaration
+  // wherever that declaration's Roll is actually rolled.
+  await spendWeaponForDeclaredMove(io, {
+    declaredMoveId,
+    characterId,
+    characterName,
+    slotNames: rollType === 'custom' ? [] : slotNames,
+    emitEvent,
+    tic,
+  });
   return { total, dice, mod };
 }
 
@@ -2507,6 +2655,14 @@ async function resolveAttack(io, { row, pairIndex, tic, emitEvent }) {
       chainRollBonus,
     }),
   });
+  await spendWeaponForDeclaredMove(io, {
+    declaredMoveId: row.declaredMoveId,
+    characterId: row.characterId,
+    characterName: row.characterName,
+    slotNames: row.rollType === 'custom' ? [] : row.rollSlotNames,
+    emitEvent,
+    tic,
+  });
 
   // A sub-5 roll is Insignificant Damage, and that is decided at the END of
   // this flow, not here (see runInterruptAndDamage). This used to bail out
@@ -2534,7 +2690,13 @@ async function resolveAttack(io, { row, pairIndex, tic, emitEvent }) {
     if (!candidatesByChar.has(r.characterId)) candidatesByChar.set(r.characterId, []);
     candidatesByChar.get(r.characterId).push({ slot_name: r.slotName, status: r.status });
   }
-  const allowedConcreteTargets = attackTargets;
+  // **The Weapon names no die, so it plays no part in choosing WHO gets hit
+  // (decided, new).** Selecting on it would find nobody — no character has a
+  // Stat called Weapon — and bail out before the roll-off it exists for ever
+  // happened. It is separated out here and settled on its own, below, once
+  // there is a target to ask about.
+  const statTargets = attackTargets.filter((name) => name !== WEAPON_SLOT);
+  const targetsWeapon = statTargets.length !== attackTargets.length;
   const candidates = [...candidatesByChar.entries()].map(([characterId, dice]) => ({ characterId, dice }));
   // An attack with no Attack Target of its own is still a real attack (see
   // the Attack Target mechanic): a Successful Block replaces its effective
@@ -2551,9 +2713,9 @@ async function resolveAttack(io, { row, pairIndex, tic, emitEvent }) {
   const targetCharacterId =
     declaredTargetId != null && candidates.some((c) => c.characterId === declaredTargetId)
       ? declaredTargetId
-      : allowedConcreteTargets.length === 0
+      : statTargets.length === 0
         ? (candidates.map((c) => c.characterId).sort((a, b) => a - b)[0] ?? null)
-        : selectUnevenCombatTarget({ candidates, allowedConcreteTargets });
+        : selectUnevenCombatTarget({ candidates, allowedConcreteTargets: statTargets });
   if (targetCharacterId == null) {
     // Nothing eligible to hit — this move's own resolution is nonetheless
     // complete (nothing more will ever happen for it), so it must still
@@ -2562,6 +2724,32 @@ async function resolveAttack(io, { row, pairIndex, tic, emitEvent }) {
     await run('UPDATE declared_moves SET interactions_resolved = 1 WHERE id = ?', [row.declaredMoveId]);
     await emitEvent(tic, 'damage_applied', { declaredMoveId: row.declaredMoveId, result: 'no-eligible-target' });
     return;
+  }
+
+  // The Weapon line, settled on its own before anything else — see
+  // resolveWeaponTargetLine for why it takes no defence and why an unarmed
+  // target turns it into a Hand.
+  let allowedConcreteTargets = statTargets;
+  if (targetsWeapon) {
+    const weaponLine = await resolveWeaponTargetLine(io, {
+      statTargets,
+      attackerCharacterId: row.characterId,
+      attackerCharacterName: row.characterName,
+      attackerDeclaredMoveId: row.declaredMoveId,
+      attackerTotal: total,
+      targetCharacterId,
+      emitEvent,
+      tic,
+    });
+    allowedConcreteTargets = weaponLine.effectiveAttackTargets;
+    if (weaponLine.stop) {
+      // The whole attack was the weapon, and the weapon answered it. Nothing
+      // lands — no Stat was ever named, so there is nothing left to damage and
+      // no defence to ask about. Resolved, exactly like the no-target bail
+      // above, so processTic stops re-attempting it.
+      await run('UPDATE declared_moves SET interactions_resolved = 1 WHERE id = ?', [row.declaredMoveId]);
+      return;
+    }
   }
 
   // **The Minimum Damage Threshold for this exchange (decided, new).** The
@@ -2890,6 +3078,19 @@ async function runBlockLine(io, { pending, defenderDM, guard, line, emitEvent })
     total: blockResult,
     defensive: true,
     defenseType: defenderDM.defense_kind ?? 'block',
+  });
+  // A guard swung with a weapon wears it out like any other Move — once for the
+  // whole declaration, however many lines of attack it ends up answering.
+  await spendWeaponForDeclaredMove(io, {
+    declaredMoveId: defenderDM.id,
+    characterId: defenderDM.character_id,
+    characterName: defenderDM.character_name,
+    slotNames:
+      defenderDM.roll_type === 'custom' && defenderDM.custom_roll_size != null
+        ? []
+        : expandRollSlotRows([...baseSlotRows, ...defensiveSlotRows]),
+    emitEvent,
+    tic,
   });
 
   let lineOutcome;

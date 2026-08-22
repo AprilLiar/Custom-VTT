@@ -927,6 +927,32 @@ export async function initDb() {
   // Character-owned counters (Phase 5). character_id nullable for standalone
   // arena counters (GM-only, created directly in the Combat Arena) — that
   // creation path arrives in Phase 6, this table just already accepts it.
+  // **Weapons (decided, new).** A character's one carried weapon, or no row at
+  // all — which is the default for everybody, and the point: the Weapon slot on
+  // the Vitruvian figure starts genuinely empty rather than holding a d4 nobody
+  // asked for. One per character (UNIQUE), because the figure has one slot and
+  // "the weapon in your hands" is singular in every rule written about it.
+  //
+  // Deliberately its own table rather than a ninth `dice` row: a weapon has a
+  // name and a Durability, it comes and goes mid-fight, and every one of the 8
+  // Stats is load-bearing elsewhere (the creation budget, Injuries, Stat Lock,
+  // max Stamina). Adding a ninth would have rippled through all of it to model
+  // something that is not a body part.
+  //
+  // `durability` is a positive integer, spent only by USING the weapon in a
+  // Move — see spendWeaponDurability in server/weapons.js. Rolling it on its own
+  // costs nothing.
+  await run(`
+    CREATE TABLE IF NOT EXISTS weapons (
+      id INTEGER PRIMARY KEY,
+      character_id INTEGER NOT NULL UNIQUE REFERENCES characters(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      die_size INTEGER NOT NULL,
+      bonus INTEGER NOT NULL DEFAULT 0,
+      durability INTEGER NOT NULL
+    )
+  `);
+
   await run(`
     CREATE TABLE IF NOT EXISTS counters (
       id INTEGER PRIMARY KEY,
@@ -1280,6 +1306,15 @@ export async function initDb() {
     'defense_outcome',
     "TEXT CHECK(defense_outcome IN ('success','failed'))"
   );
+
+  // **Has this move already paid its Weapon Durability? (decided, new.)**
+  // Using a weapon in a Move costs 1 Durability — once per Move, not once per
+  // roll. Several paths can roll the same declaration's Roll (a Block is rolled
+  // once per attacked Stat; a grapple chain re-rolls a follow-up), so the spend
+  // is recorded on the declaration itself rather than counted at each roll
+  // site. Rolling a weapon outside a Move — the sheet's own die, a GM's roll
+  // request — never touches Durability and never reaches this column.
+  await ensureColumn('declared_moves', 'weapon_spent', 'INTEGER NOT NULL DEFAULT 0');
 
   await seedRuleset();
   await seedTells();

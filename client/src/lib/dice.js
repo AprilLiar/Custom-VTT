@@ -1,4 +1,7 @@
-const DIE_SIZES = [4, 6, 8, 10, 12];
+// The five die sizes the game has, mirroring DIE_SIZES in server/gameLogic.js.
+// Exported because the Weapon editor offers exactly this list — a weapon's die
+// is one of the same five, not a free number.
+export const DIE_SIZES = [4, 6, 8, 10, 12];
 
 export const POOLS = [
   { key: 'head', label: 'Head' },

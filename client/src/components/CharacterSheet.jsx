@@ -181,6 +181,14 @@ export default function CharacterSheet() {
           : prev
       );
     };
+    // The weapon is one row, replaced wholesale on every change (see
+    // server/weapons.js) — so the payload IS the new state and there is nothing
+    // to merge. `null` means they are carrying nothing again, which is a real
+    // value here, not an absence.
+    const onWeaponUpdated = ({ characterId: cid, weapon }) => {
+      if (cid !== characterId) return;
+      setData((prev) => (prev ? { ...prev, weapon } : prev));
+    };
     const onCounterDeleted = ({ counterId }) => {
       setData((prev) =>
         prev ? { ...prev, counters: prev.counters.filter((c) => c.id !== counterId) } : prev
@@ -209,6 +217,7 @@ export default function CharacterSheet() {
     socket.on('counter:created', onCounterCreated);
     socket.on('counter:updated', onCounterUpdated);
     socket.on('counter:deleted', onCounterDeleted);
+    socket.on('weapon:updated', onWeaponUpdated);
     return () => {
       socket.off('move:created', refetchMoves);
       socket.off('move:updated', refetchMoves);
@@ -232,6 +241,7 @@ export default function CharacterSheet() {
       socket.off('counter:created', onCounterCreated);
       socket.off('counter:updated', onCounterUpdated);
       socket.off('counter:deleted', onCounterDeleted);
+      socket.off('weapon:updated', onWeaponUpdated);
     };
   }, [characterId, navigate]);
 
