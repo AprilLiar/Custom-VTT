@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { createServer } from 'node:http';
 import { Server } from 'socket.io';
-import { db, all, one, run, initDb } from './db.js';
+import { db, all, one, run, readMany, writeMany, initDb, syncReplica } from './db.js';
 import {
   advancePairResolution,
   resolveDodge,
@@ -70,6 +70,13 @@ import {
   movementBlockedByLegs,
   BLOCK_TAG,
 } from './tagAutomations.js';
+import {
+  getWeapon,
+  grantWeapon,
+  removeWeapon,
+  weaponDie,
+  WEAPON_SLOT,
+} from './weapons.js';
 import { effectiveFrames, idleStaminaRegenRate } from './perkAutomations.js';
 import { clearAllPerkState, perkAllowsRevealedDetail, perkStaminaCostDeltas } from './perkEngine.js';
 import { isAutomatedPerk, isManualPerk, perkDefinition } from './perks/index.js';
@@ -149,13 +156,13 @@ async function attachInteractions(moves) {
   // is real latency, and this is the single read path every move surface goes
   // through (Compendium, a character's Moves tab, every move:created payload).
   const [rows, tagRows, rollSlotRows, resistSlotRows, defensiveSlotRows, directionRows] =
-    await Promise.all([
-      all(`SELECT * FROM move_interactions WHERE move_id IN (${marks}) ORDER BY id`, ids),
-      all(`SELECT * FROM move_tags WHERE move_id IN (${marks}) ORDER BY id`, ids),
-      all(`SELECT * FROM move_roll_slots WHERE move_id IN (${marks}) ORDER BY id`, ids),
-      all(`SELECT * FROM move_resist_roll_slots WHERE move_id IN (${marks}) ORDER BY id`, ids),
-      all(`SELECT * FROM move_defensive_roll_slots WHERE move_id IN (${marks}) ORDER BY id`, ids),
-      all(`SELECT * FROM move_grapple_directions WHERE move_id IN (${marks}) ORDER BY id`, ids),
+    await readMany([
+      [`SELECT * FROM move_interactions WHERE move_id IN (${marks}) ORDER BY id`, ids],
+      [`SELECT * FROM move_tags WHERE move_id IN (${marks}) ORDER BY id`, ids],
+      [`SELECT * FROM move_roll_slots WHERE move_id IN (${marks}) ORDER BY id`, ids],
+      [`SELECT * FROM move_resist_roll_slots WHERE move_id IN (${marks}) ORDER BY id`, ids],
+      [`SELECT * FROM move_defensive_roll_slots WHERE move_id IN (${marks}) ORDER BY id`, ids],
+      [`SELECT * FROM move_grapple_directions WHERE move_id IN (${marks}) ORDER BY id`, ids],
     ]);
   const byMove = new Map();
   for (const row of rows) {
@@ -242,7 +249,7 @@ const getMove = async (id) => {
 // with Perk-granted per-character overrides folded in (effective frame
 // data, effective tags, and any roll bonus) — "the move copy on the
 // character," distinct from the shared Compendium template.
-async function getMovesFor(characterId) {
+async function getMovesFor(characterId, { knownDice = null } = {}) {
   const moves = await all(
     `SELECT m.*, CASE WHEN cm.id IS NULL THEN 0 ELSE 1 END AS is_granted
      FROM moves m
@@ -257,25 +264,40 @@ async function getMovesFor(characterId) {
   const ids = withBase.map((m) => m.id);
   const marks = ids.map(() => '?').join(',');
 
-  // Four independent lookups — fired concurrently rather than one after
-  // another, since none of them depend on each other's results.
-  const [overrideRows, tagOverrideRows, bonusRows, dice] = await Promise.all([
-    all(
+  // Five independent lookups in **one** round trip. They were already
+  // concurrent, which is the right shape — but `Promise.all` still puts five
+  // requests on the wire, and this function runs once per character on the
+  // combat snapshot.
+  //
+  // `knownDice` lets a caller that has already read this character's dice hand
+  // them in rather than making this read them a second time: `GET /api/combat`
+  // fetches every seated character's dice in one bulk query up front and then
+  // called through here, which is how the same character's dice ended up being
+  // read three times in a single request.
+  const [overrideRows, tagOverrideRows, bonusRows, weaponRows, diceRows] = await readMany([
+    [
       `SELECT * FROM character_move_overrides WHERE character_id = ? AND move_id IN (${marks})`,
-      [characterId, ...ids]
-    ),
-    all(
+      [characterId, ...ids],
+    ],
+    [
       `SELECT * FROM character_move_tags WHERE character_id = ? AND move_id IN (${marks})`,
-      [characterId, ...ids]
-    ),
-    all(
+      [characterId, ...ids],
+    ],
+    [
       `SELECT * FROM character_move_roll_bonuses WHERE character_id = ? AND move_id IN (${marks})`,
-      [characterId, ...ids]
-    ),
-    // Live dice, keyed by body-part slot below, to resolve each move's Roll
-    // to the character's actual current dice (not the shared template).
-    getDice(characterId),
+      [characterId, ...ids],
+    ],
+    // The Weapon, so a Move whose Roll names it can quote what it will actually
+    // throw. Null for almost everybody (see server/weapons.js).
+    ['SELECT * FROM weapons WHERE character_id = ?', [characterId]],
+    // Live dice, keyed by body-part slot below, to resolve each move's Roll to
+    // the character's actual current dice (not the shared template). Optional,
+    // and therefore LAST: readMany drops falsy entries, so a conditional in the
+    // middle would shift every index after it.
+    knownDice ? null : ['SELECT * FROM dice WHERE character_id = ? ORDER BY id', [characterId]],
   ]);
+  const dice = knownDice ?? diceRows;
+  const weapon = weaponRows?.[0] ?? null;
 
   const overrideByMove = new Map();
   for (const row of overrideRows) {
@@ -298,13 +320,19 @@ async function getMovesFor(characterId) {
   }
 
   const dieBySlot = new Map(dice.map((d) => [d.slot_name, d]));
+  // The Weapon slot resolves to whatever is in hand, shaped like a die row so
+  // every reader below treats it as one. Absent when they are carrying nothing,
+  // which is exactly what makes such a move show as unrollable — and the
+  // declare gate refuses it outright.
+  const armed = weaponDie(weapon);
+  if (armed) dieBySlot.set(WEAPON_SLOT, armed);
 
   // What each move actually costs THIS character, Perks included (Perfect
   // Player discounts a Dodge). Resolved here rather than left to the client
   // because it is the same figure move:declare will check against and
   // combat:character_done_declaring will spend — the picker must not be showing
   // a different one. The dice this needs are already in hand above.
-  const staminaCosts = await resolveStaminaCosts(characterId, withBase);
+  const staminaCosts = await resolveStaminaCosts(characterId, withBase, { knownDice: dice });
 
   return withBase.map((move) => {
     const deltas = overrideByMove.get(move.id) ?? { startup: 0, active: 0, recovery: 0 };
@@ -327,7 +355,9 @@ async function getMovesFor(characterId) {
     // Perk-granted per-move roll_bonus into one suggested modifier — the
     // "specified bonus" the Roll dialog pre-fills, editable manually from there.
     const toDieInfo = (d) => ({
-      dieId: d.id,
+      // Null for the Weapon: it is not a row in `dice`, so it has no die id to
+      // send back. pool:roll takes it as its own `includeWeapon` flag instead.
+      dieId: d.id ?? null,
       slot_name: d.slot_name,
       current_size: d.current_size,
       bonus: d.bonus,
@@ -679,9 +709,19 @@ function mapDeclaredMovesForViewer(rows, pairsByIndex, viewer) {
 // The character's dice and Injuries are fetched once and handed to every Perk,
 // rather than each seam function querying for itself — the conditions Perks want
 // here are all about the state of the fighter, and this is asked once per move.
-async function resolveStaminaCosts(characterId, moves) {
+async function resolveStaminaCosts(characterId, moves, { knownDice = null } = {}) {
   if (!moves.length) return new Map();
-  const [dice, injuries] = await Promise.all([getDice(characterId), getInjuries(characterId)]);
+  // `knownDice` for the same reason getMovesFor takes it: the combat snapshot
+  // already read every seated character's dice in bulk, and this used to make
+  // it read them again per character.
+  // The optional statement goes LAST so the required ones keep fixed indices —
+  // readMany drops falsy entries, and a conditional in the middle would shift
+  // everything after it.
+  const [injuries, diceRows] = await readMany([
+    ['SELECT * FROM injuries WHERE character_id = ? ORDER BY id', [characterId]],
+    knownDice ? null : ['SELECT * FROM dice WHERE character_id = ? ORDER BY id', [characterId]],
+  ]);
+  const dice = knownDice ?? diceRows;
   // One batched pass, not one per move — see perkStaminaCostDeltas. The picker
   // asks about a character's whole move list at once.
   const deltas = await perkStaminaCostDeltas({ characterId, moves, dice, injuries });
@@ -1124,8 +1164,29 @@ app.get('/api/health', async (_req, res) => {
   }
 });
 
+// **Stances ride along (decided, new).** The Compendium needs every
+// character's stances to decide which styled moves each of them could ever
+// learn, and its only way to get them was to fetch a whole character sheet per
+// character — `getCharacter(c.id)` in a loop, 24 queries each, re-run on every
+// one of the twenty events it listened to. Two queries here replace all of
+// that, and nothing else on this endpoint changes: `stances` is additive, so
+// callers that only want the flat roster are untouched.
 app.get('/api/characters', wrap(async (_req, res) => {
-  res.json((await all('SELECT * FROM characters ORDER BY id')).map(omitVitruvianArt));
+  const [characters, stanceRows] = await Promise.all([
+    all('SELECT * FROM characters ORDER BY id'),
+    all('SELECT * FROM stances ORDER BY character_id, id'),
+  ]);
+  const stancesByCharacter = new Map();
+  for (const stance of stanceRows) {
+    if (!stancesByCharacter.has(stance.character_id)) stancesByCharacter.set(stance.character_id, []);
+    stancesByCharacter.get(stance.character_id).push(stance);
+  }
+  res.json(
+    characters.map((character) => ({
+      ...omitVitruvianArt(character),
+      stances: stancesByCharacter.get(character.id) ?? [],
+    }))
+  );
 }));
 
 // Character-list folders (GM-managed) — separate from /api/characters so
@@ -1142,7 +1203,7 @@ app.get('/api/characters/:id', wrap(async (req, res) => {
   // is fine against a local SQLite file, but against Turso's networked
   // connection in production every await is a real round-trip, and eight in
   // a row is exactly the "a few seconds to open a character" symptom.
-  const [dice, inventory, injuries, stances, moves, roleplay, perks, counters] = await Promise.all([
+  const [dice, inventory, injuries, stances, moves, roleplay, perks, counters, weapon] = await Promise.all([
     getDice(character.id),
     getInventory(character.id),
     getInjuries(character.id),
@@ -1151,8 +1212,11 @@ app.get('/api/characters/:id', wrap(async (req, res) => {
     getRoleplay(character.id),
     getCharacterPerks(character.id),
     getCounters(character.id),
+    // Null for almost everyone — a weapon is something a character acquires,
+    // not something they are created with (see server/weapons.js).
+    getWeapon(character.id),
   ]);
-  res.json({ character, dice, inventory, injuries, stances, moves, roleplay, perks, counters });
+  res.json({ character, dice, inventory, injuries, stances, moves, roleplay, perks, counters, weapon });
 }));
 
 app.get('/api/tells', wrap(async (_req, res) => {
@@ -1347,17 +1411,49 @@ app.get('/api/combat', wrap(async (req, res) => {
   // character takes ~4 seconds"); now it's 4 total (moves is naturally one
   // per character, getMovesFor's own shape), run concurrently regardless of
   // how many are seated.
-  const [charRows, diceRows, stanceRows, counters, movesByChar, declaredMoveRows, openResolutions] = await Promise.all([
-    charIds.length ? all(`SELECT * FROM characters WHERE id IN (${marks})`, charIds) : [],
-    charIds.length ? all(`SELECT * FROM dice WHERE character_id IN (${marks}) ORDER BY id`, charIds) : [],
-    charIds.length ? all(`SELECT * FROM stances WHERE character_id IN (${marks}) ORDER BY id`, charIds) : [],
-    charIds.length
-      ? all(
+  // **Everything that depends on nothing else, in one round trip.**
+  //
+  // This was already batched by IN-clause rather than looping per participant,
+  // which is the right shape — but seven concurrent `all()` calls are still
+  // seven requests, and `getMovesFor` sat inside the same group, so it could
+  // not be handed the dice this query had just read. That is how one request
+  // came to read the same character's dice three times: here in bulk, again
+  // inside getMovesFor, and again inside resolveStaminaCosts.
+  //
+  // One batched read, then the per-character move lists with those dice passed
+  // in. Two steps rather than one, but each is a single trip and the duplicate
+  // reads are gone.
+  // Nobody seated is a real state, and it is written out as its own branch
+  // rather than as four conditionals inside the batch: readMany drops falsy
+  // entries, so a `null` in the middle of the list would silently shift every
+  // result after it onto the wrong name.
+  const [charRows, diceRows, stanceRows, weaponRows, counters] = charIds.length
+    ? await readMany([
+        [`SELECT * FROM characters WHERE id IN (${marks})`, charIds],
+        [`SELECT * FROM dice WHERE character_id IN (${marks}) ORDER BY id`, charIds],
+        [`SELECT * FROM stances WHERE character_id IN (${marks}) ORDER BY id`, charIds],
+        // Who is holding what. Being armed is a plain visible fact — you can see
+        // what someone is carrying — and the Arena has to act on it: a Move whose
+        // Roll names the Weapon is closed to anyone carrying nothing, greyed
+        // exactly as a Movement move is greyed on a broken leg.
+        [`SELECT * FROM weapons WHERE character_id IN (${marks})`, charIds],
+        [
           `SELECT * FROM counters WHERE character_id IS NULL OR (show_in_combat = 1 AND character_id IN (${marks})) ORDER BY id`,
-          charIds
-        )
-      : all('SELECT * FROM counters WHERE character_id IS NULL ORDER BY id'),
-    Promise.all(charIds.map((id) => getMovesFor(id))),
+          charIds,
+        ],
+      ])
+    : [[], [], [], [], await all('SELECT * FROM counters WHERE character_id IS NULL ORDER BY id')];
+
+  // Dice grouped per character, so each getMovesFor below is handed the rows
+  // this request is already holding instead of re-reading them.
+  const diceByCharacter = new Map();
+  for (const die of diceRows ?? []) {
+    if (!diceByCharacter.has(die.character_id)) diceByCharacter.set(die.character_id, []);
+    diceByCharacter.get(die.character_id).push(die);
+  }
+
+  const [movesByChar, declaredMoveRows, openResolutions] = await Promise.all([
+    Promise.all(charIds.map((id) => getMovesFor(id, { knownDice: diceByCharacter.get(id) ?? [] }))),
     fetchDeclaredMoveRows(),
     fetchOpenResolutionsByPair(),
   ]);
@@ -1366,7 +1462,10 @@ app.get('/api/combat', wrap(async (req, res) => {
 
   const characters = {};
   for (const character of charRows) {
-    characters[character.id] = { character: omitVitruvianArt(character), dice: [], stances: [] };
+    characters[character.id] = { character: omitVitruvianArt(character), dice: [], stances: [], weapon: null };
+  }
+  for (const weapon of weaponRows) {
+    if (characters[weapon.character_id]) characters[weapon.character_id].weapon = weapon;
   }
   for (const die of diceRows) characters[die.character_id]?.dice.push(die);
   for (const stance of stanceRows) characters[stance.character_id]?.stances.push(stance);
@@ -1418,13 +1517,15 @@ app.post('/api/characters', wrap(async (req, res) => {
   );
   const id = Number(result.lastInsertRowid);
 
-  for (const t of DICE_TEMPLATE) {
-    await run('INSERT INTO dice (character_id, pool, slot_name) VALUES (?, ?, ?)', [
-      id,
-      t.pool,
-      t.slot_name,
-    ]);
-  }
+  // The eight Stat dice in one round trip rather than eight. They were written
+  // one at a time in a `for await` loop, which is the most sequential shape
+  // there is — and creating a character is the first thing anyone does.
+  await writeMany(
+    DICE_TEMPLATE.map((t) => [
+      'INSERT INTO dice (character_id, pool, slot_name) VALUES (?, ?, ?)',
+      [id, t.pool, t.slot_name],
+    ])
+  );
 
   const character = await getCharacter(id);
   io.emit('character:created', character);
@@ -1494,6 +1595,24 @@ app.delete('/api/characters/:id', wrap(async (req, res) => {
   res.json({ ok: true });
 }));
 
+// **How much of the log a page load fetches (decided, new — Phase 4 of the
+// round-trip work).**
+//
+// This used to be the whole thing, every time, with no bound at all — and
+// `chat_log` is where pasted images live, base64 in `image_data`, so a session
+// with a dozen shared pictures made every reload and every reconnect drag
+// several megabytes across the wire before the Chat tab could paint. It is one
+// query either way, so this is not about round trips; it is about the size of
+// the answer.
+//
+// Deliberately generous, and deliberately the *tail*: 300 entries is far more
+// than a fight produces, the GM clears the log between fights anyway
+// (`chat:cleared`), and live entries arrive over the socket regardless of this
+// number. The cost is that scrollback older than 300 entries does not come
+// back after a reload — nothing in the UI pages further back, so an unbounded
+// fetch was only ever serving the part of the log nobody scrolled to.
+const CHAT_HISTORY_LIMIT = 300;
+
 app.get('/api/chat', wrap(async (_req, res) => {
   const rows = await all(`
     SELECT c.id, c.kind, c.character_id, c.modifier, c.dice_rolled, c.content,
@@ -1504,7 +1623,7 @@ app.get('/api/chat', wrap(async (_req, res) => {
            m.active_tics AS move_active_tics, m.recovery_tics AS move_recovery_tics,
            m.defense_frame_positions AS move_defense_frame_positions,
            m.stamina_cost AS move_stamina_cost
-    FROM chat_log c
+    FROM (SELECT * FROM chat_log ORDER BY id DESC LIMIT ${CHAT_HISTORY_LIMIT}) c
     LEFT JOIN characters ch ON ch.id = c.character_id
     LEFT JOIN moves m ON m.id = c.move_id
     ORDER BY c.id
@@ -1758,6 +1877,59 @@ io.on('connection', (socket) => {
     });
   });
 
+  // ---------------------------------------------------------------------
+  // The Weapon (decided, new — see server/weapons.js)
+  // ---------------------------------------------------------------------
+  //
+  // A character carries one weapon or none, and none is the default. These
+  // three events are the whole player-facing surface; the mechanics live in
+  // weapons.js and the engine, and a Perk arming its holder calls the SAME
+  // `grantWeapon` these do rather than writing its own row.
+  //
+  // No ownership check, matching every other sheet edit in this app — the
+  // trust-based no-login model is a decided constraint, not an oversight.
+  on('weapon:create', async ({ characterId, name, dieSize, bonus, durability }) => {
+    const character = await getCharacter(characterId);
+    if (!character) return;
+    const weapon = await grantWeapon(io, character.id, { name, dieSize, bonus, durability });
+    if (!weapon) return;
+    await postSystemMessage(io, `${character.name} takes up the ${weapon.name}.`);
+  });
+
+  on('weapon:delete', async ({ characterId }) => {
+    const character = await getCharacter(characterId);
+    if (!character) return;
+    const weapon = await getWeapon(character.id);
+    if (!(await removeWeapon(io, character.id))) return;
+    await postSystemMessage(io, `${character.name} puts down the ${weapon.name}.`);
+  });
+
+  // **Rolling the weapon costs nothing (decided).** This is the sheet's own die
+  // widget and a GM's roll request — a check, a flourish, a contest. Durability
+  // is spent by USING the weapon in a Move, which happens in the engine
+  // (spendWeaponForDeclaredMove), never here.
+  on('weapon:roll', async ({ characterId, modifier }) => {
+    const [character, weapon] = await Promise.all([getCharacter(characterId), getWeapon(characterId)]);
+    if (!character || !weapon) return;
+    const die = weaponDie(weapon);
+    const mod = clampModifier(modifier) + (await getCombatRollBonus(character.id, { slotNames: [WEAPON_SLOT] }));
+    await logRoll(io, {
+      characterId: character.id,
+      characterName: character.name,
+      modifier: mod,
+      // Same die shape every other roll payload uses, so the chat card renders
+      // it without knowing a weapon from a Stat.
+      dice: [
+        {
+          slot_name: WEAPON_SLOT,
+          size: die.current_size,
+          bonus: die.bonus,
+          result: rollDie(die.current_size) + die.bonus,
+        },
+      ],
+    });
+  });
+
   // A raw ad-hoc roll of one die size (d4-d12) plus a modifier, not tied to
   // any character's own die — the chat Dice Tray (item 1) and a move's
   // Custom Roll type (item 2, base die instead of a Stat) both funnel
@@ -1793,19 +1965,30 @@ io.on('connection', (socket) => {
   // together with one shared modifier (not tied to a body section).
   // `declaredMoveId` (Combat Automation, sub-phase 3, optional) — see
   // dice:roll_custom's identical comment just above.
-  on('pool:roll', async ({ characterId, dieIds, modifier, declaredMoveId, rollRequestId = null }) => {
+  //
+  // `includeWeapon` (decided, new): the Weapon is not a die row, so it cannot
+  // ride in `dieIds` with the rest. A Move whose Roll names it sends this flag
+  // instead and the weapon joins the pool here. Rolling costs no Durability —
+  // that is what USING it in a Move costs, and this is not one (see
+  // server/weapons.js).
+  on('pool:roll', async ({ characterId, dieIds, modifier, declaredMoveId, rollRequestId = null, includeWeapon = false }) => {
     const character = await getCharacter(characterId);
-    if (!character || !Array.isArray(dieIds) || !dieIds.length) return;
+    if (!character || !Array.isArray(dieIds)) return;
     const ids = [...new Set(dieIds.map(Number).filter(Number.isInteger))];
-    if (!ids.length) return;
-    const dice = (
-      await all(
-        `SELECT * FROM dice WHERE character_id = ? AND status = 'active' AND id IN (${ids
-          .map(() => '?')
-          .join(',')}) ORDER BY id`,
-        [character.id, ...ids]
-      )
-    );
+    if (!ids.length && !includeWeapon) return;
+    const [statDice, armed] = await Promise.all([
+      ids.length
+        ? all(
+            `SELECT * FROM dice WHERE character_id = ? AND status = 'active' AND id IN (${ids
+              .map(() => '?')
+              .join(',')}) ORDER BY id`,
+            [character.id, ...ids]
+          )
+        : [],
+      includeWeapon ? getWeapon(character.id) : null,
+    ]);
+    const weaponInPool = weaponDie(armed);
+    const dice = weaponInPool ? [...statDice, weaponInPool] : statDice;
     if (!dice.length) return;
     const mod =
       clampModifier(modifier) +
@@ -4006,6 +4189,21 @@ io.on('connection', (socket) => {
       return;
     }
 
+    // **A Move that swings a weapon needs one in hand (decided, new).** The
+    // Weapon Roll slot resolves to whatever the character is carrying, and a
+    // fighter carrying nothing would simply roll one die fewer — a move quietly
+    // worth less than it says it is, which is exactly the kind of silence this
+    // engine keeps having to be taught not to do. Refused instead, and the
+    // picker greys the card the same way it greys a Movement move on a broken
+    // leg, so this line is only ever reached by a stale view.
+    if (move.roll_type !== 'custom') {
+      const rollsWeapon = await one(
+        'SELECT 1 AS yes FROM move_roll_slots WHERE move_id = ? AND slot_name = ?',
+        [move.id, WEAPON_SLOT]
+      );
+      if (rollsWeapon && !(await getWeapon(character.id))) return;
+    }
+
     // Affordability is checked up front, against current_stamina minus
     // every other move this character already has pending (not yet
     // committed) this Declaration Phase — the actual spend only happens when
@@ -4264,6 +4462,15 @@ io.on('connection', (socket) => {
       // itself applies no artificial pacing (all pacing is a client
       // concern — see the plan's core architecture principle). Other pairs
       // are untouched and keep running independently.
+      //
+      // **Awaiting this costs the caller nothing, which is worth writing down
+      // because it looks like it should.** Socket.io does not serialise a
+      // socket's handlers — it invokes each one and ignores the returned
+      // promise — so a long `await` here has never held up the next event from
+      // this or any other client. Detaching it was tried and reverted: it
+      // bought no responsiveness and opened a window for two resolutions of
+      // the same pair to overlap. The way to make this faster is to make the
+      // round shorter, not to look away while it runs.
       await advancePairResolution(participant.pair_index, io);
       // The engine moves current_tic, and on a clean finish rolls this
       // pair into its next round's Declaration phase — the snapshot every
@@ -4474,6 +4681,32 @@ app.use(express.static(clientDist));
 app.get('*', (_req, res) => {
   res.sendFile(path.join(clientDist, 'index.html'));
 });
+
+// Pull the embedded replica up to date before touching the schema — see
+// syncReplica in db.js for why an unsynced replica must never reach initDb.
+// A no-op (and instant) when running against a plain local file.
+//
+// Deliberately fatal. The alternative is a server that came up holding an
+// empty replica, whose seed functions would then look at a world with no
+// ruleset, no Tells and no Perks and helpfully write a second copy of all
+// three into the primary.
+let syncMs = null;
+try {
+  syncMs = await syncReplica();
+} catch (err) {
+  console.error(
+    'Could not sync the embedded replica from the Turso primary, so the server is stopping ' +
+      'rather than starting against an empty database.\n' +
+      'Check TURSO_DATABASE_URL and TURSO_AUTH_TOKEN, and that the primary is reachable.\n',
+    err
+  );
+  process.exit(1);
+}
+console.log(
+  syncMs == null
+    ? 'Database: local file (no replica)'
+    : `Database: embedded replica, synced from the primary in ${syncMs}ms — reads are local`
+);
 
 await initDb();
 // Chat is intentionally ephemeral — see chat:clear below — and clearing it

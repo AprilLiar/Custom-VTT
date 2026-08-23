@@ -1,6 +1,10 @@
 node_modules/
 client/dist/
 local.db
+# The embedded replica and its sidecar files — a disposable local cache of
+# the Turso primary, rebuilt on every boot (see server/db.js).
+replica.db
+replica.db-*
 .env
 test-results/
 playwright-report/

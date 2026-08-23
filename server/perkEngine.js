@@ -13,6 +13,7 @@
 // roundResolution.js and combatBonuses.js already do, and a Perk definition
 // receives it through its ctx rather than importing it.
 
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { all, one, run } from './db.js';
 import { injuryPenaltyBySlot } from './gameLogic.js';
 import { MIN_DAMAGE_THRESHOLD } from './combatDamage.js';
@@ -138,20 +139,50 @@ function once(fn) {
 // flavour is the normal case, not an error, and must never make a resolver
 // throw. Ordered by grant so a fold is at least deterministic, even though
 // every seam below is order-independent by design.
-export async function perkDefinitionsFor(characterId) {
-  if (characterId == null) return [];
-  const rows = await all(
+// **A memo with a lifetime somebody else controls (decided, new).**
+//
+// Resolving one round asked this question eleven times — it is on the path of
+// every roll, every trigger and every threshold, for both fighters. Who holds
+// which Perk cannot change *within* a resolution: the engine never grants or
+// revokes, and a grant arriving from another socket mid-round is already
+// undefined as to which Tic it would first apply on.
+//
+// A module-level cache would be wrong anyway: Node yields at every await, so a
+// `perk:grant` handler can interleave between Tics and would then be reading a
+// stale map for the rest of the session. AsyncLocalStorage scopes the memo to
+// exactly one `withPerkCache` call — concurrent handlers each get their own,
+// and nothing outside a resolution is cached at all.
+//
+// The *promise* is memoised rather than the value, so ten seams asking at once
+// still make one read.
+const perkCache = new AsyncLocalStorage();
+
+export function withPerkCache(fn) {
+  return perkCache.run(new Map(), fn);
+}
+
+function loadPerkDefinitions(characterId) {
+  return all(
     `SELECT p.name AS name, cp.id AS characterPerkId
      FROM character_perks cp JOIN perks p ON p.id = cp.perk_id
      WHERE cp.character_id = ? ORDER BY cp.id`,
     [characterId]
-  );
-  const out = [];
-  for (const row of rows) {
-    const definition = perkDefinition(row.name);
-    if (definition) out.push({ definition, name: row.name, characterPerkId: row.characterPerkId });
-  }
-  return out;
+  ).then((rows) => {
+    const out = [];
+    for (const row of rows) {
+      const definition = perkDefinition(row.name);
+      if (definition) out.push({ definition, name: row.name, characterPerkId: row.characterPerkId });
+    }
+    return out;
+  });
+}
+
+export async function perkDefinitionsFor(characterId) {
+  if (characterId == null) return [];
+  const cache = perkCache.getStore();
+  if (!cache) return loadPerkDefinitions(characterId);
+  if (!cache.has(characterId)) cache.set(characterId, loadPerkDefinitions(characterId));
+  return cache.get(characterId);
 }
 
 // The context every seam function receives. Built once per resolution rather

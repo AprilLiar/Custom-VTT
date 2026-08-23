@@ -750,6 +750,16 @@ export default function MoveCreator({
           Which Stats this move's damage may be applied to. Only meaningful when this move has a
           Roll — a move with no Roll isn't an Attack regardless of this selection.
         </p>
+        {/* The Weapon is in this list but is not a Stat, and it does not take
+            damage: naming it makes the move go for what the target is holding,
+            settled by a roll-off against the weapon's own die. Said here
+            because the button looks identical to the other six and the rule
+            behind it is not. */}
+        <p className="mb-1.5 text-xs text-zinc-500">
+          <b className="text-zinc-400">Weapon</b> is not a Stat: it goes for what they are holding.
+          Your roll against the weapon's own — beat it and the weapon is destroyed, tie and it
+          holds. Against someone carrying nothing it lands on a random Hand instead.
+        </p>
         <div className="flex flex-wrap items-center gap-1.5">
           {ROLL_SLOT_NAMES.map((slot) => {
             const selected = attackTargets.includes(slot);

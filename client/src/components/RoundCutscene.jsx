@@ -70,6 +70,8 @@ const EVENT_LABEL = {
   interrupt_resolved: 'Interrupt',
   damage_applied: 'Damage',
   damage_unapplied: 'Nowhere to land',
+  weapon_durability: 'Wear',
+  weapon_target: 'The weapon',
   move_fizzled: 'The move is lost',
   stat_stepped: 'Stat',
   next_roll_penalty: 'Weakened',
@@ -302,6 +304,26 @@ function eventNarration(ev, startTic) {
       return `${p.damage ?? 0} damage lands on ${
         p.targetCharacterName ? `${p.targetCharacterName}'s ` : 'a '
       }${p.slotName ?? 'Stat'} — already broken, so nothing can be applied.`;
+    case 'weapon_durability':
+      // Said out loud every time, not only when it breaks: a weapon quietly
+      // counting down to nothing is the sort of thing a table finds out about
+      // at the worst possible moment.
+      return p.destroyed
+        ? `${p.characterName ?? 'They'} put the last of the ${p.weaponName ?? 'weapon'} into that — it is destroyed.`
+        : `${p.weaponName ?? 'The weapon'} takes the wear — ${p.durability ?? 0} Durability left.`;
+    case 'weapon_target':
+      if (!p.armed) {
+        return `${p.attackerCharacterName ?? 'The attack'} came for a weapon ${
+          p.targetCharacterName ?? 'the defender'
+        } is not carrying — it falls on the ${p.substituteSlotName ?? 'arm'} instead.`;
+      }
+      return p.destroyed
+        ? `${p.attackerCharacterName ?? 'The attacker'} (${p.attackerResult ?? '?'}) breaks ${
+            p.targetCharacterName ? `${p.targetCharacterName}'s ` : 'the '
+          }${p.weaponName ?? 'weapon'} (${p.weaponResult ?? '?'}).`
+        : `${p.weaponName ?? 'The weapon'} (${p.weaponResult ?? '?'}) holds against ${
+            p.attackerResult ?? '?'
+          } — nothing lands.`;
     case 'move_fizzled':
       // Named, not silently dropped: a declared move that simply never comes
       // out reads as a bug unless the round says why it went.
@@ -498,6 +520,18 @@ function eventDetail(ev, startTic) {
     case 'damage_unapplied':
       lines.push(`${p.damage ?? 0} damage, unapplied`);
       lines.push(`${p.slotName ?? 'That Stat'} is incapacitated — consider it for Injuries`);
+      break;
+    case 'weapon_durability':
+      lines.push('Using a weapon in a Move costs 1 Durability');
+      lines.push(p.destroyed ? 'That was the last of it' : `${p.durability ?? 0} left`);
+      break;
+    case 'weapon_target':
+      if (!p.armed) {
+        lines.push('A Weapon attack against an unarmed fighter falls on a random arm');
+        break;
+      }
+      lines.push(`${p.attackerResult ?? '?'} against the weapon's ${p.weaponResult ?? '?'}`);
+      lines.push(p.destroyed ? 'Beaten outright — the weapon is gone' : 'A tie holds, so the weapon stands');
       break;
     case 'stat_stepped':
       lines.push(statStepDetail(p));

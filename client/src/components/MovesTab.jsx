@@ -13,7 +13,7 @@ import RollDialog from './RollDialog.jsx';
 // unusable moves render dimmed.
 export default function MovesTab({ data }) {
   const { role } = useRole();
-  const { character, moves, stances } = data;
+  const { character, moves, stances, weapon } = data;
   const [tells, setTells] = useState(null);
   const [tags, setTags] = useState(null);
   const [ruleset, setRuleset] = useState(null);
@@ -35,6 +35,13 @@ export default function MovesTab({ data }) {
     });
   const toggleTell = toggleIn(setTellFilter);
   const toggleTag = toggleIn(setTagFilter);
+
+  // **A Move that rolls the Weapon, on somebody carrying nothing (decided,
+  // new).** Dimmed exactly as a Secondary move is, and for the same reason:
+  // it is on the sheet, it is readable, and it cannot be reached for. The
+  // server refuses it at declaration too — this is that rule shown rather
+  // than discovered.
+  const needsWeapon = (move) => !weapon && (move.roll_slots ?? []).includes('Weapon');
 
   // Every Tell a move on THIS sheet actually opens with, and every Tag one of
   // them actually carries — not the world's full list. The Compendium is the
@@ -199,15 +206,17 @@ export default function MovesTab({ data }) {
                 // (decided, new). Same treatment an unusable Style already gets,
                 // since "you have it, you just can't throw it right now" is the
                 // same statement.
-                dimmed={!isUsable || Boolean(move.is_secondary)}
+                dimmed={!isUsable || Boolean(move.is_secondary) || needsWeapon(move)}
                 dimReason={
                   move.is_secondary
                     ? move.requirement_move_id != null
                       ? `Secondary — declarable only right after ${move.requirement_move_name ?? 'the move it follows'}`
                       : 'Secondary — reached only from a grapple, never declared by hand'
-                    : style
-                      ? `Needs an active stance with ${style.name}`
-                      : undefined
+                    : needsWeapon(move)
+                      ? 'Rolls a Weapon — nothing in hand to swing'
+                      : style
+                        ? `Needs an active stance with ${style.name}`
+                        : undefined
                 }
                 badge={
                   move.is_default ? (
@@ -258,9 +267,14 @@ export default function MovesTab({ data }) {
               return;
             }
             const sideDice = rollFor.side ? rollFor.move.roll_choice[rollFor.side] : [];
+            const pool = [...rollFor.move.roll_dice, ...sideDice];
             socket.emit('pool:roll', {
               characterId: character.id,
-              dieIds: [...rollFor.move.roll_dice, ...sideDice].map((d) => d.dieId),
+              dieIds: pool.map((d) => d.dieId).filter((id) => id != null),
+              // The Weapon is not a die row and so has no id to send — it rides
+              // as its own flag and the server puts it back in the pool. See
+              // pool:roll and server/weapons.js.
+              includeWeapon: pool.some((d) => d.slot_name === 'Weapon'),
               modifier,
             });
           }}

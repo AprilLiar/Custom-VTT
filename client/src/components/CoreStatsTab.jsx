@@ -5,7 +5,7 @@ import { useRole } from '../roleContext.jsx';
 import { socket } from '../socket.js';
 import { updateCharacter } from '../lib/api.js';
 import { fileToPortrait, portraitSrc, vitruvianSrc } from '../lib/image.js';
-import { ANATOMY } from '../lib/anatomy.js';
+import { ANATOMY, WEAPON_SPOT } from '../lib/anatomy.js';
 import { useMediaQuery } from '../lib/useMediaQuery.js';
 
 // How the 8 Stats sit around the Vitruvian figure. Wide screens keep the
@@ -33,6 +33,7 @@ import RollDialog from './RollDialog.jsx';
 import ItemList from './ItemList.jsx';
 import InjuryList from './InjuryList.jsx';
 import VitruvianFigure from './VitruvianFigure.jsx';
+import WeaponSlot from './WeaponSlot.jsx';
 import PopNumber from './PopNumber.jsx';
 
 function NamePortrait({ character }) {
@@ -152,7 +153,7 @@ function StaminaBlock({ character, staminaDie }) {
 }
 
 export default function CoreStatsTab({ data }) {
-  const { character, dice, inventory, injuries } = data;
+  const { character, dice, inventory, injuries, weapon } = data;
   const { role } = useRole();
   // Tailwind's own `sm` — the width below which the 4-wide middle row of
   // Stats stops fitting at all (see NARROW_ROWS above).
@@ -312,6 +313,16 @@ export default function CoreStatsTab({ data }) {
             </div>
           );
         })}
+        {/* The Weapon (decided, new). Bottom-right of the figure, off the
+            body: it is the one thing here that is not a Stat, and putting it
+            on an arm or a hip would say it belonged to the anatomy. Empty for
+            everybody until somebody picks something up. */}
+        <div
+          className="absolute -translate-x-1/2 -translate-y-1/2"
+          style={{ top: WEAPON_SPOT.top, left: WEAPON_SPOT.left }}
+        >
+          <WeaponSlot characterId={character.id} weapon={weapon} />
+        </div>
       </div>
 
       {/* Mobile readiness (Change 002) §14.6A: a 2/4/2 grouped grid (head
@@ -368,6 +379,11 @@ export default function CoreStatsTab({ data }) {
               })}
             </div>
           ))}
+          {/* A row of its own on a phone, rather than a coordinate: the mobile
+              layout is grouped rows, and the Weapon is its own group. */}
+          <div className="flex justify-center gap-3">
+            <WeaponSlot characterId={character.id} weapon={weapon} compact />
+          </div>
         </div>
       </div>
 

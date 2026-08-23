@@ -462,8 +462,10 @@ either side.
 
 ### Rolls
 
-A Move's Roll picks from six slots: **Skull**, **Brain**, **Stamina**,
-**Body**, and the two *ambiguous* appendage choices **Hand** and **Leg**.
+A Move's Roll picks from seven slots: **Skull**, **Brain**, **Stamina**,
+**Body**, the two *ambiguous* appendage choices **Hand** and **Leg**, and
+**Weapon** — which is not a Stat at all, but whatever you happen to be carrying
+(see The Weapon).
 
 An ambiguous slot resolves to a real die only when the move is used — you pick
 a side. Because of that, a move with a single ambiguous slot needs **two
@@ -473,8 +475,13 @@ Taking an appendage slot **twice** means *both* sides at once — a straight
 block that guards with both hands. Two is the ceiling. Taking a slot twice
 also answers its own left/right question, so such a move needs only one Tell.
 
+A move that rolls the **Weapon** slot cannot be declared with empty hands —
+there is nothing to swing. Such a move is greyed out on your sheet and in the
+declare picker until you are carrying something.
+
 **Custom Roll** replaces the Stat slots with a single flat die (d4–d12)
-belonging to the *item* rather than the wielder. That is how weapons work.
+belonging to the move itself rather than to the wielder — for a move whose
+damage die should not move when your Stats do.
 
 **A modifier modifies the roll, not each die.** Everything that adjusts a roll
 — the move's own Roll Modifier, your Reasons to Fight, the Stance matchup, a
@@ -491,7 +498,9 @@ and then adds 4. It does not add 4 three times.
 
 Every Move with a Roll lists which Stats its damage lands on — all of them, not
 one of them. Naming two Stats is naming two places the blow arrives, each
-defended on its own (see Damage below). An **empty** Attack Target is
+defended on its own (see Damage below). **Weapon** can be named here too, and
+it means something different from the six Stats: the move goes for what they
+are holding, not for them (see The Weapon). An **empty** Attack Target is
 meaningful, not an oversight:
 
 - On a **Defensive** move it means the move is **defence-pure**: it exists to
@@ -898,6 +907,66 @@ mechanical effects, and they all resolve the instant that outcome is decided:
   that one roll and then it is gone. Nothing else about them changes, and it
   does not expire at the end of a round — an opponent who never rolls again
   this round carries it into the next one.
+
+## The Weapon
+
+You carry **one weapon, or none — and none is where everyone starts.** Nothing
+about you changes when you pick something up except that you have one more die
+to throw and a few more Moves open to you.
+
+A weapon is four things and no more:
+
+- **Name** — what it is.
+- **Dice** — one of the game's own, d4 through d12.
+- **Modifier** — a flat number added to that die.
+- **Durability** — a positive whole number. What is left of it.
+
+It lives at the bottom right of your Vitruvian figure, off the body, because it
+is the one thing there that is not part of you. Click the empty slot to take
+something up; click the weapon to roll it.
+
+### Rolling it
+
+**It rolls like any other Stat.** Die plus its modifier, and then everything
+else that adjusts a roll lands on top exactly as it would for Skull or Body —
+the Stance matchup, your Reasons to Fight, a Perk, the number the GM adds by
+hand.
+
+A weapon has no Half-Damage and cannot be incapacitated. It is not a limb.
+Things do not get progressively worse; they break.
+
+### Durability
+
+**Rolling the weapon costs nothing.** A check, a flourish, a contest of
+strength — throw it as often as you like.
+
+**Using it in a Move costs 1.** Once per Move, not once per roll: a guard swung
+at two limbs is still one guard, and a move that gets rolled twice for its own
+reasons still only wears the weapon once. At 0 the weapon is gone.
+
+Every point spent is announced, not just the last one. You should never
+discover you were at 1 by finding out you are at 0.
+
+### Going for their weapon
+
+A Move can name **Weapon** as its Attack Target. That move goes for what they
+are holding rather than for them, and it is settled by one roll-off:
+
+**Your roll against the weapon's own.** Beat it and the weapon is **destroyed**
+outright. **A tie holds it** — breaking a thing is the bigger consequence, so it
+has to be earned outright, the same way every other close call in this game
+falls to the defender.
+
+Nothing guards the weapon: no Block, no Dodge, no Defense Frame stands between
+your swing and it. Its own die is its defence.
+
+**If it holds, nothing lands** — for a move that named nothing else, that is
+the whole outcome.
+
+**Against someone carrying nothing, the swing lands on a random Hand instead.**
+It was aimed at what they should have been holding, and it arrives at the hand
+that should have been holding it. From there it is an ordinary attack on an
+ordinary Stat: blockable, dodgeable, and damaging like any other.
 
 ## Stamina
 

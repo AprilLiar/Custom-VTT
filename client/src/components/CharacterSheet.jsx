@@ -156,13 +156,18 @@ export default function CharacterSheet() {
         .then((fresh) => setData((prev) => (prev ? { ...prev, moves: fresh.moves } : prev)))
         .catch(() => {});
     };
-    // A Perk grant/revoke also needs the perks list itself refetched — its
-    // die/stamina side-effects arrive separately via die:updated/
-    // character:updated, which are already handled above.
-    const refetchPerks = ({ characterId: cid } = {}) => {
+    // **A Perk grant/revoke takes one fetch, not two (fix).** A Perk changes
+    // both lists — it can carry per-character move overrides *and* it is itself
+    // a Perk — so both `refetchMoves` and `refetchPerks` were bound to
+    // `perk:granted`/`perk:revoked`. Each ran its own `getCharacter`, so one
+    // click cost two full sheet reads (24 queries each) and then threw half of
+    // each away. One fetch, both lists off it.
+    const refetchMovesAndPerks = ({ characterId: cid } = {}) => {
       if (cid !== undefined && cid !== characterId) return;
       getCharacter(characterId)
-        .then((fresh) => setData((prev) => (prev ? { ...prev, perks: fresh.perks } : prev)))
+        .then((fresh) =>
+          setData((prev) => (prev ? { ...prev, moves: fresh.moves, perks: fresh.perks } : prev))
+        )
         .catch(() => {});
     };
     const onRoleplayUpdated = ({ characterId: cid, entries }) => {
@@ -181,6 +186,14 @@ export default function CharacterSheet() {
           : prev
       );
     };
+    // The weapon is one row, replaced wholesale on every change (see
+    // server/weapons.js) — so the payload IS the new state and there is nothing
+    // to merge. `null` means they are carrying nothing again, which is a real
+    // value here, not an absence.
+    const onWeaponUpdated = ({ characterId: cid, weapon }) => {
+      if (cid !== characterId) return;
+      setData((prev) => (prev ? { ...prev, weapon } : prev));
+    };
     const onCounterDeleted = ({ counterId }) => {
       setData((prev) =>
         prev ? { ...prev, counters: prev.counters.filter((c) => c.id !== counterId) } : prev
@@ -192,10 +205,8 @@ export default function CharacterSheet() {
     socket.on('move:deleted', refetchMoves);
     socket.on('move:granted', refetchMoves);
     socket.on('move:revoked', refetchMoves);
-    socket.on('perk:granted', refetchMoves);
-    socket.on('perk:revoked', refetchMoves);
-    socket.on('perk:granted', refetchPerks);
-    socket.on('perk:revoked', refetchPerks);
+    socket.on('perk:granted', refetchMovesAndPerks);
+    socket.on('perk:revoked', refetchMovesAndPerks);
     socket.on('roleplay:updated', onRoleplayUpdated);
     socket.on('character:updated', onCharacterUpdated);
     socket.on('character:deleted', onCharacterDeleted);
@@ -209,16 +220,15 @@ export default function CharacterSheet() {
     socket.on('counter:created', onCounterCreated);
     socket.on('counter:updated', onCounterUpdated);
     socket.on('counter:deleted', onCounterDeleted);
+    socket.on('weapon:updated', onWeaponUpdated);
     return () => {
       socket.off('move:created', refetchMoves);
       socket.off('move:updated', refetchMoves);
       socket.off('move:deleted', refetchMoves);
       socket.off('move:granted', refetchMoves);
       socket.off('move:revoked', refetchMoves);
-      socket.off('perk:granted', refetchMoves);
-      socket.off('perk:revoked', refetchMoves);
-      socket.off('perk:granted', refetchPerks);
-      socket.off('perk:revoked', refetchPerks);
+      socket.off('perk:granted', refetchMovesAndPerks);
+      socket.off('perk:revoked', refetchMovesAndPerks);
       socket.off('roleplay:updated', onRoleplayUpdated);
       socket.off('character:updated', onCharacterUpdated);
       socket.off('character:deleted', onCharacterDeleted);
@@ -232,6 +242,7 @@ export default function CharacterSheet() {
       socket.off('counter:created', onCounterCreated);
       socket.off('counter:updated', onCounterUpdated);
       socket.off('counter:deleted', onCounterDeleted);
+      socket.off('weapon:updated', onWeaponUpdated);
     };
   }, [characterId, navigate]);
 

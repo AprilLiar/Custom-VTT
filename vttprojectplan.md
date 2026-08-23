@@ -15,10 +15,206 @@ On every fresh page load, a modal asks who's playing: a **GM** button (unchanged
 - **Frontend:** React + Vite, Tailwind CSS, Framer Motion (transitions/layout), GSAP (impact/roll effects)
 - **Backend:** Node.js + Express — also serves the built frontend (single deployable app)
 - **Real-time:** Socket.io
-- **Database:** Turso — free, hosted, SQLite-compatible (libSQL), no credit card required. Used instead of a local SQLite file because Render's free tier has no persistent disk; same SQL, same schema, just accessed over network instead of a local file.
+- **Database:** Turso — free, hosted, SQLite-compatible (libSQL), no credit card required. Used instead of a local SQLite file because Render's free tier has no persistent disk; same SQL, same schema. **Accessed through an embedded replica, not over the network (decided, new — see Database round-trips below).**
 - **Hosting:** Render — free web service tier, no credit card required. Supports WebSockets natively while active. Tradeoff: the free tier sleeps after inactivity, so the first connection after a quiet period takes ~30-60 seconds to wake up (a one-time delay at the start of a session, not an ongoing issue).
 - **Access:** one shared URL, no auth, no per-player restrictions
 - **Mobile:** installable PWA (manifest + service worker, see Mobile Readiness below); Playwright (`@playwright/test`) drives a 5-project mobile device matrix (`playwright.config.js`, `e2e-mobile/`) alongside the existing `node --test` server suite
+
+## Database round-trips (decided, new)
+**Status: Phase 0 shipped.** Reported from the table as "every operation of declaring, granting or
+choosing takes 3-5 seconds". It was measured rather than guessed: `all`/`one`/`run` were wrapped in
+an `AsyncLocalStorage` counter and each socket handler and REST route made to report its query count
+and wall time, run twice against a fresh database — once bare, once with 40ms injected before every
+query so that **serialization depth** (how many queries an action runs *in a row*) could be read off
+directly as `wall / 40`.
+
+**Nothing was slow. The trips were.** The database answers in single-digit milliseconds; what costs
+seconds is that `server/db.js` sends one statement per call, so an action's wall time is
+`depth x round-trip`:
+
+| Operation | Queries | Depth | @40ms |
+| --- | --- | --- | --- |
+| `combat:character_done_declaring` (2nd side — resolves the round) | 210 | **145** | 5808ms |
+| `initDb()` (warm database, **every** boot) | 148 | 148 | ~5900ms |
+| `GET /api/combat` | 46 | 10 | 415ms |
+| `combat:next_round` | 29 | 15 | 620ms |
+| `move:declare` | 26 | **14** | 573ms |
+| `combat:character_done_declaring` (1st side) | 24 | 15 | 599ms |
+| `GET /api/characters/:id` | 24 | 6 | 248ms |
+| `POST /api/characters` | 10 | 10 | 419ms |
+| `move:grant` | 3 | 3 | 125ms |
+
+At a cross-region round-trip of 150-250ms a 14-deep declare lands at 2.1-3.5s, which is exactly the
+reported band.
+
+**Phase 0 — the embedded replica (shipped).** `createClient({ url: 'file:replica.db', syncUrl:
+TURSO_DATABASE_URL, authToken })` keeps a full copy of the database on the server's own disk. Reads
+are answered locally in microseconds and never leave the process; only writes go to the primary.
+Three properties make this safe rather than merely fast, and all three were verified against the
+installed client before it was wired in:
+
+- **`readYourWrites` defaults to `true`** (`node_modules/libsql/index.js` — `opts?.readYourWrites ?? true`),
+  so a write is visible to the very next local read. The engine reads back what it just wrote
+  constantly, and would be *incorrect* rather than merely stale without this.
+- **One instance.** Render's free tier runs a single web service, so no second writer's frames need
+  chasing. `syncInterval` is therefore off by default and opt-in via `TURSO_SYNC_SECONDS`, for the
+  case where something outside the server writes to the primary (a `turso db shell` session).
+- **The local file is disposable** — a cache of the primary, rebuilt on boot, so Render's ephemeral
+  disk costs nothing and the primary stays the only durable copy. It is gitignored
+  (`replica.db`, `replica.db-*`) and its location is overridable with `TURSO_REPLICA_PATH`.
+
+`syncReplica()` runs once before `initDb()` and is **deliberately fatal on failure**: a server that
+came up holding an empty replica would let the seed functions conclude the world has no ruleset, no
+Tells and no Perks, and write a second copy of all three into the primary. The failure path was
+exercised against an unreachable primary — it stops before `initDb` with a message naming the two
+env vars to check.
+
+Nothing else changed: with no `TURSO_DATABASE_URL`, or one that is already a `file:` URL, the client
+is constructed exactly as before and the boot log says `Database: local file (no replica)`.
+
+**Phase 1 — the client refetch storm (shipped).** `move:grant` costs the server three queries; the
+delay was never the grant, it was what every connected browser did when the broadcast landed. Four
+components each kept their own roster copy and all four wrote the same wrong rule — refetch
+`/api/characters` on `character:created`, `character:updated` **and** `character:deleted` — and
+`character:updated` is what `adjustStamina` emits every time a fighter's Stamina moves. `ChatPanel`
+is mounted on every page, so one Stamina tick had every browser in the session re-fetching. The
+Compendium was worse: one `refreshAll` bound to twenty event names that refetched Tells, Tags, the
+ruleset, every Move, every Character **and a full character sheet per character in the game**
+(24 queries each) purely to read their stances.
+
+- **`client/src/lib/useRoster.js` (new)** owns the one copy of the rule: refetch only on a real
+  membership change, and **patch a `character:updated` in place from its own payload** — it already
+  carries the whole character, so it costs no request at all. Merging rather than replacing is what
+  keeps the `stances` that only the roster fetch supplies. Returns `null` until the first fetch so
+  callers can still tell "loading" from "no characters". Used by `ChatPanel`, `CharacterList`,
+  `Compendium` and `PerksCompendium`.
+- **`GET /api/characters` now returns each character's `stances`** — two queries for the whole
+  roster, replacing the per-character sheet fetch the Compendium was doing in a loop. Additive, so
+  callers that only want the flat roster are untouched.
+- **The Compendium's `refreshAll` is four narrow refetchers** mapped to the events that actually
+  invalidate their data (Tells / Tags / library / roster), instead of one function on twenty events.
+- **`CharacterSheet` fetches once per Perk event, not twice.** `perk:granted`/`perk:revoked` were
+  bound to both `refetchMoves` and `refetchPerks`, each running its own `getCharacter` and throwing
+  half the result away.
+
+Measured in a real browser against a live server: five `character:updated` broadcasts (confirmed
+received) now cause **0** API requests where they previously caused five roster refetches, and one
+grant causes **one** request — `/api/moves`, 9 queries — where it previously caused five endpoint
+fetches plus a full sheet per character. A whole Compendium refresh is now 15 queries and **flat in
+roster size**; it used to be 14 + 24n.
+
+**Phase 2 — a batched read/write seam (shipped, with a caveat worth recording).**
+`readMany`/`writeMany` in `db.js` wrap `db.batch`, which posts a whole array of statements together
+and returns one result set each: many statements, **one** round trip. They take the same
+`[sql, args]` pairs the plain helpers take and return rows in the same order, so converting a
+`Promise.all` of reads is mechanical. Pinned by `server/test/dbBatch.test.js`, which asserts a
+batched read returns *exactly* what the same reads return one at a time, plus the two edge cases
+every call site meets — an empty group and a group of one.
+
+Converted: `attachInteractions` (six sub-table reads, 6 trips to 1), `getMovesFor` (five, to 1),
+`resolveStaminaCosts`, `GET /api/combat`'s bulk reads, and character creation's eight dice inserts.
+Both `getMovesFor` and `resolveStaminaCosts` also take a `knownDice` option now, so the combat
+snapshot hands down the dice it has already read — that is what stopped one request reading the same
+character's dice **three** times. `attributes` and `attribute_counters` are memoised for the life of
+the process in `combatBonuses.js`: `seedRuleset` is their only writer and it runs at boot, so there
+is no invalidation problem to have.
+
+**The caveat, because it changes what to expect from the rest of this work.** Measured at 40ms a
+trip, total trips fell hard but wall time mostly did not:
+
+| | trips | wall @40ms |
+| --- | --- | --- |
+| `POST /api/characters` | 10 → **3** | 419ms → **128ms** |
+| `GET /api/combat` | 46 → **20** | 415ms → 416ms |
+| `move:declare` | 26 → **23** | 573ms → 538ms |
+| resolve a round | 210 → **205** | 5808ms → 5810ms |
+
+Batching only shortens the critical path where the statements were **sequential**. Most of what was
+converted already ran inside a `Promise.all`, and parallel requests cost count, not depth — so the
+real win here is character creation (genuinely a `for await` loop, now one trip), plus far less load
+on the connection and much more headroom under the libSQL client's 20-request concurrency limit,
+which `GET /api/combat` at 46 was liable to queue behind. **The depth that costs seconds is in the
+declare gate and the round engine, which is Phase 3.**
+
+**Phase 3 — the round engine (shipped, and it settles what is left).** Resolving one round issued 210
+queries across 75 distinct statements, re-fetching the pair's invariants at every one of its seven
+Tics. Three things changed:
+
+- **`withPerkCache` in `perkEngine.js`.** "Who holds which Perk" was asked eleven times per round —
+  it is on the path of every roll, trigger and threshold, for both fighters — and cannot change
+  within a resolution. Memoised through an `AsyncLocalStorage` scoped to one `advancePairResolution`
+  call, deliberately *not* a module-level cache: Node yields at every await, so a `perk:grant`
+  arriving between Tics would leave a process-wide map stale for the rest of the session.
+- **The two per-Tic progress writes go together** through `writeMany`. They are one record — "this
+  Tic is finished" — and a crash between them would leave the halves disagreeing.
+- **`applyIdleTicStaminaRegen`'s three reads batch into one**, and it runs once per Tic.
+
+Result: **210 → 176 trips**, and the round still resolves correctly end to end (pair back to
+Declaration, round 2, the same chat output).
+
+**Two findings worth more than the numbers.**
+
+**Awaiting the resolution never blocked anything.** The plan for this phase said to acknowledge the
+click and resolve asynchronously. That was written on the assumption that Socket.io serialises a
+socket's handlers. **It does not** — measured directly: it invokes each handler and ignores the
+returned promise, so a slow handler does not delay the next event from that or any other client.
+Detaching the call was implemented, measured, and **reverted**: it bought no responsiveness and
+opened a window for two resolutions of the same pair to overlap. The comment at that call site now
+says so, because the code looks like it should block and does not.
+
+**Depth is structural now, and Phase 0 is what pays for it.** At 40ms a trip the round went 5808ms →
+5600ms: 176 trips but still ~140 of them one after another. What was removed had been running inside
+`Promise.all` groups already, and parallel requests cost count, not depth. What remains is genuinely
+sequential — roughly twenty ordered DB steps per Tic, each depending on the last, which is what
+resolving a fight Tic by Tic *is*. Collapsing it would mean threading one loaded context through
+every helper in the engine, which `CLAUDE.md` flags as the high-risk module, and it is not worth that
+for a cost the embedded replica has already removed: 140 local reads is not a number anybody can feel.
+
+**So the shape of the whole exercise is:** Phase 0 removed the cost, Phases 1–3 removed the waste.
+The remaining depth only matters again if the replica is ever turned off.
+
+**Phase 4 — standing costs (shipped).** The costs nobody triggers, paid on every boot and every page
+load. `initDb` re-ran 148 awaited statements against a database that needed nothing done — ~65 reads
+of `sqlite_master` (one per `ensureColumn`, one per migration guard), 38 `CREATE TABLE IF NOT EXISTS`
+that find the table already there, and ~26 seed lookups — and Render's free tier cold-starts often
+enough that it is paid over and over.
+
+- **One `sqlite_master` snapshot, and a DDL queue.** `ddl()` collects statements instead of sending
+  them; the queue drains in a single `db.batch` the moment anything needs the database to be current,
+  which `all`, `run`, `readMany` and `writeMany` each do for themselves — so a migration or a seed
+  added later gets the flush without knowing the queue exists.
+- **The seeds' guards became one batched read** and one batched write, instead of a `COUNT` per table
+  and a `SELECT` per Tag and per registered Perk.
+- **Indexes on the foreign keys the app looks rows up by.** The schema had *none*: every
+  `WHERE character_id = ?` was a full scan, since SQLite only indexes `INTEGER PRIMARY KEY` for free.
+  Honest about the size of this one — most of these tables hold tens of rows, and reads are local
+  now; it matters for `chat_log`, `round_events` and `declared_moves`, which grow for the life of a
+  world.
+- **`GET /api/chat` returns the last 300 entries**, not the entire log. That endpoint is where pasted
+  images live (base64, in `chat_log.image_data`), so an unbounded fetch dragged megabytes across on
+  every reload and reconnect. One query either way — this is about the size of the answer, not trips.
+  The cost: scrollback older than 300 entries does not survive a reload. Nothing in the UI pages
+  further back, and the GM clears the log between fights.
+
+**Result: 148 trips → 4 on a warm boot; 243 → 30 on a brand-new database.**
+
+**No version stamp, deliberately.** The obvious fix — stamp a schema version and skip `initDb` when
+it matches — is simpler and much more dangerous: a Perk added to the registry, a Tag renamed, a seed
+row a GM deleted would all silently stop being repaired, and the failure would surface as a missing
+mechanic weeks later. Phase 4 runs the whole of `initDb` every boot, exactly as before; it just stops
+paying a round trip per line to do it.
+
+**Two regressions caught by comparing schemas rather than by reading the diff.** Both were invisible
+on a second boot, which is why `server/test/initDbSchema.test.js` tests the *first* one. (a) The
+snapshot is taken before this boot's CREATEs are sent, so on a fresh database the table `ensureColumn`
+is about to alter is not in it — reading the snapshot alone skipped every ALTER, and a new world came
+up missing three dozen columns. (b) The table-rebuilding migrations exist *because* the base CREATE
+above them still declares the old shape, so a fresh database is born needing the rebuild; a guard
+reading the pre-CREATE snapshot skipped it and left the new world with the old CHECK constraint. Both
+are fixed by `tableSql` answering from the snapshot **or** the pending queue — the queued statement
+is exactly what the table is about to become. Verified by diffing `sqlite_master` and the seeded rows
+against the old `initDb`: identical on a fresh database, on repeat boots, and on three vintages of
+legacy database upgraded forward.
 
 ## Game mechanic — Dice Pools (Core Stats tab)
 Each character has 3 fixed dice pools, always the same slot names for every character:
@@ -86,11 +282,11 @@ Each character builds their own stances via an in-sheet **Stance Creator**; stan
   - **Kept on Default moves (decided).** Unlike the Style gate — which `writeMove` forces to NULL on a Default move — the Combat Style survives there. "Anyone may throw this" is a statement about *who*, not about what the move is made of, and dropping it would put the whole mechanic out of reach of the moves every character actually has.
   - **The Tic must be passed in, not read (bugfix found building this).** `combat_pairs.current_tic` is written only *after* a Tic finishes processing (see `advancePairResolution`'s crash-recovery ordering), so during resolution it lags one Tic behind. Reading it to answer "what is the opponent doing right now" made the attacker's just-revealed move look like it wasn't out yet, and the **defender's** roll silently scored against the bare stance while the attacker's own roll — which passes its `moveId` explicitly — was correct. Every engine roll now passes its own Tic; only manual rolls fall back to `current_tic`, which is accurate precisely because no resolution is mid-flight when a human clicks a die.
 - **Roll (decided, optional)**, configured directly below Style in the Move Creator: a move can specify which dice it rolls plus one flat bonus (±20) shared across the whole collection — mechanically identical to Pool Roll (one shared modifier across an arbitrary dice selection), just pre-configured per move. Most moves are expected to have one, but it's optional for scalability (e.g. purely narrative moves). On a character's Moves tab, a move with a Roll shows the character's *actual current* die for each configured slot as a clickable button (e.g. `Body (d8+3)`, the same combined-formula convention as the Chat Log), pre-filled with the move's bonus — its own flat bonus plus any Perk-granted `move_roll_bonus` for that move (see Perks & Tags: this is now the live use case for that automation) — but freely editable before rolling, in the same roll dialog used everywhere else. An incapacitated die among the configured slots is silently dropped rather than blocking the roll, exactly like Pool Roll. In the Compendium (no character context to resolve real dice against), the Roll shows only the static slot names and bonus.
-  - **Roll slot vocabulary (decided)**: 6 choices, not the 8 concrete dice — Skull, Brain, Stamina, Body, plus two **ambiguous appendage choices**: **Left/Right Hand** and **Left/Right Leg**. The GM doesn't commit to a side at creation time; the *player* picks Left or Right at the moment the move is actually rolled, on the character's Moves tab. If a Roll includes either ambiguous choice, ONE Left/Right pick governs the whole Roll — a move using both Left/Right Hand and Left/Right Leg resolves both together from that single choice (e.g. "Left" rolls the Left Hand die AND the Left Leg die), not independently per slot.
+  - **Roll slot vocabulary (decided, revised)**: 7 choices, not the 8 concrete dice — Skull, Brain, Stamina, Body, plus two **ambiguous appendage choices** (**Left/Right Hand** and **Left/Right Leg**) and **Weapon**, which names no die at all and resolves to whatever the character is carrying (see **Game mechanic — The Weapon** below). The GM doesn't commit to a side at creation time; the *player* picks Left or Right at the moment the move is actually rolled, on the character's Moves tab. If a Roll includes either ambiguous choice, ONE Left/Right pick governs the whole Roll — a move using both Left/Right Hand and Left/Right Leg resolves both together from that single choice (e.g. "Left" rolls the Left Hand die AND the Left Leg die), not independently per slot.
   - **An appendage slot may be taken TWICE, meaning both sides (decided, new)**: clicking Hand (or Leg) a second time in the Move Creator cycles it to **Both Hands** / **Both Legs** — the Roll then rolls the Left *and* Right die of that appendage together. This is what a Straight Block is: it guards with both hands. Two is a hard ceiling (a character has exactly two of each), and a concrete Stat — Skull/Brain/Stamina/Body — is one-of-a-kind and still caps at one; the Creator's button cycles off → one → both → off. **Taking a slot twice answers its Left/Right question**, so such a move needs only ONE Tell (not the Right/Left pair above), records no `appendage_choice` when declared, and is never asked which side to use. A move that takes Hand twice *and* Leg once is still ambiguous — about the Leg only. Storage: `move_roll_slots` keeps one row per distinct slot plus a `count` column (SQLite can't drop the table's `UNIQUE(move_id, slot_name)` without a rebuild, and every reader groups by slot anyway); rows written before that column read back as 1, so nothing needed migrating. `move_defensive_roll_slots` mirrors it exactly. Attack Target is unaffected — it is a *set* of Stats damage may land on, where "twice" would mean nothing, and Hand/Leg there already expands to both sides when no side is chosen. The Moves tab renders one Roll button per available side (e.g. `Right: Body (d8+3) + Right Hand (d10+3)` / `Left: Body (d8+3) + Left Hand (d8+3)`) so the player can see each side's actual current dice before committing; clicking either opens the roll dialog pre-filled exactly like a normal Roll.
   - **Ambiguous Roll needs two Tells (decided)**: a move using Left/Right Hand or Left/Right Leg needs a **Right Tell** and a **Left Tell** instead of the usual single Tell — the Move Creator swaps in two Tell dropdowns in that case. Since nothing commits to a side until the move is actually rolled, the move's Tell header always shows **both Tells side by side** (in the Compendium and on every character sheet) rather than picking one arbitrarily.
   - **Roll type — Stat vs. Custom (decided, new):** the Move Creator's Roll section starts with a Stat/Custom toggle. **Stat** is everything described above (`moves.roll_type = 'stat'`, the default). **Custom** replaces the whole body-part-slot picker with a single base die picked from d4-d12 (`moves.custom_roll_size`) — for weapons, whose damage die belongs to the item, not the wielder, so it shouldn't move when the wielder's own Stats change. The two are mutually exclusive and enforced server-side (see `move:create`/`move:update` below): switching types in the Creator clears the other type's own picks, and `writeMove` forces `roll_slots = []` for a Custom move and `custom_roll_size = NULL` for a Stat move regardless of what's sent. A Custom Roll has no character-die concept at all — no incapacitation, no per-character resolution — so its Moves-tab button always just reads `d{size}{+bonus}` and is always clickable; rolling it goes through `dice:roll_custom` (see Real-time events below) instead of `pool:roll`, including at reveal-time auto-Roll. The flat **Bonus** field is shared with the Stat type (still `roll_modifier`, still folds in any Perk `roll_bonus` into `effective_roll_modifier`).
-  - **Attack Target (Change 001, decided, new):** every Move with a Roll also carries an Attack Target — which of the same 6 slots its damage may actually be applied to. Full mechanic (multi-select, empty-by-default, Successful-Block replacement, server-authoritative enforcement) documented in its own **Game mechanic — Attack Target** section below, since it interacts with Combat Automation's damage/defense flow rather than move creation alone.
+  - **Attack Target (Change 001, decided, new):** every Move with a Roll also carries an Attack Target — which of the same 7 slots its damage may actually be applied to (Weapon among them, where it means something different — see The Weapon below). Full mechanic (multi-select, empty-by-default, Successful-Block replacement, server-authoritative enforcement) documented in its own **Game mechanic — Attack Target** section below, since it interacts with Combat Automation's damage/defense flow rather than move creation alone.
 - **Tags (decided)**: each move carries 0-10 Tags, picked from the world-level GM-managed `tags` list (created/edited in the Compendium, like Tells — this pulls the base tag tables forward from Phase 4; per-character tag overrides via Perks remain Phase 4). Tags can also change dynamically later (Perks adding Tags to specific moves). A Tag has a **name and an optional description**; hovering a Tag anywhere it's shown (the Tag manager, a Move Creator's picker, a Move card) pops a tooltip with that description.
 - **The Moves tab filters by Tell and by Tag (decided, new).** Two multi-select-OR chip rows above the move grid, in exactly the Compendium's own filter language — picks *within* a row are OR'd, the two rows are AND'd, and an empty row is not applied at all. **Tell and Tag rather than the Compendium's Style and Tag:** on your own sheet a Style you cannot currently use is already dimmed and labelled, while "which of these opens with the shoulder drop" had no answer at all. Each row lists only the Tells and Tags that moves **on this sheet** actually carry — the Compendium is the library and shows the world's whole vocabulary, but a sheet is a hand of cards, and a filter that can only ever return nothing is worse than no filter. Both halves of an ambiguous move's Left/Right Tell pair count as that move's Tells, and a Perk's `effective_tag_ids` override is what a Tag filter reads, so the filter agrees with the chips actually printed on the card.
 
@@ -555,6 +751,28 @@ placement Tic still being behind the new round's start is what separates the two
 - **Installable PWA (14.9A, task #228):** `client/public/manifest.webmanifest` (name/icons/`display: standalone`/theme colors, brand-red-on-near-black icon at 192px/512px) plus `client/public/sw.js`, registered from `main.jsx` after page load. The app is a live Socket.io session with no meaningful offline mode, so the service worker's only job is a faster reload on a flaky connection: cache-first for hashed `/assets/*` build output (safe — a content-hashed filename never goes stale), network-first-with-shell-fallback for navigations, and `/api/*`/`/socket.io/*` are never intercepted (always live). No Wake Lock, no push notifications — out of scope per 14.10.
 - **Playwright mobile device matrix (task #229):** `playwright.config.js` (repo root) defines 5 projects against `e2e-mobile/*.spec.js` — `mobile-chrome` (Pixel 7), `tablet` (Galaxy Tab S4), `mobile-landscape` (Pixel 7 landscape — wide enough to legitimately fall back to the desktop nav pattern at `md:`, which the specs account for rather than assume bottom-nav everywhere), `320-fallback` (a forced 320×568 viewport, the 14.3A floor), and `mobile-safari` (iPhone 13, WebKit) for CI/full-install environments — this sandbox only ships a Chromium binary (see environment notes), so the four Chromium-based projects pin `launchOptions.executablePath` to it rather than the version-mismatched revision `@playwright/test` would otherwise try to download. Specs cover: no-horizontal-overflow smoke checks across Arena/Characters/Compendium at every project's viewport, the Characters/Compendium folder drawers and the character-to-folder move dialog, Character Sheet tab-switching, the Arena's roster drawer and single-row Tic Counter, and `DialogShell`'s shared backdrop-click/Escape/44px-close-button behavior. Run via `npm run test:mobile`.
 
+## Game mechanic — The Weapon (decided, new)
+**Status: fully built.** A character carries **one weapon, or none — and none is the default.** Nothing about a fighter changes when they pick something up except that a new die becomes available to them and a few Moves open up; there is no inventory of weapons, no equip slot ceremony, and no weapon on anybody's sheet until somebody puts one there.
+
+A weapon has four fields and no more: **Name**, **Dice** (one of the game's own d4-d12), **Modifier** (a flat number, added to the die) and **Durability** (a positive integer). `weapons` is one row per character, `UNIQUE(character_id)`, `ON DELETE CASCADE`.
+
+- **It rolls like any other Stat.** Die plus modifier, and then every other modifier on the roll lands on top exactly as it does for a Stat — the Stance matchup, Reasons to Fight, a Perk's per-move bonus, the ad-hoc number typed into the dialog. `weaponDie(weapon)` (`server/weapons.js`) hands it to the roll paths shaped like the die rows they already speak (`slot_name` / `current_size` / `bonus` / `status`), so nothing downstream needs a special case. A weapon has no incapacitation and no half-damage: it is not a body part, it is a thing, and things break rather than degrade.
+- **The seventh Roll slot.** `'Weapon'` joins `ROLL_SLOT_NAMES`, so a Move can name it in its Roll exactly like Skull or Body. `resolveMoveRollDice` looks it up separately (it is not in `dice`) and drops it in.
+  - **A Move that rolls the Weapon cannot be declared with empty hands (decided).** `move:declare` refuses it outright — an unarmed fighter would otherwise simply roll one die fewer, which is a move quietly worth less than it says it is. The Arena picker greys such a card with "No weapon in hand — this move rolls one, so there is nothing to swing", exactly as it greys a Movement move on a broken leg, and the Moves tab dims it the way a **Secondary** move is dimmed. Reaching the server gate therefore means a stale view or a hand-sent event.
+- **Durability is spent by USING it, not by rolling it (decided).** Rolling the weapon on its own — the sheet's die widget, a GM roll request, a contest — costs nothing. **Using it in a Move costs 1**, and at 0 the weapon is destroyed.
+  - **Once per declaration, not once per roll.** Several paths can roll the same declaration's Roll — a Block is rolled once per attacked Stat, a grapple follow-up re-rolls the move it chained into — and a guard swung at two limbs must not cost twice what the same guard swung at one costs. `declared_moves.weapon_spent` is the flag that makes it once, and it survives a pause, which matters because a Block's second line is often rolled on the far side of one.
+  - Every spend says so in chat ("*X*'s Machete is down to 2 Durability", or "…gives out and is destroyed") and emits a **`weapon_durability`** round_event, self-contained per §0 so a replay watched later still names the weapon that is by then gone.
+- **The Weapon as an Attack Target (decided).** `'Weapon'` is also in `CONCRETE_ATTACK_TARGET_NAMES`, so a Move can go for what the target is holding. It is **not a Stat**, and the rules that follow from that are the whole mechanic:
+  - It takes no part in choosing *who* gets hit. No character has a die called Weapon, so selecting on it would find nobody and bail before the roll-off it exists for ever happened — `resolveAttack` splits the Weapon out of the target list before `selectUnevenCombatTarget` sees it.
+  - **One roll-off, no defence.** The attacker's own already-made total against the weapon's own die. Beat it and the weapon is **destroyed**; **a tie holds** — destroying a thing outright is the bigger consequence and should be earned outright, the same way every other ambiguity in this game falls to the defensive side. No guard stands between the blow and the weapon: the weapon's own die *is* its defence.
+  - **When it holds, nothing lands.** For a move that named nothing else, that is the whole outcome — no damage, no fall-through to a Stat.
+  - **Against an unarmed target it becomes a random Hand.** The swing was aimed at what they were holding, so it arrives at the hand that should have been holding it. That substituted Stat is an ordinary target from there on — blockable, dodgeable, damaged like any other — and the swap is announced rather than silently swallowed.
+  - Both outcomes emit a **`weapon_target`** round_event and a chat line naming both numbers.
+- **Written to be granted programmatically (decided).** `grantWeapon(io, characterId, {...})` in `server/weapons.js` is the *whole* creation path: the `weapon:create` socket handler calls it, and a Perk that arms its holder under some condition will call the same function with the same shape. There is deliberately no second way in. It replaces whatever the character was carrying (one weapon, so arming them with a second is swapping, not stacking) and **refuses rather than clamps** a request that doesn't describe a weapon — a d7 or a Durability of 0 is a mistake at the point it was typed, and a silently-corrected weapon is worse than a rejected one.
+- **On the sheet:** the slot sits at the **bottom right of the Vitruvian figure**, off the body — it is the one thing there that is not a Stat, and putting it on a hand would claim it belonged to the anatomy. Empty it is a dashed outline with a sword in it; click to create. Armed it shows `d10+3` with a Durability pip on its corner (red at 1) and the weapon's name beneath, click to roll, with ✎ to edit and ✕ to put it down. Durability dropping fires the same short violent shake a die's step does. On mobile it becomes its own row under the legs, the same grouped-rows treatment the Stats get.
+  - Two rendering rules were learned the hard way here and are worth keeping: the widget's dialogs are **portalled to `<body>`**, because a transformed ancestor (the `-translate-x-1/2` that places the slot) becomes the containing block for `position: fixed` descendants and the modal laid itself out inside a 64px box; and the Durability pip is a **sibling** of the button rather than a child, because `panel-cut-lg` is a clip-path and a clip-path clips its own descendants.
+- Verified end-to-end by `scripts/playtest-weapons.mjs` against a live server on a fresh DB: the empty default, the declare refusal, the spend of exactly 1 per Move, the free bare roll, a weapon holding (and nothing landing), a weapon breaking, the unarmed fallback landing on one Hand, and putting it down.
+
 ## Game mechanic — Chat Log
 A single shared feed for the whole game (what was "roll log" earlier — renamed since it now shows more than dice rolls):
 - Every die/pool roll posts here, as already described. Each entry shows the roller's small avatar (their portrait, or an initial-letter placeholder) to the left of their name; the roll modifier is **not** shown as a separate tag near the name — it's folded into each die's own formula instead (a die's permanent bonus + the roll's ad-hoc modifier combined into one signed value, e.g. `Body (d8+3): 11`). **Roll breakdown (decided):** each die's line shows the physical die face itself plus its flat additions, then the final result — e.g. `Body d8: 6 + 3 = ` followed by the result in a visibly **bolder, larger font** so the number that actually matters strikes the eye at a glance, instead of the whole line reading as one same-weight value; a multi-die roll's `Total` line underneath gets the same bold/large treatment. Nothing new is stored or sent for this — the physical die face isn't a separate field, it's recovered client-side as `result - bonus - modifier` (exact, since `result` was always computed as `rollDie(size) + bonus + modifier` server-side — see `die:roll`/`pool:roll` below), so this is a `ChatPanel.jsx`-only change.
@@ -571,6 +789,13 @@ A single shared feed for the whole game (what was "roll log" earlier — renamed
   - **Two bugs found while wiring it up**, both latent and both only reachable once cards existed again: `ChatPanel`'s expanded card read a bare `moves` from inside `Entry`, a different scope — the first person to open a card would have hit a `ReferenceError` (it is on `moveInfo` now); and the `chat:round_summary` listener was never unsubscribed on unmount while the other four were.
 - **A description keeps the line breaks it was typed with (decided, new).** Move and Perk descriptions are authored in `<textarea>`s, so pressing Enter has always *stored* a newline — and `.trim()` only ever touched the ends — but every display site rendered it in a plain `<p>`, which collapses whitespace, so the break silently disappeared between typing it and reading it. `whitespace-pre-wrap break-words` on `MoveCard`, `PerkCard` and the Character Creation wizard's Perk list fixes it wherever a description is read at length. The one deliberate exception is the search dropdown, whose result rows are single-line by design.
 
+- **A page load fetches the last 300 entries, not the whole log (decided, new — see Database
+  round-trips above).** `GET /api/chat` was unbounded, and `chat_log.image_data` is where pasted
+  images live as base64, so a session with a dozen shared pictures dragged megabytes across on every
+  reload and every reconnect. Live entries still arrive over the socket regardless of the limit; what
+  is lost is scrollback older than 300 entries after a reload, which nothing in the UI pages back to
+  anyway. Deliberately generous — a fight produces far fewer than 300 — and the log is cleared
+  between fights in any case, which is the next bullet.
 - Nothing chat-related is kept for long: clears automatically on server restart (an actual `DELETE FROM chat_log` at boot, not just an incidental side effect of Render's free tier spinning the server down between quiet periods) and via a manual **Clear Chat** button, GM-only (decided — matches every other admin-style control in the app; the server itself doesn't enforce this, same as everywhere else in this no-auth app).
 
 ## Game mechanic — Character Creation (decided, new)
@@ -663,6 +888,18 @@ Every page's header carries a **Search bar**, available to all roles. Typing deb
   should be reintroduced deliberately and piecemeal, not as another whole-app pass.
 
 ## Data model
+
+**Indexes are declared separately, in `ensureIndexes()` (decided, new).** The tables below carry no
+`CREATE INDEX` of their own — every one is created by name (`idx_<table>_<column>`) in a single list
+at the end of `initDb`, so adding one later needs no table rebuild and the whole set rides the same
+batch as the schema. They cover the foreign keys the app actually looks rows up by: the per-character
+fan-out every combat payload does (`dice`, `counters`, `stances`, `weapons`, `injuries`,
+`combat_participants`, `character_moves`, `character_perks`, …), the per-move one a Move sheet does
+(`move_roll_slots` and its siblings, `move_tags`, `move_interactions`), and the three tables that grow
+for the life of a world (`round_events.resolution_id`, `chat_log.move_id`,
+`declared_moves.character_id`). SQLite indexes `INTEGER PRIMARY KEY` for free and nothing else, so
+before this every `WHERE character_id = ?` was a full scan.
+
 ```sql
 CREATE TABLE characters (
   id INTEGER PRIMARY KEY,
@@ -909,6 +1146,23 @@ CREATE TABLE character_move_roll_bonuses (
   move_id INTEGER NOT NULL REFERENCES moves(id) ON DELETE CASCADE,
   amount INTEGER NOT NULL,
   source_character_perk_id INTEGER REFERENCES character_perks(id) ON DELETE CASCADE
+);
+
+-- The Weapon (decided, new — see Game mechanic — The Weapon above). One per
+-- character or none, and none is the default: nobody starts holding anything.
+-- Deliberately NOT a ninth die row — a weapon has no incapacitation, no
+-- half-damage, no locked baseline and no share of Stamina; adding one to `dice`
+-- would have rippled through all of that to model something that is not a body
+-- part. `durability` is a positive integer, spent only by USING the weapon in a
+-- Move (1 per declaration, tracked by declared_moves.weapon_spent); rolling it
+-- on its own costs nothing.
+CREATE TABLE weapons (
+  id INTEGER PRIMARY KEY,
+  character_id INTEGER NOT NULL UNIQUE REFERENCES characters(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  die_size INTEGER NOT NULL,
+  bonus INTEGER NOT NULL DEFAULT 0,
+  durability INTEGER NOT NULL
 );
 
 CREATE TABLE counters (
@@ -1283,7 +1537,16 @@ CREATE TABLE declared_moves (
   -- and a GM editing the Move's Tags would retroactively mask or unmask a
   -- declaration already on the board. Cleared by move:undeclare on whatever
   -- the deleted move was hiding. See the Feint Tag under Tags & automation.
-  feint_masked INTEGER NOT NULL DEFAULT 0
+  feint_masked INTEGER NOT NULL DEFAULT 0,
+  -- The Weapon (decided, new): has this declaration already paid its 1
+  -- Durability? Using a weapon in a Move costs 1 — once per Move, not once per
+  -- roll. Several paths can roll the same declaration's Roll (a Block is rolled
+  -- once per attacked Stat; a grapple follow-up re-rolls the move it chained
+  -- into), so the spend is recorded on the declaration rather than counted at
+  -- each roll site, and it survives a pause. Rolling a weapon OUTSIDE a Move —
+  -- the sheet's die widget, a GM roll request — never touches Durability and
+  -- never reaches this column. See server/weapons.js.
+  weapon_spent INTEGER NOT NULL DEFAULT 0
 );
 ```
 When a character is created, auto-generate its 8 `dice` rows (2 head + 4 core + 2 legs) at a default size of d8, editable afterward via step up/down.
@@ -1297,7 +1560,11 @@ When a character is created, auto-generate its 8 `dice` rows (2 head + 4 core + 
 - `character_folder:create` / `character_folder:rename` / `character_folder:delete` (client [GM] → server): `{ name, parentFolderId? }` / `{ folderId, name }` / `{ folderId }` — manages `character_folders`. `parentFolderId` nests the new folder inside an existing one (validated server-side; an unknown id falls back to root). Delete promotes the folder's direct characters and direct child folders **one level up, to the deleted folder's own `parent_id`** (root if it was already at root) rather than unconditionally to root, then removes the folder; broadcasts `character_folder:created` / `character_folder:updated` / `character_folder:deleted` (the delete payload includes `{ folderId, parentFolderId }` so a client viewing the deleted folder can follow it up to the same parent). `GET /api/character-folders` lists them, including `parent_id` (kept separate from `GET /api/characters`, whose flat-array shape existing callers depend on).
 - `character:set_folder` (client [GM] → server): `{ characterId, folderId }` (`folderId` null = root; an unknown id also falls back to root) — the drag-and-drop reassignment path, mirrors `move:set_folder`: touches only `characters.folder_id`. Broadcasts `character:updated`. `POST /api/characters` also accepts an optional `folderId` so a new character can be filed in directly from the Add Character form (GM only — Players' new PCs always land at root).
 - `die:roll` (client → server): `{ characterId, dieId, modifier }` — modifier is the ad-hoc +/- entered in the roll dialog, plus this character's own Reasons to Fight bonus if a fight is currently active (`getReasonsToFightBonus`, see Combat Arena above — folded in server-side, not just a client pre-fill). Result = roll(current_size) + bonus + modifier. Server logs to `chat_log`, broadcasts `roll:result`.
-- `pool:roll` (client → server): `{ characterId, dieIds, modifier, declaredMoveId? }` — rolls the selected set of that character's dice (any mix across Head/Core/Legs; incapacitated dice are silently dropped), each at its own size + bonus, plus the one shared modifier (also carrying the Reasons to Fight bonus, same as `die:roll` above) applied to all of them. **`declaredMoveId` (Combat Automation, sub-phase 3, optional):** when present and it resolves (`buildRollContext` — must be a real `declared_moves` row belonging to this `characterId`, who must currently be seated), the logged/broadcast roll carries the roll-context payload (`{ declaredMoveId, moveId, pairIndex, side, targetCandidateIds, effectiveAttackTargets, attackTargetSource }` — the last two added by Change 001, read live off that same `declared_moves` row at roll time — see `chat_log.payload` in the Data model above) so a future Apply button knows which move/attacker/targets/effective-target this roll belongs to; an unresolvable id is silently dropped (context omitted) rather than rejecting the roll. Only ever sent by the reveal-time auto-Roll flow (`CombatHeaderBar.jsx`) — every other caller (a manual Stat roll from the Moves tab, the Dice Tray) omits it, so those stay bare rolls with no Apply button, exactly as intended ("never for a bare Dice Tray/manual Stat/Pool roll" — see the Combat Automation mechanic above). Broadcasts `roll:result`.
+- `pool:roll` (client → server): `{ characterId, dieIds, modifier, declaredMoveId?, includeWeapon? }` — rolls the selected set of that character's dice (any mix across Head/Core/Legs; incapacitated dice are silently dropped), each at its own size + bonus, plus the one shared modifier (also carrying the Reasons to Fight bonus, same as `die:roll` above) applied to all of them. **`declaredMoveId` (Combat Automation, sub-phase 3, optional):** when present and it resolves (`buildRollContext` — must be a real `declared_moves` row belonging to this `characterId`, who must currently be seated), the logged/broadcast roll carries the roll-context payload (`{ declaredMoveId, moveId, pairIndex, side, targetCandidateIds, effectiveAttackTargets, attackTargetSource }` — the last two added by Change 001, read live off that same `declared_moves` row at roll time — see `chat_log.payload` in the Data model above) so a future Apply button knows which move/attacker/targets/effective-target this roll belongs to; an unresolvable id is silently dropped (context omitted) rather than rejecting the roll. Only ever sent by the reveal-time auto-Roll flow (`CombatHeaderBar.jsx`) — every other caller (a manual Stat roll from the Moves tab, the Dice Tray) omits it, so those stay bare rolls with no Apply button, exactly as intended ("never for a bare Dice Tray/manual Stat/Pool roll" — see the Combat Automation mechanic above). **`includeWeapon` (the Weapon, decided, new):** a weapon is not a die row and so has no id to put in `dieIds` — a Move whose Roll names the Weapon slot sends this flag instead and the server appends `weaponDie(weapon)` to the pool. Rolling costs no Durability; that is what *using* the weapon in a Move costs (see The Weapon above). Broadcasts `roll:result`.
+- `weapon:create` (client → server): `{ characterId, name, dieSize, bonus, durability }` — the player-facing half of the Weapon's single creation path; calls `grantWeapon` (`server/weapons.js`), which a Perk arming its holder will call with the same shape. Replaces whatever that character was carrying (one weapon, so a second is a swap, not a stack) and **refuses** rather than clamps a request that isn't a weapon (a die outside d4-d12, a blank name, a Durability below 1). Posts a chat line and broadcasts `weapon:updated` plus `combat:updated` (being armed opens and closes Moves in the Arena picker). Open access, same trust model as every other sheet edit here.
+- `weapon:delete` (client → server): `{ characterId }` — puts it down. Same broadcasts.
+- `weapon:roll` (client → server): `{ characterId, modifier }` — rolls the weapon on its own, die + its modifier + the ad-hoc one + any combat bonus, exactly like `die:roll` does for a Stat. **Costs no Durability** — see The Weapon above. Logs to `chat_log` with `slot_name: 'Weapon'`, broadcasts `roll:result`.
+- `weapon:updated` (server → all): `{ characterId, weapon }` — the weapon's whole new state, or `null` when they are now carrying nothing. Emitted by every path that changes one: created, put down, worn down by a Move, or destroyed by an attack that went for it. One row replaced wholesale, so the payload *is* the new state and there is nothing for a client to merge.
 - `dice:roll_custom` (client → server): `{ characterId, size, modifier, declaredMoveId? }` — a raw `1d{size} + modifier` roll not tied to any character's own die (`size` must be one of 4/6/8/10/12 or it's a no-op); powers both the chat Dice Tray above and a move's Custom Roll type below. `characterId: null` posts as the generic GM persona (`GM_CHAT_SENTINEL_ID`, same convention as `chat:message`) — Reasons to Fight only applies when a real character is attributed, since a GM-persona roll isn't any seated character's own; `declaredMoveId` is likewise only ever resolved for a real (non-GM) character, same rule and roll-context shape as `pool:roll` above. Logs to `chat_log` (`slot_name: 'Custom'`), broadcasts `roll:result`.
 - `die:step` (client → server): `{ dieId, direction: 'up' | 'down' }` — server logic:
   - **up:** if `status == 'incapacitated'`, revive to `current_size = 4`, `bonus = 0`, `status = 'active'`; else if `current_size < 12`, advance to next size; else (`current_size == 12`) increment `bonus` instead.
