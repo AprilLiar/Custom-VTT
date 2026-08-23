@@ -37,29 +37,153 @@ const authToken = process.env.TURSO_AUTH_TOKEN;
 // The initial sync is mandatory (see syncReplica below) — starting up against
 // an empty replica would let the seed functions decide the world is unpopulated
 // and re-seed it into the primary.
+//
+// **Writes are local too, and pushed on a timer (decided, new — Phase 5).**
+//
+// Phase 0 above optimised the half that was not hurting. With reads answered
+// locally, what is left in the actions anybody notices — declaring, granting,
+// choosing — is almost entirely *writes*, and an embedded replica still sends
+// each one to the primary and waits. Worse, `readYourWrites` means it waits for
+// the replication frame to come back as well, so a write can cost two round
+// trips, not one. Measured trip counts never showed this because they counted
+// reads and writes as if they cost the same; a live playtest after Phase 0
+// showed only a slight improvement, which is what finally located it.
+//
+// `offline: true` closes that gap: a write lands in the local file immediately
+// and is pushed to the primary by `db.sync()`, which `startSyncLoop` runs every
+// ten seconds in the background. The user's own framing of the trade, and it is
+// the right one for this app: **losing the last few seconds of a fight is
+// cheaper than making every action of it wait.**
+//
+// What makes it safe here is the same thing that made Phase 0 safe — there is
+// exactly one writer. Reconciling concurrent writers is the hard and dangerous
+// part of local-first, and Render's free tier runs a single instance, so this
+// collapses to the easy case: the local file is the truth of the moment, the
+// primary is an asynchronous copy of it.
+//
+// **The failure mode is not "lose ten seconds".** Ten seconds is the bound only
+// while sync is actually succeeding. If it starts failing — an expired token, a
+// network partition, a primary that has moved on — writes pile up locally and
+// nothing is obviously wrong until Render recycles the container and takes the
+// whole unsynced pile with it. So the loop below does not swallow failures:
+// it counts them, and `syncHealth()` reports a backlog the server broadcasts
+// (see `db:sync_health` in index.js) so a silent divergence cannot run for an
+// hour unnoticed. That alarm is the price of admission for this trade, not a
+// nicety.
 const REMOTE_SCHEMES = /^(libsql|https?|wss?):/i;
 const usingRemote = REMOTE_SCHEMES.test(url);
 const replicaPath = process.env.TURSO_REPLICA_PATH || 'replica.db';
-// Off by default: with one instance and read-your-writes there is no frame to
-// chase. Set it (in seconds) only if something outside this server writes to
-// the primary — a `turso db shell` session, a second deployment.
-const syncInterval = Number(process.env.TURSO_SYNC_SECONDS) || undefined;
+// How often the background loop pushes local writes to the primary, and so
+// also the size of the window a crash can lose. Ten seconds by default.
+export const SYNC_SECONDS = Number(process.env.TURSO_SYNC_SECONDS) || 10;
+// How long a run of failures is tolerated before the server calls the sync
+// unhealthy out loud. Two missed cycles is noise; a minute is a problem.
+const UNHEALTHY_AFTER_MS = Math.max(SYNC_SECONDS * 1000 * 6, 60_000);
 
-export const db = usingRemote
-  ? createClient({ url: `file:${replicaPath}`, syncUrl: url, authToken, syncInterval })
-  : createClient(authToken ? { url, authToken } : { url });
+// Built as a pure function so the one thing that would fail *silently* can be
+// tested: if `offline` were ever dropped — renamed upstream, stripped by the
+// client's config expansion — every write would quietly go back to costing a
+// round trip and the deploy would look perfectly healthy. There is nothing to
+// observe from inside the app that would catch that, so it is pinned here
+// instead (see server/test/dbConfig.test.js).
+export function buildClientConfig({ url, authToken, replicaPath, remote }) {
+  if (!remote) return authToken ? { url, authToken } : { url };
+  return {
+    url: `file:${replicaPath}`,
+    syncUrl: url,
+    authToken,
+    // Deliberately NOT libSQL's own `syncInterval`. Its timer swallows the
+    // result, and an alarm that cannot see a failure is not an alarm — the
+    // loop below owns the cadence precisely so it can own the errors.
+    offline: true,
+  };
+}
+
+export const db = createClient(
+  buildClientConfig({ url, authToken, replicaPath, remote: usingRemote })
+);
 
 export const replicaMode = usingRemote;
 
-// Pull the primary into the local replica. Called once before initDb (see
-// server/index.js) and deliberately allowed to throw: a server that came up
-// against a half-synced replica would re-seed the ruleset, the Tells and the
-// Perks into the primary as duplicates. Better to die and let Render restart.
+// Pull the primary into the local replica, and push whatever is waiting.
+//
+// Called once before initDb (see server/index.js), where it is deliberately
+// allowed to throw: a server that came up against a half-synced replica would
+// re-seed the ruleset, the Tells and the Perks into the primary as duplicates.
+// Better to die and let Render restart. The background loop below catches
+// instead, because by then the world is real and dying would lose more than
+// waiting does.
 export async function syncReplica() {
   if (!usingRemote) return null;
   const started = Date.now();
   await db.sync();
-  return Date.now() - started;
+  const elapsed = Date.now() - started;
+  lastSyncedAt = Date.now();
+  consecutiveFailures = 0;
+  lastError = null;
+  return elapsed;
+}
+
+let lastSyncedAt = null;
+let consecutiveFailures = 0;
+let lastError = null;
+let syncTimer = null;
+let syncInFlight = false;
+
+// What the server reports and broadcasts. `healthy` is false only once a run of
+// failures has lasted long enough to mean something — a single missed cycle on
+// a flaky connection is not worth shouting about, and an alarm that cries wolf
+// gets ignored, which would defeat the point of having one.
+export function syncHealth() {
+  if (!usingRemote) return { mode: 'local-file', healthy: true };
+  const staleMs = lastSyncedAt == null ? null : Date.now() - lastSyncedAt;
+  return {
+    mode: 'offline-writes',
+    healthy: consecutiveFailures === 0 || (staleMs ?? 0) < UNHEALTHY_AFTER_MS,
+    everySeconds: SYNC_SECONDS,
+    lastSyncedAt,
+    staleSeconds: staleMs == null ? null : Math.round(staleMs / 1000),
+    consecutiveFailures,
+    lastError,
+  };
+}
+
+// One sync attempt, never throwing. Returns the health afterwards so the caller
+// can decide whether it has something to announce.
+export async function syncOnce() {
+  if (!usingRemote || syncInFlight) return syncHealth();
+  syncInFlight = true;
+  try {
+    await syncReplica();
+  } catch (err) {
+    consecutiveFailures += 1;
+    lastError = err?.message ?? String(err);
+  } finally {
+    syncInFlight = false;
+  }
+  return syncHealth();
+}
+
+// The background push. `unref()` so a pending timer never holds the process
+// open, and the loop deliberately does not run against a plain local file —
+// there is nothing to push to.
+export function startSyncLoop(onHealthChange) {
+  if (!usingRemote || syncTimer) return false;
+  let wasHealthy = true;
+  syncTimer = setInterval(async () => {
+    const health = await syncOnce();
+    if (health.healthy !== wasHealthy) {
+      wasHealthy = health.healthy;
+      onHealthChange?.(health);
+    }
+  }, SYNC_SECONDS * 1000);
+  syncTimer.unref?.();
+  return true;
+}
+
+export function stopSyncLoop() {
+  if (syncTimer) clearInterval(syncTimer);
+  syncTimer = null;
 }
 
 // One libSQL result set as plain objects keyed by column name. Shared by `all`
