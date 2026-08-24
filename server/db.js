@@ -124,11 +124,76 @@ export async function syncReplica() {
   return elapsed;
 }
 
+// **`db.sync()` blocks the event loop, so the loop below has to be adaptive
+// (bugfix — Phase 5 shipped this wrong and broke the Arena).**
+//
+// The whole libSQL binding is synchronous — every symbol it exports is `*Sync`,
+// better-sqlite3 lineage — and `db.sync()` is `databaseSyncSync`, which does
+// **network I/O on the calling thread**. (`createClient` proves it: with a
+// `syncUrl` the constructor itself performs a blocking `PullDb` and throws if
+// the primary rejects it.) For local statements that costs microseconds and is
+// exactly why this app is fast. For a sync it means Node serves *nothing* for
+// the duration.
+//
+// Phase 0 called it once at boot, where a stall is harmless. Phase 5 then put
+// it on a ten-second timer, which turned a boot-time cost into a permanent one:
+// every ten seconds the server stopped answering for however long a sync takes.
+// A page needing one request slips between the stalls and feels fine; the Arena
+// fires five requests plus a move query per fighter, and re-runs that on a
+// dozen different events, so it is overwhelmingly the most likely thing to be
+// caught — which is exactly how it presented, as an Arena that never finished
+// loading while the rest of the app was fast.
+//
+// The fix is not to sync less often — that trades durability for latency, the
+// wrong way round. It is to make the loop **notice what it is costing**:
+//
+//  - Every sync is timed. A slow one widens the interval, so a sync that costs
+//    real time cannot run every ten seconds; a fast one narrows it back.
+//  - A failure backs off exponentially rather than hammering a blocking call
+//    into an unreachable primary once per cycle — the pathological case, and
+//    the one that can stall a server almost continuously.
+//  - The duration is logged either way, because the one number this could not
+//    be reasoned about without is how long a real sync against the real primary
+//    actually takes.
+//
+// The boot sync and the SIGTERM flush stay blocking and unthrottled on purpose:
+// at both of those moments there is nothing else to serve, and finishing the
+// push matters more than yielding.
 let lastSyncedAt = null;
 let consecutiveFailures = 0;
 let lastError = null;
+let lastSyncMs = null;
 let syncTimer = null;
 let syncInFlight = false;
+
+// A sync is allowed to occupy at most this share of wall-clock time. At the
+// default cadence a 100ms sync is 1% and stays at ten seconds; a 2s sync backs
+// off to a minute rather than stalling the server every ten.
+const MAX_SYNC_DUTY = 0.02;
+const MAX_BACKOFF_MS = 5 * 60_000;
+
+// Exported for tests: the whole point of this function is what it does in the
+// two cases that cannot be reproduced without a real primary — a slow sync and
+// a failing one — so it is pinned directly rather than through the loop.
+export function nextSyncDelayMs({ failures = consecutiveFailures, lastMs = lastSyncMs } = {}) {
+  const base = SYNC_SECONDS * 1000;
+  if (failures > 0) {
+    return Math.min(base * 2 ** Math.min(failures, 6), MAX_BACKOFF_MS);
+  }
+  if (lastMs == null) return base;
+  return Math.min(Math.max(base, lastMs / MAX_SYNC_DUTY), MAX_BACKOFF_MS);
+}
+
+function nextDelayMs() {
+  const base = SYNC_SECONDS * 1000;
+  // Failures back off hardest: an unreachable primary is where a blocking call
+  // costs the most and achieves the least.
+  if (consecutiveFailures > 0) {
+    return Math.min(base * 2 ** Math.min(consecutiveFailures, 6), MAX_BACKOFF_MS);
+  }
+  if (lastSyncMs == null) return base;
+  return Math.min(Math.max(base, lastSyncMs / MAX_SYNC_DUTY), MAX_BACKOFF_MS);
+}
 
 // What the server reports and broadcasts. `healthy` is false only once a run of
 // failures has lasted long enough to mean something — a single missed cycle on
@@ -141,6 +206,11 @@ export function syncHealth() {
     mode: 'offline-writes',
     healthy: consecutiveFailures === 0 || (staleMs ?? 0) < UNHEALTHY_AFTER_MS,
     everySeconds: SYNC_SECONDS,
+    // What the loop is *actually* running at, which drifts from everySeconds
+    // whenever a sync turns out to be slow or is failing. A backlog window that
+    // has quietly grown from 10s to 5 minutes is the thing worth seeing.
+    nextInSeconds: Math.round(nextDelayMs() / 1000),
+    lastSyncMs,
     lastSyncedAt,
     staleSeconds: staleMs == null ? null : Math.round(staleMs / 1000),
     consecutiveFailures,
@@ -153,9 +223,12 @@ export function syncHealth() {
 export async function syncOnce() {
   if (!usingRemote || syncInFlight) return syncHealth();
   syncInFlight = true;
+  const started = Date.now();
   try {
     await syncReplica();
+    lastSyncMs = Date.now() - started;
   } catch (err) {
+    lastSyncMs = Date.now() - started;
     consecutiveFailures += 1;
     lastError = err?.message ?? String(err);
   } finally {
@@ -167,22 +240,31 @@ export async function syncOnce() {
 // The background push. `unref()` so a pending timer never holds the process
 // open, and the loop deliberately does not run against a plain local file —
 // there is nothing to push to.
-export function startSyncLoop(onHealthChange) {
+export function startSyncLoop(onHealthChange, onSyncMeasured) {
   if (!usingRemote || syncTimer) return false;
   let wasHealthy = true;
-  syncTimer = setInterval(async () => {
-    const health = await syncOnce();
-    if (health.healthy !== wasHealthy) {
-      wasHealthy = health.healthy;
-      onHealthChange?.(health);
-    }
-  }, SYNC_SECONDS * 1000);
-  syncTimer.unref?.();
+  // setTimeout rather than setInterval: the delay is recomputed from what the
+  // last sync actually cost, and an interval cannot be rescheduled. It also
+  // means a slow sync can never have a second one queued up behind it.
+  const schedule = (delay) => {
+    syncTimer = setTimeout(async () => {
+      const health = await syncOnce();
+      onSyncMeasured?.(health);
+      if (health.healthy !== wasHealthy) {
+        wasHealthy = health.healthy;
+        onHealthChange?.(health);
+      }
+      schedule(nextDelayMs());
+    }, delay);
+    // Never hold the process open for a pending sync.
+    syncTimer.unref?.();
+  };
+  schedule(SYNC_SECONDS * 1000);
   return true;
 }
 
 export function stopSyncLoop() {
-  if (syncTimer) clearInterval(syncTimer);
+  if (syncTimer) clearTimeout(syncTimer);
   syncTimer = null;
 }
 
