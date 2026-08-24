@@ -15,7 +15,7 @@ On every fresh page load, a modal asks who's playing: a **GM** button (unchanged
 - **Frontend:** React + Vite, Tailwind CSS, Framer Motion (transitions/layout), GSAP (impact/roll effects)
 - **Backend:** Node.js + Express — also serves the built frontend (single deployable app)
 - **Real-time:** Socket.io
-- **Database:** Turso — free, hosted, SQLite-compatible (libSQL), no credit card required. Used instead of a local SQLite file because Render's free tier has no persistent disk; same SQL, same schema. **Accessed through an embedded replica, not over the network (decided, new — see Database round-trips below).**
+- **Database:** Turso — free, hosted, SQLite-compatible (libSQL), no credit card required. Used instead of a local SQLite file because Render's free tier has no persistent disk; same SQL, same schema. **Accessed through an embedded replica with offline writes, so neither reads nor writes cross the network on the request path — the local file is the truth of the moment and the primary is an asynchronous copy of it, pushed every 10s (decided, new — see Database round-trips below).**
 - **Hosting:** Render — free web service tier, no credit card required. Supports WebSockets natively while active. Tradeoff: the free tier sleeps after inactivity, so the first connection after a quiet period takes ~30-60 seconds to wake up (a one-time delay at the start of a session, not an ongoing issue).
 - **Access:** one shared URL, no auth, no per-player restrictions
 - **Mobile:** installable PWA (manifest + service worker, see Mobile Readiness below); Playwright (`@playwright/test`) drives a 5-project mobile device matrix (`playwright.config.js`, `e2e-mobile/`) alongside the existing `node --test` server suite
@@ -170,8 +170,8 @@ resolving a fight Tic by Tic *is*. Collapsing it would mean threading one loaded
 every helper in the engine, which `CLAUDE.md` flags as the high-risk module, and it is not worth that
 for a cost the embedded replica has already removed: 140 local reads is not a number anybody can feel.
 
-**So the shape of the whole exercise is:** Phase 0 removed the cost, Phases 1–3 removed the waste.
-The remaining depth only matters again if the replica is ever turned off.
+**So the shape of Phases 0–3 is:** Phase 0 removed the cost of reads, Phases 1–3 removed the waste.
+**This was then measured against a live game and found to be only half the story — see Phase 5.**
 
 **Phase 4 — standing costs (shipped).** The costs nobody triggers, paid on every boot and every page
 load. `initDb` re-ran 148 awaited statements against a database that needed nothing done — ~65 reads
@@ -215,6 +215,64 @@ are fixed by `tableSql` answering from the snapshot **or** the pending queue —
 is exactly what the table is about to become. Verified by diffing `sqlite_master` and the seeded rows
 against the old `initDb`: identical on a fresh database, on repeat boots, and on three vintages of
 legacy database upgraded forward.
+
+**Phase 5 — writes go local too (shipped, and it corrects the four phases above).**
+
+**First, the correction, because it is the more useful half.** Phases 1–4 were steered by *trip
+counts*, measured against a local file where every statement is sub-millisecond, and then converted
+to wall time by multiplying by an assumed round-trip. That arithmetic assumes every trip costs the
+same. **It does not.** After Phase 0 a read costs approximately nothing and a write costs a full
+round trip — arguably two, since `readYourWrites` must pull the replication frame back before the
+next local read is correct. Counting reads and writes as one unit made a change that removed 34 reads
+and no writes look like progress. The round-trip time itself was never measured either; the report
+flagged it as unverified and then quoted wall times anyway.
+
+A live playtest after Phase 0 deployed settled it: **the delay dropped only slightly.** That is the
+ground truth the numbers could not see, and it says writes are what remain. Treat this as the
+standing lesson for any future performance work here: **counts are not latency, and a probe against a
+local file cannot tell you the difference. Measure the deployed thing, or measure reads and writes
+separately.**
+
+**The fix, which is the architecture the user proposed:** `offline: true` on the libSQL client. A
+write lands in the local replica immediately and is pushed to the primary by `db.sync()`, which
+`startSyncLoop` runs every ten seconds in the background. Reads were already local; now writes are
+too, and an action's cost stops depending on the network at all.
+
+- **Why it is safe here:** exactly one writer. Reconciling concurrent writers is the hard and
+  dangerous part of local-first, and Render's free tier runs a single instance — so the local file is
+  the truth of the moment and the primary is an asynchronous copy of it. This is the same property
+  that made Phase 0 safe, used harder.
+- **The accepted trade (decided, explicitly):** a crash costs up to one sync window. Losing the last
+  few seconds of a fight is cheaper than making every action of it wait. Worst case somebody re-rolls
+  a die.
+- **The real risk is not the ten seconds — it is a sync that fails quietly.** An expired token or a
+  network partition looks exactly like a healthy sync from inside the game: everything lands,
+  everything is fast, and nothing is wrong until Render recycles the container and takes the whole
+  unsynced backlog with it. So `syncOnce` counts failures rather than swallowing them, `syncHealth()`
+  reports staleness, and a health *change* is logged **and** broadcast as `db:sync_health`, which
+  `SyncHealthBanner` puts on screen in red. That alarm is the price of admission for this trade, not
+  a nicety. It is deliberately not dismissible — "offline" is self-correcting and everyone knows what
+  it means, while this is silent data loss in progress and the only fix is a human noticing.
+- **`SIGTERM` flushes before exit** (time-boxed to 5s). Render sends it before recycling a service,
+  which turns the common planned case — a redeploy, a free-tier spin-down — from "lose up to one
+  window" into "lose nothing".
+- **libSQL's own `syncInterval` is deliberately unused.** Its timer swallows the result, and an alarm
+  that cannot see a failure is not an alarm.
+
+**What this does not fix.** The remaining wait is the browser↔Render hop: the click travels to the
+server and the broadcast travels back, roughly 100–200ms depending on region, and no database change
+touches it. If the game still feels laggy after this, that hop is the culprit and **optimistic UI is
+the answer to it** — the client applying the change immediately and reconciling on the broadcast.
+That is the next thing to try, and deliberately not bundled in here.
+
+**Verification is honest about its limit.** `offline: true` only activates with a real `syncUrl`, and
+development runs against a plain local file, so **the offline path cannot be exercised outside the
+deploy at all**. What *is* pinned locally (`server/test/dbConfig.test.js`) is the one failure that
+would otherwise be invisible: that the flag survives the vendor's own config expansion and reaches
+the driver. If it were ever dropped upstream, every write would silently go back to costing a round
+trip, every test would still pass, and the only symptom would be a game that feels slow again.
+Turso's own documentation calls the offline-sync story beta — that, rather than the ten seconds, is
+the standing risk to watch.
 
 ## Game mechanic — Dice Pools (Core Stats tab)
 Each character has 3 fixed dice pools, always the same slot names for every character:
@@ -1590,6 +1648,7 @@ When a character is created, auto-generate its 8 `dice` rows (2 head + 4 core + 
 - `move:grant` / `move:revoke` (client [GM] → server): `{ characterId, moveId }` — inserts/deletes a `character_moves` row (the drag-and-drop from the compendium). Grant is refused server-side when the move has a style and the character has no stance containing it (learnability rule). Broadcasts `move:granted` / `move:revoked`
 - `roleplay:save_answer` / `roleplay:add_question` / `roleplay:update_entry` / `roleplay:delete_question` (client → server): `{ characterId, question, answer }` (upserts a canonical-question answer) / `{ characterId, question }` (custom, capped at 20 per character) / `{ entryId, question, answer }` (question editable only on custom rows) / `{ entryId }` (custom rows only) — all broadcast `roleplay:updated` `{ characterId, entries }`
 - `combat:next_round` (client [GM] → server) — a no-op unless already in `tic_countdown` phase or the fight hasn't started yet (`phase` null), and at least one character is seated. Increments `round_number`, sets `current_tic` and `round_start_tic` together to `computeNextRoundStartTic({ phase, currentTic, roundStartTic, roundLength })` — `current_tic` itself for the very first round (`phase` null), otherwise `max(current_tic, round_start_tic + round_length)` so the new round's window can never overlap the previous round's own Tics even if the Tic Countdown was never (or only partially) stepped through (bugfix — see the Declaration Phase bullet above). **Stamina Regen (decided, new rule):** on every round *except* the first (`phase` was already non-null, i.e. this isn't the Start Combat full-restore below), rolls each seated character's Stamina die at its current size/bonus, adds the result to `current_stamina` (clamped to `max_stamina`), broadcasts `character:updated`, and logs each as a normal roll (`logRoll`, same shape `stamina:regen` already uses) — automatic, for every seated character at once, not just whoever presses the manual button. Also rolls the Brain die for every seated participant with an active Brain die — modifier = that character's own Reasons to Fight bonus minus `computeInitiativeOverflowPenalty` for any move-footprint overflow they're still carrying into this round (see the Declaration Phase's Initiative bullet above for both; the real modifier is now passed to `logRoll` so the Chat Log breakdown attributes it correctly instead of folding it into the raw die face — bugfix) — logged to `chat_log` as normal initiative rolls, same `logRoll` path as any other roll (an incapacitated/missing Brain die is silently dropped from its side's initiative, same as `pool:roll` drops incapacitated dice elsewhere), sets `phase = 'declaration'`, resets every seated character's `declared_this_round` to 0, then — **per pair (revised, combat redesign)** — for each `pair_index` that has participants, resolves that pair's own per-side initiative from just its own seated characters' Brain rolls plus current/locked Brain value and active-stance Speed (for the tie-break cascade — see the Initiative ties bullet above) via `resolveSideInitiative` (see `server/combatTiming.js`) and (re)inserts its `combat_pairs` row with `declaring_side` set to the losing side (or the only side, if the pair has just one); the whole `combat_pairs` table is cleared and rebuilt fresh each call. Broadcasts `combat:updated`.
+- `db:sync_health` (server → client): `{ mode, healthy, everySeconds, lastSyncedAt, staleSeconds, consecutiveFailures, lastError }` — **only ever emitted on a health *change*, and to a newly-connected socket only when already unhealthy.** A healthy sync is silent, because an alarm that fires routinely gets ignored and this one has exactly one job. The server writes locally and pushes to the primary every 10s (see Database round-trips, Phase 5); a push that starts failing is invisible from inside the game — everything lands, everything is fast — until the container recycles and takes the unsynced backlog with it. `SyncHealthBanner` renders this as a red, non-dismissible banner. `healthy` deliberately stays true through a short run of failures (a single flaky cycle is noise) and flips only once the staleness passes ~6 sync windows.
 - `identity:set` (client → server): `{ role: 'gm' }` or `{ role: 'player', characterId }` — sets `socket.data.identity` for this connection (validated: a `player` identity's `characterId` must resolve to a real character, otherwise it's dropped to `null`/unidentified). Drives declared-move visibility (see Combat Timing's identity-based reveal rule); sent once from the Role Modal on pick, and re-sent on every reconnect (roleContext.jsx) since identity lives only in memory per-connection, not persisted. No broadcast — this only affects what *this* socket receives afterward. **The server answers it with a fresh `combat:updated` addressed to that socket alone** (`emitCombatUpdatedTo`): identity is the one moment the server reliably hears "someone is back", and a *paused* pair emits nothing further of its own accord, so without this a client that was away when a pause was raised had nothing coming and no reason to ask. See *Pause delivery*.
 - `move:declare` (client → server): `{ characterId, moveId, placementTic?, appendageChoice? }` — open access, same trust model as any other roll/declare in this app (declaring for a character isn't restricted to whoever's logged in as them — visibility is what's identity-gated, not the action itself). A no-op unless: `phase` is `'declaration'`; the character hasn't already pressed **Done Declaring** this round (`declared_this_round = 0`); their own `combat_pairs` row (keyed by their `pair_index`) has `declaring_side` matching their own `side` (**revised, combat redesign** — was a single arena-wide `declaring_side` check; now scoped to that character's own pair, so other pairs can be mid-Declaration independently — see Combat Timing above); the move is actually available to them (Default, or granted); if the move has a style, the character's **active** stance carries it (same learnability rule Tab 3 already dims by — checked against the active stance specifically, not "any stance" like `move:grant`'s rule); it's affordable — `current_stamina` minus every other move this character already has pending (not yet committed) this Declaration Phase, minus this move's own `stamina_cost`, must not go below 0 (see Stamina Cost above); and, if the move is ambiguous (`right_tell_id`/`left_tell_id` both set), `appendageChoice` is exactly `'left'` or `'right'` (see the Declaration Phase's Ambiguous moves bullet above) — for a non-ambiguous move, `appendageChoice` is simply ignored/stored as `null` even if one was sent. Computes the legal minimum Tic (`computePlacementTic` — the round's start Tic, or this character's own last-declared move's **full footprint end**, `reveal_tic + active_tics + recovery_tics`, if later, even from a previous round — **revised**, was Startup/reveal-only, see Combat Timing above for why); the "last-declared move" lookup joins `moves` to compute and order by that full-footprint end rather than raw `reveal_tic`. `placementTic`, if supplied (the drag-and-drop declare picker's drop Tic — see Combat Timing above), is used as-is when it's at or after that minimum, otherwise it's clamped up to the minimum instead of being rejected — omitting it entirely also just uses the minimum, so older/simpler callers keep working. `reveal_tic` (`computeMoveFootprint`, Startup-only) is computed from the resulting `placement_tic`, and a `declared_moves` row (including `appendage_choice`) is inserted. **Attack Target (Change 001, decided, new):** the same insert also snapshots `effective_attack_targets` — the move's current `attack_targets` expanded via `expandAttackTargets` using this declaration's own `appendageChoice` (both sides if the move has no ambiguous slot, or `appendageChoice` is null) — and `attack_target_source = 'move'`; written regardless of whether the move even has a Roll, since a Roll-less move simply never enters the damage/defense flow that reads it. Broadcasts `combat:updated` (see below — every connected socket gets its own tailored view based on its identity, computed fresh from the same DB rows); every viewer's `declaredMoves` entry always carries `appendageChoice` (and `tellId`/`rightTellId`/`leftTellId`), never withheld — only `moveId`/`moveName`/`staminaCost` are identity-gated.
 - `move:undeclare` (client → server): `{ declaredMoveId }` — open access, same trust model as `move:declare`. A no-op unless the row exists, `phase === 'declaration'`, and `stamina_committed = 0` (i.e. that character hasn't pressed **Done Declaring** yet — see Cancelling a declared move above). Deletes the `declared_moves` row outright, and clears `feint_masked` on whatever this character had placed at the deleted move's own footprint end — taking a **Feint** back has to take its concealment back too (see the Feint Tag under Tags & automation). Broadcasts `combat:updated`.

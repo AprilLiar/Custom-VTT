@@ -4,7 +4,10 @@ import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { createServer } from 'node:http';
 import { Server } from 'socket.io';
-import { db, all, one, run, readMany, writeMany, initDb, syncReplica } from './db.js';
+import {
+  db, all, one, run, readMany, writeMany, initDb,
+  syncReplica, syncOnce, syncHealth, startSyncLoop, replicaMode, SYNC_SECONDS,
+} from './db.js';
 import {
   advancePairResolution,
   resolveDodge,
@@ -1776,6 +1779,13 @@ const GM_CHAT_SENTINEL_ID = 0;
 let lastDamageChange = null; // { dieId, current_size, bonus, status, half_damage } | null
 
 io.on('connection', (socket) => {
+  // A client joining while the push to the primary is already failing has to
+  // find out now, not at the next state change — the alarm exists precisely
+  // for the case where nothing else is happening. Only sent when there is
+  // something to say; a healthy sync is silent.
+  const health = syncHealth();
+  if (!health.healthy) socket.emit('db:sync_health', health);
+
   const on = (event, handler) => {
     socket.on(event, async (payload) => {
       try {
@@ -4705,8 +4715,52 @@ try {
 console.log(
   syncMs == null
     ? 'Database: local file (no replica)'
-    : `Database: embedded replica, synced from the primary in ${syncMs}ms — reads are local`
+    : `Database: embedded replica with offline writes, synced from the primary in ${syncMs}ms — ` +
+      `reads AND writes are local, pushed every ${SYNC_SECONDS}s`
 );
+
+// **The alarm (Phase 5).** Offline writes bound a crash to one sync window
+// *only while the push is actually succeeding*. A sync that starts failing
+// quietly — expired token, network partition — looks exactly like a sync that
+// is working, right up until Render recycles the container and takes the whole
+// unsynced backlog with it. So a health *change* is announced in both
+// directions: it goes to the server log, and to every connected client, which
+// puts it in front of the one person who can do something about it.
+if (
+  startSyncLoop((health) => {
+    if (health.healthy) {
+      console.log(`Database: sync to the primary recovered after ${health.consecutiveFailures} failure(s)`);
+    } else {
+      console.error(
+        `Database: NOT syncing to the primary — ${health.consecutiveFailures} consecutive failures, ` +
+          `last success ${health.staleSeconds ?? 'never'}s ago. Local writes are accumulating and ` +
+          `will be LOST if this container restarts. Last error: ${health.lastError}`
+      );
+    }
+    io.emit('db:sync_health', health);
+  })
+) {
+  // Render sends SIGTERM before recycling a service, which is the one moment a
+  // final push is both possible and worth the most — it turns the common,
+  // planned case (a redeploy, a free-tier spin-down) from "lose up to one
+  // window" into "lose nothing". Best effort and time-boxed: a shutdown that
+  // hangs waiting on an unreachable primary is worse than one that gives up.
+  let shuttingDown = false;
+  const flushAndExit = async (signal) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`${signal} received — pushing unsynced writes to the primary before exit`);
+    try {
+      await Promise.race([syncOnce(), new Promise((r) => setTimeout(r, 5000))]);
+      console.log('Final sync complete');
+    } catch (err) {
+      console.error('Final sync failed; the last writes may be lost:', err);
+    }
+    process.exit(0);
+  };
+  process.on('SIGTERM', () => flushAndExit('SIGTERM'));
+  process.on('SIGINT', () => flushAndExit('SIGINT'));
+}
 
 await initDb();
 // Chat is intentionally ephemeral — see chat:clear below — and clearing it
