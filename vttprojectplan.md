@@ -259,6 +259,36 @@ too, and an action's cost stops depending on the network at all.
 - **libSQL's own `syncInterval` is deliberately unused.** Its timer swallows the result, and an alarm
   that cannot see a failure is not an alarm.
 
+**Phase 5.1 — the sync loop was blocking the event loop (bugfix, shipped).** Phase 5 broke the Arena
+in production: it hung on "Loading…" forever while every other page stayed fast.
+
+**The whole libSQL binding is synchronous.** Every symbol it exports is `*Sync` — better-sqlite3
+lineage — and `db.sync()` is `databaseSyncSync`, which does **network I/O on the calling thread**.
+(`createClient` proves it: given a `syncUrl` the constructor itself performs a blocking `PullDb` and
+throws if the primary rejects it.) For local statements that costs microseconds and is exactly why
+this app is fast; for a sync it means Node serves *nothing* until it returns.
+
+Phase 0 called it once at boot, where a stall is harmless. Phase 5 put it on a ten-second timer,
+turning a boot-time cost into a permanent one. Why the **Arena** specifically: a page needing one
+request slips between the stalls, but the Arena fires five requests plus a move query per fighter and
+re-runs that on a dozen different events, so it is overwhelmingly the most likely thing to be caught
+— and if it never completes a full set, it never leaves its loading gate (`combat`, `roster`,
+`folders`, `tells`), which is precisely the reported symptom.
+
+The fix is **not** to sync less often — that trades durability for latency, the wrong way round. The
+loop now notices what it costs: every sync is timed, a slow one widens the interval (capped at 2% of
+wall-clock, and at 5 minutes absolute), a failure backs off exponentially rather than hammering a
+blocking call into an unreachable primary once a cycle, and the duration is logged. The boot sync and
+the `SIGTERM` flush stay blocking and unthrottled on purpose — at both moments there is nothing else
+to serve. `GET /api/health` now reports `sync` so the deployed state can be read from outside;
+`server/test/dbConfig.test.js` pins the schedule, since both cases it exists for need a real primary
+and can never be reproduced locally.
+
+**The standing lesson, and it is the same one as Phase 5's.** A native module whose every export ends
+in `Sync` is telling you it blocks. That is free for local work and ruinous for anything that touches
+the network, and the difference is invisible in development — where `usingRemote` is false and the
+sync path never runs at all. **Check what blocks before putting it on a timer.**
+
 **What this does not fix.** The remaining wait is the browser↔Render hop: the click travels to the
 server and the broadcast travels back, roughly 100–200ms depending on region, and no database change
 touches it. If the game still feels laggy after this, that hop is the culprit and **optimistic UI is

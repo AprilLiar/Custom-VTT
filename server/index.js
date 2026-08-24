@@ -1160,8 +1160,19 @@ const wrap = (fn) => (req, res) =>
 
 app.get('/api/health', async (_req, res) => {
   try {
+    const started = Date.now();
     await db.execute('SELECT 1');
-    res.json({ ok: true, db: 'connected' });
+    // The sync half is the part worth being able to read from outside. It is
+    // the one thing about this deployment that cannot be reproduced locally
+    // (offline writes need a real syncUrl), and `lastSyncMs` doubles as the
+    // length of time the server answers nothing, because `db.sync()` blocks the
+    // event loop — see the note above the sync loop in db.js.
+    res.json({
+      ok: true,
+      db: 'connected',
+      readMs: Date.now() - started,
+      sync: syncHealth(),
+    });
   } catch (err) {
     res.status(500).json({ ok: false, db: 'error', message: err.message });
   }
@@ -4726,6 +4737,7 @@ console.log(
 // unsynced backlog with it. So a health *change* is announced in both
 // directions: it goes to the server log, and to every connected client, which
 // puts it in front of the one person who can do something about it.
+let syncsLogged = 0;
 if (
   startSyncLoop((health) => {
     if (health.healthy) {
@@ -4738,6 +4750,21 @@ if (
       );
     }
     io.emit('db:sync_health', health);
+  },
+  (health) => {
+    // How long a real sync against the real primary costs was the one number
+    // this could not be reasoned about without — `db.sync()` blocks the event
+    // loop for exactly this long, so it is also the length of time the server
+    // answers nothing. Logged for the first few, then only when it is slow
+    // enough to have widened the interval, so a healthy server stays quiet.
+    const slow = health.nextInSeconds > health.everySeconds;
+    if (syncsLogged < 5 || slow) {
+      syncsLogged += 1;
+      console.log(
+        `Database: sync took ${health.lastSyncMs}ms` +
+          (slow ? ` — slow, so the next one is in ${health.nextInSeconds}s instead of ${health.everySeconds}s` : '')
+      );
+    }
   })
 ) {
   // Render sends SIGTERM before recycling a service, which is the one moment a

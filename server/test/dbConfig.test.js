@@ -80,3 +80,53 @@ test('the sync window is ten seconds, and local mode reports itself healthy', ()
   // push and nothing that can be unhealthy.
   assert.deepEqual(syncHealth(), { mode: 'local-file', healthy: true });
 });
+
+// --- the sync cadence (bugfix: Phase 5 shipped this blocking the event loop) --
+//
+// `db.sync()` is `databaseSyncSync` — the whole libSQL binding is synchronous,
+// so a sync does network I/O *on the event loop* and the server answers nothing
+// for its duration. Phase 5 put that on a fixed ten-second timer, which is fine
+// while syncs are fast and pathological when they are not: a slow or failing
+// sync stalls the server every ten seconds forever. The heaviest page in the
+// app never finished loading.
+//
+// These pin the adaptive schedule that replaced it, because both cases it
+// exists for — a slow sync and a failing one — need a real primary to
+// reproduce and so can never be covered end to end here.
+const { nextSyncDelayMs } = await import('../db.js');
+
+test('a fast sync keeps the full ten-second cadence', () => {
+  assert.equal(nextSyncDelayMs({ failures: 0, lastMs: 0 }), 10_000);
+  assert.equal(nextSyncDelayMs({ failures: 0, lastMs: 50 }), 10_000);
+  // 200ms against a 10s cycle is 2% — right at the ceiling, still no widening.
+  assert.equal(nextSyncDelayMs({ failures: 0, lastMs: 200 }), 10_000);
+});
+
+test('a slow sync widens the interval so it cannot stall the server repeatedly', () => {
+  // A sync that blocks for a full second must not run every ten: at 2% duty
+  // that earns a 50-second gap.
+  assert.equal(nextSyncDelayMs({ failures: 0, lastMs: 1_000 }), 50_000);
+  assert.equal(nextSyncDelayMs({ failures: 0, lastMs: 4_000 }), 200_000);
+});
+
+test('the widening is capped, so a sync still happens eventually', () => {
+  // Durability is the point of the loop; backing off forever would quietly
+  // stop pushing, which is worse than being slow.
+  assert.equal(nextSyncDelayMs({ failures: 0, lastMs: 60_000 }), 5 * 60_000);
+});
+
+test('failures back off hardest, and stop hammering an unreachable primary', () => {
+  assert.equal(nextSyncDelayMs({ failures: 1, lastMs: 30_000 }), 20_000);
+  assert.equal(nextSyncDelayMs({ failures: 2, lastMs: 30_000 }), 40_000);
+  assert.equal(nextSyncDelayMs({ failures: 4, lastMs: 30_000 }), 160_000);
+  // Capped, and reached quickly: a blocking call into a dead primary is the
+  // single most expensive thing this loop can do.
+  assert.equal(nextSyncDelayMs({ failures: 6, lastMs: 30_000 }), 5 * 60_000);
+  assert.equal(nextSyncDelayMs({ failures: 99, lastMs: 30_000 }), 5 * 60_000);
+});
+
+test('a failing sync backs off on failure count, not on how long it took', () => {
+  // Both of these have failed once; the duration must not soften the backoff.
+  assert.equal(nextSyncDelayMs({ failures: 1, lastMs: 1 }), 20_000);
+  assert.equal(nextSyncDelayMs({ failures: 1, lastMs: 100_000 }), 20_000);
+});
