@@ -666,6 +666,11 @@ async function runAutomations(io, {
         // 'startup' | 'in-flight' | 'idle' — what they were caught doing.
         phase: plan.phase,
         affectedDeclaredMoveId: plan.affectedMoveId,
+        // Whether the frames that landed are Trip Recovery. Only meaningful on
+        // the in-flight case — the other two produce no frames at all (see
+        // planImposedRecovery) — so the client folds it in only there, and a
+        // replay draws the arrows exactly where the live round did.
+        trip: Boolean(trip),
         // Ids and a Tic count only. Deliberately NOT the new Active/Recovery
         // ends: a still-unrevealed move's frame lengths are secret, and a
         // round_event is replayed to everyone. "This move moved N Tics later"
@@ -3536,7 +3541,7 @@ async function processTic(io, { pairIndex, tic, emitEvent, resolutionId }) {
     // which by then describes a completely different round).
     const revealRows = await all(
       `SELECT dm.id, dm.character_id, dm.move_id, dm.placement_tic, dm.reveal_tic,
-              dm.recovery_extension_tics, dm.appendage_choice,
+              dm.recovery_extension_tics, dm.trip_recovery_tics, dm.appendage_choice,
               m.name AS move_name, m.startup_tics, m.active_tics, m.recovery_tics,
               m.defense_frame_positions,
               m.image_data AS move_image_data, m.image_mime_type AS move_image_mime_type,
@@ -3572,6 +3577,11 @@ async function processTic(io, { pairIndex, tic, emitEvent, resolutionId }) {
         revealTic: r.reveal_tic,
         activeEndTic,
         recoveryEndTic: activeEndTic + r.recovery_tics + (r.recovery_extension_tics ?? 0),
+        // Usually 0 here — a trip lands mid-round, after this move has already
+        // revealed, and arrives as a delta on `moves_displaced` instead. It is
+        // carried anyway for a move tripped *before* it came out, and because a
+        // stored replay has to be self-contained.
+        tripRecoveryTics: r.trip_recovery_tics ?? 0,
         defenseFramePositions: JSON.parse(r.defense_frame_positions ?? '[]'),
       });
       await postMoveReveal(io, r);
@@ -4293,7 +4303,7 @@ async function resolvePairRound(pairIndex, io) {
   if (isNewResolution) {
     const carried = await all(
       `SELECT dm.id, dm.character_id, dm.move_id, dm.placement_tic, dm.reveal_tic,
-              dm.recovery_extension_tics, dm.appendage_choice,
+              dm.recovery_extension_tics, dm.trip_recovery_tics, dm.appendage_choice,
               m.name AS move_name, m.startup_tics, m.active_tics, m.recovery_tics,
               m.defense_frame_positions,
               m.image_data AS move_image_data, m.image_mime_type AS move_image_mime_type,
@@ -4326,6 +4336,11 @@ async function resolvePairRound(pairIndex, io) {
         revealTic: r.reveal_tic,
         activeEndTic,
         recoveryEndTic: activeEndTic + r.recovery_tics + (r.recovery_extension_tics ?? 0),
+        // A move that crossed the round boundary can be lying in trip frames
+        // — that is precisely the case the Arena's carried-over lanes draw —
+        // so the cutscene has to be told, or the same Tics render as ordinary
+        // Recovery in the replay and as a trip on the board.
+        tripRecoveryTics: r.trip_recovery_tics ?? 0,
         defenseFramePositions: JSON.parse(r.defense_frame_positions ?? '[]'),
       });
     }

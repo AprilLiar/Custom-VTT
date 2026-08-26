@@ -753,6 +753,37 @@ The Tic Countdown is still, underneath, a single **global counter that never res
    - **`defense_success`** / **`defense_failure`** fire on the **defender's own move** (the two triggers `is_defensive` gates in the Move Creator), from `combat:resolve_defense`'s Successful/Failed branches respectively — self = defender, opponent = attacker. Deliberately **unguarded** (no `interactions_resolved` check): a defensive move can legitimately defend more than once, so `combat:resolve_defense` firing again for the same defending move fires its defense trigger again too, same as the roll/chat notice it already produces each time.
    - **`self_recovery`/`opponent_recovery` are applied to the CLOCK, not to a row (decided, revised — see "Recovery lands on the timeline" below).** They originally bumped one declared move's `recovery_extension_tics` via `clampRecoveryExtension` and nothing on the board moved; `opponent_recovery` even had a "whichever of their declared moves ends latest" fallback for `miss`, which has no specific opponent move tied to the exchange. Both are gone. The effect now asks what that character is doing at the Tic it fires on and puts the frames there, sliding everything they had declared after it. `clampRecoveryExtension` survives for exactly one case: a **negative** `self_recovery`, which shortens a window rather than displacing anything. **`self_stamina`/`opponent_stamina`** both reuse the existing `adjustStamina` helper (sub-phase 3's Forfeit/Interrupt refund plumbing).
 
+**Carried-over frames are lanes now, not an edge stripe (decided, revised; implemented).** The Tic
+Counter used to signal a move carrying over from last round as a 1.5px strip across the top of a Tic
+square, split between up to three characters, with the identity available only on hover. It said
+"somebody is still busy here" and almost nothing else — not who, not how many, and a Trip Recovery
+frame was indistinguishable from an ordinary one.
+
+- **One lane per character**, portrait and name plus a **full-size square per Tic** in the round's own
+  colours, arrows and all. Filled, not edged: the whole complaint about the stripe was that it read as
+  decoration on somebody else's square rather than as a thing occupying a Tic.
+- **Players above the strip, NPCs below** — the cutscene's own convention, reused rather than
+  reinvented, because the Arena and the cutscene are the same board.
+- **One scroll container holds every row**, which is what keeps a lane's square aligned with the Tic
+  above it however far the strip is scrolled. Identity sits on its own line rather than beside the
+  row for the same reason: a left-hand label would either scroll out of view or push every square out
+  of alignment, and alignment is the entire point. Above the row for a lane above the counter, below
+  it for one below, so the name always reads away from the strip.
+- **The compact header-bar counter keeps the old stripe** — it is an always-visible strip with no room
+  for four extra rows. Only the Arena's own counter takes lanes, and the two signals are never drawn
+  at once.
+
+**Two bugs found by looking at it, both of which had shipped.** `phaseAt` was being called for the
+carried-over frames **without `tripRecoveryTics`**, so every carried trip frame classified as ordinary
+Recovery. And worse: **the cutscene never received the data at all.** `moves_displaced` carried no
+`trip` flag and `reveal`/`carryover` carried no `tripRecoveryTics`, because two payload edits were
+silently lost when an earlier scripted edit aborted on a failed assertion — so the replay drew every
+trip frame as ordinary Recovery and the arrow never appeared anywhere. The trip playtest passed
+throughout, because it asserted the DB column and the REST payload and never the round events.
+**Two channels carry this fact and testing one of them is testing half the feature**; the playtest now
+asserts both. The arrow itself was also 9px of `blue-200/90` on a `blue-800` cell — present, and
+invisible at any normal viewing distance, which is the same as absent.
+
 **Move filters on the declare picker (decided, new; implemented).** The Arena's Declaration screen now
 carries the same Tell/Tag filters the character sheet has — **Tag on the left, Tell on the right**, on
 their own row under the default/unique tabs. Mid-round is exactly when "which of these opens with the

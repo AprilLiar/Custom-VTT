@@ -133,6 +133,33 @@ const chat = await jf('/api/chat');
 const said = chat.some((c) => typeof c.message === 'string' && /Trip Recovery/.test(c.message));
 check('the Chat Log calls it Trip Recovery by name', said);
 
+// **The cutscene's own channel, which the first version of this file never
+// checked.** It asserted the DB column and the REST payload and passed — while
+// `moves_displaced` carried no `trip` flag and `reveal`/`carryover` carried no
+// `tripRecoveryTics` at all, so the replay drew every trip frame as ordinary
+// Recovery and the down arrow never appeared anywhere. Two channels carry this
+// fact and testing one of them is testing half the feature.
+const events = await all(
+  "SELECT type, payload FROM round_events WHERE type IN ('moves_displaced','reveal','carryover') ORDER BY seq"
+);
+const displaced = events
+  .filter((e) => e.type === 'moves_displaced')
+  .map((e) => JSON.parse(e.payload))
+  .find((p) => p.phase === 'in-flight');
+check(
+  'the moves_displaced event tells the cutscene this was a trip',
+  displaced?.trip === true,
+  JSON.stringify(displaced ?? null)
+);
+const footprintEvents = events
+  .filter((e) => e.type === 'reveal' || e.type === 'carryover')
+  .map((e) => JSON.parse(e.payload));
+check(
+  'every cutscene footprint payload carries tripRecoveryTics',
+  footprintEvents.length > 0 && footprintEvents.every((p) => p.tripRecoveryTics !== undefined),
+  JSON.stringify(footprintEvents.map((p) => [p.declaredMoveId, p.tripRecoveryTics]))
+);
+
 const snapshot = await jf('/api/combat?role=gm');
 const dashDeclared = (snapshot.declaredMoves ?? []).find((d) => d.id === dashRow?.id);
 check('the combat payload carries tripRecoveryTics for the client', dashDeclared?.tripRecoveryTics === 3, JSON.stringify(dashDeclared ?? null));

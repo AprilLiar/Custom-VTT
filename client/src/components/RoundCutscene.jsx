@@ -1283,7 +1283,13 @@ function MoveBar({ fp, ticks, startTic, effect, beat, staminaFlash }) {
               {!dead && isTripTic(fp, tic) && (
                 <span
                   aria-hidden="true"
-                  className="pointer-events-none absolute inset-0 flex items-center justify-center text-[9px] font-bold leading-none text-blue-200/90 md:text-[11px]"
+                  // Sized to be read, not to be technically present. The first
+                  // version was 9px of blue-200 at 90% over a blue-800 cell —
+                  // there, and invisible at any normal viewing distance, which
+                  // is the same as not being there. Trip Recovery shares the
+                  // blue family with ordinary Recovery on purpose, so this
+                  // glyph is the entire distinction and has to win its cell.
+                  className="pointer-events-none absolute inset-0 flex items-center justify-center font-display text-sm font-bold leading-none text-white drop-shadow-[0_1px_1px_rgba(0,0,0,0.9)] md:text-base"
                 >
                   {TRIP_MARK}
                 </span>

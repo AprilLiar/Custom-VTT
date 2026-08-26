@@ -31,7 +31,10 @@ import { dieLabel, tintFor, POOLS } from '../lib/dice.js';
 import { ANATOMY } from '../lib/anatomy.js';
 import { buildFolderTree } from '../lib/folders.js';
 import { countRollSlot } from '../lib/diceSlots.js';
-import { FRAME_PHASES, PHASE_BG, PHASE_LABEL, PHASE_ZONE, phaseBgAt, phaseAt } from '../lib/framePhaseColors.js';
+import {
+  FRAME_PHASES, PHASE_BG, PHASE_LABEL, PHASE_ZONE, TRIP_MARK,
+  phaseBgAt, phaseAt, isTripTic,
+} from '../lib/framePhaseColors.js';
 import { MoveFilterChips, useMoveFilters } from '../lib/moveFilters.jsx';
 import RoundCutscene from './RoundCutscene.jsx';
 import DamageApplicationDialog from './DamageApplicationDialog.jsx';
@@ -687,6 +690,80 @@ export function TicSquare({
 // `label` overrides the default "Drag a move here to declare"/"Tic Counter"
 // caption: the header has no move source to drag from (no roster/declare
 // picker lives there), so it always passes a fixed "Tic Counter" instead.
+// One character's carried-over frames, aligned square-for-square with the Tic
+// Counter it sits against.
+//
+// The squares are the counter's own size and shape (`TIC_SQUARE_SIZE` +
+// `panel-cut`) and are **filled**, not edged: the whole complaint about the old
+// stripe was that it read as decoration on somebody else's square rather than
+// as a thing occupying a Tic. A filled square the same size as the Tic above it
+// says "this Tic is spoken for" without needing a legend.
+//
+// Identity goes on its own line rather than beside the row, because the counter
+// scrolls horizontally: a left-hand label would either scroll out of view or
+// push every square out of alignment with the Tic above it, and alignment is
+// the entire point. Above the row for a lane that sits above the counter, below
+// it for one that sits below — so the name is always on the outside, reading
+// away from the strip.
+function CarriedFrameLane({ lane, squares, position }) {
+  const initial = lane.name.slice(0, 1).toUpperCase();
+  const caption = (
+    <div className={`flex items-center gap-1.5 ${position === 'above' ? 'pb-0.5' : 'pt-0.5'}`}>
+      {lane.imageData ? (
+        <img
+          src={`data:${lane.imageMimeType ?? 'image/jpeg'};base64,${lane.imageData}`}
+          alt=""
+          className="h-5 w-5 shrink-0 panel-cut-sm object-cover"
+        />
+      ) : (
+        <span className="flex h-5 w-5 shrink-0 items-center justify-center panel-cut-sm bg-zinc-800 font-display text-[10px] text-zinc-500">
+          {initial}
+        </span>
+      )}
+      <span className="font-display text-[10px] uppercase tracking-wide text-zinc-400">
+        {lane.name}
+      </span>
+      <span className="text-[9px] text-zinc-600">carried over</span>
+    </div>
+  );
+  const row = (
+    <div className="flex flex-nowrap items-center gap-1.5">
+      {squares.map((sq) => {
+        const cell = lane.byTic.get(sq.absoluteTic);
+        return (
+          <span
+            key={sq.absoluteTic}
+            title={
+              cell
+                ? `${lane.name} — ${PHASE_LABEL[cell.phase] ?? cell.phase}, carried over from last round`
+                : undefined
+            }
+            className={`relative flex ${TIC_SQUARE_SIZE} shrink-0 items-center justify-center panel-cut ${
+              cell ? PHASE_BG[cell.phase] ?? 'bg-zinc-500' : 'border border-zinc-800/60 bg-zinc-900/20'
+            }`}
+          >
+            {cell?.trip && (
+              // The arrow, at a size somebody can actually read. Trip Recovery
+              // is deliberately the same blue family as ordinary Recovery — it
+              // IS Recovery, spent on the floor — so the arrow, not the shade,
+              // is what has to carry the difference.
+              <span aria-hidden="true" className="font-display text-lg font-bold leading-none text-blue-100">
+                {TRIP_MARK}
+              </span>
+            )}
+          </span>
+        );
+      })}
+    </div>
+  );
+  return (
+    <div className="flex flex-col">
+      {position === 'above' ? caption : row}
+      {position === 'above' ? row : caption}
+    </div>
+  );
+}
+
 export function TicCounterCentral({
   pairIndex, // Combat Automation overhaul: which pair's own independent round/phase/Tic clock this instance is showing.
   phase,
@@ -701,6 +778,10 @@ export function TicCounterCentral({
   declaredMoves,
   showDeclaredPreview,
   overflowTics,
+  // Per-character carried-over frame lanes. Only the Arena's own counter
+  // passes them: the header-bar copy is a compact always-visible strip with no
+  // room for four extra rows, and keeps the old edge stripe instead.
+  carriedLanes,
   attackStarts, // Attack telegraph: Map<absoluteTic, marks> — built by the caller (see attackStartsByTic), like overflowTics
   linkAttackStarts, // only the Arena's own counter has Tell cards on screen to draw a connector to
   role,
@@ -784,8 +865,19 @@ export function TicCounterCentral({
           rather than as a scroll hint. The padding gives the fade its own
           empty space to happen in. */}
       <div
-        className="flex max-w-full flex-nowrap items-center gap-1.5 overflow-x-auto overscroll-x-contain px-4 py-1 [mask-image:linear-gradient(to_right,transparent,black_16px,black_calc(100%-16px),transparent)]"
+        className="flex max-w-full flex-col overflow-x-auto overscroll-x-contain px-4 py-1 [mask-image:linear-gradient(to_right,transparent,black_16px,black_calc(100%-16px),transparent)]"
       >
+        {/* Players above, NPCs below — the cutscene's own convention, so the
+            two views of the same board read the same way round. One scroll
+            container holds every row, which is what keeps a lane's squares
+            aligned with the Tic above them no matter how far the strip is
+            scrolled. */}
+        {(carriedLanes ?? [])
+          .filter((lane) => !lane.isNpc)
+          .map((lane) => (
+            <CarriedFrameLane key={lane.characterId} lane={lane} squares={squares} position="above" />
+          ))}
+        <div className="flex flex-nowrap items-center gap-1.5">
         {squares.map((sq, i) => {
           // A pending tap-to-declare placement (see onTapPlace) makes every
           // square a valid destination.
@@ -799,7 +891,10 @@ export function TicCounterCentral({
               declaredPhases={
                 showDeclaredPreview ? declaredPhasesAt(sq.absoluteTic, declaredMoves) : undefined
               }
-              overflowNames={overflowTics.get(sq.absoluteTic)}
+              // Suppressed once lanes are present: the lane already says who
+              // is busy and for how long, and drawing both is two answers to
+              // one question.
+              overflowNames={carriedLanes?.length ? undefined : overflowTics.get(sq.absoluteTic)}
               attackStarts={attackStarts?.get(sq.absoluteTic)}
               linkAnchor={linkAttackStarts}
               onDragOver={
@@ -850,6 +945,12 @@ export function TicCounterCentral({
             </div>
           </div>
         )}
+        </div>
+        {(carriedLanes ?? [])
+          .filter((lane) => lane.isNpc)
+          .map((lane) => (
+            <CarriedFrameLane key={lane.characterId} lane={lane} squares={squares} position="below" />
+          ))}
       </div>
       {showDeclaredPreview && (
         <div className="flex flex-wrap items-center justify-center gap-2 text-[9px] text-zinc-600">
@@ -863,7 +964,7 @@ export function TicCounterCentral({
           <span>— your declared moves this round</span>
         </div>
       )}
-      {overflowTics.size > 0 && (
+      {overflowTics.size > 0 && !carriedLanes?.length && (
         <div className="flex items-center gap-1 text-[9px] text-zinc-600">
           <span className="flex h-1.5 w-4 overflow-hidden">
             <span className="h-full flex-1 bg-blue-500" />
@@ -2502,17 +2603,33 @@ export default function CombatArena() {
   // an anonymous smudge. The identity was never secret in the first place
   // (its Tell has been visible since it was declared, and it revealed last
   // round), so there is nothing to protect by greying it out.
-  const overflowTics = new Map(); // absoluteTic -> [{ name, phase }]
+  // **Carried-over frames, as lanes rather than an edge stripe (decided,
+  // revised).** This used to be a 1.5px strip across the top of a Tic square,
+  // split between up to three characters, with the identity available only on
+  // hover. It technically said "somebody is still busy here" and in practice
+  // said almost nothing: you could not tell who, you could not tell how many,
+  // and a Trip Recovery frame was indistinguishable from an ordinary one.
+  //
+  // Now it is one lane per character — portrait and name, then a full-size
+  // square per Tic in the round's own colours, arrows and all — laid out the
+  // way the cutscene lays out its move bars, and by the same rule: **Players
+  // above the strip, NPCs below.** Reusing that convention rather than
+  // inventing one is the point; the Arena and the cutscene are the same board.
+  const carriedLanes = [];
   if (displayPair) {
     const pairIndexByChar = new Map(participants.map((p) => [p.character_id, p.pair_index]));
+    const byCharacter = new Map();
     for (const dm of declaredMoves) {
       if (pairIndexByChar.get(dm.characterId) !== displayPairIndex) continue;
       if (dm.roundNumber >= displayPair.roundNumber) continue;
-      const name = characters[dm.characterId]?.character.name;
-      if (!name) continue;
+      const entry = characters[dm.characterId];
+      if (!entry?.character?.name) continue;
       for (let t = displayPair.roundStartTic; t < dm.recoveryEndTic; t++) {
         // Same phase classification the cutscene and the chat snapshots use,
-        // so a carried-over Recovery is the same blue everywhere.
+        // so a carried-over Recovery is the same blue everywhere — including
+        // `trip_recovery`, which needs tripRecoveryTics to be classifiable at
+        // all. Omitting it (as this call did) silently drew every carried trip
+        // frame as ordinary Recovery.
         const phase = phaseAt(
           {
             placementTic: dm.placementTic,
@@ -2520,14 +2637,43 @@ export default function CombatArena() {
             activeEndTic: dm.activeEndTic,
             recoveryEndTic: dm.recoveryEndTic,
             defenseFramePositions: dm.defenseFramePositions ?? [],
+            tripRecoveryTics: dm.tripRecoveryTics ?? 0,
           },
           t
         );
         if (!phase) continue;
-        const at = overflowTics.get(t) ?? [];
-        at.push({ name, phase });
-        overflowTics.set(t, at);
+        let lane = byCharacter.get(dm.characterId);
+        if (!lane) {
+          lane = {
+            characterId: dm.characterId,
+            name: entry.character.name,
+            imageData: entry.character.image_data,
+            imageMimeType: entry.character.image_mime_type,
+            isNpc: entry.character.character_type === 'npc',
+            byTic: new Map(),
+          };
+          byCharacter.set(dm.characterId, lane);
+          carriedLanes.push(lane);
+        }
+        // A Defense Frame wins the colour but is still spent on the ground, so
+        // the arrow is asked of the window rather than of the phase name.
+        lane.byTic.set(t, {
+          phase,
+          trip: isTripTic(
+            { activeEndTic: dm.activeEndTic, recoveryEndTic: dm.recoveryEndTic, tripRecoveryTics: dm.tripRecoveryTics ?? 0 },
+            t
+          ),
+        });
       }
+    }
+  }
+  // Kept only for the compact header-bar counter, which has no room for lanes.
+  const overflowTics = new Map();
+  for (const lane of carriedLanes) {
+    for (const [t, cell] of lane.byTic) {
+      const at = overflowTics.get(t) ?? [];
+      at.push({ name: lane.name, phase: cell.phase });
+      overflowTics.set(t, at);
     }
   }
 
@@ -2714,6 +2860,7 @@ export default function CombatArena() {
             />
           ) : (
           <TicCounterCentral
+            carriedLanes={carriedLanes}
             pairIndex={displayPairIndex}
             phase={displayPair?.phase}
             currentTic={displayPair?.currentTic}
