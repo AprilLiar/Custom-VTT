@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 import { AnimatePresence, motion } from 'framer-motion';
@@ -32,6 +32,7 @@ import { ANATOMY } from '../lib/anatomy.js';
 import { buildFolderTree } from '../lib/folders.js';
 import { countRollSlot } from '../lib/diceSlots.js';
 import { FRAME_PHASES, PHASE_BG, PHASE_LABEL, PHASE_ZONE, phaseBgAt, phaseAt } from '../lib/framePhaseColors.js';
+import { MoveFilterChips, useMoveFilters } from '../lib/moveFilters.jsx';
 import RoundCutscene from './RoundCutscene.jsx';
 import DamageApplicationDialog from './DamageApplicationDialog.jsx';
 import { REWARD_LABELS, REWARD_COLORS } from '../lib/counterDisplay.js';
@@ -1708,7 +1709,24 @@ function DeclareMovePicker({ entry, roundStartTic, declaredMoves, tags, tellById
   const activeStance = stances.find((s) => s.id === character.active_stance_id);
   const activeStyles = activeStance ? [activeStance.attribute_a_id, activeStance.attribute_b_id] : [];
   const usable = (move) => move.style_attribute_id == null || activeStyles.includes(move.style_attribute_id);
-  const shown = (moves ?? []).filter((m) => Boolean(m.is_default) === (tab === 'default') && usable(m));
+  const inTab = (moves ?? []).filter((m) => Boolean(m.is_default) === (tab === 'default') && usable(m));
+  // **The same Tell/Tag filters the sheet has, on the declare picker (decided,
+  // new).** Mid-round is exactly when "which of these opens with the shoulder
+  // drop" is worth answering fastest, and this list can be long — a Default tab
+  // is every default move in the world.
+  //
+  // Built from the CURRENT TAB, not the whole list: switching tabs re-derives
+  // the chips, so the picker never offers a Tell that returns nothing on the
+  // tab you are looking at. The picks themselves survive the switch, which is
+  // the useful behaviour — narrowing to a Tag and then checking both tabs for
+  // it is a real thing to want.
+  const filters = useMoveFilters(inTab);
+  const shown = inTab.filter(filters.matches);
+  const tellList = useMemo(
+    () => [...tellById.values()].filter((t) => filters.presentTellIds.has(t.id)),
+    [tellById, filters.presentTellIds]
+  );
+  const tagList = (tags ?? []).filter((t) => filters.presentTagIds.has(t.id));
   // Feint Tag (decided, new): if the move this character just queued carries
   // the Feint Tag, whatever goes on next — on the first free Tic — is dealt
   // out of everyone else's view entirely until it reveals. Said out loud
@@ -1728,7 +1746,7 @@ function DeclareMovePicker({ entry, roundStartTic, declaredMoves, tags, tellById
         </p>
       )}
       <div className="mb-1.5 flex items-center gap-2">
-        <div className="flex overflow-hidden panel-cut-sm border border-zinc-700 text-[11px] font-semibold uppercase">
+        <div className="flex shrink-0 overflow-hidden panel-cut-sm border border-zinc-700 text-[11px] font-semibold uppercase">
           {['default', 'unique'].map((t) => (
             <button
               key={t}
@@ -1740,6 +1758,37 @@ function DeclareMovePicker({ entry, roundStartTic, declaredMoves, tags, tellById
           ))}
         </div>
       </div>
+      {/* **Tag on the left, Tell on the right**, on their own row under the
+          tabs rather than sharing one with them. Sharing was the first attempt
+          and it looked right with three chips and wrong with ten: the two
+          filters and the tab toggle all compete for the same line, so the Tells
+          ended up in a one-per-line column down the right edge. A row of their
+          own lets each side wrap into its own half. */}
+      {(tagList.length > 0 || tellList.length > 0) && (
+        <div className="mb-1.5 flex items-start justify-between gap-3">
+          <MoveFilterChips
+            label="Tag:"
+            items={tagList}
+            selected={filters.tagFilter}
+            onToggle={filters.toggleTag}
+            onClear={filters.clearTag}
+            labelFor={(t) => t.name}
+            titleFor={(t) => t.description}
+            compact
+            className="min-w-0 flex-1"
+          />
+          <MoveFilterChips
+            label="Tell:"
+            items={tellList}
+            selected={filters.tellFilter}
+            onToggle={filters.toggleTell}
+            onClear={filters.clearTell}
+            labelFor={(t) => t.name}
+            compact
+            className="min-w-0 flex-1 justify-end"
+          />
+        </div>
+      )}
       <div className="flex flex-wrap gap-1.5">
         {shown.length ? (
           shown.map((m) => (
@@ -1765,7 +1814,9 @@ function DeclareMovePicker({ entry, roundStartTic, declaredMoves, tags, tellById
             />
           ))
         ) : (
-          <span className="text-xs text-zinc-600">No {tab} moves.</span>
+          <span className="text-xs text-zinc-600">
+            {filters.anyActive ? `No ${tab} moves match these filters.` : `No ${tab} moves.`}
+          </span>
         )}
       </div>
     </div>

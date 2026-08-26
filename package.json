@@ -26,6 +26,7 @@
     "@playwright/test": "^1.62.1",
     "concurrently": "^9.1.0",
     "eslint": "^9.39.5",
+    "eslint-plugin-react-hooks": "^7.1.1",
     "globals": "^17.11.0",
     "socket.io-client": "^4.8.0"
   }

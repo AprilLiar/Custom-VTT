@@ -753,6 +753,37 @@ The Tic Countdown is still, underneath, a single **global counter that never res
    - **`defense_success`** / **`defense_failure`** fire on the **defender's own move** (the two triggers `is_defensive` gates in the Move Creator), from `combat:resolve_defense`'s Successful/Failed branches respectively — self = defender, opponent = attacker. Deliberately **unguarded** (no `interactions_resolved` check): a defensive move can legitimately defend more than once, so `combat:resolve_defense` firing again for the same defending move fires its defense trigger again too, same as the roll/chat notice it already produces each time.
    - **`self_recovery`/`opponent_recovery` are applied to the CLOCK, not to a row (decided, revised — see "Recovery lands on the timeline" below).** They originally bumped one declared move's `recovery_extension_tics` via `clampRecoveryExtension` and nothing on the board moved; `opponent_recovery` even had a "whichever of their declared moves ends latest" fallback for `miss`, which has no specific opponent move tied to the exchange. Both are gone. The effect now asks what that character is doing at the Tic it fires on and puts the frames there, sliding everything they had declared after it. `clampRecoveryExtension` survives for exactly one case: a **negative** `self_recovery`, which shortens a window rather than displacing anything. **`self_stamina`/`opponent_stamina`** both reuse the existing `adjustStamina` helper (sub-phase 3's Forfeit/Interrupt refund plumbing).
 
+**Move filters on the declare picker (decided, new; implemented).** The Arena's Declaration screen now
+carries the same Tell/Tag filters the character sheet has — **Tag on the left, Tell on the right**, on
+their own row under the default/unique tabs. Mid-round is exactly when "which of these opens with the
+shoulder drop" is worth answering fastest, and the Default tab is every default move in the world.
+
+- **Extracted rather than copied a third time** (`client/src/lib/moveFilters.jsx`: `useMoveFilters` +
+  `MoveFilterChips`). The control already existed twice — the Compendium's Style+Tag row and the
+  sheet's Tell+Tag row — and three implementations of "OR'd within, AND'd between" is how two of them
+  quietly stop agreeing. Same call the frame palette got. `MovesTab` was switched over to it in the
+  same change, so there is one implementation, not two plus a new one.
+- **Chips are built from the current tab, not the whole list.** Switching tabs re-derives them, so the
+  picker never offers a Tell that returns nothing on the tab you are looking at — the sheet's own
+  reasoning ("a filter that can only ever return nothing is a worse answer than not offering it")
+  applied one level down. The *picks* survive the switch, which is the useful half: narrowing to a Tag
+  and then checking both tabs for it is a real thing to want.
+- **They share a row, not a line.** The first attempt put both filters on the tab row, which looked
+  right with three chips and wrong with ten — the tabs, the Tags and the Tells all competed for one
+  line and the Tells ended up in a one-per-line column down the right edge. Caught by looking at it.
+- **A `compact` variant** drops the 44px touch floor for the Arena only: on a sheet the filters are a
+  primary control on a phone, and here they are a refinement on a screen you are already aiming at.
+
+**A `useMemo is not defined` shipped past the build and the linter, and closed a gap (bugfix).** The
+new picker used `useMemo`, `CombatArena.jsx` did not import it, and `npm run build` was perfectly
+happy: Vite parses the file fine and an undefined identifier is a runtime error, not a syntax one. It
+crashed the whole declare panel and was caught only because a browser pass happened to open it —
+**the same class of bug as `attributes is not defined`, three days later.** `client/src` had been left
+out of the linter as "worth doing, not worth bundling into a hotfix"; it is in now, with
+`eslint-plugin-react-hooks` loaded purely so the existing `exhaustive-deps` disable directives
+resolve (the rules themselves stay off — this is a correctness gate, and that sweep is separate work).
+Verified the way a check has to be: by deleting the import again and watching `no-undef` name it.
+
 **Trip Recovery Frames (decided, new; implemented).** A second kind of Recovery: identical for timing —
 it ends a footprint, blocks the next move, displaces everything queued behind it — but the fighter is
 on the **ground** for it, and two rules read that difference.

@@ -1,5 +1,6 @@
 import js from '@eslint/js';
 import globals from 'globals';
+import reactHooks from 'eslint-plugin-react-hooks';
 
 // **A linter, finally — and it exists for one specific bug (decided, new).**
 //
@@ -40,12 +41,36 @@ export default [
     },
     rules: correctness,
   },
+  {
+    // **The client is linted now too (decided, revised).** It was left out as
+    // "worth doing, not worth bundling into a hotfix" — and then the very next
+    // change shipped `useMemo is not defined` in CombatArena, the same class of
+    // bug, caught only because a browser pass happened to open that panel.
+    // `npm run build` does not catch it: Vite parses the file fine, and an
+    // undefined identifier is a runtime error, not a syntax one.
+    //
+    // `react-hooks` is loaded for one reason only: several components carry
+    // `eslint-disable-next-line react-hooks/exhaustive-deps`, and ESLint 9
+    // errors on a directive naming a rule it has not loaded. The rules stay
+    // off — this is a correctness gate, and the exhaustive-deps sweep those
+    // comments represent is a separate piece of work.
+    files: ['client/src/**/*.{js,jsx}'],
+    plugins: { 'react-hooks': reactHooks },
+    // The `exhaustive-deps` directives below are load-bearing documentation of
+    // deliberate choices, and they become live again the day that rule is
+    // turned on. Reporting them as "unused" because this config switches the
+    // rule off would be the lint complaining about its own configuration.
+    linterOptions: { reportUnusedDisableDirectives: 'off' },
+    languageOptions: {
+      ecmaVersion: 2023,
+      sourceType: 'module',
+      globals: { ...globals.browser },
+      parserOptions: { ecmaFeatures: { jsx: true } },
+    },
+    rules: {
+      ...correctness,
+      'react-hooks/exhaustive-deps': 'off',
+      'react-hooks/rules-of-hooks': 'off',
+    },
+  },
 ];
-
-// **The client is deliberately not linted here yet.** Several components carry
-// `eslint-disable-next-line react-hooks/exhaustive-deps` comments, and ESLint
-// 9 errors on a disable directive naming a rule it has not loaded — so linting
-// `client/src` means taking on `eslint-plugin-react-hooks` and the React
-// plugin config with it. Worth doing; not worth bundling into a production
-// hotfix. The bug this file exists for was server-side, and `npm run build`
-// already fails the client on anything Vite cannot parse.
