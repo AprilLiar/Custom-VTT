@@ -753,6 +753,52 @@ The Tic Countdown is still, underneath, a single **global counter that never res
    - **`defense_success`** / **`defense_failure`** fire on the **defender's own move** (the two triggers `is_defensive` gates in the Move Creator), from `combat:resolve_defense`'s Successful/Failed branches respectively — self = defender, opponent = attacker. Deliberately **unguarded** (no `interactions_resolved` check): a defensive move can legitimately defend more than once, so `combat:resolve_defense` firing again for the same defending move fires its defense trigger again too, same as the roll/chat notice it already produces each time.
    - **`self_recovery`/`opponent_recovery` are applied to the CLOCK, not to a row (decided, revised — see "Recovery lands on the timeline" below).** They originally bumped one declared move's `recovery_extension_tics` via `clampRecoveryExtension` and nothing on the board moved; `opponent_recovery` even had a "whichever of their declared moves ends latest" fallback for `miss`, which has no specific opponent move tied to the exchange. Both are gone. The effect now asks what that character is doing at the Tic it fires on and puts the frames there, sliding everything they had declared after it. `clampRecoveryExtension` survives for exactly one case: a **negative** `self_recovery`, which shortens a window rather than displacing anything. **`self_stamina`/`opponent_stamina`** both reuse the existing `adjustStamina` helper (sub-phase 3's Forfeit/Interrupt refund plumbing).
 
+**Trip Recovery Frames (decided, new; implemented).** A second kind of Recovery: identical for timing —
+it ends a footprint, blocks the next move, displaces everything queued behind it — but the fighter is
+on the **ground** for it, and two rules read that difference.
+
+- **Stored as a count, not a range.** `declared_moves.trip_recovery_tics` says how many of the move's
+  *trailing* Recovery Tics are trip frames. Trip frames are always the tail of a footprint, because
+  they are imposed at the moment the trip lands and go on after whatever the fighter was already
+  doing — exactly where `recovery_extension_tics` already puts imposed Recovery. So the window is
+  derivable (`tripWindow` in `combatTiming.js`) and there is no second value that could drift out of
+  agreement with the first.
+- **Only the in-flight case produces them.** `planImposedRecovery` has three answers and only one
+  creates Recovery frames: caught mid-move, the Tics go on the end, so with `trip` they go on as trip
+  frames. Caught in Startup they extend the wind-up — those are Startup frames, not Recovery ones, so
+  there is nothing to mark. Caught idle, nothing is drawn at all (a rule decided above). The Chat Log
+  says "Trip Recovery" only where frames actually landed, rather than promising some that are not on
+  the clock. **Note this makes the Startup case nearly unreachable for Movement Punisher anyway**,
+  since an attack that deals damage during Startup Interrupts instead and deletes the move.
+- **Movement Punisher now imposes them** (revised — it was ordinary Recovery). Still 3, still through
+  the same `runAutomations` door, so the displacement, the round event and the cutscene beat are
+  unchanged; what changed is what kind of frames they are.
+- **Two new automation effects**, `self_trip_recovery` and `opponent_trip_recovery` — their
+  `_recovery` siblings with one flag set, deliberately falling through into the same executor cases
+  so nothing about them can drift. Separate types rather than a checkbox for the same reason
+  `self_stat_increase` exists: a GM picking "Trip the opponent" off a list will find it. Unsigned —
+  a negative trip has no coherent meaning, and `self_recovery` is still there for shortening a window.
+- **The Off The Ground Tag** is the first Tag whose effect is at **declare** time rather than at
+  resolution. A move carrying it may be placed so its Startup overlaps the declarer's own trip
+  frames. Two caps, both in `placementFloorAfterTrip`: never further back than the trip window began
+  (ordinary Recovery is untouchable, so the Tag does nothing at all to a fighter who was not tripped),
+  and never more than the move's own Startup (its Active frames can never begin before the trip ends).
+  The invariant behind both, and the one the tests pin: **the reveal Tic always lands at or after the
+  old floor.**
+- **Drawn as darker blue with a down arrow on every frame.** It stays in the blue family on purpose —
+  it *is* Recovery, just spent on the floor, and a fifth hue would say it was a different kind of
+  thing. The arrow is what actually carries the distinction, because two adjacent blues is exactly
+  the difference that fails for anyone who cannot separate them. `PHASE_BG.trip_recovery` flows to
+  every render site through the shared palette; the arrow is drawn where a frame is big enough to
+  hold one. An imposed trip Tic keeps the trip colour rather than the generic dimmed-extension blue,
+  or the arrow would end up sitting on the wrong background.
+- **Verified**: `server/test/tripFrames.test.js` (10 checks on the two pure rules, including a swept
+  invariant that Active never begins early) and `scripts/playtest-trip-frames.mjs` (9 checks against
+  a live server — the trip written as trip frames, named in the Chat Log, carried in the combat
+  payload, and then *read back at declare time*, with a Tagged and an untagged move measured against
+  the same floor). That last chain is the one thing no unit test reaches: the Tag is the only rule in
+  the game that spans resolution and declaration.
+
 **Recovery lands on the timeline (decided, new; implemented).** "If a move applies Recovery to the opponent, the Recovery frames should be applied instantly, moving the declared frames of the opponent to a later Tic." Imposed Recovery is no longer bookkeeping that quietly changes a later subtraction — it is a thing that happens to the clock at the moment it fires, and you can watch it happen.
 - **Where the frames go is decided by what the target is doing at that exact Tic**, and there are exactly three answers (`planImposedRecovery` in `server/combatTiming.js` — pure, unit-tested before it was wired to anything, per this repo's own rule about the timing math):
   - **Caught in Startup** → the extra Tics are added to that move's own Startup, so the move is **delayed**. `placement_tic` deliberately stays put (the wind-up genuinely began there) and `reveal_tic` moves later, dragging Active and Recovery with it.

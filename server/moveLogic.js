@@ -107,7 +107,32 @@ export const AUTOMATION_TYPES = [
   // to recover.
   'self_stat_recover',
   'opponent_next_roll_penalty',
+  // **The two trip effects (decided, new).** Identical to their `_recovery`
+  // siblings in every respect except that the frames they impose are Trip
+  // Recovery — the fighter is on the ground for them, which the Off The Ground
+  // Tag reads and which draws differently.
+  //
+  // Separate types rather than a flag on the existing two, for the same reason
+  // `self_stat_increase` exists rather than a negative `self_stat_step`: the
+  // authoring should read as what it does. A GM picking "Trip the opponent"
+  // off a list will find it; a checkbox tucked beside an amount is a thing
+  // nobody discovers.
+  //
+  // Unsigned, both of them. A negative trip is not "un-tripping" anything —
+  // there is no coherent meaning for it, and the ordinary `self_recovery` is
+  // still there for shortening a window.
+  'self_trip_recovery',
+  'opponent_trip_recovery',
 ];
+
+// The two effects whose imposed frames are Trip Recovery rather than ordinary
+// Recovery, and the ordinary ones they otherwise behave exactly like. Kept as
+// one mapping so the executor has a single place to ask "is this a trip?" and
+// "what does it do apart from that?".
+export const TRIP_RECOVERY_TYPES = new Map([
+  ['self_trip_recovery', 'self_recovery'],
+  ['opponent_trip_recovery', 'opponent_recovery'],
+]);
 
 // Which Stats a stat-step automation may name. Deliberately the concrete
 // slots only — an automation names one Stat outright, so the ambiguous

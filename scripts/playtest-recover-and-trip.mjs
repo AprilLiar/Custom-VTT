@@ -7,7 +7,10 @@
 //      against one step of damage — and then check where it stopped.
 //   2. **Movement Punisher** — a Tag that only means anything opposite the
 //      **Movement** Tag. Connect with somebody mid-stride and they trip: 3
-//      Recovery, imposed exactly the way an Add Recovery effect does it.
+//      **Trip** Recovery, imposed exactly the way an Add Recovery effect does
+//      it. Trip frames behave identically for timing but say the fighter is on
+//      the floor — which the Off The Ground Tag can be declared into (see
+//      scripts/playtest-trip-frames.mjs for that half).
 //
 // Each one is run as a PAIR of otherwise identical rounds — the real thing and
 // a control — so what the mechanic did is the difference between two fights
@@ -224,8 +227,13 @@ check('it is reported as a TAG, not as something a GM authored',
 check('under its own trigger, labelled for the table',
   tagged.trip?.trigger === 'movement_punished' && /trip/i.test(tagged.trip?.triggerLabel ?? ''),
   JSON.stringify({ trigger: tagged.trip?.trigger, label: tagged.trip?.triggerLabel }));
-check('and it is 3 Recovery, worded exactly like an authored Add Recovery',
-  (tagged.trip?.effects ?? []).some((x) => /\+3 Recovery/.test(x)),
+// **Trip Recovery, not ordinary Recovery (revised).** Being caught mid-stride
+// puts you on the floor, which is a different state from being slow to recover:
+// the Off The Ground Tag reads it, and the frames draw as their own darker blue
+// with a down arrow. Still 3, still through the same Add Recovery executor —
+// what changed is what kind of frames they are, and the log has to say so.
+check('and it is 3 Trip Recovery, worded so the table can tell it from ordinary Recovery',
+  (tagged.trip?.effects ?? []).some((x) => /\+3 Trip Recovery/.test(x)),
   JSON.stringify(tagged.trip?.effects));
 check('the Recovery actually landed on the clock, not just in the log',
   tagged.imposed.length > 0, tagged.events.map((e) => e.type).join(', '));

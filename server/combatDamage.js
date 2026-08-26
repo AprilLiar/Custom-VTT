@@ -153,12 +153,23 @@ export function resolveBlockStamina({
 // `defenseFramePositions` are 0-based indices into the full Startup+Active+
 // Recovery sequence (see Defense Frames under Moves & Tells) — a Defense-
 // tagged square overrides whichever phase it would otherwise land in.
-export function phaseAtTic({ placementTic, revealTic, activeEndTic, recoveryEndTic, defenseFramePositions = [] }, tic) {
+export function phaseAtTic(
+  { placementTic, revealTic, activeEndTic, recoveryEndTic, defenseFramePositions = [], tripRecoveryTics = 0 },
+  tic
+) {
   if (tic < placementTic || tic >= recoveryEndTic) return null;
   const offset = tic - placementTic;
   if (defenseFramePositions.includes(offset)) return 'defense';
   if (tic < revealTic) return 'startup';
   if (tic < activeEndTic) return 'active';
+  // Trip Recovery is Recovery the fighter spends on the ground, and it is
+  // always the tail of the footprint — see `tripWindow` in combatTiming.js for
+  // why that is derived rather than stored. Checked after `defense` for the
+  // same reason `recovery` is: a Defense Frame is an annotation on top of
+  // whatever phase it lands in, and a guard held from the floor is still a
+  // guard.
+  const tripFrom = Math.max(activeEndTic, recoveryEndTic - Math.max(0, tripRecoveryTics));
+  if (tripRecoveryTics > 0 && tic >= tripFrom) return 'trip_recovery';
   return 'recovery';
 }
 

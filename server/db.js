@@ -1730,6 +1730,20 @@ export async function initDb() {
   // request — never touches Durability and never reaches this column.
   await ensureColumn('declared_moves', 'weapon_spent', 'INTEGER NOT NULL DEFAULT 0');
 
+  // **How many of this move's trailing Recovery Tics are Trip frames (decided,
+  // new).** Trip Recovery behaves exactly like Recovery for timing — it
+  // blocks, it displaces, it ends the footprint — but the fighter is on the
+  // ground for it, and two rules read that difference: the **Off The Ground**
+  // Tag lets a move's Startup overlap them (and only them), and they draw
+  // differently.
+  //
+  // A count rather than a range, because trip frames are always the *tail* of
+  // a footprint: they are imposed at the moment the trip lands and go on after
+  // whatever the fighter was already doing, exactly where imposed Recovery
+  // already goes. So the window is derivable from the footprint end, and there
+  // is no second value that could drift out of agreement with the first.
+  await ensureColumn('declared_moves', 'trip_recovery_tics', 'INTEGER NOT NULL DEFAULT 0');
+
   await ensureIndexes();
 
   await seedWorld();
@@ -1888,7 +1902,11 @@ const SEEDED_TAGS = [
   ],
   [
     'Movement Punisher',
-    'Built to catch someone mid-stride. If this connects for real damage against a move tagged Movement, its user trips — 3 Recovery, imposed on the spot.',
+    'Built to catch someone mid-stride. If this connects for real damage against a move tagged Movement, its user is tripped — 3 Trip Recovery frames, imposed on the spot.',
+  ],
+  [
+    'Off The Ground',
+    'Thrown from the floor. This move may be declared so that its Startup overlaps your own Trip Recovery frames — you are getting up as you wind up. Only Trip Recovery: ordinary Recovery still has to finish, and the move\u2019s Active frames can never begin before you are back on your feet.',
   ],
 ];
 

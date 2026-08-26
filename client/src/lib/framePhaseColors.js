@@ -13,14 +13,28 @@
 // most-recently-touched call sites. FrameBar's older yellow/red/green
 // shift onto it, which is the point: one palette, one place to change it.
 
-export const FRAME_PHASES = ['startup', 'active', 'recovery', 'defense'];
+export const FRAME_PHASES = ['startup', 'active', 'recovery', 'trip_recovery', 'defense'];
 
 export const PHASE_LABEL = {
   startup: 'Startup',
   active: 'Active',
   recovery: 'Recovery',
+  trip_recovery: 'Trip Recovery',
   defense: 'Defense',
 };
+
+// **Trip Recovery reads as Recovery, deliberately (decided, new).** It *is*
+// Recovery — same blocking, same displacement — so it stays in the blue
+// family rather than taking a colour of its own; a fifth hue would say "this
+// is a different kind of thing" when the point is that it is the same thing
+// happening on the ground. Darker, plus a down arrow on every frame, so it is
+// unmistakable at a glance without being unreadable next to ordinary blue.
+//
+// The arrow is what actually carries the distinction: colour alone fails for
+// anyone who cannot tell two blues apart, and these two are adjacent by
+// design. Rendered by `TripFrameMark` (see below) wherever a frame is big
+// enough to hold it.
+export const TRIP_MARK = '\u2193';
 
 // Flat fills — frame-data strips, lane-snapshot segments, the small
 // footprint-preview squares, and the cutscene's own move bars.
@@ -28,6 +42,7 @@ export const PHASE_BG = {
   startup: 'bg-amber-500',
   active: 'bg-rose-500',
   recovery: 'bg-blue-500',
+  trip_recovery: 'bg-blue-800',
   defense: 'bg-emerald-500',
 };
 
@@ -40,6 +55,7 @@ export const PHASE_ZONE = {
   startup: 'border-amber-300 bg-amber-500/80 shadow-[0_0_10px_rgba(251,191,36,0.45)]',
   active: 'border-rose-300 bg-rose-500/80 shadow-[0_0_10px_rgba(244,63,94,0.45)]',
   recovery: 'border-blue-300 bg-blue-500/80 shadow-[0_0_10px_rgba(59,130,246,0.45)]',
+  trip_recovery: 'border-blue-400 bg-blue-800/90 shadow-[0_0_10px_rgba(30,64,175,0.55)]',
   defense: 'border-emerald-300 bg-emerald-500/80 shadow-[0_0_10px_rgba(16,185,129,0.45)]',
   blocked: 'border-zinc-600 bg-zinc-800 text-zinc-600',
 };
@@ -56,6 +72,7 @@ export const PHASE_BG_EXTENDED = {
   startup: 'bg-amber-500/70',
   active: 'bg-rose-500/70',
   recovery: 'bg-blue-500/70',
+  trip_recovery: 'bg-blue-800/70',
   defense: 'bg-emerald-500/70',
 };
 
@@ -79,11 +96,16 @@ export function isExtendedRecoveryTic(footprint, tic) {
 // checked first: a defense-tagged Active Tic renders green, not red.
 export function phaseAt(footprint, tic) {
   if (!footprint) return null;
-  const { placementTic, revealTic, activeEndTic, recoveryEndTic, defenseFramePositions } = footprint;
+  const {
+    placementTic, revealTic, activeEndTic, recoveryEndTic, defenseFramePositions,
+    tripRecoveryTics = 0,
+  } = footprint;
   if (tic < placementTic || tic >= recoveryEndTic) return null;
   if (defenseFramePositions?.includes(tic - placementTic)) return 'defense';
   if (tic < revealTic) return 'startup';
   if (tic < activeEndTic) return 'active';
+  const tripFrom = Math.max(activeEndTic, recoveryEndTic - Math.max(0, tripRecoveryTics));
+  if (tripRecoveryTics > 0 && tic >= tripFrom) return 'trip_recovery';
   return 'recovery';
 }
 
@@ -93,4 +115,17 @@ export function phaseAt(footprint, tic) {
 export function phaseBgAt(footprint, tic) {
   const phase = phaseAt(footprint, tic);
   return phase ? PHASE_BG[phase] : null;
+}
+
+
+// Is this Tic one of the move's Trip Recovery frames? The renderers need this
+// separately from `phaseAt` because a Defense Frame wins the *colour* while
+// still being spent on the ground — a guard held from the floor is still on
+// the floor, and still keeps the arrow.
+export function isTripTic(footprint, tic) {
+  if (!footprint) return false;
+  const { activeEndTic, recoveryEndTic, tripRecoveryTics = 0 } = footprint;
+  if (!(tripRecoveryTics > 0)) return false;
+  if (tic < activeEndTic || tic >= recoveryEndTic) return false;
+  return tic >= Math.max(activeEndTic, recoveryEndTic - tripRecoveryTics);
 }

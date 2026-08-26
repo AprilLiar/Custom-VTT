@@ -362,17 +362,55 @@ These two only mean anything about each other. On its own, neither does a thing.
 - **Movement Punisher** goes on a move built to catch somebody doing that.
 
 If a **Movement Punisher** attack **connects** with a fighter who is in the
-middle of a **Movement** move, that fighter **trips**. The trip is narrative —
-there is no knocked-down state to get out of — and it costs them **3 Recovery**,
-added to whatever they are doing exactly the way any other imposed Recovery is.
-Three Tics later than you meant to be is what being put on the floor costs in a
-game measured in Tics.
+middle of a **Movement** move, that fighter **trips**: **3 Trip Recovery
+Frames**, added to whatever they are doing exactly the way any other imposed
+Recovery is. Three Tics later than you meant to be is what being put on the
+floor costs in a game measured in Tics.
+
+Trip Recovery Frames are Recovery you spend **on the ground** — see *Trip
+Recovery Frames* below. They block and delay exactly like ordinary Recovery;
+the difference is that a move tagged **Off The Ground** can be thrown out of
+them.
 
 **"Connects" means at least half a point of damage actually landed.** A miss
 trips nobody, and neither does a blow a guard reduced to nothing — you have to
 have genuinely caught them mid-stride. It does not matter whether their move
 had come out yet: a Movement move still winding up is a fighter already
 committed to going somewhere.
+
+### Trip Recovery Frames
+
+Most Recovery is a fighter catching their balance. **Trip Recovery** is a
+fighter on the floor. Mechanically the two are the same thing — trip frames end
+a move's footprint, block the next one, and push back everything queued behind
+them, just as ordinary Recovery does — and on the Tic strip they are drawn in a
+**darker blue with a down arrow** on every frame, so you can see at a glance
+which of the two somebody is in.
+
+Where they come from: the **Movement Punisher** Tag above, and any move whose
+On Hit (or other) effect says **Trip the opponent** or **Trip yourself**.
+
+They always sit at the **end** of whatever you were doing. A trip does not undo
+the punch that was already landing — it lands, and then you are on the ground.
+
+### Off The Ground
+
+A move tagged **Off The Ground** can be thrown while you are still getting up:
+its **Startup may overlap your own Trip Recovery Frames**.
+
+Two limits, and they are the whole shape of the Tag:
+
+- **Only Trip Recovery.** Ordinary Recovery still has to finish. The Tag is not
+  a general licence to start early — it does nothing at all unless you have
+  actually been tripped.
+- **Only the Startup.** The move's **Active** frames can never begin before you
+  are back on your feet. A move with 2 Startup thrown into 3 trip frames starts
+  2 Tics early and connects exactly when the trip ends; one with 5 Startup
+  still only reaches back 3, because that is all the trip there was.
+
+So a fighter with the right move in their list is not simply three Tics behind
+after a trip — they can spend those Tics winding up instead of lying there. It
+is the answer to Movement Punisher, and it costs a Tag slot on the move.
 
 **A broken Leg forbids Movement moves entirely.** Either Leg — you do not step,
 slip or lunge on one leg, and the rule needs no follow-up question. A Movement
