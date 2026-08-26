@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { sortTags } from '../lib/moveDisplay.js';
+import { MoveFilterChips, useMoveFilters } from '../lib/moveFilters.jsx';
 import { useRole } from '../roleContext.jsx';
 import { socket } from '../socket.js';
 import { getRuleset, getTags, getTells, getMoves } from '../lib/api.js';
@@ -25,16 +26,10 @@ export default function MovesTab({ data }) {
   // a Compendium with thirty. Tell and Tag rather than the Compendium's Style
   // and Tag: on your own sheet a Style you cannot use is already dimmed, while
   // "which of these opens with the shoulder drop" has had no answer at all.
-  const [tellFilter, setTellFilter] = useState(new Set()); // Set<tell id> — OR'd
-  const [tagFilter, setTagFilter] = useState(new Set()); // Set<tag id> — OR'd
-  const toggleIn = (setter) => (id) =>
-    setter((prev) => {
-      const next = new Set(prev);
-      next.has(id) ? next.delete(id) : next.add(id);
-      return next;
-    });
-  const toggleTell = toggleIn(setTellFilter);
-  const toggleTag = toggleIn(setTagFilter);
+  // Shared with the Arena's declare picker (see lib/moveFilters.jsx) rather
+  // than kept here: three copies of one control is how two of them quietly stop
+  // agreeing about what "OR'd within, AND'd between" means.
+  const filters = useMoveFilters(moves);
 
   // **A Move that rolls the Weapon, on somebody carrying nothing (decided,
   // new).** Dimmed exactly as a Secondary move is, and for the same reason:
@@ -42,25 +37,6 @@ export default function MovesTab({ data }) {
   // server refuses it at declaration too — this is that rule shown rather
   // than discovered.
   const needsWeapon = (move) => !weapon && (move.roll_slots ?? []).includes('Weapon');
-
-  // Every Tell a move on THIS sheet actually opens with, and every Tag one of
-  // them actually carries — not the world's full list. The Compendium is the
-  // library and shows everything; a sheet is a hand of cards, and offering a
-  // filter that can only ever return nothing is a worse answer than not
-  // offering it. Both sides of an ambiguous move's Left/Right pair count.
-  const moveTellIds = (move) =>
-    [move.tell_id, move.left_tell_id, move.right_tell_id].filter((id) => id != null);
-  const moveTagIds = (move) => move.effective_tag_ids ?? move.tag_ids ?? [];
-  const presentTellIds = useMemo(() => {
-    const ids = new Set();
-    for (const m of moves) for (const id of moveTellIds(m)) ids.add(id);
-    return ids;
-  }, [moves]);
-  const presentTagIds = useMemo(() => {
-    const ids = new Set();
-    for (const m of moves) for (const id of moveTagIds(m)) ids.add(id);
-    return ids;
-  }, [moves]);
 
   useEffect(() => {
     const refresh = () => {
@@ -102,69 +78,28 @@ export default function MovesTab({ data }) {
     );
   }
 
-  // The two filters narrow independently and are AND'd with each other, while
-  // the picks *within* one are OR'd — "a Jab or a Hook, and Fast" — matching
-  // the Compendium exactly. An empty filter is not applied at all.
-  const visibleMoves = moves.filter((m) => {
-    if (tellFilter.size > 0 && !moveTellIds(m).some((id) => tellFilter.has(id))) return false;
-    if (tagFilter.size > 0 && !moveTagIds(m).some((id) => tagFilter.has(id))) return false;
-    return true;
-  });
-
-  const filterRow = (label, items, selected, toggle, clear, labelFor, titleFor) =>
-    items.length === 0 ? null : (
-      <div className="flex flex-wrap items-center gap-1">
-        <span className="mr-1 text-xs font-semibold uppercase text-zinc-500">{label}</span>
-        {items.map((item) => {
-          const active = selected.has(item.id);
-          return (
-            <button
-              key={item.id}
-              type="button"
-              onClick={() => toggle(item.id)}
-              title={titleFor?.(item) || `Filter by ${labelFor(item)}`}
-              className={`min-h-11 panel-cut-sm border px-2 py-1 text-xs md:min-h-0 ${
-                active
-                  ? 'border-brand-500 bg-brand-600/30 text-brand-300'
-                  : 'border-zinc-700 text-zinc-500 hover:border-zinc-500'
-              }`}
-            >
-              {labelFor(item)}
-            </button>
-          );
-        })}
-        {selected.size > 0 && (
-          <button
-            type="button"
-            onClick={clear}
-            className="ml-1 text-xs text-zinc-500 underline hover:text-zinc-300"
-          >
-            clear
-          </button>
-        )}
-      </div>
-    );
+  const visibleMoves = moves.filter(filters.matches);
 
   return (
     <div className="space-y-3">
       <div className="space-y-2">
-        {filterRow(
-          'Filter by Tell:',
-          tells.filter((t) => presentTellIds.has(t.id)),
-          tellFilter,
-          toggleTell,
-          () => setTellFilter(new Set()),
-          (t) => t.name
-        )}
-        {filterRow(
-          'Filter by tag:',
-          tags.filter((t) => presentTagIds.has(t.id)),
-          tagFilter,
-          toggleTag,
-          () => setTagFilter(new Set()),
-          (t) => t.name,
-          (t) => t.description
-        )}
+        <MoveFilterChips
+          label="Filter by Tell:"
+          items={tells.filter((t) => filters.presentTellIds.has(t.id))}
+          selected={filters.tellFilter}
+          onToggle={filters.toggleTell}
+          onClear={filters.clearTell}
+          labelFor={(t) => t.name}
+        />
+        <MoveFilterChips
+          label="Filter by tag:"
+          items={tags.filter((t) => filters.presentTagIds.has(t.id))}
+          selected={filters.tagFilter}
+          onToggle={filters.toggleTag}
+          onClear={filters.clearTag}
+          labelFor={(t) => t.name}
+          titleFor={(t) => t.description}
+        />
       </div>
 
       {visibleMoves.length === 0 ? (

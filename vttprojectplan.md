@@ -753,6 +753,68 @@ The Tic Countdown is still, underneath, a single **global counter that never res
    - **`defense_success`** / **`defense_failure`** fire on the **defender's own move** (the two triggers `is_defensive` gates in the Move Creator), from `combat:resolve_defense`'s Successful/Failed branches respectively — self = defender, opponent = attacker. Deliberately **unguarded** (no `interactions_resolved` check): a defensive move can legitimately defend more than once, so `combat:resolve_defense` firing again for the same defending move fires its defense trigger again too, same as the roll/chat notice it already produces each time.
    - **`self_recovery`/`opponent_recovery` are applied to the CLOCK, not to a row (decided, revised — see "Recovery lands on the timeline" below).** They originally bumped one declared move's `recovery_extension_tics` via `clampRecoveryExtension` and nothing on the board moved; `opponent_recovery` even had a "whichever of their declared moves ends latest" fallback for `miss`, which has no specific opponent move tied to the exchange. Both are gone. The effect now asks what that character is doing at the Tic it fires on and puts the frames there, sliding everything they had declared after it. `clampRecoveryExtension` survives for exactly one case: a **negative** `self_recovery`, which shortens a window rather than displacing anything. **`self_stamina`/`opponent_stamina`** both reuse the existing `adjustStamina` helper (sub-phase 3's Forfeit/Interrupt refund plumbing).
 
+**Carried-over frames are lanes now, not an edge stripe (decided, revised; implemented).** The Tic
+Counter used to signal a move carrying over from last round as a 1.5px strip across the top of a Tic
+square, split between up to three characters, with the identity available only on hover. It said
+"somebody is still busy here" and almost nothing else — not who, not how many, and a Trip Recovery
+frame was indistinguishable from an ordinary one.
+
+- **One lane per character**, portrait and name plus a **full-size square per Tic** in the round's own
+  colours, arrows and all. Filled, not edged: the whole complaint about the stripe was that it read as
+  decoration on somebody else's square rather than as a thing occupying a Tic.
+- **Players above the strip, NPCs below** — the cutscene's own convention, reused rather than
+  reinvented, because the Arena and the cutscene are the same board.
+- **One scroll container holds every row**, which is what keeps a lane's square aligned with the Tic
+  above it however far the strip is scrolled. Identity sits on its own line rather than beside the
+  row for the same reason: a left-hand label would either scroll out of view or push every square out
+  of alignment, and alignment is the entire point. Above the row for a lane above the counter, below
+  it for one below, so the name always reads away from the strip.
+- **The compact header-bar counter keeps the old stripe** — it is an always-visible strip with no room
+  for four extra rows. Only the Arena's own counter takes lanes, and the two signals are never drawn
+  at once.
+
+**Two bugs found by looking at it, both of which had shipped.** `phaseAt` was being called for the
+carried-over frames **without `tripRecoveryTics`**, so every carried trip frame classified as ordinary
+Recovery. And worse: **the cutscene never received the data at all.** `moves_displaced` carried no
+`trip` flag and `reveal`/`carryover` carried no `tripRecoveryTics`, because two payload edits were
+silently lost when an earlier scripted edit aborted on a failed assertion — so the replay drew every
+trip frame as ordinary Recovery and the arrow never appeared anywhere. The trip playtest passed
+throughout, because it asserted the DB column and the REST payload and never the round events.
+**Two channels carry this fact and testing one of them is testing half the feature**; the playtest now
+asserts both. The arrow itself was also 9px of `blue-200/90` on a `blue-800` cell — present, and
+invisible at any normal viewing distance, which is the same as absent.
+
+**Move filters on the declare picker (decided, new; implemented).** The Arena's Declaration screen now
+carries the same Tell/Tag filters the character sheet has — **Tag on the left, Tell on the right**, on
+their own row under the default/unique tabs. Mid-round is exactly when "which of these opens with the
+shoulder drop" is worth answering fastest, and the Default tab is every default move in the world.
+
+- **Extracted rather than copied a third time** (`client/src/lib/moveFilters.jsx`: `useMoveFilters` +
+  `MoveFilterChips`). The control already existed twice — the Compendium's Style+Tag row and the
+  sheet's Tell+Tag row — and three implementations of "OR'd within, AND'd between" is how two of them
+  quietly stop agreeing. Same call the frame palette got. `MovesTab` was switched over to it in the
+  same change, so there is one implementation, not two plus a new one.
+- **Chips are built from the current tab, not the whole list.** Switching tabs re-derives them, so the
+  picker never offers a Tell that returns nothing on the tab you are looking at — the sheet's own
+  reasoning ("a filter that can only ever return nothing is a worse answer than not offering it")
+  applied one level down. The *picks* survive the switch, which is the useful half: narrowing to a Tag
+  and then checking both tabs for it is a real thing to want.
+- **They share a row, not a line.** The first attempt put both filters on the tab row, which looked
+  right with three chips and wrong with ten — the tabs, the Tags and the Tells all competed for one
+  line and the Tells ended up in a one-per-line column down the right edge. Caught by looking at it.
+- **A `compact` variant** drops the 44px touch floor for the Arena only: on a sheet the filters are a
+  primary control on a phone, and here they are a refinement on a screen you are already aiming at.
+
+**A `useMemo is not defined` shipped past the build and the linter, and closed a gap (bugfix).** The
+new picker used `useMemo`, `CombatArena.jsx` did not import it, and `npm run build` was perfectly
+happy: Vite parses the file fine and an undefined identifier is a runtime error, not a syntax one. It
+crashed the whole declare panel and was caught only because a browser pass happened to open it —
+**the same class of bug as `attributes is not defined`, three days later.** `client/src` had been left
+out of the linter as "worth doing, not worth bundling into a hotfix"; it is in now, with
+`eslint-plugin-react-hooks` loaded purely so the existing `exhaustive-deps` disable directives
+resolve (the rules themselves stay off — this is a correctness gate, and that sweep is separate work).
+Verified the way a check has to be: by deleting the import again and watching `no-undef` name it.
+
 **Trip Recovery Frames (decided, new; implemented).** A second kind of Recovery: identical for timing —
 it ends a footprint, blocks the next move, displaces everything queued behind it — but the fighter is
 on the **ground** for it, and two rules read that difference.
