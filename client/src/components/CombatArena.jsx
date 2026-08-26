@@ -35,7 +35,7 @@ import {
   FRAME_PHASES, PHASE_BG, PHASE_LABEL, PHASE_ZONE, TRIP_MARK,
   phaseBgAt, phaseAt, isTripTic,
 } from '../lib/framePhaseColors.js';
-import { MoveFilterChips, useMoveFilters } from '../lib/moveFilters.jsx';
+import { MoveFilterChips, MoveFilterColumn, useMoveFilters } from '../lib/moveFilters.jsx';
 import RoundCutscene from './RoundCutscene.jsx';
 import DamageApplicationDialog from './DamageApplicationDialog.jsx';
 import { REWARD_LABELS, REWARD_COLORS } from '../lib/counterDisplay.js';
@@ -1797,8 +1797,31 @@ function DeclareMoveCard({ character, move, roundStartTic, declaredMoves, tags, 
 // currently has the floor — Default/Unique tabs split the character's move
 // list the same way Tab 3 does; a styled move is left out of either tab
 // unless it matches one of the two styles in the character's active stance.
-function DeclareMovePicker({ entry, roundStartTic, declaredMoves, tags, tellById, styleDeltas, heldMove }) {
-  const { character, stances, moves, dice, weapon } = entry;
+// The move list the picker is showing, and the filter state over it.
+//
+// Lifted out of DeclareMovePicker so ActiveDeclarePanel can render the filter
+// columns *outside* the panel's own border, in the empty screen either side of
+// it. The tab belongs here too: the chips are derived from the current tab, so
+// whoever owns the chips has to own the tab.
+function useDeclareMoveList(entry) {
+  const { character, stances, moves } = entry;
+  const [tab, setTab] = useState('default');
+  const activeStance = stances.find((s) => s.id === character.active_stance_id);
+  const activeStyles = activeStance ? [activeStance.attribute_a_id, activeStance.attribute_b_id] : [];
+  const usable = (move) => move.style_attribute_id == null || activeStyles.includes(move.style_attribute_id);
+  const inTab = (moves ?? []).filter((m) => Boolean(m.is_default) === (tab === 'default') && usable(m));
+  // Built from the CURRENT TAB, not the whole list: switching tabs re-derives
+  // the chips, so the picker never offers a Tell that returns nothing on the
+  // tab you are looking at. The picks themselves survive the switch, which is
+  // the useful behaviour — narrowing to a Tag and then checking both tabs for
+  // it is a real thing to want.
+  const filters = useMoveFilters(inTab);
+  return { tab, setTab, filters, shown: inTab.filter(filters.matches) };
+}
+
+function DeclareMovePicker({ entry, roundStartTic, declaredMoves, tags, tellById, styleDeltas, heldMove, list, tagList, tellList }) {
+  const { character, moves, dice, weapon } = entry;
+  const { tab, setTab, filters, shown } = list;
   // **A Movement move needs both Legs (decided, new).** The server refuses one
   // outright (movementBlockedByLegs); this is the same rule read client-side so
   // the card greys and says why, rather than looking draggable and being
@@ -1806,28 +1829,6 @@ function DeclareMovePicker({ entry, roundStartTic, declaredMoves, tags, tellById
   const legsBroken = (dice ?? []).some(
     (d) => (d.slot_name === 'Left Leg' || d.slot_name === 'Right Leg') && d.status === 'incapacitated'
   );
-  const [tab, setTab] = useState('default');
-  const activeStance = stances.find((s) => s.id === character.active_stance_id);
-  const activeStyles = activeStance ? [activeStance.attribute_a_id, activeStance.attribute_b_id] : [];
-  const usable = (move) => move.style_attribute_id == null || activeStyles.includes(move.style_attribute_id);
-  const inTab = (moves ?? []).filter((m) => Boolean(m.is_default) === (tab === 'default') && usable(m));
-  // **The same Tell/Tag filters the sheet has, on the declare picker (decided,
-  // new).** Mid-round is exactly when "which of these opens with the shoulder
-  // drop" is worth answering fastest, and this list can be long — a Default tab
-  // is every default move in the world.
-  //
-  // Built from the CURRENT TAB, not the whole list: switching tabs re-derives
-  // the chips, so the picker never offers a Tell that returns nothing on the
-  // tab you are looking at. The picks themselves survive the switch, which is
-  // the useful behaviour — narrowing to a Tag and then checking both tabs for
-  // it is a real thing to want.
-  const filters = useMoveFilters(inTab);
-  const shown = inTab.filter(filters.matches);
-  const tellList = useMemo(
-    () => [...tellById.values()].filter((t) => filters.presentTellIds.has(t.id)),
-    [tellById, filters.presentTellIds]
-  );
-  const tagList = (tags ?? []).filter((t) => filters.presentTagIds.has(t.id));
   // Feint Tag (decided, new): if the move this character just queued carries
   // the Feint Tag, whatever goes on next — on the first free Tic — is dealt
   // out of everyone else's view entirely until it reveals. Said out loud
@@ -1859,14 +1860,13 @@ function DeclareMovePicker({ entry, roundStartTic, declaredMoves, tags, tellById
           ))}
         </div>
       </div>
-      {/* **Tag on the left, Tell on the right**, on their own row under the
-          tabs rather than sharing one with them. Sharing was the first attempt
-          and it looked right with three chips and wrong with ten: the two
-          filters and the tab toggle all compete for the same line, so the Tells
-          ended up in a one-per-line column down the right edge. A row of their
-          own lets each side wrap into its own half. */}
+      {/* **The phone layout, and only the phone layout.** On a desktop these
+          live in columns either side of the panel (see ActiveDeclarePanel),
+          where there is room for a readable font. A phone has no side space to
+          give, so it keeps the compact in-panel row rather than being reflowed
+          into something worse. */}
       {(tagList.length > 0 || tellList.length > 0) && (
-        <div className="mb-1.5 flex items-start justify-between gap-3">
+        <div className="mb-1.5 flex items-start justify-between gap-3 md:hidden">
           <MoveFilterChips
             label="Tag:"
             items={tagList}
@@ -1932,7 +1932,38 @@ function DeclareMovePicker({ entry, roundStartTic, declaredMoves, tags, tellById
 // individually (decided, combat redesign) — there's no shared per-side
 // button anymore.
 function ActiveDeclarePanel({ entry, roundStartTic, declaredMoves, tags, tellById, styleDeltas, heldMove, opponents = [], aimId = null, onAim }) {
+  // Owned here rather than inside the picker so the filters can be rendered
+  // OUTSIDE the panel's border — see the columns below.
+  const list = useDeclareMoveList(entry);
+  const tellList = useMemo(
+    () => [...tellById.values()].filter((t) => list.filters.presentTellIds.has(t.id)),
+    [tellById, list.filters.presentTellIds]
+  );
+  const tagList = (tags ?? []).filter((t) => list.filters.presentTagIds.has(t.id));
   return (
+    // **The filters flank the panel on a desktop (decided, revised).** The
+    // picker is a narrow centred column with a great deal of empty screen on
+    // either side of it, and chips squeezed inside it were both cramped and too
+    // small to read at a glance — which is the one thing a filter has to be
+    // mid-round. Tag to the left of the move list, Tell to the right, at a
+    // readable size, in space that was carrying nothing.
+    //
+    // `items-start` so a long filter column does not stretch the panel, and the
+    // columns are `hidden md:flex`: a phone keeps the compact in-panel row,
+    // because it has no side space to give.
+    <div className="flex w-full items-start justify-center gap-4">
+      <div className="hidden md:flex">
+        <MoveFilterColumn
+          label="Tag"
+          items={tagList}
+          selected={list.filters.tagFilter}
+          onToggle={list.filters.toggleTag}
+          onClear={list.filters.clearTag}
+          labelFor={(t) => t.name}
+          titleFor={(t) => t.description}
+          align="right"
+        />
+      </div>
     <div className="w-full max-w-md space-y-2 panel-cut-lg border border-brand-800/50 bg-brand-950/20 p-3">
       <div className="flex items-center justify-between gap-2">
         <h3 className="truncate text-sm font-bold text-brand-200">{entry.character.name}'s turn to declare</h3>
@@ -1975,7 +2006,22 @@ function ActiveDeclarePanel({ entry, roundStartTic, declaredMoves, tags, tellByI
         tellById={tellById}
         styleDeltas={styleDeltas}
         heldMove={heldMove}
+        list={list}
+        tagList={tagList}
+        tellList={tellList}
       />
+    </div>
+      <div className="hidden md:flex">
+        <MoveFilterColumn
+          label="Tell"
+          items={tellList}
+          selected={list.filters.tellFilter}
+          onToggle={list.filters.toggleTell}
+          onClear={list.filters.clearTell}
+          labelFor={(t) => t.name}
+          align="left"
+        />
+      </div>
     </div>
   );
 }
