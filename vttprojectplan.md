@@ -322,6 +322,38 @@ database, proves a real fight is open before corrupting anything, and waits on b
 than sleeping. **Verified the only way that means anything: 6 probes fail against the pre-fix server
 and 0 against the fixed one.**
 
+**Phase 5.3 — the actual cause: `attributes is not defined` (bugfix, shipped).** Neither 5.1 nor 5.2
+was it. The Arena's own error banner — added in 5.2 — reported the answer in one line the moment it
+deployed: `/api/combat — internal error: attributes is not defined`.
+
+**It was a Phase 2 regression, not a Phase 5 one.** Commit `04ae8ca` replaced a local
+`const [counters, attributes] = ...` in `getPairStanceMatchup` with `const { beats, nameById } =
+await rulesetTables()`, and the memo returned no `attributes` — but a closure further down,
+`deltasFor`, still iterated it. `rulesetTables()` now returns the rows too.
+
+**Why every test missed it, and why that is the important part.** `deltasFor` is only reached for a
+facing where *both* fighters have an active stance. Every fixture in this repo creates bare NPCs, so
+the closure was unreachable in testing and the code looked exercised while the broken line never
+ran. It also explains the misleading shape of the failure: the Arena alone broke, because nothing
+else computes a stance matchup, and it broke *later* than the deploy that caused it, because it
+needed someone to set a stance. **A fixture simpler than real data does not test the code real data
+reaches** — `playtest-arena-resilience.mjs` now gives both fighters stances and asserts
+`stanceMatchups` is non-empty before trusting a single probe below it.
+
+**ESLint, scoped to correctness (decided, new).** `no-undef` finds this in milliseconds; it cost four
+deploys instead. `npm run lint` covers `server/` and `scripts/` with `js.configs.recommended` minus
+`no-unused-vars`/`no-empty` — a correctness gate, not a style gate, because a lint run noisy enough
+to ignore is worth nothing. `client/src` is deliberately excluded for now: several components carry
+`eslint-disable-next-line react-hooks/exhaustive-deps`, and ESLint 9 errors on a directive naming a
+rule it has not loaded, so linting the client means taking on the React Hooks plugin — worth doing,
+not worth bundling into a hotfix.
+
+**The standing lesson, and it is about method, not code.** Three deploys were spent theorising from
+"what changed most recently" — and the answer was a commit four phases back, invisible to every test,
+reachable only with production-shaped data. What actually solved it was making the failure *report
+itself*: one error banner turned four days of guessing into a one-line diagnosis. **When a symptom
+cannot be reproduced, stop reasoning about causes and go make the system say what is wrong.**
+
 **What this does not fix.** The remaining wait is the browser↔Render hop: the click travels to the
 server and the broadcast travels back, roughly 100–200ms depending on region, and no database change
 touches it. If the game still feels laggy after this, that hop is the culprit and **optimistic UI is
