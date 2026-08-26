@@ -28,6 +28,21 @@ const wait = (ev, pred = () => true, ms = 15000) =>
     const h = (p) => { if (pred(p)) { clearTimeout(t); gm.off(ev, h); res(p); } };
     gm.on(ev, h);
   });
+
+// The setup is itself under test. When `GET /api/combat` is broken, so is the
+// `combat:updated` broadcast that shapes the same payload — so a regression
+// here surfaces as a wait that never resolves, and an unhandled timeout would
+// report as a crash rather than as the failure it is.
+const setupFailed = (err) => {
+  console.log(`FAIL: setup could not complete — ${err?.message ?? err}`);
+  console.log('  (a broken combat payload breaks combat:updated too, so this is the bug, not flakiness)');
+  console.log('\n1 FAILED');
+  process.exit(1);
+};
+// Top-level await turns a rejected setup into an uncaught exception rather than
+// an unhandled rejection, so both routes are covered.
+process.on('unhandledRejection', setupFailed);
+process.on('uncaughtException', setupFailed);
 gm.emit('identity:set', { role: 'gm' }); await sleep(400);
 const stamp = Date.now();
 const a = await jpost('/api/characters', { name: `A${stamp}`, characterType: 'npc' });
@@ -37,6 +52,31 @@ const d = await jpost('/api/characters', { name: `D${stamp}`, characterType: 'np
 // script tested an empty Arena while reporting success. Waiting on the
 // broadcast rather than sleeping is the other half of not lying: a fixed sleep
 // cannot tell "it worked" from "it silently did nothing".
+// **Both fighters get an active stance, and that is not incidental.**
+//
+// `getPairStanceMatchup` only computes its per-Style deltas for a facing where
+// *both* sides have an active stance — so the closure that referenced an
+// undefined `attributes` was unreachable without them. Every test in this repo
+// created bare NPCs, every one passed, and the Arena was broken in production
+// for four deploys with `ReferenceError: attributes is not defined`.
+//
+// A fixture that is simpler than real data does not test the code real data
+// reaches. These two stances are the difference between this file catching that
+// bug and sailing straight past it.
+const styles = await fetch(`${BASE}/api/ruleset`).then((r) => r.json());
+const [s1, s2, s3] = styles.attributes ?? styles;
+const giveStance = async (character, attrA, attrB) => {
+  gm.emit('stance:create', {
+    characterId: character.id,
+    name: `Stance ${character.id}`,
+    attributeAId: attrA.id,
+    attributeBId: attrB.id,
+  });
+  await wait('stance:activated', (p) => p.characterId === character.id);
+};
+await giveStance(a, s1, s2);
+await giveStance(d, s2, s3);
+
 gm.emit('combat:add_participant', { characterId: a.id, side: 'left', pairIndex: 0 });
 await wait('combat:updated', (c) => c.participants.some((p) => p.character_id === a.id));
 gm.emit('combat:add_participant', { characterId: d.id, side: 'right', pairIndex: 0 });
@@ -78,6 +118,16 @@ const check = (label, ok, detail = '') => {
     'a real fight is open, so shapePair actually runs',
     pairs.length > 0,
     'combat_pairs is empty — shapePair is never called and the pause payloads below are never parsed'
+  );
+  // The stance matchup is the path that was actually broken in production, and
+  // it is only reached when both fighters have an active stance. Asserting the
+  // payload carries it is what keeps this fixture from quietly degrading back
+  // into the bare-NPC one that missed the bug.
+  const snapshot = await fetch(`${BASE}/api/combat?role=gm`).then((r) => r.json());
+  check(
+    'both fighters have active stances, so the stance matchup is computed',
+    snapshot.stanceMatchups && Object.keys(snapshot.stanceMatchups).length > 0,
+    'no stanceMatchups in the payload — getPairStanceMatchup is not being exercised'
   );
   if (fails) process.exit(1);
 }

@@ -208,6 +208,13 @@ function rulesetTables() {
     return {
       beats: buildBeats(counters),
       nameById: new Map(attributes.map((a) => [a.id, a.name])),
+      // The raw rows as well as the name lookup: getPairStanceMatchup scores
+      // every Style in the ruleset for its per-move deltas and needs to iterate
+      // them. Leaving this out is what broke the Arena — the memo replaced a
+      // local `attributes` binding that a closure further down still used, so
+      // the endpoint threw `attributes is not defined` for any pair where a
+      // seated fighter had an active stance, and only then.
+      attributes,
     };
   })();
   return rulesetPromise;
@@ -282,7 +289,7 @@ export async function getPairStanceMatchup(pairIndex) {
     )
   );
 
-  const { beats, nameById } = await rulesetTables();
+  const { beats, nameById, attributes } = await rulesetTables();
   const stylesOf = (characterId) => {
     const stance = stanceByChar.get(characterId);
     return stance ? [stance.attribute_a_id, stance.attribute_b_id] : null;
