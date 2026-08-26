@@ -68,6 +68,7 @@ import {
 import {
   carriesBlockTag,
   carriesFeintTag,
+  carriesOffTheGroundTag,
   effectiveTagNames,
   feintMasksDeclaration,
   movementBlockedByLegs,
@@ -88,6 +89,7 @@ import {
   resolveSideInitiative,
   computePlacementTic,
   computeMoveFootprint,
+  placementFloorAfterTrip,
   isMoveRevealedTo,
   relativeTic,
   computeNextRoundStartTic,
@@ -504,7 +506,7 @@ async function fetchDeclaredMoveRows() {
   return all(`
     SELECT dm.id, dm.character_id, dm.round_number, dm.queue_order,
            dm.placement_tic, dm.reveal_tic, dm.stamina_committed, dm.appendage_choice,
-           dm.recovery_extension_tics, dm.feint_masked, dm.target_character_id,
+           dm.recovery_extension_tics, dm.trip_recovery_tics, dm.feint_masked, dm.target_character_id,
            m.id AS move_id, m.name AS move_name, m.tell_id, m.right_tell_id,
            m.left_tell_id, m.active_tics, m.recovery_tics, m.stamina_cost,
            m.defense_frame_positions, m.is_defensive, m.attack_targets,
@@ -660,6 +662,13 @@ function mapDeclaredMovesForViewer(rows, pairsByIndex, viewer) {
       // every move untouched by a Block's Recovery extension — see the
       // column's own comment in db.js — the automatic engine is what sets it now.
       recoveryEndTic: row.reveal_tic + row.active_tics + row.recovery_tics + row.recovery_extension_tics,
+      // **Trip Recovery frames, as a count off the end (decided, new).** Same
+      // disclosure reasoning as the two Tic ends above: this is structure, not
+      // identity — where somebody is lying on the floor is a plain visible
+      // fact, and the Off The Ground Tag makes it one both sides play around.
+      // The client derives the window from this and recoveryEndTic, exactly as
+      // `tripWindow` does server-side, so there is one rule for where they are.
+      tripRecoveryTics: row.trip_recovery_tics ?? 0,
       // Same frame-timing precedent as activeEndTic/recoveryEndTic above:
       // fine to disclose regardless of reveal status, since it's structure
       // (when the defensive windows land), not identity. Positions are
@@ -4279,7 +4288,11 @@ io.on('connection', (socket) => {
       "SELECT status FROM dice WHERE character_id = ? AND slot_name IN ('Left Leg', 'Right Leg')",
       [character.id]
     )).map((d) => d.status);
-    if (movementBlockedByLegs({ tagNames: await moveTagNamesFor(character.id, move.id), legStatuses })) {
+    // Resolved once and reused: the leg gate needs it, and so does the Off The
+    // Ground floor below. A Perk may add or strip a Tag, so this is the
+    // per-character resolved set, never the move template's raw list.
+    const declaredTagNames = await moveTagNamesFor(character.id, move.id);
+    if (movementBlockedByLegs({ tagNames: declaredTagNames, legStatuses })) {
       return;
     }
 
@@ -4316,7 +4329,7 @@ io.on('connection', (socket) => {
         // dm.move_id rides along for the Requirement gate below: the move
         // whose footprint ends last IS the one this declaration would come
         // right after, which is exactly what a Requirement asks about.
-        `SELECT dm.move_id,
+        `SELECT dm.move_id, dm.trip_recovery_tics,
                 (dm.reveal_tic + m.active_tics + m.recovery_tics + dm.recovery_extension_tics) AS blocked_until_tic
          FROM declared_moves dm JOIN moves m ON m.id = dm.move_id
          WHERE dm.character_id = ?
@@ -4362,9 +4375,27 @@ io.on('connection', (socket) => {
     // earlier one is still active or recovering (revised: an earlier
     // version of this rule blocked only through Startup, letting a
     // still-Active/Recovering move get silently overlapped by a new one).
+    // **Off The Ground (decided, new).** A move carrying the Tag may start
+    // early enough that its Startup overlaps the trip frames this character is
+    // already lying in — you are getting up as you wind up. Two caps, both in
+    // `placementFloorAfterTrip`: never further back than the trip window
+    // itself (ordinary Recovery is still untouchable) and never more than this
+    // move's own Startup (its Active frames cannot begin before you are back
+    // on your feet).
+    //
+    // The floor only, exactly like every other rule here — the round's own
+    // start Tic still wins, so this can never reach back into a previous round.
+    const previousBlockedUntilTic = last
+      ? placementFloorAfterTrip({
+          blockedUntilTic: last.blocked_until_tic,
+          tripRecoveryTics: last.trip_recovery_tics ?? 0,
+          startupTics: move.startup_tics,
+          offTheGround: carriesOffTheGroundTag(declaredTagNames),
+        })
+      : null;
     const minPlacementTic = computePlacementTic({
       roundStartTic: pair.round_start_tic,
-      previousBlockedUntilTic: last ? last.blocked_until_tic : null,
+      previousBlockedUntilTic,
     });
     // A Requirement move doesn't get to pick its Tic: "right after" is a
     // timing claim, not just an ordering one, so it starts exactly where the

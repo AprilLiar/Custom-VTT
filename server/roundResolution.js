@@ -412,12 +412,22 @@ const IMPOSED_PHASE_PHRASE = {
 // Log line, the cutscene's own effect list and the round summary can never
 // describe the same displacement differently. `plan` is planImposedRecovery's
 // result, or null when there was no clock to apply it to (see imposeRecovery).
-function describeImposedRecovery(plan, amount, characterName, isOpponent) {
+function describeImposedRecovery(plan, amount, characterName, isOpponent, trip = false) {
   const arrow = isOpponent ? ` → ${characterName}` : ` (${characterName})`;
-  if (!plan || plan.phase === 'none') return `+${amount} Recovery${arrow}`;
+  // Named in the log, because the table has to be able to tell a trip from
+  // ordinary imposed Recovery without counting pixels on a Tic strip — it is
+  // the difference between "slow to recover" and "on the floor", and the Off
+  // The Ground Tag makes that difference playable.
+  const kind = trip ? 'Trip Recovery' : 'Recovery';
+  if (!plan || plan.phase === 'none') return `+${amount} ${kind}${arrow}`;
   const shifted = plan.updates.filter((u) => u.id !== plan.affectedMoveId).length;
   const tail = shifted ? `, ${shifted} move${shifted === 1 ? '' : 's'} pushed later` : '';
-  return `+${amount} Recovery${arrow} (${IMPOSED_PHASE_PHRASE[plan.phase]}${tail})`;
+  // A trip that landed on someone winding up, or between moves, produced no
+  // trip frames — the Tics went into Startup or into pure displacement (see
+  // planImposedRecovery). Saying "Trip Recovery" there would promise frames
+  // that are not on the clock.
+  const landed = trip && plan.phase === 'in-flight' ? 'Trip Recovery' : 'Recovery';
+  return `+${amount} ${landed}${arrow} (${IMPOSED_PHASE_PHRASE[plan.phase]}${tail})`;
 }
 
 // Mirrors server/index.js's applyMoveInteractions exactly, minus the
@@ -596,7 +606,7 @@ async function runAutomations(io, {
   // the reasoning and all three cases live in planImposedRecovery
   // (combatTiming.js), pure and unit-tested; this is only the read, the
   // write-back and the announcement.
-  const imposeRecovery = async (characterId, characterName, tics, atTic) => {
+  const imposeRecovery = async (characterId, characterName, tics, atTic, trip = false) => {
     if (characterId == null) return null;
     // The engine always knows the Tic it is resolving. server/index.js's
     // combat:apply_damage — the chat card's manual Apply button, the one
@@ -616,7 +626,7 @@ async function runAutomations(io, {
     if (!Number.isInteger(clockTic)) return null;
     const rows = await all(
       `SELECT dm.id, dm.placement_tic, dm.reveal_tic, dm.recovery_extension_tics,
-              m.active_tics, m.recovery_tics
+              dm.trip_recovery_tics, m.active_tics, m.recovery_tics
        FROM declared_moves dm JOIN moves m ON m.id = dm.move_id
        WHERE dm.character_id = ?
        ORDER BY dm.placement_tic`,
@@ -630,16 +640,20 @@ async function runAutomations(io, {
         activeTics: r.active_tics,
         recoveryTics: r.recovery_tics,
         recoveryExtensionTics: r.recovery_extension_tics,
+        tripRecoveryTics: r.trip_recovery_tics,
       })),
       tic: clockTic,
       tics,
+      trip,
     });
-    for (const u of plan.updates) {
-      await run(
-        'UPDATE declared_moves SET placement_tic = ?, reveal_tic = ?, recovery_extension_tics = ? WHERE id = ?',
-        [u.placementTic, u.revealTic, u.recoveryExtensionTics, u.id]
-      );
-    }
+    // One batched write rather than one per displaced move: a cascade can touch
+    // every move a character has declared, and this is inside the round engine.
+    await writeMany(
+      plan.updates.map((u) => [
+        'UPDATE declared_moves SET placement_tic = ?, reveal_tic = ?, recovery_extension_tics = ?, trip_recovery_tics = ? WHERE id = ?',
+        [u.placementTic, u.revealTic, u.recoveryExtensionTics, u.tripRecoveryTics ?? 0, u.id],
+      ])
+    );
     // Only the moves that genuinely MOVED, which is every update except the
     // in-flight one (that one grew rather than moved). The cutscene needs the
     // distinction to animate them differently — see moves_displaced there.
@@ -682,16 +696,28 @@ async function runAutomations(io, {
       // A NEGATIVE self_recovery is the one exception and keeps the old
       // local path (see shrinkRecovery): shortening a window is not a
       // displacement, and nothing should arrive earlier than it was thrown.
+      // The two trip effects are their `_recovery` siblings with one flag set.
+      // Deliberately falling through into the same cases rather than being
+      // handled apart: everything about them — where the frames land, what is
+      // displaced, the Chat Log line, the round event — is meant to be
+      // identical, and the only way to guarantee that is for it to be the same
+      // code.
+      case 'self_trip_recovery':
       case 'self_recovery': {
-        if (amount < 0) {
+        const trip = automation.type === 'self_trip_recovery';
+        if (amount < 0 && !trip) {
           const applied = await shrinkRecovery(selfDeclaredMoveId, amount);
           if (applied) effects.push(`−${Math.abs(amount)} Recovery (${selfCharacter.name})`);
           break;
         }
-        const plan = await imposeRecovery(selfCharacterId, selfCharacter.name, amount, tic);
-        effects.push(describeImposedRecovery(plan, amount, selfCharacter.name, false));
+        // A negative trip is not "un-tripping" anything, so it is dropped
+        // rather than quietly shortening a window the way self_recovery does.
+        if (amount < 0) break;
+        const plan = await imposeRecovery(selfCharacterId, selfCharacter.name, amount, tic, trip);
+        effects.push(describeImposedRecovery(plan, amount, selfCharacter.name, false, trip));
         break;
       }
+      case 'opponent_trip_recovery':
       case 'opponent_recovery': {
         if (!opponentCharacter) break;
         // No "whichever of their moves ends latest" fallback any more. That
@@ -699,8 +725,9 @@ async function runAutomations(io, {
         // the exchange — but the question was never "which move", it was
         // "what are they doing right now", and the idle case is a real
         // answer rather than a missing one.
-        const plan = await imposeRecovery(opponentCharacterId, opponentCharacter.name, amount, tic);
-        effects.push(describeImposedRecovery(plan, amount, opponentCharacter.name, true));
+        const trip = automation.type === 'opponent_trip_recovery';
+        const plan = await imposeRecovery(opponentCharacterId, opponentCharacter.name, amount, tic, trip);
+        effects.push(describeImposedRecovery(plan, amount, opponentCharacter.name, true, trip));
         break;
       }
       case 'self_stat_step':
@@ -1620,10 +1647,16 @@ async function runInterruptAndDamage(io, {
   // the rule asks for.
   //
   // The consequence runs through `runAutomations` with an ordinary
-  // `opponent_recovery`, rather than reaching for the Recovery machinery
+  // `opponent_trip_recovery`, rather than reaching for the Recovery machinery
   // directly: that is what "works like the Add Recovery trigger" has to mean if
   // it is going to behave identically — same displacement rules, same Chat Log
   // line, same round event, same cutscene beat.
+  //
+  // **Trip Recovery, not ordinary Recovery (revised).** Being caught mid-stride
+  // puts you on the floor, which is a different state from being slow to
+  // recover: the frames draw as their own darker blue with a down arrow, and a
+  // move carrying **Off The Ground** may wind up during them. The count is
+  // unchanged at 3.
   if (applied.length) {
     const trippedMove = await movementMoveInPlay(targetCharacterId, tic);
     const punished =
@@ -1645,7 +1678,7 @@ async function runInterruptAndDamage(io, {
       );
     } else if (punished) {
       await runAutomations(io, {
-        automations: [{ type: 'opponent_recovery', amount: MOVEMENT_PUNISH_RECOVERY }],
+        automations: [{ type: 'opponent_trip_recovery', amount: MOVEMENT_PUNISH_RECOVERY }],
         text: 'caught mid-stride — they go down',
         trigger: 'movement_punished',
         sourceName: 'Movement Punisher',

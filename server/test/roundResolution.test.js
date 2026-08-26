@@ -1986,13 +1986,22 @@ test('Movement Punisher: connecting with a Movement move imposes Recovery on it'
   assert.equal(fired.sourceKind, 'tag');
   assert.equal(fired.trigger, 'movement_punished');
   // It runs through the ordinary Add Recovery effect, so it reports the same
-  // way one authored on a move would.
-  assert.ok(fired.effects.some((x) => /\+3 Recovery/.test(x)), JSON.stringify(fired.effects));
+  // way one authored on a move would — but as **Trip** Recovery (revised):
+  // being caught mid-stride puts you on the floor, which is a different state
+  // from being slow to recover, and the log has to say which one happened.
+  assert.ok(fired.effects.some((x) => /\+3 Trip Recovery/.test(x)), JSON.stringify(fired.effects));
 
   // And the Recovery actually landed on the clock, not just in the log.
-  const dm = await one('SELECT reveal_tic, recovery_extension_tics FROM declared_moves WHERE id = ?', [dashId]);
+  const dm = await one(
+    'SELECT reveal_tic, recovery_extension_tics, trip_recovery_tics FROM declared_moves WHERE id = ?',
+    [dashId]
+  );
   const displaced = (dm?.recovery_extension_tics ?? 0) > 0 || dm?.reveal_tic > 1;
   assert.ok(displaced, `the Movement move should have been pushed about: ${JSON.stringify(dm)}`);
+  // The frames are marked as trip frames on the row itself, which is what the
+  // Off The Ground Tag reads at declare time and what draws with the arrow.
+  // Asserting only the log would pass while the column stayed 0.
+  assert.equal(dm?.trip_recovery_tics, 3, JSON.stringify(dm));
 });
 
 test('Movement Punisher does nothing without both Tags', async () => {

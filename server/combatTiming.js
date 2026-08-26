@@ -85,6 +85,65 @@ export function computeMoveFootprint({ placementTic, startupTics, activeTics, re
   return { placementTic, revealTic, activeEndTic, recoveryEndTic };
 }
 
+// **Trip Recovery Frames (decided, new).**
+//
+// A distinct kind of Recovery: same timing behaviour in every respect —
+// it blocks, it displaces, it ends a footprint — but the fighter is on the
+// **ground** for it rather than merely recovering, and two rules read that
+// difference. The **Off The Ground** Tag lets a move's Startup overlap them
+// (and only them), and the two trip automations impose them by name.
+//
+// **Trip frames always sit at the END of a footprint**, which is not an
+// arbitrary choice: they are imposed at the moment the trip lands and go on
+// after whatever the fighter was already doing, exactly where
+// `recovery_extension_tics` already puts imposed Recovery. That makes the
+// window derivable from the footprint end and a count, with nothing to store
+// about *where* they are — one number per declared move.
+//
+// Half-open [from, to), the same convention every other footprint test here
+// uses. Floored at `activeEndTic` so a trip larger than the move's own
+// Recovery window cannot eat into its Active frames — being knocked down does
+// not retroactively un-throw the punch that was already landing.
+export function tripWindow({ activeEndTic, recoveryEndTic, tripRecoveryTics = 0 }) {
+  const tics = Math.max(0, Math.trunc(Number(tripRecoveryTics) || 0));
+  if (tics <= 0) return null;
+  const from = Math.max(activeEndTic, recoveryEndTic - tics);
+  if (from >= recoveryEndTic) return null;
+  return { from, to: recoveryEndTic };
+}
+
+// **Where an Off The Ground move may start (decided, new).**
+//
+// Normally a character's next move is floored at their previous move's full
+// footprint end — `computePlacementTic`'s `previousBlockedUntilTic`. A move
+// carrying **Off The Ground** may begin earlier, so that its Startup overlaps
+// the trip frames: you are winding up as you get back to your feet.
+//
+// Two limits, and both are the point of the rule:
+//
+//  - **Only the trip frames.** The floor never reaches back past where the
+//    trip window began, so ordinary Recovery is still untouchable. A move
+//    with 5 Startup against 2 trip frames overlaps 2, not 5.
+//  - **Only the Startup.** The overlap is capped at the move's own Startup
+//    length, which is the same statement as: its Active frames may not begin
+//    before the trip window ends. You can be getting up while winding up; you
+//    cannot throw the punch from the floor.
+//
+// Returns the earliest legal placement Tic. With no trip frames, or without
+// the Tag, this is exactly `blockedUntilTic` — the existing rule, unchanged.
+export function placementFloorAfterTrip({
+  blockedUntilTic,
+  tripRecoveryTics = 0,
+  startupTics = 0,
+  offTheGround = false,
+}) {
+  if (blockedUntilTic == null) return null;
+  if (!offTheGround) return blockedUntilTic;
+  const trip = Math.max(0, Math.trunc(Number(tripRecoveryTics) || 0));
+  const startup = Math.max(0, Math.trunc(Number(startupTics) || 0));
+  return blockedUntilTic - Math.min(trip, startup);
+}
+
 // Reveal state is computed live from the current Tic, never cached — so
 // moving the counter backward naturally re-hides a move that hasn't
 // "really" happened yet. The declaring character's own client always sees
@@ -225,7 +284,7 @@ export function overlapsRoundWindow({ placementTic, recoveryEndTic, roundStartTi
 // pulling later moves earlier would violate the placement floors they were
 // declared under, so that case is deliberately left to the plain
 // `clampRecoveryExtension` path and answers `{ phase: 'none' }` here.
-export function planImposedRecovery({ moves, tic, tics }) {
+export function planImposedRecovery({ moves, tic, tics, trip = false }) {
   const none = { phase: 'none', affectedMoveId: null, updates: [] };
   if (!Number.isInteger(tics) || tics <= 0) return none;
   if (!Number.isInteger(tic)) return none;
@@ -240,13 +299,28 @@ export function planImposedRecovery({ moves, tic, tics }) {
   const hit = withEnds.find((m) => m.placementTic <= tic && tic < m.recoveryEndTic) ?? null;
   const phase = hit == null ? 'idle' : tic < hit.revealTic ? 'startup' : 'in-flight';
 
+  // **Trip frames are only created where the imposed Tics land as Recovery**
+  // (decided, new). There are three cases and only one of them produces them:
+  //
+  //  - **in-flight** — the Tics go on the end, as Recovery, so with `trip` they
+  //    go on as Trip Recovery. This is the case that matters and the only one
+  //    Movement Punisher can normally reach, since an attack that deals damage
+  //    during Startup Interrupts instead (see the plan), deleting the move.
+  //  - **startup** — the Tics extend the wind-up. Those are Startup frames, not
+  //    Recovery ones, so there is nothing to mark: the move is delayed exactly
+  //    as an ordinary imposed Recovery delays it.
+  //  - **idle** — nothing is drawn on idle Tics at all (a decided rule: a Tic
+  //    strip draws declared moves, and there is no declared move there), so the
+  //    whole effect is the displacement, trip or not.
   const updates = [];
   if (hit && phase === 'startup') {
     updates.push({ id: hit.id, placementTic: hit.placementTic, revealTic: hit.revealTic + tics,
-      recoveryExtensionTics: hit.recoveryExtensionTics ?? 0 });
+      recoveryExtensionTics: hit.recoveryExtensionTics ?? 0,
+      tripRecoveryTics: hit.tripRecoveryTics ?? 0 });
   } else if (hit) {
     updates.push({ id: hit.id, placementTic: hit.placementTic, revealTic: hit.revealTic,
-      recoveryExtensionTics: (hit.recoveryExtensionTics ?? 0) + tics });
+      recoveryExtensionTics: (hit.recoveryExtensionTics ?? 0) + tics,
+      tripRecoveryTics: (hit.tripRecoveryTics ?? 0) + (trip ? tics : 0) });
   }
 
   // "After the affected one" is measured from where the affected move
@@ -263,6 +337,9 @@ export function planImposedRecovery({ moves, tic, tics }) {
       placementTic: m.placementTic + tics,
       revealTic: m.revealTic + tics,
       recoveryExtensionTics: m.recoveryExtensionTics ?? 0,
+      // A displaced move slides whole: its own frames are unchanged, trip
+      // frames included. Only the move that was actually caught grows.
+      tripRecoveryTics: m.tripRecoveryTics ?? 0,
     });
   }
 

@@ -440,6 +440,10 @@ const mv = (id, placementTic, { startup = 2, active = 2, recovery = 2, ext = 0 }
   recoveryExtensionTics: ext,
 });
 
+// Every expectation below carries `tripRecoveryTics: 0`: the update shape grew
+// one field when Trip Recovery arrived, and these assert the whole object on
+// purpose — a partial match would stop noticing a field that started coming
+// back wrong. The trip cases themselves are in tripFrames.test.js.
 test('planImposedRecovery: caught in Startup, the move is delayed rather than lengthened', () => {
   const r = planImposedRecovery({ moves: [mv(1, 0)], tic: 1, tics: 2 });
   assert.equal(r.phase, 'startup');
@@ -447,7 +451,7 @@ test('planImposedRecovery: caught in Startup, the move is delayed rather than le
   assert.deepEqual(r.updates, [
     // placementTic stays — the wind-up really did begin there — and the
     // extra Tics go into Startup, dragging Active and Recovery later.
-    { id: 1, placementTic: 0, revealTic: 4, recoveryExtensionTics: 0 },
+    { id: 1, placementTic: 0, revealTic: 4, recoveryExtensionTics: 0, tripRecoveryTics: 0 },
   ]);
 });
 
@@ -455,7 +459,7 @@ test('planImposedRecovery: caught mid-Active or mid-Recovery, the frames go on t
   for (const tic of [2, 3, 4, 5]) {
     const r = planImposedRecovery({ moves: [mv(1, 0)], tic, tics: 3 });
     assert.equal(r.phase, 'in-flight', `tic ${tic}`);
-    assert.deepEqual(r.updates, [{ id: 1, placementTic: 0, revealTic: 2, recoveryExtensionTics: 3 }], `tic ${tic}`);
+    assert.deepEqual(r.updates, [{ id: 1, placementTic: 0, revealTic: 2, recoveryExtensionTics: 3, tripRecoveryTics: 0 }], `tic ${tic}`);
   }
 });
 
@@ -477,7 +481,7 @@ test('planImposedRecovery: caught between moves, the whole effect is the displac
   assert.equal(r.affectedMoveId, null);
   // Nothing is drawn on the idle Tics — there is no declared move there to
   // draw — so the only change is that what came later moved later.
-  assert.deepEqual(r.updates, [{ id: 2, placementTic: 11, revealTic: 13, recoveryExtensionTics: 0 }]);
+  assert.deepEqual(r.updates, [{ id: 2, placementTic: 11, revealTic: 13, recoveryExtensionTics: 0, tripRecoveryTics: 0 }]);
 });
 
 test('planImposedRecovery: everything declared after the affected move slides by the same amount', () => {
@@ -485,9 +489,9 @@ test('planImposedRecovery: everything declared after the affected move slides by
   const r = planImposedRecovery({ moves, tic: 3, tics: 2 });
   assert.equal(r.phase, 'in-flight');
   assert.deepEqual(r.updates, [
-    { id: 1, placementTic: 0, revealTic: 2, recoveryExtensionTics: 2 },
-    { id: 2, placementTic: 8, revealTic: 10, recoveryExtensionTics: 0 },
-    { id: 3, placementTic: 14, revealTic: 16, recoveryExtensionTics: 0 },
+    { id: 1, placementTic: 0, revealTic: 2, recoveryExtensionTics: 2, tripRecoveryTics: 0 },
+    { id: 2, placementTic: 8, revealTic: 10, recoveryExtensionTics: 0, tripRecoveryTics: 0 },
+    { id: 3, placementTic: 14, revealTic: 16, recoveryExtensionTics: 0, tripRecoveryTics: 0 },
   ]);
 });
 
@@ -507,7 +511,7 @@ test('planImposedRecovery: a move ALREADY past is never touched', () => {
   const moves = [mv(1, 0), mv(2, 9)];
   const r = planImposedRecovery({ moves, tic: 10, tics: 2 });
   assert.equal(r.phase, 'startup'); // move 2's own Startup is 9-10
-  assert.deepEqual(r.updates, [{ id: 2, placementTic: 9, revealTic: 13, recoveryExtensionTics: 0 }]);
+  assert.deepEqual(r.updates, [{ id: 2, placementTic: 9, revealTic: 13, recoveryExtensionTics: 0, tripRecoveryTics: 0 }]);
 });
 
 test('planImposedRecovery: zero, negative and non-integer amounts change nothing', () => {

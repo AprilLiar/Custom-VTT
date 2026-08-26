@@ -36,10 +36,26 @@ export const HARD_TO_INTERRUPT_TAG = 'Hard to Interrupt';
 export const MOVEMENT_TAG = 'Movement';
 export const MOVEMENT_PUNISHER_TAG = 'Movement Punisher';
 
+// **Off The Ground**: the Tag that reads Trip Recovery frames. A move carrying
+// it may be declared so its Startup overlaps the declarer's own trip frames —
+// see `placementFloorAfterTrip` in combatTiming.js for the two caps that keep
+// it from becoming a general "start earlier" licence.
+//
+// The only Tag so far whose effect is at **declare** time rather than at
+// resolution: it does not change what the move does, only when it may be put
+// on the clock.
+export const OFF_THE_GROUND_TAG = 'Off The Ground';
+
 // How much Recovery a punished Movement move costs its owner. A flat 3 rather
 // than a number in the Tag's name: the two Interruption Tags are parameterised
 // because their whole point is scaling a contest, and this one is a single
 // consequence the table can price once.
+//
+// **These are Trip Recovery frames (decided, revised).** Being caught
+// mid-stride puts you on the floor, which is a different state from being
+// slow to recover — Off The Ground reads it, and the frames draw as their
+// own darker blue with a down arrow. The count is unchanged; what changed is
+// what kind of frames they are.
 export const MOVEMENT_PUNISH_RECOVERY = 3;
 
 // One entry per Tag that carries mechanics. See resolveBlockStamina and
@@ -94,6 +110,13 @@ export const TAG_HOOKS = {
     // Fires only against a Movement move, and only on a real connection.
     punishesTag: MOVEMENT_TAG,
     imposesRecovery: MOVEMENT_PUNISH_RECOVERY,
+    // ...and they land as Trip Recovery, not ordinary Recovery.
+    imposesTripRecovery: true,
+  },
+  [OFF_THE_GROUND_TAG]: {
+    // Read at declare time by the placement floor, not at resolution. Nothing
+    // in the damage or timing engines looks at it.
+    overlapsTripRecovery: true,
   },
   [FEINT_TAG]: {
     // A Feint shows its own Tell exactly like any other move — that is the
@@ -223,6 +246,7 @@ export function movementPunisherApplies({ punisherTagNames, targetTagNames, dama
 export const carriesBlockTag = (tagNames) => hasTagNamed(tagNames, BLOCK_TAG);
 export const carriesNoDamageTag = (tagNames) => hasTagNamed(tagNames, NO_DAMAGE_TAG);
 export const carriesFeintTag = (tagNames) => hasTagNamed(tagNames, FEINT_TAG);
+export const carriesOffTheGroundTag = (tagNames) => hasTagNamed(tagNames, OFF_THE_GROUND_TAG);
 
 // Does a Feint conceal the declaration being made? "Right after" is a timing
 // claim, not just an ordering one — the same reading the Requirement gate

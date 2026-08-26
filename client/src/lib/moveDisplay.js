@@ -48,6 +48,13 @@ export function automationLabel({ type, amount, slot }) {
       return `Recover${where} ${n} step${n === 1 ? '' : 's'} (self, never past base)`;
     case 'opponent_next_roll_penalty':
       return `−${n} on the opponent's next roll`;
+    // Named as a trip rather than as Recovery-with-a-qualifier: the frames
+    // behave identically, but what the author is choosing is to put somebody
+    // on the floor, and the Off The Ground Tag is playable off that fact.
+    case 'self_trip_recovery':
+      return `Trip yourself — +${n} Trip Recovery`;
+    case 'opponent_trip_recovery':
+      return `Trip the opponent — +${n} Trip Recovery`;
     default:
       return `${type} ${amount}`;
   }
@@ -68,6 +75,10 @@ export const AUTOMATION_OPTIONS = [
   // Same upward step, with a ceiling: healing back toward where the Stat
   // started, never past it.
   { type: 'self_stat_recover', label: 'Recover your own Stat (never past base)' },
+  // The two trip effects. Deliberately next to the Recovery options they are
+  // siblings of, so an author comparing "add Recovery" with "trip" sees both.
+  { type: 'opponent_trip_recovery', label: 'Trip the opponent (Trip Recovery)' },
+  { type: 'self_trip_recovery', label: 'Trip yourself (Trip Recovery)' },
   { type: 'opponent_next_roll_penalty', label: "Weaken the opponent's next roll" },
 ];
 

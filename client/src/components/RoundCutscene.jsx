@@ -8,6 +8,8 @@ import { decomposeRoll, formatRollPart, formatRollBreakdown } from '../lib/dice.
 import {
   PHASE_BG,
   PHASE_BG_EXTENDED,
+  TRIP_MARK,
+  isTripTic,
   PHASE_LABEL,
   phaseAt,
   isExtendedRecoveryTic,
@@ -919,6 +921,15 @@ function footprintsFrom(events, upTo) {
         // else put on you, so they are drawn in Recovery blue.
         hitFp.recoveryExtendedKind = 'imposed';
         hitFp.recoveryEndTic += by;
+        // **Trip frames, folded in as a delta like everything else here.**
+        // Only the in-flight case produces any — the Startup case puts the
+        // Tics into the wind-up and the idle case draws nothing at all (see
+        // planImposedRecovery server-side) — which is why this sits in this
+        // branch rather than above the phase test. Accumulated, not assigned:
+        // a fighter tripped twice in one round is on the floor for the sum.
+        if (p.trip) {
+          hitFp.tripRecoveryTics = (hitFp.tripRecoveryTics ?? 0) + by;
+        }
       }
       continue;
     }
@@ -1240,7 +1251,13 @@ function MoveBar({ fp, ticks, startTic, effect, beat, staminaFlash }) {
                     ? 'bg-zinc-600/60'
                     : 'bg-zinc-800/50'
                   : extended
-                    ? PHASE_BG_EXTENDED[imposed ? 'recovery' : 'defense']
+                    ? // An imposed Tic that is also a trip Tic keeps the trip
+                      // colour: it is dimmed because somebody else put it
+                      // there, but it is still the floor — losing that here
+                      // would leave the arrow sitting on ordinary blue.
+                      PHASE_BG_EXTENDED[
+                        imposed ? (isTripTic(fp, tic) ? 'trip_recovery' : 'recovery') : 'defense'
+                      ]
                     : phase
                       ? PHASE_BG[phase]
                       : 'bg-zinc-800/50'
@@ -1254,6 +1271,22 @@ function MoveBar({ fp, ticks, startTic, effect, beat, staminaFlash }) {
                   continuous line. */}
               {dead && phase && (
                 <span className="pointer-events-none absolute inset-x-0 top-1/2 h-px -translate-y-1/2 bg-zinc-300" />
+              )}
+              {/* **Trip Recovery wears a down arrow (decided, new).** The
+                  darker blue alone is not enough: it is deliberately adjacent
+                  to ordinary Recovery — because it *is* Recovery, just spent on
+                  the floor — and two adjacent blues is exactly the distinction
+                  that fails for anyone who cannot separate them. The arrow is
+                  what actually carries it. Skipped on a dead cell, where the
+                  move never happened and there is nothing to be on the floor
+                  for. */}
+              {!dead && isTripTic(fp, tic) && (
+                <span
+                  aria-hidden="true"
+                  className="pointer-events-none absolute inset-0 flex items-center justify-center text-[9px] font-bold leading-none text-blue-200/90 md:text-[11px]"
+                >
+                  {TRIP_MARK}
+                </span>
               )}
             </span>
           );
