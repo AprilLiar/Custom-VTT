@@ -289,6 +289,39 @@ in `Sync` is telling you it blocks. That is free for local work and ruinous for 
 the network, and the difference is invisible in development — where `usingRemote` is false and the
 sync path never runs at all. **Check what blocks before putting it on a timer.**
 
+**Phase 5.2 — the Arena could be taken down by one bad row (bugfix, shipped).** The Arena stayed
+stuck on "Loading…" after 5.1, so the blocking sync was not the cause. Five confirmed ones were found
+instead, each a 500 from `GET /api/combat`:
+
+- **`combat_state` row 1 missing.** Every field below it is dereferenced off that row, and *nothing
+  else in the app reads `combat_state`* — which is exactly why the Arena alone broke while every
+  other page stayed fast. `initDb` seeds the row each boot, so its absence means something ate it;
+  the endpoint now re-creates it and says so, because a fight that has to be restarted beats an
+  Arena nobody can open.
+- **Four unguarded `JSON.parse` calls** on mid-round pause payloads (Dodge, Block, conflict,
+  grapple) — the least trustworthy rows in the database, written by a resolution a redeploy or a
+  spin-down may have interrupted halfway. One unreadable pause on one pair now degrades to "this
+  pair has no prompt", loudly logged, instead of costing everyone the whole screen. The shaping step
+  is guarded too, since parsing safely and then shaping unsafely is a guard in name only.
+
+**Two failures of reporting mattered as much as the bug.** `GET /api/combat` is the Arena's whole
+world — if it throws there is no partial state to fall back on — and every fetch ended in
+`.catch(console.error)` behind a `!combat || !roster || !folders || !tells` gate. So any failure
+became an infinite spinner with no error, no detail and no retry. The Arena now renders **which**
+endpoint failed and **why**, with a retry; and `wrap` returns the real message instead of a flat
+`internal error`, since there is no auth here by design and `/api/health` has always done the same.
+A UI that cannot report its own failure makes every future failure equally opaque, which is the more
+expensive bug.
+
+`scripts/playtest-arena-resilience.mjs` pins all five. **It also has its own lesson.** The first
+version passed everything while testing nothing three separate ways: it corrupted a different
+database file than the server was reading, it asserted on `payload.pairs` which is a truthy `[]`
+when no fight exists, and it seated fighters with `combat:seat` — an event that does not exist, so
+`combat:next_round` was a no-op and `shapePair` never ran. It now proves it shares the server's
+database, proves a real fight is open before corrupting anything, and waits on broadcasts rather
+than sleeping. **Verified the only way that means anything: 6 probes fail against the pre-fix server
+and 0 against the fixed one.**
+
 **What this does not fix.** The remaining wait is the browser↔Render hop: the click travels to the
 server and the broadcast travels back, roughly 100–200ms depending on region, and no database change
 touches it. If the game still feels laggy after this, that hop is the culprit and **optimistic UI is

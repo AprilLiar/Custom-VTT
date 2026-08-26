@@ -772,6 +772,49 @@ async function getPendingStaminaCost(characterId) {
 // by both GET /api/combat and combat:updated — camelCase, plus the derived
 // relativeTic/isOverflow/overflowBy every existing Tic Counter render
 // already expects (see combatTiming.js's relativeTic).
+// **A pause payload that will not take the Arena down with it (bugfix, new).**
+//
+// `GET /api/combat` is the Arena's whole world — if it throws, the page has no
+// partial state to fall back on and simply never finishes loading. That makes
+// every `JSON.parse` on this path a single point of failure for the entire
+// screen, and the values being parsed are the *least* trustworthy rows in the
+// database: mid-round pause payloads, written by a resolution that may have
+// been interrupted by a redeploy or a free-tier spin-down halfway through.
+//
+// One unreadable pause on one pair is not a reason nobody can see the Arena.
+// It degrades to "this pair has no prompt", which the GM can clear and re-run,
+// and it says so loudly in the log rather than silently — a prompt that has
+// quietly vanished is its own bug and must not look like normal operation.
+function parsePausePayload(json, what, pairIndex) {
+  if (!json) return null;
+  try {
+    return JSON.parse(json);
+  } catch (err) {
+    console.error(
+      `Unreadable ${what} payload on pair ${pairIndex} — the prompt is being dropped so the ` +
+        `Arena can still load. Clear the pair to re-run the round. Stored value: ${String(json).slice(0, 200)}`,
+      err
+    );
+    return null;
+  }
+}
+
+// The same guard extended over the shaping step. `defensePromptPayload` reads
+// fields off the parsed payload, so handing it a null — or a payload that
+// parsed but is not the shape it expects, which a half-written row can easily
+// be — would throw from one line further down and cost the whole Arena just the
+// same. Parsing safely and then shaping unsafely would be a guard in name only.
+function defensePromptOrNull(json, kind, what, pairIndex) {
+  const payload = parsePausePayload(json, what, pairIndex);
+  if (!payload) return null;
+  try {
+    return defensePromptPayload(payload, kind);
+  } catch (err) {
+    console.error(`Unusable ${what} payload on pair ${pairIndex} — dropping the prompt.`, err);
+    return null;
+  }
+}
+
 function shapePair(row, roundLength, resolution, viewer) {
   const tic = relativeTic({ tic: row.current_tic, roundStartTic: row.round_start_tic, roundLength });
   return {
@@ -801,13 +844,13 @@ function shapePair(row, roundLength, resolution, viewer) {
     // business reading that mid-round.
     pendingDodge:
       viewer?.role === 'gm' && resolution?.status === 'paused_dodge' && resolution.pending_dodge_json
-        ? defensePromptPayload(JSON.parse(resolution.pending_dodge_json), 'dodge')
+        ? defensePromptOrNull(resolution.pending_dodge_json, 'dodge', 'Dodge', row.pair_index)
         : null,
     // The conflict prompt is the affected *fighter's* call, not the GM's, so it
     // stays on the shared shape and the client filters it by ownership.
     pendingConflict:
       resolution?.status === 'paused_conflict' && resolution.pending_conflict_json
-        ? JSON.parse(resolution.pending_conflict_json)
+        ? parsePausePayload(resolution.pending_conflict_json, 'conflict', row.pair_index)
         : null,
     // The Block prompt rides the same snapshot as the Dodge prompt above, so a
     // GM who connects (or reconnects) into an already-paused pair picks it up
@@ -816,7 +859,7 @@ function shapePair(row, roundLength, resolution, viewer) {
     // role gate, matching combat:block_prompt's emitToGMs delivery).
     pendingDefense:
       viewer?.role === 'gm' && resolution?.status === 'paused_defense' && resolution.pending_defense_json
-        ? defensePromptPayload(JSON.parse(resolution.pending_defense_json), 'block')
+        ? defensePromptOrNull(resolution.pending_defense_json, 'block', 'Block', row.pair_index)
         : null,
     // Deliberately NOT included here. Grappling's prompt differs per viewer —
     // the grappler sees the move names, the target sees four blanks — so it
@@ -959,7 +1002,12 @@ async function emitCombatUpdatedTo(viewerSocket) {
 // a PC's declared move either.
 function mapPendingGrappleForViewer(resolution, identity, participants) {
   if (resolution?.status !== 'paused_grapple' || !resolution.pending_grapple_json) return null;
-  const pending = JSON.parse(resolution.pending_grapple_json);
+  const pending = parsePausePayload(
+    resolution.pending_grapple_json,
+    'grapple',
+    resolution.pair_index
+  );
+  if (!pending) return null;
   const owns = (characterId) => {
     if (!identity) return false;
     if (identity.role === 'player') return identity.characterId === characterId;
@@ -1152,10 +1200,23 @@ const TRIGGER_LABELS = {
 
 // Express 4 doesn't catch async route errors — without this a DB hiccup
 // would crash the whole server.
+// The message rides along with the 500 (decided, new).
+//
+// It used to be a flat `internal error`, which meant a failing endpoint told
+// nobody anything: the server log had the stack, but the log lives on Render
+// and the person looking at the broken screen is usually not the person who can
+// read it. That is exactly how an Arena that threw on every load presented as
+// an infinite spinner with no way in — see the Arena's own error state.
+//
+// Nothing is leaked by this that the app does not already hand out: there is no
+// auth here by design (see the plan), `/api/health` has always returned
+// `err.message`, and every reader is a GM or a player at the same table.
 const wrap = (fn) => (req, res) =>
   fn(req, res).catch((err) => {
     console.error(`error in ${req.method} ${req.path}:`, err);
-    if (!res.headersSent) res.status(500).json({ error: 'internal error' });
+    if (!res.headersSent) {
+      res.status(500).json({ error: err?.message ? `internal error: ${err.message}` : 'internal error' });
+    }
   });
 
 app.get('/api/health', async (_req, res) => {
@@ -1410,11 +1471,23 @@ app.get('/api/combat/round-replay/:resolutionId', wrap(async (req, res) => {
 
 app.get('/api/combat', wrap(async (req, res) => {
   const viewer = viewerFromQuery(req.query);
-  const [state, participants, pairRows] = await Promise.all([
+  let [state, participants, pairRows] = await Promise.all([
     one('SELECT * FROM combat_state WHERE id = 1'),
     allParticipants(),
     all('SELECT * FROM combat_pairs ORDER BY pair_index'),
   ]);
+
+  // `initDb` seeds this row on every boot, so its absence means something ate
+  // it — and every read below dereferences it, which would throw a TypeError
+  // and leave the Arena (and nothing else in the app, since nothing else reads
+  // combat_state) loading forever. Re-create it rather than 500: this is
+  // precisely what initDb would do, the row carries no history worth mourning,
+  // and a fight that has to be restarted beats an Arena nobody can open.
+  if (!state) {
+    console.error('combat_state row 1 was missing — re-creating it. A fight in progress is lost.');
+    await run('INSERT OR IGNORE INTO combat_state (id, uneven_combat_enabled) VALUES (1, 0)');
+    state = await one('SELECT * FROM combat_state WHERE id = 1');
+  }
 
   const charIds = [...new Set(participants.map((p) => p.character_id))];
   const marks = charIds.map(() => '?').join(',');
