@@ -1843,6 +1843,22 @@ export default function CombatArena() {
   const [roster, setRoster] = useState(null);
   const [folders, setFolders] = useState(null);
   const [tells, setTells] = useState(null);
+  // **Why the Arena has an error state at all (bugfix).**
+  //
+  // Every one of the four fetches below used to end in `.catch(console.error)`,
+  // and the render gate below is `if (!combat || !roster || !folders || !tells)`
+  // — so any failing fetch left its state null forever and the page sat on
+  // "Loading…" with no indication that anything had gone wrong, no error, and
+  // no way to retry short of a reload that would do exactly the same thing.
+  //
+  // That is how a server-side exception in `/api/combat` presented in
+  // production: an Arena stuck loading while every other page was fine, and
+  // nothing on screen to say why. The bug that caused it is one thing; a UI
+  // that cannot report its own failure is a separate and worse one, because it
+  // makes every future failure just as opaque. Keyed by source so the message
+  // names *which* endpoint broke — that alone narrows a diagnosis enormously.
+  const [loadErrors, setLoadErrors] = useState({});
+  const [reloadNonce, setReloadNonce] = useState(0);
   // Tag rows, for the Block Tag's own display rule (see moveDisplay.js).
   const [tags, setTags] = useState([]);
   const [dropTarget, setDropTarget] = useState(null); // `${side}-${pairIndex}` | null
@@ -1906,14 +1922,35 @@ export default function CombatArena() {
   }, [combat, activeLaneIndex]);
 
   useEffect(() => {
+    // Records the failure instead of swallowing it, and clears it again once
+    // that same source succeeds — a blip during a fight must not leave a stale
+    // error banner up once the next broadcast has refetched cleanly.
+    const load = (source, promise, set) =>
+      promise
+        .then((value) => {
+          set(value);
+          setLoadErrors((prev) => {
+            if (!(source in prev)) return prev;
+            const next = { ...prev };
+            delete next[source];
+            return next;
+          });
+        })
+        .catch((err) => {
+          console.error(`${source} failed:`, err);
+          setLoadErrors((prev) => ({ ...prev, [source]: err?.message || String(err) }));
+        });
+
     const refresh = () => {
       // REST has no socket to carry identity, so it rides as query params
       // instead (see viewerFromQuery server-side) — same info the socket
       // itself was already told via identity:set in roleContext.jsx.
-      getCombat(role === 'gm' ? { role } : { role, characterId }).then(setCombat).catch(console.error);
-      getCharacters().then(setRoster).catch(console.error);
-      getCharacterFolders().then(setFolders).catch(console.error);
-      getTells().then(setTells).catch(console.error);
+      load('/api/combat', getCombat(role === 'gm' ? { role } : { role, characterId }), setCombat);
+      load('/api/characters', getCharacters(), setRoster);
+      load('/api/character-folders', getCharacterFolders(), setFolders);
+      load('/api/tells', getTells(), setTells);
+      // Tags are not in the render gate below — the Arena draws without them —
+      // so a tag failure must not put the whole page behind an error screen.
       getTags().then(setTags).catch(console.error);
     };
     refresh();
@@ -1933,7 +1970,7 @@ export default function CombatArena() {
     return () => {
       for (const ev of events) socket.off(ev, refresh);
     };
-  }, [role, characterId]);
+  }, [role, characterId, reloadNonce]);
 
   // Mobile readiness (Change 002) §11.2: a reconnect or a resumed-from-
   // background tab isn't guaranteed to also fire one of the broadcasts the
@@ -2036,6 +2073,36 @@ export default function CombatArena() {
   // long as a fight is active — see that file for the actual logic.
 
   if (!combat || !roster || !folders || !tells) {
+    const failures = Object.entries(loadErrors);
+    if (failures.length) {
+      return (
+        <div className="p-4">
+          <div role="alert" className="max-w-xl border border-red-900 bg-red-950/50 p-4 text-sm">
+            <p className="font-display text-base font-semibold uppercase tracking-wide text-red-200">
+              The Arena could not load
+            </p>
+            <ul className="mt-2 space-y-1 text-red-200/90">
+              {failures.map(([source, message]) => (
+                <li key={source}>
+                  <code className="text-red-100">{source}</code> — {message}
+                </li>
+              ))}
+            </ul>
+            <p className="mt-3 text-zinc-400">
+              The rest of the app is unaffected. If this keeps happening, the message above is the
+              one worth reporting.
+            </p>
+            <button
+              type="button"
+              onClick={() => setReloadNonce((n) => n + 1)}
+              className="font-display mt-3 border border-red-700 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-red-100 hover:bg-red-900/50"
+            >
+              Try again
+            </button>
+          </div>
+        </div>
+      );
+    }
     return <p className="text-zinc-500">Loading…</p>;
   }
 
