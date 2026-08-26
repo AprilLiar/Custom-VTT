@@ -127,3 +127,68 @@ export function MoveFilterChips({
     </div>
   );
 }
+
+// **The desktop declare-picker variant: a column beside the move list.**
+//
+// The picker is a narrow centred panel with a great deal of empty screen either
+// side of it on a desktop, and filter chips squeezed inside it were both cramped
+// and too small to read at a glance — which is the one thing a filter has to be
+// mid-round. Out here they get room, and a font size somebody can actually use.
+//
+// **Deliberately desktop-only** (`hidden md:flex` at the call site). A phone has
+// no side space to give, so the compact in-panel row stays exactly as it is
+// there rather than being reflowed into something worse.
+//
+// Chips stack full-width rather than wrapping: a column of left-aligned labels
+// is scannable top-to-bottom, and a ragged two-per-line wrap in a 200px column
+// is not.
+export function MoveFilterColumn({
+  label,
+  items,
+  selected,
+  onToggle,
+  onClear,
+  labelFor,
+  titleFor,
+  align = 'left',
+}) {
+  if (!items?.length) return null;
+  return (
+    <div className={`flex w-44 shrink-0 flex-col gap-1 lg:w-52 ${align === 'right' ? 'items-end' : 'items-start'}`}>
+      <div className="flex w-full items-baseline justify-between gap-2">
+        <span className="font-display text-sm font-semibold uppercase tracking-wide text-zinc-400">
+          {label}
+        </span>
+        {selected.size > 0 && (
+          <button
+            type="button"
+            onClick={onClear}
+            className="text-xs text-zinc-500 underline hover:text-zinc-300"
+          >
+            clear
+          </button>
+        )}
+      </div>
+      {items.map((item) => {
+        const active = selected.has(item.id);
+        return (
+          <button
+            key={item.id}
+            type="button"
+            onClick={() => onToggle(item.id)}
+            title={titleFor?.(item) || `Filter by ${labelFor(item)}`}
+            className={`w-full panel-cut-sm border px-2 py-1 text-sm ${
+              align === 'right' ? 'text-right' : 'text-left'
+            } ${
+              active
+                ? 'border-brand-500 bg-brand-600/30 text-brand-200'
+                : 'border-zinc-800 text-zinc-400 hover:border-zinc-600 hover:text-zinc-200'
+            }`}
+          >
+            {labelFor(item)}
+          </button>
+        );
+      })}
+    </div>
+  );
+}

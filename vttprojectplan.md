@@ -799,11 +799,20 @@ shoulder drop" is worth answering fastest, and the Default tab is every default 
   reasoning ("a filter that can only ever return nothing is a worse answer than not offering it")
   applied one level down. The *picks* survive the switch, which is the useful half: narrowing to a Tag
   and then checking both tabs for it is a real thing to want.
-- **They share a row, not a line.** The first attempt put both filters on the tab row, which looked
-  right with three chips and wrong with ten — the tabs, the Tags and the Tells all competed for one
-  line and the Tells ended up in a one-per-line column down the right edge. Caught by looking at it.
-- **A `compact` variant** drops the 44px touch floor for the Arena only: on a sheet the filters are a
-  primary control on a phone, and here they are a refinement on a screen you are already aiming at.
+- **On a desktop they flank the panel, outside its border (revised).** The picker is a narrow centred
+  column with a great deal of empty screen either side of it, and chips squeezed inside it were both
+  cramped and too small to read at a glance — which is the one thing a filter has to be mid-round.
+  **Tag to the left of the move list, Tell to the right**, as a full-size stacked column at a
+  readable font, in space that was carrying nothing. Two earlier attempts kept them inside the panel
+  (first sharing the tab row, then on a row of their own beneath it); both were legible only in the
+  sense that the pixels were present.
+- **The phone keeps the compact in-panel row exactly as it was** (`md:hidden` on the row,
+  `hidden md:flex` on the columns). A phone has no side space to give, and reflowing a column into a
+  390px screen would be worse than what is already there.
+- **The filter state is owned by `ActiveDeclarePanel`, not the picker** (`useDeclareMoveList`), which
+  is what makes rendering the columns outside the panel's border possible at all. The tab belongs
+  there for the same reason: the chips derive from the current tab, so whoever owns the chips owns
+  the tab.
 
 **A `useMemo is not defined` shipped past the build and the linter, and closed a gap (bugfix).** The
 new picker used `useMemo`, `CombatArena.jsx` did not import it, and `npm run build` was perfectly
