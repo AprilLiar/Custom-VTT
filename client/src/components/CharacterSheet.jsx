@@ -9,6 +9,7 @@ import CoreStatsTab from './CoreStatsTab.jsx';
 import StancesTab from './StancesTab.jsx';
 import MovesTab from './MovesTab.jsx';
 import RoleplayTab from './RoleplayTab.jsx';
+import RelationshipsTab from './RelationshipsTab.jsx';
 import CharacterCreationDialog from './CharacterCreationDialog.jsx';
 import PerksTab from './PerksTab.jsx';
 import CountersTab from './CountersTab.jsx';
@@ -50,8 +51,15 @@ const TABS = [
   { key: 'perks', label: 'Perks', phase: 4 },
   { key: 'counters', label: 'Counters', phase: 5 },
   { key: 'roleplay', label: 'Role-play', phase: 3 },
+  // PC-only (see PC_ONLY_TABS): a Relationships board belongs to a player, and
+  // an NPC has nobody to keep one for.
+  { key: 'relationships', label: 'Relationships', phase: 11 },
 ];
-const BUILT_TABS = ['core', 'stances', 'moves', 'perks', 'counters', 'roleplay'];
+const BUILT_TABS = ['core', 'stances', 'moves', 'perks', 'counters', 'roleplay', 'relationships'];
+const PC_ONLY_TABS = new Set(['relationships']);
+// The Relationships board is the one tab that does not fit a 768px column — it
+// is a canvas, and a canvas wants the whole width the page can spare.
+const WIDE_TABS = new Set(['relationships']);
 
 export default function CharacterSheet() {
   const { id } = useParams();
@@ -268,8 +276,14 @@ export default function CharacterSheet() {
   const activeStance = data.stances.find((s) => s.id === data.character.active_stance_id);
   const canCreate = role === 'gm' || myCharacterId === data.character.id;
 
+  // A canvas tab drops the column cap and takes whatever width <main> has left
+  // after the chat panel; every other tab keeps the readable 768px measure.
+  const visibleTabs = TABS.filter(
+    (t) => !PC_ONLY_TABS.has(t.key) || data.character.character_type === 'pc'
+  );
+
   return (
-    <div className="mx-auto max-w-3xl">
+    <div className={WIDE_TABS.has(tab) ? 'mx-auto w-full' : 'mx-auto max-w-3xl'}>
       {/* Mobile readiness (Change 002) §8.1: sticky under the mobile top
           bar so it stays reachable while a tall tab's content scrolls;
           scroll-snap-x makes the horizontal tab scroll land cleanly on
@@ -278,7 +292,7 @@ export default function CharacterSheet() {
           scroller) so it can no longer widen the tab strip's own scroll
           content on a narrow phone. */}
       <div className="sticky top-0 z-10 -mx-2 flex items-center gap-1 overflow-x-auto overflow-y-hidden bg-zinc-950 px-2 [scrollbar-width:none] [scroll-snap-type:x_proximity] md:mx-0 md:bg-transparent md:px-0">
-        {TABS.map((t) => (
+        {visibleTabs.map((t) => (
           <TabButton key={t.key} tab={t} active={tab === t.key} built={BUILT_TABS.includes(t.key)} onClick={() => setTab(t.key)} />
         ))}
       </div>
@@ -324,6 +338,7 @@ export default function CharacterSheet() {
           {tab === 'perks' && <PerksTab data={data} />}
           {tab === 'counters' && <CountersTab data={data} />}
           {tab === 'roleplay' && <RoleplayTab data={data} />}
+          {tab === 'relationships' && <RelationshipsTab data={data} />}
         </motion.div>
       </AnimatePresence>
 

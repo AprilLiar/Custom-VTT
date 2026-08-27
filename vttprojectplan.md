@@ -2759,6 +2759,111 @@ one now readable in full, inside the panel, with nothing overlapping.
 Verified by 487 unit tests (including the new `movementBlockedByLegs` rule, the mid-round fizzle
 with its refund, the re-homing, and a carryover proving it is left alone) and a clean build.
 
+## Game mechanic — Relationships board (decided, new; Phase 1 implemented)
+
+A seventh tab on a **Player Character's** sheet: an infinite 2D board where a player drags
+NPCs out of the world roster — or invents people who were never fighters — and draws named,
+coloured, directional relationships between them. Miro is the stated model. It is the first
+thing in this app that is a *tool* rather than a rule: nothing here touches combat.
+
+**Why it exists.** `roleplay_entries` holds seven prose questions and everything else on a
+sheet is a fighter's mechanics, so who your character knows has had nowhere to live. The
+world already has a cast, filed in nested `character_folders`, that a Player can see in the
+Arena roster and nowhere else.
+
+**Decisions taken up front** (each one asked, not assumed):
+
+- **The board lives in the DB, keyed to the owning PC**, and is private to that character's
+  viewer **plus the GM, who can fully edit it**. Not localStorage: a map that vanishes with a
+  cleared cache is not a record.
+- **Each placement is its own node**, with its own Nickname and Notes. The same NPC dragged
+  out twice is two independent nodes — placing someone twice usually means they occupy two
+  roles in your head, and shared fields would fight that.
+- **Infinite canvas, pan + zoom.** Nodes are stored in world coordinates.
+- **Phone is view-and-navigate only.** Precise pointer work has no room on that screen; the
+  map stays readable there rather than being hidden.
+- **The text halo is `backdrop-filter`** on a rectangle sized to the text — blur and fade
+  what passes *behind* the box, text stays sharp on top. One CSS property, so it costs
+  nothing at any node count.
+- **Floating ends stay put, are draggable, and re-attach** by dropping on another node's dot,
+  keeping colour, label and arrowhead.
+- **If the GM deletes a world NPC, every node referencing it converts to a board-local
+  person**, keeping the last-known name and picture, the player's Nickname and Notes, and
+  every relationship. A GM tidying the roster must not silently destroy part of a player's map.
+- **The emoji picker is a hand-rolled curated grid.** This client's entire runtime is react,
+  react-router, framer-motion, gsap, lucide and socket.io-client; a picker library would be
+  the largest dependency in it.
+
+**Players see NPCs in the rail.** A deliberate exception to the rule that a Player never sees
+an NPC outside combat (`CharacterList` filters them; a Player is bounced off an NPC sheet).
+The Arena roster is the existing precedent: knowing who exists is not reading their sheet,
+and a relationship map is worthless without the cast.
+
+**Phased, five slices, each deployable.** Phase 1 ships the part that is expensive to change
+later and cheap to change now — how the board claims space, how the camera feels, and what
+the void looks like. Phases 2-5 add nodes, relationships, the editors, and the motion pass.
+
+### Phase 1 (implemented)
+
+- **`client/src/lib/boardViewport.js`** — the camera as pure maths, unit-tested. Two spaces:
+  *world* (where nodes live, stored, camera-independent) and *screen* (pixels inside the
+  viewport). One implementation of each direction, because the bug this file exists to
+  prevent is a point converted one way by one call site and the other way by another —
+  which looks perfect at 100% and puts every dropped node in the wrong place at 40%.
+  `toWorld`/`toScreen` are pinned as exact inverses at four zoom levels.
+- **The camera is a ref during a gesture, state between them.** Writing pan into React state
+  on every `pointermove` re-renders the whole board sixty times a second, and the feel is a
+  stated requirement — the difference between liquid and rigid is exactly here. A drag writes
+  `transform` straight onto the world layer from a rAF and commits once on `pointerup`.
+- **Depth is parallax, not decoration.** Two dot fields at different sizes and opacities,
+  panned at different rates, painted on the *viewport* rather than the world layer — a
+  background inside the transform would be dragged at exactly the camera's speed and the
+  parallax would die. One field alone reads as a flat grid.
+- **`FolderRosterNode` extracted from `CombatArena.jsx`** to `client/src/components/FolderRoster.jsx`,
+  unchanged. It already took the characters as a map and the card as a render prop, so it
+  knew nothing about seating; the alternative was a second copy that would have drifted the
+  first time either one's collapse behaviour changed.
+- **The rail is three sections**: *You* pinned at the top and outside every folder, the
+  glowing-white **Custom** folder for board-local people, then the world's NPCs in the GM's
+  own nested folders. Custom is deliberately **not** a `character_folders` row — those people
+  belong to one player's board, and the world's folder tree belongs to everybody.
+- **Two ways to be big.** Inline, the tab drops the sheet's `max-w-3xl` (`WIDE_TABS` in
+  `CharacterSheet.jsx`) and takes a `clamp()`ed slab of viewport height. Fullscreen portals
+  the whole board over the app, past the header and the 320px chat panel, Escape to return.
+  The height is a magic number on purpose: a `calc()` against a header, an optional combat
+  bar and a mobile bottom nav is wrong the moment a fight starts.
+- **Fullscreen portals to `document.body`.** The void sets a `transform` on its world layer,
+  and a transformed ancestor makes `position: fixed` resolve against that ancestor — the
+  exact trap this codebase has already hit three times (`MovePickerDialog`, the Arena hover
+  cards). Every popover from Phase 2 on must portal for the same reason.
+- **The tab is PC-only** (`PC_ONLY_TABS`): an NPC has nobody to keep a board for.
+
+**Two things the browser pass caught that nothing else would have.** The void was too black
+— a true black swallows the dot field and reads as "nothing rendered", so the base is
+greyish-black with a soft central glow. And wheel-zoom at `exp(-deltaY/220)` sent a single
+notch straight to the zoom ceiling; `/500` makes one notch a ~22% step.
+
+### Planned, not yet built
+
+- **Phase 2 — the cast.** `relationship_people` and `relationship_nodes`. Drag rail → node,
+  free repositioning, the double-click node editor, board-local person creation, the ✕ menu,
+  a shared `HaloText`, and the world-NPC-deleted conversion wired into
+  `DELETE /api/characters/:id` — that is data integrity and does not wait for a polish phase.
+- **Phase 3 — the web.** `relationship_edges`: four side dots per node, drag-to-connect,
+  Bézier bending so duplicate pairs do not overlap (`StanceGraph.jsx`'s `Edge` already has
+  that maths), arrowheads, floating ends and re-attachment.
+- **Phase 4 — the editors.** Colour, label, curated emoji grid, arrowhead side, Retire
+  (grey, 50% transparent, backmost layer), Delete.
+- **Phase 5 — the feel.** Spring settle, eased edges, dot bloom, and the hardening pass.
+
+**Do not rely on any `ON DELETE` action in this schema.** `PRAGMA foreign_keys` is only ever
+touched *inside* the six table-rebuild helpers in `db.js` and is never enabled at connection
+setup; SQLite defaults it OFF per connection, and on a fresh database those rebuild blocks
+are skipped entirely. This is why `DELETE /api/characters/:id` already spells its cascade out
+by hand. `REFERENCES` clauses in the new tables are documentation of intent; every deletion
+is explicit. `CHECK` constraints *are* enforced regardless, so the discriminator on
+`relationship_nodes` (exactly one of `character_id` / `person_id`) is a real guard.
+
 ## Implementation Risks & Recommendations
 A scope check for whoever picks this up: this grew well past "semi-simple website" over the course of design. Most of it (dice, inventory, injuries, stances, perks, counters) is standard CRUD-plus-broadcast work. Combat Timing (Tics/Startup/reveal/overflow) is the one genuinely hard piece — real software complexity, not just more forms — and it's also the most original part of the system, which is exactly why it deserves the most care rather than being rushed alongside everything else.
 
