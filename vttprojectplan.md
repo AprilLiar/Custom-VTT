@@ -2881,10 +2881,85 @@ notch straight to the zoom ceiling; `/500` makes one notch a ~22% step.
   board-local person per board, not per node, so two placements of one NPC become two views
   of one person rather than two people.
 
+### Phase 3 (implemented) — the web
+
+- **`relationship_edges`.** An endpoint is either a node and a side, or a point in world
+  space. The "delete the character but keep the relationships" option writes the last-known
+  anchor into `from_x/from_y` and nulls the node reference in ONE statement per side, so
+  there is no instant where a row has neither.
+- **The loose end lands at the node's CENTRE**, not at the dot it was attached to. The dot is
+  a property of a portrait that no longer exists; the middle of where that person used to be
+  is the honest answer, and it reads the same for all four sides.
+- **`relationshipGeometry.js`** — anchors, hit-testing, the curve and the fan, all pure and
+  unit-tested. The property worth pinning is invisible with one line and obvious with three:
+  **two lines between the same pair must not overlap.** A pair is keyed *unordered*, so A→B
+  and B→A share one fan; offsets are symmetric about zero and handed out in stable id order,
+  so adding a line never reshuffles the ones already there.
+- **Hit-testing is arithmetic, not `elementFromPoint`** — exact at any zoom, it does not
+  fight pointer capture, and it does not care that the element under the cursor is the line
+  being dragged.
+- **One gesture serves drawing and re-attaching.** Dragging from a dot proposes a new line;
+  dragging a loose end proposes moving an existing one. They differ only in what happens on
+  release, so they share every frame in between. The rubber band snaps to the target's dot
+  once you are over somebody, so the drop is never a surprise.
+- **Retired lines get their own SVG surface that paints first**, which is what "moves to the
+  backmost layer" means; z-index inside one surface cannot express it as simply.
+- **A loop is refused** — from somebody to themselves has nothing to say, and the curve maths
+  would need a special case for a zero-length span. `move_end` refuses it too.
+- **Edges follow a dragged node live**, by the technique the node itself uses: the two or
+  three paths touching it are recomputed and their `d` written directly, no re-render.
+  Without it a dragged portrait tears away from its own relationships until you let go.
+
+**Four bugs, three of which only a browser could have found.**
+
+1. **The SVG surface was a 1×1 box trusting `overflow: visible`.** It does not work: an
+   outermost `<svg>` clips to its viewport regardless, so every relationship was drawn and
+   then thrown away — three lines in the database and nothing on screen, nothing logged. The
+   surface spans a large box now, with a `viewBox` mapping user units to world units 1:1.
+2. **A temporal-dead-zone `ReferenceError` took the whole tab down.** A hook's dependency
+   ARRAY is evaluated at render time, so `useCallback(fn, [nodesById])` with `const nodesById`
+   declared further down the component threw before anything rendered. The declarations moved
+   above every hook that reads them. `no-use-before-define` was tried as a guard and
+   deliberately not kept — see `eslint.config.mjs` for why.
+3. **`useRelationshipBoard` silently threw every edge away.** Its socket handler was written
+   in Phase 2 and named `people` and `nodes` explicitly; the moment the server started
+   sending `edges` they were dropped on the floor. It spreads the payload now — a board is
+   whatever the server says a board is.
+4. **Re-grabbing a node right after dropping it made it fly off** (reported from play). A
+   drag writes the new position straight to the DOM and tells the server on release; until
+   the broadcast returns, React state holds the OLD coordinates, so the next grab computed
+   its offset against the old position while the portrait was drawn at the new one — jumping
+   by exactly the previous drag's distance, compounding. A `livePos` ref is the local truth
+   between a drop and its confirmation, and every reader goes through one positioned view. A
+   regression probe grabs the same node three times and asserts the total displacement is
+   exactly the sum of the three drags.
+
+### The void's depth, rebuilt (decided, second attempt)
+
+The first version was two tiled dot fields at different sizes panned at different rates. It
+read as depth at 100% and fell apart everywhere else: scaling a fixed tile with the camera
+means zooming out packs the dots tighter and tighter until the field is a grey mess, and two
+grids at different scales beat into moiré on the way there. Reported from play as "just a
+mess of dots, especially when zooming out a lot".
+
+The two jobs are split now, and neither is a scaled tile:
+
+1. **The dots hold a constant on-screen density.** Their world spacing doubles whenever
+   zooming out would push them closer than 40px apart and halves past 88px — the grid steps
+   to a coarser or finer one instead of crowding. It still pans 1:1 with the camera, so the
+   field belongs to the world rather than to the screen; the stepping is invisible in motion
+   and is what every infinite canvas does. `dotSpacing` lives in `boardViewport.js` with the
+   rest of the camera maths, swept across the whole zoom range by a test.
+2. **Depth is three large soft clouds** drifting at a fraction of the camera's rate. A
+   slow-moving gradient is a far better distance cue than a second grid, and it cannot moiré
+   against anything because it has no repeat.
+
+**Wheel now zooms** rather than pans (reported from play — the first version reserved zoom
+for Ctrl, which read as backwards). A trackpad's sideways swipe still pans, since that
+gesture has no zoom meaning: a wheel event whose `deltaX` dominates is a pan, everything
+else is a zoom.
+
 ### Planned, not yet built
-- **Phase 3 — the web.** `relationship_edges`: four side dots per node, drag-to-connect,
-  Bézier bending so duplicate pairs do not overlap (`StanceGraph.jsx`'s `Edge` already has
-  that maths), arrowheads, floating ends and re-attachment.
 - **Phase 4 — the editors.** Colour, label, curated emoji grid, arrowhead side, Retire
   (grey, 50% transparent, backmost layer), Delete.
 - **Phase 5 — the feel.** Spring settle, eased edges, dot bloom, and the hardening pass.
