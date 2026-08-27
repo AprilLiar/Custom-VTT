@@ -14,7 +14,10 @@ import {
   MIN_ZOOM,
   DOT_MAX_PX,
   DOT_MIN_PX,
+  boundsOf,
+  anyNodeVisible,
   centerOn,
+  fitTo,
   clampZoom,
   dotSpacing,
   panBy,
@@ -114,4 +117,70 @@ test('dot spacing keeps a constant on-screen density at every zoom', () => {
   // A garbage zoom must not loop forever or return something unusable.
   assert.ok(Number.isFinite(dotSpacing(0)));
   assert.ok(Number.isFinite(dotSpacing(NaN)));
+});
+
+// ---------------------------------------------------------------------------
+// Framing the cast
+// ---------------------------------------------------------------------------
+
+test('boundsOf measures the whole cast, portraits included', () => {
+  assert.equal(boundsOf([]), null);
+  assert.equal(boundsOf(null), null);
+  // A node's stored x/y is its top-left, so the box has to reach a portrait's
+  // width and height past the last one or the right edge is clipped.
+  assert.deepEqual(boundsOf([{ x: 0, y: 0 }], 112, 112), { minX: 0, minY: 0, maxX: 112, maxY: 112 });
+  assert.deepEqual(boundsOf([{ x: -50, y: 20 }, { x: 300, y: -10 }], 112, 112), {
+    minX: -50, minY: -10, maxX: 412, maxY: 132,
+  });
+  // A row with a broken coordinate is skipped rather than poisoning the box
+  // with NaN and framing the camera on nothing.
+  assert.deepEqual(boundsOf([{ x: 0, y: 0 }, { x: NaN, y: 5 }], 10, 10), {
+    minX: 0, minY: 0, maxX: 10, maxY: 10,
+  });
+});
+
+test('fitTo centres the cast and never zooms IN to fill the screen', () => {
+  const bounds = { minX: 0, minY: 0, maxX: 400, maxY: 200 };
+  const view = fitTo(bounds, 1000, 600, 80);
+  // The middle of the box lands in the middle of the viewport.
+  const centre = toScreen(view, 200, 100);
+  near(centre.x, 500, 1e-9);
+  near(centre.y, 300, 1e-9);
+  // A board with one person on it must not open at 250%.
+  assert.ok(view.zoom <= 1, String(view.zoom));
+
+  // A very spread-out board frames as far out as the camera allows rather than
+  // refusing.
+  const huge = fitTo({ minX: 0, minY: 0, maxX: 100000, maxY: 100000 }, 800, 600);
+  assert.equal(huge.zoom, MIN_ZOOM);
+  // Nonsense in, default out — never NaN.
+  assert.deepEqual(fitTo(null, 800, 600), DEFAULT_VIEW);
+  assert.deepEqual(fitTo(bounds, 0, 0), DEFAULT_VIEW);
+});
+
+test('re-framing is decided per node, not by any sliver of the bounding box', () => {
+  const nodes = [{ x: 0, y: 0 }];
+  // A saved camera that already shows somebody is left alone.
+  assert.equal(anyNodeVisible(DEFAULT_VIEW, nodes, 800, 600), true);
+
+  // **The bug this pins.** The first version tested the bounding box for any
+  // overlap with the viewport, so a nineteen-pixel sliver of one portrait's
+  // edge counted as "the map is visible" — and a phone opened on an empty void
+  // with the whole cast just off the right edge. A node's centre is at +56, so
+  // a camera showing only its left 19px must answer false.
+  assert.equal(anyNodeVisible({ x: -93, y: 0, zoom: 1 }, nodes, 374, 540), false);
+  // Showing most of it answers true.
+  assert.equal(anyNodeVisible({ x: -20, y: 0, zoom: 1 }, nodes, 374, 540), true);
+
+  // Entirely off screen in each direction.
+  assert.equal(anyNodeVisible({ x: -5000, y: 0, zoom: 1 }, nodes, 800, 600), false);
+  assert.equal(anyNodeVisible({ x: 0, y: 5000, zoom: 1 }, nodes, 800, 600), false);
+  // One visible node out of many is enough — the board is not empty.
+  assert.equal(
+    anyNodeVisible(DEFAULT_VIEW, [{ x: 9000, y: 9000 }, { x: 10, y: 10 }], 800, 600),
+    true
+  );
+  // Nothing to frame never re-frames, and a broken coordinate is not "visible".
+  assert.equal(anyNodeVisible(DEFAULT_VIEW, [], 800, 600), true);
+  assert.equal(anyNodeVisible(DEFAULT_VIEW, [{ x: NaN, y: 0 }], 800, 600), false);
 });

@@ -1,9 +1,9 @@
 import { useRef, useState } from 'react';
 import { X } from 'lucide-react';
-import { motion } from 'framer-motion';
+import { motion, useReducedMotion } from 'framer-motion';
 import { TEXT_VISIBLE_ZOOM } from '../lib/boardViewport.js';
 import { DOT_OUT, NODE_H, NODE_W, SIDES } from '../lib/relationshipGeometry.js';
-import { portraitSrc } from '../lib/image.js';
+import { usePortraitUrl } from '../lib/portraitCache.js';
 import HaloText from './HaloText.jsx';
 
 // One person, placed. The portrait is the whole hit target; the name and any
@@ -41,8 +41,12 @@ export default function RelationshipNode({
   nodeRef,
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
+  const [dropped, setDropped] = useState(0);
   const downAt = useRef(null);
-  const src = portraitSrc(person);
+  const reduceMotion = useReducedMotion();
+  // A shared blob URL rather than a data: URI — the same face can be on this
+  // board many times, and a data: URI is decoded once per <img>.
+  const src = usePortraitUrl(person);
   const showText = zoom >= TEXT_VISIBLE_ZOOM;
 
   const handlePointerDown = (e) => {
@@ -52,6 +56,15 @@ export default function RelationshipNode({
     if (e.button !== 0) return;
     downAt.current = { x: e.clientX, y: e.clientY };
     onPointerDown?.(e, node);
+  };
+
+  // The landing. Only after a real drag — a click that moved nothing should not
+  // make the portrait bounce.
+  const handlePointerUp = (e) => {
+    if (!canEdit || !downAt.current) return;
+    const moved = Math.hypot(e.clientX - downAt.current.x, e.clientY - downAt.current.y);
+    downAt.current = null;
+    if (moved > 4) setDropped((n) => n + 1);
   };
 
   // **Two elements, because two things want `transform`.**
@@ -72,6 +85,7 @@ export default function RelationshipNode({
       ref={nodeRef}
       data-node-id={node.id}
       onPointerDown={handlePointerDown}
+      onPointerUp={handlePointerUp}
       onDoubleClick={(e) => {
         e.stopPropagation();
         if (canEdit) onOpenEditor?.(node);
@@ -86,8 +100,16 @@ export default function RelationshipNode({
     >
       <motion.div
         initial={{ scale: 0.6, opacity: 0 }}
-        animate={{ scale: 1, opacity: 1 }}
-        transition={{ type: 'spring', stiffness: 420, damping: 22 }}
+        // `dropped` bumps a counter on release, and the spring overshoots back
+        // to 1 — the portrait lands rather than stopping dead. Damping is low
+        // enough to be felt and high enough not to wobble.
+        animate={{ scale: dropped ? [1.07, 1] : 1, opacity: 1 }}
+        whileHover={canEdit ? { scale: 1.035 } : undefined}
+        transition={
+          reduceMotion
+            ? { duration: 0 }
+            : { type: 'spring', stiffness: 420, damping: 20, mass: 0.6 }
+        }
         className="flex w-full flex-col items-center"
       >
       <div className="group relative">
