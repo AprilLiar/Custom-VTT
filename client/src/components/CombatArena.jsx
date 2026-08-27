@@ -30,6 +30,7 @@ import { portraitSrc } from '../lib/image.js';
 import { dieLabel, tintFor, POOLS } from '../lib/dice.js';
 import { ANATOMY } from '../lib/anatomy.js';
 import { buildFolderTree } from '../lib/folders.js';
+import { useAnchoredPosition } from '../lib/useAnchoredPosition.js';
 import { FolderRosterNode } from './FolderRoster.jsx';
 import { countRollSlot } from '../lib/diceSlots.js';
 import {
@@ -1019,72 +1020,6 @@ function CompactTellFace({ dm, tellById }) {
 // answer without leaving the Arena. The full card renders as an overlay
 // above everything rather than expanding in place, because expanding one
 // card reflows the whole lane underneath it.
-// Where to put a declared move's full card so it sits fully on screen.
-//
-// **Why this is measured rather than done in CSS.** The card used to be an
-// `absolute … z-50` child of the compact card, and it was covered by other
-// Arena UI anyway: its own parent sets `perspective` for the flip animation,
-// and a non-`none` perspective establishes a stacking context, so that z-50
-// only ever competed with its siblings *inside* one small card. No z-index
-// there can beat a later stacking context — the layer has to leave the
-// subtree entirely, which means a portal, which means viewport coordinates.
-// (Exactly the failure mode DialogShell hit when a transformed ancestor
-// re-parented its `fixed`; MoveLinkOverlay and MovePickerDialog already
-// portal for the same reason.)
-//
-// Clamping is what makes it work on a phone: a fixed-width card centred on a
-// lane card near the screen edge would otherwise hang off it, and the lane
-// strip scrolls horizontally, so "near the edge" is the normal case there.
-const HOVER_CARD_WIDTH = 288; // w-72, and the max-w below keeps CSS in step
-const HOVER_CARD_GAP = 8;
-
-function useHoverCardPosition(anchorRef, open) {
-  const [pos, setPos] = useState(null);
-  useLayoutEffect(() => {
-    if (!open) {
-      setPos(null);
-      return undefined;
-    }
-    let frame = 0;
-    const measure = () => {
-      const el = anchorRef.current;
-      if (!el) return;
-      const r = el.getBoundingClientRect();
-      const vw = window.innerWidth;
-      const vh = window.innerHeight;
-      const width = Math.min(HOVER_CARD_WIDTH, vw - HOVER_CARD_GAP * 2);
-      // Centred on the anchor, then pulled back inside the viewport.
-      const left = Math.min(
-        Math.max(HOVER_CARD_GAP, r.left + r.width / 2 - width / 2),
-        vw - width - HOVER_CARD_GAP
-      );
-      // Above by preference — the compact card sits low in a lane and the
-      // space above it is usually empty. Flip below when it won't fit, which
-      // on a short mobile viewport is most of the time.
-      const spaceAbove = r.top;
-      const below = spaceAbove < vh / 2;
-      setPos({ left, width, below, top: below ? r.bottom + HOVER_CARD_GAP : undefined,
-        bottom: below ? undefined : vh - r.top + HOVER_CARD_GAP });
-    };
-    const remeasure = () => {
-      cancelAnimationFrame(frame);
-      frame = requestAnimationFrame(measure);
-    };
-    measure();
-    // Capture phase: the lane strip and the page shell are their own scroll
-    // containers and neither bubbles scroll to window (same reason
-    // MoveLinkOverlay listens this way).
-    window.addEventListener('scroll', remeasure, true);
-    window.addEventListener('resize', remeasure);
-    return () => {
-      cancelAnimationFrame(frame);
-      window.removeEventListener('scroll', remeasure, true);
-      window.removeEventListener('resize', remeasure);
-    };
-  }, [anchorRef, open]);
-  return pos;
-}
-
 function CompactDeclaredMoveCard({ dm, move, tellById, allMoves = [] }) {
   const revealed = dm.isRevealed && move;
   const [showCard, setShowCard] = useState(false);
@@ -1110,7 +1045,7 @@ function CompactDeclaredMoveCard({ dm, move, tellById, allMoves = [] }) {
   // either way, so hovering the *Tic* still points back at an
   // already-revealed card; only the card->Tic direction defers.
   const linkOnHover = telegraphed && !revealed;
-  const cardPos = useHoverCardPosition(cardRef, showCard && revealed);
+  const cardPos = useAnchoredPosition(cardRef, showCard && revealed);
 
   // Feint Tag: this declaration is concealed from everyone but its owner
   // until it reveals. `publiclyRevealed` is what ends the concealment, not
@@ -1547,7 +1482,7 @@ function buildDeclarePayload(character, move, roundStartTic, declaredMoves) {
 // and the same reason as CompactDeclaredMoveCard's: an ancestor with
 // `perspective` establishes a stacking context no z-index inside it escapes.
 function DeclareMoveInfo({ move, anchorRef, open, onClose, tellById, allMoves, tags }) {
-  const pos = useHoverCardPosition(anchorRef, open);
+  const pos = useAnchoredPosition(anchorRef, open);
   const moveTags = sortTags((tags ?? []).filter((t) => (move.tag_ids ?? []).includes(t.id)));
   useEffect(() => {
     if (!open) return undefined;

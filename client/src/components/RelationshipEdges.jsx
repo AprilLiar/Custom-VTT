@@ -30,6 +30,7 @@ export default function RelationshipEdges({
   onEdgeDoubleClick,
   onEndPointerDown,
   registerPath,
+  showRetired = true,
   draft,
 }) {
   const bends = useMemo(() => assignBends(edges), [edges]);
@@ -47,7 +48,10 @@ export default function RelationshipEdges({
     [edges, nodesById, bends]
   );
 
-  const retired = drawable.filter((d) => d.edge.retired);
+  // Hidden entirely rather than dimmed further: the point of the toggle is a
+  // board showing only what is currently true, and a fainter ghost is still
+  // clutter.
+  const retired = showRetired ? drawable.filter((d) => d.edge.retired) : [];
   const live = drawable.filter((d) => !d.edge.retired);
   const showText = zoom >= TEXT_VISIBLE_ZOOM;
 
@@ -196,7 +200,7 @@ function EdgeLine({ edge, ends, d, canEdit, selected, onPointerDown, onDoubleCli
         onPointerDown={(e) => onPointerDown?.(e, edge)}
         onDoubleClick={(e) => {
           e.stopPropagation();
-          onDoubleClick?.(edge);
+          onDoubleClick?.(edge, e);
         }}
       />
       <path
@@ -210,24 +214,57 @@ function EdgeLine({ edge, ends, d, canEdit, selected, onPointerDown, onDoubleCli
         markerStart={edge.arrow === 'from' ? marker : undefined}
         markerEnd={edge.arrow === 'to' ? marker : undefined}
       />
-      {/* A loose end is a real, grabbable thing: it stays where the portrait
-          was and can be dragged onto somebody else. Drawn as a ring so it does
-          not read as an arrowhead. */}
-      {canEdit && edge.from_node_id == null && (
-        <LooseEnd point={ends.from} color={color} onPointerDown={(e) => onEndPointerDown?.(e, edge, 'from')} />
+      {/* **Both ends are grabbable, not just loose ones (decided, new).**
+          Clicking a line selects it and puts a handle on each end; dragging one
+          re-anchors that end to another character or another dot, and releasing
+          it over empty space DISCONNECTS it — leaving the line hanging exactly
+          as it would if the character had been deleted. One gesture covers
+          re-aim and detach, because they are the same act with different
+          endings.
+          A loose end shows its handle permanently, selected or not: it is
+          already detached and has to be findable in order to be picked back up. */}
+      {canEdit && (edge.from_node_id == null || selected) && (
+        <EndHandle
+          point={ends.from}
+          color={color}
+          loose={edge.from_node_id == null}
+          onPointerDown={(e) => onEndPointerDown?.(e, edge, 'from')}
+        />
       )}
-      {canEdit && edge.to_node_id == null && (
-        <LooseEnd point={ends.to} color={color} onPointerDown={(e) => onEndPointerDown?.(e, edge, 'to')} />
+      {canEdit && (edge.to_node_id == null || selected) && (
+        <EndHandle
+          point={ends.to}
+          color={color}
+          loose={edge.to_node_id == null}
+          onPointerDown={(e) => onEndPointerDown?.(e, edge, 'to')}
+        />
       )}
     </g>
   );
 }
 
-function LooseEnd({ point, color, onPointerDown }) {
+// Drawn as a ring rather than a disc so it never reads as an arrowhead. A
+// detached end is filled dark and hollow — visibly waiting for somewhere to go;
+// an attached one is solid, because it is already somewhere.
+function EndHandle({ point, color, loose, onPointerDown }) {
   return (
-    <g style={{ cursor: 'grab', pointerEvents: 'auto' }} onPointerDown={onPointerDown}>
-      <circle cx={point.x} cy={point.y} r="11" fill="transparent" />
-      <circle cx={point.x} cy={point.y} r="5" fill="#15171b" stroke={color} strokeWidth="2" />
+    <g
+      style={{ cursor: 'grab', pointerEvents: 'auto' }}
+      onPointerDown={(e) => {
+        e.stopPropagation();
+        onPointerDown?.(e);
+      }}
+    >
+      {/* A 5px ring is not a pointer target. This is. */}
+      <circle cx={point.x} cy={point.y} r="12" fill="transparent" />
+      <circle
+        cx={point.x}
+        cy={point.y}
+        r="5.5"
+        fill={loose ? '#15171b' : color}
+        stroke={loose ? color : '#15171b'}
+        strokeWidth="2"
+      />
     </g>
   );
 }

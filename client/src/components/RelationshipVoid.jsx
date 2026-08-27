@@ -60,7 +60,7 @@ const CLOUDS =
   'radial-gradient(44rem 34rem at 55% 92%, rgba(70,90,110,0.08), transparent 72%)';
 
 function RelationshipVoid(
-  { characterId, interactive = true, className = '', children, onViewChange, onBackgroundPointerDown, ...rest },
+  { characterId, interactive = true, className = '', children, onViewChange, onBackgroundPointerDown, corner, ...rest },
   ref
 ) {
   const viewportRef = useRef(null);
@@ -313,6 +313,7 @@ function RelationshipVoid(
 
       {interactive && (
         <div className="pointer-events-auto absolute bottom-2 right-2 flex items-center gap-1">
+          {corner}
           <ZoomButton onClick={() => nudgeZoom(1 / 1.25)} disabled={view.zoom <= MIN_ZOOM} label="Zoom out">
             −
           </ZoomButton>
