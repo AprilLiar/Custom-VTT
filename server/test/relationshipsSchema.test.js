@@ -167,3 +167,49 @@ test('a character with nodes still pointing at them cannot be deleted', async ()
   assert.ok(survivor, 'the placement outlived the character it used to point at');
   assert.equal(survivor.character_id, null);
 });
+
+// ---------------------------------------------------------------------------
+// Relationship edges — the fields the editor writes
+// ---------------------------------------------------------------------------
+
+test('an edge starts red, straight, live and unlabelled', async () => {
+  const owner = await makeCharacter('edge-owner', 'pc');
+  const a = await makeCharacter('a');
+  const b = await makeCharacter('b');
+  const nodeA = Number((await run('INSERT INTO relationship_nodes (owner_character_id, character_id) VALUES (?, ?)', [owner, a])).lastInsertRowid);
+  const nodeB = Number((await run('INSERT INTO relationship_nodes (owner_character_id, character_id) VALUES (?, ?)', [owner, b])).lastInsertRowid);
+  await run(
+    'INSERT INTO relationship_edges (owner_character_id, from_node_id, to_node_id) VALUES (?, ?, ?)',
+    [owner, nodeA, nodeB]
+  );
+  const edge = await one('SELECT * FROM relationship_edges WHERE owner_character_id = ?', [owner]);
+  assert.equal(edge.label, '');
+  assert.equal(edge.arrow, 'none');
+  assert.equal(edge.retired, 0);
+  assert.match(edge.color, /^#[0-9a-f]{6}$/i);
+  // A brand-new line is attached at both ends, with no stored loose point.
+  assert.equal(edge.from_x, null);
+  assert.equal(edge.to_x, null);
+});
+
+test('arrow and side are constrained to the values the renderer understands', async () => {
+  const owner = await makeCharacter('constrained', 'pc');
+  const c = await makeCharacter('c');
+  const node = Number((await run('INSERT INTO relationship_nodes (owner_character_id, character_id) VALUES (?, ?)', [owner, c])).lastInsertRowid);
+  // `arrow` picks a <marker> and `side` picks an anchor; a value outside these
+  // sets has no drawing at all, so the column refuses it rather than letting
+  // the board render nothing and say nothing.
+  await assert.rejects(
+    run('INSERT INTO relationship_edges (owner_character_id, from_node_id, arrow) VALUES (?, ?, ?)', [owner, node, 'both']),
+    /CHECK|constraint/i
+  );
+  await assert.rejects(
+    run('INSERT INTO relationship_edges (owner_character_id, from_node_id, from_side) VALUES (?, ?, ?)', [owner, node, 'middle']),
+    /CHECK|constraint/i
+  );
+  for (const arrow of ['none', 'from', 'to']) {
+    await run('INSERT INTO relationship_edges (owner_character_id, from_node_id, arrow) VALUES (?, ?, ?)', [owner, node, arrow]);
+  }
+  const rows = await all('SELECT arrow FROM relationship_edges WHERE owner_character_id = ?', [owner]);
+  assert.equal(rows.length, 3);
+});

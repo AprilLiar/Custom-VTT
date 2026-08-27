@@ -52,6 +52,44 @@ export function hitNode(node, point) {
   );
 }
 
+// **The drop region is bigger than the portrait.** The four dots protrude
+// beyond the picture's edge, so a connector released exactly ON a dot — the
+// most natural aim there is — lands outside `hitNode` and connects to nothing.
+// Reported from play as "dragging to the anchor point does not work; you have
+// to drag to the picture".
+//
+// The pad covers the dot's own offset plus a comfortable grab radius around it,
+// so the whole visible target and a little air around it all accept the drop.
+export const DROP_PAD = 18;
+
+export function hitNodeArea(node, point, pad = DROP_PAD) {
+  return (
+    point.x >= node.x - pad &&
+    point.x <= node.x + NODE_W + pad &&
+    point.y >= node.y - pad &&
+    point.y <= node.y + NODE_H + pad
+  );
+}
+
+// The node a connector released here should attach to. With a pad this wide,
+// two nodes sitting close together can both accept the same point, so the
+// nearest centre wins rather than whichever happens to come first in the list.
+export function dropTarget(nodes, point, { exceptId = null, pad = DROP_PAD } = {}) {
+  let best = null;
+  let bestDistance = Infinity;
+  for (const node of nodes) {
+    if (exceptId != null && node.id === exceptId) continue;
+    if (!hitNodeArea(node, point, pad)) continue;
+    const c = nodeCenter(node);
+    const distance = Math.hypot(point.x - c.x, point.y - c.y);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      best = node;
+    }
+  }
+  return best;
+}
+
 // Which of the four dots a point is nearest — what a connector drag snaps to
 // when it lands on a node. Measured from the node's centre by direction rather
 // than by distance to each dot, so the four sides divide the node into equal

@@ -2959,9 +2959,62 @@ for Ctrl, which read as backwards). A trackpad's sideways swipe still pans, sinc
 gesture has no zoom meaning: a wheel event whose `deltaX` dominates is a pan, everything
 else is a zoom.
 
+### Phase 4 (implemented) — the editors
+
+- **Double-click a line → a popover** with colour, label, emoji, arrowhead side, Retire and
+  Delete. Portalled to `document.body` and positioned by the extracted
+  `useAnchoredPosition` — the board sets a `transform`, and a transformed ancestor captures
+  `position: fixed`. Anchored to the screen point of the double-click rather than to the
+  line, so the panel does not chase its own subject if the board is panned behind it.
+- **Every control applies live.** There is a Close, not a Save: colour is chosen against the
+  actual board, and staging it means picking blind. Matches the sheet's existing habit —
+  Role-play saves on blur and there is no Save button anywhere on it.
+- **A local draft, echoing the server** (`RoleplayTab`'s pattern, and needed for the same
+  reason). Binding the controls straight to the row looked right and felt broken: a keystroke
+  or a checkbox tick could not show until the write had reached the server and the broadcast
+  had returned, so the checkbox visibly did not move when clicked. The draft answers
+  instantly and re-syncs on the edge id, not on every broadcast — re-syncing on each one
+  would yank the caret back mid-word as this component's own echo returned. The label emit is
+  debounced; a socket frame per keystroke is a lot of traffic for a value nobody reads until
+  you stop typing.
+- **Colour is validated, not clamped.** It is the one field on this board that reaches a
+  renderer — into an SVG `stroke` and into a `<marker>` id — so the server accepts strict
+  `#rrggbb` and falls back to the value already stored for anything else. `arrow` is checked
+  against the three the renderer can draw before the write, so a bad value is a dropped
+  field rather than a thrown constraint.
+- **The emoji picker is a hand-rolled curated grid** in six rows chosen for what a
+  relationship is — bonds, trouble, standing, dealings, secrets, kin. It inserts at the
+  caret into an ordinary text field rather than owning one: `"⚔️ rivals"` and `"owes me 💰"`
+  are both things people write, and only one of them is the end of the string. A complete set
+  would be worse here — scrolling a thousand emoji to find the dagger is slower than seeing
+  it in the second row — and a picker library would be the largest dependency in a client
+  whose whole runtime is seven packages.
+- **"Retired shown" toggle** beside the zoom controls, on by default, appearing only once
+  something is retired. Per-viewer in `localStorage` beside the camera: what you are looking
+  at is a property of the person looking. Retired lines are hidden entirely rather than
+  dimmed further — a fainter ghost is still clutter.
+
+**Two things reported from play, both fixed here.**
+
+1. **Clicking a line now exposes a grab handle on each end**, and dragging one re-aims that
+   end at another character or another dot. Releasing it over empty space **disconnects** it,
+   leaving the line hanging exactly as a deleted character would — one gesture covers re-aim
+   and detach, because they are the same act with different endings. A loose end shows its
+   handle permanently, selected or not: it is already detached and has to be findable to be
+   picked back up.
+2. **Dropping on an anchor dot now works.** The dots protrude beyond the portrait, so a
+   connector released exactly ON one — the most natural aim there is — landed outside the
+   strict `hitNode` rect and connected to nothing; you had to drop on the picture.
+   `hitNodeArea` accepts a padded region, and `dropTarget` picks the **nearest centre** among
+   matches, because a pad wide enough to be forgiving is wide enough for two close nodes to
+   both accept the same point.
+
+**`useHoverCardPosition` is now `useAnchoredPosition`** in `client/src/lib/`, extracted from
+`CombatArena.jsx` where it was module-local. It takes either a ref or a static viewport rect,
+the second form for anchors that are not elements at all — a point on an SVG curve. The Arena
+imports it; there is no second copy to drift.
+
 ### Planned, not yet built
-- **Phase 4 — the editors.** Colour, label, curated emoji grid, arrowhead side, Retire
-  (grey, 50% transparent, backmost layer), Delete.
 - **Phase 5 — the feel.** Spring settle, eased edges, dot bloom, and the hardening pass.
 
 **Foreign keys ARE enforced — corrected, and measured.** Phase 1's write-up of this section

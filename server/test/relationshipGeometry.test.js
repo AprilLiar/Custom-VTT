@@ -18,7 +18,10 @@ import {
   bendOffsets,
   edgeEnds,
   edgePath,
+  DROP_PAD,
+  dropTarget,
   hitNode,
+  hitNodeArea,
   nearestSide,
   nodeCenter,
   pairKey,
@@ -189,4 +192,36 @@ test('the server\'s node-centre constant matches this module', () => {
   // here instead. If the portrait size ever changes, this is what fails.
   assert.equal(NODE_W / 2, 56);
   assert.equal(NODE_H / 2, 56);
+});
+
+test('a connector released ON a dot attaches, not just one released on the picture', () => {
+  // The bug this pins: the four dots protrude beyond the portrait, so aiming at
+  // one — the natural thing to do — landed outside the strict rect and
+  // connected to nothing.
+  const n = node(1, 0, 0);
+  for (const side of SIDES) {
+    const dot = anchorPoint(n, side);
+    assert.equal(hitNode(n, dot), false, `${side} dot is outside the picture, as drawn`);
+    assert.equal(hitNodeArea(n, dot), true, `${side} dot must still accept a drop`);
+    // And the side it snaps to is the one you aimed at.
+    assert.equal(nearestSide(n, dot), side);
+  }
+});
+
+test('the padded region has a limit, and the nearest centre wins inside it', () => {
+  const a = node(1, 0, 0);
+  const far = { x: NODE_W + DROP_PAD + 5, y: NODE_H / 2 };
+  assert.equal(hitNodeArea(a, far), false, 'the pad is generous, not unbounded');
+
+  // Two nodes close enough that one point sits in both pads: the one you are
+  // actually nearer to takes the connection.
+  const b = node(2, NODE_W + 10, 0);
+  const between = { x: NODE_W + 4, y: NODE_H / 2 };
+  assert.equal(dropTarget([a, b], between)?.id, a.id);
+  const nearerB = { x: NODE_W + 8, y: NODE_H / 2 };
+  assert.equal(dropTarget([a, b], nearerB)?.id, b.id);
+
+  // The node a new line is being drawn FROM never accepts its own drop.
+  assert.equal(dropTarget([a], { x: 10, y: 10 }, { exceptId: 1 }), null);
+  assert.equal(dropTarget([a, b], { x: -500, y: -500 }), null);
 });

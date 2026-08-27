@@ -221,6 +221,103 @@ await sleep(600);
 mine = await board(alice.id, { role: 'player', characterId: alice.id });
 check('another player cannot draw a line on it', mine.edges.length === 2, String(mine.edges.length));
 
+// --- what a relationship SAYS
+console.log('\n--- naming a relationship ---');
+const edgeId = mine.edges[0].id;
+aliceSock.emit('relationships:update_edge', {
+  edgeId, label: '⚔️ rivals', color: '#38BDF8', arrow: 'to', retired: false,
+});
+await sleep(700);
+mine = await board(alice.id, { role: 'player', characterId: alice.id });
+let named = mine.edges.find((e) => e.id === edgeId);
+check('the label persists, emoji and all', named.label === '⚔️ rivals', JSON.stringify(named.label));
+check('the colour persists, normalised to lower case', named.color === '#38bdf8', JSON.stringify(named.color));
+check('the arrowhead persists', named.arrow === 'to', JSON.stringify(named.arrow));
+
+// One field at a time: the editor applies each control live, so a colour change
+// must not carry a stale label along and wipe what was typed a moment ago.
+aliceSock.emit('relationships:update_edge', { edgeId, color: '#4ADE80' });
+await sleep(700);
+mine = await board(alice.id, { role: 'player', characterId: alice.id });
+named = mine.edges.find((e) => e.id === edgeId);
+check('changing one field leaves the others alone',
+  named.color === '#4ade80' && named.label === '⚔️ rivals' && named.arrow === 'to',
+  JSON.stringify(named));
+
+// **Colour is the one field that reaches a renderer.** It goes into an SVG
+// stroke and a <marker> id, so anything that is not #rrggbb must never be
+// stored — the fallback is the value already there, not the garbage.
+for (const bad of ['red', 'url(#x)', '#4ade8', 'javascript:alert(1)', '#4ade80; fill:red', '']) {
+  aliceSock.emit('relationships:update_edge', { edgeId, color: bad });
+}
+await sleep(900);
+mine = await board(alice.id, { role: 'player', characterId: alice.id });
+named = mine.edges.find((e) => e.id === edgeId);
+check('a colour that is not #rrggbb is refused, keeping the last good one',
+  named.color === '#4ade80', JSON.stringify(named.color));
+
+// An arrow outside the three the renderer understands is dropped, not thrown:
+// the column's CHECK would reject it, and a constraint error would take the
+// whole handler down rather than ignoring one bad field.
+aliceSock.emit('relationships:update_edge', { edgeId, arrow: 'both' });
+await sleep(700);
+mine = await board(alice.id, { role: 'player', characterId: alice.id });
+check('an arrow value the renderer cannot draw is dropped, not thrown',
+  mine.edges.find((e) => e.id === edgeId).arrow === 'to');
+
+// Retiring is reversible — it is history, not a delete.
+aliceSock.emit('relationships:update_edge', { edgeId, retired: true });
+await sleep(700);
+mine = await board(alice.id, { role: 'player', characterId: alice.id });
+check('a relationship can be retired', mine.edges.find((e) => e.id === edgeId).retired === 1);
+aliceSock.emit('relationships:update_edge', { edgeId, retired: false });
+await sleep(700);
+mine = await board(alice.id, { role: 'player', characterId: alice.id });
+check('...and brought back', mine.edges.find((e) => e.id === edgeId).retired === 0);
+
+// The same gate as everything else on the board.
+bobSock.emit('relationships:update_edge', { edgeId, label: 'vandalised' });
+await sleep(700);
+mine = await board(alice.id, { role: 'player', characterId: alice.id });
+check('another player cannot rename your relationship',
+  mine.edges.find((e) => e.id === edgeId).label === '⚔️ rivals');
+gm.emit('relationships:update_edge', { edgeId, label: 'GM says so' });
+await sleep(700);
+mine = await board(alice.id, { role: 'player', characterId: alice.id });
+check('the GM can', mine.edges.find((e) => e.id === edgeId).label === 'GM says so');
+
+// --- re-anchoring by hand (the single-click gesture's server side)
+console.log('\n--- re-aiming a relationship ---');
+const third = mine.nodes.find((n) => n.id !== mine.edges[0].from_node_id && n.id !== mine.edges[0].to_node_id);
+if (third) {
+  aliceSock.emit('relationships:move_end', { edgeId, end: 'to', nodeId: third.id, side: 'left' });
+  await sleep(700);
+  mine = await board(alice.id, { role: 'player', characterId: alice.id });
+  const aimed = mine.edges.find((e) => e.id === edgeId);
+  check('an attached end can be re-aimed at somebody else',
+    aimed.to_node_id === third.id && aimed.to_side === 'left', JSON.stringify(aimed));
+  check('...keeping everything it said', aimed.label === 'GM says so' && aimed.color === '#4ade80');
+}
+// Dragging an end into empty space disconnects it — the same act as the
+// character being deleted, and the same stored shape.
+aliceSock.emit('relationships:move_end', { edgeId, end: 'to', nodeId: null, x: 120, y: 340 });
+await sleep(700);
+mine = await board(alice.id, { role: 'player', characterId: alice.id });
+const detached = mine.edges.find((e) => e.id === edgeId);
+check('an attached end can be disconnected, left hanging where it was dropped',
+  detached.to_node_id === null && detached.to_x === 120 && detached.to_y === 340, JSON.stringify(detached));
+
+// Put it back on nB before moving on. The floating-end section below deletes
+// that node and asserts this edge's end lands at its centre, which only means
+// anything while the end is attached to it — and a round trip out to space and
+// back is worth asserting in its own right.
+aliceSock.emit('relationships:move_end', { edgeId, end: 'to', nodeId: nB.id, side: 'left' });
+await sleep(700);
+mine = await board(alice.id, { role: 'player', characterId: alice.id });
+const reAimed = mine.edges.find((e) => e.id === edgeId);
+check('a disconnected end can be picked back up and re-attached',
+  reAimed.to_node_id === nB.id && reAimed.to_x === null, JSON.stringify(reAimed));
+
 // --- floating ends
 console.log('\n--- delete the person, keep the relationship ---');
 const edgeBefore = mine.edges[0];

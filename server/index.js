@@ -3983,6 +3983,39 @@ io.on('connection', (socket) => {
     return edge;
   };
 
+  // **Colour is user data that reaches a renderer.** It goes straight into an
+  // SVG `stroke` and into a `<marker>` id, so it is the one field on this board
+  // that is validated rather than merely clamped: a strict `#rrggbb`, and
+  // anything else falls back to the column default rather than being stored.
+  const HEX = /^#[0-9a-fA-F]{6}$/;
+  const DEFAULT_EDGE_COLOR = '#f87179';
+  const colour = (value, fallback = DEFAULT_EDGE_COLOR) =>
+    HEX.test(String(value ?? '')) ? String(value).toLowerCase() : fallback;
+
+  const ARROWS = new Set(['none', 'from', 'to']);
+
+  // What a relationship SAYS, as opposed to where it is attached (move_end).
+  // Every field is optional: the editor applies each control live, so a single
+  // change sends a single field and everything else keeps its stored value.
+  on('relationships:update_edge', async ({ edgeId, label, color, arrow, retired }) => {
+    const edge = await loadOwnedEdge(edgeId);
+    if (!edge) return;
+    await run(
+      `UPDATE relationship_edges SET label = ?, color = ?, arrow = ?, retired = ? WHERE id = ?`,
+      [
+        clampText(label ?? edge.label, 60),
+        colour(color ?? edge.color, edge.color),
+        // Validated here as well as by the column's CHECK so a bad value is a
+        // dropped event rather than a thrown constraint — the same shape
+        // `side()` uses for the four dot names.
+        ARROWS.has(arrow) ? arrow : ARROWS.has(edge.arrow) ? edge.arrow : 'none',
+        retired == null ? edge.retired : retired ? 1 : 0,
+        edge.id,
+      ]
+    );
+    await emitRelationships(edge.owner_character_id);
+  });
+
   on('relationships:delete_edge', async ({ edgeId }) => {
     const edge = await loadOwnedEdge(edgeId);
     if (!edge) return;

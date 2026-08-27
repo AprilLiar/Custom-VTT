@@ -1,16 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { socket } from '../socket.js';
-import { DEFAULT_VIEW } from '../lib/boardViewport.js';
+import { DEFAULT_VIEW, loadShowRetired, saveShowRetired } from '../lib/boardViewport.js';
 import {
   anchorPoint,
   assignBends,
   edgeEnds,
   edgePath,
-  hitNode,
+  dropTarget,
   nearestSide,
 } from '../lib/relationshipGeometry.js';
 import RelationshipEdges from './RelationshipEdges.jsx';
+import RelationshipEditor from './RelationshipEditor.jsx';
 import RelationshipNode, { NODE_WIDTH, PORTRAIT_HEIGHT } from './RelationshipNode.jsx';
 import RelationshipVoid from './RelationshipVoid.jsx';
 
@@ -64,6 +65,11 @@ export default function RelationshipBoard({
   const [dropping, setDropping] = useState(false);
   const [editing, setEditing] = useState(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState(null);
+  // The line being edited, plus the SCREEN point to hang the popover from —
+  // captured at the moment of the double-click so the panel does not chase the
+  // line if the board is panned behind it.
+  const [editingEdge, setEditingEdge] = useState(null);
+  const [showRetired, setShowRetired] = useState(() => loadShowRetired(ownerCharacterId));
   // The line currently being drawn or re-attached, as world points. State
   // rather than a ref because the draft path has to re-render to be seen —
   // it is one <path>, not the whole board, so the cost is a rounding error
@@ -119,6 +125,22 @@ export default function RelationshipBoard({
         ? charactersById.get(node.character_id) ?? { name: 'Unknown' }
         : peopleById.get(node.person_id) ?? { name: 'Unknown' },
     [charactersById, peopleById]
+  );
+
+  // The editor reads the edge out of board state every render rather than
+  // holding a copy, so a live edit repaints the panel from the same truth the
+  // line is drawn from — there is no second version of the relationship.
+  const liveEditedEdge = editingEdge ? edges.find((e) => e.id === editingEdge.id) : null;
+
+  // The arrow controls are meaningless as "from" and "to" — those are storage
+  // words. They are drawn with the two people's actual names.
+  const endName = useCallback(
+    (nodeId) => {
+      if (nodeId == null) return 'the loose end';
+      const node = nodesById.get(nodeId);
+      return node ? subjectFor(node)?.name ?? 'Unknown' : 'Unknown';
+    },
+    [nodesById, subjectFor]
   );
 
   const registerPath = useCallback((key, el) => {
@@ -267,9 +289,13 @@ export default function RelationshipBoard({
       // Hit-testing is arithmetic against the stored rects, not
       // elementFromPoint: exact at any zoom, and it does not care that the
       // element under the cursor is the line being dragged.
-      const over = nodes.find(
-        (n) => hitNode(n, point) && !(connect.kind === 'new' && n.id === connect.nodeId)
-      );
+      //
+      // `dropTarget` accepts a padded region rather than the bare portrait,
+      // because the four dots sit OUTSIDE the picture and aiming at one is the
+      // natural thing to do — the strict rect rejected exactly that drop.
+      const over = dropTarget(nodes, point, {
+        exceptId: connect.kind === 'new' ? connect.nodeId : null,
+      });
       connect.target = over ? { nodeId: over.id, side: nearestSide(over, point) } : null;
       setDraft({
         from: connect.anchor,
@@ -371,6 +397,25 @@ export default function RelationshipBoard({
         onDrop={onDrop}
         onDragOver={onDragOver}
         onDragLeave={() => setDropping(false)}
+        corner={
+          canEdit && edges.some((e) => e.retired) ? (
+            <button
+              onClick={() => {
+                const next = !showRetired;
+                setShowRetired(next);
+                saveShowRetired(ownerCharacterId, next);
+              }}
+              title="Retired relationships are kept as history"
+              className={`panel-cut-sm border px-2 py-1 text-[10px] font-bold uppercase tracking-wide ${
+                showRetired
+                  ? 'border-zinc-700 bg-zinc-900/80 text-zinc-400 hover:text-zinc-100'
+                  : 'border-brand-700/60 bg-zinc-900/80 text-brand-300'
+              }`}
+            >
+              {showRetired ? 'Retired shown' : 'Retired hidden'}
+            </button>
+          ) : null
+        }
         className={`${className} ${dropping ? 'ring-2 ring-brand-400' : ''}`}
       >
         <RelationshipEdges
@@ -384,9 +429,13 @@ export default function RelationshipBoard({
             setSelectedEdgeId(edge.id);
             setSelectedId(null);
           }}
-          onEdgeDoubleClick={(edge) => setSelectedEdgeId(edge.id)}
+          onEdgeDoubleClick={(edge, e) => {
+            setSelectedEdgeId(edge.id);
+            setEditingEdge({ id: edge.id, anchor: { left: e.clientX, top: e.clientY } });
+          }}
           onEndPointerDown={onEndPointerDown}
           registerPath={registerPath}
+          showRetired={showRetired}
           draft={draft}
         />
         {nodes.map((node) => (
@@ -414,6 +463,16 @@ export default function RelationshipBoard({
         ))}
         {!nodes.length && <EmptyHint canEdit={canEdit} />}
       </RelationshipVoid>
+
+      {editingEdge && liveEditedEdge && (
+        <RelationshipEditor
+          edge={liveEditedEdge}
+          anchor={editingEdge.anchor}
+          fromName={endName(liveEditedEdge.from_node_id)}
+          toName={endName(liveEditedEdge.to_node_id)}
+          onClose={() => setEditingEdge(null)}
+        />
+      )}
 
       {editing && (
         <NodeEditor

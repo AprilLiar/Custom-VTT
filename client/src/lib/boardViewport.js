@@ -129,3 +129,26 @@ export function saveView(characterId, view) {
     /* private window, or storage full — the camera is not worth an error */
   }
 }
+
+// Whether retired relationships are drawn at all. A property of the person
+// looking rather than of the board — the same rule the camera follows — so it
+// lives here in localStorage and is never sent anywhere. On by default: history
+// is the reason retiring exists, and a line vanishing the moment you retired it
+// would read as a delete.
+const retiredKey = (characterId) => `vtt.relationships.retired.${characterId}`;
+
+export function loadShowRetired(characterId) {
+  try {
+    return localStorage.getItem(retiredKey(characterId)) !== '0';
+  } catch {
+    return true;
+  }
+}
+
+export function saveShowRetired(characterId, show) {
+  try {
+    localStorage.setItem(retiredKey(characterId), show ? '1' : '0');
+  } catch {
+    /* private window, or storage full — a view preference is not worth an error */
+  }
+}
