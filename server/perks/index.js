@@ -166,6 +166,17 @@ export const SEAMS = [
   // character_move_overrides: that table is a snapshot, so a move learned
   // *after* the Perk was granted would silently miss out.
   'moveFrameDelta',
+  // ({ character }) -> { label, name, dieSize, bonus?, durability, once? } | null.
+  // A weapon this character could pick up, offered on their EMPTY Weapon slot
+  // (Never Empty-Handed). NOT folded: each Perk's offer is its own button, so
+  // two Perks offering something would simply both be listed.
+  //
+  // The only seam so far that is a player-facing *action* rather than a number
+  // the engine folds in — and it is still shaped as participation in a decision
+  // the engine already makes, namely what may fill an empty Weapon slot. The
+  // Perk does not arm anybody; it says what it is willing to offer, and
+  // `weapon:take_offer` is what actually calls `grantWeapon`.
+  'weaponOffer',
 ];
 
 // Tier-3 lifecycle keys — not seams (they are not folded across Perks, each
@@ -196,6 +207,7 @@ import healingFactor from './healingFactor.js';
 import ironSkin from './ironSkin.js';
 import lastBreathTaker from './lastBreathTaker.js';
 import multifaceted from './multifaceted.js';
+import neverEmptyHanded from './neverEmptyHanded.js';
 import notJustAScratch from './notJustAScratch.js';
 import osu from './osu.js';
 import perfectPlayer from './perfectPlayer.js';
@@ -225,6 +237,7 @@ const DEFINITIONS = [
   lastBreathTaker,
   grounded,
   osu,
+  neverEmptyHanded,
   dogfighter,
 ];
 

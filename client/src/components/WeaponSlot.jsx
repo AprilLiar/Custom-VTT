@@ -149,7 +149,7 @@ function WeaponEditor({ weapon, characterId, onClose }) {
   );
 }
 
-export default function WeaponSlot({ characterId, weapon, compact = false }) {
+export default function WeaponSlot({ characterId, weapon, offers = [], compact = false }) {
   const [editing, setEditing] = useState(false);
   const [rolling, setRolling] = useState(false);
   const buttonRef = useRef(null);
@@ -190,6 +190,24 @@ export default function WeaponSlot({ characterId, weapon, compact = false }) {
           <Sword className="h-7 w-7 opacity-60" />
         </button>
         <span className="text-xs text-zinc-600">Weapon</span>
+        {/* **What a Perk is offering to put here (Never Empty-Handed).** On the
+            empty slot rather than on the Perk's own card, because this is where
+            you look for a weapon — and it is the one place in the app that
+            already means "you are carrying nothing". Only takeable offers ever
+            arrive (the server filters a spent once-per-Fight charge out
+            entirely), so the button's absence is the whole of the "you already
+            did this" state; there is nothing to grey out. */}
+        {offers.map((offer) => (
+          <button
+            key={offer.perkName}
+            type="button"
+            onClick={() => socket.emit('weapon:take_offer', { characterId, perkName: offer.perkName })}
+            title={`${offer.perkName} — d${offer.dieSize}, ${offer.durability} Durability`}
+            className="panel-cut-sm whitespace-nowrap border border-amber-700/60 bg-amber-950/30 px-2 py-0.5 text-[11px] text-amber-300 hover:border-amber-500 hover:bg-amber-900/40"
+          >
+            {offer.label}
+          </button>
+        ))}
         {editing &&
           toBody(
             <WeaponEditor weapon={null} characterId={characterId} onClose={() => setEditing(false)} />

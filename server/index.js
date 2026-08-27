@@ -84,6 +84,7 @@ import {
 import { effectiveFrames, idleStaminaRegenRate } from './perkAutomations.js';
 import {
   clearAllPerkState, perkAllowsRevealedDetail, perkStaminaCostDeltas, perkMoveFrameDeltas,
+  perkWeaponOffers, takeWeaponOffer,
 } from './perkEngine.js';
 import { isAutomatedPerk, isManualPerk, perkDefinition } from './perks/index.js';
 import { validateCreation } from './characterCreation.js';
@@ -1315,7 +1316,11 @@ app.get('/api/characters/:id', wrap(async (req, res) => {
     // not something they are created with (see server/weapons.js).
     getWeapon(character.id),
   ]);
-  res.json({ character, dice, inventory, injuries, stances, moves, roleplay, perks, counters, weapon });
+  // What this character could pick up, offered on an EMPTY slot only (Never
+  // Empty-Handed). Resolved server-side and sent already filtered, so the slot
+  // renders what it is given rather than deciding whether a charge is spent.
+  const weaponOffers = weapon ? [] : await perkWeaponOffers(character.id);
+  res.json({ character, dice, inventory, injuries, stances, moves, roleplay, perks, counters, weapon, weaponOffers });
 }));
 
 app.get('/api/tells', wrap(async (_req, res) => {
@@ -2012,6 +2017,37 @@ io.on('connection', (socket) => {
     const weapon = await grantWeapon(io, character.id, { name, dieSize, bonus, durability });
     if (!weapon) return;
     await postSystemMessage(io, `${character.name} takes up the ${weapon.name}.`);
+  });
+
+  // **Taking a weapon a Perk offered (Never Empty-Handed).** The Perk says what
+  // it is willing to offer; this is what actually arms anybody, through the
+  // same `grantWeapon` seam every other weapon in the game comes through.
+  //
+  // Everything is re-derived from the character's own granted Perks — the
+  // client sends a name and nothing else — so a hand-sent event cannot conjure
+  // a weapon, spend a charge twice, or invent a die size.
+  on('weapon:take_offer', async ({ characterId, perkName }) => {
+    const character = await getCharacter(characterId);
+    if (!character) return;
+    // Refused outright rather than replacing what they are holding: this is
+    // finding something on the floor, not swapping kit.
+    if (await getWeapon(character.id)) return;
+    const offer = await takeWeaponOffer(character.id, String(perkName ?? ''));
+    if (!offer) return;
+    const weapon = await grantWeapon(io, character.id, {
+      name: offer.name,
+      dieSize: offer.dieSize,
+      bonus: offer.bonus ?? 0,
+      durability: offer.durability,
+    });
+    // Announced, because the table needs to know where a weapon came from —
+    // a fighter who was unarmed a moment ago now is not.
+    if (weapon) {
+      await postSystemMessage(
+        io,
+        `${character.name} finds something to fight with — ${offer.name} (d${offer.dieSize}, ${offer.durability} Durability), from ${offer.perkName}.`
+      );
+    }
   });
 
   on('weapon:delete', async ({ characterId }) => {

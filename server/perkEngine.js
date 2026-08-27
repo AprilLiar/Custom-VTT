@@ -454,6 +454,52 @@ export async function perkMoveFrameDeltas({ characterId, moves }) {
   return out;
 }
 
+// **What this character could pick up right now (Never Empty-Handed).**
+//
+// Not folded across Perks: each offer is its own button, so two Perks offering
+// something would both be listed rather than summing into nonsense. Returns
+// only offers that are actually *takeable* — the caller renders them directly,
+// so an offer that is already spent must not reach the client at all rather
+// than appearing and then being refused.
+//
+// The empty-slot condition lives with the caller (server/index.js), which knows
+// whether the character is carrying anything; this answers the Perk half only.
+export async function perkWeaponOffers(characterId) {
+  const granted = await perkDefinitionsFor(characterId);
+  const withSeam = granted.filter((g) => typeof g.definition.weaponOffer === 'function');
+  if (!withSeam.length) return [];
+  const ctx = await seamContext(characterId, {});
+  const offers = [];
+  for (const { definition, characterPerkId } of withSeam) {
+    const offer = await definition.weaponOffer({ ...ctx, characterPerkId });
+    if (!offer) continue;
+    // A spent once-per-Fight offer is dropped here rather than shown greyed:
+    // the slot is a small control, and "you already did this" is a state the
+    // absence of the button says perfectly well.
+    if (offer.once && (await readPerkState(characterPerkId, offerKey(definition.name)))) continue;
+    offers.push({ ...offer, perkName: definition.name, characterPerkId });
+  }
+  return offers;
+}
+
+// One key per Perk name, so two Perks offering weapons spend their charges
+// independently.
+export const offerKey = (perkName) => `weapon-offer:${perkName}`;
+
+// Take one. Returns the offer that was taken, or null if it is not on the
+// table — a stale client, a second click, or a Perk that was revoked between
+// the render and the press. Deliberately re-derives the offers rather than
+// trusting anything the client sent beyond the Perk's name.
+export async function takeWeaponOffer(characterId, perkName) {
+  const offers = await perkWeaponOffers(characterId);
+  const offer = offers.find((o) => o.perkName === perkName);
+  if (!offer) return null;
+  if (offer.once && !(await consumeOnce(offer.characterPerkId, offerKey(perkName), offer.once))) {
+    return null;
+  }
+  return offer;
+}
+
 // One move's delta. The single-move shorthand over the batch above.
 export async function perkStaminaCostDelta({ characterId, move, dice, injuries }) {
   const deltas = await perkStaminaCostDeltas({ characterId, moves: [move], dice, injuries });
