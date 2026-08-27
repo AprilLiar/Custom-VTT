@@ -13,6 +13,7 @@ import {
   resolveDodge,
   resolveBlock,
   resolveMoveConflict,
+  resolveNonCommit,
   answerGrapple,
   resumeGrapple,
   resumeAllPairsOnBoot,
@@ -840,6 +841,24 @@ function defensePromptOrNull(json, kind, what, pairIndex) {
   }
 }
 
+// One viewer's half of a Non-Committed prompt: the entry that belongs to them,
+// and nothing else.
+//
+// **Never the whole payload.** It lists move names for every holder in the
+// pair, and a pair can have a holder on each side — handing that across would
+// disclose an opponent's undeclared board, which is the one thing Declaration
+// exists to keep. A GM sees their NPCs' entries; a Player sees their own.
+function nonCommitForViewer(pending, viewer) {
+  const entries = pending?.entries ?? [];
+  if (!entries.length || !viewer) return null;
+  const mine = entries.filter((entry) =>
+    viewer.role === 'player'
+      ? viewer.characterId === entry.characterId
+      : entry.characterType === 'npc'
+  );
+  return mine.length ? { entries: mine } : null;
+}
+
 function shapePair(row, roundLength, resolution, viewer) {
   const tic = relativeTic({ tic: row.current_tic, roundStartTic: row.round_start_tic, roundLength });
   return {
@@ -876,6 +895,16 @@ function shapePair(row, roundLength, resolution, viewer) {
     pendingConflict:
       resolution?.status === 'paused_conflict' && resolution.pending_conflict_json
         ? parsePausePayload(resolution.pending_conflict_json, 'conflict', row.pair_index)
+        : null,
+    // **The Non-Committed window (decided, new).** Scoped to the fighter it
+    // belongs to, not to the GM: it is their own moves being taken back, and
+    // the payload names what they declared — which is exactly the thing
+    // declaration keeps secret from everyone else until it reveals. A GM
+    // controlling an NPC gets it because they control that NPC, on the same
+    // ownership test the conflict prompt already uses.
+    pendingNonCommit:
+      resolution?.status === 'paused_noncommit' && resolution.pending_noncommit_json
+        ? nonCommitForViewer(parsePausePayload(resolution.pending_noncommit_json, 'Non-Committed', row.pair_index), viewer)
         : null,
     // The Block prompt rides the same snapshot as the Dodge prompt above, so a
     // GM who connects (or reconnects) into an already-paused pair picks it up
@@ -2026,6 +2055,30 @@ io.on('connection', (socket) => {
   // Everything is re-derived from the character's own granted Perks — the
   // client sends a name and nothing else — so a hand-sent event cannot conjure
   // a weapon, spend a charge twice, or invent a die size.
+  // **Answering the Non-Committed window.** Ownership is checked here rather
+  // than trusted: the resolver only cancels ids the stored prompt offered, and
+  // this refuses a socket that does not control any of the fighters it names.
+  on('combat:resolve_noncommit', async ({ pairIndex, declaredMoveIds }) => {
+    const identity = socket.data.identity;
+    if (!identity) return;
+    const index = Number(pairIndex);
+    if (!Number.isInteger(index)) return;
+    const resolution = await one(
+      `SELECT pending_noncommit_json FROM pair_round_resolutions
+       WHERE pair_index = ? AND status = 'paused_noncommit'`,
+      [index]
+    );
+    if (!resolution) return;
+    const pending = parsePausePayload(resolution.pending_noncommit_json, 'Non-Committed', index);
+    const mine = nonCommitForViewer(pending, identity);
+    if (!mine) return;
+    // Only ids from THIS viewer's own entries — a Player answering cannot
+    // cancel the NPC's moves in the same prompt, and vice versa.
+    const ownIds = new Set(mine.entries.flatMap((e) => e.moves.map((m) => m.declaredMoveId)));
+    const chosen = (declaredMoveIds ?? []).map(Number).filter((id) => ownIds.has(id));
+    await resolveNonCommit(index, { declaredMoveIds: chosen }, io);
+  });
+
   on('weapon:take_offer', async ({ characterId, perkName }) => {
     const character = await getCharacter(characterId);
     if (!character) return;

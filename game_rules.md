@@ -1179,6 +1179,22 @@ way tables always have.
   count as having **Hard to Interrupt (2)** — and a Move that already had Hard
   to Interrupt (x) has it increased by 2 instead. It only makes you harder to
   break up; it does nothing for your own attempts to break up somebody else.
+- **Osu!** Technique, paid for in time. Every **Attack** you declare gets **+1
+  Recovery** — you are returning to your stance after each one — and in exchange
+  every Attack Roll you make gets **+2**. The extra frame is real: it is on the
+  Tic strip before you place the move, and it floors where your next one can go.
+- **Never Empty-Handed.** **Once per Fight**, you can pick something up off the
+  floor: a **d12 Weapon with 3 Durability** and no modifier. The offer sits on
+  your empty Weapon slot; taking it is your choice and your timing. Reaching for
+  it early spends the Fight's only chance, and what you find is 3 Durability
+  that an attack aimed at your Weapon can break.
+- **Non-Committed.** You do not commit until you have to. After everyone has
+  finished declaring but **before anything is Revealed**, you are asked whether
+  to take any of your own moves back. Anything you Interrupt refunds its Stamina
+  in full and frees its Tics. Nothing you keep moves — the rest of your queue
+  stays exactly where you threw it — but the freed Tics no longer hold up where
+  you may place next round. It buys you nerve, not information: nothing has
+  revealed yet, and you are guessing exactly as blindly as everybody else.
 
 > **Splash damage lands like any other damage.** If the second Stat is already
 > broken, the splash cannot be applied and is reported at the end of the round

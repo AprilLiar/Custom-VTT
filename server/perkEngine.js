@@ -500,6 +500,19 @@ export async function takeWeaponOffer(characterId, perkName) {
   return offer;
 }
 
+// Does this character get the take-it-back window at the head of resolution?
+// (Non-Committed.) OR-ed, like every other boolean seam.
+export async function perkInterruptsOwnDeclarations(characterId, extra = {}) {
+  const granted = await perkDefinitionsFor(characterId);
+  const withSeam = granted.filter((g) => typeof g.definition.interruptsOwnDeclarations === 'function');
+  if (!withSeam.length) return false;
+  const ctx = await seamContext(characterId, extra);
+  for (const { definition, characterPerkId } of withSeam) {
+    if (await definition.interruptsOwnDeclarations({ ...ctx, characterPerkId })) return true;
+  }
+  return false;
+}
+
 // One move's delta. The single-move shorthand over the batch above.
 export async function perkStaminaCostDelta({ characterId, move, dice, injuries }) {
   const deltas = await perkStaminaCostDeltas({ characterId, moves: [move], dice, injuries });

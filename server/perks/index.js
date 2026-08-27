@@ -177,6 +177,14 @@ export const SEAMS = [
   // Perk does not arm anybody; it says what it is willing to offer, and
   // `weapon:take_offer` is what actually calls `grantWeapon`.
   'weaponOffer',
+  // (ctx) -> boolean. OR-ed. Whether this character gets the chance to take
+  // their own declarations back at the head of resolution, after everyone has
+  // declared and before anything reveals (Non-Committed).
+  //
+  // A boolean rather than a number because it is a *window*, not a quantity —
+  // two Perks granting it grant the same one window, which is exactly what
+  // OR-ing means here.
+  'interruptsOwnDeclarations',
 ];
 
 // Tier-3 lifecycle keys — not seams (they are not folded across Perks, each
@@ -208,6 +216,7 @@ import ironSkin from './ironSkin.js';
 import lastBreathTaker from './lastBreathTaker.js';
 import multifaceted from './multifaceted.js';
 import neverEmptyHanded from './neverEmptyHanded.js';
+import nonCommitted from './nonCommitted.js';
 import notJustAScratch from './notJustAScratch.js';
 import osu from './osu.js';
 import perfectPlayer from './perfectPlayer.js';
@@ -238,6 +247,7 @@ const DEFINITIONS = [
   grounded,
   osu,
   neverEmptyHanded,
+  nonCommitted,
   dogfighter,
 ];
 
