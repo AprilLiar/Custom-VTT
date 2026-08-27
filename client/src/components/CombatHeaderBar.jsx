@@ -11,6 +11,7 @@ import { useIsDesktop } from '../lib/useMediaQuery.js';
 import { useSocketRefresh } from '../lib/connection.js';
 import { clearSummonedPrompt, onSummonedPrompt } from '../lib/pausePrompts.js';
 import MoveConflictDialog from './MoveConflictDialog.jsx';
+import NonCommitDialog from './NonCommitDialog.jsx';
 import DefensePromptDialog from './DefensePromptDialog.jsx';
 import GrapplePromptDialog from './GrapplePromptDialog.jsx';
 
@@ -152,6 +153,16 @@ export default function CombatHeaderBar() {
     return pair ? { ...pair.pendingConflict, pairIndex: pair.pairIndex } : null;
   })();
 
+  // **Non-Committed's window.** No ownership test here, unlike the conflict
+  // prompt: the server has already filtered the payload down to the entries
+  // this socket controls (see nonCommitForViewer), so anything that arrives is
+  // by definition ours to answer. Filtering again on the client would be a
+  // second, weaker copy of a rule that has to hold server-side anyway.
+  const snapshotNonCommit = (() => {
+    const pair = pairs.find((p) => p.pendingNonCommit);
+    return pair ? { ...pair.pendingNonCommit, pairIndex: pair.pairIndex } : null;
+  })();
+
   // A hand-summoned prompt steps aside the moment the ordinary path produces
   // the same question — it exists for when that path is silent, not to compete
   // with it, and leaving it up would strand a stale copy after the answer lands.
@@ -178,6 +189,14 @@ export default function CombatHeaderBar() {
       }`}
       {...defenseEntry}
       onAnswered={clearSummonedPrompt}
+    />
+  ) : null;
+
+  const nonCommitDialog = snapshotNonCommit ? (
+    <NonCommitDialog
+      key={`noncommit:${snapshotNonCommit.pairIndex}`}
+      pairIndex={snapshotNonCommit.pairIndex}
+      entries={snapshotNonCommit.entries ?? []}
     />
   ) : null;
 
@@ -240,6 +259,7 @@ export default function CombatHeaderBar() {
       <>
         {conflictDialog}
         {defenseDialog}
+        {nonCommitDialog}
         {grappleDialog}
       </>
     );
@@ -376,6 +396,7 @@ export default function CombatHeaderBar() {
       )}
       {conflictDialog}
       {defenseDialog}
+      {nonCommitDialog}
       {grappleDialog}
     </div>
   );

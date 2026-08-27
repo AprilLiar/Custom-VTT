@@ -153,7 +153,7 @@ function StaminaBlock({ character, staminaDie }) {
 }
 
 export default function CoreStatsTab({ data }) {
-  const { character, dice, inventory, injuries, weapon } = data;
+  const { character, dice, inventory, injuries, weapon, weaponOffers = [] } = data;
   const { role } = useRole();
   // Tailwind's own `sm` — the width below which the 4-wide middle row of
   // Stats stops fitting at all (see NARROW_ROWS above).
@@ -321,7 +321,7 @@ export default function CoreStatsTab({ data }) {
           className="absolute -translate-x-1/2 -translate-y-1/2"
           style={{ top: WEAPON_SPOT.top, left: WEAPON_SPOT.left }}
         >
-          <WeaponSlot characterId={character.id} weapon={weapon} />
+          <WeaponSlot characterId={character.id} weapon={weapon} offers={weaponOffers} />
         </div>
       </div>
 
@@ -382,7 +382,7 @@ export default function CoreStatsTab({ data }) {
           {/* A row of its own on a phone, rather than a coordinate: the mobile
               layout is grouped rows, and the Weapon is its own group. */}
           <div className="flex justify-center gap-3">
-            <WeaponSlot characterId={character.id} weapon={weapon} compact />
+            <WeaponSlot characterId={character.id} weapon={weapon} offers={weaponOffers} compact />
           </div>
         </div>
       </div>

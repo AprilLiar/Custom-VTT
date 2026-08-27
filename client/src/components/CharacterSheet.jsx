@@ -192,7 +192,17 @@ export default function CharacterSheet() {
     // value here, not an absence.
     const onWeaponUpdated = ({ characterId: cid, weapon }) => {
       if (cid !== characterId) return;
-      setData((prev) => (prev ? { ...prev, weapon } : prev));
+      // `weaponOffers` is only meaningful on an EMPTY slot, and whether a
+      // once-per-Fight charge is still there is the server's answer, not one
+      // this patch can derive. So: armed, the offers are simply gone; disarmed,
+      // refetch and let the server say whether anything is still on the table.
+      // Losing a weapon is rare enough to afford one request, and guessing here
+      // is how a spent charge would reappear as a button that then refuses.
+      if (weapon) {
+        setData((prev) => (prev ? { ...prev, weapon, weaponOffers: [] } : prev));
+        return;
+      }
+      getCharacter(characterId).then(setData).catch(() => {});
     };
     const onCounterDeleted = ({ counterId }) => {
       setData((prev) =>

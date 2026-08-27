@@ -156,6 +156,56 @@ export const SEAMS = [
   // already broken pays nothing, matching the same "it cannot be applied"
   // reading the end-of-round report uses.
   'staminaPerHalfDamage',
+  // ({ move }) -> { startup?, active?, recovery? } frames added to ONE move for
+  // this character (Osu!). Folded field by field, additively, into the same
+  // per-character override deltas `getMovesFor` already applies — so a frame a
+  // Perk adds shows up in the declare picker, in the placement floor, in the
+  // footprint the engine resolves and on the Tic strip, from one addition.
+  //
+  // Deliberately a seam rather than rows written at grant time into
+  // character_move_overrides: that table is a snapshot, so a move learned
+  // *after* the Perk was granted would silently miss out.
+  'moveFrameDelta',
+  // ({ character }) -> { label, name, dieSize, bonus?, durability, once? } | null.
+  // A weapon this character could pick up, offered on their EMPTY Weapon slot
+  // (Never Empty-Handed). NOT folded: each Perk's offer is its own button, so
+  // two Perks offering something would simply both be listed.
+  //
+  // The only seam so far that is a player-facing *action* rather than a number
+  // the engine folds in — and it is still shaped as participation in a decision
+  // the engine already makes, namely what may fill an empty Weapon slot. The
+  // Perk does not arm anybody; it says what it is willing to offer, and
+  // `weapon:take_offer` is what actually calls `grantWeapon`.
+  'weaponOffer',
+  // (ctx) -> boolean. OR-ed. Whether this character gets the chance to take
+  // their own declarations back at the head of resolution, after everyone has
+  // declared and before anything reveals (Non-Committed).
+  //
+  // A boolean rather than a number because it is a *window*, not a quantity —
+  // two Perks granting it grant the same one window, which is exactly what
+  // OR-ing means here.
+  'interruptsOwnDeclarations',
+  // (ctx) -> number. Summed onto the modifier of a Block rolled AGAINST this
+  // character (Path To Mastery: Strength). Negative penalises the guard.
+  //
+  // The first seam that answers about somebody ELSE's roll: it is asked of the
+  // attacker and folded into the blocker's own modifier, which is the only
+  // place that knows both halves of the exchange. Blocks only — a Dodge is
+  // getting out of the way and does not care how hard you hit.
+  'blockPenaltyAgainstYou',
+  // (ctx) -> { charges, scope } | null. How many times one of this character's
+  // Stats may refuse to Break, and over what window (Path To Mastery:
+  // Durability). NOT folded: each Perk keeps its own charges, and the engine
+  // spends the first one that has any left.
+  //
+  // The seam answers how many; `perkAbsorbBreak` spends one, because only the
+  // damage loop knows a break actually happened. A Perk decrementing its own
+  // counter would have to be told about breaks it did not prevent.
+  'absorbsBreak',
+  // (ctx) -> boolean. OR-ed. Whether this character reads the High/Mid/Low band
+  // of an unrevealed attack aimed at them (Eye Catcher). A band only — not the
+  // move, not its frames, not its damage.
+  'seesAttackHeight',
 ];
 
 // Tier-3 lifecycle keys — not seams (they are not folded across Perks, each
@@ -180,13 +230,20 @@ import baronOfSuffering from './baronOfSuffering.js';
 import corneredAnimal from './corneredAnimal.js';
 import deadlyPendulum from './deadlyPendulum.js';
 import dogfighter from './dogfighter.js';
+import eyeCatcher from './eyeCatcher.js';
+import pathToMasteryDurability from './pathToMasteryDurability.js';
+import pathToMasterySpeed from './pathToMasterySpeed.js';
+import pathToMasteryStrength from './pathToMasteryStrength.js';
 import geniusObserver from './geniusObserver.js';
 import grounded from './grounded.js';
 import healingFactor from './healingFactor.js';
 import ironSkin from './ironSkin.js';
 import lastBreathTaker from './lastBreathTaker.js';
 import multifaceted from './multifaceted.js';
+import neverEmptyHanded from './neverEmptyHanded.js';
+import nonCommitted from './nonCommitted.js';
 import notJustAScratch from './notJustAScratch.js';
+import osu from './osu.js';
 import perfectPlayer from './perfectPlayer.js';
 import piercingHeadache from './piercingHeadache.js';
 import punchesInBunches from './punchesInBunches.js';
@@ -213,6 +270,13 @@ const DEFINITIONS = [
   piercingHeadache,
   lastBreathTaker,
   grounded,
+  osu,
+  neverEmptyHanded,
+  nonCommitted,
+  eyeCatcher,
+  pathToMasteryDurability,
+  pathToMasterySpeed,
+  pathToMasteryStrength,
   dogfighter,
 ];
 

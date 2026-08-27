@@ -418,6 +418,150 @@ export async function perkStaminaCostDeltas({ characterId, moves, dice, injuries
   return out;
 }
 
+// **How many frames a Perk adds to one move, for this character (new seam).**
+//
+// Folded into `getMovesFor`'s existing per-character override deltas, which is
+// the single place a character's move list is built — so a Perk-granted frame
+// lands in the declare picker, the placement floor, the footprint the engine
+// resolves and the Tic strip, all from one addition. The character_move_overrides
+// table was the alternative and is the wrong shape for this: it is a snapshot
+// written at grant time, so a move learned *afterwards* would silently miss out.
+//
+// Field by field and additive, like `interruptAmounts`. A Perk answering only
+// `{ recovery: 1 }` leaves the other two alone.
+export async function perkMoveFrameDeltas({ characterId, moves }) {
+  const out = new Map();
+  const list = moves ?? [];
+  if (!list.length) return out;
+  const granted = await perkDefinitionsFor(characterId);
+  const withSeam = granted.filter((g) => typeof g.definition.moveFrameDelta === 'function');
+  if (!withSeam.length) return out;
+
+  const slots = await rollSlotsByMove(list.map((m) => m.id));
+  const base = await seamContext(characterId, {});
+
+  for (const move of list) {
+    const facts = moveFacts(move, slots.get(move.id) ?? []);
+    const total = { startup: 0, active: 0, recovery: 0 };
+    for (const { definition, characterPerkId } of withSeam) {
+      const answer = (await definition.moveFrameDelta({ ...base, move: facts, characterPerkId })) ?? {};
+      for (const key of ['startup', 'active', 'recovery']) {
+        total[key] += Math.trunc(Number(answer[key]) || 0);
+      }
+    }
+    if (total.startup || total.active || total.recovery) out.set(move.id, total);
+  }
+  return out;
+}
+
+// **What this character could pick up right now (Never Empty-Handed).**
+//
+// Not folded across Perks: each offer is its own button, so two Perks offering
+// something would both be listed rather than summing into nonsense. Returns
+// only offers that are actually *takeable* — the caller renders them directly,
+// so an offer that is already spent must not reach the client at all rather
+// than appearing and then being refused.
+//
+// The empty-slot condition lives with the caller (server/index.js), which knows
+// whether the character is carrying anything; this answers the Perk half only.
+export async function perkWeaponOffers(characterId) {
+  const granted = await perkDefinitionsFor(characterId);
+  const withSeam = granted.filter((g) => typeof g.definition.weaponOffer === 'function');
+  if (!withSeam.length) return [];
+  const ctx = await seamContext(characterId, {});
+  const offers = [];
+  for (const { definition, characterPerkId } of withSeam) {
+    const offer = await definition.weaponOffer({ ...ctx, characterPerkId });
+    if (!offer) continue;
+    // A spent once-per-Fight offer is dropped here rather than shown greyed:
+    // the slot is a small control, and "you already did this" is a state the
+    // absence of the button says perfectly well.
+    if (offer.once && (await readPerkState(characterPerkId, offerKey(definition.name)))) continue;
+    offers.push({ ...offer, perkName: definition.name, characterPerkId });
+  }
+  return offers;
+}
+
+// One key per Perk name, so two Perks offering weapons spend their charges
+// independently.
+export const offerKey = (perkName) => `weapon-offer:${perkName}`;
+
+// Take one. Returns the offer that was taken, or null if it is not on the
+// table — a stale client, a second click, or a Perk that was revoked between
+// the render and the press. Deliberately re-derives the offers rather than
+// trusting anything the client sent beyond the Perk's name.
+export async function takeWeaponOffer(characterId, perkName) {
+  const offers = await perkWeaponOffers(characterId);
+  const offer = offers.find((o) => o.perkName === perkName);
+  if (!offer) return null;
+  if (offer.once && !(await consumeOnce(offer.characterPerkId, offerKey(perkName), offer.once))) {
+    return null;
+  }
+  return offer;
+}
+
+// Does this character get the take-it-back window at the head of resolution?
+// (Non-Committed.) OR-ed, like every other boolean seam.
+export async function perkInterruptsOwnDeclarations(characterId, extra = {}) {
+  const granted = await perkDefinitionsFor(characterId);
+  const withSeam = granted.filter((g) => typeof g.definition.interruptsOwnDeclarations === 'function');
+  if (!withSeam.length) return false;
+  const ctx = await seamContext(characterId, extra);
+  for (const { definition, characterPerkId } of withSeam) {
+    if (await definition.interruptsOwnDeclarations({ ...ctx, characterPerkId })) return true;
+  }
+  return false;
+}
+
+// What a Block rolled against this character is penalised by (Path To Mastery:
+// Strength). Summed, like every other number seam — asked of the ATTACKER and
+// folded into the blocker's own modifier.
+export async function perkBlockPenaltyAgainstYou(characterId, extra = {}) {
+  return sumSeam(characterId, 'blockPenaltyAgainstYou', extra);
+}
+
+// **Spend one charge to keep a Stat off the floor (Path To Mastery:
+// Durability).** Returns true if a Perk absorbed the break.
+//
+// NOT folded across Perks: each keeps its own charges, and the first with any
+// left pays. Two Perks each granting two would give four, in the order they
+// happen to be granted — which is fine, because they are charges rather than a
+// rate and nothing about the outcome depends on which one paid.
+//
+// Called only once the engine knows a break really happened, which is why the
+// spend lives here rather than in the definitions: a Perk decrementing its own
+// counter would have to be told about breaks it did not prevent.
+export async function perkAbsorbBreak(characterId, extra = {}) {
+  const granted = await perkDefinitionsFor(characterId);
+  const withSeam = granted.filter((g) => typeof g.definition.absorbsBreak === 'function');
+  if (!withSeam.length) return false;
+  const ctx = await seamContext(characterId, extra);
+  for (const { definition, characterPerkId } of withSeam) {
+    const answer = await definition.absorbsBreak({ ...ctx, characterPerkId });
+    const charges = Math.trunc(Number(answer?.charges) || 0);
+    if (charges <= 0) continue;
+    const key = `absorbs-break:${definition.name}`;
+    const used = Math.trunc(Number(await readPerkState(characterPerkId, key)) || 0);
+    if (used >= charges) continue;
+    await writePerkState(characterPerkId, key, used + 1, answer.scope ?? 'fight');
+    return true;
+  }
+  return false;
+}
+
+// Does this character read the High/Mid/Low band of attacks aimed at them?
+// (Eye Catcher.) OR-ed.
+export async function perkSeesAttackHeight(characterId, extra = {}) {
+  const granted = await perkDefinitionsFor(characterId);
+  const withSeam = granted.filter((g) => typeof g.definition.seesAttackHeight === 'function');
+  if (!withSeam.length) return false;
+  const ctx = await seamContext(characterId, extra);
+  for (const { definition, characterPerkId } of withSeam) {
+    if (await definition.seesAttackHeight({ ...ctx, characterPerkId })) return true;
+  }
+  return false;
+}
+
 // One move's delta. The single-move shorthand over the batch above.
 export async function perkStaminaCostDelta({ characterId, move, dice, injuries }) {
   const deltas = await perkStaminaCostDeltas({ characterId, moves: [move], dice, injuries });

@@ -824,6 +824,123 @@ out of the linter as "worth doing, not worth bundling into a hotfix"; it is in n
 resolve (the rules themselves stay off — this is a correctness gate, and that sweep is separate work).
 Verified the way a check has to be: by deleting the import again and watching `no-undef` name it.
 
+**Three new Perks (decided, new; implemented).**
+
+- **Osu!** — two seams, one clause. "+1 Recovery to every Attack, +2 to all Attack Rolls": the Recovery is the
+  *cost* of the accuracy. Both halves read `isAttackingMove`, deliberately the same shared reading, because a
+  Perk whose two clauses disagreed about what an Attack is would have you paying for moves that never got the
+  bonus. The frame rides the new `moveFrameDelta` seam and is therefore a real frame — visible in the declare
+  picker before the move is placed, and flooring the next declaration.
+- **Never Empty-Handed** — the first **player-activated** Perk. The offer appears on the character's own empty
+  Weapon slot, which is both where you would look for a weapon and the one place in the app that already means
+  "you are carrying nothing". Once per Fight, through the fight-scoped state store Second Wind already uses.
+  Everything is re-derived server-side from the granted Perks — the client sends a Perk name and nothing else —
+  so a hand-sent event cannot conjure a weapon, spend a charge twice or invent a die size.
+- **Non-Committed** — the only Perk that stops the round. A **fifth pause** (`paused_noncommit`) on the pair's
+  own resolution row, raised at the head of the round: after everyone has declared, before anything reveals.
+  Reusing that architecture rather than inventing a parallel one is what gives it crash-recovery and reconnect
+  behaviour for free. Gated on `isNewResolution`, so it asks once per round rather than every time the engine
+  resumes — answering it must not raise it again.
+  - **The payload is filtered per viewer** (`nonCommitForViewer`). It names move names for every holder in the
+    pair, and a pair can have a holder on each side; handing the whole thing across would disclose an
+    opponent's undeclared board, which is the one thing Declaration exists to keep.
+  - **Cancelling refunds in full and frees the Tics, but nothing slides earlier** (decided). That is the
+    engine's standing rule — nothing arrives earlier than it was thrown — and this is the same rule, not an
+    exception to it. The freed Tics still matter: they no longer floor next round's placement.
+  - **Keeping everything is a real answer**, and it is the primary button. The Perk is an option, not an
+    obligation.
+
+**Verified live**, since none of the three is reachable from the unit suite end to end: `playtest-never-empty-handed.mjs`
+(13 probes — the offer only when granted and only on an empty slot, the charge spent exactly once, a second press
+refused, a hand-sent event naming an unheld Perk arming nobody, the charge returning when the Fight does) and
+`playtest-non-committed.mjs` (18 probes). The two most valuable probes in the latter are the ones about **everybody
+else**: a pair with no holder must never pause — getting that wrong would stall every fight in the game behind a
+prompt nobody can answer, a far worse failure than the Perk not working — and the window must not re-open on a round
+it has already been answered on.
+
+**One measurement lesson, again.** The refund probe first asserted a before/after Stamina total and failed against a
+perfectly correct refund: answering the window *releases the round*, and a round pays Stamina regen, so the
+comparison was measuring the refund plus whatever the round did. It asserts the `noncommit` event's own figure now.
+
+**Four more Perks (decided, new; implemented).** Three of them cost one file and one registry line each —
+which is what the seam register is for — and one needed a genuinely new question asked of the payload.
+
+- **Path To Mastery: Speed** — "all your moves gain -1 to Startup", on the existing `moveFrameDelta` seam.
+  **All** moves, not all attacks: a guard that comes up a Tic sooner is the same mastery as a punch that
+  lands a Tic sooner, and the Perk does not qualify itself. `effectiveFrames` already clamps each segment
+  to `0..FRAME_MAX`, so a 1-Startup move goes to 0 and no further — it comes out the instant it is placed,
+  with no wind-up to read, which is a shape the engine already handles.
+- **Path To Mastery: Strength** — "Blocks against you gain a -5 Penalty; your Damage Threshold is reduced
+  by 1". The Threshold half is the existing `minDamageThresholdWhenAttacking` seam (Not Just a Scratch's,
+  from the same side). The Block half needed a new one: **`blockPenaltyAgainstYou`**, and it is the first
+  seam in the game asked of somebody *other than the roller*. Every roll seam so far answers about the
+  fighter making the roll; this is a penalty on the **defender's** roll, conditioned on **who they are
+  guarding against**. It is therefore asked of the attacker and folded into the defender's modifier inside
+  `runBlockLine`, the only place that knows both halves of the exchange — it cannot live in
+  `loadBlockGuard`, which is handed the defender and nothing about who is swinging. Blocks only, on
+  purpose: a Dodge is getting out of the way and does not care how hard you hit, and never reaches that
+  function.
+- **Path To Mastery: Durability** — "the first 2 times in a Fight that a Stat would be Broken, keep it at
+  1d4 instead". A **charge**, spent by the engine rather than by the Perk: the seam (`absorbsBreak`)
+  answers *how many and over what window*, and `perkAbsorbBreak` spends one, because only the damage loop
+  knows a break really happened. The question is asked **only where a break would actually occur** — the
+  die was live coming in and is incapacitated going out — so a charge is never burned on a blow that was
+  not going to break anything. The Stat still takes everything the hit was worth: it lands at a bare d4,
+  no bonus, no pending half, exactly where the break would have left it, minus the going out. So this
+  buys the two worst moments of a fight rather than two free hits — a d4 Stat is one more half-step from
+  breaking anyway. Fight-scoped through the same store Second Wind and Never Empty-Handed use.
+  **Announced, not silent**, on the Grounded precedent: a table watching a Stat get taken out is
+  expecting it to go, and its refusal needs a reason on the record.
+- **Eye Catcher** — "you know whether the attack against you is High (Skull, Brain), Mid (Body, Stamina,
+  Hands) or Low (Legs), in addition to the Tell". The only one of the four that is not a number.
+
+**Eye Catcher is a disclosure rule, and disclosure rules live in the viewer map.** The band itself is
+pure and unit-tested (`attackHeights` in `moveLogic.js`); everything hard about it is *who may read it*.
+
+- **Where it attaches.** `mapDeclaredMovesForViewer` — the same function that decides whether a viewer
+  gets `moveName`, `staminaCost` or a Feint-masked row at all. Adding it anywhere else would have meant
+  a second, weaker gate beside the one the game already trusts.
+- **Protected by absence.** The key is simply not present on a row the viewer has not earned, exactly as
+  `moveId`/`moveName` are `null` rather than blanked and a Feint-masked row is dropped rather than
+  flagged. A `{ attackHeights: null, entitled: false }` shape would tell a devtools reader precisely
+  where to look. The client therefore needs no check of its own: the key's presence *is* the entitlement.
+- **Not gated on reveal.** Knowing it *before* the move shows itself is the Perk's entire content. Once
+  a move reveals, its Attack Targets are public anyway and the band is merely redundant.
+- **"Against you" is answered from the board, not from the payload.** A row qualifies when it is
+  somebody else's move, in the viewer's own pair, and either aimed at them or aimed at nobody in
+  particular — `target_character_id` is NULL in a 1v1 because there is only one person it could be for,
+  so pair membership is what closes that case.
+- **Resolved once per broadcast, not once per socket.** Which fighters read height is a property of the
+  board rather than of the socket looking at it, so `buildCombatUpdate` resolves the whole seated set in
+  **one** `Promise.all` and hands `combatUpdateFor` a Set. Wall time on a broadcast is depth × round
+  trip, never count — the same rule the DB latency work established. `GET /api/combat` serves exactly
+  one viewer, so it asks only about that viewer, and rides in a `Promise.all` already being made.
+- **A defence-pure move reports no height**, because it carries no Attack Targets — the true answer
+  rather than a withheld one — and **`Weapon` belongs to no band on purpose**: it names no die, it is a
+  strike at what somebody is holding rather than at a height on their body, and calling it Mid because a
+  hand holds the thing would be inventing an answer. A move aimed across two bands reports **both**;
+  narrowing it to one would sell certainty the reader has not earned.
+- **Shown as a badge under the greyed Tell** in the Arena's compact card, colour-coded High/Mid/Low. The
+  `opacity-60 grayscale` moved off the card and onto the Tell itself: the greying says "you do not know
+  what this move is", and the height is the one thing here you *do* know.
+
+**Verified live** (`playtest-perks-batch5.mjs`, 30 probes) plus 8 new unit tests. The live script is
+where Eye Catcher's entitlement had to be checked, because the only way to test one is to ask as
+somebody who does not have it — a real socket identity against a real endpoint — and it is where
+Durability had to be checked, because the charge is spent by the damage loop and only a real attack
+landing real steps on a live Stat reaches the line that spends it. The Durability probe watches three
+consecutive guaranteed breaks (+9 on a d4 is two Half-Damage steps every time, and a fresh d4 is two
+steps from going out) and asserts the first two are absorbed and the **third is not** — a charge that
+never ran out would pass a two-round test.
+
+**A fixture lesson worth writing down.** Four probes in this batch's first run failed while the engine
+was entirely correct: the fixtures rolled `'Right Hand'`, which is not a Roll slot — the slot is `'Hand'`,
+and `sanitizeRollSlots` drops what it does not recognise. A move with no Roll never enters the damage
+flow at all, so every one of those rounds revealed and completed having done nothing, and the probes
+faithfully reported nothing. The diagnosis came from running the *known-good* `playtest-perks-batch4.mjs`
+against the same server: it passed, which located the fault in the fixture rather than the branch in one
+step instead of a reading of `resolveAttack`. Keep a known-good script around for exactly this.
+
 **Trip Recovery Frames (decided, new; implemented).** A second kind of Recovery: identical for timing —
 it ends a footprint, blocks the next move, displaces everything queued behind it — but the fighter is
 on the **ground** for it, and two rules read that difference.
@@ -1093,7 +1210,7 @@ A **Character Creation** button at the top of every character sheet opens a guid
   - **Three tiers, and a definition declares only what it needs.** **Tier 1** is declarative and reuses the move-interaction vocabulary verbatim — `ALL_TRIGGERS` for the keys, `AUTOMATION_TYPES` for the effects, and the same executor, so the Chat Log line, the `automation_fired` event and the cutscene narration all come free (`runAutomations`, split out of `applyMoveInteractions` for exactly this; giving Perks their own copy of that switch would have meant two implementations of every effect drifting apart one bugfix at a time). **Tier 2** is a narrow function on a named seam, whose signature belongs to the seam rather than to the Perk. **Tier 3** is the imperative escape hatch — `onGrant`/`onRevoke` for permanent state, for the genuinely non-standard.
   - **Every seam is additive, or boolean-OR — no priority field, no ordering, ever.** That is precisely what lets a character carry ten Perks without anybody reasoning about ten, and it is why `idleStaminaRegen` (the one seam that is a *rate* rather than a contribution, where a higher number is a stricter Perk) takes the strictest value instead of summing: it still cannot depend on grant order, which the previous "first granted Perk with an entry wins" version quietly did. A Perk that genuinely needs to *replace* a rule rather than add to it does not get a seam; it goes in Tier 3 and says so in its own file. **This will eventually be tested by a Perk that wants to override something. The answer is Tier 3, not a priority field on the seams** — recorded here so it is not re-litigated under deadline.
   - **A Perk that changes a number says so out loud.** Numeric contributions ride the roll's own `modifierBreakdown` as **one named term per Perk** under that Perk's name (never one lump), and triggered ones emit the same `automation_fired` event a move's do, now carrying `sourceName`/`sourceKind` so a Perk is named rather than masquerading as a move (`moveName` stays null for a Perk and is kept for moves, since stored replays already have it — §0). A Perk that silently moves a total is the same defect as the unexplained "+5 Modifier" the breakdown was built to kill.
-  - **The seam register.** Built: `rollBonus` (`combatBonuses.js`), `triggers` (`roundResolution.js`), `canSeeRevealedDetail`, `idleStaminaRegen`, `onGrant`/`onRevoke`, and — added for the first official playtest's Perk list — `minDamageThresholdWhenAttacking` / `minDamageThresholdWhenAttacked` (`resolveAttack`), `blockRiposteSteps` (the Block branch of `resolveAttack`), `staminaCostDelta` (the four Stamina call sites in `index.js`), `roundStartHalfHealing` (`openRoundForCharacters`), `staminaPerHalfDamage` (`runInterruptAndDamage`), and — added for the third batch — `splashDamage` (`runInterruptAndDamage`, right after the blow lands), `ignoresMovementPunisher` (the Movement Punisher branch), and **`interruptAmounts`** (`checkInterrupt`), which was designed here long before anything needed it and was taken up unchanged by Dogfighter — which is exactly what the register is for: that Perk cost one file and one line, not an argument about the engine. Designed but deliberately **not** built until something needs them, with their shapes agreed so adding one is a bounded change rather than a re-opened architecture question: `damageTakenDelta` (`(ctx) → steps`, in `runInterruptAndDamage`), `moveTagOverrides` (`(ctx) → {add, remove}`, in `moveTagNamesFor`/`getMovesFor`). Adding a Perk that uses an existing seam is **one new file plus one registry line**; adding a seam is an engine change. Five of the seam resolvers are now one shared `sumSeam` fold in `perkEngine.js` rather than five near-identical loops — five copies is how one of them quietly stops truncating. **The seam context is lazy where it is expensive (new).** Perks that ask about a move — *what am I throwing?*, *what did I throw right before it?* — get `getMove()` / `getPreviousMove()` thunks rather than eager fields, memoised per resolution. `perkRollBonusTerms` runs on every roll in the game and those facts cost two or three queries to build, so a Perk that never asks pays nothing and three that ask on the same roll pay once. Both hand back the same small **facts shape** (`moveFacts`: id, name, rollSlots, activeTics, isDefensive, attackTargets, defenseKind, defenseOutcome), normalised because a `getMovesFor` row and a bare `SELECT * FROM moves` disagree about `attack_targets` — one an array, one a JSON string — and a Perk reading the wrong one would silently answer "no Attack Target" for every move in the game.
+  - **The seam register.** Built: `rollBonus` (`combatBonuses.js`), `triggers` (`roundResolution.js`), `canSeeRevealedDetail`, `idleStaminaRegen`, `onGrant`/`onRevoke`, and — added for the first official playtest's Perk list — `minDamageThresholdWhenAttacking` / `minDamageThresholdWhenAttacked` (`resolveAttack`), `blockRiposteSteps` (the Block branch of `resolveAttack`), `staminaCostDelta` (the four Stamina call sites in `index.js`), `roundStartHalfHealing` (`openRoundForCharacters`), `staminaPerHalfDamage` (`runInterruptAndDamage`), and — added for the third batch — `splashDamage` (`runInterruptAndDamage`, right after the blow lands), `ignoresMovementPunisher` (the Movement Punisher branch), **`interruptAmounts`** (`checkInterrupt`), which was designed here long before anything needed it and was taken up unchanged by Dogfighter — which is exactly what the register is for: that Perk cost one file and one line, not an argument about the engine. and — added for **Osu!** — **`moveFrameDelta`** (`(ctx) → {startup?, active?, recovery?}`, folded into `getMovesFor`'s existing per-character override deltas). That last one is worth a note on *why it is a seam*: `character_move_overrides` already stores per-character frame deltas with a `source_character_perk_id`, so a Perk could have written rows there on grant — but that table is a **snapshot**, and a move learned after the grant would silently miss out. A seam is asked every time the move list is built, so it cannot go stale. Folding it into the deltas `getMovesFor` already applies is what makes a Perk-granted frame indistinguishable downstream from a GM-granted one: same declare picker, same placement floor, same resolved footprint, same Tic strip. and — added for this batch — **`weaponOffer`** (`getMovesFor`'s sibling on the character sheet: what a Perk is willing to put in an EMPTY Weapon slot, taken through the same `grantWeapon` every weapon comes through, and the only seam so far that is a player-facing *action* rather than a number — still shaped as participation in a decision the engine already makes) and **`interruptsOwnDeclarations`** (a boolean, OR-ed: whether this fighter gets the take-it-back window at the head of resolution). and — added for the Path To Mastery batch — **`blockPenaltyAgainstYou`** (`(ctx) → number`, summed, folded into the DEFENDER's modifier in `runBlockLine`: the first seam asked of somebody other than the roller, and the reason it is asked of the attacker is that only that function knows both halves of the exchange), **`absorbsBreak`** (`(ctx) → {charges, scope}`, first-answer-wins, spent by `perkAbsorbBreak` inside the damage loop rather than by the Perk, and asked only where a break would genuinely occur so a charge is never burned on a blow that was not going to break anything), and **`seesAttackHeight`** (a boolean, OR-ed, resolved once per broadcast in `buildCombatUpdate` and consumed by `mapDeclaredMovesForViewer` — the second disclosure seam after `canSeeRevealedDetail`, and like it, answered server-side so an advantage is never on the honour system). Designed but deliberately **not** built until something needs them, with their shapes agreed so adding one is a bounded change rather than a re-opened architecture question: `damageTakenDelta` (`(ctx) → steps`, in `runInterruptAndDamage`), `moveTagOverrides` (`(ctx) → {add, remove}`, in `moveTagNamesFor`/`getMovesFor`). Adding a Perk that uses an existing seam is **one new file plus one registry line**; adding a seam is an engine change. Five of the seam resolvers are now one shared `sumSeam` fold in `perkEngine.js` rather than five near-identical loops — five copies is how one of them quietly stops truncating. **The seam context is lazy where it is expensive (new).** Perks that ask about a move — *what am I throwing?*, *what did I throw right before it?* — get `getMove()` / `getPreviousMove()` thunks rather than eager fields, memoised per resolution. `perkRollBonusTerms` runs on every roll in the game and those facts cost two or three queries to build, so a Perk that never asks pays nothing and three that ask on the same roll pay once. Both hand back the same small **facts shape** (`moveFacts`: id, name, rollSlots, activeTics, isDefensive, attackTargets, defenseKind, defenseOutcome), normalised because a `getMovesFor` row and a bare `SELECT * FROM moves` disagree about `attack_targets` — one an array, one a JSON string — and a Perk reading the wrong one would silently answer "no Attack Target" for every move in the game.
   - **Five Perks automated for the first official playtest (decided, new), plus one marked deliberately manual.** The three that shipped with the architecture included two acknowledged placeholders; these are the real list.
     - **Iron Skin** (+2) and **Not Just a Scratch** (−2) push on the **Minimum Damage Threshold** — the smallest roll that deals anything — from opposite sides. **Only the first gate moves**: `computeHitDamage` became `result < threshold ? 0 : max(1, floor(result / 5))`, so the ladder reads 7-10-15-20 or 3-10-15-20 and every later gate stays a multiple of 5. Two knock-on effects fall out rather than needing rules of their own: **Insignificant Damage** is just `steps === 0`, and the **Full/Partial** line on a defence is just "did the leftover deal damage", so against Iron Skin a leftover of 5-6 is now a Full Block. The figure is resolved **once per exchange** (`minDamageThresholdFor`, after target selection, since it depends on both fighters) and threaded into every branch; the two seams being separate is what makes an attacker and a defender carrying one each simply cancel back to the plain 5. Floored at 1 so no pile of Perks can make a roll of 0 hurt.
     - **Spiked Shell** — a Full Block sends damage back at the attacker: one Half-Damage step per full 5 points the guard beat the attack roll by, landing on **the limb that swung**. `selectRiposteTargets` (pure) groups the attacker's already-resolved Roll dice by kind: all of one kind → all of them (so "2 Hands" hits both), a mix → one at random, and no limb in the Roll at all → the same rule over whatever Stats it did name. A **Custom Roll names no Stat and is immune.** Fires **per line** (the guard is already rolled once per Stat the attack names) and only on a line that resolved `full` — a guard scaled back by running out of Stamina comes out Partial and pays nothing. It runs through `runAutomations` with ordinary `opponent_stat_step` effects under a `block_riposte` / "Countered" trigger, exactly as Movement Punisher does, so the Chat Log line, the `automation_fired` event and the cutscene beat all come free.

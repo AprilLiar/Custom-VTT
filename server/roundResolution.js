@@ -134,8 +134,11 @@ import {
   perkDefinitionsFor,
   withPerkCache,
   perkRoundStartHalfHealing,
+  perkAbsorbBreak,
+  perkBlockPenaltyAgainstYou,
   perkIgnoresMovementPunisher,
   perkInterruptAmounts,
+  perkInterruptsOwnDeclarations,
   perkSplashDamage,
   perkStaminaPerHalfDamage,
 } from './perkEngine.js';
@@ -965,6 +968,10 @@ async function applyAutoDamage(io, { targetCharacterId, effectiveAttackTargets, 
   // Nothing is redirected: the damage does not slide onto a neighbouring Stat.
   // It simply does not land.
   const unapplied = [];
+  // Stats that Path To Mastery: Durability held together this blow. Collected
+  // rather than announced inline for the same reason the damage line is: one
+  // sentence per attack, not one per Stat.
+  const heldTogether = [];
 
   for (const die of targets) {
     const own = stepsBySlot ? stepsBySlot[die.slot_name] ?? 0 : steps;
@@ -980,6 +987,24 @@ async function applyAutoDamage(io, { targetCharacterId, effectiveAttackTargets, 
       half_damage: Boolean(die.half_damage),
     };
     for (let i = 0; i < own; i++) next = applyHalfDamage(next);
+    // **Path To Mastery: Durability.** A Stat that would go out is held at a
+    // bare d4 instead, for as many times as the holder has charges.
+    //
+    // Asked only when a break would ACTUALLY happen — the die was live coming
+    // in and is incapacitated going out — so a charge is never spent on a blow
+    // that was not going to break anything. The Stat still takes everything the
+    // hit was worth: it lands at d4 with no bonus and no pending half, exactly
+    // where the break would have left it, minus the going out.
+    let breakAbsorbed = false;
+    if (die.status !== 'incapacitated' && next.status === 'incapacitated') {
+      if (await perkAbsorbBreak(targetCharacterId)) {
+        next = { current_size: 4, bonus: 0, status: 'active', half_damage: false };
+        breakAbsorbed = true;
+      }
+    }
+    if (breakAbsorbed) {
+      heldTogether.push(die.slot_name);
+    }
     await run('UPDATE dice SET current_size = ?, bonus = ?, status = ?, half_damage = ? WHERE id = ?', [
       next.current_size,
       next.bonus,
@@ -1014,6 +1039,19 @@ async function applyAutoDamage(io, { targetCharacterId, effectiveAttackTargets, 
     await postSystemMessage(
       io,
       `${character.name} took ${list}${attackerName ? ` from ${attackerName}` : ''}.`
+    );
+  }
+  // **Path To Mastery: Durability, announced.** Same reasoning as Grounded: a
+  // table watching a Stat get taken out is expecting it to go, and a Stat that
+  // refuses to break needs a reason on the record. Posted after the damage
+  // line so it reads as a consequence of the blow just described.
+  if (character && heldTogether.length) {
+    const list = heldTogether.length === 1
+      ? heldTogether[0]
+      : `${heldTogether.slice(0, -1).join(', ')} and ${heldTogether[heldTogether.length - 1]}`;
+    await postSystemMessage(
+      io,
+      `${character.name}'s ${list} refuses to break — held at a d4.`
     );
   }
   // The unappliable half is deliberately NOT announced here. One line per blow
@@ -3079,8 +3117,18 @@ async function persistBlockPause(io, { pairIndex, pending, emitEvent, resolution
 // it exactly as the old inline loop did — the arithmetic is untouched — and
 // folds what got through into the running leftover.
 async function runBlockLine(io, { pending, defenderDM, guard, line, emitEvent }) {
-  const { baseSlotRows, defensiveSlotRows, defMod, blockTagged } = guard;
+  const { baseSlotRows, defensiveSlotRows, blockTagged } = guard;
   const { tic, attackerResult: total } = pending;
+  // **Path To Mastery: Strength — a penalty on somebody else's roll.** Asked of
+  // the ATTACKER and folded into the blocker's modifier here, because this is
+  // the only place that knows both halves of the exchange. It cannot live in
+  // `loadBlockGuard`, which is handed the defender and nothing about who they
+  // are guarding against.
+  //
+  // Blocks only. A Dodge is getting out of the way and does not care how hard
+  // you hit — it never reaches this function.
+  const defMod =
+    guard.defMod + (await perkBlockPenaltyAgainstYou(pending.attackerCharacterId ?? null));
   const defenseLabel = 'Block';
   const against = line ? ` against the strike to ${line}` : '';
 
@@ -3401,6 +3449,150 @@ async function finishBlock(io, { pairIndex, pending, defenderDM, guard, emitEven
 // **Unrevealed only.** A move already on the board has happened — its Tell is
 // out, its frames are running, and sliding it would rewrite the past. The
 // blocker's own move is excluded by the caller for the same reason.
+// **Answering the Non-Committed window.** Deletes the declarations named,
+// refunds what they committed, clears the pause and lets the round run.
+//
+// A no-op unless this pair really is `paused_noncommit`, matching every other
+// resolver here — the guard is what stops a stale client or a double click from
+// cancelling a move in a round that has already moved on.
+//
+// **Only moves the payload itself offered can be cancelled.** The ids are
+// checked against the stored prompt rather than against the board, so a
+// hand-sent event cannot reach into an opponent's queue, or into a carried-over
+// move that already revealed. An empty selection is a perfectly good answer:
+// it means "I am keeping all of it", and it resumes the round untouched.
+export async function resolveNonCommit(pairIndex, { declaredMoveIds } = {}, io) {
+  const resolution = await one(
+    `SELECT * FROM pair_round_resolutions WHERE pair_index = ? AND status = 'paused_noncommit'`,
+    [pairIndex]
+  );
+  if (!resolution) return;
+
+  let pending = null;
+  try {
+    pending = JSON.parse(resolution.pending_noncommit_json ?? 'null');
+  } catch {
+    pending = null;
+  }
+  const offered = new Map();
+  for (const entry of pending?.entries ?? []) {
+    for (const move of entry.moves) offered.set(move.declaredMoveId, { ...move, entry });
+  }
+
+  const chosen = [...new Set((declaredMoveIds ?? []).map((id) => Number(id)))]
+    .map((id) => offered.get(id))
+    .filter(Boolean);
+
+  const emitEvent = await makeEmitEvent(io, resolution, pairIndex, resolution.round_number);
+
+  for (const move of chosen) {
+    const row = await one(
+      `SELECT dm.id, dm.character_id, dm.reveal_tic, dm.recovery_extension_tics,
+              m.name AS move_name, m.active_tics, m.recovery_tics
+       FROM declared_moves dm JOIN moves m ON m.id = dm.move_id WHERE dm.id = ?`,
+      [move.declaredMoveId]
+    );
+    if (!row) continue;
+    await run('DELETE FROM declared_moves WHERE id = ?', [row.id]);
+    // Feint Tag: whatever was declared right after this one was masked BY it,
+    // and taking the move off the board has to take its concealment with it —
+    // the same clean-up move:undeclare and Forfeit already do.
+    const footprintEnd = row.reveal_tic + row.active_tics + row.recovery_tics + row.recovery_extension_tics;
+    await run(
+      'UPDATE declared_moves SET feint_masked = 0 WHERE character_id = ? AND placement_tic = ? AND id <> ?',
+      [row.character_id, footprintEnd, row.id]
+    );
+    if (move.staminaRefund) {
+      await adjustStamina(io, row.character_id, move.staminaRefund, {
+        emitEvent,
+        tic: resolution.round_start_tic,
+        reason: `${row.move_name} taken back`,
+      });
+    }
+    await emitEvent(resolution.round_start_tic, 'noncommit', {
+      characterId: row.character_id,
+      characterName: move.entry.characterName,
+      declaredMoveId: row.id,
+      moveName: row.move_name,
+      staminaRefunded: move.staminaRefund,
+    });
+    await postSystemMessage(
+      io,
+      `${move.entry.characterName} thinks better of ${row.move_name} — taken back before anyone saw it${
+        move.staminaRefund ? `, ${move.staminaRefund} Stamina returned` : ''
+      }.`
+    );
+  }
+
+  await run(
+    `UPDATE pair_round_resolutions SET status = 'running', pending_noncommit_json = NULL WHERE id = ?`,
+    [resolution.id]
+  );
+  await io.emitCombatUpdated?.();
+  // Nothing slides earlier (decided). The freed Tics are unoccupied — they no
+  // longer floor where this character may place next round — but a move still
+  // queued stays exactly where it was thrown, which is the same rule a
+  // shortened Recovery window already follows.
+  await advancePairResolution(pairIndex, io);
+}
+
+// **Who, if anyone, gets asked to take their moves back this round.**
+//
+// Returns the pause payload, or null when nobody in this pair holds the Perk or
+// nobody who does has anything on the board — a prompt with no answer worth
+// giving is a prompt that should not appear. Null is the common case by a very
+// long way, so this stays cheap: one participants read, and the Perk question
+// asked only of the fighters actually seated here.
+//
+// **Scoped to declarations in THIS round.** A move carried over from an earlier
+// round already revealed — it is on the table, and taking it back now would be
+// retracting something everyone has seen. The Perk's own words are "before any
+// Move is Revealed", and a carryover fails that test by definition.
+async function planNonCommitPrompt(pairIndex, roundNumber) {
+  const seats = await all(
+    `SELECT cp.character_id, ch.name, ch.character_type
+     FROM combat_participants cp JOIN characters ch ON ch.id = cp.character_id
+     WHERE cp.pair_index = ?`,
+    [pairIndex]
+  );
+  if (!seats.length) return null;
+
+  const holders = [];
+  for (const seat of seats) {
+    if (await perkInterruptsOwnDeclarations(seat.character_id)) holders.push(seat);
+  }
+  if (!holders.length) return null;
+
+  const entries = [];
+  for (const holder of holders) {
+    const moves = await all(
+      `SELECT dm.id, dm.placement_tic, dm.stamina_committed, m.name AS move_name, m.stamina_cost,
+              (m.startup_tics + m.active_tics + m.recovery_tics + dm.recovery_extension_tics) AS footprintTics
+       FROM declared_moves dm JOIN moves m ON m.id = dm.move_id
+       WHERE dm.character_id = ? AND dm.round_number = ?
+       ORDER BY dm.placement_tic`,
+      [holder.character_id, roundNumber]
+    );
+    if (!moves.length) continue;
+    entries.push({
+      characterId: holder.character_id,
+      characterName: holder.name,
+      characterType: holder.character_type,
+      moves: moves.map((m) => ({
+        declaredMoveId: m.id,
+        moveName: m.move_name,
+        placementTic: m.placement_tic,
+        footprintTics: m.footprintTics,
+        // What cancelling would hand back. Zero for a move whose Stamina was
+        // never committed, which is what makes the prompt honest rather than
+        // promising a refund that is not there.
+        staminaRefund: m.stamina_committed ? Number(m.stamina_cost) || 0 : 0,
+      })),
+    });
+  }
+  return entries.length ? { entries } : null;
+}
+
 async function planCascadeFor(characterId, { excludeDeclaredMoveId, blockedUntil, pairIndex }) {
   const [rows, window] = await Promise.all([
     all(
@@ -4283,6 +4475,27 @@ async function resolvePairRound(pairIndex, io) {
   // construction rather than by remembering to edit this line.
   if (resolution.status !== 'running') {
     return;
+  }
+
+  // **Non-Committed: the take-it-back window (decided, new).** After everyone
+  // has declared and before anything reveals — which is exactly here, on the
+  // round's very first pass, before the carryover and reveal events below.
+  //
+  // Gated on `isNewResolution` so it asks once per round rather than every time
+  // the engine resumes. A round that has already been through this window and
+  // been resumed must never be stopped by it again, or answering the prompt
+  // would simply raise it a second time.
+  if (isNewResolution) {
+    const pending = await planNonCommitPrompt(pairIndex, pair.round_number);
+    if (pending) {
+      await run(
+        `UPDATE pair_round_resolutions SET status = 'paused_noncommit', pending_noncommit_json = ?
+         WHERE id = ?`,
+        [JSON.stringify(pending), resolution.id]
+      );
+      await io.emitCombatUpdated?.();
+      return;
+    }
   }
 
   const emitEvent = await makeEmitEvent(io, resolution, pairIndex, pair.round_number);

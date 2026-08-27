@@ -638,6 +638,42 @@ export function orderConcreteTargets(list) {
   return CONCRETE_ATTACK_TARGET_NAMES.filter((name) => supplied.has(name));
 }
 
+// **Attack height (decided, new — Eye Catcher).** Which of the three bands a
+// set of concrete Attack Targets is coming at, in the reading the Perk states:
+// High is the head (Skull, Brain), Mid is the trunk and what is held out in
+// front of it (Body, Stamina, both Hands), Low is the legs.
+//
+// 'Weapon' belongs to no band on purpose. It names no die (see
+// CONCRETE_ATTACK_TARGET_NAMES) — it is a strike at the thing someone is
+// holding rather than at a height on their body — so reporting it as Mid
+// because a hand happens to hold it would be inventing an answer.
+//
+// Returns every band the attack touches, in High/Mid/Low order, because a move
+// can legitimately be aimed at more than one: "High / Low" is the true answer
+// for a move that goes for the Skull and a Leg, and collapsing it to one band
+// would tell the defender something false.
+const ATTACK_HEIGHT_BY_TARGET = new Map([
+  ['Skull', 'High'],
+  ['Brain', 'High'],
+  ['Body', 'Mid'],
+  ['Stamina', 'Mid'],
+  ['Left Hand', 'Mid'],
+  ['Right Hand', 'Mid'],
+  ['Left Leg', 'Low'],
+  ['Right Leg', 'Low'],
+]);
+
+export const ATTACK_HEIGHT_NAMES = ['High', 'Mid', 'Low'];
+
+export function attackHeights(targets) {
+  const found = new Set();
+  for (const name of Array.isArray(targets) ? targets : []) {
+    const band = ATTACK_HEIGHT_BY_TARGET.get(name);
+    if (band) found.add(band);
+  }
+  return ATTACK_HEIGHT_NAMES.filter((band) => found.has(band));
+}
+
 export function parseConcreteAttackTargets(json) {
   let list;
   try {

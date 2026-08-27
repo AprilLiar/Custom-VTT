@@ -695,6 +695,56 @@ async function migratePairRoundResolutionsGrapple() {
   await run('PRAGMA foreign_keys = ON');
 }
 
+// **A fifth pause: `paused_noncommit` (Non-Committed).** The Perk stops the
+// round at its very head — after everyone has declared, before anything
+// reveals — so its holder can take their own moves back. Same table rebuild as
+// the four before it, and for the same reason: SQLite cannot ALTER a CHECK in
+// place.
+//
+// The four existing pause payloads are carried across untouched. A round paused
+// mid-flight while this migration runs would be a genuine problem, which is why
+// this runs at boot, before any pair can advance.
+async function migratePairRoundResolutionsNonCommit() {
+  const sql = await tableSql('pair_round_resolutions');
+  if (!sql || sql.includes('paused_noncommit')) return;
+  await run('PRAGMA foreign_keys = OFF');
+  await run(`
+    CREATE TABLE pair_round_resolutions_v5 (
+      id INTEGER PRIMARY KEY,
+      pair_index INTEGER NOT NULL,
+      round_number INTEGER NOT NULL,
+      fight_number INTEGER NOT NULL DEFAULT 1,
+      round_start_tic INTEGER NOT NULL,
+      round_length INTEGER NOT NULL,
+      status TEXT NOT NULL DEFAULT 'running'
+        CHECK(status IN ('running','paused_dodge','paused_conflict','paused_defense','paused_grapple','paused_noncommit','complete')),
+      resolved_through_tic INTEGER NOT NULL DEFAULT 0,
+      pending_dodge_json TEXT,
+      pending_conflict_json TEXT,
+      pending_defense_json TEXT,
+      pending_grapple_json TEXT,
+      pending_noncommit_json TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      completed_at TEXT,
+      UNIQUE(pair_index, round_number, fight_number)
+    )
+  `);
+  await run(`
+    INSERT INTO pair_round_resolutions_v5
+      (id, pair_index, round_number, fight_number, round_start_tic, round_length, status,
+       resolved_through_tic, pending_dodge_json, pending_conflict_json, pending_defense_json,
+       pending_grapple_json, created_at, completed_at)
+    SELECT id, pair_index, round_number, fight_number, round_start_tic, round_length, status,
+           resolved_through_tic, pending_dodge_json, pending_conflict_json, pending_defense_json,
+           pending_grapple_json, created_at, completed_at
+    FROM pair_round_resolutions
+  `);
+  await run('DROP TABLE pair_round_resolutions');
+  await run('ALTER TABLE pair_round_resolutions_v5 RENAME TO pair_round_resolutions');
+  invalidateSchemaSnapshot();
+  await run('PRAGMA foreign_keys = ON');
+}
+
 export async function initDb() {
   ddlQueue = [];
   queuedTables.clear();
@@ -1551,6 +1601,7 @@ export async function initDb() {
   await migratePairRoundResolutionsFightNumber();
   await migratePairRoundResolutionsDefenseConfirm();
   await migratePairRoundResolutionsGrapple();
+  await migratePairRoundResolutionsNonCommit();
 
   // Combat Automation overhaul: the replayable event log for one pair's
   // round — the single source of truth for both the live cutscene push and

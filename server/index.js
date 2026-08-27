@@ -13,6 +13,7 @@ import {
   resolveDodge,
   resolveBlock,
   resolveMoveConflict,
+  resolveNonCommit,
   answerGrapple,
   resumeGrapple,
   resumeAllPairsOnBoot,
@@ -58,6 +59,7 @@ import {
   sanitizeAttackTargets,
   expandAttackTargets,
   parseConcreteAttackTargets,
+  attackHeights,
   clampStaminaModifier,
   clampSuccessThreshold,
   normalizeGrappleDirections,
@@ -82,7 +84,10 @@ import {
   WEAPON_SLOT,
 } from './weapons.js';
 import { effectiveFrames, idleStaminaRegenRate } from './perkAutomations.js';
-import { clearAllPerkState, perkAllowsRevealedDetail, perkStaminaCostDeltas } from './perkEngine.js';
+import {
+  clearAllPerkState, perkAllowsRevealedDetail, perkStaminaCostDeltas, perkMoveFrameDeltas,
+  perkWeaponOffers, takeWeaponOffer, perkSeesAttackHeight,
+} from './perkEngine.js';
 import { isAutomatedPerk, isManualPerk, perkDefinition } from './perks/index.js';
 import { validateCreation } from './characterCreation.js';
 import {
@@ -338,9 +343,22 @@ async function getMovesFor(characterId, { knownDice = null } = {}) {
   // combat:character_done_declaring will spend — the picker must not be showing
   // a different one. The dice this needs are already in hand above.
   const staminaCosts = await resolveStaminaCosts(characterId, withBase, { knownDice: dice });
+  // Frames a Perk adds to this character's moves (Osu!). Folded into the same
+  // deltas the stored per-character overrides use, one line below, so a
+  // Perk-granted frame is indistinguishable downstream from a GM-granted one —
+  // same picker, same placement floor, same footprint, same Tic strip.
+  const perkFrames = await perkMoveFrameDeltas({ characterId, moves: withBase });
 
   return withBase.map((move) => {
-    const deltas = overrideByMove.get(move.id) ?? { startup: 0, active: 0, recovery: 0 };
+    const stored = overrideByMove.get(move.id) ?? { startup: 0, active: 0, recovery: 0 };
+    const fromPerks = perkFrames.get(move.id);
+    const deltas = fromPerks
+      ? {
+          startup: stored.startup + fromPerks.startup,
+          active: stored.active + fromPerks.active,
+          recovery: stored.recovery + fromPerks.recovery,
+        }
+      : stored;
     const effective = effectiveFrames(move, deltas);
     const tagOverrides = tagOverridesByMove.get(move.id) ?? [];
     const addedIds = tagOverrides.filter((o) => o.action === 'add').map((o) => o.tag_id);
@@ -507,6 +525,7 @@ async function fetchDeclaredMoveRows() {
     SELECT dm.id, dm.character_id, dm.round_number, dm.queue_order,
            dm.placement_tic, dm.reveal_tic, dm.stamina_committed, dm.appendage_choice,
            dm.recovery_extension_tics, dm.trip_recovery_tics, dm.feint_masked, dm.target_character_id,
+           dm.effective_attack_targets,
            m.id AS move_id, m.name AS move_name, m.tell_id, m.right_tell_id,
            m.left_tell_id, m.active_tics, m.recovery_tics, m.stamina_cost,
            m.defense_frame_positions, m.is_defensive, m.attack_targets,
@@ -603,7 +622,36 @@ function isRevealedToViewer(row, viewer) {
 // declared move outliving its owner's seat) or whose pair no longer exists
 // falls back to "never naturally reveals to a non-owner" rather than
 // guessing at a clock that no longer applies to it.
-function mapDeclaredMovesForViewer(rows, pairsByIndex, viewer) {
+// **Eye Catcher (decided, new).** `attackHeightViewers` is the set of character
+// ids whose Perks answer yes to `seesAttackHeight`, resolved once per broadcast
+// (buildCombatUpdate) rather than per socket — the same one-read-many-views
+// shape the rest of this function is built on. `pairIndexByCharacter` is what
+// answers "is this attack coming at me" in a 1v1, where target_character_id is
+// NULL because there is only one person it could be for.
+function mapDeclaredMovesForViewer(
+  rows,
+  pairsByIndex,
+  viewer,
+  { attackHeightViewers = null, pairIndexByCharacter = null } = {}
+) {
+  // Whether THIS viewer is entitled at all, asked once instead of per row.
+  const viewerSeesHeight = Boolean(
+    viewer?.role === 'player' && attackHeightViewers?.has(viewer.characterId)
+  );
+  const viewerPairIndex = viewerSeesHeight
+    ? pairIndexByCharacter?.get(viewer.characterId) ?? null
+    : null;
+  // Null when this viewer has not earned this row's height, so the spread at
+  // the push below adds no key at all rather than an empty one.
+  const attackHeightsForViewer = (row) => {
+    if (!viewerSeesHeight) return null;
+    if (row.character_id === viewer.characterId) return null;
+    if (viewerPairIndex == null || row.pair_index !== viewerPairIndex) return null;
+    if (row.target_character_id != null && row.target_character_id !== viewer.characterId) return null;
+    const heights = attackHeights(parseConcreteAttackTargets(row.effective_attack_targets));
+    return heights.length ? { attackHeights: heights } : null;
+  };
+
   const out = [];
   for (const row of rows) {
     const viewerIsOwner = isRevealedToViewer(row, viewer);
@@ -702,6 +750,19 @@ function mapDeclaredMovesForViewer(rows, pairsByIndex, viewer) {
       // dropped below rather than blanked. For the owner it drives the
       // "hidden" marker on their own Tell card.
       feintMasked: Boolean(row.feint_masked),
+      // **Eye Catcher: the height, alongside the Tell.** Present only on rows
+      // this viewer's Perk actually earns them — somebody else's move, in this
+      // viewer's own pair, coming at this viewer — and absent entirely
+      // otherwise, following the same protect-by-absence rule as moveId and
+      // moveName above rather than sending a flag a devtools reader could just
+      // flip.
+      //
+      // Not gated on `isRevealed`: knowing it BEFORE the move shows itself is
+      // the Perk's entire content. Once the move reveals, its full target list
+      // is public anyway and the band is merely redundant. A defence-pure move
+      // has no Attack Targets and so reports no height at all, which is the
+      // true answer rather than a withheld one.
+      ...(attackHeightsForViewer(row) ?? {}),
     });
   }
   return out;
@@ -824,6 +885,24 @@ function defensePromptOrNull(json, kind, what, pairIndex) {
   }
 }
 
+// One viewer's half of a Non-Committed prompt: the entry that belongs to them,
+// and nothing else.
+//
+// **Never the whole payload.** It lists move names for every holder in the
+// pair, and a pair can have a holder on each side — handing that across would
+// disclose an opponent's undeclared board, which is the one thing Declaration
+// exists to keep. A GM sees their NPCs' entries; a Player sees their own.
+function nonCommitForViewer(pending, viewer) {
+  const entries = pending?.entries ?? [];
+  if (!entries.length || !viewer) return null;
+  const mine = entries.filter((entry) =>
+    viewer.role === 'player'
+      ? viewer.characterId === entry.characterId
+      : entry.characterType === 'npc'
+  );
+  return mine.length ? { entries: mine } : null;
+}
+
 function shapePair(row, roundLength, resolution, viewer) {
   const tic = relativeTic({ tic: row.current_tic, roundStartTic: row.round_start_tic, roundLength });
   return {
@@ -860,6 +939,16 @@ function shapePair(row, roundLength, resolution, viewer) {
     pendingConflict:
       resolution?.status === 'paused_conflict' && resolution.pending_conflict_json
         ? parsePausePayload(resolution.pending_conflict_json, 'conflict', row.pair_index)
+        : null,
+    // **The Non-Committed window (decided, new).** Scoped to the fighter it
+    // belongs to, not to the GM: it is their own moves being taken back, and
+    // the payload names what they declared — which is exactly the thing
+    // declaration keeps secret from everyone else until it reveals. A GM
+    // controlling an NPC gets it because they control that NPC, on the same
+    // ownership test the conflict prompt already uses.
+    pendingNonCommit:
+      resolution?.status === 'paused_noncommit' && resolution.pending_noncommit_json
+        ? nonCommitForViewer(parsePausePayload(resolution.pending_noncommit_json, 'Non-Committed', row.pair_index), viewer)
         : null,
     // The Block prompt rides the same snapshot as the Dodge prompt above, so a
     // GM who connects (or reconnects) into an already-paused pair picks it up
@@ -928,6 +1017,19 @@ async function buildCombatUpdate() {
       fetchOpenResolutionsByPair(),
       fetchPairStanceMatchups(),
     ]);
+  // **Eye Catcher, asked once for the whole table (decided, new).** Which
+  // seated fighters read attack height is a property of the board, not of the
+  // socket looking at it, so it is resolved here — with the whole set in ONE
+  // Promise.all rather than a per-character await chain, because wall time on
+  // a broadcast is depth times round-trip, never count (see the DB latency
+  // notes in the plan). A character with no such Perk costs a single cached
+  // perk read and stops before touching anything else.
+  const attackHeightViewers = new Set();
+  const seated = participants.map((p) => p.character_id);
+  const sees = await Promise.all(seated.map((id) => perkSeesAttackHeight(id)));
+  seated.forEach((id, i) => {
+    if (sees[i]) attackHeightViewers.add(id);
+  });
   return {
     state,
     participants,
@@ -935,13 +1037,17 @@ async function buildCombatUpdate() {
     declaredMoveRows,
     openResolutions,
     stanceMatchups,
+    attackHeightViewers,
+    pairIndexByCharacter: new Map(participants.map((p) => [p.character_id, p.pair_index])),
     pairsByIndex: new Map(pairRows.map((row) => [row.pair_index, row])),
   };
 }
 
 function combatUpdateFor(built, viewer) {
-  const { state, participants, pairRows, declaredMoveRows, openResolutions, stanceMatchups, pairsByIndex } =
-    built;
+  const {
+    state, participants, pairRows, declaredMoveRows, openResolutions, stanceMatchups, pairsByIndex,
+    attackHeightViewers, pairIndexByCharacter,
+  } = built;
   return {
     unevenCombatEnabled: Boolean(state.uneven_combat_enabled),
     freshStart: Boolean(state.fresh_start),
@@ -968,7 +1074,10 @@ function combatUpdateFor(built, viewer) {
     // What each side of each pair's stance is worth against the other, for
     // the Arena's VS divider (see fetchPairStanceMatchups).
     stanceMatchups,
-    declaredMoves: mapDeclaredMovesForViewer(declaredMoveRows, pairsByIndex, viewer),
+    declaredMoves: mapDeclaredMovesForViewer(declaredMoveRows, pairsByIndex, viewer, {
+      attackHeightViewers,
+      pairIndexByCharacter,
+    }),
   };
 }
 
@@ -1300,7 +1409,11 @@ app.get('/api/characters/:id', wrap(async (req, res) => {
     // not something they are created with (see server/weapons.js).
     getWeapon(character.id),
   ]);
-  res.json({ character, dice, inventory, injuries, stances, moves, roleplay, perks, counters, weapon });
+  // What this character could pick up, offered on an EMPTY slot only (Never
+  // Empty-Handed). Resolved server-side and sent already filtered, so the slot
+  // renders what it is given rather than deciding whether a charge is spent.
+  const weaponOffers = weapon ? [] : await perkWeaponOffers(character.id);
+  res.json({ character, dice, inventory, injuries, stances, moves, roleplay, perks, counters, weapon, weaponOffers });
 }));
 
 app.get('/api/tells', wrap(async (_req, res) => {
@@ -1548,13 +1661,21 @@ app.get('/api/combat', wrap(async (req, res) => {
     diceByCharacter.get(die.character_id).push(die);
   }
 
-  const [movesByChar, declaredMoveRows, openResolutions] = await Promise.all([
+  const [movesByChar, declaredMoveRows, openResolutions, viewerSeesAttackHeight] = await Promise.all([
     Promise.all(charIds.map((id) => getMovesFor(id, { knownDice: diceByCharacter.get(id) ?? [] }))),
     fetchDeclaredMoveRows(),
     fetchOpenResolutionsByPair(),
+    // Eye Catcher. This endpoint serves exactly ONE viewer, unlike the
+    // broadcast, so only that viewer's own entitlement is worth asking about —
+    // and it rides in the group above rather than after it, so it costs a slot
+    // in a round trip already being made instead of a round trip of its own.
+    viewer?.role === 'player' ? perkSeesAttackHeight(viewer.characterId) : false,
   ]);
   const pairsByIndex = new Map(pairRows.map((row) => [row.pair_index, row]));
-  const declaredMoves = mapDeclaredMovesForViewer(declaredMoveRows, pairsByIndex, viewer);
+  const declaredMoves = mapDeclaredMovesForViewer(declaredMoveRows, pairsByIndex, viewer, {
+    attackHeightViewers: viewerSeesAttackHeight ? new Set([viewer.characterId]) : null,
+    pairIndexByCharacter: new Map(participants.map((p) => [p.character_id, p.pair_index])),
+  });
 
   const characters = {};
   for (const character of charRows) {
@@ -1997,6 +2118,61 @@ io.on('connection', (socket) => {
     const weapon = await grantWeapon(io, character.id, { name, dieSize, bonus, durability });
     if (!weapon) return;
     await postSystemMessage(io, `${character.name} takes up the ${weapon.name}.`);
+  });
+
+  // **Taking a weapon a Perk offered (Never Empty-Handed).** The Perk says what
+  // it is willing to offer; this is what actually arms anybody, through the
+  // same `grantWeapon` seam every other weapon in the game comes through.
+  //
+  // Everything is re-derived from the character's own granted Perks — the
+  // client sends a name and nothing else — so a hand-sent event cannot conjure
+  // a weapon, spend a charge twice, or invent a die size.
+  // **Answering the Non-Committed window.** Ownership is checked here rather
+  // than trusted: the resolver only cancels ids the stored prompt offered, and
+  // this refuses a socket that does not control any of the fighters it names.
+  on('combat:resolve_noncommit', async ({ pairIndex, declaredMoveIds }) => {
+    const identity = socket.data.identity;
+    if (!identity) return;
+    const index = Number(pairIndex);
+    if (!Number.isInteger(index)) return;
+    const resolution = await one(
+      `SELECT pending_noncommit_json FROM pair_round_resolutions
+       WHERE pair_index = ? AND status = 'paused_noncommit'`,
+      [index]
+    );
+    if (!resolution) return;
+    const pending = parsePausePayload(resolution.pending_noncommit_json, 'Non-Committed', index);
+    const mine = nonCommitForViewer(pending, identity);
+    if (!mine) return;
+    // Only ids from THIS viewer's own entries — a Player answering cannot
+    // cancel the NPC's moves in the same prompt, and vice versa.
+    const ownIds = new Set(mine.entries.flatMap((e) => e.moves.map((m) => m.declaredMoveId)));
+    const chosen = (declaredMoveIds ?? []).map(Number).filter((id) => ownIds.has(id));
+    await resolveNonCommit(index, { declaredMoveIds: chosen }, io);
+  });
+
+  on('weapon:take_offer', async ({ characterId, perkName }) => {
+    const character = await getCharacter(characterId);
+    if (!character) return;
+    // Refused outright rather than replacing what they are holding: this is
+    // finding something on the floor, not swapping kit.
+    if (await getWeapon(character.id)) return;
+    const offer = await takeWeaponOffer(character.id, String(perkName ?? ''));
+    if (!offer) return;
+    const weapon = await grantWeapon(io, character.id, {
+      name: offer.name,
+      dieSize: offer.dieSize,
+      bonus: offer.bonus ?? 0,
+      durability: offer.durability,
+    });
+    // Announced, because the table needs to know where a weapon came from —
+    // a fighter who was unarmed a moment ago now is not.
+    if (weapon) {
+      await postSystemMessage(
+        io,
+        `${character.name} finds something to fight with — ${offer.name} (d${offer.dieSize}, ${offer.durability} Durability), from ${offer.perkName}.`
+      );
+    }
   });
 
   on('weapon:delete', async ({ characterId }) => {
