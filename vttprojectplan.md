@@ -2843,12 +2843,45 @@ the void looks like. Phases 2-5 add nodes, relationships, the editors, and the m
 greyish-black with a soft central glow. And wheel-zoom at `exp(-deltaY/220)` sent a single
 notch straight to the zoom ceiling; `/500` makes one notch a ~22% step.
 
-### Planned, not yet built
+### Phase 2 (implemented) — the cast
 
-- **Phase 2 — the cast.** `relationship_people` and `relationship_nodes`. Drag rail → node,
-  free repositioning, the double-click node editor, board-local person creation, the ✕ menu,
-  a shared `HaloText`, and the world-NPC-deleted conversion wired into
-  `DELETE /api/characters/:id` — that is data integrity and does not wait for a polish phase.
+- **`relationship_people`** (a person who exists only on one board) and
+  **`relationship_nodes`** (one placement, in world coordinates). A board *is* its owner:
+  there is no `boards` table, every row carries `owner_character_id`, and the camera stays in
+  localStorage because where somebody is looking is a property of the person looking.
+- **Nickname and Notes live on the NODE, not the person.** The same NPC dragged out twice is
+  two independent placements, because placing somebody twice usually means they occupy two
+  roles in your head.
+- **The board is its own endpoint**, `GET /api/characters/:id/relationships`, not one more
+  key on `GET /api/characters/:id`. That payload is refetched by roughly twenty unrelated
+  socket events — every Stamina tick among them — and a board carries base64 pictures.
+- **Broadcast is per-socket, never `io.emit`.** A private board must not cross the wire to
+  another player, so `emitRelationships` iterates sockets and emits only to the owner and the
+  GM — the `refreshCapabilities` shape. The board is read once regardless of how many sockets
+  are entitled to it. Every write is gated by the same predicate (`maySeeBoard`); there is no
+  per-event variation because there is no per-event rule.
+- **Two drag systems, deliberately.** Rail → board is native HTML5 DnD on the
+  `text/character-id` mime `CharacterList` and Arena seating already use. Inside the board is
+  pointer events, because native DnD reports no continuous position and has no touch
+  equivalent. A node drag writes `transform` straight onto its own element from the pointer
+  handler and emits **once**, on drop.
+- **Player Characters are in the rail too** (decided during the phase, on the user's call).
+  The other people at the table are relationships as much as NPCs are — often the strongest
+  ones a character has — and they live in the same `character_folders` tree, so showing both
+  is the honest reading of "the GM's actual structure" rather than a filtered view of it.
+  PCs carry a badge and sort first inside their folder; the board's owner is excluded and
+  pinned at the top instead.
+- **`HaloText`** — the shared "text always wins" wrapper. One `backdrop-filter` on a
+  rectangle sized to the text, so what passes behind it is blurred and faded while the text
+  stays sharp. It costs the same at one node as at a hundred, which a proximity-based
+  approach would not. The opaque scrim underneath is **not** optional: `backdrop-filter`
+  under a transformed ancestor is a real browser minefield, and where the blur is dropped the
+  text must still be legible.
+- **The world-NPC-deleted conversion is wired into `DELETE /api/characters/:id`** — one
+  board-local person per board, not per node, so two placements of one NPC become two views
+  of one person rather than two people.
+
+### Planned, not yet built
 - **Phase 3 — the web.** `relationship_edges`: four side dots per node, drag-to-connect,
   Bézier bending so duplicate pairs do not overlap (`StanceGraph.jsx`'s `Edge` already has
   that maths), arrowheads, floating ends and re-attachment.
@@ -2856,13 +2889,30 @@ notch straight to the zoom ceiling; `/500` makes one notch a ~22% step.
   (grey, 50% transparent, backmost layer), Delete.
 - **Phase 5 — the feel.** Spring settle, eased edges, dot bloom, and the hardening pass.
 
-**Do not rely on any `ON DELETE` action in this schema.** `PRAGMA foreign_keys` is only ever
-touched *inside* the six table-rebuild helpers in `db.js` and is never enabled at connection
-setup; SQLite defaults it OFF per connection, and on a fresh database those rebuild blocks
-are skipped entirely. This is why `DELETE /api/characters/:id` already spells its cascade out
-by hand. `REFERENCES` clauses in the new tables are documentation of intent; every deletion
-is explicit. `CHECK` constraints *are* enforced regardless, so the discriminator on
-`relationship_nodes` (exactly one of `character_id` / `person_id`) is a real guard.
+**Foreign keys ARE enforced — corrected, and measured.** Phase 1's write-up of this section
+claimed the opposite, reasoning that `PRAGMA foreign_keys` is only ever touched *inside* the
+six table-rebuild helpers in `db.js`, is never enabled at connection setup, and that SQLite
+defaults it OFF per connection. Every one of those facts is true and the conclusion was
+still wrong: **`@libsql/client` turns it on when it opens the connection**, so
+`PRAGMA foreign_keys` reads `1` before `initDb` has run a single statement. Probed directly
+rather than reasoned about, after a test written to assert the wrong behaviour failed.
+
+Two consequences, both load-bearing:
+
+- `relationship_nodes.character_id` carries **no** `ON DELETE` action, so deleting a
+  character with nodes still pointing at them is **refused by the database**. That makes the
+  conversion in `DELETE /api/characters/:id` mandatory rather than merely considerate —
+  remove it and the delete fails outright, which is by far the better failure mode than a
+  quietly broken board.
+- The explicit board deletions in that handler are belt-and-braces now rather than the only
+  belt, and they stay: that handler spells out its whole cascade by hand as a matter of
+  style, and an ordering that is correct under either answer is worth more than the saved
+  lines.
+
+`CHECK` constraints hold regardless of the pragma, so the discriminator on
+`relationship_nodes` (exactly one of `character_id` / `person_id`) is a real guard under
+either story. **The lesson is the one this project keeps relearning:** a chain of true facts
+is not a measurement. `server/test/relationshipsSchema.test.js` now pins the pragma itself.
 
 ## Implementation Risks & Recommendations
 A scope check for whoever picks this up: this grew well past "semi-simple website" over the course of design. Most of it (dice, inventory, injuries, stances, perks, counters) is standard CRUD-plus-broadcast work. Combat Timing (Tics/Startup/reveal/overflow) is the one genuinely hard piece — real software complexity, not just more forms — and it's also the most original part of the system, which is exactly why it deserves the most care rather than being rushed alongside everything else.

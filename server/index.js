@@ -1384,6 +1384,52 @@ app.get('/api/characters', wrap(async (_req, res) => {
 
 // Character-list folders (GM-managed) — separate from /api/characters so
 // existing callers that just want the flat character array are unaffected.
+// **The Relationships board, read whole.**
+//
+// Deliberately its own endpoint rather than one more key on
+// GET /api/characters/:id. That payload is refetched by roughly twenty
+// unrelated socket events — every Stamina tick among them — and a board carries
+// base64 pictures for its board-local people. Folding it in would drag all of
+// that along on every one of those refetches, for a tab most of them have
+// nothing to do with.
+async function getRelationshipBoard(ownerCharacterId) {
+  const [people, nodes] = await readMany([
+    ['SELECT * FROM relationship_people WHERE owner_character_id = ? ORDER BY id', [ownerCharacterId]],
+    ['SELECT * FROM relationship_nodes WHERE owner_character_id = ? ORDER BY id', [ownerCharacterId]],
+  ]);
+  return { people, nodes };
+}
+
+// Who may read or write one board: its owner, or the GM. The GM edits rather
+// than merely watches (decided) — useful for setting a new player up with a
+// starting web — so there is one predicate, not two.
+function maySeeBoard(viewer, ownerCharacterId) {
+  if (!viewer) return false;
+  if (viewer.role === 'gm') return true;
+  return viewer.role === 'player' && viewer.characterId === Number(ownerCharacterId);
+}
+
+// A private board must never cross the wire to another player, so this is a
+// per-socket emit rather than an io.emit — the same shape refreshCapabilities
+// uses, and for the same reason. The board is read ONCE regardless of how many
+// sockets are entitled to it.
+async function emitRelationships(ownerCharacterId) {
+  const id = Number(ownerCharacterId);
+  if (!Number.isInteger(id)) return;
+  let payload = null;
+  for (const socket of io.sockets.sockets.values()) {
+    if (!maySeeBoard(socket.data?.identity, id)) continue;
+    payload = payload ?? (await getRelationshipBoard(id));
+    socket.emit('relationships:updated', { characterId: id, ...payload });
+  }
+}
+
+app.get('/api/characters/:id/relationships', wrap(async (req, res) => {
+  const viewer = viewerFromQuery(req.query);
+  if (!maySeeBoard(viewer, req.params.id)) return res.status(403).json({ error: 'not yours' });
+  res.json(await getRelationshipBoard(Number(req.params.id)));
+}));
+
 app.get('/api/character-folders', wrap(async (_req, res) => {
   res.json(await all('SELECT * FROM character_folders ORDER BY name'));
 }));
@@ -1783,6 +1829,46 @@ app.put('/api/characters/:id', wrap(async (req, res) => {
   res.json(updated);
 }));
 
+// **A player's memory outlives the GM's roster (decided).**
+//
+// When a character is deleted, every Relationships node on somebody ELSE's
+// board that pointed at them would be left dangling. Rather than dropping those
+// nodes — which would silently destroy part of a player's map because the GM
+// tidied up — each one converts into a board-local person on the board it
+// already sits on, carrying the last-known name and picture across. Position,
+// Nickname, Notes and (from Phase 3) every relationship are untouched: to that
+// board, nothing happened except that this person stopped being someone the
+// GM tracks.
+//
+// Runs BEFORE the character row goes, so the name and picture are still there
+// to copy, and before the deleted character's own board rows are cleared.
+// One person per board, not per node: two placements of the same NPC on one
+// board are two views of one person and must not become two people.
+async function convertRelationshipNodesToPeople(character) {
+  const nodes = await all(
+    'SELECT * FROM relationship_nodes WHERE character_id = ?',
+    [character.id]
+  );
+  if (!nodes.length) return;
+  const boards = [...new Set(nodes.map((n) => n.owner_character_id))];
+  for (const ownerCharacterId of boards) {
+    // The owner's own board is about to be deleted wholesale below, so there is
+    // nothing worth converting there.
+    if (ownerCharacterId === character.id) continue;
+    const inserted = await run(
+      `INSERT INTO relationship_people (owner_character_id, name, image_data, image_mime_type)
+       VALUES (?, ?, ?, ?)`,
+      [ownerCharacterId, character.name, character.image_data ?? null, character.image_mime_type ?? null]
+    );
+    await run(
+      `UPDATE relationship_nodes SET person_id = ?, character_id = NULL
+       WHERE character_id = ? AND owner_character_id = ?`,
+      [Number(inserted.lastInsertRowid), character.id, ownerCharacterId]
+    );
+    await emitRelationships(ownerCharacterId);
+  }
+}
+
 app.delete('/api/characters/:id', wrap(async (req, res) => {
   const character = await getCharacter(req.params.id);
   if (!character) return res.status(404).json({ error: 'not found' });
@@ -1795,6 +1881,9 @@ app.delete('/api/characters/:id', wrap(async (req, res) => {
   await run('DELETE FROM stances WHERE character_id = ?', [character.id]);
   await run('DELETE FROM character_moves WHERE character_id = ?', [character.id]);
   await run('DELETE FROM roleplay_entries WHERE character_id = ?', [character.id]);
+  await convertRelationshipNodesToPeople(character);
+  await run('DELETE FROM relationship_nodes WHERE owner_character_id = ?', [character.id]);
+  await run('DELETE FROM relationship_people WHERE owner_character_id = ?', [character.id]);
   await run('DELETE FROM character_move_tags WHERE character_id = ?', [character.id]);
   await run('DELETE FROM character_move_overrides WHERE character_id = ?', [character.id]);
   await run('DELETE FROM character_move_roll_bonuses WHERE character_id = ?', [character.id]);
@@ -3740,6 +3829,134 @@ io.on('connection', (socket) => {
     if (!entry) return;
     await run('DELETE FROM roleplay_entries WHERE id = ?', [entry.id]);
     await emitRoleplay(entry.character_id);
+  });
+
+  // -------------------------------------------------------------------
+  // Relationships board
+  // -------------------------------------------------------------------
+  //
+  // Every handler starts with the same gate. There is no per-event variation
+  // because there is no per-event rule: you may write a board if you own it or
+  // you are the GM, full stop. A caller who is neither is dropped silently, the
+  // way move:declare treats a declaration for a character it doesn't own.
+  const mayWriteBoard = (ownerCharacterId) =>
+    maySeeBoard(socket.data.identity, ownerCharacterId);
+
+  // Node writes arrive by node id, not by board id, so the owner has to be
+  // read back off the row before the gate can be applied — otherwise a caller
+  // could move a node on somebody else's board by naming its id.
+  const loadOwnedNode = async (nodeId) => {
+    const node = await one('SELECT * FROM relationship_nodes WHERE id = ?', [nodeId]);
+    if (!node || !mayWriteBoard(node.owner_character_id)) return null;
+    return node;
+  };
+
+  const clampText = (value, max) => String(value ?? '').slice(0, max);
+  // A world coordinate. Bounded because the plane is infinite but a number is
+  // not: a NaN or an Infinity here would put a node nowhere and take the whole
+  // board's layout with it.
+  const coord = (value) => {
+    const n = Number(value);
+    return Number.isFinite(n) ? Math.max(-1e6, Math.min(1e6, n)) : 0;
+  };
+
+  on('relationships:add_node', async ({ characterId, targetCharacterId, personId, x, y }) => {
+    if (!mayWriteBoard(characterId)) return;
+    const owner = await getCharacter(characterId);
+    if (!owner) return;
+    // Exactly one source, matching the table's own CHECK. Asked here as well so
+    // a malformed payload is a dropped event rather than a constraint error.
+    const hasCharacter = targetCharacterId != null;
+    const hasPerson = personId != null;
+    if (hasCharacter === hasPerson) return;
+    if (hasCharacter && !(await getCharacter(targetCharacterId))) return;
+    if (hasPerson) {
+      const person = await one(
+        'SELECT id FROM relationship_people WHERE id = ? AND owner_character_id = ?',
+        [personId, owner.id]
+      );
+      // A person belongs to one board. Placing somebody else's is not a thing.
+      if (!person) return;
+    }
+    await run(
+      `INSERT INTO relationship_nodes (owner_character_id, character_id, person_id, x, y)
+       VALUES (?, ?, ?, ?, ?)`,
+      [owner.id, hasCharacter ? Number(targetCharacterId) : null, hasPerson ? Number(personId) : null, coord(x), coord(y)]
+    );
+    await emitRelationships(owner.id);
+  });
+
+  // One write per drag, sent on pointerup. Nothing hits the DB mid-gesture.
+  on('relationships:move_node', async ({ nodeId, x, y }) => {
+    const node = await loadOwnedNode(nodeId);
+    if (!node) return;
+    await run('UPDATE relationship_nodes SET x = ?, y = ? WHERE id = ?', [coord(x), coord(y), node.id]);
+    await emitRelationships(node.owner_character_id);
+  });
+
+  on('relationships:update_node', async ({ nodeId, nickname, notes }) => {
+    const node = await loadOwnedNode(nodeId);
+    if (!node) return;
+    await run('UPDATE relationship_nodes SET nickname = ?, notes = ? WHERE id = ?', [
+      clampText(nickname ?? node.nickname, 80),
+      clampText(notes ?? node.notes, 8000),
+      node.id,
+    ]);
+    await emitRelationships(node.owner_character_id);
+  });
+
+  // `keepRelationships` is the ✕ menu's two options. Phase 3 is what gives the
+  // flag teeth — there are no edges yet — but the shape is settled here so the
+  // client's menu is not rewritten when they arrive.
+  on('relationships:delete_node', async ({ nodeId }) => {
+    const node = await loadOwnedNode(nodeId);
+    if (!node) return;
+    await run('DELETE FROM relationship_nodes WHERE id = ?', [node.id]);
+    await emitRelationships(node.owner_character_id);
+  });
+
+  on('relationships:create_person', async ({ characterId, name, imageData, imageMimeType }) => {
+    if (!mayWriteBoard(characterId)) return;
+    const owner = await getCharacter(characterId);
+    const personName = clampText(name, 80).trim();
+    // Name is the one mandatory field: a face with no name is not a person you
+    // can think about, and the rail would show a blank row.
+    if (!owner || !personName) return;
+    await run(
+      `INSERT INTO relationship_people (owner_character_id, name, image_data, image_mime_type)
+       VALUES (?, ?, ?, ?)`,
+      [owner.id, personName, imageData ? String(imageData) : null, imageData ? String(imageMimeType ?? 'image/jpeg') : null]
+    );
+    await emitRelationships(owner.id);
+  });
+
+  on('relationships:update_person', async ({ personId, name, imageData, imageMimeType }) => {
+    const person = await one('SELECT * FROM relationship_people WHERE id = ?', [personId]);
+    if (!person || !mayWriteBoard(person.owner_character_id)) return;
+    const personName = clampText(name ?? person.name, 80).trim();
+    if (!personName) return;
+    // An absent picture means "leave it alone", not "clear it" — the editor
+    // only sends one when the file picker actually produced one.
+    await run(
+      imageData
+        ? 'UPDATE relationship_people SET name = ?, image_data = ?, image_mime_type = ? WHERE id = ?'
+        : 'UPDATE relationship_people SET name = ? WHERE id = ?',
+      imageData
+        ? [personName, String(imageData), String(imageMimeType ?? 'image/jpeg'), person.id]
+        : [personName, person.id]
+    );
+    await emitRelationships(person.owner_character_id);
+  });
+
+  // Deleting a person takes their placements with them — they are that person
+  // and nothing else. Explicit, because ON DELETE actions cannot be relied on
+  // here (see the tables' own note in db.js).
+  on('relationships:delete_person', async ({ personId }) => {
+    const person = await one('SELECT * FROM relationship_people WHERE id = ?', [personId]);
+    if (!person || !mayWriteBoard(person.owner_character_id)) return;
+    await run('DELETE FROM relationship_nodes WHERE person_id = ?', [person.id]);
+    await run('DELETE FROM relationship_people WHERE id = ?', [person.id]);
+    await emitRelationships(person.owner_character_id);
   });
 
   on('injury:add', async ({ characterId, name, effect, slotName, penalty }) => {

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from 'react';
 import {
   DEFAULT_VIEW,
   MAX_ZOOM,
@@ -35,13 +35,10 @@ const FAR = { size: 143, rate: 0.28, alpha: 0.06, r: 1.9 };
 const dotLayer = ({ size, alpha, r }) =>
   `radial-gradient(circle at center, rgba(226,232,240,${alpha}) ${r}px, transparent ${r + 0.6}px)`;
 
-export default function RelationshipVoid({
-  characterId,
-  interactive = true,
-  className = '',
-  children,
-  onViewChange,
-}) {
+function RelationshipVoid(
+  { characterId, interactive = true, className = '', children, onViewChange, onBackgroundPointerDown, ...rest },
+  ref
+) {
   const viewportRef = useRef(null);
   const worldRef = useRef(null);
   const [view, setView] = useState(() => loadView(characterId));
@@ -52,6 +49,27 @@ export default function RelationshipVoid({
   const panRef = useRef(null);
   const pinchRef = useRef(null);
   const frameRef = useRef(0);
+
+  // What the board above needs in order to drag a node: the live camera, and
+  // one exact screen->world conversion. Exposed imperatively rather than as
+  // state because the camera deliberately does not re-render during a gesture —
+  // a dragging node asks for the current value sixty times a second and must
+  // get the real one, not last render's.
+  useImperativeHandle(
+    ref,
+    () => ({
+      getView: () => viewRef.current,
+      getViewportEl: () => viewportRef.current,
+      // clientX/clientY straight off a pointer or drop event.
+      toWorld: (clientX, clientY) => {
+        const el = viewportRef.current;
+        if (!el) return { x: 0, y: 0 };
+        const rect = el.getBoundingClientRect();
+        return toWorld(viewRef.current, clientX - rect.left, clientY - rect.top);
+      },
+    }),
+    []
+  );
 
   // One place that puts the camera on screen. Everything that moves the camera —
   // drag, wheel, pinch, a committed state change — goes through here, so the DOM
@@ -112,6 +130,7 @@ export default function RelationshipVoid({
     // Only the void itself pans. A pointerdown that started on a child (a node,
     // from Phase 2) is that child's gesture, and this must not steal it.
     if (e.target !== viewportRef.current && e.target !== worldRef.current) return;
+    onBackgroundPointerDown?.(e);
     pointersRef.current.set(e.pointerId, localPoint(e));
     viewportRef.current.setPointerCapture(e.pointerId);
 
@@ -212,6 +231,7 @@ export default function RelationshipVoid({
   return (
     <div
       ref={viewportRef}
+      data-relationship-void=""
       {...handlers}
       // touch-action:none is mandatory, not defensive — without it the browser
       // claims the gesture and scrolls or zooms the page instead of the board.
@@ -224,6 +244,7 @@ export default function RelationshipVoid({
         backgroundImage: `${dotLayer(NEAR)}, ${dotLayer(FAR)}`,
       }}
       className={`relative overflow-hidden select-none ${interactive ? 'cursor-grab active:cursor-grabbing' : ''} ${className}`}
+      {...rest}
     >
       {/* A cold vignette over the dots. The void reads as depth rather than as a
           dotted sheet only once the edges fall away. */}
@@ -278,4 +299,5 @@ function ZoomButton({ onClick, disabled, label, children }) {
   );
 }
 
+export default forwardRef(RelationshipVoid);
 export { toWorld };

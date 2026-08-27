@@ -1273,6 +1273,78 @@ export async function initDb() {
     )
   `);
 
+  // ---------------------------------------------------------------------
+  // Relationships board (decided, new) — see the plan's own section.
+  // ---------------------------------------------------------------------
+  //
+  // **A board IS its owner.** There is no `boards` table: every row below
+  // carries `owner_character_id`, and that is the whole of a board's identity.
+  // Pan and zoom are deliberately not here either — where somebody is looking
+  // is a property of the person looking, not of the game (the same rule
+  // SettingsPage states for brand hue), so the camera lives in localStorage.
+  //
+  // **Foreign keys ARE enforced here — measured, not assumed.** An earlier
+  // version of this comment claimed the opposite, reasoning that `PRAGMA
+  // foreign_keys` is only ever touched inside the six rebuild helpers above and
+  // that SQLite defaults it OFF per connection. Both facts are true and the
+  // conclusion was still wrong: `@libsql/client` turns it ON when it opens the
+  // connection, so `PRAGMA foreign_keys` reads 1 before `initDb` has run a
+  // single statement. Probe it before believing either story.
+  //
+  // Two consequences that shape the deletion code, and neither is optional:
+  //
+  //   - `relationship_nodes.character_id` has NO `ON DELETE` action, so with
+  //     enforcement on, deleting a character that still has nodes pointing at
+  //     it is **refused**. That makes the conversion in
+  //     DELETE /api/characters/:id (nodes on other players' boards become
+  //     board-local people) mandatory rather than merely kind — without it the
+  //     delete fails outright.
+  //   - The explicit board deletions in that same handler are belt-and-braces
+  //     now rather than the only belt, and they stay: that handler spells out
+  //     its whole cascade by hand as a matter of style, and an ordering that
+  //     works whether or not the pragma is on is worth more than the saved
+  //     lines.
+  //
+  // CHECK constraints are enforced regardless of the pragma, which is what
+  // makes the discriminator below real under either story.
+
+  // A person who exists only on one player's board. NOT named "temp npcs":
+  // when the GM deletes a world NPC, every node referencing it converts into
+  // one of these (keeping the last-known name and picture), and "temporary"
+  // would then be a lie about the most permanent thing on the board.
+  ddl(`
+    CREATE TABLE IF NOT EXISTS relationship_people (
+      id INTEGER PRIMARY KEY,
+      owner_character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      image_data TEXT,
+      image_mime_type TEXT,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  // One placement on one board, at a point in world coordinates.
+  //
+  // Exactly one of character_id / person_id is set, and the CHECK is what makes
+  // that a schema fact rather than a convention every reader has to remember.
+  // Nickname and Notes live on the NODE, not on the person: the same NPC
+  // dragged out twice is two independent placements, because placing somebody
+  // twice usually means they occupy two roles in your head.
+  ddl(`
+    CREATE TABLE IF NOT EXISTS relationship_nodes (
+      id INTEGER PRIMARY KEY,
+      owner_character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+      character_id INTEGER REFERENCES characters(id),
+      person_id INTEGER REFERENCES relationship_people(id),
+      x REAL NOT NULL DEFAULT 0,
+      y REAL NOT NULL DEFAULT 0,
+      nickname TEXT NOT NULL DEFAULT '',
+      notes TEXT NOT NULL DEFAULT '',
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      CHECK ((character_id IS NULL) <> (person_id IS NULL))
+    )
+  `);
+
   // The Perks compendium: master list of Perk templates. Just picture, name,
   // and description — no generic automation system (removed; see
   // server/perkAutomations.js for the manual per-Perk hook skeleton that
@@ -1850,6 +1922,11 @@ async function ensureIndexes() {
     ['character_move_overrides', 'character_id'],
     ['character_move_tags', 'character_id'],
     ['perk_tag_links', 'perk_id'],
+    // A board is read whole, by owner; and `character_id` is the lookup that
+    // finds every node to convert when the GM deletes a world NPC.
+    ['relationship_people', 'owner_character_id'],
+    ['relationship_nodes', 'owner_character_id'],
+    ['relationship_nodes', 'character_id'],
   ];
   for (const [table, column] of indexes) {
     ddl(`CREATE INDEX IF NOT EXISTS idx_${table}_${column} ON ${table}(${column})`);

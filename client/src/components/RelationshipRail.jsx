@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { buildFolderTree } from '../lib/folders.js';
 import { portraitSrc } from '../lib/image.js';
 import { FolderRosterNode } from './FolderRoster.jsx';
+import { DRAG_MIME, DRAG_PERSON_MIME } from './RelationshipBoard.jsx';
 
 // The cast, down the right-hand fifth of the Relationships tab.
 //
@@ -12,8 +13,16 @@ import { FolderRosterNode } from './FolderRoster.jsx';
 //      Not a `character_folders` row and never will be: these belong to one
 //      player's board, and putting them in the world's folder tree would put
 //      them in everybody's.
-//   3. **The world's NPCs**, in the GM's own nested folders, exactly as the
-//      Arena's seating rail shows them — same component, same collapse rules.
+//   3. **Everyone else in the world** — other Player Characters *and* NPCs — in
+//      the GM's own nested folders, exactly as the Arena's seating rail shows
+//      them: same component, same collapse rules.
+//
+// **PCs belong in this list** (decided, added). The other people at the table
+// are relationships too, and often the strongest ones a character has; leaving
+// them out would have meant a map that could not show the party. They live in
+// the same `character_folders` tree NPCs do, so showing both is also the honest
+// reading of "the GM's actual structure" rather than a filtered view of it.
+// They are marked with a PC badge, and sort first inside their folder.
 //
 // **Players see NPCs here.** That is a deliberate exception to the rule that a
 // Player never sees an NPC outside combat (CharacterList filters them, and a
@@ -23,10 +32,11 @@ import { FolderRosterNode } from './FolderRoster.jsx';
 
 export default function RelationshipRail({
   me,
-  npcs,
+  cast,
   folders,
   people = [],
   onCreatePerson,
+  onEditPerson,
   canEdit,
 }) {
   const [collapsed, setCollapsed] = useState(new Set());
@@ -40,24 +50,32 @@ export default function RelationshipRail({
       return next;
     });
 
-  const npcsByFolder = useMemo(() => {
+  const castByFolder = useMemo(() => {
     const map = new Map();
-    for (const c of npcs) {
+    for (const c of cast) {
       const key = c.folder_id ?? null;
       if (!map.has(key)) map.set(key, []);
       map.get(key).push(c);
     }
-    for (const list of map.values()) list.sort((a, b) => a.name.localeCompare(b.name));
+    // Player Characters first inside a folder, then NPCs, each alphabetical.
+    // The people at your table are the ones you reach for most.
+    for (const list of map.values()) {
+      list.sort((a, b) => {
+        const aPc = a.character_type === 'pc' ? 0 : 1;
+        const bPc = b.character_type === 'pc' ? 0 : 1;
+        return aPc - bPc || a.name.localeCompare(b.name);
+      });
+    }
     return map;
-  }, [npcs]);
+  }, [cast]);
 
   const tree = useMemo(() => buildFolderTree(folders ?? []), [folders]);
-  const folderless = npcsByFolder.get(null) ?? [];
+  const folderless = castByFolder.get(null) ?? [];
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-2 overflow-y-auto panel-cut border border-zinc-800 bg-zinc-900/60 p-2">
       <SectionLabel>You</SectionLabel>
-      {me && <RailCard record={me} />}
+      {me && <RailCard record={me} characterId={me.id} canEdit={canEdit} />}
 
       <div>
         <button
@@ -74,7 +92,13 @@ export default function RelationshipRail({
         {!customCollapsed && (
           <div className="space-y-2 pb-1 pl-2.5">
             {people.map((p) => (
-              <RailCard key={`person-${p.id}`} record={p} />
+              <RailCard
+                key={`person-${p.id}`}
+                record={p}
+                personId={p.id}
+                canEdit={canEdit}
+                onEdit={() => onEditPerson?.(p)}
+              />
             ))}
             {canEdit && (
               <button
@@ -96,11 +120,11 @@ export default function RelationshipRail({
         <FolderRosterNode
           key={node.id}
           node={node}
-          charsByFolder={npcsByFolder}
+          charsByFolder={castByFolder}
           collapsed={collapsed}
           onToggle={toggle}
           depth={0}
-          rosterCard={(c) => <RailCard key={c.id} record={c} />}
+          rosterCard={(c) => <RailCard key={c.id} record={c} characterId={c.id} canEdit={canEdit} />}
         />
       ))}
       {folderless.length > 0 && (
@@ -108,14 +132,14 @@ export default function RelationshipRail({
           <SectionLabel>Folderless</SectionLabel>
           <div className="space-y-2">
             {folderless.map((c) => (
-              <RailCard key={c.id} record={c} />
+              <RailCard key={c.id} record={c} characterId={c.id} canEdit={canEdit} />
             ))}
           </div>
         </div>
       )}
-      {!npcs.length && (
+      {!cast.length && (
         <p className="px-1 text-[11px] text-zinc-600">
-          The world has no NPCs yet. Ask your GM, or make someone of your own above.
+          Nobody else exists in the world yet. Make someone of your own above.
         </p>
       )}
     </div>
@@ -134,12 +158,26 @@ function SectionLabel({ children }) {
 // so a world character row and a board-local person row render identically —
 // which is the point: once somebody is on the board, where they came from stops
 // mattering to everything except deletion.
-function RailCard({ record }) {
+function RailCard({ record, characterId, personId, canEdit, onEdit }) {
   const src = portraitSrc(record);
+  // Native HTML5 drag, with the same `text/character-id` mime CharacterList and
+  // Arena seating already use — the app's convention for a list-to-target drag.
+  // A board-local person rides its own mime so the board can tell the two apart
+  // without a second lookup.
+  const onDragStart = (e) => {
+    if (characterId != null) e.dataTransfer.setData(DRAG_MIME, String(characterId));
+    else if (personId != null) e.dataTransfer.setData(DRAG_PERSON_MIME, String(personId));
+    e.dataTransfer.effectAllowed = 'copy';
+  };
   return (
     <div
-      className="flex items-center gap-2 panel-cut-sm border border-zinc-800 bg-zinc-900 p-1 text-left"
-      title={record.name}
+      draggable={canEdit}
+      onDragStart={canEdit ? onDragStart : undefined}
+      onDoubleClick={onEdit}
+      className={`flex items-center gap-2 panel-cut-sm border border-zinc-800 bg-zinc-900 p-1 text-left ${
+        canEdit ? 'cursor-grab active:cursor-grabbing hover:border-brand-700' : ''
+      }`}
+      title={canEdit ? `Drag ${record.name} onto the board` : record.name}
     >
       {src ? (
         <img src={src} alt="" draggable={false} className="h-8 w-8 shrink-0 panel-cut-sm object-cover" />
@@ -151,6 +189,14 @@ function RailCard({ record }) {
       <span className="min-w-0 flex-1 truncate text-[11px] font-semibold text-zinc-300">
         {record.name}
       </span>
+      {record.character_type === 'pc' && (
+        <span
+          className="shrink-0 rounded-full bg-brand-900/60 px-1.5 py-px text-[8px] font-bold uppercase tracking-wide text-brand-300"
+          title="Player Character"
+        >
+          PC
+        </span>
+      )}
     </div>
   );
 }
