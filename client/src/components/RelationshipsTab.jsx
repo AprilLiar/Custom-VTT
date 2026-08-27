@@ -1,20 +1,17 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Maximize2, Minimize2 } from 'lucide-react';
 import { getCharacterFolders } from '../lib/api.js';
 import { useIsDesktop } from '../lib/useMediaQuery.js';
 import { useRole } from '../roleContext.jsx';
 import { useRoster } from '../lib/useRoster.js';
+import { useRelationshipBoard } from '../lib/useRelationshipBoard.js';
+import PersonEditor from './PersonEditor.jsx';
+import RelationshipBoard from './RelationshipBoard.jsx';
 import RelationshipRail from './RelationshipRail.jsx';
-import RelationshipVoid from './RelationshipVoid.jsx';
 
-// Phase 1 of the Relationships board: the tab, the void, and the cast.
-//
-// Nothing can be placed yet — dragging a name out of the rail comes in Phase 2,
-// along with the tables that would store it. What this phase settles is the part
-// that is expensive to change later and cheap to change now: how the board
-// claims space on a sheet capped at 768px, how the camera feels, and what the
-// void looks like.
+// The Relationships board: an infinite space where a player lays out who their
+// character knows, and (from Phase 3) how.
 //
 // **Two ways to be big.** Inline, the tab breaks the sheet's `max-w-3xl` and
 // takes a fixed slab of viewport height. Fullscreen portals the whole thing over
@@ -33,9 +30,20 @@ export default function RelationshipsTab({ data }) {
   const isDesktop = useIsDesktop();
   const [fullscreen, setFullscreen] = useState(false);
   const [folders, setFolders] = useState([]);
+  const [editingPerson, setEditingPerson] = useState(null);
   const roster = useRoster();
 
   const character = data.character;
+  // The identity the board endpoint is gated on. Memoised because it is a
+  // dependency of the fetch, and a fresh object every render would refetch the
+  // whole board — pictures and all — on every keystroke elsewhere on the sheet.
+  const identity = useMemo(
+    () => (role === 'gm' ? { role: 'gm' } : role === 'player' && myCharacterId != null
+      ? { role: 'player', characterId: String(myCharacterId) }
+      : null),
+    [role, myCharacterId]
+  );
+  const { board } = useRelationshipBoard(character.id, identity);
   // Decision: the GM may see and edit any board; a Player only their own. Phone
   // is view-and-navigate only — precise pointer work has no room on that screen.
   const canEdit = isDesktop && (role === 'gm' || myCharacterId === character.id);
@@ -57,29 +65,36 @@ export default function RelationshipsTab({ data }) {
     return () => window.removeEventListener('keydown', onKey);
   }, [fullscreen]);
 
-  const npcs = (roster ?? []).filter((c) => c.character_type === 'npc');
+  // Everyone who is not the board's owner: other Player Characters as well as
+  // NPCs (decided, added). The party are relationships too, and usually the
+  // strongest ones a character has. The owner themselves is excluded here and
+  // pinned at the top of the rail instead.
+  const cast = (roster ?? []).filter((c) => c.id !== character.id);
   const me = (roster ?? []).find((c) => c.id === character.id) ?? character;
 
-  const board = (
+  const charactersById = useMemo(
+    () => new Map((roster ?? []).map((c) => [c.id, c])),
+    [roster]
+  );
+
+  const surface = (
     <div className="flex h-full min-h-0 gap-2">
-      <RelationshipVoid
-        characterId={character.id}
-        interactive
+      <RelationshipBoard
+        ownerCharacterId={character.id}
+        board={board}
+        charactersById={charactersById}
+        canEdit={canEdit}
         className="min-w-0 flex-1 panel-cut border border-zinc-800"
-      >
-        {/* Phase 2 fills this with nodes. The marker is here so the void is
-            visibly a *place* rather than an empty box you cannot tell you are
-            moving through — without it, panning an unmarked plane looks broken. */}
-        <Origin />
-      </RelationshipVoid>
+      />
       <div className="hidden w-52 shrink-0 md:block lg:w-60">
         <RelationshipRail
           me={me}
-          npcs={npcs}
+          cast={cast}
           folders={folders}
-          people={[]}
+          people={board?.people ?? []}
           canEdit={canEdit}
-          onCreatePerson={() => {}}
+          onCreatePerson={() => setEditingPerson({})}
+          onEditPerson={(p) => canEdit && setEditingPerson(p)}
         />
       </div>
     </div>
@@ -93,6 +108,14 @@ export default function RelationshipsTab({ data }) {
       {fullscreen ? <Minimize2 size={12} /> : <Maximize2 size={12} />}
       {fullscreen ? 'Exit' : 'Fullscreen'}
     </button>
+  );
+
+  const personEditor = editingPerson && (
+    <PersonEditor
+      ownerCharacterId={character.id}
+      person={editingPerson.id ? editingPerson : null}
+      onClose={() => setEditingPerson(null)}
+    />
   );
 
   if (fullscreen) {
@@ -109,7 +132,8 @@ export default function RelationshipsTab({ data }) {
           <span className="text-[10px] uppercase tracking-wide text-zinc-600">Esc to exit</span>
           <div className="ml-auto">{toggle}</div>
         </div>
-        <div className="min-h-0 flex-1">{board}</div>
+        <div className="min-h-0 flex-1">{surface}</div>
+        {personEditor}
       </div>,
       document.body
     );
@@ -125,26 +149,13 @@ export default function RelationshipsTab({ data }) {
         </p>
         <div className="ml-auto">{toggle}</div>
       </div>
-      <div className={`${INLINE_HEIGHT} min-h-0`}>{board}</div>
+      <div className={`${INLINE_HEIGHT} min-h-0`}>{surface}</div>
       {!isDesktop && (
         <p className="text-[10px] uppercase tracking-wide text-zinc-600">
           Editing the board needs a bigger screen — here you can look around it.
         </p>
       )}
-    </div>
-  );
-}
-
-// A faint origin marker, so panning an empty plane still reads as motion.
-function Origin() {
-  return (
-    <div
-      aria-hidden
-      className="pointer-events-none absolute"
-      style={{ left: -60, top: -60, width: 120, height: 120 }}
-    >
-      <div className="absolute left-1/2 top-0 h-full w-px -translate-x-1/2 bg-zinc-100/5" />
-      <div className="absolute left-0 top-1/2 h-px w-full -translate-y-1/2 bg-zinc-100/5" />
+      {personEditor}
     </div>
   );
 }

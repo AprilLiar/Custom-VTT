@@ -39,6 +39,15 @@ export const search = (q) => fetch(`/api/search?q=${encodeURIComponent(q)}`).the
 export const getCombat = (identity) =>
   fetch(`/api/combat${identity ? `?${new URLSearchParams(identity)}` : ''}`).then(json);
 
+// One character's Relationships board. Carries the identity as query params for
+// the same reason getCombat does — REST has no socket to carry it — and here it
+// is a real gate rather than a filter: the server answers 403 to anyone who is
+// neither the board's owner nor the GM.
+export const getRelationshipBoard = (characterId, identity) =>
+  fetch(
+    `/api/characters/${characterId}/relationships${identity ? `?${new URLSearchParams(identity)}` : ''}`
+  ).then(json);
+
 // Combat Automation overhaul §3 — a completed round's stored event log,
 // behind the chat log's "Watch Round N" button. Takes no identity: a
 // resolved round is public history, watchable by anyone (decision #11).
