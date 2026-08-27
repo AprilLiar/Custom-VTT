@@ -30,6 +30,7 @@ import { portraitSrc } from '../lib/image.js';
 import { dieLabel, tintFor, POOLS } from '../lib/dice.js';
 import { ANATOMY } from '../lib/anatomy.js';
 import { buildFolderTree } from '../lib/folders.js';
+import { FolderRosterNode } from './FolderRoster.jsx';
 import { countRollSlot } from '../lib/diceSlots.js';
 import {
   FRAME_PHASES, PHASE_BG, PHASE_LABEL, PHASE_ZONE, TRIP_MARK,
@@ -326,57 +327,6 @@ function ArenaCounterRow({ counter, characterName }) {
           ✕
         </button>
       </div>
-    </div>
-  );
-}
-
-// Every available (unseated) character inside this folder, including all
-// descendant folders — what the roster's per-folder count shows, and what
-// decides whether an empty subtree hides itself entirely.
-function countAvailable(node, charsByFolder) {
-  const direct = charsByFolder.get(node.id)?.length ?? 0;
-  const childSum = node.children.reduce((sum, child) => sum + countAvailable(child, charsByFolder), 0);
-  return direct + childSum;
-}
-
-// One folder row in the roster's recursive, collapsible tree. Clicking the
-// header toggles collapse for its whole subtree (tracked as a Set of folder
-// ids in the parent); a folder whose complete subtree has no available
-// characters hides itself rather than showing an always-empty row. Direct
-// characters render before child folders once expanded, per spec.
-function FolderRosterNode({ node, charsByFolder, collapsed, onToggle, depth, rosterCard }) {
-  const count = countAvailable(node, charsByFolder);
-  if (count === 0) return null;
-  const isCollapsed = collapsed.has(node.id);
-  const directChars = charsByFolder.get(node.id) ?? [];
-  return (
-    <div>
-      <button
-        onClick={() => onToggle(node.id)}
-        style={{ paddingLeft: `${depth * 12}px` }}
-        className="flex w-full items-center gap-1 panel-cut-sm py-1 text-left text-[10px] font-bold uppercase tracking-wide text-zinc-500 hover:text-zinc-300"
-      >
-        <span className="shrink-0">{isCollapsed ? '▸' : '▾'}</span>
-        <span className="min-w-0 flex-1 truncate">📁 {node.name}</span>
-        <span className="shrink-0 normal-case text-zinc-600">({count})</span>
-      </button>
-      {!isCollapsed && directChars.length > 0 && (
-        <div className="space-y-2 pb-1" style={{ paddingLeft: `${depth * 12 + 10}px` }}>
-          {directChars.map(rosterCard)}
-        </div>
-      )}
-      {!isCollapsed &&
-        node.children.map((child) => (
-          <FolderRosterNode
-            key={child.id}
-            node={child}
-            charsByFolder={charsByFolder}
-            collapsed={collapsed}
-            onToggle={onToggle}
-            depth={depth + 1}
-            rosterCard={rosterCard}
-          />
-        ))}
     </div>
   );
 }
