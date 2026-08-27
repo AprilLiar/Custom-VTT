@@ -134,6 +134,8 @@ import {
   perkDefinitionsFor,
   withPerkCache,
   perkRoundStartHalfHealing,
+  perkAbsorbBreak,
+  perkBlockPenaltyAgainstYou,
   perkIgnoresMovementPunisher,
   perkInterruptAmounts,
   perkInterruptsOwnDeclarations,
@@ -966,6 +968,10 @@ async function applyAutoDamage(io, { targetCharacterId, effectiveAttackTargets, 
   // Nothing is redirected: the damage does not slide onto a neighbouring Stat.
   // It simply does not land.
   const unapplied = [];
+  // Stats that Path To Mastery: Durability held together this blow. Collected
+  // rather than announced inline for the same reason the damage line is: one
+  // sentence per attack, not one per Stat.
+  const heldTogether = [];
 
   for (const die of targets) {
     const own = stepsBySlot ? stepsBySlot[die.slot_name] ?? 0 : steps;
@@ -981,6 +987,24 @@ async function applyAutoDamage(io, { targetCharacterId, effectiveAttackTargets, 
       half_damage: Boolean(die.half_damage),
     };
     for (let i = 0; i < own; i++) next = applyHalfDamage(next);
+    // **Path To Mastery: Durability.** A Stat that would go out is held at a
+    // bare d4 instead, for as many times as the holder has charges.
+    //
+    // Asked only when a break would ACTUALLY happen — the die was live coming
+    // in and is incapacitated going out — so a charge is never spent on a blow
+    // that was not going to break anything. The Stat still takes everything the
+    // hit was worth: it lands at d4 with no bonus and no pending half, exactly
+    // where the break would have left it, minus the going out.
+    let breakAbsorbed = false;
+    if (die.status !== 'incapacitated' && next.status === 'incapacitated') {
+      if (await perkAbsorbBreak(targetCharacterId)) {
+        next = { current_size: 4, bonus: 0, status: 'active', half_damage: false };
+        breakAbsorbed = true;
+      }
+    }
+    if (breakAbsorbed) {
+      heldTogether.push(die.slot_name);
+    }
     await run('UPDATE dice SET current_size = ?, bonus = ?, status = ?, half_damage = ? WHERE id = ?', [
       next.current_size,
       next.bonus,
@@ -1015,6 +1039,19 @@ async function applyAutoDamage(io, { targetCharacterId, effectiveAttackTargets, 
     await postSystemMessage(
       io,
       `${character.name} took ${list}${attackerName ? ` from ${attackerName}` : ''}.`
+    );
+  }
+  // **Path To Mastery: Durability, announced.** Same reasoning as Grounded: a
+  // table watching a Stat get taken out is expecting it to go, and a Stat that
+  // refuses to break needs a reason on the record. Posted after the damage
+  // line so it reads as a consequence of the blow just described.
+  if (character && heldTogether.length) {
+    const list = heldTogether.length === 1
+      ? heldTogether[0]
+      : `${heldTogether.slice(0, -1).join(', ')} and ${heldTogether[heldTogether.length - 1]}`;
+    await postSystemMessage(
+      io,
+      `${character.name}'s ${list} refuses to break — held at a d4.`
     );
   }
   // The unappliable half is deliberately NOT announced here. One line per blow
@@ -3080,8 +3117,18 @@ async function persistBlockPause(io, { pairIndex, pending, emitEvent, resolution
 // it exactly as the old inline loop did — the arithmetic is untouched — and
 // folds what got through into the running leftover.
 async function runBlockLine(io, { pending, defenderDM, guard, line, emitEvent }) {
-  const { baseSlotRows, defensiveSlotRows, defMod, blockTagged } = guard;
+  const { baseSlotRows, defensiveSlotRows, blockTagged } = guard;
   const { tic, attackerResult: total } = pending;
+  // **Path To Mastery: Strength — a penalty on somebody else's roll.** Asked of
+  // the ATTACKER and folded into the blocker's modifier here, because this is
+  // the only place that knows both halves of the exchange. It cannot live in
+  // `loadBlockGuard`, which is handed the defender and nothing about who they
+  // are guarding against.
+  //
+  // Blocks only. A Dodge is getting out of the way and does not care how hard
+  // you hit — it never reaches this function.
+  const defMod =
+    guard.defMod + (await perkBlockPenaltyAgainstYou(pending.attackerCharacterId ?? null));
   const defenseLabel = 'Block';
   const against = line ? ` against the strike to ${line}` : '';
 

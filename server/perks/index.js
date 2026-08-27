@@ -185,6 +185,27 @@ export const SEAMS = [
   // two Perks granting it grant the same one window, which is exactly what
   // OR-ing means here.
   'interruptsOwnDeclarations',
+  // (ctx) -> number. Summed onto the modifier of a Block rolled AGAINST this
+  // character (Path To Mastery: Strength). Negative penalises the guard.
+  //
+  // The first seam that answers about somebody ELSE's roll: it is asked of the
+  // attacker and folded into the blocker's own modifier, which is the only
+  // place that knows both halves of the exchange. Blocks only — a Dodge is
+  // getting out of the way and does not care how hard you hit.
+  'blockPenaltyAgainstYou',
+  // (ctx) -> { charges, scope } | null. How many times one of this character's
+  // Stats may refuse to Break, and over what window (Path To Mastery:
+  // Durability). NOT folded: each Perk keeps its own charges, and the engine
+  // spends the first one that has any left.
+  //
+  // The seam answers how many; `perkAbsorbBreak` spends one, because only the
+  // damage loop knows a break actually happened. A Perk decrementing its own
+  // counter would have to be told about breaks it did not prevent.
+  'absorbsBreak',
+  // (ctx) -> boolean. OR-ed. Whether this character reads the High/Mid/Low band
+  // of an unrevealed attack aimed at them (Eye Catcher). A band only — not the
+  // move, not its frames, not its damage.
+  'seesAttackHeight',
 ];
 
 // Tier-3 lifecycle keys — not seams (they are not folded across Perks, each
@@ -209,6 +230,10 @@ import baronOfSuffering from './baronOfSuffering.js';
 import corneredAnimal from './corneredAnimal.js';
 import deadlyPendulum from './deadlyPendulum.js';
 import dogfighter from './dogfighter.js';
+import eyeCatcher from './eyeCatcher.js';
+import pathToMasteryDurability from './pathToMasteryDurability.js';
+import pathToMasterySpeed from './pathToMasterySpeed.js';
+import pathToMasteryStrength from './pathToMasteryStrength.js';
 import geniusObserver from './geniusObserver.js';
 import grounded from './grounded.js';
 import healingFactor from './healingFactor.js';
@@ -248,6 +273,10 @@ const DEFINITIONS = [
   osu,
   neverEmptyHanded,
   nonCommitted,
+  eyeCatcher,
+  pathToMasteryDurability,
+  pathToMasterySpeed,
+  pathToMasteryStrength,
   dogfighter,
 ];
 

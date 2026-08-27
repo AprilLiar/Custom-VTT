@@ -59,6 +59,7 @@ import {
   sanitizeAttackTargets,
   expandAttackTargets,
   parseConcreteAttackTargets,
+  attackHeights,
   clampStaminaModifier,
   clampSuccessThreshold,
   normalizeGrappleDirections,
@@ -85,7 +86,7 @@ import {
 import { effectiveFrames, idleStaminaRegenRate } from './perkAutomations.js';
 import {
   clearAllPerkState, perkAllowsRevealedDetail, perkStaminaCostDeltas, perkMoveFrameDeltas,
-  perkWeaponOffers, takeWeaponOffer,
+  perkWeaponOffers, takeWeaponOffer, perkSeesAttackHeight,
 } from './perkEngine.js';
 import { isAutomatedPerk, isManualPerk, perkDefinition } from './perks/index.js';
 import { validateCreation } from './characterCreation.js';
@@ -524,6 +525,7 @@ async function fetchDeclaredMoveRows() {
     SELECT dm.id, dm.character_id, dm.round_number, dm.queue_order,
            dm.placement_tic, dm.reveal_tic, dm.stamina_committed, dm.appendage_choice,
            dm.recovery_extension_tics, dm.trip_recovery_tics, dm.feint_masked, dm.target_character_id,
+           dm.effective_attack_targets,
            m.id AS move_id, m.name AS move_name, m.tell_id, m.right_tell_id,
            m.left_tell_id, m.active_tics, m.recovery_tics, m.stamina_cost,
            m.defense_frame_positions, m.is_defensive, m.attack_targets,
@@ -620,7 +622,36 @@ function isRevealedToViewer(row, viewer) {
 // declared move outliving its owner's seat) or whose pair no longer exists
 // falls back to "never naturally reveals to a non-owner" rather than
 // guessing at a clock that no longer applies to it.
-function mapDeclaredMovesForViewer(rows, pairsByIndex, viewer) {
+// **Eye Catcher (decided, new).** `attackHeightViewers` is the set of character
+// ids whose Perks answer yes to `seesAttackHeight`, resolved once per broadcast
+// (buildCombatUpdate) rather than per socket — the same one-read-many-views
+// shape the rest of this function is built on. `pairIndexByCharacter` is what
+// answers "is this attack coming at me" in a 1v1, where target_character_id is
+// NULL because there is only one person it could be for.
+function mapDeclaredMovesForViewer(
+  rows,
+  pairsByIndex,
+  viewer,
+  { attackHeightViewers = null, pairIndexByCharacter = null } = {}
+) {
+  // Whether THIS viewer is entitled at all, asked once instead of per row.
+  const viewerSeesHeight = Boolean(
+    viewer?.role === 'player' && attackHeightViewers?.has(viewer.characterId)
+  );
+  const viewerPairIndex = viewerSeesHeight
+    ? pairIndexByCharacter?.get(viewer.characterId) ?? null
+    : null;
+  // Null when this viewer has not earned this row's height, so the spread at
+  // the push below adds no key at all rather than an empty one.
+  const attackHeightsForViewer = (row) => {
+    if (!viewerSeesHeight) return null;
+    if (row.character_id === viewer.characterId) return null;
+    if (viewerPairIndex == null || row.pair_index !== viewerPairIndex) return null;
+    if (row.target_character_id != null && row.target_character_id !== viewer.characterId) return null;
+    const heights = attackHeights(parseConcreteAttackTargets(row.effective_attack_targets));
+    return heights.length ? { attackHeights: heights } : null;
+  };
+
   const out = [];
   for (const row of rows) {
     const viewerIsOwner = isRevealedToViewer(row, viewer);
@@ -719,6 +750,19 @@ function mapDeclaredMovesForViewer(rows, pairsByIndex, viewer) {
       // dropped below rather than blanked. For the owner it drives the
       // "hidden" marker on their own Tell card.
       feintMasked: Boolean(row.feint_masked),
+      // **Eye Catcher: the height, alongside the Tell.** Present only on rows
+      // this viewer's Perk actually earns them — somebody else's move, in this
+      // viewer's own pair, coming at this viewer — and absent entirely
+      // otherwise, following the same protect-by-absence rule as moveId and
+      // moveName above rather than sending a flag a devtools reader could just
+      // flip.
+      //
+      // Not gated on `isRevealed`: knowing it BEFORE the move shows itself is
+      // the Perk's entire content. Once the move reveals, its full target list
+      // is public anyway and the band is merely redundant. A defence-pure move
+      // has no Attack Targets and so reports no height at all, which is the
+      // true answer rather than a withheld one.
+      ...(attackHeightsForViewer(row) ?? {}),
     });
   }
   return out;
@@ -973,6 +1017,19 @@ async function buildCombatUpdate() {
       fetchOpenResolutionsByPair(),
       fetchPairStanceMatchups(),
     ]);
+  // **Eye Catcher, asked once for the whole table (decided, new).** Which
+  // seated fighters read attack height is a property of the board, not of the
+  // socket looking at it, so it is resolved here — with the whole set in ONE
+  // Promise.all rather than a per-character await chain, because wall time on
+  // a broadcast is depth times round-trip, never count (see the DB latency
+  // notes in the plan). A character with no such Perk costs a single cached
+  // perk read and stops before touching anything else.
+  const attackHeightViewers = new Set();
+  const seated = participants.map((p) => p.character_id);
+  const sees = await Promise.all(seated.map((id) => perkSeesAttackHeight(id)));
+  seated.forEach((id, i) => {
+    if (sees[i]) attackHeightViewers.add(id);
+  });
   return {
     state,
     participants,
@@ -980,13 +1037,17 @@ async function buildCombatUpdate() {
     declaredMoveRows,
     openResolutions,
     stanceMatchups,
+    attackHeightViewers,
+    pairIndexByCharacter: new Map(participants.map((p) => [p.character_id, p.pair_index])),
     pairsByIndex: new Map(pairRows.map((row) => [row.pair_index, row])),
   };
 }
 
 function combatUpdateFor(built, viewer) {
-  const { state, participants, pairRows, declaredMoveRows, openResolutions, stanceMatchups, pairsByIndex } =
-    built;
+  const {
+    state, participants, pairRows, declaredMoveRows, openResolutions, stanceMatchups, pairsByIndex,
+    attackHeightViewers, pairIndexByCharacter,
+  } = built;
   return {
     unevenCombatEnabled: Boolean(state.uneven_combat_enabled),
     freshStart: Boolean(state.fresh_start),
@@ -1013,7 +1074,10 @@ function combatUpdateFor(built, viewer) {
     // What each side of each pair's stance is worth against the other, for
     // the Arena's VS divider (see fetchPairStanceMatchups).
     stanceMatchups,
-    declaredMoves: mapDeclaredMovesForViewer(declaredMoveRows, pairsByIndex, viewer),
+    declaredMoves: mapDeclaredMovesForViewer(declaredMoveRows, pairsByIndex, viewer, {
+      attackHeightViewers,
+      pairIndexByCharacter,
+    }),
   };
 }
 
@@ -1597,13 +1661,21 @@ app.get('/api/combat', wrap(async (req, res) => {
     diceByCharacter.get(die.character_id).push(die);
   }
 
-  const [movesByChar, declaredMoveRows, openResolutions] = await Promise.all([
+  const [movesByChar, declaredMoveRows, openResolutions, viewerSeesAttackHeight] = await Promise.all([
     Promise.all(charIds.map((id) => getMovesFor(id, { knownDice: diceByCharacter.get(id) ?? [] }))),
     fetchDeclaredMoveRows(),
     fetchOpenResolutionsByPair(),
+    // Eye Catcher. This endpoint serves exactly ONE viewer, unlike the
+    // broadcast, so only that viewer's own entitlement is worth asking about —
+    // and it rides in the group above rather than after it, so it costs a slot
+    // in a round trip already being made instead of a round trip of its own.
+    viewer?.role === 'player' ? perkSeesAttackHeight(viewer.characterId) : false,
   ]);
   const pairsByIndex = new Map(pairRows.map((row) => [row.pair_index, row]));
-  const declaredMoves = mapDeclaredMovesForViewer(declaredMoveRows, pairsByIndex, viewer);
+  const declaredMoves = mapDeclaredMovesForViewer(declaredMoveRows, pairsByIndex, viewer, {
+    attackHeightViewers: viewerSeesAttackHeight ? new Set([viewer.characterId]) : null,
+    pairIndexByCharacter: new Map(participants.map((p) => [p.character_id, p.pair_index])),
+  });
 
   const characters = {};
   for (const character of charRows) {

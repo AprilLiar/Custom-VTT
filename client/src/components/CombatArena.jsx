@@ -984,6 +984,14 @@ export function TicCounterCentral({
 // shows only the Tell for whichever appendage was actually chosen at
 // declare time (both side by side only as a fallback for a legacy row
 // declared before that choice existed).
+// One colour per band, so the badge is readable at a glance across the Arena
+// without anyone stopping to read the word: head high, trunk middle, legs low.
+const HEIGHT_BADGE = {
+  High: 'bg-rose-600 text-white',
+  Mid: 'bg-amber-500 text-black',
+  Low: 'bg-sky-600 text-white',
+};
+
 function CompactTellFace({ dm, tellById }) {
   const rightTell = dm.rightTellId ? tellById.get(dm.rightTellId) : null;
   const leftTell = dm.leftTellId ? tellById.get(dm.leftTellId) : null;
@@ -998,19 +1006,45 @@ function CompactTellFace({ dm, tellById }) {
   // a long Tell is readable at any length instead of readable up to a
   // guess. `break-words` covers a single long unbroken word, which wrapping
   // alone would still overflow.
+  // **Eye Catcher.** The server sends `attackHeights` only on a row this
+  // viewer's Perk has actually earned (see mapDeclaredMovesForViewer) — its
+  // mere presence is the entitlement, so there is nothing to check here.
+  const heights = Array.isArray(dm.attackHeights) ? dm.attackHeights : [];
+  // `opacity-60 grayscale` moved off the card and onto the Tell itself: the
+  // greying says "you do not know what this move is", and the height is the
+  // one thing here you DO know. Reading it through the same haze as the
+  // secret it accompanies would bury the Perk's whole payout.
   return (
-    <div className="flex w-44 items-center gap-2 panel-cut border border-zinc-800 bg-zinc-900/60 p-2 opacity-60 grayscale">
-      {showBoth ? (
-        <>
-          <Thumb record={rightTell} name={rightTell?.name} size="h-7 w-7" />
-          <Thumb record={leftTell} name={leftTell?.name} size="h-7 w-7" />
-        </>
-      ) : (
-        <Thumb record={shown} name={shown?.name} size="h-7 w-7" />
+    <div className="w-44 panel-cut border border-zinc-800 bg-zinc-900/60 p-2">
+      <div className="flex items-center gap-2 opacity-60 grayscale">
+        {showBoth ? (
+          <>
+            <Thumb record={rightTell} name={rightTell?.name} size="h-7 w-7" />
+            <Thumb record={leftTell} name={leftTell?.name} size="h-7 w-7" />
+          </>
+        ) : (
+          <Thumb record={shown} name={shown?.name} size="h-7 w-7" />
+        )}
+        <span className="min-w-0 flex-1 break-words text-[11px] font-semibold uppercase leading-tight text-zinc-400">
+          {shown?.name ?? (showBoth ? `${rightTell?.name ?? '?'}/${leftTell?.name ?? '?'}` : 'Tell')}
+        </span>
+      </div>
+      {heights.length > 0 && (
+        <div
+          className="mt-1.5 flex items-center gap-1 border-t border-zinc-800 pt-1.5"
+          title="Eye Catcher: you read where this attack is aimed."
+        >
+          <span className="text-[9px] uppercase tracking-wide text-zinc-600">aim</span>
+          {heights.map((height) => (
+            <span
+              key={height}
+              className={`px-1 py-px text-[10px] font-bold uppercase leading-none ${HEIGHT_BADGE[height] ?? 'bg-zinc-700 text-zinc-100'}`}
+            >
+              {height}
+            </span>
+          ))}
+        </div>
       )}
-      <span className="min-w-0 flex-1 break-words text-[11px] font-semibold uppercase leading-tight text-zinc-400">
-        {shown?.name ?? (showBoth ? `${rightTell?.name ?? '?'}/${leftTell?.name ?? '?'}` : 'Tell')}
-      </span>
     </div>
   );
 }

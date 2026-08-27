@@ -1195,6 +1195,30 @@ way tables always have.
   stays exactly where you threw it — but the freed Tics no longer hold up where
   you may place next round. It buys you nerve, not information: nothing has
   revealed yet, and you are guessing exactly as blindly as everybody else.
+- **Path To Mastery: Speed.** All your Moves gain **-1 to Startup** — every one
+  of them, guards included, not just your attacks. The shorter wind-up is real:
+  it is on the Tic strip before you place the Move, and it is what your next
+  declaration is floored against. A Move already at 1 Startup goes to 0, which
+  means it comes out the instant you place it, with no wind-up for anyone to
+  read.
+- **Path To Mastery: Strength.** You are hard to stand in front of. **Blocks
+  against you take a -5 Penalty** — Dodges do not, since getting out of the way
+  does not care how hard you hit — and your own **Minimum Damage Threshold is
+  reduced by 1**, so blows that would have been shrugged off as Insignificant
+  land instead.
+- **Path To Mastery: Durability.** The **first 2 times in a Fight** that a Stat
+  of yours would be **Broken**, it is kept at **1d4** instead. The Stat still
+  takes everything the blow was worth — it lands at a bare d4, no bonus, no
+  pending Half-Damage — it simply does not go out, and the table is told it
+  refused. This buys you the two worst moments of a Fight, not two free hits: a
+  d4 Stat is one more Half-Damage step from breaking anyway. The charges come
+  back when the Fight ends.
+- **Eye Catcher.** You read where a blow is going. For any attack aimed at you,
+  you know whether it is **High** (Skull, Brain), **Mid** (Body, Stamina, Hands)
+  or **Low** (Legs) — **in addition to** its Tell, and **before** it Reveals. A
+  Move aimed across two bands shows you both. A pure guard has no Attack Target
+  and so shows you nothing, and neither does an attack aimed at a Weapon, which
+  is a strike at what you are holding rather than at a height on your body.
 
 > **Splash damage lands like any other damage.** If the second Stat is already
 > broken, the splash cannot be applied and is reported at the end of the round

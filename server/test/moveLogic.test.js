@@ -17,6 +17,7 @@ import {
   isAttackingMove,
   isHandAttack,
   moveNameIs,
+  attackHeights,
   AMBIGUOUS_ROLL_SLOTS,
   TRIGGERS,
   DEFENSE_TRIGGERS,
@@ -453,4 +454,41 @@ test('moveNameIs: exact, but forgiving about case and stray spaces', () => {
   assert.equal(moveNameIs(facts({ name: 'Jabs' }), 'Jab'), false);
   // A roll that belongs to no move at all must never match.
   assert.equal(moveNameIs(null, 'Jab'), false);
+});
+
+test('attackHeights: the three bands, as Eye Catcher states them', () => {
+  assert.deepEqual(attackHeights(['Skull']), ['High']);
+  assert.deepEqual(attackHeights(['Brain']), ['High']);
+  assert.deepEqual(attackHeights(['Body']), ['Mid']);
+  assert.deepEqual(attackHeights(['Stamina']), ['Mid']);
+  assert.deepEqual(attackHeights(['Left Hand']), ['Mid']);
+  assert.deepEqual(attackHeights(['Right Hand']), ['Mid']);
+  assert.deepEqual(attackHeights(['Left Leg']), ['Low']);
+  assert.deepEqual(attackHeights(['Right Leg']), ['Low']);
+});
+
+test('attackHeights: a multi-band attack reports every band it touches', () => {
+  // Collapsing this to one band would tell the defender something false — the
+  // move really is coming at both heights.
+  assert.deepEqual(attackHeights(['Right Leg', 'Skull']), ['High', 'Low']);
+  assert.deepEqual(attackHeights(['Body', 'Skull', 'Left Leg']), ['High', 'Mid', 'Low']);
+  // Fixed High/Mid/Low order regardless of the order the targets arrive in,
+  // so the badge row never reshuffles between reads.
+  assert.deepEqual(attackHeights(['Left Leg', 'Body', 'Brain']), ['High', 'Mid', 'Low']);
+  // De-duplicated: two Mid targets are one Mid badge.
+  assert.deepEqual(attackHeights(['Left Hand', 'Right Hand', 'Body']), ['Mid']);
+});
+
+test('attackHeights: Weapon has no height, and neither does nothing', () => {
+  // A strike at what someone is holding is not aimed at a height on their
+  // body; calling it Mid because a hand holds the thing would be an invention.
+  assert.deepEqual(attackHeights(['Weapon']), []);
+  // A defence-pure move carries no Attack Targets, and reports no height
+  // rather than a withheld one.
+  assert.deepEqual(attackHeights([]), []);
+  assert.deepEqual(attackHeights(null), []);
+  assert.deepEqual(attackHeights(undefined), []);
+  assert.deepEqual(attackHeights(['Not A Stat']), []);
+  // A Weapon line alongside a real target still reports the real one.
+  assert.deepEqual(attackHeights(['Weapon', 'Skull']), ['High']);
 });

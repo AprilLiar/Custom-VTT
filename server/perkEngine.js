@@ -513,6 +513,55 @@ export async function perkInterruptsOwnDeclarations(characterId, extra = {}) {
   return false;
 }
 
+// What a Block rolled against this character is penalised by (Path To Mastery:
+// Strength). Summed, like every other number seam — asked of the ATTACKER and
+// folded into the blocker's own modifier.
+export async function perkBlockPenaltyAgainstYou(characterId, extra = {}) {
+  return sumSeam(characterId, 'blockPenaltyAgainstYou', extra);
+}
+
+// **Spend one charge to keep a Stat off the floor (Path To Mastery:
+// Durability).** Returns true if a Perk absorbed the break.
+//
+// NOT folded across Perks: each keeps its own charges, and the first with any
+// left pays. Two Perks each granting two would give four, in the order they
+// happen to be granted — which is fine, because they are charges rather than a
+// rate and nothing about the outcome depends on which one paid.
+//
+// Called only once the engine knows a break really happened, which is why the
+// spend lives here rather than in the definitions: a Perk decrementing its own
+// counter would have to be told about breaks it did not prevent.
+export async function perkAbsorbBreak(characterId, extra = {}) {
+  const granted = await perkDefinitionsFor(characterId);
+  const withSeam = granted.filter((g) => typeof g.definition.absorbsBreak === 'function');
+  if (!withSeam.length) return false;
+  const ctx = await seamContext(characterId, extra);
+  for (const { definition, characterPerkId } of withSeam) {
+    const answer = await definition.absorbsBreak({ ...ctx, characterPerkId });
+    const charges = Math.trunc(Number(answer?.charges) || 0);
+    if (charges <= 0) continue;
+    const key = `absorbs-break:${definition.name}`;
+    const used = Math.trunc(Number(await readPerkState(characterPerkId, key)) || 0);
+    if (used >= charges) continue;
+    await writePerkState(characterPerkId, key, used + 1, answer.scope ?? 'fight');
+    return true;
+  }
+  return false;
+}
+
+// Does this character read the High/Mid/Low band of attacks aimed at them?
+// (Eye Catcher.) OR-ed.
+export async function perkSeesAttackHeight(characterId, extra = {}) {
+  const granted = await perkDefinitionsFor(characterId);
+  const withSeam = granted.filter((g) => typeof g.definition.seesAttackHeight === 'function');
+  if (!withSeam.length) return false;
+  const ctx = await seamContext(characterId, extra);
+  for (const { definition, characterPerkId } of withSeam) {
+    if (await definition.seesAttackHeight({ ...ctx, characterPerkId })) return true;
+  }
+  return false;
+}
+
 // One move's delta. The single-move shorthand over the batch above.
 export async function perkStaminaCostDelta({ characterId, move, dice, injuries }) {
   const deltas = await perkStaminaCostDeltas({ characterId, moves: [move], dice, injuries });

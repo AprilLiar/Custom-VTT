@@ -31,6 +31,9 @@ const {
   perkDefinitionsFor,
   perkMoveFrameDeltas,
   perkRollBonusTerms,
+  perkBlockPenaltyAgainstYou,
+  perkAbsorbBreak,
+  perkSeesAttackHeight,
   readPerkState,
   writePerkState,
 } = await import('../perkEngine.js');
@@ -306,4 +309,88 @@ test('Osu!: +1 Recovery on an Attack, nothing on a guard', async () => {
   const deltas = await perkMoveFrameDeltas({ characterId, moves: [attack, guard] });
   assert.deepEqual(deltas.get(attack.id), { startup: 0, active: 0, recovery: 1 });
   assert.equal(deltas.get(guard.id), undefined);
+});
+
+
+// ---------------------------------------------------------------------------
+// The Path To Mastery batch, and Eye Catcher
+// ---------------------------------------------------------------------------
+//
+// Appended at the end of the file rather than filed beside the seam each one
+// uses, for the same reason the note in roundResolution.test.js gives: these
+// share a database with everything above and each `makeCharacter` bumps `seq`.
+// Inserting mid-file shifts nothing here (no shared Math.random), but keeping
+// the convention means the next person does not have to work out whether it
+// does.
+
+const grantSeeded = async (characterId, name) => {
+  const perk = await one('SELECT id FROM perks WHERE name = ?', [name]);
+  assert.ok(perk, `${name} is seeded from the registry at startup`);
+  await run('INSERT INTO character_perks (character_id, perk_id) VALUES (?, ?)', [characterId, perk.id]);
+  return perk.id;
+};
+
+test('Path To Mastery: Speed takes a Tic off Startup, on everything', async () => {
+  const characterId = await makeCharacter('speed');
+  await grantSeeded(characterId, 'Path To Mastery: Speed');
+  // Deliberately one attack and one defence-pure guard: "all your moves" means
+  // all of them, and a seam that quietly read isAttackingMove would pass a test
+  // that only ever handed it attacks.
+  const attack = await makeMove('speed-attack');
+  const guard = await makeMove('speed-guard', { isDefensive: true, attackTargets: [] });
+  const deltas = await perkMoveFrameDeltas({ characterId, moves: [attack, guard] });
+  assert.deepEqual(deltas.get(attack.id), { startup: -1, active: 0, recovery: 0 });
+  assert.deepEqual(deltas.get(guard.id), { startup: -1, active: 0, recovery: 0 });
+});
+
+test('Path To Mastery: Strength penalises Blocks thrown at its holder', async () => {
+  const attackerId = await makeCharacter('strong');
+  const plainId = await makeCharacter('plain-attacker');
+  await grantSeeded(attackerId, 'Path To Mastery: Strength');
+  // The seam is asked about the ATTACKER — "Blocks against you" is a property
+  // of who is swinging, not of who is guarding — so this is the number the
+  // blocker's Defence Modifier picks up.
+  assert.equal(await perkBlockPenaltyAgainstYou(attackerId), -5);
+  assert.equal(await perkBlockPenaltyAgainstYou(plainId), 0);
+  // A null attacker is the ordinary case for anything not thrown by a person
+  // (see runBlockLine's call site), and must answer 0 rather than throw.
+  assert.equal(await perkBlockPenaltyAgainstYou(null), 0);
+});
+
+test('Path To Mastery: Durability absorbs exactly two breaks, then stops', async () => {
+  const characterId = await makeCharacter('durable');
+  await grantSeeded(characterId, 'Path To Mastery: Durability');
+  assert.equal(await perkAbsorbBreak(characterId), true);
+  assert.equal(await perkAbsorbBreak(characterId), true);
+  // Third time the Stat goes out like anybody else's.
+  assert.equal(await perkAbsorbBreak(characterId), false);
+  assert.equal(await perkAbsorbBreak(characterId), false);
+});
+
+test("Path To Mastery: Durability's charges are per Fight, and come back when one ends", async () => {
+  const characterId = await makeCharacter('durable-refresh');
+  await grantSeeded(characterId, 'Path To Mastery: Durability');
+  assert.equal(await perkAbsorbBreak(characterId), true);
+  assert.equal(await perkAbsorbBreak(characterId), true);
+  assert.equal(await perkAbsorbBreak(characterId), false);
+  // "First 2 times in a Fight" — the same scope combat:clear and the end of
+  // combat already sweep for every other fight-scoped Perk.
+  await clearAllPerkState('fight');
+  assert.equal(await perkAbsorbBreak(characterId), true);
+  assert.equal(await perkAbsorbBreak(characterId), true);
+  assert.equal(await perkAbsorbBreak(characterId), false);
+});
+
+test('a character without Durability never absorbs anything', async () => {
+  const characterId = await makeCharacter('breakable');
+  assert.equal(await perkAbsorbBreak(characterId), false);
+});
+
+test('Eye Catcher answers the height seam; nobody else does', async () => {
+  const seer = await makeCharacter('eye-catcher');
+  const blind = await makeCharacter('no-eye-catcher');
+  await grantSeeded(seer, 'Eye Catcher');
+  assert.equal(await perkSeesAttackHeight(seer), true);
+  assert.equal(await perkSeesAttackHeight(blind), false);
+  assert.equal(await perkSeesAttackHeight(null), false);
 });
