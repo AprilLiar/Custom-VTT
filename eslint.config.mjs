@@ -29,6 +29,22 @@ const correctness = {
   // bury the rules that do.
   'no-unused-vars': 'off',
   'no-empty': 'off',
+  // **`no-use-before-define`: tried, and deliberately not enabled.** A `const`
+  // read before its declaration IS a real runtime error — a hook dependency
+  // array naming a `const` declared further down a component threw a
+  // temporal-dead-zone ReferenceError and took a whole tab down, the third
+  // runtime-only error this project has shipped past lint. So the rule was
+  // worth trying.
+  //
+  // It does not earn its place. Turned on (`variables: true, functions: false`)
+  // it flags 18 sites across working code, and every one is the SAFE shape: a
+  // module-level `let` or a `const` arrow read from inside a function body that
+  // nothing calls until after the module has finished initialising. The rule
+  // cannot tell that apart from a reference evaluated during initialisation,
+  // which is the only case that throws — so the choice is 18 suppressions in
+  // code that is fine, and that is exactly the sweep this gate exists not to
+  // demand. Recorded here so the next person with this idea can skip the
+  // experiment.
 };
 
 export default [

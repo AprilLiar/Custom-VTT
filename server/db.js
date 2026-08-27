@@ -1345,6 +1345,38 @@ export async function initDb() {
     )
   `);
 
+  // A relationship: a line between two placements, or between a placement and a
+  // loose point in space.
+  //
+  // **An endpoint is either a node or a coordinate.** `ON DELETE SET NULL` is
+  // what makes "delete the character but keep the relationships" nearly free —
+  // the handler writes the last-known anchor into from_x/from_y first, then
+  // deletes the node, and the line is left hanging exactly where the portrait
+  // was. (It writes the null explicitly too: an ordering that is correct
+  // whether or not the pragma is on costs nothing and survives a change to it.)
+  //
+  // `retired` is a past relationship kept for history: forced grey, half
+  // transparent, and pushed to the backmost layer so anything may overlap it.
+  ddl(`
+    CREATE TABLE IF NOT EXISTS relationship_edges (
+      id INTEGER PRIMARY KEY,
+      owner_character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+      from_node_id INTEGER REFERENCES relationship_nodes(id) ON DELETE SET NULL,
+      from_side TEXT NOT NULL DEFAULT 'right' CHECK(from_side IN ('top','right','bottom','left')),
+      from_x REAL,
+      from_y REAL,
+      to_node_id INTEGER REFERENCES relationship_nodes(id) ON DELETE SET NULL,
+      to_side TEXT NOT NULL DEFAULT 'left' CHECK(to_side IN ('top','right','bottom','left')),
+      to_x REAL,
+      to_y REAL,
+      label TEXT NOT NULL DEFAULT '',
+      color TEXT NOT NULL DEFAULT '#f87179',
+      arrow TEXT NOT NULL DEFAULT 'none' CHECK(arrow IN ('none','from','to')),
+      retired INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
   // The Perks compendium: master list of Perk templates. Just picture, name,
   // and description — no generic automation system (removed; see
   // server/perkAutomations.js for the manual per-Perk hook skeleton that
@@ -1927,6 +1959,11 @@ async function ensureIndexes() {
     ['relationship_people', 'owner_character_id'],
     ['relationship_nodes', 'owner_character_id'],
     ['relationship_nodes', 'character_id'],
+    ['relationship_edges', 'owner_character_id'],
+    // Both ends, because deleting a node has to find every line touching it and
+    // neither column can serve the other's lookup.
+    ['relationship_edges', 'from_node_id'],
+    ['relationship_edges', 'to_node_id'],
   ];
   for (const [table, column] of indexes) {
     ddl(`CREATE INDEX IF NOT EXISTS idx_${table}_${column} ON ${table}(${column})`);

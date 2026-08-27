@@ -189,6 +189,92 @@ check('the person carries the deleted character\'s name', remembered?.name === `
   JSON.stringify(remembered?.name));
 check('nobody was left dangling', mine.nodes.every((n) => (n.character_id == null) !== (n.person_id == null)));
 
+// ============================================ 7b. relationships
+console.log('\n--- the web ---');
+mine = await board(alice.id, { role: 'player', characterId: alice.id });
+const [nA, nB] = mine.nodes;
+aliceSock.emit('relationships:add_edge', { fromNodeId: nA.id, fromSide: 'right', toNodeId: nB.id, toSide: 'left' });
+await sleep(700);
+mine = await board(alice.id, { role: 'player', characterId: alice.id });
+check('a relationship can be drawn between two nodes', (mine.edges ?? []).length === 1, JSON.stringify(mine.edges));
+check('...remembering which dot each end came from',
+  mine.edges[0].from_side === 'right' && mine.edges[0].to_side === 'left', JSON.stringify(mine.edges[0]));
+check('...and defaulting to no arrowhead, not retired',
+  mine.edges[0].arrow === 'none' && mine.edges[0].retired === 0, JSON.stringify(mine.edges[0]));
+
+// The same pair, again — explicitly allowed, and the client fans them apart.
+aliceSock.emit('relationships:add_edge', { fromNodeId: nB.id, fromSide: 'top', toNodeId: nA.id, toSide: 'bottom' });
+await sleep(700);
+mine = await board(alice.id, { role: 'player', characterId: alice.id });
+check('the same pair can be connected more than once', mine.edges.length === 2, String(mine.edges.length));
+
+// A loop is refused: it has nothing to say and the curve maths would need a
+// special case for a zero-length span.
+aliceSock.emit('relationships:add_edge', { fromNodeId: nA.id, fromSide: 'top', toNodeId: nA.id, toSide: 'bottom' });
+await sleep(600);
+mine = await board(alice.id, { role: 'player', characterId: alice.id });
+check('a line from somebody to themselves is refused', mine.edges.length === 2, String(mine.edges.length));
+
+// Another player cannot draw on this board.
+bobSock.emit('relationships:add_edge', { fromNodeId: nA.id, fromSide: 'right', toNodeId: nB.id, toSide: 'left' });
+await sleep(600);
+mine = await board(alice.id, { role: 'player', characterId: alice.id });
+check('another player cannot draw a line on it', mine.edges.length === 2, String(mine.edges.length));
+
+// --- floating ends
+console.log('\n--- delete the person, keep the relationship ---');
+const edgeBefore = mine.edges[0];
+aliceSock.emit('relationships:delete_node', { nodeId: nB.id, keepRelationships: true });
+await sleep(800);
+mine = await board(alice.id, { role: 'player', characterId: alice.id });
+check('the node is gone', !mine.nodes.some((n) => n.id === nB.id));
+check('...but both its relationships survive', mine.edges.length === 2, String(mine.edges.length));
+const floated = mine.edges.find((e) => e.id === edgeBefore.id);
+check('...with the end floating loose', floated.to_node_id === null, JSON.stringify(floated));
+check('...pinned at the middle of where the portrait was',
+  floated.to_x === nB.x + 56 && floated.to_y === nB.y + 56,
+  JSON.stringify([floated.to_x, floated.to_y, nB.x, nB.y]));
+check('...keeping colour and arrowhead', floated.color === edgeBefore.color && floated.arrow === edgeBefore.arrow);
+
+// --- re-attaching
+const survivor = mine.nodes.find((n) => n.id !== nA.id) ?? nA;
+aliceSock.emit('relationships:move_end', { edgeId: floated.id, end: 'to', nodeId: survivor.id, side: 'top' });
+await sleep(700);
+mine = await board(alice.id, { role: 'player', characterId: alice.id });
+const reattached = mine.edges.find((e) => e.id === floated.id);
+check('a floating end can be re-attached to somebody else',
+  reattached.to_node_id === survivor.id && reattached.to_side === 'top', JSON.stringify(reattached));
+check('...and its stored loose coordinates are cleared',
+  reattached.to_x === null && reattached.to_y === null, JSON.stringify([reattached.to_x, reattached.to_y]));
+
+// Dropping it back into space.
+aliceSock.emit('relationships:move_end', { edgeId: floated.id, end: 'to', nodeId: null, x: 777, y: 333 });
+await sleep(700);
+mine = await board(alice.id, { role: 'player', characterId: alice.id });
+const dropped = mine.edges.find((e) => e.id === floated.id);
+check('...and dropped loose again wherever it was released',
+  dropped.to_node_id === null && dropped.to_x === 777 && dropped.to_y === 333, JSON.stringify(dropped));
+
+// Re-attaching an end onto the node the other end already holds is the loop
+// add_edge refuses, so move_end refuses it too.
+aliceSock.emit('relationships:move_end', { edgeId: dropped.id, end: 'to', nodeId: dropped.from_node_id, side: 'top' });
+await sleep(600);
+mine = await board(alice.id, { role: 'player', characterId: alice.id });
+check('an end cannot be re-attached onto its own other end',
+  mine.edges.find((e) => e.id === dropped.id).to_node_id === null);
+
+// --- the destructive option
+console.log('\n--- delete the person and the relationships ---');
+const before = mine.edges.length;
+aliceSock.emit('relationships:delete_node', { nodeId: nA.id, keepRelationships: false });
+await sleep(800);
+mine = await board(alice.id, { role: 'player', characterId: alice.id });
+check('every line touching that node went with it', mine.edges.length < before, `${before} -> ${mine.edges.length}`);
+check('...and none was left dangling on a node that is gone',
+  mine.edges.every((e) => (e.from_node_id == null || mine.nodes.some((n) => n.id === e.from_node_id))
+    && (e.to_node_id == null || mine.nodes.some((n) => n.id === e.to_node_id))),
+  JSON.stringify(mine.edges));
+
 // ============================================ 8. deleting your own board rows
 console.log('\n--- deleting people and placements ---');
 aliceSock.emit('relationships:delete_person', { personId: ferryman.id });
@@ -197,6 +283,10 @@ mine = await board(alice.id, { role: 'player', characterId: alice.id });
 check('deleting a person takes their placements with them',
   !mine.people.some((p) => p.id === ferryman.id) && !mine.nodes.some((n) => n.person_id === ferryman.id),
   JSON.stringify([mine.people.length, mine.nodes.length]));
+check('...and leaves no line pointing at a node that no longer exists',
+  (mine.edges ?? []).every((e) => (e.from_node_id == null || mine.nodes.some((n) => n.id === e.from_node_id))
+    && (e.to_node_id == null || mine.nodes.some((n) => n.id === e.to_node_id))),
+  JSON.stringify(mine.edges));
 
 const victim = mine.nodes[0];
 aliceSock.emit('relationships:delete_node', { nodeId: victim.id });
@@ -210,7 +300,8 @@ const gone = await jdel(`/api/characters/${alice.id}`);
 check('deleting the owner succeeds despite their board', gone?.ok === true, JSON.stringify(gone));
 const leftovers = await board(alice.id, { role: 'gm' });
 check('their board is gone with them',
-  (leftovers?.nodes ?? []).length === 0 && (leftovers?.people ?? []).length === 0,
+  (leftovers?.nodes ?? []).length === 0 && (leftovers?.people ?? []).length === 0
+    && (leftovers?.edges ?? []).length === 0,
   JSON.stringify(leftovers));
 
 console.log(failures === 0 ? '\nALL PASSED' : `\n${failures} FAILED`);

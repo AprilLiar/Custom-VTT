@@ -12,8 +12,11 @@ import {
   DEFAULT_VIEW,
   MAX_ZOOM,
   MIN_ZOOM,
+  DOT_MAX_PX,
+  DOT_MIN_PX,
   centerOn,
   clampZoom,
+  dotSpacing,
   panBy,
   toScreen,
   toWorld,
@@ -93,4 +96,22 @@ test('centerOn puts a world point in the middle of the viewport', () => {
   near(screen.x, 400);
   near(screen.y, 300);
   assert.equal(centred.zoom, 0.5);
+});
+
+// ---------------------------------------------------------------------------
+// The void's dot field
+// ---------------------------------------------------------------------------
+
+test('dot spacing keeps a constant on-screen density at every zoom', () => {
+  // The first version scaled a fixed tile with the camera, so zooming out
+  // packed the dots tighter until the field was a grey mess. The grid steps to
+  // a coarser or finer one instead, and the property that matters is that the
+  // on-screen spacing never leaves its band however far you zoom.
+  for (let zoom = 0.25; zoom <= 2.5; zoom += 0.01) {
+    const spacing = dotSpacing(zoom);
+    assert.ok(spacing >= DOT_MIN_PX && spacing <= DOT_MAX_PX, `zoom ${zoom.toFixed(2)} gave ${spacing}`);
+  }
+  // A garbage zoom must not loop forever or return something unusable.
+  assert.ok(Number.isFinite(dotSpacing(0)));
+  assert.ok(Number.isFinite(dotSpacing(NaN)));
 });

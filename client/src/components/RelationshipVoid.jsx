@@ -4,6 +4,7 @@ import {
   MAX_ZOOM,
   MIN_ZOOM,
   clampZoom,
+  dotSpacing,
   loadView,
   panBy,
   saveView,
@@ -25,15 +26,38 @@ import {
 // Children are rendered inside the transformed layer, so anything drawn there
 // is positioned in world coordinates and needs to know nothing about the camera.
 
-// Two dot fields at different sizes and opacities, panned at different rates.
-// That parallax IS the depth illusion — one field alone reads as a flat grid,
-// and the near field moving faster than the far one is the only cue that says
-// "these are at different distances" without drawing anything else.
-const NEAR = { size: 62, rate: 0.6, alpha: 0.11, r: 1.2 };
-const FAR = { size: 143, rate: 0.28, alpha: 0.06, r: 1.9 };
+// **Depth, rebuilt (decided, second attempt).**
+//
+// The first version was two tiled dot fields at different sizes panned at
+// different rates. It read as depth at 100% and fell apart everywhere else:
+// scaling a fixed tile with the camera means zooming out packs the dots
+// tighter and tighter until the field is a grey mess, and two grids at
+// different scales beat against each other into moiré on the way there.
+//
+// So the two jobs are split, and neither is a scaled tile:
+//
+//   1. **The dots keep a constant on-screen density.** Their world spacing
+//      doubles every time zooming out would push them closer than MIN_PX
+//      apart, and halves when zooming in would spread them past MAX_PX — the
+//      grid steps to a coarser or finer one instead of crowding. They pan 1:1
+//      with the camera, so the field still belongs to the world rather than to
+//      the screen; the stepping is invisible in motion and is what every
+//      infinite canvas does.
+//   2. **Depth is three large soft clouds**, drifting at a fraction of the
+//      camera's rate. A slow-moving gradient is a far better distance cue than
+//      a second grid, and it cannot moiré against anything because it has no
+//      repeat.
 
-const dotLayer = ({ size, alpha, r }) =>
-  `radial-gradient(circle at center, rgba(226,232,240,${alpha}) ${r}px, transparent ${r + 0.6}px)`;
+const DOT_LAYER =
+  'radial-gradient(circle at center, rgba(203,213,225,0.16) 1.15px, transparent 1.75px)';
+
+// Fixed in the viewport, drifting slowly. Positions are percentages so they
+// scale with the pane rather than needing a measurement.
+const CLOUD_RATE = 0.22;
+const CLOUDS =
+  'radial-gradient(38rem 30rem at 22% 28%, rgba(99,102,141,0.10), transparent 70%),' +
+  'radial-gradient(30rem 26rem at 78% 66%, rgba(120,85,95,0.09), transparent 70%),' +
+  'radial-gradient(44rem 34rem at 55% 92%, rgba(70,90,110,0.08), transparent 72%)';
 
 function RelationshipVoid(
   { characterId, interactive = true, className = '', children, onViewChange, onBackgroundPointerDown, ...rest },
@@ -41,6 +65,7 @@ function RelationshipVoid(
 ) {
   const viewportRef = useRef(null);
   const worldRef = useRef(null);
+  const cloudsRef = useRef(null);
   const [view, setView] = useState(() => loadView(characterId));
   const viewRef = useRef(view);
   // Which pointers are currently down on the void, so a second finger can turn a
@@ -81,11 +106,19 @@ function RelationshipVoid(
     if (!world || !viewport) return;
     const v = viewRef.current;
     world.style.transform = `translate(${v.x}px, ${v.y}px) scale(${v.zoom})`;
-    // The dot fields live on the viewport rather than the world layer precisely
-    // so they can move at their own rate — a background inside the transform
-    // would be dragged at exactly the camera's speed and the parallax would die.
-    viewport.style.backgroundSize = `${NEAR.size * v.zoom}px ${NEAR.size * v.zoom}px, ${FAR.size * v.zoom}px ${FAR.size * v.zoom}px`;
-    viewport.style.backgroundPosition = `${v.x * NEAR.rate}px ${v.y * NEAR.rate}px, ${v.x * FAR.rate}px ${v.y * FAR.rate}px`;
+    // The dot field lives on the viewport rather than on the world layer so its
+    // spacing can be quantised independently of the camera's scale — a
+    // background inside the transform is scaled by it, which is exactly the
+    // crowding this replaced.
+    const spacing = dotSpacing(v.zoom);
+    viewport.style.backgroundSize = `${spacing}px ${spacing}px`;
+    // Modulo the spacing so the offset never grows unbounded — a background
+    // position of a few hundred thousand pixels is where subpixel jitter starts.
+    viewport.style.backgroundPosition = `${v.x % spacing}px ${v.y % spacing}px`;
+    const clouds = cloudsRef.current;
+    if (clouds) {
+      clouds.style.transform = `translate3d(${v.x * CLOUD_RATE}px, ${v.y * CLOUD_RATE}px, 0)`;
+    }
   }, []);
 
   const schedulePaint = useCallback(() => {
@@ -182,9 +215,16 @@ function RelationshipVoid(
     }
   };
 
-  // Wheel is zoom-about-the-cursor, and trackpad two-finger scroll is a pan.
-  // The browser reports both as `wheel`; `ctrlKey` is what a pinch on a trackpad
-  // sets, and is the standard way to tell them apart.
+  // **Wheel zooms.** Plain scroll, no modifier — that is what a canvas does and
+  // what the hand expects here (an earlier version panned on a bare wheel and
+  // reserved zoom for Ctrl, which read as backwards).
+  //
+  // Zoom is about the cursor, so whatever is under the pointer stays under it.
+  // A trackpad's two-finger *sideways* swipe still pans, because that gesture
+  // has no zoom meaning and reporting it as one would make horizontal scrolling
+  // jump the camera: a wheel event carrying real deltaX and almost no deltaY is
+  // a pan, everything else is a zoom. Shift-wheel pans vertically, the usual
+  // escape hatch for a mouse with only one wheel.
   useEffect(() => {
     const el = viewportRef.current;
     if (!el || !interactive) return undefined;
@@ -193,15 +233,14 @@ function RelationshipVoid(
       const rect = el.getBoundingClientRect();
       const x = e.clientX - rect.left;
       const y = e.clientY - rect.top;
-      // Shift is here alongside Ctrl/Cmd because a mouse wheel has no pinch and
-      // Ctrl-wheel is browser page-zoom muscle memory for some people.
-      if (e.ctrlKey || e.metaKey || e.shiftKey) {
+      const sidewaysSwipe = Math.abs(e.deltaX) > Math.abs(e.deltaY);
+      if (e.shiftKey || sidewaysSwipe) {
+        applyView(panBy(viewRef.current, -e.deltaX, -e.deltaY));
+      } else {
         // A wheel notch is ~100 deltaY, so /500 makes one notch a ~22% step —
         // a step, not a leap. The first version used /220 and a single notch
         // went straight to the zoom ceiling.
         applyView(zoomAt(viewRef.current, Math.exp(-e.deltaY / 500), x, y));
-      } else {
-        applyView(panBy(viewRef.current, -e.deltaX, -e.deltaY));
       }
       commitView();
     };
@@ -241,19 +280,27 @@ function RelationshipVoid(
         // reads as "nothing rendered"; this is dark enough to sit under the
         // app's palette and light enough that the depth field is visible.
         backgroundColor: '#15171b',
-        backgroundImage: `${dotLayer(NEAR)}, ${dotLayer(FAR)}`,
+        backgroundImage: DOT_LAYER,
       }}
       className={`relative overflow-hidden select-none ${interactive ? 'cursor-grab active:cursor-grabbing' : ''} ${className}`}
       {...rest}
     >
-      {/* A cold vignette over the dots. The void reads as depth rather than as a
-          dotted sheet only once the edges fall away. */}
+      {/* The clouds: the parallax layer proper, drifting behind the dots at a
+          fraction of the camera's rate. Oversized and offset so the drift never
+          pulls an edge into view. */}
+      <div
+        aria-hidden
+        ref={cloudsRef}
+        className="pointer-events-none absolute"
+        style={{ inset: '-30%', backgroundImage: CLOUDS, willChange: 'transform' }}
+      />
+      {/* A cold vignette over everything. The void reads as depth rather than
+          as a dotted sheet only once the edges fall away. */}
       <div
         aria-hidden
         className="pointer-events-none absolute inset-0"
         style={{
-          background:
-            'radial-gradient(ellipse at center, rgba(148,163,184,0.05) 0%, transparent 45%), radial-gradient(ellipse at center, transparent 40%, rgba(0,0,0,0.6) 100%)',
+          background: 'radial-gradient(ellipse at center, transparent 42%, rgba(0,0,0,0.62) 100%)',
         }}
       />
       <div

@@ -1393,11 +1393,12 @@ app.get('/api/characters', wrap(async (_req, res) => {
 // that along on every one of those refetches, for a tab most of them have
 // nothing to do with.
 async function getRelationshipBoard(ownerCharacterId) {
-  const [people, nodes] = await readMany([
+  const [people, nodes, edges] = await readMany([
     ['SELECT * FROM relationship_people WHERE owner_character_id = ? ORDER BY id', [ownerCharacterId]],
     ['SELECT * FROM relationship_nodes WHERE owner_character_id = ? ORDER BY id', [ownerCharacterId]],
+    ['SELECT * FROM relationship_edges WHERE owner_character_id = ? ORDER BY id', [ownerCharacterId]],
   ]);
-  return { people, nodes };
+  return { people, nodes, edges };
 }
 
 // Who may read or write one board: its owner, or the GM. The GM edits rather
@@ -1882,6 +1883,7 @@ app.delete('/api/characters/:id', wrap(async (req, res) => {
   await run('DELETE FROM character_moves WHERE character_id = ?', [character.id]);
   await run('DELETE FROM roleplay_entries WHERE character_id = ?', [character.id]);
   await convertRelationshipNodesToPeople(character);
+  await run('DELETE FROM relationship_edges WHERE owner_character_id = ?', [character.id]);
   await run('DELETE FROM relationship_nodes WHERE owner_character_id = ?', [character.id]);
   await run('DELETE FROM relationship_people WHERE owner_character_id = ?', [character.id]);
   await run('DELETE FROM character_move_tags WHERE character_id = ?', [character.id]);
@@ -3851,6 +3853,12 @@ io.on('connection', (socket) => {
     return node;
   };
 
+  // Half a node's width/height. Kept as a literal rather than imported from the
+  // client's geometry module — the server has no business importing client code
+  // — and pinned against NODE_W/NODE_H by relationshipGeometry.test.js so the
+  // two cannot drift.
+  const NODE_CENTER_OFFSET = 56;
+
   const clampText = (value, max) => String(value ?? '').slice(0, max);
   // A world coordinate. Bounded because the plane is infinite but a number is
   // not: a NaN or an Infinity here would put a node nowhere and take the whole
@@ -3905,14 +3913,113 @@ io.on('connection', (socket) => {
     await emitRelationships(node.owner_character_id);
   });
 
-  // `keepRelationships` is the ✕ menu's two options. Phase 3 is what gives the
-  // flag teeth — there are no edges yet — but the shape is settled here so the
-  // client's menu is not rewritten when they arrive.
-  on('relationships:delete_node', async ({ nodeId }) => {
+  // **The ✕ menu's two options.**
+  //
+  // `keepRelationships` leaves every line touching this node hanging exactly
+  // where its portrait was: the last-known anchor is written into from_x/from_y
+  // (or to_x/to_y) and the node reference nulled, in ONE statement per side, so
+  // there is no instant where a row has neither an anchor nor a coordinate.
+  // The line keeps its colour, its label and its arrowhead, and can be dragged
+  // onto somebody else later.
+  //
+  // The loose end lands at the node's CENTRE rather than at the dot it was
+  // attached to. The dot is a property of a portrait that no longer exists; the
+  // middle of where that person used to be is the honest answer, and it is the
+  // one place that reads the same for all four sides.
+  on('relationships:delete_node', async ({ nodeId, keepRelationships }) => {
     const node = await loadOwnedNode(nodeId);
     if (!node) return;
+    if (keepRelationships) {
+      const cx = node.x + NODE_CENTER_OFFSET;
+      const cy = node.y + NODE_CENTER_OFFSET;
+      await run(
+        `UPDATE relationship_edges SET from_node_id = NULL, from_x = ?, from_y = ? WHERE from_node_id = ?`,
+        [cx, cy, node.id]
+      );
+      await run(
+        `UPDATE relationship_edges SET to_node_id = NULL, to_x = ?, to_y = ? WHERE to_node_id = ?`,
+        [cx, cy, node.id]
+      );
+    } else {
+      await run('DELETE FROM relationship_edges WHERE from_node_id = ? OR to_node_id = ?', [
+        node.id,
+        node.id,
+      ]);
+    }
     await run('DELETE FROM relationship_nodes WHERE id = ?', [node.id]);
     await emitRelationships(node.owner_character_id);
+  });
+
+  // -------------------------------------------------------------------
+  // Relationships: the lines
+  // -------------------------------------------------------------------
+
+  const SIDE_NAMES = new Set(['top', 'right', 'bottom', 'left']);
+  const side = (value, fallback) => (SIDE_NAMES.has(value) ? value : fallback);
+
+  // Both endpoints must be nodes on the SAME board — the board this caller may
+  // write. Checked by reading them back rather than trusting the payload, the
+  // same way loadOwnedNode does, so naming a node id from another board buys
+  // nothing.
+  on('relationships:add_edge', async ({ fromNodeId, fromSide, toNodeId, toSide }) => {
+    const from = await loadOwnedNode(fromNodeId);
+    const to = await loadOwnedNode(toNodeId);
+    if (!from || !to) return;
+    if (from.owner_character_id !== to.owner_character_id) return;
+    // A line from somebody to themselves is a loop with nothing to say, and the
+    // curve maths would have to special-case a zero-length span to draw it.
+    if (from.id === to.id) return;
+    await run(
+      `INSERT INTO relationship_edges (owner_character_id, from_node_id, from_side, to_node_id, to_side)
+       VALUES (?, ?, ?, ?, ?)`,
+      [from.owner_character_id, from.id, side(fromSide, 'right'), to.id, side(toSide, 'left')]
+    );
+    await emitRelationships(from.owner_character_id);
+  });
+
+  const loadOwnedEdge = async (edgeId) => {
+    const edge = await one('SELECT * FROM relationship_edges WHERE id = ?', [edgeId]);
+    if (!edge || !mayWriteBoard(edge.owner_character_id)) return null;
+    return edge;
+  };
+
+  on('relationships:delete_edge', async ({ edgeId }) => {
+    const edge = await loadOwnedEdge(edgeId);
+    if (!edge) return;
+    await run('DELETE FROM relationship_edges WHERE id = ?', [edge.id]);
+    await emitRelationships(edge.owner_character_id);
+  });
+
+  // Moving or re-attaching one end of a line. Both are the same write: an end
+  // is either a node and a side, or a point in space, and this swaps between
+  // them. `nodeId: null` drops it loose at (x, y); a node id picks it back up.
+  on('relationships:move_end', async ({ edgeId, end, nodeId, side: toSide, x, y }) => {
+    const edge = await loadOwnedEdge(edgeId);
+    if (!edge || (end !== 'from' && end !== 'to')) return;
+    let target = null;
+    if (nodeId != null) {
+      target = await loadOwnedNode(nodeId);
+      if (!target || target.owner_character_id !== edge.owner_character_id) return;
+      // Re-attaching an end onto the node the OTHER end already holds would
+      // make the loop add_edge refuses to create, so it is refused here too.
+      const otherNodeId = end === 'from' ? edge.to_node_id : edge.from_node_id;
+      if (otherNodeId != null && Number(otherNodeId) === target.id) return;
+    }
+    const columns =
+      end === 'from'
+        ? ['from_node_id', 'from_side', 'from_x', 'from_y']
+        : ['to_node_id', 'to_side', 'to_x', 'to_y'];
+    await run(
+      `UPDATE relationship_edges SET ${columns[0]} = ?, ${columns[1]} = ?, ${columns[2]} = ?, ${columns[3]} = ? WHERE id = ?`,
+      [
+        target ? target.id : null,
+        side(toSide, end === 'from' ? 'right' : 'left'),
+        target ? null : coord(x),
+        target ? null : coord(y),
+        edge.id,
+      ]
+    );
+    await emitRelationships(edge.owner_character_id);
   });
 
   on('relationships:create_person', async ({ characterId, name, imageData, imageMimeType }) => {
@@ -3954,6 +4061,14 @@ io.on('connection', (socket) => {
   on('relationships:delete_person', async ({ personId }) => {
     const person = await one('SELECT * FROM relationship_people WHERE id = ?', [personId]);
     if (!person || !mayWriteBoard(person.owner_character_id)) return;
+    // Their lines go with them. Deleting the person is the one destructive
+    // choice on the board that offers no "keep the relationships" option — the
+    // ✕ menu on a node is where that choice lives, and this is a level above it.
+    await run(
+      `DELETE FROM relationship_edges WHERE from_node_id IN (SELECT id FROM relationship_nodes WHERE person_id = ?)
+          OR to_node_id IN (SELECT id FROM relationship_nodes WHERE person_id = ?)`,
+      [person.id, person.id]
+    );
     await run('DELETE FROM relationship_nodes WHERE person_id = ?', [person.id]);
     await run('DELETE FROM relationship_people WHERE id = ?', [person.id]);
     await emitRelationships(person.owner_character_id);
