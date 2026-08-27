@@ -156,6 +156,16 @@ export const SEAMS = [
   // already broken pays nothing, matching the same "it cannot be applied"
   // reading the end-of-round report uses.
   'staminaPerHalfDamage',
+  // ({ move }) -> { startup?, active?, recovery? } frames added to ONE move for
+  // this character (Osu!). Folded field by field, additively, into the same
+  // per-character override deltas `getMovesFor` already applies — so a frame a
+  // Perk adds shows up in the declare picker, in the placement floor, in the
+  // footprint the engine resolves and on the Tic strip, from one addition.
+  //
+  // Deliberately a seam rather than rows written at grant time into
+  // character_move_overrides: that table is a snapshot, so a move learned
+  // *after* the Perk was granted would silently miss out.
+  'moveFrameDelta',
 ];
 
 // Tier-3 lifecycle keys — not seams (they are not folded across Perks, each
@@ -187,6 +197,7 @@ import ironSkin from './ironSkin.js';
 import lastBreathTaker from './lastBreathTaker.js';
 import multifaceted from './multifaceted.js';
 import notJustAScratch from './notJustAScratch.js';
+import osu from './osu.js';
 import perfectPlayer from './perfectPlayer.js';
 import piercingHeadache from './piercingHeadache.js';
 import punchesInBunches from './punchesInBunches.js';
@@ -213,6 +224,7 @@ const DEFINITIONS = [
   piercingHeadache,
   lastBreathTaker,
   grounded,
+  osu,
   dogfighter,
 ];
 

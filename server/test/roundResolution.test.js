@@ -3303,3 +3303,39 @@ test('an ordinary carryover is left exactly where it is', async () => {
   assert.equal(still.round_number, roundOne.round_number, 'a carryover keeps its own round');
   assert.equal(still.stamina_committed, 1, 'and stays paid for');
 });
+
+// Appended at the end of the file deliberately: these tests share a stubbed
+// `Math.random` sequence, and inserting a new fight into the middle shifts every
+// roll after it — which is how adding this test first broke an unrelated splash
+// assertion three hundred lines above.
+test('Osu!: +2 named in the breakdown on an Attack, and nothing on a guard', async () => {
+  const pairIndex = 372;
+  const attacker = await createCharacter('Osu Striker');
+  const opponent = await createCharacter('Osu Opponent');
+  await grantPerk(attacker, 'Osu!');
+
+  const punch = await createMove({ name: 'Osu Punch', startupTics: 1, activeTics: 1, recoveryTics: 1, rollSlots: ['Skull'], attackTargets: ['Body'] });
+  const bait = await createMove({ name: 'Osu Bait', startupTics: 1, activeTics: 1, recoveryTics: 1, rollSlots: ['Skull'], attackTargets: ['Body'] });
+
+  await seatPair(pairIndex, attacker, opponent);
+  await startPairDeclaration(mockIo, pairIndex);
+  await declareMove({ characterId: attacker, moveId: punch, placementTic: 0, startupTics: 1 });
+  await declareMove({ characterId: opponent, moveId: bait, placementTic: 0, startupTics: 1 });
+  await resolvePair(pairIndex);
+
+  const events = await all('SELECT type, payload FROM round_events WHERE pair_index = ? ORDER BY seq', [pairIndex]);
+  const rolls = events.map((e) => ({ type: e.type, payload: JSON.parse(e.payload) })).filter((e) => e.type === 'roll');
+  const mine = rolls.find((r) => r.payload.moveName === 'Osu Punch');
+  assert.ok(mine, `the Perk holder should have rolled: ${events.map((e) => e.type).join(', ')}`);
+  // Named, not folded silently into a total — the registry's own rule: a Perk
+  // that changes a number says so out loud.
+  const term = (mine.payload.modifierBreakdown ?? []).find((t) => t.label === 'Osu!');
+  assert.ok(term, `Osu! has to be named in the breakdown: ${JSON.stringify(mine.payload.modifierBreakdown)}`);
+  assert.equal(term.amount, 2);
+
+  // And it is the Perk holder's bonus alone — the opponent throwing the very
+  // same shape of move gets nothing.
+  const theirs = rolls.find((r) => r.payload.moveName === 'Osu Bait');
+  assert.ok(theirs);
+  assert.equal((theirs.payload.modifierBreakdown ?? []).find((t) => t.label === 'Osu!'), undefined);
+});

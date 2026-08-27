@@ -29,6 +29,7 @@ const {
   consumeOnce,
   perkAllowsRevealedDetail,
   perkDefinitionsFor,
+  perkMoveFrameDeltas,
   perkRollBonusTerms,
   readPerkState,
   writePerkState,
@@ -225,4 +226,84 @@ test('revoking a Perk takes its state with it', async () => {
   } finally {
     unregister('Test Revoke');
   }
+});
+
+// --- the moveFrameDelta seam (Osu!) --------------------------------------
+//
+// Frames a Perk adds to one move for one character. Folded into the same
+// per-character override deltas `getMovesFor` already applies, which is why
+// this is a seam and not rows written at grant time: a move learned *after*
+// the Perk was granted has to get them too, and a snapshot cannot do that.
+const makeMove = async (name, extra = {}) => {
+  const tell = await run("INSERT INTO tells (name) VALUES (?)", [`${name}-tell-${++seq}`]);
+  const result = await run(
+    `INSERT INTO moves (name, tell_id, startup_tics, active_tics, recovery_tics, is_defensive, attack_targets)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [
+      `${name}-${seq}`,
+      Number(tell.lastInsertRowid),
+      extra.startupTics ?? 1,
+      extra.activeTics ?? 1,
+      extra.recoveryTics ?? 1,
+      extra.isDefensive ? 1 : 0,
+      JSON.stringify(extra.attackTargets ?? ['Skull']),
+    ]
+  );
+  return one('SELECT * FROM moves WHERE id = ?', [Number(result.lastInsertRowid)]);
+};
+
+test('moveFrameDelta: a Perk adds frames to the moves it names, and only those', async () => {
+  const characterId = await makeCharacter('framer');
+  await grant(characterId, {
+    name: `Slow Attacker ${++seq}`,
+    description: '',
+    moveFrameDelta: ({ move }) => (move.isDefensive ? {} : { recovery: 1 }),
+  });
+  const attack = await makeMove('fd-attack');
+  const guard = await makeMove('fd-guard', { isDefensive: true, attackTargets: [] });
+
+  const deltas = await perkMoveFrameDeltas({ characterId, moves: [attack, guard] });
+  assert.deepEqual(deltas.get(attack.id), { startup: 0, active: 0, recovery: 1 });
+  // Not merely 0 — absent, so the caller keeps its own stored deltas object
+  // untouched rather than allocating a new one for every move in the list.
+  assert.equal(deltas.get(guard.id), undefined);
+});
+
+test('moveFrameDelta: two Perks on the same move add up, field by field', async () => {
+  const characterId = await makeCharacter('double-framer');
+  await grant(characterId, {
+    name: `Recovery A ${++seq}`, description: '',
+    moveFrameDelta: () => ({ recovery: 1 }),
+  });
+  await grant(characterId, {
+    name: `Recovery B ${++seq}`, description: '',
+    moveFrameDelta: () => ({ recovery: 2, startup: 1 }),
+  });
+  const move = await makeMove('fd-both');
+  const deltas = await perkMoveFrameDeltas({ characterId, moves: [move] });
+  assert.deepEqual(deltas.get(move.id), { startup: 1, active: 0, recovery: 3 });
+});
+
+test('moveFrameDelta: a character with no such Perk costs nothing and answers empty', async () => {
+  const characterId = await makeCharacter('plain');
+  const move = await makeMove('fd-plain');
+  const deltas = await perkMoveFrameDeltas({ characterId, moves: [move] });
+  assert.equal(deltas.size, 0);
+  assert.deepEqual(await perkMoveFrameDeltas({ characterId, moves: [] }), new Map());
+});
+
+test('Osu!: +1 Recovery on an Attack, nothing on a guard', async () => {
+  // The real definition, not a stand-in — the point is that its own reading of
+  // "Attack" is the shared one, so the clause that charges the Recovery and the
+  // clause that pays the bonus can never disagree about which moves they mean.
+  const characterId = await makeCharacter('osu');
+  const perk = await one("SELECT id FROM perks WHERE name = 'Osu!'");
+  assert.ok(perk, 'Osu! is seeded from the registry at startup');
+  await run('INSERT INTO character_perks (character_id, perk_id) VALUES (?, ?)', [characterId, perk.id]);
+
+  const attack = await makeMove('osu-attack');
+  const guard = await makeMove('osu-guard', { isDefensive: true, attackTargets: [] });
+  const deltas = await perkMoveFrameDeltas({ characterId, moves: [attack, guard] });
+  assert.deepEqual(deltas.get(attack.id), { startup: 0, active: 0, recovery: 1 });
+  assert.equal(deltas.get(guard.id), undefined);
 });

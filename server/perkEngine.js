@@ -418,6 +418,42 @@ export async function perkStaminaCostDeltas({ characterId, moves, dice, injuries
   return out;
 }
 
+// **How many frames a Perk adds to one move, for this character (new seam).**
+//
+// Folded into `getMovesFor`'s existing per-character override deltas, which is
+// the single place a character's move list is built — so a Perk-granted frame
+// lands in the declare picker, the placement floor, the footprint the engine
+// resolves and the Tic strip, all from one addition. The character_move_overrides
+// table was the alternative and is the wrong shape for this: it is a snapshot
+// written at grant time, so a move learned *afterwards* would silently miss out.
+//
+// Field by field and additive, like `interruptAmounts`. A Perk answering only
+// `{ recovery: 1 }` leaves the other two alone.
+export async function perkMoveFrameDeltas({ characterId, moves }) {
+  const out = new Map();
+  const list = moves ?? [];
+  if (!list.length) return out;
+  const granted = await perkDefinitionsFor(characterId);
+  const withSeam = granted.filter((g) => typeof g.definition.moveFrameDelta === 'function');
+  if (!withSeam.length) return out;
+
+  const slots = await rollSlotsByMove(list.map((m) => m.id));
+  const base = await seamContext(characterId, {});
+
+  for (const move of list) {
+    const facts = moveFacts(move, slots.get(move.id) ?? []);
+    const total = { startup: 0, active: 0, recovery: 0 };
+    for (const { definition, characterPerkId } of withSeam) {
+      const answer = (await definition.moveFrameDelta({ ...base, move: facts, characterPerkId })) ?? {};
+      for (const key of ['startup', 'active', 'recovery']) {
+        total[key] += Math.trunc(Number(answer[key]) || 0);
+      }
+    }
+    if (total.startup || total.active || total.recovery) out.set(move.id, total);
+  }
+  return out;
+}
+
 // One move's delta. The single-move shorthand over the batch above.
 export async function perkStaminaCostDelta({ characterId, move, dice, injuries }) {
   const deltas = await perkStaminaCostDeltas({ characterId, moves: [move], dice, injuries });

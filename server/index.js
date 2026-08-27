@@ -82,7 +82,9 @@ import {
   WEAPON_SLOT,
 } from './weapons.js';
 import { effectiveFrames, idleStaminaRegenRate } from './perkAutomations.js';
-import { clearAllPerkState, perkAllowsRevealedDetail, perkStaminaCostDeltas } from './perkEngine.js';
+import {
+  clearAllPerkState, perkAllowsRevealedDetail, perkStaminaCostDeltas, perkMoveFrameDeltas,
+} from './perkEngine.js';
 import { isAutomatedPerk, isManualPerk, perkDefinition } from './perks/index.js';
 import { validateCreation } from './characterCreation.js';
 import {
@@ -338,9 +340,22 @@ async function getMovesFor(characterId, { knownDice = null } = {}) {
   // combat:character_done_declaring will spend — the picker must not be showing
   // a different one. The dice this needs are already in hand above.
   const staminaCosts = await resolveStaminaCosts(characterId, withBase, { knownDice: dice });
+  // Frames a Perk adds to this character's moves (Osu!). Folded into the same
+  // deltas the stored per-character overrides use, one line below, so a
+  // Perk-granted frame is indistinguishable downstream from a GM-granted one —
+  // same picker, same placement floor, same footprint, same Tic strip.
+  const perkFrames = await perkMoveFrameDeltas({ characterId, moves: withBase });
 
   return withBase.map((move) => {
-    const deltas = overrideByMove.get(move.id) ?? { startup: 0, active: 0, recovery: 0 };
+    const stored = overrideByMove.get(move.id) ?? { startup: 0, active: 0, recovery: 0 };
+    const fromPerks = perkFrames.get(move.id);
+    const deltas = fromPerks
+      ? {
+          startup: stored.startup + fromPerks.startup,
+          active: stored.active + fromPerks.active,
+          recovery: stored.recovery + fromPerks.recovery,
+        }
+      : stored;
     const effective = effectiveFrames(move, deltas);
     const tagOverrides = tagOverridesByMove.get(move.id) ?? [];
     const addedIds = tagOverrides.filter((o) => o.action === 'add').map((o) => o.tag_id);
