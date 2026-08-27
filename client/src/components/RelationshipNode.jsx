@@ -2,6 +2,7 @@ import { useRef, useState } from 'react';
 import { X } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { TEXT_VISIBLE_ZOOM } from '../lib/boardViewport.js';
+import { DOT_OUT, NODE_H, NODE_W, SIDES } from '../lib/relationshipGeometry.js';
 import { portraitSrc } from '../lib/image.js';
 import HaloText from './HaloText.jsx';
 
@@ -19,8 +20,11 @@ import HaloText from './HaloText.jsx';
 // same rule the camera follows, and for the same reason — the feel of the board
 // is the requirement, and sixty re-renders a second is how you lose it.
 
-export const NODE_WIDTH = 112;
-export const PORTRAIT_HEIGHT = 112;
+// Re-exported from the geometry module so there is one source for the node's
+// footprint: the maths that places the dots and the CSS that draws the portrait
+// must agree, and two constants would eventually not.
+export const NODE_WIDTH = NODE_W;
+export const PORTRAIT_HEIGHT = NODE_H;
 
 export default function RelationshipNode({
   node,
@@ -31,6 +35,9 @@ export default function RelationshipNode({
   onPointerDown,
   onOpenEditor,
   onRequestDelete,
+  onDotPointerDown,
+  connecting,
+  connectTarget,
   nodeRef,
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
@@ -115,6 +122,20 @@ export default function RelationshipNode({
           </button>
         )}
 
+        {/* The four connection dots. Visible on hover, and forced visible for
+            everyone while a line is being drawn — you need to see where you
+            may drop it, not discover it by hovering mid-drag. */}
+        {canEdit &&
+          SIDES.map((side) => (
+            <ConnectDot
+              key={side}
+              side={side}
+              visible={connecting}
+              highlighted={connectTarget === side}
+              onPointerDown={(e) => onDotPointerDown?.(e, node, side)}
+            />
+          ))}
+
         {menuOpen && (
           <DeleteMenu
             onClose={() => setMenuOpen(false)}
@@ -140,6 +161,39 @@ export default function RelationshipNode({
       )}
       </motion.div>
     </div>
+  );
+}
+
+// One connection dot, protruding a few pixels from its side of the portrait.
+// It is a grab handle: `stopPropagation` on pointerdown so it starts a line
+// rather than a node drag, and a transparent hit-ring twice its visible size
+// because a 9px target is not one.
+function ConnectDot({ side, visible, highlighted, onPointerDown }) {
+  const place = {
+    top: { left: '50%', top: -DOT_OUT, transform: 'translate(-50%, -50%)' },
+    bottom: { left: '50%', top: `calc(100% + ${DOT_OUT}px)`, transform: 'translate(-50%, -50%)' },
+    left: { left: -DOT_OUT, top: '50%', transform: 'translate(-50%, -50%)' },
+    right: { left: `calc(100% + ${DOT_OUT}px)`, top: '50%', transform: 'translate(-50%, -50%)' },
+  }[side];
+  return (
+    <span
+      onPointerDown={(e) => {
+        e.stopPropagation();
+        onPointerDown?.(e);
+      }}
+      className={`absolute flex h-4 w-4 items-center justify-center transition-opacity ${
+        visible || highlighted ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+      }`}
+      style={{ ...place, cursor: 'crosshair', touchAction: 'none' }}
+    >
+      <span
+        className={`block rounded-full transition-all ${
+          highlighted
+            ? 'h-3 w-3 bg-brand-400 shadow-[0_0_10px_rgb(var(--color-brand-rgb)/70%)]'
+            : 'h-2 w-2 bg-zinc-400 hover:h-3 hover:w-3 hover:bg-brand-400'
+        }`}
+      />
+    </span>
   );
 }
 

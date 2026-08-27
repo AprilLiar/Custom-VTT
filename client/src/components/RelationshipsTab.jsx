@@ -144,8 +144,8 @@ export default function RelationshipsTab({ data }) {
       <div className="flex items-center gap-2">
         <p className="text-[11px] text-zinc-500">
           {canEdit
-            ? 'Drag to pan, scroll to move, ⌘/Ctrl-scroll to zoom.'
-            : 'Look around: drag to pan, pinch or ⌘/Ctrl-scroll to zoom.'}
+            ? 'Drag to pan, scroll to zoom. Drag a side dot to connect two people.'
+            : 'Look around: drag to pan, scroll or pinch to zoom.'}
         </p>
         <div className="ml-auto">{toggle}</div>
       </div>

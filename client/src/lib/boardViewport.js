@@ -63,6 +63,37 @@ export function centerOn(view, worldX, worldY, width, height) {
 }
 
 // ---------------------------------------------------------------------------
+// The void's dot field
+// ---------------------------------------------------------------------------
+//
+// **A constant on-screen density, at every zoom.** The first version of the
+// void scaled a fixed tile with the camera, which meant zooming out packed the
+// dots tighter and tighter until the field was a grey mess — and two such grids
+// at different scales beat into moiré on the way there.
+//
+// Instead the grid STEPS: its world spacing doubles whenever zooming out would
+// push the dots closer than DOT_MIN_PX apart on screen, and halves whenever
+// zooming in would spread them past DOT_MAX_PX. The field still pans 1:1 with
+// the camera so it belongs to the world rather than to the screen; the stepping
+// is invisible in motion, and is what every infinite canvas does.
+
+const DOT_BASE = 64; // world units between dots at 100%
+export const DOT_MIN_PX = 40;
+export const DOT_MAX_PX = 88;
+
+export function dotSpacing(zoom) {
+  const spacing = DOT_BASE * zoom;
+  // A zero, negative or non-finite zoom would loop forever below. It should be
+  // unreachable — clampZoom guards every path that sets it — which is exactly
+  // why it is worth one line here rather than a hung tab if it ever is not.
+  if (!Number.isFinite(spacing) || spacing <= 0) return DOT_BASE;
+  let stepped = spacing;
+  while (stepped < DOT_MIN_PX) stepped *= 2;
+  while (stepped > DOT_MAX_PX) stepped /= 2;
+  return stepped;
+}
+
+// ---------------------------------------------------------------------------
 // Persistence
 // ---------------------------------------------------------------------------
 //

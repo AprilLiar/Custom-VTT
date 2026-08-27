@@ -25,7 +25,7 @@ export function useRelationshipBoard(characterId, identity) {
     if (characterId == null || !identity) return;
     getRelationshipBoard(characterId, identity)
       .then(setBoard)
-      .catch(() => setBoard({ people: [], nodes: [] }));
+      .catch(() => setBoard({ people: [], nodes: [], edges: [] }));
   }, [characterId, identity]);
 
   useEffect(() => {
@@ -35,11 +35,15 @@ export function useRelationshipBoard(characterId, identity) {
       .then((data) => alive && setBoard(data))
       // A 403 is a real answer — you are looking at somebody else's board —
       // and renders as empty rather than as a spinner that never stops.
-      .catch(() => alive && setBoard({ people: [], nodes: [] }));
+      .catch(() => alive && setBoard({ people: [], nodes: [], edges: [] }));
 
     const onUpdated = (payload) => {
       if (!alive || Number(payload?.characterId) !== Number(characterId)) return;
-      setBoard({ people: payload.people ?? [], nodes: payload.nodes ?? [] });
+      // Spread rather than naming the keys: this handler was written before
+      // relationships existed and listed `people` and `nodes` explicitly, which
+      // silently threw every edge away the moment the server started sending
+      // them. A board is whatever the server says a board is.
+      setBoard({ people: [], nodes: [], edges: [], ...payload, characterId: undefined });
     };
     socket.on('relationships:updated', onUpdated);
     return () => {
