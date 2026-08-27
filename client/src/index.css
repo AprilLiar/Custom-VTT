@@ -188,6 +188,43 @@ textarea {
   }
 }
 
+/* A relationship line drawing itself in. `pathLength: 1` on the element makes
+   the dash values length-independent, so one keyframe covers a short link and a
+   long one identically. Runs once per element, which means once per line and —
+   more importantly — once for the whole web when the board is opened.
+   The global reduced-motion rule below zeroes it like everything else. */
+@keyframes rel-edge-draw {
+  from {
+    stroke-dasharray: 1;
+    stroke-dashoffset: 1;
+  }
+  to {
+    stroke-dasharray: 1;
+    stroke-dashoffset: 0;
+  }
+}
+
+.rel-edge-draw {
+  animation: rel-edge-draw 520ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* The void's clouds breathe on their own, on top of the parallax the camera
+   gives them. Slow enough to be felt rather than seen — the board should look
+   like a space with something in it, not a still image. */
+@keyframes rel-void-drift {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  50% {
+    transform: translate3d(1.5%, -1%, 0) scale(1.04);
+  }
+}
+
+.rel-void-drift {
+  animation: rel-void-drift 48s ease-in-out infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

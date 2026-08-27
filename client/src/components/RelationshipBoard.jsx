@@ -1,7 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { useReducedMotion } from 'framer-motion';
 import { socket } from '../socket.js';
-import { DEFAULT_VIEW, loadShowRetired, saveShowRetired } from '../lib/boardViewport.js';
+import {
+  DEFAULT_VIEW,
+  boundsOf,
+  anyNodeVisible,
+  fitTo,
+  loadShowRetired,
+  saveShowRetired,
+} from '../lib/boardViewport.js';
 import {
   anchorPoint,
   assignBends,
@@ -46,6 +54,16 @@ export default function RelationshipBoard({
   const dragRef = useRef(null);
   const lastPointRef = useRef({ x: 0, y: 0 });
   const pathEls = useRef(new Map());
+  // **The lines lag, the portrait does not.** The thing under your finger has
+  // to track the pointer exactly — anything else feels like rubber-banding the
+  // cursor — but the relationships attached to it should whip along behind and
+  // catch up. That one asymmetry is most of what makes the board feel like it
+  // is full of liquid rather than made of sticks.
+  //
+  // A rAF loop eases a "drawn" position toward the node's true one and keeps
+  // running for a few frames after release, so the web settles rather than
+  // snapping. It draws directly to the paths' `d`, never through React.
+  const chase = useRef({ raf: 0, nodeId: null, at: null, target: null });
   // **Where a node really is right now, ahead of the server.**
   //
   // Fixes a bug that showed up as "picking a character up and putting it down
@@ -70,6 +88,10 @@ export default function RelationshipBoard({
   // line if the board is panned behind it.
   const [editingEdge, setEditingEdge] = useState(null);
   const [showRetired, setShowRetired] = useState(() => loadShowRetired(ownerCharacterId));
+  // Framer's springs are inline styles, which the global prefers-reduced-motion
+  // rule in index.css cannot reach — it only zeroes CSS animations. So the
+  // preference is read here too, and every easing below collapses to instant.
+  const reduceMotion = useReducedMotion();
   // The line currently being drawn or re-attached, as world points. State
   // rather than a ref because the draft path has to re-render to be seen —
   // it is one <path>, not the whole board, so the cost is a rounding error
@@ -173,6 +195,75 @@ export default function RelationshipBoard({
     [edges, nodesById]
   );
 
+  // Point the chase at a new target and make sure the loop is running. The
+  // loop stops on its own once it has caught up and the drag is over.
+  const chaseEdges = useCallback(
+    (nodeId, target) => {
+      const c = chase.current;
+      if (c.nodeId !== nodeId) {
+        c.nodeId = nodeId;
+        c.at = { ...target };
+      }
+      c.target = target;
+      if (reduceMotion) {
+        c.at = { ...target };
+        redrawEdgesFor(nodeId, { ...nodesById.get(nodeId), ...target });
+        return;
+      }
+      if (c.raf) return;
+      const step = () => {
+        const cur = chase.current;
+        if (!cur.target || cur.nodeId == null) {
+          cur.raf = 0;
+          return;
+        }
+        // A plain exponential chase rather than a spring: no overshoot, so a
+        // line never crosses its own anchor, and one constant to tune.
+        const k = 0.3;
+        cur.at.x += (cur.target.x - cur.at.x) * k;
+        cur.at.y += (cur.target.y - cur.at.y) * k;
+        const node = nodesById.get(cur.nodeId);
+        if (node) redrawEdgesFor(cur.nodeId, { ...node, x: cur.at.x, y: cur.at.y });
+        const settled = Math.hypot(cur.target.x - cur.at.x, cur.target.y - cur.at.y) < 0.4;
+        // Keep going while the pointer is still down even once caught up —
+        // the next move has to find the loop already running.
+        if (settled && !dragRef.current) {
+          if (node) redrawEdgesFor(cur.nodeId, { ...node, ...cur.target });
+          cur.raf = 0;
+          cur.nodeId = null;
+          cur.at = null;
+          cur.target = null;
+          return;
+        }
+        cur.raf = requestAnimationFrame(step);
+      };
+      c.raf = requestAnimationFrame(step);
+    },
+    [nodesById, redrawEdgesFor, reduceMotion]
+  );
+
+  useEffect(() => () => cancelAnimationFrame(chase.current.raf), []);
+
+  // **Open on the map, not on empty space.** The camera is per-browser, so a
+  // board opened on a second device — or one laid out far from the origin —
+  // would otherwise land at the default view with the whole cast off screen
+  // and no hint that it exists. Found by opening the board at phone size.
+  //
+  // Once, on the first load that has nodes, and only when none of them are
+  // visible: a saved camera that already shows the map is left exactly where
+  // the player left it.
+  const framed = useRef(false);
+  useEffect(() => {
+    if (framed.current || !nodes.length) return;
+    const api = voidRef.current;
+    const el = api?.getViewportEl();
+    if (!el) return;
+    framed.current = true;
+    const rect = el.getBoundingClientRect();
+    if (anyNodeVisible(api.getView(), nodes, rect.width, rect.height)) return;
+    api.setView(fitTo(boundsOf(nodes), rect.width, rect.height));
+  }, [nodes]);
+
   const registerNode = useCallback((id, el) => {
     if (el) nodeEls.current.set(id, el);
     else nodeEls.current.delete(id);
@@ -220,7 +311,7 @@ export default function RelationshipBoard({
       // The lines have to come along, or a dragged portrait tears away from its
       // own relationships until you let go. Same technique: recompute the two
       // or three paths that touch this node and write `d` directly.
-      redrawEdgesFor(drag.nodeId, { ...nodesById.get(drag.nodeId), x: drag.x, y: drag.y });
+      chaseEdges(drag.nodeId, { x: drag.x, y: drag.y });
     };
     const onUp = () => {
       const drag = dragRef.current;
@@ -240,7 +331,7 @@ export default function RelationshipBoard({
       window.removeEventListener('pointerup', onUp);
       window.removeEventListener('pointercancel', onUp);
     };
-  }, [canEdit, nodesById, redrawEdgesFor]);
+  }, [canEdit, chaseEdges]);
 
   // ---- drawing and re-attaching a relationship ----------------------------
   //

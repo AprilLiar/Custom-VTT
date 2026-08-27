@@ -85,6 +85,14 @@ function RelationshipVoid(
     () => ({
       getView: () => viewRef.current,
       getViewportEl: () => viewportRef.current,
+      // Used by the board to frame the cast on first open. Goes through the
+      // same commit path a gesture does, so localStorage and React agree.
+      setView: (next) => {
+        viewRef.current = next;
+        setView(next);
+        saveView(characterId, next);
+        onViewChange?.(next);
+      },
       // clientX/clientY straight off a pointer or drop event.
       toWorld: (clientX, clientY) => {
         const el = viewportRef.current;
@@ -93,7 +101,7 @@ function RelationshipVoid(
         return toWorld(viewRef.current, clientX - rect.left, clientY - rect.top);
       },
     }),
-    []
+    [characterId, onViewChange]
   );
 
   // One place that puts the camera on screen. Everything that moves the camera —
@@ -292,8 +300,16 @@ function RelationshipVoid(
         aria-hidden
         ref={cloudsRef}
         className="pointer-events-none absolute"
-        style={{ inset: '-30%', backgroundImage: CLOUDS, willChange: 'transform' }}
-      />
+        style={{ inset: '-30%', willChange: 'transform' }}
+      >
+        {/* The autonomous drift lives on a CHILD, because the parent's
+            transform is written every frame by the camera and a CSS animation
+            on the same property would be overwritten sixty times a second. */}
+        <div
+          className="rel-void-drift absolute inset-0"
+          style={{ backgroundImage: CLOUDS }}
+        />
+      </div>
       {/* A cold vignette over everything. The void reads as depth rather than
           as a dotted sheet only once the edges fall away. */}
       <div

@@ -3014,8 +3014,58 @@ else is a zoom.
 the second form for anchors that are not elements at all — a point on an SVG curve. The Arena
 imports it; there is no second copy to drift.
 
+### Phase 5 (implemented) — the feel
+
+**The lines lag, the portrait does not.** The one asymmetry that makes the board feel full of
+liquid rather than made of sticks: whatever is under your finger tracks the pointer exactly —
+anything else reads as rubber-banding the cursor — while the relationships attached to it
+whip along behind and catch up. A rAF loop eases a drawn position toward the node's true one
+and keeps running for a few frames after release, so the web *settles* rather than snapping,
+writing to the paths' `d` directly and never through React. Measured mid-drag at ~87px of
+trail, landing exactly on the anchor dot once settled.
+
+An exponential chase rather than a spring, deliberately: no overshoot, so a line never
+crosses its own anchor, and there is one constant to tune instead of three.
+
+Everything else in the pass: a spring overshoot when a portrait lands (only after a real
+drag — a click that moved nothing must not bounce), a hover lift, dots that bloom, lines that
+**draw themselves in** (`pathLength="1"` normalises the dash maths so one keyframe covers a
+short link and a long one, and because the element persists across renders it runs once per
+line — and once for the whole web when the board is opened, which is the nicest moment the
+tab has), and clouds that breathe on their own. The autonomous drift lives on a *child* of
+the clouds layer, because the parent's `transform` is rewritten by the camera sixty times a
+second and a CSS animation on the same property would simply lose.
+
+**`prefers-reduced-motion` is read twice.** The global rule in `index.css` zeroes CSS
+animations and transitions, but framer-motion animates through inline styles it cannot reach
+— so `useReducedMotion()` collapses every spring and the edge chase to instant as well.
+
+### Hardening
+
+- **One decoded image per distinct picture** (`portraitCache.js`). A `data:` URI is not
+  cached by anything — it *is* the bytes — so the same NPC placed twenty times was the same
+  ~150KB string decoded twenty times, and this board is the first place in the app where one
+  person can be on screen more than once. A reference-counted `blob:` URL is decoded once and
+  shared; the count is on the entry rather than a timer, because revoking while somebody
+  still renders it shows as a broken image. Verified in the browser: four portraits, three
+  distinct URLs, the twice-placed Baron sharing one.
+- **The board opens on the map, not on empty space.** The camera is per-browser, so opening a
+  board on a second device — or one laid out far from the origin — landed at the default view
+  with the whole cast off screen and no hint it existed. Found by opening the board at phone
+  size and seeing a perfect, empty void.
+
+  **And the first fix was wrong in an instructive way.** `boundsVisible` tested the cast's
+  bounding box for *any* overlap with the viewport, which counted a nineteen-pixel sliver of
+  one portrait's edge as "the map is visible" — the phone still opened empty. The screenshot
+  said it was broken; measuring where the nodes actually were said why. `anyNodeVisible` asks
+  per node whether its **centre** is on screen: a face you can recognise, not a hairline of
+  one. Framing runs once, on the first load that has nodes, and never touches a camera that
+  already shows somebody.
+- **Phone confirmed view-only**: nodes and relationships render, the rail is hidden, and there
+  are no connect dots at all.
+
 ### Planned, not yet built
-- **Phase 5 — the feel.** Spring settle, eased edges, dot bloom, and the hardening pass.
+- Nothing. The feature is complete.
 
 **Foreign keys ARE enforced — corrected, and measured.** Phase 1's write-up of this section
 claimed the opposite, reasoning that `PRAGMA foreign_keys` is only ever touched *inside* the

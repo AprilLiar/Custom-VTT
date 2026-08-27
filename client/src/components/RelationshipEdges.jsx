@@ -206,6 +206,13 @@ function EdgeLine({ edge, ends, d, canEdit, selected, onPointerDown, onDoubleCli
       <path
         ref={(el) => registerPath?.(edge.id, el)}
         d={d}
+        // Draws itself in from its start. `pathLength="1"` normalises the dash
+        // maths so one rule covers every length of line, and because the
+        // element persists across re-renders the animation runs once — when the
+        // line is first drawn, and when the board is first opened, where the
+        // whole web assembling itself is the nicest moment the tab has.
+        pathLength="1"
+        className="rel-edge-draw"
         fill="none"
         stroke={color}
         strokeWidth={selected ? 3.5 : 2}

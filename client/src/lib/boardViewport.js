@@ -62,6 +62,65 @@ export function centerOn(view, worldX, worldY, width, height) {
   };
 }
 
+// **Framing what is actually there.**
+//
+// A camera position is per-browser, so opening a board on a second device — or
+// after somebody laid the map out far from the origin — lands you at the
+// default view staring at empty space, with no clue that a whole web exists a
+// few thousand units away. Found by opening the board at phone size: the void
+// rendered perfectly and had nothing in it.
+//
+// `boundsOf` measures the cast; `fitTo` returns the camera that frames it.
+// Zoom is clamped like any other, so a very spread-out board simply shows as
+// much as MIN_ZOOM allows rather than refusing to frame at all.
+
+export function boundsOf(nodes, nodeW = 112, nodeH = 112) {
+  if (!nodes?.length) return null;
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const n of nodes) {
+    if (!Number.isFinite(n.x) || !Number.isFinite(n.y)) continue;
+    minX = Math.min(minX, n.x);
+    minY = Math.min(minY, n.y);
+    maxX = Math.max(maxX, n.x + nodeW);
+    maxY = Math.max(maxY, n.y + nodeH);
+  }
+  if (!Number.isFinite(minX)) return null;
+  return { minX, minY, maxX, maxY };
+}
+
+export function fitTo(bounds, width, height, padding = 80) {
+  if (!bounds || !(width > 0) || !(height > 0)) return DEFAULT_VIEW;
+  const boxW = Math.max(1, bounds.maxX - bounds.minX);
+  const boxH = Math.max(1, bounds.maxY - bounds.minY);
+  // Never zoom IN to fill the screen with two portraits — a board with one
+  // person on it should not open at 250%.
+  const zoom = clampZoom(Math.min(1, Math.min((width - padding * 2) / boxW, (height - padding * 2) / boxH)));
+  return centerOn({ x: 0, y: 0, zoom }, (bounds.minX + bounds.maxX) / 2, (bounds.minY + bounds.maxY) / 2, width, height);
+}
+
+// Can the player actually SEE somebody? What decides whether opening the board
+// needs to re-frame at all — a saved camera that already shows the map is left
+// exactly where the player left it.
+//
+// **Asked per node, not against the bounding box.** The first version tested
+// the box for any overlap with the viewport at all, which counted a nineteen
+// pixel sliver of one portrait's edge as "the map is visible" and left a phone
+// staring at an empty void with the whole cast just off the right edge. Found
+// by opening the board at phone size and then measuring where everything
+// actually was. A node's CENTRE being on screen is the honest test: it means a
+// face is there to be recognised, not a hairline of one.
+export function anyNodeVisible(view, nodes, width, height, nodeW = 112, nodeH = 112) {
+  if (!nodes?.length) return true;
+  return nodes.some((n) => {
+    if (!Number.isFinite(n.x) || !Number.isFinite(n.y)) return false;
+    const p = toScreen(view, n.x + nodeW / 2, n.y + nodeH / 2);
+    return p.x >= 0 && p.x <= width && p.y >= 0 && p.y <= height;
+  });
+}
+
 // ---------------------------------------------------------------------------
 // The void's dot field
 // ---------------------------------------------------------------------------
