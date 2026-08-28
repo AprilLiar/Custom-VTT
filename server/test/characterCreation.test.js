@@ -28,11 +28,11 @@ const ok = (over = {}) => validateCreation({ presetKey: 'adult', ...over });
 
 test('the three presets carry the table\'s numbers', () => {
   assert.deepEqual(
-    PRESETS.map((p) => [p.key, p.statPoints, p.perkCount]),
+    PRESETS.map((p) => [p.key, p.statPoints, p.perkCount, p.moveCount]),
     [
-      ['teenager', 8, 3],
-      ['adult', 16, 5],
-      ['old_master', 24, 7],
+      ['teenager', 8, 2, 4],
+      ['adult', 16, 3, 8],
+      ['old_master', 24, 5, 16],
     ]
   );
   for (const preset of PRESETS) {
@@ -105,16 +105,22 @@ test('a negative rank is floored at a bare d4, not treated as damage', () => {
   assert.equal(v.normalized.pointsSpent, 2);
 });
 
-test('the Perk count is guidance too — over it warns, under it is silent', () => {
-  assert.equal(ok({ perkIds: [1, 2, 3, 4, 5] }).ok, true);
-  const over = ok({ perkIds: [1, 2, 3, 4, 5, 6] });
-  assert.equal(over.ok, true);
-  assert.deepEqual(over.errors, []);
-  assert.match(over.warnings[0], /suggests 5 Perks/);
-  assert.equal(ok({ perkIds: [1] }).normalized.perksLeft, 4);
+test('the Perk count is a CAP — exactly on it passes, one over blocks', () => {
+  // Changed on the table's call: this used to warn and allow. Reducing the
+  // numbers without enforcing them would have changed nothing at all.
+  assert.equal(ok({ perkIds: [1, 2, 3] }).ok, true, 'an Adult may take three');
+  const over = ok({ perkIds: [1, 2, 3, 4] });
+  assert.equal(over.ok, false);
+  assert.deepEqual(over.warnings, [], 'over a cap is an error, not advice');
+  assert.match(over.errors[0], /allows 3 Perks/);
+  assert.equal(ok({ perkIds: [1] }).normalized.perksLeft, 2);
   assert.deepEqual(ok({ perkIds: [1] }).warnings, []);
-  // Picking the same Perk twice is one Perk, not two against the count.
+  // Picking the same Perk twice is one Perk, not two against the cap — the
+  // dedupe has to happen before the count or a double-click blocks the build.
   assert.deepEqual(ok({ perkIds: [1, 1, 1] }).normalized.perkIds, [1]);
+  assert.equal(ok({ perkIds: [1, 1, 2, 2, 3, 3] }).ok, true);
+  // No preset means no cap: a free-form build has nothing to exceed.
+  assert.equal(validateCreation({ perkIds: [1, 2, 3, 4, 5, 6, 7, 8] }).ok, true);
 });
 
 test('unknown Move and Perk ids are dropped, not rejected', () => {
@@ -126,10 +132,46 @@ test('unknown Move and Perk ids are dropped, not rejected', () => {
   assert.equal(v.ok, true);
 });
 
-test('Moves have no budget at all', () => {
-  const v = ok({ moveIds: Array.from({ length: 50 }, (_, i) => i + 1) });
-  assert.equal(v.ok, true);
-  assert.equal(v.normalized.moveIds.length, 50);
+test('the Move count is a cap too, and dedupes before counting', () => {
+  assert.equal(ok({ moveIds: [1, 2, 3, 4, 5, 6, 7, 8] }).ok, true, 'an Adult may take eight');
+  const over = ok({ moveIds: [1, 2, 3, 4, 5, 6, 7, 8, 9] });
+  assert.equal(over.ok, false);
+  assert.match(over.errors[0], /allows 8 Moves/);
+  assert.equal(ok({ moveIds: [1, 2] }).normalized.movesLeft, 6);
+  // Ten ids, five distinct Moves — under the cap.
+  assert.equal(ok({ moveIds: [1, 1, 2, 2, 3, 3, 4, 4, 5, 5] }).ok, true);
+  // A cap only exists when a preset does.
+  const free = validateCreation({ moveIds: Array.from({ length: 50 }, (_, i) => i + 1) });
+  assert.equal(free.ok, true);
+  assert.equal(free.normalized.moveIds.length, 50);
+  assert.equal(free.normalized.movesLeft, null);
+});
+
+test('a Move whose Style the character will not have is refused, not dropped', () => {
+  // **The bug this pins.** The wizard greyed these rows and let you tick them
+  // anyway; the server then accepted the build and silently skipped the Move,
+  // which looked exactly like it had worked. Now it is an error, named.
+  const moveStyles = { 1: 10, 2: 20, 3: null };
+  const moveNames = { 1: 'Iron Palm', 2: 'Ghost Step', 3: 'Shove' };
+  const withStyles = (over) => validateCreation({ presetKey: 'adult', moveStyles, moveNames, ...over });
+
+  const bad = withStyles({ moveIds: [1], ownedStyleIds: [20] });
+  assert.equal(bad.ok, false);
+  assert.match(bad.errors[0], /Iron Palm/, 'the Move is named, not just counted');
+
+  // The Style it needs, and a Move with no Style at all, both pass.
+  assert.equal(withStyles({ moveIds: [1], ownedStyleIds: [10] }).ok, true);
+  assert.equal(withStyles({ moveIds: [3], ownedStyleIds: [] }).ok, true);
+  // Several blocked Moves are one error listing all of them, not a wall.
+  const many = withStyles({ moveIds: [1, 2], ownedStyleIds: [] });
+  assert.equal(many.errors.length, 1);
+  assert.match(many.errors[0], /Iron Palm.*Ghost Step/);
+
+  // **A caller that cannot say gets no check**, rather than a guess. The
+  // wizard's early renders and any other caller keep working unchanged.
+  assert.equal(validateCreation({ presetKey: 'adult', moveIds: [1] }).ok, true);
+  assert.equal(validateCreation({ presetKey: 'adult', moveIds: [1], moveStyles }).ok, true);
+  assert.equal(validateCreation({ presetKey: 'adult', moveIds: [1], ownedStyleIds: [] }).ok, true);
 });
 
 test('a stance is optional, but a half-filled one is an error', () => {
@@ -171,21 +213,25 @@ test('rankOfDie reads a part-built character back at the rank they bought', () =
   assert.equal(rankOfDie(null), 0);
 });
 
-test('warnings and errors are separate lists, and only errors block', () => {
+test('Stat points still only warn, while the two counts block', () => {
+  // The split the table asked for: a spread is a shape and stays advice; the
+  // Perk and Move counts are limits.
   const v = validateCreation({
     presetKey: 'teenager',
     statRanks: { Skull: 20 },              // over — a warning
-    perkIds: [1, 2, 3, 4],                 // over — a warning
+    perkIds: [1, 2, 3, 4],                 // over — an error
     stance: { name: 'X', attributeAId: 1, attributeBId: 1 }, // broken — an error
   });
-  assert.equal(v.warnings.length, 2, JSON.stringify(v.warnings));
-  assert.equal(v.errors.length, 1, JSON.stringify(v.errors));
-  assert.equal(v.ok, false); // the stance, not the spending
+  assert.equal(v.warnings.length, 1, JSON.stringify(v.warnings));
+  assert.match(v.warnings[0], /Stat points/);
+  assert.equal(v.errors.length, 2, JSON.stringify(v.errors));
+  assert.equal(v.ok, false);
 
-  // Take the broken stance away and the same overspent build is fine.
-  const spendy = validateCreation({ presetKey: 'teenager', statRanks: { Skull: 20 }, perkIds: [1, 2, 3, 4] });
+  // A wildly overspent SPREAD, on its own, is still a legal build.
+  const spendy = validateCreation({ presetKey: 'teenager', statRanks: { Skull: 20 } });
   assert.equal(spendy.ok, true);
-  assert.equal(spendy.warnings.length, 2);
+  assert.equal(spendy.warnings.length, 1);
+  assert.deepEqual(spendy.errors, []);
 });
 
 test('every skippable step really is skippable, all at once', () => {
