@@ -13,32 +13,43 @@
 import { DICE_TEMPLATE, rankOf } from './gameLogic.js';
 
 // The three starting points. Everything a preset decides is here: how many
-// points there are to raise Stats with, and how many Perks the character
-// begins play with.
+// points there are to raise Stats with, and how many Perks and Moves the
+// character begins play with.
 //
 // The order is the arc — a Teenager is quick and unformed, an Old Master is
 // everything a lifetime buys — and the numbers are the table's, not derived
 // from anything, so they live as data rather than as a formula.
+//
+// **Perks and Moves are hard caps; Stat points are still guidance (decided,
+// revised).** The flow used to treat every one of these numbers as a
+// suggestion — said plainly and then allowed — on the reasoning that guiding a
+// build is not policing one. The table has since asked for the two *counts* to
+// be limits, and reducing a budget nobody enforces would have changed nothing.
+// Stat points are untouched by that call and still only warn: a spread is a
+// shape, and the table has never wanted a shape refused.
 export const PRESETS = [
   {
     key: 'teenager',
     name: 'Teenager',
     statPoints: 8,
-    perkCount: 3,
+    perkCount: 2,
+    moveCount: 4,
     blurb: 'Young, fast, and mostly potential. Few Stats worth writing home about, and fewer tricks.',
   },
   {
     key: 'adult',
     name: 'Adult',
     statPoints: 16,
-    perkCount: 5,
+    perkCount: 3,
+    moveCount: 8,
     blurb: 'A fighter in their prime — trained, experienced, and still in one piece.',
   },
   {
     key: 'old_master',
     name: 'Old Master',
     statPoints: 24,
-    perkCount: 7,
+    perkCount: 5,
+    moveCount: 16,
     blurb: 'Decades of it. Deep Stats and a long list of things nobody else knows how to do.',
   },
 ];
@@ -69,23 +80,33 @@ export const rankOfDie = (die) => (die?.status === 'incapacitated' ? 0 : rankOf(
 
 // Validate and normalize a whole draft.
 //
-// **Errors block; warnings do not (decided, revised).** Every number a preset
-// carries is a *suggestion* — the flow exists to guide a build, not to police
-// one, and a table that wants a Teenager with nineteen points is not doing
-// anything the app should refuse. Overspending Stat points or Perks is a
-// warning: said plainly, in the wizard and in the chat line the build posts,
-// and then allowed.
+// **Errors block; warnings do not.** What is which changed once, on the table's
+// call, and the split now runs:
 //
-// What stays an error is only what would leave the character actually broken —
-// a stance that is half-built, or two of the same Style, which is not a stance
-// at all. Those have a Skip button next to them; nobody is trapped by one.
+//   - *error* — the Perk count and the Move count over their preset's cap, a
+//     Move whose Style the character will not have, and anything that would
+//     leave the character structurally broken (a half-built stance, or two of
+//     the same Style, which is not a stance at all).
+//   - *warning* — Stat points over the preset's budget, said plainly in the
+//     wizard and in the chat line the build posts, and then allowed.
 //
-// **Every step is optional, including the preset.** No preset means no budget:
-// a free-form build, with nothing to overspend.
+// Every blocking case has a Skip or an obvious undo next to it in the wizard;
+// nobody is trapped by one.
+//
+// **Every step is optional, including the preset.** No preset means no caps at
+// all: a free-form build, with nothing to exceed.
 //
 // Normalizes rather than rejecting where it safely can, the same way every
 // other write path here does (see writeMove): unknown ids are dropped and
 // out-of-range numbers are clamped.
+//
+// `moveStyles` (`{ [moveId]: styleAttributeId | null }`) and `ownedStyleIds`
+// are both optional and only used together: a caller that cannot say which
+// Styles the character will end up with gets no Style check, rather than a
+// guess. The server passes the character's EXISTING stances plus the one this
+// draft creates, because that union is exactly what `move:grant` will test
+// against afterwards — a narrower answer here would refuse a build the grant
+// would have accepted.
 export function validateCreation({
   presetKey,
   statRanks = {},
@@ -96,6 +117,9 @@ export function validateCreation({
   validMoveIds = null,
   validPerkIds = null,
   validAttributeIds = null,
+  moveStyles = null,
+  ownedStyleIds = null,
+  moveNames = null,
 } = {}) {
   const errors = [];
   const warnings = [];
@@ -137,14 +161,36 @@ export function validateCreation({
   }
 
   // ---- Moves ----
-  // No budget: "grab any Moves for yourself" is the whole instruction. Deduped,
-  // and filtered to moves that exist when the caller knows which those are.
+  // Deduped, and filtered to moves that exist when the caller knows which
+  // those are. Picking the same Move twice is one Move against the cap, not
+  // two — the dedupe happens before the count for exactly that reason.
   const moves = dedupeIds(moveIds).filter((id) => !validMoveIds || validMoveIds.includes(id));
+  if (preset && moves.length > preset.moveCount) {
+    errors.push(`${preset.name} allows ${preset.moveCount} Moves; this picks ${moves.length}.`);
+  }
+
+  // **A Style you do not have is not a Move you can learn.** The same rule
+  // `move:grant` enforces, checked here so the wizard can refuse it up front
+  // rather than the server accepting the build and silently dropping the Move —
+  // which is what used to happen, and which looked exactly like it had worked.
+  if (moveStyles && ownedStyleIds) {
+    const owned = new Set(ownedStyleIds.map(Number).filter(Number.isInteger));
+    const blocked = moves.filter((id) => {
+      const styleId = moveStyles[id] ?? moveStyles[String(id)] ?? null;
+      return styleId != null && !owned.has(Number(styleId));
+    });
+    if (blocked.length) {
+      const named = blocked.map((id) => moveNames?.[id] ?? moveNames?.[String(id)] ?? `#${id}`);
+      errors.push(
+        `Your stance does not carry the Style for ${named.join(', ')} — drop ${blocked.length === 1 ? 'it' : 'them'} or pick that Style.`
+      );
+    }
+  }
 
   // ---- Perks ----
   const perks = dedupeIds(perkIds).filter((id) => !validPerkIds || validPerkIds.includes(id));
   if (preset && perks.length > preset.perkCount) {
-    warnings.push(`${preset.name} suggests ${preset.perkCount} Perks; this picks ${perks.length}.`);
+    errors.push(`${preset.name} allows ${preset.perkCount} Perks; this picks ${perks.length}.`);
   }
 
   // ---- Role-play ----
@@ -169,6 +215,7 @@ export function validateCreation({
       pointsLeft: preset ? preset.statPoints - spent : null,
       stance: normalizedStance,
       moveIds: moves,
+      movesLeft: preset ? preset.moveCount - moves.length : null,
       perkIds: perks,
       perksLeft: preset ? preset.perkCount - perks.length : null,
       roleplay: answers,

@@ -61,6 +61,9 @@ gm.emit('perk:create', { name: `CC Perk A ${stamp}`, description: '' });
 const perkA = await wait('perk:created', (p) => p.name === `CC Perk A ${stamp}`);
 gm.emit('perk:create', { name: `CC Perk B ${stamp}`, description: '' });
 const perkB = await wait('perk:created', (p) => p.name === `CC Perk B ${stamp}`);
+// A third, so a Teenager (2 Perks) has something to go over the cap with.
+gm.emit('perk:create', { name: `CC Perk C ${stamp}`, description: '' });
+const perkC = await wait('perk:created', (p) => p.name === `CC Perk C ${stamp}`);
 
 // ============================================== 1. a legal Adult build
 console.log('\n--- an Adult build, applied end to end ---');
@@ -179,31 +182,78 @@ check('two of the same Style is not a stance', rejected.errors.some((e) => /two 
   JSON.stringify(rejected.errors));
 
 // ============================= 3. learnability is not bypassed by creation
+//
+// **This used to be applied-then-silently-skipped, and is now a refusal.** The
+// old behaviour accepted the whole build and dropped the one Move, which from
+// the player's side looked exactly like it had worked. The whole draft is
+// refused now, naming the Move, so the wizard can say what is wrong while there
+// is still something to change.
 console.log('\n--- a Move whose Style the new stance does not carry ---');
 const student = await jpost('/api/characters', { name: `Student${stamp}`, characterType: 'pc' });
+const narrowStance = {
+  name: `Narrow ${stamp}`,
+  attributeAId: styleA.id,
+  // A stance of styleA + a third style, so styleB is NOT carried.
+  attributeBId: (ruleset.attributes[2] ?? styleB).id,
+};
 gm.emit('character:apply_creation', {
   characterId: student.id,
   presetKey: 'teenager',
   statRanks: { Skull: 8 },
-  // A stance of styleA + a third style, so styleB is NOT carried.
-  stance: {
-    name: `Narrow ${stamp}`,
-    attributeAId: styleA.id,
-    attributeBId: (ruleset.attributes[2] ?? styleB).id,
-  },
+  stance: narrowStance,
   moveIds: [plainMove.id, offStyleMove.id],
 });
-const studentApplied = await wait('character:creation_applied', (p) => p.characterId === student.id);
+const offStyleRejected = await wait('character:creation_rejected', (p) => p.characterId === student.id);
+console.log('  errors:', JSON.stringify(offStyleRejected.errors));
+check('an off-Style Move refuses the build rather than being dropped from it',
+  (offStyleRejected.errors ?? []).some((e) => /Style/i.test(e) && e.includes(`CC Off Style ${stamp}`)),
+  JSON.stringify(offStyleRejected.errors));
+await sleep(400);
+const refusedSheet = await sheet(student.id);
+check('...and nothing at all was written — a refused draft is not half-applied',
+  refusedSheet.moves.filter((m) => !m.is_default).length === 0 && refusedSheet.stances.length === 0,
+  JSON.stringify(refusedSheet.moves.map((m) => m.name)));
+
+// Drop the offending Move and the same build goes through.
+gm.emit('character:apply_creation', {
+  characterId: student.id,
+  presetKey: 'teenager',
+  statRanks: { Skull: 8 },
+  stance: narrowStance,
+  moveIds: [plainMove.id],
+});
+await wait('character:creation_applied', (p) => p.characterId === student.id);
 await sleep(600);
 const studentSheet = await sheet(student.id);
 const studentMoves = studentSheet.moves.filter((m) => !m.is_default).map((m) => m.name);
-console.log('  moves:', JSON.stringify(studentMoves), 'skipped:', JSON.stringify(studentApplied.skippedMoves));
-check('the unstyled Move was granted', studentMoves.includes(`CC Plain ${stamp}`), JSON.stringify(studentMoves));
-check('the off-Style Move was NOT — creation is no way around learnability',
+console.log('  moves:', JSON.stringify(studentMoves));
+check('the unstyled Move was granted once the off-Style one was dropped',
+  studentMoves.includes(`CC Plain ${stamp}`), JSON.stringify(studentMoves));
+check('and the off-Style Move is still not there',
   !studentMoves.includes(`CC Off Style ${stamp}`), JSON.stringify(studentMoves));
-check('...and it was said out loud rather than silently dropped',
-  (studentApplied.skippedMoves ?? []).includes(`CC Off Style ${stamp}`),
-  JSON.stringify(studentApplied.skippedMoves));
+
+// ------------------------- the two counts are caps, not suggestions any more
+console.log('\n--- over a preset\'s Perk and Move counts ---');
+const greedy = await jpost('/api/characters', { name: `Greedy${stamp}`, characterType: 'pc' });
+gm.emit('character:apply_creation', {
+  characterId: greedy.id,
+  presetKey: 'teenager',                    // 2 Perks, 4 Moves
+  perkIds: [perkA.id, perkB.id, perkA.id],  // deduped to 2 — at the cap, legal
+});
+await wait('character:creation_applied', (p) => p.characterId === greedy.id);
+check('duplicates collapse before the cap is counted, so two ids for one Perk pass', true);
+
+const overPerks = await jpost('/api/characters', { name: `OverP${stamp}`, characterType: 'pc' });
+gm.emit('character:apply_creation', {
+  characterId: overPerks.id,
+  presetKey: 'teenager',
+  perkIds: [perkA.id, perkB.id, perkC.id],
+});
+const perkRefusal = await wait('character:creation_rejected', (p) => p.characterId === overPerks.id);
+check('a third Perk on a Teenager is refused, not warned about',
+  (perkRefusal.errors ?? []).some((e) => /allows 2 Perks/.test(e)), JSON.stringify(perkRefusal.errors));
+await sleep(400);
+check('...and that character got nothing', (await sheet(overPerks.id)).perks.length === 0);
 
 // ================================================ 4. re-running is idempotent
 console.log('\n--- running the flow again re-states the spread, never stacks ---');

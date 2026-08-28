@@ -39,6 +39,29 @@
    would swap out, rather than colors being hardcoded ad hoc per component. */
 :root {
   --color-brand-rgb: 239 63 76;
+
+  /* **The app is dark; say so to the browser.** Without this the document
+     declares itself light, so every widget the browser draws ITSELF — a
+     <select>'s drop-down list above all — is painted as a light control. The
+     app then sets a pale `color` on the <select>, an <option> inherits it, and
+     the open list is pale text on a near-white popup: unreadable, and reported
+     as exactly that on the Counters tab's reward menu.
+     One line fixes every <select> in the app at once, and takes native
+     scrollbars, checkboxes and date pickers with it. The <option> rules below
+     are the belt to this pair of braces, because engines disagree about how
+     much of a popup an author may style at all. */
+  color-scheme: dark;
+}
+
+/* Explicit, because `color-scheme` alone is not honoured for popup contents
+   everywhere — Firefox in particular paints the list from the option's own
+   computed colours. Stated once here rather than at each of the thirteen
+   <select>s, several of which deliberately colour the CLOSED control (the
+   reward tag is a coloured pill) and must not have that colour leak into the
+   open list. */
+option {
+  background-color: #18181b; /* zinc-900 */
+  color: #e4e4e7;            /* zinc-200 */
 }
 
 @layer base {

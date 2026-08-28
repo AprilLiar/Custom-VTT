@@ -343,7 +343,13 @@ export default function CharacterSheet() {
       </AnimatePresence>
 
       {creating && (
-        <CharacterCreationDialog character={data.character} onClose={() => setCreating(false)} />
+        <CharacterCreationDialog
+          character={data.character}
+          // The stances they already stand in: creation ADDS a stance, so a
+          // Style bought earlier still counts toward what Moves are learnable.
+          stances={data.stances}
+          onClose={() => setCreating(false)}
+        />
       )}
     </div>
   );

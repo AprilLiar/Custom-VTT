@@ -16,10 +16,23 @@ import { motion } from 'framer-motion';
 // squeezed into a centered `max-w-md` panel. Framer Motion's animated
 // entrance/exit is unchanged from what every dialog already used (spring
 // scale+fade), just centralized here.
+// **`dismissible` and `closeButton` are two different questions**, and they only
+// look like one because for most dialogs the answer is the same. `dismissible`
+// is whether an ACCIDENT closes this — a click on the backdrop, a stray Escape.
+// `closeButton` is whether there is a deliberate way out at all.
+//
+// The five pause prompts (Defense, Grapple, Non-Committed, Move Conflict, Roll
+// Request) want neither: they must be answered. Character Creation wants no
+// accident and a very obvious deliberate exit — a whole build lives in its local
+// state and nothing is written until Finish, so a mis-click on the backdrop used
+// to bin every choice made so far, silently. So `closeButton` defaults to
+// `dismissible`, which leaves all five exactly as they were, and Creation opts
+// the ✕ back in on its own.
 export default function DialogShell({
   title,
   onClose,
   dismissible = true,
+  closeButton = dismissible,
   variant = 'sheet', // 'sheet' | 'fullscreen' | 'theater'
   maxWidth = 'max-w-md',
   children,
@@ -108,7 +121,7 @@ export default function DialogShell({
             >
               {title}
             </h3>
-            {dismissible && (
+            {closeButton && (
               <button
                 type="button"
                 onClick={onClose}

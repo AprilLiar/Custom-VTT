@@ -2682,25 +2682,41 @@ io.on('connection', (socket) => {
     const character = await getCharacter(payload.characterId);
     if (!character) return;
 
-    const [moves, perks, attributes] = await Promise.all([
-      all('SELECT id FROM moves'),
+    const [moves, perks, attributes, ownedStances] = await Promise.all([
+      all('SELECT id, name, style_attribute_id FROM moves'),
       all('SELECT id FROM perks'),
       all('SELECT id FROM attributes'),
+      all('SELECT attribute_a_id, attribute_b_id FROM stances WHERE character_id = ?', [character.id]),
     ]);
+    // **The Styles this character will have when the Moves are granted** — the
+    // stances they already stand in, plus the one this draft is about to
+    // create. That union is exactly what `characterHasStyle` will test against
+    // a few lines below, so the validator refuses precisely the Moves the grant
+    // loop would have dropped, and no others. Computing it from the new stance
+    // alone would refuse a Move the character was always going to be able to
+    // learn.
+    const ownedStyleIds = [
+      ...ownedStances.flatMap((s) => [s.attribute_a_id, s.attribute_b_id]),
+      payload?.stance?.attributeAId,
+      payload?.stance?.attributeBId,
+    ].filter((id) => Number.isInteger(Number(id)));
     const result = validateCreation({
       ...payload,
       validMoveIds: moves.map((m) => m.id),
       validPerkIds: perks.map((p) => p.id),
       validAttributeIds: attributes.map((a) => a.id),
+      moveStyles: Object.fromEntries(moves.map((m) => [m.id, m.style_attribute_id])),
+      moveNames: Object.fromEntries(moves.map((m) => [m.id, m.name])),
+      ownedStyleIds,
     });
     if (!result.ok) {
       // Answered to the caller alone, not broadcast: a rejected draft is that
       // one person's problem, and the wizard shows the same list inline.
       //
       // **Only genuine errors reach here.** Going over a preset's suggested
-      // Stat points or Perks is a warning, not a refusal — see validateCreation
-      // — so the short list that can actually block is things like a stance
-      // with one Style, which is not a stance.
+      // Stat points is a warning, not a refusal — see validateCreation — while
+      // the Perk and Move counts, a Move whose Style the character will not
+      // have, and a structurally broken stance all block.
       socket.emit('character:creation_rejected', {
         characterId: character.id,
         errors: result.errors,

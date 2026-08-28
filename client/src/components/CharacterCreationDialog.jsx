@@ -91,7 +91,7 @@ function FilterRow({ label, options, selected, onToggle, onClear }) {
   );
 }
 
-export default function CharacterCreationDialog({ character, onClose }) {
+export default function CharacterCreationDialog({ character, stances = [], onClose }) {
   const [stepIndex, setStepIndex] = useState(0);
   const [presetKey, setPresetKey] = useState(null);
   // **Every Stat starts at a bare d4, whatever the character already has
@@ -173,6 +173,30 @@ export default function CharacterCreationDialog({ character, onClose }) {
   }, [character.id, onClose]);
 
   const preset = presetByKey(presetKey);
+
+  // **Declared before every hook that reads them.** A hook's dependency ARRAY
+  // is evaluated at render time, so leaving these below `check`'s useMemo threw
+  // a temporal-dead-zone ReferenceError and took the whole dialog down the
+  // moment it opened. The same trap RelationshipBoard hit; lint does not catch
+  // it and no test that never mounts the component can either.
+  const styleById = new Map(library.attributes.map((a) => [a.id, a]));
+  // **Which Styles this build will actually have.** The stance being built in
+  // step 3, PLUS any stance the character already stands in — creation adds a
+  // stance, it never takes the old ones away, so a character who already had
+  // Speed can still learn a Speed Move whatever this draft picks. Getting that
+  // union wrong is not cosmetic any more: it now forbids rather than greys, so
+  // a narrower answer here would refuse a Move the server would have granted.
+  const ownedStyles = useMemo(
+    () =>
+      new Set([
+        ...stance.pair,
+        ...stances.flatMap((s) => [s.attribute_a_id, s.attribute_b_id]),
+      ].filter((id) => Number.isInteger(Number(id)))),
+    [stance.pair, stances]
+  );
+  const unlearnable = (move) =>
+    move.style_attribute_id != null && !ownedStyles.has(move.style_attribute_id);
+
   const draft = {
     presetKey,
     statRanks: ranks,
@@ -183,12 +207,33 @@ export default function CharacterCreationDialog({ character, onClose }) {
     perkIds,
     roleplay: answers,
   };
-  const check = useMemo(() => validateCreation(draft), [presetKey, ranks, stance, moveIds, perkIds, answers]);
+  // The wizard runs the SAME validator the server does, over the same Style
+  // data, so what it refuses and what the server refuses cannot drift — which
+  // is the whole reason this module is shared.
+  const check = useMemo(
+    () =>
+      validateCreation({
+        ...draft,
+        moveStyles: Object.fromEntries(library.moves.map((m) => [m.id, m.style_attribute_id])),
+        moveNames: Object.fromEntries(library.moves.map((m) => [m.id, m.name])),
+        ownedStyleIds: [...ownedStyles],
+      }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [presetKey, ranks, stance, moveIds, perkIds, answers, library.moves, ownedStyles]
+  );
   const spent = statPointsSpent(ranks);
   // Null when there is no preset — a free-form build has no "left" to report,
   // and 0 would read as "you are out".
   const pointsLeft = preset ? preset.statPoints - spent : null;
   const perksLeft = preset ? preset.perkCount - perkIds.length : null;
+  const movesLeft = preset ? preset.moveCount - moveIds.length : null;
+  // **A cap disables what is not already picked, never what is.** Greying out a
+  // ticked box would trap the build: you would be at the cap, over it, or
+  // holding a Move you can no longer learn, with no way to put any of them
+  // down. So a picked row always stays clickable — the only thing a cap stops
+  // is picking one more.
+  const atMoveCap = movesLeft != null && movesLeft <= 0;
+  const atPerkCap = perksLeft != null && perksLeft <= 0;
 
   const step = STEPS[stepIndex];
   const last = stepIndex === STEPS.length - 1;
@@ -215,14 +260,6 @@ export default function CharacterCreationDialog({ character, onClose }) {
   const toggleIn = (list, setList, id) =>
     setList(list.includes(id) ? list.filter((x) => x !== id) : [...list, id]);
 
-  const styleById = new Map(library.attributes.map((a) => [a.id, a]));
-  // Which Styles this build will actually have — the stance being built in
-  // step 3. Used to flag a Move the character will not be able to learn,
-  // because the server enforces the same rule and would drop it.
-  const ownedStyles = new Set(stance.pair);
-  const unlearnable = (move) =>
-    move.style_attribute_id != null && !ownedStyles.has(move.style_attribute_id);
-
   // Search on the name, then Style, then Tag — each an independent narrowing,
   // exactly as the Compendium applies them.
   const visibleMoves = library.moves
@@ -246,6 +283,14 @@ export default function CharacterCreationDialog({ character, onClose }) {
     <DialogShell
       title={`Create ${character.name}`}
       onClose={onClose}
+      // **Not dismissible by clicking away (decided, new).** A whole build lives
+      // in this dialog's local state and nothing is written until Finish, so a
+      // stray click on the backdrop threw away every choice made so far with no
+      // warning and no undo. Escape goes with it: both are accidents, and this
+      // is the one dialog in the app where an accident costs real work. The ✕
+      // stays, and it is deliberate.
+      dismissible={false}
+      closeButton
       variant="fullscreen"
       maxWidth="max-w-3xl"
       footer={
@@ -421,9 +466,10 @@ export default function CharacterCreationDialog({ character, onClose }) {
 
         {step.key === 'moves' && (
           <div className="space-y-3">
+            <Budget left={movesLeft} total={preset?.moveCount ?? null} noun="Move" hard />
             <p className="text-sm text-zinc-400">
-              Take whatever you want — there is no budget on Moves. Default Moves everybody already has
-              are not listed.
+              Default Moves everybody already has are not listed. A Move with a Style can only be taken
+              by someone whose stance carries that Style.
             </p>
             {/* **The controls sit beside the list, not above it.** Stacked, the
                 Search box and two filter rows ate a third of the window and
@@ -457,17 +503,36 @@ export default function CharacterCreationDialog({ character, onClose }) {
               </aside>
               <div className="min-w-0 flex-1 max-h-[30rem] space-y-1 overflow-y-auto">
               {visibleMoves.map((move) => {
+                const picked = moveIds.includes(move.id);
                 const blocked = unlearnable(move);
+                // Forbidden, not merely discouraged: the greyed-out row used to
+                // stay tickable, and the server then accepted the build and
+                // dropped the Move without a word — which looked exactly like
+                // it had worked. A picked row stays clickable so it can always
+                // be put back down.
+                const disabled = !picked && (blocked || atMoveCap);
                 return (
                   <label
                     key={move.id}
+                    title={
+                      blocked
+                        ? `Your stance does not carry ${styleById.get(move.style_attribute_id)?.name ?? 'this Style'}`
+                        : disabled
+                          ? `${preset.name} allows ${preset.moveCount} Moves`
+                          : undefined
+                    }
                     className={`flex items-center gap-2 panel-cut-sm border p-2 ${
-                      blocked ? 'border-amber-900/60 opacity-60' : 'border-zinc-800'
-                    }`}
+                      blocked
+                        ? 'border-amber-900/60 opacity-60'
+                        : picked
+                          ? 'border-brand-700'
+                          : 'border-zinc-800'
+                    } ${disabled ? 'cursor-not-allowed opacity-50' : ''}`}
                   >
                     <input
                       type="checkbox"
-                      checked={moveIds.includes(move.id)}
+                      checked={picked}
+                      disabled={disabled}
                       onChange={() => toggleIn(moveIds, setMoveIds, move.id)}
                       className="h-4 w-4"
                     />
@@ -489,7 +554,7 @@ export default function CharacterCreationDialog({ character, onClose }) {
 
         {step.key === 'perks' && (
           <div className="space-y-3">
-            <Budget left={perksLeft} total={preset?.perkCount ?? null} noun="Perk" />
+            <Budget left={perksLeft} total={preset?.perkCount ?? null} noun="Perk" hard />
             <div className="flex flex-col gap-3 md:flex-row">
               <aside className="shrink-0 md:w-52">
                 <FilterRow
@@ -503,16 +568,19 @@ export default function CharacterCreationDialog({ character, onClose }) {
               <div className="min-w-0 flex-1 max-h-[30rem] space-y-1 overflow-y-auto">
               {visiblePerks.map((perk) => {
                 const picked = perkIds.includes(perk.id);
+                const capped = !picked && atPerkCap;
                 return (
                   <label
                     key={perk.id}
+                    title={capped ? `${preset.name} allows ${preset.perkCount} Perks` : undefined}
                     className={`flex items-start gap-2 panel-cut-sm border p-2 ${
                       picked ? 'border-brand-700' : 'border-zinc-800'
-                    }`}
+                    } ${capped ? 'cursor-not-allowed opacity-50' : ''}`}
                   >
                     <input
                       type="checkbox"
                       checked={picked}
+                      disabled={!picked && atPerkCap}
                       onChange={() => toggleIn(perkIds, setPerkIds, perk.id)}
                       className="mt-0.5 h-4 w-4"
                     />
@@ -595,26 +663,31 @@ export default function CharacterCreationDialog({ character, onClose }) {
 // The budget, said the way a budget should be said: what is LEFT, big, with
 // the total as context. "Spent 10 of 16" makes you do the subtraction the
 // decision actually needs.
-function Budget({ left, total, noun }) {
+//
+// `hard` is a cap rather than a suggestion — the Perk and Move counts — so it
+// says "of N" rather than "N suggested", and going over is red rather than
+// amber. A number the wizard will refuse must not be worded as advice.
+function Budget({ left, total, noun, hard = false }) {
   if (total == null) {
     return (
       <div className="panel-cut border border-zinc-800 p-2 text-sm text-zinc-400">
-        No preset picked — spend as much or as little as you like.
+        No preset picked — {hard ? 'no limit on these' : 'spend as much or as little as you like'}.
       </div>
     );
   }
   const over = left < 0;
+  const tone = over
+    ? hard
+      ? 'border-red-800 text-red-300'
+      : 'border-amber-800 text-amber-300'
+    : 'border-zinc-800 text-zinc-300';
   return (
-    <div
-      className={`panel-cut border p-2 text-sm ${
-        over ? 'border-amber-800 text-amber-300' : 'border-zinc-800 text-zinc-300'
-      }`}
-    >
+    <div className={`panel-cut border p-2 text-sm ${tone}`}>
       <span className="font-display text-xl font-bold">{Math.abs(left)}</span>{' '}
       {noun}
       {Math.abs(left) === 1 ? '' : 's'} {over ? 'over' : 'left'}{' '}
-      <span className={over ? 'text-amber-500/70' : 'text-zinc-600'}>
-        {over ? `— ${total} suggested` : `of ${total}`}
+      <span className={over ? 'opacity-70' : 'text-zinc-600'}>
+        {over ? `— ${total} allowed` : `of ${total}`}
       </span>
     </div>
   );
