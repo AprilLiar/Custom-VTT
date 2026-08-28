@@ -198,7 +198,7 @@ export default function RelationshipEditor({ edge, anchor, fromName, toName, onC
         {edge.bend != null && (
           <button
             type="button"
-            onClick={() => patch({ bend: null })}
+            onClick={() => patch({ bend: null, bendU: null })}
             title="Drop the hand-drawn arc and let the board space this line again"
             className="flex items-center gap-1.5 self-start panel-cut-sm border border-zinc-700 px-2 py-1 text-[10px] font-bold uppercase tracking-wide text-zinc-400 hover:border-zinc-500 hover:text-zinc-100"
           >
@@ -224,13 +224,20 @@ export default function RelationshipEditor({ edge, anchor, fromName, toName, onC
         </label>
 
         <div className="flex items-center justify-between border-t border-zinc-800 pt-2">
+          {/* **No confirmation (decided, revised).** It used to ask, on the
+              reasoning that a relationship is real work to rebuild. There is an
+              undo behind the whole board now — three steps of it, Ctrl+Z — so
+              the dialog was buying nothing and costing a click every time,
+              which is most of what tidying a web is. Delete and Backspace do
+              the same thing to whatever is selected, and they do not ask
+              either. */}
           <button
             type="button"
             onClick={() => {
-              if (!window.confirm('Delete this relationship?')) return;
               socket.emit('relationships:delete_edge', { edgeId: edge.id });
               onClose();
             }}
+            title="Delete this relationship — Ctrl+Z takes it back"
             className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-wide text-zinc-600 hover:text-brand-400"
           >
             <Trash2 size={12} /> Delete

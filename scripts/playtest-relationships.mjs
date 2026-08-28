@@ -320,6 +320,35 @@ for (const bad of [Infinity, 'sideways', 1e12]) {
 aliceSock.emit('relationships:update_edge', { edgeId, bend: null, label: '⚔️ rivals' });
 await sleep(700);
 
+// **Both halves of the bend travel together.** `bend` is the offset across the
+// line and `bendU` is where along it that offset sits; clearing one without the
+// other would leave a later re-bend inheriting a position from an arc nobody
+// can see any more.
+aliceSock.emit('relationships:update_edge', { edgeId, bend: 60, bendU: 0.2 });
+await sleep(700);
+mine = await board(alice.id, { role: 'player', characterId: alice.id });
+let arc = mine.edges.find((e) => e.id === edgeId);
+check('an off-centre arc stores both of its numbers', arc.bend === 60 && arc.bend_u === 0.2,
+  JSON.stringify([arc.bend, arc.bend_u]));
+
+aliceSock.emit('relationships:update_edge', { edgeId, bend: null });
+await sleep(700);
+mine = await board(alice.id, { role: 'player', characterId: alice.id });
+arc = mine.edges.find((e) => e.id === edgeId);
+check('clearing the arc clears BOTH halves, not just the one named',
+  arc.bend === null && arc.bend_u === null, JSON.stringify([arc.bend, arc.bend_u]));
+
+// `bend_u` is bounded far more tightly than `bend`: a control point a chord
+// past either end is already a hairpin.
+aliceSock.emit('relationships:update_edge', { edgeId, bend: 10, bendU: 500 });
+await sleep(700);
+mine = await board(alice.id, { role: 'player', characterId: alice.id });
+arc = mine.edges.find((e) => e.id === edgeId);
+check('a wild along-the-line position is bounded, not stored raw',
+  Math.abs(arc.bend_u) <= 2, JSON.stringify(arc.bend_u));
+aliceSock.emit('relationships:update_edge', { edgeId, bend: null, label: '⚔️ rivals' });
+await sleep(700);
+
 // The same gate as everything else on the board.
 bobSock.emit('relationships:update_edge', { edgeId, label: 'vandalised' });
 await sleep(700);
@@ -445,6 +474,80 @@ check('their board is gone with them',
   (leftovers?.nodes ?? []).length === 0 && (leftovers?.people ?? []).length === 0
     && (leftovers?.edges ?? []).length === 0,
   JSON.stringify(leftovers));
+
+// ============================================ 10. undo
+//
+// **The one thing only a live server can prove.** Undo restores whole rows by
+// their ORIGINAL ids — an inverse command could not, because re-creating a
+// deleted node would hand it a new id and every relationship pointing at it
+// would point at nothing.
+console.log('\n--- three steps of undo ---');
+const uOwner = await jpost('/api/characters', { name: `Undoer${stamp}`, characterType: 'pc' });
+const uSock = await connect({ role: 'player', characterId: uOwner.id });
+const uBoard = () => board(uOwner.id, { role: 'player', characterId: uOwner.id });
+
+for (const [x, y] of [[0, 0], [400, 0]]) {
+  uSock.emit('relationships:add_node', { characterId: uOwner.id, targetCharacterId: npc.id, x, y });
+  await sleep(500);
+}
+let ub = await uBoard();
+const [uA, uB] = ub.nodes;
+uSock.emit('relationships:add_edge', { fromNodeId: uA.id, fromSide: 'right', toNodeId: uB.id, toSide: 'left' });
+await sleep(600);
+ub = await uBoard();
+const uEdgeId = ub.edges[0].id;
+uSock.emit('relationships:update_edge', { edgeId: uEdgeId, label: 'before' });
+await sleep(600);
+
+// Delete the node the line hangs from, relationships and all.
+uSock.emit('relationships:delete_node', { nodeId: uA.id, keepRelationships: false });
+await sleep(700);
+ub = await uBoard();
+check('the node and its line are gone', ub.nodes.length === 1 && ub.edges.length === 0,
+  JSON.stringify([ub.nodes.length, ub.edges.length]));
+
+uSock.emit('relationships:undo', { characterId: uOwner.id });
+await sleep(700);
+ub = await uBoard();
+check('undo brings the node back WITH ITS ORIGINAL ID',
+  ub.nodes.some((n) => n.id === uA.id), JSON.stringify(ub.nodes.map((n) => n.id)));
+check('...and the relationship that pointed at it points at it again',
+  ub.edges.length === 1 && ub.edges[0].from_node_id === uA.id && ub.edges[0].id === uEdgeId,
+  JSON.stringify(ub.edges));
+check('...carrying the label it had', ub.edges[0].label === 'before', JSON.stringify(ub.edges[0].label));
+
+// The window is three deep, and the fourth step back is refused rather than
+// reaching further into the past.
+for (const label of ['one', 'two', 'three', 'four']) {
+  uSock.emit('relationships:update_edge', { edgeId: uEdgeId, label });
+  await sleep(400);
+}
+for (let i = 0; i < 5; i++) {
+  uSock.emit('relationships:undo', { characterId: uOwner.id });
+  await sleep(400);
+}
+ub = await uBoard();
+check('undo is exactly three deep — five presses do not reach past it',
+  ub.edges[0].label === 'one', JSON.stringify(ub.edges[0].label));
+check('...and pressing it on an empty stack is a no-op, not a crash',
+  ub.nodes.length === 2 && ub.edges.length === 1, JSON.stringify([ub.nodes.length, ub.edges.length]));
+
+// The depth rides every broadcast so the client can grey its own control.
+uSock.emit('relationships:update_node', { nodeId: uB.id, nickname: 'x' });
+await sleep(600);
+const lastUpdate = uSock.boards.at(-1);
+check('every board update reports how many steps back are left',
+  typeof lastUpdate?.undoDepth === 'number' && lastUpdate.undoDepth > 0,
+  JSON.stringify(lastUpdate?.undoDepth));
+
+// The same gate as every other write on this board.
+bobSock.emit('relationships:undo', { characterId: uOwner.id });
+await sleep(600);
+ub = await uBoard();
+check('another player cannot undo your board',
+  ub.nodes.find((n) => n.id === uB.id)?.nickname === 'x',
+  JSON.stringify(ub.nodes.map((n) => n.nickname)));
+uSock.close();
 
 console.log(failures === 0 ? '\nALL PASSED' : `\n${failures} FAILED`);
 for (const s of [gm, aliceSock, bobSock]) s.close();

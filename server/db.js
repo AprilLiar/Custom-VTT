@@ -1409,6 +1409,14 @@ export async function initDb() {
   // would flatten out the instant either portrait moved; an offset is relative
   // to the line's own two ends, so the curve travels with them.
   await ensureColumn('relationship_edges', 'bend', 'REAL');
+  // **The other half of the bend.** `bend` is the control point's offset ACROSS
+  // the chord; `bend_u` is where along it that offset is applied — 0 at one end,
+  // 1 at the other, NULL reading as 0.5, which is exactly what the single-column
+  // version always did. Two numbers is what makes a hand bend omni-directional
+  // and lets the arc form where it was grabbed rather than always in the middle.
+  // The older column keeps its name rather than being migrated to `bend_v`: the
+  // rename would move every stored arc for no change in behaviour.
+  await ensureColumn('relationship_edges', 'bend_u', 'REAL');
 
   // The Perks compendium: master list of Perk templates. Just picture, name,
   // and description — no generic automation system (removed; see

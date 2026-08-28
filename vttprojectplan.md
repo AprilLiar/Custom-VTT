@@ -3093,6 +3093,8 @@ animations and transitions, but framer-motion animates through inline styles it 
 point under your finger follows, and the line bows into the arc it defines. What is stored
 is a single `relationship_edges.bend` REAL — the same perpendicular displacement of the
 quadratic's control point that the automatic fan hands out — and **never a control point**.
+(One number turned out to be one too few: see Phase 8, where it became a pair so the arc can
+form off-centre and in any direction.)
 An absolute control point is a fixed place in the world, so the arc would flatten the moment
 either portrait moved; an offset is measured against the line's own two ends and travels with
 them. `NULL` means "never bent by hand" and returns the line to the fan; `0` is a real,
@@ -3180,6 +3182,68 @@ away without a word — the same trap the relationship board hit — so the box 
 the labels actually being drawn rather than being a constant that happens to fit today's
 seven styles. `stanceGraphLayout.js` holds both, with a test that reconstructs the old
 placement and asserts it collided, so the new one cannot pass vacuously.
+
+### Phase 8 (implemented) — two-axis bends, undo, and the keyboard
+
+**A bend is two numbers now, not one.** The control point is stored as a pair of
+fractions of the line's own frame — `bend` is the offset ACROSS the chord (the column
+keeps its name) and `bend_u` is where ALONG it that offset sits, NULL reading as 0.5.
+Two degrees of freedom is what makes the gesture omni-directional and what lets the arc
+form where it was grabbed: with `u` pinned at the middle, which is all the first version
+had, every arc peaked in the centre however near an end you pulled, and dragging along
+the line did nothing at all because the drag was projected onto the normal and the other
+half thrown away.
+
+The maths is one identity. A quadratic's only control-point term is `2t(1−t)·C`, so
+moving `C` by Δ moves the curve at parameter `t` by `2t(1−t)·Δ`. Read backwards: to make
+the grabbed point follow the pointer exactly, move `C` by the pointer's own delta divided
+by that weight — both components at once. The weight is floored (grabbing within a few
+pixels of an anchor would otherwise divide by nearly zero), and the drag adds only the
+change since the grab, so the first frame is a no-op by construction wherever you
+grabbed. Every arc already on a board survives untouched: `u = 0.5` reproduces the old
+single-number curve exactly.
+
+**`Number(null)` is `0`, twice.** Reading either column with a bare `Number()` was a
+silent disaster in both directions — on `bend` it would have read every un-bent line in
+the world as "hand-bent, dead straight" and switched the automatic fan off for the whole
+board; on `bend_u` it would have jammed every arc stored before that column existed hard
+against one end. Both are caught by one `column()` guard, and both were caught by tests
+rather than by anybody looking at a board.
+
+**Undo, three deep, and it lives on the server.** An inverse command works fine for a
+move or a colour and falls apart on a delete: undoing one has to bring the row back with
+the SAME id, or every relationship that pointed at it now points at nothing. So each
+mutating handler snapshots the whole board before it writes, and `relationships:undo`
+restores the three tables by re-inserting every row with its original id. In memory only
+— an undo stack is a convenience for the session you are in, not a record of the game —
+and shared per board rather than per person, because the GM and the owner edit the same
+web and two private histories would disagree the moment both drew. `undoDepth` rides
+every broadcast so the corner's Undo button can grey itself rather than firing into an
+empty stack. Ctrl+Z (and ⌘Z) is bound on the board.
+
+**Delete and Backspace remove whatever is selected**, line or portrait, and the
+relationship editor's Delete no longer asks first. The confirmation was buying nothing
+once there was an undo behind the whole board, and it cost a click every time — which is
+most of what tidying a web is. A portrait deleted by key keeps its relationships,
+floating loose: it is the gentler of the ✕ menu's two options and the right default for a
+key that is easy to hit by accident. Neither key fires while focus is in an input, a
+textarea or a contenteditable, because Backspace in the label field has to delete a
+character rather than the relationship it names.
+
+**The anchor dot no longer lags behind its portrait.** The lines trailing a dragged face
+is the board's whole feel and is deliberate; the handle sitting ON the anchor dot is a
+different thing — it belongs to the portrait, and leaving it behind read as the dot
+coming unstuck. It is now moved on the pointer's own frame from the node's TRUE position
+rather than the chase's eased one.
+
+**And that fix had a second half only measuring caught.** React never wrote that
+`transform`, so React never removed it: the handle tracked perfectly during the drag and
+then jumped a full drag-length the moment it was released, because the stale offset was
+applied on top of the freshly rendered position. Cleared in a layout effect keyed on
+`nodes` — after React has placed the handles, before the browser paints, so no frame
+shows the old spot. The path registry is keyed by both strings and raw numeric edge ids,
+which the first version of that loop found the hard way, in the browser, with a
+`startsWith is not a function` that took the tab down.
 
 ### Planned, not yet built
 - Nothing. The feature is complete.

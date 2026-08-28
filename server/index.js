@@ -1431,6 +1431,80 @@ async function getRelationshipBoard(ownerCharacterId) {
   return { people, nodes, edges };
 }
 
+// ---------------------------------------------------------------------------
+// Undo — the last three states of a board
+// ---------------------------------------------------------------------------
+//
+// **Whole snapshots, on the server, rather than inverse commands on the client.**
+// An inverse works fine for a move or a colour, and falls apart on a delete:
+// undoing one has to bring a row back with the SAME id, or every relationship
+// that pointed at it now points at nothing. Re-inserting by id is something only
+// the writer can do, so the writer is where undo lives — and it also means the
+// GM and the owner, who edit the same board, share one history rather than
+// holding two that disagree.
+//
+// Three deep, as asked. In memory only: an undo stack is a working convenience
+// for the session you are in, not a record of the game, and one that survived a
+// restart would let somebody reach back past a night's play.
+//
+// Keyed by owner, so one player's undo can never touch another's board.
+const UNDO_DEPTH = 3;
+const undoStacks = new Map(); // ownerCharacterId -> snapshot[] (oldest first)
+
+// Take a snapshot of a board as it is RIGHT NOW. Called before a write, so the
+// top of the stack is always the state to return to.
+async function pushUndo(ownerCharacterId) {
+  const id = Number(ownerCharacterId);
+  if (!Number.isInteger(id)) return;
+  const snapshot = await getRelationshipBoard(id);
+  const stack = undoStacks.get(id) ?? [];
+  stack.push(snapshot);
+  // Oldest out first: three is the window the table asked for, and an unbounded
+  // stack of boards carrying base64 portraits is a memory leak with a nice name.
+  while (stack.length > UNDO_DEPTH) stack.shift();
+  undoStacks.set(id, stack);
+}
+
+// Put a board back exactly as it was: clear the three tables for this owner and
+// re-insert every row with its original id. Explicit column lists rather than a
+// row spread, so a future column added to one of these tables fails loudly here
+// instead of being silently dropped on the first undo.
+async function restoreBoard(ownerCharacterId, snapshot) {
+  const id = Number(ownerCharacterId);
+  await run('DELETE FROM relationship_edges WHERE owner_character_id = ?', [id]);
+  await run('DELETE FROM relationship_nodes WHERE owner_character_id = ?', [id]);
+  await run('DELETE FROM relationship_people WHERE owner_character_id = ?', [id]);
+  // People first, then nodes, then edges — the order the references run in, so
+  // the database never sees a row pointing at one that is not back yet.
+  for (const p of snapshot.people) {
+    await run(
+      `INSERT INTO relationship_people (id, owner_character_id, name, image_data, image_mime_type, created_at, crop_x, crop_y, crop_w, crop_h)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [p.id, id, p.name, p.image_data, p.image_mime_type, p.created_at, p.crop_x, p.crop_y, p.crop_w, p.crop_h]
+    );
+  }
+  for (const n of snapshot.nodes) {
+    await run(
+      `INSERT INTO relationship_nodes (id, owner_character_id, character_id, person_id, x, y, nickname, notes, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [n.id, id, n.character_id, n.person_id, n.x, n.y, n.nickname, n.notes, n.created_at]
+    );
+  }
+  for (const e of snapshot.edges) {
+    await run(
+      `INSERT INTO relationship_edges (id, owner_character_id, from_node_id, from_side, from_x, from_y,
+        to_node_id, to_side, to_x, to_y, label, color, arrow, retired, created_at, bend, bend_u)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [e.id, id, e.from_node_id, e.from_side, e.from_x, e.from_y, e.to_node_id, e.to_side, e.to_x, e.to_y,
+        e.label, e.color, e.arrow, e.retired, e.created_at, e.bend, e.bend_u]
+    );
+  }
+}
+
+// How many steps back this board can go, so the client can grey its own control
+// rather than firing into an empty stack to find out.
+const undoDepthFor = (ownerCharacterId) => undoStacks.get(Number(ownerCharacterId))?.length ?? 0;
+
 // Who may read or write one board: its owner, or the GM. The GM edits rather
 // than merely watches (decided) — useful for setting a new player up with a
 // starting web — so there is one predicate, not two.
@@ -1451,7 +1525,9 @@ async function emitRelationships(ownerCharacterId) {
   for (const socket of io.sockets.sockets.values()) {
     if (!maySeeBoard(socket.data?.identity, id)) continue;
     payload = payload ?? (await getRelationshipBoard(id));
-    socket.emit('relationships:updated', { characterId: id, ...payload });
+    // `undoDepth` rides every board update so the client can grey its own Undo
+    // rather than firing into an empty stack to find out it was empty.
+    socket.emit('relationships:updated', { characterId: id, ...payload, undoDepth: undoDepthFor(id) });
   }
 }
 
@@ -3932,6 +4008,7 @@ io.on('connection', (socket) => {
     const hasCharacter = targetCharacterId != null;
     const hasPerson = personId != null;
     if (hasCharacter === hasPerson) return;
+    await pushUndo(owner.id);
     if (hasCharacter && !(await getCharacter(targetCharacterId))) return;
     if (hasPerson) {
       const person = await one(
@@ -3953,6 +4030,7 @@ io.on('connection', (socket) => {
   on('relationships:move_node', async ({ nodeId, x, y }) => {
     const node = await loadOwnedNode(nodeId);
     if (!node) return;
+    await pushUndo(node.owner_character_id);
     await run('UPDATE relationship_nodes SET x = ?, y = ? WHERE id = ?', [coord(x), coord(y), node.id]);
     await emitRelationships(node.owner_character_id);
   });
@@ -3960,6 +4038,7 @@ io.on('connection', (socket) => {
   on('relationships:update_node', async ({ nodeId, nickname, notes }) => {
     const node = await loadOwnedNode(nodeId);
     if (!node) return;
+    await pushUndo(node.owner_character_id);
     await run('UPDATE relationship_nodes SET nickname = ?, notes = ? WHERE id = ?', [
       clampText(nickname ?? node.nickname, 80),
       clampText(notes ?? node.notes, 8000),
@@ -3984,6 +4063,7 @@ io.on('connection', (socket) => {
   on('relationships:delete_node', async ({ nodeId, keepRelationships }) => {
     const node = await loadOwnedNode(nodeId);
     if (!node) return;
+    await pushUndo(node.owner_character_id);
     if (keepRelationships) {
       const cx = node.x + NODE_CENTER_OFFSET;
       const cy = node.y + NODE_CENTER_OFFSET;
@@ -4024,6 +4104,7 @@ io.on('connection', (socket) => {
     // A line from somebody to themselves is a loop with nothing to say, and the
     // curve maths would have to special-case a zero-length span to draw it.
     if (from.id === to.id) return;
+    await pushUndo(from.owner_character_id);
     await run(
       `INSERT INTO relationship_edges (owner_character_id, from_node_id, from_side, to_node_id, to_side)
        VALUES (?, ?, ?, ?, ?)`,
@@ -4058,25 +4139,37 @@ io.on('connection', (socket) => {
   // being absent, which like every other field on this event means "leave it
   // alone", so the three cases have to stay apart: undefined keeps, null
   // clears, a number sets.
+  // **The hand-drawn arc, as two fractions of the line's own frame.** `bend` is
+  // the control point's offset ACROSS the chord and `bendU` is where along it
+  // that offset sits. Bounded for exactly the reason `coord` is bounded: the
+  // plane is infinite and a number is not, and one NaN here would take the line
+  // off the board entirely.
   const BEND_LIMIT = 4000;
-  const bendValue = (value) => {
+  const BEND_U_LIMIT = 2;
+  const bounded = (value, limit, fallback = null) => {
     // Explicitly, before Number() gets its hands on it: `Number(null)` is 0,
     // which is a perfectly finite number and would store "hand-bent, straight"
     // where the caller asked for "not hand-bent at all".
-    if (value === null || value === undefined || value === '') return null;
+    if (value === null || value === undefined || value === '') return fallback;
     const n = Number(value);
-    if (!Number.isFinite(n)) return null;
-    return Math.max(-BEND_LIMIT, Math.min(BEND_LIMIT, n));
+    if (!Number.isFinite(n)) return fallback;
+    return Math.max(-limit, Math.min(limit, n));
   };
 
   // What a relationship SAYS, as opposed to where it is attached (move_end).
   // Every field is optional: the editor applies each control live, so a single
   // change sends a single field and everything else keeps its stored value.
-  on('relationships:update_edge', async ({ edgeId, label, color, arrow, retired, bend }) => {
+  on('relationships:update_edge', async (payload) => {
+    const { edgeId, label, color, arrow, retired, bend, bendU } = payload;
     const edge = await loadOwnedEdge(edgeId);
     if (!edge) return;
+    await pushUndo(edge.owner_character_id);
+    // **The two halves of a bend move together.** `bend: null` clears the whole
+    // hand bend, so `bend_u` has to go with it or a later re-bend would inherit
+    // a stale along-the-line position from an arc nobody can see any more.
+    const clearing = bend === null;
     await run(
-      `UPDATE relationship_edges SET label = ?, color = ?, arrow = ?, retired = ?, bend = ? WHERE id = ?`,
+      `UPDATE relationship_edges SET label = ?, color = ?, arrow = ?, retired = ?, bend = ?, bend_u = ? WHERE id = ?`,
       [
         clampText(label ?? edge.label, 60),
         colour(color ?? edge.color, edge.color),
@@ -4085,7 +4178,8 @@ io.on('connection', (socket) => {
         // `side()` uses for the four dot names.
         ARROWS.has(arrow) ? arrow : ARROWS.has(edge.arrow) ? edge.arrow : 'none',
         retired == null ? edge.retired : retired ? 1 : 0,
-        bend === undefined ? edge.bend : bendValue(bend),
+        bend === undefined ? edge.bend : bounded(bend, BEND_LIMIT),
+        clearing ? null : bendU === undefined ? edge.bend_u : bounded(bendU, BEND_U_LIMIT, 0.5),
         edge.id,
       ]
     );
@@ -4095,6 +4189,7 @@ io.on('connection', (socket) => {
   on('relationships:delete_edge', async ({ edgeId }) => {
     const edge = await loadOwnedEdge(edgeId);
     if (!edge) return;
+    await pushUndo(edge.owner_character_id);
     await run('DELETE FROM relationship_edges WHERE id = ?', [edge.id]);
     await emitRelationships(edge.owner_character_id);
   });
@@ -4114,6 +4209,7 @@ io.on('connection', (socket) => {
       const otherNodeId = end === 'from' ? edge.to_node_id : edge.from_node_id;
       if (otherNodeId != null && Number(otherNodeId) === target.id) return;
     }
+    await pushUndo(edge.owner_character_id);
     const columns =
       end === 'from'
         ? ['from_node_id', 'from_side', 'from_x', 'from_y']
@@ -4139,6 +4235,7 @@ io.on('connection', (socket) => {
     // Name is the one mandatory field: a face with no name is not a person you
     // can think about, and the rail would show a blank row.
     if (!owner || !personName) return;
+    await pushUndo(owner.id);
     await run(
       `INSERT INTO relationship_people (owner_character_id, name, image_data, image_mime_type, crop_x, crop_y, crop_w, crop_h)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -4156,6 +4253,7 @@ io.on('connection', (socket) => {
     if (!personName) return;
     // An absent picture means "leave it alone", not "clear it" — the editor
     // only sends one when the file picker actually produced one.
+    await pushUndo(person.owner_character_id);
     await run(
       imageData
         ? `UPDATE relationship_people SET name = ?, image_data = ?, image_mime_type = ?, ${CROP_COLUMNS} WHERE id = ?`
@@ -4173,6 +4271,7 @@ io.on('connection', (socket) => {
   on('relationships:delete_person', async ({ personId }) => {
     const person = await one('SELECT * FROM relationship_people WHERE id = ?', [personId]);
     if (!person || !mayWriteBoard(person.owner_character_id)) return;
+    await pushUndo(person.owner_character_id);
     // Their lines go with them. Deleting the person is the one destructive
     // choice on the board that offers no "keep the relationships" option — the
     // ✕ menu on a node is where that choice lives, and this is a level above it.
@@ -4184,6 +4283,24 @@ io.on('connection', (socket) => {
     await run('DELETE FROM relationship_nodes WHERE person_id = ?', [person.id]);
     await run('DELETE FROM relationship_people WHERE id = ?', [person.id]);
     await emitRelationships(person.owner_character_id);
+  });
+
+  // **Ctrl+Z.** Pops the most recent snapshot and puts the board back exactly as
+  // it was — same rows, same ids — so relationships that pointed at a deleted
+  // node point at it again rather than at nothing.
+  //
+  // The stack is per board and shared: the GM and the owner edit the same web,
+  // so they undo the same history. Whoever presses it takes back the last
+  // change made to that board, not the last change made by them — which is the
+  // only version that can be coherent when two people are drawing at once.
+  on('relationships:undo', async ({ characterId }) => {
+    if (!mayWriteBoard(characterId)) return;
+    const id = Number(characterId);
+    const stack = undoStacks.get(id);
+    if (!stack?.length) return;
+    await restoreBoard(id, stack.pop());
+    if (!stack.length) undoStacks.delete(id);
+    await emitRelationships(id);
   });
 
   on('injury:add', async ({ characterId, name, effect, slotName, penalty }) => {

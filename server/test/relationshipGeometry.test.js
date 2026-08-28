@@ -12,16 +12,22 @@ import {
   BEND_LIMIT,
   BEND_SNAP,
   BEND_SPACING,
+  BEND_U_LIMIT,
   NODE_H,
   NODE_W,
   SIDES,
+  STRAIGHT,
   anchorPoint,
   assignBends,
+  bendFields,
+  bendFromControl,
   bendFromDrag,
+  bendOf,
   bendOffsets,
   bendWeight,
   chordParam,
   clampBend,
+  controlPoint,
   edgeEnds,
   edgePath,
   DROP_PAD,
@@ -35,6 +41,9 @@ import {
 } from '../../client/src/lib/relationshipGeometry.js';
 
 const node = (id, x, y) => ({ id, x, y });
+
+const near = (a, b, epsilon = 1e-9) =>
+  assert.ok(Math.abs(a - b) < epsilon, `${a} !== ${b} (within ${epsilon})`);
 
 test('the four dots sit on the midpoints of the portrait edges', () => {
   const n = node(1, 100, 200);
@@ -104,23 +113,55 @@ test('one line is straight; two bow apart symmetrically', () => {
 test('a bent line really does leave the straight one', () => {
   const from = { x: 0, y: 0 };
   const to = { x: 200, y: 0 };
-  const straight = edgePath(from, to, 0);
-  const bent = edgePath(from, to, BEND_SPACING);
+  const straight = edgePath(from, to, STRAIGHT);
+  const bent = edgePath(from, to, { u: 0.5, v: BEND_SPACING });
   // The label point is the curve's own midpoint, so it moves with the bend.
   assert.deepEqual(straight.mid, { x: 100, y: 0 });
   assert.notDeepEqual(bent.mid, straight.mid);
   assert.equal(bent.mid.x, 100);
   assert.ok(Math.abs(bent.mid.y) > 1, JSON.stringify(bent.mid));
   // And the two directions separate rather than landing on each other.
-  const other = edgePath(from, to, -BEND_SPACING);
+  const other = edgePath(from, to, { u: 0.5, v: -BEND_SPACING });
   assert.ok(bent.mid.y * other.mid.y < 0, 'opposite offsets must bow opposite ways');
+  // No bend at all is the straight line, and so is an unusable one.
+  assert.equal(edgePath(from, to).d, straight.d);
+  assert.equal(edgePath(from, to, { u: NaN, v: NaN }).d, straight.d);
+});
+
+test('u slides the arc along the line, which is what "not at the centre" means', () => {
+  // The whole of item 3. With `u` pinned at 0.5 — all the first version had —
+  // every arc peaked in the middle however near an end it was pulled.
+  const from = { x: 0, y: 0 };
+  const to = { x: 400, y: 0 };
+  const near = edgePath(from, to, { u: 0.15, v: 60 });
+  const far = edgePath(from, to, { u: 0.85, v: 60 });
+  assert.ok(near.c.x < 100, `control point should sit early: ${near.c.x}`);
+  assert.ok(far.c.x > 300, `control point should sit late: ${far.c.x}`);
+  // Both still bow the same way; only where they bulge differs.
+  assert.ok(near.mid.y > 0 && far.mid.y > 0);
+  assert.notEqual(near.d, far.d);
+});
+
+test('the control point round-trips through the chord frame', () => {
+  // The pair IS the control point, expressed against the line's own two ends —
+  // which is what lets an arc survive both portraits being moved.
+  for (const [from, to] of [
+    [{ x: 0, y: 0 }, { x: 300, y: 0 }],
+    [{ x: 120, y: 40 }, { x: -60, y: 260 }],
+  ]) {
+    for (const bend of [STRAIGHT, { u: 0.2, v: -75 }, { u: 1.4, v: 12.5 }]) {
+      const back = bendFromControl(from, to, controlPoint(from, to, bend));
+      near(back.u, bend.u, 1e-9);
+      near(back.v, bend.v, 1e-9);
+    }
+  }
 });
 
 test('a curve between identical points does not divide by zero', () => {
   // Reachable: two nodes dropped exactly on top of each other, or a loose end
   // released on its own anchor.
   const p = { x: 40, y: 40 };
-  const path = edgePath(p, p, BEND_SPACING);
+  const path = edgePath(p, p, { u: 0.5, v: BEND_SPACING });
   assert.ok(!path.d.includes('NaN'), path.d);
   assert.ok(Number.isFinite(path.mid.x) && Number.isFinite(path.mid.y));
 });
@@ -141,8 +182,11 @@ test('assignBends fans a pair and leaves a lone line straight', () => {
     { id: 4, from_node_id: 1, to_node_id: null }, // loose
   ];
   const bends = assignBends(edges);
-  assert.equal(bends.get(3), 0, 'the only line between 1 and 3 stays straight');
+  assert.deepEqual(bends.get(3), STRAIGHT, 'the only line between 1 and 3 stays straight');
   assert.equal(bends.get(4), undefined, 'a loose end gets no fan');
+  // The fan only ever moves a line ACROSS its chord, so every automatic bend
+  // sits at the middle. `u` is the hand-drag's alone.
+  for (const id of [1, 2, 3]) assert.equal(bends.get(id).u, 0.5);
 });
 
 // **The bug the old version of this file could not see.**
@@ -195,25 +239,32 @@ test('a hand-drawn arc overrides the fan without disturbing its neighbours', () 
     { id: 3, from_node_id: 1, to_node_id: 2 },
   ];
   const before = assignBends(pair);
-  const after = assignBends([{ ...pair[0], bend: 137 }, pair[1], pair[2]]);
+  const after = assignBends([{ ...pair[0], bend: 137, bend_u: 0.3 }, pair[1], pair[2]]);
 
-  assert.equal(after.get(1), 137, 'the bent line keeps exactly what it was given');
+  assert.deepEqual(after.get(1), { u: 0.3, v: 137 }, 'the bent line keeps exactly what it was given');
   // The other two must not slide sideways because a third line was bent. A
   // hand-bent edge still occupies its slot in the fan; it just does not sit in
   // it. Re-fanning the remainder would move lines nobody touched.
-  assert.equal(after.get(2), before.get(2));
-  assert.equal(after.get(3), before.get(3));
+  assert.deepEqual(after.get(2), before.get(2));
+  assert.deepEqual(after.get(3), before.get(3));
 
   // A hand bend of zero is a real value — "I straightened this myself" — and
   // must not be mistaken for the absence of one.
-  assert.equal(assignBends([{ id: 1, from_node_id: 1, to_node_id: 2, bend: 0 }]).get(1), 0);
+  assert.deepEqual(assignBends([{ id: 1, from_node_id: 1, to_node_id: 2, bend: 0 }]).get(1), STRAIGHT);
+  // **A row stored before `bend_u` existed reads as the middle**, which is
+  // exactly what the single-number version always drew — so every arc already
+  // on a board survives the upgrade unchanged.
+  assert.deepEqual(bendOf({ bend: 40 }), { u: 0.5, v: 40 });
+  assert.deepEqual(bendOf({ bend: 40, bend_u: null }), { u: 0.5, v: 40 });
+  assert.deepEqual(bendOf({ bend: 40, bend_u: 0.2 }), { u: 0.2, v: 40 });
   // Null, undefined and garbage all mean "no hand bend": fall back to the fan.
   for (const bend of [null, undefined, NaN, 'wobbly']) {
+    assert.equal(bendOf({ bend }), null, `bend ${String(bend)} is not a hand bend`);
     const fanned = assignBends([
       { id: 1, from_node_id: 1, to_node_id: 2, bend },
       { id: 2, from_node_id: 1, to_node_id: 2, bend },
     ]);
-    assert.equal(fanned.get(1), -BEND_SPACING / 2, `bend ${String(bend)} should fall back to the fan`);
+    assert.deepEqual(fanned.get(1), { u: 0.5, v: -BEND_SPACING / 2 }, `bend ${String(bend)} should fall back to the fan`);
   }
 });
 
@@ -221,26 +272,46 @@ test('a hand-drawn arc overrides the fan without disturbing its neighbours', () 
 // Bending a line by hand
 // ---------------------------------------------------------------------------
 
-test('grabbing a line anywhere and pulling puts that point under the pointer', () => {
+test('the point you grabbed follows the pointer exactly, in BOTH directions', () => {
+  // The whole of "omni-directional". The first version projected the drag onto
+  // the chord's normal and threw the along-chord half away, so dragging a line
+  // sideways did nothing at all.
   const from = { x: 0, y: 0 };
   const to = { x: 400, y: 0 };
-  // Away from the ends, the maths is exact: the offset it answers is the one
-  // that draws the curve through the point you dragged to.
+  const at = (bend, t) => {
+    const c = controlPoint(from, to, bend);
+    return {
+      x: (1 - t) ** 2 * from.x + 2 * t * (1 - t) * c.x + t ** 2 * to.x,
+      y: (1 - t) ** 2 * from.y + 2 * t * (1 - t) * c.y + t ** 2 * to.y,
+    };
+  };
   for (const t of [0.3, 0.5, 0.7]) {
-    const target = { x: from.x + t * 400, y: 60 };
-    const offset = bendFromDrag(from, to, t, target);
-    // Evaluate the resulting quadratic at t and check it lands on the pointer.
-    const { d } = edgePath(from, to, offset);
-    const [, cx, cy] = d.match(/Q ([-\d.]+) ([-\d.]+)/).map(Number);
-    const y = 2 * t * (1 - t) * Number(cy) + t * t * to.y + (1 - t) * (1 - t) * from.y;
-    assert.ok(Math.abs(y - 60) < 1e-9, `t=${t} drew through ${y}, not 60`);
-    assert.ok(Number.isFinite(cx));
+    const before = at(STRAIGHT, t);
+    for (const [dx, dy] of [[0, 60], [0, -60], [70, 0], [-45, 25]]) {
+      const bend = bendFromDrag(from, to, STRAIGHT, t, dx, dy);
+      const after = at(bend, t);
+      near(after.x - before.x, dx, 1e-9);
+      near(after.y - before.y, dy, 1e-9);
+    }
+  }
+});
+
+test('a drag starting from an existing arc adds to it rather than replacing it', () => {
+  // The delta rule. Grabbing a bent line and not moving must leave it exactly
+  // where it was — otherwise the first frame of every re-bend is a jump.
+  const from = { x: 0, y: 0 };
+  const to = { x: 400, y: 0 };
+  const base = { u: 0.25, v: -90 };
+  for (const t of [0.1, 0.5, 0.9]) {
+    const still = bendFromDrag(from, to, base, t, 0, 0);
+    near(still.u, base.u, 1e-9);
+    near(still.v, base.v, 1e-9);
   }
 });
 
 test('grabbing right at an anchor does not throw the line off the board', () => {
   // The ends of a quadratic do not move however hard its control point is
-  // pulled, so the honest offset there is infinite. `bendWeight`'s floor is what
+  // pulled, so the honest divisor there is zero. `bendWeight`'s floor is what
   // stops that from being a division by nearly zero and a line several thousand
   // units long on the first frame.
   const from = { x: 0, y: 0 };
@@ -249,27 +320,33 @@ test('grabbing right at an anchor does not throw the line off the board', () => 
   assert.equal(bendWeight(0), 0.25);
   assert.equal(bendWeight(1), 0.25);
   for (const t of [0, 0.001, 0.999, 1]) {
-    const offset = bendFromDrag(from, to, t, { x: 5, y: 40 });
-    assert.ok(Number.isFinite(offset), `t=${t} gave ${offset}`);
-    assert.ok(Math.abs(offset) <= 160, `t=${t} gave a wild ${offset}`);
+    const bend = bendFromDrag(from, to, STRAIGHT, t, 40, 40);
+    assert.ok(Number.isFinite(bend.u) && Number.isFinite(bend.v), `t=${t} gave ${JSON.stringify(bend)}`);
+    assert.ok(Math.abs(bend.v) <= 200, `t=${t} gave a wild ${bend.v}`);
   }
   // A zero-length line — two portraits dropped on top of each other — must not
   // divide by zero either.
-  assert.ok(Number.isFinite(bendFromDrag(from, from, 0.5, { x: 3, y: 3 })));
+  const degenerate = bendFromDrag(from, from, STRAIGHT, 0.5, 3, 3);
+  assert.ok(Number.isFinite(degenerate.u) && Number.isFinite(degenerate.v));
 });
 
 test('the bend is measured in the line\'s own frame, so it survives a move', () => {
-  // The reason a bend is one number and not a control point. Bend a line, then
-  // move both of its ends somewhere else entirely: the arc has to come along.
-  const offset = 80;
-  const near = edgePath({ x: 0, y: 0 }, { x: 200, y: 0 }, offset);
-  const far = edgePath({ x: 1000, y: 500 }, { x: 1200, y: 500 }, offset);
-  // Same span, same offset, same shape — just translated.
-  assert.ok(Math.abs((near.mid.y - 0) - (far.mid.y - 500)) < 1e-9);
+  // The reason a bend is a pair of fractions and not a control point. Bend a
+  // line, then move both of its ends somewhere else entirely: the arc comes.
+  const bend = { u: 0.5, v: 80 };
+  const near1 = edgePath({ x: 0, y: 0 }, { x: 200, y: 0 }, bend);
+  const far = edgePath({ x: 1000, y: 500 }, { x: 1200, y: 500 }, bend);
+  // Same span, same bend, same shape — just translated.
+  near(near1.mid.y - 0, far.mid.y - 500, 1e-9);
   // Rotating the span rotates the arc with it rather than flattening it.
-  const turned = edgePath({ x: 0, y: 0 }, { x: 0, y: 200 }, offset);
+  const turned = edgePath({ x: 0, y: 0 }, { x: 0, y: 200 }, bend);
   const bow = Math.hypot(turned.mid.x - 0, turned.mid.y - 100);
-  assert.ok(Math.abs(bow - Math.abs(near.mid.y)) < 1e-9, 'the bow keeps its size when the line turns');
+  near(bow, Math.abs(near1.mid.y), 1e-9);
+  // And so does an off-centre one: `u` is a fraction of the chord, not a length.
+  const off = { u: 0.2, v: 80 };
+  const short = edgePath({ x: 0, y: 0 }, { x: 100, y: 0 }, off);
+  const long = edgePath({ x: 0, y: 0 }, { x: 800, y: 0 }, off);
+  near(short.c.x / 100, long.c.x / 800, 1e-9);
 });
 
 test('chordParam reads 0 at one end and 1 at the other, and never leaves that range', () => {
@@ -285,19 +362,35 @@ test('chordParam reads 0 at one end and 1 at the other, and never leaves that ra
 });
 
 test('a bend dragged back to nearly straight snaps to straight, and is bounded', () => {
-  assert.equal(snapBend(0), 0);
-  assert.equal(snapBend(BEND_SNAP - 0.01), 0);
-  assert.equal(snapBend(-BEND_SNAP + 0.01), 0);
-  assert.equal(snapBend(BEND_SNAP + 1), BEND_SNAP + 1);
-  assert.equal(snapBend(-40), -40);
+  // Only `v` is snapped. `u` is where along the line the arc sits, and on a
+  // straight line that makes no difference at all — so a snap resets it to the
+  // middle rather than leaving a meaningless number behind.
+  assert.deepEqual(snapBend({ u: 0.2, v: 0 }), STRAIGHT);
+  assert.deepEqual(snapBend({ u: 0.2, v: BEND_SNAP - 0.01 }), STRAIGHT);
+  assert.deepEqual(snapBend({ u: 0.2, v: -BEND_SNAP + 0.01 }), STRAIGHT);
+  assert.deepEqual(snapBend({ u: 0.2, v: BEND_SNAP + 1 }), { u: 0.2, v: BEND_SNAP + 1 });
+  assert.deepEqual(snapBend({ u: 0.9, v: -40 }), { u: 0.9, v: -40 });
 
-  assert.equal(clampBend(1e9), BEND_LIMIT);
-  assert.equal(clampBend(-1e9), -BEND_LIMIT);
-  assert.equal(clampBend(12.5), 12.5);
+  assert.deepEqual(clampBend({ u: 0.5, v: 1e9 }), { u: 0.5, v: BEND_LIMIT });
+  assert.deepEqual(clampBend({ u: 0.5, v: -1e9 }), { u: 0.5, v: -BEND_LIMIT });
+  // `u` is bounded far more tightly: a control point a chord-length past either
+  // end is already a hairpin, and past that the curve stops being a line
+  // between two people at all.
+  assert.deepEqual(clampBend({ u: 50, v: 0 }), { u: BEND_U_LIMIT, v: 0 });
+  assert.deepEqual(clampBend({ u: -50, v: 0 }), { u: -BEND_U_LIMIT, v: 0 });
+  assert.deepEqual(clampBend({ u: 0.7, v: 12.5 }), { u: 0.7, v: 12.5 });
   // Garbage draws a straight line rather than no line at all.
-  assert.equal(clampBend(NaN), 0);
-  assert.equal(clampBend(undefined), 0);
-  assert.equal(clampBend('nope'), 0);
+  for (const bad of [{ u: NaN, v: NaN }, {}, null, undefined, { u: 'a', v: 'b' }]) {
+    assert.deepEqual(clampBend(bad), STRAIGHT, JSON.stringify(bad));
+  }
+});
+
+test('bendFields sends both halves, or two nulls to clear the whole arc', () => {
+  // The two have to travel together: clearing `bend` without `bend_u` would
+  // leave a later re-bend inheriting a stale position from an arc nobody can
+  // see any more.
+  assert.deepEqual(bendFields(null), { bend: null, bendU: null });
+  assert.deepEqual(bendFields({ u: 1 / 3, v: 40.5 }), { bend: 40.5, bendU: 0.333333 });
 });
 
 test('bends are stable in id order, so adding a line does not reshuffle the rest', () => {
@@ -311,9 +404,9 @@ test('bends are stable in id order, so adding a line does not reshuffle the rest
     { id: 9, from_node_id: 1, to_node_id: 2 },
     { id: 5, from_node_id: 1, to_node_id: 2 },
   ]);
-  assert.equal(two.get(5), twoReversed.get(5));
-  assert.equal(two.get(9), twoReversed.get(9));
-  assert.ok(two.get(5) < two.get(9), 'the lower id takes the lower offset');
+  assert.deepEqual(two.get(5), twoReversed.get(5));
+  assert.deepEqual(two.get(9), twoReversed.get(9));
+  assert.ok(two.get(5).v < two.get(9).v, 'the lower id takes the lower offset');
 });
 
 test('edgeEnds resolves node anchors and loose points alike', () => {
