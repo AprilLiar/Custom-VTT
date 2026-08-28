@@ -9,6 +9,8 @@ import {
   getCharacterFolders,
 } from '../lib/api.js';
 import { portraitSrc } from '../lib/image.js';
+import { cropOf } from '../lib/imageCrop.js';
+import CroppedImage from './CroppedImage.jsx';
 import { flattenFolderTree, folderPath } from '../lib/folders.js';
 import FolderTreeNav from './FolderTreeNav.jsx';
 import DialogShell from './DialogShell.jsx';
@@ -306,7 +308,7 @@ export default function CharacterList() {
                   >
                     <div className="flex h-56 items-center justify-center bg-zinc-800">
                       {src ? (
-                        <img src={src} alt={c.name} loading="lazy" className="h-full w-full object-cover" />
+                        <CroppedImage src={src} alt={c.name} crop={cropOf(c)} loading="lazy" className="h-full w-full" />
                       ) : (
                         <span className="flex h-full w-full items-center justify-center text-5xl font-bold text-zinc-600">
                           {c.name.slice(0, 1).toUpperCase()}

@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react';
 import { useRole } from '../roleContext.jsx';
 import { getCharacters } from '../lib/api.js';
 import { portraitSrc } from '../lib/image.js';
+import { cropOf } from '../lib/imageCrop.js';
+import CroppedImage from './CroppedImage.jsx';
 
 // Shown on every fresh load, before anything else. A display filter, not
 // auth: picking a character just tells the server (via identity:set, see
@@ -43,7 +45,7 @@ export default function RoleModal() {
                   >
                     <div className="panel-cut-sm flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden bg-zinc-800 text-sm font-bold text-zinc-500">
                       {src ? (
-                        <img src={src} alt="" className="h-full w-full object-cover" />
+                        <CroppedImage src={src} crop={cropOf(c)} className="h-full w-full" />
                       ) : (
                         c.name.slice(0, 1).toUpperCase()
                       )}

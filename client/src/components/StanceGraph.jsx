@@ -1,22 +1,20 @@
 import { iconFor } from '../lib/styleIcons.js';
+import {
+  LABEL_FONT_SIZE,
+  NODE_R,
+  labelPosition,
+  nodePosition,
+  viewBoxString,
+} from '../lib/stanceGraphLayout.js';
 
 // Vector rendering of the 7-style counter tournament, drawn to blend with the
 // UI. Arrows point winner -> disadvantaged style. With an active stance, its
 // two styles are highlighted: green edges = matchups you counter, red edges =
 // matchups that counter you, indigo = an edge between your own two styles.
-
-const SIZE = 460;
-const CENTER = SIZE / 2;
-const RADIUS = 150;
-const NODE_R = 22;
-
-const polar = (i, n, radius) => {
-  const angle = ((-90 + (i * 360) / n) * Math.PI) / 180;
-  return {
-    x: CENTER + radius * Math.cos(angle),
-    y: CENTER + radius * Math.sin(angle),
-  };
-};
+//
+// The geometry lives in `stanceGraphLayout.js` — including why a label is not
+// simply on its node's ray at a fixed radius, which is the fix for the labels
+// overlapping the icons.
 
 const EDGE_COLORS = {
   neutral: '#52525b',
@@ -59,7 +57,7 @@ function Edge({ from, to, kind }) {
 // buttons' disabled state.
 export default function StanceGraph({ attributes, counters, activePair, onNodeClick }) {
   const positions = new Map(
-    attributes.map((attr, i) => [attr.id, polar(i, attributes.length, RADIUS)])
+    attributes.map((attr, i) => [attr.id, nodePosition(i, attributes.length)])
   );
   const inPair = (id) => activePair?.includes(id) ?? false;
   const picking = Boolean(onNodeClick);
@@ -76,7 +74,7 @@ export default function StanceGraph({ attributes, counters, activePair, onNodeCl
   };
 
   return (
-    <svg viewBox={`0 0 ${SIZE} ${SIZE}`} className="mx-auto w-full max-w-md">
+    <svg viewBox={viewBoxString(attributes)} className="mx-auto w-full max-w-md">
       <defs>
         {Object.entries(EDGE_COLORS).map(([kind, color]) => (
           <marker
@@ -105,7 +103,7 @@ export default function StanceGraph({ attributes, counters, activePair, onNodeCl
 
       {attributes.map((attr, i) => {
         const pos = positions.get(attr.id);
-        const label = polar(i, attributes.length, RADIUS + 44);
+        const label = labelPosition(i, attributes.length, attr.name);
         const active = inPair(attr.id);
         const Icon = iconFor(attr.icon);
         const disabled = picking && atCapacity && !active;
@@ -141,7 +139,7 @@ export default function StanceGraph({ attributes, counters, activePair, onNodeCl
               textAnchor="middle"
               dominantBaseline="middle"
               fill={active ? '#c7d2fe' : '#a1a1aa'}
-              fontSize="12"
+              fontSize={LABEL_FONT_SIZE}
               fontWeight={active ? 700 : 500}
             >
               {attr.name}

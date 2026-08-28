@@ -1329,6 +1329,36 @@ const TRIGGER_LABELS = {
 // Nothing is leaked by this that the app does not already hand out: there is no
 // auth here by design (see the plan), `/api/health` has always returned
 // `err.message`, and every reader is a GM or a player at the same table.
+// **Which region of an uploaded picture shows.** Four fractions of the
+// picture's own width and height, and the one field on any of these tables that
+// reaches a renderer as raw CSS — `client/src/lib/imageCrop.js` turns it into
+// four percentages on an <img>. So it is validated rather than clamped: a NaN
+// or a rectangle that leaves the picture would draw a thumbnail as an empty box
+// with nothing logged anywhere.
+//
+// Anything that is not a real rectangle inside the picture is stored as four
+// NULLs, which the client reads as "no crop" and renders with plain
+// `object-fit: cover` — exactly what every picture uploaded before the crop
+// editor existed still does.
+//
+// **Always written together with the image**, never on its own: a new picture
+// means the old crop described a different photograph, so it goes.
+const CROP_COLUMNS = 'crop_x = ?, crop_y = ?, crop_w = ?, crop_h = ?';
+
+function cropValues(payload) {
+  const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+  const x = num(payload?.cropX);
+  const y = num(payload?.cropY);
+  const w = num(payload?.cropW);
+  const h = num(payload?.cropH);
+  const slack = 1e-6;
+  const ok =
+    x !== null && y !== null && w !== null && h !== null &&
+    w > 0 && h > 0 &&
+    x >= -slack && y >= -slack && x + w <= 1 + slack && y + h <= 1 + slack;
+  return ok ? [x, y, w, h] : [null, null, null, null];
+}
+
 const wrap = (fn) => (req, res) =>
   fn(req, res).catch((err) => {
     console.error(`error in ${req.method} ${req.path}:`, err);
@@ -1809,8 +1839,8 @@ app.put('/api/characters/:id', wrap(async (req, res) => {
     args.push(name);
   }
   if (req.body?.imageData !== undefined) {
-    sets.push('image_data = ?', 'image_mime_type = ?');
-    args.push(String(req.body.imageData), String(req.body.imageMimeType ?? 'image/jpeg'));
+    sets.push('image_data = ?', 'image_mime_type = ?', CROP_COLUMNS);
+    args.push(String(req.body.imageData), String(req.body.imageMimeType ?? 'image/jpeg'), ...cropValues(req.body));
   }
   // GM-only client-side (same trust model as everywhere else in this
   // no-auth app) — replaces Tab 1's default backdrop figure for this
@@ -3002,28 +3032,32 @@ io.on('connection', (socket) => {
     io.emit('stance:activated', { characterId: stance.character_id, stanceId: stance.id });
   });
 
-  on('tell:create', async ({ name, imageData, imageMimeType }) => {
+  on('tell:create', async (payload) => {
+    const { name, imageData, imageMimeType } = payload;
     const tellName = String(name ?? '').trim();
     if (!tellName) return;
     const result = await run(
-      'INSERT INTO tells (name, image_data, image_mime_type) VALUES (?, ?, ?)',
-      [tellName, imageData ?? null, imageData ? (imageMimeType ?? 'image/png') : null]
+      'INSERT INTO tells (name, image_data, image_mime_type, crop_x, crop_y, crop_w, crop_h) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      [tellName, imageData ?? null, imageData ? (imageMimeType ?? 'image/png') : null, ...cropValues(payload)]
     );
     io.emit('tell:created', await one('SELECT * FROM tells WHERE id = ?', [
       Number(result.lastInsertRowid),
     ]));
   });
 
-  on('tell:update', async ({ tellId, name, imageData, imageMimeType }) => {
+  on('tell:update', async (payload) => {
+    const { tellId, name, imageData, imageMimeType } = payload;
     const tell = await one('SELECT * FROM tells WHERE id = ?', [tellId]);
     const tellName = String(name ?? '').trim();
     if (!tell || !tellName) return;
-    // image only replaced when a new one is provided
+    // image only replaced when a new one is provided — and its crop goes with
+    // it, since a crop describes one particular picture.
     if (imageData !== undefined) {
-      await run('UPDATE tells SET name = ?, image_data = ?, image_mime_type = ? WHERE id = ?', [
+      await run(`UPDATE tells SET name = ?, image_data = ?, image_mime_type = ?, ${CROP_COLUMNS} WHERE id = ?`, [
         tellName,
         imageData,
         imageMimeType ?? 'image/png',
+        ...cropValues(payload),
         tell.id,
       ]);
     } else {
@@ -3248,14 +3282,15 @@ io.on('connection', (socket) => {
           roll_modifier, right_tell_id, left_tell_id, is_defensive, defense_frame_positions,
           roll_type, custom_roll_size, attack_targets, defense_kind, stamina_modifier,
           combat_style_attribute_id, success_threshold, is_grappling, requirement_move_id, sort_order,
-          is_secondary)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          is_secondary, crop_x, crop_y, crop_w, crop_h)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [name, isDefault, tellId, startup, active, recovery, effectiveStaminaCost, description, styleId,
           folderId, payload.imageData ?? null,
           payload.imageData ? (payload.imageMimeType ?? 'image/png') : null,
           rollModifier, rightTellId, leftTellId, isDefensive, JSON.stringify(defenseFramePositions),
           rollType, customRollSize, JSON.stringify(attackTargets), defenseKind, staminaModifier,
-          combatStyleId, successThreshold, isGrappling, requirementMoveId, sortOrder, isSecondary]
+          combatStyleId, successThreshold, isGrappling, requirementMoveId, sortOrder, isSecondary,
+          ...cropValues(payload)]
       );
       id = Number(result.lastInsertRowid);
     } else {
@@ -3273,11 +3308,13 @@ io.on('connection', (socket) => {
           defenseKind, staminaModifier, combatStyleId, successThreshold, isGrappling,
           requirementMoveId, isSecondary, id]
       );
-      // image only replaced when a new one is provided
+      // image only replaced when a new one is provided — and its crop goes
+      // with it, since a crop describes one particular picture.
       if (payload.imageData !== undefined) {
-        await run('UPDATE moves SET image_data = ?, image_mime_type = ? WHERE id = ?', [
+        await run(`UPDATE moves SET image_data = ?, image_mime_type = ?, ${CROP_COLUMNS} WHERE id = ?`, [
           payload.imageData,
           payload.imageMimeType ?? 'image/png',
+          ...cropValues(payload),
           id,
         ]);
       }
@@ -3653,16 +3690,18 @@ io.on('connection', (socket) => {
     let id = perkId;
     if (id == null) {
       const result = await run(
-        'INSERT INTO perks (name, description, image_data, image_mime_type) VALUES (?, ?, ?, ?)',
-        [name, description, payload.imageData ?? null, payload.imageData ? (payload.imageMimeType ?? 'image/png') : null]
+        'INSERT INTO perks (name, description, image_data, image_mime_type, crop_x, crop_y, crop_w, crop_h) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+        [name, description, payload.imageData ?? null, payload.imageData ? (payload.imageMimeType ?? 'image/png') : null,
+          ...cropValues(payload)]
       );
       id = Number(result.lastInsertRowid);
     } else {
       await run('UPDATE perks SET name = ?, description = ? WHERE id = ?', [name, description, id]);
       if (payload.imageData !== undefined) {
-        await run('UPDATE perks SET image_data = ?, image_mime_type = ? WHERE id = ?', [
+        await run(`UPDATE perks SET image_data = ?, image_mime_type = ?, ${CROP_COLUMNS} WHERE id = ?`, [
           payload.imageData,
           payload.imageMimeType ?? 'image/png',
+          ...cropValues(payload),
           id,
         ]);
       }
@@ -4076,7 +4115,8 @@ io.on('connection', (socket) => {
     await emitRelationships(edge.owner_character_id);
   });
 
-  on('relationships:create_person', async ({ characterId, name, imageData, imageMimeType }) => {
+  on('relationships:create_person', async (payload) => {
+    const { characterId, name, imageData, imageMimeType } = payload;
     if (!mayWriteBoard(characterId)) return;
     const owner = await getCharacter(characterId);
     const personName = clampText(name, 80).trim();
@@ -4084,14 +4124,16 @@ io.on('connection', (socket) => {
     // can think about, and the rail would show a blank row.
     if (!owner || !personName) return;
     await run(
-      `INSERT INTO relationship_people (owner_character_id, name, image_data, image_mime_type)
-       VALUES (?, ?, ?, ?)`,
-      [owner.id, personName, imageData ? String(imageData) : null, imageData ? String(imageMimeType ?? 'image/jpeg') : null]
+      `INSERT INTO relationship_people (owner_character_id, name, image_data, image_mime_type, crop_x, crop_y, crop_w, crop_h)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [owner.id, personName, imageData ? String(imageData) : null, imageData ? String(imageMimeType ?? 'image/jpeg') : null,
+        ...cropValues(payload)]
     );
     await emitRelationships(owner.id);
   });
 
-  on('relationships:update_person', async ({ personId, name, imageData, imageMimeType }) => {
+  on('relationships:update_person', async (payload) => {
+    const { personId, name, imageData, imageMimeType } = payload;
     const person = await one('SELECT * FROM relationship_people WHERE id = ?', [personId]);
     if (!person || !mayWriteBoard(person.owner_character_id)) return;
     const personName = clampText(name ?? person.name, 80).trim();
@@ -4100,10 +4142,10 @@ io.on('connection', (socket) => {
     // only sends one when the file picker actually produced one.
     await run(
       imageData
-        ? 'UPDATE relationship_people SET name = ?, image_data = ?, image_mime_type = ? WHERE id = ?'
+        ? `UPDATE relationship_people SET name = ?, image_data = ?, image_mime_type = ?, ${CROP_COLUMNS} WHERE id = ?`
         : 'UPDATE relationship_people SET name = ? WHERE id = ?',
       imageData
-        ? [personName, String(imageData), String(imageMimeType ?? 'image/jpeg'), person.id]
+        ? [personName, String(imageData), String(imageMimeType ?? 'image/jpeg'), ...cropValues(payload), person.id]
         : [personName, person.id]
     );
     await emitRelationships(person.owner_character_id);

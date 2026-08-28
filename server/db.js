@@ -443,6 +443,23 @@ function invalidateSchemaSnapshot() {
 // base CREATEs are frozen at their historical shape. Consulting the snapshot
 // alone would find no table on a brand-new database, skip the ALTER, and leave
 // a fresh world missing three dozen columns until its second boot.
+// **Which part of an uploaded picture actually shows.** Four fractions of the
+// image's own width and height — see `client/src/lib/imageCrop.js` for why they
+// are normalised per axis rather than as a square, and why NULL means "no crop"
+// rather than "the default crop".
+//
+// The picture itself is never cut down: `image_data` keeps whatever was
+// uploaded, so the Arena card can render the whole thing while every thumbnail
+// shows the chosen region, and re-opening the editor starts from the original
+// rather than from a crop of a crop. Four columns instead of one packed string
+// because every other optional field on these tables is its own column, and a
+// REAL is a REAL.
+async function ensureCropColumns(table) {
+  for (const axis of ['x', 'y', 'w', 'h']) {
+    await ensureColumn(table, `crop_${axis}`, 'REAL');
+  }
+}
+
 async function ensureColumn(table, column, columnDdl) {
   const key = `${table}.${column}`;
   if (pendingColumns.has(key)) return;
@@ -778,6 +795,7 @@ export async function initDb() {
   await ensureColumn('characters', 'folder_id', 'INTEGER');
   await ensureColumn('characters', 'vitruvian_image_data', 'TEXT');
   await ensureColumn('characters', 'vitruvian_image_mime_type', 'TEXT');
+  await ensureCropColumns('characters');
 
   // GM-created folders for organizing the character list — same structural
   // pattern as move_folders (create/rename/delete). Nested: parent_id is a
@@ -953,6 +971,7 @@ export async function initDb() {
   `);
   await ensureColumn('tells', 'image_data', 'TEXT');
   await ensureColumn('tells', 'image_mime_type', 'TEXT');
+  await ensureCropColumns('tells');
 
   // GM-created folders for organizing the Moves compendium. Nested, same
   // parent_id self-reference pattern as character_folders above.
@@ -1026,6 +1045,7 @@ export async function initDb() {
   await ensureColumn('moves', 'folder_id', 'INTEGER');
   await ensureColumn('moves', 'image_data', 'TEXT');
   await ensureColumn('moves', 'image_mime_type', 'TEXT');
+  await ensureCropColumns('moves');
   await ensureColumn('moves', 'roll_modifier', 'INTEGER NOT NULL DEFAULT 0');
   await ensureColumn('moves', 'right_tell_id', 'INTEGER REFERENCES tells(id)');
   await ensureColumn('moves', 'left_tell_id', 'INTEGER REFERENCES tells(id)');
@@ -1322,6 +1342,7 @@ export async function initDb() {
       created_at TEXT DEFAULT CURRENT_TIMESTAMP
     )
   `);
+  await ensureCropColumns('relationship_people');
 
   // One placement on one board, at a point in world coordinates.
   //
@@ -1402,6 +1423,7 @@ export async function initDb() {
       image_mime_type TEXT
     )
   `);
+  await ensureCropColumns('perks');
 
   ddl(`
     CREATE TABLE IF NOT EXISTS character_perks (

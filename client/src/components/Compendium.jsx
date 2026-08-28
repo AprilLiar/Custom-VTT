@@ -6,6 +6,9 @@ import { getMoves, getRuleset, getTags, getTells } from '../lib/api.js';
 import { useRoster } from '../lib/useRoster.js';
 import { iconFor } from '../lib/styleIcons.js';
 import { fileToSmallImage, portraitSrc } from '../lib/image.js';
+import { cropOf } from '../lib/imageCrop.js';
+import { usePictureUpload } from '../lib/usePictureUpload.jsx';
+import CroppedImage from './CroppedImage.jsx';
 import { folderPath } from '../lib/folders.js';
 import FolderTreeNav from './FolderTreeNav.jsx';
 import MoveCard from './MoveCard.jsx';
@@ -25,12 +28,15 @@ function TellManager({ tells, usedTellIds }) {
     setImage(undefined);
   };
 
-  const pickImage = async (e) => {
-    const file = e.target.files?.[0];
-    e.target.value = '';
-    if (!file) return;
-    setImage(await fileToSmallImage(file).catch(() => undefined));
-  };
+  const { pick: pickImage, dialog } = usePictureUpload({
+    process: (file) => fileToSmallImage(file).catch(() => undefined),
+    name,
+    previewSizes: [
+      { label: 'Beside a move', px: 24 },
+      { label: 'In the Tell list', px: 36 },
+    ],
+    onPicked: setImage,
+  });
 
   const save = (e) => {
     e.preventDefault();
@@ -43,7 +49,14 @@ function TellManager({ tells, usedTellIds }) {
 
   const preview =
     image !== undefined
-      ? { image_data: image?.imageData, image_mime_type: image?.imageMimeType }
+      ? {
+          image_data: image?.imageData,
+          image_mime_type: image?.imageMimeType,
+          crop_x: image?.cropX,
+          crop_y: image?.cropY,
+          crop_w: image?.cropW,
+          crop_h: image?.cropH,
+        }
       : editing !== 'new'
         ? editing
         : null;
@@ -104,6 +117,7 @@ function TellManager({ tells, usedTellIds }) {
             <Thumb record={preview} name={name || '?'} size="h-9 w-9" cut="panel-cut" />
           </button>
           <input ref={fileRef} type="file" accept="image/*" hidden onChange={pickImage} />
+          {dialog}
           <input
             autoFocus
             value={name}
@@ -795,7 +809,7 @@ export default function MovesCompendium() {
                 >
                   <div className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden panel-cut-sm bg-zinc-800 text-sm font-bold text-zinc-600">
                     {src ? (
-                      <img src={src} alt="" loading="lazy" className="h-full w-full object-cover" />
+                      <CroppedImage src={src} crop={cropOf(c)} loading="lazy" className="h-full w-full" />
                     ) : (
                       c.name.slice(0, 1).toUpperCase()
                     )}

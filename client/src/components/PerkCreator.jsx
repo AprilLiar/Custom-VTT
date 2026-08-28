@@ -1,5 +1,6 @@
 import { useRef, useState } from 'react';
 import { fileToSmallImage } from '../lib/image.js';
+import { usePictureUpload } from '../lib/usePictureUpload.jsx';
 import Thumb from './Thumb.jsx';
 
 // Perk Creator: picture, name, description. Mechanical effects are no
@@ -19,12 +20,18 @@ export default function PerkCreator({ initial, tags = [], onSubmit, onCancel }) 
   const toggleTag = (id) =>
     setTagIds((prev) => (prev.includes(id) ? prev.filter((t) => t !== id) : [...prev, id]));
 
-  const pickImage = async (e) => {
-    const file = e.target.files?.[0];
-    e.target.value = '';
-    if (!file) return;
-    setImage(await fileToSmallImage(file).catch(() => undefined));
-  };
+  // `image` stays `undefined` until a picture is actually chosen, which is how
+  // edit mode says "keep the existing one" — the crop rides along inside it, so
+  // a Perk edited without touching its art keeps both.
+  const { pick: pickImage, dialog } = usePictureUpload({
+    process: (file) => fileToSmallImage(file).catch(() => undefined),
+    name,
+    previewSizes: [
+      { label: 'On the Perk card', px: 48 },
+      { label: 'In a list', px: 24 },
+    ],
+    onPicked: setImage,
+  });
 
   const valid = Boolean(name.trim());
 
@@ -41,7 +48,14 @@ export default function PerkCreator({ initial, tags = [], onSubmit, onCancel }) 
 
   const preview =
     image !== undefined
-      ? { image_data: image?.imageData, image_mime_type: image?.imageMimeType }
+      ? {
+          image_data: image?.imageData,
+          image_mime_type: image?.imageMimeType,
+          crop_x: image?.cropX,
+          crop_y: image?.cropY,
+          crop_w: image?.cropW,
+          crop_h: image?.cropH,
+        }
       : initial;
 
   return (
@@ -125,6 +139,7 @@ export default function PerkCreator({ initial, tags = [], onSubmit, onCancel }) 
           Cancel
         </button>
       </div>
+      {dialog}
     </form>
   );
 }

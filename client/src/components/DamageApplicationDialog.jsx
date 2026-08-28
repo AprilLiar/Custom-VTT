@@ -5,6 +5,8 @@ import { dieLabel } from '../lib/dice.js';
 import { ANATOMY } from '../lib/anatomy.js';
 import VitruvianFigure from './VitruvianFigure.jsx';
 import { portraitSrc, vitruvianSrc } from '../lib/image.js';
+import { cropOf } from '../lib/imageCrop.js';
+import CroppedImage from './CroppedImage.jsx';
 import DialogShell from './DialogShell.jsx';
 
 // Combat Automation (Phase 9, sub-phase 4 — 4.1's Damage Application
@@ -98,10 +100,11 @@ export default function DamageApplicationDialog({
         ) : (
           <div className="flex flex-col gap-3 md:flex-row">
             <div className="flex shrink-0 flex-col items-center gap-2 md:w-40">
-              <img
+              <CroppedImage
                 src={portraitSrc(target.character)}
                 alt={target.character.name}
-                className="h-16 w-16 shrink-0 border border-zinc-700 bg-zinc-800 object-cover panel-cut-sm"
+                crop={cropOf(target.character)}
+                className="h-16 w-16 shrink-0 border border-zinc-700 bg-zinc-800 panel-cut-sm"
               />
               <span className="font-display text-center text-sm font-semibold text-zinc-100">
                 {target.character.name}

@@ -4,6 +4,8 @@ import { socket } from '../socket.js';
 import { getPerks, getPerkTags } from '../lib/api.js';
 import { useRoster } from '../lib/useRoster.js';
 import { portraitSrc } from '../lib/image.js';
+import { cropOf } from '../lib/imageCrop.js';
+import CroppedImage from './CroppedImage.jsx';
 import PerkCard from './PerkCard.jsx';
 import PerkCreator from './PerkCreator.jsx';
 
@@ -387,7 +389,7 @@ export default function PerksCompendium() {
                 >
                   <div className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden panel-cut-sm bg-zinc-800 text-sm font-bold text-zinc-600">
                     {src ? (
-                      <img src={src} alt="" loading="lazy" className="h-full w-full object-cover" />
+                      <CroppedImage src={src} crop={cropOf(c)} loading="lazy" className="h-full w-full" />
                     ) : (
                       c.name.slice(0, 1).toUpperCase()
                     )}

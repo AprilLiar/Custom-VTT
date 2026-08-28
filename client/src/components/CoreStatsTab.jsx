@@ -5,6 +5,9 @@ import { useRole } from '../roleContext.jsx';
 import { socket } from '../socket.js';
 import { updateCharacter } from '../lib/api.js';
 import { fileToPortrait, portraitSrc, vitruvianSrc } from '../lib/image.js';
+import { cropOf } from '../lib/imageCrop.js';
+import { usePictureUpload } from '../lib/usePictureUpload.jsx';
+import CroppedImage from './CroppedImage.jsx';
 import { ANATOMY, WEAPON_SPOT } from '../lib/anatomy.js';
 import { useMediaQuery } from '../lib/useMediaQuery.js';
 
@@ -40,7 +43,6 @@ function NamePortrait({ character }) {
   const fileRef = useRef(null);
   const nameRef = useRef(null);
   const [name, setName] = useState(character.name);
-  const [uploading, setUploading] = useState(false);
   const debounceRef = useRef(null);
 
   // Follow live renames from other devices unless this input is being edited
@@ -58,20 +60,18 @@ function NamePortrait({ character }) {
     }, 500);
   };
 
-  const onPickImage = async (e) => {
-    const file = e.target.files?.[0];
-    e.target.value = '';
-    if (!file) return;
-    setUploading(true);
-    try {
-      const portrait = await fileToPortrait(file);
-      await updateCharacter(character.id, portrait);
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setUploading(false);
-    }
-  };
+  // The crop step sits between the file picker and the save. The Arena card
+  // still renders `image_data` whole — only the square frames use the crop.
+  const { pick, dialog, busy } = usePictureUpload({
+    process: fileToPortrait,
+    name,
+    previewSizes: [
+      { label: 'In the roster', px: 32 },
+      { label: 'On the sheet', px: 96 },
+      { label: 'On a relationship board', px: 112 },
+    ],
+    onPicked: (fields) => updateCharacter(character.id, fields),
+  });
 
   const src = portraitSrc(character);
   return (
@@ -83,15 +83,21 @@ function NamePortrait({ character }) {
         whileTap={{ scale: 0.97 }}
         className="flex h-24 w-24 shrink-0 items-center justify-center overflow-hidden border border-zinc-700 bg-zinc-800 [clip-path:polygon(0_0,100%_0,100%_88%,88%_100%,0_100%)] hover:border-brand-500"
       >
-        {uploading ? (
+        {busy ? (
           <span className="text-xs text-zinc-500">…</span>
         ) : src ? (
-          <img src={src} alt={character.name} className="h-full w-full object-cover" />
+          <CroppedImage
+            src={src}
+            alt={character.name}
+            crop={cropOf(character)}
+            className="h-full w-full"
+          />
         ) : (
           <span className="px-1 text-center text-xs text-zinc-500">Add portrait</span>
         )}
       </motion.button>
-      <input ref={fileRef} type="file" accept="image/*" hidden onChange={onPickImage} />
+      <input ref={fileRef} type="file" accept="image/*" hidden onChange={pick} />
+      {dialog}
       <div className="min-w-0 flex-1">
         <input
           ref={nameRef}

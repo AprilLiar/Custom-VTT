@@ -4,6 +4,8 @@ import { motion, useReducedMotion } from 'framer-motion';
 import { TEXT_VISIBLE_ZOOM } from '../lib/boardViewport.js';
 import { DOT_OUT, NODE_H, NODE_W, SIDES } from '../lib/relationshipGeometry.js';
 import { usePortraitUrl } from '../lib/portraitCache.js';
+import { cropOf } from '../lib/imageCrop.js';
+import CroppedImage from './CroppedImage.jsx';
 import HaloText from './HaloText.jsx';
 
 // One person, placed. The portrait is the whole hit target; the name and any
@@ -120,11 +122,11 @@ export default function RelationshipNode({
       >
       <div className="group relative">
         {src ? (
-          <img
+          <CroppedImage
             src={src}
-            alt=""
             draggable={false}
-            className={`panel-cut border-2 object-cover ${selected ? 'border-brand-500' : 'border-zinc-700'}`}
+            crop={cropOf(person)}
+            className={`panel-cut border-2 ${selected ? 'border-brand-500' : 'border-zinc-700'}`}
             style={{ width: NODE_WIDTH, height: PORTRAIT_HEIGHT }}
           />
         ) : (

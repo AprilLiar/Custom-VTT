@@ -1940,6 +1940,16 @@ When a character is created, auto-generate its 8 `dice` rows (2 head + 4 core + 
 
 **Image storage note:** portraits are stored directly in Turso as base64 (`image_data`) rather than a separate image hosting service — simplest option, no extra account needed, and well within Turso's free storage limits for a handful of character portraits. To keep rows small, the frontend should resize/compress images client-side before upload (e.g. cap at ~800px wide) rather than uploading a raw phone photo.
 
+**Choosing what shows (implemented, decided).** Every thumbnail in the app is square and no uploaded picture is, so `object-fit: cover` was quietly deciding which part of each face survived — and it always takes the middle, which is where a face usually is not. Picking a file now opens a crop step before the save: a fixed square frame with the picture panned and zoomed behind it, and a live preview on the right showing the result at the sizes it will really appear, with the name laid out beside it.
+
+- **A stored rectangle, never a baked-in cut.** `image_data` keeps whatever was uploaded; four nullable REAL columns — `crop_x`, `crop_y`, `crop_w`, `crop_h` — say which part of it to show. So the Arena card renders the whole picture (decided: it is the only tall portrait on any screen, and a crop chosen to make a good 24px avatar is the wrong thing to enlarge there), re-opening the editor starts from the original rather than from a crop of a crop, and nothing is stored twice. On `characters`, `moves`, `tells`, `perks` and `relationship_people`.
+- **NULL is "no crop", not "the default crop"** — it renders with plain `object-fit: cover`, exactly as everything did before this existed, which is what makes the change invisible to every picture already uploaded and means there is no backfill.
+- **Normalised per axis**, `crop_w` against the picture's width and `crop_h` against its height. It looks wrong until you see what it buys: rendering is four CSS percentages on an `<img>` inside an `overflow: hidden` box, needing no intrinsic size, so all two dozen thumbnails stay plain synchronous renders with no `onLoad` anywhere. The editor is what keeps the *pixel* region square, so the aspect ratio is preserved by construction.
+- **The crop always travels with the picture.** A new upload clears the old crop server-side, because that crop described a different photograph. An edit that does not touch the image does not touch the crop.
+- **Validated, not clamped** (`cropValues` in `server/index.js`). It is the only field on these tables that reaches a renderer as raw CSS, so anything that is not a real rectangle inside the picture is stored as four NULLs rather than drawing a thumbnail as an empty box with nothing logged.
+- **`CroppedImage` is the only place a crop becomes pixels**, and `Thumb` wraps it — which is why sixteen call sites needed one edit. Its inner `aspect-ratio: 1; min-width/height: 100%` square is load-bearing rather than decoration: the crop maths assumes the region it fills is square, and a 3:1 picture in a 194×224 card rendered at 2.6:1 until that square was added. Caught by measuring, not by looking.
+- Not applied to chat images (posted whole, with no name beside them) or the Vitruvian backdrop (a full-figure backdrop, shown whole) — the preview clause in the request scopes this to pictures that become an avatar next to a name.
+
 **Move list note:** a character's full Tab 3 list = all `moves` where `is_default = 1`, plus all moves joined through `character_moves` for that character. Declared moves during combat ARE persisted (`declared_moves`), unlike the earlier draft of this plan — the Tic-based reveal timer needs them to survive a mid-round reload. The server still withholds the real `move_id` from a viewer until the reveal Tic unless they're entitled to see it early (see Combat Timing's identity-based reveal rule), sending only the Tell otherwise.
 
 ## Real-time events (Socket.io)
@@ -2991,7 +3001,8 @@ else is a zoom.
   are both things people write, and only one of them is the end of the string. A complete set
   would be worse here — scrolling a thousand emoji to find the dagger is slower than seeing
   it in the second row — and a picker library would be the largest dependency in a client
-  whose whole runtime is seven packages.
+  whose whole runtime is seven packages. (A right-click-to-favourite row was added on top of
+  it later — see Phase 7.)
 - **"Retired shown" toggle** beside the zoom controls, on by default, appearing only once
   something is retired. Per-viewer in `localStorage` beside the camera: what you are looking
   at is a property of the person looking. Retired lines are hidden entirely rather than
@@ -3132,6 +3143,34 @@ GM to tick a box was the only way to act on what you read. No learnability gate,
 Perk has none — a Move's Learn button can be closed by style and `perk:grant` has no
 equivalent rule. Automated Perks are offered like any other: the trust-based no-auth model
 is the whole app's design, and every grant is visible to the GM.
+
+### Phase 7 (implemented) — favourite emoji, and two labels that overlapped
+
+**Right-click an emoji to favourite it.** Six labelled rows are quick to scan once and slow
+to scan every time, and everyone reaches for the same three or four. Favourites ride in a
+first row, newest first, so the emoji you just decided you liked is the first one you see
+next time. Right-click rather than a long-press or a mode toggle: it is the one gesture on a
+desktop pointer not already spoken for in the picker — left-click inserts — and it costs no
+chrome at all. Per viewer in `localStorage`, like the board camera and "show retired": this
+app has no accounts by design, so "per user" is "per browser", and a shared column would make
+one player's favourites everybody's. Capped at sixteen, and the stored list is filtered on
+the way **out** as well as in, since every entry is rendered straight into a button and the
+value is editable in any devtools.
+
+**The counter wheel's labels no longer sit on their own icons.** Every label used to hang on
+its node's ray at a fixed `RADIUS + 44`. That is fine above or below the wheel, where the
+text grows sideways into empty space, and wrong at the sides, where it grows back along the
+ray straight into the node — so "Improvisation" (thirteen characters) and "Defensive" landed
+on top of the shuffle and shield icons. Reported from play.
+
+Each label is now pushed out by the part of its own half-width that actually points at the
+node, `|cos θ| · halfWidth`, so a label at the top does not move at all and only the ones
+that were overlapping do. The other half of the fix is the viewBox: pushing "Improvisation"
+clear of its icon pushes it off the right edge instead, where an outermost `<svg>` clips it
+away without a word — the same trap the relationship board hit — so the box is measured from
+the labels actually being drawn rather than being a constant that happens to fit today's
+seven styles. `stanceGraphLayout.js` holds both, with a test that reconstructs the old
+placement and asserts it collided, so the new one cannot pass vacuously.
 
 ### Planned, not yet built
 - Nothing. The feature is complete.
