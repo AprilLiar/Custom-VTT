@@ -1376,6 +1376,18 @@ export async function initDb() {
       created_at TEXT DEFAULT CURRENT_TIMESTAMP
     )
   `);
+  // **A hand-drawn arc, stored as an offset rather than a control point.**
+  // NULL means the line has never been bent by hand and takes whatever the
+  // automatic fan gives it — which is what keeps two lines between the same
+  // pair from overlapping. A number overrides that fan with the arc the player
+  // dragged: a perpendicular displacement of the curve's control point, in the
+  // edge's own from→to frame.
+  //
+  // The frame is the whole reason this is one number and not a point. An
+  // absolute control point would be a fixed place in the world, and the arc
+  // would flatten out the instant either portrait moved; an offset is relative
+  // to the line's own two ends, so the curve travels with them.
+  await ensureColumn('relationship_edges', 'bend', 'REAL');
 
   // The Perks compendium: master list of Perk templates. Just picture, name,
   // and description — no generic automation system (removed; see

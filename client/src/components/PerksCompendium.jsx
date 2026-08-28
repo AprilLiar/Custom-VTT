@@ -143,10 +143,11 @@ function PerkTagManager({ tags }) {
 // The Compendium page's Perks tab: persistent Perk library. Just picture/
 // name/description per spec — no folders or style filter, unlike Moves.
 // The page is open to every role (see CompendiumPage.jsx) — creation,
-// editing, deleting, and granting are gated to role === 'gm' below; a
-// Player gets a read-only browse of the same cards.
+// editing, deleting, and granting to *other* characters are gated to
+// role === 'gm' below. A Player browses the same cards and can take a Perk
+// for themselves, the same way the Moves tab lets them learn a Move.
 export default function PerksCompendium() {
-  const { role } = useRole();
+  const { role, characterId } = useRole();
   const [perks, setPerks] = useState(null);
   const [tags, setTags] = useState([]);
   // Multi-select, OR logic — the same filter semantics the Moves compendium's
@@ -177,6 +178,11 @@ export default function PerksCompendium() {
   }, []);
 
   if (!perks) return <p className="text-zinc-500">Loading…</p>;
+
+  // Who "me" is, for the Player-facing Take button. The roster endpoint is not
+  // role-gated (only the Characters *page* is hidden from Players), so this
+  // needs no new fetch — exactly as Compendium.jsx derives it for Moves.
+  const myCharacter = role === 'player' ? characters.find((c) => c.id === characterId) ?? null : null;
 
   const tagById = new Map(tags.map((t) => [t.id, t]));
   const toggleFilter = (id) =>
@@ -290,7 +296,42 @@ export default function PerksCompendium() {
                   perk={perk}
                   tags={(perk.tag_ids ?? []).map((id) => tagById.get(id)).filter(Boolean)}
                   actions={
-                    role === 'gm' ? (
+                    // **A Player can take a Perk for themselves (decided, new).**
+                    // The mirror of the Moves tab's Learn/Forget: the Perk
+                    // library has been readable to Players since the page was
+                    // opened to them, and "ask the GM to tick a box for you" was
+                    // the only way to act on what you read.
+                    //
+                    // No learnability gate, because a Perk has none — a Move's
+                    // Learn button can be closed by style, and `perk:grant`
+                    // has no equivalent rule to enforce. Automated Perks are
+                    // offered like any other: the trust-based no-auth model is
+                    // the whole app's design, and the GM sees every grant.
+                    role === 'player' && myCharacter ? (
+                      (() => {
+                        const has = perk.granted_character_ids.includes(myCharacter.id);
+                        return (
+                          <button
+                            title={
+                              has ? `Drop ${perk.name} from your sheet` : `Add ${perk.name} to your sheet`
+                            }
+                            onClick={() =>
+                              socket.emit(has ? 'perk:revoke' : 'perk:grant', {
+                                characterId: myCharacter.id,
+                                perkId: perk.id,
+                              })
+                            }
+                            className={`flex min-h-11 items-center panel-cut-sm px-2 py-0.5 text-xs md:min-h-0 ${
+                              has
+                                ? 'text-zinc-500 hover:bg-red-900/40 hover:text-red-400'
+                                : 'text-brand-400 hover:bg-brand-900/40'
+                            }`}
+                          >
+                            {has ? 'Drop' : 'Take'}
+                          </button>
+                        );
+                      })()
+                    ) : role === 'gm' ? (
                       <>
                         <button
                           onClick={() => setGrantOpen(grantOpen === perk.id ? null : perk.id)}

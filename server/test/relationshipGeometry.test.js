@@ -9,13 +9,19 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  BEND_LIMIT,
+  BEND_SNAP,
   BEND_SPACING,
   NODE_H,
   NODE_W,
   SIDES,
   anchorPoint,
   assignBends,
+  bendFromDrag,
   bendOffsets,
+  bendWeight,
+  chordParam,
+  clampBend,
   edgeEnds,
   edgePath,
   DROP_PAD,
@@ -25,6 +31,7 @@ import {
   nearestSide,
   nodeCenter,
   pairKey,
+  snapBend,
 } from '../../client/src/lib/relationshipGeometry.js';
 
 const node = (id, x, y) => ({ id, x, y });
@@ -136,8 +143,161 @@ test('assignBends fans a pair and leaves a lone line straight', () => {
   const bends = assignBends(edges);
   assert.equal(bends.get(3), 0, 'the only line between 1 and 3 stays straight');
   assert.equal(bends.get(4), undefined, 'a loose end gets no fan');
-  assert.notEqual(bends.get(1), bends.get(2));
-  assert.ok(Math.abs(bends.get(1) + bends.get(2)) < 1e-9, 'the pair bows symmetrically');
+});
+
+// **The bug the old version of this file could not see.**
+//
+// It asserted that a reversed pair's two offsets were unequal and summed to
+// zero. Both were true, of two curves that lay exactly on top of each other —
+// because `edgePath` takes its perpendicular from the edge's OWN direction, so
+// a B→A edge has its direction negated as well as its offset, and the two
+// negations cancel. Connect A to B and then B to A and you saw one line.
+//
+// So the assertion is on the DRAWN CURVES, not on the numbers behind them. That
+// is the property anybody actually cares about, and it is the one that failed.
+test('A→B and B→A draw two different curves, not one on top of the other', () => {
+  const a = node(1, 0, 0);
+  const b = node(2, 400, 0);
+  const nodes = new Map([[1, a], [2, b]]);
+  const forward = { id: 1, from_node_id: 1, from_side: 'right', to_node_id: 2, to_side: 'left' };
+  const backward = { id: 2, from_node_id: 2, from_side: 'left', to_node_id: 1, to_side: 'right' };
+  const bends = assignBends([forward, backward]);
+
+  // How far the drawn curve bows off the straight line between the same two
+  // dots, signed. Measured rather than assumed, because the anchors sit at the
+  // portraits' vertical centre and not at y = 0.
+  const bow = (edge, table = bends) => {
+    const ends = edgeEnds(edge, nodes);
+    const curve = edgePath(ends.from, ends.to, table.get(edge.id));
+    const straight = edgePath(ends.from, ends.to, 0);
+    return curve.mid.y - straight.mid.y;
+  };
+  const one = bow(forward);
+  const two = bow(backward);
+
+  // The two lines run between the same two dots and bow to OPPOSITE sides of
+  // the straight one. That is the whole test.
+  assert.ok(one * two < 0, `both curves bowed the same way: ${one} and ${two}`);
+  assert.ok(Math.abs(one - two) > BEND_SPACING / 4, 'and by a visible amount');
+
+  // And a third line between the same pair, whichever way round it is drawn,
+  // finds a lane of its own rather than landing on one of the first two.
+  const third = { id: 3, from_node_id: 2, from_side: 'left', to_node_id: 1, to_side: 'right' };
+  const three = assignBends([forward, backward, third]);
+  const bows = [forward, backward, third].map((e) => bow(e, three).toFixed(6));
+  assert.equal(new Set(bows).size, 3, `three distinct curves, got ${bows}`);
+});
+
+test('a hand-drawn arc overrides the fan without disturbing its neighbours', () => {
+  const pair = [
+    { id: 1, from_node_id: 1, to_node_id: 2 },
+    { id: 2, from_node_id: 1, to_node_id: 2 },
+    { id: 3, from_node_id: 1, to_node_id: 2 },
+  ];
+  const before = assignBends(pair);
+  const after = assignBends([{ ...pair[0], bend: 137 }, pair[1], pair[2]]);
+
+  assert.equal(after.get(1), 137, 'the bent line keeps exactly what it was given');
+  // The other two must not slide sideways because a third line was bent. A
+  // hand-bent edge still occupies its slot in the fan; it just does not sit in
+  // it. Re-fanning the remainder would move lines nobody touched.
+  assert.equal(after.get(2), before.get(2));
+  assert.equal(after.get(3), before.get(3));
+
+  // A hand bend of zero is a real value — "I straightened this myself" — and
+  // must not be mistaken for the absence of one.
+  assert.equal(assignBends([{ id: 1, from_node_id: 1, to_node_id: 2, bend: 0 }]).get(1), 0);
+  // Null, undefined and garbage all mean "no hand bend": fall back to the fan.
+  for (const bend of [null, undefined, NaN, 'wobbly']) {
+    const fanned = assignBends([
+      { id: 1, from_node_id: 1, to_node_id: 2, bend },
+      { id: 2, from_node_id: 1, to_node_id: 2, bend },
+    ]);
+    assert.equal(fanned.get(1), -BEND_SPACING / 2, `bend ${String(bend)} should fall back to the fan`);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Bending a line by hand
+// ---------------------------------------------------------------------------
+
+test('grabbing a line anywhere and pulling puts that point under the pointer', () => {
+  const from = { x: 0, y: 0 };
+  const to = { x: 400, y: 0 };
+  // Away from the ends, the maths is exact: the offset it answers is the one
+  // that draws the curve through the point you dragged to.
+  for (const t of [0.3, 0.5, 0.7]) {
+    const target = { x: from.x + t * 400, y: 60 };
+    const offset = bendFromDrag(from, to, t, target);
+    // Evaluate the resulting quadratic at t and check it lands on the pointer.
+    const { d } = edgePath(from, to, offset);
+    const [, cx, cy] = d.match(/Q ([-\d.]+) ([-\d.]+)/).map(Number);
+    const y = 2 * t * (1 - t) * Number(cy) + t * t * to.y + (1 - t) * (1 - t) * from.y;
+    assert.ok(Math.abs(y - 60) < 1e-9, `t=${t} drew through ${y}, not 60`);
+    assert.ok(Number.isFinite(cx));
+  }
+});
+
+test('grabbing right at an anchor does not throw the line off the board', () => {
+  // The ends of a quadratic do not move however hard its control point is
+  // pulled, so the honest offset there is infinite. `bendWeight`'s floor is what
+  // stops that from being a division by nearly zero and a line several thousand
+  // units long on the first frame.
+  const from = { x: 0, y: 0 };
+  const to = { x: 400, y: 0 };
+  assert.equal(bendWeight(0.5), 0.5);
+  assert.equal(bendWeight(0), 0.25);
+  assert.equal(bendWeight(1), 0.25);
+  for (const t of [0, 0.001, 0.999, 1]) {
+    const offset = bendFromDrag(from, to, t, { x: 5, y: 40 });
+    assert.ok(Number.isFinite(offset), `t=${t} gave ${offset}`);
+    assert.ok(Math.abs(offset) <= 160, `t=${t} gave a wild ${offset}`);
+  }
+  // A zero-length line — two portraits dropped on top of each other — must not
+  // divide by zero either.
+  assert.ok(Number.isFinite(bendFromDrag(from, from, 0.5, { x: 3, y: 3 })));
+});
+
+test('the bend is measured in the line\'s own frame, so it survives a move', () => {
+  // The reason a bend is one number and not a control point. Bend a line, then
+  // move both of its ends somewhere else entirely: the arc has to come along.
+  const offset = 80;
+  const near = edgePath({ x: 0, y: 0 }, { x: 200, y: 0 }, offset);
+  const far = edgePath({ x: 1000, y: 500 }, { x: 1200, y: 500 }, offset);
+  // Same span, same offset, same shape — just translated.
+  assert.ok(Math.abs((near.mid.y - 0) - (far.mid.y - 500)) < 1e-9);
+  // Rotating the span rotates the arc with it rather than flattening it.
+  const turned = edgePath({ x: 0, y: 0 }, { x: 0, y: 200 }, offset);
+  const bow = Math.hypot(turned.mid.x - 0, turned.mid.y - 100);
+  assert.ok(Math.abs(bow - Math.abs(near.mid.y)) < 1e-9, 'the bow keeps its size when the line turns');
+});
+
+test('chordParam reads 0 at one end and 1 at the other, and never leaves that range', () => {
+  const from = { x: 100, y: 100 };
+  const to = { x: 300, y: 100 };
+  assert.equal(chordParam(from, to, from), 0);
+  assert.equal(chordParam(from, to, to), 1);
+  assert.equal(chordParam(from, to, { x: 200, y: 100 }), 0.5);
+  // Off the ends and off to the side — a grab is still somewhere on the line.
+  assert.equal(chordParam(from, to, { x: -900, y: 4000 }), 0);
+  assert.equal(chordParam(from, to, { x: 9000, y: -4000 }), 1);
+  assert.equal(chordParam(from, from, { x: 5, y: 5 }), 0.5, 'a zero-length chord answers its middle');
+});
+
+test('a bend dragged back to nearly straight snaps to straight, and is bounded', () => {
+  assert.equal(snapBend(0), 0);
+  assert.equal(snapBend(BEND_SNAP - 0.01), 0);
+  assert.equal(snapBend(-BEND_SNAP + 0.01), 0);
+  assert.equal(snapBend(BEND_SNAP + 1), BEND_SNAP + 1);
+  assert.equal(snapBend(-40), -40);
+
+  assert.equal(clampBend(1e9), BEND_LIMIT);
+  assert.equal(clampBend(-1e9), -BEND_LIMIT);
+  assert.equal(clampBend(12.5), 12.5);
+  // Garbage draws a straight line rather than no line at all.
+  assert.equal(clampBend(NaN), 0);
+  assert.equal(clampBend(undefined), 0);
+  assert.equal(clampBend('nope'), 0);
 });
 
 test('bends are stable in id order, so adding a line does not reshuffle the rest', () => {

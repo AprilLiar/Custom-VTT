@@ -96,6 +96,12 @@ export default function RelationshipNode({
         transform: `translate(${node.x}px, ${node.y}px)`,
         cursor: canEdit ? 'grab' : 'default',
         touchAction: 'none',
+        // **Above the lines** — layer 2 of the stack documented in
+        // RelationshipEdges. Not cosmetic: an edge's transparent hit stroke
+        // starts at an anchor dot, so while the edges painted last that stroke
+        // covered the very dot it was attached to and the dot could be neither
+        // lit nor pressed.
+        zIndex: 2,
       }}
     >
       <motion.div
@@ -188,8 +194,24 @@ export default function RelationshipNode({
 
 // One connection dot, protruding a few pixels from its side of the portrait.
 // It is a grab handle: `stopPropagation` on pointerdown so it starts a line
-// rather than a node drag, and a transparent hit-ring twice its visible size
-// because a 9px target is not one.
+// rather than a node drag.
+//
+// **The target is far bigger than the dot** — a 32px box around an 8px dot.
+// Reported from play: aiming at the dot itself was fiddly, and you found out
+// whether you had hit it only by starting the wrong gesture. Now anywhere NEAR
+// the dot lights it up, and lighting up is the promise that a press will draw a
+// line rather than drag the portrait.
+//
+// The cost is honest and bounded: the box reaches about eleven pixels back over
+// the picture's edge and twenty-one out past it, so the four edge midpoints
+// belong to the dots rather than to the node drag. Everywhere else on the face
+// still grabs the portrait, which is the great majority of it.
+//
+// The hover styling hangs off a NAMED group rather than `hover:` on the inner
+// dot: the whole point is that hovering the empty air inside the box counts, and
+// a bare `hover:` on the 8px dot would only fire on the 8px dot.
+const DOT_HIT = 32;
+
 function ConnectDot({ side, visible, highlighted, onPointerDown }) {
   const place = {
     top: { left: '50%', top: -DOT_OUT, transform: 'translate(-50%, -50%)' },
@@ -203,16 +225,27 @@ function ConnectDot({ side, visible, highlighted, onPointerDown }) {
         e.stopPropagation();
         onPointerDown?.(e);
       }}
-      className={`absolute flex h-4 w-4 items-center justify-center transition-opacity ${
+      // `group/dot` here, and `group-hover:` (the node's group) for the reveal:
+      // the dots appear when you approach the portrait and brighten when you
+      // approach the dot, which are two different distances.
+      className={`group/dot absolute flex items-center justify-center transition-opacity ${
         visible || highlighted ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
       }`}
-      style={{ ...place, cursor: 'crosshair', touchAction: 'none' }}
+      style={{ ...place, width: DOT_HIT, height: DOT_HIT, cursor: 'crosshair', touchAction: 'none' }}
     >
+      {/* A faint disc under the dot, only while the box is hovered: it makes the
+          size of the target visible, so "easily clickable" is something you can
+          see rather than something you have to discover. */}
       <span
-        className={`block rounded-full transition-all ${
+        className={`absolute inset-1 rounded-full bg-brand-400/10 opacity-0 transition-opacity ${
+          highlighted ? 'opacity-100' : 'group-hover/dot:opacity-100'
+        }`}
+      />
+      <span
+        className={`relative block rounded-full transition-all ${
           highlighted
-            ? 'h-3 w-3 bg-brand-400 shadow-[0_0_10px_rgb(var(--color-brand-rgb)/70%)]'
-            : 'h-2 w-2 bg-zinc-400 hover:h-3 hover:w-3 hover:bg-brand-400'
+            ? 'h-3.5 w-3.5 bg-brand-400 shadow-[0_0_12px_rgb(var(--color-brand-rgb)/80%)]'
+            : 'h-2 w-2 bg-zinc-400 group-hover/dot:h-3.5 group-hover/dot:w-3.5 group-hover/dot:bg-brand-400 group-hover/dot:shadow-[0_0_12px_rgb(var(--color-brand-rgb)/70%)]'
         }`}
       />
     </span>

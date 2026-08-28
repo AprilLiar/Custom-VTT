@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import { TEXT_VISIBLE_ZOOM } from '../lib/boardViewport.js';
-import { assignBends, edgeEnds, edgePath } from '../lib/relationshipGeometry.js';
+import { edgeEnds, edgePath } from '../lib/relationshipGeometry.js';
 import HaloText from './HaloText.jsx';
 
 // The web: every relationship, drawn.
@@ -12,17 +12,37 @@ import HaloText from './HaloText.jsx';
 // measurement. Measuring would add a per-frame loop and reintroduce drift
 // during pan and zoom, for nothing.
 //
-// **Two surfaces, not one.** Retired relationships are a separate SVG that
-// paints first, so anything at all may overlap them — that is what "moves to
-// the backmost layer" means, and z-index inside one SVG cannot express it as
-// simply. Live lines paint above them, and text paints above everything (see
-// the label layer at the bottom).
+// **The board's layer stack, stated once.** z-index inside a single SVG cannot
+// express any of this, so each band is its own surface:
+//
+//   0  retired edges  — anything at all may overlap them; that is what
+//                       "moves to the backmost layer" means
+//   1  live edges
+//   2  the portraits  (set in RelationshipNode)
+//   3  end handles, and the line being drawn right now
+//   4  text
+//
+// **The portraits sit above the lines, and that is load-bearing.** Every edge
+// carries a transparent 16px-wide hit stroke, and it begins exactly at an
+// anchor dot — so while the edges painted last, that invisible stroke covered
+// the dot it was attached to. Measured with `elementFromPoint`: aiming at a
+// connected node's dot returned the PATH, so the dot never lit up and pressing
+// it grabbed the line instead of starting a new one. A line drawing over
+// somebody's face was the visible half of the same mistake.
+//
+// The two handles of a SELECTED line then have to climb back above the
+// portraits, or the dot they sit on would swallow them and re-aiming a line
+// would become impossible — the gesture would start a new line every time.
 
 const RETIRED_COLOR = '#8b8b93';
 
 export default function RelationshipEdges({
   edges,
   nodesById,
+  // Computed by the board rather than here: a bend drag needs the offset a line
+  // currently has in order to start from it without a jump, and two independent
+  // `assignBends` calls would be two chances to disagree about the same fan.
+  bends,
   zoom,
   canEdit,
   selectedEdgeId,
@@ -33,8 +53,6 @@ export default function RelationshipEdges({
   showRetired = true,
   draft,
 }) {
-  const bends = useMemo(() => assignBends(edges), [edges]);
-
   const drawable = useMemo(
     () =>
       edges
@@ -67,7 +85,6 @@ export default function RelationshipEdges({
             selected={selectedEdgeId === d.edge.id}
             onPointerDown={onEdgePointerDown}
             onDoubleClick={onEdgeDoubleClick}
-            onEndPointerDown={onEndPointerDown}
             registerPath={registerPath}
           />
         ))}
@@ -83,10 +100,46 @@ export default function RelationshipEdges({
             selected={selectedEdgeId === d.edge.id}
             onPointerDown={onEdgePointerDown}
             onDoubleClick={onEdgeDoubleClick}
-            onEndPointerDown={onEndPointerDown}
             registerPath={registerPath}
           />
         ))}
+      </Surface>
+
+      {/* Above the portraits: the handles that re-aim a line, and the line
+          being drawn right now. Both are things you are aiming AT somebody, so
+          both have to stay visible and grabbable over the face you are aiming
+          at — which is exactly where they end up. */}
+      <Surface className="z-[3]">
+        {canEdit &&
+          drawable.map(({ edge, ends }) => (
+            <g key={`ends-${edge.id}`} opacity={edge.retired ? 0.5 : 1}>
+              {/* **Both ends are grabbable, not just loose ones.** Clicking a
+                  line selects it and puts a handle on each end; dragging one
+                  re-anchors that end to another character or another dot, and
+                  releasing it over empty space DISCONNECTS it — leaving the
+                  line hanging exactly as it would if the character had been
+                  deleted. One gesture covers re-aim and detach, because they
+                  are the same act with different endings.
+                  A loose end shows its handle permanently, selected or not: it
+                  is already detached and has to be findable to be picked up. */}
+              {(edge.from_node_id == null || selectedEdgeId === edge.id) && (
+                <EndHandle
+                  point={ends.from}
+                  color={edge.retired ? RETIRED_COLOR : edge.color}
+                  loose={edge.from_node_id == null}
+                  onPointerDown={(e) => onEndPointerDown?.(e, edge, 'from')}
+                />
+              )}
+              {(edge.to_node_id == null || selectedEdgeId === edge.id) && (
+                <EndHandle
+                  point={ends.to}
+                  color={edge.retired ? RETIRED_COLOR : edge.color}
+                  loose={edge.to_node_id == null}
+                  onPointerDown={(e) => onEndPointerDown?.(e, edge, 'to')}
+                />
+              )}
+            </g>
+          ))}
         {/* The line being drawn right now. Dashed and unattached, so it reads
             as a proposal rather than as a relationship that already exists. */}
         {draft && (
@@ -110,7 +163,7 @@ export default function RelationshipEdges({
               key={`label-${edge.id}`}
               ref={(el) => registerPath?.(`label-${edge.id}`, el)}
               className="pointer-events-none absolute -translate-x-1/2 -translate-y-1/2 whitespace-nowrap"
-              style={{ left: mid.x, top: mid.y, zIndex: 3 }}
+              style={{ left: mid.x, top: mid.y, zIndex: 4 }}
             >
               <HaloText
                 className={`text-[12px] font-semibold ${edge.retired ? 'text-zinc-500' : 'text-zinc-100'}`}
@@ -181,7 +234,7 @@ function Defs({ items, retiredOnly = false }) {
 
 const slug = (color) => String(color).replace(/[^a-zA-Z0-9]/g, '');
 
-function EdgeLine({ edge, ends, d, canEdit, selected, onPointerDown, onDoubleClick, onEndPointerDown, registerPath }) {
+function EdgeLine({ edge, ends, d, canEdit, selected, onPointerDown, onDoubleClick, registerPath }) {
   const color = edge.retired ? RETIRED_COLOR : edge.color;
   const marker = `url(#rel-arrow-${slug(color)})`;
   return (
@@ -195,9 +248,13 @@ function EdgeLine({ edge, ends, d, canEdit, selected, onPointerDown, onDoubleCli
         fill="none"
         stroke="transparent"
         strokeWidth="16"
-        style={{ pointerEvents: canEdit ? 'stroke' : 'none', cursor: 'pointer' }}
+        // `grab`, not `pointer`: pressing here and moving bends the line, and
+        // the cursor is the only advertisement that gesture has.
+        style={{ pointerEvents: canEdit ? 'stroke' : 'none', cursor: canEdit ? 'grab' : 'default' }}
         data-edge-hit={edge.id}
-        onPointerDown={(e) => onPointerDown?.(e, edge)}
+        // The two ends ride along because the bend drag needs the chord to
+        // measure against, and this component already has them resolved.
+        onPointerDown={(e) => onPointerDown?.(e, edge, ends)}
         onDoubleClick={(e) => {
           e.stopPropagation();
           onDoubleClick?.(edge, e);
@@ -221,31 +278,6 @@ function EdgeLine({ edge, ends, d, canEdit, selected, onPointerDown, onDoubleCli
         markerStart={edge.arrow === 'from' ? marker : undefined}
         markerEnd={edge.arrow === 'to' ? marker : undefined}
       />
-      {/* **Both ends are grabbable, not just loose ones (decided, new).**
-          Clicking a line selects it and puts a handle on each end; dragging one
-          re-anchors that end to another character or another dot, and releasing
-          it over empty space DISCONNECTS it — leaving the line hanging exactly
-          as it would if the character had been deleted. One gesture covers
-          re-aim and detach, because they are the same act with different
-          endings.
-          A loose end shows its handle permanently, selected or not: it is
-          already detached and has to be findable in order to be picked back up. */}
-      {canEdit && (edge.from_node_id == null || selected) && (
-        <EndHandle
-          point={ends.from}
-          color={color}
-          loose={edge.from_node_id == null}
-          onPointerDown={(e) => onEndPointerDown?.(e, edge, 'from')}
-        />
-      )}
-      {canEdit && (edge.to_node_id == null || selected) && (
-        <EndHandle
-          point={ends.to}
-          color={color}
-          loose={edge.to_node_id == null}
-          onPointerDown={(e) => onEndPointerDown?.(e, edge, 'to')}
-        />
-      )}
     </g>
   );
 }

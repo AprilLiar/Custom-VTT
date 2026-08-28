@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowLeft, ArrowRight, Minus, Smile, Trash2 } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Minus, Smile, Spline, Trash2 } from 'lucide-react';
 import { socket } from '../socket.js';
 import { useAnchoredPosition } from '../lib/useAnchoredPosition.js';
 import EmojiGrid from './EmojiGrid.jsx';
@@ -187,6 +187,24 @@ export default function RelationshipEditor({ edge, anchor, fromName, toName, onC
             {draft.arrow === 'to' ? `${fromName} → ${toName}` : draft.arrow === 'from' ? `${toName} → ${fromName}` : 'Mutual — no arrow'}
           </p>
         </Row>
+
+        {/* **Only when there is one to undo.** A line bent by hand keeps that
+            arc forever, which is the point — but a fan offset the board chose
+            for you is not something you asked for and there is nothing here to
+            put back. So the control appears exactly when `bend` is set, and
+            clearing it hands the line back to the automatic fan rather than
+            flattening it: a pair with three lines between them must not all
+            collapse onto each other because one of them was straightened. */}
+        {edge.bend != null && (
+          <button
+            type="button"
+            onClick={() => patch({ bend: null })}
+            title="Drop the hand-drawn arc and let the board space this line again"
+            className="flex items-center gap-1.5 self-start panel-cut-sm border border-zinc-700 px-2 py-1 text-[10px] font-bold uppercase tracking-wide text-zinc-400 hover:border-zinc-500 hover:text-zinc-100"
+          >
+            <Spline size={12} /> Reset curve
+          </button>
+        )}
 
         <label className="flex cursor-pointer items-start gap-2">
           <input

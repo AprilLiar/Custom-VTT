@@ -60,7 +60,10 @@ export function hitNode(node, point) {
 //
 // The pad covers the dot's own offset plus a comfortable grab radius around it,
 // so the whole visible target and a little air around it all accept the drop.
-export const DROP_PAD = 18;
+// Kept in step with the dot's hit box in RelationshipNode (DOT_OUT + half of
+// DOT_HIT ≈ 21): a dot you can light up by hovering is a dot you should be able
+// to drop on, and a smaller pad here would light one up and then refuse it.
+export const DROP_PAD = 22;
 
 export function hitNodeArea(node, point, pad = DROP_PAD) {
   return (
@@ -164,6 +167,23 @@ export function pairKey(edge) {
   return a < b ? `${a}|${b}` : `${b}|${a}`;
 }
 
+// **Whose frame is an offset measured in?** `controlPoint` takes its
+// perpendicular from the edge's OWN direction, so an edge stored B→A has both
+// its direction and its fan offset negated relative to one stored A→B — and the
+// two negations cancel, producing an identical control point and an identical
+// curve.
+//
+// That was the bug: connect A to B, then B to A, and the two lines landed
+// exactly on top of each other while the fan believed it had separated them.
+// The old unit test asserted the offsets were symmetric and summed to zero.
+// Both were true, of a pair of curves that overlapped perfectly — which is why
+// it passed. Assert the rendered paths differ, not the numbers behind them.
+//
+// The fix: lay every fan out in ONE frame — the pair's canonical direction, from
+// the lower node id to the higher — and flip the offset handed to a backwards
+// edge so that its own negated direction restores it.
+const runsBackwards = (edge) => Number(edge.from_node_id) > Number(edge.to_node_id);
+
 // Assigns every edge its bend offset in one pass: group by pair, then hand out
 // symmetric offsets in stable id order so a line does not jump to a different
 // bend when an unrelated edge is added.
@@ -179,9 +199,94 @@ export function assignBends(edges) {
   for (const group of byPair.values()) {
     group.sort((a, b) => a.id - b.id);
     const offsets = bendOffsets(group.length);
-    group.forEach((edge, i) => out.set(edge.id, offsets[i]));
+    group.forEach((edge, i) => out.set(edge.id, runsBackwards(edge) ? -offsets[i] : offsets[i]));
+  }
+  // A hand-bent line keeps exactly the arc it was given. It is already in its
+  // own frame — the drag that produced it measured there — so it needs no
+  // canonical correction, and it is not part of any fan.
+  //
+  // Applied over the fan rather than instead of it, so bending one line of a
+  // pair leaves its neighbours in the slots they already occupy. Dropping a
+  // hand-bent line out of the count would re-fan the others, and a line you
+  // never touched would slide sideways because you moved a different one.
+  for (const edge of edges) {
+    if (Number.isFinite(edge.bend)) out.set(edge.id, edge.bend);
   }
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// Bending a line by hand
+// ---------------------------------------------------------------------------
+//
+// **One number, not a control point.** Grab a line anywhere, pull, and it bends
+// into an arc that has to survive both portraits being dragged afterwards. So
+// what is stored is the same quantity the fan hands out — a perpendicular
+// displacement of the quadratic's control point, in the edge's own from→to
+// frame — and never the control point itself, which is a fixed world position
+// and would let the line straighten out the moment an end moved.
+//
+// The maths that makes "grab ANY point" work rather than only the middle: with
+// the control point at the chord's midpoint plus `offset` along the normal,
+//
+//     B(t) = [the straight line from P0 to P2 at t] + 2t(1-t) · offset · n
+//
+// — the bracketed term really is the straight line, which is why a zero offset
+// draws one. So the curve's distance from the chord at parameter t is
+// `2t(1-t) · offset`, and the offset that puts a grabbed point back under the
+// pointer is that same relation read the other way.
+
+// Where along the chord a point sits: 0 at `from`, 1 at `to`. The pointer is
+// projected onto the chord rather than solved against the curve — for the gentle
+// arcs this produces the two agree closely, and a root-find per frame to place a
+// grab handle is arithmetic nobody can see.
+export function chordParam(from, to, point) {
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  const lenSq = dx * dx + dy * dy;
+  if (!(lenSq > 0)) return 0.5;
+  const t = ((point.x - from.x) * dx + (point.y - from.y) * dy) / lenSq;
+  return Math.max(0, Math.min(1, t));
+}
+
+// How much of the offset is felt at parameter t. **Floored**, because the ends
+// of a quadratic do not move at all however hard its control point is pulled:
+// without a floor, grabbing within a few pixels of an anchor divides by nearly
+// zero and throws the line off the board on the first frame.
+const MIN_BEND_WEIGHT = 0.25; // t roughly within [0.15, 0.85]
+export const bendWeight = (t) => Math.max(MIN_BEND_WEIGHT, 2 * t * (1 - t));
+
+// The offset that puts the point grabbed at chord parameter `t` under `point`.
+// Only the perpendicular component moves the line — sliding along the chord
+// changes nothing about a one-parameter arc — so the along-chord component is
+// dropped rather than fought.
+export function bendFromDrag(from, to, t, point) {
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  const len = Math.hypot(dx, dy) || 1;
+  // The same normal `controlPoint` displaces along, so a positive answer here
+  // bends the line the same way a positive fan offset does.
+  const nx = -dy / len;
+  const ny = dx / len;
+  // `from` is on the chord and n is perpendicular to it, so this is the
+  // pointer's signed distance from the chord line.
+  const perp = (point.x - from.x) * nx + (point.y - from.y) * ny;
+  return perp / bendWeight(t);
+}
+
+// Close enough to straight that the player meant straight. Without it a line
+// dragged back to true keeps a two-pixel kink forever, and no amount of care
+// with the mouse gets rid of it.
+export const BEND_SNAP = 6;
+export const snapBend = (offset) => (Math.abs(offset) < BEND_SNAP ? 0 : offset);
+
+// A hand bend is bounded for the same reason a node coordinate is: the plane is
+// infinite, a number is not, and one NaN here takes the whole line with it.
+export const BEND_LIMIT = 4000;
+export function clampBend(offset) {
+  const n = Number(offset);
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(-BEND_LIMIT, Math.min(BEND_LIMIT, n));
 }
 
 // Where an edge's two ends actually are, given the nodes currently on the
