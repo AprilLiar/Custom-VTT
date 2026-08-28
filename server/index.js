@@ -3994,14 +3994,34 @@ io.on('connection', (socket) => {
 
   const ARROWS = new Set(['none', 'from', 'to']);
 
+  // **The hand-drawn arc, as a perpendicular offset.** Bounded for exactly the
+  // reason `coord` is bounded: the plane is infinite and a number is not, and
+  // one NaN here would take the line off the board entirely.
+  //
+  // `null` is a real value here and means "no hand bend" — the line goes back
+  // to whatever the automatic fan gives it. That is distinct from the field
+  // being absent, which like every other field on this event means "leave it
+  // alone", so the three cases have to stay apart: undefined keeps, null
+  // clears, a number sets.
+  const BEND_LIMIT = 4000;
+  const bendValue = (value) => {
+    // Explicitly, before Number() gets its hands on it: `Number(null)` is 0,
+    // which is a perfectly finite number and would store "hand-bent, straight"
+    // where the caller asked for "not hand-bent at all".
+    if (value === null || value === undefined || value === '') return null;
+    const n = Number(value);
+    if (!Number.isFinite(n)) return null;
+    return Math.max(-BEND_LIMIT, Math.min(BEND_LIMIT, n));
+  };
+
   // What a relationship SAYS, as opposed to where it is attached (move_end).
   // Every field is optional: the editor applies each control live, so a single
   // change sends a single field and everything else keeps its stored value.
-  on('relationships:update_edge', async ({ edgeId, label, color, arrow, retired }) => {
+  on('relationships:update_edge', async ({ edgeId, label, color, arrow, retired, bend }) => {
     const edge = await loadOwnedEdge(edgeId);
     if (!edge) return;
     await run(
-      `UPDATE relationship_edges SET label = ?, color = ?, arrow = ?, retired = ? WHERE id = ?`,
+      `UPDATE relationship_edges SET label = ?, color = ?, arrow = ?, retired = ?, bend = ? WHERE id = ?`,
       [
         clampText(label ?? edge.label, 60),
         colour(color ?? edge.color, edge.color),
@@ -4010,6 +4030,7 @@ io.on('connection', (socket) => {
         // `side()` uses for the four dot names.
         ARROWS.has(arrow) ? arrow : ARROWS.has(edge.arrow) ? edge.arrow : 'none',
         retired == null ? edge.retired : retired ? 1 : 0,
+        bend === undefined ? edge.bend : bendValue(bend),
         edge.id,
       ]
     );

@@ -275,6 +275,51 @@ await sleep(700);
 mine = await board(alice.id, { role: 'player', characterId: alice.id });
 check('...and brought back', mine.edges.find((e) => e.id === edgeId).retired === 0);
 
+// **The hand-drawn arc.** A number sets it, `null` clears it back to the
+// automatic fan, and the field being absent leaves it alone — three cases that
+// have to stay apart, because `Number(null)` is a perfectly finite 0 and would
+// store "straightened by hand" where the caller asked for "not bent at all".
+aliceSock.emit('relationships:update_edge', { edgeId, bend: -42.75 });
+await sleep(700);
+mine = await board(alice.id, { role: 'player', characterId: alice.id });
+check('a hand-drawn arc persists, fraction and sign intact',
+  mine.edges.find((e) => e.id === edgeId).bend === -42.75,
+  JSON.stringify(mine.edges.find((e) => e.id === edgeId).bend));
+
+aliceSock.emit('relationships:update_edge', { edgeId, label: 'still bent' });
+await sleep(700);
+mine = await board(alice.id, { role: 'player', characterId: alice.id });
+check('...and a write to another field does not flatten it',
+  mine.edges.find((e) => e.id === edgeId).bend === -42.75);
+
+aliceSock.emit('relationships:update_edge', { edgeId, bend: 0 });
+await sleep(700);
+mine = await board(alice.id, { role: 'player', characterId: alice.id });
+check('zero is a real arc — "I straightened this myself"',
+  mine.edges.find((e) => e.id === edgeId).bend === 0,
+  JSON.stringify(mine.edges.find((e) => e.id === edgeId).bend));
+
+aliceSock.emit('relationships:update_edge', { edgeId, bend: null });
+await sleep(700);
+mine = await board(alice.id, { role: 'player', characterId: alice.id });
+check('null hands the line back to the automatic fan',
+  mine.edges.find((e) => e.id === edgeId).bend === null,
+  JSON.stringify(mine.edges.find((e) => e.id === edgeId).bend));
+
+// Bounded and NaN-proof, for the same reason a node coordinate is: the plane is
+// infinite and a number is not, and one bad value here takes the line with it.
+for (const bad of [Infinity, 'sideways', 1e12]) {
+  aliceSock.emit('relationships:update_edge', { edgeId, bend: bad });
+  await sleep(300);
+  mine = await board(alice.id, { role: 'player', characterId: alice.id });
+  const stored = mine.edges.find((e) => e.id === edgeId).bend;
+  check(`a bend of ${String(bad)} is bounded or refused, never stored raw`,
+    stored === null || (Number.isFinite(stored) && Math.abs(stored) <= 4000),
+    JSON.stringify(stored));
+}
+aliceSock.emit('relationships:update_edge', { edgeId, bend: null, label: '⚔️ rivals' });
+await sleep(700);
+
 // The same gate as everything else on the board.
 bobSock.emit('relationships:update_edge', { edgeId, label: 'vandalised' });
 await sleep(700);

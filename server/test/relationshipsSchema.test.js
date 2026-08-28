@@ -190,6 +190,34 @@ test('an edge starts red, straight, live and unlabelled', async () => {
   // A brand-new line is attached at both ends, with no stored loose point.
   assert.equal(edge.from_x, null);
   assert.equal(edge.to_x, null);
+  // **NULL, not 0.** A line nobody has bent by hand takes whatever the
+  // automatic fan gives it, and that is what keeps two lines between the same
+  // pair from overlapping. Zero would mean "somebody straightened this
+  // deliberately" and would override the fan — every second line between a pair
+  // would land on the first.
+  assert.equal(edge.bend, null);
+});
+
+test('a hand-drawn arc is stored as a signed offset, zero included', async () => {
+  const owner = await makeCharacter('bendy', 'pc');
+  const d = await makeCharacter('d');
+  const node = Number((await run('INSERT INTO relationship_nodes (owner_character_id, character_id) VALUES (?, ?)', [owner, d])).lastInsertRowid);
+  const edgeId = Number(
+    (await run('INSERT INTO relationship_edges (owner_character_id, from_node_id) VALUES (?, ?)', [owner, node])).lastInsertRowid
+  );
+  const readBack = async () => (await one('SELECT bend FROM relationship_edges WHERE id = ?', [edgeId])).bend;
+
+  // REAL, not INTEGER: a drag lands wherever it lands, and rounding the arc to
+  // whole units would make the line step as you pull it.
+  await run('UPDATE relationship_edges SET bend = ? WHERE id = ?', [-42.75, edgeId]);
+  assert.equal(await readBack(), -42.75);
+  // Zero is a real, distinct value — "I straightened this myself".
+  await run('UPDATE relationship_edges SET bend = ? WHERE id = ?', [0, edgeId]);
+  assert.equal(await readBack(), 0);
+  // And it goes back to null, which is how "reset curve" hands the line back to
+  // the fan rather than pinning it flat.
+  await run('UPDATE relationship_edges SET bend = NULL WHERE id = ?', [edgeId]);
+  assert.equal(await readBack(), null);
 });
 
 test('arrow and side are constrained to the values the renderer understands', async () => {

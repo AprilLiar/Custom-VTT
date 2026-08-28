@@ -13,10 +13,14 @@ import {
 import {
   anchorPoint,
   assignBends,
+  bendFromDrag,
+  chordParam,
+  clampBend,
   edgeEnds,
   edgePath,
   dropTarget,
   nearestSide,
+  snapBend,
 } from '../lib/relationshipGeometry.js';
 import RelationshipEdges from './RelationshipEdges.jsx';
 import RelationshipEditor from './RelationshipEditor.jsx';
@@ -78,6 +82,13 @@ export default function RelationshipBoard({
   // cleared once the server's value agrees with it; if the server ever disagrees
   // (the GM moved the same node), the server wins.
   const livePos = useRef(new Map());
+  // The same trick for a hand-drawn arc, and for the same two reasons: the drop
+  // must not flash back to the old curve while the round trip is in flight, and
+  // a second grab inside that window has to start from the offset the line
+  // really has or it compounds exactly as the node drag used to.
+  const liveBend = useRef(new Map());
+  const lastEdgesRef = useRef(null);
+  const bendRef = useRef(null);
   const [zoom, setZoom] = useState(DEFAULT_VIEW.zoom);
   const [selectedId, setSelectedId] = useState(null);
   const [dropping, setDropping] = useState(false);
@@ -110,7 +121,7 @@ export default function RelationshipBoard({
   // is off) and neither does any test that never mounts the component — the
   // browser console said it in one line.
   const rawNodes = board?.nodes ?? [];
-  const edges = board?.edges ?? [];
+  const rawEdges = board?.edges ?? [];
 
   // Drop any local override the server has now confirmed. Done during render
   // rather than in an effect so the very next line already sees the truth.
@@ -120,6 +131,19 @@ export default function RelationshipBoard({
   }
   for (const id of livePos.current.keys()) {
     if (!rawNodes.some((n) => n.id === id)) livePos.current.delete(id);
+  }
+  // **A bend override lasts exactly until the next broadcast**, whatever that
+  // broadcast says. It exists only to carry the curve across the gap between
+  // letting go and the server answering, and `board.edges` is a fresh array on
+  // every broadcast, so identity is the honest signal that the gap has closed.
+  //
+  // Keeping it until the server AGREED — the rule livePos uses — reads as more
+  // careful and is wrong here: "Straighten" writes `bend: null`, the server
+  // dutifully returns null, that never equals the number the drag left behind,
+  // and the line would keep an arc nobody could get rid of.
+  if (lastEdgesRef.current !== board?.edges) {
+    lastEdgesRef.current = board?.edges;
+    liveBend.current.clear();
   }
 
   // Every reader below — the rendered portraits, the edge geometry, the next
@@ -131,6 +155,21 @@ export default function RelationshipBoard({
     [board?.nodes, draftTick]
   );
   const nodesById = useMemo(() => new Map(nodes.map((n) => [n.id, n])), [nodes]);
+
+  const edges = useMemo(
+    () =>
+      rawEdges.map((e) =>
+        liveBend.current.has(e.id) ? { ...e, bend: liveBend.current.get(e.id) } : e
+      ),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [board?.edges, draftTick]
+  );
+
+  // **One fan, computed once.** The surface draws from it, the drag starts from
+  // it, and the rAF repaint during a node drag reads it — three call sites that
+  // must agree about where a line sits, so there is one answer rather than
+  // three chances to compute it differently.
+  const bends = useMemo(() => assignBends(edges), [edges]);
 
   const peopleById = useMemo(
     () => new Map((board?.people ?? []).map((p) => [p.id, p])),
@@ -170,29 +209,36 @@ export default function RelationshipBoard({
     else pathEls.current.delete(key);
   }, []);
 
+  // One line, redrawn straight to the DOM: both of its paths and its label.
+  // Shared by the node drag (which moves the ends) and the bend drag (which
+  // moves the curve between them), so the two can never draw a line two
+  // slightly different ways.
+  const paintEdge = useCallback((edge, lookup, offset) => {
+    const ends = edgeEnds(edge, lookup);
+    if (!ends) return;
+    const { d, mid } = edgePath(ends.from, ends.to, offset);
+    pathEls.current.get(edge.id)?.setAttribute('d', d);
+    pathEls.current.get(`hit-${edge.id}`)?.setAttribute('d', d);
+    const label = pathEls.current.get(`label-${edge.id}`);
+    if (label) {
+      label.style.left = `${mid.x}px`;
+      label.style.top = `${mid.y}px`;
+    }
+  }, []);
+
   // Rewrites every path touching `nodeId`, using `movedNode` as that node's
-  // live position. The bends are recomputed the same way the render does it, so
-  // a fanned pair stays fanned while one of its ends is being dragged.
+  // live position. It reads the same `bends` the render does, so a fanned pair
+  // stays fanned — and a hand-bent line keeps its arc — while an end is moving.
   const redrawEdgesFor = useCallback(
     (nodeId, movedNode) => {
       const lookup = new Map(nodesById);
       lookup.set(nodeId, movedNode);
-      const bends = assignBends(edges);
       for (const edge of edges) {
         if (edge.from_node_id !== nodeId && edge.to_node_id !== nodeId) continue;
-        const ends = edgeEnds(edge, lookup);
-        if (!ends) continue;
-        const { d, mid } = edgePath(ends.from, ends.to, bends.get(edge.id) ?? 0);
-        pathEls.current.get(edge.id)?.setAttribute('d', d);
-        pathEls.current.get(`hit-${edge.id}`)?.setAttribute('d', d);
-        const label = pathEls.current.get(`label-${edge.id}`);
-        if (label) {
-          label.style.left = `${mid.x}px`;
-          label.style.top = `${mid.y}px`;
-        }
+        paintEdge(edge, lookup, bends.get(edge.id) ?? 0);
       }
     },
-    [edges, nodesById]
+    [edges, nodesById, bends, paintEdge]
   );
 
   // Point the chase at a new target and make sure the loop is running. The
@@ -332,6 +378,89 @@ export default function RelationshipBoard({
       window.removeEventListener('pointercancel', onUp);
     };
   }, [canEdit, chaseEdges]);
+
+  // ---- bending a line by hand ---------------------------------------------
+  //
+  // Grab a line anywhere and pull: the point under your finger follows and the
+  // line bows into the arc it defines. What gets stored is the same
+  // perpendicular offset the automatic fan hands out (see
+  // relationshipGeometry), so the arc belongs to the line rather than to the
+  // board — move either portrait afterwards and the curve travels with them.
+  //
+  // **The gesture shares its pointerdown with selection**, and the two separate
+  // by distance: under four pixels this was a click and the line is merely
+  // selected; over it, the line bends. A double-click moves nothing, so it
+  // still opens the editor.
+  const onEdgePointerDown = useCallback(
+    (e, edge, ends) => {
+      e.stopPropagation();
+      setSelectedEdgeId(edge.id);
+      setSelectedId(null);
+      // Left button only, matching the node drag: middle-drag pans the board.
+      if (!canEdit || e.button !== 0) return;
+      const api = voidRef.current;
+      if (!api || !ends) return;
+      const point = api.toWorld(e.clientX, e.clientY);
+      const t = chordParam(ends.from, ends.to, point);
+      const base = bends.get(edge.id) ?? 0;
+      bendRef.current = {
+        edgeId: edge.id,
+        t,
+        base,
+        // **The drag applies a delta, not an absolute.** Reading the offset
+        // straight off the pointer is exact in the middle of a line and wrong
+        // near its ends, where `bendWeight`'s floor stops dividing honestly —
+        // grabbing an already-bent line close to an anchor would snap it most
+        // of the way flat on the first frame. Recording what the pointer says
+        // at the moment of the grab and adding only the CHANGE since makes that
+        // first frame a no-op by construction, wherever you grabbed.
+        grab: bendFromDrag(ends.from, ends.to, t, point),
+        offset: base,
+        moved: false,
+        startX: e.clientX,
+        startY: e.clientY,
+      };
+    },
+    [canEdit, bends]
+  );
+
+  useEffect(() => {
+    if (!canEdit) return undefined;
+    const onMove = (e) => {
+      const bend = bendRef.current;
+      const api = voidRef.current;
+      if (!bend || !api) return;
+      // Below the threshold this is still a click; committing nothing until it
+      // is exceeded is what keeps a plain select from nudging the curve.
+      if (!bend.moved && Math.hypot(e.clientX - bend.startX, e.clientY - bend.startY) < 4) return;
+      bend.moved = true;
+      const edge = edges.find((x) => x.id === bend.edgeId);
+      const ends = edge ? edgeEnds(edge, nodesById) : null;
+      if (!ends) return;
+      const point = api.toWorld(e.clientX, e.clientY);
+      bend.offset = clampBend(
+        snapBend(bend.base + bendFromDrag(ends.from, ends.to, bend.t, point) - bend.grab)
+      );
+      // Straight to the DOM, like every other gesture on this board.
+      paintEdge(edge, nodesById, bend.offset);
+    };
+    const onUp = () => {
+      const bend = bendRef.current;
+      bendRef.current = null;
+      if (!bend || !bend.moved) return;
+      liveBend.current.set(bend.edgeId, bend.offset);
+      setDraftTick((t) => t + 1);
+      socket.emit('relationships:update_edge', { edgeId: bend.edgeId, bend: bend.offset });
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
+    return () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onUp);
+    };
+  }, [canEdit, edges, nodesById, paintEdge]);
 
   // ---- drawing and re-attaching a relationship ----------------------------
   //
@@ -512,14 +641,11 @@ export default function RelationshipBoard({
         <RelationshipEdges
           edges={edges}
           nodesById={nodesById}
+          bends={bends}
           zoom={zoom}
           canEdit={canEdit}
           selectedEdgeId={selectedEdgeId}
-          onEdgePointerDown={(e, edge) => {
-            e.stopPropagation();
-            setSelectedEdgeId(edge.id);
-            setSelectedId(null);
-          }}
+          onEdgePointerDown={onEdgePointerDown}
           onEdgeDoubleClick={(edge, e) => {
             setSelectedEdgeId(edge.id);
             setEditingEdge({ id: edge.id, anchor: { left: e.clientX, top: e.clientY } });

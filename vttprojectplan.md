@@ -1243,7 +1243,7 @@ A **Character Creation** button at the top of every character sheet opens a guid
 - **Perk Tags (decided, new)**: optional categorisation on a Perk — 0 or more, picked from a world-level GM-managed list, with a name and an optional description shown as a tooltip. **Purely for organising the library: no mechanics now, and none by design.** Shown as quiet chips on every Perk card (Compendium and the character sheet's read-only Perks tab alike) and usable as a **multi-select OR filter** on the Perks Compendium — the same filter semantics the Moves tab's Style filter already uses, so the two behave alike. Filtering is open to every role, since a Player browses the same read-only library; creating/editing/deleting tags is GM-only.
   - **Their own vocabulary, not the Move tag list (decided).** `perk_tags` + `perk_tag_links`, deliberately separate from the `tags`/`move_tags` pair Moves use. Move tags stopped being cosmetic when the **Block Tag** started driving real Stamina automation (see the Block Tag under Combat Timing), so one shared list would put mechanically-loaded names in a Perk's picker where they mean nothing. Deleting a Perk tag detaches it from every Perk and needs no in-use guard — unlike a Move tag, it can never change how anything resolves.
 - A Perk in use (granted to anyone) can't be deleted — matches the same "in use" pattern already used for Tells.
-- The Perks tab on a character sheet is read-only — displays granted Perks in a grid (infinite rows, 2 columns), each card showing picture/name/description (for the same transparency reason granted Moves show their full effect; there's no automation data left to display).
+- The Perks tab on a character sheet is read-only — displays granted Perks in a grid (infinite rows, 2 columns), each card showing picture/name/description (for the same transparency reason granted Moves show their full effect; there's no automation data left to display). Taking a Perk for yourself happens on the **Compendium's** Perks tab, not here, exactly as learning a Move does.
 
 ## Game mechanic — Counters
 Simple, persistent "clocks" — no automation, just a name, a target (2-20 pips), a current count, and +/- buttons.
@@ -2037,7 +2037,7 @@ Every page's header also carries, in order: the "Dogfight" logo (links to the Co
    - **Tab 6 — Role-play:** persistent free-text fields, each under a question the player asks themselves about the character. **Seven** canonical questions (what they love and can't pass by on the street; biggest traumatic event/memory; irrational fear; favorite food; what another person can do to infuriate them; biggest vice; and — **decided, new** — *what is something they would fight for, no matter what?*, the one question with a mechanic behind it: it is where a character's **Reasons to Fight** value comes from at the table). Appending to `FIXED_QUESTIONS` is always safe since answers are keyed by the question's exact text and nothing can be keyed to a question that didn't exist yet; *rewording* an existing one still orphans its answers with ~2-3-line answer boxes, kept compact so it all fits with little scrolling, plus the ability to add custom questions with answers — up to 20 additional per character (question editable, deletable). Same open-access editing as the rest of the sheet.
 4. **Compendium** (**decided, revised: open to every role, read-only for Players**) — a single page holding every compendium as an internal tab, rather than a separate top-level nav entry per type (decided — this is the pattern for any compendium added later too). The page itself is no longer gated behind a `role !== 'gm'` redirect; each internal tab instead gates its own GM-only pieces (Creator forms, Tell/Tag managers, per-item Grant/Edit/Delete actions, drag-to-grant, the character-rail) individually, so a Player can browse folder nav, filters, and full cards on both tabs but can't create, edit, delete, or grant anything:
    - **Moves tab** — persistent library of every move; the Tell manager (name + uploaded image, placeholders replaceable, in-use Tells undeletable — "in use" now also covers a move's right/left ambiguous-Roll Tells, not just its base Tell) — **GM-only**; the Tag manager (world-level list, name + optional description shown as a tooltip everywhere the tag appears) — **GM-only**; disciplines (the folder mechanism, labeled "Discipline" in this UI, **nested** — the same `FolderTreeNav` sidebar as the character list: create/rename/delete at any depth, delete promotes direct moves and direct child disciplines one level up to the deleted one's own parent — browsable/navigable by everyone, but create/rename/delete/drag-to-file is **GM-only**), reorganized either via the Move Creator's discipline field (a select showing the full indented hierarchy) or by **dragging a move card onto a discipline row** (or onto "All Moves"/root to clear it), with "All Moves" showing every move regardless of discipline and the style filter narrowing whichever of "All Moves" or a specific discipline is showing (filter itself usable by every role); Move Creator form (**GM-only** — art upload, name, Default toggle, **Defensive toggle** — reveals two extra interaction sections at the bottom, On Successful Defense / On Failed Defense, once checked — either one Tell picker or — when the Roll includes a Left/Right Hand or Left/Right Leg slot — a Right Tell + Left Tell pair, a Style picker **required unless Default is checked, in which case it's hidden entirely and any picked style is cleared** (decided — see Moves & Tells above), optional Roll picker directly below Style — a **Stat/Custom** toggle first (decided, new — see Moves & Tells above): **Stat** toggles any of 6 slots (Skull, Brain, Left/Right Hand, Stamina, Body, Left/Right Leg) plus a flat bonus, empty = no Roll; **Custom** instead picks a single base die (d4-d12, small dice-icon buttons) plus the same flat bonus, for a weapon's own damage die — switching between the two clears whichever picks the other type had made —, Tag picker 0-10, discipline assignment, frame-data inputs with live colored preview, a required **Stamina Cost** field (0 is a valid free cost; negative restores Stamina instead of spending it — see Combat Timing above), description, On Hit/Block/Miss text + automation builders, always present); drag a move onto a character in the page's character rail to grant it (**GM-only** — per-move Grant checklist as touch fallback, with unlearnable characters disabled; the character rail itself doesn't render for a Player). Every move card shows its full discipline path and, when applicable, a small "Defensive" badge — visible to every role.
-   - **Perks tab** — persistent library of every Perk, browsable read-only by every role; Perk Creator (**GM-only** — picture upload, name, description — no automation builder, see Perks & Tags above); drag a Perk onto a character in the page's character rail to grant it (**GM-only** — per-Perk Grant checklist as touch fallback; the character rail doesn't render for a Player); delete blocked while granted to anyone
+   - **Perks tab** — persistent library of every Perk, browsable by every role; Perk Creator (**GM-only** — picture upload, name, description — no automation builder, see Perks & Tags above); drag a Perk onto a character in the page's character rail to grant it (**GM-only** — per-Perk Grant checklist as touch fallback; the character rail doesn't render for a Player); delete blocked while granted to anyone. **Decided (revised): a Player can take a Perk for themselves** — a **Take / Drop** button on every Perk card grants or drops it on their own character, the mirror of the Moves tab's Learn/Forget and for the same reason: the library has been readable to Players since the page was opened to them, and asking the GM to tick a box was the only way to act on what you read. Unlike Moves there is no learnability gate, because a Perk has none — a Move's Learn can be closed by style and `perk:grant` has no equivalent rule. Automated (⚙) Perks are offered like any other; every grant is visible to the GM, and it is the same trust model as every other control in this app
 5. **Combat Arena** — shared page, no map/tokens; reachable by clicking the header logo, visible to every role. A GM-only roster rail (not-yet-seated characters, role-filtered) to drag from, grouped by character folder recursively — see Combat Arena above for the full collapsible/counted/Folderless-last behavior; two side-by-side columns (Left/Right) of pair rows with a divider between pairs, a fresh empty row always available to start a new one. Seated cards **fill their side's full width with no unoccupied space** — a single occupant's card spans the whole side, and under Uneven Combat, adding more to the same side scales every card on it down evenly so the row always stays fully occupied (a per-card minimum width plus horizontal scroll is the fallback if a side gets too crowded to stay legible), rendered horizontally with a full-height portrait on the left (see Combat Arena above). Each seated character renders as a **read-only** card — portrait, active stance name, dice pools (grouped into the same 3 Head/Core/Legs rows as the character sheet's Tab 1, in that order, rather than one flat mixed row), Current/Max Stamina — showing a live red/green **preview** instead of the real value while this client itself has a declared-but-not-yet-committed move pending (see Stamina Cost above; red if the preview is lower, green if higher, plain otherwise; the preview now checks that character's own pair/side against `combat_pairs`, not a single arena-wide side — see the combat redesign below) — click the card to jump to the full sheet to actually roll/step, values here stay live via the same broadcasts the sheet itself uses; NPCs here are visible to Players as an explicit exception; a small ✕ (GM-only) removes one participant, a page-level **Clear Arena** button (GM-only) empties it entirely, including every declared move and the round/Tic state; a **Start Combat** button (GM-only, shown only while `phase` is null) rolls initiative and opens the first Declaration Phase — see Combat Timing above for how it and **End Combat** relate to Clear Arena. "Uneven Combat" toggle (GM-only; a read-only badge for Players when on) allows uneven pair sizes (dropping a character onto an occupied pair zone adds them rather than replacing). A **Counters** section lists every counter flagged "Show in Combat" for a currently-seated character (labeled `"{CharacterName} - {CounterName}"`, its reward tag if it has one shown read-only) plus standalone counters (labeled by name alone, never a reward tag); a small form creates a new standalone one (GM-only), but adjusting/deleting any counter shown here is open to everyone, matching the character sheet's own Counters tab.
 
    **Global status strip (decided; rewritten after the Combat Automation overhaul):** while a fight is on, a slim bar appears at the top of *every* page (`CombatHeaderBar.jsx`, mounted once in `App.jsx`'s `Shell`, not inside the Arena route — see Combat Timing above), showing the round number, **this viewer's own current state** instead of a generic phase label during Declaration (`viewerDeclarationStatus` — the GM sees a pair-count summary, e.g. "2 pairs still declaring…"; a Player sees their own seated character's status specifically: **"Your turn to declare!"**, **"Waiting for declaration…"**, **"Waiting on other declarations…"** once they've pressed Done Declaring, or **"Not seated in this fight"**), the same Tic Counter square visuals the Arena renders, and an **End Combat** button for the GM. **It is a status display, not a control** — nothing in it advances a round, because nothing does any more. Its one genuinely interactive job is carrying the dialogs that must reach someone regardless of which page they're on: the GM's **Dodge prompt** (`DodgePromptDialog`) and the affected player's **Forfeit/Postpone** prompt (`MoveConflictDialog`). Both are queued here rather than in the Arena precisely because a paused round cannot continue until they're answered, and the person who must answer may be anywhere in the app — verified end to end by `scripts/playtest-dodge.mjs`.
@@ -2894,7 +2894,9 @@ notch straight to the zoom ceiling; `/500` makes one notch a ~22% step.
   unit-tested. The property worth pinning is invisible with one line and obvious with three:
   **two lines between the same pair must not overlap.** A pair is keyed *unordered*, so A→B
   and B→A share one fan; offsets are symmetric about zero and handed out in stable id order,
-  so adding a line never reshuffles the ones already there.
+  so adding a line never reshuffles the ones already there. (Symmetric offsets turned out not
+  to be enough — see Phase 6, where a reversed edge's own negated direction cancelled them
+  out and the two lines drew on top of each other anyway.)
 - **Hit-testing is arithmetic, not `elementFromPoint`** — exact at any zoom, it does not
   fight pointer capture, and it does not care that the element under the cursor is the line
   being dragged.
@@ -2903,7 +2905,8 @@ notch straight to the zoom ceiling; `/500` makes one notch a ~22% step.
   release, so they share every frame in between. The rubber band snaps to the target's dot
   once you are over somebody, so the drop is never a surprise.
 - **Retired lines get their own SVG surface that paints first**, which is what "moves to the
-  backmost layer" means; z-index inside one surface cannot express it as simply.
+  backmost layer" means; z-index inside one surface cannot express it as simply. (That
+  one-surface-per-band idea is now the board's whole layer stack — see the table in Phase 6.)
 - **A loop is refused** — from somebody to themselves has nothing to say, and the curve maths
   would need a special case for a zero-length span. `move_end` refuses it too.
 - **Edges follow a dragged node live**, by the technique the node itself uses: the two or
@@ -3063,6 +3066,72 @@ animations and transitions, but framer-motion animates through inline styles it 
   already shows somebody.
 - **Phone confirmed view-only**: nodes and relationships render, the rail is hidden, and there
   are no connect dots at all.
+
+### Phase 6 (implemented) — bending by hand, and three things play found
+
+**Lines you bend yourself.** Grab a relationship anywhere along its length and pull: the
+point under your finger follows, and the line bows into the arc it defines. What is stored
+is a single `relationship_edges.bend` REAL — the same perpendicular displacement of the
+quadratic's control point that the automatic fan hands out — and **never a control point**.
+An absolute control point is a fixed place in the world, so the arc would flatten the moment
+either portrait moved; an offset is measured against the line's own two ends and travels with
+them. `NULL` means "never bent by hand" and returns the line to the fan; `0` is a real,
+distinct value meaning "I straightened this one myself", which is why the server takes the
+three cases apart explicitly (`Number(null)` is a perfectly finite `0`).
+
+The maths behind "grab **any** point", not just the middle: with the control point at the
+chord's midpoint plus `offset` along the normal, `B(t)` is the straight line plus
+`2t(1-t) · offset · n` — so the curve's distance from the chord at parameter `t` is
+`2t(1-t) · offset`, and the offset that puts a grabbed point back under the pointer is that
+read the other way. The weight is **floored at 0.25**: a quadratic's ends do not move however
+hard its control point is pulled, so without a floor, grabbing within a few pixels of an
+anchor divides by nearly zero and throws the line off the board on the first frame. The drag
+also applies a **delta rather than an absolute** — it records what the pointer says at the
+moment of the grab and adds only the change since — which makes the first frame a no-op by
+construction wherever you grabbed, floor included. The editor grows a **Reset curve** button
+whenever `bend` is set, which hands the line back to the fan rather than pinning it flat.
+
+**A→B and B→A no longer draw one line.** Reported from play, and the fan was wrong in a way
+its test could not see. `edgePath` takes its perpendicular from the edge's OWN direction, so
+an edge stored B→A has both its direction and its fan offset negated — and the two negations
+cancel, producing an identical control point. The old test asserted the offsets were unequal
+and summed to zero. Both were true of two curves lying exactly on top of each other, which is
+why it passed for two phases. Every fan is now laid out in one frame — the pair's canonical
+direction, low node id to high — with the offset flipped for a backwards edge so its own
+negated direction restores it. The test asserts the **drawn curves** diverge, not the numbers
+behind them; reverting the fix turns it red with "both curves bowed the same way: -7.5 and
+-7.5".
+
+**The anchor dots were unreachable, and the layer stack was the reason.** The dots got a 32px
+hit box so that hovering merely *near* one lights it up — but measuring with
+`elementFromPoint` said the hover was landing on a `path`, not on the dot. Every edge carries
+a transparent 16px-wide hit stroke, it begins exactly at an anchor dot, and the live-edge
+surface sat at `z-[1]` above portraits with no z-index at all: the invisible stroke covered
+the very dot it was attached to, so a connected node's dot could be neither lit nor pressed.
+A line drawing over somebody's face was the visible half of the same mistake. The stack is
+now stated once, in `RelationshipEdges`:
+
+| z | layer |
+|---|---|
+| 0 | retired edges — anything at all may overlap them |
+| 1 | live edges |
+| 2 | the portraits |
+| 3 | end handles, and the line being drawn right now |
+| 4 | text |
+
+Layer 3 exists because of what layer 2 broke: a selected line's two handles sit exactly on
+the dots, so they have to climb back above the portraits or re-aiming a line would start a
+new one every time. The rubber band joins them there, since a proposal you are aiming at
+somebody must stay visible over the face you are aiming at. `DROP_PAD` widened to 22 to stay
+in step with the dot's reach — a dot you can light up by hovering is a dot you must be able
+to drop on.
+
+**Players can take Perks for themselves**, the mirror of the Moves tab's Learn/Forget. The
+Perk library has been readable to Players since the page was opened to them, and asking the
+GM to tick a box was the only way to act on what you read. No learnability gate, because a
+Perk has none — a Move's Learn button can be closed by style and `perk:grant` has no
+equivalent rule. Automated Perks are offered like any other: the trust-based no-auth model
+is the whole app's design, and every grant is visible to the GM.
 
 ### Planned, not yet built
 - Nothing. The feature is complete.
