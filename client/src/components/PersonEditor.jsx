@@ -1,6 +1,9 @@
 import { useRef, useState } from 'react';
 import { socket } from '../socket.js';
 import { fileToPortrait, portraitSrc } from '../lib/image.js';
+import { cropOf } from '../lib/imageCrop.js';
+import { usePictureUpload } from '../lib/usePictureUpload.jsx';
+import CroppedImage from './CroppedImage.jsx';
 import { BoardDialog } from './RelationshipBoard.jsx';
 
 // Making up somebody who was never a fighter.
@@ -21,25 +24,26 @@ import { BoardDialog } from './RelationshipBoard.jsx';
 export default function PersonEditor({ ownerCharacterId, person, onClose }) {
   const [name, setName] = useState(person?.name ?? '');
   const [picture, setPicture] = useState(null);
-  const [busy, setBusy] = useState(false);
   const fileRef = useRef(null);
 
   const preview = picture
     ? `data:${picture.imageMimeType};base64,${picture.imageData}`
     : portraitSrc(person);
+  // A freshly chosen picture carries its own crop; an unchanged one keeps
+  // whatever the stored row already has.
+  const previewCrop = picture
+    ? cropOf({ crop_x: picture.cropX, crop_y: picture.cropY, crop_w: picture.cropW, crop_h: picture.cropH })
+    : cropOf(person);
 
-  const pick = async (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setBusy(true);
-    try {
-      setPicture(await fileToPortrait(file));
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setBusy(false);
-    }
-  };
+  const { pick, dialog, busy } = usePictureUpload({
+    process: fileToPortrait,
+    name,
+    previewSizes: [
+      { label: 'On the board', px: 112 },
+      { label: 'In the rail', px: 32 },
+    ],
+    onPicked: setPicture,
+  });
 
   const save = () => {
     const trimmed = name.trim();
@@ -69,7 +73,7 @@ export default function PersonEditor({ ownerCharacterId, person, onClose }) {
           title="Choose a picture"
         >
           {preview ? (
-            <img src={preview} alt="" className="h-full w-full panel-cut object-cover" />
+            <CroppedImage src={preview} crop={previewCrop} className="h-full w-full panel-cut" />
           ) : (
             <span className="flex h-full w-full items-center justify-center text-[10px] font-bold uppercase tracking-wide text-zinc-500">
               {busy ? '…' : 'Add picture'}
@@ -77,6 +81,7 @@ export default function PersonEditor({ ownerCharacterId, person, onClose }) {
           )}
         </button>
         <input ref={fileRef} type="file" accept="image/*" hidden onChange={pick} />
+        {dialog}
         <label className="min-w-0 flex-1">
           <span className="text-[10px] font-bold uppercase tracking-wide text-zinc-500">
             Name <span className="text-brand-400">*</span>

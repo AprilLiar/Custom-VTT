@@ -1,6 +1,8 @@
 import { useMemo, useState } from 'react';
 import { buildFolderTree } from '../lib/folders.js';
 import { portraitSrc } from '../lib/image.js';
+import { cropOf } from '../lib/imageCrop.js';
+import CroppedImage from './CroppedImage.jsx';
 import { FolderRosterNode } from './FolderRoster.jsx';
 import { DRAG_MIME, DRAG_PERSON_MIME } from './RelationshipBoard.jsx';
 
@@ -180,7 +182,7 @@ function RailCard({ record, characterId, personId, canEdit, onEdit }) {
       title={canEdit ? `Drag ${record.name} onto the board` : record.name}
     >
       {src ? (
-        <img src={src} alt="" draggable={false} className="h-8 w-8 shrink-0 panel-cut-sm object-cover" />
+        <CroppedImage src={src} crop={cropOf(record)} draggable={false} className="h-8 w-8 shrink-0 panel-cut-sm" />
       ) : (
         <span className="flex h-8 w-8 shrink-0 items-center justify-center panel-cut-sm bg-zinc-800 text-xs font-bold text-zinc-600">
           {(record.name ?? '?').slice(0, 1).toUpperCase()}

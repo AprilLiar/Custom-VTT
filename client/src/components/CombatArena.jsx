@@ -152,7 +152,13 @@ function ParticipantCard({
         </div>
       )}
 
-      {/* Portrait fills the card's full height edge-to-edge, no padding/gaps */}
+      {/* Portrait fills the card's full height edge-to-edge, no padding/gaps.
+          **Deliberately NOT cropped** (decided): every square frame in the app
+          shows the region chosen in the crop editor, and this one shows the
+          whole picture. It is the only tall portrait on any screen — the
+          fighter's presence on the card is the point — and a crop chosen to
+          make a good 24px avatar is the wrong thing to enlarge here. So this
+          stays a plain <img>: do not convert it to CroppedImage. */}
       {src ? (
         <img src={src} alt="" className="h-full w-28 shrink-0 object-cover sm:w-32" />
       ) : (

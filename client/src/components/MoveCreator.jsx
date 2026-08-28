@@ -27,6 +27,7 @@ function clampThresholdInput(value) {
 }
 import { iconFor } from '../lib/styleIcons.js';
 import { fileToSmallImage } from '../lib/image.js';
+import { usePictureUpload } from '../lib/usePictureUpload.jsx';
 import {
   ROLL_SLOT_NAMES,
   ROLL_SLOT_LABELS,
@@ -384,12 +385,15 @@ export default function MoveCreator({
       prev.includes(id) ? prev.filter((t) => t !== id) : prev.length < 10 ? [...prev, id] : prev
     );
 
-  const pickImage = async (e) => {
-    const file = e.target.files?.[0];
-    e.target.value = '';
-    if (!file) return;
-    setImage(await fileToSmallImage(file).catch(() => undefined));
-  };
+  const { pick: pickImage, dialog: cropDialog } = usePictureUpload({
+    process: (file) => fileToSmallImage(file).catch(() => undefined),
+    name,
+    previewSizes: [
+      { label: 'On the move card', px: 40 },
+      { label: 'In the chat log', px: 24 },
+    ],
+    onPicked: setImage,
+  });
 
   const submit = (e) => {
     e.preventDefault();
@@ -443,7 +447,14 @@ export default function MoveCreator({
   };
 
   const preview = image !== undefined
-    ? { image_data: image?.imageData, image_mime_type: image?.imageMimeType }
+    ? {
+        image_data: image?.imageData,
+        image_mime_type: image?.imageMimeType,
+        crop_x: image?.cropX,
+        crop_y: image?.cropY,
+        crop_w: image?.cropW,
+        crop_h: image?.cropH,
+      }
     : initial;
 
   // **Editing vs. copying.** Both arrive with a full `initial`; only an edit
@@ -1191,6 +1202,7 @@ export default function MoveCreator({
           Cancel
         </button>
       </div>
+      {cropDialog}
     </form>
   );
 }
