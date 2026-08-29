@@ -31,6 +31,9 @@ import { dieLabel, tintFor, POOLS } from '../lib/dice.js';
 import { ANATOMY } from '../lib/anatomy.js';
 import { buildFolderTree } from '../lib/folders.js';
 import { useAnchoredPosition } from '../lib/useAnchoredPosition.js';
+import { useCounterGates } from '../lib/useCounterGates.js';
+import CounterPips from './CounterPips.jsx';
+import GateEditor from './GateEditor.jsx';
 import { FolderRosterNode } from './FolderRoster.jsx';
 import { countRollSlot } from '../lib/diceSlots.js';
 import {
@@ -281,8 +284,9 @@ function ParticipantCard({
 // Same pips look as the character sheet's Counters tab, adapted for the
 // Arena: standalone counters show just their name, character-owned ones
 // show "{CharacterName} - {CounterName}" per the plan's decided labeling.
-function ArenaCounterRow({ counter, characterName }) {
+function ArenaCounterRow({ counter, characterName, gates }) {
   const label = characterName ? `${characterName} - ${counter.name}` : counter.name;
+  const [editingGate, setEditingGate] = useState(null);
   return (
     <div className="panel-cut-lg border border-zinc-800 bg-zinc-900 p-3">
       <span className="font-bold text-zinc-100">{label}</span>
@@ -304,21 +308,14 @@ function ArenaCounterRow({ counter, characterName }) {
         >
           −
         </button>
-        <div
-          className="flex flex-1 flex-wrap items-center justify-center gap-1.5"
-          title={`${counter.current_pips} / ${counter.target_pips}`}
-        >
-          {Array.from({ length: counter.target_pips }, (_, i) => (
-            <span
-              key={i}
-              className={`h-4 w-4 rounded-full border ${
-                i < counter.current_pips
-                  ? 'border-brand-400 bg-brand-500'
-                  : 'border-zinc-700 bg-zinc-800'
-              }`}
-            />
-          ))}
-        </div>
+        {/* The same strip the character sheet draws, Gates and all. It used to
+            be a second copy of the same loop here, which is how the Arena
+            quietly stops showing something the sheet does. */}
+        <CounterPips
+          counter={counter}
+          gates={gates}
+          onEditGate={(pipIndex, gate) => setEditingGate({ pipIndex, gate })}
+        />
         <button
           onClick={() => socket.emit('counter:adjust', { counterId: counter.id, delta: 1 })}
           disabled={counter.current_pips >= counter.target_pips}
@@ -334,6 +331,14 @@ function ArenaCounterRow({ counter, characterName }) {
           ✕
         </button>
       </div>
+      {editingGate && (
+        <GateEditor
+          counter={counter}
+          pipIndex={editingGate.pipIndex}
+          gate={editingGate.gate}
+          onClose={() => setEditingGate(null)}
+        />
+      )}
     </div>
   );
 }
@@ -1961,6 +1966,9 @@ function ActiveDeclarePanel({ entry, roundStartTic, declaredMoves, tags, tellByI
 // each character's own sheet, reachable by clicking their card.
 export default function CombatArena() {
   const { role, characterId } = useRole();
+  // Gates ride their own per-viewer channel rather than the Counter payload —
+  // a Counter is public and a Gate need not be. See lib/useCounterGates.js.
+  const counterGates = useCounterGates();
   const navigate = useNavigate();
   const [combat, setCombat] = useState(null); // { unevenCombatEnabled, participants, characters, counters, pairs, ...Phase 7 timing state, declaredMoves }
   const [roster, setRoster] = useState(null);
@@ -3047,6 +3055,7 @@ export default function CombatArena() {
                   <ArenaCounterRow
                     key={c.id}
                     counter={c}
+                    gates={counterGates.get(c.id)}
                     characterName={c.character_id ? characters[c.character_id]?.character.name : null}
                   />
                 ))}

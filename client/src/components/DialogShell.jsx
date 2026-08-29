@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { motion } from 'framer-motion';
 
 // Mobile readiness (Change 002), §10 + 14.7: the shared dialog chrome every
@@ -28,11 +29,27 @@ import { motion } from 'framer-motion';
 // to bin every choice made so far, silently. So `closeButton` defaults to
 // `dismissible`, which leaves all five exactly as they were, and Creation opts
 // the ✕ back in on its own.
+// **`portal` is opt-in, and it is about STACKING, not position.** A dialog
+// rendered deep inside the page is `fixed inset-0 z-50`, which is enough right
+// up until an ancestor establishes a stacking context — then `z-50` is scoped
+// to inside that context and the dialog paints *under* the page around it. It
+// still looks right, because it is drawn where it should be; it simply cannot
+// be clicked, and `elementFromPoint` on one of its own buttons answers with
+// whatever is on top instead.
+//
+// Found on the Gate editor, which is rendered from inside a Counter row inside
+// the character sheet's tab body: the panel was visible and every click on it
+// landed on `<main>`. Portalling to `document.body` puts it in the root
+// stacking context, where `z-50` means what it says.
+//
+// Off by default because the ten dialogs that predate this all render near the
+// page root and work; a dialog opened from deep in a tab should pass it.
 export default function DialogShell({
   title,
   onClose,
   dismissible = true,
   closeButton = dismissible,
+  portal = false,
   variant = 'sheet', // 'sheet' | 'fullscreen' | 'theater'
   maxWidth = 'max-w-md',
   children,
@@ -85,7 +102,7 @@ export default function DialogShell({
         ? 'h-full w-full md:h-auto md:max-h-[90dvh] md:w-full md:rounded-none md:panel-cut-lg'
         : 'w-full rounded-t-2xl md:rounded-none md:panel-cut-lg md:max-h-[90dvh]';
 
-  return (
+  const shell = (
     <div
       className={`fixed inset-0 z-50 flex items-end justify-center bg-black/60 md:items-center ${
         variant === 'theater' ? 'md:p-2' : 'md:p-4'
@@ -138,4 +155,6 @@ export default function DialogShell({
       </motion.div>
     </div>
   );
+
+  return portal ? createPortal(shell, document.body) : shell;
 }

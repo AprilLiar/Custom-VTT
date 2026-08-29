@@ -8,6 +8,7 @@ import {
   db, all, one, run, readMany, writeMany, initDb,
   syncReplica, syncOnce, syncHealth, startSyncLoop, replicaMode, SYNC_SECONDS,
 } from './db.js';
+import { gateChatLine, gatesCrossed, isValidPip, visibleGates } from './counterGates.js';
 import {
   advancePairResolution,
   resolveDodge,
@@ -153,6 +154,26 @@ const getRoleplay = (characterId) =>
   all('SELECT * FROM roleplay_entries WHERE character_id = ? ORDER BY id', [characterId]);
 const getCounters = (characterId) =>
   all('SELECT * FROM counters WHERE character_id = ? ORDER BY id', [characterId]);
+
+// **Gates ride their own channel, not the Counter payload.** A Counter goes out
+// with `io.emit` — everybody's Arena shows everybody's clocks — and a Gate can
+// carry something only the GM may read. Rather than make five Counter
+// broadcasts viewer-aware, Gates are pushed per socket on their own event and
+// held separately by the client, the same shape the Relationships board uses.
+//
+// The whole list every time: there are a handful of Counters in a world and a
+// few Gates on each, and a whole-list push cannot leave a client holding a Gate
+// that has since moved.
+const getAllGates = () => all('SELECT * FROM counter_gates ORDER BY counter_id, pip_index');
+
+async function emitGates() {
+  const gates = await getAllGates();
+  for (const socket of io.sockets.sockets.values()) {
+    const identity = socket.data?.identity;
+    if (!identity) continue;
+    socket.emit('counter_gates:updated', { gates: visibleGates(gates, identity) });
+  }
+}
 
 // Attach parsed interaction rows + tag ids to each move in the list. The
 // three lookups are independent of each other — fired concurrently so this
@@ -1569,6 +1590,18 @@ app.get('/api/characters/:id', wrap(async (req, res) => {
   res.json({ character, dice, inventory, injuries, stances, moves, roleplay, perks, counters, weapon, weaponOffers });
 }));
 
+// The Gates on every Counter, as this viewer is allowed to know them. Its own
+// endpoint rather than a key on the Counter payloads for the reason above: a
+// Counter is public and a Gate need not be, and `GET /api/characters/:id` has
+// no idea who is asking.
+app.get('/api/counter-gates', wrap(async (req, res) => {
+  const viewer = viewerFromQuery(req.query);
+  // Unlike a board there is nothing to refuse — a Gate's EXISTENCE is public —
+  // but an unidentified caller is treated as a Player, which is the closed
+  // answer rather than the open one.
+  res.json({ gates: visibleGates(await getAllGates(), viewer) });
+}));
+
 app.get('/api/tells', wrap(async (_req, res) => {
   res.json(await all('SELECT * FROM tells ORDER BY id'));
 }));
@@ -1996,6 +2029,12 @@ app.delete('/api/characters/:id', wrap(async (req, res) => {
   await run('DELETE FROM character_move_overrides WHERE character_id = ?', [character.id]);
   await run('DELETE FROM character_move_roll_bonuses WHERE character_id = ?', [character.id]);
   await run('DELETE FROM character_perks WHERE character_id = ?', [character.id]);
+  // Their Counters' Gates go first — spelled out for the same reason every
+  // other line in this cascade is, rather than trusting the DDL's ON DELETE.
+  await run(
+    'DELETE FROM counter_gates WHERE counter_id IN (SELECT id FROM counters WHERE character_id = ?)',
+    [character.id]
+  );
   await run('DELETE FROM counters WHERE character_id = ?', [character.id]);
   await run('DELETE FROM declared_moves WHERE character_id = ?', [character.id]);
   const wasSeated = await one('SELECT id FROM combat_participants WHERE character_id = ?', [
@@ -4448,6 +4487,21 @@ io.on('connection', (socket) => {
     const currentPips = clamp(counter.current_pips + change, 0, counter.target_pips);
     await run('UPDATE counters SET current_pips = ? WHERE id = ?', [currentPips, counter.id]);
     io.emit('counter:updated', await one('SELECT * FROM counters WHERE id = ?', [counter.id]));
+
+    // **Reaching a Gate is announced.** That is the whole reason a Gate exists:
+    // a point of progress the table agreed would matter, said out loud at the
+    // moment it arrives rather than noticed later. Computed against the CLAMPED
+    // value, so a +5 on a counter with two pips left announces the two Gates it
+    // actually reached and not the three it did not.
+    const gates = await all('SELECT * FROM counter_gates WHERE counter_id = ?', [counter.id]);
+    const reached = gatesCrossed(gates, counter.current_pips, currentPips);
+    if (reached.length) {
+      const owner = counter.character_id != null ? await getCharacter(counter.character_id) : null;
+      const label = owner ? `${owner.name} - ${counter.name}` : counter.name;
+      for (const gate of reached) {
+        await postSystemMessage(io, gateChatLine(label, gate, currentPips, counter.target_pips));
+      }
+    }
   });
 
   on('counter:toggle_show_in_combat', async ({ counterId }) => {
@@ -4463,8 +4517,47 @@ io.on('connection', (socket) => {
   on('counter:delete', async ({ counterId }) => {
     const counter = await one('SELECT * FROM counters WHERE id = ?', [counterId]);
     if (!counter) return;
+    // Spelled out rather than left to ON DELETE CASCADE. The pragma is on and
+    // the cascade would fire, but every other delete in this file states its own
+    // cascade (see DELETE /api/characters/:id), and one that quietly relies on
+    // the DDL is the one a future rebuild breaks.
+    await run('DELETE FROM counter_gates WHERE counter_id = ?', [counter.id]);
     await run('DELETE FROM counters WHERE id = ?', [counter.id]);
     io.emit('counter:deleted', { counterId: counter.id });
+    await emitGates();
+  });
+
+  // ---- Gates -------------------------------------------------------------
+  //
+  // **GM-only, and that is the mechanic rather than a permission.** A Gate is
+  // the GM writing on a Counter's future, and `secret` is meaningless if the
+  // person it is kept from can author it. Counters themselves stay open to
+  // whoever controls the character, exactly as before.
+  const isGm = () => socket.data?.identity?.role === 'gm';
+
+  on('counter_gate:save', async ({ counterId, pipIndex, name, description, secret }) => {
+    if (!isGm()) return;
+    const counter = await one('SELECT * FROM counters WHERE id = ?', [counterId]);
+    if (!counter) return;
+    const pip = Math.trunc(Number(pipIndex));
+    if (!isValidPip(pip, counter.target_pips)) return;
+    // One Gate per pip, so saving is an upsert rather than a create-or-fail:
+    // the editor opens on a pip and does not know or care whether the row it is
+    // about to write already exists.
+    await run(
+      `INSERT INTO counter_gates (counter_id, pip_index, name, description, secret)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(counter_id, pip_index)
+       DO UPDATE SET name = excluded.name, description = excluded.description, secret = excluded.secret`,
+      [counter.id, pip, clampText(name, 60).trim(), clampText(description, 2000), secret ? 1 : 0]
+    );
+    await emitGates();
+  });
+
+  on('counter_gate:delete', async ({ gateId }) => {
+    if (!isGm()) return;
+    await run('DELETE FROM counter_gates WHERE id = ?', [gateId]);
+    await emitGates();
   });
 
   // Free-text chat message, optionally with an attached image/GIF (see Chat
