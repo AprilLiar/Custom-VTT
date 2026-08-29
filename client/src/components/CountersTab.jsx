@@ -1,6 +1,9 @@
 import { useState } from 'react';
 import { socket } from '../socket.js';
 import { REWARD_TYPES, REWARD_LABELS, REWARD_COLORS } from '../lib/counterDisplay.js';
+import { useCounterGates } from '../lib/useCounterGates.js';
+import CounterPips from './CounterPips.jsx';
+import GateEditor from './GateEditor.jsx';
 
 const MIN_TARGET = 2;
 const MAX_TARGET = 20;
@@ -31,24 +34,10 @@ function RewardSelect({ counter }) {
   );
 }
 
-function Pips({ current, target }) {
-  return (
-    <div className="flex flex-1 flex-wrap items-center justify-center gap-1.5" title={`${current} / ${target}`}>
-      {Array.from({ length: target }, (_, i) => (
-        <span
-          key={i}
-          className={`h-4 w-4 rounded-full border ${
-            i < current
-              ? 'border-brand-400 bg-brand-500'
-              : 'border-zinc-700 bg-zinc-800'
-          }`}
-        />
-      ))}
-    </div>
-  );
-}
-
-function CounterRow({ counter }) {
+function CounterRow({ counter, gates }) {
+  // The GM clicks a pip to put a Gate on it or edit the one there; `editing`
+  // is the pip they clicked plus whatever Gate was already on it.
+  const [editing, setEditing] = useState(null);
   return (
     <div className="panel-cut-lg border border-zinc-800 bg-zinc-900 p-3">
       {/* Mobile readiness (Change 002) §8.3: flex-wrap lets this row break
@@ -85,7 +74,11 @@ function CounterRow({ counter }) {
         >
           −
         </button>
-        <Pips current={counter.current_pips} target={counter.target_pips} />
+        <CounterPips
+          counter={counter}
+          gates={gates}
+          onEditGate={(pipIndex, gate) => setEditing({ pipIndex, gate })}
+        />
         <button
           onClick={() => socket.emit('counter:adjust', { counterId: counter.id, delta: 1 })}
           disabled={counter.current_pips >= counter.target_pips}
@@ -94,6 +87,14 @@ function CounterRow({ counter }) {
           +
         </button>
       </div>
+      {editing && (
+        <GateEditor
+          counter={counter}
+          pipIndex={editing.pipIndex}
+          gate={editing.gate}
+          onClose={() => setEditing(null)}
+        />
+      )}
     </div>
   );
 }
@@ -102,6 +103,7 @@ function CounterRow({ counter }) {
 // automation. Anyone controlling the character can create/adjust them.
 export default function CountersTab({ data }) {
   const { character, counters } = data;
+  const gatesByCounter = useCounterGates();
   const [name, setName] = useState('');
   const [target, setTarget] = useState(6);
   const [reward, setReward] = useState('');
@@ -125,7 +127,9 @@ export default function CountersTab({ data }) {
       {counters.length === 0 ? (
         <p className="text-sm text-zinc-600">No counters yet.</p>
       ) : (
-        counters.map((counter) => <CounterRow key={counter.id} counter={counter} />)
+        counters.map((counter) => (
+          <CounterRow key={counter.id} counter={counter} gates={gatesByCounter.get(counter.id)} />
+        ))
       )}
 
       <form onSubmit={add} className="flex flex-wrap items-center gap-2 panel-cut-lg border border-zinc-800 bg-zinc-900 p-3">

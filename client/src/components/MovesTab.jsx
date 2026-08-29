@@ -5,6 +5,7 @@ import { useRole } from '../roleContext.jsx';
 import { socket } from '../socket.js';
 import { getRuleset, getTags, getTells, getMoves } from '../lib/api.js';
 import { folderPath } from '../lib/folders.js';
+import DropButton from './DropButton.jsx';
 import MoveCard from './MoveCard.jsx';
 import RollDialog from './RollDialog.jsx';
 
@@ -13,8 +14,12 @@ import RollDialog from './RollDialog.jsx';
 // A styled move is only usable while the ACTIVE stance carries its style;
 // unusable moves render dimmed.
 export default function MovesTab({ data }) {
-  const { role } = useRole();
+  const { role, characterId } = useRole();
   const { character, moves, stances, weapon } = data;
+  // **Whose sheet is this?** A Player can reach another character's sheet by
+  // typing the URL — the app's trust model has always allowed that — so "am I a
+  // Player" is not the question. Dropping a Move is only offered on your own.
+  const isOwnSheet = role === 'player' && characterId === character.id;
   const [tells, setTells] = useState(null);
   const [tags, setTags] = useState(null);
   const [ruleset, setRuleset] = useState(null);
@@ -165,7 +170,10 @@ export default function MovesTab({ data }) {
                   )
                 }
                 actions={
-                  role === 'gm' && !move.is_default ? (
+                  // A Default move is everybody's and cannot be dropped by
+                  // anyone — there is nothing to revoke, only a Compendium row
+                  // to un-default.
+                  move.is_default ? null : role === 'gm' ? (
                     <button
                       onClick={() =>
                         window.confirm(`Revoke ${move.name} from ${character.name}?`) &&
@@ -175,6 +183,17 @@ export default function MovesTab({ data }) {
                     >
                       Revoke
                     </button>
+                  ) : isOwnSheet ? (
+                    // "Forget", not "Drop" — the same word the Compendium's
+                    // Learn/Forget pair uses for a Move, so a player learns one
+                    // vocabulary rather than two names for one act.
+                    <DropButton
+                      label="Forget"
+                      title={`Remove ${move.name} from your sheet`}
+                      onClick={() =>
+                        socket.emit('move:revoke', { characterId: character.id, moveId: move.id })
+                      }
+                    />
                   ) : null
                 }
               />

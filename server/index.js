@@ -8,6 +8,7 @@ import {
   db, all, one, run, readMany, writeMany, initDb,
   syncReplica, syncOnce, syncHealth, startSyncLoop, replicaMode, SYNC_SECONDS,
 } from './db.js';
+import { gateChatLine, gatesCrossed, isValidPip, visibleGates } from './counterGates.js';
 import {
   advancePairResolution,
   resolveDodge,
@@ -153,6 +154,26 @@ const getRoleplay = (characterId) =>
   all('SELECT * FROM roleplay_entries WHERE character_id = ? ORDER BY id', [characterId]);
 const getCounters = (characterId) =>
   all('SELECT * FROM counters WHERE character_id = ? ORDER BY id', [characterId]);
+
+// **Gates ride their own channel, not the Counter payload.** A Counter goes out
+// with `io.emit` — everybody's Arena shows everybody's clocks — and a Gate can
+// carry something only the GM may read. Rather than make five Counter
+// broadcasts viewer-aware, Gates are pushed per socket on their own event and
+// held separately by the client, the same shape the Relationships board uses.
+//
+// The whole list every time: there are a handful of Counters in a world and a
+// few Gates on each, and a whole-list push cannot leave a client holding a Gate
+// that has since moved.
+const getAllGates = () => all('SELECT * FROM counter_gates ORDER BY counter_id, pip_index');
+
+async function emitGates() {
+  const gates = await getAllGates();
+  for (const socket of io.sockets.sockets.values()) {
+    const identity = socket.data?.identity;
+    if (!identity) continue;
+    socket.emit('counter_gates:updated', { gates: visibleGates(gates, identity) });
+  }
+}
 
 // Attach parsed interaction rows + tag ids to each move in the list. The
 // three lookups are independent of each other — fired concurrently so this
@@ -1431,6 +1452,80 @@ async function getRelationshipBoard(ownerCharacterId) {
   return { people, nodes, edges };
 }
 
+// ---------------------------------------------------------------------------
+// Undo — the last three states of a board
+// ---------------------------------------------------------------------------
+//
+// **Whole snapshots, on the server, rather than inverse commands on the client.**
+// An inverse works fine for a move or a colour, and falls apart on a delete:
+// undoing one has to bring a row back with the SAME id, or every relationship
+// that pointed at it now points at nothing. Re-inserting by id is something only
+// the writer can do, so the writer is where undo lives — and it also means the
+// GM and the owner, who edit the same board, share one history rather than
+// holding two that disagree.
+//
+// Three deep, as asked. In memory only: an undo stack is a working convenience
+// for the session you are in, not a record of the game, and one that survived a
+// restart would let somebody reach back past a night's play.
+//
+// Keyed by owner, so one player's undo can never touch another's board.
+const UNDO_DEPTH = 3;
+const undoStacks = new Map(); // ownerCharacterId -> snapshot[] (oldest first)
+
+// Take a snapshot of a board as it is RIGHT NOW. Called before a write, so the
+// top of the stack is always the state to return to.
+async function pushUndo(ownerCharacterId) {
+  const id = Number(ownerCharacterId);
+  if (!Number.isInteger(id)) return;
+  const snapshot = await getRelationshipBoard(id);
+  const stack = undoStacks.get(id) ?? [];
+  stack.push(snapshot);
+  // Oldest out first: three is the window the table asked for, and an unbounded
+  // stack of boards carrying base64 portraits is a memory leak with a nice name.
+  while (stack.length > UNDO_DEPTH) stack.shift();
+  undoStacks.set(id, stack);
+}
+
+// Put a board back exactly as it was: clear the three tables for this owner and
+// re-insert every row with its original id. Explicit column lists rather than a
+// row spread, so a future column added to one of these tables fails loudly here
+// instead of being silently dropped on the first undo.
+async function restoreBoard(ownerCharacterId, snapshot) {
+  const id = Number(ownerCharacterId);
+  await run('DELETE FROM relationship_edges WHERE owner_character_id = ?', [id]);
+  await run('DELETE FROM relationship_nodes WHERE owner_character_id = ?', [id]);
+  await run('DELETE FROM relationship_people WHERE owner_character_id = ?', [id]);
+  // People first, then nodes, then edges — the order the references run in, so
+  // the database never sees a row pointing at one that is not back yet.
+  for (const p of snapshot.people) {
+    await run(
+      `INSERT INTO relationship_people (id, owner_character_id, name, image_data, image_mime_type, created_at, crop_x, crop_y, crop_w, crop_h)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [p.id, id, p.name, p.image_data, p.image_mime_type, p.created_at, p.crop_x, p.crop_y, p.crop_w, p.crop_h]
+    );
+  }
+  for (const n of snapshot.nodes) {
+    await run(
+      `INSERT INTO relationship_nodes (id, owner_character_id, character_id, person_id, x, y, nickname, notes, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [n.id, id, n.character_id, n.person_id, n.x, n.y, n.nickname, n.notes, n.created_at]
+    );
+  }
+  for (const e of snapshot.edges) {
+    await run(
+      `INSERT INTO relationship_edges (id, owner_character_id, from_node_id, from_side, from_x, from_y,
+        to_node_id, to_side, to_x, to_y, label, color, arrow, retired, created_at, bend, bend_u)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [e.id, id, e.from_node_id, e.from_side, e.from_x, e.from_y, e.to_node_id, e.to_side, e.to_x, e.to_y,
+        e.label, e.color, e.arrow, e.retired, e.created_at, e.bend, e.bend_u]
+    );
+  }
+}
+
+// How many steps back this board can go, so the client can grey its own control
+// rather than firing into an empty stack to find out.
+const undoDepthFor = (ownerCharacterId) => undoStacks.get(Number(ownerCharacterId))?.length ?? 0;
+
 // Who may read or write one board: its owner, or the GM. The GM edits rather
 // than merely watches (decided) — useful for setting a new player up with a
 // starting web — so there is one predicate, not two.
@@ -1451,7 +1546,9 @@ async function emitRelationships(ownerCharacterId) {
   for (const socket of io.sockets.sockets.values()) {
     if (!maySeeBoard(socket.data?.identity, id)) continue;
     payload = payload ?? (await getRelationshipBoard(id));
-    socket.emit('relationships:updated', { characterId: id, ...payload });
+    // `undoDepth` rides every board update so the client can grey its own Undo
+    // rather than firing into an empty stack to find out it was empty.
+    socket.emit('relationships:updated', { characterId: id, ...payload, undoDepth: undoDepthFor(id) });
   }
 }
 
@@ -1491,6 +1588,18 @@ app.get('/api/characters/:id', wrap(async (req, res) => {
   // renders what it is given rather than deciding whether a charge is spent.
   const weaponOffers = weapon ? [] : await perkWeaponOffers(character.id);
   res.json({ character, dice, inventory, injuries, stances, moves, roleplay, perks, counters, weapon, weaponOffers });
+}));
+
+// The Gates on every Counter, as this viewer is allowed to know them. Its own
+// endpoint rather than a key on the Counter payloads for the reason above: a
+// Counter is public and a Gate need not be, and `GET /api/characters/:id` has
+// no idea who is asking.
+app.get('/api/counter-gates', wrap(async (req, res) => {
+  const viewer = viewerFromQuery(req.query);
+  // Unlike a board there is nothing to refuse — a Gate's EXISTENCE is public —
+  // but an unidentified caller is treated as a Player, which is the closed
+  // answer rather than the open one.
+  res.json({ gates: visibleGates(await getAllGates(), viewer) });
 }));
 
 app.get('/api/tells', wrap(async (_req, res) => {
@@ -1920,6 +2029,12 @@ app.delete('/api/characters/:id', wrap(async (req, res) => {
   await run('DELETE FROM character_move_overrides WHERE character_id = ?', [character.id]);
   await run('DELETE FROM character_move_roll_bonuses WHERE character_id = ?', [character.id]);
   await run('DELETE FROM character_perks WHERE character_id = ?', [character.id]);
+  // Their Counters' Gates go first — spelled out for the same reason every
+  // other line in this cascade is, rather than trusting the DDL's ON DELETE.
+  await run(
+    'DELETE FROM counter_gates WHERE counter_id IN (SELECT id FROM counters WHERE character_id = ?)',
+    [character.id]
+  );
   await run('DELETE FROM counters WHERE character_id = ?', [character.id]);
   await run('DELETE FROM declared_moves WHERE character_id = ?', [character.id]);
   const wasSeated = await one('SELECT id FROM combat_participants WHERE character_id = ?', [
@@ -3932,6 +4047,7 @@ io.on('connection', (socket) => {
     const hasCharacter = targetCharacterId != null;
     const hasPerson = personId != null;
     if (hasCharacter === hasPerson) return;
+    await pushUndo(owner.id);
     if (hasCharacter && !(await getCharacter(targetCharacterId))) return;
     if (hasPerson) {
       const person = await one(
@@ -3953,6 +4069,7 @@ io.on('connection', (socket) => {
   on('relationships:move_node', async ({ nodeId, x, y }) => {
     const node = await loadOwnedNode(nodeId);
     if (!node) return;
+    await pushUndo(node.owner_character_id);
     await run('UPDATE relationship_nodes SET x = ?, y = ? WHERE id = ?', [coord(x), coord(y), node.id]);
     await emitRelationships(node.owner_character_id);
   });
@@ -3960,6 +4077,7 @@ io.on('connection', (socket) => {
   on('relationships:update_node', async ({ nodeId, nickname, notes }) => {
     const node = await loadOwnedNode(nodeId);
     if (!node) return;
+    await pushUndo(node.owner_character_id);
     await run('UPDATE relationship_nodes SET nickname = ?, notes = ? WHERE id = ?', [
       clampText(nickname ?? node.nickname, 80),
       clampText(notes ?? node.notes, 8000),
@@ -3984,6 +4102,7 @@ io.on('connection', (socket) => {
   on('relationships:delete_node', async ({ nodeId, keepRelationships }) => {
     const node = await loadOwnedNode(nodeId);
     if (!node) return;
+    await pushUndo(node.owner_character_id);
     if (keepRelationships) {
       const cx = node.x + NODE_CENTER_OFFSET;
       const cy = node.y + NODE_CENTER_OFFSET;
@@ -4024,6 +4143,7 @@ io.on('connection', (socket) => {
     // A line from somebody to themselves is a loop with nothing to say, and the
     // curve maths would have to special-case a zero-length span to draw it.
     if (from.id === to.id) return;
+    await pushUndo(from.owner_character_id);
     await run(
       `INSERT INTO relationship_edges (owner_character_id, from_node_id, from_side, to_node_id, to_side)
        VALUES (?, ?, ?, ?, ?)`,
@@ -4058,25 +4178,37 @@ io.on('connection', (socket) => {
   // being absent, which like every other field on this event means "leave it
   // alone", so the three cases have to stay apart: undefined keeps, null
   // clears, a number sets.
+  // **The hand-drawn arc, as two fractions of the line's own frame.** `bend` is
+  // the control point's offset ACROSS the chord and `bendU` is where along it
+  // that offset sits. Bounded for exactly the reason `coord` is bounded: the
+  // plane is infinite and a number is not, and one NaN here would take the line
+  // off the board entirely.
   const BEND_LIMIT = 4000;
-  const bendValue = (value) => {
+  const BEND_U_LIMIT = 2;
+  const bounded = (value, limit, fallback = null) => {
     // Explicitly, before Number() gets its hands on it: `Number(null)` is 0,
     // which is a perfectly finite number and would store "hand-bent, straight"
     // where the caller asked for "not hand-bent at all".
-    if (value === null || value === undefined || value === '') return null;
+    if (value === null || value === undefined || value === '') return fallback;
     const n = Number(value);
-    if (!Number.isFinite(n)) return null;
-    return Math.max(-BEND_LIMIT, Math.min(BEND_LIMIT, n));
+    if (!Number.isFinite(n)) return fallback;
+    return Math.max(-limit, Math.min(limit, n));
   };
 
   // What a relationship SAYS, as opposed to where it is attached (move_end).
   // Every field is optional: the editor applies each control live, so a single
   // change sends a single field and everything else keeps its stored value.
-  on('relationships:update_edge', async ({ edgeId, label, color, arrow, retired, bend }) => {
+  on('relationships:update_edge', async (payload) => {
+    const { edgeId, label, color, arrow, retired, bend, bendU } = payload;
     const edge = await loadOwnedEdge(edgeId);
     if (!edge) return;
+    await pushUndo(edge.owner_character_id);
+    // **The two halves of a bend move together.** `bend: null` clears the whole
+    // hand bend, so `bend_u` has to go with it or a later re-bend would inherit
+    // a stale along-the-line position from an arc nobody can see any more.
+    const clearing = bend === null;
     await run(
-      `UPDATE relationship_edges SET label = ?, color = ?, arrow = ?, retired = ?, bend = ? WHERE id = ?`,
+      `UPDATE relationship_edges SET label = ?, color = ?, arrow = ?, retired = ?, bend = ?, bend_u = ? WHERE id = ?`,
       [
         clampText(label ?? edge.label, 60),
         colour(color ?? edge.color, edge.color),
@@ -4085,7 +4217,8 @@ io.on('connection', (socket) => {
         // `side()` uses for the four dot names.
         ARROWS.has(arrow) ? arrow : ARROWS.has(edge.arrow) ? edge.arrow : 'none',
         retired == null ? edge.retired : retired ? 1 : 0,
-        bend === undefined ? edge.bend : bendValue(bend),
+        bend === undefined ? edge.bend : bounded(bend, BEND_LIMIT),
+        clearing ? null : bendU === undefined ? edge.bend_u : bounded(bendU, BEND_U_LIMIT, 0.5),
         edge.id,
       ]
     );
@@ -4095,6 +4228,7 @@ io.on('connection', (socket) => {
   on('relationships:delete_edge', async ({ edgeId }) => {
     const edge = await loadOwnedEdge(edgeId);
     if (!edge) return;
+    await pushUndo(edge.owner_character_id);
     await run('DELETE FROM relationship_edges WHERE id = ?', [edge.id]);
     await emitRelationships(edge.owner_character_id);
   });
@@ -4114,6 +4248,7 @@ io.on('connection', (socket) => {
       const otherNodeId = end === 'from' ? edge.to_node_id : edge.from_node_id;
       if (otherNodeId != null && Number(otherNodeId) === target.id) return;
     }
+    await pushUndo(edge.owner_character_id);
     const columns =
       end === 'from'
         ? ['from_node_id', 'from_side', 'from_x', 'from_y']
@@ -4139,6 +4274,7 @@ io.on('connection', (socket) => {
     // Name is the one mandatory field: a face with no name is not a person you
     // can think about, and the rail would show a blank row.
     if (!owner || !personName) return;
+    await pushUndo(owner.id);
     await run(
       `INSERT INTO relationship_people (owner_character_id, name, image_data, image_mime_type, crop_x, crop_y, crop_w, crop_h)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -4156,6 +4292,7 @@ io.on('connection', (socket) => {
     if (!personName) return;
     // An absent picture means "leave it alone", not "clear it" — the editor
     // only sends one when the file picker actually produced one.
+    await pushUndo(person.owner_character_id);
     await run(
       imageData
         ? `UPDATE relationship_people SET name = ?, image_data = ?, image_mime_type = ?, ${CROP_COLUMNS} WHERE id = ?`
@@ -4173,6 +4310,7 @@ io.on('connection', (socket) => {
   on('relationships:delete_person', async ({ personId }) => {
     const person = await one('SELECT * FROM relationship_people WHERE id = ?', [personId]);
     if (!person || !mayWriteBoard(person.owner_character_id)) return;
+    await pushUndo(person.owner_character_id);
     // Their lines go with them. Deleting the person is the one destructive
     // choice on the board that offers no "keep the relationships" option — the
     // ✕ menu on a node is where that choice lives, and this is a level above it.
@@ -4184,6 +4322,24 @@ io.on('connection', (socket) => {
     await run('DELETE FROM relationship_nodes WHERE person_id = ?', [person.id]);
     await run('DELETE FROM relationship_people WHERE id = ?', [person.id]);
     await emitRelationships(person.owner_character_id);
+  });
+
+  // **Ctrl+Z.** Pops the most recent snapshot and puts the board back exactly as
+  // it was — same rows, same ids — so relationships that pointed at a deleted
+  // node point at it again rather than at nothing.
+  //
+  // The stack is per board and shared: the GM and the owner edit the same web,
+  // so they undo the same history. Whoever presses it takes back the last
+  // change made to that board, not the last change made by them — which is the
+  // only version that can be coherent when two people are drawing at once.
+  on('relationships:undo', async ({ characterId }) => {
+    if (!mayWriteBoard(characterId)) return;
+    const id = Number(characterId);
+    const stack = undoStacks.get(id);
+    if (!stack?.length) return;
+    await restoreBoard(id, stack.pop());
+    if (!stack.length) undoStacks.delete(id);
+    await emitRelationships(id);
   });
 
   on('injury:add', async ({ characterId, name, effect, slotName, penalty }) => {
@@ -4331,6 +4487,21 @@ io.on('connection', (socket) => {
     const currentPips = clamp(counter.current_pips + change, 0, counter.target_pips);
     await run('UPDATE counters SET current_pips = ? WHERE id = ?', [currentPips, counter.id]);
     io.emit('counter:updated', await one('SELECT * FROM counters WHERE id = ?', [counter.id]));
+
+    // **Reaching a Gate is announced.** That is the whole reason a Gate exists:
+    // a point of progress the table agreed would matter, said out loud at the
+    // moment it arrives rather than noticed later. Computed against the CLAMPED
+    // value, so a +5 on a counter with two pips left announces the two Gates it
+    // actually reached and not the three it did not.
+    const gates = await all('SELECT * FROM counter_gates WHERE counter_id = ?', [counter.id]);
+    const reached = gatesCrossed(gates, counter.current_pips, currentPips);
+    if (reached.length) {
+      const owner = counter.character_id != null ? await getCharacter(counter.character_id) : null;
+      const label = owner ? `${owner.name} - ${counter.name}` : counter.name;
+      for (const gate of reached) {
+        await postSystemMessage(io, gateChatLine(label, gate, currentPips, counter.target_pips));
+      }
+    }
   });
 
   on('counter:toggle_show_in_combat', async ({ counterId }) => {
@@ -4346,8 +4517,47 @@ io.on('connection', (socket) => {
   on('counter:delete', async ({ counterId }) => {
     const counter = await one('SELECT * FROM counters WHERE id = ?', [counterId]);
     if (!counter) return;
+    // Spelled out rather than left to ON DELETE CASCADE. The pragma is on and
+    // the cascade would fire, but every other delete in this file states its own
+    // cascade (see DELETE /api/characters/:id), and one that quietly relies on
+    // the DDL is the one a future rebuild breaks.
+    await run('DELETE FROM counter_gates WHERE counter_id = ?', [counter.id]);
     await run('DELETE FROM counters WHERE id = ?', [counter.id]);
     io.emit('counter:deleted', { counterId: counter.id });
+    await emitGates();
+  });
+
+  // ---- Gates -------------------------------------------------------------
+  //
+  // **GM-only, and that is the mechanic rather than a permission.** A Gate is
+  // the GM writing on a Counter's future, and `secret` is meaningless if the
+  // person it is kept from can author it. Counters themselves stay open to
+  // whoever controls the character, exactly as before.
+  const isGm = () => socket.data?.identity?.role === 'gm';
+
+  on('counter_gate:save', async ({ counterId, pipIndex, name, description, secret }) => {
+    if (!isGm()) return;
+    const counter = await one('SELECT * FROM counters WHERE id = ?', [counterId]);
+    if (!counter) return;
+    const pip = Math.trunc(Number(pipIndex));
+    if (!isValidPip(pip, counter.target_pips)) return;
+    // One Gate per pip, so saving is an upsert rather than a create-or-fail:
+    // the editor opens on a pip and does not know or care whether the row it is
+    // about to write already exists.
+    await run(
+      `INSERT INTO counter_gates (counter_id, pip_index, name, description, secret)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(counter_id, pip_index)
+       DO UPDATE SET name = excluded.name, description = excluded.description, secret = excluded.secret`,
+      [counter.id, pip, clampText(name, 60).trim(), clampText(description, 2000), secret ? 1 : 0]
+    );
+    await emitGates();
+  });
+
+  on('counter_gate:delete', async ({ gateId }) => {
+    if (!isGm()) return;
+    await run('DELETE FROM counter_gates WHERE id = ?', [gateId]);
+    await emitGates();
   });
 
   // Free-text chat message, optionally with an attached image/GIF (see Chat

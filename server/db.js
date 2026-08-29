@@ -1409,6 +1409,14 @@ export async function initDb() {
   // would flatten out the instant either portrait moved; an offset is relative
   // to the line's own two ends, so the curve travels with them.
   await ensureColumn('relationship_edges', 'bend', 'REAL');
+  // **The other half of the bend.** `bend` is the control point's offset ACROSS
+  // the chord; `bend_u` is where along it that offset is applied — 0 at one end,
+  // 1 at the other, NULL reading as 0.5, which is exactly what the single-column
+  // version always did. Two numbers is what makes a hand bend omni-directional
+  // and lets the arc form where it was grabbed rather than always in the middle.
+  // The older column keeps its name rather than being migrated to `bend_v`: the
+  // rename would move every stored arc for no change in behaviour.
+  await ensureColumn('relationship_edges', 'bend_u', 'REAL');
 
   // The Perks compendium: master list of Perk templates. Just picture, name,
   // and description — no generic automation system (removed; see
@@ -1569,6 +1577,31 @@ export async function initDb() {
       reward_type TEXT CHECK(reward_type IN ('story','statistic','perk','move','combat_prowess'))
     )
   `);
+  // **A Gate is a marker on ONE pip of a Counter.** The GM writes on a point of
+  // progress — *when this fills to here, something happens* — and the table sees
+  // that something is coming without necessarily seeing what.
+  //
+  // `UNIQUE(counter_id, pip_index)` is the mechanic, not housekeeping: a Gate is
+  // a property of a pip, and two on one pip would be two things to draw in one
+  // place and two lines to post at one moment.
+  //
+  // `secret` decides only whether the NAME and DESCRIPTION reach a Player. That
+  // a Gate exists is never hidden — the pip is drawn twice the size for
+  // everybody — so the stripping happens on the two text columns alone (see
+  // `visibleGate` in server/counterGates.js).
+  ddl(`
+    CREATE TABLE IF NOT EXISTS counter_gates (
+      id INTEGER PRIMARY KEY,
+      counter_id INTEGER NOT NULL REFERENCES counters(id) ON DELETE CASCADE,
+      pip_index INTEGER NOT NULL,
+      name TEXT NOT NULL DEFAULT '',
+      description TEXT NOT NULL DEFAULT '',
+      secret INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(counter_id, pip_index)
+    )
+  `);
+
   await ensureColumn(
     'counters',
     'reward_type',
@@ -1998,6 +2031,9 @@ async function ensureIndexes() {
     // neither column can serve the other's lookup.
     ['relationship_edges', 'from_node_id'],
     ['relationship_edges', 'to_node_id'],
+    // Every Counter render asks for its Gates, and the Arena asks for a
+    // screenful at once.
+    ['counter_gates', 'counter_id'],
   ];
   for (const [table, column] of indexes) {
     ddl(`CREATE INDEX IF NOT EXISTS idx_${table}_${column} ON ${table}(${column})`);

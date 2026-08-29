@@ -196,6 +196,10 @@ test('an edge starts red, straight, live and unlabelled', async () => {
   // deliberately" and would override the fan — every second line between a pair
   // would land on the first.
   assert.equal(edge.bend, null);
+  // The other half of the bend, and NULL for the same reason. A row stored
+  // before this column existed reads as 0.5 — the middle — which is exactly
+  // where the single-number version always put the arc.
+  assert.equal(edge.bend_u, null);
 });
 
 test('a hand-drawn arc is stored as a signed offset, zero included', async () => {
@@ -211,6 +215,10 @@ test('a hand-drawn arc is stored as a signed offset, zero included', async () =>
   // whole units would make the line step as you pull it.
   await run('UPDATE relationship_edges SET bend = ? WHERE id = ?', [-42.75, edgeId]);
   assert.equal(await readBack(), -42.75);
+  // Both halves are REAL and independent — `bend_u` is a fraction of the chord,
+  // so it needs the decimals just as much.
+  await run('UPDATE relationship_edges SET bend_u = ? WHERE id = ?', [0.183333, edgeId]);
+  assert.equal((await one('SELECT bend_u FROM relationship_edges WHERE id = ?', [edgeId])).bend_u, 0.183333);
   // Zero is a real, distinct value — "I straightened this myself".
   await run('UPDATE relationship_edges SET bend = ? WHERE id = ?', [0, edgeId]);
   assert.equal(await readBack(), 0);

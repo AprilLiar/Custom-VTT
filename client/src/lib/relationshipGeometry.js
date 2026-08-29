@@ -112,32 +112,87 @@ export function nearestSide(node, point) {
 // ---------------------------------------------------------------------------
 // The curve
 // ---------------------------------------------------------------------------
-
-// **Any pair may be connected any number of times**, so the lines have to fan
-// out or they draw exactly on top of each other and read as one.
 //
-// `offset` is a perpendicular displacement of the quadratic's control point.
-// Zero is a straight line; the fan below hands out symmetric offsets so a pair
-// with two lines gets one bowing each way rather than one straight and one bent.
+// **A bend is two numbers, not one, and they live in the chord's own frame.**
+//
+//     C = from + u·(to − from) + v·n          n = the chord's left normal
+//
+// `u` slides the control point ALONG the line (0 at one end, 1 at the other,
+// 0.5 the middle) and `v` pushes it ACROSS. Two degrees of freedom is what
+// makes a bend omni-directional and what lets it form where you grabbed rather
+// than always at the middle — with `u` pinned at 0.5, which is all the first
+// version had, every arc peaked in the centre however near an end you pulled.
+//
+// The frame is the whole reason this is a pair of fractions and not a point:
+// `C` itself would be a fixed place in the world and the arc would flatten the
+// moment either portrait moved. `u` and `v` are measured against the line's own
+// two ends, so the curve travels with them.
+//
+// `{ u: 0.5, v: 0 }` is a straight line, and `v` alone is exactly what the old
+// single-number bend meant — which is why the stored column keeps its name and
+// a NULL `bend_u` reads as 0.5.
+
 export const BEND_SPACING = 30;
 
+// The fan's slot for the i-th of n lines between one pair, as a `v`. Symmetric
+// about zero so a pair with two lines gets one bowing each way rather than one
+// straight and one bent.
 export function bendOffsets(count, spacing = BEND_SPACING) {
   if (count <= 0) return [];
   return Array.from({ length: count }, (_, i) => (i - (count - 1) / 2) * spacing);
 }
 
-// The control point for a curve from `from` to `to`, pushed `offset` to the
-// left of the direction of travel.
-function controlPoint(from, to, offset) {
+export const STRAIGHT = { u: 0.5, v: 0 };
+
+// A bend as stored on a row. `bend` is `v` (the column predates `u`), `bend_u`
+// is `u`. Either missing or unusable falls back to the straight default rather
+// than drawing nothing.
+// **`null` has to be caught before `Number()` gets its hands on it.** A NULL
+// column arrives as `null`, and `Number(null)` is a perfectly finite `0`. On
+// `bend` that would read every un-bent line in the world as "hand-bent, dead
+// straight" and switch the automatic fan off for the whole board; on `bend_u`
+// it would jam every arc stored before that column existed hard against one
+// end. Both are silent, and both are one coercion away.
+const column = (value) => {
+  if (value === null || value === undefined || value === '') return NaN;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : NaN;
+};
+
+export function bendOf(edge) {
+  const v = column(edge?.bend);
+  if (!Number.isFinite(v)) return null;
+  const u = column(edge?.bend_u);
+  return { u: Number.isFinite(u) ? u : 0.5, v };
+}
+
+// The chord's unit direction and left normal — the frame everything here is
+// expressed in. A zero-length chord (two portraits dropped on top of each
+// other) answers a valid frame rather than dividing by zero.
+export function chordFrame(from, to) {
   const dx = to.x - from.x;
   const dy = to.y - from.y;
   const len = Math.hypot(dx, dy) || 1;
-  const ux = dx / len;
-  const uy = dy / len;
+  return { len, ux: dx / len, uy: dy / len, nx: -dy / len, ny: dx / len };
+}
+
+// (u, v) -> the control point in world space.
+export function controlPoint(from, to, bend = STRAIGHT) {
+  const { len, ux, uy, nx, ny } = chordFrame(from, to);
+  const u = Number.isFinite(bend?.u) ? bend.u : 0.5;
+  const v = Number.isFinite(bend?.v) ? bend.v : 0;
   return {
-    x: (from.x + to.x) / 2 - uy * offset,
-    y: (from.y + to.y) / 2 + ux * offset,
+    x: from.x + ux * len * u + nx * v,
+    y: from.y + uy * len * u + ny * v,
   };
+}
+
+// The reverse: a control point in world space -> (u, v) in the chord's frame.
+export function bendFromControl(from, to, c) {
+  const { len, ux, uy, nx, ny } = chordFrame(from, to);
+  const dx = c.x - from.x;
+  const dy = c.y - from.y;
+  return { u: (dx * ux + dy * uy) / len, v: dx * nx + dy * ny };
 }
 
 // An SVG path plus the point a label should sit at.
@@ -145,12 +200,13 @@ function controlPoint(from, to, offset) {
 // The label goes at the curve's own midpoint (t = 0.5 on the quadratic), not at
 // the midpoint of the straight line between the ends — on a bent line those are
 // different places, and the second one leaves the label floating off the wire.
-export function edgePath(from, to, offset = 0) {
-  const c = controlPoint(from, to, offset);
+export function edgePath(from, to, bend = STRAIGHT) {
+  const c = controlPoint(from, to, bend);
   return {
     d: `M ${from.x} ${from.y} Q ${c.x} ${c.y} ${to.x} ${to.y}`,
     // Quadratic at t=0.5 is (P0 + 2C + P2) / 4.
     mid: { x: (from.x + 2 * c.x + to.x) / 4, y: (from.y + 2 * c.y + to.y) / 4 },
+    c,
   };
 }
 
@@ -167,11 +223,10 @@ export function pairKey(edge) {
   return a < b ? `${a}|${b}` : `${b}|${a}`;
 }
 
-// **Whose frame is an offset measured in?** `controlPoint` takes its
-// perpendicular from the edge's OWN direction, so an edge stored B→A has both
-// its direction and its fan offset negated relative to one stored A→B — and the
-// two negations cancel, producing an identical control point and an identical
-// curve.
+// **Whose frame is an offset measured in?** The normal is taken from the edge's
+// OWN direction, so an edge stored B→A has both its direction and its fan
+// offset negated relative to one stored A→B — and the two negations cancel,
+// producing an identical control point and an identical curve.
 //
 // That was the bug: connect A to B, then B to A, and the two lines landed
 // exactly on top of each other while the fan believed it had separated them.
@@ -184,9 +239,10 @@ export function pairKey(edge) {
 // edge so that its own negated direction restores it.
 const runsBackwards = (edge) => Number(edge.from_node_id) > Number(edge.to_node_id);
 
-// Assigns every edge its bend offset in one pass: group by pair, then hand out
+// Assigns every edge its bend in one pass: group by pair, then hand out
 // symmetric offsets in stable id order so a line does not jump to a different
-// bend when an unrelated edge is added.
+// bend when an unrelated edge is added. The fan only ever moves a line ACROSS
+// its chord, so every automatic bend has `u = 0.5`.
 export function assignBends(edges) {
   const byPair = new Map();
   for (const edge of edges) {
@@ -199,7 +255,9 @@ export function assignBends(edges) {
   for (const group of byPair.values()) {
     group.sort((a, b) => a.id - b.id);
     const offsets = bendOffsets(group.length);
-    group.forEach((edge, i) => out.set(edge.id, runsBackwards(edge) ? -offsets[i] : offsets[i]));
+    group.forEach((edge, i) =>
+      out.set(edge.id, { u: 0.5, v: runsBackwards(edge) ? -offsets[i] : offsets[i] })
+    );
   }
   // A hand-bent line keeps exactly the arc it was given. It is already in its
   // own frame — the drag that produced it measured there — so it needs no
@@ -210,7 +268,8 @@ export function assignBends(edges) {
   // hand-bent line out of the count would re-fan the others, and a line you
   // never touched would slide sideways because you moved a different one.
   for (const edge of edges) {
-    if (Number.isFinite(edge.bend)) out.set(edge.id, edge.bend);
+    const hand = bendOf(edge);
+    if (hand) out.set(edge.id, hand);
   }
   return out;
 }
@@ -219,27 +278,25 @@ export function assignBends(edges) {
 // Bending a line by hand
 // ---------------------------------------------------------------------------
 //
-// **One number, not a control point.** Grab a line anywhere, pull, and it bends
-// into an arc that has to survive both portraits being dragged afterwards. So
-// what is stored is the same quantity the fan hands out — a perpendicular
-// displacement of the quadratic's control point, in the edge's own from→to
-// frame — and never the control point itself, which is a fixed world position
-// and would let the line straighten out the moment an end moved.
+// Grab a line anywhere and pull: the point under your finger follows, in
+// whatever direction you drag it, and the arc forms THERE rather than in the
+// middle.
 //
-// The maths that makes "grab ANY point" work rather than only the middle: with
-// the control point at the chord's midpoint plus `offset` along the normal,
+// The maths is one identity. A quadratic is
 //
-//     B(t) = [the straight line from P0 to P2 at t] + 2t(1-t) · offset · n
+//     B(t) = (1−t)²·P0 + 2t(1−t)·C + t²·P2
 //
-// — the bracketed term really is the straight line, which is why a zero offset
-// draws one. So the curve's distance from the chord at parameter t is
-// `2t(1-t) · offset`, and the offset that puts a grabbed point back under the
-// pointer is that same relation read the other way.
+// so the only term the control point touches is `2t(1−t)·C`. Move `C` by Δ and
+// the curve at parameter t moves by `2t(1−t)·Δ`. Turn that around: to make the
+// point you grabbed follow the pointer exactly, move `C` by the pointer's own
+// delta divided by that weight. Both components at once, which is what makes
+// the gesture omni-directional — the first version projected the drag onto the
+// chord's normal and threw the along-chord half away.
 
 // Where along the chord a point sits: 0 at `from`, 1 at `to`. The pointer is
-// projected onto the chord rather than solved against the curve — for the gentle
-// arcs this produces the two agree closely, and a root-find per frame to place a
-// grab handle is arithmetic nobody can see.
+// projected onto the chord rather than solved against the curve — for the
+// gentle arcs this produces the two agree closely, and a root-find per frame to
+// place a grab handle is arithmetic nobody can see.
 export function chordParam(from, to, point) {
   const dx = to.x - from.x;
   const dy = to.y - from.y;
@@ -249,50 +306,66 @@ export function chordParam(from, to, point) {
   return Math.max(0, Math.min(1, t));
 }
 
-// How much of the offset is felt at parameter t. **Floored**, because the ends
-// of a quadratic do not move at all however hard its control point is pulled:
-// without a floor, grabbing within a few pixels of an anchor divides by nearly
-// zero and throws the line off the board on the first frame.
+// How much of a control-point move is felt at parameter t. **Floored**, because
+// the ends of a quadratic do not move at all however hard its control point is
+// pulled: without a floor, grabbing within a few pixels of an anchor divides by
+// nearly zero and throws the line off the board on the first frame.
 const MIN_BEND_WEIGHT = 0.25; // t roughly within [0.15, 0.85]
 export const bendWeight = (t) => Math.max(MIN_BEND_WEIGHT, 2 * t * (1 - t));
 
-// The offset that puts the point grabbed at chord parameter `t` under `point`.
-// Only the perpendicular component moves the line — sliding along the chord
-// changes nothing about a one-parameter arc — so the along-chord component is
-// dropped rather than fought.
-export function bendFromDrag(from, to, t, point) {
-  const dx = to.x - from.x;
-  const dy = to.y - from.y;
-  const len = Math.hypot(dx, dy) || 1;
-  // The same normal `controlPoint` displaces along, so a positive answer here
-  // bends the line the same way a positive fan offset does.
-  const nx = -dy / len;
-  const ny = dx / len;
-  // `from` is on the chord and n is perpendicular to it, so this is the
-  // pointer's signed distance from the chord line.
-  const perp = (point.x - from.x) * nx + (point.y - from.y) * ny;
-  return perp / bendWeight(t);
+// The bend that results from dragging the point grabbed at chord parameter `t`
+// by (dx, dy) in world space, starting from `base`.
+//
+// **A delta, not an absolute.** Reading the control point straight off the
+// pointer is exact in the middle of a line and wrong near its ends, where the
+// weight's floor stops dividing honestly — grabbing an already-bent line close
+// to an anchor would snap it most of the way flat on the first frame. Adding
+// only the CHANGE since the grab makes that first frame a no-op by
+// construction, wherever you grabbed.
+export function bendFromDrag(from, to, base, t, dx, dy) {
+  const w = bendWeight(t);
+  const c = controlPoint(from, to, base);
+  return clampBend(bendFromControl(from, to, { x: c.x + dx / w, y: c.y + dy / w }));
 }
 
 // Close enough to straight that the player meant straight. Without it a line
 // dragged back to true keeps a two-pixel kink forever, and no amount of care
-// with the mouse gets rid of it.
+// with the mouse gets rid of it. Only `v` is snapped: `u` is where along the
+// line the arc sits, and on a straight line it makes no difference at all.
 export const BEND_SNAP = 6;
-export const snapBend = (offset) => (Math.abs(offset) < BEND_SNAP ? 0 : offset);
+export const snapBend = (bend) =>
+  Math.abs(bend.v) < BEND_SNAP ? { u: 0.5, v: 0 } : bend;
 
 // A hand bend is bounded for the same reason a node coordinate is: the plane is
 // infinite, a number is not, and one NaN here takes the whole line with it.
+// `u` is bounded too, and more tightly — a control point a chord-length past
+// either end is already a hairpin, and beyond that the curve stops being a line
+// between two people at all.
 export const BEND_LIMIT = 4000;
-export function clampBend(offset) {
-  const n = Number(offset);
-  if (!Number.isFinite(n)) return 0;
-  return Math.max(-BEND_LIMIT, Math.min(BEND_LIMIT, n));
+export const BEND_U_LIMIT = 2;
+export function clampBend(bend) {
+  const u = Number(bend?.u);
+  const v = Number(bend?.v);
+  return {
+    u: Number.isFinite(u) ? Math.max(-BEND_U_LIMIT, Math.min(BEND_U_LIMIT, u)) : 0.5,
+    v: Number.isFinite(v) ? Math.max(-BEND_LIMIT, Math.min(BEND_LIMIT, v)) : 0,
+  };
 }
 
-// Where an edge's two ends actually are, given the nodes currently on the
-// board. A null answer means the edge references a node that is gone and has no
-// stored fallback — it is not drawable, and the caller drops it rather than
-// drawing a line to the origin.
+// The payload the editor and the drag send. Flat, because the columns are flat,
+// and rounded because six decimal places is already sub-pixel on any line
+// anybody will draw.
+const round = (n) => Math.round(n * 1e6) / 1e6;
+export const bendFields = (bend) =>
+  bend == null ? { bend: null, bendU: null } : { bend: round(bend.v), bendU: round(bend.u) };
+
+// ---------------------------------------------------------------------------
+// Where an edge's two ends actually are
+// ---------------------------------------------------------------------------
+
+// A null answer means the edge references a node that is gone and has no stored
+// fallback — it is not drawable, and the caller drops it rather than drawing a
+// line to the origin.
 export function edgeEnds(edge, nodesById) {
   const end = (nodeId, side, fx, fy) => {
     if (nodeId != null) {

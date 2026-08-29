@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useReducedMotion } from 'framer-motion';
 import { socket } from '../socket.js';
@@ -11,11 +11,12 @@ import {
   saveShowRetired,
 } from '../lib/boardViewport.js';
 import {
+  STRAIGHT,
   anchorPoint,
   assignBends,
+  bendFields,
   bendFromDrag,
   chordParam,
-  clampBend,
   edgeEnds,
   edgePath,
   dropTarget,
@@ -42,6 +43,10 @@ import RelationshipVoid from './RelationshipVoid.jsx';
 // **A node drag never re-renders.** `pointermove` writes `transform` straight
 // onto the node's own element; React hears about it once, on drop, as a single
 // socket emit. Same rule as the camera, same reason.
+
+// The window the server keeps (see `UNDO_DEPTH` in server/index.js). Named here
+// only for the tooltip; the server is what actually bounds the stack.
+const UNDO_DEPTH = 3;
 
 export const DRAG_MIME = 'text/character-id';
 export const DRAG_PERSON_MIME = 'text/relationship-person-id';
@@ -122,6 +127,10 @@ export default function RelationshipBoard({
   // browser console said it in one line.
   const rawNodes = board?.nodes ?? [];
   const rawEdges = board?.edges ?? [];
+  // How many steps back this board can go. Comes down with every broadcast
+  // rather than being counted here: the stack lives on the server, because
+  // undoing a delete has to bring rows back with their original ids.
+  const undoDepth = board?.undoDepth ?? 0;
 
   // Drop any local override the server has now confirmed. Done during render
   // rather than in an effect so the very next line already sees the truth.
@@ -158,9 +167,10 @@ export default function RelationshipBoard({
 
   const edges = useMemo(
     () =>
-      rawEdges.map((e) =>
-        liveBend.current.has(e.id) ? { ...e, bend: liveBend.current.get(e.id) } : e
-      ),
+      rawEdges.map((e) => {
+        const local = liveBend.current.get(e.id);
+        return local ? { ...e, bend: local.v, bend_u: local.u } : e;
+      }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [board?.edges, draftTick]
   );
@@ -213,10 +223,10 @@ export default function RelationshipBoard({
   // Shared by the node drag (which moves the ends) and the bend drag (which
   // moves the curve between them), so the two can never draw a line two
   // slightly different ways.
-  const paintEdge = useCallback((edge, lookup, offset) => {
+  const paintEdge = useCallback((edge, lookup, bend) => {
     const ends = edgeEnds(edge, lookup);
     if (!ends) return;
-    const { d, mid } = edgePath(ends.from, ends.to, offset);
+    const { d, mid } = edgePath(ends.from, ends.to, bend);
     pathEls.current.get(edge.id)?.setAttribute('d', d);
     pathEls.current.get(`hit-${edge.id}`)?.setAttribute('d', d);
     const label = pathEls.current.get(`label-${edge.id}`);
@@ -235,11 +245,58 @@ export default function RelationshipBoard({
       lookup.set(nodeId, movedNode);
       for (const edge of edges) {
         if (edge.from_node_id !== nodeId && edge.to_node_id !== nodeId) continue;
-        paintEdge(edge, lookup, bends.get(edge.id) ?? 0);
+        paintEdge(edge, lookup, bends.get(edge.id) ?? STRAIGHT);
       }
     },
     [edges, nodesById, bends, paintEdge]
   );
+
+  // **The anchor dots do NOT lag, even though the lines do.**
+  //
+  // The lines trailing behind a dragged portrait is the board's whole feel and
+  // is deliberate. The handle sitting ON the anchor dot is a different thing: it
+  // is part of the portrait, and leaving it behind read as the dot coming
+  // unstuck from the face. Reported from play as exactly that.
+  //
+  // So the handles are moved on the pointer's own frame, from the node's TRUE
+  // position rather than the chase's eased one — a `transform` written straight
+  // onto the group, offset from where it was last rendered. React puts them back
+  // at their real coordinates on the next broadcast, at which point the offset
+  // is zero and the transform is a no-op.
+  const moveHandlesFor = useCallback(
+    (nodeId, dx, dy) => {
+      for (const edge of edges) {
+        for (const end of ['from', 'to']) {
+          if (edge[`${end}_node_id`] !== nodeId) continue;
+          const el = pathEls.current.get(`handle-${edge.id}-${end}`);
+          if (el) el.setAttribute('transform', `translate(${dx} ${dy})`);
+        }
+      }
+    },
+    [edges]
+  );
+
+  // **And the offset has to be taken back off again.**
+  //
+  // React never wrote that `transform`, so React will never remove it: once the
+  // drop lands and the handle is re-rendered at its real coordinates, a stale
+  // transform is applied on top and the dot ends up exactly one drag-length away
+  // from the portrait. Measured after the first fix — the handle tracked
+  // perfectly during the drag and then jumped 180px the moment it was released.
+  //
+  // Cleared in a LAYOUT effect rather than on pointerup: this runs after React
+  // has placed the handles and before the browser paints, so there is no frame
+  // where the old position shows. `nodes` changing identity is exactly the
+  // signal that such a render happened — the drop bumps it, and so does every
+  // broadcast.
+  useLayoutEffect(() => {
+    for (const [key, el] of pathEls.current) {
+      // The registry is keyed by BOTH strings (`hit-3`, `label-3`, `handle-3-from`)
+      // and raw numeric edge ids, so the type check is not defensive padding —
+      // `startsWith` on a number threw on the first render and took the tab down.
+      if (typeof key === 'string' && key.startsWith('handle-')) el?.removeAttribute('transform');
+    }
+  }, [nodes]);
 
   // Point the chase at a new target and make sure the loop is running. The
   // loop stops on its own once it has caught up and the drag is over.
@@ -332,6 +389,11 @@ export default function RelationshipBoard({
         dy: node.y - start.y,
         x: node.x,
         y: node.y,
+        // Where the node was when the grab started — and therefore where its
+        // anchor handles were last rendered, which is what their transform is
+        // measured from.
+        originX: node.x,
+        originY: node.y,
         moved: false,
       };
     },
@@ -354,6 +416,10 @@ export default function RelationshipBoard({
       const el = nodeEls.current.get(drag.nodeId);
       // Straight to the DOM. No setState, no re-render, no dropped frames.
       if (el) el.style.transform = `translate(${drag.x}px, ${drag.y}px)`;
+      // The anchor dots belong to the portrait, so they move with it exactly —
+      // no chase, no lag. `drag.originX/Y` is where the node was when the grab
+      // began, which is also where the handles were last drawn.
+      moveHandlesFor(drag.nodeId, drag.x - drag.originX, drag.y - drag.originY);
       // The lines have to come along, or a dragged portrait tears away from its
       // own relationships until you let go. Same technique: recompute the two
       // or three paths that touch this node and write `d` directly.
@@ -377,15 +443,22 @@ export default function RelationshipBoard({
       window.removeEventListener('pointerup', onUp);
       window.removeEventListener('pointercancel', onUp);
     };
-  }, [canEdit, chaseEdges]);
+  }, [canEdit, chaseEdges, moveHandlesFor]);
 
   // ---- bending a line by hand ---------------------------------------------
   //
-  // Grab a line anywhere and pull: the point under your finger follows and the
-  // line bows into the arc it defines. What gets stored is the same
-  // perpendicular offset the automatic fan hands out (see
-  // relationshipGeometry), so the arc belongs to the line rather than to the
-  // board — move either portrait afterwards and the curve travels with them.
+  // Grab a line anywhere and pull: the point under your finger follows, in
+  // whatever direction you drag it, and the arc forms THERE. What gets stored
+  // is a pair of fractions of the line's own frame (see relationshipGeometry),
+  // so the arc belongs to the line rather than to the board — move either
+  // portrait afterwards and the curve travels with them.
+  //
+  // **Omni-directional, and where you grabbed.** The first version projected
+  // the drag onto the chord's normal and threw the along-chord half away, so
+  // every arc peaked in the middle however near an end you pulled and could
+  // only bow two ways. Moving the whole control point instead — both components
+  // of the pointer delta, divided by the curve's weight at the grabbed
+  // parameter — makes the grabbed point follow the pointer exactly.
   //
   // **The gesture shares its pointerdown with selection**, and the two separate
   // by distance: under four pixels this was a click and the line is merely
@@ -401,21 +474,14 @@ export default function RelationshipBoard({
       const api = voidRef.current;
       if (!api || !ends) return;
       const point = api.toWorld(e.clientX, e.clientY);
-      const t = chordParam(ends.from, ends.to, point);
-      const base = bends.get(edge.id) ?? 0;
       bendRef.current = {
         edgeId: edge.id,
-        t,
-        base,
-        // **The drag applies a delta, not an absolute.** Reading the offset
-        // straight off the pointer is exact in the middle of a line and wrong
-        // near its ends, where `bendWeight`'s floor stops dividing honestly —
-        // grabbing an already-bent line close to an anchor would snap it most
-        // of the way flat on the first frame. Recording what the pointer says
-        // at the moment of the grab and adding only the CHANGE since makes that
-        // first frame a no-op by construction, wherever you grabbed.
-        grab: bendFromDrag(ends.from, ends.to, t, point),
-        offset: base,
+        // Where along the line the grab landed. Fixed at pointerdown: recomputing
+        // it as the curve moves would make the line chase its own tail.
+        t: chordParam(ends.from, ends.to, point),
+        base: bends.get(edge.id) ?? STRAIGHT,
+        grabAt: point,
+        bend: bends.get(edge.id) ?? STRAIGHT,
         moved: false,
         startX: e.clientX,
         startY: e.clientY,
@@ -427,30 +493,30 @@ export default function RelationshipBoard({
   useEffect(() => {
     if (!canEdit) return undefined;
     const onMove = (e) => {
-      const bend = bendRef.current;
+      const drag = bendRef.current;
       const api = voidRef.current;
-      if (!bend || !api) return;
+      if (!drag || !api) return;
       // Below the threshold this is still a click; committing nothing until it
       // is exceeded is what keeps a plain select from nudging the curve.
-      if (!bend.moved && Math.hypot(e.clientX - bend.startX, e.clientY - bend.startY) < 4) return;
-      bend.moved = true;
-      const edge = edges.find((x) => x.id === bend.edgeId);
+      if (!drag.moved && Math.hypot(e.clientX - drag.startX, e.clientY - drag.startY) < 4) return;
+      drag.moved = true;
+      const edge = edges.find((x) => x.id === drag.edgeId);
       const ends = edge ? edgeEnds(edge, nodesById) : null;
       if (!ends) return;
       const point = api.toWorld(e.clientX, e.clientY);
-      bend.offset = clampBend(
-        snapBend(bend.base + bendFromDrag(ends.from, ends.to, bend.t, point) - bend.grab)
+      drag.bend = snapBend(
+        bendFromDrag(ends.from, ends.to, drag.base, drag.t, point.x - drag.grabAt.x, point.y - drag.grabAt.y)
       );
       // Straight to the DOM, like every other gesture on this board.
-      paintEdge(edge, nodesById, bend.offset);
+      paintEdge(edge, nodesById, drag.bend);
     };
     const onUp = () => {
-      const bend = bendRef.current;
+      const drag = bendRef.current;
       bendRef.current = null;
-      if (!bend || !bend.moved) return;
-      liveBend.current.set(bend.edgeId, bend.offset);
+      if (!drag || !drag.moved) return;
+      liveBend.current.set(drag.edgeId, drag.bend);
       setDraftTick((t) => t + 1);
-      socket.emit('relationships:update_edge', { edgeId: bend.edgeId, bend: bend.offset });
+      socket.emit('relationships:update_edge', { edgeId: drag.edgeId, ...bendFields(drag.bend) });
     };
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp);
@@ -568,6 +634,65 @@ export default function RelationshipBoard({
     };
   }, [canEdit, nodes]);
 
+  // ---- the keyboard ------------------------------------------------------
+  //
+  // **Delete removes whatever is selected, and Ctrl+Z takes it back.**
+  //
+  // Everything on this board is selected by clicking it and, until now, deleted
+  // through a menu or a popover — which is fine once and tedious while tidying
+  // a web of thirty lines. Backspace and Delete are the same key to everybody
+  // who has ever used a canvas, so both are bound rather than picking one.
+  //
+  // A node deleted this way keeps its relationships, floating loose: it is the
+  // gentler of the ✕ menu's two options and the one listed first there, and
+  // with an undo behind it the gentler default is the right one for a key that
+  // is easy to hit by accident.
+  const deleteSelection = useCallback(() => {
+    if (!canEdit) return false;
+    if (selectedEdgeId != null) {
+      socket.emit('relationships:delete_edge', { edgeId: selectedEdgeId });
+      setSelectedEdgeId(null);
+      setEditingEdge(null);
+      return true;
+    }
+    if (selectedId != null) {
+      socket.emit('relationships:delete_node', { nodeId: selectedId, keepRelationships: true });
+      setSelectedId(null);
+      return true;
+    }
+    return false;
+  }, [canEdit, selectedEdgeId, selectedId]);
+
+  const undo = useCallback(() => {
+    if (!canEdit) return;
+    socket.emit('relationships:undo', { characterId: ownerCharacterId });
+  }, [canEdit, ownerCharacterId]);
+
+  useEffect(() => {
+    if (!canEdit) return undefined;
+    const onKey = (e) => {
+      // **Never while somebody is typing.** Backspace in the label field has to
+      // delete a character, not the relationship it names, and the editor is
+      // open over the board with its input focused most of the time it exists.
+      const el = e.target;
+      const typing =
+        el?.isContentEditable ||
+        ['INPUT', 'TEXTAREA', 'SELECT'].includes(el?.tagName);
+      if (typing) return;
+      if ((e.key === 'z' || e.key === 'Z') && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        undo();
+        return;
+      }
+      if (e.key !== 'Delete' && e.key !== 'Backspace') return;
+      // Backspace is the browser's Back on some setups, so the default has to go
+      // — but only when there was actually something selected to delete.
+      if (deleteSelection()) e.preventDefault();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [canEdit, deleteSelection, undo]);
+
   // ---- dropping from the rail --------------------------------------------
 
   const onDrop = (e) => {
@@ -618,22 +743,41 @@ export default function RelationshipBoard({
         onDragOver={onDragOver}
         onDragLeave={() => setDropping(false)}
         corner={
-          canEdit && edges.some((e) => e.retired) ? (
-            <button
-              onClick={() => {
-                const next = !showRetired;
-                setShowRetired(next);
-                saveShowRetired(ownerCharacterId, next);
-              }}
-              title="Retired relationships are kept as history"
-              className={`panel-cut-sm border px-2 py-1 text-[10px] font-bold uppercase tracking-wide ${
-                showRetired
-                  ? 'border-zinc-700 bg-zinc-900/80 text-zinc-400 hover:text-zinc-100'
-                  : 'border-brand-700/60 bg-zinc-900/80 text-brand-300'
-              }`}
-            >
-              {showRetired ? 'Retired shown' : 'Retired hidden'}
-            </button>
+          canEdit ? (
+            <>
+              {/* Three steps deep, so it is a way out of a mis-click rather
+                  than a history. Greyed when there is nothing to take back,
+                  because a control that does nothing teaches nothing. */}
+              <button
+                onClick={undo}
+                disabled={undoDepth === 0}
+                title={
+                  undoDepth
+                    ? `Undo the last change (${undoDepth} of ${UNDO_DEPTH} kept) — Ctrl+Z`
+                    : 'Nothing to undo'
+                }
+                className="panel-cut-sm border border-zinc-700 bg-zinc-900/80 px-2 py-1 text-[10px] font-bold uppercase tracking-wide text-zinc-400 hover:text-zinc-100 disabled:opacity-30 disabled:hover:text-zinc-400"
+              >
+                Undo
+              </button>
+              {edges.some((e) => e.retired) && (
+                <button
+                  onClick={() => {
+                    const next = !showRetired;
+                    setShowRetired(next);
+                    saveShowRetired(ownerCharacterId, next);
+                  }}
+                  title="Retired relationships are kept as history"
+                  className={`panel-cut-sm border px-2 py-1 text-[10px] font-bold uppercase tracking-wide ${
+                    showRetired
+                      ? 'border-zinc-700 bg-zinc-900/80 text-zinc-400 hover:text-zinc-100'
+                      : 'border-brand-700/60 bg-zinc-900/80 text-brand-300'
+                  }`}
+                >
+                  {showRetired ? 'Retired shown' : 'Retired hidden'}
+                </button>
+              )}
+            </>
           ) : null
         }
         className={`${className} ${dropping ? 'ring-2 ring-brand-400' : ''}`}

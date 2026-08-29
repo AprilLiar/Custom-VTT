@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import { TEXT_VISIBLE_ZOOM } from '../lib/boardViewport.js';
-import { edgeEnds, edgePath } from '../lib/relationshipGeometry.js';
+import { STRAIGHT, edgeEnds, edgePath } from '../lib/relationshipGeometry.js';
 import HaloText from './HaloText.jsx';
 
 // The web: every relationship, drawn.
@@ -59,7 +59,7 @@ export default function RelationshipEdges({
         .map((edge) => {
           const ends = edgeEnds(edge, nodesById);
           if (!ends) return null;
-          const geom = edgePath(ends.from, ends.to, bends.get(edge.id) ?? 0);
+          const geom = edgePath(ends.from, ends.to, bends.get(edge.id) ?? STRAIGHT);
           return { edge, ends, ...geom };
         })
         .filter(Boolean),
@@ -127,6 +127,8 @@ export default function RelationshipEdges({
                   point={ends.from}
                   color={edge.retired ? RETIRED_COLOR : edge.color}
                   loose={edge.from_node_id == null}
+                  registerPath={registerPath}
+                  handleKey={`handle-${edge.id}-from`}
                   onPointerDown={(e) => onEndPointerDown?.(e, edge, 'from')}
                 />
               )}
@@ -135,6 +137,8 @@ export default function RelationshipEdges({
                   point={ends.to}
                   color={edge.retired ? RETIRED_COLOR : edge.color}
                   loose={edge.to_node_id == null}
+                  registerPath={registerPath}
+                  handleKey={`handle-${edge.id}-to`}
                   onPointerDown={(e) => onEndPointerDown?.(e, edge, 'to')}
                 />
               )}
@@ -144,7 +148,7 @@ export default function RelationshipEdges({
             as a proposal rather than as a relationship that already exists. */}
         {draft && (
           <path
-            d={edgePath(draft.from, draft.to, 0).d}
+            d={edgePath(draft.from, draft.to, STRAIGHT).d}
             fill="none"
             stroke="#e4e4e7"
             strokeOpacity="0.7"
@@ -285,9 +289,21 @@ function EdgeLine({ edge, ends, d, canEdit, selected, onPointerDown, onDoubleCli
 // Drawn as a ring rather than a disc so it never reads as an arrowhead. A
 // detached end is filled dark and hollow — visibly waiting for somewhere to go;
 // an attached one is solid, because it is already somewhere.
-function EndHandle({ point, color, loose, onPointerDown }) {
+//
+// **Registered, and moved by translate rather than by cx/cy.** The handle sits
+// on the anchor dot, and the anchor dot belongs to the portrait — so when a
+// portrait is dragged the handle has to go with it on the same frame. It used
+// to be positioned only at render time, which meant it stayed exactly where the
+// face used to be until the drag ended and React caught up: reported as the
+// anchor dot lagging behind. The board now writes a `transform` on this group
+// straight from the pointer handler, so `point` is where it started and the
+// transform is how far the portrait has moved since.
+function EndHandle({ point, color, loose, onPointerDown, registerPath, handleKey }) {
   return (
     <g
+      ref={(el) => registerPath?.(handleKey, el)}
+      data-anchor-x={point.x}
+      data-anchor-y={point.y}
       style={{ cursor: 'grab', pointerEvents: 'auto' }}
       onPointerDown={(e) => {
         e.stopPropagation();
