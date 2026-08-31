@@ -2760,9 +2760,22 @@ Phase A.
     them up at once. All three child tables are gated on their toggle and cleared when it goes
     off, exactly as `normalizeInteractions` already drops the defence triggers.
   - `normalizeGrappleDirections` (pure, in `moveLogic.js`) dedupes by direction, orders by the
-    cross, drops an id that no longer exists, and **drops a self-reference** — chaining into
-    another grappling move is allowed (below), but a move pointing at itself is an unbounded loop
-    rather than a design choice.
+    cross, and drops an id that no longer exists.
+  - **A move MAY point a direction at itself (decided, reversed; implemented).** It used to be
+    dropped as "an unbounded loop", and that reading was simply wrong: a chained move is placed at
+    `grappleFootprintEnd` — the grab's reveal Tic plus its Active frames (`planChainPlacement` in
+    `grappleLogic.js`) — so **every link lands strictly later than the one that declared it**, by at
+    least the whole of its own Startup and Active. A self-chain therefore walks forward through the
+    Round and stops at its end, exactly as a chain across three different moves does; it stops
+    earlier still the moment the grappler cannot pay for the next link, and each link is a human
+    picking a direction off the prompt rather than anything the engine does on its own. What it buys
+    is the obvious thing: one grab you can keep re-applying, which is how a wristlock or an armbar
+    reads at a table, instead of four near-identical moves describing the same hold. The move is
+    offered in its own direction picker to match. **A move being *created* has no id yet** and so is
+    not in the library to pick — save it once and the direction is there to set on the next edit.
+    **The Requirement rule is untouched**: a move that required itself could never legally be
+    declared at all, which is a move that does not work rather than a design choice, so it is still
+    excluded from its own Requirement picker and still dropped server-side.
   - `move:delete` clears `move_grapple_directions` **by `target_move_id` as well as by
     `move_id`** — deleting a move some other grapple points at would otherwise leave an arrow at
     a ghost, and the FK would refuse the delete outright.

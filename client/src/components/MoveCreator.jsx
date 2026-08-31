@@ -1155,7 +1155,17 @@ export default function MoveCreator({
         <MovePickerDialog
           moves={moves}
           folders={folders}
-          excludeMoveId={initial?.id ?? null}
+          // **This move itself is offered (decided, reversed).** It used to be
+          // excluded here as it still is from the Requirement picker below, but
+          // the two are not the same rule: a chained move lands at the grab's
+          // reveal Tic plus its Active frames, so pointing a direction back at
+          // this move walks forward through the Round rather than looping, and
+          // it is how a wristlock reads at a table — one hold you keep cranking,
+          // rather than four near-identical moves describing the same thing.
+          //
+          // A move being CREATED has no id yet and so is not in `moves` to pick;
+          // save it once and the direction is there to set on the next edit.
+          excludeMoveId={null}
           title={`Move for ${pickingDirection}`}
           onPick={(move) =>
             setGrappleDirections((prev) => ({ ...prev, [pickingDirection]: move.id }))

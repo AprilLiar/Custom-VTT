@@ -7,6 +7,7 @@ import {
   GRAPPLE_DIRECTIONS,
   GRAPPLE_TRIGGERS,
   normalizeGrappleDirections,
+  normalizeRequirement,
   normalizeInteractions,
 } from '../moveLogic.js';
 
@@ -49,16 +50,31 @@ test('a direction naming a move that no longer exists is dropped', () => {
   assert.deepEqual(rows, [{ direction: 'up', targetMoveId: 7 }]);
 });
 
-test('a move may never point a direction at itself', () => {
-  // Chaining into another grappling move is allowed and resolves normally,
-  // but a self-reference is an unbounded loop rather than a design choice.
+test('a move MAY point a direction at itself, and chain the same hold again', () => {
+  // Reversed. This was refused as "an unbounded loop", and that reading was
+  // wrong: a chained move is placed at the grab's reveal Tic plus its Active
+  // frames (planChainPlacement), so every link lands strictly later than the one
+  // that declared it and the chain walks forward into the end of the Round —
+  // exactly like a chain across three different moves does. What it buys is one
+  // grab you can keep re-applying, which is how a wristlock reads at a table.
   const rows = normalizeGrappleDirections({ up: 5, down: 7 }, { moveId: 5, validMoveIds: [...LIBRARY, 5] });
-  assert.deepEqual(rows, [{ direction: 'down', targetMoveId: 7 }]);
+  assert.deepEqual(rows, [
+    { direction: 'up', targetMoveId: 5 },
+    { direction: 'down', targetMoveId: 7 },
+  ]);
 });
 
-test('self-reference is caught whether the id arrives as a number or a string', () => {
+test('a self-reference arriving as a string is the same self-reference', () => {
   const rows = normalizeGrappleDirections({ up: '5' }, { moveId: 5, validMoveIds: [5] });
-  assert.deepEqual(rows, []);
+  assert.deepEqual(rows, [{ direction: 'up', targetMoveId: 5 }]);
+});
+
+test('a Requirement, unlike a grapple direction, may still never be itself', () => {
+  // The two rules are not the same and the reversal above does not touch this
+  // one: a move that requires itself could never legally be declared at all, so
+  // it is a move that does not work rather than a design choice.
+  assert.equal(normalizeRequirement(5, { moveId: 5, validMoveIds: [5] }), null);
+  assert.equal(normalizeRequirement(7, { moveId: 5, validMoveIds: [5, 7] }), 7);
 });
 
 test('an unknown direction key is ignored', () => {
