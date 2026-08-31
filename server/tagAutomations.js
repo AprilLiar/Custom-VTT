@@ -46,6 +46,17 @@ export const MOVEMENT_PUNISHER_TAG = 'Movement Punisher';
 // on the clock.
 export const OFF_THE_GROUND_TAG = 'Off The Ground';
 
+// **Grounding**: the Tag that WRITES Trip Recovery frames, where Off The Ground
+// only reads them. Every Recovery frame this move has becomes a Trip Recovery
+// frame — the move puts its own user on the floor as part of throwing it.
+//
+// Its natural pair is Off The Ground, and that is the point: a move that grounds
+// you is a real cost until you have something to throw off the floor. Nothing
+// about the *count* changes; a 3-Recovery move still has three frames. What
+// changes is what kind they are, which is exactly what Movement Punisher already
+// does to somebody else — this is a fighter doing it to themselves, on purpose.
+export const GROUNDING_TAG = 'Grounding';
+
 // How much Recovery a punished Movement move costs its owner. A flat 3 rather
 // than a number in the Tag's name: the two Interruption Tags are parameterised
 // because their whole point is scaling a contest, and this one is a single
@@ -117,6 +128,14 @@ export const TAG_HOOKS = {
     // Read at declare time by the placement floor, not at resolution. Nothing
     // in the damage or timing engines looks at it.
     overlapsTripRecovery: true,
+  },
+  [GROUNDING_TAG]: {
+    // Also read at declare time, and the only Tag that writes
+    // `declared_moves.trip_recovery_tics` from the move's own shape rather than
+    // from something that happened during the round. Frozen at declare like
+    // every other snapshot on that row: editing the template's Recovery
+    // afterwards must not reach back into an attack already on the clock.
+    groundsSelf: true,
   },
   [FEINT_TAG]: {
     // A Feint shows its own Tell exactly like any other move — that is the
@@ -247,6 +266,26 @@ export const carriesBlockTag = (tagNames) => hasTagNamed(tagNames, BLOCK_TAG);
 export const carriesNoDamageTag = (tagNames) => hasTagNamed(tagNames, NO_DAMAGE_TAG);
 export const carriesFeintTag = (tagNames) => hasTagNamed(tagNames, FEINT_TAG);
 export const carriesOffTheGroundTag = (tagNames) => hasTagNamed(tagNames, OFF_THE_GROUND_TAG);
+export const carriesGroundingTag = (tagNames) => hasTagNamed(tagNames, GROUNDING_TAG);
+
+// How many Trip Recovery frames a declaration starts life with. Zero for every
+// move that does not carry **Grounding**; the move's whole Recovery window when
+// it does.
+//
+// **Recovery frames added LATER are ordinary** — a Block that held too short
+// extends the window (`recovery_extension_tics`), and `phaseAt` measures the
+// trip window backwards from the Recovery end, so those extra frames land in
+// front of the trip ones. That is the right way round: the extension is time
+// spent still on your feet recovering from the guard, and the floor is where
+// the move was always going to leave you.
+//
+// Pure, and separate from the declare handler, so the one arithmetic claim here
+// — "all of them, and none of anybody else's" — can be pinned by a test.
+export function groundingTripRecoveryTics({ tagNames, recoveryTics } = {}) {
+  if (!carriesGroundingTag(tagNames)) return 0;
+  const tics = Math.trunc(Number(recoveryTics) || 0);
+  return tics > 0 ? tics : 0;
+}
 
 // Does a Feint conceal the declaration being made? "Right after" is a timing
 // claim, not just an ordering one — the same reading the Requirement gate

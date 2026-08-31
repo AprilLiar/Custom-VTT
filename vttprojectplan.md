@@ -1023,6 +1023,29 @@ on the **ground** for it, and two rules read that difference.
   and never more than the move's own Startup (its Active frames can never begin before the trip ends).
   The invariant behind both, and the one the tests pin: **the reveal Tic always lands at or after the
   old floor.**
+- **The Grounding Tag writes them (decided, new; implemented).** Off The Ground *reads* trip frames;
+  Grounding is the Tag that makes them, and the two are a deliberate pair — a move that grounds you is
+  a real cost until you have something to throw off the floor. **Every Recovery frame of a Grounding
+  move is a Trip Recovery frame.** The count never changes: a 3-Recovery move still has three frames,
+  and what changed is what kind they are — exactly what Movement Punisher already does to somebody
+  else, here done to yourself on purpose.
+  - Written once at **declare** time onto `declared_moves.trip_recovery_tics`, from the same
+    per-character resolved tag names every other Tag mechanic reads (a Perk may grant or strip it),
+    and frozen there like every other declare-time snapshot — editing the template's Recovery
+    afterwards must not reach into an attack already on the clock. It is the only thing that writes
+    that column at declare; Movement Punisher adds to it mid-round, from the other side of the fight.
+  - **Recovery added later is ordinary.** A Block that held too short extends the window
+    (`recovery_extension_tics`), and `phaseAt` measures the trip window backwards from the Recovery
+    end, so those extra frames land in *front* of the trip ones. That is the right way round: the
+    extension is time spent still on your feet recovering from the guard, and the floor is where the
+    move was always going to leave you.
+  - No client change was needed — every render site already draws from `tripRecoveryTics`.
+  - **Verified**: `groundingTripRecoveryTics` is pure and unit-tested (all of the move's Recovery and
+    none of anybody else's, junk input never becoming negative or fractional frames), plus a
+    `phaseAtTic` sweep proving the frames reach back exactly to the Active end and that the same move
+    without the Tag stays ordinary Recovery throughout; `scripts/playtest-grounding.mjs` checks the
+    same three claims against a live server, including that an Off The Ground move can be thrown out
+    of the frames Grounding created.
 - **Drawn as darker blue with a down arrow on every frame.** It stays in the blue family on purpose —
   it *is* Recovery, just spent on the floor, and a fifth hue would say it was a different kind of
   thing. The arrow is what actually carries the distinction, because two adjacent blues is exactly

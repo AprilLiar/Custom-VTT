@@ -2143,6 +2143,10 @@ const SEEDED_TAGS = [
     'Off The Ground',
     'Thrown from the floor. This move may be declared so that its Startup overlaps your own Trip Recovery frames — you are getting up as you wind up. Only Trip Recovery: ordinary Recovery still has to finish, and the move\u2019s Active frames can never begin before you are back on your feet.',
   ],
+  [
+    'Grounding',
+    'This move puts you on the floor. Every one of its Recovery frames is a Trip Recovery frame instead of an ordinary one \u2014 the same frames, the same count, spent on the ground. Pairs with Off The Ground, which is the only thing that can be thrown out of them.',
+  ],
 ];
 
 function seedTags(existingRows, writes) {

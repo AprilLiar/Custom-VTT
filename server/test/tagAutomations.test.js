@@ -12,7 +12,11 @@ import {
   tagAmount,
   movementBlockedByLegs,
   movementPunisherApplies,
+  carriesGroundingTag,
+  groundingTripRecoveryTics,
   TAG_HOOKS,
+  GROUNDING_TAG,
+  OFF_THE_GROUND_TAG,
   BLOCK_TAG,
   FEINT_TAG,
   HARD_TO_INTERRUPT_TAG,
@@ -21,7 +25,7 @@ import {
   MOVEMENT_PUNISHER_TAG,
   MOVEMENT_PUNISH_RECOVERY,
 } from '../tagAutomations.js';
-import { resolveBlockStamina } from '../combatDamage.js';
+import { phaseAtTic, resolveBlockStamina } from '../combatDamage.js';
 import { clampStaminaModifier } from '../moveLogic.js';
 
 // Block Stamina — the first Tag in the game that does something mechanical.
@@ -386,4 +390,57 @@ test('movementBlockedByLegs: it closes nothing else', () => {
   // the safe direction is to refuse nothing on absent data.
   assert.equal(movementBlockedByLegs({ tagNames: ['Movement'], legStatuses: [] }), false);
   assert.equal(movementBlockedByLegs({}), false);
+});
+
+// --- Grounding: the Tag that writes Trip Recovery frames -------------------
+
+test('the Grounding Tag is registered, and is not Off The Ground', () => {
+  // The two are a pair and are easy to confuse: Off The Ground READS trip
+  // frames (it may start inside them), Grounding WRITES them.
+  assert.ok(TAG_HOOKS[GROUNDING_TAG]?.groundsSelf, 'Grounding grounds its own user');
+  assert.ok(TAG_HOOKS[OFF_THE_GROUND_TAG]?.overlapsTripRecovery, 'Off The Ground still only overlaps');
+  assert.equal(carriesGroundingTag(['Grounding']), true);
+  assert.equal(carriesGroundingTag(['Off The Ground']), false, 'neither Tag is the other');
+  assert.equal(carriesGroundingTag(['  grounding ']), true, 'matched by name like every other Tag');
+});
+
+test('groundingTripRecoveryTics: ALL of the move\'s Recovery, and none of anyone else\'s', () => {
+  // The whole rule: the same frames, the same count, spent on the ground.
+  assert.equal(groundingTripRecoveryTics({ tagNames: ['Grounding'], recoveryTics: 3 }), 3);
+  assert.equal(groundingTripRecoveryTics({ tagNames: ['Grounding', 'Block'], recoveryTics: 1 }), 1);
+  // A move with no Recovery has nothing to convert — Grounding is not a way to
+  // acquire frames you did not have.
+  assert.equal(groundingTripRecoveryTics({ tagNames: ['Grounding'], recoveryTics: 0 }), 0);
+  // Without the Tag it is always 0, so the declare handler can call it
+  // unconditionally rather than branching around it.
+  assert.equal(groundingTripRecoveryTics({ tagNames: ['Off The Ground'], recoveryTics: 4 }), 0);
+  assert.equal(groundingTripRecoveryTics({ tagNames: [], recoveryTics: 4 }), 0);
+  assert.equal(groundingTripRecoveryTics({}), 0);
+  // Junk in the Recovery column never turns into negative or fractional frames.
+  assert.equal(groundingTripRecoveryTics({ tagNames: ['Grounding'], recoveryTics: -2 }), 0);
+  assert.equal(groundingTripRecoveryTics({ tagNames: ['Grounding'], recoveryTics: null }), 0);
+  assert.equal(groundingTripRecoveryTics({ tagNames: ['Grounding'], recoveryTics: 2.7 }), 2);
+});
+
+test('a Grounding move is trip from the first Recovery frame to the last', () => {
+  // The count is only half the claim; the other half is WHERE the frames land.
+  // phaseAt measures the trip window backwards from the Recovery end, so a
+  // whole-window count has to reach all the way back to the Active end.
+  const startup = 1, active = 2, recovery = 3;
+  const placementTic = 0;
+  const revealTic = placementTic + startup;
+  const activeEndTic = revealTic + active;
+  const recoveryEndTic = activeEndTic + recovery;
+  const tripRecoveryTics = groundingTripRecoveryTics({ tagNames: ['Grounding'], recoveryTics: recovery });
+  const footprint = { placementTic, revealTic, activeEndTic, recoveryEndTic, tripRecoveryTics };
+  for (let tic = activeEndTic; tic < recoveryEndTic; tic++) {
+    assert.equal(phaseAtTic(footprint, tic), 'trip_recovery', `Tic ${tic} should be on the floor`);
+  }
+  // ...and nothing before it moved: the Active frames are still Active.
+  assert.equal(phaseAtTic(footprint, activeEndTic - 1), 'active');
+  // The same move without the Tag keeps ordinary Recovery throughout.
+  const plain = { ...footprint, tripRecoveryTics: 0 };
+  for (let tic = activeEndTic; tic < recoveryEndTic; tic++) {
+    assert.equal(phaseAtTic(plain, tic), 'recovery');
+  }
 });
