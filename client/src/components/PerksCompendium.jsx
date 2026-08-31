@@ -365,7 +365,12 @@ export default function PerksCompendium() {
       </div>
 
       {role === 'gm' && (
-        <aside className="hidden w-44 shrink-0 md:block">
+        // Sticky to the scrollport, exactly as the Moves tab's rails are: this
+        // is a drop target beside a long grid, and a drag you have to hold
+        // while the page scrolls under it is the worst version of it.
+        // `self-start` is load-bearing — a stretched flex item is already as
+        // tall as its row and has nowhere to stick to. See Compendium.jsx.
+        <aside className="hidden w-44 shrink-0 self-start md:sticky md:top-0 md:block md:max-h-[85dvh] md:overflow-y-auto md:pl-1">
           <h2 className="mb-2 text-xs font-bold uppercase tracking-wide text-zinc-500">
             Drag a Perk here
           </h2>

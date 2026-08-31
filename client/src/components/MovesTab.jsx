@@ -87,24 +87,56 @@ export default function MovesTab({ data }) {
 
   return (
     <div className="space-y-3">
-      <div className="space-y-2">
-        <MoveFilterChips
-          label="Filter by Tell:"
-          items={tells.filter((t) => filters.presentTellIds.has(t.id))}
-          selected={filters.tellFilter}
-          onToggle={filters.toggleTell}
-          onClear={filters.clearTell}
-          labelFor={(t) => t.name}
-        />
-        <MoveFilterChips
-          label="Filter by tag:"
-          items={tags.filter((t) => filters.presentTagIds.has(t.id))}
-          selected={filters.tagFilter}
-          onToggle={filters.toggleTag}
-          onClear={filters.clearTag}
-          labelFor={(t) => t.name}
-          titleFor={(t) => t.description}
-        />
+      {/* **Four filters, split left and right by the question they ask
+          (decided, revised).** Left: what the move *does* — the Attack Target it
+          goes for and the Attack Roll it makes. Right: what the move *is* — the
+          Tell it opens with and the Tags it carries. "Which of my moves goes for
+          the head" and "which of them rolls a Hand" are what you ask of a long
+          sheet mid-round, and neither was askable at all before.
+          One column on a phone, where the two halves simply stack in that
+          order. */}
+      <div className="grid gap-x-6 gap-y-2 md:grid-cols-2">
+        <div className="space-y-2">
+          <MoveFilterChips
+            label="Attack Target:"
+            items={filters.targetItems}
+            selected={filters.targetFilter}
+            onToggle={filters.toggleTarget}
+            onClear={filters.clearTarget}
+            labelFor={(s) => s.name}
+            titleFor={(s) => `Show only moves that go for the ${s.name}`}
+          />
+          <MoveFilterChips
+            label="Attack Roll:"
+            items={filters.rollItems}
+            selected={filters.rollFilter}
+            onToggle={filters.toggleRoll}
+            onClear={filters.clearRoll}
+            labelFor={(s) => s.name}
+            titleFor={(s) => `Show only moves that roll ${s.name}`}
+          />
+        </div>
+        <div className="space-y-2">
+          <MoveFilterChips
+            label="Filter by Tell:"
+            items={tells.filter((t) => filters.presentTellIds.has(t.id))}
+            selected={filters.tellFilter}
+            onToggle={filters.toggleTell}
+            onClear={filters.clearTell}
+            labelFor={(t) => t.name}
+            className="md:justify-end"
+          />
+          <MoveFilterChips
+            label="Filter by tag:"
+            items={tags.filter((t) => filters.presentTagIds.has(t.id))}
+            selected={filters.tagFilter}
+            onToggle={filters.toggleTag}
+            onClear={filters.clearTag}
+            labelFor={(t) => t.name}
+            titleFor={(t) => t.description}
+            className="md:justify-end"
+          />
+        </div>
       </div>
 
       {visibleMoves.length === 0 ? (

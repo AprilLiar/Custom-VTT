@@ -441,7 +441,7 @@ Each character builds their own stances via an in-sheet **Stance Creator**; stan
   - **Roll type — Stat vs. Custom (decided, new):** the Move Creator's Roll section starts with a Stat/Custom toggle. **Stat** is everything described above (`moves.roll_type = 'stat'`, the default). **Custom** replaces the whole body-part-slot picker with a single base die picked from d4-d12 (`moves.custom_roll_size`) — for weapons, whose damage die belongs to the item, not the wielder, so it shouldn't move when the wielder's own Stats change. The two are mutually exclusive and enforced server-side (see `move:create`/`move:update` below): switching types in the Creator clears the other type's own picks, and `writeMove` forces `roll_slots = []` for a Custom move and `custom_roll_size = NULL` for a Stat move regardless of what's sent. A Custom Roll has no character-die concept at all — no incapacitation, no per-character resolution — so its Moves-tab button always just reads `d{size}{+bonus}` and is always clickable; rolling it goes through `dice:roll_custom` (see Real-time events below) instead of `pool:roll`, including at reveal-time auto-Roll. The flat **Bonus** field is shared with the Stat type (still `roll_modifier`, still folds in any Perk `roll_bonus` into `effective_roll_modifier`).
   - **Attack Target (Change 001, decided, new):** every Move with a Roll also carries an Attack Target — which of the same 7 slots its damage may actually be applied to (Weapon among them, where it means something different — see The Weapon below). Full mechanic (multi-select, empty-by-default, Successful-Block replacement, server-authoritative enforcement) documented in its own **Game mechanic — Attack Target** section below, since it interacts with Combat Automation's damage/defense flow rather than move creation alone.
 - **Tags (decided)**: each move carries 0-10 Tags, picked from the world-level GM-managed `tags` list (created/edited in the Compendium, like Tells — this pulls the base tag tables forward from Phase 4; per-character tag overrides via Perks remain Phase 4). Tags can also change dynamically later (Perks adding Tags to specific moves). A Tag has a **name and an optional description**; hovering a Tag anywhere it's shown (the Tag manager, a Move Creator's picker, a Move card) pops a tooltip with that description.
-- **The Moves tab filters by Tell and by Tag (decided, new).** Two multi-select-OR chip rows above the move grid, in exactly the Compendium's own filter language — picks *within* a row are OR'd, the two rows are AND'd, and an empty row is not applied at all. **Tell and Tag rather than the Compendium's Style and Tag:** on your own sheet a Style you cannot currently use is already dimmed and labelled, while "which of these opens with the shoulder drop" had no answer at all. Each row lists only the Tells and Tags that moves **on this sheet** actually carry — the Compendium is the library and shows the world's whole vocabulary, but a sheet is a hand of cards, and a filter that can only ever return nothing is worse than no filter. Both halves of an ambiguous move's Left/Right Tell pair count as that move's Tells, and a Perk's `effective_tag_ids` override is what a Tag filter reads, so the filter agrees with the chips actually printed on the card.
+- **The Moves tab filters by Tell and by Tag (decided, new; later joined by Attack Target and Attack Roll — see the four-filter split).** Two multi-select-OR chip rows above the move grid, in exactly the Compendium's own filter language — picks *within* a row are OR'd, the two rows are AND'd, and an empty row is not applied at all. **Tell and Tag rather than the Compendium's Style and Tag:** on your own sheet a Style you cannot currently use is already dimmed and labelled, while "which of these opens with the shoulder drop" had no answer at all. Each row lists only the Tells and Tags that moves **on this sheet** actually carry — the Compendium is the library and shows the world's whole vocabulary, but a sheet is a hand of cards, and a filter that can only ever return nothing is worse than no filter. Both halves of an ambiguous move's Left/Right Tell pair count as that move's Tells, and a Perk's `effective_tag_ids` override is what a Tag filter reads, so the filter agrees with the chips actually printed on the card.
 
 - **Compendium** — a persistent library of every move ever created (default and unique). **Decided (revised twice): Players can browse it, and can teach themselves a move from it** — folder nav, style filter, move cards, Tell/Tag tooltips all render the same as for the GM, and a **Learn / Forget** button on every *Unique* move grants or drops it on the Player's own character. Reading the library and being unable to act on it was the gap: the only route was asking the GM to tick a box on your behalf. Default moves are already everyone's, so they offer nothing; the style-learnability rule is unchanged and still enforced server-side, with the button saying why it is closed rather than silently refusing. **Forget** is offered as the undo — and it is offered **on the character's own Moves tab as well as in the Compendium** (decided, revised): taking something and putting it down are the same act, and only the library offered the second half, so noticing an unwanted Move on your sheet meant going elsewhere to find it again. The GM's own **Revoke** on that tab is unchanged and still keeps its confirmation, because undoing somebody else's choice is a different act from undoing your own. Nothing tracks who granted what, so a Player dropping a move the GM gave them is possible and accepted, the same trust model as every other control here. The Move Creator form, Tell/Tag managers, per-move Grant…/Edit/Delete actions, drag-to-grant, and the "drag a move here to grant" character rail remain GM-only (`role === 'gm'`, client-side gating only, same trust model as every other GM-only control in this app). The GM drags a move from the compendium onto a character in the page's character rail to grant it (a per-move Grant checklist covers touch devices); the GM can revoke a Unique move from the character's Moves tab.
 - **Compendium folders, shown in the UI as "Discipline" (decided)**: folders exist to organize moves by which **martial art/discipline** they come from (Karate, Muay Thai, etc.) — "Discipline" is purely a display label for the same underlying folder mechanism (`move_folders`, `folder:*` events), chosen because "Style" already means something else (the 7 tournament attributes). **Disciplines nest (decided)** — `move_folders.parent_id` self-references, so a discipline can itself contain sub-disciplines to any depth (e.g. "Striking / Boxing / Southpaw"). The GM creates disciplines and places moves in them — either assigned in the Move Creator (a select showing the full indented hierarchy, e.g. "Striking / Boxing"), or by **dragging a move card onto a discipline row** in the nested nav (dragging onto "All Moves"/root clears the move's discipline); creating a discipline while another is selected nests it inside that one. Deleting a discipline promotes its directly-contained moves and direct child disciplines **one level up, to the deleted discipline's own parent** (root if it was already at root) — not unconditionally to root, so removing a nested discipline only collapses that one level rather than flattening its whole subtree; if the client is currently viewing the deleted discipline, it follows automatically to that parent (or root). **"All Moves" shows every move regardless of discipline** — a specific discipline shows only its own moves. A **style filter** further narrows whichever of those two is currently showing — **multi-select, OR'd together (decided, revised):** each of the 7 style icons toggles independently (a `Set` of attribute ids, not a single value), and a move matches if its style is *any* of the currently-selected ones; no selection shows everything, same as before. Every move card, everywhere (Compendium and every character sheet, not just under a style filter), always shows its **full discipline path** — "📁 Striking / Boxing" if filed under a nested one, or **"Without Discipline"** if not.
@@ -616,6 +616,10 @@ The Tic Countdown is still, underneath, a single **global counter that never res
   - **`self_stat_recover` is the same upward step with a CEILING on it (decided, new): it can never take a Stat past its own locked baseline.** That ceiling is the whole difference between healing and improving, and it is why this is a third type rather than a flag — `self_stat_increase` is a move that makes you better than you started, and Recover Stat is a move that puts you back. Both are negated at the same single point either executes, so there is still one stepping implementation. Three details, each decided rather than incidental: **a pending half step is cleared before a whole one is bought** (the same reading `character:revert_stats` uses — a Stat put back to base must not still be carrying half a step it already paid for); **a die already at or above its baseline is left alone entirely**, so overspending the amount is harmless and "recover 5" on an undamaged Stat is a no-op rather than a buff; and **a die that was never locked has no baseline to measure against and is left uncapped** rather than pinned to a d4 it never agreed to. Measured in the same `rankOf`/`dieAtRank` rank unit everything else counts in. The effect line says `(recovered)` so the log distinguishes it from an increase that happened to be the same size.
   - **`opponent_next_roll_penalty` is a DEBT, not a modifier**, and it is the first of its kind. Every other roll modifier in the game is a standing fact re-read at each roll (`combatBonuses.js`); this one is **spent by the very next roll that character makes, of any kind, and is then gone**. It lives in a new `characters.pending_roll_penalty` column — on the character rather than on a seat, so it survives the fight ending and cannot be shed by being re-seated — and is read-and-cleared inside `getCombatRollBonusBreakdown`, which is precisely why it lives at that one funnel: every roll a character actually makes comes through it exactly once (the engine's move rolls, the defensive roll, the Interruption roll, and the three hand-thrown paths in `server/index.js`). Spending it anywhere else would mean finding all six again; spending it twice would be worse. It surfaces as a named `next_roll_penalty` term labelled **Weakened** on the roll's own breakdown, plus its own `next_roll_penalty` round_event when it lands.
     - **The per-round Initiative roll is deliberately NOT one of those rolls (assumed — worth confirming).** It reads `getStanceMatchupBonus` directly and never sees the debt. Taken literally, "the next roll of any kind" would include it, and a penalty applied mid-round would then be paid off by the *next* round's Initiative before its victim ever threw a move — which would make the effect almost impossible to feel. The reading taken is "the next roll **they** make", where Initiative is bookkeeping the round does on their behalf.
+  - **`opponent_next_roll_bonus` is the mirror of that debt, and deliberately narrower (decided, new; implemented).** "Improve their next roll **against you**": the opponent's next roll is improved by the amount — but only a roll actually aimed at the fighter who handed the opening over. In a 1v1 that is every roll and the two effects read identically; **in an Uneven Combat it is the whole point** — you dropped your guard against *this* opponent, and the fighter beside you gets nothing out of it. A separate type rather than a negative `opponent_next_roll_penalty` for the same reason `self_stat_increase` exists: "against you" is a different rule, not a different sign.
+    - **A table (`pending_roll_bonuses`), not a column**, and that is forced by the rule: this credit names *who it is good against*, and one fighter can be owed one by each of several opponents at once. A column could hold the number but not the "against whom", and dropping that drops the effect. `UNIQUE(character_id, against_character_id)` so two moves leaving a mark before the beneficiary rolls are both paid at once, and on the characters rather than on seats, exactly as the penalty column is — a mark somebody already left survives the fight ending and cannot be shed by being re-seated. Cleared explicitly on both columns in `DELETE /api/characters/:id`, like every other line of that cascade.
+    - **Consumed at the same single funnel**, `getCombatRollBonusBreakdown`, now taking an `againstCharacterId`. **Omitting it consumes nothing** — a hand-thrown Stat roll, a Weapon check and an Initiative roll are not rolls "against" anybody, and the credit stands rather than being spent on one. Surfaces as a named `next_roll_bonus` term labelled **Opening**, plus its own `next_roll_bonus` round_event when it is handed over.
+    - **Which rolls know their target.** The attacker's own move roll (against the fighter's declared target, or the sole opponent when there is only one — asked by `declaredRollTarget` *before* the roll, since the engine's full Uneven Combat target selection runs after it and needs the damage figure); a Block's guard roll (against the attacker it is held against); the Interruption roll (against the attacker doing the interrupting); and both halves of a grapple contest. Anywhere the answer is not certain — several unnamed opponents opposite — it is null, and guessing is exactly the bug the effect exists to prevent.
 - **Bugfix in the same pass: the move card printed the automation's raw type.** `automationLabel` (`client/src/lib/moveDisplay.js`) had no case for either stat-step type, so its `default` branch rendered literally `opponent_stat_step 1` on the card — reported as "the Step Stat trigger shows a string instead of a proper name", and correctly guessed at: the stat-step types are the only ones that carry a Stat, and the Stat was never threaded into the label. Every authored type now has a case (and names its Stat, and says "up"/"down" rather than printing a minus sign and leaving the reader to work out that negative damage is healing). The fallback is kept rather than removed, because a card must still render *something* for an automation saved by a newer version of the app than the one displaying it — but `server/test/moveDisplay.test.js` now walks `AUTOMATION_OPTIONS` and fails if any type reaches it, which is the test that catches the next missing case.
 - **Insignificant Damage is a hit, never a Miss, and is still defensible (decided, revised twice).** A roll under 5 — fewer than one Half-Damage step — is an attack that *landed* and did too little to matter. It is announced as **Insignificant Damage** (a chat line and an `insignificant_damage` round_event) and, because it connected, it fires the move's own **On Hit** trigger.
   - **A Miss is an attack that was evaded, and nothing else.** It comes from exactly one place: a successful (Full) Dodge, fired in `applySuccessfulDodge`. A weak swing touched its target, so calling it a Miss described the wrong event; an earlier revision had it firing On Miss to make that trigger more reachable, and that is reverted — On Hit is the trigger that matches what happened, and it is no less reachable. A **Full Block** still fires `block`, not `miss` — something was there to stop it, which is a different event again — and a **Partial** Dodge fires `block` like any other partial defence. Exactly one trigger fires per attack, since they all hang off the same `interactions_resolved` flag.
@@ -785,9 +789,11 @@ asserts both. The arrow itself was also 9px of `blue-200/90` on a `blue-800` cel
 invisible at any normal viewing distance, which is the same as absent.
 
 **Move filters on the declare picker (decided, new; implemented).** The Arena's Declaration screen now
-carries the same Tell/Tag filters the character sheet has — **Tag on the left, Tell on the right**, on
-their own row under the default/unique tabs. Mid-round is exactly when "which of these opens with the
-shoulder drop" is worth answering fastest, and the Default tab is every default move in the world.
+carries the same Tell/Tag filters the character sheet has, on their own row under the default/unique
+tabs. Mid-round is exactly when "which of these opens with the shoulder drop" is worth answering
+fastest, and the Default tab is every default move in the world. (Tag sat left of the panel and Tell
+right until Attack Target and Attack Roll joined them — see the four-filter split below, which moved
+both to the right.)
 
 - **Extracted rather than copied a third time** (`client/src/lib/moveFilters.jsx`: `useMoveFilters` +
   `MoveFilterChips`). The control already existed twice — the Compendium's Style+Tag row and the
@@ -802,8 +808,9 @@ shoulder drop" is worth answering fastest, and the Default tab is every default 
 - **On a desktop they flank the panel, outside its border (revised).** The picker is a narrow centred
   column with a great deal of empty screen either side of it, and chips squeezed inside it were both
   cramped and too small to read at a glance — which is the one thing a filter has to be mid-round.
-  **Tag to the left of the move list, Tell to the right**, as a full-size stacked column at a
-  readable font, in space that was carrying nothing. Two earlier attempts kept them inside the panel
+  A full-size stacked column either side at a readable font, in space that was carrying nothing —
+  **Attack Target and Attack Roll to the left, Tell and Tag to the right** since the four-filter
+  split below (it was Tag left, Tell right when there were only two). Two earlier attempts kept them inside the panel
   (first sharing the tab row, then on a row of their own beneath it); both were legible only in the
   sense that the pixels were present.
 - **The phone keeps the compact in-panel row exactly as it was** (`md:hidden` on the row,
@@ -813,6 +820,53 @@ shoulder drop" is worth answering fastest, and the Default tab is every default 
   is what makes rendering the columns outside the panel's border possible at all. The tab belongs
   there for the same reason: the chips derive from the current tab, so whoever owns the chips owns
   the tab.
+
+**Filter by Attack Target and Attack Roll, everywhere moves are browsed (decided, new; implemented).**
+Two more filters beside the Tell/Tag pair, on all three surfaces — the Compendium's Move browser, the
+character sheet's Moves tab, and the Arena's declare picker. "Which of these goes for the head" and
+"which of these rolls a Hand" are what you ask of a long list mid-round, and neither was askable
+anywhere before.
+
+- **The layout is a left/right split by the question each filter asks.** Left: what a move *does* —
+  its **Attack Target** and its **Attack Roll**. Right: what a move *is* — its **Tell** and its
+  **Tags** (the Compendium's right column is **Style** and Tag, since that page filters by Style
+  rather than Tell). On the Arena's desktop layout that means two stacked `MoveFilterColumn`s a side
+  flanking the panel instead of one; on a phone, two stacked compact rows a side inside it. One
+  column on a narrow sheet, where the two halves simply stack in that order.
+- **Both read the same seven-name vocabulary** (`ROLL_SLOT_NAMES`): Left/Right Hand collapse into one
+  ambiguous `Hand`, Left/Right Leg into `Leg`, `Weapon` is the seventh. A move that rolls `Hand`
+  twice is still one `Hand` to a filter — these are membership tests, not counts.
+- **`effective_attack_targets` / `effective_roll_slots` first**, for the same reason the Tag filter
+  reads `effective_tag_ids`: a Perk can change what a move does for one character, and a filter has
+  to agree with the card in front of that fighter rather than the library row behind it. Neither is
+  on the sheet payload today; reading for it costs nothing and means the filter does not quietly go
+  stale the day a seam starts writing one.
+- **Chips are built from the pile being filtered**, as the Tell/Tag rows already were — the sheet's
+  own hand, the picker's current tab, the Compendium's current discipline. The Style and Tag rows
+  deliberately still show the GM's whole authored vocabulary: those are the world's lists, and a
+  Tag's absence from a folder is itself worth seeing.
+- **A move with no Attack Target is excluded by that filter rather than exempt from it.** A pure
+  defence names nothing; asking "which of these goes for the head" should not hand back everything
+  that goes for nothing at all.
+- **The rules moved to `client/src/lib/moveFilterRules.js`**, a plain `.js` beside the `.jsx`, because
+  `node --test` cannot load JSX and the half worth pinning is what counts as a match. `moveFilters.jsx`
+  imports and re-exports it, so no call site changed. `server/test/moveFilters.test.js` covers the
+  AND/OR shape, the `effective_*` preference, the canonical chip order, and that the client's slot
+  vocabulary still equals the server's — two lists that drift give a filter that silently matches
+  nothing. The Compendium's hand-rolled Tag row became the shared `MoveFilterChips` in the same
+  change; its Style row stays bespoke, being icons rather than words.
+
+**The Compendium's side rails follow the scroll (decided, new; implemented).** Both columns — the
+discipline tree on the left, the drag-a-move-here character rail on the right, and the Perks tab's
+own rail — are `sticky top-0` against `<main>`'s scrollport. The page is one very long grid with a
+column either side of it, and both columns used to sit at the top of it: scrolling to the move you
+wanted scrolled the discipline you wanted to file it in, and the character you wanted to drop it on,
+off the screen entirely. The rail is a *drop target*, so a drag that had to be held while the page
+scrolled under it was the worst version of that interaction and the only one available.
+`self-start` is load-bearing — a stretched flex item is already as tall as its row and has nowhere
+left to stick to — and the height cap plus inner scroll covers a long roster: the box may still run
+past the fold, but its own scrollbar brings the bottom of the list into the visible part, which the
+unstuck version could not do at all.
 
 **A `useMemo is not defined` shipped past the build and the linter, and closed a gap (bugfix).** The
 new picker used `useMemo`, `CombatArena.jsx` did not import it, and `npm run build` was perfectly
@@ -973,6 +1027,98 @@ on the **ground** for it, and two rules read that difference.
   and never more than the move's own Startup (its Active frames can never begin before the trip ends).
   The invariant behind both, and the one the tests pin: **the reveal Tic always lands at or after the
   old floor.**
+- **The Grounding Tag writes them (decided, new; implemented).** Off The Ground *reads* trip frames;
+  Grounding is the Tag that makes them, and the two are a deliberate pair — a move that grounds you is
+  a real cost until you have something to throw off the floor. **Every Recovery frame of a Grounding
+  move is a Trip Recovery frame.** The count never changes: a 3-Recovery move still has three frames,
+  and what changed is what kind they are — exactly what Movement Punisher already does to somebody
+  else, here done to yourself on purpose.
+  - Written once at **declare** time onto `declared_moves.trip_recovery_tics`, from the same
+    per-character resolved tag names every other Tag mechanic reads (a Perk may grant or strip it),
+    and frozen there like every other declare-time snapshot — editing the template's Recovery
+    afterwards must not reach into an attack already on the clock. It is the only thing that writes
+    that column at declare; Movement Punisher adds to it mid-round, from the other side of the fight.
+  - **Recovery added later is ordinary.** A Block that held too short extends the window
+    (`recovery_extension_tics`), and `phaseAt` measures the trip window backwards from the Recovery
+    end, so those extra frames land in *front* of the trip ones. That is the right way round: the
+    extension is time spent still on your feet recovering from the guard, and the floor is where the
+    move was always going to leave you.
+  - No client change was needed — every render site already draws from `tripRecoveryTics`.
+
+**Punisher — (Stat): a Tag parameterised by a STAT (decided, new; implemented).** A move built to
+catch a specific *kind* of attack. `Punisher - Body` rolls **+2 while an opponent has a move on the
+clock whose own Roll includes Body** — whatever else that move also rolls. The two Interruption Tags
+put a number in their name; this puts a Stat there, for the same reason either does it: a Tag is a
+world-level row the GM names, and "Punisher - Body" is already how a table would write it on a card.
+
+- **The window is the opponent's WHOLE footprint — Startup, Active and Recovery.** That is wider than
+  anything else in `combatBonuses.js` reads (`placement_tic`, not `reveal_tic`), and deliberately so:
+  a move being wound up is exactly what a Punisher is built to catch. It is also the one claim a test
+  can lose silently, so the engine test is pinned on a still-in-Startup opponent and was verified to
+  go red when the window was narrowed back.
+- **Five Stats, seeded**: Skull, Brain, Body, **Hand** (either side, or both) and **Leg** (either side,
+  or both). Left/Right collapse into the limb — what is being punished is somebody throwing hands —
+  and the ambiguous `Hand`/`Leg` the Roll vocabulary itself uses lands in the same place. **Stamina
+  and Weapon are not on the list**, and a Punisher naming one of them (or a typo, or a bare
+  `Punisher`) is dropped rather than half-matched. The five are seeded, unlike the numbered Tags,
+  precisely because the parameter is a closed list: the whole vocabulary can be put in front of the
+  GM, and "it does nothing at all" is a bad thing to discover by typing.
+- **+2 once, however many of its Punishers matched.** The move is either punishing what they threw or
+  it is not; the Interruption Tags stack only because their parameter *is* an amount. The matched
+  Stat rides on the roll's breakdown as `Punisher: Body`, in the vocabulary's own order so a move
+  catching two names the same one every time.
+- **A move still hidden by a Feint is not punished**, and that is a rule rather than an oversight: the
+  +2 lands as a named term on a roll the whole table sees, so paying it out of a concealed move would
+  announce what that move rolls — the one fact the Feint exists to hide. It becomes punishable the
+  instant it reveals, like everything else about it. Every opponent on the far side counts, not just
+  a declared target: in an Uneven Combat there is more than one somebody to be fighting.
+- **`moveTagNamesFor` moved from `roundResolution.js` to `combatBonuses.js`** to make this possible —
+  the Tag is read at the shared roll-modifier funnel, and that module is imported *by*
+  roundResolution, so asking the other way round would have been a cycle. Re-exported from its old
+  home, since `server/index.js`'s `move:declare` has always imported it from there.
+
+**Temporary Damage: a Tag whose damage wears off (decided, new; implemented).** A move carrying it
+still deals its damage in full — **the Stat drops, and it can still be Destroyed** — but every
+half-point is recorded against the Stat it landed on and given back at **0.5 per finished Round**,
+one half-step at a time, until the debt is clear.
+
+- **Its own table (`temporary_damage`), keyed `(character_id, slot_name)`.** Not a flag on the die:
+  "how much of this Stat's damage was temporary" is a running total that outlives any one blow, and
+  several such blows can land on the same Stat inside one Round. Accumulates on the pair, and the row
+  is **deleted** when it reaches zero, so the table holds only outstanding debts and an empty table
+  is the ordinary state of the world.
+- **The rate is on the Stat, not on the blow.** 0.5 per Stat per finished Round, however many moves
+  put damage there — which is what the rule says, and what makes a Stat hit twice take two Rounds to
+  come back rather than one.
+- **`healHalfDamage` in `gameLogic.js` is the exact inverse of `applyHalfDamage`**, and had to be
+  written: `stepStat`'s upward branch is *not* an inverse (from a die with no pending half it climbs a
+  whole rank and leaves the flag clear), so undoing with it would have handed back more than was
+  taken. Swept in a test across every die size and both half states, and pinned on the case that
+  matters most — **a Stat destroyed by temporary damage walks back out of `incapacitated`**, because
+  the damage that destroyed it was never permanent.
+- **Only what actually landed is owed back.** A blow held together by Path To Mastery: Durability took
+  the Stat to a bare d4 rather than through it, and the debt is what the die is carrying, not what the
+  attack was worth; damage that found an already-broken Stat never reaches the recorder at all. The
+  splash from Piercing Headache is part of the same blow and wears off with it.
+- **A Stat already back at or above its locked baseline clears its debt without moving.** Something
+  else put it right in the meantime — a Recover Stat, the GM's own hand — and healing past where a
+  fighter started is not what "it wears off" means.
+- **Run as the Round closes, per pair**, right after `round_complete` and before the next declaration
+  opens: "per finished Round" is a fact about the Round that just ended, and a fight that stops there
+  should still have given the half-step back. Per pair because each pair runs its own Round clock, and
+  somebody else's Round finishing is not yours. It emits the same `stat_stepped` event a healing
+  automation does, so the cutscene animates the Stat coming back with no new renderer, plus one Chat
+  Log line per fighter naming the Stats — shaking off a Round's worth is one thing that happened to
+  them, not four.
+- **Not yet drawn on the sheet.** The mechanic is visible through the Chat Log and the die moving; the
+  per-Stat outstanding total is not shown anywhere yet, which is worth adding if the split turns out
+  to matter at the table.
+  - **Verified**: `groundingTripRecoveryTics` is pure and unit-tested (all of the move's Recovery and
+    none of anybody else's, junk input never becoming negative or fractional frames), plus a
+    `phaseAtTic` sweep proving the frames reach back exactly to the Active end and that the same move
+    without the Tag stays ordinary Recovery throughout; `scripts/playtest-grounding.mjs` checks the
+    same three claims against a live server, including that an Off The Ground move can be thrown out
+    of the frames Grounding created.
 - **Drawn as darker blue with a down arrow on every frame.** It stays in the blue family on purpose —
   it *is* Recovery, just spent on the floor, and a fifth hue would say it was a different kind of
   thing. The arrow is what actually carries the distinction, because two adjacent blues is exactly
@@ -1230,6 +1376,7 @@ A **Character Creation** button at the top of every character sheet opens a guid
     - **The Simplest Tool** — the Jab costs 1 less Stamina and rolls +1. The first Perk on **two seams at once**, which works precisely because seams are folded independently: the discount is asked for at declare time and the bonus at roll time, and neither knows about the other. Bound to a move named **exactly** `Jab` — trimmed and case-insensitive like every other name binding here, but exact otherwise, so "Power Jab" gets nothing; a Perk matching a substring would attach itself to every move a GM ever wrote the word into. There is no Jab in the Compendium out of the box: the GM writes one and this finds it. `getMove()` answering **null** for a roll belonging to no move (a hand-thrown die, the round's Initiative) is what stops it paying out where there is no move at all.
     - **Deadly Pendulum** — an Attack declared right after a **Successful Dodge** rolls +2. **A bet placed during Declaration and collected during resolution:** a round is declared in full before any of it resolves, so when you queue the counter behind the Dodge you do not yet know the GM will call that Dodge Successful. Only a Dodge counts, never a Block — a Block that held is not a swing away from anything.
     - **Baron of Suffering** — 1 Stamina back per 0.5 damage **dealt**, so the Damage Gates pay 1 at a 5, 2 at a 10, and a multi-Stat attack pays for every Stat it wrecks. **Only damage that LANDS counts (decided):** it is paid out of `applied`, the engine's own record of what it wrote to a die, so a blow aimed at an already-broken Stat pays nothing — the same reading as the end-of-round report saying that damage could not be applied — and a Partial Block pays only for what got through. The seam is a *rate* rather than a flat number so the arithmetic stays in the engine, where the step count is.
+      - **A stat step is damage dealt too (decided, new; implemented).** The Baron used to be paid only out of `applied` in `runInterruptAndDamage` — the damage an *attack* writes to a die — so a move whose whole point was "and it costs you a step of your own Body" fed him nothing at all, even though a step of damage is a step of damage wherever the author put it. Every `self_stat_step` / `opponent_stat_step` automation now pays as well. **Paid to whoever owns the effect, in both directions**, which is the whole rule in one line: the dealer is the automation's own character and the target is only where it landed. Stepping your OWN Stat is the case that was asked for; stepping the opponent's is the same sentence with the target changed, and paying one without the other would leave hurting yourself worth Stamina while hurting them was worth nothing. Healing pays nothing (an upward step is not damage), and neither does a step aimed at a Stat already at the floor — `stepStat` now returns `{ stepped, landedSteps }` and `landedSteps` uses exactly the reading `applyAutoDamage` uses when it sorts a blow into `applied` or `unapplied`.
     - **Wounded Wolf** is the second `manual: true` Perk: lose 1 Step in one Stat, gain 3 in another. A one-time act of character building, made at the table, moving Stats with the controls the sheet already has — there is no prompt to invent for a decision that happens once and is then simply true.
   - **`declared_moves.defense_outcome` (new)** — `'success'`/`'failed'` once a defence has been adjudicated, NULL for the overwhelming majority of moves that never were one. Stored on the row rather than in Deadly Pendulum's private state because *"did that guard hold?"* is a plain fact about the fight that the round log already says out loud; this only makes it queryable. **It records the GM's own answer, never a conclusion drawn from the damage** — a distinction the live playtest forced. `resolveDodge` routes on whether any damage got through, and an attack under the Minimum Damage Threshold gets through for zero, which correctly sends it down the no-damage path but does **not** mean the guard worked; taking the verdict from that figure wrote `'success'` onto a Dodge the GM had just rejected, and Deadly Pendulum paid out on it. The GM's per-Stat answers are now tallied across the re-pauses and written before either branch runs; `applyFailedDefense` writes only where nothing has been recorded yet, so it still covers the guards that never reached a GM (auto-Failed for landing too early or covering too little, and a Block the GM said applied nowhere).
   - **A bug this batch found and fixed: a queued move was priced against the wrong predecessor.** `getPendingStaminaCost` totals a whole Declaration's worth of already-queued moves, and a single shared "previous move" measured every one of them against whatever went down **last** — so a two-move combo was quoted one figure by the picker and charged another at commit. `perkStaminaCostDeltas` now resolves the predecessor **per entry**: callers put `declared_move_id` on rows that are already on the board, and rows without one (the picker's candidates, which have no place in the queue yet) share the last-queued lookup. Caught by the live playtest's *"the Stamina actually spent is the sum the picker quoted"* probe, which is exactly why that probe exists.
@@ -2613,9 +2760,22 @@ Phase A.
     them up at once. All three child tables are gated on their toggle and cleared when it goes
     off, exactly as `normalizeInteractions` already drops the defence triggers.
   - `normalizeGrappleDirections` (pure, in `moveLogic.js`) dedupes by direction, orders by the
-    cross, drops an id that no longer exists, and **drops a self-reference** — chaining into
-    another grappling move is allowed (below), but a move pointing at itself is an unbounded loop
-    rather than a design choice.
+    cross, and drops an id that no longer exists.
+  - **A move MAY point a direction at itself (decided, reversed; implemented).** It used to be
+    dropped as "an unbounded loop", and that reading was simply wrong: a chained move is placed at
+    `grappleFootprintEnd` — the grab's reveal Tic plus its Active frames (`planChainPlacement` in
+    `grappleLogic.js`) — so **every link lands strictly later than the one that declared it**, by at
+    least the whole of its own Startup and Active. A self-chain therefore walks forward through the
+    Round and stops at its end, exactly as a chain across three different moves does; it stops
+    earlier still the moment the grappler cannot pay for the next link, and each link is a human
+    picking a direction off the prompt rather than anything the engine does on its own. What it buys
+    is the obvious thing: one grab you can keep re-applying, which is how a wristlock or an armbar
+    reads at a table, instead of four near-identical moves describing the same hold. The move is
+    offered in its own direction picker to match. **A move being *created* has no id yet** and so is
+    not in the library to pick — save it once and the direction is there to set on the next edit.
+    **The Requirement rule is untouched**: a move that required itself could never legally be
+    declared at all, which is a move that does not work rather than a design choice, so it is still
+    excluded from its own Requirement picker and still dropped server-side.
   - `move:delete` clears `move_grapple_directions` **by `target_move_id` as well as by
     `move_id`** — deleting a move some other grapple points at would otherwise leave an arrow at
     a ghost, and the FK would refuse the delete outright.

@@ -197,13 +197,13 @@ async function seatPair(pairIndex, leftCharacterId, rightCharacterId) {
   ]);
 }
 
-async function declareMove({ characterId, moveId, placementTic, startupTics, effectiveAttackTargets, appendageChoice = null }) {
+async function declareMove({ characterId, moveId, placementTic, startupTics, effectiveAttackTargets, appendageChoice = null, targetCharacterId = null }) {
   const revealTic = placementTic + startupTics;
   const result = await run(
     `INSERT INTO declared_moves
-       (character_id, move_id, round_number, queue_order, placement_tic, reveal_tic, appendage_choice${effectiveAttackTargets ? ', effective_attack_targets' : ''})
-     VALUES (?, ?, 1, 0, ?, ?, ?${effectiveAttackTargets ? ', ?' : ''})`,
-    [characterId, moveId, placementTic, revealTic, appendageChoice, ...(effectiveAttackTargets ? [JSON.stringify(effectiveAttackTargets)] : [])]
+       (character_id, move_id, round_number, queue_order, placement_tic, reveal_tic, appendage_choice, target_character_id${effectiveAttackTargets ? ', effective_attack_targets' : ''})
+     VALUES (?, ?, 1, 0, ?, ?, ?, ?${effectiveAttackTargets ? ', ?' : ''})`,
+    [characterId, moveId, placementTic, revealTic, appendageChoice, targetCharacterId, ...(effectiveAttackTargets ? [JSON.stringify(effectiveAttackTargets)] : [])]
   );
   return Number(result.lastInsertRowid);
 }
@@ -2988,6 +2988,448 @@ test('Baron of Suffering is paid for the splash as well as the blow', async () =
   const gain = await refundEvent(pairIndex, /damage dealt/);
   assert.ok(gain, 'the Baron should have been paid');
   assert.equal(gain.delta, 3, '2 steps on the Skull + 1 splashed on the Brain');
+});
+
+test('Baron of Suffering is paid for a step taken out of your OWN Stat', async () => {
+  // Decided, new: a stat step is damage dealt, and the dealer is whoever owns
+  // the effect — not whoever it landed on. A move that costs you a step of your
+  // own Body fed the Baron nothing at all before this, because he was paid only
+  // out of the damage an *attack* wrote to a die.
+  const pairIndex = 380;
+  const attacker = await createCharacter('BSS Attacker');
+  const defender = await createCharacter('BSS Defender');
+  await grantPerk(attacker, 'Baron of Suffering');
+  await run('UPDATE characters SET current_stamina = 10 WHERE id = ?', [attacker]);
+  // The blow itself must pay nothing, or there is no telling which payment the
+  // assertion below is reading: aimed at a Stat that is already out, so the
+  // attack's own damage lands nowhere (see "pays nothing for damage that cannot
+  // be applied") and the stat step is the only thing left to feed on.
+  await run(
+    "UPDATE dice SET status = 'incapacitated', current_size = 4, bonus = 0 WHERE character_id = ? AND slot_name = 'Body'",
+    [defender]
+  );
+  const wildSwing = await createMove({
+    name: 'BSS Wild Swing', startupTics: 1, activeTics: 2, recoveryTics: 1,
+    rollSlots: ['Skull'], rollModifier: 20, attackTargets: ['Body'],
+    interactions: [
+      { trigger: 'hit', text: '', automations: [{ type: 'self_stat_step', amount: 2, slot: 'Left Hand' }] },
+    ],
+  });
+  await seatPair(pairIndex, attacker, defender);
+  await startPairDeclaration(mockIo, pairIndex);
+  await declareMove({
+    characterId: attacker, moveId: wildSwing, placementTic: 0, startupTics: 1,
+    effectiveAttackTargets: ['Body'],
+  });
+  await resolvePair(pairIndex);
+
+  const stepped = (await all('SELECT payload FROM round_events WHERE pair_index = ? AND type = ?', [pairIndex, 'stat_stepped']))
+    .map((r) => JSON.parse(r.payload));
+  assert.equal(stepped.length, 1, 'the fixture has to actually step something');
+  assert.equal(stepped[0].characterId, attacker, 'and step it on its own user');
+
+  const gain = await refundEvent(pairIndex, /damage dealt/);
+  assert.ok(gain, 'the Baron should have been paid for the two steps');
+  assert.equal(gain.delta, 2, 'one Stamina per half-point, wherever the damage landed');
+  assert.equal(gain.characterId, attacker, 'paid to the dealer, who here is also the target');
+});
+
+test('Baron of Suffering is not paid for healing, nor for a step onto a broken Stat', async () => {
+  // The two halves that stop "a stat step is damage dealt" from being a licence
+  // to print Stamina: an upward step is not damage at all, and a step aimed at
+  // a Stat already at the floor lands nowhere — the same reading applyAutoDamage
+  // gives when it sorts a blow into `unapplied`.
+  const heal = async (pairIndex, automation, prepare = async () => {}) => {
+    const attacker = await createCharacter(`BSN${pairIndex} Attacker`);
+    const defender = await createCharacter(`BSN${pairIndex} Defender`);
+    await grantPerk(attacker, 'Baron of Suffering');
+    await run('UPDATE characters SET current_stamina = 10 WHERE id = ?', [attacker]);
+    // Same isolation as the test above: the blow lands on a Stat already out,
+    // so anything the Baron is paid here came from the automation.
+    await run(
+      "UPDATE dice SET status = 'incapacitated', current_size = 4, bonus = 0 WHERE character_id = ? AND slot_name = 'Body'",
+      [defender]
+    );
+    await prepare(attacker);
+    const move = await createMove({
+      name: `BSN${pairIndex} Move`, startupTics: 1, activeTics: 2, recoveryTics: 1,
+      rollSlots: ['Skull'], rollModifier: 20, attackTargets: ['Body'],
+      interactions: [{ trigger: 'hit', text: '', automations: [automation] }],
+    });
+    await seatPair(pairIndex, attacker, defender);
+    await startPairDeclaration(mockIo, pairIndex);
+    await declareMove({
+      characterId: attacker, moveId: move, placementTic: 0, startupTics: 1,
+      effectiveAttackTargets: ['Body'],
+    });
+    await resolvePair(pairIndex);
+    return refundEvent(pairIndex, /damage dealt/);
+  };
+
+  assert.equal(
+    await heal(381, { type: 'self_stat_step', amount: -1, slot: 'Left Hand' }),
+    undefined,
+    'stepping a Stat back UP is healing, and healing is not damage dealt'
+  );
+  assert.equal(
+    await heal(382, { type: 'self_stat_step', amount: 2, slot: 'Left Hand' }, async (attacker) => {
+      await run(
+        "UPDATE dice SET status = 'incapacitated', current_size = 4, bonus = 0 WHERE character_id = ? AND slot_name = ?",
+        [attacker, 'Left Hand']
+      );
+    }),
+    undefined,
+    'a Stat already at the floor has nowhere to go, so nothing was dealt'
+  );
+});
+
+// ---------- "Improve their next roll AGAINST YOU" --------------------------
+
+test('opponent_next_roll_bonus leaves a credit naming who it is good against', async () => {
+  const pairIndex = 383;
+  const giver = await createCharacter('ONB Giver');
+  const taker = await createCharacter('ONB Taker');
+  const open = await createMove({
+    name: 'ONB Open Guard', startupTics: 1, activeTics: 2, recoveryTics: 1,
+    rollSlots: ['Skull'], rollModifier: 20, attackTargets: ['Body'],
+    interactions: [
+      { trigger: 'hit', text: '', automations: [{ type: 'opponent_next_roll_bonus', amount: 3 }] },
+    ],
+  });
+  await seatPair(pairIndex, giver, taker);
+  await startPairDeclaration(mockIo, pairIndex);
+  await declareMove({
+    characterId: giver, moveId: open, placementTic: 0, startupTics: 1,
+    effectiveAttackTargets: ['Body'],
+  });
+  await resolvePair(pairIndex);
+
+  const rows = await all('SELECT * FROM pending_roll_bonuses WHERE against_character_id = ?', [giver]);
+  assert.equal(rows.length, 1, 'exactly one credit, on the pair it names');
+  assert.equal(rows[0].character_id, taker, 'the OPPONENT is the one who rolls better');
+  assert.equal(rows[0].against_character_id, giver, '...and only against whoever opened up');
+  assert.equal(rows[0].amount, 3);
+});
+
+test('a credit is spent only by a roll actually aimed at the fighter who gave it', async () => {
+  // The whole rule the effect exists for, and the half that is invisible in a
+  // 1v1: in an Uneven Combat the opponent's next roll may well be aimed at
+  // somebody else, and then this does nothing and stays owed.
+  const { getCombatRollBonusBreakdown } = await import('../combatBonuses.js');
+  const giver = await createCharacter('SPEND Giver');
+  const bystander = await createCharacter('SPEND Bystander');
+  const taker = await createCharacter('SPEND Taker');
+  await run(
+    'INSERT INTO pending_roll_bonuses (character_id, against_character_id, amount) VALUES (?, ?, ?)',
+    [taker, giver, 4]
+  );
+  const openingIn = (breakdown) => breakdown.terms.find((t) => t.key === 'next_roll_bonus');
+
+  // A roll with no opponent in it at all — a hand-thrown Stat roll, a Weapon
+  // check — must not spend it: "their next roll against you" has not happened.
+  let bd = await getCombatRollBonusBreakdown(taker, {});
+  assert.equal(openingIn(bd), undefined, 'an untargeted roll is not a roll against anybody');
+
+  // Nor a roll aimed at the fighter standing next to them.
+  bd = await getCombatRollBonusBreakdown(taker, { againstCharacterId: bystander });
+  assert.equal(openingIn(bd), undefined, 'the bystander gets nothing out of it');
+
+  // Still owed after both.
+  const still = await one(
+    'SELECT amount AS n FROM pending_roll_bonuses WHERE character_id = ? AND against_character_id = ?',
+    [taker, giver]
+  );
+  assert.equal(still?.n, 4, 'and neither of those spent it');
+
+  // Aimed at the fighter who opened up, it pays — as a named term, because a
+  // modifier nobody can account for reads as the engine inventing numbers.
+  bd = await getCombatRollBonusBreakdown(taker, { againstCharacterId: giver });
+  assert.equal(openingIn(bd)?.amount, 4);
+  assert.equal(openingIn(bd)?.label, 'Opening');
+
+  // Spent, once. A credit that survived its own roll would be a standing bonus.
+  bd = await getCombatRollBonusBreakdown(taker, { againstCharacterId: giver });
+  assert.equal(openingIn(bd), undefined, 'the credit is consumed, not re-read');
+  assert.equal(
+    await one('SELECT amount AS n FROM pending_roll_bonuses WHERE character_id = ? AND against_character_id = ?',
+      [taker, giver]),
+    null,
+    'and the row is gone rather than left at zero'
+  );
+
+  // Nobody else was ever touched.
+  assert.equal(
+    (await all('SELECT * FROM pending_roll_bonuses WHERE character_id = ?', [bystander])).length, 0
+  );
+});
+
+test('the engine actually reaches the credit on the attack roll it modifies', async () => {
+  // The plumbing, not the rule: the roll site has to KNOW who it is rolling
+  // against, or the credit sits in the table forever and the effect does
+  // nothing anybody can see. Asserted through the roll's own modifier
+  // breakdown, which is what the table reads.
+  const pairIndex = 384;
+  const giver = await createCharacter('REACH Giver');
+  const taker = await createCharacter('REACH Taker');
+  await run(
+    'INSERT INTO pending_roll_bonuses (character_id, against_character_id, amount) VALUES (?, ?, ?)',
+    [taker, giver, 5]
+  );
+  const punch = await createMove({
+    name: 'REACH Punch', startupTics: 1, activeTics: 1, recoveryTics: 0,
+    rollSlots: ['Skull'], attackTargets: ['Body'],
+  });
+  await seatPair(pairIndex, taker, giver);
+  await startPairDeclaration(mockIo, pairIndex);
+  await declareMove({
+    characterId: taker, moveId: punch, placementTic: 0, startupTics: 1,
+    effectiveAttackTargets: ['Body'],
+  });
+  await resolvePair(pairIndex);
+
+  // The itemised breakdown rides the round EVENT, not the chat card — that is
+  // where the cutscene reads a total's parts from.
+  const roll = (await all("SELECT payload FROM round_events WHERE pair_index = ? AND type = 'roll'", [pairIndex]))
+    .map((r) => JSON.parse(r.payload))
+    .find((p) => (p?.modifierBreakdown ?? []).some((t) => t.label === 'Opening'));
+  assert.ok(roll, 'the attack roll should carry the opening as its own named term');
+  assert.equal(
+    (roll.modifierBreakdown ?? []).find((t) => t.label === 'Opening').amount, 5
+  );
+  assert.equal(
+    (await all('SELECT * FROM pending_roll_bonuses WHERE character_id = ?', [taker])).length, 0,
+    'and spending it emptied the row'
+  );
+});
+
+// ---------- Punisher — (Stat) ---------------------------------------------
+
+// One fight, two moves: the punisher's, and whatever the opponent is mid-way
+// through. Returns the punisher's own roll event so a test can read the term.
+async function punisherFight(pairIndex, { punisherTag, opponentRollSlots, opponentStartup = 4 }) {
+  const punisher = await createCharacter(`PUN${pairIndex} Punisher`);
+  const victim = await createCharacter(`PUN${pairIndex} Victim`);
+  const counter = await createMove({
+    name: `PUN${pairIndex} Counter`, startupTics: 1, activeTics: 1, recoveryTics: 0,
+    rollSlots: ['Skull'], attackTargets: ['Body'],
+  });
+  if (punisherTag) await tagMove(counter, punisherTag);
+  const theirs = await createMove({
+    name: `PUN${pairIndex} Theirs`, startupTics: opponentStartup, activeTics: 1, recoveryTics: 1,
+    rollSlots: opponentRollSlots, attackTargets: ['Body'],
+  });
+  await seatPair(pairIndex, punisher, victim);
+  await startPairDeclaration(mockIo, pairIndex);
+  // Theirs is placed at Tic 0 with a long Startup, so at Tic 1 — when the
+  // counter reveals and rolls — it is still winding up. That is the window the
+  // Tag is built for and the one nothing else in combatBonuses reads.
+  await declareMove({ characterId: victim, moveId: theirs, placementTic: 0, startupTics: opponentStartup });
+  await declareMove({
+    characterId: punisher, moveId: counter, placementTic: 0, startupTics: 1,
+    effectiveAttackTargets: ['Body'],
+  });
+  await resolvePair(pairIndex);
+  const rolls = (await all("SELECT payload FROM round_events WHERE pair_index = ? AND type = 'roll'", [pairIndex]))
+    .map((r) => JSON.parse(r.payload))
+    .filter((p) => p.characterId === punisher);
+  return rolls[0] ?? null;
+}
+
+test('Punisher catches an opponent still in Startup, which nothing else reads', async () => {
+  const roll = await punisherFight(385, {
+    punisherTag: 'Punisher - Body',
+    opponentRollSlots: ['Body', 'Hand'],
+  });
+  assert.ok(roll, 'the punisher should have rolled');
+  const term = (roll.modifierBreakdown ?? []).find((t) => String(t.label).startsWith('Punisher'));
+  assert.ok(term, `no Punisher term: ${JSON.stringify(roll.modifierBreakdown)}`);
+  assert.equal(term.amount, 2);
+  assert.equal(term.label, 'Punisher: Body', 'named with the Stat it caught them on');
+});
+
+test('Punisher pays nothing for a Stat the opponent is not rolling', async () => {
+  const roll = await punisherFight(386, {
+    punisherTag: 'Punisher - Leg',
+    opponentRollSlots: ['Body', 'Hand'],
+  });
+  assert.ok(roll);
+  assert.equal(
+    (roll.modifierBreakdown ?? []).find((t) => String(t.label).startsWith('Punisher')),
+    undefined,
+    'a Leg punisher against a Body/Hand move is a plain move'
+  );
+});
+
+test('Punisher pays nothing to a move that does not carry the Tag', async () => {
+  const roll = await punisherFight(387, { punisherTag: null, opponentRollSlots: ['Body'] });
+  assert.ok(roll);
+  assert.equal(
+    (roll.modifierBreakdown ?? []).find((t) => String(t.label).startsWith('Punisher')),
+    undefined
+  );
+});
+
+test('Punisher - Hand catches either hand', async () => {
+  // The Roll vocabulary stores the ambiguous `Hand`; a Perk or an override may
+  // resolve it to a side. Both are the limb the Tag names.
+  const roll = await punisherFight(388, {
+    punisherTag: 'Punisher - Hand',
+    opponentRollSlots: ['Hand'],
+  });
+  assert.equal(
+    (roll?.modifierBreakdown ?? []).find((t) => String(t.label).startsWith('Punisher'))?.amount,
+    2
+  );
+});
+
+// ---------- Temporary Damage ----------------------------------------------
+
+test('Temporary Damage lands in full, and comes back 0.5 a Round', async () => {
+  const pairIndex = 389;
+  const attacker = await createCharacter('TD Attacker');
+  const defender = await createCharacter('TD Defender');
+  // d8 top face + 2 = 10 → two Half-Damage steps, the same fixture the Baron
+  // tests use.
+  const sting = await createMove({
+    name: 'TD Sting', startupTics: 1, activeTics: 1, recoveryTics: 0,
+    rollSlots: ['Skull'], rollModifier: 2, attackTargets: ['Body'],
+  });
+  await tagMove(sting, 'Temporary Damage');
+  const bodyBefore = await one(
+    "SELECT current_size, bonus, half_damage FROM dice WHERE character_id = ? AND slot_name = 'Body'",
+    [defender]
+  );
+  await seatPair(pairIndex, attacker, defender);
+  await startPairDeclaration(mockIo, pairIndex);
+  await declareMove({
+    characterId: attacker, moveId: sting, placementTic: 0, startupTics: 1,
+    effectiveAttackTargets: ['Body'],
+  });
+  await resolvePair(pairIndex);
+
+  // It landed like any other damage — that half of the rule is not softened.
+  const hit = (await all("SELECT payload FROM round_events WHERE pair_index = ? AND type = 'damage_applied'", [pairIndex]))
+    .map((r) => JSON.parse(r.payload))
+    .find((p) => p.slotName === 'Body');
+  assert.ok(hit, 'the fixture has to actually land');
+  assert.equal(hit.steps, 2);
+
+  // ...and the Round finishing gave back exactly one half-step of it, leaving
+  // one owed. 0.5 per Round is a rate on the Stat, not on the blow.
+  const owed = await one(
+    "SELECT steps FROM temporary_damage WHERE character_id = ? AND slot_name = 'Body'",
+    [defender]
+  );
+  assert.equal(owed?.steps, 1, 'two dealt, one given back, one still owed');
+  const mid = await one(
+    "SELECT current_size, bonus, half_damage FROM dice WHERE character_id = ? AND slot_name = 'Body'",
+    [defender]
+  );
+  assert.notDeepEqual(mid, bodyBefore, 'and the Stat is still down the other half');
+
+});
+
+test('a second finished Round clears the rest of the debt and the Stat is whole', async () => {
+  // The tail of the rule, on its own fixture rather than by re-running the
+  // round above: an empty Round is still a finished Round, and the half-step
+  // comes back whether or not anybody threw anything.
+  const pairIndex = 392;
+  const a = await createCharacter('TD2 A');
+  const b = await createCharacter('TD2 B');
+  const before = await one(
+    "SELECT current_size, bonus, status, half_damage FROM dice WHERE character_id = ? AND slot_name = 'Body'",
+    [b]
+  );
+  // One half-step of temporary damage on the books, and a Stat carrying it.
+  await run(
+    "UPDATE dice SET half_damage = 1 WHERE character_id = ? AND slot_name = 'Body'",
+    [b]
+  );
+  await run(
+    "INSERT INTO temporary_damage (character_id, slot_name, steps) VALUES (?, 'Body', 1)",
+    [b]
+  );
+  await seatPair(pairIndex, a, b);
+  await startPairDeclaration(mockIo, pairIndex);
+  await resolvePair(pairIndex);
+
+  assert.equal(
+    await one("SELECT steps FROM temporary_damage WHERE character_id = ? AND slot_name = 'Body'", [b]),
+    null,
+    'the debt is cleared, and the row deleted rather than left at zero'
+  );
+  assert.deepEqual(
+    await one("SELECT current_size, bonus, status, half_damage FROM dice WHERE character_id = ? AND slot_name = 'Body'", [b]),
+    before,
+    'and the Stat is exactly where it started — temporary means temporary'
+  );
+});
+
+test('Damage from a move WITHOUT the Tag is owed back to nobody', async () => {
+  const pairIndex = 390;
+  const attacker = await createCharacter('TDN Attacker');
+  const defender = await createCharacter('TDN Defender');
+  const punch = await createMove({
+    name: 'TDN Punch', startupTics: 1, activeTics: 1, recoveryTics: 0,
+    rollSlots: ['Skull'], rollModifier: 2, attackTargets: ['Body'],
+  });
+  const before = await one(
+    "SELECT current_size, bonus, half_damage FROM dice WHERE character_id = ? AND slot_name = 'Body'",
+    [defender]
+  );
+  await seatPair(pairIndex, attacker, defender);
+  await startPairDeclaration(mockIo, pairIndex);
+  await declareMove({
+    characterId: attacker, moveId: punch, placementTic: 0, startupTics: 1,
+    effectiveAttackTargets: ['Body'],
+  });
+  await resolvePair(pairIndex);
+  assert.equal(
+    (await all('SELECT * FROM temporary_damage WHERE character_id = ?', [defender])).length, 0
+  );
+  assert.notDeepEqual(
+    await one("SELECT current_size, bonus, half_damage FROM dice WHERE character_id = ? AND slot_name = 'Body'", [defender]),
+    before,
+    'ordinary damage stays put'
+  );
+});
+
+test('a Stat DESTROYED by Temporary Damage comes back', async () => {
+  // The sharp end of "it is still dealt, and can make the Stat Destroyed":
+  // destroyed is not a floor the healing cannot climb out of.
+  const pairIndex = 391;
+  const attacker = await createCharacter('TDD Attacker');
+  const defender = await createCharacter('TDD Defender');
+  await run(
+    "UPDATE dice SET current_size = 4, bonus = 0, half_damage = 1, status = 'active' WHERE character_id = ? AND slot_name = 'Body'",
+    [defender]
+  );
+  const sting = await createMove({
+    name: 'TDD Sting', startupTics: 1, activeTics: 1, recoveryTics: 0,
+    rollSlots: ['Skull'], rollModifier: -4, attackTargets: ['Body'],
+  });
+  await tagMove(sting, 'Temporary Damage');
+  await seatPair(pairIndex, attacker, defender);
+  await startPairDeclaration(mockIo, pairIndex);
+  await declareMove({
+    characterId: attacker, moveId: sting, placementTic: 0, startupTics: 1,
+    effectiveAttackTargets: ['Body'],
+  });
+  await resolvePair(pairIndex);
+
+  // One step dealt (a d8 top face at −4 is a 4 → one Half-Damage step), which
+  // took a d4-with-a-half out — and the same finished Round gave it straight
+  // back, because the debt was only one half-step deep.
+  const body = await one(
+    "SELECT current_size, bonus, status, half_damage FROM dice WHERE character_id = ? AND slot_name = 'Body'",
+    [defender]
+  );
+  assert.equal(body.status, 'active', 'destroyed by temporary damage is not permanent');
+  assert.equal(body.current_size, 4);
+  assert.equal(Boolean(body.half_damage), true, 'back exactly where it was, half and all');
+  assert.equal(
+    (await all('SELECT * FROM temporary_damage WHERE character_id = ?', [defender])).length, 0
+  );
 });
 
 test('Dogfighter makes a move harder to break up, by exactly 2', async () => {

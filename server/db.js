@@ -1602,6 +1602,47 @@ export async function initDb() {
     )
   `);
 
+  // **"Improve their next roll AGAINST YOU" (decided, new).** The mirror of
+  // `characters.pending_roll_penalty`, and a table rather than a column for one
+  // reason: this credit names *who it is good against*, and in an Uneven Combat
+  // one fighter can be owed one by each of several opponents at once. A column
+  // could hold the number but not the "against whom", and dropping that is
+  // dropping the whole point of the effect.
+  //
+  // On the characters, not on seats — same reasoning as the penalty column: this
+  // is a mark somebody already left, so it survives the fight ending and cannot
+  // be shed by being re-seated. Accumulates per pair via the UNIQUE, so two
+  // moves leaving a mark before the beneficiary rolls are both paid at once.
+  // **Temporary Damage (decided, new)**: how many half-steps of damage on this
+  // Stat came from a move carrying the Tag and are still owed back. Its own
+  // table rather than a column on `dice`, for the same reason the Gates got one:
+  // it is a running total that outlives any one blow, several of which can land
+  // on the same Stat before a Round finishes.
+  //
+  // Decremented one half-step per Stat per finished Round (see
+  // healTemporaryDamage in roundResolution.js); the row is deleted when it
+  // reaches zero, so the table holds only outstanding debts and an empty table
+  // is the ordinary state of the world.
+  ddl(`
+    CREATE TABLE IF NOT EXISTS temporary_damage (
+      id INTEGER PRIMARY KEY,
+      character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+      slot_name TEXT NOT NULL,
+      steps INTEGER NOT NULL DEFAULT 0,
+      UNIQUE(character_id, slot_name)
+    )
+  `);
+
+  ddl(`
+    CREATE TABLE IF NOT EXISTS pending_roll_bonuses (
+      id INTEGER PRIMARY KEY,
+      character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+      against_character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+      amount INTEGER NOT NULL DEFAULT 0,
+      UNIQUE(character_id, against_character_id)
+    )
+  `);
+
   await ensureColumn(
     'counters',
     'reward_type',
@@ -2034,6 +2075,12 @@ async function ensureIndexes() {
     // Every Counter render asks for its Gates, and the Arena asks for a
     // screenful at once.
     ['counter_gates', 'counter_id'],
+    // Asked once per roll, by the roller — the UNIQUE already covers the
+    // (character, against) pair, and this covers the housekeeping sweep that
+    // clears a character's credits when a fight is cleared.
+    ['pending_roll_bonuses', 'character_id'],
+    // Asked once per character at the end of every Round.
+    ['temporary_damage', 'character_id'],
   ];
   for (const [table, column] of indexes) {
     ddl(`CREATE INDEX IF NOT EXISTS idx_${table}_${column} ON ${table}(${column})`);
@@ -2143,6 +2190,26 @@ const SEEDED_TAGS = [
     'Off The Ground',
     'Thrown from the floor. This move may be declared so that its Startup overlaps your own Trip Recovery frames — you are getting up as you wind up. Only Trip Recovery: ordinary Recovery still has to finish, and the move\u2019s Active frames can never begin before you are back on your feet.',
   ],
+  [
+    'Grounding',
+    'This move puts you on the floor. Every one of its Recovery frames is a Trip Recovery frame instead of an ordinary one \u2014 the same frames, the same count, spent on the ground. Pairs with Off The Ground, which is the only thing that can be thrown out of them.',
+  ],
+  // **The five Punishers, seeded rather than left to be typed.** The two
+  // Interruption Tags are parameterised too and are not seeded, because their
+  // parameter is an arbitrary number and there is no list to offer. This one's
+  // parameter is a closed list of five Stats, so the whole vocabulary can be put
+  // in front of the GM \u2014 and a Punisher naming anything else does nothing at
+  // all, which is a much worse thing to discover by typing.
+  [
+    'Temporary Damage',
+    'The damage this move deals wears off. It lands in full — the Stat drops, and it can still be destroyed — but every half-point of it is given back at 0.5 per finished Round, on each Stat separately, until it is all gone.',
+  ],
+  ...['Skull', 'Brain', 'Body', 'Hand', 'Leg'].map((stat) => [
+    `Punisher - ${stat}`,
+    `Built to catch a ${stat} attack mid-throw. +2 to this move's Roll while an opponent has a move on the clock \u2014 anywhere in its Startup, Active or Recovery frames \u2014 whose own Roll includes ${stat}${
+      stat === 'Hand' || stat === 'Leg' ? ' (either side, or both)' : ''
+    }. Whatever else that move rolls makes no difference.`,
+  ]),
 ];
 
 function seedTags(existingRows, writes) {

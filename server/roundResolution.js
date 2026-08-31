@@ -44,7 +44,7 @@
 // if either one changes.
 
 import { all, one, run, readMany, writeMany } from './db.js';
-import { rollDie, applyHalfDamage, clamp, dieAtRank, rankOf, stepDie, rollTotal } from './gameLogic.js';
+import { rollDie, applyHalfDamage, healHalfDamage, clamp, dieAtRank, rankOf, stepDie, rollTotal } from './gameLogic.js';
 import {
   parseConcreteAttackTargets,
   expandAttackTargets,
@@ -70,13 +70,14 @@ import {
 import {
   carriesBlockTag,
   carriesNoDamageTag,
-  effectiveTagNames,
+  carriesTemporaryDamageTag,
   hardToInterruptAmount,
   interrupterAmount,
   movementBlockedByLegs,
   movementPunisherApplies,
   resolveInterruptContest,
   MOVEMENT_PUNISH_RECOVERY,
+  TEMPORARY_DAMAGE_HEAL_PER_ROUND,
 } from './tagAutomations.js';
 import {
   DECLINE_FOLLOW_UP,
@@ -93,29 +94,13 @@ import {
   resolveGrappleContest,
 } from './grappleLogic.js';
 
-// A move's Tag names as they apply to ONE character — the template's own tags
-// plus/minus whatever Perks have added or removed for them
-// (character_move_tags). Tag automation has to read the resolved set, or a
-// Perk that grants the Block Tag would show up on the Moves tab and change
-// nothing in a fight. Mirrors the effective_tag_ids resolution in
-// server/index.js, on names instead of ids (see tagAutomations.js on why
-// names).
-// Exported for server/index.js's move:declare, which has to ask the same
-// question at declaration time (does the move being declared right after
-// carry the Feint Tag?) — one resolution of add/remove Perk overrides, not
-// two that can drift.
-export async function moveTagNamesFor(characterId, moveId) {
-  const [own, overrides] = await Promise.all([
-    all('SELECT t.name FROM move_tags mt JOIN tags t ON t.id = mt.tag_id WHERE mt.move_id = ?', [moveId]),
-    all(
-      `SELECT cmt.action, t.name AS tag_name
-       FROM character_move_tags cmt JOIN tags t ON t.id = cmt.tag_id
-       WHERE cmt.character_id = ? AND cmt.move_id = ?`,
-      [characterId, moveId]
-    ),
-  ]);
-  return effectiveTagNames({ moveTagNames: own.map((r) => r.name), overrides });
-}
+// A move's Tag names as they apply to ONE character. **The implementation moved
+// to combatBonuses.js** when the Punisher Tag needed it there — that module is
+// imported BY this one, so asking the other way round would have been a cycle.
+// Re-exported from here because server/index.js's move:declare has always
+// imported it from this module, and one resolution of add/remove Perk overrides
+// is the whole point of it existing once.
+export { moveTagNamesFor };
 import {
   computeMoveFootprint,
   computeNextRoundStartTic,
@@ -142,7 +127,12 @@ import {
   perkSplashDamage,
   perkStaminaPerHalfDamage,
 } from './perkEngine.js';
-import { getCombatRollBonus, getCombatRollBonusBreakdown, getStanceMatchupBonus } from './combatBonuses.js';
+import {
+  getCombatRollBonus,
+  getCombatRollBonusBreakdown,
+  getStanceMatchupBonus,
+  moveTagNamesFor,
+} from './combatBonuses.js';
 import {
   getWeapon,
   removeWeapon,
@@ -754,7 +744,7 @@ async function runAutomations(io, {
         const upward = automation.type === 'self_stat_increase' || automation.type === 'self_stat_recover';
         const steps = upward ? -amount : amount;
         const capToLocked = automation.type === 'self_stat_recover';
-        const stepped = await stepStat(io, {
+        const { stepped, landedSteps } = await stepStat(io, {
           characterId: whoId,
           slotName: automation.slot,
           steps,
@@ -770,6 +760,38 @@ async function runAutomations(io, {
               }${capToLocked ? ' (recovered)' : ''} (${who.name})`
             : `(${who.name} has no ${automation.slot} to step)`
         );
+        // **A stat step is damage dealt (decided, new).** Baron of Suffering
+        // used to be paid only out of `applied` in runInterruptAndDamage — the
+        // damage an *attack* writes to a die — so a move whose whole point was
+        // "and it costs you a step of your own Body" fed the Baron nothing at
+        // all, even though a step of damage is a step of damage wherever the
+        // author put it.
+        //
+        // **Paid to `selfCharacter` in both directions**, which is the whole
+        // rule in one line: the dealer is whoever owns the effect, and the
+        // target is only where it landed. Stepping your OWN Stat is the case
+        // that was asked for; stepping the opponent's is the same sentence with
+        // the target changed, and paying one without the other would leave
+        // hurting yourself worth Stamina while hurting them was worth nothing.
+        //
+        // Healing pays nothing (`landedSteps` is 0 for an upward step) and so
+        // does a step aimed at a Stat that is already out — the same reading
+        // applyAutoDamage uses, and the same one the round's own report gives
+        // when it says damage could not be applied.
+        if (landedSteps > 0) {
+          const perStep = await perkStaminaPerHalfDamage(selfCharacterId);
+          if (perStep > 0) {
+            await adjustStamina(io, selfCharacterId, perStep * landedSteps, {
+              emitEvent,
+              tic,
+              reason: `${landedSteps * 0.5} damage dealt`,
+            });
+            await postSystemMessage(
+              io,
+              `${selfCharacter.name} draws ${perStep * landedSteps} Stamina from the damage they dealt.`
+            );
+          }
+        }
         break;
       }
       case 'opponent_next_roll_penalty': {
@@ -796,6 +818,44 @@ async function runAutomations(io, {
           });
         }
         effects.push(`−${amount} on ${opponentCharacter.name}'s next roll`);
+        break;
+      }
+      case 'opponent_next_roll_bonus': {
+        // **A credit, and it names who it is good against.** The penalty above
+        // is spent by the opponent's next roll of any kind; this one waits for a
+        // roll aimed at the fighter who handed it over — you dropped your guard
+        // against *this* opponent, and in an Uneven Combat the fighter beside
+        // you gets nothing out of it.
+        //
+        // Its own table rather than a column for exactly that reason: a column
+        // can hold the number but not the "against whom", and one fighter can be
+        // owed one by each of several opponents at once. Accumulates on the
+        // pair, the same way the penalty accumulates on the character.
+        if (!opponentCharacter || opponentCharacterId == null) break;
+        await run(
+          `INSERT INTO pending_roll_bonuses (character_id, against_character_id, amount)
+           VALUES (?, ?, ?)
+           ON CONFLICT(character_id, against_character_id)
+             DO UPDATE SET amount = amount + excluded.amount`,
+          [opponentCharacterId, selfCharacterId, amount]
+        );
+        const owedRow = await one(
+          'SELECT amount AS n FROM pending_roll_bonuses WHERE character_id = ? AND against_character_id = ?',
+          [opponentCharacterId, selfCharacterId]
+        );
+        if (emitEvent && tic != null) {
+          await emitEvent(tic, 'next_roll_bonus', {
+            characterId: opponentCharacterId,
+            characterName: opponentCharacter.name,
+            againstCharacterId: selfCharacterId,
+            againstCharacterName: selfCharacter.name,
+            amount,
+            pending: owedRow?.n ?? amount,
+          });
+        }
+        effects.push(
+          `+${amount} on ${opponentCharacter.name}'s next roll against ${selfCharacter.name}`
+        );
         break;
       }
       // Signed, and the label has to follow the sign. The Move Creator can only
@@ -946,7 +1006,10 @@ async function applyBlockRiposte(io, {
 //
 // Returns one entry per Stat actually damaged, empty when the attack landed on
 // nothing.
-async function applyAutoDamage(io, { targetCharacterId, effectiveAttackTargets, steps, stepsBySlot = null, firstOnly = false, attackerName }) {
+// `temporary` is the **Temporary Damage** Tag on the attacking move: the damage
+// lands in full and is additionally recorded as owed back (see
+// recordTemporaryDamage below). Nothing else about the blow changes.
+async function applyAutoDamage(io, { targetCharacterId, effectiveAttackTargets, steps, stepsBySlot = null, firstOnly = false, attackerName, temporary = false }) {
   const dice = await getDice(targetCharacterId);
   let targets = selectAutoDamageTargets({ effectiveAttackTargets, dice });
   // `firstOnly` is the Successful Block redirect and nothing else: that rule
@@ -1005,6 +1068,12 @@ async function applyAutoDamage(io, { targetCharacterId, effectiveAttackTargets, 
     if (breakAbsorbed) {
       heldTogether.push(die.slot_name);
     }
+    // **Temporary Damage**, recorded against the Stat it landed on. Only what
+    // actually landed: a blow held together by Durability took the Stat to a
+    // bare d4 rather than through it, and the debt is what the die is actually
+    // carrying, not what the attack was worth. Damage that found a broken Stat
+    // never reaches here at all — it went into `unapplied` above.
+    if (temporary) await recordTemporaryDamage(targetCharacterId, die.slot_name, own);
     await run('UPDATE dice SET current_size = ?, bonus = ?, status = ?, half_damage = ? WHERE id = ?', [
       next.current_size,
       next.bonus,
@@ -1061,12 +1130,120 @@ async function applyAutoDamage(io, { targetCharacterId, effectiveAttackTargets, 
   return { applied, unapplied };
 }
 
+// **Temporary Damage, recorded.** How many half-steps of this Stat's damage came
+// from a move carrying the Tag and are still owed back. Accumulates, because
+// several such blows can land on the same Stat before a Round finishes.
+async function recordTemporaryDamage(characterId, slotName, steps) {
+  if (!(steps > 0)) return;
+  await run(
+    `INSERT INTO temporary_damage (character_id, slot_name, steps)
+     VALUES (?, ?, ?)
+     ON CONFLICT(character_id, slot_name) DO UPDATE SET steps = steps + excluded.steps`,
+    [characterId, slotName, steps]
+  );
+}
+
+// **...and given back, 0.5 per Stat per finished Round.**
+//
+// One half-step per Stat, however many moves put damage there — the rule is a
+// rate on the Stat, not on each blow. Run once per pair as its Round closes, for
+// the fighters in that pair only: each pair runs its own Round clock, and
+// somebody else's Round finishing is not yours.
+//
+// `healHalfDamage` is the exact inverse of the `applyHalfDamage` that dealt it
+// (see gameLogic.js), which is what lets a Stat destroyed by temporary damage
+// come back — the damage that destroyed it was never permanent.
+//
+// **A Stat already back at or above its locked baseline still clears its debt
+// without moving.** Something else put it right in the meantime (a Recover
+// Stat, the GM's own hand), and healing past where a fighter started is not
+// what "it wears off" means.
+async function healTemporaryDamage(io, { pairIndex, tic, emitEvent }) {
+  const owed = await all(
+    `SELECT td.id, td.character_id AS characterId, td.slot_name AS slotName, td.steps,
+            ch.name AS characterName
+     FROM temporary_damage td
+     JOIN combat_participants cp ON cp.character_id = td.character_id
+     JOIN characters ch ON ch.id = td.character_id
+     WHERE cp.pair_index = ? AND td.steps > 0
+     ORDER BY td.character_id, td.id`,
+    [pairIndex]
+  );
+  if (!owed.length) return;
+  const byCharacter = new Map();
+  for (const row of owed) {
+    const dice = await getDice(row.characterId);
+    const die = dice.find((d) => d.slot_name === row.slotName);
+    if (die) {
+      const lockedRank = die.locked_size != null ? rankOf(die.locked_size, die.locked_bonus ?? 0) : null;
+      const atOrAboveBase =
+        lockedRank != null &&
+        die.status !== 'incapacitated' &&
+        !die.half_damage &&
+        rankOf(die.current_size, die.bonus) >= lockedRank;
+      if (!atOrAboveBase) {
+        const next = healHalfDamage({
+          current_size: die.current_size,
+          bonus: die.bonus,
+          status: die.status,
+          half_damage: Boolean(die.half_damage),
+        });
+        await run('UPDATE dice SET current_size = ?, bonus = ?, status = ?, half_damage = ? WHERE id = ?', [
+          next.current_size,
+          next.bonus,
+          next.status,
+          next.half_damage ? 1 : 0,
+          die.id,
+        ]);
+        io.emit('die:updated', diePayload({ ...die, ...next, half_damage: next.half_damage ? 1 : 0 }));
+        if (emitEvent && tic != null) {
+          // The same `stat_stepped` shape a healing automation emits, so the
+          // cutscene animates the Stat coming back with no new renderer.
+          await emitEvent(tic, 'stat_stepped', {
+            characterId: row.characterId,
+            characterName: row.characterName,
+            slotName: row.slotName,
+            steps: -1,
+            sizeBefore: die.current_size,
+            bonusBefore: die.bonus,
+            statusBefore: die.status,
+            sizeAfter: next.current_size,
+            bonusAfter: next.bonus,
+            statusAfter: next.status,
+          });
+        }
+      }
+    }
+    const left = row.steps - TEMPORARY_DAMAGE_HEAL_PER_ROUND;
+    if (left > 0) await run('UPDATE temporary_damage SET steps = ? WHERE id = ?', [left, row.id]);
+    else await run('DELETE FROM temporary_damage WHERE id = ?', [row.id]);
+    if (!byCharacter.has(row.characterName)) byCharacter.set(row.characterName, []);
+    byCharacter.get(row.characterName).push(row.slotName);
+  }
+  // One line per fighter rather than one per Stat: shaking off a round's worth
+  // of temporary damage is one thing that happened to them, not four.
+  for (const [name, slots] of byCharacter) {
+    const list = slots.length === 1 ? slots[0] : `${slots.slice(0, -1).join(', ')} and ${slots.at(-1)}`;
+    await postSystemMessage(io, `${name} shakes off 0.5 temporary damage to ${list}.`);
+  }
+}
+
 // Steps one named Stat by `steps` half-damage steps (negative steps it back
 // up). Shares applyAutoDamage's machinery, but targets a Stat the move's
 // author named rather than one the Attack Target rules picked — this is
 // what lets an authored On Hit say "and it wrecks their Right Hand" without
 // a human applying it afterwards. Emits the same damage_applied shape so
 // the cutscene's fighter cards animate it identically.
+//
+// **Returns `{ stepped, landedSteps }` rather than a bare boolean (revised).**
+// `landedSteps` is how many half-points of damage this actually *dealt*, and it
+// is what pays Baron of Suffering — see the stat-step case in runAutomations.
+// Zero for an upward step (healing is not damage) and zero on an already-broken
+// Stat, which is exactly the reading applyAutoDamage uses when it sorts a blow
+// into `applied` or `unapplied`: an incapacitated die is at the floor, so the
+// damage does not land, it simply has nowhere to go. A die that goes out
+// part-way through counts in full, again matching applyAutoDamage — the blow
+// was worth what it was worth.
 async function stepStat(io, {
   characterId,
   slotName,
@@ -1083,7 +1260,8 @@ async function stepStat(io, {
 }) {
   const dice = await getDice(characterId);
   const die = dice.find((d) => d.slot_name === slotName);
-  if (!die) return false;
+  if (!die) return { stepped: false, landedSteps: 0 };
+  const landedSteps = steps > 0 && die.status !== 'incapacitated' ? steps : 0;
   let next = {
     current_size: die.current_size,
     bonus: die.bonus,
@@ -1150,7 +1328,7 @@ async function stepStat(io, {
       statusAfter: next.status,
     });
   }
-  return true;
+  return { stepped: true, landedSteps };
 }
 
 // Decision #4/#7/#8 — walks the attacker's own Active window for the first
@@ -1161,6 +1339,10 @@ async function stepStat(io, {
 // target has nothing in Startup during the attacker's Active window.
 async function checkInterrupt(io, {
   targetCharacterId,
+  // Who is doing the interrupting. Carried for the `opponent_next_roll_bonus`
+  // credit only: the caught fighter's resistance roll is a roll made against
+  // this attacker, so an opening the attacker left is good here.
+  attackerCharacterId = null,
   attackerRevealTic,
   attackerActiveTics,
   // The attack's own roll — one half of the contest (decided, corrected). The
@@ -1243,6 +1425,7 @@ async function checkInterrupt(io, {
     moveId: startupDM.move_id,
     tic,
     slotNames: interruptSlots,
+    againstCharacterId: attackerCharacterId,
   });
   const mod = bonusMods + startupDM.roll_modifier + rollBonusRow.bonus;
 
@@ -1536,6 +1719,11 @@ async function runInterruptAndDamage(io, {
     return;
   }
 
+  // **Temporary Damage**: this move's damage still lands in full and can still
+  // destroy a Stat — it is simply owed back, 0.5 a Round, on each Stat it
+  // touched. Read from the same per-character resolved tag names every other Tag
+  // mechanic uses, so a Perk that grants or strips it is honoured.
+  const temporaryDamage = carriesTemporaryDamageTag(attackerTagNames);
   const { applied, unapplied } = await applyAutoDamage(io, {
     targetCharacterId,
     effectiveAttackTargets,
@@ -1543,6 +1731,7 @@ async function runInterruptAndDamage(io, {
     stepsBySlot,
     firstOnly,
     attackerName: attackerCharacterName,
+    temporary: temporaryDamage,
   });
   // Names, not just ids: the cutscene log states outcomes as sentences now,
   // and a replay must be readable without any live combat state to look them
@@ -1621,6 +1810,8 @@ async function runInterruptAndDamage(io, {
       effectiveAttackTargets: [splash.slotName],
       steps: splash.steps,
       attackerName: attackerCharacterName,
+      // The splash is part of the same blow, so it wears off with it.
+      temporary: temporaryDamage,
     });
     for (const hit of result.applied) {
       splashSteps += hit.steps;
@@ -1739,6 +1930,7 @@ async function runInterruptAndDamage(io, {
   if (applied.length) {
     await checkInterrupt(io, {
       targetCharacterId,
+      attackerCharacterId,
       attackerRevealTic: attackActiveStart,
       attackerActiveTics,
       halfDamageSteps: Math.max(...applied.map((a) => a.steps)),
@@ -1983,7 +2175,7 @@ function rollModifierBreakdown({ rollModifier = 0, moveRollBonus = 0, terms = []
   ].filter((t) => t.amount !== 0);
 }
 
-async function rollFor(io, { characterId, characterName, moveId, moveName, slotNames, rollType, customRollSize, rollModifier, appendageChoice, tic, declaredMoveId, emitEvent, defensive = false, chainRollBonus = 0 }) {
+async function rollFor(io, { characterId, characterName, moveId, moveName, slotNames, rollType, customRollSize, rollModifier, appendageChoice, tic, declaredMoveId, emitEvent, defensive = false, chainRollBonus = 0, againstCharacterId = null }) {
   const hasRoll = rollType === 'custom' ? customRollSize != null : slotNames.length > 0;
   if (!hasRoll) return { total: 0, dice: [], mod: 0 };
 
@@ -1999,6 +2191,9 @@ async function rollFor(io, { characterId, characterName, moveId, moveName, slotN
       // A Custom Roll names no Stat, so it keeps the matchup (see
       // matchupAppliesToSlots).
       slotNames: rollType === 'custom' ? [] : slotNames,
+      // Who this roll is aimed at, for the `opponent_next_roll_bonus` credit.
+      // Null when the caller has no honest answer, which spends nothing.
+      againstCharacterId,
     }),
   ]);
   const mod = (rollModifier ?? 0) + rollBonusRow.bonus + bonus.total;
@@ -2349,6 +2544,8 @@ async function runGrappleContest(io, { row, targetCharacterId, targetName, tic, 
     // the grab that follows harder, or the mini-game stops meaning anything the
     // moment a chain goes grapple-into-grapple.
     chainRollBonus: row.chainRollBonus ?? 0,
+    // The grab is aimed at them, so a credit they left standing is good here.
+    againstCharacterId: targetCharacterId,
   });
 
   const resistSlots = expandRollSlotRows(
@@ -2371,6 +2568,8 @@ async function runGrappleContest(io, { row, targetCharacterId, targetName, tic, 
         declaredMoveId: row.declaredMoveId,
         emitEvent,
         defensive: true,
+        // ...and resisting it is a roll against the grappler, the other way.
+        againstCharacterId: row.characterId,
       })
     : { total: 0 };
 
@@ -2614,6 +2813,29 @@ async function fizzleOnBrokenLeg(io, { row, tic, emitEvent }) {
   return true;
 }
 
+// Who an attack roll is aimed at, as far as it can be known BEFORE the roll.
+//
+// Read only by the `opponent_next_roll_bonus` credit, which is spent by "their
+// next roll against you" and therefore has to know who "you" is at roll time.
+// The engine's full Uneven Combat target selection is deliberately not reused:
+// it runs after the roll, because it needs the damage the roll produced.
+//
+// Two answers only, both certain: the fighter's own declared target when they
+// named one and that opponent is still seated opposite, and the sole opponent
+// when there is exactly one. Anything else returns null, which spends nothing —
+// guessing here would hand somebody else's opening to the wrong fighter, which
+// is precisely what this effect exists to prevent.
+async function declaredRollTarget(pairIndex, row) {
+  const opposingSide = row.side === 'left' ? 'right' : 'left';
+  const seats = await all(
+    'SELECT character_id AS characterId FROM combat_participants WHERE pair_index = ? AND side = ?',
+    [pairIndex, opposingSide]
+  );
+  const ids = seats.map((seat) => seat.characterId);
+  if (row.targetCharacterId != null && ids.includes(row.targetCharacterId)) return row.targetCharacterId;
+  return ids.length === 1 ? ids[0] : null;
+}
+
 async function resolveAttack(io, { row, pairIndex, tic, emitEvent }) {
   // **A Movement move on a broken Leg fizzles (decided, new).** Declaring one
   // is already refused (see move:declare), but a Leg can break *between* the
@@ -2673,6 +2895,15 @@ async function resolveAttack(io, { row, pairIndex, tic, emitEvent }) {
   }
 
   // Step 2 — auto-roll the attacker's own move.
+  //
+  // **Who the roll is against is asked here, before the roll, and narrowly.**
+  // Full target selection happens in Step 3 below and cannot move up — it needs
+  // this roll's damage figure — but the `opponent_next_roll_bonus` credit has to
+  // be resolved before the roll it modifies. So this asks only the question the
+  // credit needs: the fighter's own declared target if they named one, and the
+  // sole opponent when there is only one to name. Several unnamed opponents has
+  // no honest answer yet, so nothing is spent and the credit stands.
+  const rollAgainstCharacterId = await declaredRollTarget(pairIndex, row);
   const [rollBonusRow, bonus] = await Promise.all([
     one(
       'SELECT COALESCE(SUM(amount), 0) AS bonus FROM character_move_roll_bonuses WHERE character_id = ? AND move_id = ?',
@@ -2683,6 +2914,7 @@ async function resolveAttack(io, { row, pairIndex, tic, emitEvent }) {
       tic,
       declaredMoveId: row.declaredMoveId,
       slotNames: row.rollType === 'custom' ? [] : row.rollSlotNames,
+      againstCharacterId: rollAgainstCharacterId,
     }),
   ]);
   const mod = row.rollModifier + rollBonusRow.bonus + bonus.total;
@@ -3064,7 +3296,10 @@ async function resolveAttack(io, { row, pairIndex, tic, emitEvent }) {
 // re-derived from the DB on every line rather than carried, so a round resumed
 // after a restart rolls against the same figures a round played straight
 // through would. Same reasoning as resolveDodge re-reading its defenderDM.
-async function loadBlockGuard(defenderDM, tic) {
+// `attackerCharacterId` is who the guard is being held against, for the
+// `opponent_next_roll_bonus` credit: a Block is a roll made *against* the
+// fighter attacking into it, so an opening they left is good here too.
+async function loadBlockGuard(defenderDM, tic, attackerCharacterId = null) {
   const [baseSlotRows, defensiveSlotRows, defRollBonusRow, defenderTagNames] = await Promise.all([
     all('SELECT slot_name, count FROM move_roll_slots WHERE move_id = ?', [defenderDM.move_id]),
     defenderDM.is_defensive
@@ -3082,6 +3317,7 @@ async function loadBlockGuard(defenderDM, tic) {
     tic,
     // Base plus defensive pool: everything this guard actually rolls.
     slotNames: [...baseSlotRows, ...defensiveSlotRows].map((r) => r.slot_name),
+    againstCharacterId: attackerCharacterId,
   });
   return {
     baseSlotRows,
@@ -4646,6 +4882,15 @@ async function resolvePairRound(pairIndex, io) {
     resolution.id,
   ]);
   await emitEvent(roundEndTicExclusive - 1, 'round_complete', { pairIndex, roundNumber: pair.round_number });
+  // **A finished Round is when Temporary Damage wears off.** Here rather than at
+  // the start of the next one: "per finished Round" is a fact about the Round
+  // that just ended, and a fight that stops after this Round should still have
+  // given the half-step back.
+  await healTemporaryDamage(io, {
+    pairIndex,
+    tic: roundEndTicExclusive - 1,
+    emitEvent,
+  });
   // Before the summary card, so the Chat Log reads "here is what the round did,
   // and here is what it could not do" and then draws the line under it.
   await reportUnappliedDamage(io, { resolutionId: resolution.id });
@@ -4847,7 +5092,7 @@ async function resolveBlock(pairIndex, { outcome, attackerDeclaredMoveId }, io) 
   });
 
   const next = { ...pending, remainingStats };
-  const guard = await loadBlockGuard(defenderDM, pending.tic);
+  const guard = await loadBlockGuard(defenderDM, pending.tic, pending.attackerCharacterId ?? null);
   if (outcome === 'failed') {
     const against = answeredStat ? ` against the strike to ${answeredStat}` : '';
     await postSystemMessage(

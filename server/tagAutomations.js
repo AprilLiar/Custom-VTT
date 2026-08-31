@@ -46,6 +46,17 @@ export const MOVEMENT_PUNISHER_TAG = 'Movement Punisher';
 // on the clock.
 export const OFF_THE_GROUND_TAG = 'Off The Ground';
 
+// **Grounding**: the Tag that WRITES Trip Recovery frames, where Off The Ground
+// only reads them. Every Recovery frame this move has becomes a Trip Recovery
+// frame — the move puts its own user on the floor as part of throwing it.
+//
+// Its natural pair is Off The Ground, and that is the point: a move that grounds
+// you is a real cost until you have something to throw off the floor. Nothing
+// about the *count* changes; a 3-Recovery move still has three frames. What
+// changes is what kind they are, which is exactly what Movement Punisher already
+// does to somebody else — this is a fighter doing it to themselves, on purpose.
+export const GROUNDING_TAG = 'Grounding';
+
 // How much Recovery a punished Movement move costs its owner. A flat 3 rather
 // than a number in the Tag's name: the two Interruption Tags are parameterised
 // because their whole point is scaling a contest, and this one is a single
@@ -57,6 +68,44 @@ export const OFF_THE_GROUND_TAG = 'Off The Ground';
 // own darker blue with a down arrow. The count is unchanged; what changed is
 // what kind of frames they are.
 export const MOVEMENT_PUNISH_RECOVERY = 3;
+
+// **Punisher — (Stat)**: a move built to catch a specific *kind* of attack.
+// While the opponent has a move on the clock — anywhere in its Startup, Active
+// or Recovery frames — whose own Roll includes the named Stat, this move rolls
+// +2. A `Punisher - Body` catches somebody in the middle of anything that rolls
+// Body, whatever else that move also rolls.
+//
+// **Parameterised by a STAT rather than by a number**, which is new: the two
+// Interruption Tags put an amount in their name, and this one puts a Stat there.
+// Same reason either does it — a Tag is a world-level row the GM names, and
+// "Punisher - Body" is already how a table would write it on a card.
+export const PUNISHER_TAG = 'Punisher';
+
+// Flat, like MOVEMENT_PUNISH_RECOVERY and for the same reason: it is a single
+// consequence the table can price once, not a contest being scaled.
+export const PUNISHER_BONUS = 2;
+
+// The five Stats a Punisher may name. Deliberately NOT the seven-name Roll
+// vocabulary: Stamina and Weapon are not on this list, and Hand and Leg mean
+// *either or both* — a `Punisher - Hand` catches a move rolling a Left Hand, a
+// Right Hand, or the ambiguous Hand, because what is being punished is somebody
+// throwing hands.
+export const PUNISHER_STATS = ['Skull', 'Brain', 'Body', 'Hand', 'Leg'];
+
+// **Temporary Damage**: damage that wears off. A move carrying this Tag still
+// deals its damage in full — the Stat drops, and it can still be destroyed —
+// but every half-point of it is recorded against the Stat it landed on and
+// given back at **0.5 per finished Round**, one half-step at a time, until the
+// debt is clear.
+//
+// Tracked in its own table rather than as a flag on the die, because "how much
+// of this Stat's damage was temporary" is a running total that outlives any one
+// blow and has to survive several of them landing on the same Stat.
+export const TEMPORARY_DAMAGE_TAG = 'Temporary Damage';
+
+// Half-steps given back per Stat per finished Round. One half-step is 0.5
+// damage, which is the rate the rule names.
+export const TEMPORARY_DAMAGE_HEAL_PER_ROUND = 1;
 
 // One entry per Tag that carries mechanics. See resolveBlockStamina and
 // resolveNoDamageOutcome in combatDamage.js for the arithmetic behind each,
@@ -118,6 +167,29 @@ export const TAG_HOOKS = {
     // in the damage or timing engines looks at it.
     overlapsTripRecovery: true,
   },
+  [PUNISHER_TAG]: {
+    // Carries a STAT in its name rather than an amount — see punisherStats.
+    // Read at roll time by the shared modifier funnel, and it moves exactly one
+    // number: this move's own Roll. Nothing about the attack it is punishing
+    // changes.
+    parameterisedByStat: true,
+    rollBonus: PUNISHER_BONUS,
+  },
+  [TEMPORARY_DAMAGE_TAG]: {
+    // Changes nothing about how much damage lands or where — only how long it
+    // stays. Read where the damage is written (applyAutoDamage) and where the
+    // round ends (healTemporaryDamage).
+    damageWearsOff: true,
+    healPerRound: TEMPORARY_DAMAGE_HEAL_PER_ROUND,
+  },
+  [GROUNDING_TAG]: {
+    // Also read at declare time, and the only Tag that writes
+    // `declared_moves.trip_recovery_tics` from the move's own shape rather than
+    // from something that happened during the round. Frozen at declare like
+    // every other snapshot on that row: editing the template's Recovery
+    // afterwards must not reach back into an attack already on the clock.
+    groundsSelf: true,
+  },
   [FEINT_TAG]: {
     // A Feint shows its own Tell exactly like any other move — that is the
     // whole point, it is a lie told in public. What it changes is the move
@@ -165,6 +237,74 @@ export function tagAmount(tagNames, tagName) {
     if (m && m[1] === wanted) total += Number(m[2]);
   }
   return total;
+}
+
+// Which Stats this move's Punisher Tags name. `Punisher - Body`,
+// `Punisher — Hand`, `punisher-leg`, `Punisher (Skull)` and `Punisher: Brain`
+// all read the same, because this is a name a person typed rather than a form
+// field — the same tolerance `tagAmount` gives the numbered Tags.
+//
+// A Stat the list does not know (`Punisher - Stamina`, a typo, a bare
+// `Punisher`) is dropped rather than half-matched: a Tag that silently punishes
+// nothing is better than one that punishes the wrong thing, and the GM can see
+// the name they typed.
+//
+// Returns a Set, so several Punisher Tags on one move are naturally one
+// question — see punisherBonus on why they do not stack.
+export function punisherStats(tagNames) {
+  const wanted = norm(PUNISHER_TAG);
+  const found = new Set();
+  for (const raw of tagNames ?? []) {
+    // The separator is whatever the GM reached for: a hyphen, an en or em
+    // dash, a colon, or parentheses.
+    const m = String(raw ?? '')
+      .trim()
+      .match(/^(.*?)\s*(?:[-–—:]|\()\s*([^()]*?)\s*\)?$/);
+    if (!m || norm(m[1]) !== wanted) continue;
+    const stat = PUNISHER_STATS.find((name) => norm(name) === norm(m[2]));
+    if (stat) found.add(stat);
+  }
+  return found;
+}
+
+// Which of the five Punisher Stats a Roll slot counts as. Left/Right collapse
+// into the appendage, because a Punisher names the limb rather than the side —
+// and the ambiguous `Hand`/`Leg` the Roll vocabulary itself uses lands in the
+// same place. Anything else (Stamina, Weapon, Custom) is not punishable and
+// answers null.
+export function punishableStat(slotName) {
+  const name = norm(slotName);
+  if (name === 'left hand' || name === 'right hand' || name === 'hand') return 'Hand';
+  if (name === 'left leg' || name === 'right leg' || name === 'leg') return 'Leg';
+  return PUNISHER_STATS.find((stat) => norm(stat) === name) ?? null;
+}
+
+// The Punisher's +2, and which Stat earned it.
+//
+// `opponentSlotNames` is every Roll slot of every opponent move whose frames —
+// Startup, Active or Recovery — cover the Tic this roll is happening on. The
+// caller supplies them; this decides whether they are what the move was built
+// for.
+//
+// **+2 once, however many Tags matched (decided).** The move is either
+// punishing what they threw or it is not: a `Punisher - Hand` + `Punisher - Leg`
+// move catching somebody rolling both is still one move catching one attack,
+// and the Interruption Tags stack only because their whole point is a
+// parameterised amount. The matched Stat is returned so the roll's own
+// breakdown can say which one it was — a modifier nobody can account for reads
+// as the engine inventing numbers.
+export function punisherBonus({ tagNames, opponentSlotNames } = {}) {
+  const wanted = punisherStats(tagNames);
+  if (wanted.size === 0) return { amount: 0, stat: null };
+  // In PUNISHER_STATS order rather than the opponent's, so a move that catches
+  // two of them names the same one every time.
+  for (const stat of PUNISHER_STATS) {
+    if (!wanted.has(stat)) continue;
+    if ((opponentSlotNames ?? []).some((slot) => punishableStat(slot) === stat)) {
+      return { amount: PUNISHER_BONUS, stat };
+    }
+  }
+  return { amount: 0, stat: null };
 }
 
 export const interrupterAmount = (tagNames) => tagAmount(tagNames, INTERRUPTER_TAG);
@@ -247,6 +387,27 @@ export const carriesBlockTag = (tagNames) => hasTagNamed(tagNames, BLOCK_TAG);
 export const carriesNoDamageTag = (tagNames) => hasTagNamed(tagNames, NO_DAMAGE_TAG);
 export const carriesFeintTag = (tagNames) => hasTagNamed(tagNames, FEINT_TAG);
 export const carriesOffTheGroundTag = (tagNames) => hasTagNamed(tagNames, OFF_THE_GROUND_TAG);
+export const carriesGroundingTag = (tagNames) => hasTagNamed(tagNames, GROUNDING_TAG);
+export const carriesTemporaryDamageTag = (tagNames) => hasTagNamed(tagNames, TEMPORARY_DAMAGE_TAG);
+
+// How many Trip Recovery frames a declaration starts life with. Zero for every
+// move that does not carry **Grounding**; the move's whole Recovery window when
+// it does.
+//
+// **Recovery frames added LATER are ordinary** — a Block that held too short
+// extends the window (`recovery_extension_tics`), and `phaseAt` measures the
+// trip window backwards from the Recovery end, so those extra frames land in
+// front of the trip ones. That is the right way round: the extension is time
+// spent still on your feet recovering from the guard, and the floor is where
+// the move was always going to leave you.
+//
+// Pure, and separate from the declare handler, so the one arithmetic claim here
+// — "all of them, and none of anybody else's" — can be pinned by a test.
+export function groundingTripRecoveryTics({ tagNames, recoveryTics } = {}) {
+  if (!carriesGroundingTag(tagNames)) return 0;
+  const tics = Math.trunc(Number(recoveryTics) || 0);
+  return tics > 0 ? tics : 0;
+}
 
 // Does a Feint conceal the declaration being made? "Right after" is a timing
 // claim, not just an ordering one — the same reading the Requirement gate

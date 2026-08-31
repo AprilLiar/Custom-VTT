@@ -9,6 +9,31 @@ import { all, one, run } from './db.js';
 import { buildBeats, matchupStyles, pairScore } from '../client/src/lib/matchups.js';
 import { grapplePenaltyAt } from './grappleLogic.js';
 import { perkRollBonusTerms } from './perkEngine.js';
+import { effectiveTagNames, punisherBonus, punisherStats } from './tagAutomations.js';
+
+// A move's Tag names as they apply to ONE character — the template's own tags
+// plus/minus whatever Perks have added or removed for them
+// (character_move_tags). Tag automation has to read the resolved set, or a Perk
+// that grants the Block Tag would show up on the Moves tab and change nothing in
+// a fight. Mirrors the effective_tag_ids resolution in server/index.js, on names
+// instead of ids (see tagAutomations.js on why names).
+//
+// **Lives here rather than in roundResolution.js** (which is where it used to
+// be, and which re-exports it for server/index.js's move:declare): the Punisher
+// Tag is read at the shared roll-modifier funnel below, and this module is
+// imported by roundResolution rather than the other way round.
+export async function moveTagNamesFor(characterId, moveId) {
+  const [own, overrides] = await Promise.all([
+    all('SELECT t.name FROM move_tags mt JOIN tags t ON t.id = mt.tag_id WHERE mt.move_id = ?', [moveId]),
+    all(
+      `SELECT cmt.action, t.name AS tag_name
+       FROM character_move_tags cmt JOIN tags t ON t.id = cmt.tag_id
+       WHERE cmt.character_id = ? AND cmt.move_id = ?`,
+      [characterId, moveId]
+    ),
+  ]);
+  return effectiveTagNames({ moveTagNames: own.map((r) => r.name), overrides });
+}
 
 // "Reasons to Fight" (see combat_participants.reasons_to_fight): +1 per
 // point. "While a fight is underway" is a per-pair question (combat_pairs.
@@ -399,13 +424,21 @@ export async function getCombatRollBonusBreakdown(
   // Perk seam, which needs it to answer "what did this fighter throw right
   // before this?" (Deadly Pendulum). Omitted by the hand-thrown paths, whose
   // rolls belong to no declaration.
-  { moveId = null, tic = null, slotNames = null, declaredMoveId = null } = {}
+  //
+  // `againstCharacterId` is who this roll is aimed at, when the caller knows —
+  // the declared move's own target for an attack, the attacker for a defensive
+  // or Interruption roll. Only `opponent_next_roll_bonus` reads it, and only to
+  // decide whether a credit is good here; omitting it consumes nothing rather
+  // than guessing, which is what keeps an Uneven Combat honest.
+  { moveId = null, tic = null, slotNames = null, declaredMoveId = null, againstCharacterId = null } = {}
 ) {
-  const [reasons, matchup, grapple, owed, perkTerms] = await Promise.all([
+  const [reasons, matchup, grapple, owed, credited, punisher, perkTerms] = await Promise.all([
     getReasonsToFightBonus(characterId),
     stanceMatchupParts(characterId, { moveId, tic }),
     getGrapplePenalty(characterId, tic),
     consumeNextRollPenalty(characterId),
+    consumeNextRollBonus(characterId, againstCharacterId),
+    punisherRollBonus(characterId, moveId, tic),
     // Perks (decided, new — see server/perks/index.js). One term per Perk
     // rather than one lump, under the Perk's own name, for the same reason the
     // Combat Style got its own line: a modifier nobody can account for reads as
@@ -429,10 +462,20 @@ export async function getCombatRollBonusBreakdown(
     { key: 'combat_style', label: styleName ? `Combat Style: ${styleName}` : 'Combat Style', amount: styleTerm },
     { key: 'grapple', label: 'Held in a grapple', amount: grapple },
     { key: 'next_roll_penalty', label: 'Weakened', amount: -owed },
+    // Named for what it is from the roller's side: an opening somebody left
+    // them. The label has to be as accountable as every other term here — a
+    // modifier nobody can explain reads as the engine inventing numbers.
+    { key: 'next_roll_bonus', label: 'Opening', amount: credited },
+    // Named with the Stat it caught them on: "Punisher: Body" is accountable at
+    // the table in a way a bare +2 is not.
+    { key: 'punisher', label: punisher.stat ? `Punisher: ${punisher.stat}` : 'Punisher', amount: punisher.amount },
     ...perkTerms,
   ].filter((t) => t.amount !== 0);
   const perkTotal = perkTerms.reduce((sum, t) => sum + t.amount, 0);
-  return { total: reasons + matchupTotal + grapple - owed + perkTotal, terms };
+  return {
+    total: reasons + matchupTotal + grapple - owed + credited + punisher.amount + perkTotal,
+    terms,
+  };
 }
 
 // The `opponent_next_roll_penalty` automation's debt: read it and spend it in
@@ -461,6 +504,79 @@ async function consumeNextRollPenalty(characterId) {
   if (!owed) return 0;
   await run('UPDATE characters SET pending_roll_penalty = 0 WHERE id = ?', [characterId]);
   return owed;
+}
+
+// The `opponent_next_roll_bonus` automation's credit — the mirror of the debt
+// above, and the one difference is the whole rule: **it is only good against the
+// fighter who handed it over.**
+//
+// So it is consumed only when the caller knows who this roll is aimed at and
+// that answer matches. A roll with no opponent in it — a hand-thrown Stat roll,
+// a Weapon check, an Initiative roll — consumes nothing and leaves the credit
+// standing: "their next roll against you" has not happened yet, and spending it
+// on a roll that was never against you is exactly the bug this table exists to
+// prevent. Same reasoning in an Uneven Combat, where the fighter beside you gets
+// nothing out of a guard you dropped.
+//
+// Consumed at the same single funnel as the penalty, and once per roll, for the
+// same reason: six call sites each spending it themselves is six chances to
+// spend it twice.
+async function consumeNextRollBonus(characterId, againstCharacterId) {
+  if (againstCharacterId == null) return 0;
+  const row = await one(
+    'SELECT amount AS n FROM pending_roll_bonuses WHERE character_id = ? AND against_character_id = ?',
+    [characterId, againstCharacterId]
+  );
+  const owed = row?.n ?? 0;
+  if (!owed) return 0;
+  await run('DELETE FROM pending_roll_bonuses WHERE character_id = ? AND against_character_id = ?', [
+    characterId,
+    againstCharacterId,
+  ]);
+  return owed;
+}
+
+// **Punisher — (Stat)**: +2 while the opponent is mid-move with the named Stat
+// in its Roll.
+//
+// The window is the opponent's whole footprint — **Startup, Active and
+// Recovery** — which is wider than anything else in here reads. `placement_tic`
+// rather than `reveal_tic` is what makes Startup count: a move being wound up
+// is exactly the thing a Punisher is built to catch.
+//
+// **A move still hidden by a Feint is not punished**, and that is a rule rather
+// than an oversight: the +2 lands as a named term on a roll the whole table
+// sees, so paying it out of a concealed move would announce what that move rolls
+// — the one fact the Feint exists to hide. The move becomes punishable the
+// instant it reveals, like everything else about it.
+//
+// Every opponent on the far side of the pair counts, not just a chosen target:
+// the Tag says "while fighting somebody who is throwing this", and in an Uneven
+// Combat there is more than one somebody.
+async function punisherRollBonus(characterId, moveId, tic) {
+  if (moveId == null || tic == null) return { amount: 0, stat: null };
+  const tagNames = await moveTagNamesFor(characterId, moveId);
+  // Cheap exit for the overwhelmingly common case — no Punisher Tag on this
+  // move, so neither of the two queries below is worth making.
+  if (punisherStats(tagNames).size === 0) return { amount: 0, stat: null };
+  const seat = await one(
+    'SELECT pair_index AS pairIndex, side FROM combat_participants WHERE character_id = ?',
+    [characterId]
+  );
+  if (!seat) return { amount: 0, stat: null };
+  const rows = await all(
+    `SELECT mrs.slot_name AS slotName
+     FROM declared_moves dm
+     JOIN moves m ON m.id = dm.move_id
+     JOIN move_roll_slots mrs ON mrs.move_id = dm.move_id
+     JOIN combat_participants cp ON cp.character_id = dm.character_id
+     WHERE cp.pair_index = ? AND cp.side = ?
+       AND dm.placement_tic <= ?
+       AND dm.reveal_tic + m.active_tics + m.recovery_tics + dm.recovery_extension_tics > ?
+       AND (dm.feint_masked = 0 OR dm.reveal_tic <= ?)`,
+    [seat.pairIndex, seat.side === 'left' ? 'right' : 'left', tic, tic, tic]
+  );
+  return punisherBonus({ tagNames, opponentSlotNames: rows.map((r) => r.slotName) });
 }
 
 // Grappling's −2: someone held in a grapple rolls worse for as long as the

@@ -72,6 +72,7 @@ import {
   carriesBlockTag,
   carriesFeintTag,
   carriesOffTheGroundTag,
+  groundingTripRecoveryTics,
   effectiveTagNames,
   feintMasksDeclaration,
   movementBlockedByLegs,
@@ -2029,6 +2030,16 @@ app.delete('/api/characters/:id', wrap(async (req, res) => {
   await run('DELETE FROM character_move_overrides WHERE character_id = ?', [character.id]);
   await run('DELETE FROM character_move_roll_bonuses WHERE character_id = ?', [character.id]);
   await run('DELETE FROM character_perks WHERE character_id = ?', [character.id]);
+  // Both columns: a credit this character was owed, and one they left with
+  // somebody else. Spelled out rather than trusted to the DDL, like every other
+  // line here — and the second half matters, since a row naming a character who
+  // no longer exists would sit in the table forever, never matchable and never
+  // cleared.
+  await run('DELETE FROM temporary_damage WHERE character_id = ?', [character.id]);
+  await run('DELETE FROM pending_roll_bonuses WHERE character_id = ? OR against_character_id = ?', [
+    character.id,
+    character.id,
+  ]);
   // Their Counters' Gates go first — spelled out for the same reason every
   // other line in this cascade is, rather than trusting the DDL's ON DELETE.
   await run(
@@ -5285,10 +5296,24 @@ io.on('connection', (socket) => {
       storedAppendageChoice
     );
 
+    // **Grounding (decided, new).** The move puts its own user on the floor:
+    // every Recovery frame it has is a Trip Recovery frame instead of an
+    // ordinary one. Written here, from the same per-character resolved tag set
+    // every other Tag mechanic reads (a Perk may grant or strip it), and frozen
+    // onto the row like every other declare-time snapshot — editing the
+    // template's Recovery afterwards must not reach into an attack already on
+    // the clock.
+    //
+    // It is the only thing that writes this column at declare time; Movement
+    // Punisher adds to it mid-round, from the other side of the fight.
+    const groundingTripTics = groundingTripRecoveryTics({
+      tagNames: declaredTagNames,
+      recoveryTics: move.recovery_tics,
+    });
     await run(
-      `INSERT INTO declared_moves (character_id, move_id, round_number, queue_order, placement_tic, reveal_tic, appendage_choice, effective_attack_targets, attack_target_source, feint_masked, target_character_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'move', ?, ?)`,
-      [character.id, move.id, pair.round_number, queueOrder, placementTic, revealTic, storedAppendageChoice, JSON.stringify(effectiveAttackTargets), feintMasked ? 1 : 0, storedTargetId]
+      `INSERT INTO declared_moves (character_id, move_id, round_number, queue_order, placement_tic, reveal_tic, appendage_choice, effective_attack_targets, attack_target_source, feint_masked, target_character_id, trip_recovery_tics)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'move', ?, ?, ?)`,
+      [character.id, move.id, pair.round_number, queueOrder, placementTic, revealTic, storedAppendageChoice, JSON.stringify(effectiveAttackTargets), feintMasked ? 1 : 0, storedTargetId, groundingTripTics]
     );
     // Every connected socket gets its own tailored view via emitCombatUpdated
     // (see isRevealedToViewer/mapDeclaredMovesForViewer) — whoever's logged

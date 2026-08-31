@@ -107,6 +107,20 @@ export const AUTOMATION_TYPES = [
   // to recover.
   'self_stat_recover',
   'opponent_next_roll_penalty',
+  // **The mirror of the line above, and deliberately narrower (decided, new).**
+  //   opponent_next_roll_bonus: the opponent's next roll **against you** is
+  //                             improved by `amount` — then the credit is spent
+  //
+  // Where the penalty is spent by the very next roll of any kind, this one waits
+  // for a roll aimed at the fighter who handed it over. In a 1v1 that is every
+  // roll and the two read identically; in an Uneven Combat it is the whole
+  // point — you dropped your guard against *this* opponent, and the fighter
+  // beside you gets nothing out of it.
+  //
+  // A separate type rather than a negative `opponent_next_roll_penalty` for the
+  // same reason `self_stat_increase` exists: the authoring should read as what
+  // it does, and "against you" is a different rule, not a different sign.
+  'opponent_next_roll_bonus',
   // **The two trip effects (decided, new).** Identical to their `_recovery`
   // siblings in every respect except that the frames they impose are Trip
   // Recovery — the fighter is on the ground for them, which the Off The Ground
@@ -381,10 +395,19 @@ export function countRollSlot(rollSlots, slot) {
 // dropped rather than stored, the same forgiving shape writeMove already uses
 // for a missing folder: the rest of the move still saves.
 //
-// **A move may never point a direction at itself.** Chaining into another
-// grappling move is allowed and resolves as an ordinary move (decided), but a
-// self-reference is an unbounded loop rather than a design choice, and it is
-// the one case that rule doesn't cover.
+// **A move MAY point a direction at itself (decided, reversed).** This used to
+// be refused as "an unbounded loop", and that reading was simply wrong: a
+// chained move is placed at `grappleFootprintEnd` — the grab's reveal Tic plus
+// its Active frames (see planChainPlacement in grappleLogic.js) — so every link
+// lands strictly later than the one that declared it, by at least the whole of
+// its own Startup and Active. A self-chain therefore walks forward through the
+// Round and stops at its end, exactly like a chain across three different moves
+// does, and it stops earlier still the moment the grappler cannot pay for the
+// next link.
+//
+// What it buys is the obvious thing: one grab you can keep re-applying, which
+// is how an armbar or a wristlock actually reads at a table — you do not need
+// four near-identical moves to describe cranking the same hold.
 export const GRAPPLE_DIRECTIONS = ['up', 'down', 'left', 'right'];
 
 export function normalizeGrappleDirections(directions, { moveId = null, validMoveIds = null } = {}) {
@@ -399,7 +422,10 @@ export function normalizeGrappleDirections(directions, { moveId = null, validMov
       : directions[direction];
     const targetMoveId = Number(raw);
     if (!Number.isInteger(targetMoveId)) continue;
-    if (moveId != null && targetMoveId === Number(moveId)) continue;
+    // No self-reference check: see the note above on why a move chaining into
+    // itself is bounded by the Round rather than a loop. `moveId` is still
+    // taken so callers read the same, and so the parameter is here if a future
+    // rule does need it.
     if (known && !known.has(targetMoveId)) continue;
     out.push({ direction, targetMoveId });
   }

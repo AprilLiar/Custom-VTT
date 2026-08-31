@@ -12,7 +12,16 @@ import {
   tagAmount,
   movementBlockedByLegs,
   movementPunisherApplies,
+  carriesGroundingTag,
+  groundingTripRecoveryTics,
+  punishableStat,
+  punisherBonus,
+  punisherStats,
   TAG_HOOKS,
+  PUNISHER_TAG,
+  PUNISHER_BONUS,
+  GROUNDING_TAG,
+  OFF_THE_GROUND_TAG,
   BLOCK_TAG,
   FEINT_TAG,
   HARD_TO_INTERRUPT_TAG,
@@ -21,7 +30,7 @@ import {
   MOVEMENT_PUNISHER_TAG,
   MOVEMENT_PUNISH_RECOVERY,
 } from '../tagAutomations.js';
-import { resolveBlockStamina } from '../combatDamage.js';
+import { phaseAtTic, resolveBlockStamina } from '../combatDamage.js';
 import { clampStaminaModifier } from '../moveLogic.js';
 
 // Block Stamina — the first Tag in the game that does something mechanical.
@@ -386,4 +395,149 @@ test('movementBlockedByLegs: it closes nothing else', () => {
   // the safe direction is to refuse nothing on absent data.
   assert.equal(movementBlockedByLegs({ tagNames: ['Movement'], legStatuses: [] }), false);
   assert.equal(movementBlockedByLegs({}), false);
+});
+
+// --- Grounding: the Tag that writes Trip Recovery frames -------------------
+
+test('the Grounding Tag is registered, and is not Off The Ground', () => {
+  // The two are a pair and are easy to confuse: Off The Ground READS trip
+  // frames (it may start inside them), Grounding WRITES them.
+  assert.ok(TAG_HOOKS[GROUNDING_TAG]?.groundsSelf, 'Grounding grounds its own user');
+  assert.ok(TAG_HOOKS[OFF_THE_GROUND_TAG]?.overlapsTripRecovery, 'Off The Ground still only overlaps');
+  assert.equal(carriesGroundingTag(['Grounding']), true);
+  assert.equal(carriesGroundingTag(['Off The Ground']), false, 'neither Tag is the other');
+  assert.equal(carriesGroundingTag(['  grounding ']), true, 'matched by name like every other Tag');
+});
+
+test('groundingTripRecoveryTics: ALL of the move\'s Recovery, and none of anyone else\'s', () => {
+  // The whole rule: the same frames, the same count, spent on the ground.
+  assert.equal(groundingTripRecoveryTics({ tagNames: ['Grounding'], recoveryTics: 3 }), 3);
+  assert.equal(groundingTripRecoveryTics({ tagNames: ['Grounding', 'Block'], recoveryTics: 1 }), 1);
+  // A move with no Recovery has nothing to convert — Grounding is not a way to
+  // acquire frames you did not have.
+  assert.equal(groundingTripRecoveryTics({ tagNames: ['Grounding'], recoveryTics: 0 }), 0);
+  // Without the Tag it is always 0, so the declare handler can call it
+  // unconditionally rather than branching around it.
+  assert.equal(groundingTripRecoveryTics({ tagNames: ['Off The Ground'], recoveryTics: 4 }), 0);
+  assert.equal(groundingTripRecoveryTics({ tagNames: [], recoveryTics: 4 }), 0);
+  assert.equal(groundingTripRecoveryTics({}), 0);
+  // Junk in the Recovery column never turns into negative or fractional frames.
+  assert.equal(groundingTripRecoveryTics({ tagNames: ['Grounding'], recoveryTics: -2 }), 0);
+  assert.equal(groundingTripRecoveryTics({ tagNames: ['Grounding'], recoveryTics: null }), 0);
+  assert.equal(groundingTripRecoveryTics({ tagNames: ['Grounding'], recoveryTics: 2.7 }), 2);
+});
+
+test('a Grounding move is trip from the first Recovery frame to the last', () => {
+  // The count is only half the claim; the other half is WHERE the frames land.
+  // phaseAt measures the trip window backwards from the Recovery end, so a
+  // whole-window count has to reach all the way back to the Active end.
+  const startup = 1, active = 2, recovery = 3;
+  const placementTic = 0;
+  const revealTic = placementTic + startup;
+  const activeEndTic = revealTic + active;
+  const recoveryEndTic = activeEndTic + recovery;
+  const tripRecoveryTics = groundingTripRecoveryTics({ tagNames: ['Grounding'], recoveryTics: recovery });
+  const footprint = { placementTic, revealTic, activeEndTic, recoveryEndTic, tripRecoveryTics };
+  for (let tic = activeEndTic; tic < recoveryEndTic; tic++) {
+    assert.equal(phaseAtTic(footprint, tic), 'trip_recovery', `Tic ${tic} should be on the floor`);
+  }
+  // ...and nothing before it moved: the Active frames are still Active.
+  assert.equal(phaseAtTic(footprint, activeEndTic - 1), 'active');
+  // The same move without the Tag keeps ordinary Recovery throughout.
+  const plain = { ...footprint, tripRecoveryTics: 0 };
+  for (let tic = activeEndTic; tic < recoveryEndTic; tic++) {
+    assert.equal(phaseAtTic(plain, tic), 'recovery');
+  }
+});
+
+// --- Punisher — (Stat) -----------------------------------------------------
+
+test('the Punisher Tag is registered and reads a STAT out of its name', () => {
+  assert.ok(TAG_HOOKS[PUNISHER_TAG]?.parameterisedByStat);
+  assert.equal(TAG_HOOKS[PUNISHER_TAG]?.rollBonus, PUNISHER_BONUS);
+  // Whatever separator the GM reached for. This is a name a person typed, not
+  // a form field — the same tolerance the numbered Tags get.
+  for (const written of ['Punisher - Body', 'punisher-body', 'Punisher — Body', 'Punisher: body', 'Punisher (Body)']) {
+    assert.deepEqual([...punisherStats([written])], ['Body'], written);
+  }
+  // Several Tags on one move, read as a set.
+  assert.deepEqual([...punisherStats(['Punisher - Hand', 'Punisher - Leg', 'Block'])].sort(), ['Hand', 'Leg']);
+});
+
+test('punisherStats drops a Stat the list does not know, rather than half-matching', () => {
+  // A Tag that silently punishes nothing is better than one that punishes the
+  // wrong thing — and the GM can see the name they typed.
+  assert.equal(punisherStats(['Punisher - Stamina']).size, 0, 'Stamina is not on the list');
+  assert.equal(punisherStats(['Punisher - Weapon']).size, 0, 'nor is Weapon');
+  assert.equal(punisherStats(['Punisher - Bodyy']).size, 0);
+  assert.equal(punisherStats(['Punisher']).size, 0, 'a bare Punisher names nothing to punish');
+  assert.equal(punisherStats(['Punisher Killer - Body']).size, 0, 'the prefix has to match exactly');
+  assert.equal(punisherStats([]).size, 0);
+  assert.equal(punisherStats().size, 0);
+});
+
+test('punishableStat: Left/Right collapse into the limb, and so does the ambiguous slot', () => {
+  // A Punisher names the limb, not the side: what is being punished is somebody
+  // throwing hands.
+  assert.equal(punishableStat('Left Hand'), 'Hand');
+  assert.equal(punishableStat('Right Hand'), 'Hand');
+  assert.equal(punishableStat('Hand'), 'Hand');
+  assert.equal(punishableStat('Left Leg'), 'Leg');
+  assert.equal(punishableStat('Right Leg'), 'Leg');
+  assert.equal(punishableStat('Leg'), 'Leg');
+  assert.equal(punishableStat('Skull'), 'Skull');
+  assert.equal(punishableStat('Brain'), 'Brain');
+  assert.equal(punishableStat('Body'), 'Body');
+  // Not punishable at all.
+  assert.equal(punishableStat('Stamina'), null);
+  assert.equal(punishableStat('Weapon'), null);
+  assert.equal(punishableStat('Custom'), null);
+  assert.equal(punishableStat(null), null);
+});
+
+test('punisherBonus: +2 when the Stat is anywhere in what they are throwing', () => {
+  // The example from the brief: Punisher - Body against a move rolling
+  // (Body + Right Hand + 1).
+  assert.deepEqual(
+    punisherBonus({ tagNames: ['Punisher - Body'], opponentSlotNames: ['Body', 'Right Hand'] }),
+    { amount: 2, stat: 'Body' }
+  );
+  // Whatever else that move rolls makes no difference — it does not have to be
+  // the only Stat, or the first.
+  assert.equal(
+    punisherBonus({ tagNames: ['Punisher - Hand'], opponentSlotNames: ['Skull', 'Left Hand'] }).amount, 2
+  );
+  // Nothing matching, nothing on the clock, no Tag at all.
+  assert.deepEqual(
+    punisherBonus({ tagNames: ['Punisher - Leg'], opponentSlotNames: ['Body', 'Right Hand'] }),
+    { amount: 0, stat: null }
+  );
+  assert.deepEqual(
+    punisherBonus({ tagNames: ['Punisher - Body'], opponentSlotNames: [] }),
+    { amount: 0, stat: null }
+  );
+  assert.deepEqual(punisherBonus({ tagNames: ['Block'], opponentSlotNames: ['Body'] }), { amount: 0, stat: null });
+  assert.deepEqual(punisherBonus({}), { amount: 0, stat: null });
+});
+
+test('punisherBonus: +2 ONCE, however many of its Punishers matched', () => {
+  // The move is either punishing what they threw or it is not. The Interruption
+  // Tags stack because their whole point is a parameterised amount; this is a
+  // condition being met.
+  const both = punisherBonus({
+    tagNames: ['Punisher - Hand', 'Punisher - Leg'],
+    opponentSlotNames: ['Left Hand', 'Right Leg'],
+  });
+  assert.equal(both.amount, 2, 'not 4');
+  // ...and it names the same Stat every time, in the vocabulary's own order
+  // rather than the order the opponent happened to roll them in.
+  assert.equal(both.stat, 'Hand');
+  assert.equal(
+    punisherBonus({
+      tagNames: ['Punisher - Leg', 'Punisher - Hand'],
+      opponentSlotNames: ['Right Leg', 'Left Hand'],
+    }).stat,
+    'Hand',
+    'stable whichever way round either list is written'
+  );
 });
