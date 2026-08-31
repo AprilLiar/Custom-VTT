@@ -70,7 +70,6 @@ import {
 import {
   carriesBlockTag,
   carriesNoDamageTag,
-  effectiveTagNames,
   hardToInterruptAmount,
   interrupterAmount,
   movementBlockedByLegs,
@@ -93,29 +92,13 @@ import {
   resolveGrappleContest,
 } from './grappleLogic.js';
 
-// A move's Tag names as they apply to ONE character — the template's own tags
-// plus/minus whatever Perks have added or removed for them
-// (character_move_tags). Tag automation has to read the resolved set, or a
-// Perk that grants the Block Tag would show up on the Moves tab and change
-// nothing in a fight. Mirrors the effective_tag_ids resolution in
-// server/index.js, on names instead of ids (see tagAutomations.js on why
-// names).
-// Exported for server/index.js's move:declare, which has to ask the same
-// question at declaration time (does the move being declared right after
-// carry the Feint Tag?) — one resolution of add/remove Perk overrides, not
-// two that can drift.
-export async function moveTagNamesFor(characterId, moveId) {
-  const [own, overrides] = await Promise.all([
-    all('SELECT t.name FROM move_tags mt JOIN tags t ON t.id = mt.tag_id WHERE mt.move_id = ?', [moveId]),
-    all(
-      `SELECT cmt.action, t.name AS tag_name
-       FROM character_move_tags cmt JOIN tags t ON t.id = cmt.tag_id
-       WHERE cmt.character_id = ? AND cmt.move_id = ?`,
-      [characterId, moveId]
-    ),
-  ]);
-  return effectiveTagNames({ moveTagNames: own.map((r) => r.name), overrides });
-}
+// A move's Tag names as they apply to ONE character. **The implementation moved
+// to combatBonuses.js** when the Punisher Tag needed it there — that module is
+// imported BY this one, so asking the other way round would have been a cycle.
+// Re-exported from here because server/index.js's move:declare has always
+// imported it from this module, and one resolution of add/remove Perk overrides
+// is the whole point of it existing once.
+export { moveTagNamesFor };
 import {
   computeMoveFootprint,
   computeNextRoundStartTic,
@@ -142,7 +125,12 @@ import {
   perkSplashDamage,
   perkStaminaPerHalfDamage,
 } from './perkEngine.js';
-import { getCombatRollBonus, getCombatRollBonusBreakdown, getStanceMatchupBonus } from './combatBonuses.js';
+import {
+  getCombatRollBonus,
+  getCombatRollBonusBreakdown,
+  getStanceMatchupBonus,
+  moveTagNamesFor,
+} from './combatBonuses.js';
 import {
   getWeapon,
   removeWeapon,

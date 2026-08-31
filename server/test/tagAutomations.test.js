@@ -14,7 +14,12 @@ import {
   movementPunisherApplies,
   carriesGroundingTag,
   groundingTripRecoveryTics,
+  punishableStat,
+  punisherBonus,
+  punisherStats,
   TAG_HOOKS,
+  PUNISHER_TAG,
+  PUNISHER_BONUS,
   GROUNDING_TAG,
   OFF_THE_GROUND_TAG,
   BLOCK_TAG,
@@ -443,4 +448,96 @@ test('a Grounding move is trip from the first Recovery frame to the last', () =>
   for (let tic = activeEndTic; tic < recoveryEndTic; tic++) {
     assert.equal(phaseAtTic(plain, tic), 'recovery');
   }
+});
+
+// --- Punisher — (Stat) -----------------------------------------------------
+
+test('the Punisher Tag is registered and reads a STAT out of its name', () => {
+  assert.ok(TAG_HOOKS[PUNISHER_TAG]?.parameterisedByStat);
+  assert.equal(TAG_HOOKS[PUNISHER_TAG]?.rollBonus, PUNISHER_BONUS);
+  // Whatever separator the GM reached for. This is a name a person typed, not
+  // a form field — the same tolerance the numbered Tags get.
+  for (const written of ['Punisher - Body', 'punisher-body', 'Punisher — Body', 'Punisher: body', 'Punisher (Body)']) {
+    assert.deepEqual([...punisherStats([written])], ['Body'], written);
+  }
+  // Several Tags on one move, read as a set.
+  assert.deepEqual([...punisherStats(['Punisher - Hand', 'Punisher - Leg', 'Block'])].sort(), ['Hand', 'Leg']);
+});
+
+test('punisherStats drops a Stat the list does not know, rather than half-matching', () => {
+  // A Tag that silently punishes nothing is better than one that punishes the
+  // wrong thing — and the GM can see the name they typed.
+  assert.equal(punisherStats(['Punisher - Stamina']).size, 0, 'Stamina is not on the list');
+  assert.equal(punisherStats(['Punisher - Weapon']).size, 0, 'nor is Weapon');
+  assert.equal(punisherStats(['Punisher - Bodyy']).size, 0);
+  assert.equal(punisherStats(['Punisher']).size, 0, 'a bare Punisher names nothing to punish');
+  assert.equal(punisherStats(['Punisher Killer - Body']).size, 0, 'the prefix has to match exactly');
+  assert.equal(punisherStats([]).size, 0);
+  assert.equal(punisherStats().size, 0);
+});
+
+test('punishableStat: Left/Right collapse into the limb, and so does the ambiguous slot', () => {
+  // A Punisher names the limb, not the side: what is being punished is somebody
+  // throwing hands.
+  assert.equal(punishableStat('Left Hand'), 'Hand');
+  assert.equal(punishableStat('Right Hand'), 'Hand');
+  assert.equal(punishableStat('Hand'), 'Hand');
+  assert.equal(punishableStat('Left Leg'), 'Leg');
+  assert.equal(punishableStat('Right Leg'), 'Leg');
+  assert.equal(punishableStat('Leg'), 'Leg');
+  assert.equal(punishableStat('Skull'), 'Skull');
+  assert.equal(punishableStat('Brain'), 'Brain');
+  assert.equal(punishableStat('Body'), 'Body');
+  // Not punishable at all.
+  assert.equal(punishableStat('Stamina'), null);
+  assert.equal(punishableStat('Weapon'), null);
+  assert.equal(punishableStat('Custom'), null);
+  assert.equal(punishableStat(null), null);
+});
+
+test('punisherBonus: +2 when the Stat is anywhere in what they are throwing', () => {
+  // The example from the brief: Punisher - Body against a move rolling
+  // (Body + Right Hand + 1).
+  assert.deepEqual(
+    punisherBonus({ tagNames: ['Punisher - Body'], opponentSlotNames: ['Body', 'Right Hand'] }),
+    { amount: 2, stat: 'Body' }
+  );
+  // Whatever else that move rolls makes no difference — it does not have to be
+  // the only Stat, or the first.
+  assert.equal(
+    punisherBonus({ tagNames: ['Punisher - Hand'], opponentSlotNames: ['Skull', 'Left Hand'] }).amount, 2
+  );
+  // Nothing matching, nothing on the clock, no Tag at all.
+  assert.deepEqual(
+    punisherBonus({ tagNames: ['Punisher - Leg'], opponentSlotNames: ['Body', 'Right Hand'] }),
+    { amount: 0, stat: null }
+  );
+  assert.deepEqual(
+    punisherBonus({ tagNames: ['Punisher - Body'], opponentSlotNames: [] }),
+    { amount: 0, stat: null }
+  );
+  assert.deepEqual(punisherBonus({ tagNames: ['Block'], opponentSlotNames: ['Body'] }), { amount: 0, stat: null });
+  assert.deepEqual(punisherBonus({}), { amount: 0, stat: null });
+});
+
+test('punisherBonus: +2 ONCE, however many of its Punishers matched', () => {
+  // The move is either punishing what they threw or it is not. The Interruption
+  // Tags stack because their whole point is a parameterised amount; this is a
+  // condition being met.
+  const both = punisherBonus({
+    tagNames: ['Punisher - Hand', 'Punisher - Leg'],
+    opponentSlotNames: ['Left Hand', 'Right Leg'],
+  });
+  assert.equal(both.amount, 2, 'not 4');
+  // ...and it names the same Stat every time, in the vocabulary's own order
+  // rather than the order the opponent happened to roll them in.
+  assert.equal(both.stat, 'Hand');
+  assert.equal(
+    punisherBonus({
+      tagNames: ['Punisher - Leg', 'Punisher - Hand'],
+      opponentSlotNames: ['Right Leg', 'Left Hand'],
+    }).stat,
+    'Hand',
+    'stable whichever way round either list is written'
+  );
 });

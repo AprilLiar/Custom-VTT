@@ -2172,6 +2172,18 @@ const SEEDED_TAGS = [
     'Grounding',
     'This move puts you on the floor. Every one of its Recovery frames is a Trip Recovery frame instead of an ordinary one \u2014 the same frames, the same count, spent on the ground. Pairs with Off The Ground, which is the only thing that can be thrown out of them.',
   ],
+  // **The five Punishers, seeded rather than left to be typed.** The two
+  // Interruption Tags are parameterised too and are not seeded, because their
+  // parameter is an arbitrary number and there is no list to offer. This one's
+  // parameter is a closed list of five Stats, so the whole vocabulary can be put
+  // in front of the GM \u2014 and a Punisher naming anything else does nothing at
+  // all, which is a much worse thing to discover by typing.
+  ...['Skull', 'Brain', 'Body', 'Hand', 'Leg'].map((stat) => [
+    `Punisher - ${stat}`,
+    `Built to catch a ${stat} attack mid-throw. +2 to this move's Roll while an opponent has a move on the clock \u2014 anywhere in its Startup, Active or Recovery frames \u2014 whose own Roll includes ${stat}${
+      stat === 'Hand' || stat === 'Leg' ? ' (either side, or both)' : ''
+    }. Whatever else that move rolls makes no difference.`,
+  ]),
 ];
 
 function seedTags(existingRows, writes) {

@@ -1044,6 +1044,38 @@ on the **ground** for it, and two rules read that difference.
     extension is time spent still on your feet recovering from the guard, and the floor is where the
     move was always going to leave you.
   - No client change was needed — every render site already draws from `tripRecoveryTics`.
+
+**Punisher — (Stat): a Tag parameterised by a STAT (decided, new; implemented).** A move built to
+catch a specific *kind* of attack. `Punisher - Body` rolls **+2 while an opponent has a move on the
+clock whose own Roll includes Body** — whatever else that move also rolls. The two Interruption Tags
+put a number in their name; this puts a Stat there, for the same reason either does it: a Tag is a
+world-level row the GM names, and "Punisher - Body" is already how a table would write it on a card.
+
+- **The window is the opponent's WHOLE footprint — Startup, Active and Recovery.** That is wider than
+  anything else in `combatBonuses.js` reads (`placement_tic`, not `reveal_tic`), and deliberately so:
+  a move being wound up is exactly what a Punisher is built to catch. It is also the one claim a test
+  can lose silently, so the engine test is pinned on a still-in-Startup opponent and was verified to
+  go red when the window was narrowed back.
+- **Five Stats, seeded**: Skull, Brain, Body, **Hand** (either side, or both) and **Leg** (either side,
+  or both). Left/Right collapse into the limb — what is being punished is somebody throwing hands —
+  and the ambiguous `Hand`/`Leg` the Roll vocabulary itself uses lands in the same place. **Stamina
+  and Weapon are not on the list**, and a Punisher naming one of them (or a typo, or a bare
+  `Punisher`) is dropped rather than half-matched. The five are seeded, unlike the numbered Tags,
+  precisely because the parameter is a closed list: the whole vocabulary can be put in front of the
+  GM, and "it does nothing at all" is a bad thing to discover by typing.
+- **+2 once, however many of its Punishers matched.** The move is either punishing what they threw or
+  it is not; the Interruption Tags stack only because their parameter *is* an amount. The matched
+  Stat rides on the roll's breakdown as `Punisher: Body`, in the vocabulary's own order so a move
+  catching two names the same one every time.
+- **A move still hidden by a Feint is not punished**, and that is a rule rather than an oversight: the
+  +2 lands as a named term on a roll the whole table sees, so paying it out of a concealed move would
+  announce what that move rolls — the one fact the Feint exists to hide. It becomes punishable the
+  instant it reveals, like everything else about it. Every opponent on the far side counts, not just
+  a declared target: in an Uneven Combat there is more than one somebody to be fighting.
+- **`moveTagNamesFor` moved from `roundResolution.js` to `combatBonuses.js`** to make this possible —
+  the Tag is read at the shared roll-modifier funnel, and that module is imported *by*
+  roundResolution, so asking the other way round would have been a cycle. Re-exported from its old
+  home, since `server/index.js`'s `move:declare` has always imported it from there.
   - **Verified**: `groundingTripRecoveryTics` is pure and unit-tested (all of the move's Recovery and
     none of anybody else's, junk input never becoming negative or fractional frames), plus a
     `phaseAtTic` sweep proving the frames reach back exactly to the Active end and that the same move

@@ -69,6 +69,29 @@ export const GROUNDING_TAG = 'Grounding';
 // what kind of frames they are.
 export const MOVEMENT_PUNISH_RECOVERY = 3;
 
+// **Punisher — (Stat)**: a move built to catch a specific *kind* of attack.
+// While the opponent has a move on the clock — anywhere in its Startup, Active
+// or Recovery frames — whose own Roll includes the named Stat, this move rolls
+// +2. A `Punisher - Body` catches somebody in the middle of anything that rolls
+// Body, whatever else that move also rolls.
+//
+// **Parameterised by a STAT rather than by a number**, which is new: the two
+// Interruption Tags put an amount in their name, and this one puts a Stat there.
+// Same reason either does it — a Tag is a world-level row the GM names, and
+// "Punisher - Body" is already how a table would write it on a card.
+export const PUNISHER_TAG = 'Punisher';
+
+// Flat, like MOVEMENT_PUNISH_RECOVERY and for the same reason: it is a single
+// consequence the table can price once, not a contest being scaled.
+export const PUNISHER_BONUS = 2;
+
+// The five Stats a Punisher may name. Deliberately NOT the seven-name Roll
+// vocabulary: Stamina and Weapon are not on this list, and Hand and Leg mean
+// *either or both* — a `Punisher - Hand` catches a move rolling a Left Hand, a
+// Right Hand, or the ambiguous Hand, because what is being punished is somebody
+// throwing hands.
+export const PUNISHER_STATS = ['Skull', 'Brain', 'Body', 'Hand', 'Leg'];
+
 // One entry per Tag that carries mechanics. See resolveBlockStamina and
 // resolveNoDamageOutcome in combatDamage.js for the arithmetic behind each,
 // and vttprojectplan.md's Block Stamina / No Damage Tag rules for the design.
@@ -129,6 +152,14 @@ export const TAG_HOOKS = {
     // in the damage or timing engines looks at it.
     overlapsTripRecovery: true,
   },
+  [PUNISHER_TAG]: {
+    // Carries a STAT in its name rather than an amount — see punisherStats.
+    // Read at roll time by the shared modifier funnel, and it moves exactly one
+    // number: this move's own Roll. Nothing about the attack it is punishing
+    // changes.
+    parameterisedByStat: true,
+    rollBonus: PUNISHER_BONUS,
+  },
   [GROUNDING_TAG]: {
     // Also read at declare time, and the only Tag that writes
     // `declared_moves.trip_recovery_tics` from the move's own shape rather than
@@ -184,6 +215,74 @@ export function tagAmount(tagNames, tagName) {
     if (m && m[1] === wanted) total += Number(m[2]);
   }
   return total;
+}
+
+// Which Stats this move's Punisher Tags name. `Punisher - Body`,
+// `Punisher — Hand`, `punisher-leg`, `Punisher (Skull)` and `Punisher: Brain`
+// all read the same, because this is a name a person typed rather than a form
+// field — the same tolerance `tagAmount` gives the numbered Tags.
+//
+// A Stat the list does not know (`Punisher - Stamina`, a typo, a bare
+// `Punisher`) is dropped rather than half-matched: a Tag that silently punishes
+// nothing is better than one that punishes the wrong thing, and the GM can see
+// the name they typed.
+//
+// Returns a Set, so several Punisher Tags on one move are naturally one
+// question — see punisherBonus on why they do not stack.
+export function punisherStats(tagNames) {
+  const wanted = norm(PUNISHER_TAG);
+  const found = new Set();
+  for (const raw of tagNames ?? []) {
+    // The separator is whatever the GM reached for: a hyphen, an en or em
+    // dash, a colon, or parentheses.
+    const m = String(raw ?? '')
+      .trim()
+      .match(/^(.*?)\s*(?:[-–—:]|\()\s*([^()]*?)\s*\)?$/);
+    if (!m || norm(m[1]) !== wanted) continue;
+    const stat = PUNISHER_STATS.find((name) => norm(name) === norm(m[2]));
+    if (stat) found.add(stat);
+  }
+  return found;
+}
+
+// Which of the five Punisher Stats a Roll slot counts as. Left/Right collapse
+// into the appendage, because a Punisher names the limb rather than the side —
+// and the ambiguous `Hand`/`Leg` the Roll vocabulary itself uses lands in the
+// same place. Anything else (Stamina, Weapon, Custom) is not punishable and
+// answers null.
+export function punishableStat(slotName) {
+  const name = norm(slotName);
+  if (name === 'left hand' || name === 'right hand' || name === 'hand') return 'Hand';
+  if (name === 'left leg' || name === 'right leg' || name === 'leg') return 'Leg';
+  return PUNISHER_STATS.find((stat) => norm(stat) === name) ?? null;
+}
+
+// The Punisher's +2, and which Stat earned it.
+//
+// `opponentSlotNames` is every Roll slot of every opponent move whose frames —
+// Startup, Active or Recovery — cover the Tic this roll is happening on. The
+// caller supplies them; this decides whether they are what the move was built
+// for.
+//
+// **+2 once, however many Tags matched (decided).** The move is either
+// punishing what they threw or it is not: a `Punisher - Hand` + `Punisher - Leg`
+// move catching somebody rolling both is still one move catching one attack,
+// and the Interruption Tags stack only because their whole point is a
+// parameterised amount. The matched Stat is returned so the roll's own
+// breakdown can say which one it was — a modifier nobody can account for reads
+// as the engine inventing numbers.
+export function punisherBonus({ tagNames, opponentSlotNames } = {}) {
+  const wanted = punisherStats(tagNames);
+  if (wanted.size === 0) return { amount: 0, stat: null };
+  // In PUNISHER_STATS order rather than the opponent's, so a move that catches
+  // two of them names the same one every time.
+  for (const stat of PUNISHER_STATS) {
+    if (!wanted.has(stat)) continue;
+    if ((opponentSlotNames ?? []).some((slot) => punishableStat(slot) === stat)) {
+      return { amount: PUNISHER_BONUS, stat };
+    }
+  }
+  return { amount: 0, stat: null };
 }
 
 export const interrupterAmount = (tagNames) => tagAmount(tagNames, INTERRUPTER_TAG);

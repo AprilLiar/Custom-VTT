@@ -3202,6 +3202,86 @@ test('the engine actually reaches the credit on the attack roll it modifies', as
   );
 });
 
+// ---------- Punisher — (Stat) ---------------------------------------------
+
+// One fight, two moves: the punisher's, and whatever the opponent is mid-way
+// through. Returns the punisher's own roll event so a test can read the term.
+async function punisherFight(pairIndex, { punisherTag, opponentRollSlots, opponentStartup = 4 }) {
+  const punisher = await createCharacter(`PUN${pairIndex} Punisher`);
+  const victim = await createCharacter(`PUN${pairIndex} Victim`);
+  const counter = await createMove({
+    name: `PUN${pairIndex} Counter`, startupTics: 1, activeTics: 1, recoveryTics: 0,
+    rollSlots: ['Skull'], attackTargets: ['Body'],
+  });
+  if (punisherTag) await tagMove(counter, punisherTag);
+  const theirs = await createMove({
+    name: `PUN${pairIndex} Theirs`, startupTics: opponentStartup, activeTics: 1, recoveryTics: 1,
+    rollSlots: opponentRollSlots, attackTargets: ['Body'],
+  });
+  await seatPair(pairIndex, punisher, victim);
+  await startPairDeclaration(mockIo, pairIndex);
+  // Theirs is placed at Tic 0 with a long Startup, so at Tic 1 — when the
+  // counter reveals and rolls — it is still winding up. That is the window the
+  // Tag is built for and the one nothing else in combatBonuses reads.
+  await declareMove({ characterId: victim, moveId: theirs, placementTic: 0, startupTics: opponentStartup });
+  await declareMove({
+    characterId: punisher, moveId: counter, placementTic: 0, startupTics: 1,
+    effectiveAttackTargets: ['Body'],
+  });
+  await resolvePair(pairIndex);
+  const rolls = (await all("SELECT payload FROM round_events WHERE pair_index = ? AND type = 'roll'", [pairIndex]))
+    .map((r) => JSON.parse(r.payload))
+    .filter((p) => p.characterId === punisher);
+  return rolls[0] ?? null;
+}
+
+test('Punisher catches an opponent still in Startup, which nothing else reads', async () => {
+  const roll = await punisherFight(385, {
+    punisherTag: 'Punisher - Body',
+    opponentRollSlots: ['Body', 'Hand'],
+  });
+  assert.ok(roll, 'the punisher should have rolled');
+  const term = (roll.modifierBreakdown ?? []).find((t) => String(t.label).startsWith('Punisher'));
+  assert.ok(term, `no Punisher term: ${JSON.stringify(roll.modifierBreakdown)}`);
+  assert.equal(term.amount, 2);
+  assert.equal(term.label, 'Punisher: Body', 'named with the Stat it caught them on');
+});
+
+test('Punisher pays nothing for a Stat the opponent is not rolling', async () => {
+  const roll = await punisherFight(386, {
+    punisherTag: 'Punisher - Leg',
+    opponentRollSlots: ['Body', 'Hand'],
+  });
+  assert.ok(roll);
+  assert.equal(
+    (roll.modifierBreakdown ?? []).find((t) => String(t.label).startsWith('Punisher')),
+    undefined,
+    'a Leg punisher against a Body/Hand move is a plain move'
+  );
+});
+
+test('Punisher pays nothing to a move that does not carry the Tag', async () => {
+  const roll = await punisherFight(387, { punisherTag: null, opponentRollSlots: ['Body'] });
+  assert.ok(roll);
+  assert.equal(
+    (roll.modifierBreakdown ?? []).find((t) => String(t.label).startsWith('Punisher')),
+    undefined
+  );
+});
+
+test('Punisher - Hand catches either hand', async () => {
+  // The Roll vocabulary stores the ambiguous `Hand`; a Perk or an override may
+  // resolve it to a side. Both are the limb the Tag names.
+  const roll = await punisherFight(388, {
+    punisherTag: 'Punisher - Hand',
+    opponentRollSlots: ['Hand'],
+  });
+  assert.equal(
+    (roll?.modifierBreakdown ?? []).find((t) => String(t.label).startsWith('Punisher'))?.amount,
+    2
+  );
+});
+
 test('Dogfighter makes a move harder to break up, by exactly 2', async () => {
   const { perkInterruptAmounts } = await import('../perkEngine.js');
   const fighter = await createCharacter('DF Fighter');
