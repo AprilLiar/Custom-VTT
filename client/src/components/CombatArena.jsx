@@ -13,6 +13,7 @@ import {
 } from '../lib/api.js';
 import {
   carriesBlockTag,
+  carriesOffTheGroundTag,
   carriesFeintTag,
   carriesMovementTag,
   sortTags,
@@ -27,7 +28,7 @@ import {
 // other way, with the server importing client/src/lib/matchups.js.
 import { declarableByHand } from '../../../server/moveLogic.js';
 import { portraitSrc } from '../lib/image.js';
-import { dieLabel, tintFor, POOLS } from '../lib/dice.js';
+import { dieLabel, temporaryDamageTitle, temporaryTint, tintFor, POOLS } from '../lib/dice.js';
 import { ANATOMY } from '../lib/anatomy.js';
 import { buildFolderTree } from '../lib/folders.js';
 import { useAnchoredPosition } from '../lib/useAnchoredPosition.js';
@@ -38,10 +39,9 @@ import { FolderRosterNode } from './FolderRoster.jsx';
 import { countRollSlot } from '../lib/diceSlots.js';
 import {
   FRAME_PHASES, PHASE_BG, PHASE_LABEL, PHASE_ZONE, TRIP_MARK,
-  phaseBgAt, phaseAt, isTripTic,
+  phaseBgAt, phaseAt, isTripTic, placementFloorAfterTrip,
 } from '../lib/framePhaseColors.js';
 import { MoveFilterChips, MoveFilterColumn, useMoveFilters } from '../lib/moveFilters.jsx';
-import RoundCutscene from './RoundCutscene.jsx';
 import DamageApplicationDialog from './DamageApplicationDialog.jsx';
 import { REWARD_LABELS, REWARD_COLORS } from '../lib/counterDisplay.js';
 import { setDraggingMove, onDraggingMoveChange } from '../lib/dragMoveState.js';
@@ -261,11 +261,18 @@ function ParticipantCard({
                   return (
                     <span
                       key={d.id}
-                      title={d.slot_name}
+                      title={[d.slot_name, temporaryDamageTitle(d)].filter(Boolean).join(' — ')}
                       className={`flex items-center gap-0.5 panel-cut-sm px-1 py-0.5 font-mono text-[10px] ${
                         d.status === 'incapacitated' ? 'text-zinc-700 line-through' : 'text-zinc-300'
                       }`}
-                      style={{ backgroundColor: tintFor(d) || 'rgba(255,255,255,0.05)' }}
+                      // Temporary Damage tints purple; see tintFor. The fallback
+                      // covers a Stat at its locked size, or out entirely, that
+                      // still owes half a step back — neither of which tintFor
+                      // answers on its own.
+                      style={{
+                        backgroundColor:
+                          tintFor(d) || temporaryTint(d) || 'rgba(255,255,255,0.05)',
+                      }}
                     >
                       {Icon && <Icon size={10} className="shrink-0 opacity-70" aria-hidden="true" />}
                       {dieLabel(d.current_size, d.bonus)}
@@ -1433,13 +1440,31 @@ function lastQueuedMoveId(characterId, declaredMoves) {
   return mine.reduce((a, b) => (b.recoveryEndTic > a.recoveryEndTic ? b : a)).moveId ?? null;
 }
 
-function buildDeclarePayload(character, move, roundStartTic, declaredMoves) {
-  const priorBlockedUntil = declaredMoves
-    .filter((dm) => dm.characterId === character.id)
-    .map((dm) => dm.recoveryEndTic);
-  const minPlacementTic = priorBlockedUntil.length
-    ? Math.max(roundStartTic, ...priorBlockedUntil)
-    : roundStartTic;
+function buildDeclarePayload(character, move, roundStartTic, declaredMoves, tags) {
+  // The move whose footprint ends LATEST is the one this declaration comes
+  // right after, and the only one whose trip frames could be overlapped — the
+  // same row the server's own floor reads (see move:declare).
+  const mine = declaredMoves.filter((dm) => dm.characterId === character.id);
+  const previous = mine.length
+    ? mine.reduce((a, b) => (b.recoveryEndTic > a.recoveryEndTic ? b : a))
+    : null;
+  // **Off The Ground (bugfix).** This used to floor every declaration at the
+  // previous move's full footprint end, which is the rule for every OTHER move
+  // — so the trip frames a Grounding move leaves behind, carried into the next
+  // round, drew as unreachable squares on the Tic Counter even though the
+  // server accepted a drop on them perfectly well. Purely a display fault: the
+  // client was applying an older, stricter version of a rule the server had
+  // already relaxed. Now both call the same function.
+  const previousFloor = previous
+    ? placementFloorAfterTrip({
+        blockedUntilTic: previous.recoveryEndTic,
+        tripRecoveryTics: previous.tripRecoveryTics ?? 0,
+        startupTics: move.startup_tics,
+        offTheGround: carriesOffTheGroundTag(move.effective_tag_ids ?? move.tag_ids, tags),
+      })
+    : null;
+  const minPlacementTic =
+    previousFloor != null ? Math.max(roundStartTic, previousFloor) : roundStartTic;
   return {
     characterId: character.id,
     moveId: move.id,
@@ -1544,7 +1569,7 @@ function DeclareMoveCard({ character, move, roundStartTic, declaredMoves, tags, 
   // Worth pointing at when a Perk actually moved it — a Dodge quoting 1 when
   // the Compendium says 3 reads as a bug unless the card says why.
   const discounted = effectiveCost !== move.stamina_cost;
-  const payload = buildDeclarePayload(character, move, roundStartTic, declaredMoves);
+  const payload = buildDeclarePayload(character, move, roundStartTic, declaredMoves, tags);
   // Requirement (decided, new): this move may only be declared immediately
   // after the one it names. The server enforces it — this only stops the
   // player dragging something that would be silently refused, which is the
@@ -1878,6 +1903,40 @@ function DeclareMovePicker({ entry, roundStartTic, declaredMoves, tags, tellById
           </span>
         )}
       </div>
+    </div>
+  );
+}
+
+// **What the Arena shows while a pair resolves (decided, revised).** This used
+// to be a live `RoundCutscene` playing the round as the server computed it. That
+// view is gone — a table watches the round back together afterwards, from the
+// replay card in chat — so what is left here is the one thing the Arena still
+// has to say: the round is being worked out, and here is what it is waiting on.
+//
+// The GM's actual calls are NOT here and never were: the Dodge, Block, move
+// conflict and grapple prompts are dialogs mounted on CombatHeaderBar, which is
+// always on screen. Removing the live cutscene took nothing away from them.
+function ResolvingBanner({ pair }) {
+  const waiting =
+    (pair?.pendingDodge && 'Waiting on the GM’s Dodge call') ||
+    (pair?.pendingConflict && 'Waiting on a guard-extension choice') ||
+    (pair?.pendingDefense && 'Waiting on the GM’s Block call') ||
+    (pair?.pendingGrapple && 'Waiting on the grapple read') ||
+    null;
+  return (
+    <div className="panel-cut-lg border border-brand-800/50 bg-brand-950/20 p-4 text-center">
+      <div className="font-display text-base uppercase tracking-wide text-brand-200 md:text-lg">
+        Round {pair?.roundNumber} is resolving…
+      </div>
+      {waiting ? (
+        <div className="mt-2 inline-block panel-cut-sm bg-amber-600/30 px-3 py-1 font-display text-xs uppercase text-amber-200 md:text-sm">
+          {waiting}
+        </div>
+      ) : (
+        <p className="mt-1 text-xs text-zinc-500 md:text-sm">
+          Watch it back from the Chat Log when it lands.
+        </p>
+      )}
     </div>
   );
 }
@@ -2885,15 +2944,7 @@ export default function CombatArena() {
               takes over and plays the round's event log back. Every other
               pair keeps rendering its own state independently below. */}
           {displayPair?.phase === 'resolving' ? (
-            <RoundCutscene
-              mode="live"
-              pairIndex={displayPairIndex}
-              roundNumber={displayPair?.roundNumber}
-              roundStartTic={displayPair?.roundStartTic}
-              roundLength={combat.roundLength}
-              pendingDodge={displayPair?.pendingDodge}
-              pendingConflict={displayPair?.pendingConflict}
-            />
+            <ResolvingBanner pair={displayPair} />
           ) : (
           <TicCounterCentral
             carriedLanes={carriedLanes}

@@ -15,6 +15,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { tripWindow, placementFloorAfterTrip } from '../combatTiming.js';
+import { placementFloorAfterTrip as clientPlacementFloorAfterTrip } from '../../client/src/lib/framePhaseColors.js';
 
 test('the trip window is the tail of the footprint', () => {
   // A move ending at 10 with 3 trip frames is on the ground for 7, 8, 9.
@@ -103,4 +104,40 @@ test('a character with no previous move is unaffected', () => {
     placementFloorAfterTrip({ blockedUntilTic: null, tripRecoveryTics: 3, startupTics: 2, offTheGround: true }),
     null
   );
+});
+
+// --- the client and the server floor a declaration the same way ------------
+
+test('the placement floor the engine enforces IS the one the counter draws', () => {
+  // **The bug this pins, found in a live playtest.** The rule lived twice: the
+  // server relaxed the floor for an Off The Ground move, and `buildDeclarePayload`
+  // in the Arena did not. Trip frames carried into a new round therefore drew as
+  // unreachable squares on the Tic Counter while a drop on them was accepted
+  // perfectly well — a display that disagreed with the engine about what was
+  // legal. There is one implementation now, and this is what says so.
+  assert.equal(
+    placementFloorAfterTrip,
+    clientPlacementFloorAfterTrip,
+    'the server must re-export the client copy, not keep its own'
+  );
+});
+
+test('trip frames spilling into a new round leave the first Tics reachable', () => {
+  // The playtest case exactly: a Grounding move whose trip window runs two Tics
+  // past the round boundary. An ordinary move is floored past them; an Off The
+  // Ground move with Startup to spare may begin on the first of them.
+  const roundStartTic = 7;
+  const previousEnd = 9; // two trip Tics inside the new round
+  const ordinary = Math.max(
+    roundStartTic,
+    placementFloorAfterTrip({ blockedUntilTic: previousEnd, tripRecoveryTics: 3, startupTics: 2, offTheGround: false })
+  );
+  assert.equal(ordinary, 9, 'an ordinary move still waits out the whole window');
+
+  const riser = Math.max(
+    roundStartTic,
+    placementFloorAfterTrip({ blockedUntilTic: previousEnd, tripRecoveryTics: 3, startupTics: 2, offTheGround: true })
+  );
+  assert.equal(riser, 7, 'Off The Ground reaches back into them, clamped at the round start');
+  assert.ok(riser < ordinary, 'which is the whole point, and what the counter must draw');
 });

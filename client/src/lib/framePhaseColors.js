@@ -129,3 +129,39 @@ export function isTripTic(footprint, tic) {
   if (tic < activeEndTic || tic >= recoveryEndTic) return false;
   return tic >= Math.max(activeEndTic, recoveryEndTic - tripRecoveryTics);
 }
+
+// **Where an Off The Ground move may start — the one copy of the rule.**
+//
+// Normally a character's next move is floored at their previous move's full
+// footprint end. A move carrying **Off The Ground** may begin earlier, so its
+// Startup overlaps the trip frames: you are winding up as you get back to your
+// feet. Two limits, and both are the point of it:
+//
+//  - **Only the trip frames.** The floor never reaches past where the trip
+//    window began, so ordinary Recovery stays untouchable.
+//  - **Only the Startup.** Capped at the move's own Startup length, which is
+//    the same statement as: its Active frames may not begin before the trip
+//    window ends. You can get up while winding up; you cannot throw the punch
+//    from the floor.
+//
+// **It lives here, on the client, and the server imports it** — the same
+// arrangement `matchups.js` already has. It began as server-only, and the Tic
+// Counter floored declarations without it: the trip frames a Grounding move
+// left behind drew as unreachable while the server happily accepted a drop on
+// them. A rule that decides both what is legal and what is drawn cannot have
+// two implementations.
+//
+// Returns the earliest legal placement Tic. With no trip frames, or without the
+// Tag, this is exactly `blockedUntilTic` — the ordinary rule, unchanged.
+export function placementFloorAfterTrip({
+  blockedUntilTic,
+  tripRecoveryTics = 0,
+  startupTics = 0,
+  offTheGround = false,
+}) {
+  if (blockedUntilTic == null) return null;
+  if (!offTheGround) return blockedUntilTic;
+  const trip = Math.max(0, Math.trunc(Number(tripRecoveryTics) || 0));
+  const startup = Math.max(0, Math.trunc(Number(startupTics) || 0));
+  return blockedUntilTic - Math.min(trip, startup);
+}

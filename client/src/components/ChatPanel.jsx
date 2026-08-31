@@ -723,7 +723,7 @@ export default function ChatPanel({ open }) {
           variant="theater"
           onClose={() => setReplayResolutionId(null)}
         >
-          <RoundCutscene mode="replay" resolutionId={replayResolutionId} />
+          <RoundCutscene resolutionId={replayResolutionId} />
         </DialogShell>
       )}
     </aside>

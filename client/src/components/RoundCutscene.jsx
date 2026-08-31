@@ -1,10 +1,17 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { gsap } from 'gsap';
 import { AnimatePresence, motion, useAnimation, useReducedMotion } from 'framer-motion';
-import { socket } from '../socket.js';
 import { getRoundReplay } from '../lib/api.js';
 import { loadCutsceneSpeed } from '../lib/theme.js';
-import { decomposeRoll, formatRollPart, formatRollBreakdown } from '../lib/dice.js';
+import { ANATOMY } from '../lib/anatomy.js';
+import { EventIcon } from '../lib/eventIcons.jsx';
+import {
+  decomposeRoll,
+  formatRollPart,
+  formatRollBreakdown,
+  temporaryDamageTitle,
+  temporarySteps,
+} from '../lib/dice.js';
 import {
   PHASE_BG,
   PHASE_BG_EXTENDED,
@@ -25,12 +32,19 @@ import {
 // stream, replayed instead of streamed, rather than two representations
 // kept in sync.
 //
-//   mode='live'   — subscribes to combat:round_event for this pairIndex.
-//                   Events arrive as the server persists them, so the
-//                   timeline grows while it plays.
-//   mode='replay' — one-shot fetch of the stored log. No subscription: the
-//                   log is complete and immutable by the time a
-//                   round_summary chat card exists to open it.
+// **Replay only (decided, revised).** There used to be a `mode='live'` that
+// subscribed to `combat:round_event` and played a round as the server resolved
+// it, mounted in the Arena in place of the Tic Counter. It is gone: a table at
+// a live game watches the replay together afterwards, and a view nobody looked
+// at was carrying half this component's complexity — a growing event list, a
+// tween that had to extend rather than restart, and a "catch up" button for a
+// playhead racing a server. What the Arena shows while a pair resolves is a
+// banner (see CombatArena), and the GM's own Dodge/Block/conflict prompts were
+// never part of this component: they are dialogs on the header bar and are
+// untouched.
+//
+// One-shot fetch of the stored log. No subscription: the log is complete and
+// immutable by the time a round_summary chat card exists to open it.
 //
 // Sequencing runs on a GSAP tween over a plain {i} proxy rather than a
 // timeline of per-element tweens. The proxy's value IS the playhead (how
@@ -743,10 +757,21 @@ function fightersFrom(events, upTo) {
   let roster = null;
   const damage = new Map(); // `${characterId}:${slotName}` -> latest applied state
   const stamina = new Map(); // characterId -> current stamina at the playhead
+  // **Temporary Damage, accumulated along the playhead.** Half-steps owed back
+  // on each Stat, so the pip can draw purple at the moment the blow lands rather
+  // than reading a debt that has since been paid off. Seeded from the roster
+  // snapshot (what was already owed when the Round opened), added to by a
+  // `temporary` damage_applied, and paid down by the heal's own `stat_stepped`.
+  const temporary = new Map(); // `${characterId}:${slotName}` -> half-steps owed
   let lastHit = null;
   for (const ev of events.slice(0, upTo)) {
     if (ev.type === 'roster') {
       roster = ev.payload?.participants ?? [];
+      for (const f of roster) {
+        for (const d of f.dice ?? []) {
+          if (d.temporarySteps > 0) temporary.set(`${f.characterId}:${d.slotName}`, d.temporarySteps);
+        }
+      }
       continue;
     }
     // Stamina moves during a round — automations spend it, an Interrupt
@@ -771,6 +796,12 @@ function fightersFrom(events, upTo) {
         bonus: p.bonusAfter,
         status: p.statusAfter,
       });
+      // The end-of-Round Temporary Damage heal rides this same event type, and
+      // says so — a Recover Stat automation must not pay down the purple. The
+      // server sends what is left, so the client never has to subtract.
+      if (p.source === 'temporary_heal') {
+        temporary.set(`${p.characterId}:${p.slotName}`, Math.max(0, p.temporaryRemaining ?? 0));
+      }
       if ((p.steps ?? 0) > 0) {
         lastHit = { characterId: p.characterId, slotName: p.slotName, seq: ev.seq, steps: p.steps };
       }
@@ -784,6 +815,10 @@ function fightersFrom(events, upTo) {
       bonus: p.bonusAfter,
       status: p.statusAfter,
     });
+    if (p.temporary) {
+      const key = `${p.targetCharacterId}:${p.slotName}`;
+      temporary.set(key, (temporary.get(key) ?? 0) + (p.steps ?? 0));
+    }
     // Same rule for a stored replay's automation steps, which predate
     // `stat_stepped` and can also be negative.
     if (!(p.source === 'automation' && (p.steps ?? 0) < 0)) {
@@ -795,7 +830,16 @@ function fightersFrom(events, upTo) {
     ...f,
     currentStamina: stamina.get(f.characterId) ?? f.currentStamina,
     dice: [...(f.dice ?? [])]
-      .map((d) => ({ ...d, ...(damage.get(`${f.characterId}:${d.slotName}`) ?? {}) }))
+      .map((d) => {
+        const key = `${f.characterId}:${d.slotName}`;
+        return {
+          ...d,
+          ...(damage.get(key) ?? {}),
+          // The roster snapshot's own figure is the floor: a Stat can walk into
+          // the Round already owing half a step from the Round before.
+          temporarySteps: temporary.has(key) ? temporary.get(key) : (d.temporarySteps ?? 0),
+        };
+      })
       .sort((a, b) => DIE_ORDER.indexOf(a.slotName) - DIE_ORDER.indexOf(b.slotName)),
   }));
   return { fighters, lastHit };
@@ -1089,6 +1133,12 @@ function barAnimation(effect, toward) {
 function StatPip({ die, hit, beat }) {
   const reduceMotion = useReducedMotion();
   const out = die.status === 'incapacitated';
+  // **Temporary Damage draws purple** — the same rule as every other surface
+  // that shows a Stat (see tintFor in lib/dice.js). A hit still wins the
+  // colouring for the beat it lands on: what just happened is the more urgent
+  // fact, and the purple is still there a moment later.
+  const temporary = temporarySteps(die) > 0;
+  const Icon = ANATOMY[die.slotName]?.Icon;
   const controls = useAnimation();
   useEffect(() => {
     if (!hit || reduceMotion) return;
@@ -1101,22 +1151,41 @@ function StatPip({ die, hit, beat }) {
   return (
     <motion.div
       animate={controls}
-      title={`${die.slotName} — d${die.size}${die.bonus ? `+${die.bonus}` : ''}${out ? ' (out)' : ''}`}
+      title={[
+        `${die.slotName} — d${die.size}${die.bonus ? `+${die.bonus}` : ''}${out ? ' (out)' : ''}`,
+        temporaryDamageTitle(die),
+      ]
+        .filter(Boolean)
+        .join('\n')}
       className={`flex min-w-0 flex-col items-center gap-0.5 border px-1 py-0.5 ${
         hit
           ? 'border-rose-400 bg-rose-900/50 shadow-[0_0_12px_2px_rgba(251,113,133,0.6)]'
-          : out
-            ? 'border-zinc-800 bg-zinc-900/60'
-            : 'border-zinc-700 bg-zinc-900'
+          : temporary
+            ? 'border-fuchsia-800/70 bg-fuchsia-950/40'
+            : out
+              ? 'border-zinc-800 bg-zinc-900/60'
+              : 'border-zinc-700 bg-zinc-900'
       }`}
     >
-      <span className={`truncate font-display text-[9px] uppercase tracking-wide md:text-[10px] ${
-        hit ? 'text-rose-200' : out ? 'text-zinc-600' : 'text-zinc-500'
+      {/* The Stat's own icon beside its name (decided, new). Eight pips of
+          four-letter words are a wall of text at a glance; the icon is what
+          makes "they went for the legs" readable without reading. Reuses
+          ANATOMY, the same map the Core Stats figure and the damage dialog
+          draw from, so a Skull is the same Skull everywhere. */}
+      <span className={`flex min-w-0 items-center gap-0.5 font-display text-[9px] uppercase tracking-wide md:text-[10px] ${
+        hit ? 'text-rose-200' : temporary ? 'text-fuchsia-300' : out ? 'text-zinc-600' : 'text-zinc-500'
       }`}>
-        {die.slotName}
+        {Icon && <Icon size={9} aria-hidden="true" className="shrink-0 opacity-80" />}
+        <span className="truncate">{die.slotName}</span>
       </span>
       <span className={`font-display text-xs font-bold md:text-sm ${
-        out ? 'text-zinc-600 line-through' : hit ? 'text-rose-200' : 'text-zinc-200'
+        out
+          ? 'text-zinc-600 line-through'
+          : hit
+            ? 'text-rose-200'
+            : temporary
+              ? 'text-fuchsia-200'
+              : 'text-zinc-200'
       }`}>
         {out ? 'OUT' : `d${die.size}${die.bonus ? `+${die.bonus}` : ''}`}
       </span>
@@ -1340,16 +1409,84 @@ function MoveBar({ fp, ticks, startTic, effect, beat, staminaFlash }) {
   );
 }
 
-export default function RoundCutscene({
-  mode = 'live',
-  pairIndex,
-  resolutionId,
-  roundNumber,
-  roundStartTic,
-  roundLength,
-  pendingDodge,
-  pendingConflict,
-}) {
+// **Who a row's event belongs to.** The table files an event in the column of
+// the fighter who ACTED — a punch appears in the puncher's column, not the
+// column of whoever got hit — because the question the table answers is "what
+// was each side doing on this Tic".
+//
+// Four ways to find them, in order of how certain each is:
+//   1. `attackerCharacterId`, on the damage events, which name two fighters and
+//      whose actor is specifically the attacker.
+//   2. `characterId`, which every other event that names one fighter carries.
+//      Where that fighter is the one something happened *to* (a Stat stepped by
+//      somebody else's automation), their column is still where it goes — the
+//      payload names no other, and a guess is worse than a consistent rule.
+//   3. The declared move it is about, resolved through the footprints the board
+//      is already tracking. This is what places a defence: `defense_resolved`
+//      and its Block/Dodge siblings name no character at all, only the guard's
+//      own declared move — and the guard belongs to the defender.
+//   4. A name, for the two grapple prompts, which predate ids on these payloads.
+//
+// Anything still unattributed — the roster, the round ending — is genuinely
+// about the whole round and gets a full-width row of its own.
+function actorOf(ev, ownerOfMove, idByName) {
+  const p = ev.payload ?? {};
+  if (p.attackerCharacterId != null) return p.attackerCharacterId;
+  if (p.characterId != null) return p.characterId;
+  for (const key of ['defenderDeclaredMoveId', 'declaredMoveId', 'attackerDeclaredMoveId']) {
+    const owner = p[key] != null ? ownerOfMove.get(p[key]) : null;
+    if (owner != null) return owner;
+  }
+  for (const key of ['characterName', 'attackerCharacterName']) {
+    const id = p[key] ? idByName.get(p[key]) : null;
+    if (id != null) return id;
+  }
+  return null;
+}
+
+// One line in a side's cell: its icon, its type, and the sentence.
+function EventLine({ ev, startTic }) {
+  const paused = PAUSE_EVENTS.has(ev.type);
+  const damage = ev.type === 'damage_applied';
+  const faded =
+    ev.type === 'insignificant_damage' ||
+    ev.type === 'damage_unapplied' ||
+    (ev.type === 'no_damage_resolved' && !ev.payload?.succeeded) ||
+    (ev.type === 'grapple_resolved' && !ev.payload?.success);
+  return (
+    <motion.div
+      initial={{ opacity: 0, x: -6 }}
+      animate={{ opacity: 1, x: 0 }}
+      transition={{ duration: 0.18 }}
+      title={eventDetail(ev, startTic)}
+      className={`flex items-start gap-1.5 border-l-2 px-1.5 py-1 text-xs md:text-sm ${
+        paused
+          ? 'border-amber-500 bg-amber-950/30 text-amber-200'
+          : damage
+            ? 'border-rose-600 bg-rose-950/20 text-rose-200'
+            : ev.type === 'grapple_resolved' && ev.payload?.success
+              ? 'border-amber-600 bg-amber-950/20 text-amber-200'
+              : faded
+                ? 'border-zinc-700 text-zinc-500'
+                : 'border-zinc-700 text-zinc-300'
+      }`}
+    >
+      <EventIcon type={ev.type} className="mt-0.5" />
+      <span className="min-w-0">
+        {/* The words as well as the icon (decided). The icon is the glance;
+            the label is what makes an unfamiliar icon legible the first time,
+            and it costs one inline chip rather than the fixed column it used
+            to sit in. */}
+        <span className="mr-1.5 font-display text-[10px] uppercase tracking-wide text-zinc-500 md:text-xs">
+          {EVENT_LABEL[ev.type] ?? ev.type}
+        </span>
+        {eventNarration(ev, startTic)}
+      </span>
+    </motion.div>
+  );
+}
+
+export default function RoundCutscene({ resolutionId }) {
   const [events, setEvents] = useState([]);
   const [meta, setMeta] = useState(null);
   // How many BEATS have played. Events revealed is derived from it — see
@@ -1357,44 +1494,22 @@ export default function RoundCutscene({
   // the quiet Tics are beats too.
   const [visibleBeats, setVisibleBeats] = useState(0);
   const [error, setError] = useState(null);
+  // **The Tic being studied, or null while it plays.** Clicking a Tic in the
+  // counter stops the playhead and pins everything — stats, Stamina, the move
+  // bars — to the state immediately BEFORE that Tic, which is the state the
+  // fighters were actually looking at when they were caught by it.
+  const [pinnedTic, setPinnedTic] = useState(null);
   // Read once per mount rather than subscribed: changing the setting
   // mid-cutscene and having the playhead lurch is worse than it taking
   // effect on the next round you open.
   const [speed] = useState(loadCutsceneSpeed);
   const proxy = useRef({ i: 0 });
   const tweenRef = useRef(null);
-  const feedRef = useRef(null);
-
-  // --- Sourcing: live subscription vs one-shot replay fetch ---
-  useEffect(() => {
-    if (mode !== 'live') return undefined;
-    // A fresh mount starts from whatever the server has already pushed
-    // during this round; there's no backfill here on purpose — the live
-    // view is for the round happening now, and anything missed is
-    // recoverable in full from the chat log's replay card afterwards.
-    const onEvent = (ev) => {
-      if (ev.pairIndex !== pairIndex) return;
-      setEvents((prev) =>
-        prev.some((e) => e.seq === ev.seq && e.resolutionId === ev.resolutionId)
-          ? prev
-          : [...prev, ev].sort((a, b) => a.seq - b.seq)
-      );
-    };
-    socket.on('combat:round_event', onEvent);
-    return () => socket.off('combat:round_event', onEvent);
-  }, [mode, pairIndex]);
-
-  // A new round for the same pair reuses this component — drop the previous
-  // round's events rather than appending onto them.
-  useEffect(() => {
-    if (mode !== 'live') return;
-    setEvents([]);
-    setVisibleBeats(0);
-    proxy.current.i = 0;
-  }, [mode, pairIndex, roundNumber]);
+  const scrollRef = useRef(null);
+  const rowRefs = useRef(new Map());
 
   useEffect(() => {
-    if (mode !== 'replay' || !resolutionId) return undefined;
+    if (!resolutionId) return undefined;
     let cancelled = false;
     getRoundReplay(resolutionId)
       .then((data) => {
@@ -1406,17 +1521,17 @@ export default function RoundCutscene({
     return () => {
       cancelled = true;
     };
-  }, [mode, resolutionId]);
+  }, [resolutionId]);
 
-  const startTic = meta?.roundStartTic ?? roundStartTic ?? 0;
-  const length = meta?.roundLength ?? roundLength ?? 7;
+  const startTic = meta?.roundStartTic ?? 0;
+  const length = meta?.roundLength ?? 7;
   const beats = useMemo(() => beatsFrom(events, startTic), [events, startTic]);
 
-  // --- Playback: one tween from wherever the playhead is to the newest
-  // beat. Re-running as events stream in extends the run rather than
-  // restarting it, because gsap.to starts from the proxy's CURRENT value.
+  // --- Playback: one tween from wherever the playhead is to the last beat.
+  // Killed outright while a Tic is pinned — studying one Tic and having the
+  // clock walk out from under you is the thing pinning exists to prevent.
   useEffect(() => {
-    if (!beats.length) return undefined;
+    if (!beats.length || pinnedTic != null) return undefined;
     tweenRef.current?.kill();
     const remaining = beats.length - proxy.current.i;
     if (remaining <= 0) {
@@ -1431,229 +1546,307 @@ export default function RoundCutscene({
       onComplete: () => setVisibleBeats(beats.length),
     });
     return () => tweenRef.current?.kill();
-  }, [beats.length, speed]);
+  }, [beats.length, speed, pinnedTic]);
 
   const skipToEnd = () => {
     tweenRef.current?.kill();
     proxy.current.i = beats.length;
+    setPinnedTic(null);
     setVisibleBeats(beats.length);
   };
-
-  // Keep the newest revealed event in view without yanking the page.
-  useEffect(() => {
-    const el = feedRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [visibleBeats]);
 
   const ticks = useMemo(
     () => Array.from({ length }, (_, i) => startTic + i),
     [startTic, length]
   );
 
+  // **How far the playhead is for rendering purposes.** While pinned that is
+  // the last beat BEFORE the pinned Tic began — everything the header draws is
+  // derived from it, so pinning rewinds the stats, the Stamina and the move
+  // bars together rather than only jumping the log.
+  const beatsBefore = useMemo(() => {
+    if (pinnedTic == null) return null;
+    const at = beats.findIndex((b) => b.tic >= pinnedTic);
+    return at < 0 ? beats.length : at;
+  }, [beats, pinnedTic]);
+  const effectiveBeats = beatsBefore ?? visibleBeats;
+
+  const jumpToTic = useCallback((tic) => {
+    tweenRef.current?.kill();
+    setPinnedTic(tic);
+    rowRefs.current.get(tic)?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  }, []);
+
+  const resume = () => {
+    // Playback picks up from the pinned Tic rather than from wherever it had
+    // got to: you stopped to look at this moment, so this is the moment the
+    // round should carry on from.
+    proxy.current.i = beatsBefore ?? proxy.current.i;
+    setVisibleBeats(beatsBefore ?? visibleBeats);
+    setPinnedTic(null);
+  };
+
+  // Keep the newest revealed row in view while playing, and never while pinned.
+  useEffect(() => {
+    if (pinnedTic != null) return;
+    const el = scrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [visibleBeats, pinnedTic]);
+
   // The beats played so far, and what they add up to. `visibleCount` (how
   // many EVENTS have been revealed) is derived from the beats rather than
   // driven directly — everything downstream still reasons in events.
-  const playedBeats = beats.slice(0, visibleBeats);
+  const playedBeats = beats.slice(0, effectiveBeats);
   const visibleCount = playedBeats.reduce((n, b) => n + (b.kind === 'event' ? 1 : 0), 0);
   const shown = events.slice(0, visibleCount);
   const footprints = footprintsFrom(events, visibleCount);
   const { fighters, lastHit } = fightersFrom(events, visibleCount);
   const fx = beatEffects(events, visibleCount);
-  // A move's bar reacts to what it did (byMoveId) or to its owner being hit
-  // (byCharacterId) — the latter is how a character with no move of their
-  // own this Tic still visibly takes the punch.
   const effectFor = (fp) => fx.byMoveId[fp.declaredMoveId] ?? fx.byCharacterId[fp.characterId] ?? null;
-  // Straight off the beat, so the clock advances through Tics where nothing
-  // happens instead of jumping to wherever the next event landed.
-  const playheadTic = playedBeats.length ? playedBeats[playedBeats.length - 1].tic : startTic;
-  // Tics the playhead has walked through that produced nothing at all. Shown
-  // in the feed as a quiet marker so the log reads as time passing rather
-  // than as a stall — the board's own playhead is moving either way.
-  const quietTics = new Set(
-    playedBeats
-      .filter((b) => b.kind === 'tic')
-      .map((b) => b.tic)
-      .filter((t) => !events.some((e) => e.tic === t))
-  );
-  const isCaughtUp = visibleBeats >= beats.length;
-  const paused = pendingDodge || pendingConflict;
+  const playheadTic = pinnedTic ?? (playedBeats.length ? playedBeats[playedBeats.length - 1].tic : startTic);
+  const isCaughtUp = visibleBeats >= beats.length && pinnedTic == null;
 
-  // Players above the strip, NPCs below — the same convention the
-  // Declaration Lanes and the old lane-snapshot chat cards already use, so
-  // the cutscene reads as the same board rather than a new grammar.
-  const above = footprints.filter((f) => f.characterType !== 'npc');
-  const below = footprints.filter((f) => f.characterType === 'npc');
+  // --- Who is on which side, and which fighter each event belongs to.
+  //
+  // The roster event carries every seated fighter's `side`, so the two action
+  // columns are the pair's own two sides rather than a guess from character
+  // type. Read from the WHOLE log, not from the played part: the columns are
+  // the table's structure and must not reshuffle as the round plays.
+  const roster = useMemo(
+    () => events.find((e) => e.type === 'roster')?.payload?.participants ?? [],
+    [events]
+  );
+  const sideById = useMemo(() => new Map(roster.map((f) => [f.characterId, f.side])), [roster]);
+  const idByName = useMemo(() => new Map(roster.map((f) => [f.name, f.characterId])), [roster]);
+  const ownerOfMove = useMemo(() => {
+    const map = new Map();
+    for (const ev of events) {
+      const p = ev.payload ?? {};
+      if (p.declaredMoveId != null && p.characterId != null) map.set(p.declaredMoveId, p.characterId);
+    }
+    return map;
+  }, [events]);
+
+  // One row per Tic, always — including the Tics where nothing happened, which
+  // is most of them. That is what keeps clicking Tic 5 landing somewhere exact,
+  // and it is what makes the table read as time passing at a constant rate
+  // rather than as a list of highlights.
+  const rows = useMemo(() => {
+    const shownSet = new Set(shown.map((e) => e.seq));
+    const byTic = new Map(ticks.map((t) => [t, { left: [], right: [], whole: [] }]));
+    for (const ev of events) {
+      if (!shownSet.has(ev.seq)) continue;
+      const tic = Math.min(Math.max(ev.tic ?? startTic, startTic), startTic + length - 1);
+      const bucket = byTic.get(tic);
+      if (!bucket) continue;
+      const actor = actorOf(ev, ownerOfMove, idByName);
+      const side = actor != null ? sideById.get(actor) : null;
+      if (side === 'left') bucket.left.push(ev);
+      else if (side === 'right') bucket.right.push(ev);
+      else bucket.whole.push(ev);
+    }
+    return ticks.map((tic) => ({ tic, ...byTic.get(tic) }));
+  }, [events, shown, ticks, startTic, length, ownerOfMove, idByName, sideById]);
+
+  const reachedTic = playedBeats.length ? playedBeats[playedBeats.length - 1].tic : startTic - 1;
+  const nameOfSide = (side) =>
+    roster.filter((f) => f.side === side).map((f) => f.name).join(' & ') || (side === 'left' ? 'Left' : 'Right');
 
   if (error) {
     return <div className="panel-cut border border-zinc-800 p-4 text-sm text-zinc-400">{error}</div>;
   }
 
   return (
-    <div className="panel-cut flex h-full min-h-0 flex-col border border-zinc-800 bg-zinc-950/60 p-3">
-      <div className="mb-2 flex items-center justify-between gap-2">
-        <h3 className="font-display text-base uppercase tracking-wide text-zinc-300 md:text-xl">
-          Round {meta?.roundNumber ?? roundNumber}
-          {mode === 'replay' && <span className="ml-2 text-xs text-zinc-500 md:text-sm">replay</span>}
-        </h3>
-        <div className="flex items-center gap-2">
-          {paused && (
-            <span className="panel-cut-sm bg-amber-600/30 px-2 py-1 font-display text-xs uppercase text-amber-300 md:text-sm">
-              {pendingDodge ? 'Waiting on the GM’s Dodge call' : 'Waiting on a guard-extension choice'}
-            </span>
-          )}
-          <button
-            type="button"
-            onClick={skipToEnd}
-            disabled={isCaughtUp}
-            className="panel-cut-sm border border-zinc-700 px-3 py-1.5 font-display text-xs uppercase text-zinc-300 hover:bg-zinc-800 disabled:opacity-40 md:text-sm"
-          >
-            {mode === 'replay' ? 'Skip to end' : 'Catch up'}
-          </button>
-        </div>
-      </div>
-
-      {/* The board: Players above the strip, NPCs below — the same
-          convention Declaration Lanes uses. `relative` so the impact burst
-          can be centred over the whole board rather than over one row. */}
-      <div className="relative shrink-0">
-        <ImpactBurst burst={fx.burst} />
-
-        <div className="mb-1 space-y-1">
-          {above.map((fp) => (
-            <MoveBar
-              key={fp.declaredMoveId}
-              fp={fp}
-              ticks={ticks}
-              startTic={startTic}
-              effect={effectFor(fp)}
-              beat={fx.seq}
-              staminaFlash={fx.revealedMoveId === fp.declaredMoveId}
-            />
-          ))}
-        </div>
-
-        {/* The Tic strip itself, driven by the playhead rather than live
-            server state — during a cutscene the round is already computed.
-            Same fixed cell width as the move bars above, and the same name
-            gutter, which is what keeps the two in lockstep. */}
-        <div className="flex items-center gap-2 py-1">
-          <span className="w-24 shrink-0 md:w-36" />
-          <div className="flex shrink-0 gap-0.5">
-            {ticks.map((tic) => (
-              <motion.span
-                key={tic}
-                animate={{ scale: tic === playheadTic ? 1.15 : 1 }}
-                transition={{ type: 'spring', stiffness: 400, damping: 22 }}
-                title={`Tic ${tic - startTic + 1}`}
-                className={`flex h-8 w-8 shrink-0 items-center justify-center border font-display text-xs md:h-10 md:w-11 md:text-sm ${
-                  tic === playheadTic
-                    ? 'border-brand-400 bg-brand-700/60 text-zinc-100'
-                    : 'border-zinc-700 bg-zinc-900 text-zinc-500'
-                }`}
+    // **One scroll container, with the header sticky inside it.** The board and
+    // the fighters used to sit above a separately-scrolling log, which meant two
+    // nested scrollers and a header that only stayed put when the outer one
+    // happened not to move. Now the whole cutscene scrolls and the header is
+    // pinned to the top of it, so the Tic counter and the stats are in reach
+    // from any row of a long round.
+    <div ref={scrollRef} className="panel-cut h-full min-h-0 overflow-y-auto border border-zinc-800 bg-zinc-950/60">
+      <div className="sticky top-0 z-20 border-b border-zinc-800 bg-zinc-950 px-3 pb-2 pt-3">
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <h3 className="font-display text-base uppercase tracking-wide text-zinc-300 md:text-xl">
+            Round {meta?.roundNumber}
+            <span className="ml-2 text-xs text-zinc-500 md:text-sm">replay</span>
+          </h3>
+          <div className="flex items-center gap-2">
+            {pinnedTic != null && (
+              <span className="panel-cut-sm bg-brand-700/40 px-2 py-1 font-display text-xs uppercase text-brand-200 md:text-sm">
+                Holding at Tic {pinnedTic - startTic + 1}
+              </span>
+            )}
+            {pinnedTic != null && (
+              <button
+                type="button"
+                onClick={resume}
+                className="panel-cut-sm border border-brand-600 px-3 py-1.5 font-display text-xs uppercase text-brand-200 hover:bg-brand-900/40 md:text-sm"
               >
-                {tic - startTic + 1}
-              </motion.span>
+                Resume
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={skipToEnd}
+              disabled={isCaughtUp}
+              className="panel-cut-sm border border-zinc-700 px-3 py-1.5 font-display text-xs uppercase text-zinc-300 hover:bg-zinc-800 disabled:opacity-40 md:text-sm"
+            >
+              Skip to end
+            </button>
+          </div>
+        </div>
+
+        {/* The board. `relative` so the impact burst can be centred over the
+            whole thing rather than over one row. Held to half the width on a
+            desktop, which is what lets the Tic counter's cells grow: a Tic you
+            are meant to click has to be big enough to aim at. */}
+        <div className="relative w-full md:w-1/2">
+          <ImpactBurst burst={fx.burst} />
+
+          <div className="mb-1 space-y-1">
+            {footprints.filter((f) => f.characterType !== 'npc').map((fp) => (
+              <MoveBar
+                key={fp.declaredMoveId}
+                fp={fp}
+                ticks={ticks}
+                startTic={startTic}
+                effect={effectFor(fp)}
+                beat={fx.seq}
+                staminaFlash={fx.revealedMoveId === fp.declaredMoveId}
+              />
+            ))}
+          </div>
+
+          {/* The Tic strip. Every cell is a button: clicking one pins the
+              round to the state just before that Tic and scrolls the table to
+              its row. */}
+          <div className="flex items-center gap-2 py-1">
+            <span className="w-24 shrink-0 md:w-36" />
+            <div className="flex min-w-0 flex-1 gap-0.5">
+              {ticks.map((tic) => {
+                const reached = tic <= reachedTic;
+                return (
+                  <motion.button
+                    key={tic}
+                    type="button"
+                    onClick={() => jumpToTic(tic)}
+                    animate={{ scale: tic === playheadTic ? 1.12 : 1 }}
+                    transition={{ type: 'spring', stiffness: 400, damping: 22 }}
+                    title={`Tic ${tic - startTic + 1} — jump here and hold`}
+                    className={`flex h-10 min-w-0 flex-1 items-center justify-center border font-display text-sm transition-colors md:h-14 md:text-lg ${
+                      tic === playheadTic
+                        ? 'border-brand-400 bg-brand-700/60 text-zinc-100'
+                        : reached
+                          ? 'border-zinc-700 bg-zinc-900 text-zinc-400 hover:border-brand-600'
+                          : 'border-zinc-800 bg-zinc-950 text-zinc-700 hover:border-zinc-600'
+                    }`}
+                  >
+                    {tic - startTic + 1}
+                  </motion.button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="mt-1 space-y-1">
+            {footprints.filter((f) => f.characterType === 'npc').map((fp) => (
+              <MoveBar
+                key={fp.declaredMoveId}
+                fp={fp}
+                ticks={ticks}
+                startTic={startTic}
+                effect={effectFor(fp)}
+                beat={fx.seq}
+                staminaFlash={fx.revealedMoveId === fp.declaredMoveId}
+              />
             ))}
           </div>
         </div>
 
-        <div className="mt-1 space-y-1">
-          {below.map((fp) => (
-            <MoveBar
-              key={fp.declaredMoveId}
-              fp={fp}
-              ticks={ticks}
-              startTic={startTic}
-              effect={effectFor(fp)}
-              beat={fx.seq}
-              staminaFlash={fx.revealedMoveId === fp.declaredMoveId}
-            />
-          ))}
+        {/* The fighters, under the board and still inside the frozen header:
+            "what is the state of everyone right now" is the question you ask
+            from anywhere in a long round, so it travels with you. */}
+        {fighters.length > 0 && (
+          <div className="mt-2 flex flex-wrap gap-2">
+            {fighters.map((f) => (
+              <FighterCard key={f.characterId} fighter={f} lastHit={lastHit} beat={fx.seq} />
+            ))}
+          </div>
+        )}
+
+        {/* The table's own column heading, inside the frozen block rather than
+            at the top of the scrolling body — a second sticky element at the
+            same offset simply slides under the first, which is exactly what it
+            did. Whose column is whose is a fact you need at row forty as much as
+            at row one. */}
+        <div className="mt-2 grid grid-cols-[2.5rem_1fr_1fr] gap-x-2 border-t border-zinc-800 pt-1 font-display text-[10px] uppercase tracking-wide text-zinc-500 md:grid-cols-[3.5rem_1fr_1fr] md:text-xs">
+          <span>Tic</span>
+          <span className="truncate">{nameOfSide('left')}</span>
+          <span className="truncate">{nameOfSide('right')}</span>
         </div>
       </div>
 
-      {/* The fighters. Below the board and above the log, because that is
-          the reading order of a round: this is who is fighting, this is
-          what they did, this is what it did to them. */}
-      {fighters.length > 0 && (
-        <div className="mt-3 flex shrink-0 flex-wrap gap-2">
-          {fighters.map((f) => (
-            <FighterCard key={f.characterId} fighter={f} lastHit={lastHit} beat={fx.seq} />
-          ))}
-        </div>
-      )}
-
-      {/* The event feed — every element is a real DOM node with its own
-          payload behind it (hover for detail), not a rendered video frame. */}
-      {/* The event feed fills whatever height it's given — in the theater
-          dialog that's most of the screen, which is the point: the log is
-          what you actually read to follow the fight. */}
-      <div ref={feedRef} className="mt-3 min-h-32 flex-1 space-y-1 overflow-y-auto pr-1">
+      {/* **The log as a table: a row per Tic, a column per side.** A flat
+          chronological feed answered "what happened next" and never "what was
+          each of them doing at Tic 4" — which is the question a fight actually
+          raises. The Tic column is what the counter above scrolls to. */}
+      <div className="px-3 pb-3">
         <AnimatePresence initial={false}>
-          {/* The feed walks the BEATS, not the events, so a Tic where
-              nothing happened still gets a line. The board's playhead is
-              visibly moving through those Tics, and a log that jumps from
-              T3 to T7 makes that look like a stall. Rendered as a thin
-              divider rather than a row, so it never competes with a real
-              event for attention. */}
-          {playedBeats.map((beat) => {
-            if (beat.kind === 'tic') {
-              if (!quietTics.has(beat.tic)) return null;
-              return (
-                <motion.div
-                  key={`quiet-${beat.tic}`}
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  transition={{ duration: 0.18 }}
-                  className="flex items-center gap-2 px-2 py-1 md:gap-3 md:px-3"
-                >
-                  <span className="w-8 shrink-0 font-display text-xs text-zinc-700 md:w-12 md:text-sm">
-                    T{beat.tic - startTic + 1}
-                  </span>
-                  <span className="h-px flex-1 bg-zinc-800" />
-                  <span className="shrink-0 font-display text-[10px] uppercase tracking-widest text-zinc-700 md:text-xs">
-                    nothing lands
-                  </span>
-                </motion.div>
-              );
-            }
-            const ev = beat.ev;
+          {rows.map((row) => {
+            const reached = row.tic <= reachedTic;
+            const empty = !row.left.length && !row.right.length && !row.whole.length;
+            if (!reached && !empty) return null;
             return (
-            <motion.div
-              key={`${ev.resolutionId ?? resolutionId}-${ev.seq}`}
-              initial={{ opacity: 0, x: -8 }}
-              animate={{ opacity: 1, x: 0 }}
-              transition={{ duration: 0.18 }}
-              title={eventDetail(ev, startTic)}
-              className={`flex items-baseline gap-2 border-l-2 px-2 py-1.5 text-sm md:gap-3 md:px-3 md:py-2 md:text-base ${
-                PAUSE_EVENTS.has(ev.type)
-                  ? 'border-amber-500 bg-amber-950/30 text-amber-200'
-                  : ev.type === 'damage_applied'
-                    ? 'border-rose-600 bg-rose-950/20 text-rose-200'
-                    : ev.type === 'grapple_resolved' && ev.payload?.success
-                      ? 'border-amber-600 bg-amber-950/20 text-amber-200'
-                      : ev.type === 'insignificant_damage' ||
-                          (ev.type === 'no_damage_resolved' && !ev.payload?.succeeded) ||
-                          (ev.type === 'grapple_resolved' && !ev.payload?.success)
-                      ? 'border-zinc-600 text-zinc-500'
-                      : 'border-zinc-700 text-zinc-300'
-              }`}
-            >
-              <span className="w-8 shrink-0 font-display text-xs text-zinc-500 md:w-12 md:text-sm">
-                T{ev.tic - startTic + 1}
-              </span>
-              <span className="w-24 shrink-0 font-display text-xs uppercase tracking-wide text-zinc-500 md:w-36 md:text-sm">
-                {EVENT_LABEL[ev.type] ?? ev.type}
-              </span>
-              {/* The sentence, not a fragment — readable without hovering. */}
-              <span className="min-w-0 flex-1">{eventNarration(ev, startTic)}</span>
-            </motion.div>
+              <div
+                key={row.tic}
+                ref={(el) => {
+                  if (el) rowRefs.current.set(row.tic, el);
+                  else rowRefs.current.delete(row.tic);
+                }}
+                className={`grid grid-cols-[2.5rem_1fr_1fr] gap-x-2 border-b border-zinc-900 py-1 md:grid-cols-[3.5rem_1fr_1fr] ${
+                  row.tic === pinnedTic ? 'bg-brand-950/40' : ''
+                } ${reached ? '' : 'opacity-40'}`}
+              >
+                <button
+                  type="button"
+                  onClick={() => jumpToTic(row.tic)}
+                  title={`Hold at Tic ${row.tic - startTic + 1}`}
+                  className={`self-start py-1 text-left font-display text-xs hover:text-brand-300 md:text-sm ${
+                    row.tic === pinnedTic ? 'text-brand-300' : 'text-zinc-600'
+                  }`}
+                >
+                  T{row.tic - startTic + 1}
+                </button>
+                <div className="min-w-0 space-y-1">
+                  {row.left.map((ev) => (
+                    <EventLine key={`${ev.resolutionId ?? resolutionId}-${ev.seq}`} ev={ev} startTic={startTic} />
+                  ))}
+                </div>
+                <div className="min-w-0 space-y-1">
+                  {row.right.map((ev) => (
+                    <EventLine key={`${ev.resolutionId ?? resolutionId}-${ev.seq}`} ev={ev} startTic={startTic} />
+                  ))}
+                </div>
+                {/* Events about the whole round rather than either fighter —
+                    the roster, the round ending — span both columns instead of
+                    being filed under somebody who did not do them. */}
+                {row.whole.length > 0 && (
+                  <div className="col-start-2 col-span-2 min-w-0 space-y-1">
+                    {row.whole.map((ev) => (
+                      <EventLine key={`${ev.resolutionId ?? resolutionId}-${ev.seq}`} ev={ev} startTic={startTic} />
+                    ))}
+                  </div>
+                )}
+                {empty && reached && (
+                  <div className="col-start-2 col-span-2 px-1.5 py-1 font-display text-[10px] uppercase tracking-widest text-zinc-700 md:text-xs">
+                    nothing lands
+                  </div>
+                )}
+              </div>
             );
           })}
         </AnimatePresence>
-        {!events.length && (
-          <div className="px-2 py-1 text-sm text-zinc-600 md:text-base">Resolving…</div>
-        )}
+        {!events.length && <div className="px-2 py-1 text-sm text-zinc-600 md:text-base">Loading…</div>}
       </div>
     </div>
   );

@@ -525,6 +525,11 @@ const diePayload = (die) => ({
   locked_bonus: die.locked_bonus,
   locked_status: die.locked_status,
   half_damage: Boolean(die.half_damage),
+  // **Temporary Damage**: how many half-steps of this Stat's damage wear off at
+  // 0.5 a Round. Carried on the die itself so every surface that draws a Stat
+  // can tint it, rather than each one asking separately — see the purple in
+  // DieWidget.jsx and the cutscene's StatPip.
+  temporary_damage: die.temporary_damage ?? 0,
 });
 
 // SQLite CURRENT_TIMESTAMP is 'YYYY-MM-DD HH:MM:SS' in UTC

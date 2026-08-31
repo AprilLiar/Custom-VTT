@@ -3317,7 +3317,7 @@ test('Temporary Damage lands in full, and comes back 0.5 a Round', async () => {
   // ...and the Round finishing gave back exactly one half-step of it, leaving
   // one owed. 0.5 per Round is a rate on the Stat, not on the blow.
   const owed = await one(
-    "SELECT steps FROM temporary_damage WHERE character_id = ? AND slot_name = 'Body'",
+    "SELECT temporary_damage AS steps FROM dice WHERE character_id = ? AND slot_name = 'Body'",
     [defender]
   );
   assert.equal(owed?.steps, 1, 'two dealt, one given back, one still owed');
@@ -3346,7 +3346,7 @@ test('a second finished Round clears the rest of the debt and the Stat is whole'
     [b]
   );
   await run(
-    "INSERT INTO temporary_damage (character_id, slot_name, steps) VALUES (?, 'Body', 1)",
+    "UPDATE dice SET temporary_damage = 1 WHERE character_id = ? AND slot_name = 'Body'",
     [b]
   );
   await seatPair(pairIndex, a, b);
@@ -3354,9 +3354,10 @@ test('a second finished Round clears the rest of the debt and the Stat is whole'
   await resolvePair(pairIndex);
 
   assert.equal(
-    await one("SELECT steps FROM temporary_damage WHERE character_id = ? AND slot_name = 'Body'", [b]),
-    null,
-    'the debt is cleared, and the row deleted rather than left at zero'
+    (await one("SELECT temporary_damage AS steps FROM dice WHERE character_id = ? AND slot_name = 'Body'", [b]))
+      ?.steps,
+    0,
+    'the debt is cleared'
   );
   assert.deepEqual(
     await one("SELECT current_size, bonus, status, half_damage FROM dice WHERE character_id = ? AND slot_name = 'Body'", [b]),
@@ -3385,7 +3386,7 @@ test('Damage from a move WITHOUT the Tag is owed back to nobody', async () => {
   });
   await resolvePair(pairIndex);
   assert.equal(
-    (await all('SELECT * FROM temporary_damage WHERE character_id = ?', [defender])).length, 0
+    (await all('SELECT * FROM dice WHERE character_id = ? AND temporary_damage > 0', [defender])).length, 0
   );
   assert.notDeepEqual(
     await one("SELECT current_size, bonus, half_damage FROM dice WHERE character_id = ? AND slot_name = 'Body'", [defender]),
@@ -3428,7 +3429,7 @@ test('a Stat DESTROYED by Temporary Damage comes back', async () => {
   assert.equal(body.current_size, 4);
   assert.equal(Boolean(body.half_damage), true, 'back exactly where it was, half and all');
   assert.equal(
-    (await all('SELECT * FROM temporary_damage WHERE character_id = ?', [defender])).length, 0
+    (await all('SELECT * FROM dice WHERE character_id = ? AND temporary_damage > 0', [defender])).length, 0
   );
 });
 

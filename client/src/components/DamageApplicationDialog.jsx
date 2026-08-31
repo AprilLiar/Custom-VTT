@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { socket } from '../socket.js';
 import { getCharacter } from '../lib/api.js';
-import { dieLabel } from '../lib/dice.js';
+import { dieLabel, temporaryDamageTitle, temporaryTint } from '../lib/dice.js';
 import { ANATOMY } from '../lib/anatomy.js';
 import VitruvianFigure from './VitruvianFigure.jsx';
 import { portraitSrc, vitruvianSrc } from '../lib/image.js';
@@ -185,9 +185,22 @@ export default function DamageApplicationDialog({
                           ? 'Incapacitated'
                           : !allowedTarget
                             ? 'Not an Attack Target'
-                            : `Apply ${steps} Half-Damage to ${die.slot_name}`
+                            : [
+                                `Apply ${steps} Half-Damage to ${die.slot_name}`,
+                                temporaryDamageTitle(die),
+                              ]
+                                .filter(Boolean)
+                                .join('\n')
                       }
-                      style={{ top: spot.top, left: spot.left }}
+                      style={{
+                        top: spot.top,
+                        left: spot.left,
+                        // Temporary Damage tints purple, here as a flat wash: this
+                        // button has no locked-size comparison to hang tintFor's
+                        // ramp on, so what is being said is only "some of this
+                        // Stat's damage wears off".
+                        backgroundColor: temporaryTint(die) ?? undefined,
+                      }}
                       className={`absolute flex h-14 w-14 -translate-x-1/2 -translate-y-1/2 flex-col items-center justify-center panel-cut-sm border font-display text-xs font-bold transition-colors ${
                         incapacitated || !allowedTarget
                           ? 'cursor-not-allowed border-zinc-800 bg-zinc-900 text-zinc-700 opacity-50'

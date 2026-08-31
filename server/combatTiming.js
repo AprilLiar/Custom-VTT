@@ -1,3 +1,5 @@
+import { placementFloorAfterTrip } from '../client/src/lib/framePhaseColors.js';
+
 // Pure Tic-timing math for Combat Timing (Phase 7) — no I/O, so it can be
 // unit-tested in isolation before any of it is wired into sockets or the
 // Arena UI (see server/test/combatTiming.test.js and the plan's Combat
@@ -131,18 +133,12 @@ export function tripWindow({ activeEndTic, recoveryEndTic, tripRecoveryTics = 0 
 //
 // Returns the earliest legal placement Tic. With no trip frames, or without
 // the Tag, this is exactly `blockedUntilTic` — the existing rule, unchanged.
-export function placementFloorAfterTrip({
-  blockedUntilTic,
-  tripRecoveryTics = 0,
-  startupTics = 0,
-  offTheGround = false,
-}) {
-  if (blockedUntilTic == null) return null;
-  if (!offTheGround) return blockedUntilTic;
-  const trip = Math.max(0, Math.trunc(Number(tripRecoveryTics) || 0));
-  const startup = Math.max(0, Math.trunc(Number(startupTics) || 0));
-  return blockedUntilTic - Math.min(trip, startup);
-}
+// **The implementation moved to `client/src/lib/framePhaseColors.js`** and is
+// re-exported here so every server import keeps working. It decides both what
+// the engine accepts and what the Tic Counter draws as reachable, and two
+// copies of that is exactly how the counter came to grey out frames a drop
+// would have been allowed on. Same arrangement `matchups.js` already has.
+export { placementFloorAfterTrip };
 
 // Reveal state is computed live from the current Tic, never cached — so
 // moving the counter backward naturally re-hides a move that hasn't

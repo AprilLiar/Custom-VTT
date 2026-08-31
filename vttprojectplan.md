@@ -875,6 +875,73 @@ left to stick to — and the height cap plus inner scroll covers a long roster: 
 past the fold, but its own scrollbar brings the bottom of the list into the visible part, which the
 unstuck version could not do at all.
 
+**The Round Cutscene is a table now, and replay-only (decided, revised; implemented).** A flat
+chronological feed answered "what happened next" and never "what was each of them doing at Tic 4",
+which is the question a fight actually raises. It is now a **table: one row per Tic, three columns —
+Tic, the left side's actions, the right side's**.
+
+- **Live mode is gone.** There used to be a `mode='live'` that subscribed to `combat:round_event` and
+  played a round as the server resolved it, mounted in the Arena in place of the Tic Counter. A table
+  at a live game watches the replay back together afterwards, and that view was carrying half the
+  component's complexity — a growing event list, a tween that had to *extend* rather than restart, and
+  a "catch up" button for a playhead racing a server. What the Arena shows while a pair resolves is a
+  **"Round N is resolving…" banner**, naming whatever the round is waiting on. **The GM's own calls
+  were never part of this component** and are untouched: the Dodge, Block, move-conflict and grapple
+  prompts are dialogs on `CombatHeaderBar`, which is always on screen.
+- **A row per Tic, always — including the Tics where nothing happened**, which is most of them. That
+  is what keeps clicking Tic 5 landing somewhere exact, and what makes the table read as time passing
+  at a constant rate rather than as a list of highlights. A quiet Tic gets its own dimmed row saying
+  so, rather than being collapsed or skipped.
+- **An event is filed in the column of the fighter who ACTED**, not of whoever it happened to — a
+  punch appears in the puncher's column, because the question the table answers is what each side was
+  *doing*. `actorOf` finds them four ways, in order of certainty: `attackerCharacterId` (added to the
+  damage events for this, since matching fighters by name is a guess when two share one);
+  `characterId`; the declared move it is about, resolved through the footprints already being tracked
+  — which is what places a defence, since `defense_resolved` and its siblings name no character at
+  all, only the guard's own declared move; and finally a name, for the two grapple prompts that
+  predate ids. Anything still unattributed — the roster, the round ending — is genuinely about the
+  whole round and spans both columns.
+- **The header is frozen and carries everything about "now".** One scroll container with the header
+  `sticky` inside it: the board, a **half-width Tic counter with much bigger cells**, the fighter
+  stats, and the table's own column heading. It used to be a board above a separately-scrolling log —
+  two nested scrollers, and a header that only stayed put when the outer one happened not to move.
+  (The column heading has to live *inside* that block: a second `sticky top-0` at the same offset
+  simply slides under the first, which is exactly what it did.)
+- **Every Tic in the counter is a button.** Clicking one **pins** the round to the state immediately
+  *before* that Tic — stats, Stamina and the move bars together, not just the log position — stops the
+  playhead, and scrolls the table to that row. That is the state the fighters were actually looking at
+  when the Tic caught them. A "Resume" carries on **from the pinned Tic** rather than from wherever
+  playback had got to: you stopped to look at this moment, so this is the moment the round continues
+  from.
+- **Stat icons on the pips**, reusing `ANATOMY` — the same map the Core Stats figure and the damage
+  dialog already draw from, so a Skull is the same Skull everywhere. Eight pips of four-letter words
+  are a wall of text at a glance; the icon is what makes "they went for the legs" readable without
+  reading.
+- **An icon at the head of every log line** (`client/src/lib/eventIcons.jsx`), **grouped by family
+  rather than invented per type**: anything that is a blow landing is the same rose icon, anything
+  that is a guard is a shield, anything that costs or returns Stamina is a bolt. Thirty distinct
+  pictograms would be thirty things to learn. **The words stay beside the icon** — the icon is the
+  glance, the label is what makes an unfamiliar icon legible the first time — but as an inline chip
+  rather than the fixed column it used to sit in, which is width two narrow action cells cannot spare.
+  An unknown type still gets a mark rather than a gap, the same reason `automationLabel` keeps its
+  fallback.
+- **A replay's Temporary Damage is self-contained** (§0): the roster snapshot carries what each Stat
+  already owed when the Round opened, `damage_applied` carries whether the blow wears off, and the
+  end-of-Round heal's `stat_stepped` says `source: 'temporary_heal'` with what is left — so a Recover
+  Stat automation cannot pay down the purple, and a replay watched a week later tints the same pips
+  rather than reading a debt long since worn off.
+
+**The Tic Counter greyed frames a drop would have been allowed on (bugfix, from a live playtest).**
+Trip frames left by a **Grounding** move and carried into the next round drew as unreachable squares,
+while declaring an **Off The Ground** move onto them worked perfectly well. Purely a display fault,
+and a textbook one: the rule lived twice. `placementFloorAfterTrip` relaxed the floor server-side,
+and `buildDeclarePayload` in the Arena floored every declaration at the previous move's full footprint
+end — the rule for every *other* move. `placementFloorAfterTrip` now lives in
+`client/src/lib/framePhaseColors.js` and the server imports it, the same arrangement `matchups.js`
+already has, so a rule that decides both what is legal and what is drawn has one implementation.
+A test asserts the two are literally the same function, and was verified to fail when the server was
+given its own copy back.
+
 **A `useMemo is not defined` shipped past the build and the linter, and closed a gap (bugfix).** The
 new picker used `useMemo`, `CombatArena.jsx` did not import it, and `npm run build` was perfectly
 happy: Vite parses the file fine and an undefined identifier is a runtime error, not a syntax one. It
@@ -1117,9 +1184,25 @@ one half-step at a time, until the debt is clear.
   automation does, so the cutscene animates the Stat coming back with no new renderer, plus one Chat
   Log line per fighter naming the Stats — shaking off a Round's worth is one thing that happened to
   them, not four.
-- **Not yet drawn on the sheet.** The mechanic is visible through the Chat Log and the die moving; the
-  per-Stat outstanding total is not shown anywhere yet, which is worth adding if the split turns out
-  to matter at the table.
+- **A column on `dice`, revised from its own table.** It shipped as
+  `temporary_damage(character_id, slot_name, steps)` on the reasoning that it is a running total
+  outliving any one blow — true, but it is one number per (character, slot), which is exactly one
+  `dice` row. The pressure that showed it up was the purple below: every die read path in the app
+  (`SELECT * FROM dice` on the sheet, the roster, the combat payload, `die:updated`) picks a column
+  up for free, where a side table would have had to be threaded into five places by hand. The old
+  table is still declared and its rows are folded into the column once at boot — a deployed world may
+  have played a Round between the two shapes, and a debt silently forgiven is a Stat that never
+  comes back.
+- **A Stat carrying Temporary Damage draws purple, everywhere a Stat is drawn (decided, new;
+  implemented)** — the Core Stats figure, the Arena's fighter cards, the damage-application dialog
+  and a replay's stat pips. Deliberately a short hop from the red it replaces rather than a fresh
+  colour: red-500 is `hsl(0, 84%, 60%)` and this is `hsl(300, 60%, 62%)` at the same alpha ramp, so a
+  purple Stat still reads as "this Stat is hurt" at a glance and only says something extra on a second
+  look. `tintFor` swaps the red for it whenever the die is below its locked size; a flat
+  `temporaryTint` fallback covers the two cases that comparison cannot answer — a Stat back at its
+  locked size that still owes half a step, and an **incapacitated** one, which is exactly the case
+  worth marking since it is the one that walks back out of it. Hovering says how much and why, in one
+  sentence worded once (`temporaryDamageTitle`) so it reads the same on all four surfaces.
   - **Verified**: `groundingTripRecoveryTics` is pure and unit-tested (all of the move's Recovery and
     none of anybody else's, junk input never becoming negative or fractional frames), plus a
     `phaseAtTic` sweep proving the frames reach back exactly to the Active end and that the same move
