@@ -1602,6 +1602,27 @@ export async function initDb() {
     )
   `);
 
+  // **"Improve their next roll AGAINST YOU" (decided, new).** The mirror of
+  // `characters.pending_roll_penalty`, and a table rather than a column for one
+  // reason: this credit names *who it is good against*, and in an Uneven Combat
+  // one fighter can be owed one by each of several opponents at once. A column
+  // could hold the number but not the "against whom", and dropping that is
+  // dropping the whole point of the effect.
+  //
+  // On the characters, not on seats — same reasoning as the penalty column: this
+  // is a mark somebody already left, so it survives the fight ending and cannot
+  // be shed by being re-seated. Accumulates per pair via the UNIQUE, so two
+  // moves leaving a mark before the beneficiary rolls are both paid at once.
+  ddl(`
+    CREATE TABLE IF NOT EXISTS pending_roll_bonuses (
+      id INTEGER PRIMARY KEY,
+      character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+      against_character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+      amount INTEGER NOT NULL DEFAULT 0,
+      UNIQUE(character_id, against_character_id)
+    )
+  `);
+
   await ensureColumn(
     'counters',
     'reward_type',
@@ -2034,6 +2055,10 @@ async function ensureIndexes() {
     // Every Counter render asks for its Gates, and the Arena asks for a
     // screenful at once.
     ['counter_gates', 'counter_id'],
+    // Asked once per roll, by the roller — the UNIQUE already covers the
+    // (character, against) pair, and this covers the housekeeping sweep that
+    // clears a character's credits when a fight is cleared.
+    ['pending_roll_bonuses', 'character_id'],
   ];
   for (const [table, column] of indexes) {
     ddl(`CREATE INDEX IF NOT EXISTS idx_${table}_${column} ON ${table}(${column})`);

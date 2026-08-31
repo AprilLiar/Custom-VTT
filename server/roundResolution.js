@@ -830,6 +830,44 @@ async function runAutomations(io, {
         effects.push(`−${amount} on ${opponentCharacter.name}'s next roll`);
         break;
       }
+      case 'opponent_next_roll_bonus': {
+        // **A credit, and it names who it is good against.** The penalty above
+        // is spent by the opponent's next roll of any kind; this one waits for a
+        // roll aimed at the fighter who handed it over — you dropped your guard
+        // against *this* opponent, and in an Uneven Combat the fighter beside
+        // you gets nothing out of it.
+        //
+        // Its own table rather than a column for exactly that reason: a column
+        // can hold the number but not the "against whom", and one fighter can be
+        // owed one by each of several opponents at once. Accumulates on the
+        // pair, the same way the penalty accumulates on the character.
+        if (!opponentCharacter || opponentCharacterId == null) break;
+        await run(
+          `INSERT INTO pending_roll_bonuses (character_id, against_character_id, amount)
+           VALUES (?, ?, ?)
+           ON CONFLICT(character_id, against_character_id)
+             DO UPDATE SET amount = amount + excluded.amount`,
+          [opponentCharacterId, selfCharacterId, amount]
+        );
+        const owedRow = await one(
+          'SELECT amount AS n FROM pending_roll_bonuses WHERE character_id = ? AND against_character_id = ?',
+          [opponentCharacterId, selfCharacterId]
+        );
+        if (emitEvent && tic != null) {
+          await emitEvent(tic, 'next_roll_bonus', {
+            characterId: opponentCharacterId,
+            characterName: opponentCharacter.name,
+            againstCharacterId: selfCharacterId,
+            againstCharacterName: selfCharacter.name,
+            amount,
+            pending: owedRow?.n ?? amount,
+          });
+        }
+        effects.push(
+          `+${amount} on ${opponentCharacter.name}'s next roll against ${selfCharacter.name}`
+        );
+        break;
+      }
       // Signed, and the label has to follow the sign. The Move Creator can only
       // author these positive (normalizeInteractions takes Math.abs of anything
       // outside SIGNED_TYPES), so a NEGATIVE amount — Stamina given back rather
@@ -1204,6 +1242,10 @@ async function stepStat(io, {
 // target has nothing in Startup during the attacker's Active window.
 async function checkInterrupt(io, {
   targetCharacterId,
+  // Who is doing the interrupting. Carried for the `opponent_next_roll_bonus`
+  // credit only: the caught fighter's resistance roll is a roll made against
+  // this attacker, so an opening the attacker left is good here.
+  attackerCharacterId = null,
   attackerRevealTic,
   attackerActiveTics,
   // The attack's own roll — one half of the contest (decided, corrected). The
@@ -1286,6 +1328,7 @@ async function checkInterrupt(io, {
     moveId: startupDM.move_id,
     tic,
     slotNames: interruptSlots,
+    againstCharacterId: attackerCharacterId,
   });
   const mod = bonusMods + startupDM.roll_modifier + rollBonusRow.bonus;
 
@@ -1782,6 +1825,7 @@ async function runInterruptAndDamage(io, {
   if (applied.length) {
     await checkInterrupt(io, {
       targetCharacterId,
+      attackerCharacterId,
       attackerRevealTic: attackActiveStart,
       attackerActiveTics,
       halfDamageSteps: Math.max(...applied.map((a) => a.steps)),
@@ -2026,7 +2070,7 @@ function rollModifierBreakdown({ rollModifier = 0, moveRollBonus = 0, terms = []
   ].filter((t) => t.amount !== 0);
 }
 
-async function rollFor(io, { characterId, characterName, moveId, moveName, slotNames, rollType, customRollSize, rollModifier, appendageChoice, tic, declaredMoveId, emitEvent, defensive = false, chainRollBonus = 0 }) {
+async function rollFor(io, { characterId, characterName, moveId, moveName, slotNames, rollType, customRollSize, rollModifier, appendageChoice, tic, declaredMoveId, emitEvent, defensive = false, chainRollBonus = 0, againstCharacterId = null }) {
   const hasRoll = rollType === 'custom' ? customRollSize != null : slotNames.length > 0;
   if (!hasRoll) return { total: 0, dice: [], mod: 0 };
 
@@ -2042,6 +2086,9 @@ async function rollFor(io, { characterId, characterName, moveId, moveName, slotN
       // A Custom Roll names no Stat, so it keeps the matchup (see
       // matchupAppliesToSlots).
       slotNames: rollType === 'custom' ? [] : slotNames,
+      // Who this roll is aimed at, for the `opponent_next_roll_bonus` credit.
+      // Null when the caller has no honest answer, which spends nothing.
+      againstCharacterId,
     }),
   ]);
   const mod = (rollModifier ?? 0) + rollBonusRow.bonus + bonus.total;
@@ -2392,6 +2439,8 @@ async function runGrappleContest(io, { row, targetCharacterId, targetName, tic, 
     // the grab that follows harder, or the mini-game stops meaning anything the
     // moment a chain goes grapple-into-grapple.
     chainRollBonus: row.chainRollBonus ?? 0,
+    // The grab is aimed at them, so a credit they left standing is good here.
+    againstCharacterId: targetCharacterId,
   });
 
   const resistSlots = expandRollSlotRows(
@@ -2414,6 +2463,8 @@ async function runGrappleContest(io, { row, targetCharacterId, targetName, tic, 
         declaredMoveId: row.declaredMoveId,
         emitEvent,
         defensive: true,
+        // ...and resisting it is a roll against the grappler, the other way.
+        againstCharacterId: row.characterId,
       })
     : { total: 0 };
 
@@ -2657,6 +2708,29 @@ async function fizzleOnBrokenLeg(io, { row, tic, emitEvent }) {
   return true;
 }
 
+// Who an attack roll is aimed at, as far as it can be known BEFORE the roll.
+//
+// Read only by the `opponent_next_roll_bonus` credit, which is spent by "their
+// next roll against you" and therefore has to know who "you" is at roll time.
+// The engine's full Uneven Combat target selection is deliberately not reused:
+// it runs after the roll, because it needs the damage the roll produced.
+//
+// Two answers only, both certain: the fighter's own declared target when they
+// named one and that opponent is still seated opposite, and the sole opponent
+// when there is exactly one. Anything else returns null, which spends nothing —
+// guessing here would hand somebody else's opening to the wrong fighter, which
+// is precisely what this effect exists to prevent.
+async function declaredRollTarget(pairIndex, row) {
+  const opposingSide = row.side === 'left' ? 'right' : 'left';
+  const seats = await all(
+    'SELECT character_id AS characterId FROM combat_participants WHERE pair_index = ? AND side = ?',
+    [pairIndex, opposingSide]
+  );
+  const ids = seats.map((seat) => seat.characterId);
+  if (row.targetCharacterId != null && ids.includes(row.targetCharacterId)) return row.targetCharacterId;
+  return ids.length === 1 ? ids[0] : null;
+}
+
 async function resolveAttack(io, { row, pairIndex, tic, emitEvent }) {
   // **A Movement move on a broken Leg fizzles (decided, new).** Declaring one
   // is already refused (see move:declare), but a Leg can break *between* the
@@ -2716,6 +2790,15 @@ async function resolveAttack(io, { row, pairIndex, tic, emitEvent }) {
   }
 
   // Step 2 — auto-roll the attacker's own move.
+  //
+  // **Who the roll is against is asked here, before the roll, and narrowly.**
+  // Full target selection happens in Step 3 below and cannot move up — it needs
+  // this roll's damage figure — but the `opponent_next_roll_bonus` credit has to
+  // be resolved before the roll it modifies. So this asks only the question the
+  // credit needs: the fighter's own declared target if they named one, and the
+  // sole opponent when there is only one to name. Several unnamed opponents has
+  // no honest answer yet, so nothing is spent and the credit stands.
+  const rollAgainstCharacterId = await declaredRollTarget(pairIndex, row);
   const [rollBonusRow, bonus] = await Promise.all([
     one(
       'SELECT COALESCE(SUM(amount), 0) AS bonus FROM character_move_roll_bonuses WHERE character_id = ? AND move_id = ?',
@@ -2726,6 +2809,7 @@ async function resolveAttack(io, { row, pairIndex, tic, emitEvent }) {
       tic,
       declaredMoveId: row.declaredMoveId,
       slotNames: row.rollType === 'custom' ? [] : row.rollSlotNames,
+      againstCharacterId: rollAgainstCharacterId,
     }),
   ]);
   const mod = row.rollModifier + rollBonusRow.bonus + bonus.total;
@@ -3107,7 +3191,10 @@ async function resolveAttack(io, { row, pairIndex, tic, emitEvent }) {
 // re-derived from the DB on every line rather than carried, so a round resumed
 // after a restart rolls against the same figures a round played straight
 // through would. Same reasoning as resolveDodge re-reading its defenderDM.
-async function loadBlockGuard(defenderDM, tic) {
+// `attackerCharacterId` is who the guard is being held against, for the
+// `opponent_next_roll_bonus` credit: a Block is a roll made *against* the
+// fighter attacking into it, so an opening they left is good here too.
+async function loadBlockGuard(defenderDM, tic, attackerCharacterId = null) {
   const [baseSlotRows, defensiveSlotRows, defRollBonusRow, defenderTagNames] = await Promise.all([
     all('SELECT slot_name, count FROM move_roll_slots WHERE move_id = ?', [defenderDM.move_id]),
     defenderDM.is_defensive
@@ -3125,6 +3212,7 @@ async function loadBlockGuard(defenderDM, tic) {
     tic,
     // Base plus defensive pool: everything this guard actually rolls.
     slotNames: [...baseSlotRows, ...defensiveSlotRows].map((r) => r.slot_name),
+    againstCharacterId: attackerCharacterId,
   });
   return {
     baseSlotRows,
@@ -4890,7 +4978,7 @@ async function resolveBlock(pairIndex, { outcome, attackerDeclaredMoveId }, io) 
   });
 
   const next = { ...pending, remainingStats };
-  const guard = await loadBlockGuard(defenderDM, pending.tic);
+  const guard = await loadBlockGuard(defenderDM, pending.tic, pending.attackerCharacterId ?? null);
   if (outcome === 'failed') {
     const against = answeredStat ? ` against the strike to ${answeredStat}` : '';
     await postSystemMessage(

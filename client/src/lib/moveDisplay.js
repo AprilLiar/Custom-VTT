@@ -48,6 +48,11 @@ export function automationLabel({ type, amount, slot }) {
       return `Recover${where} ${n} step${n === 1 ? '' : 's'} (self, never past base)`;
     case 'opponent_next_roll_penalty':
       return `−${n} on the opponent's next roll`;
+    // "Against you" is the whole difference from the line above, so it is said
+    // rather than implied — in an Uneven Combat the opponent's next roll may
+    // well be aimed at somebody else, and then this does nothing.
+    case 'opponent_next_roll_bonus':
+      return `+${n} on the opponent's next roll against you`;
     // Named as a trip rather than as Recovery-with-a-qualifier: the frames
     // behave identically, but what the author is choosing is to put somebody
     // on the floor, and the Off The Ground Tag is playable off that fact.
@@ -80,6 +85,10 @@ export const AUTOMATION_OPTIONS = [
   { type: 'opponent_trip_recovery', label: 'Trip the opponent (Trip Recovery)' },
   { type: 'self_trip_recovery', label: 'Trip yourself (Trip Recovery)' },
   { type: 'opponent_next_roll_penalty', label: "Weaken the opponent's next roll" },
+  // The mirror of the line above, and deliberately beside it. Not a negative
+  // amount on the same option: "against you" is a different rule, not a
+  // different sign, and it is the half that matters in an Uneven Combat.
+  { type: 'opponent_next_roll_bonus', label: "Improve the opponent's next roll against you" },
 ];
 
 // The two stat-step automations name one Stat outright, so they use the

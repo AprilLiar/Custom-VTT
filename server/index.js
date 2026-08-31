@@ -2030,6 +2030,15 @@ app.delete('/api/characters/:id', wrap(async (req, res) => {
   await run('DELETE FROM character_move_overrides WHERE character_id = ?', [character.id]);
   await run('DELETE FROM character_move_roll_bonuses WHERE character_id = ?', [character.id]);
   await run('DELETE FROM character_perks WHERE character_id = ?', [character.id]);
+  // Both columns: a credit this character was owed, and one they left with
+  // somebody else. Spelled out rather than trusted to the DDL, like every other
+  // line here — and the second half matters, since a row naming a character who
+  // no longer exists would sit in the table forever, never matchable and never
+  // cleared.
+  await run('DELETE FROM pending_roll_bonuses WHERE character_id = ? OR against_character_id = ?', [
+    character.id,
+    character.id,
+  ]);
   // Their Counters' Gates go first — spelled out for the same reason every
   // other line in this cascade is, rather than trusting the DDL's ON DELETE.
   await run(

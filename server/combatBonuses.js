@@ -399,13 +399,20 @@ export async function getCombatRollBonusBreakdown(
   // Perk seam, which needs it to answer "what did this fighter throw right
   // before this?" (Deadly Pendulum). Omitted by the hand-thrown paths, whose
   // rolls belong to no declaration.
-  { moveId = null, tic = null, slotNames = null, declaredMoveId = null } = {}
+  //
+  // `againstCharacterId` is who this roll is aimed at, when the caller knows —
+  // the declared move's own target for an attack, the attacker for a defensive
+  // or Interruption roll. Only `opponent_next_roll_bonus` reads it, and only to
+  // decide whether a credit is good here; omitting it consumes nothing rather
+  // than guessing, which is what keeps an Uneven Combat honest.
+  { moveId = null, tic = null, slotNames = null, declaredMoveId = null, againstCharacterId = null } = {}
 ) {
-  const [reasons, matchup, grapple, owed, perkTerms] = await Promise.all([
+  const [reasons, matchup, grapple, owed, credited, perkTerms] = await Promise.all([
     getReasonsToFightBonus(characterId),
     stanceMatchupParts(characterId, { moveId, tic }),
     getGrapplePenalty(characterId, tic),
     consumeNextRollPenalty(characterId),
+    consumeNextRollBonus(characterId, againstCharacterId),
     // Perks (decided, new — see server/perks/index.js). One term per Perk
     // rather than one lump, under the Perk's own name, for the same reason the
     // Combat Style got its own line: a modifier nobody can account for reads as
@@ -429,10 +436,14 @@ export async function getCombatRollBonusBreakdown(
     { key: 'combat_style', label: styleName ? `Combat Style: ${styleName}` : 'Combat Style', amount: styleTerm },
     { key: 'grapple', label: 'Held in a grapple', amount: grapple },
     { key: 'next_roll_penalty', label: 'Weakened', amount: -owed },
+    // Named for what it is from the roller's side: an opening somebody left
+    // them. The label has to be as accountable as every other term here — a
+    // modifier nobody can explain reads as the engine inventing numbers.
+    { key: 'next_roll_bonus', label: 'Opening', amount: credited },
     ...perkTerms,
   ].filter((t) => t.amount !== 0);
   const perkTotal = perkTerms.reduce((sum, t) => sum + t.amount, 0);
-  return { total: reasons + matchupTotal + grapple - owed + perkTotal, terms };
+  return { total: reasons + matchupTotal + grapple - owed + credited + perkTotal, terms };
 }
 
 // The `opponent_next_roll_penalty` automation's debt: read it and spend it in
@@ -460,6 +471,36 @@ async function consumeNextRollPenalty(characterId) {
   const owed = row?.n ?? 0;
   if (!owed) return 0;
   await run('UPDATE characters SET pending_roll_penalty = 0 WHERE id = ?', [characterId]);
+  return owed;
+}
+
+// The `opponent_next_roll_bonus` automation's credit — the mirror of the debt
+// above, and the one difference is the whole rule: **it is only good against the
+// fighter who handed it over.**
+//
+// So it is consumed only when the caller knows who this roll is aimed at and
+// that answer matches. A roll with no opponent in it — a hand-thrown Stat roll,
+// a Weapon check, an Initiative roll — consumes nothing and leaves the credit
+// standing: "their next roll against you" has not happened yet, and spending it
+// on a roll that was never against you is exactly the bug this table exists to
+// prevent. Same reasoning in an Uneven Combat, where the fighter beside you gets
+// nothing out of a guard you dropped.
+//
+// Consumed at the same single funnel as the penalty, and once per roll, for the
+// same reason: six call sites each spending it themselves is six chances to
+// spend it twice.
+async function consumeNextRollBonus(characterId, againstCharacterId) {
+  if (againstCharacterId == null) return 0;
+  const row = await one(
+    'SELECT amount AS n FROM pending_roll_bonuses WHERE character_id = ? AND against_character_id = ?',
+    [characterId, againstCharacterId]
+  );
+  const owed = row?.n ?? 0;
+  if (!owed) return 0;
+  await run('DELETE FROM pending_roll_bonuses WHERE character_id = ? AND against_character_id = ?', [
+    characterId,
+    againstCharacterId,
+  ]);
   return owed;
 }
 

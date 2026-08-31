@@ -197,13 +197,13 @@ async function seatPair(pairIndex, leftCharacterId, rightCharacterId) {
   ]);
 }
 
-async function declareMove({ characterId, moveId, placementTic, startupTics, effectiveAttackTargets, appendageChoice = null }) {
+async function declareMove({ characterId, moveId, placementTic, startupTics, effectiveAttackTargets, appendageChoice = null, targetCharacterId = null }) {
   const revealTic = placementTic + startupTics;
   const result = await run(
     `INSERT INTO declared_moves
-       (character_id, move_id, round_number, queue_order, placement_tic, reveal_tic, appendage_choice${effectiveAttackTargets ? ', effective_attack_targets' : ''})
-     VALUES (?, ?, 1, 0, ?, ?, ?${effectiveAttackTargets ? ', ?' : ''})`,
-    [characterId, moveId, placementTic, revealTic, appendageChoice, ...(effectiveAttackTargets ? [JSON.stringify(effectiveAttackTargets)] : [])]
+       (character_id, move_id, round_number, queue_order, placement_tic, reveal_tic, appendage_choice, target_character_id${effectiveAttackTargets ? ', effective_attack_targets' : ''})
+     VALUES (?, ?, 1, 0, ?, ?, ?, ?${effectiveAttackTargets ? ', ?' : ''})`,
+    [characterId, moveId, placementTic, revealTic, appendageChoice, targetCharacterId, ...(effectiveAttackTargets ? [JSON.stringify(effectiveAttackTargets)] : [])]
   );
   return Number(result.lastInsertRowid);
 }
@@ -3080,6 +3080,125 @@ test('Baron of Suffering is not paid for healing, nor for a step onto a broken S
     }),
     undefined,
     'a Stat already at the floor has nowhere to go, so nothing was dealt'
+  );
+});
+
+// ---------- "Improve their next roll AGAINST YOU" --------------------------
+
+test('opponent_next_roll_bonus leaves a credit naming who it is good against', async () => {
+  const pairIndex = 383;
+  const giver = await createCharacter('ONB Giver');
+  const taker = await createCharacter('ONB Taker');
+  const open = await createMove({
+    name: 'ONB Open Guard', startupTics: 1, activeTics: 2, recoveryTics: 1,
+    rollSlots: ['Skull'], rollModifier: 20, attackTargets: ['Body'],
+    interactions: [
+      { trigger: 'hit', text: '', automations: [{ type: 'opponent_next_roll_bonus', amount: 3 }] },
+    ],
+  });
+  await seatPair(pairIndex, giver, taker);
+  await startPairDeclaration(mockIo, pairIndex);
+  await declareMove({
+    characterId: giver, moveId: open, placementTic: 0, startupTics: 1,
+    effectiveAttackTargets: ['Body'],
+  });
+  await resolvePair(pairIndex);
+
+  const rows = await all('SELECT * FROM pending_roll_bonuses WHERE against_character_id = ?', [giver]);
+  assert.equal(rows.length, 1, 'exactly one credit, on the pair it names');
+  assert.equal(rows[0].character_id, taker, 'the OPPONENT is the one who rolls better');
+  assert.equal(rows[0].against_character_id, giver, '...and only against whoever opened up');
+  assert.equal(rows[0].amount, 3);
+});
+
+test('a credit is spent only by a roll actually aimed at the fighter who gave it', async () => {
+  // The whole rule the effect exists for, and the half that is invisible in a
+  // 1v1: in an Uneven Combat the opponent's next roll may well be aimed at
+  // somebody else, and then this does nothing and stays owed.
+  const { getCombatRollBonusBreakdown } = await import('../combatBonuses.js');
+  const giver = await createCharacter('SPEND Giver');
+  const bystander = await createCharacter('SPEND Bystander');
+  const taker = await createCharacter('SPEND Taker');
+  await run(
+    'INSERT INTO pending_roll_bonuses (character_id, against_character_id, amount) VALUES (?, ?, ?)',
+    [taker, giver, 4]
+  );
+  const openingIn = (breakdown) => breakdown.terms.find((t) => t.key === 'next_roll_bonus');
+
+  // A roll with no opponent in it at all — a hand-thrown Stat roll, a Weapon
+  // check — must not spend it: "their next roll against you" has not happened.
+  let bd = await getCombatRollBonusBreakdown(taker, {});
+  assert.equal(openingIn(bd), undefined, 'an untargeted roll is not a roll against anybody');
+
+  // Nor a roll aimed at the fighter standing next to them.
+  bd = await getCombatRollBonusBreakdown(taker, { againstCharacterId: bystander });
+  assert.equal(openingIn(bd), undefined, 'the bystander gets nothing out of it');
+
+  // Still owed after both.
+  const still = await one(
+    'SELECT amount AS n FROM pending_roll_bonuses WHERE character_id = ? AND against_character_id = ?',
+    [taker, giver]
+  );
+  assert.equal(still?.n, 4, 'and neither of those spent it');
+
+  // Aimed at the fighter who opened up, it pays — as a named term, because a
+  // modifier nobody can account for reads as the engine inventing numbers.
+  bd = await getCombatRollBonusBreakdown(taker, { againstCharacterId: giver });
+  assert.equal(openingIn(bd)?.amount, 4);
+  assert.equal(openingIn(bd)?.label, 'Opening');
+
+  // Spent, once. A credit that survived its own roll would be a standing bonus.
+  bd = await getCombatRollBonusBreakdown(taker, { againstCharacterId: giver });
+  assert.equal(openingIn(bd), undefined, 'the credit is consumed, not re-read');
+  assert.equal(
+    await one('SELECT amount AS n FROM pending_roll_bonuses WHERE character_id = ? AND against_character_id = ?',
+      [taker, giver]),
+    null,
+    'and the row is gone rather than left at zero'
+  );
+
+  // Nobody else was ever touched.
+  assert.equal(
+    (await all('SELECT * FROM pending_roll_bonuses WHERE character_id = ?', [bystander])).length, 0
+  );
+});
+
+test('the engine actually reaches the credit on the attack roll it modifies', async () => {
+  // The plumbing, not the rule: the roll site has to KNOW who it is rolling
+  // against, or the credit sits in the table forever and the effect does
+  // nothing anybody can see. Asserted through the roll's own modifier
+  // breakdown, which is what the table reads.
+  const pairIndex = 384;
+  const giver = await createCharacter('REACH Giver');
+  const taker = await createCharacter('REACH Taker');
+  await run(
+    'INSERT INTO pending_roll_bonuses (character_id, against_character_id, amount) VALUES (?, ?, ?)',
+    [taker, giver, 5]
+  );
+  const punch = await createMove({
+    name: 'REACH Punch', startupTics: 1, activeTics: 1, recoveryTics: 0,
+    rollSlots: ['Skull'], attackTargets: ['Body'],
+  });
+  await seatPair(pairIndex, taker, giver);
+  await startPairDeclaration(mockIo, pairIndex);
+  await declareMove({
+    characterId: taker, moveId: punch, placementTic: 0, startupTics: 1,
+    effectiveAttackTargets: ['Body'],
+  });
+  await resolvePair(pairIndex);
+
+  // The itemised breakdown rides the round EVENT, not the chat card — that is
+  // where the cutscene reads a total's parts from.
+  const roll = (await all("SELECT payload FROM round_events WHERE pair_index = ? AND type = 'roll'", [pairIndex]))
+    .map((r) => JSON.parse(r.payload))
+    .find((p) => (p?.modifierBreakdown ?? []).some((t) => t.label === 'Opening'));
+  assert.ok(roll, 'the attack roll should carry the opening as its own named term');
+  assert.equal(
+    (roll.modifierBreakdown ?? []).find((t) => t.label === 'Opening').amount, 5
+  );
+  assert.equal(
+    (await all('SELECT * FROM pending_roll_bonuses WHERE character_id = ?', [taker])).length, 0,
+    'and spending it emptied the row'
   );
 });
 

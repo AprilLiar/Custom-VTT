@@ -107,6 +107,20 @@ export const AUTOMATION_TYPES = [
   // to recover.
   'self_stat_recover',
   'opponent_next_roll_penalty',
+  // **The mirror of the line above, and deliberately narrower (decided, new).**
+  //   opponent_next_roll_bonus: the opponent's next roll **against you** is
+  //                             improved by `amount` — then the credit is spent
+  //
+  // Where the penalty is spent by the very next roll of any kind, this one waits
+  // for a roll aimed at the fighter who handed it over. In a 1v1 that is every
+  // roll and the two read identically; in an Uneven Combat it is the whole
+  // point — you dropped your guard against *this* opponent, and the fighter
+  // beside you gets nothing out of it.
+  //
+  // A separate type rather than a negative `opponent_next_roll_penalty` for the
+  // same reason `self_stat_increase` exists: the authoring should read as what
+  // it does, and "against you" is a different rule, not a different sign.
+  'opponent_next_roll_bonus',
   // **The two trip effects (decided, new).** Identical to their `_recovery`
   // siblings in every respect except that the frames they impose are Trip
   // Recovery — the fighter is on the ground for them, which the Off The Ground
