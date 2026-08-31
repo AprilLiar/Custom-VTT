@@ -500,7 +500,7 @@ test('punisherBonus: +2 when the Stat is anywhere in what they are throwing', ()
   // (Body + Right Hand + 1).
   assert.deepEqual(
     punisherBonus({ tagNames: ['Punisher - Body'], opponentSlotNames: ['Body', 'Right Hand'] }),
-    { amount: 2, stat: 'Body' }
+    { amount: 2, stat: 'Body', moveName: null }
   );
   // Whatever else that move rolls makes no difference — it does not have to be
   // the only Stat, or the first.
@@ -510,14 +510,14 @@ test('punisherBonus: +2 when the Stat is anywhere in what they are throwing', ()
   // Nothing matching, nothing on the clock, no Tag at all.
   assert.deepEqual(
     punisherBonus({ tagNames: ['Punisher - Leg'], opponentSlotNames: ['Body', 'Right Hand'] }),
-    { amount: 0, stat: null }
+    { amount: 0, stat: null, moveName: null }
   );
   assert.deepEqual(
     punisherBonus({ tagNames: ['Punisher - Body'], opponentSlotNames: [] }),
-    { amount: 0, stat: null }
+    { amount: 0, stat: null, moveName: null }
   );
-  assert.deepEqual(punisherBonus({ tagNames: ['Block'], opponentSlotNames: ['Body'] }), { amount: 0, stat: null });
-  assert.deepEqual(punisherBonus({}), { amount: 0, stat: null });
+  assert.deepEqual(punisherBonus({ tagNames: ['Block'], opponentSlotNames: ['Body'] }), { amount: 0, stat: null, moveName: null });
+  assert.deepEqual(punisherBonus({}), { amount: 0, stat: null, moveName: null });
 });
 
 test('punisherBonus: +2 ONCE, however many of its Punishers matched', () => {
@@ -540,4 +540,20 @@ test('punisherBonus: +2 ONCE, however many of its Punishers matched', () => {
     'Hand',
     'stable whichever way round either list is written'
   );
+});
+
+test('punisherBonus names the move it caught, for the roll breakdown', () => {
+  // The Tag was reported as "always active". A +2 that cannot say what it is
+  // reacting to leaves nobody able to tell a wide rule from a wrong one, so the
+  // matched move rides out with the Stat.
+  const caught = punisherBonus({
+    tagNames: ['Punisher - Body'],
+    opponentSlots: [
+      { slotName: 'Right Hand', moveName: "Mira's Jab" },
+      { slotName: 'Body', moveName: "Mira's Low Kick" },
+    ],
+  });
+  assert.deepEqual(caught, { amount: 2, stat: 'Body', moveName: "Mira's Low Kick" });
+  // The plain-string form still works, and simply has no name to give.
+  assert.equal(punisherBonus({ tagNames: ['Punisher - Body'], opponentSlots: ['Body'] }).moveName, null);
 });

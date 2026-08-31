@@ -140,6 +140,7 @@ export const NO_DAMAGE_TAG_NAME = 'No Damage';
 export const FEINT_TAG_NAME = 'Feint';
 const MOVEMENT_TAG_NAME = 'Movement';
 const OFF_THE_GROUND_TAG_NAME = 'Off The Ground';
+const SPECIAL_TAG_NAME = 'Special';
 
 const normTag = (name) => String(name ?? '').trim().toLowerCase();
 
@@ -206,6 +207,20 @@ export function carriesFeintTag(tagIds, tags) {
 // applying the rule the client had not heard of.
 export function carriesOffTheGroundTag(tagIds, tags) {
   return (tagIds ?? []).some((id) => isTagNamed(id, tags, OFF_THE_GROUND_TAG_NAME));
+}
+
+// **Special — the Tag that decides who may SEE a thing, not what it does.**
+// A Move or Perk carrying it is invisible to a Player in the Compendium and in
+// Character Creation, and a Player cannot take it themselves. The GM grants it
+// like anything else, and once granted it shows on the sheet normally: hiding
+// what somebody already has would leave them holding a move they cannot read.
+//
+// **One function for both vocabularies.** Perks carry `tag_ids` into their own
+// `perk_tags` table and Moves into `tags`, but both are `{ id, name }` rows and
+// the question asked of them is the same word — so this takes whichever list
+// belongs to the thing being asked about.
+export function carriesSpecialTag(tagIds, tags) {
+  return (tagIds ?? []).some((id) => isTagNamed(id, tags, SPECIAL_TAG_NAME));
 }
 
 // "×1.5" / "×0.5" — the multiplier as the table reads it. 1 is still shown

@@ -2388,6 +2388,26 @@ async function resolveGrapple(io, { row, pairIndex, tic, emitEvent }) {
     return;
   }
 
+  // **A grab that lands also HURTS (decided, new; bugfix).** A grappling move
+  // with a Roll and an Attack Target deals damage exactly like any other
+  // attack: its own roll against the target's Damage Thresholds. The Resist
+  // Roll decides only whether the grab takes hold at all — it is what stops the
+  // move and the chain, and it never reduces what a grab that DID land is worth.
+  //
+  // This was simply missing: a grappling move fired its On Successful Grapple
+  // clause and dealt nothing, so every grab that was meant to hurt had to have
+  // its damage written by hand as an automation. Carrying the **No Damage** Tag
+  // is how a grab opts out — which is exactly what that Tag already means
+  // everywhere else, and what most pure setups and holds will want.
+  await applyGrappleDamage(io, {
+    row,
+    targetCharacterId,
+    targetName,
+    total: contest.grapplerFinal,
+    tic,
+    emitEvent,
+  });
+
   // Both of these are owed the moment the grab lands, independent of whatever
   // follow-up comes next — so they happen before any prompt, and a chain that
   // ends in "nothing" still leaves the hold and its interactions intact.
@@ -2532,6 +2552,87 @@ async function chainFollowUp(io, { row, moveId, chainRollBonus, tic, emitEvent }
   const chained = await one('SELECT id, name FROM moves WHERE id = ?', [moveId]);
   if (!chained) return null;
   return declareChainedMove(io, { row, chained, tic, emitEvent, chainRollBonus });
+}
+
+// The damage a landed grab deals. Deliberately its own small path rather than a
+// trip through `runInterruptAndDamage`: there is no defence to resolve — the
+// Resist Roll already happened and already decided the outcome — and no
+// Interruption check, because a grab is not a blow that can be talked out of.
+// What is shared is everything that decides how much: the same
+// `minDamageThresholdFor` (so Iron Skin and Not Just a Scratch apply), the same
+// `computeHitDamage`, the same `applyAutoDamage`, the same `damage_applied` and
+// `damage_unapplied` events, the same Temporary Damage recording and the same
+// Baron of Suffering payout.
+//
+// Silent for a grab that names no Attack Target, and for one carrying **No
+// Damage** — both are "this move does not hurt anybody", said two ways, and
+// both already mean exactly that everywhere else.
+async function applyGrappleDamage(io, { row, targetCharacterId, targetName, total, tic, emitEvent }) {
+  const effectiveAttackTargets = JSON.parse(row.effectiveAttackTargets ?? '[]');
+  if (!effectiveAttackTargets.length) return;
+  const tagNames = await moveTagNamesFor(row.characterId, row.moveId);
+  if (carriesNoDamageTag(tagNames)) return;
+
+  const minimumThreshold = await minDamageThresholdFor({
+    attackerCharacterId: row.characterId,
+    targetCharacterId,
+  });
+  const { halfDamageSteps } = computeHitDamage(total, { minimumThreshold });
+  if (halfDamageSteps <= 0) return;
+
+  const temporary = carriesTemporaryDamageTag(tagNames);
+  const { applied, unapplied } = await applyAutoDamage(io, {
+    targetCharacterId,
+    effectiveAttackTargets,
+    steps: halfDamageSteps,
+    attackerName: row.characterName,
+    temporary,
+  });
+  for (const hit of applied) {
+    await emitEvent(tic, 'damage_applied', {
+      declaredMoveId: row.declaredMoveId,
+      targetCharacterId,
+      targetCharacterName: targetName,
+      attackerCharacterName: row.characterName,
+      attackerCharacterId: row.characterId,
+      slotName: hit.slotName,
+      steps: hit.steps,
+      temporary,
+      sizeBefore: hit.sizeBefore,
+      bonusBefore: hit.bonusBefore,
+      sizeAfter: hit.sizeAfter,
+      bonusAfter: hit.bonusAfter,
+      statusAfter: hit.statusAfter,
+    });
+  }
+  for (const miss of unapplied) {
+    await emitEvent(tic, 'damage_unapplied', {
+      declaredMoveId: row.declaredMoveId,
+      targetCharacterId,
+      targetCharacterName: targetName,
+      attackerCharacterName: row.characterName,
+      attackerCharacterId: row.characterId,
+      slotName: miss.slotName,
+      steps: miss.steps,
+      damage: miss.damage,
+    });
+  }
+
+  // Damage dealt is damage dealt, however it was dealt — the same reading that
+  // pays the Baron for a stat step.
+  const landed = applied.reduce((sum, a) => sum + a.steps, 0);
+  const perStep = await perkStaminaPerHalfDamage(row.characterId);
+  if (perStep > 0 && landed > 0) {
+    await adjustStamina(io, row.characterId, perStep * landed, {
+      emitEvent,
+      tic,
+      reason: `${landed * 0.5} damage dealt`,
+    });
+    await postSystemMessage(
+      io,
+      `${row.characterName} draws ${perStep * landed} Stamina from the damage they dealt.`
+    );
+  }
 }
 
 // Everything after the mini-game: the two rolls, the contest, and what a win

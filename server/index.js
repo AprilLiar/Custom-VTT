@@ -513,6 +513,37 @@ async function getCharacterPerks(characterId) {
 
 // Superset of the plan's die:updated payload: locked_* is included because the
 // current-vs-locked tint can't update after Lock/Revert without it.
+// **The Special Tag: GM-only to hand out (decided, new).**
+//
+// A Move or Perk carrying `Special` is invisible to a Player in the Compendium
+// and in Character Creation — that is the whole feature, and it is done on the
+// client where the browsing happens. This is the other half: the two grant
+// events are open-access (a Player learning a Move for themselves uses the same
+// event the GM's Grant list does), so without this a Player who knew the id
+// could still take one.
+//
+// Matched by NAME against the thing's own tag vocabulary, exactly like every
+// other Tag mechanic — Moves against `tags`, Perks against `perk_tags` — for
+// the reason tagAutomations.js gives: ids differ between databases and the GM
+// owns the list.
+const SPECIAL_TAG_NAME = 'special';
+const isSpecialMove = async (moveId) => {
+  const row = await one(
+    `SELECT 1 AS hit FROM move_tags mt JOIN tags t ON t.id = mt.tag_id
+     WHERE mt.move_id = ? AND LOWER(TRIM(t.name)) = ?`,
+    [moveId, SPECIAL_TAG_NAME]
+  );
+  return Boolean(row);
+};
+const isSpecialPerk = async (perkId) => {
+  const row = await one(
+    `SELECT 1 AS hit FROM perk_tag_links l JOIN perk_tags t ON t.id = l.perk_tag_id
+     WHERE l.perk_id = ? AND LOWER(TRIM(t.name)) = ?`,
+    [perkId, SPECIAL_TAG_NAME]
+  );
+  return Boolean(row);
+};
+
 const diePayload = (die) => ({
   dieId: die.id,
   characterId: die.character_id,
@@ -2900,6 +2931,15 @@ io.on('connection', (socket) => {
         skippedMoves.push(move.name);
         continue;
       }
+      // Special, for the same reason learnability is checked here: creation
+      // must not be a way around a rule the Compendium enforces. It is already
+      // filtered out of the picker, so reaching this means a stale view or a
+      // hand-sent event — reported in `skippedMoves` rather than dropped
+      // silently, exactly as an unlearnable style is.
+      if (socket.data.identity?.role !== 'gm' && (await isSpecialMove(move.id))) {
+        skippedMoves.push(move.name);
+        continue;
+      }
       const existing = await one('SELECT id FROM character_moves WHERE character_id = ? AND move_id = ?', [
         character.id,
         moveId,
@@ -2913,6 +2953,9 @@ io.on('connection', (socket) => {
     // Routed through the same registry hook perk:grant uses, so a Perk with an
     // onGrant behaves identically however it was handed out.
     for (const perkId of perkIds) {
+      // Special is the GM's to hand out — see isSpecialPerk. Already filtered
+      // out of the picker; this is the hand-sent-event case.
+      if (socket.data.identity?.role !== 'gm' && (await isSpecialPerk(perkId))) continue;
       const existing = await one('SELECT id FROM character_perks WHERE character_id = ? AND perk_id = ?', [
         character.id,
         perkId,
@@ -3568,6 +3611,9 @@ io.on('connection', (socket) => {
     const character = await getCharacter(characterId);
     const move = await one('SELECT * FROM moves WHERE id = ?', [moveId]);
     if (!character || !move) return;
+    // Special is the GM's to hand out. Silent no-op on refusal, matching every
+    // other rejection in this handler.
+    if (socket.data.identity?.role !== 'gm' && (await isSpecialMove(move.id))) return;
     // Learnability: a styled move needs at least one stance with that style
     if (
       move.style_attribute_id != null &&
@@ -3899,6 +3945,8 @@ io.on('connection', (socket) => {
     const character = await getCharacter(characterId);
     const perk = await one('SELECT * FROM perks WHERE id = ?', [perkId]);
     if (!character || !perk) return;
+    // See isSpecialMove above — the same rule, in the Perk vocabulary.
+    if (socket.data.identity?.role !== 'gm' && (await isSpecialPerk(perk.id))) return;
     const existing = await one(
       'SELECT * FROM character_perks WHERE character_id = ? AND perk_id = ?',
       [character.id, perk.id]

@@ -1119,6 +1119,52 @@ on the **ground** for it, and two rules read that difference.
     move was always going to leave you.
   - No client change was needed — every render site already draws from `tripRecoveryTics`.
 
+**A grab that takes hold also HURTS (decided, new; bugfix).** A grappling move with a Roll and an
+Attack Target deals damage exactly like any other attack: **its own roll against the target's Damage
+Thresholds**. The Resist Roll decides only whether the grab lands at all — it is what stops the move
+and the chain, and it never reduces what a grab that DID land is worth. A grab rolling 19 against a
+Resist Roll of 18, at default thresholds, is three Half-Damage steps.
+
+This was simply missing: a grappling move fired its **On Successful Grapple** clause and dealt
+nothing, so every grab meant to hurt had its damage written by hand as an automation. Carrying the
+**No Damage** Tag is how a grab opts out — which is exactly what that Tag already means everywhere
+else, and what most pure holds and setups will want; naming no Attack Target is the other way to say
+it, and both work.
+
+- **Its own small path (`applyGrappleDamage`), not a trip through `runInterruptAndDamage`.** There is
+  no defence to resolve — the Resist Roll already happened and already decided the outcome — and no
+  Interruption check, because a grab is not a blow that can be talked out of. What *is* shared is
+  everything deciding how much: the same `minDamageThresholdFor` (so Iron Skin and Not Just a Scratch
+  apply), the same `computeHitDamage`, the same `applyAutoDamage`, the same `damage_applied` /
+  `damage_unapplied` events, the same Temporary Damage recording and the same Baron of Suffering
+  payout.
+- **Damage first, then the On Successful Grapple clause**, matching the attack flow's own order, and
+  both before any follow-up prompt — so a chain that ends in "nothing" still leaves the hold, its
+  damage and its interactions intact.
+
+**The Special Tag — the one Tag about who may SEE a thing (decided, new; implemented).** A Move or
+Perk carrying `Special` is **invisible to a Player in the Compendium and in Character Creation, and a
+Player cannot take it themselves**. For GM-authored plot moves, boss techniques, and anything a Player
+is meant to meet rather than shop for. The GM grants it like anything else, and **once granted it
+shows on the sheet normally** — hiding what somebody already holds would leave them with a move they
+cannot read.
+
+- **A Tag rather than a column**, and one in each vocabulary: `Special` is seeded into `tags` for
+  Moves and into `perk_tags` for Perks (the only perk tag the app seeds — the rest of that vocabulary
+  is entirely the GM's). It is a property the GM hangs on a thing exactly like every other, it shows
+  on the card, and it is matched by NAME like every other Tag mechanic.
+- **Filtered at the top of the pipeline, not at the card.** A Special Move is not in the Compendium's
+  folder counts, not in its filter chips and not in its "no moves match" wording either — a Player
+  should have no way to tell one is there.
+- **Enforced server-side as well**, because the two grant events are open-access: a Player learning a
+  Move for themselves uses the same event the GM's Grant list does. `move:grant`, `perk:grant` and
+  `character:apply_creation` all refuse a Special one from a non-GM socket, so knowing the id is not
+  enough. In creation it is reported in `skippedMoves` rather than dropped silently, exactly as an
+  unlearnable style already is.
+- **Verified** by `scripts/playtest-special-tag.mjs` — a Player asking for one outright, a Player
+  submitting one through Character Creation alongside ordinary picks, and the GM handing one out and
+  it staying readable. Confirmed to go red with the server guards removed.
+
 **Punisher — (Stat): a Tag parameterised by a STAT (decided, new; implemented).** A move built to
 catch a specific *kind* of attack. `Punisher - Body` rolls **+2 while an opponent has a move on the
 clock whose own Roll includes Body** — whatever else that move also rolls. The two Interruption Tags
@@ -1139,8 +1185,17 @@ world-level row the GM names, and "Punisher - Body" is already how a table would
   GM, and "it does nothing at all" is a bad thing to discover by typing.
 - **+2 once, however many of its Punishers matched.** The move is either punishing what they threw or
   it is not; the Interruption Tags stack only because their parameter *is* an amount. The matched
-  Stat rides on the roll's breakdown as `Punisher: Body`, in the vocabulary's own order so a move
-  catching two names the same one every time.
+  Stat rides on the roll's breakdown, in the vocabulary's own order so a move catching two names the
+  same one every time.
+- **The breakdown names the MOVE it caught, not just the Stat** — `Punisher: Body (Mira's Low Kick)`
+  (revised). Reported from a live fight as "always active, even if the opponent did not declare
+  anything", and **not reproducible**: three real rounds driven through the socket handlers with the
+  opponent declaring nothing produce no Punisher term at all, and unit tests covering the empty round,
+  a later round the opponent sat out, and a Stat they were not rolling all pass. The likeliest
+  explanation is the rule being *wide* rather than wrong — the window is the opponent's whole
+  footprint, Startup through Recovery, which in practice covers most of a round once they have thrown
+  anything — but a +2 that could not say what it was reacting to left nobody able to tell a wide rule
+  from a broken one. It says now.
 - **A move still hidden by a Feint is not punished**, and that is a rule rather than an oversight: the
   +2 lands as a named term on a roll the whole table sees, so paying it out of a concealed move would
   announce what that move rolls — the one fact the Feint exists to hide. It becomes punishable the

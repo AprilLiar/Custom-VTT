@@ -2128,17 +2128,19 @@ async function ensureIndexes() {
 // which needs the attribute ids the attribute insert hands out, so it stays a
 // separate step below.
 async function seedWorld() {
-  const [attributeCount, counterCount, tellCount, tagRows, perkRows] = await readMany([
+  const [attributeCount, counterCount, tellCount, tagRows, perkTagRows, perkRows] = await readMany([
     ['SELECT COUNT(*) AS count FROM attributes'],
     ['SELECT COUNT(*) AS count FROM attribute_counters'],
     ['SELECT COUNT(*) AS count FROM tells'],
     ['SELECT name FROM tags'],
+    ['SELECT name FROM perk_tags'],
     ['SELECT name FROM perks'],
   ]);
 
   const writes = [];
   seedTells(Number(tellCount[0].count), writes);
   seedTags(tagRows, writes);
+  seedPerkTags(perkTagRows, writes);
   seedPerks(perkRows, writes);
   await writeMany(writes);
 
@@ -2215,6 +2217,18 @@ const SEEDED_TAGS = [
     'Off The Ground',
     'Thrown from the floor. This move may be declared so that its Startup overlaps your own Trip Recovery frames — you are getting up as you wind up. Only Trip Recovery: ordinary Recovery still has to finish, and the move\u2019s Active frames can never begin before you are back on your feet.',
   ],
+  // **Special — the one Tag that is about who may SEE a move, not what it does.**
+  // A move carrying it is invisible in the Compendium to a Player and cannot be
+  // taken by one, in Character Creation or by hand. GM-authored plot moves, boss
+  // techniques and anything a Player is meant to meet rather than shop for.
+  //
+  // Deliberately a Tag rather than a column: it is a property the GM hangs on a
+  // move exactly like every other, it shows on the card, and the perk side needs
+  // the identical thing in its own vocabulary.
+  [
+    'Special',
+    'GM-only. This move does not appear in the Compendium for Players, and a Player cannot take it in Character Creation or learn it themselves. The GM grants it like anything else, and once granted it shows on the sheet normally.',
+  ],
   [
     'Grounding',
     'This move puts you on the floor. Every one of its Recovery frames is a Trip Recovery frame instead of an ordinary one \u2014 the same frames, the same count, spent on the ground. Pairs with Off The Ground, which is the only thing that can be thrown out of them.',
@@ -2236,6 +2250,26 @@ const SEEDED_TAGS = [
     }. Whatever else that move rolls makes no difference.`,
   ]),
 ];
+
+// **The Perk vocabulary's own Special**, seeded for the same reason the move
+// one is: a Tag that decides who may see a thing is useless if the GM has to
+// guess its spelling, and it is matched by name like every other Tag mechanic.
+// The only perk tag the app seeds — the rest of that vocabulary is entirely the
+// GM's to invent.
+const SEEDED_PERK_TAGS = [
+  [
+    'Special',
+    'GM-only. This Perk does not appear in the Perks Compendium for Players, and a Player cannot take it in Character Creation or grant it to themselves. The GM grants it like anything else, and once granted it shows on the sheet normally.',
+  ],
+];
+
+function seedPerkTags(existingRows, writes) {
+  const have = new Set(existingRows.map((row) => normalise(row.name)));
+  for (const [name, description] of SEEDED_PERK_TAGS) {
+    if (have.has(normalise(name))) continue;
+    writes.push(['INSERT INTO perk_tags (name, description) VALUES (?, ?)', [name, description]]);
+  }
+}
 
 function seedTags(existingRows, writes) {
   const have = new Set(existingRows.map((row) => normalise(row.name)));

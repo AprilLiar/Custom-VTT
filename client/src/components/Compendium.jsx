@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { sortTags } from '../lib/moveDisplay.js';
+import { carriesSpecialTag, sortTags } from '../lib/moveDisplay.js';
 import {
   moveAttackTargets,
   moveRollSlots,
@@ -428,7 +428,15 @@ export default function MovesCompendium() {
   // goes for the head". Selecting nothing in a filter means that filter isn't
   // applied, which is why an empty Set is checked rather than treated as
   // "match none".
-  const folderPool = currentFolder != null ? moves.filter((m) => m.folder_id === currentFolder) : moves;
+  // **Special is invisible to a Player (decided, new).** Filtered at the very
+  // top of the pipeline rather than at the card, so a Special move is not in the
+  // folder counts, not in the filter chips, and not in the "no moves match"
+  // wording either — a Player should have no way to tell one is there. The GM's
+  // own view is untouched.
+  const browsable =
+    role === 'gm' ? moves : moves.filter((m) => !carriesSpecialTag(m.tag_ids, tags));
+  const folderPool =
+    currentFolder != null ? browsable.filter((m) => m.folder_id === currentFolder) : browsable;
   const styleMatched =
     styleFilter.size > 0 ? folderPool.filter((m) => styleFilter.has(m.style_attribute_id)) : folderPool;
   const tagMatched =

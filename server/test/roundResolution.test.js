@@ -144,11 +144,13 @@ async function createMove({
   attackTargets = null,
   rollModifier = 0,
   interactions = null, // [{ trigger, text, automations }]
+  isGrappling = false,
+  resistRollSlots = [],
 }) {
   const result = await run(
     `INSERT INTO moves
-       (name, tell_id, startup_tics, active_tics, recovery_tics, is_defensive, defense_kind, defense_frame_positions, roll_modifier${attackTargets ? ', attack_targets' : ''})
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?${attackTargets ? ', ?' : ''})`,
+       (name, tell_id, startup_tics, active_tics, recovery_tics, is_defensive, defense_kind, defense_frame_positions, roll_modifier, is_grappling${attackTargets ? ', attack_targets' : ''})
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?${attackTargets ? ', ?' : ''})`,
     [
       name,
       tellId,
@@ -159,10 +161,18 @@ async function createMove({
       defenseKind,
       JSON.stringify(defenseFramePositions),
       rollModifier,
+      isGrappling ? 1 : 0,
       ...(attackTargets ? [JSON.stringify(attackTargets)] : []),
     ]
   );
   const moveId = Number(result.lastInsertRowid);
+  for (const { slot_name, count } of collapseRollSlots(resistRollSlots)) {
+    await run('INSERT INTO move_resist_roll_slots (move_id, slot_name, count) VALUES (?, ?, ?)', [
+      moveId,
+      slot_name,
+      count,
+    ]);
+  }
   // One row per distinct slot with a count, matching writeMove — an
   // appendage listed twice means both sides, and the table's
   // UNIQUE(move_id, slot_name) can't hold it as two rows.
@@ -3244,7 +3254,103 @@ test('Punisher catches an opponent still in Startup, which nothing else reads', 
   const term = (roll.modifierBreakdown ?? []).find((t) => String(t.label).startsWith('Punisher'));
   assert.ok(term, `no Punisher term: ${JSON.stringify(roll.modifierBreakdown)}`);
   assert.equal(term.amount, 2);
-  assert.equal(term.label, 'Punisher: Body', 'named with the Stat it caught them on');
+  // Named with the Stat AND the move it caught — the Tag was reported as
+  // firing when it should not, and a +2 that cannot say what it is reacting to
+  // leaves nobody able to tell a wide rule from a wrong one.
+  assert.match(term.label, /^Punisher: Body \(.*Theirs\)$/, `got ${term.label}`);
+});
+
+test('Punisher pays nothing in a LATER round the opponent sat out', async () => {
+  // The live report: the Tag read as always-on. One round is not the shape that
+  // catches it — `declared_moves` keeps every row for the whole fight, so the
+  // question is whether a move from an EARLIER round can still look like
+  // something to punish once the clock has moved past it.
+  const pairIndex = 394;
+  const punisher = await createCharacter('PUNR Punisher');
+  const victim = await createCharacter('PUNR Victim');
+  const counter = await createMove({
+    name: 'PUNR Counter', startupTics: 1, activeTics: 1, recoveryTics: 0,
+    rollSlots: ['Skull'], attackTargets: ['Body'],
+  });
+  await tagMove(counter, 'Punisher - Body');
+  const theirs = await createMove({
+    name: 'PUNR Theirs', startupTics: 1, activeTics: 1, recoveryTics: 1,
+    rollSlots: ['Body'], attackTargets: ['Body'],
+  });
+  await seatPair(pairIndex, punisher, victim);
+  await startPairDeclaration(mockIo, pairIndex);
+  // Round 1: they throw a Body move, so the Punisher legitimately fires.
+  await declareMove({ characterId: victim, moveId: theirs, placementTic: 0, startupTics: 1 });
+  await declareMove({
+    characterId: punisher, moveId: counter, placementTic: 0, startupTics: 1,
+    effectiveAttackTargets: ['Body'],
+  });
+  await resolvePair(pairIndex);
+
+  const roundOne = (await all("SELECT payload FROM round_events WHERE pair_index = ? AND type = 'roll'", [pairIndex]))
+    .map((r) => JSON.parse(r.payload))
+    .filter((p) => p.characterId === punisher);
+  assert.ok(
+    (roundOne[0]?.modifierBreakdown ?? []).some((t) => String(t.label).startsWith('Punisher')),
+    'the fixture has to actually punish something in round 1'
+  );
+
+  // Round 2, on the same pair: the victim declares nothing at all.
+  const pair = await one('SELECT round_number, round_start_tic FROM combat_pairs WHERE pair_index = ?', [pairIndex]);
+  const roundLength = (await one('SELECT round_length FROM combat_state WHERE id = 1'))?.round_length ?? 7;
+  const nextStart = pair.round_start_tic + roundLength;
+  await run(
+    `UPDATE combat_pairs SET round_number = ?, round_start_tic = ?, current_tic = ?, phase = 'declaration'
+     WHERE pair_index = ?`,
+    [pair.round_number + 1, nextStart, nextStart, pairIndex]
+  );
+  await run(
+    `INSERT INTO declared_moves (character_id, move_id, round_number, queue_order, placement_tic, reveal_tic, effective_attack_targets)
+     VALUES (?, ?, ?, 1, ?, ?, ?)`,
+    [punisher, counter, pair.round_number + 1, nextStart, nextStart + 1, JSON.stringify(['Body'])]
+  );
+  await resolvePair(pairIndex);
+
+  const roundTwo = (await all("SELECT payload FROM round_events WHERE pair_index = ? AND type = 'roll'", [pairIndex]))
+    .map((r) => JSON.parse(r.payload))
+    .filter((p) => p.characterId === punisher)
+    .slice(1);
+  assert.ok(roundTwo.length, 'the punisher should have rolled again in round 2');
+  assert.equal(
+    (roundTwo[0].modifierBreakdown ?? []).find((t) => String(t.label).startsWith('Punisher')),
+    undefined,
+    `nobody was mid-move in round 2, so no +2: ${JSON.stringify(roundTwo[0].modifierBreakdown)}`
+  );
+});
+
+test('Punisher pays nothing when the opponent declared nothing at all', async () => {
+  // Reported from a live fight: the Tag read as always-on. Nobody to punish
+  // must be worth nothing — the whole rule is "while they are mid-move".
+  const pairIndex = 393;
+  const punisher = await createCharacter('PUNN Punisher');
+  const victim = await createCharacter('PUNN Victim');
+  const counter = await createMove({
+    name: 'PUNN Counter', startupTics: 1, activeTics: 1, recoveryTics: 0,
+    rollSlots: ['Skull'], attackTargets: ['Body'],
+  });
+  await tagMove(counter, 'Punisher - Body');
+  await seatPair(pairIndex, punisher, victim);
+  await startPairDeclaration(mockIo, pairIndex);
+  // Only the punisher declares. The victim throws nothing this round.
+  await declareMove({
+    characterId: punisher, moveId: counter, placementTic: 0, startupTics: 1,
+    effectiveAttackTargets: ['Body'],
+  });
+  await resolvePair(pairIndex);
+  const roll = (await all("SELECT payload FROM round_events WHERE pair_index = ? AND type = 'roll'", [pairIndex]))
+    .map((r) => JSON.parse(r.payload))
+    .find((p) => p.characterId === punisher);
+  assert.ok(roll, 'the punisher should have rolled');
+  assert.equal(
+    (roll.modifierBreakdown ?? []).find((t) => String(t.label).startsWith('Punisher')),
+    undefined,
+    `nothing to punish, so no +2: ${JSON.stringify(roll.modifierBreakdown)}`
+  );
 });
 
 test('Punisher pays nothing for a Stat the opponent is not rolling', async () => {
@@ -3431,6 +3537,78 @@ test('a Stat DESTROYED by Temporary Damage comes back', async () => {
   assert.equal(
     (await all('SELECT * FROM dice WHERE character_id = ? AND temporary_damage > 0', [defender])).length, 0
   );
+});
+
+// ---------- a grab that lands also hurts -----------------------------------
+
+// One grapple, resolved. `rollModifier` sets the grappler's total (every die
+// lands on its max face in this file), so the contest arithmetic is exact.
+async function grappleFight(pairIndex, { rollModifier, attackTargets = ['Body'], tag = null, resist = [] }) {
+  const grappler = await createCharacter(`GD${pairIndex} Grappler`);
+  const target = await createCharacter(`GD${pairIndex} Target`);
+  const grab = await createMove({
+    name: `GD${pairIndex} Armbar`, startupTics: 1, activeTics: 1, recoveryTics: 0,
+    rollSlots: ['Skull'], rollModifier, attackTargets,
+    isGrappling: true, resistRollSlots: resist,
+  });
+  if (tag) await tagMove(grab, tag);
+  await seatPair(pairIndex, grappler, target);
+  await startPairDeclaration(mockIo, pairIndex);
+  await declareMove({
+    characterId: grappler, moveId: grab, placementTic: 0, startupTics: 1,
+    effectiveAttackTargets: attackTargets,
+  });
+  await resolvePair(pairIndex);
+  const events = (await all('SELECT type, payload FROM round_events WHERE pair_index = ? ORDER BY seq', [pairIndex]))
+    .map((e) => ({ type: e.type, payload: JSON.parse(e.payload) }));
+  return { grappler, target, events };
+}
+
+test('a grapple that takes hold deals damage off its own roll', async () => {
+  // The brief's own arithmetic: a grab rolling 19 against a Resist Roll of 18,
+  // at default Damage Thresholds, is worth three Half-Damage steps. The Resist
+  // Roll decides only whether the grab lands — it never reduces what a grab
+  // that DID land is worth.
+  // Every die lands on its max face in this file; the modifier is tuned so the
+  // contest total is exactly the brief's 19, standing bonuses included.
+  const { events } = await grappleFight(395, { rollModifier: 11 });
+  const resolved = events.find((e) => e.type === 'grapple_resolved');
+  assert.ok(resolved?.payload.success, `the grab has to land: ${JSON.stringify(resolved?.payload)}`);
+  assert.equal(resolved.payload.grapplerTotal, 19, 'the fixture rolls exactly 19');
+
+  const hit = events.find((e) => e.type === 'damage_applied' && e.payload.slotName === 'Body');
+  assert.ok(hit, `the grab should have dealt damage: ${JSON.stringify(events.map((e) => e.type))}`);
+  assert.equal(hit.payload.steps, 3, 'floor(19 / 5) = 3 Half-Damage steps');
+  assert.equal(hit.payload.attackerCharacterId != null, true, 'and it is filed to its attacker');
+});
+
+test('a grapple carrying No Damage still takes hold and still hurts nobody', async () => {
+  const { events } = await grappleFight(396, { rollModifier: 15, tag: 'No Damage' });
+  assert.ok(events.find((e) => e.type === 'grapple_resolved')?.payload.success);
+  assert.equal(
+    events.find((e) => e.type === 'damage_applied' && e.payload.slotName),
+    undefined,
+    'No Damage means no damage, on a grab as much as on a strike'
+  );
+});
+
+test('a grapple with no Attack Target hurts nobody either', async () => {
+  // Two ways to say "this hold does not hurt", and both have to work: the Tag,
+  // and simply naming nothing to hit.
+  const { events } = await grappleFight(397, { rollModifier: 15, attackTargets: [] });
+  assert.ok(events.find((e) => e.type === 'grapple_resolved')?.payload.success);
+  assert.equal(events.find((e) => e.type === 'damage_applied' && e.payload.slotName), undefined);
+});
+
+test('a grapple that is out-rolled deals nothing at all', async () => {
+  // The Resist Roll's whole job: stop the move. A grab that never took hold
+  // cannot deal the damage a landed one would have.
+  // A tie goes to the defender (see resolveGrappleContest), so an equal roll is
+  // the cleanest way to make the grab fail while still clearing its threshold.
+  const { events } = await grappleFight(398, { rollModifier: 0, resist: ['Skull'] });
+  const resolved = events.find((e) => e.type === 'grapple_resolved');
+  assert.equal(resolved?.payload.success, false, `the fixture has to actually fail: ${JSON.stringify(resolved?.payload)}`);
+  assert.equal(events.find((e) => e.type === 'damage_applied' && e.payload.slotName), undefined);
 });
 
 test('Dogfighter makes a move harder to break up, by exactly 2', async () => {
