@@ -1,5 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { sortTags } from '../lib/moveDisplay.js';
+import {
+  moveAttackTargets,
+  moveRollSlots,
+  moveTagIds,
+  slotItems,
+} from '../lib/moveFilterRules.js';
+import { MoveFilterChips } from '../lib/moveFilters.jsx';
 import { useRole } from '../roleContext.jsx';
 import { socket } from '../socket.js';
 import { getMoves, getRuleset, getTags, getTells } from '../lib/api.js';
@@ -312,8 +319,13 @@ export default function MovesCompendium() {
   const [reorderTarget, setReorderTarget] = useState(null); // move id being hovered as a drop slot
   const [styleFilter, setStyleFilter] = useState(new Set()); // Set<attribute id> — OR'd together
   const [tagFilter, setTagFilter] = useState(new Set()); // Set<tag id> — OR'd together
-  // One toggler for both filters: they are the same multi-select-OR control
-  // over different id spaces, and two copies of this would be two places for
+  // Set<slot name> — the same seven-name vocabulary the character sheet and the
+  // Arena's picker filter by (see lib/moveFilterRules.js), so "which of these
+  // goes for the head" asks the same question in all three places.
+  const [targetFilter, setTargetFilter] = useState(new Set());
+  const [rollFilter, setRollFilter] = useState(new Set());
+  // One toggler for every filter: they are the same multi-select-OR control
+  // over different id spaces, and four copies of this would be four places for
   // the next change to miss.
   const toggleIn = (setter) => (id) =>
     setter((prev) => {
@@ -324,6 +336,8 @@ export default function MovesCompendium() {
     });
   const toggleStyleFilter = toggleIn(setStyleFilter);
   const toggleTagFilter = toggleIn(setTagFilter);
+  const toggleTargetFilter = toggleIn(setTargetFilter);
+  const toggleRollFilter = toggleIn(setRollFilter);
 
   // **Each event refetches only what it invalidates (decided, revised).**
   //
@@ -408,18 +422,40 @@ export default function MovesCompendium() {
 
   // "All Moves" (currentFolder == null) shows every move regardless of
   // discipline — a specific discipline tab shows only its own moves. The
-  // style filter narrows whichever of those two pools is currently showing.
-  // The two filters narrow independently and are AND'd with each other, while
-  // each is OR'd within itself: "a Strength OR Speed move that is Grab OR
-  // Feint". Selecting nothing in a filter means that filter isn't applied,
-  // which is why an empty Set is checked rather than treated as "match none".
+  // filters narrow whichever of those two pools is currently showing.
+  // They narrow independently and are AND'd with each other, while each is
+  // OR'd within itself: "a Strength OR Speed move that is Grab OR Feint, that
+  // goes for the head". Selecting nothing in a filter means that filter isn't
+  // applied, which is why an empty Set is checked rather than treated as
+  // "match none".
   const folderPool = currentFolder != null ? moves.filter((m) => m.folder_id === currentFolder) : moves;
   const styleMatched =
     styleFilter.size > 0 ? folderPool.filter((m) => styleFilter.has(m.style_attribute_id)) : folderPool;
-  const visibleMoves =
+  const tagMatched =
     tagFilter.size > 0
-      ? styleMatched.filter((m) => (m.tag_ids ?? []).some((id) => tagFilter.has(id)))
+      ? styleMatched.filter((m) => moveTagIds(m).some((id) => tagFilter.has(id)))
       : styleMatched;
+  const targetMatched =
+    targetFilter.size > 0
+      ? tagMatched.filter((m) => moveAttackTargets(m).some((n) => targetFilter.has(n)))
+      : tagMatched;
+  const visibleMoves =
+    rollFilter.size > 0
+      ? targetMatched.filter((m) => moveRollSlots(m).some((n) => rollFilter.has(n)))
+      : targetMatched;
+
+  // The slot chips come from the pool the folder is showing, not from the whole
+  // seven-name vocabulary: a discipline where nothing goes for a Weapon should
+  // not offer a Weapon chip that can only ever empty the page. The Style and Tag
+  // rows above deliberately do NOT do this — those are the GM's own authored
+  // lists and their absence from a folder is itself worth seeing.
+  const gatherSlots = (accessor) => {
+    const present = new Set();
+    for (const m of folderPool) for (const n of accessor(m)) present.add(n);
+    return slotItems(present);
+  };
+  const targetItems = gatherSlots(moveAttackTargets);
+  const rollItems = gatherSlots(moveRollSlots);
 
   // `form` is one of: null (closed), `{}` (blank new move), `{ move }` (edit
   // that move in place), `{ copyOf }` (a NEW move pre-filled from that one).
@@ -518,7 +554,22 @@ export default function MovesCompendium() {
       )}
 
     <div className="flex gap-4">
-      <aside className="hidden w-44 shrink-0 md:block">
+      {/* **Both rails follow the scroll (decided, new).** The Compendium is one
+          very long grid with a column either side of it, and both columns used
+          to sit at the top of it: scrolling to the move you wanted scrolled the
+          discipline you wanted to file it in — and the character you wanted to
+          drop it on — off the screen entirely. Sticky to the scrollport (the
+          `<main>` in App.jsx) keeps both in reach for the library's whole length.
+
+          `self-start` is what makes it work at all: a flex item stretches to the
+          row's full height by default, and a box already as tall as its
+          containing block has nowhere left to stick to.
+
+          The cap plus inner scroll is for a long roster or a deep folder tree.
+          The box may then still run past the fold, but its own scrollbar brings
+          the bottom of the list up into the visible part, which the unstuck
+          version could not do at all. */}
+      <aside className="hidden w-44 shrink-0 self-start md:sticky md:top-0 md:block md:max-h-[85dvh] md:overflow-y-auto md:pr-1">
         <FolderTreeNav
           folders={folders}
           currentFolderId={currentFolder}
@@ -541,63 +592,80 @@ export default function MovesCompendium() {
           </>
         )}
 
-        {/* Style filter */}
-        <div className="flex flex-wrap items-center gap-1">
-          <span className="mr-1 text-xs font-semibold uppercase text-zinc-500">Filter by style:</span>
-          {ruleset.attributes.map((attr) => {
-            const Icon = iconFor(attr.icon);
-            const active = styleFilter.has(attr.id);
-            return (
-              <button
-                key={attr.id}
-                onClick={() => toggleStyleFilter(attr.id)}
-                title={`Filter by ${attr.name}`}
-                className={`flex h-11 w-11 shrink-0 items-center justify-center panel-cut-sm border p-1.5 md:h-auto md:w-auto ${
-                  active
-                    ? 'border-brand-500 bg-brand-600/30 text-brand-300'
-                    : 'border-zinc-700 text-zinc-500 hover:border-zinc-500'
-                }`}
-              >
-                <Icon size={14} />
-              </button>
-            );
-          })}
-        </div>
+        {/* **Four filters, split left and right by the question they ask
+            (decided, revised).** Left: what a move *does* — the Attack Target it
+            goes for and the Attack Roll it makes. Right: what a move *is* — the
+            Style it belongs to and the Tags it carries. Browsing a library of
+            two hundred moves for "everything that goes for the Skull" was not
+            possible at all before; it is the question a GM building a discipline
+            asks constantly.
 
-        {/* Tag filter — the same multi-select-OR control as the style row
-            above, in words rather than icons because a Tag is GM-authored
-            free text with no icon to stand in for it. Hidden entirely when
-            the world has no Tags yet, rather than rendering a bare label. */}
-        {tags.length > 0 && (
-          <div className="flex flex-wrap items-center gap-1">
-            <span className="mr-1 text-xs font-semibold uppercase text-zinc-500">Filter by tag:</span>
-            {tags.map((tag) => {
-              const active = tagFilter.has(tag.id);
-              return (
-                <button
-                  key={tag.id}
-                  onClick={() => toggleTagFilter(tag.id)}
-                  title={tag.description || `Filter by ${tag.name}`}
-                  className={`panel-cut-sm border px-2 py-1 text-xs ${
-                    active
-                      ? 'border-brand-500 bg-brand-600/30 text-brand-300'
-                      : 'border-zinc-700 text-zinc-500 hover:border-zinc-500'
-                  }`}
-                >
-                  {tag.name}
-                </button>
-              );
-            })}
-            {tagFilter.size > 0 && (
-              <button
-                onClick={() => setTagFilter(new Set())}
-                className="ml-1 text-xs text-zinc-500 underline hover:text-zinc-300"
-              >
-                clear
-              </button>
-            )}
+            The Tag row is now the shared `MoveFilterChips` rather than a fourth
+            hand-rolled copy of the same control — it was already identical in
+            every respect but its source. The Style row stays bespoke: it is
+            icons, not words, and nothing else in the app filters by icon. */}
+        <div className="grid gap-x-6 gap-y-2 md:grid-cols-2">
+          <div className="space-y-2">
+            <MoveFilterChips
+              label="Attack Target:"
+              items={targetItems}
+              selected={targetFilter}
+              onToggle={toggleTargetFilter}
+              onClear={() => setTargetFilter(new Set())}
+              labelFor={(s) => s.name}
+              titleFor={(s) => `Show only moves that go for the ${s.name}`}
+            />
+            <MoveFilterChips
+              label="Attack Roll:"
+              items={rollItems}
+              selected={rollFilter}
+              onToggle={toggleRollFilter}
+              onClear={() => setRollFilter(new Set())}
+              labelFor={(s) => s.name}
+              titleFor={(s) => `Show only moves that roll ${s.name}`}
+            />
           </div>
-        )}
+
+          <div className="space-y-2">
+            <div className="flex flex-wrap items-center gap-1 md:justify-end">
+              <span className="mr-1 text-xs font-semibold uppercase text-zinc-500">
+                Filter by style:
+              </span>
+              {ruleset.attributes.map((attr) => {
+                const Icon = iconFor(attr.icon);
+                const active = styleFilter.has(attr.id);
+                return (
+                  <button
+                    key={attr.id}
+                    onClick={() => toggleStyleFilter(attr.id)}
+                    title={`Filter by ${attr.name}`}
+                    className={`flex h-11 w-11 shrink-0 items-center justify-center panel-cut-sm border p-1.5 md:h-auto md:w-auto ${
+                      active
+                        ? 'border-brand-500 bg-brand-600/30 text-brand-300'
+                        : 'border-zinc-700 text-zinc-500 hover:border-zinc-500'
+                    }`}
+                  >
+                    <Icon size={14} />
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* In words rather than icons because a Tag is GM-authored free
+                text with no icon to stand in for it. Renders nothing at all
+                when the world has no Tags yet, rather than a bare label. */}
+            <MoveFilterChips
+              label="Filter by tag:"
+              items={tags}
+              selected={tagFilter}
+              onToggle={toggleTagFilter}
+              onClear={() => setTagFilter(new Set())}
+              labelFor={(t) => t.name}
+              titleFor={(t) => t.description}
+              className="md:justify-end"
+            />
+          </div>
+        </div>
 
         {role === 'gm' &&
           (form ? (
@@ -624,7 +692,7 @@ export default function MovesCompendium() {
 
         {visibleMoves.length === 0 ? (
           <p className="text-sm text-zinc-600">
-            {styleFilter.size > 0 || tagFilter.size > 0
+            {styleFilter.size > 0 || tagFilter.size > 0 || targetFilter.size > 0 || rollFilter.size > 0
               ? 'No moves match these filters here.'
               : currentFolder != null
                 ? 'No moves in this discipline yet — assign moves to it in the Move Creator.'
@@ -785,7 +853,11 @@ export default function MovesCompendium() {
       </div>
 
       {role === 'gm' && (
-        <aside className="hidden w-44 shrink-0 md:block">
+        // Sticky for the same reason as the discipline rail opposite, and more
+        // urgently: this one is a drop target. A drag that has to be held while
+        // the page scrolls under it is the worst version of this interaction,
+        // and it was the only version available.
+        <aside className="hidden w-44 shrink-0 self-start md:sticky md:top-0 md:block md:max-h-[85dvh] md:overflow-y-auto md:pl-1">
           <h2 className="mb-2 text-xs font-bold uppercase tracking-wide text-zinc-500">
             Drag a move here
           </h2>

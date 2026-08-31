@@ -1,6 +1,13 @@
 import { useMemo, useState } from 'react';
+import {
+  moveAttackTargets,
+  moveRollSlots,
+  moveTagIds,
+  moveTellIds,
+  slotItems,
+} from './moveFilterRules.js';
 
-// **The Tell/Tag move filter, in one place (decided, new).**
+// **The move filter, in one place (decided, new).**
 //
 // This control already existed twice — the Compendium's Style+Tag row and the
 // sheet's Tell+Tag row — and the Arena's declare picker makes three. A third
@@ -9,19 +16,10 @@ import { useMemo, useState } from 'react';
 // implementations of one question is how two of them quietly stop agreeing
 // about what "OR'd within, AND'd between" means.
 //
-// The rules, unchanged from the sheet's own version:
-//   - picks *within* one filter are OR'd — "a Jab or a Hook"
-//   - the two filters are AND'd with each other — "...and Fast"
-//   - an empty filter is not applied at all
-//
-// Both sides of an ambiguous move's Left/Right Tell pair count, because a move
-// that can open with either is findable by either.
-export const moveTellIds = (move) =>
-  [move.tell_id, move.left_tell_id, move.right_tell_id].filter((id) => id != null);
-
-// `effective_tag_ids` first: a Perk may add or strip a Tag for one character,
-// and the filter has to match what that fighter's card actually shows.
-export const moveTagIds = (move) => move.effective_tag_ids ?? move.tag_ids ?? [];
+// The rule itself lives next door in `moveFilterRules.js`, where `node --test`
+// can reach it; this file is the hook and the two ways the chips are drawn.
+// Re-exported so a call site only ever needs one import.
+export { moveAttackTargets, moveRollSlots, moveTagIds, moveTellIds, slotItems };
 
 // `moves` is the pile being filtered — not the world. Offering a filter that
 // can only ever return nothing is a worse answer than not offering it, so the
@@ -30,6 +28,8 @@ export const moveTagIds = (move) => move.effective_tag_ids ?? move.tag_ids ?? []
 export function useMoveFilters(moves) {
   const [tellFilter, setTellFilter] = useState(new Set());
   const [tagFilter, setTagFilter] = useState(new Set());
+  const [targetFilter, setTargetFilter] = useState(new Set());
+  const [rollFilter, setRollFilter] = useState(new Set());
 
   const toggleIn = (setter) => (id) =>
     setter((prev) => {
@@ -40,33 +40,49 @@ export function useMoveFilters(moves) {
     });
 
   const list = moves ?? [];
-  const presentTellIds = useMemo(() => {
+  const gather = (accessor) => {
     const ids = new Set();
-    for (const m of list) for (const id of moveTellIds(m)) ids.add(id);
+    for (const m of list) for (const id of accessor(m)) ids.add(id);
     return ids;
-  }, [list]);
-  const presentTagIds = useMemo(() => {
-    const ids = new Set();
-    for (const m of list) for (const id of moveTagIds(m)) ids.add(id);
-    return ids;
-  }, [list]);
+  };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const presentTellIds = useMemo(() => gather(moveTellIds), [list]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const presentTagIds = useMemo(() => gather(moveTagIds), [list]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const presentTargets = useMemo(() => gather(moveAttackTargets), [list]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const presentRolls = useMemo(() => gather(moveRollSlots), [list]);
 
+  // Every filter is OR'd within itself and AND'd with the others, all four the
+  // same way: "a Jab or a Hook, that goes for the head, and rolls a Hand".
   const matches = (move) => {
     if (tellFilter.size > 0 && !moveTellIds(move).some((id) => tellFilter.has(id))) return false;
     if (tagFilter.size > 0 && !moveTagIds(move).some((id) => tagFilter.has(id))) return false;
+    if (targetFilter.size > 0 && !moveAttackTargets(move).some((n) => targetFilter.has(n))) return false;
+    if (rollFilter.size > 0 && !moveRollSlots(move).some((n) => rollFilter.has(n))) return false;
     return true;
   };
 
   return {
     tellFilter,
     tagFilter,
+    targetFilter,
+    rollFilter,
     toggleTell: toggleIn(setTellFilter),
     toggleTag: toggleIn(setTagFilter),
+    toggleTarget: toggleIn(setTargetFilter),
+    toggleRoll: toggleIn(setRollFilter),
     clearTell: () => setTellFilter(new Set()),
     clearTag: () => setTagFilter(new Set()),
+    clearTarget: () => setTargetFilter(new Set()),
+    clearRoll: () => setRollFilter(new Set()),
     presentTellIds,
     presentTagIds,
-    anyActive: tellFilter.size > 0 || tagFilter.size > 0,
+    targetItems: useMemo(() => slotItems(presentTargets), [presentTargets]),
+    rollItems: useMemo(() => slotItems(presentRolls), [presentRolls]),
+    anyActive:
+      tellFilter.size > 0 || tagFilter.size > 0 || targetFilter.size > 0 || rollFilter.size > 0,
     matches,
   };
 }

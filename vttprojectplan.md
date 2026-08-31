@@ -441,7 +441,7 @@ Each character builds their own stances via an in-sheet **Stance Creator**; stan
   - **Roll type — Stat vs. Custom (decided, new):** the Move Creator's Roll section starts with a Stat/Custom toggle. **Stat** is everything described above (`moves.roll_type = 'stat'`, the default). **Custom** replaces the whole body-part-slot picker with a single base die picked from d4-d12 (`moves.custom_roll_size`) — for weapons, whose damage die belongs to the item, not the wielder, so it shouldn't move when the wielder's own Stats change. The two are mutually exclusive and enforced server-side (see `move:create`/`move:update` below): switching types in the Creator clears the other type's own picks, and `writeMove` forces `roll_slots = []` for a Custom move and `custom_roll_size = NULL` for a Stat move regardless of what's sent. A Custom Roll has no character-die concept at all — no incapacitation, no per-character resolution — so its Moves-tab button always just reads `d{size}{+bonus}` and is always clickable; rolling it goes through `dice:roll_custom` (see Real-time events below) instead of `pool:roll`, including at reveal-time auto-Roll. The flat **Bonus** field is shared with the Stat type (still `roll_modifier`, still folds in any Perk `roll_bonus` into `effective_roll_modifier`).
   - **Attack Target (Change 001, decided, new):** every Move with a Roll also carries an Attack Target — which of the same 7 slots its damage may actually be applied to (Weapon among them, where it means something different — see The Weapon below). Full mechanic (multi-select, empty-by-default, Successful-Block replacement, server-authoritative enforcement) documented in its own **Game mechanic — Attack Target** section below, since it interacts with Combat Automation's damage/defense flow rather than move creation alone.
 - **Tags (decided)**: each move carries 0-10 Tags, picked from the world-level GM-managed `tags` list (created/edited in the Compendium, like Tells — this pulls the base tag tables forward from Phase 4; per-character tag overrides via Perks remain Phase 4). Tags can also change dynamically later (Perks adding Tags to specific moves). A Tag has a **name and an optional description**; hovering a Tag anywhere it's shown (the Tag manager, a Move Creator's picker, a Move card) pops a tooltip with that description.
-- **The Moves tab filters by Tell and by Tag (decided, new).** Two multi-select-OR chip rows above the move grid, in exactly the Compendium's own filter language — picks *within* a row are OR'd, the two rows are AND'd, and an empty row is not applied at all. **Tell and Tag rather than the Compendium's Style and Tag:** on your own sheet a Style you cannot currently use is already dimmed and labelled, while "which of these opens with the shoulder drop" had no answer at all. Each row lists only the Tells and Tags that moves **on this sheet** actually carry — the Compendium is the library and shows the world's whole vocabulary, but a sheet is a hand of cards, and a filter that can only ever return nothing is worse than no filter. Both halves of an ambiguous move's Left/Right Tell pair count as that move's Tells, and a Perk's `effective_tag_ids` override is what a Tag filter reads, so the filter agrees with the chips actually printed on the card.
+- **The Moves tab filters by Tell and by Tag (decided, new; later joined by Attack Target and Attack Roll — see the four-filter split).** Two multi-select-OR chip rows above the move grid, in exactly the Compendium's own filter language — picks *within* a row are OR'd, the two rows are AND'd, and an empty row is not applied at all. **Tell and Tag rather than the Compendium's Style and Tag:** on your own sheet a Style you cannot currently use is already dimmed and labelled, while "which of these opens with the shoulder drop" had no answer at all. Each row lists only the Tells and Tags that moves **on this sheet** actually carry — the Compendium is the library and shows the world's whole vocabulary, but a sheet is a hand of cards, and a filter that can only ever return nothing is worse than no filter. Both halves of an ambiguous move's Left/Right Tell pair count as that move's Tells, and a Perk's `effective_tag_ids` override is what a Tag filter reads, so the filter agrees with the chips actually printed on the card.
 
 - **Compendium** — a persistent library of every move ever created (default and unique). **Decided (revised twice): Players can browse it, and can teach themselves a move from it** — folder nav, style filter, move cards, Tell/Tag tooltips all render the same as for the GM, and a **Learn / Forget** button on every *Unique* move grants or drops it on the Player's own character. Reading the library and being unable to act on it was the gap: the only route was asking the GM to tick a box on your behalf. Default moves are already everyone's, so they offer nothing; the style-learnability rule is unchanged and still enforced server-side, with the button saying why it is closed rather than silently refusing. **Forget** is offered as the undo — and it is offered **on the character's own Moves tab as well as in the Compendium** (decided, revised): taking something and putting it down are the same act, and only the library offered the second half, so noticing an unwanted Move on your sheet meant going elsewhere to find it again. The GM's own **Revoke** on that tab is unchanged and still keeps its confirmation, because undoing somebody else's choice is a different act from undoing your own. Nothing tracks who granted what, so a Player dropping a move the GM gave them is possible and accepted, the same trust model as every other control here. The Move Creator form, Tell/Tag managers, per-move Grant…/Edit/Delete actions, drag-to-grant, and the "drag a move here to grant" character rail remain GM-only (`role === 'gm'`, client-side gating only, same trust model as every other GM-only control in this app). The GM drags a move from the compendium onto a character in the page's character rail to grant it (a per-move Grant checklist covers touch devices); the GM can revoke a Unique move from the character's Moves tab.
 - **Compendium folders, shown in the UI as "Discipline" (decided)**: folders exist to organize moves by which **martial art/discipline** they come from (Karate, Muay Thai, etc.) — "Discipline" is purely a display label for the same underlying folder mechanism (`move_folders`, `folder:*` events), chosen because "Style" already means something else (the 7 tournament attributes). **Disciplines nest (decided)** — `move_folders.parent_id` self-references, so a discipline can itself contain sub-disciplines to any depth (e.g. "Striking / Boxing / Southpaw"). The GM creates disciplines and places moves in them — either assigned in the Move Creator (a select showing the full indented hierarchy, e.g. "Striking / Boxing"), or by **dragging a move card onto a discipline row** in the nested nav (dragging onto "All Moves"/root clears the move's discipline); creating a discipline while another is selected nests it inside that one. Deleting a discipline promotes its directly-contained moves and direct child disciplines **one level up, to the deleted discipline's own parent** (root if it was already at root) — not unconditionally to root, so removing a nested discipline only collapses that one level rather than flattening its whole subtree; if the client is currently viewing the deleted discipline, it follows automatically to that parent (or root). **"All Moves" shows every move regardless of discipline** — a specific discipline shows only its own moves. A **style filter** further narrows whichever of those two is currently showing — **multi-select, OR'd together (decided, revised):** each of the 7 style icons toggles independently (a `Set` of attribute ids, not a single value), and a move matches if its style is *any* of the currently-selected ones; no selection shows everything, same as before. Every move card, everywhere (Compendium and every character sheet, not just under a style filter), always shows its **full discipline path** — "📁 Striking / Boxing" if filed under a nested one, or **"Without Discipline"** if not.
@@ -785,9 +785,11 @@ asserts both. The arrow itself was also 9px of `blue-200/90` on a `blue-800` cel
 invisible at any normal viewing distance, which is the same as absent.
 
 **Move filters on the declare picker (decided, new; implemented).** The Arena's Declaration screen now
-carries the same Tell/Tag filters the character sheet has — **Tag on the left, Tell on the right**, on
-their own row under the default/unique tabs. Mid-round is exactly when "which of these opens with the
-shoulder drop" is worth answering fastest, and the Default tab is every default move in the world.
+carries the same Tell/Tag filters the character sheet has, on their own row under the default/unique
+tabs. Mid-round is exactly when "which of these opens with the shoulder drop" is worth answering
+fastest, and the Default tab is every default move in the world. (Tag sat left of the panel and Tell
+right until Attack Target and Attack Roll joined them — see the four-filter split below, which moved
+both to the right.)
 
 - **Extracted rather than copied a third time** (`client/src/lib/moveFilters.jsx`: `useMoveFilters` +
   `MoveFilterChips`). The control already existed twice — the Compendium's Style+Tag row and the
@@ -802,8 +804,9 @@ shoulder drop" is worth answering fastest, and the Default tab is every default 
 - **On a desktop they flank the panel, outside its border (revised).** The picker is a narrow centred
   column with a great deal of empty screen either side of it, and chips squeezed inside it were both
   cramped and too small to read at a glance — which is the one thing a filter has to be mid-round.
-  **Tag to the left of the move list, Tell to the right**, as a full-size stacked column at a
-  readable font, in space that was carrying nothing. Two earlier attempts kept them inside the panel
+  A full-size stacked column either side at a readable font, in space that was carrying nothing —
+  **Attack Target and Attack Roll to the left, Tell and Tag to the right** since the four-filter
+  split below (it was Tag left, Tell right when there were only two). Two earlier attempts kept them inside the panel
   (first sharing the tab row, then on a row of their own beneath it); both were legible only in the
   sense that the pixels were present.
 - **The phone keeps the compact in-panel row exactly as it was** (`md:hidden` on the row,
@@ -813,6 +816,53 @@ shoulder drop" is worth answering fastest, and the Default tab is every default 
   is what makes rendering the columns outside the panel's border possible at all. The tab belongs
   there for the same reason: the chips derive from the current tab, so whoever owns the chips owns
   the tab.
+
+**Filter by Attack Target and Attack Roll, everywhere moves are browsed (decided, new; implemented).**
+Two more filters beside the Tell/Tag pair, on all three surfaces — the Compendium's Move browser, the
+character sheet's Moves tab, and the Arena's declare picker. "Which of these goes for the head" and
+"which of these rolls a Hand" are what you ask of a long list mid-round, and neither was askable
+anywhere before.
+
+- **The layout is a left/right split by the question each filter asks.** Left: what a move *does* —
+  its **Attack Target** and its **Attack Roll**. Right: what a move *is* — its **Tell** and its
+  **Tags** (the Compendium's right column is **Style** and Tag, since that page filters by Style
+  rather than Tell). On the Arena's desktop layout that means two stacked `MoveFilterColumn`s a side
+  flanking the panel instead of one; on a phone, two stacked compact rows a side inside it. One
+  column on a narrow sheet, where the two halves simply stack in that order.
+- **Both read the same seven-name vocabulary** (`ROLL_SLOT_NAMES`): Left/Right Hand collapse into one
+  ambiguous `Hand`, Left/Right Leg into `Leg`, `Weapon` is the seventh. A move that rolls `Hand`
+  twice is still one `Hand` to a filter — these are membership tests, not counts.
+- **`effective_attack_targets` / `effective_roll_slots` first**, for the same reason the Tag filter
+  reads `effective_tag_ids`: a Perk can change what a move does for one character, and a filter has
+  to agree with the card in front of that fighter rather than the library row behind it. Neither is
+  on the sheet payload today; reading for it costs nothing and means the filter does not quietly go
+  stale the day a seam starts writing one.
+- **Chips are built from the pile being filtered**, as the Tell/Tag rows already were — the sheet's
+  own hand, the picker's current tab, the Compendium's current discipline. The Style and Tag rows
+  deliberately still show the GM's whole authored vocabulary: those are the world's lists, and a
+  Tag's absence from a folder is itself worth seeing.
+- **A move with no Attack Target is excluded by that filter rather than exempt from it.** A pure
+  defence names nothing; asking "which of these goes for the head" should not hand back everything
+  that goes for nothing at all.
+- **The rules moved to `client/src/lib/moveFilterRules.js`**, a plain `.js` beside the `.jsx`, because
+  `node --test` cannot load JSX and the half worth pinning is what counts as a match. `moveFilters.jsx`
+  imports and re-exports it, so no call site changed. `server/test/moveFilters.test.js` covers the
+  AND/OR shape, the `effective_*` preference, the canonical chip order, and that the client's slot
+  vocabulary still equals the server's — two lists that drift give a filter that silently matches
+  nothing. The Compendium's hand-rolled Tag row became the shared `MoveFilterChips` in the same
+  change; its Style row stays bespoke, being icons rather than words.
+
+**The Compendium's side rails follow the scroll (decided, new; implemented).** Both columns — the
+discipline tree on the left, the drag-a-move-here character rail on the right, and the Perks tab's
+own rail — are `sticky top-0` against `<main>`'s scrollport. The page is one very long grid with a
+column either side of it, and both columns used to sit at the top of it: scrolling to the move you
+wanted scrolled the discipline you wanted to file it in, and the character you wanted to drop it on,
+off the screen entirely. The rail is a *drop target*, so a drag that had to be held while the page
+scrolled under it was the worst version of that interaction and the only one available.
+`self-start` is load-bearing — a stretched flex item is already as tall as its row and has nowhere
+left to stick to — and the height cap plus inner scroll covers a long roster: the box may still run
+past the fold, but its own scrollbar brings the bottom of the list into the visible part, which the
+unstuck version could not do at all.
 
 **A `useMemo is not defined` shipped past the build and the linter, and closed a gap (bugfix).** The
 new picker used `useMemo`, `CombatArena.jsx` did not import it, and `npm run build` was perfectly

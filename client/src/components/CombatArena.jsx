@@ -1795,29 +1795,57 @@ function DeclareMovePicker({ entry, roundStartTic, declaredMoves, tags, tellById
           where there is room for a readable font. A phone has no side space to
           give, so it keeps the compact in-panel row rather than being reflowed
           into something worse. */}
-      {(tagList.length > 0 || tellList.length > 0) && (
+      {(tagList.length > 0 ||
+        tellList.length > 0 ||
+        filters.targetItems.length > 0 ||
+        filters.rollItems.length > 0) && (
         <div className="mb-1.5 flex items-start justify-between gap-3 md:hidden">
-          <MoveFilterChips
-            label="Tag:"
-            items={tagList}
-            selected={filters.tagFilter}
-            onToggle={filters.toggleTag}
-            onClear={filters.clearTag}
-            labelFor={(t) => t.name}
-            titleFor={(t) => t.description}
-            compact
-            className="min-w-0 flex-1"
-          />
-          <MoveFilterChips
-            label="Tell:"
-            items={tellList}
-            selected={filters.tellFilter}
-            onToggle={filters.toggleTell}
-            onClear={filters.clearTell}
-            labelFor={(t) => t.name}
-            compact
-            className="min-w-0 flex-1 justify-end"
-          />
+          {/* The same left/right split the desktop columns use, folded into the
+              panel: what the move goes for and what it rolls on the left, what
+              it opens with and what it carries on the right. */}
+          <div className="min-w-0 flex-1 space-y-1">
+            <MoveFilterChips
+              label="Target:"
+              items={filters.targetItems}
+              selected={filters.targetFilter}
+              onToggle={filters.toggleTarget}
+              onClear={filters.clearTarget}
+              labelFor={(s) => s.name}
+              compact
+            />
+            <MoveFilterChips
+              label="Roll:"
+              items={filters.rollItems}
+              selected={filters.rollFilter}
+              onToggle={filters.toggleRoll}
+              onClear={filters.clearRoll}
+              labelFor={(s) => s.name}
+              compact
+            />
+          </div>
+          <div className="min-w-0 flex-1 space-y-1">
+            <MoveFilterChips
+              label="Tell:"
+              items={tellList}
+              selected={filters.tellFilter}
+              onToggle={filters.toggleTell}
+              onClear={filters.clearTell}
+              labelFor={(t) => t.name}
+              compact
+              className="justify-end"
+            />
+            <MoveFilterChips
+              label="Tag:"
+              items={tagList}
+              selected={filters.tagFilter}
+              onToggle={filters.toggleTag}
+              onClear={filters.clearTag}
+              labelFor={(t) => t.name}
+              titleFor={(t) => t.description}
+              compact
+              className="justify-end"
+            />
+          </div>
         </div>
       )}
       <div className="flex flex-wrap gap-1.5">
@@ -1875,22 +1903,37 @@ function ActiveDeclarePanel({ entry, roundStartTic, declaredMoves, tags, tellByI
     // picker is a narrow centred column with a great deal of empty screen on
     // either side of it, and chips squeezed inside it were both cramped and too
     // small to read at a glance — which is the one thing a filter has to be
-    // mid-round. Tag to the left of the move list, Tell to the right, at a
-    // readable size, in space that was carrying nothing.
+    // mid-round. At a readable size, in space that was carrying nothing.
+    //
+    // **Four filters now, two a side (decided, revised).** The split is by the
+    // question each one asks. Left: what the move *does* — the Attack Target it
+    // goes for and the Attack Roll it makes. Right: what the move *is* — the
+    // Tell it opens with and the Tags it carries. Two stacked columns a side
+    // rather than four across, because the panel needs the middle.
     //
     // `items-start` so a long filter column does not stretch the panel, and the
-    // columns are `hidden md:flex`: a phone keeps the compact in-panel row,
+    // columns are `hidden md:flex`: a phone keeps the compact in-panel rows,
     // because it has no side space to give.
     <div className="flex w-full items-start justify-center gap-4">
-      <div className="hidden md:flex">
+      <div className="hidden flex-col gap-4 md:flex">
         <MoveFilterColumn
-          label="Tag"
-          items={tagList}
-          selected={list.filters.tagFilter}
-          onToggle={list.filters.toggleTag}
-          onClear={list.filters.clearTag}
-          labelFor={(t) => t.name}
-          titleFor={(t) => t.description}
+          label="Attack Target"
+          items={list.filters.targetItems}
+          selected={list.filters.targetFilter}
+          onToggle={list.filters.toggleTarget}
+          onClear={list.filters.clearTarget}
+          labelFor={(s) => s.name}
+          titleFor={(s) => `Show only moves that go for the ${s.name}`}
+          align="right"
+        />
+        <MoveFilterColumn
+          label="Attack Roll"
+          items={list.filters.rollItems}
+          selected={list.filters.rollFilter}
+          onToggle={list.filters.toggleRoll}
+          onClear={list.filters.clearRoll}
+          labelFor={(s) => s.name}
+          titleFor={(s) => `Show only moves that roll ${s.name}`}
           align="right"
         />
       </div>
@@ -1941,7 +1984,7 @@ function ActiveDeclarePanel({ entry, roundStartTic, declaredMoves, tags, tellByI
         tellList={tellList}
       />
     </div>
-      <div className="hidden md:flex">
+      <div className="hidden flex-col gap-4 md:flex">
         <MoveFilterColumn
           label="Tell"
           items={tellList}
@@ -1949,6 +1992,16 @@ function ActiveDeclarePanel({ entry, roundStartTic, declaredMoves, tags, tellByI
           onToggle={list.filters.toggleTell}
           onClear={list.filters.clearTell}
           labelFor={(t) => t.name}
+          align="left"
+        />
+        <MoveFilterColumn
+          label="Tag"
+          items={tagList}
+          selected={list.filters.tagFilter}
+          onToggle={list.filters.toggleTag}
+          onClear={list.filters.clearTag}
+          labelFor={(t) => t.name}
+          titleFor={(t) => t.description}
           align="left"
         />
       </div>
