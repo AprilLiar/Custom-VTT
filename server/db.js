@@ -1614,15 +1614,22 @@ export async function initDb() {
   // be shed by being re-seated. Accumulates per pair via the UNIQUE, so two
   // moves leaving a mark before the beneficiary rolls are both paid at once.
   // **Temporary Damage (decided, new)**: how many half-steps of damage on this
-  // Stat came from a move carrying the Tag and are still owed back. Its own
-  // table rather than a column on `dice`, for the same reason the Gates got one:
-  // it is a running total that outlives any one blow, several of which can land
-  // on the same Stat before a Round finishes.
+  // Stat came from a move carrying the Tag and are still owed back. Decremented
+  // one half-step per Stat per finished Round (see healTemporaryDamage in
+  // roundResolution.js).
   //
-  // Decremented one half-step per Stat per finished Round (see
-  // healTemporaryDamage in roundResolution.js); the row is deleted when it
-  // reaches zero, so the table holds only outstanding debts and an empty table
-  // is the ordinary state of the world.
+  // **A column on `dice`, revised from its own table.** It shipped as
+  // `temporary_damage(character_id, slot_name, steps)` on the reasoning that it
+  // is a running total outliving any one blow — true, but it is one number per
+  // (character, slot), which is exactly one `dice` row. The pressure that showed
+  // it up was making the Stat draw purple: every die read path in the app
+  // (`SELECT * FROM dice` on the sheet, the roster, the combat payload,
+  // `die:updated`) picks a column up for free, where a side table would have had
+  // to be threaded into five places by hand.
+  //
+  // The old table is still declared, and its rows are folded in below rather
+  // than abandoned: a deployed world may have played a Round between the two
+  // shapes, and a debt silently forgiven is a Stat that never comes back.
   ddl(`
     CREATE TABLE IF NOT EXISTS temporary_damage (
       id INTEGER PRIMARY KEY,
@@ -1632,6 +1639,7 @@ export async function initDb() {
       UNIQUE(character_id, slot_name)
     )
   `);
+  await ensureColumn('dice', 'temporary_damage', 'INTEGER NOT NULL DEFAULT 0');
 
   ddl(`
     CREATE TABLE IF NOT EXISTS pending_roll_bonuses (
@@ -2010,6 +2018,23 @@ export async function initDb() {
   await ensureIndexes();
 
   await seedWorld();
+
+  // **Fold the old Temporary Damage table into the `dice` column (one-time).**
+  // The shape changed between two deploys hours apart, and a world that played a
+  // Round in between holds real debts in the old table. Written as an UPDATE
+  // rather than a rebuild because the two are 1:1 on (character, slot); the
+  // DELETE after it is what makes this idempotent — on every boot after the
+  // first there is nothing to move, and this costs one no-op statement.
+  //
+  // Must run after `flushDdl` has been drained by the seeds above, or the column
+  // it writes may not exist yet on a fresh database.
+  await flushDdl();
+  await run(
+    `UPDATE dice SET temporary_damage = temporary_damage + COALESCE(
+       (SELECT td.steps FROM temporary_damage td
+         WHERE td.character_id = dice.character_id AND td.slot_name = dice.slot_name), 0)`
+  );
+  await run('DELETE FROM temporary_damage');
 
   // Everything above only queued; the seeds' own reads will have drained most
   // of it, but a database that needed nothing seeded leaves the tail here.

@@ -159,6 +159,8 @@ const diePayload = (die) => ({
   locked_bonus: die.locked_bonus,
   locked_status: die.locked_status,
   half_damage: Boolean(die.half_damage),
+  // Mirrors server/index.js's own copy of this shape — see the note there.
+  temporary_damage: die.temporary_damage ?? 0,
 });
 
 async function postSystemMessage(io, text) {
@@ -1136,10 +1138,8 @@ async function applyAutoDamage(io, { targetCharacterId, effectiveAttackTargets, 
 async function recordTemporaryDamage(characterId, slotName, steps) {
   if (!(steps > 0)) return;
   await run(
-    `INSERT INTO temporary_damage (character_id, slot_name, steps)
-     VALUES (?, ?, ?)
-     ON CONFLICT(character_id, slot_name) DO UPDATE SET steps = steps + excluded.steps`,
-    [characterId, slotName, steps]
+    'UPDATE dice SET temporary_damage = temporary_damage + ? WHERE character_id = ? AND slot_name = ?',
+    [steps, characterId, slotName]
   );
 }
 
@@ -1160,65 +1160,71 @@ async function recordTemporaryDamage(characterId, slotName, steps) {
 // what "it wears off" means.
 async function healTemporaryDamage(io, { pairIndex, tic, emitEvent }) {
   const owed = await all(
-    `SELECT td.id, td.character_id AS characterId, td.slot_name AS slotName, td.steps,
-            ch.name AS characterName
-     FROM temporary_damage td
-     JOIN combat_participants cp ON cp.character_id = td.character_id
-     JOIN characters ch ON ch.id = td.character_id
-     WHERE cp.pair_index = ? AND td.steps > 0
-     ORDER BY td.character_id, td.id`,
+    `SELECT d.*, ch.name AS characterName
+     FROM dice d
+     JOIN combat_participants cp ON cp.character_id = d.character_id
+     JOIN characters ch ON ch.id = d.character_id
+     WHERE cp.pair_index = ? AND d.temporary_damage > 0
+     ORDER BY d.character_id, d.id`,
     [pairIndex]
   );
   if (!owed.length) return;
   const byCharacter = new Map();
-  for (const row of owed) {
-    const dice = await getDice(row.characterId);
-    const die = dice.find((d) => d.slot_name === row.slotName);
-    if (die) {
-      const lockedRank = die.locked_size != null ? rankOf(die.locked_size, die.locked_bonus ?? 0) : null;
-      const atOrAboveBase =
-        lockedRank != null &&
-        die.status !== 'incapacitated' &&
-        !die.half_damage &&
-        rankOf(die.current_size, die.bonus) >= lockedRank;
-      if (!atOrAboveBase) {
-        const next = healHalfDamage({
+  for (const die of owed) {
+    const left = Math.max(0, die.temporary_damage - TEMPORARY_DAMAGE_HEAL_PER_ROUND);
+    const lockedRank = die.locked_size != null ? rankOf(die.locked_size, die.locked_bonus ?? 0) : null;
+    const atOrAboveBase =
+      lockedRank != null &&
+      die.status !== 'incapacitated' &&
+      !die.half_damage &&
+      rankOf(die.current_size, die.bonus) >= lockedRank;
+    const next = atOrAboveBase
+      ? {
+          current_size: die.current_size,
+          bonus: die.bonus,
+          status: die.status,
+          half_damage: Boolean(die.half_damage),
+        }
+      : healHalfDamage({
           current_size: die.current_size,
           bonus: die.bonus,
           status: die.status,
           half_damage: Boolean(die.half_damage),
         });
-        await run('UPDATE dice SET current_size = ?, bonus = ?, status = ?, half_damage = ? WHERE id = ?', [
-          next.current_size,
-          next.bonus,
-          next.status,
-          next.half_damage ? 1 : 0,
-          die.id,
-        ]);
-        io.emit('die:updated', diePayload({ ...die, ...next, half_damage: next.half_damage ? 1 : 0 }));
-        if (emitEvent && tic != null) {
-          // The same `stat_stepped` shape a healing automation emits, so the
-          // cutscene animates the Stat coming back with no new renderer.
-          await emitEvent(tic, 'stat_stepped', {
-            characterId: row.characterId,
-            characterName: row.characterName,
-            slotName: row.slotName,
-            steps: -1,
-            sizeBefore: die.current_size,
-            bonusBefore: die.bonus,
-            statusBefore: die.status,
-            sizeAfter: next.current_size,
-            bonusAfter: next.bonus,
-            statusAfter: next.status,
-          });
-        }
-      }
+    // The die and its remaining debt move in one statement: they are two halves
+    // of the same fact, and a crash between two writes would leave a Stat healed
+    // that still owes, or the other way round.
+    await run(
+      `UPDATE dice SET current_size = ?, bonus = ?, status = ?, half_damage = ?, temporary_damage = ?
+       WHERE id = ?`,
+      [next.current_size, next.bonus, next.status, next.half_damage ? 1 : 0, left, die.id]
+    );
+    io.emit(
+      'die:updated',
+      diePayload({ ...die, ...next, half_damage: next.half_damage ? 1 : 0, temporary_damage: left })
+    );
+    if (!atOrAboveBase && emitEvent && tic != null) {
+      // The same `stat_stepped` shape a healing automation emits, so the
+      // cutscene animates the Stat coming back with no new renderer. `source`
+      // is what lets the replay tell this half-step apart from a Recover Stat,
+      // which is how it keeps its own purple count straight.
+      await emitEvent(tic, 'stat_stepped', {
+        characterId: die.character_id,
+        characterName: die.characterName,
+        slotName: die.slot_name,
+        steps: -1,
+        source: 'temporary_heal',
+        temporaryRemaining: left,
+        sizeBefore: die.current_size,
+        bonusBefore: die.bonus,
+        statusBefore: die.status,
+        sizeAfter: next.current_size,
+        bonusAfter: next.bonus,
+        statusAfter: next.status,
+      });
     }
-    const left = row.steps - TEMPORARY_DAMAGE_HEAL_PER_ROUND;
-    if (left > 0) await run('UPDATE temporary_damage SET steps = ? WHERE id = ?', [left, row.id]);
-    else await run('DELETE FROM temporary_damage WHERE id = ?', [row.id]);
-    if (!byCharacter.has(row.characterName)) byCharacter.set(row.characterName, []);
-    byCharacter.get(row.characterName).push(row.slotName);
+    if (!byCharacter.has(die.characterName)) byCharacter.set(die.characterName, []);
+    byCharacter.get(die.characterName).push(die.slot_name);
   }
   // One line per fighter rather than one per Stat: shaking off a round's worth
   // of temporary damage is one thing that happened to them, not four.
@@ -1751,8 +1757,16 @@ async function runInterruptAndDamage(io, {
       targetCharacterId,
       targetCharacterName: target?.name ?? null,
       attackerCharacterName,
+      // The id as well as the name: the cutscene's table files a blow in its
+      // ATTACKER's column, and matching fighters by name is a guess when two of
+      // them share one.
+      attackerCharacterId,
       slotName: hit?.slotName ?? null,
       steps: hit?.steps ?? steps,
+      // Whether this damage wears off (the Temporary Damage Tag), so a replay
+      // can tint the Stat purple as it lands rather than reading a debt that
+      // has since been paid back.
+      temporary: temporaryDamage,
       sizeBefore: hit?.sizeBefore ?? null,
       bonusBefore: hit?.bonusBefore ?? null,
       sizeAfter: hit?.sizeAfter ?? null,
@@ -1820,8 +1834,13 @@ async function runInterruptAndDamage(io, {
         targetCharacterId,
         targetCharacterName: target?.name ?? null,
         attackerCharacterName,
+        attackerCharacterId,
         slotName: hit.slotName,
         steps: hit.steps,
+        // Whether this damage wears off (the Temporary Damage Tag). Carried on
+        // the event so a replay can tint the Stat purple as it lands, without
+        // reading a debt that has since been paid back.
+        temporary: temporaryDamage,
         sizeBefore: hit.sizeBefore,
         bonusBefore: hit.bonusBefore,
         sizeAfter: hit.sizeAfter,
@@ -1835,6 +1854,7 @@ async function runInterruptAndDamage(io, {
         targetCharacterId,
         targetCharacterName: target?.name ?? null,
         attackerCharacterName,
+        attackerCharacterId,
         slotName: miss.slotName,
         steps: miss.steps,
         damage: miss.damage,
@@ -4816,7 +4836,7 @@ async function resolvePairRound(pairIndex, io) {
     if (seated.length) {
       const diceRows = await all(
         `SELECT d.character_id AS characterId, d.slot_name AS slotName, d.current_size AS size,
-                d.bonus AS bonus, d.status AS status
+                d.bonus AS bonus, d.status AS status, d.temporary_damage AS temporarySteps
          FROM dice d JOIN combat_participants cp ON cp.character_id = d.character_id
          WHERE cp.pair_index = ?`,
         [pairIndex]
@@ -4824,7 +4844,16 @@ async function resolvePairRound(pairIndex, io) {
       const byChar = new Map();
       for (const d of diceRows) {
         if (!byChar.has(d.characterId)) byChar.set(d.characterId, []);
-        byChar.get(d.characterId).push({ slotName: d.slotName, size: d.size, bonus: d.bonus, status: d.status });
+        byChar.get(d.characterId).push({
+          slotName: d.slotName,
+          size: d.size,
+          bonus: d.bonus,
+          status: d.status,
+          // Self-contained per §0: what this Stat owed back when the Round
+          // opened, so a replay watched a week later tints the same pips purple
+          // rather than reading a debt that has long since worn off.
+          temporarySteps: d.temporarySteps ?? 0,
+        });
       }
       await emitEvent(pair.round_start_tic, 'roster', {
         participants: seated.map((p) => ({ ...p, dice: byChar.get(p.characterId) ?? [] })),

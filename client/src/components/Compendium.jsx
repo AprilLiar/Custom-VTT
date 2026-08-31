@@ -603,9 +603,13 @@ export default function MovesCompendium() {
             The Tag row is now the shared `MoveFilterChips` rather than a fourth
             hand-rolled copy of the same control — it was already identical in
             every respect but its source. The Style row stays bespoke: it is
-            icons, not words, and nothing else in the app filters by icon. */}
-        <div className="grid gap-x-6 gap-y-2 md:grid-cols-2">
-          <div className="space-y-2">
+            icons, not words, and nothing else in the app filters by icon.
+
+            **One column per filter (revised).** Two columns of two stacked rows
+            read as two controls rather than four; one column apiece keeps the
+            left/right split and makes each its own thing. */}
+        <div className="grid gap-x-6 gap-y-2 sm:grid-cols-2 lg:grid-cols-4">
+          <div>
             <MoveFilterChips
               label="Attack Target:"
               items={targetItems}
@@ -615,6 +619,8 @@ export default function MovesCompendium() {
               labelFor={(s) => s.name}
               titleFor={(s) => `Show only moves that go for the ${s.name}`}
             />
+          </div>
+          <div>
             <MoveFilterChips
               label="Attack Roll:"
               items={rollItems}
@@ -626,8 +632,8 @@ export default function MovesCompendium() {
             />
           </div>
 
-          <div className="space-y-2">
-            <div className="flex flex-wrap items-center gap-1 md:justify-end">
+          <div>
+            <div className="flex flex-wrap items-center gap-1">
               <span className="mr-1 text-xs font-semibold uppercase text-zinc-500">
                 Filter by style:
               </span>
@@ -650,7 +656,9 @@ export default function MovesCompendium() {
                 );
               })}
             </div>
+          </div>
 
+          <div>
             {/* In words rather than icons because a Tag is GM-authored free
                 text with no icon to stand in for it. Renders nothing at all
                 when the world has no Tags yet, rather than a bare label. */}
@@ -662,7 +670,6 @@ export default function MovesCompendium() {
               onClear={() => setTagFilter(new Set())}
               labelFor={(t) => t.name}
               titleFor={(t) => t.description}
-              className="md:justify-end"
             />
           </div>
         </div>

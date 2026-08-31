@@ -139,6 +139,7 @@ export const BLOCK_TAG_NAME = 'Block';
 export const NO_DAMAGE_TAG_NAME = 'No Damage';
 export const FEINT_TAG_NAME = 'Feint';
 const MOVEMENT_TAG_NAME = 'Movement';
+const OFF_THE_GROUND_TAG_NAME = 'Off The Ground';
 
 const normTag = (name) => String(name ?? '').trim().toLowerCase();
 
@@ -194,6 +195,17 @@ export function carriesMovementTag(tagIds, tags) {
 
 export function carriesFeintTag(tagIds, tags) {
   return (tagIds ?? []).some((id) => isTagNamed(id, tags, FEINT_TAG_NAME));
+}
+
+// **Off The Ground, read client-side for the same reason Movement is.** The
+// server owns the rule (`placementFloorAfterTrip`); the picker needs it only so
+// the Tic Counter draws the right squares as reachable. Without it the client
+// floored every declaration at the previous move's full footprint, so the trip
+// frames a Grounding move leaves behind rendered as unreachable — greyed — even
+// though dropping a move on them worked perfectly well, because the server was
+// applying the rule the client had not heard of.
+export function carriesOffTheGroundTag(tagIds, tags) {
+  return (tagIds ?? []).some((id) => isTagNamed(id, tags, OFF_THE_GROUND_TAG_NAME));
 }
 
 // "×1.5" / "×0.5" — the multiplier as the table reads it. 1 is still shown

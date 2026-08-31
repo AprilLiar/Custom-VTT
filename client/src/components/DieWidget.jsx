@@ -1,7 +1,7 @@
 import { useRef } from 'react';
 import { motion } from 'framer-motion';
 import { gsap } from 'gsap';
-import { dieLabel, tintFor } from '../lib/dice.js';
+import { dieLabel, temporaryDamageTitle, temporaryTint, tintFor } from '../lib/dice.js';
 
 // compact drops the slot-name label and shrinks the button. Icon, if given,
 // renders low-opacity inside the button itself, behind the die-size number
@@ -18,7 +18,14 @@ export default function DieWidget({
   Icon = null,
 }) {
   const incapacitated = die.status === 'incapacitated';
-  const tint = tintFor(die);
+  // **Temporary Damage tints purple (decided, new).** `tintFor` already swaps
+  // the red for it whenever the die is below its locked size; this fallback
+  // covers the two cases it cannot answer — a Stat at its locked size that still
+  // owes half a step back, and an incapacitated one, which `tintFor` refuses
+  // outright. A Stat destroyed by Temporary Damage is exactly the one worth
+  // marking, since it is the one that walks back out of it.
+  const tint = tintFor(die) ?? temporaryTint(die);
+  const temporaryNote = temporaryDamageTitle(die);
   const buttonRef = useRef(null);
 
   // A quick violent spin-punch on roll — distinct from the step flash below,
@@ -114,15 +121,18 @@ export default function DieWidget({
           onClick={clickDie}
           disabled={incapacitated}
           whileTap={incapacitated ? undefined : { scale: 0.9 }}
-          title={
+          title={[
             incapacitated
               ? 'Incapacitated — step up to revive'
               : selecting
                 ? selected
                   ? 'Remove from pool roll'
                   : 'Add to pool roll'
-                : 'Roll this die'
-          }
+                : 'Roll this die',
+            temporaryNote,
+          ]
+            .filter(Boolean)
+            .join('\n')}
           className={`relative flex items-center justify-center panel-cut-lg border font-display font-bold transition-colors ${
             compact ? 'h-14 w-14 text-base' : 'h-16 w-16 text-lg'
           } ${

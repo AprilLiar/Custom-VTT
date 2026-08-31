@@ -80,12 +80,52 @@ export function formatRollBreakdown(dice, terms, total, modifier = 0) {
   return `${sum} ${body} = ${total ?? sum + parts.reduce((a, t) => a + t.amount, 0)}`;
 }
 
-// Green above locked, red below, no tint when equal; opacity scales with the gap.
+// **Temporary Damage, in one place.** How many half-steps of this Stat's damage
+// wear off at 0.5 a Round — carried on every die payload (see `diePayload` in
+// server/index.js), so any surface that draws a Stat can ask without a second
+// fetch. Reads the cutscene's own field name too: a replay's roster snapshot
+// stores it as `temporarySteps`, because those payloads are camelCase.
+export const temporarySteps = (die) =>
+  Math.max(0, Math.trunc(Number(die?.temporary_damage ?? die?.temporarySteps ?? 0)) || 0);
+
+export const isTemporarilyDamaged = (die) => temporarySteps(die) > 0;
+
+// The hover line, worded once so it says the same thing on the sheet, in the
+// Arena, in the damage dialog and in a replay.
+export function temporaryDamageTitle(die) {
+  const steps = temporarySteps(die);
+  if (!steps) return null;
+  const half = steps * 0.5;
+  return `${half} of this Stat's damage is Temporary — it comes back at 0.5 per finished Round`;
+}
+
+// **Purple for a Stat carrying Temporary Damage (decided, new).** Deliberately a
+// short hop from the red it replaces rather than a fresh colour: red-500 is
+// hsl(0, 84%, 60%) and this is hsl(300, 60%, 62%) at the same alpha ramp, so a
+// purple Stat still reads as "this Stat is hurt" at a glance and only says
+// something extra on a second look. A saturated violet would have read as a
+// different kind of state entirely.
+const DAMAGED = '239, 68, 68';
+const TEMPORARY = '196, 92, 196';
+const IMPROVED = '34, 197, 94';
+
+// Green above locked, red below, purple below when the damage wears off, no
+// tint when equal; opacity scales with the gap.
 export function tintFor(die) {
   if (die.status === 'incapacitated') return null;
   const diff =
     rankOf(die.current_size, die.bonus) - rankOf(die.locked_size, die.locked_bonus);
   if (diff === 0) return null;
   const alpha = Math.min(0.15 + 0.13 * Math.abs(diff), 0.7);
-  return diff > 0 ? `rgba(34, 197, 94, ${alpha})` : `rgba(239, 68, 68, ${alpha})`;
+  if (diff > 0) return `rgba(${IMPROVED}, ${alpha})`;
+  return `rgba(${isTemporarilyDamaged(die) ? TEMPORARY : DAMAGED}, ${alpha})`;
+}
+
+// The same purple as a flat wash, for the surfaces that do not use `tintFor` —
+// a die at its locked size can still owe Temporary Damage back (the Round that
+// dealt it may already have healed the last half-step), and an incapacitated
+// one is exactly the case worth marking: a Stat destroyed by Temporary Damage
+// walks back out of it.
+export function temporaryTint(die, alpha = 0.22) {
+  return isTemporarilyDamaged(die) ? `rgba(${TEMPORARY}, ${alpha})` : null;
 }
