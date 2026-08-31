@@ -754,7 +754,7 @@ async function runAutomations(io, {
         const upward = automation.type === 'self_stat_increase' || automation.type === 'self_stat_recover';
         const steps = upward ? -amount : amount;
         const capToLocked = automation.type === 'self_stat_recover';
-        const stepped = await stepStat(io, {
+        const { stepped, landedSteps } = await stepStat(io, {
           characterId: whoId,
           slotName: automation.slot,
           steps,
@@ -770,6 +770,38 @@ async function runAutomations(io, {
               }${capToLocked ? ' (recovered)' : ''} (${who.name})`
             : `(${who.name} has no ${automation.slot} to step)`
         );
+        // **A stat step is damage dealt (decided, new).** Baron of Suffering
+        // used to be paid only out of `applied` in runInterruptAndDamage — the
+        // damage an *attack* writes to a die — so a move whose whole point was
+        // "and it costs you a step of your own Body" fed the Baron nothing at
+        // all, even though a step of damage is a step of damage wherever the
+        // author put it.
+        //
+        // **Paid to `selfCharacter` in both directions**, which is the whole
+        // rule in one line: the dealer is whoever owns the effect, and the
+        // target is only where it landed. Stepping your OWN Stat is the case
+        // that was asked for; stepping the opponent's is the same sentence with
+        // the target changed, and paying one without the other would leave
+        // hurting yourself worth Stamina while hurting them was worth nothing.
+        //
+        // Healing pays nothing (`landedSteps` is 0 for an upward step) and so
+        // does a step aimed at a Stat that is already out — the same reading
+        // applyAutoDamage uses, and the same one the round's own report gives
+        // when it says damage could not be applied.
+        if (landedSteps > 0) {
+          const perStep = await perkStaminaPerHalfDamage(selfCharacterId);
+          if (perStep > 0) {
+            await adjustStamina(io, selfCharacterId, perStep * landedSteps, {
+              emitEvent,
+              tic,
+              reason: `${landedSteps * 0.5} damage dealt`,
+            });
+            await postSystemMessage(
+              io,
+              `${selfCharacter.name} draws ${perStep * landedSteps} Stamina from the damage they dealt.`
+            );
+          }
+        }
         break;
       }
       case 'opponent_next_roll_penalty': {
@@ -1067,6 +1099,16 @@ async function applyAutoDamage(io, { targetCharacterId, effectiveAttackTargets, 
 // what lets an authored On Hit say "and it wrecks their Right Hand" without
 // a human applying it afterwards. Emits the same damage_applied shape so
 // the cutscene's fighter cards animate it identically.
+//
+// **Returns `{ stepped, landedSteps }` rather than a bare boolean (revised).**
+// `landedSteps` is how many half-points of damage this actually *dealt*, and it
+// is what pays Baron of Suffering — see the stat-step case in runAutomations.
+// Zero for an upward step (healing is not damage) and zero on an already-broken
+// Stat, which is exactly the reading applyAutoDamage uses when it sorts a blow
+// into `applied` or `unapplied`: an incapacitated die is at the floor, so the
+// damage does not land, it simply has nowhere to go. A die that goes out
+// part-way through counts in full, again matching applyAutoDamage — the blow
+// was worth what it was worth.
 async function stepStat(io, {
   characterId,
   slotName,
@@ -1083,7 +1125,8 @@ async function stepStat(io, {
 }) {
   const dice = await getDice(characterId);
   const die = dice.find((d) => d.slot_name === slotName);
-  if (!die) return false;
+  if (!die) return { stepped: false, landedSteps: 0 };
+  const landedSteps = steps > 0 && die.status !== 'incapacitated' ? steps : 0;
   let next = {
     current_size: die.current_size,
     bonus: die.bonus,
@@ -1150,7 +1193,7 @@ async function stepStat(io, {
       statusAfter: next.status,
     });
   }
-  return true;
+  return { stepped: true, landedSteps };
 }
 
 // Decision #4/#7/#8 — walks the attacker's own Active window for the first

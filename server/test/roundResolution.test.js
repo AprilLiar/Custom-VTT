@@ -2990,6 +2990,99 @@ test('Baron of Suffering is paid for the splash as well as the blow', async () =
   assert.equal(gain.delta, 3, '2 steps on the Skull + 1 splashed on the Brain');
 });
 
+test('Baron of Suffering is paid for a step taken out of your OWN Stat', async () => {
+  // Decided, new: a stat step is damage dealt, and the dealer is whoever owns
+  // the effect — not whoever it landed on. A move that costs you a step of your
+  // own Body fed the Baron nothing at all before this, because he was paid only
+  // out of the damage an *attack* wrote to a die.
+  const pairIndex = 380;
+  const attacker = await createCharacter('BSS Attacker');
+  const defender = await createCharacter('BSS Defender');
+  await grantPerk(attacker, 'Baron of Suffering');
+  await run('UPDATE characters SET current_stamina = 10 WHERE id = ?', [attacker]);
+  // The blow itself must pay nothing, or there is no telling which payment the
+  // assertion below is reading: aimed at a Stat that is already out, so the
+  // attack's own damage lands nowhere (see "pays nothing for damage that cannot
+  // be applied") and the stat step is the only thing left to feed on.
+  await run(
+    "UPDATE dice SET status = 'incapacitated', current_size = 4, bonus = 0 WHERE character_id = ? AND slot_name = 'Body'",
+    [defender]
+  );
+  const wildSwing = await createMove({
+    name: 'BSS Wild Swing', startupTics: 1, activeTics: 2, recoveryTics: 1,
+    rollSlots: ['Skull'], rollModifier: 20, attackTargets: ['Body'],
+    interactions: [
+      { trigger: 'hit', text: '', automations: [{ type: 'self_stat_step', amount: 2, slot: 'Left Hand' }] },
+    ],
+  });
+  await seatPair(pairIndex, attacker, defender);
+  await startPairDeclaration(mockIo, pairIndex);
+  await declareMove({
+    characterId: attacker, moveId: wildSwing, placementTic: 0, startupTics: 1,
+    effectiveAttackTargets: ['Body'],
+  });
+  await resolvePair(pairIndex);
+
+  const stepped = (await all('SELECT payload FROM round_events WHERE pair_index = ? AND type = ?', [pairIndex, 'stat_stepped']))
+    .map((r) => JSON.parse(r.payload));
+  assert.equal(stepped.length, 1, 'the fixture has to actually step something');
+  assert.equal(stepped[0].characterId, attacker, 'and step it on its own user');
+
+  const gain = await refundEvent(pairIndex, /damage dealt/);
+  assert.ok(gain, 'the Baron should have been paid for the two steps');
+  assert.equal(gain.delta, 2, 'one Stamina per half-point, wherever the damage landed');
+  assert.equal(gain.characterId, attacker, 'paid to the dealer, who here is also the target');
+});
+
+test('Baron of Suffering is not paid for healing, nor for a step onto a broken Stat', async () => {
+  // The two halves that stop "a stat step is damage dealt" from being a licence
+  // to print Stamina: an upward step is not damage at all, and a step aimed at
+  // a Stat already at the floor lands nowhere — the same reading applyAutoDamage
+  // gives when it sorts a blow into `unapplied`.
+  const heal = async (pairIndex, automation, prepare = async () => {}) => {
+    const attacker = await createCharacter(`BSN${pairIndex} Attacker`);
+    const defender = await createCharacter(`BSN${pairIndex} Defender`);
+    await grantPerk(attacker, 'Baron of Suffering');
+    await run('UPDATE characters SET current_stamina = 10 WHERE id = ?', [attacker]);
+    // Same isolation as the test above: the blow lands on a Stat already out,
+    // so anything the Baron is paid here came from the automation.
+    await run(
+      "UPDATE dice SET status = 'incapacitated', current_size = 4, bonus = 0 WHERE character_id = ? AND slot_name = 'Body'",
+      [defender]
+    );
+    await prepare(attacker);
+    const move = await createMove({
+      name: `BSN${pairIndex} Move`, startupTics: 1, activeTics: 2, recoveryTics: 1,
+      rollSlots: ['Skull'], rollModifier: 20, attackTargets: ['Body'],
+      interactions: [{ trigger: 'hit', text: '', automations: [automation] }],
+    });
+    await seatPair(pairIndex, attacker, defender);
+    await startPairDeclaration(mockIo, pairIndex);
+    await declareMove({
+      characterId: attacker, moveId: move, placementTic: 0, startupTics: 1,
+      effectiveAttackTargets: ['Body'],
+    });
+    await resolvePair(pairIndex);
+    return refundEvent(pairIndex, /damage dealt/);
+  };
+
+  assert.equal(
+    await heal(381, { type: 'self_stat_step', amount: -1, slot: 'Left Hand' }),
+    undefined,
+    'stepping a Stat back UP is healing, and healing is not damage dealt'
+  );
+  assert.equal(
+    await heal(382, { type: 'self_stat_step', amount: 2, slot: 'Left Hand' }, async (attacker) => {
+      await run(
+        "UPDATE dice SET status = 'incapacitated', current_size = 4, bonus = 0 WHERE character_id = ? AND slot_name = ?",
+        [attacker, 'Left Hand']
+      );
+    }),
+    undefined,
+    'a Stat already at the floor has nowhere to go, so nothing was dealt'
+  );
+});
+
 test('Dogfighter makes a move harder to break up, by exactly 2', async () => {
   const { perkInterruptAmounts } = await import('../perkEngine.js');
   const fighter = await createCharacter('DF Fighter');
