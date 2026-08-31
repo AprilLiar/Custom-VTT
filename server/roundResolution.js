@@ -44,7 +44,7 @@
 // if either one changes.
 
 import { all, one, run, readMany, writeMany } from './db.js';
-import { rollDie, applyHalfDamage, clamp, dieAtRank, rankOf, stepDie, rollTotal } from './gameLogic.js';
+import { rollDie, applyHalfDamage, healHalfDamage, clamp, dieAtRank, rankOf, stepDie, rollTotal } from './gameLogic.js';
 import {
   parseConcreteAttackTargets,
   expandAttackTargets,
@@ -70,12 +70,14 @@ import {
 import {
   carriesBlockTag,
   carriesNoDamageTag,
+  carriesTemporaryDamageTag,
   hardToInterruptAmount,
   interrupterAmount,
   movementBlockedByLegs,
   movementPunisherApplies,
   resolveInterruptContest,
   MOVEMENT_PUNISH_RECOVERY,
+  TEMPORARY_DAMAGE_HEAL_PER_ROUND,
 } from './tagAutomations.js';
 import {
   DECLINE_FOLLOW_UP,
@@ -1004,7 +1006,10 @@ async function applyBlockRiposte(io, {
 //
 // Returns one entry per Stat actually damaged, empty when the attack landed on
 // nothing.
-async function applyAutoDamage(io, { targetCharacterId, effectiveAttackTargets, steps, stepsBySlot = null, firstOnly = false, attackerName }) {
+// `temporary` is the **Temporary Damage** Tag on the attacking move: the damage
+// lands in full and is additionally recorded as owed back (see
+// recordTemporaryDamage below). Nothing else about the blow changes.
+async function applyAutoDamage(io, { targetCharacterId, effectiveAttackTargets, steps, stepsBySlot = null, firstOnly = false, attackerName, temporary = false }) {
   const dice = await getDice(targetCharacterId);
   let targets = selectAutoDamageTargets({ effectiveAttackTargets, dice });
   // `firstOnly` is the Successful Block redirect and nothing else: that rule
@@ -1063,6 +1068,12 @@ async function applyAutoDamage(io, { targetCharacterId, effectiveAttackTargets, 
     if (breakAbsorbed) {
       heldTogether.push(die.slot_name);
     }
+    // **Temporary Damage**, recorded against the Stat it landed on. Only what
+    // actually landed: a blow held together by Durability took the Stat to a
+    // bare d4 rather than through it, and the debt is what the die is actually
+    // carrying, not what the attack was worth. Damage that found a broken Stat
+    // never reaches here at all — it went into `unapplied` above.
+    if (temporary) await recordTemporaryDamage(targetCharacterId, die.slot_name, own);
     await run('UPDATE dice SET current_size = ?, bonus = ?, status = ?, half_damage = ? WHERE id = ?', [
       next.current_size,
       next.bonus,
@@ -1117,6 +1128,104 @@ async function applyAutoDamage(io, { targetCharacterId, effectiveAttackTargets, 
   // getting hit; it is totalled per Stat and posted once when the round closes
   // (see reportUnappliedDamage).
   return { applied, unapplied };
+}
+
+// **Temporary Damage, recorded.** How many half-steps of this Stat's damage came
+// from a move carrying the Tag and are still owed back. Accumulates, because
+// several such blows can land on the same Stat before a Round finishes.
+async function recordTemporaryDamage(characterId, slotName, steps) {
+  if (!(steps > 0)) return;
+  await run(
+    `INSERT INTO temporary_damage (character_id, slot_name, steps)
+     VALUES (?, ?, ?)
+     ON CONFLICT(character_id, slot_name) DO UPDATE SET steps = steps + excluded.steps`,
+    [characterId, slotName, steps]
+  );
+}
+
+// **...and given back, 0.5 per Stat per finished Round.**
+//
+// One half-step per Stat, however many moves put damage there — the rule is a
+// rate on the Stat, not on each blow. Run once per pair as its Round closes, for
+// the fighters in that pair only: each pair runs its own Round clock, and
+// somebody else's Round finishing is not yours.
+//
+// `healHalfDamage` is the exact inverse of the `applyHalfDamage` that dealt it
+// (see gameLogic.js), which is what lets a Stat destroyed by temporary damage
+// come back — the damage that destroyed it was never permanent.
+//
+// **A Stat already back at or above its locked baseline still clears its debt
+// without moving.** Something else put it right in the meantime (a Recover
+// Stat, the GM's own hand), and healing past where a fighter started is not
+// what "it wears off" means.
+async function healTemporaryDamage(io, { pairIndex, tic, emitEvent }) {
+  const owed = await all(
+    `SELECT td.id, td.character_id AS characterId, td.slot_name AS slotName, td.steps,
+            ch.name AS characterName
+     FROM temporary_damage td
+     JOIN combat_participants cp ON cp.character_id = td.character_id
+     JOIN characters ch ON ch.id = td.character_id
+     WHERE cp.pair_index = ? AND td.steps > 0
+     ORDER BY td.character_id, td.id`,
+    [pairIndex]
+  );
+  if (!owed.length) return;
+  const byCharacter = new Map();
+  for (const row of owed) {
+    const dice = await getDice(row.characterId);
+    const die = dice.find((d) => d.slot_name === row.slotName);
+    if (die) {
+      const lockedRank = die.locked_size != null ? rankOf(die.locked_size, die.locked_bonus ?? 0) : null;
+      const atOrAboveBase =
+        lockedRank != null &&
+        die.status !== 'incapacitated' &&
+        !die.half_damage &&
+        rankOf(die.current_size, die.bonus) >= lockedRank;
+      if (!atOrAboveBase) {
+        const next = healHalfDamage({
+          current_size: die.current_size,
+          bonus: die.bonus,
+          status: die.status,
+          half_damage: Boolean(die.half_damage),
+        });
+        await run('UPDATE dice SET current_size = ?, bonus = ?, status = ?, half_damage = ? WHERE id = ?', [
+          next.current_size,
+          next.bonus,
+          next.status,
+          next.half_damage ? 1 : 0,
+          die.id,
+        ]);
+        io.emit('die:updated', diePayload({ ...die, ...next, half_damage: next.half_damage ? 1 : 0 }));
+        if (emitEvent && tic != null) {
+          // The same `stat_stepped` shape a healing automation emits, so the
+          // cutscene animates the Stat coming back with no new renderer.
+          await emitEvent(tic, 'stat_stepped', {
+            characterId: row.characterId,
+            characterName: row.characterName,
+            slotName: row.slotName,
+            steps: -1,
+            sizeBefore: die.current_size,
+            bonusBefore: die.bonus,
+            statusBefore: die.status,
+            sizeAfter: next.current_size,
+            bonusAfter: next.bonus,
+            statusAfter: next.status,
+          });
+        }
+      }
+    }
+    const left = row.steps - TEMPORARY_DAMAGE_HEAL_PER_ROUND;
+    if (left > 0) await run('UPDATE temporary_damage SET steps = ? WHERE id = ?', [left, row.id]);
+    else await run('DELETE FROM temporary_damage WHERE id = ?', [row.id]);
+    if (!byCharacter.has(row.characterName)) byCharacter.set(row.characterName, []);
+    byCharacter.get(row.characterName).push(row.slotName);
+  }
+  // One line per fighter rather than one per Stat: shaking off a round's worth
+  // of temporary damage is one thing that happened to them, not four.
+  for (const [name, slots] of byCharacter) {
+    const list = slots.length === 1 ? slots[0] : `${slots.slice(0, -1).join(', ')} and ${slots.at(-1)}`;
+    await postSystemMessage(io, `${name} shakes off 0.5 temporary damage to ${list}.`);
+  }
 }
 
 // Steps one named Stat by `steps` half-damage steps (negative steps it back
@@ -1610,6 +1719,11 @@ async function runInterruptAndDamage(io, {
     return;
   }
 
+  // **Temporary Damage**: this move's damage still lands in full and can still
+  // destroy a Stat — it is simply owed back, 0.5 a Round, on each Stat it
+  // touched. Read from the same per-character resolved tag names every other Tag
+  // mechanic uses, so a Perk that grants or strips it is honoured.
+  const temporaryDamage = carriesTemporaryDamageTag(attackerTagNames);
   const { applied, unapplied } = await applyAutoDamage(io, {
     targetCharacterId,
     effectiveAttackTargets,
@@ -1617,6 +1731,7 @@ async function runInterruptAndDamage(io, {
     stepsBySlot,
     firstOnly,
     attackerName: attackerCharacterName,
+    temporary: temporaryDamage,
   });
   // Names, not just ids: the cutscene log states outcomes as sentences now,
   // and a replay must be readable without any live combat state to look them
@@ -1695,6 +1810,8 @@ async function runInterruptAndDamage(io, {
       effectiveAttackTargets: [splash.slotName],
       steps: splash.steps,
       attackerName: attackerCharacterName,
+      // The splash is part of the same blow, so it wears off with it.
+      temporary: temporaryDamage,
     });
     for (const hit of result.applied) {
       splashSteps += hit.steps;
@@ -4765,6 +4882,15 @@ async function resolvePairRound(pairIndex, io) {
     resolution.id,
   ]);
   await emitEvent(roundEndTicExclusive - 1, 'round_complete', { pairIndex, roundNumber: pair.round_number });
+  // **A finished Round is when Temporary Damage wears off.** Here rather than at
+  // the start of the next one: "per finished Round" is a fact about the Round
+  // that just ended, and a fight that stops after this Round should still have
+  // given the half-step back.
+  await healTemporaryDamage(io, {
+    pairIndex,
+    tic: roundEndTicExclusive - 1,
+    emitEvent,
+  });
   // Before the summary card, so the Chat Log reads "here is what the round did,
   // and here is what it could not do" and then draws the line under it.
   await reportUnappliedDamage(io, { resolutionId: resolution.id });

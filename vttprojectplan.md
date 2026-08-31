@@ -1076,6 +1076,43 @@ world-level row the GM names, and "Punisher - Body" is already how a table would
   the Tag is read at the shared roll-modifier funnel, and that module is imported *by*
   roundResolution, so asking the other way round would have been a cycle. Re-exported from its old
   home, since `server/index.js`'s `move:declare` has always imported it from there.
+
+**Temporary Damage: a Tag whose damage wears off (decided, new; implemented).** A move carrying it
+still deals its damage in full — **the Stat drops, and it can still be Destroyed** — but every
+half-point is recorded against the Stat it landed on and given back at **0.5 per finished Round**,
+one half-step at a time, until the debt is clear.
+
+- **Its own table (`temporary_damage`), keyed `(character_id, slot_name)`.** Not a flag on the die:
+  "how much of this Stat's damage was temporary" is a running total that outlives any one blow, and
+  several such blows can land on the same Stat inside one Round. Accumulates on the pair, and the row
+  is **deleted** when it reaches zero, so the table holds only outstanding debts and an empty table
+  is the ordinary state of the world.
+- **The rate is on the Stat, not on the blow.** 0.5 per Stat per finished Round, however many moves
+  put damage there — which is what the rule says, and what makes a Stat hit twice take two Rounds to
+  come back rather than one.
+- **`healHalfDamage` in `gameLogic.js` is the exact inverse of `applyHalfDamage`**, and had to be
+  written: `stepStat`'s upward branch is *not* an inverse (from a die with no pending half it climbs a
+  whole rank and leaves the flag clear), so undoing with it would have handed back more than was
+  taken. Swept in a test across every die size and both half states, and pinned on the case that
+  matters most — **a Stat destroyed by temporary damage walks back out of `incapacitated`**, because
+  the damage that destroyed it was never permanent.
+- **Only what actually landed is owed back.** A blow held together by Path To Mastery: Durability took
+  the Stat to a bare d4 rather than through it, and the debt is what the die is carrying, not what the
+  attack was worth; damage that found an already-broken Stat never reaches the recorder at all. The
+  splash from Piercing Headache is part of the same blow and wears off with it.
+- **A Stat already back at or above its locked baseline clears its debt without moving.** Something
+  else put it right in the meantime — a Recover Stat, the GM's own hand — and healing past where a
+  fighter started is not what "it wears off" means.
+- **Run as the Round closes, per pair**, right after `round_complete` and before the next declaration
+  opens: "per finished Round" is a fact about the Round that just ended, and a fight that stops there
+  should still have given the half-step back. Per pair because each pair runs its own Round clock, and
+  somebody else's Round finishing is not yours. It emits the same `stat_stepped` event a healing
+  automation does, so the cutscene animates the Stat coming back with no new renderer, plus one Chat
+  Log line per fighter naming the Stats — shaking off a Round's worth is one thing that happened to
+  them, not four.
+- **Not yet drawn on the sheet.** The mechanic is visible through the Chat Log and the die moving; the
+  per-Stat outstanding total is not shown anywhere yet, which is worth adding if the split turns out
+  to matter at the table.
   - **Verified**: `groundingTripRecoveryTics` is pure and unit-tested (all of the move's Recovery and
     none of anybody else's, junk input never becoming negative or fractional frames), plus a
     `phaseAtTic` sweep proving the frames reach back exactly to the Active end and that the same move

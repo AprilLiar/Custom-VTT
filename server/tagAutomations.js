@@ -92,6 +92,21 @@ export const PUNISHER_BONUS = 2;
 // throwing hands.
 export const PUNISHER_STATS = ['Skull', 'Brain', 'Body', 'Hand', 'Leg'];
 
+// **Temporary Damage**: damage that wears off. A move carrying this Tag still
+// deals its damage in full — the Stat drops, and it can still be destroyed —
+// but every half-point of it is recorded against the Stat it landed on and
+// given back at **0.5 per finished Round**, one half-step at a time, until the
+// debt is clear.
+//
+// Tracked in its own table rather than as a flag on the die, because "how much
+// of this Stat's damage was temporary" is a running total that outlives any one
+// blow and has to survive several of them landing on the same Stat.
+export const TEMPORARY_DAMAGE_TAG = 'Temporary Damage';
+
+// Half-steps given back per Stat per finished Round. One half-step is 0.5
+// damage, which is the rate the rule names.
+export const TEMPORARY_DAMAGE_HEAL_PER_ROUND = 1;
+
 // One entry per Tag that carries mechanics. See resolveBlockStamina and
 // resolveNoDamageOutcome in combatDamage.js for the arithmetic behind each,
 // and vttprojectplan.md's Block Stamina / No Damage Tag rules for the design.
@@ -159,6 +174,13 @@ export const TAG_HOOKS = {
     // changes.
     parameterisedByStat: true,
     rollBonus: PUNISHER_BONUS,
+  },
+  [TEMPORARY_DAMAGE_TAG]: {
+    // Changes nothing about how much damage lands or where — only how long it
+    // stays. Read where the damage is written (applyAutoDamage) and where the
+    // round ends (healTemporaryDamage).
+    damageWearsOff: true,
+    healPerRound: TEMPORARY_DAMAGE_HEAL_PER_ROUND,
   },
   [GROUNDING_TAG]: {
     // Also read at declare time, and the only Tag that writes
@@ -366,6 +388,7 @@ export const carriesNoDamageTag = (tagNames) => hasTagNamed(tagNames, NO_DAMAGE_
 export const carriesFeintTag = (tagNames) => hasTagNamed(tagNames, FEINT_TAG);
 export const carriesOffTheGroundTag = (tagNames) => hasTagNamed(tagNames, OFF_THE_GROUND_TAG);
 export const carriesGroundingTag = (tagNames) => hasTagNamed(tagNames, GROUNDING_TAG);
+export const carriesTemporaryDamageTag = (tagNames) => hasTagNamed(tagNames, TEMPORARY_DAMAGE_TAG);
 
 // How many Trip Recovery frames a declaration starts life with. Zero for every
 // move that does not carry **Grounding**; the move's whole Recovery window when

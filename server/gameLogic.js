@@ -133,6 +133,27 @@ export function applyHalfDamage({ current_size, bonus, status, half_damage }) {
   return { current_size, bonus, status, half_damage: true };
 }
 
+// The exact inverse of the line above: **one half-step back UP**.
+//
+// Written as its own function rather than reusing `stepStat`'s upward branch,
+// which is not an inverse — from a die with no pending half it steps a whole
+// rank and leaves the flag clear, so applying and then undoing would hand back
+// more than was taken. The Temporary Damage Tag heals exactly what it dealt, at
+// 0.5 a Round, so it needs the real mirror:
+//
+//   (d8, half)  --apply-->  (d6, no half)  --heal-->  (d8, half)
+//   (d4, half)  --apply-->  (d4, out)      --heal-->  (d4, active, half)
+//
+// It can walk a die back out of `incapacitated`, which is the whole point: a
+// Stat destroyed by temporary damage comes back, because the damage that
+// destroyed it was never permanent.
+export function healHalfDamage({ current_size, bonus, status, half_damage }) {
+  if (half_damage) {
+    return { current_size, bonus, status, half_damage: false };
+  }
+  return { ...stepDie({ current_size, bonus, status }, 'up'), half_damage: true };
+}
+
 // **A modifier modifies the ROLL, not each die** (decided, fix). Every
 // modifier in the game — the ad-hoc one typed into a roll dialog, Reasons to
 // Fight, the Stance matchup, a move's own Roll Modifier, a Perk's per-move

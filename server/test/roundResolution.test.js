@@ -3282,6 +3282,156 @@ test('Punisher - Hand catches either hand', async () => {
   );
 });
 
+// ---------- Temporary Damage ----------------------------------------------
+
+test('Temporary Damage lands in full, and comes back 0.5 a Round', async () => {
+  const pairIndex = 389;
+  const attacker = await createCharacter('TD Attacker');
+  const defender = await createCharacter('TD Defender');
+  // d8 top face + 2 = 10 → two Half-Damage steps, the same fixture the Baron
+  // tests use.
+  const sting = await createMove({
+    name: 'TD Sting', startupTics: 1, activeTics: 1, recoveryTics: 0,
+    rollSlots: ['Skull'], rollModifier: 2, attackTargets: ['Body'],
+  });
+  await tagMove(sting, 'Temporary Damage');
+  const bodyBefore = await one(
+    "SELECT current_size, bonus, half_damage FROM dice WHERE character_id = ? AND slot_name = 'Body'",
+    [defender]
+  );
+  await seatPair(pairIndex, attacker, defender);
+  await startPairDeclaration(mockIo, pairIndex);
+  await declareMove({
+    characterId: attacker, moveId: sting, placementTic: 0, startupTics: 1,
+    effectiveAttackTargets: ['Body'],
+  });
+  await resolvePair(pairIndex);
+
+  // It landed like any other damage — that half of the rule is not softened.
+  const hit = (await all("SELECT payload FROM round_events WHERE pair_index = ? AND type = 'damage_applied'", [pairIndex]))
+    .map((r) => JSON.parse(r.payload))
+    .find((p) => p.slotName === 'Body');
+  assert.ok(hit, 'the fixture has to actually land');
+  assert.equal(hit.steps, 2);
+
+  // ...and the Round finishing gave back exactly one half-step of it, leaving
+  // one owed. 0.5 per Round is a rate on the Stat, not on the blow.
+  const owed = await one(
+    "SELECT steps FROM temporary_damage WHERE character_id = ? AND slot_name = 'Body'",
+    [defender]
+  );
+  assert.equal(owed?.steps, 1, 'two dealt, one given back, one still owed');
+  const mid = await one(
+    "SELECT current_size, bonus, half_damage FROM dice WHERE character_id = ? AND slot_name = 'Body'",
+    [defender]
+  );
+  assert.notDeepEqual(mid, bodyBefore, 'and the Stat is still down the other half');
+
+});
+
+test('a second finished Round clears the rest of the debt and the Stat is whole', async () => {
+  // The tail of the rule, on its own fixture rather than by re-running the
+  // round above: an empty Round is still a finished Round, and the half-step
+  // comes back whether or not anybody threw anything.
+  const pairIndex = 392;
+  const a = await createCharacter('TD2 A');
+  const b = await createCharacter('TD2 B');
+  const before = await one(
+    "SELECT current_size, bonus, status, half_damage FROM dice WHERE character_id = ? AND slot_name = 'Body'",
+    [b]
+  );
+  // One half-step of temporary damage on the books, and a Stat carrying it.
+  await run(
+    "UPDATE dice SET half_damage = 1 WHERE character_id = ? AND slot_name = 'Body'",
+    [b]
+  );
+  await run(
+    "INSERT INTO temporary_damage (character_id, slot_name, steps) VALUES (?, 'Body', 1)",
+    [b]
+  );
+  await seatPair(pairIndex, a, b);
+  await startPairDeclaration(mockIo, pairIndex);
+  await resolvePair(pairIndex);
+
+  assert.equal(
+    await one("SELECT steps FROM temporary_damage WHERE character_id = ? AND slot_name = 'Body'", [b]),
+    null,
+    'the debt is cleared, and the row deleted rather than left at zero'
+  );
+  assert.deepEqual(
+    await one("SELECT current_size, bonus, status, half_damage FROM dice WHERE character_id = ? AND slot_name = 'Body'", [b]),
+    before,
+    'and the Stat is exactly where it started — temporary means temporary'
+  );
+});
+
+test('Damage from a move WITHOUT the Tag is owed back to nobody', async () => {
+  const pairIndex = 390;
+  const attacker = await createCharacter('TDN Attacker');
+  const defender = await createCharacter('TDN Defender');
+  const punch = await createMove({
+    name: 'TDN Punch', startupTics: 1, activeTics: 1, recoveryTics: 0,
+    rollSlots: ['Skull'], rollModifier: 2, attackTargets: ['Body'],
+  });
+  const before = await one(
+    "SELECT current_size, bonus, half_damage FROM dice WHERE character_id = ? AND slot_name = 'Body'",
+    [defender]
+  );
+  await seatPair(pairIndex, attacker, defender);
+  await startPairDeclaration(mockIo, pairIndex);
+  await declareMove({
+    characterId: attacker, moveId: punch, placementTic: 0, startupTics: 1,
+    effectiveAttackTargets: ['Body'],
+  });
+  await resolvePair(pairIndex);
+  assert.equal(
+    (await all('SELECT * FROM temporary_damage WHERE character_id = ?', [defender])).length, 0
+  );
+  assert.notDeepEqual(
+    await one("SELECT current_size, bonus, half_damage FROM dice WHERE character_id = ? AND slot_name = 'Body'", [defender]),
+    before,
+    'ordinary damage stays put'
+  );
+});
+
+test('a Stat DESTROYED by Temporary Damage comes back', async () => {
+  // The sharp end of "it is still dealt, and can make the Stat Destroyed":
+  // destroyed is not a floor the healing cannot climb out of.
+  const pairIndex = 391;
+  const attacker = await createCharacter('TDD Attacker');
+  const defender = await createCharacter('TDD Defender');
+  await run(
+    "UPDATE dice SET current_size = 4, bonus = 0, half_damage = 1, status = 'active' WHERE character_id = ? AND slot_name = 'Body'",
+    [defender]
+  );
+  const sting = await createMove({
+    name: 'TDD Sting', startupTics: 1, activeTics: 1, recoveryTics: 0,
+    rollSlots: ['Skull'], rollModifier: -4, attackTargets: ['Body'],
+  });
+  await tagMove(sting, 'Temporary Damage');
+  await seatPair(pairIndex, attacker, defender);
+  await startPairDeclaration(mockIo, pairIndex);
+  await declareMove({
+    characterId: attacker, moveId: sting, placementTic: 0, startupTics: 1,
+    effectiveAttackTargets: ['Body'],
+  });
+  await resolvePair(pairIndex);
+
+  // One step dealt (a d8 top face at −4 is a 4 → one Half-Damage step), which
+  // took a d4-with-a-half out — and the same finished Round gave it straight
+  // back, because the debt was only one half-step deep.
+  const body = await one(
+    "SELECT current_size, bonus, status, half_damage FROM dice WHERE character_id = ? AND slot_name = 'Body'",
+    [defender]
+  );
+  assert.equal(body.status, 'active', 'destroyed by temporary damage is not permanent');
+  assert.equal(body.current_size, 4);
+  assert.equal(Boolean(body.half_damage), true, 'back exactly where it was, half and all');
+  assert.equal(
+    (await all('SELECT * FROM temporary_damage WHERE character_id = ?', [defender])).length, 0
+  );
+});
+
 test('Dogfighter makes a move harder to break up, by exactly 2', async () => {
   const { perkInterruptAmounts } = await import('../perkEngine.js');
   const fighter = await createCharacter('DF Fighter');

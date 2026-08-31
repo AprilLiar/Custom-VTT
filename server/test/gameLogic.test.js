@@ -7,7 +7,7 @@ import {
   stepDie,
   rankOf,
   applyRankPenalty,
-  applyHalfDamage,
+  applyHalfDamage, healHalfDamage,
 } from '../gameLogic.js';
 
 const die = (current_size, bonus = 0, status = 'active') => ({ current_size, bonus, status });
@@ -161,4 +161,44 @@ test('applyHalfDamage: stepping down from a bare d4 while half-damaged incapacit
     applyHalfDamage({ current_size: 4, bonus: 0, status: 'active', half_damage: true }),
     { current_size: 4, bonus: 0, status: 'incapacitated', half_damage: false }
   );
+});
+
+// --- healHalfDamage: the exact inverse -------------------------------------
+
+test('healHalfDamage undoes exactly what applyHalfDamage did, from anywhere', () => {
+  // The Temporary Damage Tag gives back precisely what it took, so this has to
+  // be a true mirror rather than "step it up a bit". Swept across every die
+  // size, both bonus and no bonus, both half states.
+  const states = [];
+  for (const size of [4, 6, 8, 10, 12]) {
+    for (const bonus of [0, 1, 3]) {
+      for (const half of [false, true]) {
+        if (size < 12 && bonus > 0) continue; // a bonus only exists past d12
+        states.push({ current_size: size, bonus, status: 'active', half_damage: half });
+      }
+    }
+  }
+  states.push({ current_size: 4, bonus: 0, status: 'incapacitated', half_damage: false });
+  for (const start of states) {
+    const hurt = applyHalfDamage(start);
+    assert.deepEqual(healHalfDamage(hurt), start, JSON.stringify(start));
+  }
+});
+
+test('healHalfDamage walks a Stat back out of being destroyed', () => {
+  // The whole reason the Tag can destroy a Stat and still be temporary.
+  const bareD4 = { current_size: 4, bonus: 0, status: 'active', half_damage: true };
+  const out = applyHalfDamage(bareD4);
+  assert.equal(out.status, 'incapacitated', 'the fixture has to actually break it');
+  assert.deepEqual(healHalfDamage(out), bareD4, 'and it comes back exactly as it went');
+});
+
+test('healHalfDamage is a HALF step, not a whole rank', () => {
+  // Two heals climb one die size, the same way two hits drop one.
+  const once = healHalfDamage({ current_size: 6, bonus: 0, status: 'active', half_damage: false });
+  assert.equal(once.current_size, 8);
+  assert.equal(once.half_damage, true, 'the other half of the step is still owed');
+  const twice = healHalfDamage(once);
+  assert.equal(twice.current_size, 8);
+  assert.equal(twice.half_damage, false);
 });

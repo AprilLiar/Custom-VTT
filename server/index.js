@@ -2035,6 +2035,7 @@ app.delete('/api/characters/:id', wrap(async (req, res) => {
   // line here — and the second half matters, since a row naming a character who
   // no longer exists would sit in the table forever, never matchable and never
   // cleared.
+  await run('DELETE FROM temporary_damage WHERE character_id = ?', [character.id]);
   await run('DELETE FROM pending_roll_bonuses WHERE character_id = ? OR against_character_id = ?', [
     character.id,
     character.id,
