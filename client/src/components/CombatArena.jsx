@@ -1905,17 +1905,21 @@ function ActiveDeclarePanel({ entry, roundStartTic, declaredMoves, tags, tellByI
     // small to read at a glance — which is the one thing a filter has to be
     // mid-round. At a readable size, in space that was carrying nothing.
     //
-    // **Four filters now, two a side (decided, revised).** The split is by the
-    // question each one asks. Left: what the move *does* — the Attack Target it
-    // goes for and the Attack Roll it makes. Right: what the move *is* — the
-    // Tell it opens with and the Tags it carries. Two stacked columns a side
-    // rather than four across, because the panel needs the middle.
+    // **Four filters, four columns, two a side (decided, revised twice).** The
+    // split is by the question each one asks. Left: what the move *does* — the
+    // Attack Target it goes for and the Attack Roll it makes. Right: what the
+    // move *is* — the Tell it opens with and the Tags it carries.
+    //
+    // Each filter gets its own column, side by side, rather than two stacked in
+    // one: stacking put Attack Roll below a seven-chip Attack Target, so the
+    // second filter of each pair started halfway down the screen and read as a
+    // continuation of the first rather than as its own control.
     //
     // `items-start` so a long filter column does not stretch the panel, and the
     // columns are `hidden md:flex`: a phone keeps the compact in-panel rows,
     // because it has no side space to give.
-    <div className="flex w-full items-start justify-center gap-4">
-      <div className="hidden flex-col gap-4 md:flex">
+    <div className="flex w-full items-start justify-center gap-3">
+      <div className="hidden gap-3 md:flex">
         <MoveFilterColumn
           label="Attack Target"
           items={list.filters.targetItems}
@@ -1984,7 +1988,7 @@ function ActiveDeclarePanel({ entry, roundStartTic, declaredMoves, tags, tellByI
         tellList={tellList}
       />
     </div>
-      <div className="hidden flex-col gap-4 md:flex">
+      <div className="hidden gap-3 md:flex">
         <MoveFilterColumn
           label="Tell"
           items={tellList}

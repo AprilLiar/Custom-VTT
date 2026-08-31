@@ -830,9 +830,16 @@ anywhere before.
 - **The layout is a left/right split by the question each filter asks.** Left: what a move *does* —
   its **Attack Target** and its **Attack Roll**. Right: what a move *is* — its **Tell** and its
   **Tags** (the Compendium's right column is **Style** and Tag, since that page filters by Style
-  rather than Tell). On the Arena's desktop layout that means two stacked `MoveFilterColumn`s a side
-  flanking the panel instead of one; on a phone, two stacked compact rows a side inside it. One
-  column on a narrow sheet, where the two halves simply stack in that order.
+  rather than Tell).
+- **One column per filter — four columns, two a side (revised).** The first cut stacked two filters
+  in each of two columns, and it read as two controls rather than four: Attack Roll sat below a
+  seven-chip Attack Target, starting halfway down the screen and looking like a continuation of the
+  filter above it. Each now gets its own column, side by side. In the Arena that is four
+  `MoveFilterColumn`s flanking the panel (narrowed to `w-32 lg:w-40` from `w-44 lg:w-52` to make
+  room — the labels they carry are short); on the sheet and in the Compendium it is a
+  `sm:grid-cols-2 lg:grid-cols-4` grid, stacking to one column on a phone in the same order. The
+  Arena's phone layout keeps its two compact rows a side inside the panel, which has no side space
+  to give either way.
 - **Both read the same seven-name vocabulary** (`ROLL_SLOT_NAMES`): Left/Right Hand collapse into one
   ambiguous `Hand`, Left/Right Leg into `Leg`, `Weapon` is the seventh. A move that rolls `Hand`
   twice is still one `Hand` to a filter — these are membership tests, not counts.

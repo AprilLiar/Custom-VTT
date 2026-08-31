@@ -158,6 +158,11 @@ export function MoveFilterChips({
 // Chips stack full-width rather than wrapping: a column of left-aligned labels
 // is scannable top-to-bottom, and a ragged two-per-line wrap in a 200px column
 // is not.
+//
+// **Narrowed from `w-44 lg:w-52` when the count went from two to four.** Four
+// of these plus the panel is the whole screen at a normal desktop width; the
+// labels they carry are short (`Skull`, `Left/Right Hand`, a Tell's name), so
+// the width was spending room the content did not need.
 export function MoveFilterColumn({
   label,
   items,
@@ -170,7 +175,7 @@ export function MoveFilterColumn({
 }) {
   if (!items?.length) return null;
   return (
-    <div className={`flex w-44 shrink-0 flex-col gap-1 lg:w-52 ${align === 'right' ? 'items-end' : 'items-start'}`}>
+    <div className={`flex w-32 shrink-0 flex-col gap-1 lg:w-40 ${align === 'right' ? 'items-end' : 'items-start'}`}>
       <div className="flex w-full items-baseline justify-between gap-2">
         <span className="font-display text-sm font-semibold uppercase tracking-wide text-zinc-400">
           {label}
