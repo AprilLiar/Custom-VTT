@@ -3,10 +3,12 @@ import { useRole } from '../roleContext.jsx';
 import { socket } from '../socket.js';
 import { getQuirks } from '../lib/api.js';
 import { useRoster } from '../lib/useRoster.js';
-import { quirkStyle } from '../lib/quirkStyles.js';
+import { Dices } from 'lucide-react';
+import { quirkStyle, splitQuirks } from '../lib/quirkStyles.js';
 import QuirkCard from './QuirkCard.jsx';
 import QuirkColumns from './QuirkColumns.jsx';
 import QuirkEditor from './QuirkEditor.jsx';
+import QuirkRollDialog from './QuirkRollDialog.jsx';
 
 // The Compendium's third tab: **the GM's shelf of exemplary Quirks, that
 // everyone can see and take** (the ask, in those words).
@@ -25,6 +27,7 @@ export default function QuirksCompendium() {
   const [quirks, setQuirks] = useState(null);
   const [form, setForm] = useState(null); // null | { quirk?, kind? }
   const [takeOpen, setTakeOpen] = useState(null); // GM only: quirk id whose character list is open
+  const [rolling, setRolling] = useState(null); // null | 'positive' | 'negative'
   const characters = useRoster() ?? [];
 
   useEffect(() => {
@@ -43,6 +46,10 @@ export default function QuirksCompendium() {
   // Perks tab makes, off the roster it already has.
   const myCharacter = role === 'player' ? characters.find((c) => c.id === characterId) ?? null : null;
 
+  // Split once here rather than inside the columns, because the Roll buttons
+  // below need the same two lists to know whether they have anything to draw.
+  const split = splitQuirks(quirks);
+
   const submit = (fields) => {
     if (form?.quirk) socket.emit('quirk:update', { quirkId: form.quirk.id, ...fields });
     else socket.emit('quirk:create', fields);
@@ -59,19 +66,38 @@ export default function QuirksCompendium() {
   };
 
   const columnFooter = (kind) => {
-    if (role !== 'gm') return null;
     const style = quirkStyle(kind);
-    if (form && !form.quirk && form.kind === kind) {
+    if (role === 'gm' && form && !form.quirk && form.kind === kind) {
       return <QuirkEditor defaultKind={kind} onSubmit={submit} onCancel={() => setForm(null)} />;
     }
+    const side = split[kind];
     return (
-      <button
-        type="button"
-        onClick={() => setForm({ kind })}
-        className={`min-h-11 w-full panel-cut-sm border px-3 text-xs font-semibold uppercase tracking-wide md:min-h-0 md:py-1.5 ${style.chip}`}
-      >
-        + New {style.label} Quirk
-      </button>
+      <div className="space-y-2">
+        {role === 'gm' && (
+          <button
+            type="button"
+            onClick={() => setForm({ kind })}
+            className={`min-h-11 w-full panel-cut-sm border px-3 text-xs font-semibold uppercase tracking-wide md:min-h-0 md:py-1.5 ${style.chip}`}
+          >
+            + New {style.label} Quirk
+          </button>
+        )}
+        {/* **Let the dice pick one.** Open to every role, not just the GM: a
+            player rolling for their own character is the case this is for. Shown
+            only when there is something to roll — a button that can only ever
+            say "nothing here" is a button that teaches you not to press it. */}
+        {side.length > 0 && (
+          <button
+            type="button"
+            onClick={() => setRolling(kind)}
+            title={`Draw one of the ${side.length} ${style.label.toLowerCase()} examples at random`}
+            className="flex min-h-11 w-full items-center justify-center gap-2 panel-cut-sm border border-zinc-700 px-3 text-xs font-semibold uppercase tracking-wide text-zinc-400 hover:border-zinc-500 hover:text-zinc-200 md:min-h-0 md:py-1.5"
+          >
+            <Dices size={14} aria-hidden />
+            Roll {style.label} Quirk
+          </button>
+        )}
+      </div>
     );
   };
 
@@ -167,6 +193,17 @@ export default function QuirksCompendium() {
           )
         }
       />
+
+      {rolling && (
+        <QuirkRollDialog
+          kind={rolling}
+          quirks={split[rolling]}
+          characters={characters}
+          // A Player has exactly one answer for "whose is it"; the GM picks.
+          myCharacterId={myCharacter?.id ?? null}
+          onClose={() => setRolling(null)}
+        />
+      )}
     </div>
   );
 }

@@ -2286,6 +2286,10 @@ const SEEDED_TAGS = [
     'Grounding',
     'This move puts you on the floor. Every one of its Recovery frames is a Trip Recovery frame instead of an ordinary one \u2014 the same frames, the same count, spent on the ground. Pairs with Off The Ground, which is the only thing that can be thrown out of them.',
   ],
+  [
+    'Ground Finisher',
+    'Built to finish somebody already on the floor. If this move\u2019s Active frames land on even one of the target\u2019s Trip Recovery frames, its Roll gets +5. The mirror of Off The Ground: that Tag gets you up early, this one punishes you for still being down.',
+  ],
   // **The five Punishers, seeded rather than left to be typed.** The two
   // Interruption Tags are parameterised too and are not seeded, because their
   // parameter is an arbitrary number and there is no list to offer. This one's

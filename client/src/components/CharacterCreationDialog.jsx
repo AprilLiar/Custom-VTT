@@ -8,6 +8,7 @@ import Thumb from './Thumb.jsx';
 import { socket } from '../socket.js';
 import { getMoves, getPerkTags, getPerks, getQuirks, getRuleset, getTags } from '../lib/api.js';
 import { carriesSpecialTag } from '../lib/moveDisplay.js';
+import { bundleMoves, moveSelectionCost } from '../../../server/moveBundles.js';
 import { QUIRK_KINDS, quirkKind, quirkStyle } from '../lib/quirkStyles.js';
 import { dieLabel } from '../lib/dice.js';
 import { FIXED_QUESTIONS } from './RoleplayTab.jsx';
@@ -235,16 +236,46 @@ export default function CharacterCreationDialog({ character, stances = [], onClo
         moveStyles: Object.fromEntries(library.moves.map((m) => [m.id, m.style_attribute_id])),
         moveNames: Object.fromEntries(library.moves.map((m) => [m.id, m.name])),
         ownedStyleIds: [...ownedStyles],
+        moveLibrary: library.moves,
       }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [presetKey, ranks, stance, moveIds, perkIds, answers, library.moves, ownedStyles]
   );
+  // **What a Move Point buys (see server/moveBundles.js).** One bundle, one
+  // checkbox, one point: `Cross - Head` and `Cross - Body` come together, and a
+  // grapple pays for its first selected extension. Derived from the same
+  // functions the server prices the submitted build with, so what this screen
+  // counts and what the server accepts cannot drift.
+  const bundles = useMemo(() => bundleMoves(library.moves), [library.moves]);
+  const bundleByKey = useMemo(() => new Map(bundles.map((b) => [b.key, b])), [bundles]);
+  const bundleKeyOfMove = useMemo(() => {
+    const map = new Map();
+    for (const bundle of bundles) for (const id of bundle.moveIds) map.set(id, bundle.key);
+    return map;
+  }, [bundles]);
+  const cost = useMemo(() => moveSelectionCost(moveIds, bundles), [moveIds, bundles]);
+  const chosenKeys = useMemo(() => new Set(cost.bundleKeys), [cost]);
+  const freedKeys = useMemo(() => new Set(cost.freedKeys), [cost]);
+
+  // Ticking a bundle takes every row in it; unticking drops every row in it.
+  // The selection stays a list of move ids — that is what the server writes and
+  // what every other part of this dialog already reads — and the bundle is only
+  // ever the unit of the CLICK.
+  const toggleBundle = (key) => {
+    const bundle = bundleByKey.get(key);
+    if (!bundle) return;
+    const ids = new Set(bundle.moveIds);
+    setMoveIds((prev) =>
+      prev.some((id) => ids.has(id)) ? prev.filter((id) => !ids.has(id)) : [...prev, ...bundle.moveIds]
+    );
+  };
+
   const spent = statPointsSpent(ranks);
   // Null when there is no preset — a free-form build has no "left" to report,
   // and 0 would read as "you are out".
   const pointsLeft = preset ? preset.statPoints - spent : null;
   const perksLeft = preset ? preset.perkCount - perkIds.length : null;
-  const movesLeft = preset ? preset.moveCount - moveIds.length : null;
+  const movesLeft = preset ? preset.moveCount - cost.points : null;
   // **A cap disables what is not already picked, never what is.** Greying out a
   // ticked box would trap the build: you would be at the cap, over it, or
   // holding a Move you can no longer learn, with no way to put any of them
@@ -304,6 +335,65 @@ export default function CharacterCreationDialog({ character, stances = [], onClo
     .filter((m) => !moveSearch || m.name.toLowerCase().includes(moveSearch.toLowerCase()))
     .filter((m) => moveStyleFilter.size === 0 || moveStyleFilter.has(m.style_attribute_id))
     .filter((m) => moveTagFilter.size === 0 || (m.tag_ids ?? []).some((id) => moveTagFilter.has(id)));
+
+  // **The visible list, as bundles, with grapple extensions pulled up under
+  // their grapple.** A bundle shows when any of its moves survives the filters
+  // above — filtering by Tag must not split a family in half and charge two
+  // points for what one tick buys.
+  //
+  // `freeWith` names the grapple whose first selected extension this would be,
+  // so the row can be offered even at the cap when it is about to cost nothing.
+  const visibleMoveIds = new Set(visibleMoves.map((m) => m.id));
+  const moveById = new Map(library.moves.map((m) => [m.id, m]));
+  const bundleShows = (bundle) => bundle.moveIds.some((id) => visibleMoveIds.has(id));
+  const bundleMovesOf = (bundle) => bundle.moveIds.map((id) => moveById.get(id)).filter(Boolean);
+  // Which grapples have already spent their one free extension on something
+  // else that is selected — read from the priced result rather than recomputed,
+  // so the row's own label and the budget agree by construction.
+  const hasFreeSpent = (grappleKey) => {
+    const bundle = bundleByKey.get(grappleKey);
+    return Boolean(bundle?.extensionKeys.some((key) => freedKeys.has(key)));
+  };
+  const visibleBundles = (() => {
+    // **Which grapple owns each follow-up, decided before anything is drawn.**
+    // Doing it inline while emitting rows makes the layout depend on the GM's
+    // `sort_order`: a grapple that sorts after its own follow-ups would have
+    // had them already placed at the top level and would show alone.
+    //
+    // Two guards keep it from eating rows it should not:
+    //  - **first root wins**, so a follow-up two grapples share is indented
+    //    once rather than fought over;
+    //  - **a grapple is never claimed as somebody's follow-up**, which is what
+    //    stops two grapples that name each other from each swallowing the
+    //    other and neither appearing at all.
+    const claimedBy = new Map();
+    for (const bundle of bundles) {
+      if (!bundle.isGrappleRoot) continue;
+      for (const key of bundle.extensionKeys) {
+        if (claimedBy.has(key) || bundleByKey.get(key)?.isGrappleRoot) continue;
+        claimedBy.set(key, bundle.key);
+      }
+    }
+    const out = [];
+    for (const bundle of bundles) {
+      if (claimedBy.has(bundle.key)) continue;
+      if (!bundleShows(bundle)) continue;
+      out.push({ bundle, moves: bundleMovesOf(bundle), indent: false, freeWith: null });
+      if (!bundle.isGrappleRoot) continue;
+      for (const key of bundle.extensionKeys) {
+        if (claimedBy.get(key) !== bundle.key) continue;
+        const extension = bundleByKey.get(key);
+        if (!extension || !bundleShows(extension)) continue;
+        out.push({
+          bundle: extension,
+          moves: bundleMovesOf(extension),
+          indent: true,
+          freeWith: bundle.key,
+        });
+      }
+    }
+    return out;
+  })();
 
   const browsablePerks = library.perks.filter((p) => !carriesSpecialTag(p.tag_ids, library.perkTags));
   const visiblePerks =
@@ -540,26 +630,42 @@ export default function CharacterCreationDialog({ character, stances = [], onClo
                 />
               </aside>
               <div className="min-w-0 flex-1 max-h-[30rem] space-y-1 overflow-y-auto">
-              {visibleMoves.map((move) => {
-                const picked = moveIds.includes(move.id);
-                const blocked = unlearnable(move);
-                // Forbidden, not merely discouraged: the greyed-out row used to
-                // stay tickable, and the server then accepted the build and
-                // dropped the Move without a word — which looked exactly like
-                // it had worked. A picked row stays clickable so it can always
-                // be put back down.
-                const disabled = !picked && (blocked || atMoveCap);
+              {/* **One row per BUNDLE, not per move** (see server/moveBundles.js).
+                  A family of variants is one checkbox and one point — `Cross -
+                  Head` and `Cross - Body` are one punch aimed two ways — and a
+                  grapple's extensions sit indented under it, the first one
+                  taken riding along free.
+
+                  The rows are grouped rather than reordered: the GM's own
+                  `sort_order` still decides where a family appears, and a
+                  grapple's extensions are pulled up beneath it so they "appear
+                  near each other" as asked. */}
+              {visibleBundles.map(({ bundle, moves: familyMoves, indent, freeWith }) => {
+                const picked = chosenKeys.has(bundle.key);
+                const blocked = familyMoves.every((m) => unlearnable(m));
+                const free = freedKeys.has(bundle.key);
+                // A bundle already inside the budget is always untickable; a
+                // new one costs a point unless a grapple is about to absorb it.
+                const wouldCost = !picked && !(freeWith != null && chosenKeys.has(freeWith) && !hasFreeSpent(freeWith));
+                const disabled = !picked && (blocked || (atMoveCap && wouldCost));
+                // The variants themselves, when there is more than one, so a
+                // player can see what the single tick is actually taking.
+                const variantNames = familyMoves.length > 1
+                  ? familyMoves.map((m) => m.name.slice(bundle.name.length).replace(/^\s*-\s*/, '')).filter(Boolean)
+                  : [];
                 return (
                   <label
-                    key={move.id}
+                    key={bundle.key}
                     title={
                       blocked
-                        ? `Your stance does not carry ${styleById.get(move.style_attribute_id)?.name ?? 'this Style'}`
+                        ? 'Your stance does not carry the Style this needs'
                         : disabled
                           ? `${preset.name} allows ${preset.moveCount} Moves`
-                          : undefined
+                          : familyMoves.length > 1
+                            ? `One Move Point takes all ${familyMoves.length}: ${familyMoves.map((m) => m.name).join(', ')}`
+                            : undefined
                     }
-                    className={`flex items-center gap-2 panel-cut-sm border p-2 ${
+                    className={`flex items-center gap-2 panel-cut-sm border p-2 ${indent ? 'ml-6' : ''} ${
                       blocked
                         ? 'border-amber-900/60 opacity-60'
                         : picked
@@ -571,20 +677,35 @@ export default function CharacterCreationDialog({ character, stances = [], onClo
                       type="checkbox"
                       checked={picked}
                       disabled={disabled}
-                      onChange={() => toggleIn(moveIds, setMoveIds, move.id)}
+                      onChange={() => toggleBundle(bundle.key)}
                       className="h-4 w-4"
                     />
-                    <Thumb record={move} name={move.name} size="h-7 w-7" cut="panel-cut-sm" />
-                    <span className="min-w-0 flex-1 truncate text-sm text-zinc-200">{move.name}</span>
-                    {blocked && (
-                      <span className="shrink-0 text-[11px] uppercase text-amber-400">
-                        needs {styleById.get(move.style_attribute_id)?.name ?? 'a Style'}
+                    <Thumb record={familyMoves[0]} name={bundle.name} size="h-7 w-7" cut="panel-cut-sm" />
+                    <span className="min-w-0 flex-1 truncate text-sm text-zinc-200">
+                      {bundle.name}
+                      {variantNames.length > 0 && (
+                        <span className="ml-1.5 text-xs text-zinc-500">{variantNames.join(' / ')}</span>
+                      )}
+                    </span>
+                    {/* The one thing a points budget has to say out loud: what
+                        this tick actually costs. Free extensions are the whole
+                        grapple rule, and a rule nobody can see is a rule nobody
+                        trusts. */}
+                    {picked && free && (
+                      <span className="shrink-0 panel-cut-sm bg-emerald-900/40 px-1.5 text-[11px] font-semibold uppercase text-emerald-300">
+                        free
                       </span>
+                    )}
+                    {bundle.isGrappleRoot && bundle.extensionKeys.length > 0 && (
+                      <span className="shrink-0 text-[11px] uppercase text-zinc-500">grapple</span>
+                    )}
+                    {blocked && (
+                      <span className="shrink-0 text-[11px] uppercase text-amber-400">needs a Style</span>
                     )}
                   </label>
                 );
               })}
-                {!visibleMoves.length && <p className="text-sm text-zinc-600">No Moves match that.</p>}
+                {!visibleBundles.length && <p className="text-sm text-zinc-600">No Moves match that.</p>}
               </div>
             </div>
           </div>

@@ -12,7 +12,9 @@ import {
   tagAmount,
   movementBlockedByLegs,
   movementPunisherApplies,
+  carriesGroundFinisherTag,
   carriesGroundingTag,
+  groundFinisherBonus,
   groundingTripRecoveryTics,
   punishableStat,
   punisherBonus,
@@ -556,4 +558,93 @@ test('punisherBonus names the move it caught, for the roll breakdown', () => {
   assert.deepEqual(caught, { amount: 2, stat: 'Body', moveName: "Mira's Low Kick" });
   // The plain-string form still works, and simply has no name to give.
   assert.equal(punisherBonus({ tagNames: ['Punisher - Body'], opponentSlots: ['Body'] }).moveName, null);
+});
+
+// ---------- Ground Finisher ----------
+
+const down = (from, to, characterName = 'Kenji') => ({ from, to, characterName });
+
+test('Ground Finisher: one overlapping Tic is enough', () => {
+  // "Land even on 1 Trip Recovery Frame" is the rule, so the smallest possible
+  // overlap has to pay in full — a move that clips the last Tic of somebody's
+  // time on the floor caught them on the floor.
+  const clipped = groundFinisherBonus({
+    tagNames: ['Ground Finisher'],
+    attackWindow: { from: 5, to: 9 },
+    tripWindows: [down(3, 6)],
+  });
+  assert.equal(clipped.amount, 5);
+  assert.equal(clipped.caught, 'Kenji');
+});
+
+test('Ground Finisher: the windows are half-open, so touching is not overlapping', () => {
+  // [3,6) and [6,9) share no Tic: they are back to back. Getting this wrong by
+  // one is how a +5 appears on an attack that arrived exactly as they stood up.
+  assert.equal(
+    groundFinisherBonus({
+      tagNames: ['Ground Finisher'],
+      attackWindow: { from: 6, to: 9 },
+      tripWindows: [down(3, 6)],
+    }).amount,
+    0
+  );
+  // ...and one Tic earlier it does overlap.
+  assert.equal(
+    groundFinisherBonus({
+      tagNames: ['Ground Finisher'],
+      attackWindow: { from: 5, to: 9 },
+      tripWindows: [down(3, 6)],
+    }).amount,
+    5
+  );
+});
+
+test('Ground Finisher: +5 once, however many people are down', () => {
+  // One move catching one fighter down. A second overlapping window is the
+  // same fact said twice, exactly as the Punisher pays once for two Stats.
+  const caught = groundFinisherBonus({
+    tagNames: ['Ground Finisher'],
+    attackWindow: { from: 0, to: 10 },
+    tripWindows: [down(2, 4, 'Kenji'), down(6, 8, 'Mira')],
+  });
+  assert.equal(caught.amount, 5);
+  assert.equal(caught.caught, 'Kenji', 'and it names the first one it found');
+});
+
+test('Ground Finisher: nothing without the Tag, and nothing without a knockdown', () => {
+  assert.equal(
+    groundFinisherBonus({
+      tagNames: ['Movement Punisher'],
+      attackWindow: { from: 0, to: 10 },
+      tripWindows: [down(2, 4)],
+    }).amount,
+    0
+  );
+  assert.equal(
+    groundFinisherBonus({
+      tagNames: ['Ground Finisher'],
+      attackWindow: { from: 0, to: 10 },
+      tripWindows: [],
+    }).amount,
+    0
+  );
+});
+
+test('Ground Finisher: a roll with no Active window of its own pays nothing', () => {
+  // A hand-thrown die or an Initiative roll belongs to no declaration, so there
+  // is no window to overlap — the true answer rather than a missing one. An
+  // empty or inverted window must not be read as "everything overlaps".
+  for (const attackWindow of [undefined, null, {}, { from: 4, to: 4 }, { from: 9, to: 5 }]) {
+    assert.equal(
+      groundFinisherBonus({ tagNames: ['Ground Finisher'], attackWindow, tripWindows: [down(0, 20)] }).amount,
+      0,
+      JSON.stringify(attackWindow)
+    );
+  }
+});
+
+test('Ground Finisher: the Tag is matched by name, case and spacing tolerantly', () => {
+  assert.equal(carriesGroundFinisherTag(['  ground finisher ']), true);
+  assert.equal(carriesGroundFinisherTag(['Grounding']), false, 'a different Tag entirely');
+  assert.equal(carriesGroundFinisherTag([]), false);
 });

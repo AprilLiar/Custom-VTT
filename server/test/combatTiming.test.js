@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  attackResolutionTic,
   resolveSideInitiative,
   computePlacementTic,
   computeMoveFootprint,
@@ -527,4 +528,82 @@ test('planImposedRecovery: nothing declared at all is a legitimate no-op', () =>
   const r = planImposedRecovery({ moves: [], tic: 3, tics: 2 });
   assert.equal(r.phase, 'idle');
   assert.deepEqual(r.updates, []);
+});
+
+// ---------- Which Tic an attack actually lands on ----------
+
+test('attackResolutionTic: a move with no Defense Frames lands on its reveal Tic', () => {
+  // The overwhelmingly common case, and the behaviour this helper replaced —
+  // it has to be arithmetically identical for every move that does not guard.
+  for (const positions of [[], null, undefined]) {
+    assert.equal(
+      attackResolutionTic({
+        placementTic: 3, revealTic: 5, activeEndTic: 8, defenseFramePositions: positions,
+      }),
+      5
+    );
+  }
+});
+
+test('attackResolutionTic: the guard at the front of the Active run is skipped', () => {
+  // Startup 2 (frames 0-1), Active 4 (frames 2-5), and the first two Active
+  // frames are Defense Frames. The blow comes out on frame 4 — the first one
+  // the move is actually punching on, not guarding on.
+  assert.equal(
+    attackResolutionTic({
+      placementTic: 0, revealTic: 2, activeEndTic: 6, defenseFramePositions: [2, 3],
+    }),
+    4
+  );
+  // ...and the same shape placed later in the round moves with it.
+  assert.equal(
+    attackResolutionTic({
+      placementTic: 10, revealTic: 12, activeEndTic: 16, defenseFramePositions: [2, 3],
+    }),
+    14
+  );
+});
+
+test('attackResolutionTic: a gap in the guard is where it lands', () => {
+  // Guarding on the first and third Active frames: the blow lands in the hole
+  // between them, not after all of them.
+  assert.equal(
+    attackResolutionTic({
+      placementTic: 0, revealTic: 1, activeEndTic: 5, defenseFramePositions: [1, 3],
+    }),
+    2
+  );
+});
+
+test('attackResolutionTic: an all-guard move still resolves, on its reveal Tic', () => {
+  // Every Active frame is a Defense Frame — a pure guard, which usually names
+  // no Attack Target and so deals nothing either way. It still has to RESOLVE:
+  // `interactions_resolved` never flips otherwise and processTic re-selects it
+  // every Tic forever. A rule that can hang the round is worse than one that
+  // resolves a guard on its first frame.
+  assert.equal(
+    attackResolutionTic({
+      placementTic: 0, revealTic: 1, activeEndTic: 4, defenseFramePositions: [1, 2, 3],
+    }),
+    1
+  );
+});
+
+test('attackResolutionTic: junk positions cannot move the landing', () => {
+  // Positions are a JSON column authored through the Move Creator; a stray
+  // string or a null must not be read as frame 0 and skip a real Active frame.
+  assert.equal(
+    attackResolutionTic({
+      placementTic: 0, revealTic: 2, activeEndTic: 5,
+      defenseFramePositions: ['x', null, undefined, {}],
+    }),
+    2
+  );
+  // A number that IS parseable still counts, whatever it arrived as.
+  assert.equal(
+    attackResolutionTic({
+      placementTic: 0, revealTic: 2, activeEndTic: 5, defenseFramePositions: ['2'],
+    }),
+    3
+  );
 });

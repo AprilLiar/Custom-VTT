@@ -2202,6 +2202,76 @@ test('the two threshold Perks cancel when they meet', async () => {
   );
 });
 
+// ---------- An attack lands on the frame it is punching on ----------
+
+test('a move that guards on its own first Active frames hits on the first one it does not', async () => {
+  // **The bug this pins.** Defense Frames may only sit on ACTIVE frames, so a
+  // move that both guards and hits has its guard drawn over the front of its
+  // own Active run — and the engine resolved every attack on its reveal Tic,
+  // which is the FIRST of those. The damage came out on the guard.
+  //
+  // Startup 1 (frame 0), Active 4 (frames 1-4), Recovery 1. Frames 1 and 2 are
+  // Defense Frames, so the blow belongs on frame 3 — absolute Tic 3, given a
+  // placement of 0.
+  const pairIndex = 420;
+  const attacker = await createCharacter('Guarding Puncher');
+  const defender = await createCharacter('Punched');
+  const guardPunch = await createMove({
+    name: 'Guard Punch',
+    startupTics: 1, activeTics: 4, recoveryTics: 1,
+    rollSlots: ['Right Hand'], rollModifier: 0, attackTargets: ['Body'],
+    isDefensive: true, defenseKind: 'block', defenseFramePositions: [1, 2],
+  });
+
+  await seatPair(pairIndex, attacker, defender);
+  await startPairDeclaration(mockIo, pairIndex);
+  await declareMove({
+    characterId: attacker, moveId: guardPunch, placementTic: 0, startupTics: 1,
+    effectiveAttackTargets: ['Body'],
+  });
+  await resolvePair(pairIndex);
+
+  const events = (
+    await all('SELECT type, tic, payload FROM round_events WHERE pair_index = ? ORDER BY seq', [pairIndex])
+  ).map((e) => ({ type: e.type, tic: e.tic, payload: JSON.parse(e.payload) }));
+
+  const roll = events.find((e) => e.type === 'roll' && e.payload.characterId === attacker);
+  assert.ok(roll, `the attack has to actually roll: ${events.map((e) => e.type).join(', ')}`);
+  assert.equal(roll.tic, 3, 'the roll belongs on the first Active frame that is not a guard');
+
+  const damage = events.find((e) => e.type === 'damage_applied' && e.payload.slotName);
+  assert.ok(damage, 'and it has to land');
+  assert.equal(damage.tic, 3, 'the damage comes out with it, not on the guard');
+});
+
+test('a move with no Defense Frames still hits on its reveal Tic', async () => {
+  // The control that makes the test above mean something: nothing changes for
+  // the overwhelming majority of moves, which do not guard at all.
+  const pairIndex = 421;
+  const attacker = await createCharacter('Plain Puncher');
+  const defender = await createCharacter('Plainly Punched');
+  const punch = await createMove({
+    name: 'Plain Punch',
+    startupTics: 1, activeTics: 4, recoveryTics: 1,
+    rollSlots: ['Right Hand'], rollModifier: 0, attackTargets: ['Body'],
+  });
+
+  await seatPair(pairIndex, attacker, defender);
+  await startPairDeclaration(mockIo, pairIndex);
+  await declareMove({
+    characterId: attacker, moveId: punch, placementTic: 0, startupTics: 1,
+    effectiveAttackTargets: ['Body'],
+  });
+  await resolvePair(pairIndex);
+
+  const roll = (
+    await all("SELECT tic, payload FROM round_events WHERE pair_index = ? AND type = 'roll' ORDER BY seq", [pairIndex])
+  ).map((e) => ({ tic: e.tic, payload: JSON.parse(e.payload) }))
+    .find((e) => e.payload.characterId === attacker);
+  assert.ok(roll);
+  assert.equal(roll.tic, 1, 'reveal Tic, exactly as before');
+});
+
 // ---------- The chat card's total is the engine's total ----------
 
 test("a follow-up whose grab was read logs the total the contest actually used", async () => {
