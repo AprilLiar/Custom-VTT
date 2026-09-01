@@ -249,3 +249,55 @@ test('every skippable step really is skippable, all at once', () => {
   // Every Stat stays where it started.
   assert.equal(v.normalized.pointsSpent, 0);
 });
+
+// ---------- Quirks ----------
+
+test('Quirks are carried by value, normalised, and never counted against a preset', () => {
+  const v = validateCreation({
+    presetKey: 'teenager',
+    quirks: [
+      // Taken off the Compendium's shelf — arrives as text, not as an id, which
+      // is the whole design: the shelf was a source of words, and the copy was
+      // made the moment it was picked.
+      { name: '  Reads people  ', description: '  Always knows.  ', kind: 'positive' },
+      // Invented on the spot, and the only one of these with a bad `kind`.
+      { name: 'Bad knee', description: '', kind: 'NEGATIVE' },
+      { name: 'Owes money', kind: 'negative' },
+      // A duplicate of the first, differently cased and differently spaced —
+      // one click too many, not a second Quirk.
+      { name: 'reads people', kind: 'positive' },
+      // Abandoned rows: a name is the one thing a Quirk cannot do without.
+      { name: '   ', description: 'orphaned' },
+      {},
+    ],
+  });
+  assert.equal(v.ok, true, JSON.stringify(v.errors));
+  assert.deepEqual(v.warnings, [], 'no preset budget applies — any number is allowed by design');
+  assert.deepEqual(v.normalized.quirks, [
+    { name: 'Reads people', description: 'Always knows.', kind: 'positive' },
+    // 'NEGATIVE' is not 'negative', and the column has a CHECK on it — so an
+    // unrecognised value becomes the default here rather than reaching the
+    // database and throwing.
+    { name: 'Bad knee', description: '', kind: 'positive' },
+    { name: 'Owes money', description: '', kind: 'negative' },
+  ]);
+});
+
+test('a build with no Quirks step is still a legal build', () => {
+  const v = validateCreation({});
+  assert.deepEqual(v.normalized.quirks, []);
+  assert.equal(v.ok, true);
+});
+
+test('the same name on opposite sides is two Quirks, not one', () => {
+  // The dedupe key is name AND kind, deliberately: "Famous" as a blessing and
+  // "Famous" as a curse are two different facts about a character, and the
+  // table gets to say both.
+  const v = validateCreation({
+    quirks: [
+      { name: 'Famous', kind: 'positive' },
+      { name: 'Famous', kind: 'negative' },
+    ],
+  });
+  assert.equal(v.normalized.quirks.length, 2);
+});

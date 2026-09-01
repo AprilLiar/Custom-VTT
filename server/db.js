@@ -526,21 +526,25 @@ async function migrateMoveInteractionsGrappleTrigger() {
 }
 
 // chat_log.kind originally had a 2-value CHECK ('roll','message'), then grew
-// to 3 ('move_reveal'), then 4 ('lane_snapshot'), now 5 ('round_summary',
+// to 3 ('move_reveal'), then 4 ('lane_snapshot'), then 5 ('round_summary',
 // the Combat Automation overhaul's once-per-pair-per-round replay card —
-// §1.5). Same rebuild pattern each time, since SQLite can't ALTER a CHECK
+// §1.5), now 6 ('quirk', a Quirk card shared to the table from a character
+// sheet). Same rebuild pattern each time, since SQLite can't ALTER a CHECK
 // constraint in place — a fresh database's CREATE TABLE IF NOT EXISTS below
 // already gets the current CHECK directly, so this only fires against a
-// database whose stored table SQL still has an older one (which, as of this
-// overhaul, is every database that predates it — including the
-// currently-deployed production one).
+// database whose stored table SQL still has an older one.
+//
+// **The guard tests for the NEWEST value, not any of them.** It used to look
+// for 'round_summary'; a database rebuilt for that one and then met with this
+// version would have matched and skipped, leaving the older 5-value CHECK in
+// place and every shared Quirk refused at the insert.
 async function migrateChatLogKind() {
   const sql = await tableSql('chat_log');
-  if (!sql || sql.includes('round_summary')) return;
+  if (!sql || sql.includes("'quirk'")) return;
   await run(`
     CREATE TABLE chat_log_v2 (
       id INTEGER PRIMARY KEY,
-      kind TEXT NOT NULL DEFAULT 'roll' CHECK(kind IN ('roll','message','move_reveal','lane_snapshot','round_summary')),
+      kind TEXT NOT NULL DEFAULT 'roll' CHECK(kind IN ('roll','message','move_reveal','lane_snapshot','round_summary','quirk')),
       character_id INTEGER NOT NULL,
       dice_rolled TEXT NOT NULL,
       modifier INTEGER NOT NULL DEFAULT 0,
@@ -935,7 +939,7 @@ export async function initDb() {
   ddl(`
     CREATE TABLE IF NOT EXISTS chat_log (
       id INTEGER PRIMARY KEY,
-      kind TEXT NOT NULL DEFAULT 'roll' CHECK(kind IN ('roll','message','move_reveal','lane_snapshot','round_summary')),
+      kind TEXT NOT NULL DEFAULT 'roll' CHECK(kind IN ('roll','message','move_reveal','lane_snapshot','round_summary','quirk')),
       character_id INTEGER NOT NULL,
       dice_rolled TEXT NOT NULL, -- JSON array of {slot_name, size, bonus, result}
       modifier INTEGER NOT NULL DEFAULT 0,
@@ -1487,6 +1491,54 @@ export async function initDb() {
       perk_id INTEGER NOT NULL REFERENCES perks(id) ON DELETE CASCADE,
       perk_tag_id INTEGER NOT NULL REFERENCES perk_tags(id) ON DELETE CASCADE,
       UNIQUE(perk_id, perk_tag_id)
+    )
+  `);
+
+  // ---------------------------------------------------------------------------
+  // Quirks — narrative only, and deliberately NOT shaped like Perks
+  // ---------------------------------------------------------------------------
+  //
+  // A Quirk is a name, a description and a side: **positive** or **negative**.
+  // It has no mechanics and never will — there is no seam register here and no
+  // `server/quirks/` to write code in, because a Quirk is a thing the table
+  // remembers about a character, not a rule the engine applies. That is the
+  // whole difference from a Perk, and it is why these two tables are not the
+  // `perks`/`character_perks` pair with an extra column.
+  //
+  // **Two tables, and they are not a template and its grants.** `quirks` is the
+  // GM's Compendium shelf of *examples*; `character_quirks` is what a character
+  // actually has, **stored by value** — its own name, description and kind on
+  // its own row. Taking an example COPIES it.
+  //
+  // Copy rather than link, for three reasons that all point the same way:
+  //   - "exemplary quirks, that everyone can see and take" (the ask, in those
+  //     words). An example is something you take a copy of; a template that
+  //     rewrites itself under everyone who took it is a different promise.
+  //   - A Quirk invented on a character sheet or in the Creator has no business
+  //     appearing on the GM's curated shelf. With copies it simply never does,
+  //     with no `owner_character_id` column and no filter to remember.
+  //   - Your Quirk is yours to reword. A link would make every edit the GM's.
+  //
+  // Both tables are plain `IF NOT EXISTS` CREATEs at their final shape because
+  // they are new — nothing in any existing database has to be migrated into
+  // them, which is exactly the case the ensureColumn convention exists to
+  // handle and this does not need.
+  ddl(`
+    CREATE TABLE IF NOT EXISTS quirks (
+      id INTEGER PRIMARY KEY,
+      name TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      kind TEXT NOT NULL DEFAULT 'positive' CHECK(kind IN ('positive','negative'))
+    )
+  `);
+
+  ddl(`
+    CREATE TABLE IF NOT EXISTS character_quirks (
+      id INTEGER PRIMARY KEY,
+      character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      kind TEXT NOT NULL DEFAULT 'positive' CHECK(kind IN ('positive','negative'))
     )
   `);
 
@@ -2076,6 +2128,7 @@ async function ensureIndexes() {
     ['character_perk_state', 'character_perk_id'],
     ['character_move_roll_bonuses', 'character_id'],
     ['roleplay_entries', 'character_id'],
+    ['character_quirks', 'character_id'],
     ['inventory_items', 'character_id'],
     // Read once per move, and a move sheet reads a lot of moves.
     ['move_roll_slots', 'move_id'],

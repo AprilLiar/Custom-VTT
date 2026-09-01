@@ -8,6 +8,7 @@ import { useSocketRefresh } from '../lib/connection.js';
 import CoreStatsTab from './CoreStatsTab.jsx';
 import StancesTab from './StancesTab.jsx';
 import MovesTab from './MovesTab.jsx';
+import QuirksTab from './QuirksTab.jsx';
 import RoleplayTab from './RoleplayTab.jsx';
 import RelationshipsTab from './RelationshipsTab.jsx';
 import CharacterCreationDialog from './CharacterCreationDialog.jsx';
@@ -50,12 +51,15 @@ const TABS = [
   { key: 'moves', label: 'Moves', phase: 3 },
   { key: 'perks', label: 'Perks', phase: 4 },
   { key: 'counters', label: 'Counters', phase: 5 },
+  // Narrative, and sat directly before Role-play because that is what it is
+  // next to in the Creator too — and because the two are read together.
+  { key: 'quirks', label: 'Quirks', phase: 12 },
   { key: 'roleplay', label: 'Role-play', phase: 3 },
   // PC-only (see PC_ONLY_TABS): a Relationships board belongs to a player, and
   // an NPC has nobody to keep one for.
   { key: 'relationships', label: 'Relationships', phase: 11 },
 ];
-const BUILT_TABS = ['core', 'stances', 'moves', 'perks', 'counters', 'roleplay', 'relationships'];
+const BUILT_TABS = ['core', 'stances', 'moves', 'perks', 'counters', 'quirks', 'roleplay', 'relationships'];
 const PC_ONLY_TABS = new Set(['relationships']);
 // The Relationships board is the one tab that does not fit a 768px column — it
 // is a canvas, and a canvas wants the whole width the page can spare.
@@ -212,6 +216,14 @@ export default function CharacterSheet() {
       }
       getCharacter(characterId).then(setData).catch(() => {});
     };
+    // The whole list rides the event, so this patches in place rather than
+    // refetching the sheet — the same shape `roleplay:updated` uses, and for the
+    // same reason: a Quirk is three short strings, and a refetch would pull
+    // every Move, Perk and portrait back down with it.
+    const onQuirksUpdated = ({ characterId: cid, quirks }) => {
+      if (cid !== characterId) return;
+      setData((prev) => (prev ? { ...prev, quirks } : prev));
+    };
     const onCounterDeleted = ({ counterId }) => {
       setData((prev) =>
         prev ? { ...prev, counters: prev.counters.filter((c) => c.id !== counterId) } : prev
@@ -226,6 +238,7 @@ export default function CharacterSheet() {
     socket.on('perk:granted', refetchMovesAndPerks);
     socket.on('perk:revoked', refetchMovesAndPerks);
     socket.on('roleplay:updated', onRoleplayUpdated);
+    socket.on('character_quirk:updated', onQuirksUpdated);
     socket.on('character:updated', onCharacterUpdated);
     socket.on('character:deleted', onCharacterDeleted);
     socket.on('die:updated', onDieUpdated);
@@ -248,6 +261,7 @@ export default function CharacterSheet() {
       socket.off('perk:granted', refetchMovesAndPerks);
       socket.off('perk:revoked', refetchMovesAndPerks);
       socket.off('roleplay:updated', onRoleplayUpdated);
+      socket.off('character_quirk:updated', onQuirksUpdated);
       socket.off('character:updated', onCharacterUpdated);
       socket.off('character:deleted', onCharacterDeleted);
       socket.off('die:updated', onDieUpdated);
@@ -337,6 +351,7 @@ export default function CharacterSheet() {
           {tab === 'moves' && <MovesTab data={data} />}
           {tab === 'perks' && <PerksTab data={data} />}
           {tab === 'counters' && <CountersTab data={data} />}
+          {tab === 'quirks' && <QuirksTab data={data} />}
           {tab === 'roleplay' && <RoleplayTab data={data} />}
           {tab === 'relationships' && <RelationshipsTab data={data} />}
         </motion.div>

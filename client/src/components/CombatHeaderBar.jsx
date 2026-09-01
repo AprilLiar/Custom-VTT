@@ -5,9 +5,14 @@ import { socket } from '../socket.js';
 import { getCombat } from '../lib/api.js';
 import { useRole } from '../roleContext.jsx';
 import { TicCounterCentral } from './CombatArena.jsx';
-import { onDraggingMoveChange } from '../lib/dragMoveState.js';
+import { setDraggingMove, onDraggingMoveChange } from '../lib/dragMoveState.js';
+import {
+  getTicDeclare,
+  isArenaCounterVisible,
+  onArenaCounterVisibility,
+  onTicDeclareChange,
+} from '../lib/ticDropTarget.js';
 import { attackStartsByTic } from '../lib/attackTelegraph.js';
-import { useIsDesktop } from '../lib/useMediaQuery.js';
 import { useSocketRefresh } from '../lib/connection.js';
 import { clearSummonedPrompt, onSummonedPrompt } from '../lib/pausePrompts.js';
 import MoveConflictDialog from './MoveConflictDialog.jsx';
@@ -55,12 +60,19 @@ function viewerDeclarationStatus({ pairs, participants }, role, characterId) {
 export default function CombatHeaderBar() {
   const { role, characterId } = useRole();
   const location = useLocation();
-  const isDesktop = useIsDesktop();
   const [combat, setCombat] = useState(null);
   const [hoverTic, setHoverTic] = useState(null);
-  const [draggingMove, setDraggingMove] = useState(null);
+  const [draggingMove, setDraggingMoveLocal] = useState(null);
+  // Whether the Arena's own Tic Counter is on screen, and whether there is an
+  // Arena mounted at all to declare through. Both are published by
+  // CombatArena.jsx — see ticDropTarget.js for why the registry rather than
+  // props — and both are read as state so this bar re-renders when they change.
+  const [arenaCounterVisible, setArenaCounterVisibleLocal] = useState(isArenaCounterVisible);
+  const [canDeclare, setCanDeclare] = useState(() => Boolean(getTicDeclare()));
 
-  useEffect(() => onDraggingMoveChange(setDraggingMove), []);
+  useEffect(() => onDraggingMoveChange(setDraggingMoveLocal), []);
+  useEffect(() => onArenaCounterVisibility(setArenaCounterVisibleLocal), []);
+  useEffect(() => onTicDeclareChange((fn) => setCanDeclare(Boolean(fn))), []);
 
   const refresh = useCallback(() => {
     getCombat(role === 'gm' ? { role } : { role, characterId })
@@ -268,13 +280,40 @@ export default function CombatHeaderBar() {
   const { pairIndex, phase, roundNumber, currentTic, roundStartTic } = activePair;
   const { roundLength } = combat;
   const onArena = location.pathname === '/combat';
-  // Mobile readiness (Change 002) §7.5: the global strip's own Tic Counter
-  // would otherwise duplicate the Arena page's own big centerpiece one on a
-  // narrow screen — collapses to a compact "Tic N/L" badge below `md`
-  // whenever the Arena's own counter is already on screen; every other
-  // mobile page still gets the full interactive counter (it's the only Tic
-  // Counter visible there), same as desktop always does everywhere.
-  const showFullCounter = isDesktop || !onArena;
+
+  // **Declaring by dropping on THIS counter (decided, new).** The handler is
+  // the Arena's own `declareMoveAt`, lent through ticDropTarget.js rather than
+  // reimplemented — see that module on why. Undefined when no Arena is mounted,
+  // which is every other page and which restores exactly the inert
+  // `e.preventDefault()` this counter has always had there: without a move
+  // source on screen there is nothing to drop anyway.
+  const handleTicDrop = canDeclare
+    ? (absoluteTic) => (e) => {
+        e.preventDefault();
+        setHoverTic(null);
+        const raw = e.dataTransfer.getData('application/x-vtt-move');
+        if (!raw) return;
+        getTicDeclare()?.(absoluteTic, JSON.parse(raw), e.clientX, e.clientY);
+      }
+    : () => (e) => e.preventDefault();
+  // The touch half, matching the Arena's own tap-to-place: a tapped
+  // DeclareMoveCard puts its payload into dragMoveState, and the next Tic tap
+  // places it. A phone has no drag at all, so without this the header's counter
+  // would be a declare target only for people using a mouse.
+  const handleTicTap =
+    canDeclare && draggingMove
+      ? (absoluteTic) => (e) => {
+          getTicDeclare()?.(absoluteTic, draggingMove, e.clientX, e.clientY);
+          setDraggingMove(null);
+        }
+      : undefined;
+  // **The full counter, always (decided, revised).** Mobile readiness §7.5 used
+  // to collapse this to a compact "Tic N/L" badge below `md` on the Arena,
+  // because it would otherwise duplicate that page's own centrepiece on a narrow
+  // screen. The duplication is now answered at the root — the whole strip stands
+  // down while that counter is on screen (see `stripHidden` below) — so by the
+  // time this renders on the Arena it is the ONLY Tic Counter there is, and a
+  // badge you cannot tap a move onto is the wrong thing to leave in its place.
   // "Ready to start" is now specific to the pair being shown — Start Tic
   // Countdown is a per-pair action now, not an arena-wide gate.
   const everyoneReady = phase === 'declaration' && activePair.declaringSide == null;
@@ -315,7 +354,34 @@ export default function CombatHeaderBar() {
     nameOf: (id) => combat.characters?.[id]?.character.name ?? null,
   });
 
+  // **The strip stands down while the Arena's own counter is on screen (decided,
+  // new).** Two Tic Counters one above the other, showing the same seven
+  // numbers, is a duplicate that costs a row of the Arena's height and says
+  // nothing new. Scroll past the centrepiece — which is what you do to reach the
+  // declare picker — and it comes back, now as the only Tic strip in reach and a
+  // live drop target for the move you are dragging.
+  //
+  // **Collapsed, not unmounted.** Every pause prompt in the game hangs off this
+  // component (defence, conflict, Non-Committed, grapple), and a bar that
+  // unmounted itself would take the GM's open question with it. The dialogs are
+  // rendered outside the collapsing wrapper, so they are unaffected either way.
+  //
+  // Animated rather than snapped: a row appearing under your cursor without
+  // warning is how you mis-click the thing that was there a frame ago.
+  const stripHidden = onArena && arenaCounterVisible;
+
   return (
+    <>
+      <AnimatePresence initial={false}>
+        {!stripHidden && (
+          <motion.div
+            key="strip"
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.18, ease: 'easeOut' }}
+            className="overflow-hidden"
+          >
     <div className="flex flex-wrap items-center gap-3 border-b border-zinc-800 bg-gradient-to-r from-zinc-950 via-zinc-900 to-zinc-950 px-4 py-2 text-sm">
       <motion.span
         key={roundNumber}
@@ -352,8 +418,7 @@ export default function CombatHeaderBar() {
           </motion.span>
         )}
       </AnimatePresence>
-      {showFullCounter ? (
-        <TicCounterCentral
+      <TicCounterCentral
           pairIndex={pairIndex}
           phase={phase}
           currentTic={currentTic}
@@ -362,7 +427,8 @@ export default function CombatHeaderBar() {
           draggingMove={draggingMove}
           hoverTic={hoverTic}
           setHoverTic={setHoverTic}
-          onDrop={() => (e) => e.preventDefault()}
+          onDrop={handleTicDrop}
+          onTapPlace={handleTicTap}
           declaredMoves={[]}
           showDeclaredPreview={false}
           overflowTics={overflowTics}
@@ -370,11 +436,6 @@ export default function CombatHeaderBar() {
           role={role}
           label="Tic Counter"
         />
-      ) : (
-        <span className="font-display panel-cut-sm border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs font-bold text-zinc-300">
-          Tic {activePair.relativeTic}/{roundLength}
-        </span>
-      )}
       {!onArena && (
         <Link
           to="/combat"
@@ -394,10 +455,14 @@ export default function CombatHeaderBar() {
           End Combat
         </button>
       )}
+    </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
       {conflictDialog}
       {defenseDialog}
       {nonCommitDialog}
       {grappleDialog}
-    </div>
+    </>
   );
 }

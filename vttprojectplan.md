@@ -1664,6 +1664,113 @@ A **Character Creation** button at the top of every character sheet opens a guid
 - A Perk in use (granted to anyone) can't be deleted — matches the same "in use" pattern already used for Tells.
 - The Perks tab on a character sheet displays granted Perks in a grid (infinite rows, 2 columns), each card showing picture/name/description (for the same transparency reason granted Moves show their full effect; there's no automation data left to display). *Taking* a Perk happens on the **Compendium's** Perks tab, exactly as learning a Move does — but **dropping one happens here** (decided, new): a Player gets a **Drop** on every Perk on their own sheet, which is where you actually notice you no longer want it. Nothing else on the tab is editable; a Perk's picture, name and description are the GM's.
 
+## Game mechanic — Quirks (decided, new; implemented)
+
+**Narrative only, and that is the whole design.** A Quirk is a **name**, a
+**description**, and a **side** — positive or negative. It has no mechanics, no
+seam register, and no `server/quirks/` to write code in, because a Quirk is
+something the table remembers about a character rather than a rule the engine
+applies. That is the entire difference from a Perk, and it is why these are not
+the `perks`/`character_perks` pair with an extra column bolted on.
+
+Any character may have **any number** of them, positive and negative alike, and
+may acquire one **at any time** — there is no budget, no cap, and no preset
+allowance, in the Creator or anywhere else.
+
+- **Two tables, and they are NOT a template and its grants.** `quirks` is the
+  GM's Compendium shelf of *examples*; `character_quirks` is what a character
+  actually has, **stored by value** — its own name, description and kind on its
+  own row. Taking an example **copies** it.
+  - **Copy rather than link (decided).** Three reasons, all pointing the same
+    way. *"Exemplary quirks, that everyone can see and take"* is what was asked
+    for, and an example is something you take a copy of — a template that
+    rewrites itself under everyone who took it is a different promise. A Quirk
+    invented on a sheet or in the Creator has no business appearing on the GM's
+    curated shelf, and with copies it simply never does, with no
+    `owner_character_id` column and no filter to remember. And your Quirk is
+    yours to reword; a link would make every edit the GM's.
+  - Consequences, all of them intended: the Compendium shows **no "granted to
+    (3)" count** (that is not a question the shelf can answer any more, and
+    pretending it could is the first crack in the semantics), deleting an
+    example takes nothing away from anyone (so there is **no "revoke it from
+    everyone first" guard**, unlike a Perk's delete), and editing an example
+    never rewrites a sheet.
+  - The one thing this loses — the GM cannot see a Quirk a player invented — is
+    the trade being bought. They can write it onto the shelf themselves if they
+    want it shared.
+- **Deduped on name AND kind.** Clicking Take twice meant it once. But `Famous`
+  as a blessing and `Famous` as a curse are two different facts about a
+  character, and the table gets to say both — which is why the key is the pair
+  and not the name.
+- **Authority.** The shelf is the GM's: `quirk:create` / `:update` / `:delete`
+  check `socket.data.identity.role` server-side, not merely hidden in the UI —
+  the only version of that rule worth having in a no-auth app. A character's own
+  Quirks are open, exactly as their Moves and Perks are.
+- **`kind` is a column CHECK**, and the write path coerces anything it does not
+  recognise to `positive` before the database sees it. A Quirk that belonged to
+  neither side would render in no column and with no colour, which looks exactly
+  like one that failed to save.
+
+### Where they appear
+
+- **Character sheet, its own tab** — between Counters and Role-play, because it
+  is the first purely narrative thing on the sheet and the two are read
+  together. Two halves; you can **write one** (the primary path — a Quirk is
+  usually invented at the table, not shopped for) or **take one** from the
+  shelf, and reword or remove your own.
+- **Character Creation, the step before Role-play** (as asked). The draft
+  carries Quirks **by value**, not as ids: by the time Finish is pressed, one
+  taken off the shelf and one invented on the screen are the same three fields.
+  Every step in that flow is skippable and this one is no exception.
+- **Compendium, a third tab after Moves and Perks.** The GM's shelf. A Player
+  gets a **Take** button; the GM gets **Give to…** (a character list — there is
+  nothing to untick, because a copy is not a membership), Edit and Delete.
+
+### Showing one to the table
+
+Every Quirk card on a character sheet carries a small **↑ in its bottom-right
+corner**: it posts that Quirk into the **Chat Log** as a card in the same
+colours, so a table can be pointed at a Quirk mid-scene instead of being told
+about it. Bottom-right and small on purpose — it is an occasional flourish, not
+something to reach for while reading, and it must not compete with the Edit and
+Remove on the title line.
+
+- **Open to every viewer, not just the sheet's owner.** Pointing at somebody's
+  Quirk is something the GM does constantly, and a Quirk is public the moment it
+  is on a sheet anybody can open.
+- **The card is self-contained at post time**: name, description and kind are
+  written into the `chat_log` row's `payload`, not looked up from
+  `character_quirks.id`. So it still reads correctly after the Quirk is
+  reworded, dropped, or its character deleted — the same rule `lane_snapshot`
+  and `round_summary` already follow, and the reason chat history survives at
+  all.
+- **`chat_log.kind` grew to a sixth value** (`'quirk'`). SQLite cannot ALTER a
+  CHECK, so this is the same table-rebuild that added each of the previous five.
+  **The guard now tests for the newest value**: it looked for `'round_summary'`,
+  and a database already rebuilt for *that* would have matched, skipped, and
+  kept the five-value CHECK — refusing every shared Quirk on a database that had
+  been running for months and on no fresh one. `migrationChatQuirk.test.js` is
+  that trap, pinned.
+
+### The look
+
+**The screen is two clear halves split down the middle: Positive left, Negative
+right** (as asked), on all three surfaces, from one `QuirkColumns` component —
+the halves have to be the same halves or a Quirk appears to move between pages.
+`grid-cols-2` with equal tracks rather than a flex pair, since equal is the
+point and flex would let a long description on one side steal width from the
+other; they stack on a phone, positives first.
+
+Positive carries a green tint on its outline and background, negative the same
+in red, **without obstructing the text** (as asked) — which is what sets the
+numbers: the background sits at ~8% opacity over the near-black panel, enough
+to read a card's side from across the table and not enough to lift the ground
+under body text. The border carries most of the signal, because nothing is
+written on it. Both live in `client/src/lib/quirkStyles.js` so three surfaces
+cannot drift into three different greens, and both are **literal emerald/rose,
+never `brand-*`**: the brand hue is runtime-overridable, and a world themed
+green would repaint every negative Quirk to match its positives.
+
 ## Game mechanic — Counters
 Simple, persistent "clocks" — no automation, just a name, a target (2-20 pips), a current count, and +/- buttons.
 - **Character-owned counters:** created by whoever controls that character (any player for a PC, GM for an NPC), shown on that character's own Counters tab — same open-access pattern as Inventory.
@@ -2480,6 +2587,52 @@ Every page's header also carries, in order: the "Dogfight" logo (links to the Co
 5. **Combat Arena** — shared page, no map/tokens; reachable by clicking the header logo, visible to every role. A GM-only roster rail (not-yet-seated characters, role-filtered) to drag from, grouped by character folder recursively — see Combat Arena above for the full collapsible/counted/Folderless-last behavior; two side-by-side columns (Left/Right) of pair rows with a divider between pairs, a fresh empty row always available to start a new one. Seated cards **fill their side's full width with no unoccupied space** — a single occupant's card spans the whole side, and under Uneven Combat, adding more to the same side scales every card on it down evenly so the row always stays fully occupied (a per-card minimum width plus horizontal scroll is the fallback if a side gets too crowded to stay legible), rendered horizontally with a full-height portrait on the left (see Combat Arena above). Each seated character renders as a **read-only** card — portrait, active stance name, dice pools (grouped into the same 3 Head/Core/Legs rows as the character sheet's Tab 1, in that order, rather than one flat mixed row), Current/Max Stamina — showing a live red/green **preview** instead of the real value while this client itself has a declared-but-not-yet-committed move pending (see Stamina Cost above; red if the preview is lower, green if higher, plain otherwise; the preview now checks that character's own pair/side against `combat_pairs`, not a single arena-wide side — see the combat redesign below) — click the card to jump to the full sheet to actually roll/step, values here stay live via the same broadcasts the sheet itself uses; NPCs here are visible to Players as an explicit exception; a small ✕ (GM-only) removes one participant, a page-level **Clear Arena** button (GM-only) empties it entirely, including every declared move and the round/Tic state; a **Start Combat** button (GM-only, shown only while `phase` is null) rolls initiative and opens the first Declaration Phase — see Combat Timing above for how it and **End Combat** relate to Clear Arena. "Uneven Combat" toggle (GM-only; a read-only badge for Players when on) allows uneven pair sizes (dropping a character onto an occupied pair zone adds them rather than replacing). A **Counters** section lists every counter flagged "Show in Combat" for a currently-seated character (labeled `"{CharacterName} - {CounterName}"`, its reward tag if it has one shown read-only) plus standalone counters (labeled by name alone, never a reward tag); a small form creates a new standalone one (GM-only), but adjusting/deleting any counter shown here is open to everyone, matching the character sheet's own Counters tab.
 
    **Global status strip (decided; rewritten after the Combat Automation overhaul):** while a fight is on, a slim bar appears at the top of *every* page (`CombatHeaderBar.jsx`, mounted once in `App.jsx`'s `Shell`, not inside the Arena route — see Combat Timing above), showing the round number, **this viewer's own current state** instead of a generic phase label during Declaration (`viewerDeclarationStatus` — the GM sees a pair-count summary, e.g. "2 pairs still declaring…"; a Player sees their own seated character's status specifically: **"Your turn to declare!"**, **"Waiting for declaration…"**, **"Waiting on other declarations…"** once they've pressed Done Declaring, or **"Not seated in this fight"**), the same Tic Counter square visuals the Arena renders, and an **End Combat** button for the GM. **It is a status display, not a control** — nothing in it advances a round, because nothing does any more. Its one genuinely interactive job is carrying the dialogs that must reach someone regardless of which page they're on: the GM's **Dodge prompt** (`DodgePromptDialog`) and the affected player's **Forfeit/Postpone** prompt (`MoveConflictDialog`). Both are queued here rather than in the Arena precisely because a paused round cannot continue until they're answered, and the person who must answer may be anywhere in the app — verified end to end by `scripts/playtest-dodge.mjs`.
+
+   **It stands down while the Arena's own counter is on screen, and it declares
+   when it is not (decided, new; implemented).** Two changes that are really one
+   idea — the header's Tic Counter is either redundant or it is the only one
+   there is, and it should behave differently in each case.
+
+   - **Hidden on the Arena while that page's own centrepiece counter is
+     visible.** Two counters showing the same seven numbers, one directly above
+     the other, cost a row of the Arena's height and said nothing new. Scroll
+     past the centrepiece — which is exactly what you do to reach the declare
+     picker — and the strip comes back. **Collapsed, not unmounted:** every
+     pause prompt in the game hangs off this component, and a bar that
+     unmounted itself would take the GM's open question with it, so the dialogs
+     render outside the collapsing wrapper.
+   - **A move can be dropped on it to declare** (or tapped, on a phone). That
+     was always a no-op — there is no move source on a Compendium or sheet page
+     to drag from — and it stopped being true the moment the strip started
+     hiding: by the time you see it on the Arena you are down at the picker,
+     and this is the Tic strip you can still reach.
+   - **`client/src/lib/ticDropTarget.js`** is the seam: the Arena publishes its
+     own `declareMoveAt` and whether its counter is on screen; the header reads
+     both. A module-level registry rather than props because the two are
+     siblings — the strip is mounted in `App.jsx`'s Shell, the Arena is a route
+     inside it — which is the same sibling problem `dragMoveState.js` and
+     `attackTelegraph.js`'s anchor registry already solve this way. **The
+     alternative was a second copy of `declareMoveAt`, and that is the thing to
+     avoid:** declaring is not one `socket.emit` but a Stamina pre-check against
+     pending declarations, the ambiguous Left/Right popup, the drop ghost and
+     the Uneven Combat aim, all of it Arena-local. Nothing is registered while
+     the Arena is unmounted, so on every other page the counter falls back to
+     exactly the inert behaviour it always had.
+   - **The Arena publishes the visibility rather than the header observing it**,
+     because only the Arena knows which element its counter is — it sits behind
+     a conditional (a resolving pair shows a banner instead) in a subtree the
+     header cannot see. One `IntersectionObserver`, attached by a **callback
+     ref** so it follows the element as the phase changes rather than through a
+     dependency list naming every reason it might come and go. `rootMargin`
+     trims the strip's own height off the top of the viewport, so "visible"
+     means visible *below* the strip — without it the counter scrolling behind
+     the header keeps it hidden and the two flicker against each other.
+   - **Mobile readiness §7.5 is reversed by this.** That rule collapsed the
+     header's counter to a compact "Tic N/L" badge below `md` on the Arena, to
+     avoid exactly the duplication now answered at the root. By the time this
+     renders on the Arena it is the only Tic Counter there is, and a badge you
+     cannot tap a move onto is the wrong thing to leave in its place — so the
+     full counter renders at every width.
 
    **The Arena takes the width it is given (decided, revised).** The page was capped at `max-w-6xl` (1152px), which left most of a normal desktop window empty while the timeline and the seating rows squeezed into a column — a board, not prose, so the cap was simply wrong for it. The cap is gone. **The Tic squares themselves are deliberately NOT part of that (decided, reverted).** A responsive `TIC_SQUARE_SIZE` (44px → 56px at `xl` → 64px at `2xl`) was tried and taken back out: growing the squares with the window made the counter feel unmoored, and it bought nothing — a Tic is a fixed unit of game time, and its square should look like the same object on every screen. `TIC_SQUARE_SIZE` is a single fixed `h-11 w-11` at every viewport, still one shared constant because the `+N` overflow marker sits at the end of the same row and has to match it exactly. It is no longer shared with the declare card's frame bar, which is now deliberately much smaller (see Combat Timing's declare-picker bullet).
    - **The strip's own edges are not clipped (bugfix).** The Tic row carries a `mask-image` gradient as its horizontal-scroll affordance — content fades out at each end so a strip wider than its container visibly continues. With no padding inside the mask, the fade fell on the first and last *squares*, so Tic 1 and Tic 7 rendered permanently half-erased and looked cut off by the page. The row now carries `px-4` — wider than the 16px fade — so the gradient eats padding instead of content, and the affordance is kept rather than removed.

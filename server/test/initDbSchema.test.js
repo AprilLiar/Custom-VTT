@@ -27,7 +27,7 @@ import path from 'node:path';
 
 const dbPath = path.join(os.tmpdir(), `initdb-${process.pid}-${Date.now()}.db`);
 process.env.TURSO_DATABASE_URL = `file:${dbPath}`;
-const { all, one, initDb } = await import('../db.js');
+const { all, one, run, initDb } = await import('../db.js');
 
 // One boot. Everything below asks what a world looks like the first time it
 // is ever started.
@@ -104,6 +104,35 @@ test('one boot seeds the world exactly once', async () => {
   }
 });
 
+test('a fresh boot has both Quirk tables, with the kind CHECK on each', async () => {
+  // New tables, declared at their final shape — so what is worth pinning is
+  // the constraint, not the migration: `kind` is what every surface colours a
+  // Quirk by, and a row that slipped through as 'Positive' or '' would be a
+  // Quirk that belongs to neither column and renders in the wrong one.
+  const sqlFor = async (table) =>
+    (await one("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?", [table]))?.sql ?? '';
+
+  for (const table of ['quirks', 'character_quirks']) {
+    const sql = await sqlFor(table);
+    assert.ok(sql, `${table} was not created on the first boot`);
+    assert.match(sql, /kind IN \('positive','negative'\)/, `${table} is missing the kind CHECK`);
+  }
+  // Stored BY VALUE, which is the whole design: a character's Quirk carries its
+  // own text and does not reference the Compendium's shelf. A `quirk_id` here
+  // would be the link semantics this feature deliberately does not have.
+  const characterQuirkColumns = await columnsOf('character_quirks');
+  for (const column of ['character_id', 'name', 'description', 'kind']) {
+    assert.ok(characterQuirkColumns.has(column), `character_quirks.${column} missing`);
+  }
+  assert.ok(!characterQuirkColumns.has('quirk_id'), 'a Quirk is copied onto a character, never linked');
+
+  // ...and the CHECK is real, not decoration.
+  await assert.rejects(
+    () => run("INSERT INTO quirks (name, kind) VALUES ('Bad', 'Positive')"),
+    'a mis-cased kind must be refused by the database, not stored'
+  );
+});
+
 test('the foreign keys the app looks rows up by are indexed', async () => {
   const indexed = new Set(
     (await all("SELECT name FROM sqlite_master WHERE type = 'index'")).map((row) => row.name)
@@ -114,6 +143,7 @@ test('the foreign keys the app looks rows up by are indexed', async () => {
     'idx_dice_character_id',
     'idx_move_roll_slots_move_id',
     'idx_chat_log_move_id',
+    'idx_character_quirks_character_id',
   ]) {
     assert.ok(indexed.has(name), `${name} was not created`);
   }
