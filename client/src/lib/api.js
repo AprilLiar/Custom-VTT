@@ -31,6 +31,9 @@ export const getPerks = () => fetch('/api/perks').then(json);
 // Perk Tags are their own vocabulary, not the Move tag list above — see
 // perk_tags in server/db.js for why.
 export const getPerkTags = () => fetch('/api/perk-tags').then(json);
+// The Quirk Compendium's shelf of examples. No grant counts on these rows —
+// a Quirk is copied when taken, never linked (see character_quirks in db.js).
+export const getQuirks = () => fetch('/api/quirks').then(json);
 export const search = (q) => fetch(`/api/search?q=${encodeURIComponent(q)}`).then(json);
 // `identity` ({ role: 'gm' } | { role: 'player', characterId }) rides as
 // query params — REST has no socket to carry it the way identity:set does

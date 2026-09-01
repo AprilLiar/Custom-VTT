@@ -113,6 +113,7 @@ export function validateCreation({
   stance = null,
   moveIds = [],
   perkIds = [],
+  quirks = [],
   roleplay = {},
   validMoveIds = null,
   validPerkIds = null,
@@ -193,6 +194,34 @@ export function validateCreation({
     errors.push(`${preset.name} allows ${preset.perkCount} Perks; this picks ${perks.length}.`);
   }
 
+  // ---- Quirks ----
+  // **Carried by VALUE, not as ids** — see character_quirks in db.js. A Quirk
+  // taken off the Compendium's shelf and one invented in the wizard arrive here
+  // as the same three fields, because by the time the draft is submitted they
+  // are the same thing: the shelf was a source of text, and the copy is already
+  // made. There is nothing to validate against a list of ids, and no preset
+  // budget to check — any character may have any number of Quirks.
+  //
+  // Unnamed entries are dropped rather than rejected: an empty row is a row the
+  // player started and abandoned, which is exactly what Skip means everywhere
+  // else in this flow. Deduped on name+kind for the same reason the add handler
+  // is — clicking Take twice meant it once.
+  const seenQuirks = new Set();
+  const normalizedQuirks = [];
+  for (const entry of Array.isArray(quirks) ? quirks : []) {
+    const name = String(entry?.name ?? '').trim().slice(0, 120);
+    if (!name) continue;
+    const kind = entry?.kind === 'negative' ? 'negative' : 'positive';
+    const key = `${kind}:${name.toLowerCase()}`;
+    if (seenQuirks.has(key)) continue;
+    seenQuirks.add(key);
+    normalizedQuirks.push({
+      name,
+      description: String(entry?.description ?? '').trim().slice(0, 4000),
+      kind,
+    });
+  }
+
   // ---- Role-play ----
   // Explicitly optional, per the flow. Empty answers are dropped rather than
   // written as blanks, so skipping the step leaves no trace.
@@ -218,6 +247,7 @@ export function validateCreation({
       movesLeft: preset ? preset.moveCount - moves.length : null,
       perkIds: perks,
       perksLeft: preset ? preset.perkCount - perks.length : null,
+      quirks: normalizedQuirks,
       roleplay: answers,
     },
   };

@@ -12,6 +12,7 @@ import { useSocketRefresh } from '../lib/connection.js';
 import { useRoster } from '../lib/useRoster.js';
 import Thumb from './Thumb.jsx';
 import FrameBar from './FrameBar.jsx';
+import QuirkCard from './QuirkCard.jsx';
 import MoveCard from './MoveCard.jsx';
 import DiceIcon from './DiceIcon.jsx';
 import DialogShell from './DialogShell.jsx';
@@ -108,6 +109,26 @@ function Entry({ entry, character, moveInfo, characters, defenseResolutions, onW
                 className="mt-1 max-h-64 max-w-full panel-cut-sm object-contain"
               />
             )}
+          </div>
+        ) : entry.kind === 'quirk' ? (
+          // **A Quirk, shown to the table** — the ↑ on a Quirk card on a
+          // character sheet. The same `QuirkCard` in the same colours, so what
+          // lands in the log is recognisably the thing that was pointed at
+          // rather than a paraphrase of it.
+          //
+          // Rendered entirely from the row's own payload, which was written at
+          // post time: the card still reads correctly after the Quirk is
+          // reworded, dropped, or its character deleted, exactly as every other
+          // non-roll card in this log does.
+          <div className="mt-1">
+            <QuirkCard
+              quirk={{
+                name: entry.quirkName,
+                description: entry.quirkDescription,
+                kind: entry.quirkKind,
+              }}
+              byline={entry.characterName ? `${entry.characterName}'s Quirk` : 'A Quirk'}
+            />
           </div>
         ) : entry.kind === 'round_summary' ? (
           <RoundSummaryCard entry={entry} onWatch={onWatchRound} />
@@ -581,6 +602,7 @@ export default function ChatPanel({ open }) {
     const onMessage = (entry) => setEntries((prev) => [...prev, entry]);
     const onMoveReveal = (entry) => setEntries((prev) => [...prev, entry]);
     const onRoundSummary = (entry) => setEntries((prev) => [...prev, entry]);
+    const onQuirk = (entry) => setEntries((prev) => [...prev, entry]);
     const onCleared = () => setEntries([]);
     const onDefenseResolved = (payload) =>
       setDefenseResolutions((prev) => new Map(prev).set(payload.attackerDeclaredMoveId, payload));
@@ -593,6 +615,7 @@ export default function ChatPanel({ open }) {
     socket.on('chat:message', onMessage);
     socket.on('chat:move_reveal', onMoveReveal);
     socket.on('chat:round_summary', onRoundSummary);
+    socket.on('chat:quirk', onQuirk);
     socket.on('chat:cleared', onCleared);
     socket.on('combat:defense_resolved', onDefenseResolved);
     socket.on('move:detail', onMoveDetail);
@@ -604,6 +627,7 @@ export default function ChatPanel({ open }) {
       // Was missing, so an unmounted panel kept appending round summaries to
       // a dead setState — the other four were always cleaned up.
       socket.off('chat:round_summary', onRoundSummary);
+      socket.off('chat:quirk', onQuirk);
       socket.off('chat:cleared', onCleared);
       socket.off('combat:defense_resolved', onDefenseResolved);
       socket.off('move:detail', onMoveDetail);

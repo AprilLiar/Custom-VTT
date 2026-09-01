@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useMemo, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 import { AnimatePresence, motion } from 'framer-motion';
@@ -45,6 +45,7 @@ import { MoveFilterChips, MoveFilterColumn, useMoveFilters } from '../lib/moveFi
 import DamageApplicationDialog from './DamageApplicationDialog.jsx';
 import { REWARD_LABELS, REWARD_COLORS } from '../lib/counterDisplay.js';
 import { setDraggingMove, onDraggingMoveChange } from '../lib/dragMoveState.js';
+import { registerTicDeclare, setArenaCounterVisible } from '../lib/ticDropTarget.js';
 import {
   attackStartsByTic,
   registerLinkAnchor,
@@ -2146,6 +2147,66 @@ export default function CombatArena() {
   const [collapsedFolders, setCollapsedFolders] = useState(new Set()); // roster folder ids, collapsed
   const [hoverTic, setHoverTic] = useState(null);
   const [draggingMove, setDraggingMoveLocal] = useState(null);
+  // **Lend `declareMoveAt` to the header strip's own Tic Counter (decided,
+  // new).** That counter is the one still on screen once you have scrolled down
+  // to the declare picker, so dropping a move on it has to declare exactly as
+  // dropping on the Arena's own does — Stamina pre-check, ambiguous Left/Right
+  // popup, drop ghost, Uneven Combat aim and all. Published rather than
+  // re-implemented, for the reason ticDropTarget.js gives: two copies of the
+  // declare rules is how one of them quietly stops agreeing.
+  //
+  // Declared up here with the rest of the state because this component has an
+  // early return below it (the load-failure branch), and a hook after that
+  // return is a hook that sometimes does not run.
+  const declareRef = useRef(null);
+  useEffect(() => registerTicDeclare((...args) => declareRef.current?.(...args)), []);
+
+  // **...and tell the header when it is redundant.** Two Tic Counters showing
+  // the same seven numbers, one directly above the other, is one too many: the
+  // header's copy cost a row of the Arena's vertical space and said nothing the
+  // centrepiece below it was not already saying. It hides while this counter is
+  // on screen and comes back the moment you scroll past it — which is also
+  // exactly when it starts earning its place, since the declare picker is below
+  // the fold and the header is then the only Tic strip you can reach.
+  //
+  // **The Arena publishes it rather than the header observing it**, because only
+  // this component knows which element the counter is: it sits behind a
+  // conditional (a resolving pair shows a banner instead) in a subtree the
+  // header cannot see.
+  //
+  // A **callback ref** rather than an effect on a ref: the counter comes and
+  // goes with the pair's phase, and a callback ref is told about that directly
+  // rather than through a dependency list that would have to name every reason
+  // the element might change. `rootMargin` trims the header's own height off the
+  // top of the viewport, so "visible" means visible *below the strip* rather
+  // than underneath it — without that, the counter scrolling behind the header
+  // would keep it hidden and the two would flicker against each other.
+  const counterObserver = useRef(null);
+  const arenaCounterRef = useCallback((el) => {
+    counterObserver.current?.disconnect();
+    counterObserver.current = null;
+    if (!el) {
+      // No counter to hide behind — a resolving pair, or no pair at all. The
+      // header is then the only one there is, so it must show.
+      setArenaCounterVisible(false);
+      return;
+    }
+    const observer = new IntersectionObserver(
+      ([entry]) => setArenaCounterVisible(entry.isIntersecting),
+      { rootMargin: '-56px 0px 0px 0px', threshold: 0 }
+    );
+    observer.observe(el);
+    counterObserver.current = observer;
+  }, []);
+  // Leaving the Arena must not leave the header hidden on every other page —
+  // the flag is global, so unmount has to put it back.
+  useEffect(
+    () => () => {
+      counterObserver.current?.disconnect();
+      setArenaCounterVisible(false);
+    },
+    []
+  );
   // **Uneven Combat: who each fighter is aiming at (decided, new).** Held here
   // rather than inside the declare panel because two very distant things read
   // it — the declaration itself, and the matchup badge on the fighter's card —
@@ -2597,6 +2658,14 @@ export default function CombatArena() {
     setDraggingMove(null);
   };
 
+  // The Arena's own declare handler is lent to the header strip's Tic Counter
+  // (see `declareRef` above and ticDropTarget.js). Assigned during render rather
+  // than in an effect because the header can fire it before this component's
+  // effects have flushed, and because what it closes over — `roster`,
+  // `declaredMoves`, the Uneven Combat aim — changes every render: a handler
+  // captured once would be checking last render's Stamina.
+  declareRef.current = declareMoveAt;
+
   const chooseAppendage = (side) => {
     spawnDropGhost(
       pendingDeclare.x,
@@ -2978,6 +3047,7 @@ export default function CombatArena() {
           {displayPair?.phase === 'resolving' ? (
             <ResolvingBanner pair={displayPair} />
           ) : (
+          <div ref={arenaCounterRef}>
           <TicCounterCentral
             carriedLanes={carriedLanes}
             pairIndex={displayPairIndex}
@@ -3003,6 +3073,7 @@ export default function CombatArena() {
             linkAttackStarts
             role={role}
           />
+          </div>
           )}
 
           <DeclarationLanes

@@ -1,10 +1,14 @@
 import { useEffect, useMemo, useState } from 'react';
 import DialogShell from './DialogShell.jsx';
+import QuirkCard from './QuirkCard.jsx';
+import QuirkColumns from './QuirkColumns.jsx';
+import QuirkEditor from './QuirkEditor.jsx';
 import StanceGraph from './StanceGraph.jsx';
 import Thumb from './Thumb.jsx';
 import { socket } from '../socket.js';
-import { getMoves, getPerkTags, getPerks, getRuleset, getTags } from '../lib/api.js';
+import { getMoves, getPerkTags, getPerks, getQuirks, getRuleset, getTags } from '../lib/api.js';
 import { carriesSpecialTag } from '../lib/moveDisplay.js';
+import { QUIRK_KINDS, quirkKind, quirkStyle } from '../lib/quirkStyles.js';
 import { dieLabel } from '../lib/dice.js';
 import { FIXED_QUESTIONS } from './RoleplayTab.jsx';
 import {
@@ -46,6 +50,11 @@ const STEPS = [
   { key: 'stance', label: 'Stance' },
   { key: 'moves', label: 'Moves' },
   { key: 'perks', label: 'Perks' },
+  // **Last before Role-play** (the ask, in those words), and that is the right
+  // place for it: a Quirk is the first thing on this whole flow that is purely
+  // narrative, so it is the hinge between building a fighter and writing a
+  // person.
+  { key: 'quirks', label: 'Quirks' },
   { key: 'roleplay', label: 'Role-play' },
 ];
 
@@ -108,9 +117,15 @@ export default function CharacterCreationDialog({ character, stances = [], onClo
   const [stance, setStance] = useState({ name: '', pair: [] });
   const [moveIds, setMoveIds] = useState([]);
   const [perkIds, setPerkIds] = useState([]);
+  // **Quirks are carried by VALUE in the draft, not as ids** (see
+  // character_quirks in db.js): one taken off the Compendium's shelf and one
+  // invented on this screen are the same three fields by the time Finish is
+  // pressed, because taking an example only ever meant copying its text.
+  const [quirks, setQuirks] = useState([]);
+  const [writingQuirk, setWritingQuirk] = useState(null); // null | 'positive' | 'negative'
   const [answers, setAnswers] = useState({});
   const [library, setLibrary] = useState({
-    moves: [], perks: [], attributes: [], counters: [], moveTags: [], perkTags: [],
+    moves: [], perks: [], attributes: [], counters: [], moveTags: [], perkTags: [], quirks: [],
   });
   // **The same three controls the Compendium already has (decided, new)**, so a
   // player who has browsed the library recognises this screen: a name Search,
@@ -133,8 +148,8 @@ export default function CharacterCreationDialog({ character, stances = [], onClo
 
   useEffect(() => {
     let alive = true;
-    Promise.all([getMoves(), getPerks(), getRuleset(), getTags(), getPerkTags()]).then(
-      ([moveData, perks, ruleset, moveTags, perkTags]) => {
+    Promise.all([getMoves(), getPerks(), getRuleset(), getTags(), getPerkTags(), getQuirks()]).then(
+      ([moveData, perks, ruleset, moveTags, perkTags, quirkShelf]) => {
         if (!alive) return;
         setLibrary({
           moves: moveData.moves ?? [],
@@ -143,6 +158,7 @@ export default function CharacterCreationDialog({ character, stances = [], onClo
           counters: ruleset.counters,
           moveTags: moveTags ?? [],
           perkTags: perkTags ?? [],
+          quirks: quirkShelf ?? [],
         });
       }
     );
@@ -206,6 +222,7 @@ export default function CharacterCreationDialog({ character, stances = [], onClo
       : null,
     moveIds,
     perkIds,
+    quirks,
     roleplay: answers,
   };
   // The wizard runs the SAME validator the server does, over the same Style
@@ -249,12 +266,25 @@ export default function CharacterCreationDialog({ character, stances = [], onClo
     stance: () => setStance({ name: '', pair: [] }),
     moves: () => setMoveIds([]),
     perks: () => setPerkIds([]),
+    quirks: () => {
+      setQuirks([]);
+      setWritingQuirk(null);
+    },
     roleplay: () => setAnswers({}),
   };
   const skip = () => {
     clearStep[step.key]?.();
     if (!last) setStepIndex(stepIndex + 1);
   };
+
+  // Deduped on name+kind, matching what `validateCreation` and the server's own
+  // add handler both do — clicking the same example twice meant it once.
+  const addQuirk = ({ name, description, kind }) =>
+    setQuirks((prev) =>
+      prev.some((q) => q.name === name && q.kind === kind)
+        ? prev
+        : [...prev, { name, description: description ?? '', kind }]
+    );
 
   const setRank = (slot, next) =>
     setRanks((prev) => ({ ...prev, [slot]: Math.max(0, next) }));
@@ -615,6 +645,110 @@ export default function CharacterCreationDialog({ character, stances = [], onClo
                 )}
               </div>
             </div>
+          </div>
+        )}
+
+        {step.key === 'quirks' && (
+          <div className="space-y-3">
+            <p className="text-sm text-zinc-400">
+              Quirks are narrative only — nothing here touches a fight. Take as many as you like from
+              the Compendium's examples, or write your own; you can add more at any time from the
+              sheet.
+            </p>
+            <QuirkColumns
+              quirks={quirks}
+              emptyText="None picked."
+              renderQuirk={(quirk) => (
+                <QuirkCard
+                  key={`${quirk.kind}:${quirk.name}`}
+                  quirk={quirk}
+                  actions={
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setQuirks((prev) =>
+                          prev.filter((q) => !(q.name === quirk.name && q.kind === quirk.kind))
+                        )
+                      }
+                      title={`Drop ${quirk.name}`}
+                      className="flex min-h-11 items-center panel-cut-sm px-2 py-0.5 text-xs text-zinc-500 hover:bg-red-900/40 hover:text-red-400 md:min-h-0"
+                    >
+                      Drop
+                    </button>
+                  }
+                />
+              )}
+              footer={(kind) =>
+                writingQuirk === kind ? (
+                  <QuirkEditor
+                    defaultKind={kind}
+                    onSubmit={(fields) => {
+                      addQuirk(fields);
+                      setWritingQuirk(null);
+                    }}
+                    onCancel={() => setWritingQuirk(null)}
+                  />
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setWritingQuirk(kind)}
+                    className={`min-h-11 w-full panel-cut-sm border px-3 text-xs font-semibold uppercase tracking-wide md:min-h-0 md:py-1.5 ${
+                      quirkStyle(kind).chip
+                    }`}
+                  >
+                    + Write your own
+                  </button>
+                )
+              }
+            />
+            {/* The Compendium's shelf, as a pick list. Descriptions and all: a
+                Quirk is nothing BUT its description, so picking one by name
+                alone would be picking blind. Already-picked examples drop out
+                of the list rather than sitting there greyed — this is a shelf,
+                not a checklist, and the picked ones are visible above. */}
+            {library.quirks.length > 0 && (
+              <div className="space-y-2">
+                <h4 className="font-display text-xs font-bold uppercase tracking-widest text-zinc-500">
+                  From the Compendium
+                </h4>
+                {/* **Split into the SAME two columns as the picked list above**,
+                    rather than flowing both sides through one grid. A shelf that
+                    interleaves them puts a negative example in the left-hand
+                    column directly under the heading that says Positive, and
+                    asks the reader to override the layout with the colour. Two
+                    rules for one split is one too many. */}
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                  {QUIRK_KINDS.map((kind) => (
+                    <div key={kind} className="min-w-0 space-y-2">
+                      {library.quirks
+                        .filter(
+                          (q) =>
+                            quirkKind(q.kind) === kind &&
+                            !quirks.some((picked) => picked.name === q.name && picked.kind === q.kind)
+                        )
+                        .map((q) => (
+                          <button
+                            key={q.id}
+                            type="button"
+                            onClick={() => addQuirk(q)}
+                            title={`Add "${q.name}" to this build`}
+                            className={`block w-full panel-cut-sm border p-2 text-left hover:border-brand-500 ${
+                              quirkStyle(q.kind).card
+                            }`}
+                          >
+                            <span className="block text-sm font-semibold text-zinc-100">{q.name}</span>
+                            {q.description && (
+                              <span className="mt-0.5 block text-xs leading-snug text-zinc-400">
+                                {q.description}
+                              </span>
+                            )}
+                          </button>
+                        ))}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         )}
 

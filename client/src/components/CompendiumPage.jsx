@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import MovesCompendium from './Compendium.jsx';
 import PerksCompendium from './PerksCompendium.jsx';
+import QuirksCompendium from './QuirksCompendium.jsx';
 
 // Hosts every compendium as an internal tab, rather than a separate
 // top-level nav link per type — add future compendia (e.g. a Tags-only
@@ -14,13 +15,18 @@ import PerksCompendium from './PerksCompendium.jsx';
 const TABS = [
   { key: 'moves', label: 'Moves' },
   { key: 'perks', label: 'Perks' },
+  // Third and last: a Quirk is narrative, so it sits after the two mechanical
+  // libraries rather than between them.
+  { key: 'quirks', label: 'Quirks' },
 ];
 
 export default function CompendiumPage() {
   const location = useLocation();
   // The header search bar can deep-link here (e.g. a Perk result) via
   // navigate('/compendium', { state: { tab: 'perks' } }).
-  const [tab, setTab] = useState(location.state?.tab === 'perks' ? 'perks' : 'moves');
+  const [tab, setTab] = useState(() =>
+    TABS.some((t) => t.key === location.state?.tab) ? location.state.tab : 'moves'
+  );
 
   return (
     <div className="mx-auto max-w-5xl">
@@ -43,6 +49,7 @@ export default function CompendiumPage() {
 
       {tab === 'moves' && <MovesCompendium />}
       {tab === 'perks' && <PerksCompendium />}
+      {tab === 'quirks' && <QuirksCompendium />}
     </div>
   );
 }

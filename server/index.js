@@ -156,6 +156,10 @@ const getRoleplay = (characterId) =>
   all('SELECT * FROM roleplay_entries WHERE character_id = ? ORDER BY id', [characterId]);
 const getCounters = (characterId) =>
   all('SELECT * FROM counters WHERE character_id = ? ORDER BY id', [characterId]);
+// Positives first, then negatives, each in the order they were acquired — which
+// is the order the sheet's two columns want and saves them sorting it twice.
+const getCharacterQuirks = (characterId) =>
+  all('SELECT * FROM character_quirks WHERE character_id = ? ORDER BY kind DESC, id', [characterId]);
 
 // **Gates ride their own channel, not the Counter payload.** A Counter goes out
 // with `io.emit` — everybody's Arena shows everybody's clocks — and a Gate can
@@ -1686,7 +1690,8 @@ app.get('/api/characters/:id', wrap(async (req, res) => {
   // is fine against a local SQLite file, but against Turso's networked
   // connection in production every await is a real round-trip, and eight in
   // a row is exactly the "a few seconds to open a character" symptom.
-  const [dice, inventory, injuries, stances, moves, roleplay, perks, counters, weapon] = await Promise.all([
+  const [dice, inventory, injuries, stances, moves, roleplay, perks, counters, weapon, quirks] =
+    await Promise.all([
     getDice(character.id),
     getInventory(character.id),
     getInjuries(character.id),
@@ -1698,12 +1703,15 @@ app.get('/api/characters/:id', wrap(async (req, res) => {
     // Null for almost everyone — a weapon is something a character acquires,
     // not something they are created with (see server/weapons.js).
     getWeapon(character.id),
+    // Stored by value, so this is the whole Quirk — no join, and nothing to
+    // resolve against the Compendium's own list.
+    getCharacterQuirks(character.id),
   ]);
   // What this character could pick up, offered on an EMPTY slot only (Never
   // Empty-Handed). Resolved server-side and sent already filtered, so the slot
   // renders what it is given rather than deciding whether a charge is spent.
   const weaponOffers = weapon ? [] : await perkWeaponOffers(character.id);
-  res.json({ character, dice, inventory, injuries, stances, moves, roleplay, perks, counters, weapon, weaponOffers });
+  res.json({ character, dice, inventory, injuries, stances, moves, roleplay, perks, counters, weapon, weaponOffers, quirks });
 }));
 
 // The Gates on every Counter, as this viewer is allowed to know them. Its own
@@ -1716,6 +1724,18 @@ app.get('/api/counter-gates', wrap(async (req, res) => {
   // but an unidentified caller is treated as a Player, which is the closed
   // answer rather than the open one.
   res.json({ gates: visibleGates(await getAllGates(), viewer) });
+}));
+
+// **The Quirk Compendium's shelf of examples.** Open to every role, like the
+// Perk library: browsing is what it is for, and the only thing gated is
+// authoring it (GM) — see quirk:create below.
+//
+// No grant counts on these rows, unlike a Perk's. A Quirk is copied when taken
+// (see character_quirks in db.js), so "who has this one" is not a question this
+// table can answer, and pretending it could would be the first crack in the
+// copy semantics.
+app.get('/api/quirks', wrap(async (_req, res) => {
+  res.json(await all('SELECT * FROM quirks ORDER BY kind, id'));
 }));
 
 app.get('/api/tells', wrap(async (_req, res) => {
@@ -2142,6 +2162,10 @@ app.delete('/api/characters/:id', wrap(async (req, res) => {
   await run('DELETE FROM stances WHERE character_id = ?', [character.id]);
   await run('DELETE FROM character_moves WHERE character_id = ?', [character.id]);
   await run('DELETE FROM roleplay_entries WHERE character_id = ?', [character.id]);
+  // Quirks are stored by value on the character, so there is nothing to
+  // preserve or repoint here the way a relationship node needs — the row IS
+  // the Quirk, and the Compendium's own examples are untouched.
+  await run('DELETE FROM character_quirks WHERE character_id = ?', [character.id]);
   await convertRelationshipNodesToPeople(character);
   await run('DELETE FROM relationship_edges WHERE owner_character_id = ?', [character.id]);
   await run('DELETE FROM relationship_nodes WHERE owner_character_id = ?', [character.id]);
@@ -2305,7 +2329,8 @@ app.get('/api/chat', wrap(async (_req, res) => {
         // resolutionId, the two sides' names) that the chat card renders as
         // one "Watch Round N" button; the round's actual events are fetched
         // from the replay endpoint by resolutionId, never inlined here.
-        ...((row.kind === 'lane_snapshot' || row.kind === 'round_summary') && row.payload
+        ...((row.kind === 'lane_snapshot' || row.kind === 'round_summary' || row.kind === 'quirk') &&
+        row.payload
           ? JSON.parse(row.payload)
           : {}),
         // roll rows carry the same roll-context shape (Combat Automation,
@@ -2969,7 +2994,7 @@ io.on('connection', (socket) => {
       });
       return;
     }
-    const { preset, ranks, stance, moveIds, perkIds, roleplay } = result.normalized;
+    const { preset, ranks, stance, moveIds, perkIds, quirks, roleplay } = result.normalized;
 
     // ---- Stats: set, not stepped ----
     const dice = await getDice(character.id);
@@ -3059,6 +3084,29 @@ io.on('connection', (socket) => {
       io.emit('perk:granted', { characterId: character.id, perkId });
     }
     if (perkIds.length) await refreshCapabilities(character.id);
+
+    // ---- Quirks ----
+    // Written by value, exactly as `character_quirk:add` does — the wizard's
+    // picks arrive already resolved to text (see validateCreation), so there is
+    // no Compendium lookup here and no id to go stale. Skipped when the name is
+    // already on this character, so re-running the flow does not double them up.
+    for (const quirk of quirks) {
+      const existing = await one(
+        'SELECT id FROM character_quirks WHERE character_id = ? AND name = ? AND kind = ?',
+        [character.id, quirk.name, quirk.kind]
+      );
+      if (existing) continue;
+      await run(
+        'INSERT INTO character_quirks (character_id, name, description, kind) VALUES (?, ?, ?, ?)',
+        [character.id, quirk.name, quirk.description, quirk.kind]
+      );
+    }
+    if (quirks.length) {
+      io.emit('character_quirk:updated', {
+        characterId: character.id,
+        quirks: await getCharacterQuirks(character.id),
+      });
+    }
 
     // ---- Role-play ----
     for (const { question, answer } of roleplay) {
@@ -4084,6 +4132,165 @@ io.on('connection', (socket) => {
 
     io.emit('perk:revoked', { characterId: characterPerk.character_id, perkId: characterPerk.perk_id });
     await refreshCapabilities(characterPerk.character_id);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Quirks
+  // ---------------------------------------------------------------------------
+  //
+  // Two families, and the split is the feature: `quirk:*` edits the GM's shelf
+  // of examples in the Compendium, `character_quirk:*` edits what one character
+  // actually has. They never touch each other's rows — taking an example is a
+  // `character_quirk:add` carrying the example's own text, so the shelf is
+  // read-only from the taking side by construction rather than by a rule
+  // somebody has to remember.
+  //
+  // One normaliser for both, because "a Quirk" means the same three fields
+  // wherever it is written, and two copies of `kind` validation is how one of
+  // them ends up accepting 'Positive'.
+  const quirkFields = (payload = {}) => {
+    const name = String(payload.name ?? '').trim().slice(0, 120);
+    if (!name) return null;
+    return {
+      name,
+      description: String(payload.description ?? '').trim().slice(0, 4000),
+      // Anything that is not exactly 'negative' is a positive: the column has a
+      // CHECK on it, so an unrecognised value has to become a legal one here
+      // rather than reaching the database and throwing.
+      kind: payload.kind === 'negative' ? 'negative' : 'positive',
+    };
+  };
+  const emitQuirks = async (characterId) =>
+    io.emit('character_quirk:updated', {
+      characterId,
+      quirks: await getCharacterQuirks(characterId),
+    });
+
+  // --- the Compendium's shelf (GM) ---
+
+  on('quirk:create', async (payload) => {
+    if (socket.data.identity?.role !== 'gm') return;
+    const fields = quirkFields(payload);
+    if (!fields) return;
+    const created = await run('INSERT INTO quirks (name, description, kind) VALUES (?, ?, ?)', [
+      fields.name,
+      fields.description,
+      fields.kind,
+    ]);
+    io.emit('quirk:created', await one('SELECT * FROM quirks WHERE id = ?', [Number(created.lastInsertRowid)]));
+  });
+
+  on('quirk:update', async (payload) => {
+    if (socket.data.identity?.role !== 'gm') return;
+    const existing = await one('SELECT * FROM quirks WHERE id = ?', [payload?.quirkId]);
+    const fields = quirkFields(payload);
+    if (!existing || !fields) return;
+    await run('UPDATE quirks SET name = ?, description = ?, kind = ? WHERE id = ?', [
+      fields.name,
+      fields.description,
+      fields.kind,
+      existing.id,
+    ]);
+    io.emit('quirk:updated', await one('SELECT * FROM quirks WHERE id = ?', [existing.id]));
+  });
+
+  // **No "in use" guard, unlike a Perk's delete.** Nobody holds a reference to
+  // this row: every character who took it has their own copy, so removing the
+  // example takes nothing away from anyone.
+  on('quirk:delete', async ({ quirkId }) => {
+    if (socket.data.identity?.role !== 'gm') return;
+    const existing = await one('SELECT * FROM quirks WHERE id = ?', [quirkId]);
+    if (!existing) return;
+    await run('DELETE FROM quirks WHERE id = ?', [existing.id]);
+    io.emit('quirk:deleted', { quirkId: existing.id });
+  });
+
+  // --- what a character actually has ---
+
+  // Adds a Quirk to one character. Either **from the shelf** (`quirkId`, whose
+  // text is copied at this instant) or **invented on the spot** (name /
+  // description / kind), which is the same event because it is the same act:
+  // the shelf is a source of text, not a thing to be linked to.
+  //
+  // Duplicates by name+kind are refused, since the only way to get one is to
+  // click Take twice and the second click meant nothing. Nothing stops two
+  // *differently worded* Quirks about the same thing — that is the player's
+  // business, and any number of Quirks is allowed by design.
+  on('character_quirk:add', async (payload = {}) => {
+    const character = await getCharacter(payload.characterId);
+    if (!character) return;
+    const source = payload.quirkId != null
+      ? await one('SELECT * FROM quirks WHERE id = ?', [payload.quirkId])
+      : payload;
+    const fields = quirkFields(source ?? {});
+    if (!fields) return;
+    const existing = await one(
+      'SELECT id FROM character_quirks WHERE character_id = ? AND name = ? AND kind = ?',
+      [character.id, fields.name, fields.kind]
+    );
+    if (existing) return;
+    await run('INSERT INTO character_quirks (character_id, name, description, kind) VALUES (?, ?, ?, ?)', [
+      character.id,
+      fields.name,
+      fields.description,
+      fields.kind,
+    ]);
+    await emitQuirks(character.id);
+  });
+
+  // Your copy is yours to reword — the whole point of copying rather than
+  // linking. The Compendium's example is untouched by this.
+  on('character_quirk:update', async (payload = {}) => {
+    const existing = await one('SELECT * FROM character_quirks WHERE id = ?', [payload.characterQuirkId]);
+    const fields = quirkFields(payload);
+    if (!existing || !fields) return;
+    await run('UPDATE character_quirks SET name = ?, description = ?, kind = ? WHERE id = ?', [
+      fields.name,
+      fields.description,
+      fields.kind,
+      existing.id,
+    ]);
+    await emitQuirks(existing.character_id);
+  });
+
+  // **Show the table a Quirk.** A card in the Chat Log, in that Quirk's own
+  // colours — the ↑ on every Quirk card on a sheet.
+  //
+  // **Self-contained at post time**, like every other chat card that is not a
+  // roll: name, description and kind are written into the row's `payload`
+  // rather than the row pointing at `character_quirks.id`. So the card still
+  // reads correctly after the Quirk is reworded, dropped, or its character
+  // deleted — which is the same rule `lane_snapshot` and `round_summary`
+  // already follow, and the reason chat history survives at all.
+  on('character_quirk:share', async ({ characterQuirkId }) => {
+    const quirk = await one('SELECT * FROM character_quirks WHERE id = ?', [characterQuirkId]);
+    if (!quirk) return;
+    const character = await getCharacter(quirk.character_id);
+    const payload = {
+      quirkName: quirk.name,
+      quirkDescription: quirk.description,
+      quirkKind: quirk.kind,
+      characterName: character?.name ?? null,
+    };
+    const result = await run(
+      `INSERT INTO chat_log (kind, character_id, dice_rolled, payload) VALUES ('quirk', ?, '[]', ?)`,
+      [quirk.character_id, JSON.stringify(payload)]
+    );
+    io.emit('chat:quirk', {
+      id: Number(result.lastInsertRowid),
+      kind: 'quirk',
+      characterId: quirk.character_id,
+      characterName: character?.name ?? '(deleted)',
+      ...payload,
+      timestamp: new Date().toISOString(),
+    });
+  });
+
+  on('character_quirk:remove', async ({ characterQuirkId }) => {
+    const existing = await one('SELECT * FROM character_quirks WHERE id = ?', [characterQuirkId]);
+    if (!existing) return;
+    await run('DELETE FROM character_quirks WHERE id = ?', [existing.id]);
+    await emitQuirks(existing.character_id);
   });
 
   const emitRoleplay = async (characterId) =>
