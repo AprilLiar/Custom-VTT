@@ -80,6 +80,20 @@ export function formatRollBreakdown(dice, terms, total, modifier = 0) {
   return `${sum} ${body} = ${total ?? sum + parts.reduce((a, t) => a + t.amount, 0)}`;
 }
 
+// Just the named pieces — `+ 4 (Stance matchup) − 5 (Read on the grab)` — with
+// no sum and no total. The chat card wants them on a second, quieter line under
+// a total that stays big and readable, rather than one long string at 2xl in a
+// 320px panel; the cutscene's own log has the width for the full sentence and
+// keeps using formatRollBreakdown.
+//
+// Empty for a roll whose modifier is one plain thing, which is most of them —
+// itemising `+ 2 (The move's own modifier)` says nothing the total didn't.
+export function formatModifierTerms(terms) {
+  const parts = (terms ?? []).filter((t) => t && t.amount);
+  if (parts.length < 2) return '';
+  return parts.map((t) => `${t.amount > 0 ? '+' : '−'} ${Math.abs(t.amount)} (${t.label})`).join(' ');
+}
+
 // **Temporary Damage, in one place.** How many half-steps of this Stat's damage
 // wear off at 0.5 a Round — carried on every die payload (see `diePayload` in
 // server/index.js), so any surface that draws a Stat can ask without a second

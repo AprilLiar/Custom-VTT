@@ -140,3 +140,41 @@ export function saveCutsceneSpeed(value) {
   else localStorage.setItem(SPEED_KEY, String(speed));
   return speed;
 }
+
+// --- Cutscene: the fighters' Stat cards, collapsed (per viewer) ---
+//
+// The frozen header carries the Tic counter, the move frames AND both fighters'
+// full Stat cards, and on a laptop that is most of the screen before a single
+// line of the log is visible. This folds the cards away, leaving the Tics and
+// the frames — the half you scroll the log against.
+//
+// **Per device, like the playback speed above and for the same reason**: how
+// much header you want is a property of the person watching and of the screen
+// they are watching on, not of the fight. It never goes near the server.
+//
+// Wrapped in try/catch on both sides: a private window, cleared site data or a
+// browser set to block storage makes the accessor itself throw, and a cutscene
+// that cannot render because a preference could not be read is a worse bug than
+// a preference that does not stick.
+const STATS_COLLAPSED_KEY = 'vtt-cutscene-stats-collapsed';
+
+export function loadCutsceneStatsCollapsed() {
+  try {
+    return localStorage.getItem(STATS_COLLAPSED_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+export function saveCutsceneStatsCollapsed(collapsed) {
+  const next = Boolean(collapsed);
+  try {
+    // Removed rather than written as '0', so the default is one thing rather
+    // than two — the same shape saveCutsceneSpeed uses for its own default.
+    if (next) localStorage.setItem(STATS_COLLAPSED_KEY, '1');
+    else localStorage.removeItem(STATS_COLLAPSED_KEY);
+  } catch {
+    // Storage is unavailable; the toggle still works for this session.
+  }
+  return next;
+}

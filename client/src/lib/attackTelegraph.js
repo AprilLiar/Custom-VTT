@@ -25,6 +25,12 @@
 // A Feint-masked move still glows on nothing, because its row is dropped from
 // the payload outright rather than blanked — see the Feint note server-side.
 //
+// **The Feint itself can be marked, for one viewer only (Never a Fool).** The
+// server puts `isFeint` on a row when that viewer's Perk earns it, and the
+// square turns red — that it is a lie, and nothing else. The move it masks is
+// still not on the wire at all, so the Perk never sees through to what came
+// after the Feint.
+//
 // One consequence worth naming, intended rather than accidental: a prepared
 // opponent can pair the visible Tell with the start Tic and look the move's
 // real frame data up in the Compendium (Players browse it read-only). That *is*
@@ -75,6 +81,12 @@ export function attackStartsByTic({
       declaredMoveId: dm.id,
       characterId: dm.characterId,
       characterName: nameOf?.(dm.characterId) ?? null,
+      // **Never a Fool.** Present on this row only when the server decided this
+      // viewer's Perk earns it (see mapDeclaredMovesForViewer) — absent, not
+      // false, for everybody else — so the client never has to decide who may
+      // know. It paints the square red and nothing more: which move it is, its
+      // frames and its Roll all stay exactly as secret as they were.
+      isFeint: Boolean(dm.isFeint),
     });
     marks.set(tic, at);
   }

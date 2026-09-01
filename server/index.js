@@ -77,6 +77,7 @@ import {
   feintMasksDeclaration,
   movementBlockedByLegs,
   BLOCK_TAG,
+  FEINT_TAG,
 } from './tagAutomations.js';
 import {
   getWeapon,
@@ -88,7 +89,7 @@ import {
 import { effectiveFrames, idleStaminaRegenRate } from './perkAutomations.js';
 import {
   clearAllPerkState, perkAllowsRevealedDetail, perkStaminaCostDeltas, perkMoveFrameDeltas,
-  perkWeaponOffers, takeWeaponOffer, perkSeesAttackHeight,
+  perkWeaponOffers, takeWeaponOffer, perkSeesAttackHeight, perkSeesFeints,
 } from './perkEngine.js';
 import { isAutomatedPerk, isManualPerk, perkDefinition } from './perks/index.js';
 import { validateCreation } from './characterCreation.js';
@@ -596,6 +597,47 @@ async function fetchDeclaredMoveRows() {
   `);
 }
 
+// **Which declared moves carry the Feint Tag, for their own owners** (Never a
+// Fool). Two queries for the whole board rather than the two-per-move
+// `moveTagNamesFor` does, because this is asked on a broadcast: wall time there
+// is depth times round-trip, and a per-move await chain would be one round trip
+// per Tell on the strip.
+//
+// Resolved per character as well as per move, because a Perk can add or remove
+// a Tag for one fighter (`character_move_tags`) — the same resolved set every
+// other Tag mechanic reads, so a Perk that grants Feint really does feint.
+//
+// Returns a Set of DECLARED-move ids, not move ids: the same move thrown by two
+// fighters can be a Feint for one of them and not the other.
+async function feintDeclaredMoveIds(rows) {
+  const moveIds = [...new Set(rows.map((r) => r.move_id).filter((id) => id != null))];
+  if (!moveIds.length) return new Set();
+  const marks = moveIds.map(() => '?').join(',');
+  const [tagged, overrides] = await Promise.all([
+    all(
+      `SELECT mt.move_id FROM move_tags mt JOIN tags t ON t.id = mt.tag_id
+       WHERE mt.move_id IN (${marks}) AND LOWER(TRIM(t.name)) = ?`,
+      [...moveIds, FEINT_TAG.toLowerCase()]
+    ),
+    all(
+      `SELECT cmt.character_id, cmt.move_id, cmt.action
+       FROM character_move_tags cmt JOIN tags t ON t.id = cmt.tag_id
+       WHERE cmt.move_id IN (${marks}) AND LOWER(TRIM(t.name)) = ?`,
+      [...moveIds, FEINT_TAG.toLowerCase()]
+    ),
+  ]);
+  const onTemplate = new Set(tagged.map((r) => r.move_id));
+  const byPair = new Map(overrides.map((r) => [`${r.character_id}:${r.move_id}`, r.action]));
+  const out = new Set();
+  for (const row of rows) {
+    // Removals win over additions, exactly as effectiveTagNames resolves them.
+    const override = byPair.get(`${row.character_id}:${row.move_id}`);
+    if (override === 'remove') continue;
+    if (override === 'add' || onTemplate.has(row.move_id)) out.add(row.id);
+  }
+  return out;
+}
+
 // Every seated character, **with the character's own type joined in**
 // (bugfix). `combat_participants` has no `character_type` column of its own,
 // and `mapPendingGrappleForViewer` asks each row for one to decide whether
@@ -690,13 +732,18 @@ function mapDeclaredMovesForViewer(
   rows,
   pairsByIndex,
   viewer,
-  { attackHeightViewers = null, pairIndexByCharacter = null } = {}
+  { attackHeightViewers = null, pairIndexByCharacter = null, feintViewers = null, feintDeclaredMoveIds: feintIds = null } = {}
 ) {
   // Whether THIS viewer is entitled at all, asked once instead of per row.
   const viewerSeesHeight = Boolean(
     viewer?.role === 'player' && attackHeightViewers?.has(viewer.characterId)
   );
-  const viewerPairIndex = viewerSeesHeight
+  // ...and the same question for Never a Fool, which reads exactly the same
+  // three gates below and so shares `viewerPairIndex`.
+  const viewerSeesFeints = Boolean(
+    viewer?.role === 'player' && feintViewers?.has(viewer.characterId)
+  );
+  const viewerPairIndex = viewerSeesHeight || viewerSeesFeints
     ? pairIndexByCharacter?.get(viewer.characterId) ?? null
     : null;
   // Null when this viewer has not earned this row's height, so the spread at
@@ -708,6 +755,18 @@ function mapDeclaredMovesForViewer(
     if (row.target_character_id != null && row.target_character_id !== viewer.characterId) return null;
     const heights = attackHeights(parseConcreteAttackTargets(row.effective_attack_targets));
     return heights.length ? { attackHeights: heights } : null;
+  };
+  // **Never a Fool.** The identical three gates — somebody else's move, in this
+  // viewer's own pair, coming at this viewer (or at nobody in particular, which
+  // is every 1v1). Null when unearned so the spread adds no key at all: a row
+  // saying `isFeint: false` would tell a devtools reader which moves are not
+  // Feints, and by elimination which ones are.
+  const feintForViewer = (row) => {
+    if (!viewerSeesFeints || !feintIds?.has(row.id)) return null;
+    if (row.character_id === viewer.characterId) return null;
+    if (viewerPairIndex == null || row.pair_index !== viewerPairIndex) return null;
+    if (row.target_character_id != null && row.target_character_id !== viewer.characterId) return null;
+    return { isFeint: true };
   };
 
   const out = [];
@@ -821,6 +880,12 @@ function mapDeclaredMovesForViewer(
       // has no Attack Targets and so reports no height at all, which is the
       // true answer rather than a withheld one.
       ...(attackHeightsForViewer(row) ?? {}),
+      // **Never a Fool: that it is a Feint, and nothing else.** Present only on
+      // rows the Perk earns, absent everywhere else — and deliberately NOT
+      // gated on `isRevealed`, since knowing before the move shows itself is
+      // the whole content of the Perk. Once it reveals, its Tags are public
+      // anyway.
+      ...(feintForViewer(row) ?? {}),
     });
   }
   return out;
@@ -1083,11 +1148,21 @@ async function buildCombatUpdate() {
   // notes in the plan). A character with no such Perk costs a single cached
   // perk read and stops before touching anything else.
   const attackHeightViewers = new Set();
+  const feintViewers = new Set();
   const seated = participants.map((p) => p.character_id);
-  const sees = await Promise.all(seated.map((id) => perkSeesAttackHeight(id)));
+  const [sees, seesFeints] = await Promise.all([
+    Promise.all(seated.map((id) => perkSeesAttackHeight(id))),
+    // **Never a Fool, on the same one-read-many-views footing.** Both sets are
+    // properties of the board rather than of the socket looking at it, and both
+    // cost a single cached Perk read per seated fighter.
+    Promise.all(seated.map((id) => perkSeesFeints(id))),
+  ]);
   seated.forEach((id, i) => {
     if (sees[i]) attackHeightViewers.add(id);
+    if (seesFeints[i]) feintViewers.add(id);
   });
+  // Only worth the two queries when somebody at the table can actually use it.
+  const feintIds = feintViewers.size ? await feintDeclaredMoveIds(declaredMoveRows) : new Set();
   return {
     state,
     participants,
@@ -1096,6 +1171,8 @@ async function buildCombatUpdate() {
     openResolutions,
     stanceMatchups,
     attackHeightViewers,
+    feintViewers,
+    feintDeclaredMoveIds: feintIds,
     pairIndexByCharacter: new Map(participants.map((p) => [p.character_id, p.pair_index])),
     pairsByIndex: new Map(pairRows.map((row) => [row.pair_index, row])),
   };
@@ -1104,7 +1181,7 @@ async function buildCombatUpdate() {
 function combatUpdateFor(built, viewer) {
   const {
     state, participants, pairRows, declaredMoveRows, openResolutions, stanceMatchups, pairsByIndex,
-    attackHeightViewers, pairIndexByCharacter,
+    attackHeightViewers, pairIndexByCharacter, feintViewers, feintDeclaredMoveIds: feintIds,
   } = built;
   return {
     unevenCombatEnabled: Boolean(state.uneven_combat_enabled),
@@ -1135,6 +1212,8 @@ function combatUpdateFor(built, viewer) {
     declaredMoves: mapDeclaredMovesForViewer(declaredMoveRows, pairsByIndex, viewer, {
       attackHeightViewers,
       pairIndexByCharacter,
+      feintViewers,
+      feintDeclaredMoveIds: feintIds,
     }),
   };
 }
@@ -1884,20 +1963,25 @@ app.get('/api/combat', wrap(async (req, res) => {
     diceByCharacter.get(die.character_id).push(die);
   }
 
-  const [movesByChar, declaredMoveRows, openResolutions, viewerSeesAttackHeight] = await Promise.all([
-    Promise.all(charIds.map((id) => getMovesFor(id, { knownDice: diceByCharacter.get(id) ?? [] }))),
-    fetchDeclaredMoveRows(),
-    fetchOpenResolutionsByPair(),
-    // Eye Catcher. This endpoint serves exactly ONE viewer, unlike the
-    // broadcast, so only that viewer's own entitlement is worth asking about —
-    // and it rides in the group above rather than after it, so it costs a slot
-    // in a round trip already being made instead of a round trip of its own.
-    viewer?.role === 'player' ? perkSeesAttackHeight(viewer.characterId) : false,
-  ]);
+  const [movesByChar, declaredMoveRows, openResolutions, viewerSeesAttackHeight, viewerSeesFeints] =
+    await Promise.all([
+      Promise.all(charIds.map((id) => getMovesFor(id, { knownDice: diceByCharacter.get(id) ?? [] }))),
+      fetchDeclaredMoveRows(),
+      fetchOpenResolutionsByPair(),
+      // Eye Catcher. This endpoint serves exactly ONE viewer, unlike the
+      // broadcast, so only that viewer's own entitlement is worth asking about —
+      // and it rides in the group above rather than after it, so it costs a slot
+      // in a round trip already being made instead of a round trip of its own.
+      viewer?.role === 'player' ? perkSeesAttackHeight(viewer.characterId) : false,
+      // Never a Fool, on the same footing.
+      viewer?.role === 'player' ? perkSeesFeints(viewer.characterId) : false,
+    ]);
   const pairsByIndex = new Map(pairRows.map((row) => [row.pair_index, row]));
   const declaredMoves = mapDeclaredMovesForViewer(declaredMoveRows, pairsByIndex, viewer, {
     attackHeightViewers: viewerSeesAttackHeight ? new Set([viewer.characterId]) : null,
     pairIndexByCharacter: new Map(participants.map((p) => [p.character_id, p.pair_index])),
+    feintViewers: viewerSeesFeints ? new Set([viewer.characterId]) : null,
+    feintDeclaredMoveIds: viewerSeesFeints ? await feintDeclaredMoveIds(declaredMoveRows) : null,
   });
 
   const characters = {};

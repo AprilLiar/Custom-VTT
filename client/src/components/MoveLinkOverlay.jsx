@@ -55,7 +55,12 @@ function measure(ids) {
     const ticCenter = { x: tic.left + tic.width / 2, y: tic.top + tic.height / 2 };
     const from = edgePoint(tell, ticCenter.x, ticCenter.y);
     const to = edgePoint(tic, tellCenter.x, tellCenter.y);
-    segments.push({ id, from, to });
+    // **Never a Fool.** The Tic anchor is the glow element itself, and it
+    // carries `data-feint` when this viewer's Perk has marked the move — so the
+    // line is drawn in the same red as the square it lands on, with no second
+    // registry to keep in step with the first. Absent for every other viewer,
+    // because the attribute is only rendered for the one who earned it.
+    segments.push({ id, from, to, feint: ticEl.dataset.feint != null });
   }
   return segments;
 }
@@ -113,7 +118,9 @@ export default function MoveLinkOverlay() {
       // SVG user space has to be the viewport too.
       style={{ overflow: 'visible' }}
     >
-      {segments.map(({ id, from, to }) => (
+      {segments.map(({ id, from, to, feint }) => {
+        const stroke = feint ? 'rgb(253 164 175)' : 'rgb(228 228 231)';
+        return (
         <g key={id}>
           {/* Drawn twice: a wide, very transparent pass reads as a glow
               around the thin one, which keeps the line legible over both
@@ -125,7 +132,7 @@ export default function MoveLinkOverlay() {
             y1={from.y}
             x2={to.x}
             y2={to.y}
-            stroke="rgb(228 228 231)"
+            stroke={stroke}
             strokeOpacity="0.18"
             strokeWidth="5"
             strokeLinecap="round"
@@ -135,16 +142,17 @@ export default function MoveLinkOverlay() {
             y1={from.y}
             x2={to.x}
             y2={to.y}
-            stroke="rgb(228 228 231)"
+            stroke={stroke}
             strokeOpacity="0.75"
             strokeWidth="1.5"
             strokeDasharray="5 4"
             strokeLinecap="round"
           />
-          <circle cx={from.x} cy={from.y} r="3" fill="rgb(228 228 231)" fillOpacity="0.85" />
-          <circle cx={to.x} cy={to.y} r="3" fill="rgb(228 228 231)" fillOpacity="0.85" />
+          <circle cx={from.x} cy={from.y} r="3" fill={stroke} fillOpacity="0.85" />
+          <circle cx={to.x} cy={to.y} r="3" fill={stroke} fillOpacity="0.85" />
         </g>
-      ))}
+        );
+      })}
     </svg>,
     document.body
   );

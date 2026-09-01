@@ -126,6 +126,9 @@ import {
   perkInterruptsOwnDeclarations,
   perkSplashDamage,
   perkStaminaPerHalfDamage,
+  perkImposedRecoveryDelta,
+  perkStaminaOverflowHealing,
+  perkStatDamageThresholds,
 } from './perkEngine.js';
 import {
   getCombatRollBonus,
@@ -190,6 +193,10 @@ async function adjustStamina(io, characterId, delta, { emitEvent = null, tic = n
   const change = Math.trunc(Number(delta) || 0);
   if (!change) return character.current_stamina;
   const currentStamina = clamp(character.current_stamina + change, 0, character.max_stamina);
+  // **Tip Top Shape** — Stamina the cap threw away. Measured here rather than
+  // at each caller because this is where the clamp happens, so every gain the
+  // engine hands out is covered by one read of the same subtraction.
+  const overflow = Math.max(0, character.current_stamina + change - character.max_stamina);
   await run('UPDATE characters SET current_stamina = ? WHERE id = ?', [currentStamina, character.id]);
   io.emit('character:updated', { ...character, current_stamina: currentStamina });
   if (emitEvent && tic != null) {
@@ -204,13 +211,92 @@ async function adjustStamina(io, characterId, delta, { emitEvent = null, tic = n
       reason,
     });
   }
+  await healFromStaminaOverflow(io, { character, overflow, tic, emitEvent });
   return currentStamina;
 }
 
-async function logRoll(io, { characterId, characterName, modifier, dice, rollContext = null }) {
+// Turns Stamina that went over the cap into healed Steps, if any Perk banks it
+// (Tip Top Shape). The Perk says the rate and keeps its own bank; the engine
+// owns the two things only it can answer — that an overflow happened at all,
+// and which Stat gets put right.
+//
+// **A random DAMAGED Stat**, which is the only reading that is not a waste: an
+// undamaged one has nothing to heal, so choosing it would silently throw the
+// payout away. Damaged means below its locked baseline, carrying a pending half
+// step, or out entirely — an incapacitated Stat is exactly the one worth
+// spending it on, and `healHalfDamage` walks a die back out of it.
+async function healFromStaminaOverflow(io, { character, overflow, tic = null, emitEvent = null }) {
+  if (!(overflow > 0) || !character) return;
+  let steps = await perkStaminaOverflowHealing(character.id, overflow);
+  if (!(steps > 0)) return;
+  const healed = [];
+  while (steps > 0) {
+    const dice = await getDice(character.id);
+    const damaged = dice.filter((d) => {
+      if (d.status === 'incapacitated' || d.half_damage) return true;
+      if (d.locked_size == null) return false;
+      return rankOf(d.current_size, d.bonus) < rankOf(d.locked_size, d.locked_bonus ?? 0);
+    });
+    if (!damaged.length) break; // nothing left to put right
+    const die = damaged[Math.floor(Math.random() * damaged.length)];
+    const next = healHalfDamage({
+      current_size: die.current_size,
+      bonus: die.bonus,
+      status: die.status,
+      half_damage: Boolean(die.half_damage),
+    });
+    await run('UPDATE dice SET current_size = ?, bonus = ?, status = ?, half_damage = ? WHERE id = ?', [
+      next.current_size,
+      next.bonus,
+      next.status,
+      next.half_damage ? 1 : 0,
+      die.id,
+    ]);
+    io.emit('die:updated', diePayload({ ...die, ...next, half_damage: next.half_damage ? 1 : 0 }));
+    if (emitEvent && tic != null) {
+      // The same `stat_stepped` shape a healing automation emits, so the
+      // cutscene animates the Stat coming back with no new renderer.
+      await emitEvent(tic, 'stat_stepped', {
+        characterId: character.id,
+        characterName: character.name,
+        slotName: die.slot_name,
+        steps: -1,
+        source: 'stamina_overflow',
+        sizeBefore: die.current_size,
+        bonusBefore: die.bonus,
+        statusBefore: die.status,
+        sizeAfter: next.current_size,
+        bonusAfter: next.bonus,
+        statusAfter: next.status,
+      });
+    }
+    healed.push(die.slot_name);
+    steps -= 1;
+  }
+  if (healed.length) {
+    const list =
+      healed.length === 1 ? healed[0] : `${healed.slice(0, -1).join(', ')} and ${healed.at(-1)}`;
+    await postSystemMessage(
+      io,
+      `${character.name} is in tip top shape — Stamina they had no room for puts ${list} back together.`
+    );
+  }
+}
+
+async function logRoll(io, { characterId, characterName, modifier, dice, rollContext = null, modifierTerms = null }) {
+  // **The named pieces the modifier is made of, on the chat card too (bugfix).**
+  // They already rode the `roll` event for the cutscene; the chat log got a bare
+  // sum, so a roll whose modifier was several things — a Stance matchup and a
+  // read on the grab, say — was a number nobody could account for. They ride the
+  // same `payload` column the roll-context does and are merged rather than
+  // replacing it, so a roll can carry both.
+  const terms = (modifierTerms ?? []).filter((t) => t && t.amount);
+  const payload = rollContext || terms.length
+    ? { ...(rollContext ?? {}), ...(terms.length ? { modifierTerms: terms } : {}) }
+    : null;
   await run(
     'INSERT INTO chat_log (character_id, dice_rolled, modifier, payload) VALUES (?, ?, ?, ?)',
-    [characterId, JSON.stringify(dice), modifier, rollContext ? JSON.stringify(rollContext) : null]
+    [characterId, JSON.stringify(dice), modifier, payload ? JSON.stringify(payload) : null]
   );
   // GM_CHAT_SENTINEL_ID only reaches here through dice:roll_custom's "post as
   // GM" path; the engine always rolls for a real character. Normalizing it
@@ -223,7 +309,7 @@ async function logRoll(io, { characterId, characterName, modifier, dice, rollCon
     // Spread onto the broadcast rather than nested under its own key, so a
     // live roll and its reload render identically — the same convention
     // kind='lane_snapshot' rows already use for their payload.
-    ...(rollContext ?? {}),
+    ...(payload ?? {}),
     characterId: isGmPost ? null : characterId,
     characterName,
     modifier,
@@ -603,6 +689,18 @@ async function runAutomations(io, {
   // write-back and the announcement.
   const imposeRecovery = async (characterId, characterName, tics, atTic, trip = false) => {
     if (characterId == null) return null;
+    // **No Wasted Movements** — every Recovery frame a fighter RECEIVES, other
+    // than a move's own base Recovery, is shortened by the Perk's figure. This
+    // is the single door every imposed Recovery comes through (both automations,
+    // both trip effects, Movement Punisher), which is exactly why it is applied
+    // here rather than at five call sites.
+    //
+    // Floored at 0 and then dropped entirely: an imposition reduced to nothing
+    // did not happen, and a 0-Tic plan would otherwise displace moves and
+    // announce a trip that puts nobody anywhere.
+    const received = Math.max(0, tics - (await perkImposedRecoveryDelta(characterId)));
+    if (received <= 0) return null;
+    tics = received;
     // The engine always knows the Tic it is resolving. server/index.js's
     // combat:apply_damage — the chat card's manual Apply button, the one
     // surviving path that fires a trigger from outside the engine — does
@@ -1011,7 +1109,23 @@ async function applyBlockRiposte(io, {
 // `temporary` is the **Temporary Damage** Tag on the attacking move: the damage
 // lands in full and is additionally recorded as owed back (see
 // recordTemporaryDamage below). Nothing else about the blow changes.
-async function applyAutoDamage(io, { targetCharacterId, effectiveAttackTargets, steps, stepsBySlot = null, firstOnly = false, attackerName, temporary = false }) {
+//
+// `result` and `attackerCharacterId` are what the **per-Stat Minimum Damage
+// Threshold** (Yamazaki Black Bones) needs: the roll that actually reached the
+// target, and who threw it. Both optional — a caller that omits them (splash
+// damage, which has no roll of its own) runs the gate not at all, which is the
+// right answer rather than a missing one.
+async function applyAutoDamage(io, {
+  targetCharacterId,
+  effectiveAttackTargets,
+  steps,
+  stepsBySlot = null,
+  firstOnly = false,
+  attackerName,
+  temporary = false,
+  result = null,
+  attackerCharacterId = null,
+}) {
   const dice = await getDice(targetCharacterId);
   let targets = selectAutoDamageTargets({ effectiveAttackTargets, dice });
   // `firstOnly` is the Successful Block redirect and nothing else: that rule
@@ -1020,8 +1134,21 @@ async function applyAutoDamage(io, { targetCharacterId, effectiveAttackTargets, 
   // authored Attack Target. Spreading the leftover across every Stat the
   // blocker happens to roll would be a different rule nobody asked for.
   if (firstOnly) targets = targets.slice(0, 1);
-  if (!targets.length) return { applied: [], unapplied: [] };
+  if (!targets.length) return { applied: [], unapplied: [], shrugged: [] };
   const character = await getCharacter(targetCharacterId);
+  // **The per-Stat Minimum Damage Threshold (Yamazaki Black Bones).** Resolved
+  // here rather than beside the exchange-wide figure because this is the only
+  // place that knows which concrete Stats a blow is about to touch — and
+  // because the die's own size is the input, so it has to be read after every
+  // earlier hit this round has already stepped it down.
+  //
+  // Two queries, both skipped entirely when nobody in the fight has such a
+  // Perk: the surcharge map comes back empty and the base threshold is never
+  // asked for. That matters — this function is on the path of every blow.
+  const surcharges = result == null ? new Map() : await perkStatDamageThresholds(targetCharacterId, targets);
+  const baseThreshold = surcharges.size
+    ? await minDamageThresholdFor({ attackerCharacterId, targetCharacterId })
+    : 0;
   const applied = [];
   // **Damage aimed at a broken Stat (decided, new).** An incapacitated die is
   // already at the floor: `applyHalfDamage` is a no-op on it, so stepping it
@@ -1033,6 +1160,11 @@ async function applyAutoDamage(io, { targetCharacterId, effectiveAttackTargets, 
   // Nothing is redirected: the damage does not slide onto a neighbouring Stat.
   // It simply does not land.
   const unapplied = [];
+  // Stats a per-Stat Threshold turned away entirely (Yamazaki Black Bones).
+  // Its own list rather than a flavour of `unapplied`: nothing was owed to that
+  // Stat, so the end-of-round Injury report — which reads `damage_unapplied`
+  // back off the log — must not count it.
+  const shrugged = [];
   // Stats that Path To Mastery: Durability held together this blow. Collected
   // rather than announced inline for the same reason the damage line is: one
   // sentence per attack, not one per Stat.
@@ -1043,6 +1175,24 @@ async function applyAutoDamage(io, { targetCharacterId, effectiveAttackTargets, 
     if (!(own > 0)) continue;
     if (die.status === 'incapacitated') {
       unapplied.push({ slotName: die.slot_name, steps: own, damage: own * 0.5 });
+      continue;
+    }
+    // **Checked AFTER the broken-Stat line, deliberately.** A destroyed die
+    // sits at the floor, which is under every Perk's "small bone" test, so a
+    // gate placed first would swallow every broken-Stat report the Injury rules
+    // depend on. Nothing has changed about that blow: it still had nowhere to
+    // land, and it still says so.
+    const surcharge = surcharges.get(die.slot_name) ?? 0;
+    if (surcharge > 0 && result < baseThreshold + surcharge) {
+      shrugged.push({
+        slotName: die.slot_name,
+        threshold: baseThreshold + surcharge,
+        baseThreshold,
+        surcharge,
+        result,
+        sizeBefore: die.current_size,
+        bonusBefore: die.bonus,
+      });
       continue;
     }
     let next = {
@@ -1125,11 +1275,25 @@ async function applyAutoDamage(io, { targetCharacterId, effectiveAttackTargets, 
       `${character.name}'s ${list} refuses to break — held at a d4.`
     );
   }
+  // **A Stat that shrugged the blow off, announced.** Unlike the unappliable
+  // half below, this one IS said out loud as it happens: a Perk that stops
+  // damage has to be visible at the moment it stops it, or it is exactly the
+  // silent number-moving the seam doctrine forbids.
+  if (character && shrugged.length) {
+    const each = shrugged.map((s) => `${s.slotName} (needed ${s.threshold})`);
+    const list = each.length === 1 ? each[0] : `${each.slice(0, -1).join(', ')} and ${each[each.length - 1]}`;
+    await postSystemMessage(
+      io,
+      `${character.name}'s ${list} is too hard to hurt with that${
+        attackerName ? ` — ${attackerName}'s ${result} is not enough` : ''
+      }.`
+    );
+  }
   // The unappliable half is deliberately NOT announced here. One line per blow
   // would bury the fact under repetition in a round where a broken limb keeps
   // getting hit; it is totalled per Stat and posted once when the round closes
   // (see reportUnappliedDamage).
-  return { applied, unapplied };
+  return { applied, unapplied, shrugged };
 }
 
 // **Temporary Damage, recorded.** How many half-steps of this Stat's damage came
@@ -1730,7 +1894,7 @@ async function runInterruptAndDamage(io, {
   // touched. Read from the same per-character resolved tag names every other Tag
   // mechanic uses, so a Perk that grants or strips it is honoured.
   const temporaryDamage = carriesTemporaryDamageTag(attackerTagNames);
-  const { applied, unapplied } = await applyAutoDamage(io, {
+  const { applied, unapplied, shrugged } = await applyAutoDamage(io, {
     targetCharacterId,
     effectiveAttackTargets,
     steps,
@@ -1738,6 +1902,11 @@ async function runInterruptAndDamage(io, {
     firstOnly,
     attackerName: attackerCharacterName,
     temporary: temporaryDamage,
+    // What actually reached the target — a Partial Block's leftover where there
+    // was one — which is the figure a per-Stat Threshold has to be measured
+    // against, exactly as the Success Threshold is above.
+    result: effectiveResult ?? attackerResult,
+    attackerCharacterId,
   });
   // Names, not just ids: the cutscene log states outcomes as sentences now,
   // and a replay must be readable without any live combat state to look them
@@ -1750,8 +1919,11 @@ async function runInterruptAndDamage(io, {
   // has always had (§0).
   //
   // An attack that landed on nothing still emits one blank event, exactly as
-  // before, so the log says the blow arrived and found nowhere to land.
-  for (const hit of applied.length ? applied : [null]) {
+  // before, so the log says the blow arrived and found nowhere to land —
+  // **unless a shrug already explains it**, in which case the blank line would
+  // read "3 steps of damage to an unknown Stat" directly under "not enough to
+  // hurt it", and the two would contradict each other.
+  for (const hit of applied.length ? applied : shrugged.length ? [] : [null]) {
     await emitEvent(tic, 'damage_applied', {
       declaredMoveId,
       targetCharacterId,
@@ -1789,6 +1961,27 @@ async function runInterruptAndDamage(io, {
       slotName: miss.slotName,
       steps: miss.steps,
       damage: miss.damage,
+    });
+  }
+  // **A Stat that was simply too hard to hurt (Yamazaki Black Bones).** Its own
+  // event type for the same reason `damage_unapplied` is: nothing landed, so no
+  // die may animate — and the reason is different enough that folding the two
+  // would make the end-of-round Injury report count bones that were never hurt.
+  for (const shrug of shrugged) {
+    await emitEvent(tic, 'damage_shrugged', {
+      declaredMoveId,
+      targetCharacterId,
+      targetCharacterName: target?.name ?? null,
+      attackerCharacterName,
+      attackerCharacterId,
+      slotName: shrug.slotName,
+      steps: shrug.steps ?? steps,
+      result: shrug.result,
+      threshold: shrug.threshold,
+      baseThreshold: shrug.baseThreshold,
+      surcharge: shrug.surcharge,
+      sizeBefore: shrug.sizeBefore,
+      bonusBefore: shrug.bonusBefore,
     });
   }
   const dm = await one('SELECT interactions_resolved FROM declared_moves WHERE id = ?', [declaredMoveId]);
@@ -2241,7 +2434,18 @@ async function rollFor(io, { characterId, characterName, moveId, moveName, slotN
   // still show the ±5 as its own line rather than folding it into the move's own
   // modifier; the arithmetic is identical either way.
   const total = rollTotal(dice, mod + chainRollBonus);
-  await logRoll(io, { characterId, characterName, modifier: mod, dice });
+  // **The chain swing is part of the logged modifier (bugfix).** It always rode
+  // the total, but the chat card was handed `mod` alone — so a follow-up whose
+  // grab had been read printed a total 5 higher than the one the contest then
+  // announced, and the log contradicted itself. `mod` stays chain-free where the
+  // cutscene reads it, because the breakdown lists the read as its own term.
+  await logRoll(io, {
+    characterId,
+    characterName,
+    modifier: mod + chainRollBonus,
+    dice,
+    modifierTerms: modifierBreakdown,
+  });
   await emitEvent(tic, 'roll', {
     declaredMoveId,
     characterId,
@@ -2581,12 +2785,14 @@ async function applyGrappleDamage(io, { row, targetCharacterId, targetName, tota
   if (halfDamageSteps <= 0) return;
 
   const temporary = carriesTemporaryDamageTag(tagNames);
-  const { applied, unapplied } = await applyAutoDamage(io, {
+  const { applied, unapplied, shrugged } = await applyAutoDamage(io, {
     targetCharacterId,
     effectiveAttackTargets,
     steps: halfDamageSteps,
     attackerName: row.characterName,
     temporary,
+    result: total,
+    attackerCharacterId: row.characterId,
   });
   for (const hit of applied) {
     await emitEvent(tic, 'damage_applied', {
@@ -2615,6 +2821,23 @@ async function applyGrappleDamage(io, { row, targetCharacterId, targetName, tota
       slotName: miss.slotName,
       steps: miss.steps,
       damage: miss.damage,
+    });
+  }
+  for (const shrug of shrugged) {
+    await emitEvent(tic, 'damage_shrugged', {
+      declaredMoveId: row.declaredMoveId,
+      targetCharacterId,
+      targetCharacterName: targetName,
+      attackerCharacterName: row.characterName,
+      attackerCharacterId: row.characterId,
+      slotName: shrug.slotName,
+      steps: halfDamageSteps,
+      result: shrug.result,
+      threshold: shrug.threshold,
+      baseThreshold: shrug.baseThreshold,
+      surcharge: shrug.surcharge,
+      sizeBefore: shrug.sizeBefore,
+      bonusBefore: shrug.bonusBefore,
     });
   }
 
@@ -3062,7 +3285,21 @@ async function resolveAttack(io, { row, pairIndex, tic, emitEvent }) {
   // declared_moves.chain_roll_bonus).
   const chainRollBonus = row.chainRollBonus ?? 0;
   const total = rollTotal(dice, mod + chainRollBonus);
-  await logRoll(io, { characterId: row.characterId, characterName: row.characterName, modifier: mod, dice });
+  // Same bugfix as rollFor's: the chat card's modifier has to be the whole sum,
+  // chain swing included, or its total disagrees with the engine's.
+  const modifierBreakdown = rollModifierBreakdown({
+    rollModifier: row.rollModifier,
+    moveRollBonus: rollBonusRow.bonus,
+    terms: bonus.terms,
+    chainRollBonus,
+  });
+  await logRoll(io, {
+    characterId: row.characterId,
+    characterName: row.characterName,
+    modifier: mod + chainRollBonus,
+    dice,
+    modifierTerms: modifierBreakdown,
+  });
   // characterName rides along for the same §0 reason every other payload
   // carries one: the cutscene names the roller in its own sentence, and a
   // replay has no live combat state left to look the id up in.
@@ -3078,12 +3315,7 @@ async function resolveAttack(io, { row, pairIndex, tic, emitEvent }) {
     // leaving the sum looking like arithmetic that doesn't add up — the same
     // defect the Reasons to Fight modifier had before it was passed through.
     chainRollBonus,
-    modifierBreakdown: rollModifierBreakdown({
-      rollModifier: row.rollModifier,
-      moveRollBonus: rollBonusRow.bonus,
-      terms: bonus.terms,
-      chainRollBonus,
-    }),
+    modifierBreakdown,
   });
   await spendWeaponForDeclaredMove(io, {
     declaredMoveId: row.declaredMoveId,
@@ -3727,7 +3959,16 @@ async function finishBlock(io, { pairIndex, pending, defenderDM, guard, emitEven
   if (pending.coverage?.coverage === 'too-short') {
     const oldRecoveryEndTic =
       defenderDM.reveal_tic + defenderDM.active_tics + defenderDM.recovery_tics + defenderDM.current_extension_tics;
-    const extensionTicsNeeded = pending.coverage.extensionTicsNeeded ?? 0;
+    // **No Wasted Movements** shortens this too (decided). The Perk's text is
+    // "1 less Recovery from all sources, other than the base Recovery of the
+    // Move", and a guard extension is Recovery this fighter is receiving on top
+    // of their move's own — the same category as a trip, arriving by a different
+    // door. Floored at 0: a guard that needed one Tic of cover and got none
+    // simply holds no longer than it already did.
+    const extensionTicsNeeded = Math.max(
+      0,
+      (pending.coverage.extensionTicsNeeded ?? 0) - (await perkImposedRecoveryDelta(defenderDM.character_id))
+    );
     const newRecoveryEndTic = oldRecoveryEndTic + extensionTicsNeeded;
     await run('UPDATE declared_moves SET recovery_extension_tics = ? WHERE id = ?', [
       defenderDM.current_extension_tics + extensionTicsNeeded,

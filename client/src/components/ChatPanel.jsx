@@ -6,7 +6,7 @@ import { getChat, getTells, getTags, getRuleset, getMoves } from '../lib/api.js'
 import { fileToChatImage } from '../lib/image.js';
 import { folderPath } from '../lib/folders.js';
 import { phaseBgAt } from '../lib/framePhaseColors.js';
-import { decomposeRoll, formatRollTotal } from '../lib/dice.js';
+import { decomposeRoll, formatModifierTerms, formatRollTotal } from '../lib/dice.js';
 import { useRole } from '../roleContext.jsx';
 import { useSocketRefresh } from '../lib/connection.js';
 import { useRoster } from '../lib/useRoster.js';
@@ -255,6 +255,18 @@ function Entry({ entry, character, moveInfo, characters, defenseResolutions, onW
                 <span className="text-2xl font-black">
                   {formatRollTotal(entry.dice, entry.modifier, entry.total)}
                 </span>
+                {/* **What the modifier was made of.** Its own quiet line under
+                    the total, and only when there is more than one named piece
+                    to name — a roll of 11 with `+ 4 (Stance matchup) − 5 (Read
+                    on the grab)` used to print as a bare `11 + 4 = 15` while
+                    the engine went on to announce 10, and the log contradicted
+                    itself. Engine rolls carry `modifierTerms`; a Dice Tray roll
+                    has none and this renders nothing. */}
+                {Boolean(formatModifierTerms(entry.modifierTerms)) && (
+                  <div className="mt-0.5 text-[11px] font-normal leading-snug text-zinc-500">
+                    {formatModifierTerms(entry.modifierTerms)}
+                  </div>
+                )}
               </div>
             )}
             {entry.declaredMoveId != null && (() => {

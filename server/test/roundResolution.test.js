@@ -2102,19 +2102,39 @@ test('the reveal card is the only thing that entitles a move to be read in full'
 // The Minimum Damage Threshold Perks are easiest to see on a roll that sits
 // exactly between the moved bar and the game's own 5, so both fixtures pin the
 // attacker's roll with a modifier rather than hoping for a die face.
-const thresholdFight = async (pairIndex, { attackerPerk = null, targetPerk = null, rollModifier }) => {
+const thresholdFight = async (pairIndex, {
+  attackerPerk = null,
+  targetPerk = null,
+  rollModifier,
+  // Sizes to set on the DEFENDER's dice before the round, for the per-Stat
+  // threshold (Yamazaki Black Bones) whose whole input is how big the bone is.
+  targetDice = null,
+  attackTargets = ['Body'],
+  // What the DECLARED move actually aims at. `declared_moves` carries its own
+  // resolved targets and the column defaults to ["Skull"], so a move authored
+  // to hit the Body still lands on the Skull unless the declaration says
+  // otherwise — which is exactly the per-Stat question here.
+  declaredTargets = null,
+}) => {
   const attacker = await createCharacter(`TH Attacker ${pairIndex}`);
   const defender = await createCharacter(`TH Defender ${pairIndex}`);
   if (attackerPerk) await grantPerk(attacker, attackerPerk);
-  if (targetPerk) await grantPerk(defender, targetPerk);
+  // One name or several — two threshold Perks on one defender is the point of
+  // the stacking test, and the seams are additive precisely so it needs no
+  // special handling anywhere but here.
+  for (const name of [targetPerk].flat().filter(Boolean)) await grantPerk(defender, name);
+  for (const [slot, size] of Object.entries(targetDice ?? {})) await setDieSize(defender, slot, size);
   const jab = await createMove({
     name: `TH Jab ${pairIndex}`,
     startupTics: 1, activeTics: 1, recoveryTics: 1,
-    rollSlots: ['Skull'], rollModifier, attackTargets: ['Body'],
+    rollSlots: ['Skull'], rollModifier, attackTargets,
   });
   await seatPair(pairIndex, attacker, defender);
   await startPairDeclaration(mockIo, pairIndex);
-  await declareMove({ characterId: attacker, moveId: jab, placementTic: 0, startupTics: 1 });
+  await declareMove({
+    characterId: attacker, moveId: jab, placementTic: 0, startupTics: 1,
+    effectiveAttackTargets: declaredTargets,
+  });
   await resolvePair(pairIndex);
   const events = await all('SELECT type, payload FROM round_events WHERE pair_index = ? ORDER BY seq', [pairIndex]);
   return events.map((e) => ({ type: e.type, payload: JSON.parse(e.payload) }));
@@ -2180,6 +2200,135 @@ test('the two threshold Perks cancel when they meet', async () => {
     both.some((e) => e.type === 'insignificant_damage'),
     `a 4 against a restored threshold of 5 is nothing: ${both.map((e) => e.type).join(', ')}`
   );
+});
+
+// ---------- The chat card's total is the engine's total ----------
+
+test("a follow-up whose grab was read logs the total the contest actually used", async () => {
+  // The bug this pins: the ±5 from the direction read rides the roll's TOTAL
+  // but was left out of the modifier handed to the chat log, so the card
+  // printed `11 + 4 = 15` and the very next line announced 10. Nothing about
+  // the engine's arithmetic was wrong — only what the log said about it.
+  const pairIndex = 416;
+  const attacker = await createCharacter('Chain Roller');
+  const defender = await createCharacter('Chain Target');
+  const punch = await createMove({
+    name: 'Chain Punch',
+    startupTics: 1, activeTics: 1, recoveryTics: 1,
+    rollSlots: ['Skull'], rollModifier: 0, attackTargets: ['Body'],
+  });
+  await seatPair(pairIndex, attacker, defender);
+  await startPairDeclaration(mockIo, pairIndex);
+  const declaredMoveId = await declareMove({
+    characterId: attacker, moveId: punch, placementTic: 0, startupTics: 1,
+  });
+  // What resolveGrapple writes on a follow-up the defender read correctly.
+  await run('UPDATE declared_moves SET chain_roll_bonus = -5 WHERE id = ?', [declaredMoveId]);
+  await resolvePair(pairIndex);
+
+  const rollEvent = (
+    await all("SELECT payload FROM round_events WHERE pair_index = ? AND type = 'roll' ORDER BY seq", [pairIndex])
+  )
+    .map((r) => JSON.parse(r.payload))
+    .find((p) => p.characterId === attacker);
+  assert.ok(rollEvent, 'the attacker has to have rolled');
+  assert.equal(rollEvent.chainRollBonus, -5);
+
+  // Matched to the event's own dice rather than taken as "the last row": the
+  // round closes by rolling everybody's Brain for the next Initiative, and that
+  // card is logged after this one.
+  const cards = await all(
+    'SELECT modifier, dice_rolled, payload FROM chat_log WHERE character_id = ? ORDER BY id',
+    [attacker]
+  );
+  const card = cards.find((c) => c.dice_rolled === JSON.stringify(rollEvent.dice));
+  assert.ok(card, `the move's roll should have a chat card: ${JSON.stringify(cards)}`);
+  const dice = JSON.parse(card.dice_rolled);
+  const sum = dice.reduce((acc, d) => acc + d.result, 0);
+  // The card renders `sum + modifier`, so this IS what a reader sees.
+  assert.equal(sum + card.modifier, rollEvent.total, 'the card must say what the engine used');
+  assert.equal(card.modifier, -5, 'and the read is inside the modifier, not beside it');
+
+  // ...and it is named, so the reader knows where the −5 came from.
+  const terms = JSON.parse(card.payload)?.modifierTerms ?? [];
+  assert.ok(
+    terms.some((t) => t.key === 'chain' && t.amount === -5),
+    `the read should be its own named term: ${JSON.stringify(terms)}`
+  );
+});
+
+// ---------- Yamazaki Black Bones: the threshold, per Stat ----------
+
+test('Yamazaki Black Bones turns away a blow a small Stat could not feel', async () => {
+  // 8 − 1 = 7. Over the plain 5, under the 8 a d6 Stat asks for.
+  const bare = await thresholdFight(410, { rollModifier: -1, targetDice: { Body: 6 }, declaredTargets: ['Body'] });
+  assert.ok(bare.some((e) => e.type === 'damage_applied'), 'the bare fixture has to actually land');
+  assert.ok(!bare.some((e) => e.type === 'damage_shrugged'));
+
+  const boned = await thresholdFight(411, {
+    targetPerk: 'Yamazaki Black Bones', rollModifier: -1, targetDice: { Body: 6 }, declaredTargets: ['Body'],
+  });
+  const shrug = boned.find((e) => e.type === 'damage_shrugged');
+  assert.ok(shrug, `the same roll should be shrugged off: ${boned.map((e) => e.type).join(', ')}`);
+  assert.equal(shrug.payload.slotName, 'Body');
+  assert.equal(shrug.payload.result, 7);
+  assert.equal(shrug.payload.threshold, 8, '5 for the exchange plus 3 for the bone');
+  assert.ok(!boned.some((e) => e.type === 'damage_applied'), 'and nothing lands');
+  // Not an Injury: a shrug must never be counted by the end-of-round report,
+  // which reads `damage_unapplied` back off this same log.
+  assert.ok(!boned.some((e) => e.type === 'damage_unapplied'));
+});
+
+test('Yamazaki Black Bones is per Stat — the big ones are as easy to hit as ever', async () => {
+  // One blow, two named Stats, one Perk: the d6 Body turns it away and the d8
+  // Skull takes it, in the same exchange. This is the whole reason the seam is
+  // per-die rather than per-exchange, so it is the test that matters most.
+  const split = await thresholdFight(412, {
+    targetPerk: 'Yamazaki Black Bones',
+    rollModifier: -1,
+    targetDice: { Body: 6 },
+    attackTargets: ['Body', 'Skull'],
+    declaredTargets: ['Body', 'Skull'],
+  });
+  const shrugged = split.filter((e) => e.type === 'damage_shrugged').map((e) => e.payload.slotName);
+  const hit = split.filter((e) => e.type === 'damage_applied' && e.payload.slotName).map((e) => e.payload.slotName);
+  assert.deepEqual(shrugged, ['Body'], `only the small bone shrugs: ${JSON.stringify(split.map((e) => e.type))}`);
+  assert.deepEqual(hit, ['Skull'], 'the d8 Skull is untouched by the Perk');
+});
+
+test('Yamazaki Black Bones is a gate and not a softener', async () => {
+  // 8 − 0 = 8, exactly the raised bar. Clearing it costs the Stat everything
+  // the blow was always worth — the Perk never reduces a landed hit, which is
+  // what "the Threshold is the first gate only" means (see computeHitDamage).
+  const cleared = await thresholdFight(413, {
+    targetPerk: 'Yamazaki Black Bones', rollModifier: 0, targetDice: { Body: 6 }, declaredTargets: ['Body'],
+  });
+  assert.ok(!cleared.some((e) => e.type === 'damage_shrugged'), 'an 8 is enough');
+  const hit = cleared.find((e) => e.type === 'damage_applied' && e.payload.slotName === 'Body');
+  assert.ok(hit, `the Body should have been hit: ${cleared.map((e) => e.type).join(', ')}`);
+  assert.equal(hit.payload.steps, 1, 'floor(8 / 5) is one step, Perk or no Perk');
+});
+
+test('Yamazaki Black Bones and Iron Skin simply add up', async () => {
+  // The exchange-wide seam and the per-Stat one sum with no rule for their
+  // meeting: 5 + 2 (Iron Skin, the whole fighter) + 3 (the bone) = 10, so an 8
+  // that cleared the bone's own 8 in the test above no longer clears anything.
+  const stacked = await thresholdFight(414, {
+    targetPerk: ['Yamazaki Black Bones', 'Iron Skin'], rollModifier: 0, targetDice: { Body: 6 }, declaredTargets: ['Body'],
+  });
+  const shrug = stacked.find((e) => e.type === 'damage_shrugged');
+  assert.ok(shrug, `both Perks together should stop an 8: ${stacked.map((e) => e.type).join(', ')}`);
+  assert.equal(shrug.payload.threshold, 10, '5 + 2 for the hide + 3 for the bone');
+  assert.equal(shrug.payload.baseThreshold, 7, 'Iron Skin moved the exchange-wide figure');
+  assert.equal(shrug.payload.surcharge, 3, 'and the bone is still worth exactly its own 3');
+
+  // Iron Skin on its own never shrugs anything: it is not per Stat, so a roll
+  // it stops is Insignificant Damage for the whole blow instead.
+  const armoured = await thresholdFight(415, {
+    targetPerk: 'Iron Skin', rollModifier: 0, targetDice: { Body: 6 }, declaredTargets: ['Body'],
+  });
+  assert.ok(!armoured.some((e) => e.type === 'damage_shrugged'));
+  assert.ok(armoured.some((e) => e.type === 'damage_applied'), 'an 8 still clears a bare 7');
 });
 
 test('Spiked Shell bites the hand that threw the punch, on a Full Block only', async () => {

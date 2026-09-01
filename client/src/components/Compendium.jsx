@@ -7,6 +7,7 @@ import {
   slotItems,
 } from '../lib/moveFilterRules.js';
 import { MoveFilterChips } from '../lib/moveFilters.jsx';
+import MoveFilterPopover from './MoveFilterPopover.jsx';
 import { useRole } from '../roleContext.jsx';
 import { socket } from '../socket.js';
 import { getMoves, getRuleset, getTags, getTells } from '../lib/api.js';
@@ -600,87 +601,90 @@ export default function MovesCompendium() {
           </>
         )}
 
-        {/* **Four filters, split left and right by the question they ask
-            (decided, revised).** Left: what a move *does* — the Attack Target it
-            goes for and the Attack Roll it makes. Right: what a move *is* — the
-            Style it belongs to and the Tags it carries. Browsing a library of
-            two hundred moves for "everything that goes for the Skull" was not
-            possible at all before; it is the question a GM building a discipline
-            asks constantly.
+        {/* **Behind a funnel button, not open on the page (decided, revised).**
+            Four columns of chips ate the top of the Compendium before a single
+            move was visible, and the Tag column alone runs to twenty-odd. The
+            Arena's declare picker keeps its open columns — mid-round a filter
+            you have to open first is a filter you will not use — but browsing a
+            library is not on a clock. The button is sticky, so it is still
+            there two hundred moves down.
 
-            The Tag row is now the shared `MoveFilterChips` rather than a fourth
-            hand-rolled copy of the same control — it was already identical in
-            every respect but its source. The Style row stays bespoke: it is
-            icons, not words, and nothing else in the app filters by icon.
-
-            **One column per filter (revised).** Two columns of two stacked rows
-            read as two controls rather than four; one column apiece keeps the
-            left/right split and makes each its own thing. */}
-        <div className="grid gap-x-6 gap-y-2 sm:grid-cols-2 lg:grid-cols-4">
-          <div>
-            <MoveFilterChips
-              label="Attack Target:"
-              items={targetItems}
-              selected={targetFilter}
-              onToggle={toggleTargetFilter}
-              onClear={() => setTargetFilter(new Set())}
-              labelFor={(s) => s.name}
-              titleFor={(s) => `Show only moves that go for the ${s.name}`}
-            />
+            Inside, the rows are full width and stacked in the order the columns
+            were in: what a move DOES (Attack Target, Attack Roll), then what it
+            IS (Style, Tags). The Style row stays bespoke — it is icons, not
+            words, and nothing else in the app filters by icon. */}
+        <MoveFilterPopover
+          activeCount={targetFilter.size + rollFilter.size + styleFilter.size + tagFilter.size}
+          onClear={() => {
+            setTargetFilter(new Set());
+            setRollFilter(new Set());
+            setStyleFilter(new Set());
+            setTagFilter(new Set());
+          }}
+        >
+          <MoveFilterChips
+            label="Attack Target:"
+            items={targetItems}
+            selected={targetFilter}
+            onToggle={toggleTargetFilter}
+            onClear={() => setTargetFilter(new Set())}
+            labelFor={(s) => s.name}
+            titleFor={(s) => `Show only moves that go for the ${s.name}`}
+          />
+          <MoveFilterChips
+            label="Attack Roll:"
+            items={rollItems}
+            selected={rollFilter}
+            onToggle={toggleRollFilter}
+            onClear={() => setRollFilter(new Set())}
+            labelFor={(s) => s.name}
+            titleFor={(s) => `Show only moves that roll ${s.name}`}
+          />
+          <div className="flex flex-wrap items-center gap-1">
+            <span className="mr-1 text-xs font-semibold uppercase text-zinc-500">
+              Filter by style:
+            </span>
+            {ruleset.attributes.map((attr) => {
+              const Icon = iconFor(attr.icon);
+              const active = styleFilter.has(attr.id);
+              return (
+                <button
+                  key={attr.id}
+                  onClick={() => toggleStyleFilter(attr.id)}
+                  title={`Filter by ${attr.name}`}
+                  className={`flex h-11 w-11 shrink-0 items-center justify-center panel-cut-sm border p-1.5 md:h-auto md:w-auto ${
+                    active
+                      ? 'border-brand-500 bg-brand-600/30 text-brand-300'
+                      : 'border-zinc-700 text-zinc-500 hover:border-zinc-500'
+                  }`}
+                >
+                  <Icon size={14} />
+                </button>
+              );
+            })}
+            {styleFilter.size > 0 && (
+              <button
+                type="button"
+                onClick={() => setStyleFilter(new Set())}
+                className="ml-1 text-xs text-zinc-500 underline hover:text-zinc-300"
+              >
+                clear
+              </button>
+            )}
           </div>
-          <div>
-            <MoveFilterChips
-              label="Attack Roll:"
-              items={rollItems}
-              selected={rollFilter}
-              onToggle={toggleRollFilter}
-              onClear={() => setRollFilter(new Set())}
-              labelFor={(s) => s.name}
-              titleFor={(s) => `Show only moves that roll ${s.name}`}
-            />
-          </div>
-
-          <div>
-            <div className="flex flex-wrap items-center gap-1">
-              <span className="mr-1 text-xs font-semibold uppercase text-zinc-500">
-                Filter by style:
-              </span>
-              {ruleset.attributes.map((attr) => {
-                const Icon = iconFor(attr.icon);
-                const active = styleFilter.has(attr.id);
-                return (
-                  <button
-                    key={attr.id}
-                    onClick={() => toggleStyleFilter(attr.id)}
-                    title={`Filter by ${attr.name}`}
-                    className={`flex h-11 w-11 shrink-0 items-center justify-center panel-cut-sm border p-1.5 md:h-auto md:w-auto ${
-                      active
-                        ? 'border-brand-500 bg-brand-600/30 text-brand-300'
-                        : 'border-zinc-700 text-zinc-500 hover:border-zinc-500'
-                    }`}
-                  >
-                    <Icon size={14} />
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          <div>
-            {/* In words rather than icons because a Tag is GM-authored free
-                text with no icon to stand in for it. Renders nothing at all
-                when the world has no Tags yet, rather than a bare label. */}
-            <MoveFilterChips
-              label="Filter by tag:"
-              items={tags}
-              selected={tagFilter}
-              onToggle={toggleTagFilter}
-              onClear={() => setTagFilter(new Set())}
-              labelFor={(t) => t.name}
-              titleFor={(t) => t.description}
-            />
-          </div>
-        </div>
+          {/* In words rather than icons because a Tag is GM-authored free text
+              with no icon to stand in for it. Renders nothing at all when the
+              world has no Tags yet, rather than a bare label. */}
+          <MoveFilterChips
+            label="Filter by tag:"
+            items={tags}
+            selected={tagFilter}
+            onToggle={toggleTagFilter}
+            onClear={() => setTagFilter(new Set())}
+            labelFor={(t) => t.name}
+            titleFor={(t) => t.description}
+          />
+        </MoveFilterPopover>
 
         {role === 'gm' &&
           (form ? (
