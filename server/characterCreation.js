@@ -11,6 +11,7 @@
 // vttprojectplan.md's Character Creation section for the design.
 
 import { DICE_TEMPLATE, rankOf } from './gameLogic.js';
+import { bundleMoves, moveSelectionCost } from './moveBundles.js';
 
 // The three starting points. Everything a preset decides is here: how many
 // points there are to raise Stats with, and how many Perks and Moves the
@@ -121,6 +122,12 @@ export function validateCreation({
   moveStyles = null,
   ownedStyleIds = null,
   moveNames = null,
+  // The whole library, for the bundle rules (see moveBundles.js): variants of
+  // one move cost a single point, and a grapple's first extension comes with
+  // the grab. Optional, and a caller that cannot supply it falls back to the
+  // old one-point-per-row count — which is never cheaper, so a build the
+  // wizard priced with bundles can never be refused by a server without them.
+  moveLibrary = null,
 } = {}) {
   const errors = [];
   const warnings = [];
@@ -166,8 +173,15 @@ export function validateCreation({
   // those are. Picking the same Move twice is one Move against the cap, not
   // two — the dedupe happens before the count for exactly that reason.
   const moves = dedupeIds(moveIds).filter((id) => !validMoveIds || validMoveIds.includes(id));
-  if (preset && moves.length > preset.moveCount) {
-    errors.push(`${preset.name} allows ${preset.moveCount} Moves; this picks ${moves.length}.`);
+  // **The budget counts BUNDLES, not rows (decided, new).** `Cross - Head` and
+  // `Cross - Body` are one punch aimed two ways, and a grapple with no follow-up
+  // is not a move — see moveBundles.js for both rules and why they are
+  // hard-coded rather than authored. The count is what the wizard shows and what
+  // this refuses, from the same function, so the two cannot drift.
+  const bundles = moveLibrary ? bundleMoves(moveLibrary) : [];
+  const movePoints = moveLibrary ? moveSelectionCost(moves, bundles).points : moves.length;
+  if (preset && movePoints > preset.moveCount) {
+    errors.push(`${preset.name} allows ${preset.moveCount} Moves; this picks ${movePoints}.`);
   }
 
   // **A Style you do not have is not a Move you can learn.** The same rule
@@ -244,7 +258,10 @@ export function validateCreation({
       pointsLeft: preset ? preset.statPoints - spent : null,
       stance: normalizedStance,
       moveIds: moves,
-      movesLeft: preset ? preset.moveCount - moves.length : null,
+      // What the selection actually costs, so a caller can show it beside the
+      // budget rather than re-deriving it from the ids.
+      movePoints,
+      movesLeft: preset ? preset.moveCount - movePoints : null,
       perkIds: perks,
       perksLeft: preset ? preset.perkCount - perks.length : null,
       quirks: normalizedQuirks,

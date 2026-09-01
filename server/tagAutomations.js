@@ -107,6 +107,52 @@ export const TEMPORARY_DAMAGE_TAG = 'Temporary Damage';
 // damage, which is the rate the rule names.
 export const TEMPORARY_DAMAGE_HEAL_PER_ROUND = 1;
 
+// **Ground Finisher**: a move built to finish somebody who is already down.
+//
+// If this move's **Active frames land on even one Trip Recovery frame** of the
+// fighter it is coming for, its Roll gets **+5**. One overlapping Tic is
+// enough — the rule is "did you catch them on the floor", not "how much of
+// their time on the floor did you cover".
+//
+// The mirror image of **Off The Ground**, which is the same window read from
+// the other side: that Tag lets the fighter on the floor start winding up
+// early, and this one rewards the opponent for arriving before they are up.
+//
+// **A Roll bonus and nothing else.** It does not change damage, targeting or
+// timing — so like the Punisher it rides the shared modifier funnel as its own
+// named term, and a table can read it off the roll's own breakdown.
+export const GROUND_FINISHER_TAG = 'Ground Finisher';
+export const GROUND_FINISHER_BONUS = 5;
+
+// Does an attack's Active window catch anybody on the floor?
+//
+// Pure, and both arguments are half-open `[from, to)` — the same convention
+// `tripWindow` returns and every other window in combatTiming.js uses. `+5`
+// once, however many trip windows it overlaps: this is one move catching one
+// fighter down, and a second overlapping window is the same fact said twice.
+//
+// The caught move's name comes back with the amount for the roll's own
+// breakdown, for exactly the reason the Punisher's Stat does — a modifier that
+// cannot say what it is reacting to leaves nobody able to tell a rule firing
+// correctly from a rule firing when it should not.
+export function groundFinisherBonus({ tagNames, attackWindow, tripWindows = [] } = {}) {
+  if (!hasTagNamed(tagNames, GROUND_FINISHER_TAG)) return { amount: 0, caught: null };
+  const from = Number(attackWindow?.from);
+  const to = Number(attackWindow?.to);
+  if (!Number.isFinite(from) || !Number.isFinite(to) || from >= to) return { amount: 0, caught: null };
+  for (const window of tripWindows ?? []) {
+    if (!window) continue;
+    const wFrom = Number(window.from);
+    const wTo = Number(window.to);
+    if (!Number.isFinite(wFrom) || !Number.isFinite(wTo)) continue;
+    // Two half-open ranges overlap when each starts before the other ends.
+    if (from < wTo && wFrom < to) {
+      return { amount: GROUND_FINISHER_BONUS, caught: window.characterName ?? null };
+    }
+  }
+  return { amount: 0, caught: null };
+}
+
 // One entry per Tag that carries mechanics. See resolveBlockStamina and
 // resolveNoDamageOutcome in combatDamage.js for the arithmetic behind each,
 // and vttprojectplan.md's Block Stamina / No Damage Tag rules for the design.
@@ -181,6 +227,15 @@ export const TAG_HOOKS = {
     // round ends (healTemporaryDamage).
     damageWearsOff: true,
     healPerRound: TEMPORARY_DAMAGE_HEAL_PER_ROUND,
+  },
+  [GROUND_FINISHER_TAG]: {
+    // Read at roll time by the shared modifier funnel, and it moves exactly one
+    // number: this move's own Roll. Nothing about the fighter on the floor
+    // changes — they are not tripped harder or held down longer.
+    rollBonus: GROUND_FINISHER_BONUS,
+    // The condition is a window overlap rather than anything about the move
+    // itself, which is why it has a pure helper of its own above.
+    needsTripOverlap: true,
   },
   [GROUNDING_TAG]: {
     // Also read at declare time, and the only Tag that writes
@@ -396,6 +451,7 @@ export const carriesNoDamageTag = (tagNames) => hasTagNamed(tagNames, NO_DAMAGE_
 export const carriesFeintTag = (tagNames) => hasTagNamed(tagNames, FEINT_TAG);
 export const carriesOffTheGroundTag = (tagNames) => hasTagNamed(tagNames, OFF_THE_GROUND_TAG);
 export const carriesGroundingTag = (tagNames) => hasTagNamed(tagNames, GROUNDING_TAG);
+export const carriesGroundFinisherTag = (tagNames) => hasTagNamed(tagNames, GROUND_FINISHER_TAG);
 export const carriesTemporaryDamageTag = (tagNames) => hasTagNamed(tagNames, TEMPORARY_DAMAGE_TAG);
 
 // How many Trip Recovery frames a declaration starts life with. Zero for every

@@ -87,6 +87,48 @@ export function computeMoveFootprint({ placementTic, startupTics, activeTics, re
   return { placementTic, revealTic, activeEndTic, recoveryEndTic };
 }
 
+// **Which Tic an attack actually lands on (decided, new; bugfix).**
+//
+// An attack used to resolve on its **reveal Tic** — the first Tic of its Active
+// window — and for a move with no Defense Frames that is still exactly what
+// this returns. But Defense Frames may only sit on ACTIVE frames (see
+// `sanitizeDefensePositions`), so a move that both guards and hits has its
+// guard drawn *over* the front of its own Active run. Resolving on the reveal
+// Tic therefore landed the blow on a frame the move was spending on defence,
+// which is not what the frame says it is doing: **the damage came out on the
+// guard.**
+//
+// So: the first Active Tic that is **not** annotated as a Defense Frame. A
+// Straight with 2 guarding frames and 2 open ones hits on the third frame of
+// its Active run, which is the first one it is actually punching on.
+//
+// **Falls back to the reveal Tic when every Active frame is a Defense Frame.**
+// Such a move is a pure guard and usually names no Attack Target, so it deals
+// nothing either way — but it still has to *resolve*, or `interactions_resolved`
+// never flips and processTic re-selects it every Tic forever. A rule that can
+// hang the round is worse than one that resolves a guard on its first frame.
+//
+// Pure, and half-open [revealTic, activeEndTic) like every other window here.
+// `defenseFramePositions` are 0-based into the move's own frame sequence, which
+// is why `placementTic` is needed to compare them against absolute Tics.
+export function attackResolutionTic({
+  placementTic,
+  revealTic,
+  activeEndTic,
+  defenseFramePositions = [],
+}) {
+  const guarded = new Set(
+    (Array.isArray(defenseFramePositions) ? defenseFramePositions : [])
+      .map((n) => Math.trunc(Number(n)))
+      .filter(Number.isInteger)
+  );
+  if (!guarded.size) return revealTic;
+  for (let tic = revealTic; tic < activeEndTic; tic++) {
+    if (!guarded.has(tic - placementTic)) return tic;
+  }
+  return revealTic;
+}
+
 // **Trip Recovery Frames (decided, new).**
 //
 // A distinct kind of Recovery: same timing behaviour in every respect —

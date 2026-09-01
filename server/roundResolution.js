@@ -102,6 +102,7 @@ import {
 // is the whole point of it existing once.
 export { moveTagNamesFor };
 import {
+  attackResolutionTic,
   computeMoveFootprint,
   computeNextRoundStartTic,
   computeInitiativeOverflowPenalty,
@@ -4387,6 +4388,7 @@ async function processTic(io, { pairIndex, tic, emitEvent, resolutionId }) {
             m.is_defensive AS isDefensive, m.is_grappling AS isGrappling,
             m.success_threshold AS successThreshold,
             m.custom_roll_size AS customRollSize, m.roll_modifier AS rollModifier,
+            m.defense_frame_positions AS defenseFramePositions,
             cp.side AS side, ch.name AS characterName
      FROM declared_moves dm
      JOIN moves m ON m.id = dm.move_id
@@ -4407,6 +4409,21 @@ async function processTic(io, { pairIndex, tic, emitEvent, resolutionId }) {
     }
 
     for (const row of toResolve) {
+      // **The blow lands on the first Active frame the move is not GUARDING on
+      // (bugfix).** Defense Frames may only sit on Active frames, so a move that
+      // both guards and hits has its guard drawn over the front of its own
+      // Active run — and resolving on the reveal Tic put the damage out on a
+      // frame the move was spending on defence. Left here rather than in the
+      // SQL above because the positions are a JSON column; the row is simply
+      // passed over and re-selected on a later Tic, since `interactions_resolved`
+      // is untouched. See attackResolutionTic for the all-guard fallback.
+      const landsOn = attackResolutionTic({
+        placementTic: row.placementTic,
+        revealTic: row.revealTic,
+        activeEndTic: row.revealTic + row.activeTics,
+        defenseFramePositions: JSON.parse(row.defenseFramePositions ?? '[]'),
+      });
+      if (landsOn > tic) continue;
       const result = await resolveAttack(io, {
         row: { ...row, rollSlotNames: rollSlotsByMove.get(row.moveId) ?? [] },
         pairIndex,

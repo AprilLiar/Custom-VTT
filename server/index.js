@@ -2953,12 +2953,31 @@ io.on('connection', (socket) => {
     const character = await getCharacter(payload.characterId);
     if (!character) return;
 
-    const [moves, perks, attributes, ownedStances] = await Promise.all([
-      all('SELECT id, name, style_attribute_id FROM moves'),
+    const [moves, perks, attributes, ownedStances, grappleDirections] = await Promise.all([
+      all('SELECT id, name, style_attribute_id, is_grappling FROM moves'),
       all('SELECT id FROM perks'),
       all('SELECT id FROM attributes'),
       all('SELECT attribute_a_id, attribute_b_id FROM stances WHERE character_id = ?', [character.id]),
+      // The grapple graph, for the Move Point bundle rules (see moveBundles.js).
+      // Read here rather than inside the validator because that module is pure.
+      all('SELECT move_id, target_move_id FROM move_grapple_directions ORDER BY id'),
     ]);
+    // The shape `bundleMoves` reads: a name, whether it is a grapple, and where
+    // its directions lead. Assembled from the two reads above rather than from
+    // `getMovesFor`, which is per-character and would answer a different
+    // question — the budget is about the LIBRARY, not about what one fighter
+    // already knows.
+    const directionsByMove = new Map();
+    for (const row of grappleDirections) {
+      if (!directionsByMove.has(row.move_id)) directionsByMove.set(row.move_id, []);
+      directionsByMove.get(row.move_id).push({ target_move_id: row.target_move_id });
+    }
+    const moveLibrary = moves.map((m) => ({
+      id: m.id,
+      name: m.name,
+      is_grappling: Boolean(m.is_grappling),
+      grapple_directions: directionsByMove.get(m.id) ?? [],
+    }));
     // **The Styles this character will have when the Moves are granted** — the
     // stances they already stand in, plus the one this draft is about to
     // create. That union is exactly what `characterHasStyle` will test against
@@ -2979,6 +2998,7 @@ io.on('connection', (socket) => {
       moveStyles: Object.fromEntries(moves.map((m) => [m.id, m.style_attribute_id])),
       moveNames: Object.fromEntries(moves.map((m) => [m.id, m.name])),
       ownedStyleIds,
+      moveLibrary,
     });
     if (!result.ok) {
       // Answered to the caller alone, not broadcast: a rejected draft is that

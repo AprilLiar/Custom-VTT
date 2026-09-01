@@ -1176,6 +1176,47 @@ on the **ground** for it, and two rules read that difference.
     move was always going to leave you.
   - No client change was needed — every render site already draws from `tripRecoveryTics`.
 
+- **The Ground Finisher Tag reads them from the other side (decided, new; implemented).** If this
+  move's **Active frames land on even one Trip Recovery frame** of the fighter it is coming for, its
+  Roll gets **+5**. One overlapping Tic is enough: the rule is "did you catch them on the floor", not
+  "how much of their time down did you cover".
+  - **The mirror of Off The Ground**, and the third Tag reading the same window. That one lets the
+    fighter on the floor start winding up early; this one rewards the opponent for arriving before
+    they are up. Between them, being knocked down is now a real position with two answers rather than
+    a stretch of dead time.
+  - **A Roll bonus and nothing else** — no change to damage, targeting or timing — so it rides the
+    shared modifier funnel as its own named term, `Ground Finisher (Kenji is down)`. Named with who
+    it caught for the same reason the Punisher is named with its Stat: a +5 that says only "+5"
+    leaves nobody able to tell a rule firing correctly from a rule firing when it should not.
+  - The overlap itself is a pure two-window test (`groundFinisherBonus`), and the windows are
+    **half-open** like every other window in `combatTiming.js` — `[3,6)` and `[6,9)` are back to back
+    and do not overlap, which is the off-by-one that would otherwise pay +5 to an attack arriving
+    exactly as they stood up. `+5` once however many people are down: one move catching one fighter.
+  - A roll belonging to no declaration (a hand-thrown die, an Initiative roll) has no Active window
+    and therefore no overlap — the true answer rather than a missing one.
+
+**An attack lands on the frame it is PUNCHING on, not the one it is guarding on (decided, new;
+bugfix).** An attack used to resolve on its **reveal Tic** — the first Tic of its Active window. But
+Defense Frames may only sit on Active frames (`sanitizeDefensePositions`), so a move that both guards
+and hits has its guard drawn over the front of its own Active run, and resolving on the reveal Tic
+put the damage out on a frame the move was spending on defence. Reported from the table in exactly
+those terms.
+
+- `attackResolutionTic` (pure, in `combatTiming.js`) answers the first Active Tic **not** annotated as
+  a Defense Frame, and `processTic` passes a move over until that Tic arrives. Nothing is marked
+  resolved in the meantime, so it is simply re-selected on a later Tic.
+- **Identical for every move that does not guard**, which is nearly all of them: no Defense Frames
+  means the answer is the reveal Tic, arithmetically as before.
+- **A gap in the guard is where it lands** — guarding on the first and third Active frames puts the
+  blow in the hole between them, not after all of them.
+- **An all-guard move still resolves, on its reveal Tic.** Such a move usually names no Attack Target
+  and deals nothing either way, but it has to resolve or `interactions_resolved` never flips and
+  processTic re-selects it every Tic forever. A rule that can hang the round is worse than one that
+  resolves a guard on its first frame.
+- The move's Active *window* is untouched — defence coverage and the Interruption check still read
+  `[revealTic, activeEndTic)`. What moved is the moment the blow happens, not how long the move is
+  dangerous for.
+
 **A grab that takes hold also HURTS (decided, new; bugfix).** A grappling move with a Roll and an
 Attack Target deals damage exactly like any other attack: **its own roll against the target's Damage
 Thresholds**. The Resist Roll decides only whether the grab lands at all — it is what stops the move
@@ -1539,6 +1580,14 @@ A **Character Creation** button at the top of every character sheet opens a guid
 
 - **Every step has a Skip, and Finish is live from the first screen.** Skip *clears* that step's contribution as well as moving on — otherwise it is Next with a different label — and Back is always there. Nothing forces a player to fill in a step they would rather come back to.
 - **The presets, and what they are:** Teenager (8 Stat points, **2** Perks, **4** Moves), Adult (16 / **3** / **8**), Old Master (24 / **5** / **16**). Even the preset itself is skippable: no preset means no caps at all, a free-form build with nothing to exceed.
+- **A Move Point buys a BUNDLE, not a row (decided, new; `server/moveBundles.js`).** The Move count used to count `moves` rows, and the table found two places where that is the wrong unit — both of them several rows that are obviously one thing a fighter learns. The picker shows **one checkbox per bundle**, ticking it takes every row inside, and the budget counts bundles.
+  - **Variants.** Moves whose names share everything before a ` - ` are one family: `Cross - Head` and `Cross - Body` are one punch aimed two ways. One point, one checkbox, shown as `Cross  Head / Body`. **The separator needs spaces on both sides**, which is the whole reason the convention is written that way at the table — without them, `Push-Kick` and `Push-Block` would silently become one point. Only the first separator splits, so a variant may have a dash in its own suffix.
+  - **A grapple and its first follow-up.** A grab that goes nowhere is not a move, so the grappler pays for one extension; every further extension is its own point. **The player chooses which one is free** — it is whichever they took — because "one extension comes with the grab" says nothing about which, and a fixed choice would quietly make some grapples better than others.
+  - **The two rules compose, and that is why the grapple walk speaks in bundles rather than rows.** `Arm Bar - Left` and `Arm Bar - Right` as two directions of one grapple are ONE extension. Reading it per-row would charge for one and free the other, which is the same follow-up.
+  - **Recursion is the reason the walk is a graph walk**, and it is cashed out as two guards. A grapple may name *itself* as a direction (the chain-the-same-move authoring) and a chain may loop back to any earlier link, so extensions are the transitive closure with a `seen` set: learning a move once is enough, and any shape of cycle terminates. And **a grapple only pays for a follow-up if you are paying for the grapple** — a follow-up you got free cannot turn around and free the move that gave it to you, or two grapples naming each other hand each other a discount and a three-move mutual chain collapses to one point. That second guard was found by a test, not by reading.
+  - **Hard-coded, deliberately.** These are naming and authoring conventions the table keeps, not data any Move Creator field expresses; the ask was for exactly these exceptions rather than for a general bundle editor, which would make every GM answer a question they have never needed to.
+  - The rules are **pure and shared**: `validateCreation` prices the submitted build with the same functions the wizard counts with, so what the player is shown and what the server accepts cannot drift. A caller that cannot supply the library falls back to one-point-per-row, which is never cheaper — so a build the wizard priced with bundles can never be refused by a server without them.
+  - In the picker, a grapple's extensions are **indented under it** whatever the GM's `sort_order` says, and the one riding along free is badged `FREE`. Which grapple owns which follow-up is decided before anything is drawn: first root wins, and a grapple is never claimed as somebody else's follow-up, or two grapples naming each other would each swallow the other and neither would appear.
 - **The two counts are CAPS; Stat points are guidance (decided, revised on the table's call).** The flow used to treat every preset number as a suggestion — warned about and then allowed — on the reasoning that guiding a build is not policing one. The table has since asked for the Perk and Move counts to be limits, and reducing a budget nobody enforces would have changed nothing. So:
   - **Perk count and Move count** are errors when exceeded. In the wizard the cap *disables what is not already picked* — never what is: greying out a ticked box would trap a build that was at, over, or holding something newly illegal, with no way to put any of it down. A picked row always stays clickable; the only thing a cap stops is picking one more.
   - **Stat points** still only warn — shown in the wizard in amber and posted to the Chat Log when the build lands, so the table finds out rather than having to notice. A spread is a shape, and the table has never asked for a shape to be refused.
@@ -1751,6 +1800,27 @@ Remove on the title line.
   kept the five-value CHECK — refusing every shared Quirk on a database that had
   been running for months and on no fresh one. `migrationChatQuirk.test.js` is
   that trap, pinned.
+
+### Rolling one
+
+Each column carries a **Roll <side> Quirk** button under its cards: it draws one
+of that side's examples at random into a dialog, with a **+ Add** to put it on a
+character, a **Roll again**, and a Close. For the table that wants the dice to
+decide who their character is rather than shopping the shelf.
+
+- **Re-rollable, deliberately.** A single throw with no way back is a worse
+  version of the same feature — you would close it and press the button again,
+  which is the same act with more clicks. A re-roll never shows you the one you
+  just saw while there is anything else to give, because a button that repeats
+  itself reads as broken.
+- **The draw happens client-side.** It is a preference of the person rolling and
+  nobody else is watching it happen, the same reasoning the cutscene's playback
+  speed follows. What lands goes through the ordinary `character_quirk:add`, so
+  a rolled Quirk is indistinguishable afterwards from one somebody chose.
+- Open to every role. A Player has exactly one answer to "whose is it" and gets
+  no picker; the GM picks from the roster.
+- Shown only when that side has something to draw — a button that can only ever
+  say "nothing here" teaches you not to press it.
 
 ### The look
 

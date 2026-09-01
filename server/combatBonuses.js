@@ -8,8 +8,15 @@
 import { all, one, run } from './db.js';
 import { buildBeats, matchupStyles, pairScore } from '../client/src/lib/matchups.js';
 import { grapplePenaltyAt } from './grappleLogic.js';
+import { tripWindow } from './combatTiming.js';
 import { perkRollBonusTerms } from './perkEngine.js';
-import { effectiveTagNames, punisherBonus, punisherStats } from './tagAutomations.js';
+import {
+  carriesGroundFinisherTag,
+  effectiveTagNames,
+  groundFinisherBonus,
+  punisherBonus,
+  punisherStats,
+} from './tagAutomations.js';
 
 // A move's Tag names as they apply to ONE character — the template's own tags
 // plus/minus whatever Perks have added or removed for them
@@ -436,7 +443,8 @@ export async function getCombatRollBonusBreakdown(
   // `reasonsToFight` is the very term Anime Protagonist doubles, and it would be
   // read twice if the seam fetched its own. Everything within each phase still
   // runs in parallel.
-  const [reasons, matchup, grapple, owed, credited, punisher, sideCounts] = await Promise.all([
+  const [reasons, matchup, grapple, owed, credited, punisher, sideCounts, groundFinisher] =
+    await Promise.all([
     getReasonsToFightBonus(characterId),
     stanceMatchupParts(characterId, { moveId, tic }),
     getGrapplePenalty(characterId, tic),
@@ -444,6 +452,7 @@ export async function getCombatRollBonusBreakdown(
     consumeNextRollBonus(characterId, againstCharacterId),
     punisherRollBonus(characterId, moveId, tic),
     sideCountsFor(characterId),
+    groundFinisherRollBonus(characterId, moveId, declaredMoveId),
   ]);
   // Perks (decided, new — see server/perks/index.js). One term per Perk
   // rather than one lump, under the Perk's own name, for the same reason the
@@ -493,11 +502,21 @@ export async function getCombatRollBonusBreakdown(
         : 'Punisher',
       amount: punisher.amount,
     },
+    // **Named with who it caught.** Same reasoning as the Punisher's label: a
+    // +5 that says only "+5" gives a table no way to tell a rule firing on a
+    // real knockdown from one firing on nothing.
+    {
+      key: 'ground_finisher',
+      label: groundFinisher.caught ? `Ground Finisher (${groundFinisher.caught} is down)` : 'Ground Finisher',
+      amount: groundFinisher.amount,
+    },
     ...perkTerms,
   ].filter((t) => t.amount !== 0);
   const perkTotal = perkTerms.reduce((sum, t) => sum + t.amount, 0);
   return {
-    total: reasons + matchupTotal + grapple - owed + credited + punisher.amount + perkTotal,
+    total:
+      reasons + matchupTotal + grapple - owed + credited + punisher.amount +
+      groundFinisher.amount + perkTotal,
     terms,
   };
 }
@@ -598,6 +617,59 @@ async function sideCountsFor(characterId) {
 // Every opponent on the far side of the pair counts, not just a chosen target:
 // the Tag says "while fighting somebody who is throwing this", and in an Uneven
 // Combat there is more than one somebody.
+// **Ground Finisher's +5** — did this move's Active frames catch anybody on the
+// floor? Shaped exactly like `punisherRollBonus` above and for the same
+// reasons: one cheap Tag check before any query, and the caught fighter's name
+// comes back so the roll's breakdown can say what it is reacting to.
+//
+// `declaredMoveId` is what gives the attack its own Active window. A roll that
+// belongs to no declaration — a hand-thrown die, an Initiative roll — has no
+// window and therefore no overlap, which is the true answer rather than a
+// missing one.
+async function groundFinisherRollBonus(characterId, moveId, declaredMoveId) {
+  if (moveId == null || declaredMoveId == null) return { amount: 0, caught: null };
+  const tagNames = await moveTagNamesFor(characterId, moveId);
+  if (!carriesGroundFinisherTag(tagNames)) return { amount: 0, caught: null };
+  const seat = await one(
+    'SELECT pair_index AS pairIndex, side FROM combat_participants WHERE character_id = ?',
+    [characterId]
+  );
+  if (!seat) return { amount: 0, caught: null };
+  const [self, opponents] = await Promise.all([
+    one(
+      `SELECT dm.reveal_tic AS revealTic, m.active_tics AS activeTics
+       FROM declared_moves dm JOIN moves m ON m.id = dm.move_id WHERE dm.id = ?`,
+      [declaredMoveId]
+    ),
+    // Every move on the other side that is carrying trip frames. The window
+    // itself is derived rather than stored — trip frames always sit at the END
+    // of a footprint (see tripWindow), so a count and the footprint are enough.
+    all(
+      `SELECT dm.reveal_tic + m.active_tics AS activeEndTic,
+              dm.reveal_tic + m.active_tics + m.recovery_tics + dm.recovery_extension_tics AS recoveryEndTic,
+              dm.trip_recovery_tics AS tripRecoveryTics,
+              ch.name AS characterName
+       FROM declared_moves dm
+       JOIN moves m ON m.id = dm.move_id
+       JOIN combat_participants cp ON cp.character_id = dm.character_id
+       JOIN characters ch ON ch.id = dm.character_id
+       WHERE cp.pair_index = ? AND cp.side = ? AND dm.trip_recovery_tics > 0`,
+      [seat.pairIndex, seat.side === 'left' ? 'right' : 'left']
+    ),
+  ]);
+  if (!self) return { amount: 0, caught: null };
+  return groundFinisherBonus({
+    tagNames,
+    attackWindow: { from: self.revealTic, to: self.revealTic + self.activeTics },
+    tripWindows: opponents
+      .map((row) => {
+        const window = tripWindow(row);
+        return window ? { ...window, characterName: row.characterName } : null;
+      })
+      .filter(Boolean),
+  });
+}
+
 async function punisherRollBonus(characterId, moveId, tic) {
   if (moveId == null || tic == null) return { amount: 0, stat: null };
   const tagNames = await moveTagNamesFor(characterId, moveId);
