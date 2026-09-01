@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useRole } from '../roleContext.jsx';
 import { socket } from '../socket.js';
 import { getPerks, getPerkTags } from '../lib/api.js';
+import { carriesSpecialTag } from '../lib/moveDisplay.js';
 import { useRoster } from '../lib/useRoster.js';
 import { portraitSrc } from '../lib/image.js';
 import { cropOf } from '../lib/imageCrop.js';
@@ -196,10 +197,15 @@ export default function PerksCompendium() {
     });
   // OR across selected tags: a Perk shows if it carries ANY of them. No
   // selection means no filtering at all, rather than "match nothing".
+  // **Special is invisible to a Player (decided, new)** — see the same filter in
+  // the Moves Compendium. Applied before the tag filter so a Special Perk is not
+  // in any count or chip a Player could read it out of.
+  const browsable =
+    role === 'gm' ? perks : perks.filter((p) => !carriesSpecialTag(p.tag_ids, tags));
   const visiblePerks =
     tagFilter.size === 0
-      ? perks
-      : perks.filter((p) => (p.tag_ids ?? []).some((id) => tagFilter.has(id)));
+      ? browsable
+      : browsable.filter((p) => (p.tag_ids ?? []).some((id) => tagFilter.has(id)));
 
   const submitPerk = (payload) => {
     if (form?.perk) socket.emit('perk:update', { perkId: form.perk.id, ...payload });

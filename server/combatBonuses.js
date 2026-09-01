@@ -466,9 +466,18 @@ export async function getCombatRollBonusBreakdown(
     // them. The label has to be as accountable as every other term here — a
     // modifier nobody can explain reads as the engine inventing numbers.
     { key: 'next_roll_bonus', label: 'Opening', amount: credited },
-    // Named with the Stat it caught them on: "Punisher: Body" is accountable at
-    // the table in a way a bare +2 is not.
-    { key: 'punisher', label: punisher.stat ? `Punisher: ${punisher.stat}` : 'Punisher', amount: punisher.amount },
+    // **Named with the Stat AND the move it caught.** "Punisher: Body" was
+    // already better than a bare +2; "Punisher: Body (Mira's Low Kick)" is what
+    // makes the Tag auditable at the table — it was reported as firing when it
+    // should not, and a modifier that cannot say what it is reacting to leaves
+    // nobody able to tell a wide rule from a wrong one.
+    {
+      key: 'punisher',
+      label: punisher.stat
+        ? `Punisher: ${punisher.stat}${punisher.moveName ? ` (${punisher.moveName})` : ''}`
+        : 'Punisher',
+      amount: punisher.amount,
+    },
     ...perkTerms,
   ].filter((t) => t.amount !== 0);
   const perkTotal = perkTerms.reduce((sum, t) => sum + t.amount, 0);
@@ -565,18 +574,25 @@ async function punisherRollBonus(characterId, moveId, tic) {
   );
   if (!seat) return { amount: 0, stat: null };
   const rows = await all(
-    `SELECT mrs.slot_name AS slotName
+    `SELECT mrs.slot_name AS slotName, m.name AS moveName, ch.name AS characterName
      FROM declared_moves dm
      JOIN moves m ON m.id = dm.move_id
      JOIN move_roll_slots mrs ON mrs.move_id = dm.move_id
      JOIN combat_participants cp ON cp.character_id = dm.character_id
+     JOIN characters ch ON ch.id = dm.character_id
      WHERE cp.pair_index = ? AND cp.side = ?
        AND dm.placement_tic <= ?
        AND dm.reveal_tic + m.active_tics + m.recovery_tics + dm.recovery_extension_tics > ?
        AND (dm.feint_masked = 0 OR dm.reveal_tic <= ?)`,
     [seat.pairIndex, seat.side === 'left' ? 'right' : 'left', tic, tic, tic]
   );
-  return punisherBonus({ tagNames, opponentSlotNames: rows.map((r) => r.slotName) });
+  return punisherBonus({
+    tagNames,
+    opponentSlots: rows.map((r) => ({
+      slotName: r.slotName,
+      moveName: `${r.characterName}'s ${r.moveName}`,
+    })),
+  });
 }
 
 // Grappling's −2: someone held in a grapple rolls worse for as long as the

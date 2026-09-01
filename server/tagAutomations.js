@@ -293,18 +293,26 @@ export function punishableStat(slotName) {
 // parameterised amount. The matched Stat is returned so the roll's own
 // breakdown can say which one it was — a modifier nobody can account for reads
 // as the engine inventing numbers.
-export function punisherBonus({ tagNames, opponentSlotNames } = {}) {
+// `opponentSlots` is either a plain list of slot names, or a list of
+// `{ slotName, moveName }` — the second form so the roll's own breakdown can
+// name the move it caught them on. **That naming is not decoration**: this Tag
+// was reported as "always active", and a +2 that says only "+2" gives a table
+// no way to tell a rule firing correctly on a wide window from a rule firing
+// when it should not. `Punisher: Body (Low Kick)` is answerable on sight.
+export function punisherBonus({ tagNames, opponentSlotNames, opponentSlots } = {}) {
   const wanted = punisherStats(tagNames);
-  if (wanted.size === 0) return { amount: 0, stat: null };
+  if (wanted.size === 0) return { amount: 0, stat: null, moveName: null };
+  const slots = (opponentSlots ?? opponentSlotNames ?? []).map((s) =>
+    typeof s === 'string' ? { slotName: s, moveName: null } : s
+  );
   // In PUNISHER_STATS order rather than the opponent's, so a move that catches
   // two of them names the same one every time.
   for (const stat of PUNISHER_STATS) {
     if (!wanted.has(stat)) continue;
-    if ((opponentSlotNames ?? []).some((slot) => punishableStat(slot) === stat)) {
-      return { amount: PUNISHER_BONUS, stat };
-    }
+    const caught = slots.find((s) => punishableStat(s.slotName) === stat);
+    if (caught) return { amount: PUNISHER_BONUS, stat, moveName: caught.moveName ?? null };
   }
-  return { amount: 0, stat: null };
+  return { amount: 0, stat: null, moveName: null };
 }
 
 export const interrupterAmount = (tagNames) => tagAmount(tagNames, INTERRUPTER_TAG);

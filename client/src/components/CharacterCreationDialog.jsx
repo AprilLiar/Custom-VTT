@@ -4,6 +4,7 @@ import StanceGraph from './StanceGraph.jsx';
 import Thumb from './Thumb.jsx';
 import { socket } from '../socket.js';
 import { getMoves, getPerkTags, getPerks, getRuleset, getTags } from '../lib/api.js';
+import { carriesSpecialTag } from '../lib/moveDisplay.js';
 import { dieLabel } from '../lib/dice.js';
 import { FIXED_QUESTIONS } from './RoleplayTab.jsx';
 import {
@@ -262,16 +263,23 @@ export default function CharacterCreationDialog({ character, stances = [], onClo
 
   // Search on the name, then Style, then Tag — each an independent narrowing,
   // exactly as the Compendium applies them.
+  // **Special never appears here (decided, new).** The Tag's whole job is that a
+  // Player cannot take the thing for themselves, and Character Creation is the
+  // largest way they take things. Filtered unconditionally rather than by role:
+  // this dialog builds a Player's own character, and a GM handing out a Special
+  // Move does it from the Compendium's Grant list, where they can see it.
   const visibleMoves = library.moves
+    .filter((m) => !carriesSpecialTag(m.tag_ids, library.moveTags))
     .filter((m) => !m.is_default)
     .filter((m) => !moveSearch || m.name.toLowerCase().includes(moveSearch.toLowerCase()))
     .filter((m) => moveStyleFilter.size === 0 || moveStyleFilter.has(m.style_attribute_id))
     .filter((m) => moveTagFilter.size === 0 || (m.tag_ids ?? []).some((id) => moveTagFilter.has(id)));
 
+  const browsablePerks = library.perks.filter((p) => !carriesSpecialTag(p.tag_ids, library.perkTags));
   const visiblePerks =
     perkTagFilter.size === 0
-      ? library.perks
-      : library.perks.filter((p) => (p.tag_ids ?? []).some((id) => perkTagFilter.has(id)));
+      ? browsablePerks
+      : browsablePerks.filter((p) => (p.tag_ids ?? []).some((id) => perkTagFilter.has(id)));
 
   const finish = () => {
     setServerErrors([]);
