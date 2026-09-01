@@ -2,7 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { gsap } from 'gsap';
 import { AnimatePresence, motion, useAnimation, useReducedMotion } from 'framer-motion';
 import { getRoundReplay } from '../lib/api.js';
-import { loadCutsceneSpeed } from '../lib/theme.js';
+import { ChevronsDownUp, ChevronsUpDown } from 'lucide-react';
+import {
+  loadCutsceneSpeed,
+  loadCutsceneStatsCollapsed,
+  saveCutsceneStatsCollapsed,
+} from '../lib/theme.js';
 import { ANATOMY } from '../lib/anatomy.js';
 import { EventIcon } from '../lib/eventIcons.jsx';
 import {
@@ -1277,14 +1282,25 @@ function MoveBar({ fp, ticks, startTic, effect, beat, staminaFlash }) {
       >
         {fp.characterName}
       </span>
-      {/* Fixed-size cells, matching the Tic Counter's own square (decided,
-          reverted). Letting these share the row's width did fill a wide
-          window, but it stretched each Tic into a ~245px slab that no longer
-          read as a square — the timeline stopped looking like a ruler. A Tic
-          is a fixed unit of game time and should look like one; the panel's
-          spare width goes to the event log below, which is what you actually
-          read. */}
-      <div className="relative flex shrink-0 gap-0.5">
+      {/* **The same width as the Tic strip below, exactly** (decided, and this
+          reverses the fixed-width note that stood here). The cells were pinned
+          to the Tic Counter's own 44px square while the strip beneath them grew
+          to fill the board — so the two rulers stopped lining up, and a bar
+          claiming Tics 1-3 no longer sat over the squares labelled 1, 2 and 3.
+          Alignment is the whole content of this row.
+          The concern the fixed size was answering — a Tic stretched into a slab
+          that stops reading as a square — was about the STRIP; it is answered by
+          the board being held to half the panel's width, and by these bars
+          keeping their short height, which is what lets more moves fit.
+          Matching the strip takes three things agreeing, not one: the same
+          leading label width, the same gap, and **nothing after the cells** —
+          the move's own name is taken out of flow on `md` and parked in the
+          empty half-panel to the right of the board, because in flow it was
+          eating 176px the strip below did not have to give up.
+          Below `md` this all reverts to fixed cells: a phone's board is full
+          width with no room beside it to park a name, and seven `flex-1` cells
+          in 200px would be 25px each. */}
+      <div className="relative flex shrink-0 gap-0.5 md:min-w-0 md:flex-1">
         {/* Block "afterlines" — concentric glowing rings that swell out of
             the guard and fade, behind the bar rather than over it. */}
         <AnimatePresence>
@@ -1327,7 +1343,7 @@ function MoveBar({ fp, ticks, startTic, effect, beat, staminaFlash }) {
                       }${phase === 'defense' && !extended ? ` (${defenseLabel} window)` : ''}`
                   : undefined
               }
-              className={`relative h-4 w-8 shrink-0 border border-zinc-900 md:h-5 md:w-11 ${
+              className={`relative h-4 w-8 shrink-0 border border-zinc-900 md:h-5 md:w-auto md:min-w-0 md:flex-1 ${
                 dead
                   ? // No phase colour: those say "this is happening," and it
                     // isn't. Grey says the Tics were claimed and then weren't.
@@ -1389,7 +1405,7 @@ function MoveBar({ fp, ticks, startTic, effect, beat, staminaFlash }) {
           hidden behind the other rows. The outer element clips nothing, so
           the flash can rise out of the row, and z-50 puts it above every
           neighbouring bar and the impact burst. */}
-      <span className="relative w-28 shrink-0 md:w-44">
+      <span className="relative w-28 shrink-0 md:absolute md:inset-y-0 md:left-full md:ml-2 md:flex md:w-44 md:items-center">
         {/* An Interrupted move is labelled by what happened to it, not by
             what it was. It never reached its reveal Tic, and being destroyed
             early is not a reveal — the timing was always public, the
@@ -1515,6 +1531,9 @@ export default function RoundCutscene({ resolutionId }) {
   // bars — to the state immediately BEFORE that Tic, which is the state the
   // fighters were actually looking at when they were caught by it.
   const [pinnedTic, setPinnedTic] = useState(null);
+  // Whether the fighters' Stat cards are folded away — see the toggle in the
+  // header. Read once at mount from localStorage, like the playback speed.
+  const [statsCollapsed, setStatsCollapsed] = useState(loadCutsceneStatsCollapsed);
   // Read once per mount rather than subscribed: changing the setting
   // mid-cutscene and having the playhead lurch is worse than it taking
   // effect on the next round you open.
@@ -1709,6 +1728,25 @@ export default function RoundCutscene({ resolutionId }) {
             >
               Skip to end
             </button>
+            {/* **Fold the Stat cards away.** The frozen header carries the Tic
+                counter, the move frames and both fighters' full Stat grids, and
+                on a laptop that is most of the screen before one line of the log
+                is visible. This leaves the Tics and the frames — the half you
+                actually scroll the log against — and the cards come back with
+                the same click. Per-viewer and remembered, like the playback
+                speed: how much header you want is a property of the person
+                watching. */}
+            <button
+              type="button"
+              onClick={() => setStatsCollapsed((was) => saveCutsceneStatsCollapsed(!was))}
+              title={statsCollapsed ? 'Show the fighters\' Stats' : 'Collapse to the Tics and frames'}
+              aria-pressed={statsCollapsed}
+              className="panel-cut-sm flex h-8 w-8 shrink-0 items-center justify-center border border-zinc-700 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
+            >
+              {statsCollapsed
+                ? <ChevronsUpDown className="h-4 w-4" aria-hidden />
+                : <ChevronsDownUp className="h-4 w-4" aria-hidden />}
+            </button>
           </div>
         </div>
 
@@ -1782,7 +1820,7 @@ export default function RoundCutscene({ resolutionId }) {
         {/* The fighters, under the board and still inside the frozen header:
             "what is the state of everyone right now" is the question you ask
             from anywhere in a long round, so it travels with you. */}
-        {fighters.length > 0 && (
+        {fighters.length > 0 && !statsCollapsed && (
           <div className="mt-2 flex flex-wrap gap-2">
             {fighters.map((f) => (
               <FighterCard key={f.characterId} fighter={f} lastHit={lastHit} beat={fx.seq} />
@@ -1795,7 +1833,14 @@ export default function RoundCutscene({ resolutionId }) {
             same offset simply slides under the first, which is exactly what it
             did. Whose column is whose is a fact you need at row forty as much as
             at row one. */}
-        <div className="mt-2 grid grid-cols-[2.5rem_1fr_1fr] gap-x-2 border-t border-zinc-800 pt-1 font-display text-[10px] uppercase tracking-wide text-zinc-500 md:grid-cols-[3.5rem_1fr_1fr] md:text-xs">
+        {/* **The two side columns split at the panel's exact centre.** They
+            used to be `1fr 1fr` after the Tic column, which put the divider a
+            couple of centimetres right of where the two Stat cards above it
+            meet — two rules for the same "left side / right side" line, and the
+            eye reads the mismatch long before it works out why. Sized off 50%
+            minus the Tic column and half its gap instead, so the boundary lands
+            dead centre whatever the panel's width. */}
+        <div className="mt-2 grid grid-cols-[2.5rem_calc(50%_-_3.25rem)_1fr] gap-x-2 border-t border-zinc-800 pt-1 font-display text-[10px] uppercase tracking-wide text-zinc-500 md:grid-cols-[3.5rem_calc(50%_-_4.25rem)_1fr] md:text-xs">
           <span>Tic</span>
           <span className="truncate">{nameOfSide('left')}</span>
           <span className="truncate">{nameOfSide('right')}</span>
@@ -1819,7 +1864,7 @@ export default function RoundCutscene({ resolutionId }) {
                   if (el) rowRefs.current.set(row.tic, el);
                   else rowRefs.current.delete(row.tic);
                 }}
-                className={`grid grid-cols-[2.5rem_1fr_1fr] gap-x-2 border-b border-zinc-900 py-1 md:grid-cols-[3.5rem_1fr_1fr] ${
+                className={`grid grid-cols-[2.5rem_calc(50%_-_3.25rem)_1fr] gap-x-2 border-b border-zinc-900 py-1 md:grid-cols-[3.5rem_calc(50%_-_4.25rem)_1fr] ${
                   row.tic === pinnedTic ? 'bg-brand-950/40' : ''
                 } ${reached ? '' : 'opacity-40'}`}
               >

@@ -7,6 +7,7 @@ import { getRuleset, getTags, getTells, getMoves } from '../lib/api.js';
 import { folderPath } from '../lib/folders.js';
 import DropButton from './DropButton.jsx';
 import MoveCard from './MoveCard.jsx';
+import MoveFilterPopover from './MoveFilterPopover.jsx';
 import RollDialog from './RollDialog.jsx';
 
 // Tab 3: read-only list of the character's available moves — all Default
@@ -87,63 +88,63 @@ export default function MovesTab({ data }) {
 
   return (
     <div className="space-y-3">
-      {/* **Four filters, split left and right by the question they ask
-          (decided, revised).** Left: what the move *does* — the Attack Target it
-          goes for and the Attack Roll it makes. Right: what the move *is* — the
-          Tell it opens with and the Tags it carries. "Which of my moves goes for
-          the head" and "which of them rolls a Hand" are what you ask of a long
-          sheet mid-round, and neither was askable at all before.
-          **One column per filter (revised).** They were two columns of two
-          stacked rows, which read as two controls rather than four — the second
-          filter of each pair looked like a continuation of the first. One
-          column apiece keeps the left/right split and makes each its own thing.
-          Two columns at `sm`, four at `lg`, one on a phone, where they simply
-          stack in that order. */}
-      <div className="grid gap-x-6 gap-y-2 sm:grid-cols-2 lg:grid-cols-4">
-        <div>
-          <MoveFilterChips
-            label="Attack Target:"
-            items={filters.targetItems}
-            selected={filters.targetFilter}
-            onToggle={filters.toggleTarget}
-            onClear={filters.clearTarget}
-            labelFor={(s) => s.name}
-            titleFor={(s) => `Show only moves that go for the ${s.name}`}
-          />
-        </div>
-        <div>
-          <MoveFilterChips
-            label="Attack Roll:"
-            items={filters.rollItems}
-            selected={filters.rollFilter}
-            onToggle={filters.toggleRoll}
-            onClear={filters.clearRoll}
-            labelFor={(s) => s.name}
-            titleFor={(s) => `Show only moves that roll ${s.name}`}
-          />
-        </div>
-        <div>
-          <MoveFilterChips
-            label="Filter by Tell:"
-            items={tells.filter((t) => filters.presentTellIds.has(t.id))}
-            selected={filters.tellFilter}
-            onToggle={filters.toggleTell}
-            onClear={filters.clearTell}
-            labelFor={(t) => t.name}
-          />
-        </div>
-        <div>
-          <MoveFilterChips
-            label="Filter by tag:"
-            items={tags.filter((t) => filters.presentTagIds.has(t.id))}
-            selected={filters.tagFilter}
-            onToggle={filters.toggleTag}
-            onClear={filters.clearTag}
-            labelFor={(t) => t.name}
-            titleFor={(t) => t.description}
-          />
-        </div>
-      </div>
+      {/* **Behind a funnel button, not open on the page (decided, revised).**
+          Four columns of chips ate the top of this tab before a single move was
+          visible, and the Tag column alone can run to twenty. The Arena's
+          declare picker keeps its open columns — mid-round a filter you have to
+          open first is a filter you will not use — but a sheet you are browsing
+          is not on a clock. The button is sticky, so it is still there when you
+          are forty moves down.
+          Inside the panel the rows are full width and stacked, in the same
+          order the columns were in: what the move DOES (Attack Target, Attack
+          Roll), then what it IS (Tell, Tags). */}
+      <MoveFilterPopover
+        activeCount={
+          filters.targetFilter.size + filters.rollFilter.size + filters.tellFilter.size + filters.tagFilter.size
+        }
+        onClear={() => {
+          filters.clearTarget();
+          filters.clearRoll();
+          filters.clearTell();
+          filters.clearTag();
+        }}
+      >
+        <MoveFilterChips
+          label="Attack Target:"
+          items={filters.targetItems}
+          selected={filters.targetFilter}
+          onToggle={filters.toggleTarget}
+          onClear={filters.clearTarget}
+          labelFor={(s) => s.name}
+          titleFor={(s) => `Show only moves that go for the ${s.name}`}
+        />
+        <MoveFilterChips
+          label="Attack Roll:"
+          items={filters.rollItems}
+          selected={filters.rollFilter}
+          onToggle={filters.toggleRoll}
+          onClear={filters.clearRoll}
+          labelFor={(s) => s.name}
+          titleFor={(s) => `Show only moves that roll ${s.name}`}
+        />
+        <MoveFilterChips
+          label="Filter by Tell:"
+          items={tells.filter((t) => filters.presentTellIds.has(t.id))}
+          selected={filters.tellFilter}
+          onToggle={filters.toggleTell}
+          onClear={filters.clearTell}
+          labelFor={(t) => t.name}
+        />
+        <MoveFilterChips
+          label="Filter by tag:"
+          items={tags.filter((t) => filters.presentTagIds.has(t.id))}
+          selected={filters.tagFilter}
+          onToggle={filters.toggleTag}
+          onClear={filters.clearTag}
+          labelFor={(t) => t.name}
+          titleFor={(t) => t.description}
+        />
+      </MoveFilterPopover>
 
       {visibleMoves.length === 0 ? (
         <p className="text-sm text-zinc-600">No moves on this sheet match these filters.</p>

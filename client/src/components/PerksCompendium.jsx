@@ -7,6 +7,7 @@ import { useRoster } from '../lib/useRoster.js';
 import { portraitSrc } from '../lib/image.js';
 import { cropOf } from '../lib/imageCrop.js';
 import CroppedImage from './CroppedImage.jsx';
+import MoveFilterPopover from './MoveFilterPopover.jsx';
 import PerkCard from './PerkCard.jsx';
 import PerkCreator from './PerkCreator.jsx';
 
@@ -250,40 +251,50 @@ export default function PerksCompendium() {
 
         {role === 'gm' && <PerkTagManager tags={tags} />}
 
-        {/* Filter bar — open to every role, since browsing is (a Player gets
-            the same read-only library). Hidden entirely when no tags exist,
-            rather than showing an empty row of nothing to filter by. */}
+        {/* **Behind the same funnel button the Moves Compendium uses.** One
+            Perk Tag row is shorter than four Move filter columns, but the two
+            libraries sit under the same tab strip and a control that is a
+            button on one page and a loose row of chips on the other is two
+            answers to one question. Open to every role, since browsing is (a
+            Player gets the same read-only library), and hidden entirely when no
+            tags exist rather than offering a filter that can only ever return
+            everything. */}
         {tags.length > 0 && (
-          <div className="flex flex-wrap items-center gap-1.5">
-            <span className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Filter</span>
-            {tags.map((tag) => {
-              const on = tagFilter.has(tag.id);
-              return (
+          <MoveFilterPopover
+            activeCount={tagFilter.size}
+            onClear={() => setTagFilter(new Set())}
+          >
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Filter</span>
+              {tags.map((tag) => {
+                const on = tagFilter.has(tag.id);
+                return (
+                  <button
+                    key={tag.id}
+                    type="button"
+                    onClick={() => toggleFilter(tag.id)}
+                    title={tag.description || undefined}
+                    className={`panel-cut-sm border px-2 py-1 text-xs font-semibold ${
+                      on
+                        ? 'border-sky-500 bg-sky-600/25 text-sky-200'
+                        : 'border-zinc-700 bg-zinc-900 text-zinc-400 hover:border-zinc-500'
+                    }`}
+                  >
+                    {tag.name}
+                  </button>
+                );
+              })}
+              {tagFilter.size > 0 && (
                 <button
-                  key={tag.id}
                   type="button"
-                  onClick={() => toggleFilter(tag.id)}
-                  title={tag.description || undefined}
-                  className={`panel-cut-sm border px-2 py-1 text-xs font-semibold ${
-                    on
-                      ? 'border-sky-500 bg-sky-600/25 text-sky-200'
-                      : 'border-zinc-700 bg-zinc-900 text-zinc-400 hover:border-zinc-500'
-                  }`}
+                  onClick={() => setTagFilter(new Set())}
+                  className="panel-cut-sm px-2 py-1 text-xs text-zinc-500 hover:text-zinc-300"
                 >
-                  {tag.name}
+                  Clear
                 </button>
-              );
-            })}
-            {tagFilter.size > 0 && (
-              <button
-                type="button"
-                onClick={() => setTagFilter(new Set())}
-                className="panel-cut-sm px-2 py-1 text-xs text-zinc-500 hover:text-zinc-300"
-              >
-                Clear
-              </button>
-            )}
-          </div>
+              )}
+            </div>
+          </MoveFilterPopover>
         )}
 
         {perks.length === 0 ? (
