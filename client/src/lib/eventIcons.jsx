@@ -4,6 +4,7 @@ import {
   ArrowRightLeft,
   Ban,
   BatteryWarning,
+  Bone,
   ChevronsRight,
   CircleDashed,
   CircleHelp,
@@ -78,6 +79,7 @@ const ICONS = {
   // — damage —
   damage_applied: { Icon: HeartCrack, tone: 'text-rose-400' },
   damage_unapplied: { Icon: CircleDashed, tone: 'text-zinc-600' },
+  damage_shrugged: { Icon: Bone, tone: 'text-zinc-400' },
   insignificant_damage: { Icon: CircleDashed, tone: 'text-zinc-600' },
   no_damage_resolved: { Icon: CircleDashed, tone: 'text-zinc-400' },
   interrupt_resolved: { Icon: ArrowBigDownDash, tone: 'text-rose-400' },

@@ -20,6 +20,9 @@ const dm = ({
   revealTic = 5,
   activeTics = 2,
   publiclyRevealed = false,
+  // Never a Fool: present on the payload only for a viewer whose Perk earns it,
+  // so the default here is "the key is not there at all".
+  isFeint = undefined,
 } = {}) => ({
   id,
   characterId,
@@ -27,6 +30,7 @@ const dm = ({
   revealTic,
   activeEndTic: revealTic + activeTics,
   publiclyRevealed,
+  ...(isFeint === undefined ? {} : { isFeint }),
 });
 
 const starts = (declaredMoves, overrides = {}) =>
@@ -80,8 +84,21 @@ test('attackStartsByTic: marks the first Startup Tic and nothing else', () => {
   const marks = starts([dm({ placementTic: 2, revealTic: 5 })]);
   assert.deepEqual([...marks.keys()], [2]);
   assert.deepEqual(marks.get(2), [
-    { declaredMoveId: 1, characterId: 10, characterName: 'Char10' },
+    // `isFeint` is false for a row the server never marked — the mark is built
+    // from a per-viewer key the client is not entitled to decide (Never a Fool).
+    { declaredMoveId: 1, characterId: 10, characterName: 'Char10', isFeint: false },
   ]);
+});
+
+test('attackStartsByTic: carries the viewer\'s Feint marking through (Never a Fool)', () => {
+  // Only ever true when the SERVER put `isFeint` on the row for this viewer —
+  // the client has no other way to decide it, which is what keeps the
+  // entitlement in one place. Every other viewer's payload has no such key and
+  // the mark comes back false.
+  const marked = starts([dm({ placementTic: 1, revealTic: 4, isFeint: true })]);
+  assert.equal(marked.get(1)[0].isFeint, true);
+  const plain = starts([dm({ placementTic: 1, revealTic: 4 })]);
+  assert.equal(plain.get(1)[0].isFeint, false);
 });
 
 test('attackStartsByTic: a long wind-up and a short one draw identically', () => {

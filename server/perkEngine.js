@@ -236,6 +236,51 @@ export async function perkRollBonusTerms(characterId, extra = {}) {
   return terms;
 }
 
+// How many Recovery frames this character does NOT receive, from any source
+// other than a move's own base Recovery (No Wasted Movements). Summed, and the
+// caller floors the result at 0.
+//
+// Asked at the two doors imposed Recovery comes through — `imposeRecovery`, and
+// the guard extension a too-short Block earns — rather than at the five effects
+// that reach them, so a new way of imposing Recovery is covered by the door it
+// arrives at rather than by remembering this Perk exists.
+export async function perkImposedRecoveryDelta(characterId, extra = {}) {
+  return sumSeam(characterId, 'imposedRecoveryDelta', extra);
+}
+
+// **Tip Top Shape** — Stamina that would have gone over the cap, banked until it
+// is worth a Step of healing.
+//
+// NOT folded, for the same reason `absorbsBreak` is not: each grant keeps its
+// own bank in `character_perk_state`, so two copies of the Perk bank separately
+// rather than sharing one counter whose owner nobody could name. The seam says
+// the rate; the banking is the engine's, because only the engine sees the
+// overflow happen.
+//
+// Returns the number of Half-Damage Steps to heal now, having already written
+// each Perk's remainder back. `scope: 'fight'` on the bank: overflow saved in
+// round two is still saved in round five, and a new fight starts you level.
+export async function perkStaminaOverflowHealing(characterId, overflow) {
+  const spare = Math.max(0, Math.trunc(Number(overflow) || 0));
+  if (!spare) return 0;
+  const granted = await perkDefinitionsFor(characterId);
+  const withSeam = granted.filter((g) => typeof g.definition.staminaOverflowHealing === 'function');
+  if (!withSeam.length) return 0;
+  const ctx = await seamContext(characterId, {});
+  let steps = 0;
+  for (const { definition, characterPerkId } of withSeam) {
+    const answer = await definition.staminaOverflowHealing({ ...ctx, characterPerkId });
+    const per = Math.max(1, Math.trunc(Number(answer?.perStamina) || 0));
+    const each = Math.max(0, Math.trunc(Number(answer?.steps) || 0));
+    if (!each) continue;
+    const key = `overflow:${definition.name}`;
+    const banked = Math.max(0, Math.trunc(Number(await readPerkState(characterPerkId, key)) || 0)) + spare;
+    steps += Math.floor(banked / per) * each;
+    await writePerkState(characterPerkId, key, banked % per, 'fight');
+  }
+  return steps;
+}
+
 // Whether this character may read a publicly revealed move in full (Genius
 // Observer). OR-ed: any one Perk saying yes is a yes.
 export async function perkAllowsRevealedDetail(characterId, extra = {}) {
@@ -281,6 +326,31 @@ export async function minDamageThresholdFor({ attackerCharacterId, targetCharact
   // Floored at 1: a pile of Not Just a Scratch must not make a roll of 0 — or a
   // negative one — deal damage. Something still has to land.
   return Math.max(1, MIN_DAMAGE_THRESHOLD + attacking + attacked);
+}
+
+// What each of this character's Stats adds to the Minimum Damage Threshold on
+// top of the exchange-wide figure (Yamazaki Black Bones). A Map keyed by Stat
+// name, carrying only the non-zero answers — an empty Map means "nothing here
+// moves", which is the case for every fighter without such a Perk and is what
+// lets applyAutoDamage skip the whole gate without a second query.
+//
+// Asked per die rather than per attack, which is the entire point of the seam:
+// the same blow can be under the bar for one Stat and over it for the next.
+export async function perkStatDamageThresholds(characterId, dice) {
+  const out = new Map();
+  if (characterId == null || !dice?.length) return out;
+  const granted = await perkDefinitionsFor(characterId);
+  const withSeam = granted.filter((g) => typeof g.definition.statDamageThreshold === 'function');
+  if (!withSeam.length) return out;
+  const ctx = await seamContext(characterId, { dice });
+  for (const die of dice) {
+    let total = 0;
+    for (const { definition, characterPerkId } of withSeam) {
+      total += Math.trunc(Number(await definition.statDamageThreshold({ ...ctx, die, characterPerkId })) || 0);
+    }
+    if (total) out.set(die.slot_name, total);
+  }
+  return out;
 }
 
 // How many Half-Damage steps a Full Block sends back at the attacker (Spiked
@@ -558,6 +628,20 @@ export async function perkSeesAttackHeight(characterId, extra = {}) {
   const ctx = await seamContext(characterId, extra);
   for (const { definition, characterPerkId } of withSeam) {
     if (await definition.seesAttackHeight({ ...ctx, characterPerkId })) return true;
+  }
+  return false;
+}
+
+// Is this character told that an unrevealed move aimed at them is a Feint?
+// (Never a Fool.) OR-ed, and asked exactly where Eye Catcher's is — once per
+// broadcast for the whole table, or once for the single viewer of a fetch.
+export async function perkSeesFeints(characterId, extra = {}) {
+  const granted = await perkDefinitionsFor(characterId);
+  const withSeam = granted.filter((g) => typeof g.definition.seesFeints === 'function');
+  if (!withSeam.length) return false;
+  const ctx = await seamContext(characterId, extra);
+  for (const { definition, characterPerkId } of withSeam) {
+    if (await definition.seesFeints({ ...ctx, characterPerkId })) return true;
   }
   return false;
 }

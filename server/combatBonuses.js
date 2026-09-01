@@ -432,20 +432,35 @@ export async function getCombatRollBonusBreakdown(
   // than guessing, which is what keeps an Uneven Combat honest.
   { moveId = null, tic = null, slotNames = null, declaredMoveId = null, againstCharacterId = null } = {}
 ) {
-  const [reasons, matchup, grapple, owed, credited, punisher, perkTerms] = await Promise.all([
+  // Two phases, because the Perk seam needs facts the first phase produces:
+  // `reasonsToFight` is the very term Anime Protagonist doubles, and it would be
+  // read twice if the seam fetched its own. Everything within each phase still
+  // runs in parallel.
+  const [reasons, matchup, grapple, owed, credited, punisher, sideCounts] = await Promise.all([
     getReasonsToFightBonus(characterId),
     stanceMatchupParts(characterId, { moveId, tic }),
     getGrapplePenalty(characterId, tic),
     consumeNextRollPenalty(characterId),
     consumeNextRollBonus(characterId, againstCharacterId),
     punisherRollBonus(characterId, moveId, tic),
-    // Perks (decided, new — see server/perks/index.js). One term per Perk
-    // rather than one lump, under the Perk's own name, for the same reason the
-    // Combat Style got its own line: a modifier nobody can account for reads as
-    // the engine inventing numbers. Zero contributions are already dropped by
-    // the resolver, so this is empty for the overwhelming majority of rolls.
-    perkRollBonusTerms(characterId, { moveId, tic, declaredMoveId }),
+    sideCountsFor(characterId),
   ]);
+  // Perks (decided, new — see server/perks/index.js). One term per Perk
+  // rather than one lump, under the Perk's own name, for the same reason the
+  // Combat Style got its own line: a modifier nobody can account for reads as
+  // the engine inventing numbers. Zero contributions are already dropped by
+  // the resolver, so this is empty for the overwhelming majority of rolls.
+  //
+  // `reasonsToFight` and `sideCounts` ride along for the two Perks that ask
+  // about them (Anime Protagonist, Never Tell Me the Odds): a Perk file never
+  // touches the database itself — every seam answers from its context.
+  const perkTerms = await perkRollBonusTerms(characterId, {
+    moveId,
+    tic,
+    declaredMoveId,
+    reasonsToFight: reasons,
+    sideCounts,
+  });
   // Zeroed rather than skipped, so the shape below stays one expression and a
   // future term cannot be added on the wrong side of an early return.
   const matchupApplies = matchupAppliesToSlots(slotNames);
@@ -543,6 +558,27 @@ async function consumeNextRollBonus(characterId, againstCharacterId) {
     againstCharacterId,
   ]);
   return owed;
+}
+
+// How many fighters are on each side of this character's own pair — theirs and
+// mine. Read by Never Tell Me the Odds, which is about being outnumbered *here*
+// rather than about the Uneven Combat toggle: that toggle only permits lopsided
+// pairs, it does not make any particular one lopsided, and reading it would hand
+// the bonus to a fighter in a perfectly even 1v1 elsewhere in the same fight.
+//
+// `{ mine: 0, theirs: 0 }` for anybody not seated, so a Perk can compare without
+// a null check.
+async function sideCountsFor(characterId) {
+  const seat = await one(
+    'SELECT pair_index AS pairIndex, side FROM combat_participants WHERE character_id = ?',
+    [characterId]
+  );
+  if (!seat) return { mine: 0, theirs: 0 };
+  const rows = await all('SELECT side FROM combat_participants WHERE pair_index = ?', [seat.pairIndex]);
+  return {
+    mine: rows.filter((r) => r.side === seat.side).length,
+    theirs: rows.filter((r) => r.side !== seat.side).length,
+  };
 }
 
 // **Punisher — (Stat)**: +2 while the opponent is mid-move with the named Stat

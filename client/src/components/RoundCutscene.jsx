@@ -86,6 +86,7 @@ const EVENT_LABEL = {
   interrupt_resolved: 'Interrupt',
   damage_applied: 'Damage',
   damage_unapplied: 'Nowhere to land',
+  damage_shrugged: 'Too hard to hurt',
   weapon_durability: 'Wear',
   weapon_target: 'The weapon',
   move_fizzled: 'The move is lost',
@@ -320,6 +321,13 @@ function eventNarration(ev, startTic) {
       return `${p.damage ?? 0} damage lands on ${
         p.targetCharacterName ? `${p.targetCharacterName}'s ` : 'a '
       }${p.slotName ?? 'Stat'} — already broken, so nothing can be applied.`;
+    case 'damage_shrugged':
+      // Not a miss and not a Block: the blow arrived and the bone was harder
+      // than it was. The threshold it needed is on the event so a replay can
+      // say the same thing without asking anybody's Perks (§0).
+      return `${p.result ?? '?'} is not enough to hurt ${
+        p.targetCharacterName ? `${p.targetCharacterName}'s ` : 'that '
+      }${p.slotName ?? 'Stat'} — it needs ${p.threshold ?? '?'} to feel anything.`;
     case 'weapon_durability':
       // Said out loud every time, not only when it breaks: a weapon quietly
       // counting down to nothing is the sort of thing a table finds out about
@@ -536,6 +544,13 @@ function eventDetail(ev, startTic) {
     case 'damage_unapplied':
       lines.push(`${p.damage ?? 0} damage, unapplied`);
       lines.push(`${p.slotName ?? 'That Stat'} is incapacitated — consider it for Injuries`);
+      break;
+    case 'damage_shrugged':
+      lines.push(`Minimum Damage Threshold on that Stat: ${p.threshold ?? '?'}`);
+      if (p.baseThreshold != null && p.surcharge != null) {
+        lines.push(`${p.baseThreshold} for the exchange, +${p.surcharge} for that Stat alone`);
+      }
+      lines.push('Nothing landed, so nothing is owed — this is not an Injury');
       break;
     case 'weapon_durability':
       lines.push('Using a weapon in a Move costs 1 Durability');
@@ -1451,6 +1466,7 @@ function EventLine({ ev, startTic }) {
   const faded =
     ev.type === 'insignificant_damage' ||
     ev.type === 'damage_unapplied' ||
+    ev.type === 'damage_shrugged' ||
     (ev.type === 'no_damage_resolved' && !ev.payload?.succeeded) ||
     (ev.type === 'grapple_resolved' && !ev.payload?.success);
   return (

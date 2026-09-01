@@ -202,10 +202,53 @@ export const SEAMS = [
   // damage loop knows a break actually happened. A Perk decrementing its own
   // counter would have to be told about breaks it did not prevent.
   'absorbsBreak',
+  // (ctx) -> number of Recovery frames this character does NOT receive, from any
+  // source other than a move's own base Recovery (No Wasted Movements). Summed,
+  // and floored at 0 by the caller.
+  //
+  // Asked at the two doors imposed Recovery comes through — `imposeRecovery`,
+  // which every automation and both trip effects and Movement Punisher pass
+  // through, and the guard extension a too-short Block earns — rather than at
+  // the effects themselves. A new way of imposing Recovery is then covered by
+  // the door it arrives at, rather than by somebody remembering this Perk.
+  'imposedRecoveryDelta',
+  // (ctx) -> { perStamina, steps } | null. Stamina that would have gone OVER
+  // this character's cap, banked until it is worth healing a Half-Damage Step
+  // (Tip Top Shape). NOT folded: each grant keeps its own bank in
+  // character_perk_state, exactly as `absorbsBreak` keeps its own charges, so
+  // two copies bank separately rather than sharing a counter nobody owns.
+  //
+  // The seam says the rate; the banking and the payout are the engine's,
+  // because only the engine sees the overflow happen — and WHICH Stat is
+  // healed is its choice, at random among the damaged ones, the same division
+  // of labour `roundStartHalfHealing` already uses.
+  'staminaOverflowHealing',
   // (ctx) -> boolean. OR-ed. Whether this character reads the High/Mid/Low band
   // of an unrevealed attack aimed at them (Eye Catcher). A band only — not the
   // move, not its frames, not its damage.
   'seesAttackHeight',
+  // (ctx) -> boolean. OR-ed. Whether this character is told that an unrevealed
+  // move aimed at them carries the **Feint** Tag (Never a Fool). That it is a
+  // Feint and nothing else — the same three gates `seesAttackHeight` uses
+  // decide whose moves qualify, and the flag is absent rather than false on
+  // every row the Perk does not earn.
+  'seesFeints',
+  // ({ die }) -> number added to the Minimum Damage Threshold for damage landing
+  // on THAT ONE Stat of this character (Yamazaki Black Bones). Summed, and asked
+  // once per Stat a blow is about to touch.
+  //
+  // **The per-Stat sibling of `minDamageThresholdWhenAttacked`, not a
+  // replacement for it.** That seam moves the bar for the whole exchange, which
+  // is the right shape for Iron Skin — a hide is a hide, wherever you hit it.
+  // This one moves the bar for one bone, so a fighter's cracked ribs can be
+  // easier to hurt than their forearms in the same blow.
+  //
+  // The Threshold is a GATE and nothing else (see computeHitDamage): a Stat that
+  // clears it takes exactly the damage it would always have taken. So a Perk
+  // here never changes a number of Steps — it decides whether that Stat is
+  // touched at all, which is why the engine narrates a stopped Stat with its own
+  // `damage_shrugged` event rather than quietly reducing the blow.
+  'statDamageThreshold',
 ];
 
 // Tier-3 lifecycle keys — not seams (they are not folded across Perks, each
@@ -226,6 +269,7 @@ export const META_KEYS = ['name', 'description', 'triggers', 'manual'];
 // The Perks themselves. One import, one array entry.
 // ---------------------------------------------------------------------------
 
+import animeProtagonist from './animeProtagonist.js';
 import baronOfSuffering from './baronOfSuffering.js';
 import corneredAnimal from './corneredAnimal.js';
 import deadlyPendulum from './deadlyPendulum.js';
@@ -240,17 +284,23 @@ import healingFactor from './healingFactor.js';
 import ironSkin from './ironSkin.js';
 import lastBreathTaker from './lastBreathTaker.js';
 import multifaceted from './multifaceted.js';
+import neverAFool from './neverAFool.js';
 import neverEmptyHanded from './neverEmptyHanded.js';
 import nonCommitted from './nonCommitted.js';
+import neverTellMeTheOdds from './neverTellMeTheOdds.js';
+import noWastedMovements from './noWastedMovements.js';
 import notJustAScratch from './notJustAScratch.js';
 import osu from './osu.js';
 import perfectPlayer from './perfectPlayer.js';
 import piercingHeadache from './piercingHeadache.js';
 import punchesInBunches from './punchesInBunches.js';
+import rhythmBreaker from './rhythmBreaker.js';
 import secondWind from './secondWind.js';
 import spikedShell from './spikedShell.js';
 import theSimplestTool from './theSimplestTool.js';
+import tipTopShape from './tipTopShape.js';
 import woundedWolf from './woundedWolf.js';
+import yamazakiBlackBones from './yamazakiBlackBones.js';
 
 const DEFINITIONS = [
   geniusObserver,
@@ -278,6 +328,13 @@ const DEFINITIONS = [
   pathToMasterySpeed,
   pathToMasteryStrength,
   dogfighter,
+  rhythmBreaker,
+  neverTellMeTheOdds,
+  animeProtagonist,
+  noWastedMovements,
+  tipTopShape,
+  yamazakiBlackBones,
+  neverAFool,
 ];
 
 export const PERK_REGISTRY = Object.fromEntries(

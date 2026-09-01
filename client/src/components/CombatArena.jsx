@@ -538,6 +538,12 @@ export function TicSquare({
   // page to link it to.
   const starts = attackStarts ?? [];
   const startIds = starts.map((s) => s.declaredMoveId);
+  // **Never a Fool.** True only when the server marked one of these rows for
+  // THIS viewer (see attackStartsByTic) — every other viewer's payload has no
+  // such field, so there is nothing here to leak. It recolours the same glow
+  // rather than drawing a second marker: what changes is that you know the
+  // commitment is a lie, not that there is one.
+  const hasFeint = starts.some((mark) => mark.isFeint);
   const startKey = startIds.join(',');
   const { ids: linkedIds } = useMoveLink();
   const isLinked = startIds.some((id) => linkedIds.includes(id));
@@ -556,7 +562,7 @@ export function TicSquare({
   const telegraphTitle = starts.length
     ? ` — ${starts.map((s) => s.characterName ?? 'Someone').join(', ')} start${
         starts.length === 1 ? 's' : ''
-      } an attack here`
+      } an attack here${hasFeint ? ", and you can tell it's a Feint" : ''}`
     : '';
   const title = clickTitle ?? `Tic ${relativeTic}${telegraphTitle}${
     carried.length
@@ -613,12 +619,38 @@ export function TicSquare({
         <span
           ref={glowRef}
           aria-hidden
+          // Read by MoveLinkOverlay off the anchor element it already looks up,
+          // so the connector can be drawn in the same red without a second
+          // registry to keep in step with this one.
+          data-feint={hasFeint ? '' : undefined}
           className={`pointer-events-none absolute inset-0 transition-all duration-200 ${
-            isLinked
-              ? 'bg-zinc-100/15 shadow-[inset_0_0_0_2px_rgb(228_228_231_/_95%),inset_0_0_16px_3px_rgb(228_228_231_/_55%)]'
-              : 'bg-zinc-100/[0.06] shadow-[inset_0_0_0_1.5px_rgb(228_228_231_/_65%),inset_0_0_12px_2px_rgb(228_228_231_/_28%)]'
+            hasFeint
+              ? isLinked
+                ? 'bg-rose-500/20 shadow-[inset_0_0_0_2px_rgb(244_63_94_/_95%),inset_0_0_16px_3px_rgb(244_63_94_/_60%)]'
+                : 'bg-rose-500/[0.09] shadow-[inset_0_0_0_1.5px_rgb(244_63_94_/_70%),inset_0_0_12px_2px_rgb(244_63_94_/_32%)]'
+              : isLinked
+                ? 'bg-zinc-100/15 shadow-[inset_0_0_0_2px_rgb(228_228_231_/_95%),inset_0_0_16px_3px_rgb(228_228_231_/_55%)]'
+                : 'bg-zinc-100/[0.06] shadow-[inset_0_0_0_1.5px_rgb(228_228_231_/_65%),inset_0_0_12px_2px_rgb(228_228_231_/_28%)]'
           }`}
         />
+      )}
+      {/* **"Feint!", on hover, over the highlight** (Never a Fool). Painted on
+          top of the red glow rather than beside it, and only while the link is
+          live, so the resting board stays a board — the red square is the
+          standing fact and the word is the confirmation you go looking for.
+          `panel-cut` clips every descendant to the square, so this cannot
+          overflow: it is sized to fit 44px rather than drawn large and let
+          spill. Hidden from the layout (absolute) so it never nudges the Tic
+          number it sits over. */}
+      {hasFeint && (
+        <span
+          aria-hidden
+          className={`font-display pointer-events-none absolute inset-0 flex items-center justify-center text-[9px] font-black uppercase italic tracking-tight text-rose-300 transition-opacity duration-200 [text-shadow:0_0_6px_rgb(244_63_94_/_90%)] ${
+            isLinked ? 'opacity-90' : 'opacity-0'
+          }`}
+        >
+          Feint!
+        </span>
       )}
       {relativeTic}
       {/* A carried-over move paints the top edge of the square in its own
