@@ -86,7 +86,15 @@ test('attackStartsByTic: marks the first Startup Tic and nothing else', () => {
   assert.deepEqual(marks.get(2), [
     // `isFeint` is false for a row the server never marked — the mark is built
     // from a per-viewer key the client is not entitled to decide (Never a Fool).
-    { declaredMoveId: 1, characterId: 10, characterName: 'Char10', isFeint: false },
+    // `declaredMove` is the row itself, carried for the header strip's Tell
+    // popover (it has no card on the page to draw a connector to).
+    {
+      declaredMoveId: 1,
+      characterId: 10,
+      characterName: 'Char10',
+      isFeint: false,
+      declaredMove: dm({ placementTic: 2, revealTic: 5 }),
+    },
   ]);
 });
 

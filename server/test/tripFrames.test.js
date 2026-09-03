@@ -14,7 +14,7 @@
 //      is meant to be.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { tripWindow, placementFloorAfterTrip } from '../combatTiming.js';
+import { tripWindow, placementFloorAfterTrip, planImposedRecovery } from '../combatTiming.js';
 import { placementFloorAfterTrip as clientPlacementFloorAfterTrip } from '../../client/src/lib/framePhaseColors.js';
 
 test('the trip window is the tail of the footprint', () => {
@@ -140,4 +140,107 @@ test('trip frames spilling into a new round leave the first Tics reachable', () 
   );
   assert.equal(riser, 7, 'Off The Ground reaches back into them, clamped at the round start');
   assert.ok(riser < ordinary, 'which is the whole point, and what the counter must draw');
+});
+
+// ---------- Recovery imposed on a fighter who is already down ----------
+//
+// The bug, reported from the table: *"when a move adds regular recovery to an
+// opponent who had Trip Recovery, all recovery became regular recovery,
+// forbidding the Off The Ground moves"* — plus the second half, that an Off The
+// Ground move could still be declared and was then visually pushed later.
+//
+// One root cause behind both. Trip frames are the LAST `tripRecoveryTics` of a
+// footprint, so ordinary Tics appended to the end pushed the trip window along
+// in front of them: the frames the fighter was lying on became ordinary
+// Recovery, and the move declared to overlap them was left overlapping ordinary
+// Recovery — which is what displaced it.
+
+// A Grounding move: 1 Startup, 1 Active, 3 Recovery, all three of them trip.
+// Placed at 0, so Active ends at 2, Recovery ends at 5, trip window [2,5).
+const grounded = (ext = 0) => ({
+  id: 1,
+  placementTic: 0,
+  revealTic: 1,
+  activeTics: 1,
+  recoveryTics: 3,
+  recoveryExtensionTics: ext,
+  tripRecoveryTics: 3,
+});
+
+const windowOf = (update, move) => {
+  const activeEndTic = update.revealTic + move.activeTics;
+  const recoveryEndTic = activeEndTic + move.recoveryTics + update.recoveryExtensionTics;
+  return tripWindow({ activeEndTic, recoveryEndTic, tripRecoveryTics: update.tripRecoveryTics });
+};
+
+test('ordinary Recovery imposed on a downed fighter does not un-ground the frames they are lying on', () => {
+  const move = grounded();
+  // Caught at Tic 3 — mid trip window, on the floor — with 2 ordinary Recovery.
+  const plan = planImposedRecovery({ moves: [move], tic: 3, tics: 2, trip: false });
+  assert.equal(plan.phase, 'in-flight');
+  const update = plan.updates.find((u) => u.id === 1);
+  assert.equal(update.recoveryExtensionTics, 2, 'the frames still arrive, and still on the end');
+  assert.equal(update.tripRecoveryTics, 5, 'and they are frames spent on the floor, because that is where they are');
+
+  // The whole Recovery run is still trip, which is what the table was watching.
+  const after = windowOf(update, move);
+  assert.deepEqual(after, { from: 2, to: 7 });
+  const before = tripWindow({ activeEndTic: 2, recoveryEndTic: 5, tripRecoveryTics: 3 });
+  assert.equal(after.from, before.from, 'the window may only GROW — its start must not move');
+});
+
+test('...which is what keeps an Off The Ground move legal on the frames it was declared onto', () => {
+  // A riser with 2 Startup declared to begin at Tic 3, overlapping the last two
+  // trip frames. Before the fix, the imposition slid the window to [4,7) and
+  // that placement was suddenly on ordinary Recovery.
+  const move = grounded();
+  const update = planImposedRecovery({ moves: [move], tic: 3, tics: 2, trip: false }).updates.find(
+    (u) => u.id === 1
+  );
+  const window = windowOf(update, move);
+  const blockedUntil = window.to;
+  const floor = placementFloorAfterTrip({
+    blockedUntilTic: blockedUntil,
+    tripRecoveryTics: update.tripRecoveryTics,
+    startupTics: 2,
+    offTheGround: true,
+  });
+  assert.equal(floor, 5, 'the riser still reaches back into trip frames — it is simply two Tics later');
+  assert.ok(floor >= window.from, 'and never past where the window begins, which is the Tag\'s own cap');
+  // **The assertion that actually separates fixed from broken.** The riser was
+  // declared onto Tic 3. Before the fix the window slid to [4,7) and Tic 3
+  // became ordinary Recovery under it; now it is still on the floor there.
+  assert.ok(window.from <= 3, `Tic 3 must still be a trip frame, window was ${JSON.stringify(window)}`);
+});
+
+test('a trip imposed on somebody already down still just adds to the pile', () => {
+  // Unchanged behaviour, and the reason the new condition is `trip || already
+  // down` rather than a replacement for `trip`.
+  const update = planImposedRecovery({ moves: [grounded()], tic: 3, tics: 2, trip: true }).updates.find(
+    (u) => u.id === 1
+  );
+  assert.equal(update.tripRecoveryTics, 5);
+  assert.equal(update.recoveryExtensionTics, 2);
+});
+
+test('ordinary Recovery on somebody NOT down stays ordinary', () => {
+  // The control. Nothing about an upright fighter changed: no trip frames in,
+  // none out, however much Recovery is imposed.
+  const upright = { id: 1, placementTic: 0, revealTic: 1, activeTics: 1, recoveryTics: 3, recoveryExtensionTics: 0, tripRecoveryTics: 0 };
+  const update = planImposedRecovery({ moves: [upright], tic: 3, tics: 2, trip: false }).updates.find(
+    (u) => u.id === 1
+  );
+  assert.equal(update.tripRecoveryTics, 0);
+  assert.equal(update.recoveryExtensionTics, 2);
+});
+
+test('a fighter caught in STARTUP is not grounded by it, trip frames pending or not', () => {
+  // Startup Tics are not Recovery, so there is nothing to be on the floor for —
+  // the move is delayed and its own trip frames ride along untouched.
+  const update = planImposedRecovery({ moves: [grounded()], tic: 0, tics: 2, trip: false }).updates.find(
+    (u) => u.id === 1
+  );
+  assert.equal(update.revealTic, 3, 'delayed');
+  assert.equal(update.recoveryExtensionTics, 0);
+  assert.equal(update.tripRecoveryTics, 3, 'unchanged');
 });

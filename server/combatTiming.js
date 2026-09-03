@@ -350,15 +350,33 @@ export function planImposedRecovery({ moves, tic, tics, trip = false }) {
   //  - **idle** — nothing is drawn on idle Tics at all (a decided rule: a Tic
   //    strip draws declared moves, and there is no declared move there), so the
   //    whole effect is the displacement, trip or not.
+  //
+  // **...and Recovery imposed on a fighter who is ALREADY DOWN is Trip Recovery
+  // too, whoever imposed it and whatever they meant by it (decided, new;
+  // bugfix).** You cannot be made to recover *on your feet* while you are on the
+  // floor. Reported from the table as "a move added regular recovery to an
+  // opponent who had Trip Recovery and all of it became regular", and that is
+  // exactly what happened: trip frames are the LAST `tripRecoveryTics` of a
+  // footprint (see tripWindow), so ordinary Tics appended to the end pushed the
+  // trip window along in front of them — the frames the fighter was lying on
+  // silently became ordinary Recovery, and an **Off The Ground** move declared
+  // to overlap them was left overlapping ordinary Recovery instead, which is
+  // why it was then displaced.
+  //
+  // The condition is the affected move already ending in trip frames, because
+  // that is precisely when the appended Tics land *after* those frames — i.e.
+  // at a moment the fighter is on the ground. Nothing else about the imposition
+  // changes: the same count of frames arrives, on the same Tics.
   const updates = [];
   if (hit && phase === 'startup') {
     updates.push({ id: hit.id, placementTic: hit.placementTic, revealTic: hit.revealTic + tics,
       recoveryExtensionTics: hit.recoveryExtensionTics ?? 0,
       tripRecoveryTics: hit.tripRecoveryTics ?? 0 });
   } else if (hit) {
+    const alreadyDown = (hit.tripRecoveryTics ?? 0) > 0;
     updates.push({ id: hit.id, placementTic: hit.placementTic, revealTic: hit.revealTic,
       recoveryExtensionTics: (hit.recoveryExtensionTics ?? 0) + tics,
-      tripRecoveryTics: (hit.tripRecoveryTics ?? 0) + (trip ? tics : 0) });
+      tripRecoveryTics: (hit.tripRecoveryTics ?? 0) + (trip || alreadyDown ? tics : 0) });
   }
 
   // "After the affected one" is measured from where the affected move

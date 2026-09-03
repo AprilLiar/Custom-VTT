@@ -1175,6 +1175,29 @@ on the **ground** for it, and two rules read that difference.
     extension is time spent still on your feet recovering from the guard, and the floor is where the
     move was always going to leave you.
   - No client change was needed — every render site already draws from `tripRecoveryTics`.
+  - **Recovery imposed on a fighter who is already down is Trip Recovery too
+    (decided, revised; bugfix).** This reverses the "Recovery added later is
+    ordinary" note above for one case, and the table found it: *"when a move adds
+    regular recovery to an opponent who had Trip Recovery, all recovery became
+    regular recovery, forbidding the Off The Ground moves"*. Exactly what
+    happened — trip frames are the LAST `tripRecoveryTics` of a footprint, so
+    ordinary Tics appended to the end pushed the whole window along in front of
+    them: the frames the fighter was lying on silently became ordinary Recovery,
+    and an Off The Ground move declared to overlap them was left overlapping
+    ordinary Recovery, which is why it was then displaced ("could be declared,
+    but visually pushed later"). One root cause, both symptoms.
+    - The rule now: **you cannot be made to recover on your feet while you are
+      on the floor.** `planImposedRecovery`'s in-flight branch adds the imposed
+      Tics to `trip_recovery_tics` as well when the affected move already ends in
+      trip frames — which is precisely when the appended Tics land *after* those
+      frames, i.e. at a moment the fighter is on the ground.
+    - Nothing else changes: the same count of frames arrives, on the same Tics,
+      and the window may only **grow** — its start never moves. The earlier note
+      still holds for an upright fighter, where a too-short Block's extension is
+      time spent recovering on your feet.
+    - The displacement of following moves is untouched and correct: the trip
+      window grew by the same count, so an Off The Ground move slides with it
+      and keeps the same relationship to the frames it was declared onto.
 
 - **The Ground Finisher Tag reads them from the other side (decided, new; implemented).** If this
   move's **Active frames land on even one Trip Recovery frame** of the fighter it is coming for, its
@@ -2657,6 +2680,33 @@ Every page's header also carries, in order: the "Dogfight" logo (links to the Co
 5. **Combat Arena** — shared page, no map/tokens; reachable by clicking the header logo, visible to every role. A GM-only roster rail (not-yet-seated characters, role-filtered) to drag from, grouped by character folder recursively — see Combat Arena above for the full collapsible/counted/Folderless-last behavior; two side-by-side columns (Left/Right) of pair rows with a divider between pairs, a fresh empty row always available to start a new one. Seated cards **fill their side's full width with no unoccupied space** — a single occupant's card spans the whole side, and under Uneven Combat, adding more to the same side scales every card on it down evenly so the row always stays fully occupied (a per-card minimum width plus horizontal scroll is the fallback if a side gets too crowded to stay legible), rendered horizontally with a full-height portrait on the left (see Combat Arena above). Each seated character renders as a **read-only** card — portrait, active stance name, dice pools (grouped into the same 3 Head/Core/Legs rows as the character sheet's Tab 1, in that order, rather than one flat mixed row), Current/Max Stamina — showing a live red/green **preview** instead of the real value while this client itself has a declared-but-not-yet-committed move pending (see Stamina Cost above; red if the preview is lower, green if higher, plain otherwise; the preview now checks that character's own pair/side against `combat_pairs`, not a single arena-wide side — see the combat redesign below) — click the card to jump to the full sheet to actually roll/step, values here stay live via the same broadcasts the sheet itself uses; NPCs here are visible to Players as an explicit exception; a small ✕ (GM-only) removes one participant, a page-level **Clear Arena** button (GM-only) empties it entirely, including every declared move and the round/Tic state; a **Start Combat** button (GM-only, shown only while `phase` is null) rolls initiative and opens the first Declaration Phase — see Combat Timing above for how it and **End Combat** relate to Clear Arena. "Uneven Combat" toggle (GM-only; a read-only badge for Players when on) allows uneven pair sizes (dropping a character onto an occupied pair zone adds them rather than replacing). A **Counters** section lists every counter flagged "Show in Combat" for a currently-seated character (labeled `"{CharacterName} - {CounterName}"`, its reward tag if it has one shown read-only) plus standalone counters (labeled by name alone, never a reward tag); a small form creates a new standalone one (GM-only), but adjusting/deleting any counter shown here is open to everyone, matching the character sheet's own Counters tab.
 
    **Global status strip (decided; rewritten after the Combat Automation overhaul):** while a fight is on, a slim bar appears at the top of *every* page (`CombatHeaderBar.jsx`, mounted once in `App.jsx`'s `Shell`, not inside the Arena route — see Combat Timing above), showing the round number, **this viewer's own current state** instead of a generic phase label during Declaration (`viewerDeclarationStatus` — the GM sees a pair-count summary, e.g. "2 pairs still declaring…"; a Player sees their own seated character's status specifically: **"Your turn to declare!"**, **"Waiting for declaration…"**, **"Waiting on other declarations…"** once they've pressed Done Declaring, or **"Not seated in this fight"**), the same Tic Counter square visuals the Arena renders, and an **End Combat** button for the GM. **It is a status display, not a control** — nothing in it advances a round, because nothing does any more. Its one genuinely interactive job is carrying the dialogs that must reach someone regardless of which page they're on: the GM's **Dodge prompt** (`DodgePromptDialog`) and the affected player's **Forfeit/Postpone** prompt (`MoveConflictDialog`). Both are queued here rather than in the Arena precisely because a paused round cannot continue until they're answered, and the person who must answer may be anywhere in the app — verified end to end by `scripts/playtest-dodge.mjs`.
+
+   **Its Tic squares show what they show everywhere else, and its Tells open as
+   popovers (decided, new; implemented).** Two gaps that were both the same
+   thing — this strip is the ONLY Tic Counter on every page but the Arena, and it
+   was drawing less than the one it stands in for.
+
+   - **The occupied-Tic pips are drawn**, the same little phase squares the
+     Arena's counter has always had. A Tic that was spoken for used to look
+     identical to an empty one.
+     **Scoped to what this viewer may already read in full** (`isRevealed` —
+     their own moves, plus anything already public). A move's frame *runs* are
+     the thing a Tell exists to make you guess at (see `attackStartsByTic` on why
+     only the first Startup Tic glows), so drawing an opponent's phases before
+     they reveal would hand over exactly what the telegraph is careful not to.
+   - **A telegraphed square is clickable and opens the Tell in a popover.** The
+     Arena draws a connector from the glow to the Tell card in its lanes; there
+     is no lane on a Compendium or character-sheet page, so the glow here was
+     inert — you could see something starts on that Tic and had no way to find
+     out what. The popover renders the same `CompactTellFace` the lanes use, so
+     the two surfaces show one card rather than two drawings of it, and it names
+     each fighter (two can commit on the same Tic). Never a Fool's **Feint!**
+     is said in words there as well as in the square's colour.
+   - `TicSquare` takes `onStartsClick` as the counterpart of `linkAnchor`, and
+     **`linkAnchor` wins when both are somehow supplied**: a connector to a card
+     you can already see beats a popup covering it. Portalled and positioned in
+     viewport coordinates, because the strip is a row of transformed motion
+     elements and a transformed ancestor captures `position: fixed`.
 
    **It stands down while the Arena's own counter is on screen, and it declares
    when it is not (decided, new; implemented).** Two changes that are really one
