@@ -87,6 +87,13 @@ export function attackStartsByTic({
       // know. It paints the square red and nothing more: which move it is, its
       // frames and its Roll all stay exactly as secret as they were.
       isFeint: Boolean(dm.isFeint),
+      // **The row itself, for the surfaces that cannot draw a connector.** The
+      // Arena links a glowing square to the Tell card sitting a few inches
+      // below it; the global header strip has no lane and no card on the page
+      // to point at, so it shows the Tell in a popover instead and needs the
+      // row to render one from. Carrying it changes nothing about what is on
+      // the wire — this is the same object the caller already handed in.
+      declaredMove: dm,
     });
     marks.set(tic, at);
   }

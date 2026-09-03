@@ -1,10 +1,10 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { socket } from '../socket.js';
-import { getCombat } from '../lib/api.js';
+import { getCombat, getTells } from '../lib/api.js';
 import { useRole } from '../roleContext.jsx';
-import { TicCounterCentral } from './CombatArena.jsx';
+import { CompactTellFace, TicCounterCentral } from './CombatArena.jsx';
 import { setDraggingMove, onDraggingMoveChange } from '../lib/dragMoveState.js';
 import {
   getTicDeclare,
@@ -14,6 +14,8 @@ import {
 } from '../lib/ticDropTarget.js';
 import { attackStartsByTic } from '../lib/attackTelegraph.js';
 import { useSocketRefresh } from '../lib/connection.js';
+import { createPortal } from 'react-dom';
+import { useAnchoredPosition } from '../lib/useAnchoredPosition.js';
 import { clearSummonedPrompt, onSummonedPrompt } from '../lib/pausePrompts.js';
 import MoveConflictDialog from './MoveConflictDialog.jsx';
 import NonCommitDialog from './NonCommitDialog.jsx';
@@ -70,7 +72,48 @@ export default function CombatHeaderBar() {
   const [arenaCounterVisible, setArenaCounterVisibleLocal] = useState(isArenaCounterVisible);
   const [canDeclare, setCanDeclare] = useState(() => Boolean(getTicDeclare()));
 
+  // **The Tells behind this strip's own glowing squares.** The Arena draws a
+  // connector from a glow to the Tell card in its lanes; there is no lane on a
+  // Compendium or character-sheet page, so the glow here was inert — you could
+  // see that something starts on that Tic and had no way to find out what.
+  // Clicking one opens a popover with the same `CompactTellFace` the lanes use,
+  // so the two surfaces show the same card rather than two drawings of it.
+  const [tells, setTells] = useState([]);
+  const [tellPopup, setTellPopup] = useState(null); // { starts, anchor }
+  const popupRef = useRef(null);
+  const tellAnchor = useRef(null);
+  tellAnchor.current = tellPopup?.anchor ?? null;
+  const popupPos = useAnchoredPosition(tellAnchor, Boolean(tellPopup), { width: 240 });
+
   useEffect(() => onDraggingMoveChange(setDraggingMoveLocal), []);
+
+  useEffect(() => {
+    const refreshTells = () => getTells().then(setTells).catch(console.error);
+    refreshTells();
+    const events = ['tell:created', 'tell:updated', 'tell:deleted'];
+    for (const ev of events) socket.on(ev, refreshTells);
+    return () => {
+      for (const ev of events) socket.off(ev, refreshTells);
+    };
+  }, []);
+
+  // Escape, and a pointer down anywhere outside, close it — a popover is
+  // something you step away from, and it is portalled so a click on the page
+  // behind it is not a click on any ancestor of it.
+  useEffect(() => {
+    if (!tellPopup) return undefined;
+    const onKey = (e) => e.key === 'Escape' && setTellPopup(null);
+    const onPointerDown = (e) => {
+      if (popupRef.current?.contains(e.target)) return;
+      setTellPopup(null);
+    };
+    document.addEventListener('keydown', onKey);
+    document.addEventListener('pointerdown', onPointerDown);
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      document.removeEventListener('pointerdown', onPointerDown);
+    };
+  }, [tellPopup]);
   useEffect(() => onArenaCounterVisibility(setArenaCounterVisibleLocal), []);
   useEffect(() => onTicDeclareChange((fn) => setCanDeclare(Boolean(fn))), []);
 
@@ -345,6 +388,15 @@ export default function CombatHeaderBar() {
   // Arena's Declaration Lanes, and there is no move source or lane on a
   // Compendium or character-sheet page to point at, so this counter passes
   // no linkAttackStarts and renders the glow as a bare marker.
+  // The footprints this viewer is entitled to read in full — their own, plus
+  // whatever has already gone public. Scoped to the pair on screen, because a
+  // different fight's timing is none of this strip's business.
+  const visibleFootprints = (combat.declaredMoves ?? []).filter(
+    (dm) => dm.isRevealed && pairIndexByChar.get(dm.characterId) === pairIndex
+  );
+
+  const tellById = new Map(tells.map((t) => [t.id, t]));
+
   const attackStarts = attackStartsByTic({
     declaredMoves: combat.declaredMoves,
     pairIndexByChar,
@@ -429,10 +481,23 @@ export default function CombatHeaderBar() {
           setHoverTic={setHoverTic}
           onDrop={handleTicDrop}
           onTapPlace={handleTicTap}
-          declaredMoves={[]}
-          showDeclaredPreview={false}
+          // **The occupied-Tic squares, same as the Arena's counter (decided,
+          // new).** This strip drew none at all, so a Tic that was spoken for
+          // looked identical to an empty one — on every page where this is the
+          // only counter there is.
+          //
+          // **Scoped to what this viewer may already see in full.** A move's
+          // frame RUNS are the thing a Tell exists to make you guess at (see
+          // attackStartsByTic on why only the first Startup Tic glows), so
+          // drawing another fighter's phases before they reveal would hand over
+          // exactly what the telegraph is careful not to. `isRevealed` is the
+          // server's own answer to "may this viewer read this row" — their own
+          // moves, plus anything already public.
+          declaredMoves={visibleFootprints}
+          showDeclaredPreview={visibleFootprints.length > 0}
           overflowTics={overflowTics}
           attackStarts={attackStarts}
+          onStartsClick={(starts, anchor) => setTellPopup({ starts, anchor })}
           role={role}
           label="Tic Counter"
         />
@@ -459,6 +524,37 @@ export default function CombatHeaderBar() {
           </motion.div>
         )}
       </AnimatePresence>
+      {/* **The Tell behind a glowing square.** Portalled and positioned in
+          viewport coordinates: the strip is a flex row of transformed motion
+          elements, and a transformed ancestor captures `position: fixed` — the
+          trap this codebase has hit five times now. One card per move starting
+          on that Tic, since two fighters can commit on the same one. */}
+      {tellPopup &&
+        popupPos &&
+        createPortal(
+          <div
+            ref={popupRef}
+            className="fixed z-[80] space-y-2 panel-cut border border-zinc-700 bg-zinc-950 p-2 shadow-[0_18px_40px_rgba(0,0,0,0.65)]"
+            style={{ left: popupPos.left, width: popupPos.width, top: popupPos.top, bottom: popupPos.bottom }}
+          >
+            {tellPopup.starts.map((start) => (
+              <div key={start.declaredMoveId} className="space-y-1">
+                <p className="font-display text-[10px] uppercase tracking-widest text-zinc-500">
+                  {start.characterName ?? 'Someone'} starts something here
+                </p>
+                {start.declaredMove && <CompactTellFace dm={start.declaredMove} tellById={tellById} />}
+                {/* Never a Fool, said in words rather than only in the square's
+                    colour — the popover is where you come to read it. */}
+                {start.isFeint && (
+                  <p className="font-display text-[11px] font-black uppercase italic tracking-tight text-rose-300">
+                    Feint!
+                  </p>
+                )}
+              </div>
+            ))}
+          </div>,
+          document.body
+        )}
       {conflictDialog}
       {defenseDialog}
       {nonCommitDialog}

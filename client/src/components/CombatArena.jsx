@@ -514,6 +514,14 @@ export function TicSquare({
   overflowNames,
   attackStarts,
   linkAnchor,
+  // **The Tell, for a counter with nothing to point at.** The Arena links a
+  // glowing square to the Tell card a few inches below it; the global header
+  // strip has no lane on the page, so its glow was inert — you could see that
+  // something starts here and had no way to find out what. Given this, the
+  // square becomes clickable and hands the marks back for a popover.
+  // `linkAnchor` wins when both are supplied: a connector to a card you can
+  // already see beats a popup covering it.
+  onStartsClick,
   onDragOver,
   onDrop,
   onClick,
@@ -565,7 +573,7 @@ export function TicSquare({
         starts.length === 1 ? 's' : ''
       } an attack here${hasFeint ? ", and you can tell it's a Feint" : ''}`
     : '';
-  const title = clickTitle ?? `Tic ${relativeTic}${telegraphTitle}${
+  const title = clickTitle ?? `${onStartsClick && starts.length ? 'Click to read the Tell — ' : ''}Tic ${relativeTic}${telegraphTitle}${
     carried.length
       ? ` — ${carried
           .map((c) => `${c.name}'s ${PHASE_LABEL[c.phase] ?? c.phase}`)
@@ -575,7 +583,13 @@ export function TicSquare({
   // Tap-to-place owns the click whenever a move is mid-placement; the
   // telegraph's own tap-to-pin only takes over when it doesn't, so
   // declaring a move never gets hijacked by an informational overlay.
-  const handleClick = onClick ?? (linkAnchor && startIds.length ? () => toggleLinkPin(startIds) : undefined);
+  const handleClick =
+    onClick ??
+    (linkAnchor && startIds.length
+      ? () => toggleLinkPin(startIds)
+      : onStartsClick && starts.length
+        ? (e) => onStartsClick(starts, e.currentTarget)
+        : undefined);
   return (
     <motion.div
       ref={ref}
@@ -786,6 +800,11 @@ export function TicCounterCentral({
   carriedLanes,
   attackStarts, // Attack telegraph: Map<absoluteTic, marks> — built by the caller (see attackStartsByTic), like overflowTics
   linkAttackStarts, // only the Arena's own counter has Tell cards on screen to draw a connector to
+  // The other half of that: a counter WITHOUT cards on the page (the global
+  // header strip) makes its telegraphed squares clickable and shows the Tell in
+  // a popover instead. See TicSquare's own note on why linkAnchor wins when
+  // both are somehow supplied.
+  onStartsClick,
   role,
   label,
 }) {
@@ -899,6 +918,7 @@ export function TicCounterCentral({
               overflowNames={carriedLanes?.length ? undefined : overflowTics.get(sq.absoluteTic)}
               attackStarts={attackStarts?.get(sq.absoluteTic)}
               linkAnchor={linkAttackStarts}
+              onStartsClick={onStartsClick}
               onDragOver={
                 canDrop
                   ? (e) => {
@@ -994,7 +1014,7 @@ const HEIGHT_BADGE = {
   Low: 'bg-sky-600 text-white',
 };
 
-function CompactTellFace({ dm, tellById }) {
+export function CompactTellFace({ dm, tellById }) {
   const rightTell = dm.rightTellId ? tellById.get(dm.rightTellId) : null;
   const leftTell = dm.leftTellId ? tellById.get(dm.leftTellId) : null;
   const tell = tellById.get(dm.tellId);
