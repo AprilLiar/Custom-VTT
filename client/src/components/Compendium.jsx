@@ -641,7 +641,7 @@ export default function MovesCompendium() {
             titleFor={(s) => `Show only moves that roll ${s.name}`}
           />
           <div className="flex flex-wrap items-center gap-1">
-            <span className="mr-1 text-xs font-semibold uppercase text-zinc-500">
+            <span className="mr-1 text-xs font-semibold uppercase text-zinc-400">
               Filter by style:
             </span>
             {ruleset.attributes.map((attr) => {
@@ -653,9 +653,13 @@ export default function MovesCompendium() {
                   onClick={() => toggleStyleFilter(attr.id)}
                   title={`Filter by ${attr.name}`}
                   className={`flex h-11 w-11 shrink-0 items-center justify-center panel-cut-sm border p-1.5 md:h-auto md:w-auto ${
+                    // Contrast, raised (see moveFilters.jsx's MoveFilterChips)
+                    // — this row is the one filter here that isn't built from
+                    // that shared component (icons, not words), and it had
+                    // drifted onto the same too-dark unselected border/text.
                     active
                       ? 'border-brand-500 bg-brand-600/30 text-brand-300'
-                      : 'border-zinc-700 text-zinc-500 hover:border-zinc-500'
+                      : 'border-zinc-500 text-zinc-300 hover:border-zinc-300 hover:text-zinc-100'
                   }`}
                 >
                   <Icon size={14} />
@@ -666,7 +670,7 @@ export default function MovesCompendium() {
               <button
                 type="button"
                 onClick={() => setStyleFilter(new Set())}
-                className="ml-1 text-xs text-zinc-500 underline hover:text-zinc-300"
+                className="ml-1 text-xs text-zinc-400 underline hover:text-zinc-200"
               >
                 clear
               </button>

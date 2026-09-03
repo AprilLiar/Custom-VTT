@@ -24,7 +24,7 @@ import RollRequestPrompt from './components/RollRequestPrompt.jsx';
 // each a real route except Chat (a toggle, not a page — see chatOpen
 // below). Settings/Search stay as top-bar icon actions on mobile too, same
 // as desktop, rather than crowding a 5th bottom-nav slot.
-function BottomNav({ homePath, chatOpen, onToggleChat, unreadChat }) {
+function BottomNav({ homePath, chatOpen, onToggleChat, onNavigate, unreadChat }) {
   const location = useLocation();
   const items = [
     { to: '/combat', label: 'Arena', icon: Swords, match: (p) => p === '/combat' },
@@ -45,6 +45,17 @@ function BottomNav({ homePath, chatOpen, onToggleChat, unreadChat }) {
           <Link
             key={label}
             to={to}
+            // A real tab strip lets you land on a tab by pressing it, even
+            // the one you're already "on" — and Chat is the case that
+            // surfaces it: opening Chat never changes the route underneath
+            // it, so pressing the SAME tab you opened it from (the common
+            // gesture for "take me back") left `location.pathname` unchanged
+            // and the pathname-keyed close effect below never fired. Chat
+            // stayed open, overlaying a page that looked like it should have
+            // taken over. Closing it here, on every press, is what makes
+            // this button behave like every other one on the strip rather
+            // than as a toggle Chat alone gets to ignore.
+            onClick={onNavigate}
             className={`flex min-h-11 flex-col items-center justify-center gap-0.5 py-1.5 text-[10px] font-semibold uppercase tracking-wide ${
               active ? 'text-brand-400' : 'text-zinc-500'
             }`}
@@ -205,7 +216,10 @@ function Shell() {
           <SearchBar mobileFullWidth onNavigate={() => setMobileMenuOpen(false)} />
           <Link
             to="/rules"
-            onClick={() => setMobileMenuOpen(false)}
+            onClick={() => {
+              setMobileMenuOpen(false);
+              setChatOpen(false);
+            }}
             className="flex min-h-11 items-center gap-2 panel-cut-sm border border-zinc-700 px-3 text-sm font-semibold text-zinc-300 hover:bg-zinc-800"
           >
             <Scroll size={16} />
@@ -213,7 +227,10 @@ function Shell() {
           </Link>
           <Link
             to="/settings"
-            onClick={() => setMobileMenuOpen(false)}
+            onClick={() => {
+              setMobileMenuOpen(false);
+              setChatOpen(false);
+            }}
             className="flex min-h-11 items-center gap-2 panel-cut-sm border border-zinc-700 px-3 text-sm font-semibold text-zinc-300 hover:bg-zinc-800"
           >
             <Cog size={16} />
@@ -254,6 +271,7 @@ function Shell() {
         homePath={homePath}
         chatOpen={chatOpen}
         onToggleChat={() => setChatOpen((v) => !v)}
+        onNavigate={() => setChatOpen(false)}
         unreadChat={unreadChat}
       />
 

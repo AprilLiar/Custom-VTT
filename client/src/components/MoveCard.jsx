@@ -11,6 +11,7 @@ import { dieFormula } from '../lib/dice.js';
 import { ROLL_SLOT_LABELS, describeRollSlots } from '../lib/diceSlots.js';
 import FrameBar from './FrameBar.jsx';
 import Thumb from './Thumb.jsx';
+import TapDescribe from './TapDescribe.jsx';
 
 const DIRECTION_GLYPHS = { up: '↑', down: '↓', left: '←', right: '→' };
 
@@ -343,23 +344,23 @@ export default function MoveCard({
                 one says who may throw this move, the other changes what it
                 is worth in the matchup. */}
             {combatStyle && (
-              <span
-                title="Combat Style — added to the user's stance when this move's roll is scored against the opponent"
+              <TapDescribe
+                text="Combat Style — added to the user's stance when this move's roll is scored against the opponent"
                 className="inline-flex items-center gap-1 rounded-full bg-amber-900/40 px-2 py-0.5 text-xs font-semibold text-amber-300"
               >
                 <CombatStyleIcon size={11} />
                 {combatStyle.name}
                 <span className="text-amber-500/80">matchup</span>
-              </span>
+              </TapDescribe>
             )}
             {tags.map((tag) => (
-              <span
+              <TapDescribe
                 key={tag.id}
-                title={tag.description || undefined}
+                text={tag.description || ''}
                 className="rounded-full bg-emerald-900/40 px-2 py-0.5 text-xs font-semibold text-emerald-300"
               >
                 {tag.name}
-              </span>
+              </TapDescribe>
             ))}
           </div>
         )}
