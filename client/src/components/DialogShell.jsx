@@ -125,7 +125,24 @@ export default function DialogShell({
         // entirely on any device without a safe area (every desktop, where
         // the inset is 0px). Content then sat flush against the border and
         // read as clipped. The inset has to be ADDED to the padding.
-        style={{ paddingBottom: 'calc(1rem + var(--safe-bottom))' }}
+        //
+        // **The top inset matters here too, and only here (decided, fix).**
+        // Every other variant is bottom-anchored or centered with real
+        // backdrop above it, so its title bar was never flush against the
+        // device's own top edge. `theater` (and a `fullscreen` panel on a
+        // short phone) fills the whole viewport, which puts the close
+        // button right at the physical top of the screen — exactly where a
+        // phone's own status/address bar chrome sits, and `position: fixed`
+        // is notoriously unreliable about tracking that bar's actual height
+        // rather than the layout viewport's. Reported as "the round replay's
+        // ✕ isn't reachable in portrait, only in landscape" — landscape
+        // routinely collapses that chrome, portrait often doesn't. Adding
+        // the same safe-top inset used everywhere else in the app (the
+        // mobile header) keeps the button below it instead of under it.
+        style={{
+          paddingTop: 'calc(1rem + var(--safe-top))',
+          paddingBottom: 'calc(1rem + var(--safe-bottom))',
+        }}
         className={`flex flex-col gap-3 border border-zinc-700 bg-zinc-900 p-4 outline-none ${
           variant === 'theater' ? '' : 'max-h-[92dvh]'
         } ${sheetPanelClass} ${variant === 'theater' ? 'max-w-none' : maxWidth} ${panelClassName}`}

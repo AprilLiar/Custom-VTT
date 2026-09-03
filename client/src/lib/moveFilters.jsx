@@ -104,7 +104,7 @@ export function MoveFilterChips({
   if (!items?.length) return null;
   return (
     <div className={`flex flex-wrap items-center gap-1 ${className}`}>
-      <span className={`mr-1 font-semibold uppercase text-zinc-500 ${compact ? 'text-[10px]' : 'text-xs'}`}>
+      <span className={`mr-1 font-semibold uppercase text-zinc-400 ${compact ? 'text-[10px]' : 'text-xs'}`}>
         {label}
       </span>
       {items.map((item) => {
@@ -122,9 +122,16 @@ export function MoveFilterChips({
               // these are a refinement on a screen you are already aiming at.
               compact ? 'px-1.5 py-0.5 text-[10px]' : 'min-h-11 px-2 py-1 text-xs md:min-h-0'
             } ${
+              // **Contrast, raised (decided, fix).** An unselected chip was
+              // `border-zinc-700 text-zinc-500` against this app's near-black
+              // panels — reported from the table as "too dark and hard to
+              // read," and it measures out that way too: zinc-500 text on a
+              // zinc-950 panel clears neither WCAG contrast tier. A picked
+              // chip already reads fine (`brand-300` on a lit `brand-600/30`
+              // fill); this only lifts the far more common unpicked state.
               active
                 ? 'border-brand-500 bg-brand-600/30 text-brand-300'
-                : 'border-zinc-700 text-zinc-500 hover:border-zinc-500'
+                : 'border-zinc-500 text-zinc-300 hover:border-zinc-300 hover:text-zinc-100'
             }`}
           >
             {labelFor(item)}
@@ -135,7 +142,7 @@ export function MoveFilterChips({
         <button
           type="button"
           onClick={onClear}
-          className={`ml-1 text-zinc-500 underline hover:text-zinc-300 ${compact ? 'text-[10px]' : 'text-xs'}`}
+          className={`ml-1 text-zinc-400 underline hover:text-zinc-200 ${compact ? 'text-[10px]' : 'text-xs'}`}
         >
           clear
         </button>
@@ -177,14 +184,14 @@ export function MoveFilterColumn({
   return (
     <div className={`flex w-32 shrink-0 flex-col gap-1 lg:w-40 ${align === 'right' ? 'items-end' : 'items-start'}`}>
       <div className="flex w-full items-baseline justify-between gap-2">
-        <span className="font-display text-sm font-semibold uppercase tracking-wide text-zinc-400">
+        <span className="font-display text-sm font-semibold uppercase tracking-wide text-zinc-300">
           {label}
         </span>
         {selected.size > 0 && (
           <button
             type="button"
             onClick={onClear}
-            className="text-xs text-zinc-500 underline hover:text-zinc-300"
+            className="text-xs text-zinc-400 underline hover:text-zinc-200"
           >
             clear
           </button>
@@ -201,9 +208,13 @@ export function MoveFilterColumn({
             className={`w-full panel-cut-sm border px-2 py-1 text-sm ${
               align === 'right' ? 'text-right' : 'text-left'
             } ${
+              // Contrast, raised (see MoveFilterChips) — the same unselected
+              // state was `border-zinc-800 text-zinc-400`, darker still than
+              // the chip row's own, since a column's border sits against an
+              // even quieter background with nothing behind it to lift it.
               active
                 ? 'border-brand-500 bg-brand-600/30 text-brand-200'
-                : 'border-zinc-800 text-zinc-400 hover:border-zinc-600 hover:text-zinc-200'
+                : 'border-zinc-500 text-zinc-300 hover:border-zinc-300 hover:text-zinc-100'
             }`}
           >
             {labelFor(item)}

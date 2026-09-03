@@ -10,6 +10,7 @@ import { decomposeRoll, formatModifierTerms, formatRollTotal } from '../lib/dice
 import { useRole } from '../roleContext.jsx';
 import { useSocketRefresh } from '../lib/connection.js';
 import { useRoster } from '../lib/useRoster.js';
+import { useIsDesktop } from '../lib/useMediaQuery.js';
 import Thumb from './Thumb.jsx';
 import FrameBar from './FrameBar.jsx';
 import QuirkCard from './QuirkCard.jsx';
@@ -694,6 +695,22 @@ export default function ChatPanel({ open }) {
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [entries, open]);
+
+  // Mobile: Chat is a real tab, so leaving it (App.jsx closes it on any
+  // route change below `md:`) has to take an open round replay with it —
+  // otherwise the dialog just stops being drawn (this component renders
+  // `null` while `open` is false) without its own state resetting, and
+  // tapping back into Chat popped the same replay open again unasked,
+  // as if it had been running behind the other tabs the whole time. This
+  // component instance never unmounts (`App.jsx` always renders it, `open`
+  // only gates its output), so that reset has to happen here rather than
+  // relying on mount/unmount to do it. Desktop is untouched: there Chat is
+  // a persistent side panel that never "closes" on navigation, so a replay
+  // left open should stay open.
+  const isDesktop = useIsDesktop();
+  useEffect(() => {
+    if (!open && !isDesktop) setReplayResolutionId(null);
+  }, [open, isDesktop]);
 
   if (!open) return null;
 

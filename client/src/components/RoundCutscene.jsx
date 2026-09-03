@@ -1282,25 +1282,30 @@ function MoveBar({ fp, ticks, startTic, effect, beat, staminaFlash }) {
       >
         {fp.characterName}
       </span>
-      {/* **The same width as the Tic strip below, exactly** (decided, and this
-          reverses the fixed-width note that stood here). The cells were pinned
-          to the Tic Counter's own 44px square while the strip beneath them grew
-          to fill the board — so the two rulers stopped lining up, and a bar
-          claiming Tics 1-3 no longer sat over the squares labelled 1, 2 and 3.
-          Alignment is the whole content of this row.
-          The concern the fixed size was answering — a Tic stretched into a slab
-          that stops reading as a square — was about the STRIP; it is answered by
-          the board being held to half the panel's width, and by these bars
-          keeping their short height, which is what lets more moves fit.
-          Matching the strip takes three things agreeing, not one: the same
-          leading label width, the same gap, and **nothing after the cells** —
-          the move's own name is taken out of flow on `md` and parked in the
-          empty half-panel to the right of the board, because in flow it was
-          eating 176px the strip below did not have to give up.
-          Below `md` this all reverts to fixed cells: a phone's board is full
-          width with no room beside it to park a name, and seven `flex-1` cells
-          in 200px would be 25px each. */}
-      <div className="relative flex shrink-0 gap-0.5 md:min-w-0 md:flex-1">
+      {/* **The same width as the Tic strip below, exactly, at every size
+          (decided, fix).** The cells here and the Tic strip's own cells both
+          size themselves as `flex-1` off an identical fixed budget of
+          non-cell siblings — same leading label width, same gaps, same
+          trailing box width (a real name here, an invisible spacer of the
+          same width on the Tic strip's own row) — so the two rulers can only
+          ever divide the exact same remaining pixels the exact same way.
+          Nothing here is measured or matched by hand; agreement follows from
+          the two rows having the same shape.
+          **This used to be fixed `w-8` cells below `md`, and that was the
+          bug.** A phone has no side panel to park the move's name in the way
+          `md` does, so the name stayed inline and ate real width from this
+          row — width the Tic strip's row never had to give up, since it has
+          nothing after its own cells. The two rulers computed different
+          available widths and drifted apart round to round. Squishing the
+          trailing name down to a short fixed box (see below) and mirroring
+          that same box, invisibly, on the Tic strip is what makes the two
+          agree again — and also what stops a wide row from overflowing the
+          phone screen at all: fixed-width cells couldn't shrink to fit and
+          silently turned this panel into something you had to drag
+          sideways to see the rest of, "while there was nothing there" once
+          you did (the overflow was blank row past the last real cell, not
+          content). `flex-1` cells simply take whatever is left. */}
+      <div className="relative flex min-w-0 flex-1 gap-0.5">
         {/* Block "afterlines" — concentric glowing rings that swell out of
             the guard and fade, behind the bar rather than over it. */}
         <AnimatePresence>
@@ -1343,7 +1348,7 @@ function MoveBar({ fp, ticks, startTic, effect, beat, staminaFlash }) {
                       }${phase === 'defense' && !extended ? ` (${defenseLabel} window)` : ''}`
                   : undefined
               }
-              className={`relative h-4 w-8 shrink-0 border border-zinc-900 md:h-5 md:w-auto md:min-w-0 md:flex-1 ${
+              className={`relative h-4 min-w-0 flex-1 border border-zinc-900 md:h-5 ${
                 dead
                   ? // No phase colour: those say "this is happening," and it
                     // isn't. Grey says the Tics were claimed and then weren't.
@@ -1404,8 +1409,15 @@ function MoveBar({ fp, ticks, startTic, effect, beat, staminaFlash }) {
           was clipped the moment it floated above the row — it read as being
           hidden behind the other rows. The outer element clips nothing, so
           the flash can rise out of the row, and z-50 puts it above every
-          neighbouring bar and the impact burst. */}
-      <span className="relative w-28 shrink-0 md:absolute md:inset-y-0 md:left-full md:ml-2 md:flex md:w-44 md:items-center">
+          neighbouring bar and the impact burst.
+          **`w-16`, not `w-28`, below `md` (decided, fix).** This box's width
+          is part of the fixed budget the cells row solves `flex-1` around
+          (see above) — the narrower it is, the more of a cramped phone
+          screen the cells actually get, and the Tic strip mirrors this exact
+          width so the two rows keep agreeing. A shorter name truncates
+          harder, which is the trade the table asked for directly: squish
+          it down so the row fits without a horizontal drag. */}
+      <span className="relative w-16 shrink-0 md:absolute md:inset-y-0 md:left-full md:ml-2 md:flex md:w-44 md:items-center">
         {/* An Interrupted move is labelled by what happened to it, not by
             what it was. It never reached its reveal Tic, and being destroyed
             early is not a reveal — the timing was always public, the
@@ -1800,6 +1812,14 @@ export default function RoundCutscene({ resolutionId }) {
                 );
               })}
             </div>
+            {/* Mirrors the width of a MoveBar's trailing name box below `md`
+                (see the comment on that row) — invisible here, but it is
+                what makes this row's `flex-1` cells divide the exact same
+                remaining width the move rows above and below divide, so a
+                bar claiming Tics 1-3 sits over squares 1, 2 and 3 exactly.
+                Not needed at `md`, where a MoveBar's name is taken out of
+                flow entirely and both rows already agree with nothing added. */}
+            <span className="w-16 shrink-0 md:hidden" />
           </div>
 
           <div className="mt-1 space-y-1">

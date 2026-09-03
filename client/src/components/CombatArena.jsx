@@ -42,6 +42,7 @@ import {
   phaseBgAt, phaseAt, isTripTic, placementFloorAfterTrip,
 } from '../lib/framePhaseColors.js';
 import { MoveFilterChips, MoveFilterColumn, useMoveFilters } from '../lib/moveFilters.jsx';
+import MoveFilterPopover from './MoveFilterPopover.jsx';
 import DamageApplicationDialog from './DamageApplicationDialog.jsx';
 import { REWARD_LABELS, REWARD_COLORS } from '../lib/counterDisplay.js';
 import { setDraggingMove, onDraggingMoveChange } from '../lib/dragMoveState.js';
@@ -1229,7 +1230,7 @@ function CompactDeclaredMoveCard({ dm, move, tellById, allMoves = [] }) {
         <button
           onClick={() => socket.emit('move:undeclare', { declaredMoveId: dm.id })}
           title="Take this back and declare something else"
-          className="absolute -right-1 -top-1 z-10 flex h-4 w-4 items-center justify-center rounded-full border border-zinc-700 bg-zinc-900 text-[10px] text-zinc-400 hover:border-red-500 hover:text-red-400"
+          className="absolute -right-2 -top-2 z-10 flex h-7 w-7 items-center justify-center rounded-full border border-zinc-700 bg-zinc-900 text-sm text-zinc-400 hover:border-red-500 hover:text-red-400 md:-right-1 md:-top-1 md:h-4 md:w-4 md:text-[10px]"
         >
           ✕
         </button>
@@ -1868,63 +1869,71 @@ function DeclareMovePicker({ entry, roundStartTic, declaredMoves, tags, tellById
           ))}
         </div>
       </div>
-      {/* **The phone layout, and only the phone layout.** On a desktop these
-          live in columns either side of the panel (see ActiveDeclarePanel),
-          where there is room for a readable font. A phone has no side space to
-          give, so it keeps the compact in-panel row rather than being reflowed
-          into something worse. */}
+      {/* **The phone layout, and only the phone layout (decided, revised).**
+          On a desktop these live in columns either side of the panel (see
+          ActiveDeclarePanel), where there is room for a readable font. A
+          phone used to keep an always-open compact in-panel row instead — the
+          Arena's own "a filter you have to open costs a beat mid-round"
+          reasoning, applied to a screen with no side space to give it a
+          column. Reported from the table as costing too much of the phone
+          screen on its own: four rows of tiny chips before a single move
+          card, on top of the Tell/Default-Unique tabs above it and the round
+          clock already running. It now folds behind the same funnel button
+          every other filtered list on this app already uses (the Compendium,
+          a character's own Moves tab) — a beat spent opening it once, versus
+          a whole screen of chips paid on every single glance at the picker. */}
       {(tagList.length > 0 ||
         tellList.length > 0 ||
         filters.targetItems.length > 0 ||
         filters.rollItems.length > 0) && (
-        <div className="mb-1.5 flex items-start justify-between gap-3 md:hidden">
-          {/* The same left/right split the desktop columns use, folded into the
-              panel: what the move goes for and what it rolls on the left, what
-              it opens with and what it carries on the right. */}
-          <div className="min-w-0 flex-1 space-y-1">
-            <MoveFilterChips
-              label="Target:"
-              items={filters.targetItems}
-              selected={filters.targetFilter}
-              onToggle={filters.toggleTarget}
-              onClear={filters.clearTarget}
-              labelFor={(s) => s.name}
-              compact
-            />
-            <MoveFilterChips
-              label="Roll:"
-              items={filters.rollItems}
-              selected={filters.rollFilter}
-              onToggle={filters.toggleRoll}
-              onClear={filters.clearRoll}
-              labelFor={(s) => s.name}
-              compact
-            />
-          </div>
-          <div className="min-w-0 flex-1 space-y-1">
-            <MoveFilterChips
-              label="Tell:"
-              items={tellList}
-              selected={filters.tellFilter}
-              onToggle={filters.toggleTell}
-              onClear={filters.clearTell}
-              labelFor={(t) => t.name}
-              compact
-              className="justify-end"
-            />
-            <MoveFilterChips
-              label="Tag:"
-              items={tagList}
-              selected={filters.tagFilter}
-              onToggle={filters.toggleTag}
-              onClear={filters.clearTag}
-              labelFor={(t) => t.name}
-              titleFor={(t) => t.description}
-              compact
-              className="justify-end"
-            />
-          </div>
-        </div>
+        <MoveFilterPopover
+          className="md:hidden"
+          activeCount={
+            filters.targetFilter.size + filters.rollFilter.size + filters.tellFilter.size + filters.tagFilter.size
+          }
+          onClear={() => {
+            filters.clearTarget();
+            filters.clearRoll();
+            filters.clearTell();
+            filters.clearTag();
+          }}
+        >
+          <MoveFilterChips
+            label="Attack Target:"
+            items={filters.targetItems}
+            selected={filters.targetFilter}
+            onToggle={filters.toggleTarget}
+            onClear={filters.clearTarget}
+            labelFor={(s) => s.name}
+            titleFor={(s) => `Show only moves that go for the ${s.name}`}
+          />
+          <MoveFilterChips
+            label="Attack Roll:"
+            items={filters.rollItems}
+            selected={filters.rollFilter}
+            onToggle={filters.toggleRoll}
+            onClear={filters.clearRoll}
+            labelFor={(s) => s.name}
+            titleFor={(s) => `Show only moves that roll ${s.name}`}
+          />
+          <MoveFilterChips
+            label="Tell:"
+            items={tellList}
+            selected={filters.tellFilter}
+            onToggle={filters.toggleTell}
+            onClear={filters.clearTell}
+            labelFor={(t) => t.name}
+          />
+          <MoveFilterChips
+            label="Tag:"
+            items={tagList}
+            selected={filters.tagFilter}
+            onToggle={filters.toggleTag}
+            onClear={filters.clearTag}
+            labelFor={(t) => t.name}
+            titleFor={(t) => t.description}
+          />
+        </MoveFilterPopover>
       )}
       <div className="flex flex-wrap gap-1.5">
         {shown.length ? (
