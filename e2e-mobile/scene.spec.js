@@ -456,3 +456,111 @@ test.describe('Scene tab: summoning and the stage roster (Phase 5)', () => {
     await page.getByText('me', { exact: true }).click();
   });
 });
+
+// Finds a summoned figure's own positioned wrapper by matching its <img
+// alt> to the owner's name — StageRoster sets alt={entry.name}, and this
+// is more robust than indexing into the roster's children, whose DOM order
+// changes as summons come and go (rank 0, the newest, is always first).
+async function stageFigureLeft(page, name) {
+  return page.evaluate((n) => {
+    const img = Array.from(document.querySelectorAll('img')).find((i) => i.alt === n);
+    return img?.closest('.absolute.bottom-0')?.style.left;
+  }, name);
+}
+
+test.describe('Scene tab: the stage\'s motion pass (Phase 6)', () => {
+  test.use({ viewport: { width: 1280, height: 900 } });
+
+  test('summoning a second character repositions an existing one, with no snap-to-origin error', async ({ page }) => {
+    const stamp = Date.now();
+    const errors = [];
+    page.on('pageerror', (err) => errors.push(err.message));
+    page.on('dialog', (dialog) => dialog.accept());
+
+    await chooseGm(page);
+    await goToScene(page);
+
+    for (const label of ['A', 'B']) {
+      await page.getByPlaceholder('New Temp NPC', { exact: true }).fill(`Reflow${label} ${stamp}`);
+      await page.locator('form:has(input[placeholder="New Temp NPC"]) button[type="submit"]').click();
+    }
+    for (const label of ['A', 'B']) {
+      await page.locator(`button[title="Edit Reflow${label} ${stamp}"]`).click();
+      const [chooser] = await Promise.all([
+        page.waitForEvent('filechooser'),
+        page.getByText('+ Add picture', { exact: true }).click(),
+      ]);
+      await chooser.setFiles({ name: 'pose.png', mimeType: 'image/png', buffer: TINY_PNG_BUFFER });
+      await expect(page.getByText('pose', { exact: true })).toBeVisible();
+      await page.getByRole('button', { name: 'Close' }).click();
+    }
+
+    await page.getByText(`ReflowA ${stamp}`, { exact: true }).click();
+    await page.getByText('pose', { exact: true }).click();
+    // Both are GM summons — same side ('right') — so A is alone on stage
+    // first, flush against its edge.
+    await expect.poll(() => stageFigureLeft(page, `ReflowA ${stamp}`)).not.toBe(undefined);
+    const leftBefore = await stageFigureLeft(page, `ReflowA ${stamp}`);
+
+    await page.getByText(`ReflowB ${stamp}`, { exact: true }).click();
+    await page.getByText('pose', { exact: true }).click();
+    // B lands at rank 0 (the edge); A gets pushed one natural step inward.
+    // The position/entrance split (see StageRoster's own comment) is what
+    // makes this a clean reposition rather than A snapping back to its own
+    // slide-in origin and replaying the entrance.
+    await expect.poll(() => stageFigureLeft(page, `ReflowA ${stamp}`)).not.toBe(leftBefore);
+
+    expect(errors).toEqual([]);
+
+    // Cleanup.
+    await page.getByText(`ReflowA ${stamp}`, { exact: true }).click();
+    await page.getByText('On stage', { exact: true }).locator('xpath=ancestor::button').click();
+    await page.getByText(`ReflowB ${stamp}`, { exact: true }).click();
+    await page.getByText('On stage', { exact: true }).locator('xpath=ancestor::button').click();
+    for (const label of ['A', 'B']) {
+      await page.locator(`button[title="Edit Reflow${label} ${stamp}"]`).click();
+      await page.getByRole('button', { name: 'Delete Temp NPC' }).click();
+    }
+  });
+});
+
+test.describe('Scene tab: the stage\'s motion pass, reduced motion (Phase 6)', () => {
+  test.use({ viewport: { width: 1280, height: 900 }, reducedMotion: 'reduce' });
+
+  test('a summon still lands correctly with prefers-reduced-motion, no hang or error', async ({ page }) => {
+    const stamp = Date.now();
+    const errors = [];
+    page.on('pageerror', (err) => errors.push(err.message));
+    page.on('dialog', (dialog) => dialog.accept());
+
+    await chooseGm(page);
+    await goToScene(page);
+
+    await page.getByPlaceholder('New Temp NPC', { exact: true }).fill(`ReducedMotion ${stamp}`);
+    await page.locator('form:has(input[placeholder="New Temp NPC"]) button[type="submit"]').click();
+    await page.locator(`button[title="Edit ReducedMotion ${stamp}"]`).click();
+    const [chooser] = await Promise.all([
+      page.waitForEvent('filechooser'),
+      page.getByText('+ Add picture', { exact: true }).click(),
+    ]);
+    await chooser.setFiles({ name: 'pose.png', mimeType: 'image/png', buffer: TINY_PNG_BUFFER });
+    await expect(page.getByText('pose', { exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Close' }).click();
+
+    await page.getByText(`ReducedMotion ${stamp}`, { exact: true }).click();
+    await page.getByText('pose', { exact: true }).click();
+    // `transition: { duration: 0 }` under reduced motion (StageRoster's own
+    // gate) — the figure is expected to be at its resting position almost
+    // immediately, not mid-slide, so a short wait is enough here where the
+    // full-motion test above needs expect.poll instead.
+    await page.waitForTimeout(200);
+    await expect(page.locator(`img[alt="ReducedMotion ${stamp}"]`)).toBeVisible();
+    expect(errors).toEqual([]);
+
+    // Cleanup.
+    await page.getByText(`ReducedMotion ${stamp}`, { exact: true }).click();
+    await page.getByText('On stage', { exact: true }).locator('xpath=ancestor::button').click();
+    await page.locator(`button[title="Edit ReducedMotion ${stamp}"]`).click();
+    await page.getByRole('button', { name: 'Delete Temp NPC' }).click();
+  });
+});
