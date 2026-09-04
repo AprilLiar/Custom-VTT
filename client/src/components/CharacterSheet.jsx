@@ -14,6 +14,7 @@ import RelationshipsTab from './RelationshipsTab.jsx';
 import CharacterCreationDialog from './CharacterCreationDialog.jsx';
 import PerksTab from './PerksTab.jsx';
 import CountersTab from './CountersTab.jsx';
+import ScenePicturesEditor from './ScenePicturesEditor.jsx';
 
 // Mobile readiness (Change 002) §8.1: the active tab scrolls itself into
 // view inside the row's own horizontal scroller — same pattern as the
@@ -58,8 +59,16 @@ const TABS = [
   // PC-only (see PC_ONLY_TABS): a Relationships board belongs to a player, and
   // an NPC has nobody to keep one for.
   { key: 'relationships', label: 'Relationships', phase: 11 },
+  // Last, always — "a new tab at the very end" (the Scene tab plan's own
+  // wording). Every character gets this one, PC and NPC alike: unlike
+  // Relationships (which needs a player to belong to), a Scene Picture is
+  // just art, and a real NPC gets summoned onto the stage exactly like a PC.
+  { key: 'scene_pictures', label: 'Scene Pictures', phase: 13 },
 ];
-const BUILT_TABS = ['core', 'stances', 'moves', 'perks', 'counters', 'quirks', 'roleplay', 'relationships'];
+const BUILT_TABS = [
+  'core', 'stances', 'moves', 'perks', 'counters', 'quirks', 'roleplay', 'relationships',
+  'scene_pictures',
+];
 const PC_ONLY_TABS = new Set(['relationships']);
 // The Relationships board is the one tab that does not fit a 768px column — it
 // is a canvas, and a canvas wants the whole width the page can spare.
@@ -354,6 +363,9 @@ export default function CharacterSheet() {
           {tab === 'quirks' && <QuirksTab data={data} />}
           {tab === 'roleplay' && <RoleplayTab data={data} />}
           {tab === 'relationships' && <RelationshipsTab data={data} />}
+          {tab === 'scene_pictures' && (
+            <ScenePicturesEditor ownerType="character" ownerId={data.character.id} canEdit={canCreate} />
+          )}
         </motion.div>
       </AnimatePresence>
 

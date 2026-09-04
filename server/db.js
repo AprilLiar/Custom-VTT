@@ -1422,6 +1422,115 @@ export async function initDb() {
   // rename would move every stored arc for no change in behaviour.
   await ensureColumn('relationship_edges', 'bend_u', 'REAL');
 
+  // ---------------------------------------------------------------------
+  // Scene tab (decided, new). A GM-authored fullscreen background picture
+  // ("a Scene") plus a lightweight, portrait-only, narrative-only roster
+  // ("Temp NPCs") — distinct from real fighting NPCs the same way this app
+  // already keeps the Relationships board's `relationship_people` distinct
+  // from `characters`. Every real Character and every Temp NPC can carry
+  // any number of transparent-PNG "Scene Pictures", picked at summon time.
+  //
+  // Temp NPCs get their own folder tree, mirroring character_folders
+  // exactly (self-referencing parent_id, ON DELETE SET NULL is metadata
+  // only — the actual promote-one-level-on-delete logic is explicit in
+  // temp_npc_folder:delete, same as character_folder:delete).
+  ddl(`
+    CREATE TABLE IF NOT EXISTS temp_npc_folders (
+      id INTEGER PRIMARY KEY,
+      name TEXT NOT NULL,
+      parent_id INTEGER REFERENCES temp_npc_folders(id) ON DELETE SET NULL
+    )
+  `);
+
+  ddl(`
+    CREATE TABLE IF NOT EXISTS temp_npcs (
+      id INTEGER PRIMARY KEY,
+      name TEXT NOT NULL,
+      image_data TEXT,
+      image_mime_type TEXT,
+      folder_id INTEGER REFERENCES temp_npc_folders(id) ON DELETE SET NULL,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  await ensureCropColumns('temp_npcs');
+
+  // Scenes: a fullscreen background picture, foldered the same way again.
+  ddl(`
+    CREATE TABLE IF NOT EXISTS scene_folders (
+      id INTEGER PRIMARY KEY,
+      name TEXT NOT NULL,
+      parent_id INTEGER REFERENCES scene_folders(id) ON DELETE SET NULL
+    )
+  `);
+
+  ddl(`
+    CREATE TABLE IF NOT EXISTS scenes (
+      id INTEGER PRIMARY KEY,
+      name TEXT NOT NULL,
+      image_data TEXT,
+      image_mime_type TEXT,
+      folder_id INTEGER REFERENCES scene_folders(id) ON DELETE SET NULL,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  // The right-drawer THUMBNAIL crop only. The live stage never reads these
+  // columns — it always renders the full, uncropped image, object-fit: cover.
+  await ensureCropColumns('scenes');
+
+  // Singleton: which Scene is currently active, same shape as combat_state's
+  // own id=1 row.
+  ddl(`
+    CREATE TABLE IF NOT EXISTS scene_state (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      active_scene_id INTEGER REFERENCES scenes(id) ON DELETE SET NULL
+    )
+  `);
+  ddl(`INSERT OR IGNORE INTO scene_state (id, active_scene_id) VALUES (1, NULL)`);
+
+  // Scene Pictures: owned by exactly one of a Character or a Temp NPC — the
+  // same discriminator relationship_nodes uses for character_id/person_id.
+  // Both FKs CASCADE, deliberately UNLIKE relationship_nodes.character_id
+  // (which carries no ON DELETE at all, forcing an explicit app-level
+  // conversion before a character can be deleted): a scene_pictures row has
+  // no cross-owner reference to preserve, so there is nothing worth saving
+  // across the owner's own deletion — CASCADE says exactly that.
+  ddl(`
+    CREATE TABLE IF NOT EXISTS scene_pictures (
+      id INTEGER PRIMARY KEY,
+      character_id INTEGER REFERENCES characters(id) ON DELETE CASCADE,
+      temp_npc_id INTEGER REFERENCES temp_npcs(id) ON DELETE CASCADE,
+      name TEXT NOT NULL DEFAULT '',
+      image_data TEXT NOT NULL,
+      image_mime_type TEXT NOT NULL,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      CHECK ((character_id IS NULL) <> (temp_npc_id IS NULL))
+    )
+  `);
+
+  // The stage roster: who is currently summoned. Deliberately NO scene_id
+  // column — a summon is independent of which Scene is active (decided: the
+  // stage follows you between backgrounds), so there is nothing for such a
+  // column to mean, and its absence is what makes that rule a schema fact
+  // rather than a habit a future handler could accidentally break.
+  ddl(`
+    CREATE TABLE IF NOT EXISTS scene_summons (
+      id INTEGER PRIMARY KEY,
+      character_id INTEGER REFERENCES characters(id) ON DELETE CASCADE,
+      temp_npc_id INTEGER REFERENCES temp_npcs(id) ON DELETE CASCADE,
+      scene_picture_id INTEGER NOT NULL REFERENCES scene_pictures(id) ON DELETE CASCADE,
+      side TEXT NOT NULL CHECK(side IN ('left','right')),
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      CHECK ((character_id IS NULL) <> (temp_npc_id IS NULL)),
+      -- SQLite treats NULLs as distinct under UNIQUE, so this correctly
+      -- means "one seat per character (or per temp_npc)" rather than "one
+      -- NULL-character_id row" — the same trick combat_participants relies
+      -- on for its own per-character uniqueness elsewhere.
+      UNIQUE(character_id),
+      UNIQUE(temp_npc_id)
+    )
+  `);
+  // ---------------------------------------------------------------------
+
   // The Perks compendium: master list of Perk templates. Just picture, name,
   // and description — no generic automation system (removed; see
   // server/perkAutomations.js for the manual per-Perk hook skeleton that
@@ -2159,6 +2268,11 @@ async function ensureIndexes() {
     ['pending_roll_bonuses', 'character_id'],
     // Asked once per character at the end of every Round.
     ['temporary_damage', 'character_id'],
+    // The Scene tab's roster/library reads, by folder and by owner.
+    ['temp_npcs', 'folder_id'],
+    ['scenes', 'folder_id'],
+    ['scene_pictures', 'character_id'],
+    ['scene_pictures', 'temp_npc_id'],
   ];
   for (const [table, column] of indexes) {
     ddl(`CREATE INDEX IF NOT EXISTS idx_${table}_${column} ON ${table}(${column})`);

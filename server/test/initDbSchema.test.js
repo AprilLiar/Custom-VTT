@@ -57,6 +57,10 @@ test('one boot adds every ensureColumn column, not just the base CREATE', async 
     ['move_roll_slots', ['count']],
     ['characters', ['folder_id', 'vitruvian_image_data', 'pending_roll_penalty']],
     ['chat_log', ['payload', 'image_data']],
+    // Scene tab: both tables' crop columns arrive only via ensureCropColumns,
+    // same shape as relationship_people's own crop columns above them.
+    ['temp_npcs', ['crop_x', 'crop_y', 'crop_w', 'crop_h']],
+    ['scenes', ['crop_x', 'crop_y', 'crop_w', 'crop_h']],
   ];
   for (const [table, columns] of expected) {
     const have = await columnsOf(table);

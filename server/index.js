@@ -1682,6 +1682,21 @@ app.get('/api/character-folders', wrap(async (_req, res) => {
   res.json(await all('SELECT * FROM character_folders ORDER BY name'));
 }));
 
+// Scene tab: a picture's owner is exactly one of a Character or a Temp NPC
+// (see scene_pictures' own CHECK) — open read, matching character_folders
+// above: this is GM-*managed* content, not GM-*secret* content, so nothing
+// here is gated server-side. The write side (Phase 3) is where ownership
+// actually gets enforced.
+app.get('/api/scene-pictures', wrap(async (req, res) => {
+  const { ownerType, ownerId } = req.query;
+  const id = Number(ownerId);
+  if (!Number.isInteger(id) || (ownerType !== 'character' && ownerType !== 'temp_npc')) {
+    return res.json([]);
+  }
+  const column = ownerType === 'character' ? 'character_id' : 'temp_npc_id';
+  res.json(await all(`SELECT * FROM scene_pictures WHERE ${column} = ? ORDER BY id`, [id]));
+}));
+
 app.get('/api/characters/:id', wrap(async (req, res) => {
   const character = await getCharacter(req.params.id);
   if (!character) return res.status(404).json({ error: 'not found' });
@@ -2170,6 +2185,13 @@ app.delete('/api/characters/:id', wrap(async (req, res) => {
   await run('DELETE FROM relationship_edges WHERE owner_character_id = ?', [character.id]);
   await run('DELETE FROM relationship_nodes WHERE owner_character_id = ?', [character.id]);
   await run('DELETE FROM relationship_people WHERE owner_character_id = ?', [character.id]);
+  // Scene tab: no conversion needed the way a relationship node needs one —
+  // a scene_pictures/scene_summons row has no cross-owner reference to
+  // preserve, it belongs to this character alone. Summons first, so a
+  // character currently on stage is pulled off it before their pictures
+  // (which a summon row also points at) disappear underneath them.
+  await run('DELETE FROM scene_summons WHERE character_id = ?', [character.id]);
+  await run('DELETE FROM scene_pictures WHERE character_id = ?', [character.id]);
   await run('DELETE FROM character_move_tags WHERE character_id = ?', [character.id]);
   await run('DELETE FROM character_move_overrides WHERE character_id = ?', [character.id]);
   await run('DELETE FROM character_move_roll_bonuses WHERE character_id = ?', [character.id]);
