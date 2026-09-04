@@ -44,6 +44,8 @@ export const getCombat = (identity) =>
 // ownerType is 'character' | 'temp_npc' — see scene_pictures' own CHECK.
 export const getScenePictures = (ownerType, ownerId) =>
   fetch(`/api/scene-pictures?${new URLSearchParams({ ownerType, ownerId })}`).then(json);
+export const getTempNpcs = () => fetch('/api/temp-npcs').then(json);
+export const getTempNpcFolders = () => fetch('/api/temp-npc-folders').then(json);
 
 // One character's Relationships board. Carries the identity as query params for
 // the same reason getCombat does — REST has no socket to carry it — and here it

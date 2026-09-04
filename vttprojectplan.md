@@ -4033,7 +4033,18 @@ that hold regardless of which phase is currently shipped.
 - **Temp NPCs are a brand-new, lightweight, global, GM-managed roster** (`temp_npcs`) — not a flag
   on `characters`. Cheap, narrative-only, and deliberately never touches Arena seating, Compendium
   grants, or the character sheet's other tabs. Foldered in its own tree (`temp_npc_folders`),
-  mirroring `character_folders` exactly.
+  mirroring `character_folders` exactly, with real create/rename/delete of its own — nothing else
+  in the app manages this tree, so the GM's drawer (Phase 2) is genuinely its only home.
+- **Scenes are foldered too** (`scene_folders`, the GM's own addition on top of the original ask) —
+  the same tree shape again, for the right-hand Scenes drawer (Phase 4).
+- **The GM's left drawer mixes both rosters in one place**: a "Temp NPCs" section (its own
+  GM-editable folder tree) stacked over a read-only "Characters (NPCs)" section that simply
+  reflects the real `character_folders` tree, filtered to `character_type = 'npc'` — that tree
+  already has its own management UI (the Character List page), so this drawer never duplicates it.
+- **Every new write here is GM-only, enforced server-side** (`if (socket.data.identity?.role !==
+  'gm') return;`, the `quirk:create` idiom) — a deliberate departure from `character_folder:*`'s
+  older, merely client-gated precedent. A fresh authoring surface shouldn't regress to the looser
+  convention just because it happens to reuse the same folder shape.
 - **The Scene page is always fullscreen, for both roles**, from the moment it's opened. The GM's
   authoring tools (create Scene, upload picture, manage Temp NPC folders, summon) live in
   drawers/overlays on top of that canvas, not a separate management page (Phase 2 onward).
@@ -4109,6 +4120,37 @@ CASCADE-not-blocked contrasted directly against `relationship_nodes`'s refusal),
 extended for the two `ensureCropColumns` calls, `e2e-mobile/scene.spec.js` (chrome genuinely absent
 from the DOM at every viewport, the orientation gate's three width/orientation combinations, the
 new sheet tab) — 720 server tests and 18 Playwright checks (6 tests × 3 device projects) passing.
+
+### Phase 2 (implemented) — Temp NPCs and folders
+
+`temp_npc_folders`/`temp_npcs` CRUD, all GM-only and server-enforced: `temp_npc_folder:create/
+rename/delete` (promote-one-level-on-delete, identical to `character_folder:delete`'s own rule) and
+`temp_npc:create/update/set_folder/delete` (name-only for now — the portrait upload arrives in
+Phase 3 alongside Scene Pictures, the one place this feature actually touches the image pipeline).
+`temp_npc:delete` spells out its cascade by hand (`scene_summons` → `scene_pictures` →
+`temp_npcs`), matching `DELETE /api/characters/:id`'s own style even though both FKs are already
+`ON DELETE CASCADE`. Reads are open REST (`GET /api/temp-npcs`, `GET /api/temp-npc-folders`),
+matching `GET /api/characters`/`GET /api/character-folders` — GM-*managed*, not GM-*secret*.
+
+`SceneCastDrawer.jsx` (new), the left overlay on `ScenePage.jsx`'s canvas, mounted only when
+`useRole().role === 'gm'` — a Player who navigates to `/scene` directly never sees it. Two sections:
+- **Temp NPCs** — `FolderTreeNav` (this app's existing "manage a folder tree" widget, already doing
+  this exact job for `character_folders` and move Disciplines) reused as-is for create/rename/
+  delete/navigate, with a short list of the selected folder's Temp NPCs beneath it and an inline
+  "+ New" form. Cards are draggable (`text/temp-npc-id`, mirroring `text/character-id`) onto a
+  folder row to refile. Double-clicking a card opens `TempNpcEditor.jsx` — a name field, a delete
+  button, and (decision #9) the very same `ScenePicturesEditor` every character's sheet tab uses,
+  embedded directly, since a Temp NPC has nothing else to edit.
+- **Characters (NPCs)** — read-only `FolderRosterNode` (its 3rd consumer, after the Arena's seating
+  rail and the Relationships board's own "The world" section; the 4th arrives with Phase 4's Scenes
+  drawer), reflecting the real `character_folders` tree filtered to `character_type = 'npc'`.
+
+Verified: `npm run lint` and the full server suite (720/720, no regressions — this phase added no
+new server tests, since nothing here is timing/math the way Combat Timing or `sceneLayout.js` will
+be). `e2e-mobile/scene.spec.js` gained two tests: the GM checkpoint itself (create → rename → open
+the picture editor and rename through it → delete the Temp NPC → rename and delete the folder, each
+step asserted against the live DOM) and a gate test confirming a Player sees neither drawer section.
+Both passing across the same three device projects as Phase 1.
 
 ## Implementation Risks & Recommendations
 A scope check for whoever picks this up: this grew well past "semi-simple website" over the course of design. Most of it (dice, inventory, injuries, stances, perks, counters) is standard CRUD-plus-broadcast work. Combat Timing (Tics/Startup/reveal/overflow) is the one genuinely hard piece — real software complexity, not just more forms — and it's also the most original part of the system, which is exactly why it deserves the most care rather than being rushed alongside everything else.

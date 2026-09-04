@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { chooseGm } from './helpers.js';
+import { chooseGm, choosePlayer } from './helpers.js';
 
 // The Scene tab's route (client/src/App.jsx's `Shell()`) is deliberately
 // chrome-free — no header, no bottom nav — because a still-mounted bottom
@@ -97,5 +97,61 @@ test.describe('Character Sheet: the Scene Pictures tab', () => {
     await expect(page.getByRole('button', { name: 'Scene Pictures' })).toBeVisible();
     await page.getByRole('button', { name: 'Scene Pictures' }).click();
     await expect(page.getByText('No Scene Pictures yet.')).toBeVisible();
+  });
+});
+
+test.describe('Scene tab: the Temp NPC roster drawer (Phase 2)', () => {
+  test.use({ viewport: { width: 1280, height: 900 } });
+
+  test('GM: create, rename, and delete a Temp NPC folder and a Temp NPC', async ({ page }) => {
+    page.on('dialog', (dialog) => dialog.accept(dialog.type() === 'prompt' ? 'Renamed Folder' : undefined));
+
+    await chooseGm(page);
+    await goToScene(page);
+    // exact: true, since the section labels render CSS-uppercased ("TEMP
+    // NPCS") but the DOM text itself is title case, and a case-insensitive
+    // substring match also catches the "🏠 All Temp NPCs" button below it.
+    await expect(page.getByText('Temp NPCs', { exact: true })).toBeVisible();
+    await expect(page.getByText('Characters (NPCs)', { exact: true })).toBeVisible();
+
+    // Create a folder, then a Temp NPC filed inside it.
+    await page.getByPlaceholder('New folder').fill('Bandits');
+    await page.locator('form:has(input[placeholder="New folder"]) button[type="submit"]').click();
+    await expect(page.getByText('📁 Bandits')).toBeVisible();
+    await page.getByText('📁 Bandits').click();
+
+    await page.getByPlaceholder('New Temp NPC').fill('Bandit Grunt');
+    await page.locator('form:has(input[placeholder="New Temp NPC"]) button[type="submit"]').click();
+    await expect(page.getByText('Bandit Grunt')).toBeVisible();
+
+    // Double-click opens the picture editor straight away (decision #9) —
+    // rename through it, which is also this dialog's only write besides
+    // delete, so it doubles as the tab's rename coverage.
+    await page.getByText('Bandit Grunt').dblclick();
+    await expect(page.getByText('No Scene Pictures yet.')).toBeVisible();
+    await page.locator('input[value="Bandit Grunt"]').fill('Bandit Captain');
+    await page.getByRole('button', { name: 'Save' }).click();
+    await expect(page.getByRole('heading', { name: 'Bandit Captain' })).toBeVisible();
+    await page.getByRole('button', { name: 'Close' }).click();
+    await expect(page.getByText('Bandit Captain')).toBeVisible();
+
+    // Delete the Temp NPC, then the folder it was in.
+    await page.getByText('Bandit Captain').dblclick();
+    await page.getByRole('button', { name: 'Delete Temp NPC' }).click();
+    await expect(page.getByText('Bandit Captain')).toHaveCount(0);
+
+    await page.locator('button[title="Rename"]').first().click();
+    await expect(page.getByText('📁 Renamed Folder')).toBeVisible();
+    await page.locator('button[title="Delete"]').first().click();
+    await expect(page.getByText('📁 Renamed Folder')).toHaveCount(0);
+  });
+
+  test('a Player never sees the Temp NPC drawer', async ({ page }) => {
+    const name = `Scene Cast Spec PC ${Date.now()}`;
+    await page.request.post('/api/characters', { data: { name, characterType: 'pc' } });
+    await choosePlayer(page, name);
+    await goToScene(page);
+    await expect(page.getByText('Temp NPCs', { exact: true })).toHaveCount(0);
+    await expect(page.getByText('Characters (NPCs)', { exact: true })).toHaveCount(0);
   });
 });

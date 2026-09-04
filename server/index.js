@@ -1682,6 +1682,16 @@ app.get('/api/character-folders', wrap(async (_req, res) => {
   res.json(await all('SELECT * FROM character_folders ORDER BY name'));
 }));
 
+// Scene tab: the Temp NPC roster's own library — open read, same reasoning
+// as character-folders above (GM-*managed*, not GM-*secret*).
+app.get('/api/temp-npcs', wrap(async (_req, res) => {
+  res.json(await all('SELECT * FROM temp_npcs ORDER BY name'));
+}));
+
+app.get('/api/temp-npc-folders', wrap(async (_req, res) => {
+  res.json(await all('SELECT * FROM temp_npc_folders ORDER BY name'));
+}));
+
 // Scene tab: a picture's owner is exactly one of a Character or a Temp NPC
 // (see scene_pictures' own CHECK) — open read, matching character_folders
 // above: this is GM-*managed* content, not GM-*secret* content, so nothing
@@ -4018,6 +4028,107 @@ io.on('connection', (socket) => {
     }
     await run('UPDATE characters SET folder_id = ? WHERE id = ?', [target, character.id]);
     io.emit('character:updated', { ...character, folder_id: target });
+  });
+
+  // ---------------------------------------------------------------------
+  // Scene tab: the Temp NPC roster and its folder tree (Phase 2). Same
+  // structural pattern as character_folders/characters above, but every
+  // write here is server-enforced GM-only (`role !== 'gm'` idiom, the
+  // `quirk:create` convention) — this plan's own deliberate departure from
+  // character_folder:*'s older, merely client-gated precedent (see
+  // vttprojectplan.md's "Scene tab" section for why).
+  // ---------------------------------------------------------------------
+
+  on('temp_npc_folder:create', async ({ name, parentFolderId }) => {
+    if (socket.data.identity?.role !== 'gm') return;
+    const folderName = String(name ?? '').trim();
+    if (!folderName) return;
+    let parentId = null;
+    if (parentFolderId != null) {
+      const parent = await one('SELECT id FROM temp_npc_folders WHERE id = ?', [parentFolderId]);
+      if (parent) parentId = parent.id;
+    }
+    const result = await run('INSERT INTO temp_npc_folders (name, parent_id) VALUES (?, ?)', [
+      folderName,
+      parentId,
+    ]);
+    io.emit(
+      'temp_npc_folder:created',
+      await one('SELECT * FROM temp_npc_folders WHERE id = ?', [Number(result.lastInsertRowid)])
+    );
+  });
+
+  on('temp_npc_folder:rename', async ({ folderId, name }) => {
+    if (socket.data.identity?.role !== 'gm') return;
+    const folder = await one('SELECT * FROM temp_npc_folders WHERE id = ?', [folderId]);
+    const folderName = String(name ?? '').trim();
+    if (!folder || !folderName) return;
+    await run('UPDATE temp_npc_folders SET name = ? WHERE id = ?', [folderName, folder.id]);
+    io.emit('temp_npc_folder:updated', await one('SELECT * FROM temp_npc_folders WHERE id = ?', [folder.id]));
+  });
+
+  on('temp_npc_folder:delete', async ({ folderId }) => {
+    if (socket.data.identity?.role !== 'gm') return;
+    const folder = await one('SELECT * FROM temp_npc_folders WHERE id = ?', [folderId]);
+    if (!folder) return;
+    // Same promote-one-level rule as character_folder:delete: direct Temp
+    // NPCs and direct child folders move up to this folder's own parent
+    // (root if it was already at root), not unconditionally to root.
+    await run('UPDATE temp_npcs SET folder_id = ? WHERE folder_id = ?', [folder.parent_id, folder.id]);
+    await run('UPDATE temp_npc_folders SET parent_id = ? WHERE parent_id = ?', [folder.parent_id, folder.id]);
+    await run('DELETE FROM temp_npc_folders WHERE id = ?', [folder.id]);
+    io.emit('temp_npc_folder:deleted', { folderId: folder.id, parentFolderId: folder.parent_id });
+  });
+
+  on('temp_npc:create', async ({ name, folderId }) => {
+    if (socket.data.identity?.role !== 'gm') return;
+    const npcName = String(name ?? '').trim();
+    if (!npcName) return;
+    let folder = null;
+    if (folderId != null) {
+      const row = await one('SELECT id FROM temp_npc_folders WHERE id = ?', [folderId]);
+      if (row) folder = row.id;
+    }
+    const result = await run('INSERT INTO temp_npcs (name, folder_id) VALUES (?, ?)', [npcName, folder]);
+    io.emit('temp_npc:created', await one('SELECT * FROM temp_npcs WHERE id = ?', [Number(result.lastInsertRowid)]));
+  });
+
+  // Name only for now — the portrait upload arrives in Phase 3 alongside
+  // Scene Pictures, which is where this app's PNG-preserving image pipeline
+  // actually gets touched for this feature.
+  on('temp_npc:update', async ({ tempNpcId, name }) => {
+    if (socket.data.identity?.role !== 'gm') return;
+    const npc = await one('SELECT * FROM temp_npcs WHERE id = ?', [tempNpcId]);
+    const npcName = String(name ?? '').trim();
+    if (!npc || !npcName) return;
+    await run('UPDATE temp_npcs SET name = ? WHERE id = ?', [npcName, npc.id]);
+    io.emit('temp_npc:updated', await one('SELECT * FROM temp_npcs WHERE id = ?', [npc.id]));
+  });
+
+  on('temp_npc:set_folder', async ({ tempNpcId, folderId }) => {
+    if (socket.data.identity?.role !== 'gm') return;
+    const npc = await one('SELECT * FROM temp_npcs WHERE id = ?', [tempNpcId]);
+    if (!npc) return;
+    let target = null;
+    if (folderId != null) {
+      const folder = await one('SELECT id FROM temp_npc_folders WHERE id = ?', [folderId]);
+      if (folder) target = folder.id;
+    }
+    await run('UPDATE temp_npcs SET folder_id = ? WHERE id = ?', [target, npc.id]);
+    io.emit('temp_npc:updated', { ...npc, folder_id: target });
+  });
+
+  on('temp_npc:delete', async ({ tempNpcId }) => {
+    if (socket.data.identity?.role !== 'gm') return;
+    const npc = await one('SELECT * FROM temp_npcs WHERE id = ?', [tempNpcId]);
+    if (!npc) return;
+    // Explicit cascade, matching DELETE /api/characters/:id's own style —
+    // both FKs are already ON DELETE CASCADE, but every delete in this file
+    // spells its cascade out by hand rather than trusting the DDL alone.
+    await run('DELETE FROM scene_summons WHERE temp_npc_id = ?', [npc.id]);
+    await run('DELETE FROM scene_pictures WHERE temp_npc_id = ?', [npc.id]);
+    await run('DELETE FROM temp_npcs WHERE id = ?', [npc.id]);
+    io.emit('temp_npc:deleted', { tempNpcId: npc.id });
   });
 
   on('move:revoke', async ({ characterId, moveId }) => {
