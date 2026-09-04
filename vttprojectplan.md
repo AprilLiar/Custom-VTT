@@ -4152,6 +4152,45 @@ the picture editor and rename through it → delete the Temp NPC → rename and 
 step asserted against the live DOM) and a gate test confirming a Player sees neither drawer section.
 Both passing across the same three device projects as Phase 1.
 
+### Phase 3 (implemented) — the Scene Pictures upload pipeline
+
+`scene_picture:create/update/delete`, the one place in the whole feature a Player writes anything —
+gated by a new `mayWriteScenePicture(viewer, ownerType, ownerId)` (`server/index.js`, beside
+`maySeeBoard`): the GM always may; a Player only for their own character's own pictures; a Temp
+NPC's are GM-only always, since nobody plays one. `scene_picture:created/updated/deleted` broadcast
+via plain `io.emit`, matching `move:updated`'s shape — this is GM-managed library content, not a
+secret the way a pre-reveal declared move is, and each `ScenePicturesEditor` instance filters
+incoming events to its own owner rather than the server scoping the emit.
+
+`fileToScenePicture` (`client/src/lib/image.js`) — the same "PNG stays PNG, else JPEG 0.85" branch
+`fileToSmallImage` already uses for Moves/Tells, capped at 1024px on the longest side (the art shows
+at real screen height on the stage, not as a thumbnail). **No crop step**, unlike every other
+picture upload in the app: `scene_pictures` carries no `crop_*` columns (Phase 1's own schema
+decision), and cropping a transparent character cutout the way a portrait photo gets cropped doesn't
+make sense — the art already arrives framed the way it's meant to show. `ScenePicturesEditor.jsx`
+(replacing Phase 1's list-only skeleton) is now the full grid: upload, rename (a `window.prompt`,
+matching `FolderTreeNav`'s own convention), delete, live-patched over the socket. The empty state is
+`+ Add picture` for anyone who can edit and the read-only "No Scene Pictures yet." only for anyone
+who can't — Phase 1's own test for the always-empty tab was updated to match, since a GM (who can
+always edit) now sees the add tile, never the read-only line.
+
+`temp_npc:update` gained an optional portrait — the Temp NPC's own regular picture (its `Thumb`
+everywhere in the drawer), deferred from Phase 2. Reuses `fileToPortrait`/`usePictureUpload`/the
+crop dialog exactly like `PersonEditor.jsx`'s own board-local person, since `temp_npcs` carries the
+same `crop_*` columns a portrait needs (unlike `scene_pictures` above) — an "absent picture means
+leave it alone" payload contract, identical to `relationships:update_person`'s.
+
+Verified: `npm run lint`, the full server suite (720/720, no schema changes this phase so nothing
+new to pin there), and **`scripts/playtest-scene.mjs`** (new) — a live-socket script in
+`playtest-relationships.mjs`'s own shape, since a server-enforced write gate can only really be
+proven by asking as somebody who lacks it: a GM and two Player sockets, confirming a Player may
+write their own character's Scene Pictures, may NOT write another Player's or a Temp NPC's (create,
+rename, AND delete all separately), the GM may write anyone's, and `scene_picture:created` reaches
+every socket (`io.emit`, not scoped) — 10/10 checks passing. `e2e-mobile/scene.spec.js` gained three
+tests: a GM's full upload → rename → delete round trip, a Player uploading to their own character
+(cross-checked against the REST read, not just the DOM), and the updated empty-state assertions
+above. All passing across the same three device projects as Phases 1-2.
+
 ## Implementation Risks & Recommendations
 A scope check for whoever picks this up: this grew well past "semi-simple website" over the course of design. Most of it (dice, inventory, injuries, stances, perks, counters) is standard CRUD-plus-broadcast work. Combat Timing (Tics/Startup/reveal/overflow) is the one genuinely hard piece — real software complexity, not just more forms — and it's also the most original part of the system, which is exactly why it deserves the most care rather than being rushed alongside everything else.
 

@@ -1655,6 +1655,16 @@ function maySeeBoard(viewer, ownerCharacterId) {
   return viewer.role === 'player' && viewer.characterId === Number(ownerCharacterId);
 }
 
+// Who may write a Scene Picture for a given owner (Scene tab plan, Phase 3).
+// Mirrors maySeeBoard's shape — the GM always may, a Player only for their
+// own character — plus the split a relationship board never needed: nobody
+// plays a Temp NPC, so a temp_npc owner is GM-only regardless of viewer.
+function mayWriteScenePicture(viewer, ownerType, ownerId) {
+  if (!viewer) return false;
+  if (viewer.role === 'gm') return true;
+  return ownerType === 'character' && viewer.role === 'player' && viewer.characterId === Number(ownerId);
+}
+
 // A private board must never cross the wire to another player, so this is a
 // per-socket emit rather than an io.emit — the same shape refreshCapabilities
 // uses, and for the same reason. The board is read ONCE regardless of how many
@@ -4093,15 +4103,22 @@ io.on('connection', (socket) => {
     io.emit('temp_npc:created', await one('SELECT * FROM temp_npcs WHERE id = ?', [Number(result.lastInsertRowid)]));
   });
 
-  // Name only for now — the portrait upload arrives in Phase 3 alongside
-  // Scene Pictures, which is where this app's PNG-preserving image pipeline
-  // actually gets touched for this feature.
-  on('temp_npc:update', async ({ tempNpcId, name }) => {
+  // The name is always sent; a picture is only sent when the file picker in
+  // TempNpcEditor actually produced one — same "absent means leave it
+  // alone" contract relationships:update_person uses for the same reason.
+  on('temp_npc:update', async ({ tempNpcId, name, imageData, imageMimeType, ...payload }) => {
     if (socket.data.identity?.role !== 'gm') return;
     const npc = await one('SELECT * FROM temp_npcs WHERE id = ?', [tempNpcId]);
     const npcName = String(name ?? '').trim();
     if (!npc || !npcName) return;
-    await run('UPDATE temp_npcs SET name = ? WHERE id = ?', [npcName, npc.id]);
+    await run(
+      imageData
+        ? `UPDATE temp_npcs SET name = ?, image_data = ?, image_mime_type = ?, ${CROP_COLUMNS} WHERE id = ?`
+        : 'UPDATE temp_npcs SET name = ? WHERE id = ?',
+      imageData
+        ? [npcName, String(imageData), String(imageMimeType ?? 'image/jpeg'), ...cropValues(payload), npc.id]
+        : [npcName, npc.id]
+    );
     io.emit('temp_npc:updated', await one('SELECT * FROM temp_npcs WHERE id = ?', [npc.id]));
   });
 
@@ -4129,6 +4146,63 @@ io.on('connection', (socket) => {
     await run('DELETE FROM scene_pictures WHERE temp_npc_id = ?', [npc.id]);
     await run('DELETE FROM temp_npcs WHERE id = ?', [npc.id]);
     io.emit('temp_npc:deleted', { tempNpcId: npc.id });
+  });
+
+  // ---------------------------------------------------------------------
+  // Scene tab: Scene Pictures (Phase 3) — the transparent-PNG art a
+  // Character or Temp NPC is summoned onto the stage with. Per-owner gate
+  // (mayWriteScenePicture), NOT flatly GM-only: this is the one place in
+  // the whole feature a Player writes anything, for their own character's
+  // own pictures. `io.emit`, matching move:updated's shape — GM-managed
+  // library content, same as every other Scene tab authoring event, not a
+  // secret the way a pre-reveal declared move is.
+  // ---------------------------------------------------------------------
+
+  const ownerColumn = (ownerType) => (ownerType === 'character' ? 'character_id' : 'temp_npc_id');
+  const ownerTable = (ownerType) => (ownerType === 'character' ? 'characters' : 'temp_npcs');
+
+  on('scene_picture:create', async ({ ownerType, ownerId, name, imageData, imageMimeType }) => {
+    const id = Number(ownerId);
+    if (!Number.isInteger(id) || (ownerType !== 'character' && ownerType !== 'temp_npc')) return;
+    if (!mayWriteScenePicture(socket.data.identity, ownerType, id)) return;
+    if (!imageData) return;
+    const owner = await one(`SELECT id FROM ${ownerTable(ownerType)} WHERE id = ?`, [id]);
+    if (!owner) return;
+    const pictureName = String(name ?? '').trim();
+    const result = await run(
+      `INSERT INTO scene_pictures (${ownerColumn(ownerType)}, name, image_data, image_mime_type) VALUES (?, ?, ?, ?)`,
+      [id, pictureName, String(imageData), String(imageMimeType ?? 'image/png')]
+    );
+    io.emit(
+      'scene_picture:created',
+      await one('SELECT * FROM scene_pictures WHERE id = ?', [Number(result.lastInsertRowid)])
+    );
+  });
+
+  on('scene_picture:update', async ({ scenePictureId, name }) => {
+    const picture = await one('SELECT * FROM scene_pictures WHERE id = ?', [scenePictureId]);
+    if (!picture) return;
+    const ownerType = picture.character_id != null ? 'character' : 'temp_npc';
+    const ownerId = picture.character_id ?? picture.temp_npc_id;
+    if (!mayWriteScenePicture(socket.data.identity, ownerType, ownerId)) return;
+    const pictureName = String(name ?? '').trim();
+    if (!pictureName) return;
+    await run('UPDATE scene_pictures SET name = ? WHERE id = ?', [pictureName, picture.id]);
+    io.emit('scene_picture:updated', await one('SELECT * FROM scene_pictures WHERE id = ?', [picture.id]));
+  });
+
+  on('scene_picture:delete', async ({ scenePictureId }) => {
+    const picture = await one('SELECT * FROM scene_pictures WHERE id = ?', [scenePictureId]);
+    if (!picture) return;
+    const ownerType = picture.character_id != null ? 'character' : 'temp_npc';
+    const ownerId = picture.character_id ?? picture.temp_npc_id;
+    if (!mayWriteScenePicture(socket.data.identity, ownerType, ownerId)) return;
+    // Explicit, matching every other delete in this file — scene_summons'
+    // own FK is already ON DELETE CASCADE, but nothing here trusts the DDL
+    // alone. Un-summons whoever was showing this picture, if anyone was.
+    await run('DELETE FROM scene_summons WHERE scene_picture_id = ?', [picture.id]);
+    await run('DELETE FROM scene_pictures WHERE id = ?', [picture.id]);
+    io.emit('scene_picture:deleted', { scenePictureId: picture.id });
   });
 
   on('move:revoke', async ({ characterId, moveId }) => {

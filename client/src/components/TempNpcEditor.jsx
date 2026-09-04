@@ -1,5 +1,9 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { socket } from '../socket.js';
+import { fileToPortrait, portraitSrc } from '../lib/image.js';
+import { cropOf } from '../lib/imageCrop.js';
+import { usePictureUpload } from '../lib/usePictureUpload.jsx';
+import CroppedImage from './CroppedImage.jsx';
 import DialogShell from './DialogShell.jsx';
 import ScenePicturesEditor from './ScenePicturesEditor.jsx';
 
@@ -14,14 +18,39 @@ import ScenePicturesEditor from './ScenePicturesEditor.jsx';
 // to it), never through this dialog — Scene Pictures need an owner id to
 // attach to, so there is nothing this dialog could show before the row
 // exists anyway.
+//
+// The portrait here is the Temp NPC's own regular picture (its Thumb
+// everywhere in the drawer) — reuses fileToPortrait/usePictureUpload/the
+// crop dialog exactly like PersonEditor's own board-local person, since
+// temp_npcs carries the same crop_* columns a portrait needs. Not to be
+// confused with Scene Pictures below, which have no crop step at all.
 export default function TempNpcEditor({ tempNpc, onClose }) {
   const [name, setName] = useState(tempNpc.name);
+  const [picture, setPicture] = useState(null);
+  const fileRef = useRef(null);
+
+  const preview = picture
+    ? `data:${picture.imageMimeType};base64,${picture.imageData}`
+    : portraitSrc(tempNpc);
+  const previewCrop = picture
+    ? cropOf({ crop_x: picture.cropX, crop_y: picture.cropY, crop_w: picture.cropW, crop_h: picture.cropH })
+    : cropOf(tempNpc);
+
+  const { pick, dialog, busy } = usePictureUpload({
+    process: fileToPortrait,
+    name,
+    previewSizes: [
+      { label: 'In the drawer', px: 24 },
+      { label: 'On a card', px: 88 },
+    ],
+    onPicked: setPicture,
+  });
 
   const save = (e) => {
     e.preventDefault();
     const trimmed = name.trim();
     if (!trimmed) return;
-    socket.emit('temp_npc:update', { tempNpcId: tempNpc.id, name: trimmed });
+    socket.emit('temp_npc:update', { tempNpcId: tempNpc.id, name: trimmed, ...(picture ?? {}) });
   };
 
   const remove = () => {
@@ -34,22 +63,39 @@ export default function TempNpcEditor({ tempNpc, onClose }) {
   return (
     <DialogShell title={tempNpc.name} onClose={onClose} maxWidth="max-w-sm" portal>
       <form onSubmit={save} className="space-y-3">
-        <div className="flex gap-2">
+        <div className="flex items-start gap-3">
+          <button
+            type="button"
+            onClick={() => fileRef.current?.click()}
+            className="shrink-0 panel-cut border border-zinc-700 bg-zinc-800 hover:border-brand-600"
+            style={{ width: 64, height: 64 }}
+            title="Choose a picture"
+          >
+            {preview ? (
+              <CroppedImage src={preview} crop={previewCrop} className="h-full w-full panel-cut" />
+            ) : (
+              <span className="flex h-full w-full items-center justify-center text-[9px] font-bold uppercase tracking-wide text-zinc-500">
+                {busy ? '…' : 'Add picture'}
+              </span>
+            )}
+          </button>
+          <input ref={fileRef} type="file" accept="image/*" hidden onChange={pick} />
+          {dialog}
           <input
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder="Name"
             autoFocus
-            className="min-h-11 w-0 min-w-0 flex-1 panel-cut-sm border border-zinc-700 bg-zinc-800 px-2 py-1 text-sm outline-none focus:border-brand-500"
+            className="min-h-11 min-w-0 flex-1 panel-cut-sm border border-zinc-700 bg-zinc-800 px-2 py-1 text-sm outline-none focus:border-brand-500"
           />
-          <button
-            type="submit"
-            disabled={!name.trim()}
-            className="min-h-11 shrink-0 panel-cut-sm bg-brand-600 px-3 text-sm font-semibold hover:bg-brand-500 disabled:opacity-40"
-          >
-            Save
-          </button>
         </div>
+        <button
+          type="submit"
+          disabled={!name.trim()}
+          className="min-h-11 w-full panel-cut-sm bg-brand-600 px-3 text-sm font-semibold hover:bg-brand-500 disabled:opacity-40"
+        >
+          Save
+        </button>
         <button
           type="button"
           onClick={remove}

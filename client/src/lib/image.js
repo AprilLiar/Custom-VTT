@@ -93,6 +93,42 @@ export function fileToChatImage(file) {
   });
 }
 
+// A Scene Picture: a Character's or Temp NPC's transparent-PNG art for the
+// stage (Scene tab plan, Phase 3). Same "PNG stays PNG, else JPEG 0.85"
+// branch as fileToSmallImage, just a much bigger cap — this is meant to
+// show at real screen height, not as a thumbnail, so 128px would be a
+// blurry mess. No crop step: scene_pictures carries no crop_* columns, and
+// cropping a character cutout the way a portrait photo gets cropped
+// doesn't make sense — the art is already framed the way it's meant to
+// show.
+const SCENE_PICTURE_MAX_SIDE = 1024;
+
+export function fileToScenePicture(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('could not read file'));
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error('not a readable image'));
+      img.onload = () => {
+        const scale = Math.min(1, SCENE_PICTURE_MAX_SIDE / Math.max(img.width, img.height));
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.round(img.width * scale);
+        canvas.height = Math.round(img.height * scale);
+        canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+        const png = file.type === 'image/png';
+        const dataUrl = png ? canvas.toDataURL('image/png') : canvas.toDataURL('image/jpeg', 0.85);
+        resolve({
+          imageData: dataUrl.split(',')[1],
+          imageMimeType: png ? 'image/png' : 'image/jpeg',
+        });
+      };
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
 // Small square-ish art for Moves and Tells: cap the longest side at 128px,
 // keeping PNG (with transparency) when the source is PNG.
 export function fileToSmallImage(file) {

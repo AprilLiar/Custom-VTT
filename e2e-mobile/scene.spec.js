@@ -85,7 +85,7 @@ test.describe('Scene tab: orientation gate — desktop width is never gated', ()
 test.describe('Character Sheet: the Scene Pictures tab', () => {
   test.use({ viewport: { width: 1280, height: 900 } });
 
-  test('every character gets the tab, PC or NPC, empty until Phase 3', async ({ page }) => {
+  test('every character gets the tab, PC or NPC, empty until a picture is uploaded', async ({ page }) => {
     await page.request.post('/api/characters', {
       data: { name: `Scene Spec PC ${Date.now()}`, characterType: 'pc' },
     });
@@ -96,7 +96,76 @@ test.describe('Character Sheet: the Scene Pictures tab', () => {
     await page.locator('[class*="cursor-pointer"]').first().click();
     await expect(page.getByRole('button', { name: 'Scene Pictures' })).toBeVisible();
     await page.getByRole('button', { name: 'Scene Pictures' }).click();
-    await expect(page.getByText('No Scene Pictures yet.')).toBeVisible();
+    // The GM can edit this character, so the empty state is the "+ Add
+    // picture" tile, not the read-only "No Scene Pictures yet." message —
+    // that one only shows to a viewer who cannot upload (see the Player
+    // gate test below).
+    await expect(page.getByText('+ Add picture', { exact: true })).toBeVisible();
+    await expect(page.getByText('No Scene Pictures yet.')).toHaveCount(0);
+  });
+
+  test('a GM can upload, rename, and delete a Scene Picture (Phase 3)', async ({ page }) => {
+    await page.request.post('/api/characters', {
+      data: { name: `Scene Upload Spec PC ${Date.now()}`, characterType: 'pc' },
+    });
+    await chooseGm(page);
+    await page.locator('[class*="cursor-pointer"]').first().click();
+    await page.getByRole('button', { name: 'Scene Pictures' }).click();
+
+    const [chooser] = await Promise.all([
+      page.waitForEvent('filechooser'),
+      page.getByText('+ Add picture', { exact: true }).click(),
+    ]);
+    await chooser.setFiles({
+      name: 'tiny.png',
+      mimeType: 'image/png',
+      // A 1x1 transparent PNG — the pipeline (fileToScenePicture) only
+      // cares that this decodes as an image, not what it shows.
+      buffer: Buffer.from(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+        'base64'
+      ),
+    });
+    await expect(page.getByText('tiny', { exact: true })).toBeVisible();
+
+    page.once('dialog', (dialog) => dialog.accept('Renamed'));
+    await page.locator('button[title="Rename"]').click();
+    await expect(page.getByText('Renamed', { exact: true })).toBeVisible();
+
+    page.once('dialog', (dialog) => dialog.accept());
+    await page.getByText('Delete', { exact: true }).click();
+    await expect(page.getByText('Renamed', { exact: true })).toHaveCount(0);
+    await expect(page.getByText('+ Add picture', { exact: true })).toBeVisible();
+  });
+
+  test('a Player can upload a Scene Picture to their own character', async ({ page }) => {
+    const name = `Scene Player Upload PC ${Date.now()}`;
+    const created = await page.request
+      .post('/api/characters', { data: { name, characterType: 'pc' } })
+      .then((r) => r.json());
+    await choosePlayer(page, name);
+    await page.getByRole('button', { name: 'Scene Pictures' }).click();
+
+    const [chooser] = await Promise.all([
+      page.waitForEvent('filechooser'),
+      page.getByText('+ Add picture', { exact: true }).click(),
+    ]);
+    await chooser.setFiles({
+      name: 'tiny.png',
+      mimeType: 'image/png',
+      buffer: Buffer.from(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+        'base64'
+      ),
+    });
+    await expect(page.getByText('tiny', { exact: true })).toBeVisible();
+
+    // Confirm it landed server-side as a real scene_pictures row, owned by
+    // this character — not just a client-side optimistic render.
+    const rows = await page.request
+      .get(`/api/scene-pictures?ownerType=character&ownerId=${created.id}`)
+      .then((r) => r.json());
+    expect(rows).toHaveLength(1);
   });
 });
 
@@ -128,7 +197,10 @@ test.describe('Scene tab: the Temp NPC roster drawer (Phase 2)', () => {
     // rename through it, which is also this dialog's only write besides
     // delete, so it doubles as the tab's rename coverage.
     await page.getByText('Bandit Grunt').dblclick();
-    await expect(page.getByText('No Scene Pictures yet.')).toBeVisible();
+    // GM-editable (TempNpcEditor always passes canEdit), so the empty
+    // state is the "+ Add picture" tile — see the Scene Pictures tab's
+    // own describe block above for the read-only wording's own coverage.
+    await expect(page.getByText('+ Add picture', { exact: true })).toBeVisible();
     await page.locator('input[value="Bandit Grunt"]').fill('Bandit Captain');
     await page.getByRole('button', { name: 'Save' }).click();
     await expect(page.getByRole('heading', { name: 'Bandit Captain' })).toBeVisible();
