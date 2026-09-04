@@ -25,26 +25,30 @@ const TEMP_NPC_DRAG_MIME = 'text/temp-npc-id';
 //      already doing exactly this job for character_folders and move
 //      Disciplines) is reused as-is for that, with a short list of the
 //      current folder's Temp NPCs and an inline "+ New" form beneath it.
-//   2. **Characters (NPCs)** — the folder tree itself is read-only here.
+//   2. **Characters** — the folder tree itself is read-only here.
 //      `character_folders` already has its own management UI (the
 //      Character List page); this section only needs to *reflect* that
 //      real tree, which is exactly what `FolderRosterNode` already does
 //      for the Relationships rail's own "The world" section — same
 //      component, same collapse rules, its 3rd consumer (the 4th arrived
-//      with Phase 4's Scene list drawer). The cards themselves are NOT
-//      read-only, though — every NPC here is click-to-summon (Phase 5).
+//      with Phase 4's Scene list drawer). Every character in the world —
+//      PC or NPC — lands here: the GM may summon anyone (decision #5's
+//      "one place to summon anyone the GM controls"), including a PC on a
+//      Player's behalf, alongside their own PlayerSummonDock. The cards
+//      themselves are NOT read-only, though — every character here is
+//      click-to-summon (Phase 5).
 //
 // Clicking a card opens `SummonPicker` (Phase 5) — the GM may summon any
-// Temp NPC or real NPC, decision #4's "pick one at summon, swap freely
-// after." A Temp NPC's own edit dialog (`TempNpcEditor`, decision #9) moved
-// off the card's own click and onto a small "✎" button of its own:
-// overloading one element with both a click-to-summon and a
+// Temp NPC or real character, decision #4's "pick one at summon, swap
+// freely after." A Temp NPC's own edit dialog (`TempNpcEditor`, decision
+// #9) moved off the card's own click and onto a small "✎" button of its
+// own: overloading one element with both a click-to-summon and a
 // double-click-to-edit fired the summon picker once on every double-click
 // too (a browser dblclick is preceded by two real click events), which is
 // harmless for Scenes' own idempotent re-activate but not for popping a
-// second dialog open mid-edit. A real NPC card has no such editor here at
-// all — it already has a full CharacterSheet, reached the normal way — so
-// its whole card stays a single, unambiguous summon trigger.
+// second dialog open mid-edit. A real character's card has no such editor
+// here at all — it already has a full CharacterSheet, reached the normal
+// way — so its whole card stays a single, unambiguous summon trigger.
 export default function SceneCastDrawer() {
   const characters = useRoster();
   const stage = useStage();
@@ -52,7 +56,7 @@ export default function SceneCastDrawer() {
   const [tempNpcs, setTempNpcs] = useState(null);
   const [tempNpcFolders, setTempNpcFolders] = useState(null);
   const [currentTempFolder, setCurrentTempFolder] = useState(null);
-  const [collapsedNpc, setCollapsedNpc] = useState(new Set());
+  const [collapsedFolders, setCollapsedFolders] = useState(new Set());
   const [newTempNpcName, setNewTempNpcName] = useState('');
   const [editingTempNpc, setEditingTempNpc] = useState(null);
   const [summoning, setSummoning] = useState(null); // { ownerType, ownerId, ownerName, currentScenePictureId }
@@ -111,8 +115,8 @@ export default function SceneCastDrawer() {
     else if (fresh !== editingTempNpc) setEditingTempNpc(fresh);
   }, [tempNpcs, editingTempNpc]);
 
-  const toggleNpc = (id) =>
-    setCollapsedNpc((prev) => {
+  const toggleFolder = (id) =>
+    setCollapsedFolders((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
       else next.add(id);
@@ -140,11 +144,14 @@ export default function SceneCastDrawer() {
       currentScenePictureId: summonByOwner.get(`${ownerType}:${owner.id}`)?.scene_picture_id ?? null,
     });
 
-  const npcTree = useMemo(() => buildFolderTree(characterFolders ?? []), [characterFolders]);
-  const npcsByFolder = useMemo(() => {
+  // Every character in the world lands here — PC or NPC alike (decision #5's
+  // "one place to summon anyone the GM controls"; a Player also has their
+  // own PlayerSummonDock for just their own character, so this drawer isn't
+  // their only route onto the stage, but it is the GM's).
+  const characterTree = useMemo(() => buildFolderTree(characterFolders ?? []), [characterFolders]);
+  const charsByFolder = useMemo(() => {
     const map = new Map();
     for (const c of characters ?? []) {
-      if (c.character_type !== 'npc') continue;
       const key = c.folder_id ?? null;
       if (!map.has(key)) map.set(key, []);
       map.get(key).push(c);
@@ -152,7 +159,7 @@ export default function SceneCastDrawer() {
     for (const list of map.values()) list.sort((a, b) => a.name.localeCompare(b.name));
     return map;
   }, [characters]);
-  const folderlessNpcs = npcsByFolder.get(null) ?? [];
+  const folderlessCharacters = charsByFolder.get(null) ?? [];
 
   const tempNpcsInFolder = useMemo(
     () =>
@@ -273,17 +280,17 @@ export default function SceneCastDrawer() {
           </div>
 
           <div>
-            <SectionLabel>Characters (NPCs)</SectionLabel>
-            {npcTree.map((node) => (
+            <SectionLabel>Characters</SectionLabel>
+            {characterTree.map((node) => (
               <FolderRosterNode
                 key={node.id}
                 node={node}
-                charsByFolder={npcsByFolder}
-                collapsed={collapsedNpc}
-                onToggle={toggleNpc}
+                charsByFolder={charsByFolder}
+                collapsed={collapsedFolders}
+                onToggle={toggleFolder}
                 depth={0}
                 rosterCard={(c) => (
-                  <NpcCard
+                  <CharacterCard
                     key={c.id}
                     character={c}
                     onSummon={() => openSummonPicker('character', c)}
@@ -292,10 +299,10 @@ export default function SceneCastDrawer() {
                 )}
               />
             ))}
-            {folderlessNpcs.length > 0 && (
+            {folderlessCharacters.length > 0 && (
               <div className="space-y-1.5 pt-1">
-                {folderlessNpcs.map((c) => (
-                  <NpcCard
+                {folderlessCharacters.map((c) => (
+                  <CharacterCard
                     key={c.id}
                     character={c}
                     onSummon={() => openSummonPicker('character', c)}
@@ -304,8 +311,8 @@ export default function SceneCastDrawer() {
                 ))}
               </div>
             )}
-            {npcTree.length === 0 && folderlessNpcs.length === 0 && (
-              <p className="px-1 text-[10px] text-zinc-600">No NPCs in the world yet.</p>
+            {characterTree.length === 0 && folderlessCharacters.length === 0 && (
+              <p className="px-1 text-[10px] text-zinc-600">No characters in the world yet.</p>
             )}
           </div>
         </>
@@ -333,10 +340,10 @@ function SectionLabel({ children }) {
   );
 }
 
-// Click-to-summon only — a real NPC already has a full CharacterSheet
-// (Scene Pictures tab included, same as every character) for everything
-// else, reached the normal way, not from this drawer.
-function NpcCard({ character, onSummon, live }) {
+// Click-to-summon only — a real character (PC or NPC) already has a full
+// CharacterSheet (Scene Pictures tab included) for everything else, reached
+// the normal way, not from this drawer.
+function CharacterCard({ character, onSummon, live }) {
   return (
     <button
       type="button"

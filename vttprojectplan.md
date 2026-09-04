@@ -4038,9 +4038,12 @@ that held across every phase, from the first line of schema to the final motion 
 - **Scenes are foldered too** (`scene_folders`, the GM's own addition on top of the original ask) —
   the same tree shape again, for the right-hand Scenes drawer (Phase 4).
 - **The GM's left drawer mixes both rosters in one place**: a "Temp NPCs" section (its own
-  GM-editable folder tree) stacked over a read-only "Characters (NPCs)" section that simply
-  reflects the real `character_folders` tree, filtered to `character_type = 'npc'` — that tree
-  already has its own management UI (the Character List page), so this drawer never duplicates it.
+  GM-editable folder tree) stacked over a read-only "Characters" section that simply reflects the
+  real `character_folders` tree — that tree already has its own management UI (the Character List
+  page), so this drawer never duplicates it. **Every character lands here, PC or NPC** — Phase 2
+  shipped this filtered to `character_type = 'npc'` only, which turned out wrong: a playtest found
+  the GM had no way at all to summon a PC (mayWriteScenePicture already grants a GM write access to
+  any character, PC included, so the gap was purely this filter, fixed post-launch, see below).
 - **Every new write here is GM-only, enforced server-side** (`if (socket.data.identity?.role !==
   'gm') return;`, the `quirk:create` idiom) — a deliberate departure from `character_folder:*`'s
   older, merely client-gated precedent. A fresh authoring surface shouldn't regress to the looser
@@ -4066,8 +4069,8 @@ that held across every phase, from the first line of schema to the final motion 
   folders) and *who may summon what* (see below) — never the shared "what's on stage right now."
 - **`stage:summon`'s `side` is derived from `identity.role` server-side, never taken from the
   client payload** — a GM's summons are always `'right'`, a Player's always `'left'`. Ownership is
-  checked the same way `scene_picture:*` writes are: GM may summon any Temp NPC or real NPC; a
-  Player only their own character. The payload is deliberately just `{ scenePictureId }` — the
+  checked the same way `scene_picture:*` writes are: GM may summon any character (PC or NPC) or
+  Temp NPC; a Player only their own character. The payload is deliberately just `{ scenePictureId }` — the
   server resolves that picture's own owner rather than trusting a separately-sent id that could
   disagree with it.
 - **Mobile: landscape-only, by design.** `useIsLandscape()` (`client/src/lib/useMediaQuery.js`)
@@ -4142,9 +4145,10 @@ matching `GET /api/characters`/`GET /api/character-folders` — GM-*managed*, no
   folder row to refile. Double-clicking a card opens `TempNpcEditor.jsx` — a name field, a delete
   button, and (decision #9) the very same `ScenePicturesEditor` every character's sheet tab uses,
   embedded directly, since a Temp NPC has nothing else to edit.
-- **Characters (NPCs)** — read-only `FolderRosterNode` (its 3rd consumer, after the Arena's seating
+- **Characters** — read-only `FolderRosterNode` (its 3rd consumer, after the Arena's seating
   rail and the Relationships board's own "The world" section; the 4th arrives with Phase 4's Scenes
-  drawer), reflecting the real `character_folders` tree filtered to `character_type = 'npc'`.
+  drawer), reflecting the real `character_folders` tree. Shipped this phase filtered to
+  `character_type = 'npc'` only — corrected post-launch to include PCs too, see below.
 
 Verified: `npm run lint` and the full server suite (720/720, no regressions — this phase added no
 new server tests, since nothing here is timing/math the way Combat Timing or `sceneLayout.js` will
@@ -4262,7 +4266,7 @@ collide, even fully crammed; adding a member never reorders anyone already on st
 the shared factor; the factor is genuinely shared across both sides combined, not computed
 per-side; and the `MIN_STEP_FACTOR` floor holds under extreme crowding.
 
-**`stage:summon`/`stage:remove_summon`** (`server/index.js`), the two invariants the whole mechanic
+**`stage:summon`** (`server/index.js`), the two invariants the whole mechanic
 depends on: `side` is derived from `identity.role` server-side and never read from the payload (a
 GM's summons always land `'right'`, a Player's always `'left'` — proven by a raw socket sending a
 forged `side` field and watching the server ignore it), and ownership is the exact
@@ -4284,9 +4288,9 @@ wording suggested: a `DialogShell` fits this app's existing "click a card, get a
 rhythm (`TempNpcEditor`, `SceneEditor`) far more cheaply than viewport-relative positioning would,
 for the same interaction. Lists an owner's Scene Pictures, highlights the one currently showing,
 and both toggling off and swapping are the same `stage:summon` emit — the server sorts out which
-case it is. Shared by both callers: `SceneCastDrawer`'s rows (any owner, GM-only) and
-`PlayerSummonDock` (new, bottom-left on `ScenePage`, a Player's own equivalent scoped to just their
-own character — the GM's drawer never lists a PC).
+case it is. Shared by both callers: `SceneCastDrawer`'s rows (any character or Temp NPC, GM-only)
+and `PlayerSummonDock` (new, bottom-left on `ScenePage`, a Player's own equivalent scoped to just
+their own character).
 
 **The click split that had to change**: `SceneCastDrawer`'s Temp NPC cards used to be
 double-click-to-edit with no other action. Overloading the same card with click-to-summon broke
@@ -4295,8 +4299,8 @@ fired the summon picker open (and closed) twice in front of the editor. Harmless
 `SceneListDrawer`'s own click/dblclick split (a stray re-activate of an already-active Scene is a
 no-op), not harmless for popping a second dialog mid-edit. Temp NPC cards now split the two actions
 onto two elements: the whole card is the summon trigger, a small "✎" button of its own opens
-`TempNpcEditor`. Real NPC cards (`NpcCard`) have no editor here at all, so they stay a single,
-unambiguous summon trigger — no split needed.
+`TempNpcEditor`. Real character cards (`CharacterCard`) have no editor here at all, so they stay a
+single, unambiguous summon trigger — no split needed.
 
 **`StageRoster.jsx`** (new) renders the actual figures — hard-cut via `layoutStage`, no motion yet
 (that's Phase 6), bottom-anchored inside a fixed `SLOT_WIDTH` column with `object-fit: contain`
@@ -4308,8 +4312,8 @@ start painting over the GM's own controls.
 **A real layout bug, found and fixed during this phase's own browser verification**: a GM's own
 `SceneCastDrawer`/`SceneListDrawer` sit directly over the canvas's left/right edges — the exact
 edges decision #3 wants a GM's own summons entering from. Unmeasured, a small right-side roster
-rendered entirely underneath `SceneListDrawer`, invisible and its remove button unclickable behind
-it. Fixed with a new `DRAWER_WIDTH` constant (`sceneLayout.js`, `= 256`, matching both drawers'
+rendered entirely underneath `SceneListDrawer`, invisible and unclickable behind it. Fixed with a
+new `DRAWER_WIDTH` constant (`sceneLayout.js`, `= 256`, matching both drawers'
 `w-64`): for a GM, `ScenePage` narrows the `stageWidth` handed to `layoutStage` by `DRAWER_WIDTH *
 2` and shifts every figure's `x` by `DRAWER_WIDTH` afterward, so the roster lays out entirely
 within the visible gap between the two drawers rather than the canvas's full, mostly-obscured
@@ -4319,13 +4323,14 @@ by their own self-summon landing at the true `x = 0` left edge in the Playwright
 Verified: `npm run lint`, the full server suite (728/728 — the 8 new `sceneLayout` tests, no schema
 changes). Extended `scripts/playtest-scene.mjs` with the summon surface: a Player may summon and
 un-summon their own character but not another Player's or a Temp NPC's; a GM's forged `side` field
-is ignored server-side; swapping a picture updates the summon row in place (same id); `remove_summon`
-is refused for a Player and succeeds for the GM; deleting a summoned character removes them from
-`stage:updated` live, not just the next fetch — 26/26 checks passing. `e2e-mobile/scene.spec.js`
-gained two tests: the GM's full summon → swap → un-summon → on-stage-remove round trip (including
-asserting the on-stage remove button is actually visible, pinning the `DRAWER_WIDTH` fix), and a
-Player summoning themselves from their own docked control with a DOM measurement proving the
-left-edge position. Manually verified beyond what's committed: bulk-summoned 11 characters via raw
+is ignored server-side; swapping a picture updates the summon row in place (same id); deleting a
+summoned character removes them from `stage:updated` live, not just the next fetch. `e2e-mobile/
+scene.spec.js` gained two tests: the GM's full summon → swap → un-summon round trip (including a
+`DRAWER_WIDTH`-pinning position check, since Phase 5 first shipped this as the on-stage remove
+button's own reachability check — see Post-launch fixes below for why that button is gone and the
+check moved to a plain bounding-box assertion instead), and a Player summoning themselves from
+their own docked control with a DOM measurement proving the left-edge position. Manually verified
+beyond what's committed: bulk-summoned 11 characters via raw
 sockets against the live dev server and measured every figure's real `getBoundingClientRect()` in
 a browser — the compression step matched `layoutStage`'s own formula to the pixel (a `factor` of
 exactly `0.5`, an `118px` step between every consecutive rank, rank 0 on each side flush against
@@ -4375,7 +4380,63 @@ shifts to whoever summoned most recently) before and after a second summon — i
 one natural step (`236px`, unchanged from Phase 5's own math), confirming the reflow and the motion
 code compose correctly through the real rendering pipeline, not just each in isolation.
 
-This is the last phase — the Scene tab, as originally scoped, is complete.
+This is the last of the six originally-scoped phases — the mechanic itself was complete here. A
+round of live playtesting surfaced five follow-up fixes, folded into the plan below rather than
+numbered as a seventh phase (none of them add new scope; each corrects something the six phases
+above already claimed to do).
+
+### Post-launch fixes (implemented) — playtest follow-ups
+
+**PCs were missing from the GM's own "Characters" section.** Phase 2 shipped that section filtered
+to `character_type = 'npc'`, so a GM had no drawer path to summon a PC at all — `mayWriteScenePicture`
+already granted a GM write access to any character, PC included, so this was purely a client-side
+filter bug, not a permissions gap. Dropped the filter; the section (and its empty-state/heading)
+renamed from "Characters (NPCs)" to plain "Characters" everywhere it appears (`SceneCastDrawer.jsx`,
+`e2e-mobile/scene.spec.js`), and its internal names (`npcTree`/`npcsByFolder`/`NpcCard`/etc.)
+renamed to match what they now actually hold (`characterTree`/`charsByFolder`/`CharacterCard`).
+
+**The orientation gate had no way out.** `OrientationGate.jsx`'s rotate-prompt branch never
+rendered the "Back to the Arena" corner link — only the canvas branch did — so a phone-width Player
+stuck in portrait had no way off the chromeless `/scene` route short of physically rotating the
+device first. `ScenePage.jsx`'s corner link is now a shared `TopLeftControls` component rendered on
+both branches (the gate branch passes no `onHideUi`, so it renders just the back link).
+
+**Character-art tops didn't line up.** `StageRoster.jsx`'s figure `<img>` used `max-h-[85vh]` — a
+cap, not a fixed size — so a figure's rendered height followed its own PNG's own aspect ratio; two
+characters bottom-anchored via `object-bottom` at different aspect ratios still had their heads land
+at different screen heights. Changed to a fixed `h-[85vh]`: `object-fit: contain` now scales every
+image into the identical box, so any normal standing-figure art (taller than the box's own aspect
+ratio, the overwhelmingly common case) is height-bound and its top lands flush with every other
+character's.
+
+**Cinematic hide-UI toggle (new).** `ScenePage.jsx` gained a purely local (never socket-synced)
+`uiHidden` state: an "eye" button in `TopLeftControls`, next to the back link, hides every overlay
+control down to just the backdrop and the summoned figures — both drawers, the corner controls, and
+the "No Scene active yet."/Scene-name text, for either role. There is deliberately no separate "show
+UI" control; a plain `onClick` on the stage's own root div brings everything back on the next tap
+anywhere, matching the ask verbatim ("tapping anything brings them back"). `StageRoster` itself is
+untouched by this — the figures are the one thing cinematic mode never hides.
+
+**The on-stage "✕" remove button was removed.** Phase 5 added a GM-only on-stage remove control
+(`stage:remove_summon`) as "the GM's explicit clear, mirrors the Arena's seated-card ✕" — but
+decision #6 already named re-selecting the same character in the list as un-summoning's *only* path,
+and the on-stage button broke the cinematic illusion besides. Removed the button and `canRemove` prop
+from `StageRoster.jsx`/`ScenePage.jsx`, and the `stage:remove_summon` handler from `server/index.js`
+entirely — nothing else called it once the button was gone. This is fully redundant with the
+PC-visibility fix above, not just coincidentally timed with it: with PCs now listed in the GM's own
+drawer, `stage:summon`'s re-select toggle (via `mayWriteScenePicture`'s GM-always-may branch) already
+covers clearing *any* seat — Temp NPC, real NPC, or PC — so there was never a case the removed button
+covered that the drawer's own click doesn't.
+
+Verified: `npm run lint`, the full server suite (728/728, no schema changes). `scripts/
+playtest-scene.mjs`'s own `stage:remove_summon`-specific checks were replaced with equivalent
+`stage:summon` re-select checks (ownership still refuses a non-owning Player, the GM's re-select
+still clears a PC's own seat) — 30/30 checks passing. `e2e-mobile/scene.spec.js`: the Phase 5 summon
+test's on-stage-remove assertions were replaced with a `getBoundingClientRect()`-based position
+check (still pinning the `DRAWER_WIDTH` fix, now via bounding box instead of a click target) and a
+fixed-height assertion (`85vh` of the 900px test viewport, regardless of the 1×1 test PNG's own
+aspect ratio); gained a new orientation-gate assertion (the corner link works while gated) and a new
+cinematic-toggle test (hiding clears every overlay control, a plain click anywhere restores them).
 
 ## Implementation Risks & Recommendations
 A scope check for whoever picks this up: this grew well past "semi-simple website" over the course of design. Most of it (dice, inventory, injuries, stances, perks, counters) is standard CRUD-plus-broadcast work. Combat Timing (Tics/Startup/reveal/overflow) is the one genuinely hard piece — real software complexity, not just more forms — and it's also the most original part of the system, which is exactly why it deserves the most care rather than being rushed alongside everything else.

@@ -310,23 +310,29 @@ check(
   `${aliceSummon?.id} !== ${summonIdBeforeSwap}`
 );
 
-// ============================================ 11. stage:remove_summon is GM-only
-console.log('\n--- stage:remove_summon is the GM\'s own clear, refused for a Player ---');
-bobSock.emit('stage:remove_summon', { summonId: aliceSummon.id });
+// ============================================ 11. un-summoning is only ever a re-select of the showing picture — there is no separate "remove" write
+console.log(
+  "\n--- clearing a seat is always stage:summon's own toggle; the GM's write access covers any character, PC included ---"
+);
+bobSock.emit('stage:summon', { scenePictureId: altPicture.id });
 await sleep(300);
 stage = await jf('/api/stage');
 check(
-  "Bob's remove_summon of Alice was refused — she's still on stage",
+  "Bob re-selecting Alice's showing picture was refused — she's still on stage",
   stage.summons.some((s) => s.character_id === alice.id),
   JSON.stringify(stage.summons)
 );
 
-gm.emit('stage:remove_summon', { summonId: aliceSummon.id });
+gm.emit('stage:summon', { scenePictureId: altPicture.id });
 await sleep(300);
 stage = await jf('/api/stage');
-check("the GM's remove_summon succeeded", !stage.summons.some((s) => s.character_id === alice.id), JSON.stringify(stage.summons));
+check(
+  "the GM re-selecting Alice's showing picture un-summoned her, even though it's a PC's — mayWriteScenePicture's GM-always-may branch",
+  !stage.summons.some((s) => s.character_id === alice.id),
+  JSON.stringify(stage.summons)
+);
 
-gm.emit('stage:remove_summon', { summonId: gruntSummon.id });
+gm.emit('stage:summon', { scenePictureId: gruntPicture.id });
 await sleep(300);
 
 // ============================================ 12. deleting a summoned character removes them live, not just on the next fetch

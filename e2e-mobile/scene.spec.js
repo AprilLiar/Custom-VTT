@@ -55,16 +55,49 @@ test.describe('Scene tab: the chromeless route', () => {
   });
 });
 
+test.describe('Scene tab: cinematic hide-UI toggle', () => {
+  test.use({ viewport: { width: 1280, height: 900 } });
+
+  test('GM: hiding the interface clears every overlay control; tapping the stage restores them', async ({ page }) => {
+    await chooseGm(page);
+    await goToScene(page);
+    await expect(page.getByText('Characters', { exact: true })).toBeVisible();
+    await expect(page.getByText('Scenes', { exact: true })).toBeVisible();
+    await expect(page.locator('a[title="Back to the Arena"]')).toBeVisible();
+
+    await page.locator('button[title^="Hide interface"]').click();
+    // Only what cinematic mode is FOR — the backdrop and the figures —
+    // stays; every drawer and corner control, GM's own hide toggle
+    // included, is gone rather than merely covered.
+    await expect(page.getByText('Characters', { exact: true })).toHaveCount(0);
+    await expect(page.getByText('Scenes', { exact: true })).toHaveCount(0);
+    await expect(page.locator('a[title="Back to the Arena"]')).toHaveCount(0);
+    await expect(page.locator('button[title^="Hide interface"]')).toHaveCount(0);
+
+    // "Tapping anything brings them back" — no dedicated "show" control,
+    // just a plain click anywhere on the now-bare stage.
+    await page.mouse.click(640, 450);
+    await expect(page.getByText('Characters', { exact: true })).toBeVisible();
+    await expect(page.locator('a[title="Back to the Arena"]')).toBeVisible();
+  });
+});
+
 test.describe('Scene tab: orientation gate — phone-width portrait is asked to rotate', () => {
   test.use({ viewport: { width: 390, height: 844 } });
 
-  test('the rotate prompt shows, chrome stays absent', async ({ page }) => {
+  test('the rotate prompt shows, chrome stays absent, and the corner link still gets you out', async ({ page }) => {
     await chooseGm(page);
     await goToScene(page);
     await expect(page.getByText('Flip your device to landscape')).toBeVisible();
     // Chrome stays absent even while gated — the gate is inside the same
     // chromeless route, not a fallback to the normal Shell.
     await expect(page.locator('header')).toHaveCount(0);
+    // Regression: the gate used to render with no way off the route at
+    // all — a phone-width Player stuck in portrait had to rotate the
+    // device just to reach the corner link, which only rendered in the
+    // canvas branch below this one.
+    await page.locator('a[title="Back to the Arena"]').click();
+    await expect(page).toHaveURL(/\/combat/);
   });
 });
 
@@ -193,7 +226,7 @@ test.describe('Scene tab: the Temp NPC roster drawer (Phase 2)', () => {
     // NPCS") but the DOM text itself is title case, and a case-insensitive
     // substring match also catches the "🏠 All Temp NPCs" button below it.
     await expect(page.getByText('Temp NPCs', { exact: true })).toBeVisible();
-    await expect(page.getByText('Characters (NPCs)', { exact: true })).toBeVisible();
+    await expect(page.getByText('Characters', { exact: true })).toBeVisible();
 
     // Create a folder, then a Temp NPC filed inside it. Both names are
     // stamped — this suite's projects share one live dev server
@@ -241,13 +274,28 @@ test.describe('Scene tab: the Temp NPC roster drawer (Phase 2)', () => {
     await expect(page.getByText(`📁 ${renamedFolder}`, { exact: true })).toHaveCount(0);
   });
 
+  test('GM: the Characters section lists PCs, not just NPCs', async ({ page }) => {
+    // Regression: this section used to filter to `character_type === 'npc'`
+    // only, so a GM had no way to summon a PC at all — decision #5 is "one
+    // place to summon anyone the GM controls," which a PC is included in.
+    const pcName = `Scene Cast PC ${Date.now()}`;
+    await page.request.post('/api/characters', { data: { name: pcName, characterType: 'pc' } });
+    await chooseGm(page);
+    await goToScene(page);
+    // The attribute, not the computed accessible name — CharacterCard's
+    // button nests a Thumb (its own `alt`) alongside the name text, so the
+    // accessible name doubles the name up rather than reading as plain
+    // "Summon <name>" (the same gotcha noted on the Temp NPC cards above).
+    await expect(page.locator(`button[title="Summon ${pcName}"]`)).toBeVisible();
+  });
+
   test('a Player never sees the Temp NPC drawer', async ({ page }) => {
     const name = `Scene Cast Spec PC ${Date.now()}`;
     await page.request.post('/api/characters', { data: { name, characterType: 'pc' } });
     await choosePlayer(page, name);
     await goToScene(page);
     await expect(page.getByText('Temp NPCs', { exact: true })).toHaveCount(0);
-    await expect(page.getByText('Characters (NPCs)', { exact: true })).toHaveCount(0);
+    await expect(page.getByText('Characters', { exact: true })).toHaveCount(0);
   });
 });
 
@@ -350,7 +398,7 @@ const TINY_PNG_BUFFER = Buffer.from(
 test.describe('Scene tab: summoning and the stage roster (Phase 5)', () => {
   test.use({ viewport: { width: 1280, height: 900 } });
 
-  test('GM: summon a Temp NPC, swap which picture shows, un-summon, and remove from the stage', async ({ page }) => {
+  test('GM: summon a Temp NPC, swap which picture shows, and un-summon by re-selecting it', async ({ page }) => {
     const stamp = Date.now();
     await chooseGm(page);
     await goToScene(page);
@@ -388,10 +436,25 @@ test.describe('Scene tab: summoning and the stage roster (Phase 5)', () => {
     await expect(liveBadge).toBeVisible();
 
     // The GM's own summon renders inset from the drawers, never underneath
-    // SceneListDrawer (DRAWER_WIDTH's own fix) — pin that the on-stage
-    // remove button is actually reachable, not hidden behind it.
-    const removeButton = page.locator(`button[title^="Remove Summon Grunt ${stamp}"]`);
-    await expect(removeButton).toBeVisible();
+    // SceneListDrawer (DRAWER_WIDTH's own fix) — a GM's summon always lands
+    // side 'right', so this is the side that can go missing behind it.
+    const rightEdge = await page.evaluate((n) => {
+      const img = Array.from(document.querySelectorAll('img')).find((i) => i.alt === n);
+      return img?.closest('.absolute.bottom-0')?.getBoundingClientRect().right;
+    }, `Summon Grunt ${stamp}`);
+    expect(rightEdge).not.toBeUndefined();
+    expect(rightEdge).toBeLessThanOrEqual(1280 - 256); // viewport width - DRAWER_WIDTH
+
+    // Regression: the box is a fixed `h-[85vh]`, not a `max-h-[85vh]` cap —
+    // a cap would leave this 1x1 test PNG rendered at its own tiny natural
+    // size (letting every character's top land at a different height); a
+    // fixed height forces the same box regardless of the source image's
+    // own aspect ratio, which is what actually standardizes the tops.
+    const imgHeight = await page.evaluate((n) => {
+      const img = Array.from(document.querySelectorAll('img')).find((i) => i.alt === n);
+      return img?.getBoundingClientRect().height;
+    }, `Summon Grunt ${stamp}`);
+    expect(Math.abs(imgHeight - 900 * 0.85)).toBeLessThan(2);
 
     // A different picture swaps in place, not a fresh summon.
     await page.getByText(`Summon Grunt ${stamp}`, { exact: true }).click();
@@ -399,17 +462,10 @@ test.describe('Scene tab: summoning and the stage roster (Phase 5)', () => {
     await page.getByText('Pose B', { exact: true }).click();
     await expect(liveBadge).toBeVisible();
 
-    // Re-picking the now-showing picture un-summons.
+    // Re-picking the now-showing picture un-summons — the only clear path
+    // there is (decision #6): no separate "remove from stage" control.
     await page.getByText(`Summon Grunt ${stamp}`, { exact: true }).click();
     await page.getByText('On stage', { exact: true }).locator('xpath=ancestor::button').click();
-    await expect(liveBadge).toHaveCount(0);
-    await expect(removeButton).toHaveCount(0);
-
-    // Summon again, then clear it from the stage side instead.
-    await page.getByText(`Summon Grunt ${stamp}`, { exact: true }).click();
-    await page.getByText('Pose A', { exact: true }).click();
-    await expect(removeButton).toBeVisible();
-    await removeButton.click();
     await expect(liveBadge).toHaveCount(0);
 
     // Cleanup — leaves scene_summons/scene_pictures/temp_npcs empty for
