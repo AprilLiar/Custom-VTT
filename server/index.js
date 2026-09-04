@@ -1679,7 +1679,22 @@ async function getStagePayload() {
         [state.active_scene_id]
       )
     : null;
-  return { activeScene, summons: [] };
+  // snake_case throughout, matching activeScene above and every other row
+  // this feature reads verbatim off the DB (scene_pictures, temp_npcs, …) —
+  // only outbound WRITE payloads (stage:summon's own emit target) use
+  // camelCase in this app's convention. character_id/temp_npc_id decide
+  // ownership client-side the same way scene_pictures' own rows do.
+  const summons = await all(`
+    SELECT ss.id, ss.side, ss.character_id, ss.temp_npc_id, ss.scene_picture_id,
+           sp.image_data, sp.image_mime_type,
+           COALESCE(c.name, tn.name) AS name
+    FROM scene_summons ss
+    JOIN scene_pictures sp ON sp.id = ss.scene_picture_id
+    LEFT JOIN characters c ON c.id = ss.character_id
+    LEFT JOIN temp_npcs tn ON tn.id = ss.temp_npc_id
+    ORDER BY ss.id DESC
+  `);
+  return { activeScene, summons };
 }
 
 // A private board must never cross the wire to another player, so this is a
@@ -2245,6 +2260,7 @@ app.delete('/api/characters/:id', wrap(async (req, res) => {
   // preserve, it belongs to this character alone. Summons first, so a
   // character currently on stage is pulled off it before their pictures
   // (which a summon row also points at) disappear underneath them.
+  const wasSummoned = await one('SELECT id FROM scene_summons WHERE character_id = ?', [character.id]);
   await run('DELETE FROM scene_summons WHERE character_id = ?', [character.id]);
   await run('DELETE FROM scene_pictures WHERE character_id = ?', [character.id]);
   await run('DELETE FROM character_move_tags WHERE character_id = ?', [character.id]);
@@ -2277,6 +2293,7 @@ app.delete('/api/characters/:id', wrap(async (req, res) => {
 
   io.emit('character:deleted', { id: character.id });
   if (wasSeated) await emitCombatUpdated();
+  if (wasSummoned) io.emit('stage:updated', await getStagePayload());
   res.json({ ok: true });
 }));
 
@@ -4177,10 +4194,12 @@ io.on('connection', (socket) => {
     // Explicit cascade, matching DELETE /api/characters/:id's own style —
     // both FKs are already ON DELETE CASCADE, but every delete in this file
     // spells its cascade out by hand rather than trusting the DDL alone.
+    const wasSummoned = await one('SELECT id FROM scene_summons WHERE temp_npc_id = ?', [npc.id]);
     await run('DELETE FROM scene_summons WHERE temp_npc_id = ?', [npc.id]);
     await run('DELETE FROM scene_pictures WHERE temp_npc_id = ?', [npc.id]);
     await run('DELETE FROM temp_npcs WHERE id = ?', [npc.id]);
     io.emit('temp_npc:deleted', { tempNpcId: npc.id });
+    if (wasSummoned) io.emit('stage:updated', await getStagePayload());
   });
 
   // ---------------------------------------------------------------------
@@ -4235,9 +4254,11 @@ io.on('connection', (socket) => {
     // Explicit, matching every other delete in this file — scene_summons'
     // own FK is already ON DELETE CASCADE, but nothing here trusts the DDL
     // alone. Un-summons whoever was showing this picture, if anyone was.
+    const wasSummoned = await one('SELECT id FROM scene_summons WHERE scene_picture_id = ?', [picture.id]);
     await run('DELETE FROM scene_summons WHERE scene_picture_id = ?', [picture.id]);
     await run('DELETE FROM scene_pictures WHERE id = ?', [picture.id]);
     io.emit('scene_picture:deleted', { scenePictureId: picture.id });
+    if (wasSummoned) io.emit('stage:updated', await getStagePayload());
   });
 
   // ---------------------------------------------------------------------
@@ -4364,6 +4385,56 @@ io.on('connection', (socket) => {
       target = scene.id;
     }
     await run('UPDATE scene_state SET active_scene_id = ? WHERE id = 1', [target]);
+    io.emit('stage:updated', await getStagePayload());
+  });
+
+  // Summoning (Phase 5) — the payload is deliberately just { scenePictureId
+  // }, never an owner id: the server resolves the picture's own owner and
+  // derives everything else from that, so a client can't summon under one
+  // identity while claiming another. Two invariants this handler exists to
+  // make unforgeable:
+  //   1. `side` comes from `identity.role`, never the payload — a GM's
+  //      summons always land 'right', a Player's always 'left'.
+  //   2. Ownership is the exact mayWriteScenePicture gate: GM may summon
+  //      any Temp NPC or real NPC; a Player only their own character.
+  // Selecting the same picture that's already showing un-summons (decision
+  // #4's toggle); a different picture swaps in place — side and
+  // created_at both untouched, so a swap never reorders the stage.
+  on('stage:summon', async ({ scenePictureId }) => {
+    const viewer = socket.data.identity;
+    if (!viewer) return;
+    const picture = await one('SELECT * FROM scene_pictures WHERE id = ?', [scenePictureId]);
+    if (!picture) return;
+    const ownerType = picture.character_id != null ? 'character' : 'temp_npc';
+    const ownerId = picture.character_id ?? picture.temp_npc_id;
+    if (!mayWriteScenePicture(viewer, ownerType, ownerId)) return;
+
+    const side = viewer.role === 'gm' ? 'right' : 'left';
+    const ownerColumn = ownerType === 'character' ? 'character_id' : 'temp_npc_id';
+    const existing = await one(`SELECT * FROM scene_summons WHERE ${ownerColumn} = ?`, [ownerId]);
+
+    if (!existing) {
+      await run(`INSERT INTO scene_summons (${ownerColumn}, scene_picture_id, side) VALUES (?, ?, ?)`, [
+        ownerId,
+        picture.id,
+        side,
+      ]);
+    } else if (existing.scene_picture_id === picture.id) {
+      await run('DELETE FROM scene_summons WHERE id = ?', [existing.id]);
+    } else {
+      await run('UPDATE scene_summons SET scene_picture_id = ? WHERE id = ?', [picture.id, existing.id]);
+    }
+    io.emit('stage:updated', await getStagePayload());
+  });
+
+  // The GM's explicit clear — mirrors the Arena's seated-card ✕. A Player
+  // un-summons their own character by re-selecting the same picture
+  // (stage:summon's own toggle above); this is for the GM tidying up
+  // somebody else's seat (a Temp NPC, an NPC, or clearing a Player's stale
+  // summon).
+  on('stage:remove_summon', async ({ summonId }) => {
+    if (socket.data.identity?.role !== 'gm') return;
+    await run('DELETE FROM scene_summons WHERE id = ?', [summonId]);
     io.emit('stage:updated', await getStagePayload());
   });
 

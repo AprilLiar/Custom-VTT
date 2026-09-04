@@ -1,6 +1,7 @@
 // Playtest: the Scene tab's server surface (grows phase by phase, mirroring
 // e2e-mobile/scene.spec.js's own growth). Covers Phase 3's
-// mayWriteScenePicture AND Phase 4's Scene/activation surface.
+// mayWriteScenePicture, Phase 4's Scene/activation surface, and Phase 5's
+// summoning.
 //
 // The one thing worth checking against a running server rather than a unit
 // test: **server-enforced write gates.** A Player may write their own
@@ -12,7 +13,12 @@
 // entirely (a malicious client would do exactly this). Phase 4 adds the
 // `stage:updated` broadcast itself: it must reach every socket (`io.emit`,
 // not scoped), and deleting the active Scene must reset `activeScene` to
-// `null` live, not just in the next REST read.
+// `null` live, not just in the next REST read. Phase 5 is where the
+// unforgeability actually matters most: `stage:summon`'s `side` MUST come
+// from the socket's own identity, never a payload field a malicious client
+// could set to `'right'` and grant itself the GM's own half of the stage —
+// only a raw socket, deliberately sending a forged `side`, can prove the
+// server ignores it.
 //
 //   TURSO_DATABASE_URL="file:/tmp/pt.db" PORT=3100 node server/index.js
 //   E2E_URL=http://localhost:3100 node scripts/playtest-scene.mjs
@@ -235,6 +241,126 @@ check(
   bobSock.stages.at(-1)?.activeScene === null,
   JSON.stringify(bobSock.stages.at(-1))
 );
+
+// ============================================ 9. summoning: side is server-derived, ownership is enforced
+console.log('\n--- stage:summon: side comes from identity, never the payload; ownership is enforced ---');
+const alicePicture = (await scenePictures('character', alice.id))[0];
+const gruntPicture = (await scenePictures('temp_npc', grunt.id))[0];
+
+aliceSock.emit('stage:summon', { scenePictureId: alicePicture.id });
+await sleep(300);
+stage = await jf('/api/stage');
+let aliceSummon = stage.summons.find((s) => s.character_id === alice.id);
+check("Alice's own summon landed", Boolean(aliceSummon), JSON.stringify(stage.summons));
+check("a Player's summon is always side 'left'", aliceSummon?.side === 'left', JSON.stringify(aliceSummon));
+
+bobSock.emit('stage:summon', { scenePictureId: alicePicture.id });
+await sleep(300);
+stage = await jf('/api/stage');
+check(
+  "Bob summoning Alice's OWN picture was refused — still exactly one summon, still Alice's",
+  stage.summons.filter((s) => s.character_id === alice.id).length === 1,
+  JSON.stringify(stage.summons)
+);
+
+// A malicious payload claiming 'left' for a GM summon must still land 'right'.
+gm.emit('stage:summon', { scenePictureId: gruntPicture.id, side: 'left' });
+await sleep(300);
+stage = await jf('/api/stage');
+const gruntSummon = stage.summons.find((s) => s.temp_npc_id === grunt.id);
+check(
+  "the GM's summon is always side 'right', regardless of a forged payload field",
+  gruntSummon?.side === 'right',
+  JSON.stringify(gruntSummon)
+);
+
+// ============================================ 10. re-picking the same picture un-summons; a different one swaps in place
+console.log('\n--- re-picking the same picture un-summons; a different picture swaps without reordering ---');
+aliceSock.emit('stage:summon', { scenePictureId: alicePicture.id });
+await sleep(300);
+stage = await jf('/api/stage');
+check(
+  "re-selecting Alice's own showing picture un-summoned her",
+  !stage.summons.some((s) => s.character_id === alice.id),
+  JSON.stringify(stage.summons)
+);
+
+aliceSock.emit('stage:summon', { scenePictureId: alicePicture.id });
+await sleep(300);
+gm.emit('scene_picture:create', {
+  ownerType: 'character',
+  ownerId: alice.id,
+  name: 'Alt pose',
+  imageData: TINY_PNG,
+  imageMimeType: 'image/png',
+});
+await sleep(300);
+const altPicture = (await scenePictures('character', alice.id)).find((p) => p.name === 'Alt pose');
+stage = await jf('/api/stage');
+const summonIdBeforeSwap = stage.summons.find((s) => s.character_id === alice.id)?.id;
+
+aliceSock.emit('stage:summon', { scenePictureId: altPicture.id });
+await sleep(300);
+stage = await jf('/api/stage');
+aliceSummon = stage.summons.find((s) => s.character_id === alice.id);
+check('the swap picked up the new picture', aliceSummon?.scene_picture_id === altPicture.id, JSON.stringify(aliceSummon));
+check(
+  "swapping updates the summon row IN PLACE — same summon id, not a delete+reinsert (decision #4's 'position preserved')",
+  aliceSummon?.id === summonIdBeforeSwap,
+  `${aliceSummon?.id} !== ${summonIdBeforeSwap}`
+);
+
+// ============================================ 11. stage:remove_summon is GM-only
+console.log('\n--- stage:remove_summon is the GM\'s own clear, refused for a Player ---');
+bobSock.emit('stage:remove_summon', { summonId: aliceSummon.id });
+await sleep(300);
+stage = await jf('/api/stage');
+check(
+  "Bob's remove_summon of Alice was refused — she's still on stage",
+  stage.summons.some((s) => s.character_id === alice.id),
+  JSON.stringify(stage.summons)
+);
+
+gm.emit('stage:remove_summon', { summonId: aliceSummon.id });
+await sleep(300);
+stage = await jf('/api/stage');
+check("the GM's remove_summon succeeded", !stage.summons.some((s) => s.character_id === alice.id), JSON.stringify(stage.summons));
+
+gm.emit('stage:remove_summon', { summonId: gruntSummon.id });
+await sleep(300);
+
+// ============================================ 12. deleting a summoned character removes them live, not just on the next fetch
+console.log('\n--- deleting a summoned character removes them from stage:updated live ---');
+const carol = await jpost('/api/characters', { name: `SceneCarol${stamp}`, characterType: 'pc' });
+const carolSock = await connect({ role: 'player', characterId: carol.id });
+carolSock.emit('scene_picture:create', {
+  ownerType: 'character',
+  ownerId: carol.id,
+  name: 'Neutral',
+  imageData: TINY_PNG,
+  imageMimeType: 'image/png',
+});
+await sleep(300);
+const carolPicture = (await scenePictures('character', carol.id))[0];
+carolSock.emit('stage:summon', { scenePictureId: carolPicture.id });
+await sleep(300);
+stage = await jf('/api/stage');
+check('Carol summoned successfully, ahead of being deleted', stage.summons.some((s) => s.character_id === carol.id));
+
+await fetch(`${BASE}/api/characters/${carol.id}`, { method: 'DELETE' });
+await sleep(300);
+stage = await jf('/api/stage');
+check(
+  "deleting Carol removed her from the next REST read of the stage",
+  !stage.summons.some((s) => s.character_id === carol.id),
+  JSON.stringify(stage.summons)
+);
+check(
+  'and the removal arrived live, over the socket, not just on the next fetch',
+  !bobSock.stages.at(-1)?.summons?.some((s) => s.character_id === carol.id),
+  JSON.stringify(bobSock.stages.at(-1))
+);
+carolSock.close();
 
 console.log(failures === 0 ? '\nALL PASSED' : `\n${failures} FAILED`);
 gm.close();
