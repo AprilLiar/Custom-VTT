@@ -26,3 +26,9 @@ export function useMediaQuery(query) {
 // Arena, and every dialog — matches Tailwind's own `md` (768px).
 export const useIsDesktop = () => useMediaQuery('(min-width: 768px)');
 export const useIsCoarsePointer = () => useMediaQuery('(pointer: coarse)');
+// The Scene tab's orientation gate (decided: no portrait layout for the
+// stage is ever built — a phone-width viewport is asked to rotate instead).
+// Deliberately width-scoped by the CALLER, not here: raw orientation alone
+// would wrongly gate a desktop browser window that just happens to be taller
+// than it is wide. Callers combine this with `!useIsDesktop()`.
+export const useIsLandscape = () => useMediaQuery('(orientation: landscape)');

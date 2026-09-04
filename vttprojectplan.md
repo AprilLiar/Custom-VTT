@@ -2697,7 +2697,9 @@ When a character is created, auto-generate its 8 `dice` rows (2 head + 4 core + 
 Every page's header also carries, in order: the "Dogfight" logo (links to the Combat Arena — see item 5), the **Compendium** link (**decided, revised: visible to every role**, not GM-only — see item 4 below for what's actually GM-gated inside it), the **Characters**/**Character** link (visible to every role; labeled and routed per role — see item 2 below), the **Search bar** (see Global UI — Search above), the Chat Log toggle, and a **Cog icon** linking to **Settings** (item 7 below) — all persistent regardless of which page is open.
 1. **Role-select modal** — shown on every fresh load, before anything else: "Player" or "GM". Not persisted.
 2. **Character list** (home) — **decided, revised: no longer reachable by a Player.** The `/` route and the header's roster link both go straight to a GM's full roster or a Player's own sheet, per-role (see Roles / access model and the header description above) — this page itself, and its "+ Add Character" form, still exist and are unchanged for the GM, just no longer linked-to for a Player (direct navigation to `/` still resolves to their own sheet, not this page — there's no way to land here as a Player through the UI). Cards for each character, filtered by role (`pc` only for Player, all for GM — this filter is now moot for a Player since the page is unreachable, but stays in place rather than being ripped out); a nested, indented folder tree (`FolderTreeNav`, shared with the Compendium's Discipline nav) sits in a sidebar beside the grid — 🏠 All Characters at the root, every folder at every depth selectable, drag a card onto any row to file it there (dropping on root clears it), or — mobile/touch, see Mobile Readiness below — tap a card's ⇄ button to open the same choice as a picker dialog; the sidebar itself collapses into a "Change…" trigger below `md:`. Management (create/rename/delete, and either filing gesture) is **GM-only**: Players just browse whatever folders exist. Deleting a folder promotes its direct characters and direct child folders one level up to its own parent (root if it was already at root); if the folder being viewed is the one deleted, the view follows it up to that same parent. "+ Add Character" button (name only, plus a PC/NPC toggle and a folder picker — showing the full indented hierarchy — for GM; Players' new PCs always land at root; dice auto-seeded either way); each card has a **Delete** option that asks for confirmation first (it cascades — dice, stances, moves, inventory, injuries all go with it). Cards sit in a responsive grid, each with a fixed-size portrait area that the art fills edge-to-edge (cropped to cover, not letterboxed — no visible empty space around it regardless of the source image's aspect ratio), and a small folder-path chip ("📁 Fighters / Bosses") shows on any card filed in a folder, next to the NPC badge.
-3. **Character sheet**, split into 6 tabs:
+3. **Character sheet**, split into 9 tabs (Tabs 1-6 below; **Tab 7 — Quirks**, **Tab 8 —
+   Relationships** (PC-only) and **Tab 9 — Scene Pictures** are documented in their own
+   `## Game mechanic —` sections above rather than repeated here):
    - **Tab 1 — Core Stats:**
      - **Name** — simple editable text field, saved live
      - **Portrait** — image area; clicking it opens a file picker to upload/replace the character's picture (same click-to-change flow whether setting it the first time or changing it later)
@@ -4016,6 +4018,97 @@ Two consequences, both load-bearing:
 `relationship_nodes` (exactly one of `character_id` / `person_id`) is a real guard under
 either story. **The lesson is the one this project keeps relearning:** a chain of true facts
 is not a measurement. `server/test/relationshipsSchema.test.js` now pins the pragma itself.
+
+## Game mechanic — Scene tab (decided, new; Phase 1 implemented)
+
+A second "everyone's screen shows the same thing" surface, alongside the Combat Arena — but built
+for roleplay/downtime scenes rather than fighting: a GM-controlled fullscreen background picture
+("a Scene") with characters' transparent-PNG art sliding on/off it as they're "summoned," in the
+visual language of a light novel or Foundry VTT's Theatre module rather than a battle map. Full
+design and phasing lives in the session plan this was built from; the decisions below are the ones
+that hold regardless of which phase is currently shipped.
+
+**Decisions, locked before any code was written:**
+
+- **Temp NPCs are a brand-new, lightweight, global, GM-managed roster** (`temp_npcs`) — not a flag
+  on `characters`. Cheap, narrative-only, and deliberately never touches Arena seating, Compendium
+  grants, or the character sheet's other tabs. Foldered in its own tree (`temp_npc_folders`),
+  mirroring `character_folders` exactly.
+- **The Scene page is always fullscreen, for both roles**, from the moment it's opened. The GM's
+  authoring tools (create Scene, upload picture, manage Temp NPC folders, summon) live in
+  drawers/overlays on top of that canvas, not a separate management page (Phase 2 onward).
+- **Switching the active Scene force-navigates every connected Player** straight to the fullscreen
+  view — every switch, including the first activation of a session. No other feature in this app
+  force-navigates anyone; this is a deliberate, new pattern (Phase 4). The force-navigate listener
+  diffs only `activeScene?.id`, never the rest of the shared payload — diffing the whole thing
+  would re-navigate every Player on every summon/un-summon too, which is a materially worse
+  failure than the accepted "cutting to a new scene interrupts whatever you were doing" tradeoff.
+- **A Scene Picture is "pick one at summon, swap freely after."** Summoning opens a picker of that
+  owner's own Scene Pictures; once on stage, the same control swaps which picture shows without
+  leaving the stage — position/order in the lineup is preserved, only the image changes (Phase 5).
+- **Summons are independent of the active Scene** — switching backgrounds never clears the stage.
+  `scene_summons` deliberately has no `scene_id` column at all; that omission is the rule, not a
+  habit a future handler could accidentally break.
+- **The stage's "who is currently summoned" state is public to everyone watching** — a plain
+  `io.emit('stage:updated', ...)`, no per-viewer redaction, unlike `combat:updated`'s secrecy
+  around pre-reveal declared moves. What's GM-only is the *authoring* library (Scenes, Temp NPCs,
+  folders) and *who may summon what* (see below) — never the shared "what's on stage right now."
+- **`stage:summon`'s `side` is derived from `identity.role` server-side, never taken from the
+  client payload** — a GM's summons are always `'right'`, a Player's always `'left'`. Ownership is
+  checked the same way `scene_picture:*` writes are: GM may summon any Temp NPC or real NPC; a
+  Player only their own character. The payload is deliberately just `{ scenePictureId }` — the
+  server resolves that picture's own owner rather than trusting a separately-sent id that could
+  disagree with it.
+- **Mobile: landscape-only, by design.** `useIsLandscape()` (`client/src/lib/useMediaQuery.js`)
+  gates on `!useIsDesktop() && !useIsLandscape()` — width-scoped, not raw orientation, so a desktop
+  window resized taller than wide is never blocked. No portrait layout for the stage is ever built;
+  a phone-width portrait viewport sees a "flip your device" message instead (`OrientationGate.jsx`).
+- **The route is genuinely chrome-free, not chrome-covered.** `App.jsx`'s `Shell()` branches on
+  `location.pathname === '/scene'` and mounts no header, no mobile menu, no `CombatHeaderBar`, no
+  `ChatPanel`, no `BottomNav` at all — a new pattern, deliberately not the Relationships board's
+  `fullscreen` toggle (a `createPortal` that only ever paints *over* the still-mounted chrome). A
+  force-navigated Player must not be able to tap a still-present bottom nav out from under the
+  page, which a portal-over-chrome approach would still allow. `ScenePage.jsx` carries the one way
+  off the route itself (a small corner link back to the Arena) and the "Scene" header/mobile-menu
+  links (`App.jsx`) are the way onto it.
+
+**Data model** (six new tables, `server/db.js`, right after the Relationships board's own tables):
+`temp_npc_folders`/`temp_npcs` (mirrors `character_folders`, plus `ensureCropColumns`),
+`scene_folders`/`scenes` (same shape again, for the GM's right-hand Scenes drawer), `scene_state`
+(a `combat_state`-style singleton holding `active_scene_id`), `scene_pictures` (owned by exactly
+one of a `character_id`/`temp_npc_id`, `CHECK`-enforced like `relationship_nodes`'s own
+discriminator), and `scene_summons` (same discriminator, plus `UNIQUE(character_id)` /
+`UNIQUE(temp_npc_id)` so an owner holds at most one seat on stage — SQLite treats `NULL` as
+distinct under `UNIQUE`, so a Temp NPC's own uniqueness never collides with a character's).
+
+**Every new FK here is a straightforward `ON DELETE CASCADE`** — deliberately unlike
+`relationship_nodes.character_id`, which carries no `ON DELETE` action at all because a
+relationship node can point at a character who isn't its board's owner and needs converting rather
+than deleting. Nothing here has that shape: a `scene_pictures`/`scene_summons` row has no
+cross-owner reference to preserve, so there is nothing worth saving across the owner's own
+deletion, and copying the no-action pattern here would only make deleting a character with Scene
+Pictures fail for no reason. `DELETE /api/characters/:id` gained two explicit lines for the same
+belt-and-braces reason every other line in that handler is spelled out by hand.
+
+Phases 2-6 below (Temp NPCs, the upload pipeline, Scenes/activation/force-navigate, summoning,
+motion) each land as their own PR, ending in a deploy + playtest checkpoint, mirroring the
+Relationships board's own cadence — this section grows one `### Phase N` heading at a time as each
+one actually ships, rather than being stubbed out in advance.
+
+### Phase 1 (implemented) — schema, the chromeless route, the orientation gate
+
+Schema (six tables, above), the chromeless `/scene` route, the orientation gate, and an empty
+`ScenePicturesEditor.jsx` wired into a new final Character Sheet tab (every character, PC or NPC,
+gets it — not gated by `PC_ONLY_TABS`). `GET /api/scene-pictures` is open, unfiltered REST,
+matching `GET /api/character-folders` — this is GM-*managed* content, not GM-*secret* content. A
+"Scene" link was added to the desktop header and the mobile "More" menu — the route itself carries
+no chrome once you're on it, so this is the only way in besides typing the URL by hand.
+
+Verified: `server/test/sceneSchema.test.js` (both discriminators, both `UNIQUE`s, FK enforcement,
+CASCADE-not-blocked contrasted directly against `relationship_nodes`'s refusal), `initDbSchema.test.js`
+extended for the two `ensureCropColumns` calls, `e2e-mobile/scene.spec.js` (chrome genuinely absent
+from the DOM at every viewport, the orientation gate's three width/orientation combinations, the
+new sheet tab) — 720 server tests and 18 Playwright checks (6 tests × 3 device projects) passing.
 
 ## Implementation Risks & Recommendations
 A scope check for whoever picks this up: this grew well past "semi-simple website" over the course of design. Most of it (dice, inventory, injuries, stances, perks, counters) is standard CRUD-plus-broadcast work. Combat Timing (Tics/Startup/reveal/overflow) is the one genuinely hard piece — real software complexity, not just more forms — and it's also the most original part of the system, which is exactly why it deserves the most care rather than being rushed alongside everything else.

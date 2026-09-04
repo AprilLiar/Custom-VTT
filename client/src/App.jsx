@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, Navigate, Route, Routes, useLocation } from 'react-router-dom';
-import { Cog, Menu, Scroll, Search, Swords, Users, BookOpen, MessageSquare } from 'lucide-react';
+import { Cog, Menu, Scroll, Search, Swords, Users, BookOpen, MessageSquare, Clapperboard } from 'lucide-react';
 import { RoleProvider, useRole } from './roleContext.jsx';
 import { socket } from './socket.js';
 import { useIsDesktop } from './lib/useMediaQuery.js';
@@ -18,6 +18,7 @@ import ConnectionBanner from './components/ConnectionBanner.jsx';
 import SyncHealthBanner from './components/SyncHealthBanner.jsx';
 import GmToolsWidget from './components/GmToolsWidget.jsx';
 import RollRequestPrompt from './components/RollRequestPrompt.jsx';
+import ScenePage from './components/ScenePage.jsx';
 
 // Mobile readiness (Change 002) §5.1/14.2: bottom navigation is the primary
 // mobile nav (recommended default) — Arena/Character(s)/Compendium/Chat,
@@ -134,6 +135,47 @@ function Shell() {
   // Player on a roster they're not meant to see.
   const homePath = role === 'player' ? `/character/${characterId}` : '/';
 
+  // One route list, shared by both chrome shapes below — /scene is a normal
+  // entry in it like any other page.
+  const routes = (
+    <Routes>
+      <Route
+        path="/"
+        element={role === 'player' ? <Navigate to={homePath} replace /> : <CharacterList />}
+      />
+      <Route path="/character/:id" element={<CharacterSheet />} />
+      <Route path="/compendium" element={<CompendiumPage />} />
+      <Route path="/combat" element={<CombatArena />} />
+      <Route path="/scene" element={<ScenePage />} />
+      <Route path="/settings" element={<SettingsPage />} />
+      <Route path="/rules" element={<RulesPage />} />
+      <Route path="*" element={<Navigate to={homePath} replace />} />
+    </Routes>
+  );
+
+  // Scene tab (decided): this route needs to be genuinely chrome-free — no
+  // header, no mobile menu, no CombatHeaderBar, no Chat overlay, and
+  // critically no BottomNav, since a still-mounted bottom nav under a
+  // force-navigated page would let a Player tap their way back out, which is
+  // exactly what force-navigating them here is meant to prevent. This is a
+  // route-level branch rather than the RelationshipsTab-style
+  // portal-over-chrome trick used everywhere else in this app, because that
+  // trick only ever paints OVER the chrome — the bottom nav is still there
+  // underneath it, still tappable. `ScenePage` itself carries the one way
+  // off the route (a small corner link back to the Arena), since nothing
+  // else on this branch does.
+  if (location.pathname === '/scene') {
+    return (
+      <div className="app-shell bg-arena flex flex-col text-zinc-100">
+        <ConnectionBanner />
+        <SyncHealthBanner />
+        <div className="flex flex-1 overflow-hidden">{routes}</div>
+        <GmToolsWidget />
+        <RollRequestPrompt />
+      </div>
+    );
+  }
+
   return (
     <div className="app-shell bg-arena flex flex-col text-zinc-100">
       <ConnectionBanner />
@@ -169,6 +211,17 @@ function Shell() {
           className="panel-cut-sm font-display hidden px-2 py-1 text-sm font-semibold uppercase tracking-wide text-zinc-400 hover:text-brand-300 md:inline-block"
         >
           {role === 'gm' ? 'Characters' : 'Character'}
+        </Link>
+        {/* The Scene tab's only entry point on this branch — the route
+            itself is chrome-free once you're on it (see above), so this is
+            the sole link a GM (or, once a Scene is active, a Player) has to
+            reach it voluntarily. A Player is normally pulled here by the
+            force-navigate broadcast (Phase 4) rather than clicking this. */}
+        <Link
+          to="/scene"
+          className="panel-cut-sm font-display hidden px-2 py-1 text-sm font-semibold uppercase tracking-wide text-zinc-400 hover:text-brand-300 md:inline-block"
+        >
+          Scene
         </Link>
         <div className="flex-1" />
         <div className="hidden md:block">
@@ -215,6 +268,17 @@ function Shell() {
         <div className="flex shrink-0 flex-col gap-2 border-b border-zinc-800 bg-zinc-950 p-3 md:hidden">
           <SearchBar mobileFullWidth onNavigate={() => setMobileMenuOpen(false)} />
           <Link
+            to="/scene"
+            onClick={() => {
+              setMobileMenuOpen(false);
+              setChatOpen(false);
+            }}
+            className="flex min-h-11 items-center gap-2 panel-cut-sm border border-zinc-700 px-3 text-sm font-semibold text-zinc-300 hover:bg-zinc-800"
+          >
+            <Clapperboard size={16} />
+            Scene
+          </Link>
+          <Link
             to="/rules"
             onClick={() => {
               setMobileMenuOpen(false);
@@ -247,18 +311,7 @@ function Shell() {
           visible while chat is open (see BottomNav below). */}
       <div className="relative flex flex-1 overflow-hidden">
         <main className="min-w-0 flex-1 overflow-y-auto p-2 md:p-4">
-          <Routes>
-            <Route
-              path="/"
-              element={role === 'player' ? <Navigate to={homePath} replace /> : <CharacterList />}
-            />
-            <Route path="/character/:id" element={<CharacterSheet />} />
-            <Route path="/compendium" element={<CompendiumPage />} />
-            <Route path="/combat" element={<CombatArena />} />
-            <Route path="/settings" element={<SettingsPage />} />
-            <Route path="/rules" element={<RulesPage />} />
-            <Route path="*" element={<Navigate to={homePath} replace />} />
-          </Routes>
+          {routes}
         </main>
         <ChatPanel open={chatOpen} />
       </div>
