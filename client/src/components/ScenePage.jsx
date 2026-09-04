@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ArrowLeft } from 'lucide-react';
+import { ArrowLeft, EyeOff } from 'lucide-react';
 import { useIsDesktop, useIsLandscape } from '../lib/useMediaQuery.js';
 import { useRole } from '../roleContext.jsx';
 import { useStage } from '../lib/useStage.js';
@@ -46,6 +46,15 @@ export default function ScenePage() {
     return () => observer.disconnect();
   }, [stageEl]);
 
+  // Cinematic mode: a purely local viewing preference (never socket-synced
+  // — hiding your OWN interface says nothing about the shared game state,
+  // unlike everything else this page touches). Hides every overlay control
+  // down to just the backdrop and the summoned figures; tapping anywhere on
+  // the stage brings it straight back, via the plain onClick below rather
+  // than a dedicated "show" control, matching the ask verbatim ("tapping
+  // anything brings them back") — there is deliberately no second way in.
+  const [uiHidden, setUiHidden] = useState(false);
+
   // Decided: no portrait layout for the stage is ever built. Desktop is
   // never gated, regardless of window aspect — see useIsLandscape's own
   // comment for why the width check has to live with the caller.
@@ -53,6 +62,11 @@ export default function ScenePage() {
     return (
       <div className="relative flex h-full w-full flex-col">
         <OrientationGate />
+        {/* The chromeless route (App.jsx's Shell()) mounts no header, no
+            bottom nav — without this, a phone-width Player stuck in
+            portrait had no way off the route at all short of rotating the
+            device just to reach the corner link below. */}
+        <TopLeftControls />
       </div>
     );
   }
@@ -66,6 +80,13 @@ export default function ScenePage() {
   return (
     <div
       ref={setStageEl}
+      // Cinematic mode's whole "tap anything to come back" (only while
+      // hidden — a plain no-op click while the interface is already
+      // showing) — everything the interface itself can do (nav links,
+      // drawer buttons, the hide toggle below) still handles its own click
+      // first, then this bubbles harmlessly since the condition is already
+      // false by the time it's showing.
+      onClick={() => uiHidden && setUiHidden(false)}
       className="relative flex h-full w-full flex-col items-center justify-center overflow-hidden bg-zinc-950 text-zinc-500"
     >
       {backgroundSrc && (
@@ -83,40 +104,70 @@ export default function ScenePage() {
           entering from. Without insetting, a small right-side roster
           would render entirely underneath SceneListDrawer, invisible and
           unclickable behind it (see DRAWER_WIDTH's own comment). A Player
-          has no drawers, so their stage uses the full measured width. */}
+          has no drawers, so their stage uses the full measured width.
+          Rendered regardless of `uiHidden` — the figures themselves are
+          the one thing cinematic mode never hides. */}
       {stageWidth > 0 && (
         <StageRoster
           summons={summons}
           stageWidth={role === 'gm' ? Math.max(0, stageWidth - DRAWER_WIDTH * 2) : stageWidth}
           offsetX={role === 'gm' ? DRAWER_WIDTH : 0}
-          canRemove={role === 'gm'}
         />
       )}
-      {/* The one way off this route — App.jsx's chromeless branch mounts no
-          header, no bottom nav, nothing else that navigates. z-20 so it
-          stays above the drawers' own z-10, which dock to the same corners
-          for a GM. */}
+      {!uiHidden && (
+        <>
+          {/* The one way off this route — App.jsx's chromeless branch
+              mounts no header, no bottom nav, nothing else that navigates.
+              z-20 so it stays above the drawers' own z-10, which dock to
+              the same corners for a GM. */}
+          <TopLeftControls onHideUi={() => setUiHidden(true)} />
+          {/* z-[2]: summons are independent of the active Scene (decision
+              #6), so this text can be on screen at the same time as
+              StageRoster's own z-[1] stacking context — it needs to sit
+              above that, not fall into the DOM-order tiebreak a bare
+              z-index:auto would lose. */}
+          {!activeScene && (
+            <p className="relative z-[2] font-display text-sm uppercase tracking-wide">No Scene active yet.</p>
+          )}
+          {activeScene && !backgroundSrc && (
+            <p className="relative z-[2] font-display text-sm uppercase tracking-wide">{activeScene.name}</p>
+          )}
+          {role === 'gm' && <SceneCastDrawer />}
+          {role === 'gm' && <SceneListDrawer activeSceneId={activeScene?.id ?? null} />}
+          {role === 'player' && <PlayerSummonDock characterId={characterId} summons={summons} />}
+        </>
+      )}
+    </div>
+  );
+}
+
+// The corner toolbar — always the back link, plus the cinematic-mode
+// toggle wherever there's an interface worth hiding (the orientation
+// gate's own call passes no `onHideUi` at all: there's nothing to hide
+// there yet, just the rotate-prompt and this one way out).
+function TopLeftControls({ onHideUi }) {
+  return (
+    <div
+      className="absolute left-3 top-3 z-20 flex gap-2"
+      style={{ marginTop: 'var(--safe-top)', marginLeft: 'var(--safe-left)' }}
+    >
       <Link
         to="/combat"
         title="Back to the Arena"
-        className="absolute left-3 top-3 z-20 flex h-11 w-11 items-center justify-center panel-cut-sm border border-zinc-700 bg-zinc-900/80 text-zinc-400 hover:border-brand-500 hover:text-brand-300"
-        style={{ marginTop: 'var(--safe-top)', marginLeft: 'var(--safe-left)' }}
+        className="flex h-11 w-11 items-center justify-center panel-cut-sm border border-zinc-700 bg-zinc-900/80 text-zinc-400 hover:border-brand-500 hover:text-brand-300"
       >
         <ArrowLeft size={18} aria-hidden />
       </Link>
-      {/* z-[2]: summons are independent of the active Scene (decision #6),
-          so this text can be on screen at the same time as StageRoster's
-          own z-[1] stacking context — it needs to sit above that, not
-          fall into the DOM-order tiebreak a bare z-index:auto would lose. */}
-      {!activeScene && (
-        <p className="relative z-[2] font-display text-sm uppercase tracking-wide">No Scene active yet.</p>
+      {onHideUi && (
+        <button
+          type="button"
+          onClick={onHideUi}
+          title="Hide interface — tap the screen to bring it back"
+          className="flex h-11 w-11 items-center justify-center panel-cut-sm border border-zinc-700 bg-zinc-900/80 text-zinc-400 hover:border-brand-500 hover:text-brand-300"
+        >
+          <EyeOff size={18} aria-hidden />
+        </button>
       )}
-      {activeScene && !backgroundSrc && (
-        <p className="relative z-[2] font-display text-sm uppercase tracking-wide">{activeScene.name}</p>
-      )}
-      {role === 'gm' && <SceneCastDrawer />}
-      {role === 'gm' && <SceneListDrawer activeSceneId={activeScene?.id ?? null} />}
-      {role === 'player' && <PlayerSummonDock characterId={characterId} summons={summons} />}
     </div>
   );
 }

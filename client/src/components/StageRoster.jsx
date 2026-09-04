@@ -1,6 +1,5 @@
 import { useMemo } from 'react';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
-import { socket } from '../socket.js';
 import { layoutStage, SLOT_WIDTH } from '../lib/sceneLayout.js';
 
 // The stage itself (Scene tab plan, Phase 5: hard-cut positioning; Phase 6:
@@ -26,9 +25,21 @@ import { layoutStage, SLOT_WIDTH } from '../lib/sceneLayout.js';
 // motion.div at all — `initial` only plays once, on that figure's own
 // mount, keyed by `entry.id`, which never changes across a reflow.
 //
-// Bottom-anchored, `object-fit: contain` inside a fixed SLOT_WIDTH column
-// — image aspect ratio is deliberately not `layoutStage`'s problem (see
-// that file's own comment), so the framing happens here instead.
+// Bottom-anchored, `object-fit: contain` inside a fixed SLOT_WIDTH-wide,
+// `h-[85vh]`-tall box — image aspect ratio is deliberately not
+// `layoutStage`'s problem (see that file's own comment), so the framing
+// happens here instead. **Height is a fixed `h-`, not a `max-h` cap**: a
+// `max-h` alone leaves an image's rendered height driven by its own PNG's
+// own aspect ratio (auto, only ever clamped for an unusually tall one) —
+// bottoms lined up via `object-bottom`, but two characters uploaded at
+// different aspect ratios still had their heads land at different screen
+// heights. A fixed height turns that auto sizing into a real box every
+// image is scaled into via `object-fit: contain`, so any normal
+// standing-figure art (taller than the box's own aspect ratio, the
+// overwhelmingly common case) is height-bound and its top lands flush with
+// every other character's — width-bound art (unusually wide/short) still
+// centers with a gap above, which is the honest CSS limit short of a real
+// per-picture crop tool.
 //
 // `offsetX` shifts every figure right by that many px after layout —
 // ScenePage already narrowed `stageWidth` itself to the visible gap
@@ -50,7 +61,7 @@ const ENTER_RIGHT = { x: 140, opacity: 0 };
 const IDLE = { x: 0, opacity: 1 };
 const EXIT = { opacity: 0, scale: 0.85 };
 
-export default function StageRoster({ summons, stageWidth, offsetX = 0, canRemove }) {
+export default function StageRoster({ summons, stageWidth, offsetX = 0 }) {
   const reduceMotion = useReducedMotion();
 
   const placed = useMemo(() => {
@@ -84,18 +95,8 @@ export default function StageRoster({ summons, stageWidth, offsetX = 0, canRemov
               <img
                 src={`data:${entry.image_mime_type || 'image/png'};base64,${entry.image_data}`}
                 alt={entry.name ?? ''}
-                className="block max-h-[85vh] w-full object-contain object-bottom"
+                className="block h-[85vh] w-full object-contain object-bottom"
               />
-              {canRemove && (
-                <button
-                  type="button"
-                  onClick={() => socket.emit('stage:remove_summon', { summonId: entry.id })}
-                  title={`Remove ${entry.name ?? 'this summon'} from the stage`}
-                  className="absolute right-1 top-1 flex h-7 w-7 items-center justify-center panel-cut-sm border border-zinc-700 bg-zinc-900/80 text-zinc-300 hover:border-red-500 hover:text-red-400"
-                >
-                  ✕
-                </button>
-              )}
             </motion.div>
           </div>
         ))}

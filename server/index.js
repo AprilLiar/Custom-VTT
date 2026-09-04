@@ -4399,7 +4399,12 @@ io.on('connection', (socket) => {
   //      any Temp NPC or real NPC; a Player only their own character.
   // Selecting the same picture that's already showing un-summons (decision
   // #4's toggle); a different picture swaps in place — side and
-  // created_at both untouched, so a swap never reorders the stage.
+  // created_at both untouched, so a swap never reorders the stage. This is
+  // the ONLY way to clear a seat (decision #6) — there is deliberately no
+  // separate "remove from stage" write. A GM may summon any Temp NPC or
+  // real character (mayWriteScenePicture's own GM-always-may branch), so
+  // re-selecting in their own drawer clears anyone's seat, PC included; a
+  // Player un-summons the same way, scoped to just their own character.
   on('stage:summon', async ({ scenePictureId }) => {
     const viewer = socket.data.identity;
     if (!viewer) return;
@@ -4424,17 +4429,6 @@ io.on('connection', (socket) => {
     } else {
       await run('UPDATE scene_summons SET scene_picture_id = ? WHERE id = ?', [picture.id, existing.id]);
     }
-    io.emit('stage:updated', await getStagePayload());
-  });
-
-  // The GM's explicit clear — mirrors the Arena's seated-card ✕. A Player
-  // un-summons their own character by re-selecting the same picture
-  // (stage:summon's own toggle above); this is for the GM tidying up
-  // somebody else's seat (a Temp NPC, an NPC, or clearing a Player's stale
-  // summon).
-  on('stage:remove_summon', async ({ summonId }) => {
-    if (socket.data.identity?.role !== 'gm') return;
-    await run('DELETE FROM scene_summons WHERE id = ?', [summonId]);
     io.emit('stage:updated', await getStagePayload());
   });
 
