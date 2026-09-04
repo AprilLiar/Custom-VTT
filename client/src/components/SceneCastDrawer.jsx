@@ -2,11 +2,13 @@ import { useEffect, useMemo, useState } from 'react';
 import { socket } from '../socket.js';
 import { getTempNpcs, getTempNpcFolders, getCharacterFolders } from '../lib/api.js';
 import { useRoster } from '../lib/useRoster.js';
+import { useStage } from '../lib/useStage.js';
 import { buildFolderTree } from '../lib/folders.js';
 import { FolderRosterNode } from './FolderRoster.jsx';
 import FolderTreeNav from './FolderTreeNav.jsx';
 import Thumb from './Thumb.jsx';
 import TempNpcEditor from './TempNpcEditor.jsx';
+import SummonPicker from './SummonPicker.jsx';
 
 // A drag mime of its own (mirrors `text/character-id`, CharacterList's own
 // convention) so a Temp NPC card dropped on a folder can't be confused with
@@ -23,19 +25,29 @@ const TEMP_NPC_DRAG_MIME = 'text/temp-npc-id';
 //      already doing exactly this job for character_folders and move
 //      Disciplines) is reused as-is for that, with a short list of the
 //      current folder's Temp NPCs and an inline "+ New" form beneath it.
-//   2. **Characters (NPCs)** — read-only. `character_folders` already has
-//      its own management UI (the Character List page); this section only
-//      needs to *reflect* that real tree, which is exactly what
-//      `FolderRosterNode` already does for the Relationships rail's own
-//      "The world" section — same component, same collapse rules, its 3rd
-//      consumer (the 4th arrives with Phase 4's Scene list drawer).
+//   2. **Characters (NPCs)** — the folder tree itself is read-only here.
+//      `character_folders` already has its own management UI (the
+//      Character List page); this section only needs to *reflect* that
+//      real tree, which is exactly what `FolderRosterNode` already does
+//      for the Relationships rail's own "The world" section — same
+//      component, same collapse rules, its 3rd consumer (the 4th arrived
+//      with Phase 4's Scene list drawer). The cards themselves are NOT
+//      read-only, though — every NPC here is click-to-summon (Phase 5).
 //
-// Double-clicking a Temp NPC opens `TempNpcEditor` (decision #9: a Temp NPC
-// has nothing else to edit, so that dialog IS the whole thing). A real NPC
-// card is inert here — it already has a full CharacterSheet, reached the
-// normal way, not from this overlay.
+// Clicking a card opens `SummonPicker` (Phase 5) — the GM may summon any
+// Temp NPC or real NPC, decision #4's "pick one at summon, swap freely
+// after." A Temp NPC's own edit dialog (`TempNpcEditor`, decision #9) moved
+// off the card's own click and onto a small "✎" button of its own:
+// overloading one element with both a click-to-summon and a
+// double-click-to-edit fired the summon picker once on every double-click
+// too (a browser dblclick is preceded by two real click events), which is
+// harmless for Scenes' own idempotent re-activate but not for popping a
+// second dialog open mid-edit. A real NPC card has no such editor here at
+// all — it already has a full CharacterSheet, reached the normal way — so
+// its whole card stays a single, unambiguous summon trigger.
 export default function SceneCastDrawer() {
   const characters = useRoster();
+  const stage = useStage();
   const [characterFolders, setCharacterFolders] = useState(null);
   const [tempNpcs, setTempNpcs] = useState(null);
   const [tempNpcFolders, setTempNpcFolders] = useState(null);
@@ -43,6 +55,7 @@ export default function SceneCastDrawer() {
   const [collapsedNpc, setCollapsedNpc] = useState(new Set());
   const [newTempNpcName, setNewTempNpcName] = useState('');
   const [editingTempNpc, setEditingTempNpc] = useState(null);
+  const [summoning, setSummoning] = useState(null); // { ownerType, ownerId, ownerName, currentScenePictureId }
 
   useEffect(() => {
     let alive = true;
@@ -104,6 +117,27 @@ export default function SceneCastDrawer() {
       if (next.has(id)) next.delete(id);
       else next.add(id);
       return next;
+    });
+
+  // Who's currently on stage, keyed by owner — a card checks this to show
+  // its "on stage" badge and to hand SummonPicker the picture it should
+  // highlight as already-showing (clicking it again is how a summon toggles
+  // off, so the picker needs to know which one that is).
+  const summonByOwner = useMemo(() => {
+    const map = new Map();
+    for (const s of stage?.summons ?? []) {
+      if (s.character_id != null) map.set(`character:${s.character_id}`, s);
+      if (s.temp_npc_id != null) map.set(`temp_npc:${s.temp_npc_id}`, s);
+    }
+    return map;
+  }, [stage]);
+
+  const openSummonPicker = (ownerType, owner) =>
+    setSummoning({
+      ownerType,
+      ownerId: owner.id,
+      ownerName: owner.name,
+      currentScenePictureId: summonByOwner.get(`${ownerType}:${owner.id}`)?.scene_picture_id ?? null,
     });
 
   const npcTree = useMemo(() => buildFolderTree(characterFolders ?? []), [characterFolders]);
@@ -185,19 +219,37 @@ export default function SceneCastDrawer() {
             />
             <div className="mt-2 space-y-1.5">
               {tempNpcsInFolder.map((npc) => (
-                <button
+                <div
                   key={npc.id}
                   draggable
                   onDragStart={(e) => e.dataTransfer.setData(TEMP_NPC_DRAG_MIME, String(npc.id))}
-                  onDoubleClick={() => setEditingTempNpc(npc)}
-                  title={`Double-click to edit ${npc.name}`}
-                  className="flex w-full items-center gap-2 panel-cut-sm border border-zinc-800 bg-zinc-900 p-1 text-left hover:border-brand-700"
+                  title={`Summon ${npc.name}`}
+                  className="flex w-full items-center gap-1 panel-cut-sm border border-zinc-800 bg-zinc-900 p-1 text-left hover:border-brand-700"
                 >
-                  <Thumb record={npc} name={npc.name} size="h-6 w-6" />
-                  <span className="min-w-0 flex-1 truncate text-[11px] font-semibold text-zinc-300">
-                    {npc.name}
-                  </span>
-                </button>
+                  <button
+                    type="button"
+                    onClick={() => openSummonPicker('temp_npc', npc)}
+                    className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                  >
+                    <Thumb record={npc} name={npc.name} size="h-6 w-6" />
+                    <span className="min-w-0 flex-1 truncate text-[11px] font-semibold text-zinc-300">
+                      {npc.name}
+                    </span>
+                    {summonByOwner.has(`temp_npc:${npc.id}`) && (
+                      <span className="shrink-0 text-[9px] font-bold uppercase tracking-wide text-brand-400">
+                        Live
+                      </span>
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setEditingTempNpc(npc)}
+                    title={`Edit ${npc.name}`}
+                    className="shrink-0 px-1 text-xs text-zinc-600 hover:text-zinc-300"
+                  >
+                    ✎
+                  </button>
+                </div>
               ))}
               {tempNpcsInFolder.length === 0 && (
                 <p className="px-1 text-[10px] text-zinc-600">Nobody filed here yet.</p>
@@ -230,13 +282,25 @@ export default function SceneCastDrawer() {
                 collapsed={collapsedNpc}
                 onToggle={toggleNpc}
                 depth={0}
-                rosterCard={(c) => <NpcCard key={c.id} character={c} />}
+                rosterCard={(c) => (
+                  <NpcCard
+                    key={c.id}
+                    character={c}
+                    onSummon={() => openSummonPicker('character', c)}
+                    live={summonByOwner.has(`character:${c.id}`)}
+                  />
+                )}
               />
             ))}
             {folderlessNpcs.length > 0 && (
               <div className="space-y-1.5 pt-1">
                 {folderlessNpcs.map((c) => (
-                  <NpcCard key={c.id} character={c} />
+                  <NpcCard
+                    key={c.id}
+                    character={c}
+                    onSummon={() => openSummonPicker('character', c)}
+                    live={summonByOwner.has(`character:${c.id}`)}
+                  />
                 ))}
               </div>
             )}
@@ -248,6 +312,15 @@ export default function SceneCastDrawer() {
       )}
 
       {editingTempNpc && <TempNpcEditor tempNpc={editingTempNpc} onClose={() => setEditingTempNpc(null)} />}
+      {summoning && (
+        <SummonPicker
+          ownerType={summoning.ownerType}
+          ownerId={summoning.ownerId}
+          ownerName={summoning.ownerName}
+          currentScenePictureId={summoning.currentScenePictureId}
+          onClose={() => setSummoning(null)}
+        />
+      )}
     </div>
   );
 }
@@ -260,19 +333,24 @@ function SectionLabel({ children }) {
   );
 }
 
-// Read-only — a real NPC already has a full CharacterSheet (Scene Pictures
-// tab included, same as every character); summoning them onto the stage is
-// Phase 5's job, not this one's.
-function NpcCard({ character }) {
+// Click-to-summon only — a real NPC already has a full CharacterSheet
+// (Scene Pictures tab included, same as every character) for everything
+// else, reached the normal way, not from this drawer.
+function NpcCard({ character, onSummon, live }) {
   return (
-    <div
-      title={character.name}
-      className="flex items-center gap-2 panel-cut-sm border border-zinc-800 bg-zinc-900 p-1"
+    <button
+      type="button"
+      onClick={onSummon}
+      title={`Summon ${character.name}`}
+      className="flex w-full items-center gap-2 panel-cut-sm border border-zinc-800 bg-zinc-900 p-1 text-left hover:border-brand-700"
     >
       <Thumb record={character} name={character.name} size="h-6 w-6" />
       <span className="min-w-0 flex-1 truncate text-[11px] font-semibold text-zinc-300">
         {character.name}
       </span>
-    </div>
+      {live && (
+        <span className="shrink-0 text-[9px] font-bold uppercase tracking-wide text-brand-400">Live</span>
+      )}
+    </button>
   );
 }

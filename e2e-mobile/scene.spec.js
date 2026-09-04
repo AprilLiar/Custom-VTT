@@ -17,6 +17,16 @@ import { chooseGm, choosePlayer } from './helpers.js';
 // the one combination the orientation gate has to get right (mobile width,
 // landscape orientation → show the canvas, not the rotate prompt).
 async function goToScene(page) {
+  // Already there? Skip the click entirely — this suite's projects share
+  // one live dev server, and `stage:updated` is a global `io.emit`
+  // (decision #3): a DIFFERENT test's Scene activation, running
+  // concurrently, can force-navigate THIS page to /scene before this
+  // function's own click ever runs. At that point the header/nav are
+  // already gone (the chromeless route mounts neither), so waiting to
+  // click a link that will never reappear just hangs to the test timeout.
+  // Proceeding from "already on /scene" is correct, not a workaround —
+  // it's the exact state this function exists to reach.
+  if (/\/scene(?:$|[/?#])/.test(new URL(page.url()).pathname)) return;
   const isDesktopWidth = (page.viewportSize()?.width ?? 0) >= 768;
   if (isDesktopWidth) {
     await page.locator('header a[href="/scene"]').click();
@@ -203,10 +213,13 @@ test.describe('Scene tab: the Temp NPC roster drawer (Phase 2)', () => {
     await page.locator('form:has(input[placeholder="New Temp NPC"]) button[type="submit"]').click();
     await expect(page.getByText(grunt, { exact: true })).toBeVisible();
 
-    // Double-click opens the picture editor straight away (decision #9) —
-    // rename through it, which is also this dialog's only write besides
-    // delete, so it doubles as the tab's rename coverage.
-    await page.getByText(grunt, { exact: true }).dblclick();
+    // The "✎" button opens the picture editor straight away (decision #9)
+    // — rename through it, which is also this dialog's only write besides
+    // delete, so it doubles as the tab's rename coverage. Not the card's
+    // own click any more (Phase 5): that one is the summon trigger now, so
+    // editing had to move onto a button of its own — see SceneCastDrawer's
+    // own comment on why overloading one element with both broke down.
+    await page.locator(`button[title="Edit ${grunt}"]`).click();
     // GM-editable (TempNpcEditor always passes canEdit), so the empty
     // state is the "+ Add picture" tile — see the Scene Pictures tab's
     // own describe block above for the read-only wording's own coverage.
@@ -218,7 +231,7 @@ test.describe('Scene tab: the Temp NPC roster drawer (Phase 2)', () => {
     await expect(page.getByText(captain, { exact: true })).toBeVisible();
 
     // Delete the Temp NPC, then the folder it was in.
-    await page.getByText(captain, { exact: true }).dblclick();
+    await page.locator(`button[title="Edit ${captain}"]`).click();
     await page.getByRole('button', { name: 'Delete Temp NPC' }).click();
     await expect(page.getByText(captain, { exact: true })).toHaveCount(0);
 
@@ -326,5 +339,120 @@ test.describe('Scene tab: Scenes, activation, and the force-navigate cut (Phase 
     await choosePlayer(page, name);
     await goToScene(page);
     await expect(page.getByText('Scenes', { exact: true })).toHaveCount(0);
+  });
+});
+
+const TINY_PNG_BUFFER = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+  'base64'
+);
+
+test.describe('Scene tab: summoning and the stage roster (Phase 5)', () => {
+  test.use({ viewport: { width: 1280, height: 900 } });
+
+  test('GM: summon a Temp NPC, swap which picture shows, un-summon, and remove from the stage', async ({ page }) => {
+    const stamp = Date.now();
+    await chooseGm(page);
+    await goToScene(page);
+
+    await page.getByPlaceholder('New Temp NPC', { exact: true }).fill(`Summon Grunt ${stamp}`);
+    await page.locator('form:has(input[placeholder="New Temp NPC"]) button[type="submit"]').click();
+    await expect(page.getByText(`Summon Grunt ${stamp}`, { exact: true })).toBeVisible();
+
+    // Give it two pictures via its editor (the "✎" button — the card's own
+    // click is the summon trigger now, see SceneCastDrawer's own comment
+    // on why those two actions had to split onto separate elements).
+    await page.locator(`button[title="Edit Summon Grunt ${stamp}"]`).click();
+    for (const name of ['Pose A', 'Pose B']) {
+      const [chooser] = await Promise.all([
+        page.waitForEvent('filechooser'),
+        page.getByText('+ Add picture', { exact: true }).click(),
+      ]);
+      await chooser.setFiles({ name: `${name}.png`, mimeType: 'image/png', buffer: TINY_PNG_BUFFER });
+      await expect(page.getByText(name, { exact: true })).toBeVisible();
+    }
+    await page.getByRole('button', { name: 'Close' }).click();
+
+    // Scoped to this card specifically, not a bare page-wide "Live" —
+    // this suite's projects share one live dev server, so another
+    // project's own summoned Temp NPC (or an active Scene, which gets the
+    // same badge text in SceneListDrawer) can legitimately show a "Live"
+    // badge of its own at the same time.
+    const liveBadge = page
+      .locator('button', { has: page.getByText(`Summon Grunt ${stamp}`, { exact: true }) })
+      .getByText('Live', { exact: true });
+
+    // Single click opens the summon picker; picking a picture summons.
+    await page.getByText(`Summon Grunt ${stamp}`, { exact: true }).click();
+    await page.getByText('Pose A', { exact: true }).click();
+    await expect(liveBadge).toBeVisible();
+
+    // The GM's own summon renders inset from the drawers, never underneath
+    // SceneListDrawer (DRAWER_WIDTH's own fix) — pin that the on-stage
+    // remove button is actually reachable, not hidden behind it.
+    const removeButton = page.locator(`button[title^="Remove Summon Grunt ${stamp}"]`);
+    await expect(removeButton).toBeVisible();
+
+    // A different picture swaps in place, not a fresh summon.
+    await page.getByText(`Summon Grunt ${stamp}`, { exact: true }).click();
+    await expect(page.getByText('On stage', { exact: true })).toBeVisible();
+    await page.getByText('Pose B', { exact: true }).click();
+    await expect(liveBadge).toBeVisible();
+
+    // Re-picking the now-showing picture un-summons.
+    await page.getByText(`Summon Grunt ${stamp}`, { exact: true }).click();
+    await page.getByText('On stage', { exact: true }).locator('xpath=ancestor::button').click();
+    await expect(liveBadge).toHaveCount(0);
+    await expect(removeButton).toHaveCount(0);
+
+    // Summon again, then clear it from the stage side instead.
+    await page.getByText(`Summon Grunt ${stamp}`, { exact: true }).click();
+    await page.getByText('Pose A', { exact: true }).click();
+    await expect(removeButton).toBeVisible();
+    await removeButton.click();
+    await expect(liveBadge).toHaveCount(0);
+
+    // Cleanup — leaves scene_summons/scene_pictures/temp_npcs empty for
+    // whatever test runs next. The "✎" button, not the card's own click —
+    // that one opens the summon picker, not the editor.
+    await page.locator(`button[title="Edit Summon Grunt ${stamp}"]`).click();
+    await page.getByRole('button', { name: 'Delete Temp NPC' }).click();
+  });
+
+  test('a Player summons themselves from their own docked control, at the stage\'s left edge', async ({ page }) => {
+    const name = `Summon Player ${Date.now()}`;
+    const created = await page.request
+      .post('/api/characters', { data: { name, characterType: 'pc' } })
+      .then((r) => r.json());
+
+    // Upload their own Scene Picture first — SummonPicker only ever lists
+    // existing pictures, it has no upload affordance of its own.
+    await choosePlayer(page, name);
+    await page.getByRole('button', { name: 'Scene Pictures' }).click();
+    const [chooser] = await Promise.all([
+      page.waitForEvent('filechooser'),
+      page.getByText('+ Add picture', { exact: true }).click(),
+    ]);
+    await chooser.setFiles({ name: 'me.png', mimeType: 'image/png', buffer: TINY_PNG_BUFFER });
+    await expect(page.getByText('me', { exact: true })).toBeVisible();
+
+    await page.locator('header a[href="/scene"]').click();
+    await page.waitForURL(/\/scene/);
+    // No drawers for a Player (SceneCastDrawer/SceneListDrawer are GM-only)
+    // — the dock needs no DRAWER_WIDTH inset the way the GM's own summons
+    // do, so a self-summon lands flush at x=0.
+    await page.getByText('Summon yourself', { exact: true }).click();
+    await page.getByText('me', { exact: true }).click();
+    await expect(page.getByText('On stage', { exact: true })).toBeVisible();
+
+    const left = await page.evaluate(() => {
+      const wrapper = document.querySelector('.absolute.inset-0.z-\\[1\\]');
+      return wrapper?.firstElementChild?.getBoundingClientRect().left;
+    });
+    expect(left).toBe(0);
+
+    // Cleanup.
+    await page.getByText('On stage', { exact: true }).click();
+    await page.getByText('me', { exact: true }).click();
   });
 });
