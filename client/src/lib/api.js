@@ -46,6 +46,12 @@ export const getScenePictures = (ownerType, ownerId) =>
   fetch(`/api/scene-pictures?${new URLSearchParams({ ownerType, ownerId })}`).then(json);
 export const getTempNpcs = () => fetch('/api/temp-npcs').then(json);
 export const getTempNpcFolders = () => fetch('/api/temp-npc-folders').then(json);
+export const getScenes = () => fetch('/api/scenes').then(json);
+export const getSceneFolders = () => fetch('/api/scene-folders').then(json);
+// The live stage everyone shares — { activeScene, summons }, see
+// getStagePayload in server/index.js for why this shape stays put across
+// phases even though summons is still always [] until Phase 5.
+export const getStage = () => fetch('/api/stage').then(json);
 
 // One character's Relationships board. Carries the identity as query params for
 // the same reason getCombat does — REST has no socket to carry it — and here it

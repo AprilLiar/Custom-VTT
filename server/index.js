@@ -1665,6 +1665,23 @@ function mayWriteScenePicture(viewer, ownerType, ownerId) {
   return ownerType === 'character' && viewer.role === 'player' && viewer.characterId === Number(ownerId);
 }
 
+// The live stage everyone shares (Scene tab plan, Phase 4): which Scene is
+// active right now, plus who's summoned onto it. `summons` stays [] until
+// Phase 5 wires scene_summons in — settling the shape now means that phase
+// only adds rows to an existing field, never changes what stage:updated
+// carries, which is what keeps the force-navigate listener's own diff (on
+// activeScene?.id alone, never the whole payload) correct across phases.
+async function getStagePayload() {
+  const state = await one('SELECT active_scene_id FROM scene_state WHERE id = 1');
+  const activeScene = state?.active_scene_id
+    ? await one(
+        'SELECT id, name, image_data, image_mime_type FROM scenes WHERE id = ?',
+        [state.active_scene_id]
+      )
+    : null;
+  return { activeScene, summons: [] };
+}
+
 // A private board must never cross the wire to another player, so this is a
 // per-socket emit rather than an io.emit — the same shape refreshCapabilities
 // uses, and for the same reason. The board is read ONCE regardless of how many
@@ -1715,6 +1732,24 @@ app.get('/api/scene-pictures', wrap(async (req, res) => {
   }
   const column = ownerType === 'character' ? 'character_id' : 'temp_npc_id';
   res.json(await all(`SELECT * FROM scene_pictures WHERE ${column} = ? ORDER BY id`, [id]));
+}));
+
+// Scene tab: the GM's Scenes library (Phase 4) — open read, same reasoning
+// as temp-npcs/character-folders above.
+app.get('/api/scenes', wrap(async (_req, res) => {
+  res.json(await all('SELECT * FROM scenes ORDER BY name'));
+}));
+
+app.get('/api/scene-folders', wrap(async (_req, res) => {
+  res.json(await all('SELECT * FROM scene_folders ORDER BY name'));
+}));
+
+// The live stage everyone shares — open read, matching stage:updated's own
+// io.emit (nothing here is secret). `summons` stays [] until Phase 5 wires
+// scene_summons in; the shape is settled now so that phase only adds rows,
+// never a payload change.
+app.get('/api/stage', wrap(async (_req, res) => {
+  res.json(await getStagePayload());
 }));
 
 app.get('/api/characters/:id', wrap(async (req, res) => {
@@ -4203,6 +4238,133 @@ io.on('connection', (socket) => {
     await run('DELETE FROM scene_summons WHERE scene_picture_id = ?', [picture.id]);
     await run('DELETE FROM scene_pictures WHERE id = ?', [picture.id]);
     io.emit('scene_picture:deleted', { scenePictureId: picture.id });
+  });
+
+  // ---------------------------------------------------------------------
+  // Scene tab: Scenes, their folders, and activation (Phase 4). Same
+  // structural pattern as temp_npc_folders/temp_npcs above — every write
+  // here is server-enforced GM-only, the quirk:create idiom.
+  // ---------------------------------------------------------------------
+
+  on('scene_folder:create', async ({ name, parentFolderId }) => {
+    if (socket.data.identity?.role !== 'gm') return;
+    const folderName = String(name ?? '').trim();
+    if (!folderName) return;
+    let parentId = null;
+    if (parentFolderId != null) {
+      const parent = await one('SELECT id FROM scene_folders WHERE id = ?', [parentFolderId]);
+      if (parent) parentId = parent.id;
+    }
+    const result = await run('INSERT INTO scene_folders (name, parent_id) VALUES (?, ?)', [
+      folderName,
+      parentId,
+    ]);
+    io.emit(
+      'scene_folder:created',
+      await one('SELECT * FROM scene_folders WHERE id = ?', [Number(result.lastInsertRowid)])
+    );
+  });
+
+  on('scene_folder:rename', async ({ folderId, name }) => {
+    if (socket.data.identity?.role !== 'gm') return;
+    const folder = await one('SELECT * FROM scene_folders WHERE id = ?', [folderId]);
+    const folderName = String(name ?? '').trim();
+    if (!folder || !folderName) return;
+    await run('UPDATE scene_folders SET name = ? WHERE id = ?', [folderName, folder.id]);
+    io.emit('scene_folder:updated', await one('SELECT * FROM scene_folders WHERE id = ?', [folder.id]));
+  });
+
+  on('scene_folder:delete', async ({ folderId }) => {
+    if (socket.data.identity?.role !== 'gm') return;
+    const folder = await one('SELECT * FROM scene_folders WHERE id = ?', [folderId]);
+    if (!folder) return;
+    // Same promote-one-level rule as temp_npc_folder:delete/character_folder:delete.
+    await run('UPDATE scenes SET folder_id = ? WHERE folder_id = ?', [folder.parent_id, folder.id]);
+    await run('UPDATE scene_folders SET parent_id = ? WHERE parent_id = ?', [folder.parent_id, folder.id]);
+    await run('DELETE FROM scene_folders WHERE id = ?', [folder.id]);
+    io.emit('scene_folder:deleted', { folderId: folder.id, parentFolderId: folder.parent_id });
+  });
+
+  on('scene:create', async ({ name, folderId }) => {
+    if (socket.data.identity?.role !== 'gm') return;
+    const sceneName = String(name ?? '').trim();
+    if (!sceneName) return;
+    let folder = null;
+    if (folderId != null) {
+      const row = await one('SELECT id FROM scene_folders WHERE id = ?', [folderId]);
+      if (row) folder = row.id;
+    }
+    const result = await run('INSERT INTO scenes (name, folder_id) VALUES (?, ?)', [sceneName, folder]);
+    io.emit('scene:created', await one('SELECT * FROM scenes WHERE id = ?', [Number(result.lastInsertRowid)]));
+  });
+
+  // The name is always sent; a background is only sent when the file picker
+  // in SceneEditor actually produced one — same "absent means leave it
+  // alone" contract temp_npc:update/relationships:update_person use.
+  on('scene:update', async ({ sceneId, name, imageData, imageMimeType, ...payload }) => {
+    if (socket.data.identity?.role !== 'gm') return;
+    const scene = await one('SELECT * FROM scenes WHERE id = ?', [sceneId]);
+    const sceneName = String(name ?? '').trim();
+    if (!scene || !sceneName) return;
+    await run(
+      imageData
+        ? `UPDATE scenes SET name = ?, image_data = ?, image_mime_type = ?, ${CROP_COLUMNS} WHERE id = ?`
+        : 'UPDATE scenes SET name = ? WHERE id = ?',
+      imageData
+        ? [sceneName, String(imageData), String(imageMimeType ?? 'image/jpeg'), ...cropValues(payload), scene.id]
+        : [sceneName, scene.id]
+    );
+    io.emit('scene:updated', await one('SELECT * FROM scenes WHERE id = ?', [scene.id]));
+    // The active Scene's own background may have just changed — the stage
+    // carries a copy of that row, not a live join, so it needs its own push.
+    const state = await one('SELECT active_scene_id FROM scene_state WHERE id = 1');
+    if (state?.active_scene_id === scene.id) io.emit('stage:updated', await getStagePayload());
+  });
+
+  on('scene:set_folder', async ({ sceneId, folderId }) => {
+    if (socket.data.identity?.role !== 'gm') return;
+    const scene = await one('SELECT * FROM scenes WHERE id = ?', [sceneId]);
+    if (!scene) return;
+    let target = null;
+    if (folderId != null) {
+      const folder = await one('SELECT id FROM scene_folders WHERE id = ?', [folderId]);
+      if (folder) target = folder.id;
+    }
+    await run('UPDATE scenes SET folder_id = ? WHERE id = ?', [target, scene.id]);
+    io.emit('scene:updated', { ...scene, folder_id: target });
+  });
+
+  on('scene:delete', async ({ sceneId }) => {
+    if (socket.data.identity?.role !== 'gm') return;
+    const scene = await one('SELECT * FROM scenes WHERE id = ?', [sceneId]);
+    if (!scene) return;
+    const state = await one('SELECT active_scene_id FROM scene_state WHERE id = 1');
+    const wasActive = state?.active_scene_id === scene.id;
+    // Explicit, matching every other delete in this file. scene_state's own
+    // FK is ON DELETE SET NULL (already correct), but nothing here trusts
+    // the DDL alone.
+    await run('UPDATE scene_state SET active_scene_id = NULL WHERE active_scene_id = ?', [scene.id]);
+    await run('DELETE FROM scenes WHERE id = ?', [scene.id]);
+    io.emit('scene:deleted', { sceneId: scene.id });
+    if (wasActive) io.emit('stage:updated', await getStagePayload());
+  });
+
+  // The force-navigate signal (decision #3): every switch cuts every
+  // connected client to /scene, including the very first activation of the
+  // session (active_scene_id starts NULL). `sceneId: null` is accepted too
+  // — deactivating leaves scene_state consistent with scene:delete's own
+  // ON DELETE SET NULL, but deliberately has nothing in the client that
+  // navigates anyone anywhere for it (there is no scene to cut to).
+  on('scene:activate', async ({ sceneId }) => {
+    if (socket.data.identity?.role !== 'gm') return;
+    let target = null;
+    if (sceneId != null) {
+      const scene = await one('SELECT id FROM scenes WHERE id = ?', [sceneId]);
+      if (!scene) return;
+      target = scene.id;
+    }
+    await run('UPDATE scene_state SET active_scene_id = ? WHERE id = 1', [target]);
+    io.emit('stage:updated', await getStagePayload());
   });
 
   on('move:revoke', async ({ characterId, moveId }) => {

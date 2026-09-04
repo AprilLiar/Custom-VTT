@@ -1,14 +1,18 @@
 // Playtest: the Scene tab's server surface (grows phase by phase, mirroring
-// e2e-mobile/scene.spec.js's own growth — this run covers what Phase 3
-// introduces: mayWriteScenePicture).
+// e2e-mobile/scene.spec.js's own growth). Covers Phase 3's
+// mayWriteScenePicture AND Phase 4's Scene/activation surface.
 //
 // The one thing worth checking against a running server rather than a unit
-// test: **the per-owner write gate on scene_pictures.** A Player may write
-// their own character's Scene Pictures and nobody else's; a Temp NPC's are
-// GM-only always, since nobody plays one. The only way to prove a
-// server-enforced gate is real is to ask as somebody who lacks it — a raw
-// socket identity against a real endpoint, bypassing the UI's own
-// `canCreate` check entirely (a malicious client would do exactly this).
+// test: **server-enforced write gates.** A Player may write their own
+// character's Scene Pictures and nobody else's; a Temp NPC's are GM-only
+// always, since nobody plays one; every Scene/scene-folder write is
+// GM-only, full stop. The only way to prove a server-enforced gate is real
+// is to ask as somebody who lacks it — a raw socket identity against a
+// real endpoint, bypassing the UI's own `canCreate`/GM-only rendering
+// entirely (a malicious client would do exactly this). Phase 4 adds the
+// `stage:updated` broadcast itself: it must reach every socket (`io.emit`,
+// not scoped), and deleting the active Scene must reset `activeScene` to
+// `null` live, not just in the next REST read.
 //
 //   TURSO_DATABASE_URL="file:/tmp/pt.db" PORT=3100 node server/index.js
 //   E2E_URL=http://localhost:3100 node scripts/playtest-scene.mjs
@@ -39,7 +43,9 @@ const connect = async (identity) => {
   await new Promise((r) => s.on('connect', r));
   s.emit('identity:set', identity);
   s.pictures = []; // scene_picture:created payloads this socket was told about
+  s.stages = []; // stage:updated payloads this socket was told about
   s.on('scene_picture:created', (p) => s.pictures.push(p));
+  s.on('stage:updated', (p) => s.stages.push(p));
   await sleep(400);
   return s;
 };
@@ -173,6 +179,62 @@ check(
 // ============================================ 6. broadcast reaches everyone (io.emit, not scoped)
 console.log('\n--- scene_picture:created reaches every connected socket ---');
 check("Bob's own socket was told about Alice's very first picture (io.emit, not per-owner)", bobSock.pictures.length >= 1);
+
+// ============================================ 7. Scenes and scene folders are GM-only, always
+console.log('\n--- Scene/scene-folder writes are GM-only, always ---');
+aliceSock.emit('scene_folder:create', { name: `Forged Folder ${stamp}`, parentFolderId: null });
+await sleep(300);
+let sceneFolders = await jf('/api/scene-folders');
+check(
+  "a Player's scene_folder:create was refused",
+  !sceneFolders.some((f) => f.name === `Forged Folder ${stamp}`),
+  JSON.stringify(sceneFolders)
+);
+
+aliceSock.emit('scene:create', { name: `Forged Scene ${stamp}`, folderId: null });
+await sleep(300);
+let scenes = await jf('/api/scenes');
+check(
+  "a Player's scene:create was refused",
+  !scenes.some((s) => s.name === `Forged Scene ${stamp}`),
+  JSON.stringify(scenes)
+);
+
+gm.emit('scene:create', { name: `Tavern ${stamp}`, folderId: null });
+await sleep(300);
+scenes = await jf('/api/scenes');
+const tavern = scenes.find((s) => s.name === `Tavern ${stamp}`);
+check("the GM's scene:create landed", Boolean(tavern), JSON.stringify(scenes));
+
+aliceSock.emit('scene:activate', { sceneId: tavern.id });
+await sleep(300);
+let stage = await jf('/api/stage');
+check(
+  "a Player's scene:activate was refused — the stage stays inactive",
+  stage.activeScene === null,
+  JSON.stringify(stage)
+);
+
+// ============================================ 8. activation reaches every socket, and resets on delete
+console.log('\n--- scene:activate broadcasts to every socket; deleting the active Scene resets it live ---');
+gm.emit('scene:activate', { sceneId: tavern.id });
+await sleep(300);
+stage = await jf('/api/stage');
+check("the GM's scene:activate landed", stage.activeScene?.id === tavern.id, JSON.stringify(stage));
+check(
+  "Bob's own socket was told the stage changed (io.emit, not scoped)",
+  bobSock.stages.some((s) => s.activeScene?.id === tavern.id)
+);
+
+gm.emit('scene:delete', { sceneId: tavern.id });
+await sleep(300);
+stage = await jf('/api/stage');
+check('deleting the active Scene resets activeScene to null in the next REST read', stage.activeScene === null, JSON.stringify(stage));
+check(
+  'and the reset arrived live, over the socket, not just on the next fetch',
+  bobSock.stages.at(-1)?.activeScene === null,
+  JSON.stringify(bobSock.stages.at(-1))
+);
 
 console.log(failures === 0 ? '\nALL PASSED' : `\n${failures} FAILED`);
 gm.close();

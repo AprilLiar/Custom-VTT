@@ -4191,6 +4191,63 @@ tests: a GM's full upload → rename → delete round trip, a Player uploading t
 (cross-checked against the REST read, not just the DOM), and the updated empty-state assertions
 above. All passing across the same three device projects as Phases 1-2.
 
+### Phase 4 (implemented) — Scenes, activation, and the force-navigate cut
+
+`scene_folder:create/rename/delete` and `scene:create/update/set_folder/delete`, structurally
+identical to Phase 2's `temp_npc_folder:*`/`temp_npc:*` (promote-one-level-on-delete, GM-only
+server-enforced, the "absent picture means leave it alone" contract for `scene:update`'s optional
+backdrop). `scene:activate` is new: GM-only, writes `scene_state.active_scene_id`, then broadcasts
+`stage:updated` — a plain `io.emit`, no per-viewer redaction, matching decision #3's "the stage is
+public to everyone watching." A new `getStagePayload()` helper (`server/index.js`, beside
+`mayWriteScenePicture`) is the one place that builds `{ activeScene, summons: [] }`, called from
+`GET /api/stage` and from every write that can change it — `scene:activate` itself, `scene:delete`
+when the deleted Scene was the active one (its own `scene_state` FK is `ON DELETE SET NULL`, but the
+handler spells the reset out explicitly, matching this file's own house style), and `scene:update`
+when the *active* Scene's own backdrop just changed. `summons` stays `[]` until Phase 5 — the shape
+is settled now specifically so that phase only adds rows to an existing field, never changes what
+`stage:updated` carries.
+
+**The force-navigate listener** (decision #3) lives in `App.jsx`'s `Shell()`, not on `ScenePage.jsx`
+— it has to run before a Player's browser even gets to that component, since being cut there from
+anywhere else in the app is the entire point. A `useRef` sentinel tracks the last `activeScene?.id`
+this listener has personally seen **over the `stage:updated` socket event**, never seeded from a
+REST fetch — a page load or reconnect that happens to land while a Scene is already active must
+never navigate anyone on its own; only a live switch does, and `stage:updated` only ever fires for
+one. Diffs *only* `activeScene?.id`, exactly as Risk #1 in this section demanded: a later
+summon/un-summon (Phase 5) fires the same event with the same id and must not re-cut anyone, which
+is also what a Scene *rename* while it's the active one already proves today, ahead of summoning
+existing at all. A `null` id (nothing active, or the active Scene got deleted) never navigates
+anywhere — there is no Scene to cut to.
+
+`SceneListDrawer.jsx` (new), the right overlay on `ScenePage.jsx`'s canvas, mirroring
+`SceneCastDrawer`'s left-side structure — `FolderTreeNav` for the folder tree, a list of the current
+folder's Scenes, an inline "+ New" form — but with a click split neither existing drawer needed:
+**single-click activates** a Scene (the constant, cheap action), **double-click opens
+`SceneEditor.jsx`** (rename/backdrop/delete, the rare one). The active Scene's row is highlighted
+with a "Live" badge. `SceneEditor.jsx` mirrors `TempNpcEditor.jsx` (name field, `usePictureUpload` +
+the crop dialog + `fileToSceneBackground`, a delete button) minus the embedded
+`ScenePicturesEditor` — a Scene owns a backdrop, never Scene Pictures.
+
+`fileToSceneBackground` (`client/src/lib/image.js`) caps by **width**, not longest side, at 1600px —
+a backdrop is always meant to be read at real screen width, mirroring `fileToPortrait`'s own "cap at
+N wide" framing rather than `fileToScenePicture`'s. `ScenePage.jsx` now renders the active Scene's
+backdrop full-bleed (`object-cover`) via a new `useStage()` hook (`client/src/lib/useStage.js`) —
+fetch-once-then-subscribe, the `useRoster`-style convention, and deliberately NOT what the
+force-navigate listener uses (that one owns its own narrower, non-REST-seeded tracking, per above).
+An active Scene with no backdrop yet shows its name centered instead of a broken image.
+
+Verified: `npm run lint`, the full server suite (720/720, no schema changes this phase). Extended
+`scripts/playtest-scene.mjs` with a GM-only enforcement pass on every new Scene/scene-folder write,
+`scene:activate` reaching every socket live, and deleting the active Scene resetting `activeScene`
+to `null` live rather than only on the next fetch — 18/18 checks passing. `e2e-mobile/scene.spec.js`
+gained this suite's first two-viewer test (two real browser contexts, a GM and a Player, in one
+test — the force-navigate effect only exists as one role's action on the other's browser): the full
+checkpoint in one pass — first activation force-navigates a Player from their own sheet; a second
+activation re-cuts them in place, still on `/scene`; the Player leaves on their own; renaming the
+still-active Scene (Phase 5's summon/un-summon shape, simulated ahead of that phase existing) does
+not re-navigate them. Plus the now-standard Player-gate test for the new drawer. Manually confirmed
+in-browser that an uploaded backdrop actually paints full-bleed on the canvas once activated.
+
 ## Implementation Risks & Recommendations
 A scope check for whoever picks this up: this grew well past "semi-simple website" over the course of design. Most of it (dice, inventory, injuries, stances, perks, counters) is standard CRUD-plus-broadcast work. Combat Timing (Tics/Startup/reveal/overflow) is the one genuinely hard piece — real software complexity, not just more forms — and it's also the most original part of the system, which is exactly why it deserves the most care rather than being rushed alongside everything else.
 

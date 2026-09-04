@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Link, Navigate, Route, Routes, useLocation } from 'react-router-dom';
+import { Link, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import { Cog, Menu, Scroll, Search, Swords, Users, BookOpen, MessageSquare, Clapperboard } from 'lucide-react';
 import { RoleProvider, useRole } from './roleContext.jsx';
 import { socket } from './socket.js';
@@ -112,6 +112,33 @@ function Shell() {
     lastPath.current = location.pathname;
     if (!isDesktop) setChatOpen(false);
   }, [location.pathname, isDesktop]);
+
+  // Scene tab (decided, Phase 4): activating a Scene force-navigates every
+  // connected client straight to /scene, including the very first
+  // activation of the session — the whole "cinematic cut" the feature
+  // exists for. Diffs ONLY `activeScene?.id`, never the rest of the
+  // stage:updated payload: a later summon/un-summon (Phase 5) fires this
+  // same event with the SAME id, and re-navigating on every one of those
+  // would turn a cinematic cut into a constant, disorienting yank (Risk #1
+  // in the Scene tab plan). The ref starts at a sentinel rather than
+  // seeding from a REST fetch, so a page load or reconnect that happens to
+  // land while a Scene is already active never navigates anyone on its
+  // own — only a live switch does, which is exactly what a `stage:updated`
+  // SOCKET event means (nothing pushes it just to catch a client up).
+  // A `null` activeScene (nothing activated, or the active Scene got
+  // deleted) never navigates anywhere — there is no Scene to cut to.
+  const navigate = useNavigate();
+  const lastActiveSceneId = useRef(undefined);
+  useEffect(() => {
+    const onStageUpdated = (stage) => {
+      const id = stage?.activeScene?.id ?? null;
+      if (id === lastActiveSceneId.current) return;
+      lastActiveSceneId.current = id;
+      if (id != null) navigate('/scene', { replace: true });
+    };
+    socket.on('stage:updated', onStageUpdated);
+    return () => socket.off('stage:updated', onStageUpdated);
+  }, [navigate]);
 
   useEffect(() => {
     if (chatOpen) {
