@@ -4,7 +4,6 @@ import { ArrowLeft, EyeOff } from 'lucide-react';
 import { useIsDesktop, useIsLandscape } from '../lib/useMediaQuery.js';
 import { useRole } from '../roleContext.jsx';
 import { useStage } from '../lib/useStage.js';
-import { DRAWER_WIDTH } from '../lib/sceneLayout.js';
 import OrientationGate from './OrientationGate.jsx';
 import SceneCastDrawer from './SceneCastDrawer.jsx';
 import SceneListDrawer from './SceneListDrawer.jsx';
@@ -99,21 +98,16 @@ export default function ScenePage() {
           aria-hidden
         />
       )}
-      {/* A GM's own drawers sit directly over the canvas's left/right
-          edges — the same edges decision #3 wants a GM's own summons
-          entering from. Without insetting, a small right-side roster
-          would render entirely underneath SceneListDrawer, invisible and
-          unclickable behind it (see DRAWER_WIDTH's own comment). A Player
-          has no drawers, so their stage uses the full measured width.
-          Rendered regardless of `uiHidden` — the figures themselves are
-          the one thing cinematic mode never hides. */}
-      {stageWidth > 0 && (
-        <StageRoster
-          summons={summons}
-          stageWidth={role === 'gm' ? Math.max(0, stageWidth - DRAWER_WIDTH * 2) : stageWidth}
-          offsetX={role === 'gm' ? DRAWER_WIDTH : 0}
-        />
-      )}
+      {/* The whole measured canvas, full width, for every role — the
+          cinematic look with the interface hidden entirely (see
+          `uiHidden` below) is the benchmark this page is built to match,
+          so the figures are never narrowed to "the gap between the
+          drawers" the way an earlier pass had them for a GM. Artwork is
+          allowed to render behind the drawers on their own translucent
+          `bg-zinc-950/90` — intended, not a layout bug. Rendered
+          regardless of `uiHidden` — the figures themselves are the one
+          thing cinematic mode never hides. */}
+      {stageWidth > 0 && <StageRoster summons={summons} stageWidth={stageWidth} />}
       {!uiHidden && (
         <>
           {/* The one way off this route — App.jsx's chromeless branch

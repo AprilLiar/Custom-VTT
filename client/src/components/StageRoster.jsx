@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
-import { layoutStage, SLOT_WIDTH } from '../lib/sceneLayout.js';
+import { layoutStage } from '../lib/sceneLayout.js';
 
 // The stage itself (Scene tab plan, Phase 5: hard-cut positioning; Phase 6:
 // the entrance/exit motion). `summons` already arrives sorted `id DESC`
@@ -25,27 +25,35 @@ import { layoutStage, SLOT_WIDTH } from '../lib/sceneLayout.js';
 // motion.div at all — `initial` only plays once, on that figure's own
 // mount, keyed by `entry.id`, which never changes across a reflow.
 //
-// Bottom-anchored, `object-fit: contain` inside a fixed SLOT_WIDTH-wide,
-// `h-[85vh]`-tall box — image aspect ratio is deliberately not
-// `layoutStage`'s problem (see that file's own comment), so the framing
-// happens here instead. **Height is a fixed `h-`, not a `max-h` cap**: a
-// `max-h` alone leaves an image's rendered height driven by its own PNG's
-// own aspect ratio (auto, only ever clamped for an unusually tall one) —
-// bottoms lined up via `object-bottom`, but two characters uploaded at
-// different aspect ratios still had their heads land at different screen
-// heights. A fixed height turns that auto sizing into a real box every
-// image is scaled into via `object-fit: contain`, so any normal
-// standing-figure art (taller than the box's own aspect ratio, the
-// overwhelmingly common case) is height-bound and its top lands flush with
-// every other character's — width-bound art (unusually wide/short) still
-// centers with a gap above, which is the honest CSS limit short of a real
-// per-picture crop tool.
+// Bottom-anchored, **height-only** sizing — `h-screen` (the whole scene's
+// own height, the cinematic-no-UI look this page is designed around) with
+// width left to `auto`, rather than fitting into a fixed SLOT_WIDTH box.
+// This is the second attempt at lining up every character's own top edge:
+// the first tried a fixed-size BOX (`h-[85vh] w-full object-fit: contain`)
+// on the theory that most standing-figure art is taller than the box's own
+// narrow aspect ratio and would therefore be height-bound — wrong in
+// practice, since plenty of real art is closer to a portrait crop than a
+// full-body sprite, which `object-fit: contain` then fits by WIDTH inside
+// that box, leaving empty space above and a shorter-looking character.
+// Constraining only height sidesteps the whole question: every image is
+// scaled to the exact same height, full stop, with whatever width its own
+// aspect ratio produces — there is no second dimension left for
+// `object-fit` to negotiate, so every character's top is the SAME line by
+// construction, not by hoping their aspect ratios cooperate. This is a
+// pure rendering rule with no stored-per-picture state, so it applies
+// retroactively to every already-uploaded Scene Picture with no migration.
 //
-// `offsetX` shifts every figure right by that many px after layout —
-// ScenePage already narrowed `stageWidth` itself to the visible gap
-// between a GM's own drawers (see DRAWER_WIDTH), so `layoutStage` lays
-// out entirely within that narrower space starting at 0; this is just
-// what re-anchors 0 to where the gap actually starts on screen.
+// **The width this produces is not `layoutStage`'s SLOT_WIDTH** — that
+// constant is still exactly right for the horizontal SPACING/crowding math
+// (see that file's own comment: image aspect ratio was always deliberately
+// not its problem), but a character now routinely renders wider than it on
+// screen. That is intended, not a bug to square away: the whole point of
+// this pass is to stop treating the stage's own width as "the middle
+// strip between the drawers" and let artwork use the full canvas edge to
+// edge, bleeding behind the GM's drawers on the sides exactly as their own
+// `bg-zinc-950/90` translucency already implied it might. `layoutStage`
+// still receives the FULL measured stage width — see ScenePage, which no
+// longer narrows it or applies any offset.
 
 // Named variants, RoundCutscene.jsx's own vocabulary style: a plain object
 // of framer-motion keyframes/targets per name, rather than a switch full
@@ -61,7 +69,7 @@ const ENTER_RIGHT = { x: 140, opacity: 0 };
 const IDLE = { x: 0, opacity: 1 };
 const EXIT = { opacity: 0, scale: 0.85 };
 
-export default function StageRoster({ summons, stageWidth, offsetX = 0 }) {
+export default function StageRoster({ summons, stageWidth }) {
   const reduceMotion = useReducedMotion();
 
   const placed = useMemo(() => {
@@ -83,8 +91,14 @@ export default function StageRoster({ summons, stageWidth, offsetX = 0 }) {
         {placed.map((entry) => (
           <div
             key={entry.id}
+            // No `width` here any more — `entry.x` (layoutStage's own
+            // nominal-SLOT_WIDTH spacing) still anchors where a figure's
+            // LEFT edge sits, but how far its own art actually reaches
+            // right of that is now up to the image's own aspect ratio at
+            // a fixed height, not a column this div would otherwise clip
+            // it to.
             className="absolute bottom-0"
-            style={{ left: entry.x + offsetX, width: SLOT_WIDTH, zIndex: entry.z }}
+            style={{ left: entry.x, zIndex: entry.z }}
           >
             <motion.div
               initial={entry.side === 'left' ? ENTER_LEFT : ENTER_RIGHT}
@@ -95,7 +109,14 @@ export default function StageRoster({ summons, stageWidth, offsetX = 0 }) {
               <img
                 src={`data:${entry.image_mime_type || 'image/png'};base64,${entry.image_data}`}
                 alt={entry.name ?? ''}
-                className="block h-[85vh] w-full object-contain object-bottom"
+                // `max-w-none` overrides Tailwind's own preflight reset
+                // (`img { max-width: 100% }`, meant for ordinary inline
+                // images) — without it, a wide/short character's own
+                // render silently clamps back down to whatever "100%" of
+                // its auto-sized ancestor chain resolves to, defeating the
+                // whole height-only sizing rule above for exactly the
+                // aspect ratios it exists to fix.
+                className="block h-screen w-auto max-w-none"
               />
             </motion.div>
           </div>

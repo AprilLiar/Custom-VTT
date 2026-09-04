@@ -10,20 +10,19 @@
 // recently summoned member. The caller is responsible for pre-sorting each
 // side `scene_summons.id DESC` before calling this — this file only lays
 // out whatever order it's handed.
-export const SLOT_WIDTH = 220; // a picture's natural on-stage width, px
+export const SLOT_WIDTH = 220; // a picture's natural on-stage spacing unit, px
 export const SLOT_GAP = 16; // natural gap between neighbors when there's room to spare
 export const MIN_STEP_FACTOR = 0.35; // floor: a step never compresses past this fraction
 
-// A GM's own SceneCastDrawer/SceneListDrawer (`w-64` in both) sit directly
-// over the left/right edges of the canvas — the same edges decision #3
-// wants a GM's own summons entering from. Without accounting for that, a
-// small right-side roster renders entirely underneath SceneListDrawer,
-// invisible and unclickable behind it. The caller (ScenePage) is
-// responsible for subtracting this from the measured canvas width and
-// offsetting `x` by it for a GM — this constant only documents the number
-// both sides need to agree on, since Tailwind's `w-64` isn't otherwise
-// reachable from JS.
-export const DRAWER_WIDTH = 256;
+// `stageWidth` is always the FULL measured canvas — a GM's own
+// SceneCastDrawer/SceneListDrawer sit directly over its left/right edges,
+// and a summon is allowed to render behind them (both drawers' own
+// `bg-zinc-950/90` translucency already implied this was fine). An earlier
+// version had the caller narrow `stageWidth` by a `DRAWER_WIDTH` and shift
+// `x` to keep every summon clear of both drawers — removed: the cinematic,
+// no-UI view is this page's own look benchmark, and that view has no
+// drawers to avoid in the first place, so the layout underneath the
+// interface should already match it edge to edge.
 
 // left/right: arrays already ordered rank 0 = nearest that side's edge.
 // Returns each entry plus { x, z }, plus the shared compression factor

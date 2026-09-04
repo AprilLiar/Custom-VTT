@@ -435,26 +435,30 @@ test.describe('Scene tab: summoning and the stage roster (Phase 5)', () => {
     await page.getByText('Pose A', { exact: true }).click();
     await expect(liveBadge).toBeVisible();
 
-    // The GM's own summon renders inset from the drawers, never underneath
-    // SceneListDrawer (DRAWER_WIDTH's own fix) — a GM's summon always lands
-    // side 'right', so this is the side that can go missing behind it.
-    const rightEdge = await page.evaluate((n) => {
+    // Regression: the GM's own summon lays out against the FULL stage
+    // width now, not narrowed to the gap between the drawers — an earlier
+    // pass kept every summon clear of both drawers; this page's own
+    // cinematic-no-UI look is the benchmark now, and that view has no
+    // drawers to avoid, so pin the wrapper's `left` against the no-inset
+    // formula directly (stageWidth - SLOT_WIDTH, a GM's summon always
+    // landing side 'right').
+    const wrapperLeft = await page.evaluate((n) => {
       const img = Array.from(document.querySelectorAll('img')).find((i) => i.alt === n);
-      return img?.closest('.absolute.bottom-0')?.getBoundingClientRect().right;
+      return img?.closest('.absolute.bottom-0')?.getBoundingClientRect().left;
     }, `Summon Grunt ${stamp}`);
-    expect(rightEdge).not.toBeUndefined();
-    expect(rightEdge).toBeLessThanOrEqual(1280 - 256); // viewport width - DRAWER_WIDTH
+    expect(Math.abs(wrapperLeft - (1280 - 220))).toBeLessThan(2); // viewport width - SLOT_WIDTH
 
-    // Regression: the box is a fixed `h-[85vh]`, not a `max-h-[85vh]` cap —
-    // a cap would leave this 1x1 test PNG rendered at its own tiny natural
-    // size (letting every character's top land at a different height); a
-    // fixed height forces the same box regardless of the source image's
-    // own aspect ratio, which is what actually standardizes the tops.
+    // Regression: height is a fixed `h-screen` (the whole scene's own
+    // height), not a box `object-fit: contain` fits an image inside of —
+    // constraining only height, with width left `auto`, is what actually
+    // standardizes every character's top regardless of their own PNG's own
+    // aspect ratio (a fixed W×H box only aligns tops for art narrower than
+    // the box itself; plenty of real art isn't).
     const imgHeight = await page.evaluate((n) => {
       const img = Array.from(document.querySelectorAll('img')).find((i) => i.alt === n);
       return img?.getBoundingClientRect().height;
     }, `Summon Grunt ${stamp}`);
-    expect(Math.abs(imgHeight - 900 * 0.85)).toBeLessThan(2);
+    expect(Math.abs(imgHeight - 900)).toBeLessThan(2);
 
     // A different picture swaps in place, not a fresh summon.
     await page.getByText(`Summon Grunt ${stamp}`, { exact: true }).click();
@@ -495,8 +499,10 @@ test.describe('Scene tab: summoning and the stage roster (Phase 5)', () => {
     await page.locator('header a[href="/scene"]').click();
     await page.waitForURL(/\/scene/);
     // No drawers for a Player (SceneCastDrawer/SceneListDrawer are GM-only)
-    // — the dock needs no DRAWER_WIDTH inset the way the GM's own summons
-    // do, so a self-summon lands flush at x=0.
+    // — and a GM's own summons now use the same full-width layout with no
+    // inset either, so this is really pinning `layoutStage`'s own rank-0
+    // edge case, not anything Player-specific: a self-summon lands flush
+    // at x=0.
     await page.getByText('Summon yourself', { exact: true }).click();
     await page.getByText('me', { exact: true }).click();
     await expect(page.getByText('On stage', { exact: true })).toBeVisible();
