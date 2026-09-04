@@ -4019,14 +4019,14 @@ Two consequences, both load-bearing:
 either story. **The lesson is the one this project keeps relearning:** a chain of true facts
 is not a measurement. `server/test/relationshipsSchema.test.js` now pins the pragma itself.
 
-## Game mechanic — Scene tab (decided, new; Phase 1 implemented)
+## Game mechanic — Scene tab (decided, new; complete, all 6 phases shipped)
 
 A second "everyone's screen shows the same thing" surface, alongside the Combat Arena — but built
 for roleplay/downtime scenes rather than fighting: a GM-controlled fullscreen background picture
 ("a Scene") with characters' transparent-PNG art sliding on/off it as they're "summoned," in the
 visual language of a light novel or Foundry VTT's Theatre module rather than a battle map. Full
 design and phasing lives in the session plan this was built from; the decisions below are the ones
-that hold regardless of which phase is currently shipped.
+that held across every phase, from the first line of schema to the final motion pass.
 
 **Decisions, locked before any code was written:**
 
@@ -4101,10 +4101,11 @@ deletion, and copying the no-action pattern here would only make deleting a char
 Pictures fail for no reason. `DELETE /api/characters/:id` gained two explicit lines for the same
 belt-and-braces reason every other line in that handler is spelled out by hand.
 
-Phases 2-6 below (Temp NPCs, the upload pipeline, Scenes/activation/force-navigate, summoning,
-motion) each land as their own PR, ending in a deploy + playtest checkpoint, mirroring the
-Relationships board's own cadence — this section grows one `### Phase N` heading at a time as each
-one actually ships, rather than being stubbed out in advance.
+Phases 2-6 (Temp NPCs, the upload pipeline, Scenes/activation/force-navigate, summoning, motion)
+each landed as their own PR, ending in a deploy + playtest checkpoint, mirroring the Relationships
+board's own cadence — this section grew one `### Phase N` heading at a time as each one actually
+shipped, rather than being stubbed out in advance. All six are implemented; see Phase 6's own
+subsection below for the wrap-up.
 
 ### Phase 1 (implemented) — schema, the chromeless route, the orientation gate
 
@@ -4330,6 +4331,51 @@ a browser — the compression step matched `layoutStage`'s own formula to the pi
 exactly `0.5`, an `118px` step between every consecutive rank, rank 0 on each side flush against
 its edge) — the strongest confirmation available that the pure function and its wiring genuinely
 agree, not just each independently "look right."
+
+### Phase 6 (implemented) — the feel
+
+Mirrors the Relationships board's own "Phase 5 — the feel" sequencing (functional pieces first,
+motion after) and the plan's own final phase. Everything lives in `StageRoster.jsx` — no server
+changes, no new files.
+
+**The position/entrance split, `RelationshipNode.jsx`'s own pattern, applied here for the same
+reason.** Each figure is two elements: an outer plain `div` that owns POSITION (`left`, a bare
+number straight off `layoutStage`, recomputed every render as the roster reflows) and an inner
+`motion.div` that owns the ENTRANCE/EXIT slide. Risk #4 named this exact conflict ahead of time —
+had both lived on one element, framer-motion's own `animate` would compose `transform` itself and
+overwrite the position's `left`-driven layout on every reflow, snapping every figure back to its
+slide-in origin each time somebody else summoned or un-summoned. Split like this, a reposition
+never touches the motion.div at all: `initial` only plays once, on that figure's own mount, keyed
+by `entry.id` (the `scene_summons` row's own id), which never changes across a reflow.
+
+**Named variants, `RoundCutscene.jsx`'s own vocabulary style** — `ENTER_LEFT`/`ENTER_RIGHT`/`EXIT`,
+plain objects rather than a switch full of inline ones. Only two entrance directions: the side a
+summon is bound to (decision #3 — a Player's own summons always land `'left'`, a GM's always
+`'right'`) is exactly the direction its portrait slides in from, so the slide reads as the
+character stepping onto the stage from that edge. One `EXIT` for both sides — un-summoning reads as
+the picture simply leaving (fade + scale down), not as a reversed entrance, so it doesn't need its
+own side split. Mount/unmount animation (`AnimatePresence`, wrapping the roster's own `.map()`)
+handles the exit — without it, React would remove an un-summoned figure from the DOM immediately,
+with no chance for `EXIT` to ever play.
+
+**`useReducedMotion()`** gates the `transition` on the inner `motion.div` to `{ duration: 0 }`
+rather than removing `initial`/`animate` — the same choice `RelationshipNode.jsx` already made, and
+for the same reason: the target state is still reached in one render, which is what "collapses to
+instant" means in practice, without a second code path that could drift from the animated one.
+
+Verified: `npm run lint`, the full server suite (728/728 — no server changes this phase).
+`e2e-mobile/scene.spec.js` gained two tests: summoning a second character while the first is
+already on stage, confirming the first's own position actually changes (a real reflow, not a
+no-op) with zero page errors thrown — the practical proof that the split holds together, since a
+clobbered `transform` would either throw or leave the figure visibly stuck; and a reduced-motion
+smoke test (`test.use({ reducedMotion: 'reduce' })`) confirming a summon still lands correctly with
+no hang or error under that setting. Manually verified beyond what's committed: tracked one
+specific figure's `left` (matched by its own `img[alt]`, since DOM child order changes as rank 0
+shifts to whoever summoned most recently) before and after a second summon — it moved by exactly
+one natural step (`236px`, unchanged from Phase 5's own math), confirming the reflow and the motion
+code compose correctly through the real rendering pipeline, not just each in isolation.
+
+This is the last phase — the Scene tab, as originally scoped, is complete.
 
 ## Implementation Risks & Recommendations
 A scope check for whoever picks this up: this grew well past "semi-simple website" over the course of design. Most of it (dice, inventory, injuries, stances, perks, counters) is standard CRUD-plus-broadcast work. Combat Timing (Tics/Startup/reveal/overflow) is the one genuinely hard piece — real software complexity, not just more forms — and it's also the most original part of the system, which is exactly why it deserves the most care rather than being rushed alongside everything else.
