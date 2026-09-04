@@ -129,6 +129,40 @@ export function fileToScenePicture(file) {
   });
 }
 
+// A Scene's fullscreen backdrop (Scene tab plan, Phase 4). Capped by WIDTH,
+// not longest side, unlike fileToScenePicture above — a backdrop is always
+// meant to be landscape-ish and read at real screen width, so width is the
+// dimension that actually matters here (mirrors fileToPortrait's own "cap
+// at N wide" framing, just a much bigger N). PNG-preserving all the same,
+// on the off chance a GM composites a backdrop with real transparency.
+const SCENE_BACKGROUND_MAX_WIDTH = 1600;
+
+export function fileToSceneBackground(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('could not read file'));
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error('not a readable image'));
+      img.onload = () => {
+        const scale = Math.min(1, SCENE_BACKGROUND_MAX_WIDTH / img.width);
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.round(img.width * scale);
+        canvas.height = Math.round(img.height * scale);
+        canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+        const png = file.type === 'image/png';
+        const dataUrl = png ? canvas.toDataURL('image/png') : canvas.toDataURL('image/jpeg', 0.85);
+        resolve({
+          imageData: dataUrl.split(',')[1],
+          imageMimeType: png ? 'image/png' : 'image/jpeg',
+        });
+      };
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
 // Small square-ish art for Moves and Tells: cap the longest side at 128px,
 // keeping PNG (with transparency) when the source is PNG.
 export function fileToSmallImage(file) {

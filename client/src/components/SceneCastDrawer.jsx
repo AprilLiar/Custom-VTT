@@ -174,7 +174,14 @@ export default function SceneCastDrawer() {
               onDelete={(folderId) => socket.emit('temp_npc_folder:delete', { folderId })}
               onDropOnFolder={onDropTempNpcOnFolder}
               rootLabel="All Temp NPCs"
-              nounLabel="folder"
+              // Specific rather than the generic "folder" (Phase 2's
+              // original choice) — SceneListDrawer's own FolderTreeNav
+              // (Phase 4) sits right beside this one on the same page, and
+              // both used to render an identically-placeholdered "New
+              // folder" input, ambiguous to anything querying by it.
+              // Mirrors Compendium.jsx's own nounLabel="discipline" for the
+              // same reason, against CharacterList's plain "folder".
+              nounLabel="Temp NPC folder"
             />
             <div className="mt-2 space-y-1.5">
               {tempNpcsInFolder.map((npc) => (

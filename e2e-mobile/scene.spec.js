@@ -173,7 +173,9 @@ test.describe('Scene tab: the Temp NPC roster drawer (Phase 2)', () => {
   test.use({ viewport: { width: 1280, height: 900 } });
 
   test('GM: create, rename, and delete a Temp NPC folder and a Temp NPC', async ({ page }) => {
-    page.on('dialog', (dialog) => dialog.accept(dialog.type() === 'prompt' ? 'Renamed Folder' : undefined));
+    const stamp = Date.now();
+    const renamedFolder = `Renamed Folder ${stamp}`;
+    page.on('dialog', (dialog) => dialog.accept(dialog.type() === 'prompt' ? renamedFolder : undefined));
 
     await chooseGm(page);
     await goToScene(page);
@@ -183,39 +185,47 @@ test.describe('Scene tab: the Temp NPC roster drawer (Phase 2)', () => {
     await expect(page.getByText('Temp NPCs', { exact: true })).toBeVisible();
     await expect(page.getByText('Characters (NPCs)', { exact: true })).toBeVisible();
 
-    // Create a folder, then a Temp NPC filed inside it.
-    await page.getByPlaceholder('New folder').fill('Bandits');
-    await page.locator('form:has(input[placeholder="New folder"]) button[type="submit"]').click();
-    await expect(page.getByText('📁 Bandits')).toBeVisible();
-    await page.getByText('📁 Bandits').click();
+    // Create a folder, then a Temp NPC filed inside it. Both names are
+    // stamped — this suite's projects share one live dev server
+    // (playwright.config.js's reuseExistingServer), so a literal "Bandits"
+    // from two projects running this same test in an overlapping window
+    // would collide in that shared temp_npc_folders table, not just in
+    // this page's own DOM.
+    const folderName = `Bandits ${stamp}`;
+    await page.getByPlaceholder('New Temp NPC folder').fill(folderName);
+    await page.locator('form:has(input[placeholder="New Temp NPC folder"]) button[type="submit"]').click();
+    await expect(page.getByText(`📁 ${folderName}`, { exact: true })).toBeVisible();
+    await page.getByText(`📁 ${folderName}`, { exact: true }).click();
 
-    await page.getByPlaceholder('New Temp NPC').fill('Bandit Grunt');
+    const grunt = `Bandit Grunt ${stamp}`;
+    const captain = `Bandit Captain ${stamp}`;
+    await page.getByPlaceholder('New Temp NPC', { exact: true }).fill(grunt);
     await page.locator('form:has(input[placeholder="New Temp NPC"]) button[type="submit"]').click();
-    await expect(page.getByText('Bandit Grunt')).toBeVisible();
+    await expect(page.getByText(grunt, { exact: true })).toBeVisible();
 
     // Double-click opens the picture editor straight away (decision #9) —
     // rename through it, which is also this dialog's only write besides
     // delete, so it doubles as the tab's rename coverage.
-    await page.getByText('Bandit Grunt').dblclick();
+    await page.getByText(grunt, { exact: true }).dblclick();
     // GM-editable (TempNpcEditor always passes canEdit), so the empty
     // state is the "+ Add picture" tile — see the Scene Pictures tab's
     // own describe block above for the read-only wording's own coverage.
     await expect(page.getByText('+ Add picture', { exact: true })).toBeVisible();
-    await page.locator('input[value="Bandit Grunt"]').fill('Bandit Captain');
+    await page.locator(`input[value="${grunt}"]`).fill(captain);
     await page.getByRole('button', { name: 'Save' }).click();
-    await expect(page.getByRole('heading', { name: 'Bandit Captain' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: captain })).toBeVisible();
     await page.getByRole('button', { name: 'Close' }).click();
-    await expect(page.getByText('Bandit Captain')).toBeVisible();
+    await expect(page.getByText(captain, { exact: true })).toBeVisible();
 
     // Delete the Temp NPC, then the folder it was in.
-    await page.getByText('Bandit Captain').dblclick();
+    await page.getByText(captain, { exact: true }).dblclick();
     await page.getByRole('button', { name: 'Delete Temp NPC' }).click();
-    await expect(page.getByText('Bandit Captain')).toHaveCount(0);
+    await expect(page.getByText(captain, { exact: true })).toHaveCount(0);
 
     await page.locator('button[title="Rename"]').first().click();
-    await expect(page.getByText('📁 Renamed Folder')).toBeVisible();
+    await expect(page.getByText(`📁 ${renamedFolder}`, { exact: true })).toBeVisible();
     await page.locator('button[title="Delete"]').first().click();
-    await expect(page.getByText('📁 Renamed Folder')).toHaveCount(0);
+    await expect(page.getByText(`📁 ${renamedFolder}`, { exact: true })).toHaveCount(0);
   });
 
   test('a Player never sees the Temp NPC drawer', async ({ page }) => {
@@ -225,5 +235,96 @@ test.describe('Scene tab: the Temp NPC roster drawer (Phase 2)', () => {
     await goToScene(page);
     await expect(page.getByText('Temp NPCs', { exact: true })).toHaveCount(0);
     await expect(page.getByText('Characters (NPCs)', { exact: true })).toHaveCount(0);
+  });
+});
+
+test.describe('Scene tab: Scenes, activation, and the force-navigate cut (Phase 4)', () => {
+  test.use({ viewport: { width: 1280, height: 900 } });
+
+  // Two independent browser contexts standing in for a GM and a Player at
+  // the same table — this suite's first genuinely two-viewer test, because
+  // the thing being pinned (decision #3's force-navigate) only exists as an
+  // effect ONE role's action has on the OTHER role's browser. A single
+  // `page` fixture can't observe that.
+  //
+  // Deliberately cleans up (deactivates) the Scene it activates before
+  // returning, below — `scene_state` is a real singleton this whole suite
+  // shares across every project's own worker, all pointed at one dev
+  // server (playwright.config.js's `reuseExistingServer`). `stage:updated`
+  // is `io.emit`, by design (decision #3 again) — so while this test's
+  // Scene is active, ANY other Scene-tab test running concurrently in
+  // another project would also get force-navigated, mid-assertion. That is
+  // the feature working correctly, not a bug; if a *different* test flakes
+  // with a stray navigation while this one is mid-run, look here first.
+  test('activating a Scene force-navigates a Player from any page; a second activation re-cuts them in place; a same-Scene stage update does not re-navigate', async ({
+    browser,
+  }) => {
+    const gmContext = await browser.newContext();
+    const gmPage = await gmContext.newPage();
+    gmPage.on('dialog', (dialog) => dialog.accept());
+    const playerContext = await browser.newContext();
+    const playerPage = await playerContext.newPage();
+
+    const stamp = Date.now();
+    const name = `Scene Activate Spec PC ${stamp}`;
+    await gmPage.request.post('/api/characters', { data: { name, characterType: 'pc' } });
+
+    await chooseGm(gmPage);
+    await goToScene(gmPage);
+    await gmPage.getByPlaceholder('New Scene', { exact: true }).fill(`Tavern ${stamp}`);
+    await gmPage.locator('form:has(input[placeholder="New Scene"]) button[type="submit"]').click();
+    await gmPage.getByPlaceholder('New Scene', { exact: true }).fill(`Forest ${stamp}`);
+    await gmPage.locator('form:has(input[placeholder="New Scene"]) button[type="submit"]').click();
+    await expect(gmPage.getByRole('button', { name: new RegExp(`Tavern ${stamp}`) })).toBeVisible();
+
+    // The Player starts on their own sheet — anywhere but /scene.
+    await choosePlayer(playerPage, name);
+    await expect(playerPage).toHaveURL(/\/character\/\d+/);
+
+    // First activation: force-navigated, including this being the very
+    // first Scene ever activated (decision #3's own wording).
+    await gmPage.getByRole('button', { name: new RegExp(`Tavern ${stamp}`) }).click();
+    await expect(playerPage).toHaveURL(/\/scene/, { timeout: 5000 });
+
+    // Second activation: the Player, already on /scene, is re-cut in place
+    // — never bounced to another page and back.
+    await gmPage.getByRole('button', { name: new RegExp(`Forest ${stamp}`) }).click();
+    await playerPage.waitForTimeout(300);
+    await expect(playerPage).toHaveURL(/\/scene/);
+
+    // The Player leaves on their own. A stage:updated for the SAME active
+    // Scene (Phase 5's own summon/un-summon shape, simulated here by
+    // renaming the still-active Scene) must not re-navigate them — Risk #1
+    // in the Scene tab plan, diffing activeScene?.id and nothing else.
+    await playerPage.locator('a[title="Back to the Arena"]').click();
+    await expect(playerPage).toHaveURL(/\/combat/);
+
+    await gmPage.getByRole('button', { name: new RegExp(`Forest ${stamp}`) }).dblclick();
+    await gmPage.locator(`input[value="Forest ${stamp}"]`).fill(`Forest Renamed ${stamp}`);
+    await gmPage.getByRole('button', { name: 'Save' }).click();
+    await playerPage.waitForTimeout(500);
+    await expect(playerPage).toHaveURL(/\/combat/);
+
+    // Cleanup: deleting the still-active Scene resets scene_state to null
+    // (server-side, ON DELETE SET NULL plus this handler's own explicit
+    // reset — see server/index.js's scene:delete). scene_state is a
+    // singleton shared by the whole suite, so leaving a Scene active here
+    // would fail every other test's "No Scene active yet." assertion,
+    // depending only on run order.
+    await gmPage.getByRole('button', { name: 'Delete Scene' }).click();
+    await expect(gmPage.getByRole('button', { name: new RegExp(`Forest Renamed ${stamp}`) })).toHaveCount(0);
+    await gmPage.getByRole('button', { name: new RegExp(`Tavern ${stamp}`) }).dblclick();
+    await gmPage.getByRole('button', { name: 'Delete Scene' }).click();
+
+    await gmContext.close();
+    await playerContext.close();
+  });
+
+  test('a Player never sees the Scenes drawer', async ({ page }) => {
+    const name = `Scene List Gate PC ${Date.now()}`;
+    await page.request.post('/api/characters', { data: { name, characterType: 'pc' } });
+    await choosePlayer(page, name);
+    await goToScene(page);
+    await expect(page.getByText('Scenes', { exact: true })).toHaveCount(0);
   });
 });
