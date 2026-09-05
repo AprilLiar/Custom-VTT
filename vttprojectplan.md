@@ -4401,13 +4401,13 @@ stuck in portrait had no way off the chromeless `/scene` route short of physical
 device first. `ScenePage.jsx`'s corner link is now a shared `TopLeftControls` component rendered on
 both branches (the gate branch passes no `onHideUi`, so it renders just the back link).
 
-**Character-art tops didn't line up.** `StageRoster.jsx`'s figure `<img>` used `max-h-[85vh]` — a
-cap, not a fixed size — so a figure's rendered height followed its own PNG's own aspect ratio; two
-characters bottom-anchored via `object-bottom` at different aspect ratios still had their heads land
-at different screen heights. Changed to a fixed `h-[85vh]`: `object-fit: contain` now scales every
-image into the identical box, so any normal standing-figure art (taller than the box's own aspect
-ratio, the overwhelmingly common case) is height-bound and its top lands flush with every other
-character's.
+**Character-art tops didn't line up (first attempt, later superseded — see "Full-bleed stage" below).**
+`StageRoster.jsx`'s figure `<img>` used `max-h-[85vh]` — a cap, not a fixed size — so a figure's
+rendered height followed its own PNG's own aspect ratio; two characters bottom-anchored via
+`object-bottom` at different aspect ratios still had their heads land at different screen heights.
+First fix: a fixed `h-[85vh]` box with `w-full`/`object-fit: contain`, on the theory that most
+standing-figure art is taller than the box's own narrow aspect ratio and would end up height-bound.
+Playtesting immediately after this shipped showed that theory didn't hold for real art (see below).
 
 **Cinematic hide-UI toggle (new).** `ScenePage.jsx` gained a purely local (never socket-synced)
 `uiHidden` state: an "eye" button in `TopLeftControls`, next to the back link, hides every overlay
@@ -4431,12 +4431,52 @@ covered that the drawer's own click doesn't.
 Verified: `npm run lint`, the full server suite (728/728, no schema changes). `scripts/
 playtest-scene.mjs`'s own `stage:remove_summon`-specific checks were replaced with equivalent
 `stage:summon` re-select checks (ownership still refuses a non-owning Player, the GM's re-select
-still clears a PC's own seat) — 30/30 checks passing. `e2e-mobile/scene.spec.js`: the Phase 5 summon
-test's on-stage-remove assertions were replaced with a `getBoundingClientRect()`-based position
-check (still pinning the `DRAWER_WIDTH` fix, now via bounding box instead of a click target) and a
-fixed-height assertion (`85vh` of the 900px test viewport, regardless of the 1×1 test PNG's own
-aspect ratio); gained a new orientation-gate assertion (the corner link works while gated) and a new
-cinematic-toggle test (hiding clears every overlay control, a plain click anywhere restores them).
+still clears a PC's own seat) — 30/30 checks passing. `e2e-mobile/scene.spec.js` gained a new
+orientation-gate assertion (the corner link works while gated) and a new cinematic-toggle test
+(hiding clears every overlay control, a plain click anywhere restores them); the Phase 5 summon
+test's on-stage-remove assertions became a plain position/height check, further reworked by the
+next fix below.
+
+**Full-bleed stage: the whole screen is the working surface, and heights are lined up by height
+alone.** Two more rounds of playtesting, right after the two fixes above shipped:
+
+1. A GM's own summons were still confined to "the gap between the drawers" — `ScenePage.jsx`
+   narrowed `stageWidth` by `DRAWER_WIDTH * 2` and shifted `x` by `DRAWER_WIDTH` (Phase 5's own fix
+   for a different problem: keeping the on-stage remove button, since removed above, reachable).
+   The actual ask is the opposite: the cinematic no-UI view (`uiHidden` above) is this page's own
+   look benchmark, and that view has no drawers to dodge, so the layout underneath the interface
+   should already match it — artwork bleeding behind a GM's drawers on their own translucent
+   `bg-zinc-950/90` is intended, not a bug. Removed `DRAWER_WIDTH` entirely (`sceneLayout.js`,
+   `ScenePage.jsx`, `StageRoster.jsx`) — `layoutStage` now always receives the full measured canvas
+   width, for either role, with no offset.
+2. The `h-[85vh]`/`w-full`/`object-fit: contain` box from the fix above turned out not to line up
+   real art's tops at all: `object-fit: contain` only lands an image flush against the box's own top
+   when the image is height-bound (taller, proportionally, than the box), and a box as narrow as
+   `SLOT_WIDTH` (220px) against `85vh` tall is an unusually extreme aspect ratio — most real art,
+   closer to a portrait crop than a full-body sprite, is WIDTH-bound instead, landing short with a
+   gap above. Replaced with height-ONLY sizing: `h-screen` (using the whole scene height, per the
+   ask) with `w-auto` — every image is scaled to the exact same height, full stop, with whatever
+   width its own aspect ratio produces, so there is no second box dimension left for `object-fit` to
+   negotiate and every top lands on the same line by construction. Also needed `max-w-none`:
+   Tailwind's own preflight resets `img { max-width: 100% }` for ordinary inline images, which
+   silently re-clamped a wide/short character's width back down despite `w-auto`, discovered only
+   by measuring an intentionally extreme 500×150 test image's rendered box in a real browser (900px
+   tall on a 900px-tall viewport, but its width capped at ~220px instead of the ~3000px the aspect
+   ratio implied, until `max-w-none` was added). This is a pure rendering rule, not stored per
+   picture, so it applies retroactively to every already-uploaded Scene Picture with no migration —
+   `SLOT_WIDTH` itself is untouched, since it was always the horizontal SPACING unit for
+   `layoutStage`'s own crowding math, never a clipping box for the art (see that file's own comment).
+
+Verified: `npm run lint`, the full server suite (728/728, unaffected — pure client rendering, no
+server changes). `scripts/playtest-scene.mjs` (30/30, unaffected — layout-agnostic). `e2e-mobile/
+scene.spec.js`'s Phase 5 summon test: the drawer-avoidance position check became a no-inset check
+(the wrapper's `left` now pins against `stageWidth - SLOT_WIDTH` directly, no `DRAWER_WIDTH`
+subtracted), and the fixed-height assertion moved from `85vh` to the full `900px` test viewport
+height. Manually verified beyond what's committed: a throwaway script summoned two Temp NPCs with
+deliberately mismatched synthetic art (100×500 and 500×150) and measured both in a real browser —
+both landed at `top: 0, bottom: 900` despite one rendering 180px wide and the other 3000px, directly
+confirming the height-only rule holds regardless of aspect ratio, plus a screenshot confirming the
+wide figure visibly extends behind the Scenes drawer rather than stopping short of it.
 
 ## Implementation Risks & Recommendations
 A scope check for whoever picks this up: this grew well past "semi-simple website" over the course of design. Most of it (dice, inventory, injuries, stances, perks, counters) is standard CRUD-plus-broadcast work. Combat Timing (Tics/Startup/reveal/overflow) is the one genuinely hard piece — real software complexity, not just more forms — and it's also the most original part of the system, which is exactly why it deserves the most care rather than being rushed alongside everything else.
