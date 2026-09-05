@@ -12,36 +12,59 @@ import { layoutStage } from '../lib/sceneLayout.js';
 //
 // **Two elements per figure, because two things want `transform`** — the
 // exact conflict RelationshipNode.jsx already hit and documented. The
-// outer plain `div` owns POSITION: `left` is a bare number straight off
+// outer plain `div` owns POSITION: `entry.x` is a bare number straight off
 // `layoutStage`, recomputed on every render as the roster reflows, and it
 // stays a plain CSS property rather than anything framer-motion touches.
 // The inner `motion.div` owns the ENTRANCE/EXIT slide — if that lived on
 // the SAME element as the position, framer-motion's own `animate` would
-// compose `transform` itself and overwrite the position's `left`-driven
-// layout on every reflow, snapping every figure back to its slide-in
-// origin each time somebody else summoned or un-summoned (the exact bug
+// compose `transform` itself and overwrite the position's layout on every
+// reflow, snapping every figure back to its slide-in origin each time
+// somebody else summoned or un-summoned (the exact bug
 // RelationshipNode.jsx's own comment describes). Split like this, a
-// reposition (a plain re-render with a new `left`) never touches the
+// reposition (a plain re-render with a new `x`) never touches the
 // motion.div at all — `initial` only plays once, on that figure's own
 // mount, keyed by `entry.id`, which never changes across a reflow.
 //
-// Bottom-anchored, **height-only** sizing — `h-screen` (the whole scene's
-// own height, the cinematic-no-UI look this page is designed around) with
-// width left to `auto`, rather than fitting into a fixed SLOT_WIDTH box.
-// This is the second attempt at lining up every character's own top edge:
-// the first tried a fixed-size BOX (`h-[85vh] w-full object-fit: contain`)
-// on the theory that most standing-figure art is taller than the box's own
-// narrow aspect ratio and would therefore be height-bound — wrong in
-// practice, since plenty of real art is closer to a portrait crop than a
-// full-body sprite, which `object-fit: contain` then fits by WIDTH inside
-// that box, leaving empty space above and a shorter-looking character.
-// Constraining only height sidesteps the whole question: every image is
-// scaled to the exact same height, full stop, with whatever width its own
-// aspect ratio produces — there is no second dimension left for
-// `object-fit` to negotiate, so every character's top is the SAME line by
-// construction, not by hoping their aspect ratios cooperate. This is a
-// pure rendering rule with no stored-per-picture state, so it applies
-// retroactively to every already-uploaded Scene Picture with no migration.
+// **`entry.x` is applied as `left` on the left side and `right` on the
+// right** — never `left` for both. A right-side figure used to get an
+// absolute `left` computed from `stageWidth - SLOT_WIDTH`, which only
+// actually lands flush against the screen's own right edge when the
+// figure renders at exactly `SLOT_WIDTH` wide. Once rendering stopped
+// clipping figures to that nominal width (below), a right-side figure
+// wider than `SLOT_WIDTH` had its TRUE right edge land past the screen's
+// own edge — not bleeding behind a drawer as intended, but off the canvas
+// entirely, on any device. Anchoring with CSS `right` instead makes the
+// browser align flush to the true edge regardless of how wide the image
+// actually renders — the figure can only grow further LEFT (into the
+// drawer, still intended), never further right (off-screen).
+//
+// Bottom-anchored, **height-only** sizing — `h-[70dvh]` with width left to
+// `auto`, rather than fitting into a fixed SLOT_WIDTH box. This is the
+// second attempt at lining up every character's own top edge: the first
+// tried a fixed-size BOX (`h-[85vh] w-full object-fit: contain`) on the
+// theory that most standing-figure art is taller than the box's own narrow
+// aspect ratio and would therefore be height-bound — wrong in practice,
+// since plenty of real art is closer to a portrait crop than a full-body
+// sprite, which `object-fit: contain` then fits by WIDTH inside that box,
+// leaving empty space above and a shorter-looking character. Constraining
+// only height sidesteps the whole question: every image is scaled to the
+// exact same height, full stop, with whatever width its own aspect ratio
+// produces — there is no second dimension left for `object-fit` to
+// negotiate, so every character's top is the SAME line by construction,
+// not by hoping their aspect ratios cooperate. This is a pure rendering
+// rule with no stored-per-picture state, so it applies retroactively to
+// every already-uploaded Scene Picture with no migration.
+//
+// **`dvh`, not `vh` — and 70, not 100.** A plain `vh` unit on mobile Safari
+// is pinned to the LARGEST possible viewport (address bar collapsed), not
+// the currently-visible one — so `h-screen` (100vh) rendered every figure
+// taller than the space actually visible while the address bar was still
+// showing, pushing heads up above the top of the real, visible screen.
+// `dvh` (already this app's own convention for exactly this problem — see
+// GmToolsWidget/Compendium/DialogShell's own `dvh` dialogs) tracks the
+// CURRENT visible viewport instead, and backing off from 100 to 70 leaves
+// real headroom on top of that for good measure, rather than trusting the
+// browser chrome's height to be accounted for down to the pixel.
 //
 // **The width this produces is not `layoutStage`'s SLOT_WIDTH** — that
 // constant is still exactly right for the horizontal SPACING/crowding math
@@ -91,14 +114,14 @@ export default function StageRoster({ summons, stageWidth }) {
         {placed.map((entry) => (
           <div
             key={entry.id}
-            // No `width` here any more — `entry.x` (layoutStage's own
-            // nominal-SLOT_WIDTH spacing) still anchors where a figure's
-            // LEFT edge sits, but how far its own art actually reaches
-            // right of that is now up to the image's own aspect ratio at
+            // No `width` here — how far a figure's own art reaches from
+            // its anchored edge is up to the image's own aspect ratio at
             // a fixed height, not a column this div would otherwise clip
-            // it to.
+            // it to. Anchored by `left` OR `right` (never both, never the
+            // wrong one) — see this file's own top comment for why a
+            // right-side figure can't safely use `left` any more.
             className="absolute bottom-0"
-            style={{ left: entry.x, zIndex: entry.z }}
+            style={{ [entry.side === 'left' ? 'left' : 'right']: entry.x, zIndex: entry.z }}
           >
             <motion.div
               initial={entry.side === 'left' ? ENTER_LEFT : ENTER_RIGHT}
@@ -116,7 +139,7 @@ export default function StageRoster({ summons, stageWidth }) {
                 // its auto-sized ancestor chain resolves to, defeating the
                 // whole height-only sizing rule above for exactly the
                 // aspect ratios it exists to fix.
-                className="block h-screen w-auto max-w-none"
+                className="block h-[70dvh] w-auto max-w-none"
               />
             </motion.div>
           </div>

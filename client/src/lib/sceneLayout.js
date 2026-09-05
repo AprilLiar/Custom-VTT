@@ -28,6 +28,23 @@ export const MIN_STEP_FACTOR = 0.35; // floor: a step never compresses past this
 // Returns each entry plus { x, z }, plus the shared compression factor
 // itself (worth exposing — Phase 6's motion pass and any future debugging
 // both want to know how crammed the stage currently is).
+//
+// **`x` is a distance from the entry's OWN edge, not an absolute
+// left-based coordinate** — 0 at rank 0, growing inward for higher ranks,
+// identically for both sides. The caller applies it as CSS `left` for the
+// left side and CSS `right` for the right side (see StageRoster.jsx). This
+// used to be `stageWidth - SLOT_WIDTH` for the right side's rank 0 — an
+// absolute `left` position that only actually landed flush against the
+// true right edge when a character rendered at exactly `SLOT_WIDTH` wide.
+// Once rendering stopped clipping every figure to that nominal width (see
+// StageRoster.jsx's own comment), a right-side character wider than
+// `SLOT_WIDTH` had its true right edge land PAST the screen's own right
+// edge — not bleeding behind the drawer as intended, but off the canvas
+// entirely, on any screen. Anchoring from the entry's own edge instead
+// sidesteps the problem: the browser aligns flush to that edge regardless
+// of how wide the image actually renders, so a right-side character can
+// only ever grow further LEFT (into the drawer, still intended), never
+// further right (off the actual screen).
 export function layoutStage({ left, right, stageWidth }) {
   const n = left.length + right.length;
   const naturalStep = SLOT_WIDTH + SLOT_GAP;
@@ -40,7 +57,6 @@ export function layoutStage({ left, right, stageWidth }) {
       ? 1
       : Math.max(MIN_STEP_FACTOR, (stageWidth - SLOT_WIDTH) / ((n - 1) * naturalStep));
   const step = naturalStep * factor;
-  const place = (side, edgeX, sign) =>
-    side.map((entry, rank) => ({ ...entry, x: edgeX + sign * rank * step, z: side.length - rank }));
-  return { left: place(left, 0, 1), right: place(right, stageWidth - SLOT_WIDTH, -1), factor };
+  const place = (side) => side.map((entry, rank) => ({ ...entry, x: rank * step, z: side.length - rank }));
+  return { left: place(left), right: place(right), factor };
 }
