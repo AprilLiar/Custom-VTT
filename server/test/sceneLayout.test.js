@@ -25,7 +25,10 @@ test('room to spare: factor is exactly 1, spacing is exactly natural', () => {
   assert.equal(factor, 1);
   assert.equal(left[0].x, 0);
   assert.equal(left[1].x, SLOT_WIDTH + SLOT_GAP);
-  assert.equal(right[0].x, 2000 - SLOT_WIDTH);
+  // A distance from the RIGHT edge, not an absolute left-based coordinate
+  // — see sceneLayout.js's own comment on why the caller applies this as
+  // CSS `right`, not `left`.
+  assert.equal(right[0].x, 0);
 });
 
 test('a single character on stage always gets factor 1, regardless of stage width', () => {
@@ -39,7 +42,7 @@ test('rank 0 on each side is always exactly at its own screen edge, at any crowd
   const right = Array.from({ length: 9 }, (_, i) => entry(`r${i}`));
   const { left: placedLeft, right: placedRight } = layoutStage({ left, right, stageWidth: 900 });
   assert.equal(placedLeft[0].x, 0);
-  assert.equal(placedRight[0].x, 900 - SLOT_WIDTH);
+  assert.equal(placedRight[0].x, 0); // distance from ITS OWN (the right) edge
 });
 
 test('consecutive ranks on the same side never collide, even heavily crammed', () => {
@@ -105,4 +108,32 @@ test('z-order ranks each side back-to-front, rank 0 (the newest, at the edge) on
   assert.equal(left[0].z, 3);
   assert.equal(left[1].z, 2);
   assert.equal(left[2].z, 1);
+});
+
+// Regression: the right side's `x` used to be an absolute left-based
+// coordinate (`stageWidth - SLOT_WIDTH`), which only actually landed a
+// figure flush against the screen's own right edge when it rendered at
+// exactly SLOT_WIDTH wide — anything wider (StageRoster.jsx no longer
+// clips to that width) spilled past the true right edge of the screen
+// entirely, not just behind a drawer. `x` is now a distance from the
+// entry's OWN edge for both sides — identical to the left side's own
+// values — so the caller can apply it as CSS `right` and let the browser
+// anchor flush regardless of a figure's actual rendered width.
+test("a right-side entry's x is a distance from ITS OWN edge, not an absolute left-based coordinate", () => {
+  const right = [entry('newest'), entry('older')];
+  // Rank 0 is flush against its own edge — distance 0 — at any stage
+  // width, unlike the old `stageWidth - SLOT_WIDTH` formula this replaced.
+  assert.equal(layoutStage({ left: [], right, stageWidth: 400 }).right[0].x, 0);
+  assert.equal(layoutStage({ left: [], right, stageWidth: 4000 }).right[0].x, 0);
+  // And at a SHARED stage width, it matches the left side's own values
+  // exactly, rank for rank — both sides are symmetric distances from
+  // their own edge now, so the same compression factor produces the same
+  // steps on both sides.
+  const { left, right: mirroredRight } = layoutStage({
+    left: [entry('a'), entry('b')],
+    right: [entry('c'), entry('d')],
+    stageWidth: 900,
+  });
+  assert.equal(mirroredRight[0].x, left[0].x);
+  assert.equal(mirroredRight[1].x, left[1].x);
 });

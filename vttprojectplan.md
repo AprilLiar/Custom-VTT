@@ -4478,6 +4478,46 @@ both landed at `top: 0, bottom: 900` despite one rendering 180px wide and the ot
 confirming the height-only rule holds regardless of aspect ratio, plus a screenshot confirming the
 wide figure visibly extends behind the Scenes drawer rather than stopping short of it.
 
+**Two real-device bugs the full-bleed pass above introduced, caught from an actual production
+screenshot rather than any of the above (both of the above were verified on desktop-sized headless
+Chromium, which never exercises either failure mode):**
+
+1. **A wide right-side character overflowed past the true right edge of the screen — not bleeding
+   behind a drawer, but off the canvas entirely, on a real phone.** The right side's `x` was still an
+   absolute `left`-based coordinate (`stageWidth - SLOT_WIDTH`) applied as CSS `left`, a leftover from
+   before this pass — that formula only actually lands a figure flush against the screen's own right
+   edge when it renders at exactly `SLOT_WIDTH` wide, which is no longer guaranteed now that
+   rendering doesn't clip to that width. Fixed at the root: `layoutStage`'s `x` is now a distance from
+   the entry's OWN edge for both sides (0 at rank 0, growing inward) — identical values on both sides,
+   no longer `stageWidth`-dependent for the right side's own anchor point — and the caller
+   (`StageRoster.jsx`) applies it as CSS `right` for a right-side entry instead of `left`. The browser
+   now aligns flush to the true edge regardless of how wide the image actually renders; a figure can
+   still grow further left into the drawer (intended), never further right off-screen (the bug).
+   `server/test/sceneLayout.test.js`'s two `stageWidth - SLOT_WIDTH` assertions became `0`, and a new
+   test pins that a right-side entry's `x` no longer depends on `stageWidth` at all.
+2. **`h-screen` (100vh) rendered every figure taller than what was actually visible on a real phone.**
+   Plain `vh` on mobile Safari is pinned to the LARGEST possible viewport (address bar fully
+   collapsed), not the currently-visible one — so a figure sized to `100vh` while the address bar was
+   still showing had its top pushed up above the real, visible top of the screen. Changed to
+   `h-[70dvh]`: `dvh` (already this app's own convention for exactly this problem — see
+   GmToolsWidget/Compendium/DialogShell's own `dvh` dialogs) tracks the current visible viewport
+   instead of the chrome-collapsed one, and dropping from 100 to 70 leaves real headroom on top of
+   that rather than trusting the browser chrome's own height down to the pixel — the user's own
+   request, verbatim.
+
+Verified: `npm run lint`, the full server suite (729/729 — one new `sceneLayout` test, no schema
+changes). `scripts/playtest-scene.mjs` (30/30, unaffected). `e2e-mobile/scene.spec.js`'s Phase 5
+summon test: the position check now asserts the wrapper's actual right edge sits flush against the
+true viewport edge (`getBoundingClientRect().right`), not an inset formula; the height assertion
+moved from the full test-viewport height to 70% of it. The Phase 6 reflow test's own `stageFigureLeft`
+helper (GM summons, always side 'right' — it was reading a `.style.left` that no longer exists on
+those figures) was renamed `stageFigureOffset` and reads whichever of `left`/`right` is actually set.
+Manually verified beyond what's committed: a throwaway script summoned a deliberately extreme
+600×150 image on a GM's own (right) side and measured it in a real browser — landed at `right: 1280`
+(exactly the 1280px viewport's own true edge, confirming no overflow) and `height: 630, top: 270`
+(exactly 70% of a 900px viewport, with the remaining 30% left clear at the top) — both numbers
+confirming the fix rather than merely "looking right" in a screenshot.
+
 ## Implementation Risks & Recommendations
 A scope check for whoever picks this up: this grew well past "semi-simple website" over the course of design. Most of it (dice, inventory, injuries, stances, perks, counters) is standard CRUD-plus-broadcast work. Combat Timing (Tics/Startup/reveal/overflow) is the one genuinely hard piece — real software complexity, not just more forms — and it's also the most original part of the system, which is exactly why it deserves the most care rather than being rushed alongside everything else.
 

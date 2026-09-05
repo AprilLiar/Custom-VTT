@@ -435,30 +435,35 @@ test.describe('Scene tab: summoning and the stage roster (Phase 5)', () => {
     await page.getByText('Pose A', { exact: true }).click();
     await expect(liveBadge).toBeVisible();
 
-    // Regression: the GM's own summon lays out against the FULL stage
-    // width now, not narrowed to the gap between the drawers — an earlier
-    // pass kept every summon clear of both drawers; this page's own
-    // cinematic-no-UI look is the benchmark now, and that view has no
-    // drawers to avoid, so pin the wrapper's `left` against the no-inset
-    // formula directly (stageWidth - SLOT_WIDTH, a GM's summon always
-    // landing side 'right').
-    const wrapperLeft = await page.evaluate((n) => {
+    // Regression: a GM's summon (always side 'right') is anchored by CSS
+    // `right`, not an absolute `left` computed from `stageWidth -
+    // SLOT_WIDTH` — that formula only actually landed flush against the
+    // screen's true right edge when a figure rendered at exactly
+    // SLOT_WIDTH wide, and this app's own real art routinely doesn't (see
+    // sceneLayout.js's own comment). Pin the wrapper's actual right edge
+    // against the true viewport edge directly, which is what CSS `right:
+    // 0` guarantees regardless of the image's own rendered width.
+    const wrapperRight = await page.evaluate((n) => {
       const img = Array.from(document.querySelectorAll('img')).find((i) => i.alt === n);
-      return img?.closest('.absolute.bottom-0')?.getBoundingClientRect().left;
+      return img?.closest('.absolute.bottom-0')?.getBoundingClientRect().right;
     }, `Summon Grunt ${stamp}`);
-    expect(Math.abs(wrapperLeft - (1280 - 220))).toBeLessThan(2); // viewport width - SLOT_WIDTH
+    expect(Math.abs(wrapperRight - 1280)).toBeLessThan(2); // the viewport's own true right edge
 
-    // Regression: height is a fixed `h-screen` (the whole scene's own
-    // height), not a box `object-fit: contain` fits an image inside of —
-    // constraining only height, with width left `auto`, is what actually
-    // standardizes every character's top regardless of their own PNG's own
-    // aspect ratio (a fixed W×H box only aligns tops for art narrower than
-    // the box itself; plenty of real art isn't).
+    // Regression: height is a fixed `h-[70dvh]`, not a box `object-fit:
+    // contain` fits an image inside of — constraining only height, with
+    // width left `auto`, is what actually standardizes every character's
+    // top regardless of their own PNG's own aspect ratio (a fixed W×H box
+    // only aligns tops for art narrower than the box itself; plenty of
+    // real art isn't). 70, not 100: mobile Safari's `vh` is pinned to the
+    // browser chrome-collapsed viewport, not the currently-visible one, so
+    // `dvh` plus a safety margin below 100 keeps every figure's top inside
+    // the space that's actually visible (this headless run has no dynamic
+    // browser chrome, so `dvh` here just equals the plain viewport height).
     const imgHeight = await page.evaluate((n) => {
       const img = Array.from(document.querySelectorAll('img')).find((i) => i.alt === n);
       return img?.getBoundingClientRect().height;
     }, `Summon Grunt ${stamp}`);
-    expect(Math.abs(imgHeight - 900)).toBeLessThan(2);
+    expect(Math.abs(imgHeight - 900 * 0.7)).toBeLessThan(2);
 
     // A different picture swaps in place, not a fresh summon.
     await page.getByText(`Summon Grunt ${stamp}`, { exact: true }).click();
@@ -523,10 +528,14 @@ test.describe('Scene tab: summoning and the stage roster (Phase 5)', () => {
 // alt> to the owner's name — StageRoster sets alt={entry.name}, and this
 // is more robust than indexing into the roster's children, whose DOM order
 // changes as summons come and go (rank 0, the newest, is always first).
-async function stageFigureLeft(page, name) {
+// Reads whichever of `left`/`right` StageRoster actually set (never both —
+// see that file's own comment on why a right-side figure is anchored by
+// `right`, not `left`), so this works for a summon on either side.
+async function stageFigureOffset(page, name) {
   return page.evaluate((n) => {
     const img = Array.from(document.querySelectorAll('img')).find((i) => i.alt === n);
-    return img?.closest('.absolute.bottom-0')?.style.left;
+    const style = img?.closest('.absolute.bottom-0')?.style;
+    return style && (style.left || style.right);
   }, name);
 }
 
@@ -561,8 +570,8 @@ test.describe('Scene tab: the stage\'s motion pass (Phase 6)', () => {
     await page.getByText('pose', { exact: true }).click();
     // Both are GM summons — same side ('right') — so A is alone on stage
     // first, flush against its edge.
-    await expect.poll(() => stageFigureLeft(page, `ReflowA ${stamp}`)).not.toBe(undefined);
-    const leftBefore = await stageFigureLeft(page, `ReflowA ${stamp}`);
+    await expect.poll(() => stageFigureOffset(page, `ReflowA ${stamp}`)).not.toBe(undefined);
+    const offsetBefore = await stageFigureOffset(page, `ReflowA ${stamp}`);
 
     await page.getByText(`ReflowB ${stamp}`, { exact: true }).click();
     await page.getByText('pose', { exact: true }).click();
@@ -570,7 +579,7 @@ test.describe('Scene tab: the stage\'s motion pass (Phase 6)', () => {
     // The position/entrance split (see StageRoster's own comment) is what
     // makes this a clean reposition rather than A snapping back to its own
     // slide-in origin and replaying the entrance.
-    await expect.poll(() => stageFigureLeft(page, `ReflowA ${stamp}`)).not.toBe(leftBefore);
+    await expect.poll(() => stageFigureOffset(page, `ReflowA ${stamp}`)).not.toBe(offsetBefore);
 
     expect(errors).toEqual([]);
 
