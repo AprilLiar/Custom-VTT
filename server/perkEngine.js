@@ -294,6 +294,19 @@ export async function perkAllowsRevealedDetail(characterId, extra = {}) {
   return false;
 }
 
+// Whether this character may learn or use any Move regardless of its Style
+// requirement (Endless Possibilities). OR-ed: any one Perk saying yes is a yes.
+export async function perkBypassesStyleRequirement(characterId, extra = {}) {
+  const granted = await perkDefinitionsFor(characterId);
+  const withSeam = granted.filter((g) => typeof g.definition.bypassesStyleRequirement === 'function');
+  if (!withSeam.length) return false;
+  const ctx = await seamContext(characterId, extra);
+  for (const { definition, characterPerkId } of withSeam) {
+    if (await definition.bypassesStyleRequirement({ ...ctx, characterPerkId })) return true;
+  }
+  return false;
+}
+
 // The shared shape of every numeric seam that just sums: ask each granted Perk,
 // truncate, add up. Written once rather than five near-identical loops, because
 // five copies is how one of them quietly stops truncating.

@@ -249,6 +249,10 @@ export const SEAMS = [
   // touched at all, which is why the engine narrates a stopped Stat with its own
   // `damage_shrugged` event rather than quietly reducing the blow.
   'statDamageThreshold',
+  // (ctx) -> boolean. OR-ed. Whether this character may learn or use any Move
+  // regardless of its Style requirement (Endless Possibilities) — their own
+  // stance still stands for everything else a Style governs.
+  'bypassesStyleRequirement',
 ];
 
 // Tier-3 lifecycle keys — not seams (they are not folded across Perks, each
@@ -274,6 +278,7 @@ import baronOfSuffering from './baronOfSuffering.js';
 import corneredAnimal from './corneredAnimal.js';
 import deadlyPendulum from './deadlyPendulum.js';
 import dogfighter from './dogfighter.js';
+import endlessPossibilities from './endlessPossibilities.js';
 import eyeCatcher from './eyeCatcher.js';
 import pathToMasteryDurability from './pathToMasteryDurability.js';
 import pathToMasterySpeed from './pathToMasterySpeed.js';
@@ -304,6 +309,7 @@ import yamazakiBlackBones from './yamazakiBlackBones.js';
 
 const DEFINITIONS = [
   geniusObserver,
+  endlessPossibilities,
   corneredAnimal,
   secondWind,
   ironSkin,

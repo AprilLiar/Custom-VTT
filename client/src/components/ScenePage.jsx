@@ -4,6 +4,12 @@ import { ArrowLeft, EyeOff } from 'lucide-react';
 import { useIsDesktop, useIsLandscape } from '../lib/useMediaQuery.js';
 import { useRole } from '../roleContext.jsx';
 import { useStage } from '../lib/useStage.js';
+import {
+  loadSceneHeightScale,
+  loadSceneGapScale,
+  loadSceneSizeScale,
+  loadSceneShowNameplates,
+} from '../lib/sceneSettings.js';
 import OrientationGate from './OrientationGate.jsx';
 import SceneCastDrawer from './SceneCastDrawer.jsx';
 import SceneListDrawer from './SceneListDrawer.jsx';
@@ -53,6 +59,16 @@ export default function ScenePage() {
   // than a dedicated "show" control, matching the ask verbatim ("tapping
   // anything brings them back") — there is deliberately no second way in.
   const [uiHidden, setUiHidden] = useState(false);
+
+  // Scene Settings (client/src/lib/sceneSettings.js) — same "read once,
+  // per-device, never socket-synced" shape as Cutscene Speed on the
+  // Settings page. Read here rather than inside StageRoster so a setting
+  // change takes effect on the next visit to /scene (a fresh mount) without
+  // that component needing to know settings exist at all.
+  const [heightScale] = useState(loadSceneHeightScale);
+  const [gapScale] = useState(loadSceneGapScale);
+  const [sizeScale] = useState(loadSceneSizeScale);
+  const [showNameplates] = useState(loadSceneShowNameplates);
 
   // Decided: no portrait layout for the stage is ever built. Desktop is
   // never gated, regardless of window aspect — see useIsLandscape's own
@@ -107,7 +123,16 @@ export default function ScenePage() {
           `bg-zinc-950/90` — intended, not a layout bug. Rendered
           regardless of `uiHidden` — the figures themselves are the one
           thing cinematic mode never hides. */}
-      {stageWidth > 0 && <StageRoster summons={summons} stageWidth={stageWidth} />}
+      {stageWidth > 0 && (
+        <StageRoster
+          summons={summons}
+          stageWidth={stageWidth}
+          heightScale={heightScale}
+          gapScale={gapScale}
+          sizeScale={sizeScale}
+          showNameplates={showNameplates}
+        />
+      )}
       {!uiHidden && (
         <>
           {/* The one way off this route — App.jsx's chromeless branch
