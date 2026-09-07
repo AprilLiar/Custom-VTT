@@ -1680,12 +1680,18 @@ async function getStagePayload() {
         [state.active_scene_id]
       )
     : null;
+  // **Scene-scoped (decided, revised) — a summon belongs to exactly one
+  // Scene now (scene_summons.scene_id, NOT NULL; see db.js's own comment
+  // on the column), so this only ever reads the ACTIVE Scene's own roster.
+  // No active Scene means nothing to show, same as the backdrop itself.**
   // snake_case throughout, matching activeScene above and every other row
   // this feature reads verbatim off the DB (scene_pictures, temp_npcs, …) —
   // only outbound WRITE payloads (stage:summon's own emit target) use
   // camelCase in this app's convention. character_id/temp_npc_id decide
   // ownership client-side the same way scene_pictures' own rows do.
-  const summons = await all(`
+  const summons = activeScene
+    ? await all(
+        `
     SELECT ss.id, ss.side, ss.character_id, ss.temp_npc_id, ss.scene_picture_id,
            ss.pos_x, ss.pos_y, ss.scale,
            sp.image_data, sp.image_mime_type,
@@ -1694,8 +1700,12 @@ async function getStagePayload() {
     JOIN scene_pictures sp ON sp.id = ss.scene_picture_id
     LEFT JOIN characters c ON c.id = ss.character_id
     LEFT JOIN temp_npcs tn ON tn.id = ss.temp_npc_id
+    WHERE ss.scene_id = ?
     ORDER BY ss.id DESC
-  `);
+  `,
+        [activeScene.id]
+      )
+    : [];
   return { activeScene, summons };
 }
 
@@ -1720,6 +1730,32 @@ app.get('/api/characters/:id/relationships', wrap(async (req, res) => {
   const viewer = viewerFromQuery(req.query);
   if (!maySeeBoard(viewer, req.params.id)) return res.status(403).json({ error: 'not yours' });
   res.json(await getRelationshipBoard(Number(req.params.id)));
+}));
+
+// GM Notes (decided, new) — genuinely GM-secret, not merely GM-managed: the
+// same viewerFromQuery 403 gate the Relationships board's own read uses
+// above, and every broadcast (below) goes only to GM-identified sockets.
+// Unlike Temp NPCs/Scenes (open REST, just not rendered for a Player),
+// campaign notes are exactly the kind of spoiler-bearing text a GM does not
+// want a technically-curious Player pulling straight off the API.
+function emitToGm(event, payload) {
+  for (const socket of io.sockets.sockets.values()) {
+    if (socket.data?.identity?.role === 'gm') socket.emit(event, payload);
+  }
+}
+
+app.get('/api/scene-notes', wrap(async (req, res) => {
+  const viewer = viewerFromQuery(req.query);
+  if (viewer?.role !== 'gm') return res.status(403).json({ error: 'GM only' });
+  const sceneId = Number(req.query.sceneId);
+  if (!Number.isInteger(sceneId)) return res.json([]);
+  res.json(await all('SELECT * FROM scene_notes WHERE scene_id = ? ORDER BY id', [sceneId]));
+}));
+
+app.get('/api/master-note', wrap(async (req, res) => {
+  const viewer = viewerFromQuery(req.query);
+  if (viewer?.role !== 'gm') return res.status(403).json({ error: 'GM only' });
+  res.json(await one('SELECT * FROM master_note WHERE id = 1'));
 }));
 
 app.get('/api/character-folders', wrap(async (_req, res) => {
@@ -4383,8 +4419,12 @@ io.on('connection', (socket) => {
     const wasActive = state?.active_scene_id === scene.id;
     // Explicit, matching every other delete in this file. scene_state's own
     // FK is ON DELETE SET NULL (already correct), but nothing here trusts
-    // the DDL alone.
+    // the DDL alone. Same for scene_notes'/scene_summons' own ON DELETE
+    // CASCADE — deleting a Scene takes its own prepared roster with it,
+    // which is exactly what "scene-specific" (scene_summons.scene_id) means.
     await run('UPDATE scene_state SET active_scene_id = NULL WHERE active_scene_id = ?', [scene.id]);
+    await run('DELETE FROM scene_notes WHERE scene_id = ?', [scene.id]);
+    await run('DELETE FROM scene_summons WHERE scene_id = ?', [scene.id]);
     await run('DELETE FROM scenes WHERE id = ?', [scene.id]);
     io.emit('scene:deleted', { sceneId: scene.id });
     if (wasActive) io.emit('stage:updated', await getStagePayload());
@@ -4411,23 +4451,33 @@ io.on('connection', (socket) => {
   // Summoning (Phase 5) — the payload is deliberately just { scenePictureId
   // }, never an owner id: the server resolves the picture's own owner and
   // derives everything else from that, so a client can't summon under one
-  // identity while claiming another. Two invariants this handler exists to
-  // make unforgeable:
+  // identity while claiming another. Three invariants this handler exists
+  // to make unforgeable:
   //   1. `side` comes from `identity.role`, never the payload — a GM's
   //      summons always land 'right', a Player's always 'left'.
   //   2. Ownership is the exact mayWriteScenePicture gate: GM may summon
   //      any Temp NPC or real NPC; a Player only their own character.
+  //   3. **`scene_id` is always the currently ACTIVE Scene, read server-side
+  //      — never a client-claimed one (decided, revised).** Summons are
+  //      scene-specific now (see scene_summons' own comment in db.js: a GM
+  //      preparing a Scene's roster in advance shouldn't have it bleed into
+  //      whichever Scene is actually live) — refused outright with no
+  //      active Scene, since there is nothing to pin a summon to yet.
   // Selecting the same picture that's already showing un-summons (decision
   // #4's toggle); a different picture swaps in place — side and
   // created_at both untouched, so a swap never reorders the stage. This is
   // the ONLY way to clear a seat (decision #6) — there is deliberately no
-  // separate "remove from stage" write. A GM may summon any Temp NPC or
-  // real character (mayWriteScenePicture's own GM-always-may branch), so
-  // re-selecting in their own drawer clears anyone's seat, PC included; a
-  // Player un-summons the same way, scoped to just their own character.
+  // separate "remove from stage" write (the on-stage "x" button, Client-
+  // side, just re-emits this with the summon's own current picture). A GM
+  // may summon any Temp NPC or real character (mayWriteScenePicture's own
+  // GM-always-may branch), so re-selecting in their own drawer clears
+  // anyone's seat, PC included; a Player un-summons the same way, scoped to
+  // just their own character.
   on('stage:summon', async ({ scenePictureId }) => {
     const viewer = socket.data.identity;
     if (!viewer) return;
+    const state = await one('SELECT active_scene_id FROM scene_state WHERE id = 1');
+    if (!state?.active_scene_id) return;
     const picture = await one('SELECT * FROM scene_pictures WHERE id = ?', [scenePictureId]);
     if (!picture) return;
     const ownerType = picture.character_id != null ? 'character' : 'temp_npc';
@@ -4436,14 +4486,16 @@ io.on('connection', (socket) => {
 
     const side = viewer.role === 'gm' ? 'right' : 'left';
     const ownerColumn = ownerType === 'character' ? 'character_id' : 'temp_npc_id';
-    const existing = await one(`SELECT * FROM scene_summons WHERE ${ownerColumn} = ?`, [ownerId]);
+    const existing = await one(`SELECT * FROM scene_summons WHERE scene_id = ? AND ${ownerColumn} = ?`, [
+      state.active_scene_id,
+      ownerId,
+    ]);
 
     if (!existing) {
-      await run(`INSERT INTO scene_summons (${ownerColumn}, scene_picture_id, side) VALUES (?, ?, ?)`, [
-        ownerId,
-        picture.id,
-        side,
-      ]);
+      await run(
+        `INSERT INTO scene_summons (scene_id, ${ownerColumn}, scene_picture_id, side) VALUES (?, ?, ?, ?)`,
+        [state.active_scene_id, ownerId, picture.id, side]
+      );
     } else if (existing.scene_picture_id === picture.id) {
       await run('DELETE FROM scene_summons WHERE id = ?', [existing.id]);
     } else {
@@ -4484,6 +4536,50 @@ io.on('connection', (socket) => {
     if (!mayWriteScenePicture(viewer, ownerType, ownerId)) return;
     await run('UPDATE scene_summons SET scale = ? WHERE id = ?', [clamp(Number(scale), 0.25, 4), summon.id]);
     io.emit('stage:updated', await getStagePayload());
+  });
+
+  // GM Notes (decided, new) — see the tables' own comment in db.js for why
+  // these are genuinely GM-secret rather than merely GM-managed: every
+  // handler here is GM-only, server-enforced (not just hidden client-side),
+  // and every broadcast goes through emitToGm, never io.emit.
+  on('scene_note:create', async ({ sceneId, title, body }) => {
+    if (socket.data.identity?.role !== 'gm') return;
+    const scene = await one('SELECT id FROM scenes WHERE id = ?', [sceneId]);
+    if (!scene) return;
+    const result = await run('INSERT INTO scene_notes (scene_id, title, body) VALUES (?, ?, ?)', [
+      scene.id,
+      String(title ?? ''),
+      String(body ?? ''),
+    ]);
+    emitToGm('scene_note:created', await one('SELECT * FROM scene_notes WHERE id = ?', [Number(result.lastInsertRowid)]));
+  });
+
+  on('scene_note:update', async ({ noteId, title, body }) => {
+    if (socket.data.identity?.role !== 'gm') return;
+    const note = await one('SELECT id FROM scene_notes WHERE id = ?', [noteId]);
+    if (!note) return;
+    await run('UPDATE scene_notes SET title = ?, body = ? WHERE id = ?', [
+      String(title ?? ''),
+      String(body ?? ''),
+      note.id,
+    ]);
+    emitToGm('scene_note:updated', await one('SELECT * FROM scene_notes WHERE id = ?', [note.id]));
+  });
+
+  on('scene_note:delete', async ({ noteId }) => {
+    if (socket.data.identity?.role !== 'gm') return;
+    const note = await one('SELECT id FROM scene_notes WHERE id = ?', [noteId]);
+    if (!note) return;
+    await run('DELETE FROM scene_notes WHERE id = ?', [note.id]);
+    emitToGm('scene_note:deleted', { noteId: note.id });
+  });
+
+  // The Master Note is a singleton (id=1, seeded at boot — see db.js) —
+  // update only, never create/delete.
+  on('master_note:update', async ({ body }) => {
+    if (socket.data.identity?.role !== 'gm') return;
+    await run('UPDATE master_note SET body = ? WHERE id = 1', [String(body ?? '')]);
+    emitToGm('master_note:updated', await one('SELECT * FROM master_note WHERE id = 1'));
   });
 
   on('move:revoke', async ({ characterId, moveId }) => {

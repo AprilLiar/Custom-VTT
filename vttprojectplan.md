@@ -4066,9 +4066,16 @@ that held across every phase, from the first line of schema to the final motion 
 - **A Scene Picture is "pick one at summon, swap freely after."** Summoning opens a picker of that
   owner's own Scene Pictures; once on stage, the same control swaps which picture shows without
   leaving the stage — position/order in the lineup is preserved, only the image changes (Phase 5).
-- **Summons are independent of the active Scene** — switching backgrounds never clears the stage.
-  `scene_summons` deliberately has no `scene_id` column at all; that omission is the rule, not a
-  habit a future handler could accidentally break.
+- **Summons are Scene-specific (decided, revised — reverses the original "independent of the active
+  Scene" rule).** `scene_summons.scene_id` is now `NOT NULL`: switching to a different Scene shows
+  that Scene's own prepared roster, not whoever was summoned before. This exists so a GM can prepare
+  a Scene's cast and layout in advance — populate it, position everyone, resize as needed — without
+  any of that leaking into whichever Scene the table is actually looking at, and without a later
+  Scene switch wiping it out either. `stage:summon` resolves `scene_id` itself from
+  `scene_state.active_scene_id`, same as `side` from identity — never a client-claimed value — and
+  is refused outright with no active Scene (nothing to pin a summon to yet). The per-owner `UNIQUE`
+  moved from table-wide to per-Scene (`UNIQUE(scene_id, character_id)`), so the same character can
+  be independently prepared into more than one Scene at once, each with its own side/position/scale.
 - **The stage's "who is currently summoned" state is public to everyone watching** — a plain
   `io.emit('stage:updated', ...)`, no per-viewer redaction, unlike `combat:updated`'s secrecy
   around pre-reveal declared moves. What's GM-only is the *authoring* library (Scenes, Temp NPCs,
@@ -4098,8 +4105,11 @@ that held across every phase, from the first line of schema to the final motion 
 (a `combat_state`-style singleton holding `active_scene_id`), `scene_pictures` (owned by exactly
 one of a `character_id`/`temp_npc_id`, `CHECK`-enforced like `relationship_nodes`'s own
 discriminator), and `scene_summons` (same discriminator, plus `UNIQUE(character_id)` /
-`UNIQUE(temp_npc_id)` so an owner holds at most one seat on stage — SQLite treats `NULL` as
-distinct under `UNIQUE`, so a Temp NPC's own uniqueness never collides with a character's).
+`UNIQUE(temp_npc_id)` so an owner held at most one seat on stage — SQLite treats `NULL` as
+distinct under `UNIQUE`, so a Temp NPC's own uniqueness never collided with a character's).
+**Revised later** (see "Summons are Scene-specific" above): `scene_summons` gained a `NOT NULL
+scene_id` and both `UNIQUE`s moved to per-Scene, so an owner now holds at most one seat *per Scene*
+rather than one seat, full stop.
 
 **Every new FK here is a straightforward `ON DELETE CASCADE`** — deliberately unlike
 `relationship_nodes.character_id`, which carries no `ON DELETE` action at all because a
@@ -4555,14 +4565,45 @@ difference), so a fraction is what keeps a drag looking right on every screen wi
   this codebase has hit the "two things both want `transform`" bug three times already
   (`StageRoster.jsx`'s and `RelationshipNode.jsx`'s own header comments), and `drag` would reintroduce
   exactly that conflict on figures that already have a transform-owning `motion.div` for their
-  entrance/exit slide. A small handle (bottom-right corner of the figure, shown only where editable)
-  drives the resize; dragging it tracks vertical distance only, matching this file's own established
-  height-only sizing rule, and writes straight to that one `<img>`'s pixel height during the gesture
-  before converting back to a `scale` ratio on release.
-- **No dedicated reset control.** Un-summoning and re-summoning a character already produces a
-  brand-new `scene_summons` row (the existing `stage:summon` toggle deletes-then-reinserts), which
-  naturally comes back at `pos_x`/`pos_y` NULL and `scale` 1 — that's the escape hatch back to the
-  automatic layout.
+  entrance/exit slide. A small handle drives the resize; dragging it tracks vertical distance only,
+  matching this file's own established height-only sizing rule, and writes straight to that one
+  `<img>`'s pixel height during the gesture before converting back to a `scale` ratio on release.
+- **Corner controls: hidden by default, two reveal gestures, two corners (decided, revised).** The
+  resize handle sits at a figure's own top-LEFT corner (moved from bottom-right); a new "remove from
+  stage" ✕ sits at the top-right, reusing `stage:summon`'s own toggle (its own picture re-selected)
+  rather than adding a second write — decision #4/#6 already made "no separate remove-from-stage
+  write" a rule, and this button just gives that existing toggle an on-stage trigger. Both are hidden
+  until revealed, on either of two gestures: real hover (`group-hover:opacity-100`, desktop's own
+  affordance, free) or a completed tap that did NOT turn into a drag (`selectedId` in
+  `StageRoster.jsx`, toggled in the shared pointerup handler — mobile has no hover to catch this).
+  **Deliberately not this app's own established `.hover-only-action` convention**
+  (`client/src/index.css`: a hover-only control defaults to always-visible on a coarse pointer, since
+  there's nothing to hover) — here a single press is explicitly meant to BE the reveal gesture, so a
+  bespoke per-figure toggle replaces that default for these two controls specifically. Single-select:
+  tapping a different figure swaps which one is showing rather than stacking. Hidden corner buttons
+  carry `pointer-events-none` (not just `opacity-0`), so an invisible one can never steal the
+  pointerdown that should start a drag there instead. Resizing back down or re-dragging to the
+  automatic layout still has no dedicated reset — un-summoning (the ✕) and re-summoning already
+  produces a brand-new `scene_summons` row at `pos_x`/`pos_y` NULL, `scale` 1, which remains the
+  escape hatch for position/size specifically, distinct from the ✕'s own job of clearing the seat.
+- **Corner buttons stay clickable under the GM's own drawers (bugfix, found during manual
+  verification of the above).** `StageRoster`'s whole roster renders inside its own low, fixed
+  stacking context (`z-[1]` on the roster's outer wrapper) so a crowded roster's internal ranks never
+  outrank the GM drawers' `z-10` (`SceneCastDrawer`/`SceneListDrawer`) — deliberate, since bleeding
+  art behind a translucent drawer is the whole point of the full-bleed stage. CSS stacking contexts
+  nest strictly, though: no *internal* z-index, however high, can out-rank a *sibling* context, so a
+  figure's own `MANUAL_Z`/`ACTIVE_GESTURE_Z` never actually cleared the drawer either — confirmed
+  live with Playwright's own hit-testing, not just an opacity check: a figure docked near the screen
+  edge (routine for a GM's own right-side summons) had its Resize/✕ buttons visually reveal correctly
+  on hover (opacity doesn't care about paint order) while a real click silently hit-tested to the
+  drawer sitting on top of them instead. Fixed by promoting the roster's own *wrapper* to `z-[15]`
+  (clears the drawers' `z-10`, stays below `TopLeftControls`' `z-20`) for as long as any figure's
+  controls are showing — tracked via a new `hoveredId` state (real hover) alongside the existing
+  `selectedId` (tap-select) — rather than bumping any one figure, since only the wrapper's own
+  promotion can actually escape the sibling context. Accepted trade-off: while true, the *whole*
+  roster briefly renders above the drawers, not just the figure being reached for, since they all
+  share one wrapper — visually minor and only for as long as a hover/selection lasts, versus the
+  added complexity of a React portal for just the one figure.
 - **Hide Interface's exit gesture changed from "tap anywhere" to "press the toggle again" (decided,
   revised).** The original tap-anywhere-on-the-stage-to-return would have fought with dragging — a
   drag press on the stage is itself a tap on the stage, so it would have stolen the first frame of
@@ -4574,6 +4615,33 @@ difference), so a fraction is what keeps a drag looking right on every screen wi
   unconditionally regardless of `uiHidden` (*"the figures themselves are the one thing cinematic mode
   never hides"*), so the new drag/resize handlers needed no special-casing to keep working while
   hidden — they simply were never gated behind that flag to begin with.
+
+**GM Notes (decided, new).** A GM-only "Notes" button in `ScenePage.jsx`'s corner controls (hides
+along with the back-arrow while Hide Interface is on — see above — since it's a GM tool, not part
+of the cinematic view) opens a dialog with two shapes behind a switch:
+- **Scene Notes** — any number, each pinned to whichever Scene is currently active
+  (`scene_notes.scene_id`, `NOT NULL`, `ON DELETE CASCADE` off `scenes`). Create/edit/delete, plain
+  title + body.
+- **Master Note** — a singleton (`master_note`, `id=1` `CHECK`, same shape as `scene_state`/
+  `combat_state`'s own id=1 row), one Note for the whole campaign, reachable from any Scene's own
+  Notes dialog and always the same content regardless of which one you opened it from — for
+  planning that isn't about any single Scene.
+- **Genuinely GM-secret, not merely GM-managed (decided) — the one deliberate departure from this
+  feature's own established secrecy model.** Every other piece of Scene-tab authoring content (Temp
+  NPCs, Scenes themselves, Scene Pictures) is open REST + an unscoped `io.emit`, "GM-*managed*, not
+  GM-*secret*" — a Player's client simply never renders the drawers that would show it, matching
+  `GET /api/characters`. Campaign notes are the opposite kind of content: spoilers, upcoming twists,
+  NPC secrets a GM plans around — exactly what a technically-curious Player pulling the API directly
+  would be looking for. `GET /api/scene-notes` and `GET /api/master-note` both go through the same
+  `viewerFromQuery` 403 gate the Relationships board's own read already uses (`role !== 'gm'` →
+  refused), and every write (`scene_note:create/update/delete`, `master_note:update`) is a
+  server-enforced GM-only socket handler whose broadcast (`emitToGm`, new — mirrors
+  `emitRelationships`'s per-socket-filter shape) reaches only GM-identified sockets, never a plain
+  `io.emit`.
+- No dedicated "browse notes across every Scene" view — the dialog always shows the *currently
+  active* Scene's own notes, matching how the rest of the Scene tab already treats "one Scene at a
+  time" as the working set. With no Scene active, the Scene Notes side shows a message instead
+  (Notes need a concrete Scene to pin to); the Master Note side is unaffected either way.
 
 ## Implementation Risks & Recommendations
 A scope check for whoever picks this up: this grew well past "semi-simple website" over the course of design. Most of it (dice, inventory, injuries, stances, perks, counters) is standard CRUD-plus-broadcast work. Combat Timing (Tics/Startup/reveal/overflow) is the one genuinely hard piece — real software complexity, not just more forms — and it's also the most original part of the system, which is exactly why it deserves the most care rather than being rushed alongside everything else.

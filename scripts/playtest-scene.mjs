@@ -244,6 +244,17 @@ check(
 
 // ============================================ 9. summoning: side is server-derived, ownership is enforced
 console.log('\n--- stage:summon: side comes from identity, never the payload; ownership is enforced ---');
+// Summons are Scene-specific now (decided, revised — see vttprojectplan.md)
+// and stage:summon refuses outright with no active Scene, so section 8's
+// own deletion of `tavern` (the only Scene activated so far) needs a fresh
+// one activated before any of this section's summoning can land at all.
+gm.emit('scene:create', { name: `Backroom ${stamp}` });
+await sleep(300);
+scenes = await jf('/api/scenes');
+const backroom = scenes.find((s) => s.name === `Backroom ${stamp}`);
+gm.emit('scene:activate', { sceneId: backroom.id });
+await sleep(300);
+
 const alicePicture = (await scenePictures('character', alice.id))[0];
 const gruntPicture = (await scenePictures('temp_npc', grunt.id))[0];
 

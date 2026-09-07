@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ArrowLeft, Eye, EyeOff } from 'lucide-react';
+import { ArrowLeft, Eye, EyeOff, StickyNote } from 'lucide-react';
 import { useIsDesktop, useIsLandscape } from '../lib/useMediaQuery.js';
 import { useRole } from '../roleContext.jsx';
 import { useStage } from '../lib/useStage.js';
@@ -13,6 +13,7 @@ import {
 import OrientationGate from './OrientationGate.jsx';
 import SceneCastDrawer from './SceneCastDrawer.jsx';
 import SceneListDrawer from './SceneListDrawer.jsx';
+import SceneNotesDialog from './SceneNotesDialog.jsx';
 import StageRoster from './StageRoster.jsx';
 import PlayerSummonDock from './PlayerSummonDock.jsx';
 
@@ -65,6 +66,11 @@ export default function ScenePage() {
   // hidden (see TopLeftControls below) — there is deliberately no second
   // way in or out any more.
   const [uiHidden, setUiHidden] = useState(false);
+
+  // GM Notes (decided, new) — a dialog, not a docked drawer like
+  // SceneCastDrawer/SceneListDrawer, since it's opened on demand rather
+  // than needed at a glance the whole time the GM is on this page.
+  const [notesOpen, setNotesOpen] = useState(false);
 
   // Scene Settings (client/src/lib/sceneSettings.js) — same "read once,
   // per-device, never socket-synced" shape as Cutscene Speed on the
@@ -140,7 +146,11 @@ export default function ScenePage() {
           TopLeftControls: it hides the back-arrow but never itself while
           `uiHidden`). z-20 so it stays above the drawers' own z-10, which
           dock to the same corners for a GM, and above StageRoster's figures. */}
-      <TopLeftControls uiHidden={uiHidden} onToggleUi={() => setUiHidden((v) => !v)} />
+      <TopLeftControls
+        uiHidden={uiHidden}
+        onToggleUi={() => setUiHidden((v) => !v)}
+        onOpenNotes={role === 'gm' ? () => setNotesOpen(true) : undefined}
+      />
       {!uiHidden && (
         <>
           {/* z-[2]: summons are independent of the active Scene (decision
@@ -159,6 +169,7 @@ export default function ScenePage() {
           {role === 'player' && <PlayerSummonDock characterId={characterId} summons={summons} />}
         </>
       )}
+      {notesOpen && <SceneNotesDialog activeScene={activeScene} onClose={() => setNotesOpen(false)} />}
     </div>
   );
 }
@@ -172,10 +183,11 @@ export default function ScenePage() {
 // here, and tapping anywhere on the stage was the only way back — dropped
 // once figures became draggable (see ScenePage's own `uiHidden` comment):
 // a drag press on the stage would have fought with "any tap exits." The
-// back-arrow still hides — while cinematic mode is on, the toggle button
-// really is meant to be the only UI element shown, and leaving the app
-// reachable would be a second, undocumented way out of it.
-function TopLeftControls({ uiHidden, onToggleUi }) {
+// back-arrow (and the Notes button, GM-only, below) still hide — while
+// cinematic mode is on, the toggle button really is meant to be the only
+// UI element shown, and leaving either reachable would be a second,
+// undocumented way out of it.
+function TopLeftControls({ uiHidden, onToggleUi, onOpenNotes }) {
   return (
     <div
       className="absolute left-3 top-3 z-20 flex gap-2"
@@ -189,6 +201,16 @@ function TopLeftControls({ uiHidden, onToggleUi }) {
         >
           <ArrowLeft size={18} aria-hidden />
         </Link>
+      )}
+      {!uiHidden && onOpenNotes && (
+        <button
+          type="button"
+          onClick={onOpenNotes}
+          title="Notes"
+          className="flex h-11 w-11 items-center justify-center panel-cut-sm border border-zinc-700 bg-zinc-900/80 text-zinc-400 hover:border-brand-500 hover:text-brand-300"
+        >
+          <StickyNote size={18} aria-hidden />
+        </button>
       )}
       {onToggleUi && (
         <button

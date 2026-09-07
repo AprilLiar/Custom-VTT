@@ -67,3 +67,10 @@ export const getRelationshipBoard = (characterId, identity) =>
 // resolved round is public history, watchable by anyone (decision #11).
 export const getRoundReplay = (resolutionId) =>
   fetch(`/api/combat/round-replay/${resolutionId}`).then(json);
+
+// GM Notes — genuinely GM-secret (403 for anyone else), the same identity-
+// as-query-params shape getRelationshipBoard uses above.
+export const getSceneNotes = (sceneId, identity) =>
+  fetch(`/api/scene-notes?${new URLSearchParams({ sceneId, ...identity })}`).then(json);
+export const getMasterNote = (identity) =>
+  fetch(`/api/master-note${identity ? `?${new URLSearchParams(identity)}` : ''}`).then(json);
