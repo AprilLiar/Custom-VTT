@@ -1529,6 +1529,21 @@ export async function initDb() {
       UNIQUE(temp_npc_id)
     )
   `);
+  // **Manual drag-to-place and resize (decided, new).** `pos_x`/`pos_y` are
+  // fractions (0..1) of the viewer's own measured stage box, NULL meaning
+  // "never manually placed — still governed by layoutStage.js's automatic
+  // cramming." A fraction of each viewer's own stage, not a raw world pixel
+  // (contrast relationship_nodes.x/y above, which ARE raw pixels): the Scene
+  // stage has no pan/zoom camera the way the Relationships board does, and
+  // is already viewed at whatever size each device's own screen happens to
+  // be, so a fraction is what keeps a drag looking right on every screen.
+  // `scale` is a per-summon size multiplier, independent of position — a
+  // figure can be resized without ever leaving the automatic layout, so it
+  // is NOT NULL (unlike pos_x/pos_y, "never resized" and "resized back to
+  // 1x" are the same state).
+  await ensureColumn('scene_summons', 'pos_x', 'REAL');
+  await ensureColumn('scene_summons', 'pos_y', 'REAL');
+  await ensureColumn('scene_summons', 'scale', 'REAL NOT NULL DEFAULT 1');
   // ---------------------------------------------------------------------
 
   // The Perks compendium: master list of Perk templates. Just picture, name,

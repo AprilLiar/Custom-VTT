@@ -1687,6 +1687,7 @@ async function getStagePayload() {
   // ownership client-side the same way scene_pictures' own rows do.
   const summons = await all(`
     SELECT ss.id, ss.side, ss.character_id, ss.temp_npc_id, ss.scene_picture_id,
+           ss.pos_x, ss.pos_y, ss.scale,
            sp.image_data, sp.image_mime_type,
            COALESCE(c.name, tn.name) AS name
     FROM scene_summons ss
@@ -3004,14 +3005,24 @@ io.on('connection', (socket) => {
     // damage". The locked baseline has no half_damage of its own by
     // construction: a base value is a whole value, so reverting always clears
     // it rather than restoring some remembered flag.
+    // **temporary_damage is cleared too (bugfix, same shape).** It is not a
+    // size either — it is a debt owed back at 0.5 a Round by
+    // healTemporaryDamage (roundResolution.js), tracked separately from the
+    // die's own size specifically so it survives whatever the die's current
+    // value does in between. Left standing, a reverted die reads as fully
+    // restored but the stale debt keeps paying itself off round after round
+    // regardless — harmless while the die stays at base, but a live hazard
+    // the moment something else damages that Stat again, since the leftover
+    // debt has nothing to do with the new damage yet still drives healing
+    // amounts for it. Reported as "revert stats to base does not heal back
+    // Temporary Damage". Same reasoning as half_damage: the locked baseline
+    // has no debt of its own, so reverting always zeroes it.
     await Promise.all(
       reverted.map(({ die, next }) =>
-        run('UPDATE dice SET current_size = ?, bonus = ?, status = ?, half_damage = 0 WHERE id = ?', [
-          next.size,
-          next.bonus,
-          next.status,
-          die.id,
-        ])
+        run(
+          'UPDATE dice SET current_size = ?, bonus = ?, status = ?, half_damage = 0, temporary_damage = 0 WHERE id = ?',
+          [next.size, next.bonus, next.status, die.id]
+        )
       )
     );
     for (const { die, next } of reverted) {
@@ -3023,6 +3034,7 @@ io.on('connection', (socket) => {
           bonus: next.bonus,
           status: next.status,
           half_damage: 0,
+          temporary_damage: 0,
         })
       );
     }
@@ -4437,6 +4449,40 @@ io.on('connection', (socket) => {
     } else {
       await run('UPDATE scene_summons SET scene_picture_id = ? WHERE id = ?', [picture.id, existing.id]);
     }
+    io.emit('stage:updated', await getStagePayload());
+  });
+
+  // Manual drag-to-place and resize — the same ownership gate stage:summon
+  // itself uses (GM may move/resize any summon; a Player only their own
+  // character's; nobody but the GM may touch a Temp NPC's), resolved off the
+  // SUMMON's own owner rather than trusting a client-claimed id. Committed
+  // once per gesture (on release), never mid-drag — stage:updated is an
+  // unscoped io.emit to every connected socket, so a client streaming every
+  // pointermove here would re-render the whole table's screens 60x/second
+  // for a drag only one of them can see move live anyway.
+  on('stage:reposition_summon', async ({ summonId, posX, posY }) => {
+    const viewer = socket.data.identity;
+    const summon = await one('SELECT * FROM scene_summons WHERE id = ?', [summonId]);
+    if (!viewer || !summon) return;
+    const ownerType = summon.character_id != null ? 'character' : 'temp_npc';
+    const ownerId = summon.character_id ?? summon.temp_npc_id;
+    if (!mayWriteScenePicture(viewer, ownerType, ownerId)) return;
+    await run('UPDATE scene_summons SET pos_x = ?, pos_y = ? WHERE id = ?', [
+      clamp(Number(posX), 0, 1),
+      clamp(Number(posY), 0, 1),
+      summon.id,
+    ]);
+    io.emit('stage:updated', await getStagePayload());
+  });
+
+  on('stage:resize_summon', async ({ summonId, scale }) => {
+    const viewer = socket.data.identity;
+    const summon = await one('SELECT * FROM scene_summons WHERE id = ?', [summonId]);
+    if (!viewer || !summon) return;
+    const ownerType = summon.character_id != null ? 'character' : 'temp_npc';
+    const ownerId = summon.character_id ?? summon.temp_npc_id;
+    if (!mayWriteScenePicture(viewer, ownerType, ownerId)) return;
+    await run('UPDATE scene_summons SET scale = ? WHERE id = ?', [clamp(Number(scale), 0.25, 4), summon.id]);
     io.emit('stage:updated', await getStagePayload());
   });
 
