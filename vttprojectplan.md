@@ -387,7 +387,7 @@ Each character has 3 fixed dice pools, always the same slot names for every char
 ## Game mechanic — Stamina & Stat Lock (Core Stats tab)
 Each die tracks two states: its **current** value (fluctuates during play) and its **locked** value (the "fully rested" baseline).
 - **Lock in Stats** — snapshots every die's current size/bonus/status as the new locked baseline for that character. Persists indefinitely until pressed again (stored in the DB, not session-based). Unaffected by Injuries (below) — always a verbatim current→locked copy.
-- **Revert Stats to Base** — resets every die's current size/bonus/status back to its locked baseline, **with any Injury penalties on that slot re-applied (decided, new rule)** — see Injuries below. Not a raw copy of the locked row when the slot has one or more penalizing Injuries. **It clears `half_damage` too (bugfix).** That flag is not a size — it is half a step of damage already taken, waiting for its other half (see `applyHalfDamage`) — and reverting used to write size/bonus/status back while leaving it standing, so a Stat that read as fully restored still took its next hit twice as hard. Reported as "revert stats to base does not heal half damage". The locked baseline has no `half_damage` of its own by construction (a base value is a whole value), so reverting always clears it rather than restoring some remembered flag.
+- **Revert Stats to Base** — resets every die's current size/bonus/status back to its locked baseline, **with any Injury penalties on that slot re-applied (decided, new rule)** — see Injuries below. Not a raw copy of the locked row when the slot has one or more penalizing Injuries. **It clears `half_damage` too (bugfix).** That flag is not a size — it is half a step of damage already taken, waiting for its other half (see `applyHalfDamage`) — and reverting used to write size/bonus/status back while leaving it standing, so a Stat that read as fully restored still took its next hit twice as hard. Reported as "revert stats to base does not heal half damage". The locked baseline has no `half_damage` of its own by construction (a base value is a whole value), so reverting always clears it rather than restoring some remembered flag. **It clears `temporary_damage` too (bugfix, same shape).** That column is not a size either — it is a debt owed back at 0.5 a Round by `healTemporaryDamage` (see "Temporary Damage: a Tag whose damage wears off" below), tracked separately from the die's own current value specifically so it survives whatever that value does in between. Left standing, a reverted die read as fully restored while the stale debt kept paying itself off round after round regardless — harmless while the die stayed at base, but a live hazard the moment something else damaged that Stat again, since the leftover debt has nothing to do with the new damage yet still drove healing amounts for it. Reported as "revert stats to base does not heal back Temporary Damage". Same fix shape as `half_damage`: the locked baseline has no debt of its own, so reverting always zeroes it.
 - Locking/reverting only affects the 8 dice — Current Stamina is tracked independently and is untouched by either button.
 - **Visual tint per die:** compare current vs. locked using a rank (d4=0, d6=1, d8=2, d10=3, d12=4, then +1 per bonus point beyond d12). Above locked → green tint; below locked → red tint; equal → no tint. Tint opacity scales with the size of the difference — bigger gap, stronger tint.
 - **Injuries affecting base stats (decided, new rule):** an Injury (Core Stats tab's Injuries list — see Pages / views below) can optionally target one of the 8 die slots with an integer rank penalty (`injuries.slot_name` + `injuries.penalty`; `rankOf`/`applyRankPenalty` in `server/gameLogic.js`, same rank unit the tint above already uses). The penalty is **never applied live** — only **Revert Stats to Base** applies it, subtracting however many ranks that slot's Injuries sum to (more than one Injury can stack on the same slot) from the locked size/bonus, floored at incapacitated rather than going negative (same floor manual step-down already hits at a bare d4). Because this only ever pushes the reverted-to value *below* the true locked baseline, it shows up automatically via the existing red tint above — no new client-side visual code needed. Max Stamina is **not** recomputed on revert (matches "Current Stamina untouched" above) even when the penalized slot is Stamina — only the die's own size/bonus/status reflect the penalty.
@@ -4523,6 +4523,57 @@ Manually verified beyond what's committed: a throwaway script summoned a deliber
 (exactly the 1280px viewport's own true edge, confirming no overflow) and `height: 630, top: 270`
 (exactly 70% of a 900px viewport, with the remaining 30% left clear at the top) — both numbers
 confirming the fix rather than merely "looking right" in a screenshot.
+
+**Manual drag-to-place and resize (decided, new).** Every summoned figure a viewer may edit (the GM:
+anyone; a Player: only their own character's summon — the exact ownership rule `mayWriteScenePicture`
+already enforces for `stage:summon`/`scene_picture:*`, mirrored client-side so a handle only ever
+appears where the write would actually succeed) can be dragged anywhere on the stage and resized by
+hand, on both mouse and touch. Two new nullable/defaulted columns on `scene_summons`:
+`pos_x`/`pos_y` (fractions 0..1 of the *viewer's own* measured stage box, NULL meaning "never
+manually placed — still governed by `layoutStage`'s automatic cramming") and `scale` (a per-summon
+size multiplier, `NOT NULL DEFAULT 1`, independent of position — a figure can be resized without
+ever leaving the automatic layout). A fraction of each viewer's own stage rather than a raw world
+pixel (contrast `relationship_nodes.x`/`y`, which ARE raw pixels under that board's own pan/zoom
+camera): the Scene stage has no camera and is already viewed at whatever size each device's own
+screen happens to be (the backdrop is already `object-cover`, accepting some per-device framing
+difference), so a fraction is what keeps a drag looking right on every screen without building one.
+- **Two new socket handlers, `stage:reposition_summon`/`stage:resize_summon`**, both resolving the
+  summon's own owner and gating through `mayWriteScenePicture` exactly like `stage:summon`, both
+  broadcasting the same full `stage:updated` payload every other Scene write already does (no new
+  event name for clients to learn). Values are clamped server-side (`pos_x`/`pos_y` to `[0,1]`,
+  `scale` to `[0.25,4]`) rather than refused outright.
+- **Committed once per gesture, on release — never mid-drag.** `stage:updated` is an unscoped
+  `io.emit` to every connected socket, so streaming a write on every `pointermove` would re-render
+  the whole table's screens dozens of times a second for a drag only the dragging viewer can see
+  live anyway. Everyone else just sees the figure land in its new spot once the drag ends — the same
+  trade-off `RelationshipBoard.jsx`'s own node drag already makes.
+- **The drag/resize itself mirrors `RelationshipBoard.jsx`'s own node-drag**, not Framer Motion's
+  `drag` prop: `onPointerDown` per figure, `window`-level `pointermove`/`pointerup`/`pointercancel`
+  (not per-element, and no `setPointerCapture` — a drag has to keep tracking once the pointer leaves
+  the figure it started on), a plain ref rather than state for the in-progress gesture, and direct
+  DOM writes with no re-render until the drop. Framer's own `drag` prop was deliberately avoided —
+  this codebase has hit the "two things both want `transform`" bug three times already
+  (`StageRoster.jsx`'s and `RelationshipNode.jsx`'s own header comments), and `drag` would reintroduce
+  exactly that conflict on figures that already have a transform-owning `motion.div` for their
+  entrance/exit slide. A small handle (bottom-right corner of the figure, shown only where editable)
+  drives the resize; dragging it tracks vertical distance only, matching this file's own established
+  height-only sizing rule, and writes straight to that one `<img>`'s pixel height during the gesture
+  before converting back to a `scale` ratio on release.
+- **No dedicated reset control.** Un-summoning and re-summoning a character already produces a
+  brand-new `scene_summons` row (the existing `stage:summon` toggle deletes-then-reinserts), which
+  naturally comes back at `pos_x`/`pos_y` NULL and `scale` 1 — that's the escape hatch back to the
+  automatic layout.
+- **Hide Interface's exit gesture changed from "tap anywhere" to "press the toggle again" (decided,
+  revised).** The original tap-anywhere-on-the-stage-to-return would have fought with dragging — a
+  drag press on the stage is itself a tap on the stage, so it would have stolen the first frame of
+  every drag to close cinematic mode, or exited it out from under a GM mid-repositioning a character.
+  The hide/show toggle button (`ScenePage.jsx`'s `TopLeftControls`) is now the one element that
+  survives `uiHidden` — every other overlay control, including the back-arrow off this route, still
+  hides — and its own icon/title now flip between `EyeOff`/"Hide interface" and `Eye`/"Show interface"
+  depending on state, since it now does both jobs. `StageRoster` itself was already rendered
+  unconditionally regardless of `uiHidden` (*"the figures themselves are the one thing cinematic mode
+  never hides"*), so the new drag/resize handlers needed no special-casing to keep working while
+  hidden — they simply were never gated behind that flag to begin with.
 
 ## Implementation Risks & Recommendations
 A scope check for whoever picks this up: this grew well past "semi-simple website" over the course of design. Most of it (dice, inventory, injuries, stances, perks, counters) is standard CRUD-plus-broadcast work. Combat Timing (Tics/Startup/reveal/overflow) is the one genuinely hard piece — real software complexity, not just more forms — and it's also the most original part of the system, which is exactly why it deserves the most care rather than being rushed alongside everything else.

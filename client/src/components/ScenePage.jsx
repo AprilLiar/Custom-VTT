@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ArrowLeft, EyeOff } from 'lucide-react';
+import { ArrowLeft, Eye, EyeOff } from 'lucide-react';
 import { useIsDesktop, useIsLandscape } from '../lib/useMediaQuery.js';
 import { useRole } from '../roleContext.jsx';
 import { useStage } from '../lib/useStage.js';
@@ -54,10 +54,16 @@ export default function ScenePage() {
   // Cinematic mode: a purely local viewing preference (never socket-synced
   // — hiding your OWN interface says nothing about the shared game state,
   // unlike everything else this page touches). Hides every overlay control
-  // down to just the backdrop and the summoned figures; tapping anywhere on
-  // the stage brings it straight back, via the plain onClick below rather
-  // than a dedicated "show" control, matching the ask verbatim ("tapping
-  // anything brings them back") — there is deliberately no second way in.
+  // down to just the backdrop and the summoned figures. **Exits only via
+  // the same toggle button, not by tapping the stage (decided, revised):**
+  // the original "tap anywhere to bring it back" was dropped once figures
+  // themselves became draggable — a drag necessarily starts with a press
+  // on the stage, which would have fought with "any tap exits," either
+  // stealing the first frame of every drag to close cinematic mode or
+  // exiting it under a GM mid-repositioning a character. The toggle button
+  // itself now stays visible and is the ONLY UI element shown while
+  // hidden (see TopLeftControls below) — there is deliberately no second
+  // way in or out any more.
   const [uiHidden, setUiHidden] = useState(false);
 
   // Scene Settings (client/src/lib/sceneSettings.js) — same "read once,
@@ -95,13 +101,6 @@ export default function ScenePage() {
   return (
     <div
       ref={setStageEl}
-      // Cinematic mode's whole "tap anything to come back" (only while
-      // hidden — a plain no-op click while the interface is already
-      // showing) — everything the interface itself can do (nav links,
-      // drawer buttons, the hide toggle below) still handles its own click
-      // first, then this bubbles harmlessly since the condition is already
-      // false by the time it's showing.
-      onClick={() => uiHidden && setUiHidden(false)}
       className="relative flex h-full w-full flex-col items-center justify-center overflow-hidden bg-zinc-950 text-zinc-500"
     >
       {backgroundSrc && (
@@ -131,15 +130,19 @@ export default function ScenePage() {
           gapScale={gapScale}
           sizeScale={sizeScale}
           showNameplates={showNameplates}
+          role={role}
+          characterId={characterId}
         />
       )}
+      {/* The one way off this route (the back-arrow) plus the hide-interface
+          toggle — rendered unconditionally now, outside the `!uiHidden` gate
+          below, so the toggle itself stays reachable while hidden (see
+          TopLeftControls: it hides the back-arrow but never itself while
+          `uiHidden`). z-20 so it stays above the drawers' own z-10, which
+          dock to the same corners for a GM, and above StageRoster's figures. */}
+      <TopLeftControls uiHidden={uiHidden} onToggleUi={() => setUiHidden((v) => !v)} />
       {!uiHidden && (
         <>
-          {/* The one way off this route — App.jsx's chromeless branch
-              mounts no header, no bottom nav, nothing else that navigates.
-              z-20 so it stays above the drawers' own z-10, which dock to
-              the same corners for a GM. */}
-          <TopLeftControls onHideUi={() => setUiHidden(true)} />
           {/* z-[2]: summons are independent of the active Scene (decision
               #6), so this text can be on screen at the same time as
               StageRoster's own z-[1] stacking context — it needs to sit
@@ -160,31 +163,41 @@ export default function ScenePage() {
   );
 }
 
-// The corner toolbar — always the back link, plus the cinematic-mode
-// toggle wherever there's an interface worth hiding (the orientation
-// gate's own call passes no `onHideUi` at all: there's nothing to hide
-// there yet, just the rotate-prompt and this one way out).
-function TopLeftControls({ onHideUi }) {
+// The corner toolbar. The orientation gate's own call passes neither prop
+// at all: there's nothing to hide yet, just the rotate-prompt and the
+// back-arrow as this route's one way out.
+//
+// **The toggle button is the only element that survives `uiHidden`
+// (decided, revised).** It used to disappear along with everything else in
+// here, and tapping anywhere on the stage was the only way back — dropped
+// once figures became draggable (see ScenePage's own `uiHidden` comment):
+// a drag press on the stage would have fought with "any tap exits." The
+// back-arrow still hides — while cinematic mode is on, the toggle button
+// really is meant to be the only UI element shown, and leaving the app
+// reachable would be a second, undocumented way out of it.
+function TopLeftControls({ uiHidden, onToggleUi }) {
   return (
     <div
       className="absolute left-3 top-3 z-20 flex gap-2"
       style={{ marginTop: 'var(--safe-top)', marginLeft: 'var(--safe-left)' }}
     >
-      <Link
-        to="/combat"
-        title="Back to the Arena"
-        className="flex h-11 w-11 items-center justify-center panel-cut-sm border border-zinc-700 bg-zinc-900/80 text-zinc-400 hover:border-brand-500 hover:text-brand-300"
-      >
-        <ArrowLeft size={18} aria-hidden />
-      </Link>
-      {onHideUi && (
-        <button
-          type="button"
-          onClick={onHideUi}
-          title="Hide interface — tap the screen to bring it back"
+      {!uiHidden && (
+        <Link
+          to="/combat"
+          title="Back to the Arena"
           className="flex h-11 w-11 items-center justify-center panel-cut-sm border border-zinc-700 bg-zinc-900/80 text-zinc-400 hover:border-brand-500 hover:text-brand-300"
         >
-          <EyeOff size={18} aria-hidden />
+          <ArrowLeft size={18} aria-hidden />
+        </Link>
+      )}
+      {onToggleUi && (
+        <button
+          type="button"
+          onClick={onToggleUi}
+          title={uiHidden ? 'Show interface' : 'Hide interface'}
+          className="flex h-11 w-11 items-center justify-center panel-cut-sm border border-zinc-700 bg-zinc-900/80 text-zinc-400 hover:border-brand-500 hover:text-brand-300"
+        >
+          {uiHidden ? <Eye size={18} aria-hidden /> : <EyeOff size={18} aria-hidden />}
         </button>
       )}
     </div>
