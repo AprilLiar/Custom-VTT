@@ -11,12 +11,17 @@ import { getStage } from './api.js';
 // use this hook, since it must diff only `activeScene?.id` against what it
 // personally last saw over the SOCKET, never seed from this hook's own
 // initial REST fetch (a page load must never force-navigate on its own).
-export function useStage() {
+//
+// `identity` rides along to the initial REST fetch only (see getStage's own
+// comment) — the SOCKET side needs no identity argument here, since the
+// server already knows a connected socket's own identity (socket.data.identity)
+// and redacts stage:updated per-socket before it ever reaches this listener.
+export function useStage(identity) {
   const [stage, setStage] = useState(null);
 
   useEffect(() => {
     let alive = true;
-    getStage()
+    getStage(identity)
       .then((s) => {
         if (alive) setStage(s);
       })
@@ -27,7 +32,8 @@ export function useStage() {
       alive = false;
       socket.off('stage:updated', onUpdated);
     };
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [identity?.role, identity?.characterId]);
 
   return stage;
 }

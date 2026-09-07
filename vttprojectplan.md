@@ -1586,6 +1586,15 @@ placement Tic still being behind the new round's start is what separates the two
 - **Compendium/CharacterList mobile folder drawer + tap-to-move (task #225):** the fixed `w-44` `FolderTreeNav` sidebar (both character-list folders and move Disciplines) collapses below `md:` into a "📁 {current folder} · Change…" trigger button opening the same `FolderTreeNav` in a `DialogShell`. **Filing a Move into a Discipline already had a tap path** (`MoveCreator.jsx`'s Discipline `<select>`, reachable via Edit) so no new dialog was needed there; **filing a character into a folder had none** (`character:set_folder` only ever fired from a native `dragstart`/`drop` pair) — a new `MoveToFolderDialog` (GM-only, a ⇄ button beside each card's existing ✕ delete) lists every folder flattened with its indent depth and emits the same event a drop would. `FolderTreeNav`'s own rename/delete icon buttons and its "+ new folder" row picked up the same 44px bump as the audit above. Granting a Move/Perk to a character already had a tap-only path too (the per-card **Grant…** checklist, `GrantList`) alongside its drag-onto-a-character-rail shortcut — the rail stays `hidden md:block` unchanged, since the checklist already covers mobile with no functional loss; its checkbox rows and the style-filter icon buttons picked up the same touch-target treatment.
 - **Image payload perf pass (task #227):** `vitruvian_image_data`/`vitruvian_image_mime_type` (a full base64 backdrop image per character) is only ever read on a character's *own* Core Stats tab, via the single-character `GET /api/characters/:id` fetch — never in a roster/grid view. `GET /api/characters` and `GET /api/combat` (both of which return *every* character at once) now strip both fields before responding (`omitVitruvianArt` in `server/index.js`) instead of sending a full extra portrait-sized image per seated/listed character that nothing on those views ever reads; `GET /api/characters/:id` is untouched, so Core Stats' own custom-art upload/display is unaffected. Portrait thumbnails in scrollable rosters (`CharacterList.jsx`'s grid, `Compendium.jsx`/`PerksCompendium.jsx`'s character rail, `CombatArena.jsx`'s roster drawer) got `loading="lazy"`; the Arena's own always-visible seated-participant portrait did not, since lazy-loading an already-in-viewport image has no benefit.
 - **Installable PWA (14.9A, task #228):** `client/public/manifest.webmanifest` (name/icons/`display: standalone`/theme colors, brand-red-on-near-black icon at 192px/512px) plus `client/public/sw.js`, registered from `main.jsx` after page load. The app is a live Socket.io session with no meaningful offline mode, so the service worker's only job is a faster reload on a flaky connection: cache-first for hashed `/assets/*` build output (safe — a content-hashed filename never goes stale), network-first-with-shell-fallback for navigations, and `/api/*`/`/socket.io/*` are never intercepted (always live). No Wake Lock, no push notifications — out of scope per 14.10.
+- **Card action buttons moved into the picture's own header (bugfix, decided, revised).** The ⇄
+  move-to-folder and ✕ delete buttons from task #225 above lived in the SAME row as the character's
+  own name, alongside the NPC and folder-path badges — on a narrow card (2 columns on mobile) two
+  44px touch targets plus both badges left the name almost no room, routinely truncating it down to
+  a single letter before the ellipsis. Moved into a small overlay bar at the top of the portrait
+  image itself (`CharacterList.jsx`), same hover-reveal mechanics as before (`.hover-only-action`
+  still makes them default-visible on a coarse pointer) and the same corner-button chip look
+  StageRoster's own Resize/Remove/Hide buttons already use (`rounded-full border bg-zinc-900/80`).
+  The name row now holds only the name (`flex-1 min-w-0 truncate`) plus the two badges.
 - **Playwright mobile device matrix (task #229):** `playwright.config.js` (repo root) defines 5 projects against `e2e-mobile/*.spec.js` — `mobile-chrome` (Pixel 7), `tablet` (Galaxy Tab S4), `mobile-landscape` (Pixel 7 landscape — wide enough to legitimately fall back to the desktop nav pattern at `md:`, which the specs account for rather than assume bottom-nav everywhere), `320-fallback` (a forced 320×568 viewport, the 14.3A floor), and `mobile-safari` (iPhone 13, WebKit) for CI/full-install environments — this sandbox only ships a Chromium binary (see environment notes), so the four Chromium-based projects pin `launchOptions.executablePath` to it rather than the version-mismatched revision `@playwright/test` would otherwise try to download. Specs cover: no-horizontal-overflow smoke checks across Arena/Characters/Compendium at every project's viewport, the Characters/Compendium folder drawers and the character-to-folder move dialog, Character Sheet tab-switching, the Arena's roster drawer and single-row Tic Counter, and `DialogShell`'s shared backdrop-click/Escape/44px-close-button behavior. Run via `npm run test:mobile`.
 
 ## Game mechanic — The Weapon (decided, new)
@@ -4642,6 +4651,116 @@ of the cinematic view) opens a dialog with two shapes behind a switch:
   active* Scene's own notes, matching how the rest of the Scene tab already treats "one Scene at a
   time" as the working set. With no Scene active, the Scene Notes side shows a message instead
   (Notes need a concrete Scene to pin to); the Master Note side is unaffected either way.
+
+**Notes dialog: full-height workspace + two-column saved boxes (decided, revised).** The original
+layout stacked every Scene Note inline in one scrollable list, each in a fixed `rows={4}` textarea —
+a note longer than a few lines was only readable by scrolling inside its own cramped box. Reworked
+into three regions (`SceneNotesDialog.jsx`): a `editingId` state (`null` | `'new'` | a note's id)
+tracks which ONE note, if any, sits in a full-height middle workspace (`NoteEditor`, no fixed `rows`,
+`flex-1` instead); every other note renders as a compact clickable box (`NoteColumn`) in a side
+column, split half-into-left-then-half-into-right (`Math.ceil(others.length / 2)`) rather than a
+fixed per-column capacity nothing in the request specified. Saving (create OR update) clears
+`editingId` immediately — before the server's own echo lands — which is what actually moves a note
+out of the workspace and into a box the moment you're done with it; clicking a box moves that note
+BACK into the workspace for further editing, excluding it from the side columns while it's there.
+Each side column is independently `max-h-[70dvh] overflow-y-auto` (nested inside DialogShell's own
+single shared scroll container) so a long list of saved notes never pushes the workspace itself
+off-screen — the actual fix for "impossible to see it fully without scrolling."
+
+**Manually-placed summons are anchored to the Scene's own artwork, not to each viewer's own screen
+shape (bugfix, decided, revised).** Reported live: a GM repositioning a character saw it land in a
+visibly different vertical spot on a Player's own screen — same horizontal position, wrong height.
+Root cause: `pos_x`/`pos_y` were a fraction of the DRAGGING viewer's own measured stage box, and the
+backdrop renders with `object-cover`, which crops that background differently depending on how each
+viewer's OWN aspect ratio compares to the image's natural one — a wide desktop GM and a narrower
+tablet Player crop the same picture differently, so "53.9% down MY OWN box" lands at a different
+point in the ARTWORK for each of them, usually most visibly on the vertical axis (stage-box aspect
+ratios tend to vary more in height-to-width proportion across devices than the images uploaded for
+them do). Fixed with a new `client/src/lib/sceneProjection.js`: `stageToImageFraction`/
+`imageFractionToStage` replicate `object-cover`'s own crop math to convert between "a fraction of
+THIS viewer's stage box" and "a fraction of the image's own natural content" — the latter is what
+`scene_summons.pos_x`/`pos_y` store and transmit now, so "the GM put them here" means the same
+visual spot in the picture for every viewer, projected back through each one's own crop at render
+time. `ScenePage.jsx` captures the backdrop `<img>`'s own `naturalWidth`/`naturalHeight` via
+`onLoad` (reset whenever `backgroundSrc` changes) and now tracks `stageHeight` alongside the
+pre-existing `stageWidth`; both flow down to `StageRoster.jsx`, which applies the conversion at both
+ends — `stageToImageFraction` when a drag commits, `imageFractionToStage` when a manual figure
+renders. Degrades to a plain stage-box fraction (the original behavior) whenever there's no image
+loaded yet, so nothing breaks for a Scene with no backdrop. Auto-placed (never-dragged) figures are
+untouched — `layoutStage`'s own left/right cramming was never image-relative to begin with and
+still isn't; only the manual-position branch changed.
+
+**Hidden (decided, new).** A per-summon GM-only toggle — `scene_summons.is_hidden`
+(`INTEGER NOT NULL DEFAULT 0`, a plain `ensureColumn`, no schema split needed the way Notes required
+one). A new corner button in `StageRoster.jsx`, stacked directly under the ✕ (same reveal mechanics:
+hover or tap-select), GM-only regardless of ownership — unlike every other corner control, this does
+NOT go through `mayWriteScenePicture`/`canEditSummon`, since hiding is a narrative tool the GM wields
+over the whole table, not a "may I edit my own character" permission. A Hidden summon stays fully
+present and editable for the GM (rendered at 50% opacity) but is genuinely absent — not just
+CSS-hidden — from every non-GM view, **including the character's own Player** ("for Players, the
+Hidden character becomes fully invisible" is read literally, not scoped to "everyone but the
+owner"): `server/index.js`'s `getStagePayload` was split into `buildStagePayload` (the unfiltered
+snapshot, now also carrying `is_hidden` and `drawings`, see below) and `stagePayloadFor(built,
+viewer)` (drops any `is_hidden` row for a non-GM viewer), mirroring `buildCombatUpdate`/
+`combatUpdateFor`'s existing split exactly. `emitStageUpdated()` replaces every former
+`io.emit('stage:updated', …)` call site with a per-socket loop (`buildCombatUpdate`'s own
+`emitCombatUpdated` shape) — a Hidden summon must never cross the wire to a non-GM socket even
+transiently, so a single unscoped broadcast was no longer correct once Hidden existed. `GET
+/api/stage` picked up the same redaction and now takes an `identity` query param (`getStage`,
+`useStage`) the same way `GET /api/combat` already does, for the same reason.
+
+**Scene drawings — a shared pen/eraser annotation layer (decided, new).** The opposite trust model
+from GM Notes: open to BOTH roles (a Player may draw and erase exactly like a GM), and the
+`scene_drawings` table deliberately carries no author column at all ("do not keep info about who
+drew something, it is just a drawing for everybody"). Each row is one stroke: `scene_id` (`NOT
+NULL`, `ON DELETE CASCADE`), `points` (JSON array of `[x, y]` pairs — fractions of the Scene's own
+background image, the same `sceneProjection.js` coordinate space `pos_x`/`pos_y` use, for the same
+hard-sync reasoning above), `color`, `width` (also an image-relative fraction, so a line reads the
+same relative thickness on every viewer's own screen), and `is_eraser`. An eraser stroke is not a
+deletion or a geometric clip against earlier strokes — it's an ordinary stroke row that every client
+composites with `globalCompositeOperation: 'destination-out'` instead of `'source-over'`
+(`SceneDrawingLayer.jsx`) when replaying every row in `id` order: the ORDER is the eraser, since a
+stroke only ever erases what was already painted before it, never anything drawn after — matching
+what a person watching an eraser pass over a real page would expect, without needing any
+point-in-polygon math. `scene_draw:add` resolves `scene_id` server-side off the active Scene (same
+pattern `stage:summon` established — refused outright with no active Scene), and validates/clamps
+points (max 4000, each coordinate clamped to `[0,1]`) and width (`[0.001, 0.2]`) rather than trusting
+a client verbatim. `scene_draw:clear` — the eraser tool's own "double-press" gesture client-side —
+wipes every stroke on the active Scene regardless of who drew it (there's no author column to filter
+by even if this wanted to); deliberately NOT GM-gated, since the whole feature is a shared, anonymous
+tool by design, so the ability to clear it is shared too. Drawings ride the SAME `stage:updated`
+payload as summons (`buildStagePayload`'s own `drawings` field, `ORDER BY id ASC` — replay order is
+load-bearing, unlike `summons`' own `DESC`) rather than a separate event, so they stay in sync with
+Scene switches automatically through the subscription `useStage()` already provides.
+`SceneDrawingLayer` is a `<canvas>` rendered as a SIBLING of `StageRoster`, not nested inside it —
+nesting would inherit that component's own low, capped stacking context (see the corner-button/GM-
+drawer bugfix above) and hide a drawing under a manually-placed figure. Its own `STAGE_DRAWING_Z`
+(700) sits above `StageRoster`'s `MANUAL_Z` (500, drawings render OVER steady-state figures, the
+common "circle this, point at that" GM annotation use) but below `ACTIVE_GESTURE_Z` (9000, a figure
+actively being dragged/resized right now still visually wins). The canvas only captures the stage's
+pointer events (`pointer-events: auto`) while a tool is actually selected (`'pen'`/`'erase'`) — at
+the default `'select'` tool it's `pointer-events: none`, letting every event fall through to
+`StageRoster`'s own figures beneath regardless of the canvas's z-index. Because that capture spans
+the WHOLE stage while active, every other corner control that must stay reachable regardless of the
+active tool was bumped above `STAGE_DRAWING_Z` too: `TopLeftControls` and `PlayerSummonDock` both
+moved from `z-20` to `z-[1000]`, and the new `SceneDrawToolbar` itself sits at `z-[950]` — the exact
+same class of bug the drawer/corner-button fix above already caught once, deliberately avoided here
+by getting the ordering right from the start rather than discovering it live. A stroke commits once,
+on release, never mid-gesture — the same trade-off `stage:reposition_summon`/`stage:resize_summon`
+already make, for the identical reason (streaming every point would re-render every other viewer's
+canvas at pointer-move frequency for a line only the drawer can see move live anyway); the drawer's
+OWN in-progress stroke still paints locally in real time for instant feedback, just not broadcast
+until it's done. `SceneDrawToolbar` docks bottom-right (the one corner nothing else claims — GM
+drawers own the full left/right edges, `PlayerSummonDock` owns bottom-left, `TopLeftControls` owns
+top-left), available to both roles, hidden with the rest of the UI chrome while Hide Interface is on
+(the canvas itself, like `StageRoster`, is not — drawings are part of the Scene, not UI chrome).
+Pen: color swatch + width slider. Eraser: width slider only, plus the clear-all double-press.
+Clicking the already-active tool's own button returns to `'select'`, the same "press it again"
+shape `TopLeftControls`' hide/show toggle already uses. Last-used pen color/width and eraser width
+are remembered **per device** (`sceneSettings.js`'s existing localStorage convention, extended:
+`loadSceneDrawColor`/`loadScenePenWidth`/`loadSceneEraserWidth`), re-saved on every change rather
+than read once — "remember it for each user" means live, not just at load, and this app's no-login
+model has no other place for a per-user setting to live anyway.
 
 ## Implementation Risks & Recommendations
 A scope check for whoever picks this up: this grew well past "semi-simple website" over the course of design. Most of it (dice, inventory, injuries, stances, perks, counters) is standard CRUD-plus-broadcast work. Combat Timing (Tics/Startup/reveal/overflow) is the one genuinely hard piece — real software complexity, not just more forms — and it's also the most original part of the system, which is exactly why it deserves the most care rather than being rushed alongside everything else.

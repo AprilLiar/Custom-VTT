@@ -8,7 +8,10 @@ import SummonPicker from './SummonPicker.jsx';
 // to their own character only (the GM's drawer never lists a PC — a Player
 // summons themselves from here, nowhere else). Docked bottom-left so it
 // never collides with the corner "Back to the Arena" link (top-left) or
-// either GM-only drawer (both absent for a Player anyway).
+// either GM-only drawer (both absent for a Player anyway). z-[1000] —
+// matches ScenePage's own TopLeftControls value, so this stays clickable
+// even while SceneDrawingLayer's canvas is capturing pointer events for an
+// active draw/erase tool (its own STAGE_DRAWING_Z is 700).
 export default function PlayerSummonDock({ characterId, summons }) {
   const characters = useRoster();
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -24,12 +27,12 @@ export default function PlayerSummonDock({ characterId, summons }) {
         type="button"
         onClick={() => setPickerOpen(true)}
         title={mySummon ? 'Change how you appear on stage' : 'Summon yourself onto the stage'}
-        className={`absolute bottom-3 left-3 z-20 flex items-center gap-2 panel-cut-sm border p-1.5 pr-3 ${
+        className={`absolute bottom-3 left-3 flex items-center gap-2 panel-cut-sm border p-1.5 pr-3 ${
           mySummon
             ? 'border-brand-500 bg-brand-900/60 text-brand-200'
             : 'border-zinc-700 bg-zinc-900/80 text-zinc-300 hover:border-brand-500'
         }`}
-        style={{ marginBottom: 'var(--safe-bottom)', marginLeft: 'var(--safe-left)' }}
+        style={{ zIndex: 1000, marginBottom: 'var(--safe-bottom)', marginLeft: 'var(--safe-left)' }}
       >
         <Thumb record={character} name={character.name} size="h-8 w-8" />
         <span className="text-xs font-semibold">{mySummon ? 'On stage' : 'Summon yourself'}</span>
