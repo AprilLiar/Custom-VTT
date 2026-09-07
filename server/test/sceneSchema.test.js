@@ -13,10 +13,14 @@
 //     is nothing to convert: deleting the owner should simply take these
 //     rows with it, and the DB should not refuse the delete the way it
 //     refuses one with relationship_nodes still pointing at it.
-//  3. **scene_summons enforces "at most one seat per owner"** via two
-//     separate UNIQUE columns rather than one — SQLite treats NULLs as
-//     distinct under UNIQUE, so a character's own UNIQUE(character_id) does
-//     not collide with a temp_npc's rows (all NULL on that column) at all.
+//  3. **scene_summons enforces "at most one seat per owner, per Scene"** via
+//     two separate UNIQUE(scene_id, ...) columns rather than one — SQLite
+//     treats NULLs as distinct under UNIQUE, so a character's own
+//     UNIQUE(scene_id, character_id) does not collide with a temp_npc's rows
+//     (all NULL on that column) at all. Scoped by scene_id (revised — see
+//     vttprojectplan.md's "Summons are Scene-specific" bullet): the same
+//     owner can hold independent seats in two different Scenes at once,
+//     which is the whole point of preparing Scenes in advance.
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -57,6 +61,10 @@ const makePicture = async (ownerColumn, ownerId) => {
   );
   return Number(result.lastInsertRowid);
 };
+const makeScene = async (name) => {
+  const result = await run('INSERT INTO scenes (name) VALUES (?)', [`${name}-${++seq}`]);
+  return Number(result.lastInsertRowid);
+};
 
 test('a fresh boot creates every Scene table with the columns each surface reads', async () => {
   const tables = await all(
@@ -79,7 +87,7 @@ test('a fresh boot creates every Scene table with the columns each surface reads
   for (const column of ['character_id', 'temp_npc_id', 'name', 'image_data', 'image_mime_type']) {
     assert.match(byName.get('scene_pictures'), new RegExp(`\\b${column}\\b`));
   }
-  for (const column of ['character_id', 'temp_npc_id', 'scene_picture_id', 'side']) {
+  for (const column of ['scene_id', 'character_id', 'temp_npc_id', 'scene_picture_id', 'side', 'pos_x', 'pos_y', 'scale']) {
     assert.match(byName.get('scene_summons'), new RegExp(`\\b${column}\\b`));
   }
 });
@@ -126,73 +134,109 @@ test('a Scene Picture belongs to exactly one owner — never both, never neither
 });
 
 test('a stage summon belongs to exactly one owner, same rule as a Scene Picture', async () => {
+  const scene = await makeScene('owner-scene');
   const character = await makeCharacter('summon-owner', 'pc');
   const tempNpc = await makeTempNpc('summon-npc');
   const picture = await makePicture('character_id', character);
 
   await assert.rejects(
     run(
-      "INSERT INTO scene_summons (character_id, temp_npc_id, scene_picture_id, side) VALUES (?, ?, ?, 'left')",
-      [character, tempNpc, picture]
+      "INSERT INTO scene_summons (scene_id, character_id, temp_npc_id, scene_picture_id, side) VALUES (?, ?, ?, ?, 'left')",
+      [scene, character, tempNpc, picture]
     ),
     /CHECK|constraint/i
   );
   await assert.rejects(
-    run("INSERT INTO scene_summons (scene_picture_id, side) VALUES (?, 'left')", [picture]),
+    run("INSERT INTO scene_summons (scene_id, scene_picture_id, side) VALUES (?, ?, 'left')", [scene, picture]),
     /CHECK|constraint/i
+  );
+});
+
+test('a stage summon always belongs to a Scene — scene_id is NOT NULL', async () => {
+  const character = await makeCharacter('scene-less', 'pc');
+  const picture = await makePicture('character_id', character);
+  await assert.rejects(
+    run(
+      "INSERT INTO scene_summons (character_id, scene_picture_id, side) VALUES (?, ?, 'left')",
+      [character, picture]
+    ),
+    /NOT NULL|constraint/i
   );
 });
 
 test('side is constrained to the two the stage actually renders', async () => {
+  const scene = await makeScene('side-scene');
   const character = await makeCharacter('side-owner', 'pc');
   const picture = await makePicture('character_id', character);
   await assert.rejects(
     run(
-      "INSERT INTO scene_summons (character_id, scene_picture_id, side) VALUES (?, ?, 'center')",
-      [character, picture]
+      "INSERT INTO scene_summons (scene_id, character_id, scene_picture_id, side) VALUES (?, ?, ?, 'center')",
+      [scene, character, picture]
     ),
     /CHECK|constraint/i
   );
   await run(
-    "INSERT INTO scene_summons (character_id, scene_picture_id, side) VALUES (?, ?, 'left')",
-    [character, picture]
+    "INSERT INTO scene_summons (scene_id, character_id, scene_picture_id, side) VALUES (?, ?, ?, 'left')",
+    [scene, character, picture]
   );
 });
 
-test('a character (or Temp NPC) holds at most one seat on stage at a time', async () => {
+test('a character (or Temp NPC) holds at most one seat per Scene at a time', async () => {
+  const scene = await makeScene('one-seat-scene');
   const character = await makeCharacter('one-seat', 'pc');
   const pictureA = await makePicture('character_id', character);
   const pictureB = await makePicture('character_id', character);
   await run(
-    "INSERT INTO scene_summons (character_id, scene_picture_id, side) VALUES (?, ?, 'left')",
-    [character, pictureA]
+    "INSERT INTO scene_summons (scene_id, character_id, scene_picture_id, side) VALUES (?, ?, ?, 'left')",
+    [scene, character, pictureA]
   );
-  // The same character trying to hold a SECOND seat (a different picture) is
-  // the shape a bad handler could produce if it inserted instead of updating
-  // an existing summon — UNIQUE(character_id) refuses it outright.
+  // The same character trying to hold a SECOND seat on the SAME Scene (a
+  // different picture) is the shape a bad handler could produce if it
+  // inserted instead of updating an existing summon — UNIQUE(scene_id,
+  // character_id) refuses it outright.
   await assert.rejects(
     run(
-      "INSERT INTO scene_summons (character_id, scene_picture_id, side) VALUES (?, ?, 'left')",
-      [character, pictureB]
+      "INSERT INTO scene_summons (scene_id, character_id, scene_picture_id, side) VALUES (?, ?, ?, 'left')",
+      [scene, character, pictureB]
     ),
     /UNIQUE|constraint/i
   );
 
-  // A Temp NPC's own UNIQUE(temp_npc_id) is independent — two different Temp
-  // NPCs, both NULL on character_id, do not collide with each other, because
-  // SQLite treats NULLs as distinct under UNIQUE.
+  // A Temp NPC's own UNIQUE(scene_id, temp_npc_id) is independent — two
+  // different Temp NPCs, both NULL on character_id, do not collide with
+  // each other, because SQLite treats NULLs as distinct under UNIQUE.
   const npcA = await makeTempNpc('roster-a');
   const npcB = await makeTempNpc('roster-b');
   const pictureNpcA = await makePicture('temp_npc_id', npcA);
   const pictureNpcB = await makePicture('temp_npc_id', npcB);
   await run(
-    "INSERT INTO scene_summons (temp_npc_id, scene_picture_id, side) VALUES (?, ?, 'right')",
-    [npcA, pictureNpcA]
+    "INSERT INTO scene_summons (scene_id, temp_npc_id, scene_picture_id, side) VALUES (?, ?, ?, 'right')",
+    [scene, npcA, pictureNpcA]
   );
   await run(
-    "INSERT INTO scene_summons (temp_npc_id, scene_picture_id, side) VALUES (?, ?, 'right')",
-    [npcB, pictureNpcB]
+    "INSERT INTO scene_summons (scene_id, temp_npc_id, scene_picture_id, side) VALUES (?, ?, ?, 'right')",
+    [scene, npcB, pictureNpcB]
   );
+});
+
+test('the same character can hold independent seats in two different Scenes at once', async () => {
+  // The whole point of the scene_id-scoped UNIQUE (revised from a
+  // table-wide one) — preparing several Scenes in advance means the same
+  // character is routinely seated in more than one at a time.
+  const sceneA = await makeScene('prep-a');
+  const sceneB = await makeScene('prep-b');
+  const character = await makeCharacter('multi-scene', 'pc');
+  const picture = await makePicture('character_id', character);
+  await run(
+    "INSERT INTO scene_summons (scene_id, character_id, scene_picture_id, side) VALUES (?, ?, ?, 'left')",
+    [sceneA, character, picture]
+  );
+  await run(
+    "INSERT INTO scene_summons (scene_id, character_id, scene_picture_id, side) VALUES (?, ?, ?, 'left')",
+    [sceneB, character, picture]
+  );
+  const rows = await all('SELECT * FROM scene_summons WHERE character_id = ?', [character]);
+  assert.equal(rows.length, 2);
 });
 
 test('scene_state seeds a single row, id fixed at 1', async () => {
@@ -214,11 +258,12 @@ test('foreign keys are enforced on this connection', async () => {
 });
 
 test('deleting a character CASCADEs their own Scene Pictures and stage seat away — unlike a relationship node, nothing here blocks the delete', async () => {
+  const scene = await makeScene('doomed-owner-scene');
   const character = await makeCharacter('doomed-owner', 'pc');
   const picture = await makePicture('character_id', character);
   await run(
-    "INSERT INTO scene_summons (character_id, scene_picture_id, side) VALUES (?, ?, 'left')",
-    [character, picture]
+    "INSERT INTO scene_summons (scene_id, character_id, scene_picture_id, side) VALUES (?, ?, ?, 'left')",
+    [scene, character, picture]
   );
 
   // The point of the contrast: relationship_nodes.character_id has no
@@ -238,11 +283,12 @@ test('deleting a character CASCADEs their own Scene Pictures and stage seat away
 });
 
 test('deleting a Temp NPC CASCADEs their own Scene Pictures and stage seat away', async () => {
+  const scene = await makeScene('doomed-npc-scene');
   const tempNpc = await makeTempNpc('doomed-npc');
   const picture = await makePicture('temp_npc_id', tempNpc);
   await run(
-    "INSERT INTO scene_summons (temp_npc_id, scene_picture_id, side) VALUES (?, ?, 'right')",
-    [tempNpc, picture]
+    "INSERT INTO scene_summons (scene_id, temp_npc_id, scene_picture_id, side) VALUES (?, ?, ?, 'right')",
+    [scene, tempNpc, picture]
   );
   await run('DELETE FROM temp_npcs WHERE id = ?', [tempNpc]);
   assert.equal(
@@ -251,6 +297,25 @@ test('deleting a Temp NPC CASCADEs their own Scene Pictures and stage seat away'
   );
   assert.equal(
     (await all('SELECT * FROM scene_summons WHERE temp_npc_id = ?', [tempNpc])).length,
+    0
+  );
+});
+
+test('deleting a Scene CASCADEs its own stage seats away, at the schema level', async () => {
+  // The server also does this deletion explicitly (scene:delete's own
+  // cascade block, server/index.js) so a stale seat is never a race with
+  // the handler — but the FK's own ON DELETE CASCADE is what actually
+  // guarantees it if anything else ever deletes a Scene row directly.
+  const scene = await makeScene('doomed-scene');
+  const character = await makeCharacter('scene-doomed-owner', 'pc');
+  const picture = await makePicture('character_id', character);
+  await run(
+    "INSERT INTO scene_summons (scene_id, character_id, scene_picture_id, side) VALUES (?, ?, ?, 'left')",
+    [scene, character, picture]
+  );
+  await run('DELETE FROM scenes WHERE id = ?', [scene]);
+  assert.equal(
+    (await all('SELECT * FROM scene_summons WHERE scene_id = ?', [scene])).length,
     0
   );
 });

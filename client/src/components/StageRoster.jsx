@@ -1,6 +1,6 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
-import { Maximize2 } from 'lucide-react';
+import { Maximize2, X } from 'lucide-react';
 import { layoutStage, SLOT_WIDTH, SLOT_GAP } from '../lib/sceneLayout.js';
 import { socket } from '../socket.js';
 import HaloText from './HaloText.jsx';
@@ -18,6 +18,26 @@ const BASE_HEIGHT_DVH = 70;
 // gesture.
 const MANUAL_Z = 500;
 const ACTIVE_GESTURE_Z = 9000;
+// This whole roster lives inside its own stacking context (the wrapper div
+// at the bottom of this file, `z-[1]` on a `position: absolute` box) — a
+// deliberate cap so a crowded roster's own internal z values (1..N per
+// side, or MANUAL_Z/ACTIVE_GESTURE_Z for a placed/dragged figure) only ever
+// compete with EACH OTHER, never with the GM drawers' own z-10
+// (SceneCastDrawer/SceneListDrawer, ScenePage.jsx) — bleeding art behind a
+// translucent drawer is intentional (this file's own header comment).
+// CSS stacking contexts nest strictly: no INTERNAL z-index, however high,
+// can ever out-rank a SIBLING context of the wrapper itself — confirmed
+// live, the hard way: MANUAL_Z=500 and even ACTIVE_GESTURE_Z=9000 both
+// still lose to the drawer's z-10, because they're only ever compared
+// against each other inside this wrapper's own capped context, not against
+// the drawer directly. A figure's corner buttons can visually reveal on
+// `:hover` regardless (opacity doesn't care about paint order) while still
+// being unclickable underneath the drawer — the bug this constant fixes.
+// The only way to actually clear a sibling context is to promote the
+// WRAPPER itself, so this is applied to that div's own z-index, not to any
+// one figure — see `anyControlsShown` below. z-15 clears the drawers'
+// z-10 while staying below TopLeftControls' own z-20.
+const CONTROLS_Z = 15;
 // Below this many pixels of real pointer movement, a press-and-release is
 // read as a tap, not a drag — matches RelationshipNode.jsx's own `moved > 4`
 // threshold for the same reason: a click that moved nothing should not
@@ -168,6 +188,28 @@ export default function StageRoster({
 }) {
   const reduceMotion = useReducedMotion();
 
+  // The resize handle and the un-summon "x" are hidden by default and
+  // revealed two ways: real hover (CSS, `group-hover:`, desktop's own
+  // affordance for free) and a completed tap that DIDN'T turn into a drag
+  // (this state, toggled in the pointerup handler below) — for touch,
+  // where there is no hover. **Deliberately not this app's usual
+  // `.hover-only-action` convention** (index.css: a hover-only control
+  // defaults to always-visible on a coarse pointer, since there's nothing
+  // to hover) — here a single press is explicitly meant to be the reveal
+  // gesture, not "just always show it," so a bespoke per-figure toggle
+  // replaces that default for these two controls only. Single-select: at
+  // most one figure's controls are ever showing from a tap, matching
+  // "press on them once" rather than every editable figure lighting up at
+  // once.
+  const [selectedId, setSelectedId] = useState(null);
+
+  // Real-hover companion to selectedId's tap-toggle (above) — tracked in JS,
+  // not left purely to CSS `group-hover`, because the z-index bump that
+  // clears the GM drawers (CONTROLS_Z, above) has to be React-driven to
+  // land in the same render as everything else; a CSS-only bump can't win
+  // against the inline zIndex this component already sets.
+  const [hoveredId, setHoveredId] = useState(null);
+
   // GM may drag/resize anyone; a Player only their own character's summon
   // — the exact rule the server's mayWriteScenePicture enforces, mirrored
   // here so a handle only ever appears where the write would actually
@@ -237,7 +279,15 @@ export default function StageRoster({
         els.wrapper.style.zIndex = '';
         els.img.style.zIndex = '';
       }
-      if (!g.moved) return;
+      if (!g.moved) {
+        // A tap, not a drag — the resize-handle/x gesture never reaches
+        // here at all (both call stopPropagation on their own pointerdown),
+        // so this is always a tap on the figure itself. Toggles this one
+        // figure's controls; tapping a different figure swaps which one is
+        // showing rather than stacking (selectedId holds at most one id).
+        if (g.type === 'move') setSelectedId((cur) => (cur === g.summonId ? null : g.summonId));
+        return;
+      }
       if (g.type === 'move') {
         const rect = wrapperRef.current?.getBoundingClientRect();
         if (!rect) return;
@@ -320,6 +370,18 @@ export default function StageRoster({
     };
   };
 
+  // No dedicated "remove from stage" write exists (Scene tab plan, decision
+  // #4/#6) — un-summoning has only ever been stage:summon's own toggle,
+  // re-selecting the SAME picture that's already showing. This button
+  // reuses that exact toggle rather than adding a second way to clear a
+  // seat.
+  const unsummon = (e, entry) => {
+    e.stopPropagation();
+    if (!canEditSummon(entry)) return;
+    socket.emit('stage:summon', { scenePictureId: entry.scene_picture_id });
+    setSelectedId((cur) => (cur === entry.id ? null : cur));
+  };
+
   const setRefs = (id) => ({
     wrapper: (el) => {
       const cur = elRefs.current.get(id) ?? {};
@@ -334,6 +396,15 @@ export default function StageRoster({
   const renderFigure = (entry, { manual: isManual }) => {
     const editable = canEditSummon(entry);
     const refs = setRefs(entry.id);
+    const selected = selectedId === entry.id;
+    // Hidden by default; shown on real hover (`group-hover`, desktop, free)
+    // or when tap-selected (`selected`, mobile — see the `selectedId`
+    // comment above). `pointer-events-none` while hidden, not just
+    // `opacity-0`, so an invisible corner button can never steal the
+    // pointerdown that should start a drag there instead.
+    const cornerButtonClass = `absolute flex h-8 w-8 items-center justify-center rounded-full border border-zinc-600 bg-zinc-900/80 text-zinc-300 transition-opacity hover:border-brand-500 hover:text-brand-300 ${
+      selected ? 'opacity-100' : 'opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto'
+    }`;
     const positionStyle = isManual
       ? {
           left: `${(entry.pos_x ?? 0) * 100}%`,
@@ -362,11 +433,15 @@ export default function StageRoster({
           animate={IDLE}
           exit={EXIT}
           transition={reduceMotion ? { duration: 0 } : { type: 'spring', stiffness: 300, damping: 28 }}
-          // `relative`: the nameplate and the resize handle below are both
+          // `relative`: the nameplate and the corner buttons below are all
           // positioned against THIS box, which (having no width of its
           // own) always ends up exactly as wide as the `img` it wraps.
-          className="relative"
+          // `group`: what the corner buttons' own `group-hover:` reveal
+          // hangs off (see cornerButtonClass above).
+          className="group relative"
           style={{ cursor: editable ? 'grab' : undefined, touchAction: editable ? 'none' : undefined }}
+          onMouseEnter={editable ? () => setHoveredId(entry.id) : undefined}
+          onMouseLeave={editable ? () => setHoveredId((cur) => (cur === entry.id ? null : cur)) : undefined}
         >
           {showNameplates && entry.name && (
             <HaloText
@@ -397,16 +472,39 @@ export default function StageRoster({
               onPointerDown={(e) => startResize(e, entry)}
               title="Resize"
               aria-label="Resize"
-              className="absolute bottom-0 right-0 flex h-8 w-8 items-center justify-center rounded-full border border-zinc-600 bg-zinc-900/80 text-zinc-300 hover:border-brand-500 hover:text-brand-300"
+              className={`${cornerButtonClass} left-0 top-0`}
               style={{ cursor: 'ns-resize', touchAction: 'none' }}
             >
               <Maximize2 size={14} aria-hidden />
+            </button>
+          )}
+          {editable && (
+            <button
+              type="button"
+              onPointerDown={(e) => unsummon(e, entry)}
+              title="Remove from stage"
+              aria-label="Remove from stage"
+              className={`${cornerButtonClass} right-0 top-0`}
+              style={{ touchAction: 'none' }}
+            >
+              <X size={14} aria-hidden />
             </button>
           )}
         </motion.div>
       </div>
     );
   };
+
+  // Whether ANY figure currently has its corner controls showing (hover or
+  // tap-select) — see CONTROLS_Z's own comment: promoting the WRAPPER
+  // itself, not any one figure, is the only way to actually clear the
+  // drawers' sibling stacking context. This briefly lifts the WHOLE roster
+  // above the drawers while true, not just the one figure being reached
+  // for — a minor, deliberate trade (other figures' art can flash in front
+  // of a drawer for the moment a control is open) against the alternative
+  // of a React portal, given this only ever happens for as long as a
+  // hover/selection lasts.
+  const anyControlsShown = selectedId != null || hoveredId != null;
 
   return (
     // A stacking context of its own (position + a low, fixed z-index): a
@@ -415,8 +513,10 @@ export default function StageRoster({
     // OTHER inside this box, never leak out to outrank the drawers'
     // z-10/z-20 — without this wrapper, a side with more than ~10 summons
     // (or a manually-placed one) would start painting over the GM's own
-    // controls.
-    <div ref={wrapperRef} className="absolute inset-0 z-[1]">
+    // controls. Bumped to CONTROLS_Z while `anyControlsShown` — see that
+    // constant's own comment for why a figure's corner buttons need the
+    // WRAPPER promoted, not themselves.
+    <div ref={wrapperRef} className={`absolute inset-0 ${anyControlsShown ? 'z-[15]' : 'z-[1]'}`}>
       <AnimatePresence>
         {autoPlaced.map((entry) => renderFigure(entry, { manual: false }))}
         {manual.map((entry) => renderFigure(entry, { manual: true }))}

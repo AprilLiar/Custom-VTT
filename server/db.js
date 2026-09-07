@@ -525,6 +525,56 @@ async function migrateMoveInteractionsGrappleTrigger() {
   invalidateSchemaSnapshot();
 }
 
+// scene_summons gained a NOT NULL scene_id (decided, revised — see the
+// table's own CREATE-time comment for why summons stopped being
+// Scene-independent). SQLite can't ALTER a UNIQUE constraint in place
+// either, and the UNIQUE shape itself has to change too
+// (UNIQUE(character_id) → UNIQUE(scene_id, character_id)) — so this isn't
+// a plain ensureColumn, it's the same rebuild shape as
+// migrateMoveInteractionsTrigger above. **Existing rows are dropped, not
+// copied forward** — deliberately, not an oversight: an old row predates
+// the very column this migration exists to add, so it has no Scene to
+// attach to and nothing sensible to backfill with, and scene_summons has
+// only ever held live, ephemeral "who's on stage right now" state anyway
+// (never a history worth preserving) — clearing it costs a GM one click
+// to re-summon whoever was there, the same trust already placed in this
+// table by every other write here treating it as disposable.
+//
+// **Rebuilds through `run()` directly, start to finish — never leans on
+// the still-queued `CREATE TABLE IF NOT EXISTS` above to recreate it
+// afterward.** `tableSql()` (via `schemaTables()` → `all()`) flushes
+// `ddlQueue` the moment it is called, which runs that queued CREATE
+// TABLE (and, on an existing database, no-ops it — the OLD table is still
+// there to satisfy IF NOT EXISTS) *before* this function's own body gets
+// to decide anything. Dropping the table and trusting the queue to
+// recreate it later would leave nothing queued to do so once that flush
+// has already happened — the table would simply stay gone. So the DROP
+// and the CREATE both happen here, immediately, the same as every other
+// rebuild in this file.
+async function migrateSceneSummonsSceneId() {
+  const sql = await tableSql('scene_summons');
+  if (!sql || sql.includes('scene_id')) return;
+  await run('DROP TABLE scene_summons');
+  await run(`
+    CREATE TABLE scene_summons (
+      id INTEGER PRIMARY KEY,
+      scene_id INTEGER NOT NULL REFERENCES scenes(id) ON DELETE CASCADE,
+      character_id INTEGER REFERENCES characters(id) ON DELETE CASCADE,
+      temp_npc_id INTEGER REFERENCES temp_npcs(id) ON DELETE CASCADE,
+      scene_picture_id INTEGER NOT NULL REFERENCES scene_pictures(id) ON DELETE CASCADE,
+      side TEXT NOT NULL CHECK(side IN ('left','right')),
+      pos_x REAL,
+      pos_y REAL,
+      scale REAL NOT NULL DEFAULT 1,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      CHECK ((character_id IS NULL) <> (temp_npc_id IS NULL)),
+      UNIQUE(scene_id, character_id),
+      UNIQUE(scene_id, temp_npc_id)
+    )
+  `);
+  invalidateSchemaSnapshot();
+}
+
 // chat_log.kind originally had a 2-value CHECK ('roll','message'), then grew
 // to 3 ('move_reveal'), then 4 ('lane_snapshot'), then 5 ('round_summary',
 // the Combat Automation overhaul's once-per-pair-per-round replay card —
@@ -1507,28 +1557,40 @@ export async function initDb() {
     )
   `);
 
-  // The stage roster: who is currently summoned. Deliberately NO scene_id
-  // column — a summon is independent of which Scene is active (decided: the
-  // stage follows you between backgrounds), so there is nothing for such a
-  // column to mean, and its absence is what makes that rule a schema fact
-  // rather than a habit a future handler could accidentally break.
+  // The stage roster: who is currently summoned. **Scene-specific (decided,
+  // revised).** This table originally had no `scene_id` at all, on the
+  // reasoning that a summon should follow you between backgrounds — that
+  // was reversed on the table's own request: without a Scene-scoped roster
+  // there was no way to prepare a Scene's cast and layout in advance
+  // without it bleeding into whichever Scene was actually live. `scene_id`
+  // is therefore NOT NULL, and the UNIQUEs are now per-Scene
+  // (`UNIQUE(scene_id, character_id)`) rather than table-wide — the same
+  // character can be independently prepared into more than one Scene at
+  // once, each with its own side/position/scale, which is exactly what
+  // "prepare in advance" means in practice.
   ddl(`
     CREATE TABLE IF NOT EXISTS scene_summons (
       id INTEGER PRIMARY KEY,
+      scene_id INTEGER NOT NULL REFERENCES scenes(id) ON DELETE CASCADE,
       character_id INTEGER REFERENCES characters(id) ON DELETE CASCADE,
       temp_npc_id INTEGER REFERENCES temp_npcs(id) ON DELETE CASCADE,
       scene_picture_id INTEGER NOT NULL REFERENCES scene_pictures(id) ON DELETE CASCADE,
       side TEXT NOT NULL CHECK(side IN ('left','right')),
+      pos_x REAL,
+      pos_y REAL,
+      scale REAL NOT NULL DEFAULT 1,
       created_at TEXT DEFAULT CURRENT_TIMESTAMP,
       CHECK ((character_id IS NULL) <> (temp_npc_id IS NULL)),
       -- SQLite treats NULLs as distinct under UNIQUE, so this correctly
-      -- means "one seat per character (or per temp_npc)" rather than "one
-      -- NULL-character_id row" — the same trick combat_participants relies
-      -- on for its own per-character uniqueness elsewhere.
-      UNIQUE(character_id),
-      UNIQUE(temp_npc_id)
+      -- means "one seat per character (or per temp_npc) PER SCENE" rather
+      -- than "one NULL-character_id row per Scene" — the same trick
+      -- combat_participants relies on for its own per-character uniqueness
+      -- elsewhere.
+      UNIQUE(scene_id, character_id),
+      UNIQUE(scene_id, temp_npc_id)
     )
   `);
+  await migrateSceneSummonsSceneId();
   // **Manual drag-to-place and resize (decided, new).** `pos_x`/`pos_y` are
   // fractions (0..1) of the viewer's own measured stage box, NULL meaning
   // "never manually placed — still governed by layoutStage.js's automatic
