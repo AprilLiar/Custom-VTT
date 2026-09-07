@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import { EyeOff, Maximize2, X } from 'lucide-react';
 import { layoutStage, SLOT_WIDTH, SLOT_GAP } from '../lib/sceneLayout.js';
@@ -19,25 +20,30 @@ const BASE_HEIGHT_DVH = 70;
 // gesture.
 const MANUAL_Z = 500;
 const ACTIVE_GESTURE_Z = 9000;
-// This whole roster lives inside its own stacking context (the wrapper div
-// at the bottom of this file, `z-[1]` on a `position: absolute` box) — a
+// **Two sibling containers, not one (decided, revised) — see the "two
+// containers" comment on this file's own return statement for the full
+// story.** The "crowd" container (`z-[1]`) is its own stacking context, a
 // deliberate cap so a crowded roster's own internal z values (1..N per
-// side, or MANUAL_Z/ACTIVE_GESTURE_Z for a placed/dragged figure) only ever
-// compete with EACH OTHER, never with the GM drawers' own z-10
-// (SceneCastDrawer/SceneListDrawer, ScenePage.jsx) — bleeding art behind a
-// translucent drawer is intentional (this file's own header comment).
-// CSS stacking contexts nest strictly: no INTERNAL z-index, however high,
-// can ever out-rank a SIBLING context of the wrapper itself — confirmed
-// live, the hard way: MANUAL_Z=500 and even ACTIVE_GESTURE_Z=9000 both
-// still lose to the drawer's z-10, because they're only ever compared
-// against each other inside this wrapper's own capped context, not against
-// the drawer directly. A figure's corner buttons can visually reveal on
-// `:hover` regardless (opacity doesn't care about paint order) while still
-// being unclickable underneath the drawer — the bug this constant fixes.
-// The only way to actually clear a sibling context is to promote the
-// WRAPPER itself, so this is applied to that div's own z-index, not to any
-// one figure — see `anyControlsShown` below. z-15 clears the drawers'
-// z-10 while staying below TopLeftControls' own z-20.
+// side, or MANUAL_Z for a placed figure) only ever compete with EACH
+// OTHER, never with the GM drawers' own z-10 (SceneCastDrawer/
+// SceneListDrawer, ScenePage.jsx) — bleeding art behind a translucent
+// drawer is intentional (this file's own header comment). CSS stacking
+// contexts nest strictly: no INTERNAL z-index, however high, can ever
+// out-rank a SIBLING context of that container itself — confirmed live,
+// the hard way, when this used to be ONE container whose OWN z-index got
+// bumped while any figure was selected: MANUAL_Z=500 still lost to the
+// drawer's z-10 from inside it, and promoting the WHOLE container to
+// escape that (the previous fix) then blocked every OTHER piece of Scene
+// UI underneath it for as long as ANY figure stayed selected — reported
+// live as "selecting a character makes other UI elements inaccessible."
+// This constant is now the fixed z of the SEPARATE "elevated" container
+// (always mounted, `pointer-events: none` on itself) that ONLY the
+// currently selected/hovered figure ever portals into — z-15 clears the
+// drawers' z-10 while staying below TopLeftControls'/the draw toolbar's
+// much higher values (SceneDrawToolbar.jsx), and its own `pointer-events:
+// none` is what lets a click on any OTHER, non-elevated part of the stage
+// (including a drawer control directly behind this container) reach
+// straight through it instead of being swallowed by empty space.
 const CONTROLS_Z = 15;
 // Below this many pixels of real pointer movement, a press-and-release is
 // read as a tap, not a drag — matches RelationshipNode.jsx's own `moved > 4`
@@ -177,6 +183,23 @@ const EXIT = { opacity: 0, scale: 0.85 };
 
 const clamp = (value, lo, hi) => Math.min(hi, Math.max(lo, value));
 
+// A thin wrapper around createPortal, purely so AnimatePresence (below) has
+// something valid to look at. `React.isValidElement()` — which
+// AnimatePresence relies on internally to walk its own children — returns
+// `false` for a raw createPortal() result (a Portal is its own React
+// internal type, not a plain element), so AnimatePresence silently drops
+// any portal handed to it directly: confirmed live, the hard way, as
+// "every figure vanished the moment AnimatePresence wrapped the portal
+// list" — no error, no warning, just nothing rendered. A NORMAL component
+// like this one IS a valid element from AnimatePresence's point of view,
+// so it can track this wrapper's own mount/key/removal (and therefore run
+// its child's exit animation) exactly as it would any other child — what
+// THIS component does internally, including portaling its own children
+// elsewhere in the DOM, is invisible to and unconstrained by that.
+function FigurePortal({ target, children }) {
+  return createPortal(children, target);
+}
+
 export default function StageRoster({
   summons,
   stageWidth,
@@ -224,11 +247,17 @@ export default function StageRoster({
   const [selectedId, setSelectedId] = useState(null);
 
   // Real-hover companion to selectedId's tap-toggle (above) — tracked in JS,
-  // not left purely to CSS `group-hover`, because the z-index bump that
-  // clears the GM drawers (CONTROLS_Z, above) has to be React-driven to
-  // land in the same render as everything else; a CSS-only bump can't win
-  // against the inline zIndex this component already sets.
+  // not left purely to CSS `group-hover`, because routing a figure into the
+  // elevated container (below) has to be React-driven to land in the same
+  // render as everything else; a CSS-only reveal can't move a figure to a
+  // different container.
   const [hoveredId, setHoveredId] = useState(null);
+  // The one figure, if any, currently routed into the elevated container —
+  // see this file's own return statement for why. Priority doesn't matter
+  // in practice (at most one of these is ever set on a given device: touch
+  // has no hover, and a mouse tap-select is rare enough on desktop not to
+  // collide with a real hover), so a plain fallback is enough.
+  const elevatedId = selectedId ?? hoveredId;
 
   // GM may drag/resize anyone; a Player only their own character's summon
   // — the exact rule the server's mayWriteScenePicture enforces, mirrored
@@ -257,15 +286,27 @@ export default function StageRoster({
 
   // --- drag-to-place / resize -----------------------------------------
   //
-  // `wrapperRef` is this component's own top-level box (below) — already
-  // `inset-0` inside the stage, so its rect IS the stage's own box; no ref
-  // or ResizeObserver is threaded down from ScenePage for this. `elRefs`
-  // maps a summon id to its position div AND its own `<img>`, both needed
-  // (the position div for a move-drag's `left`/`top`, the img for a
-  // resize-drag's `height`) without a second ref map. `gestureRef` holds
-  // the one in-progress gesture, if any — a plain ref, not state, so a
-  // frame of movement never triggers a re-render.
+  // `wrapperRef` is the "crowd" container's own top-level box (below) —
+  // already `inset-0` inside the stage, so its rect IS the stage's own
+  // box; no ref or ResizeObserver is threaded down from ScenePage for
+  // this. A plain ref (not state) so drag math always reads the live
+  // element with no re-render dependency; `crowdEl`/`elevatedEl` are the
+  // SAME two container elements again, but as state — createPortal needs
+  // an actual DOM node to target, which isn't available until after the
+  // first render mounts these, so a ref alone can't drive the portals'
+  // own render decision the way it can drive on-demand math in an event
+  // handler. `elRefs` maps a summon id to its position div AND its own
+  // `<img>`, both needed (the position div for a move-drag's `left`/`top`,
+  // the img for a resize-drag's `height`) without a second ref map.
+  // `gestureRef` holds the one in-progress gesture, if any — a plain ref,
+  // not state, so a frame of movement never triggers a re-render.
   const wrapperRef = useRef(null);
+  const [crowdEl, setCrowdEl] = useState(null);
+  const [elevatedEl, setElevatedEl] = useState(null);
+  const setCrowdRef = (el) => {
+    wrapperRef.current = el;
+    setCrowdEl(el);
+  };
   const elRefs = useRef(new Map());
   const gestureRef = useRef(null);
 
@@ -480,7 +521,13 @@ export default function StageRoster({
         // page scroll/pinch-zoom instead of a drag (RelationshipNode.jsx
         // uses the same rule for the same reason). Has to live in `style`,
         // not as a bare JSX prop — there is no such DOM attribute.
-        style={{ ...positionStyle, touchAction: editable ? 'none' : undefined }}
+        // pointerEvents:'auto' unconditionally — a no-op in the crowd
+        // container (already the default there) but load-bearing when this
+        // figure is portaled into the elevated container instead, which
+        // sets pointer-events:none on ITSELF (see this file's own return
+        // statement) so its own empty space never blocks a drawer behind
+        // it; the one figure actually inside still needs to opt back in.
+        style={{ ...positionStyle, touchAction: editable ? 'none' : undefined, pointerEvents: 'auto' }}
         onPointerDown={editable ? (e) => startMove(e, entry) : undefined}
       >
         <motion.div
@@ -571,32 +618,60 @@ export default function StageRoster({
     );
   };
 
-  // Whether ANY figure currently has its corner controls showing (hover or
-  // tap-select) — see CONTROLS_Z's own comment: promoting the WRAPPER
-  // itself, not any one figure, is the only way to actually clear the
-  // drawers' sibling stacking context. This briefly lifts the WHOLE roster
-  // above the drawers while true, not just the one figure being reached
-  // for — a minor, deliberate trade (other figures' art can flash in front
-  // of a drawer for the moment a control is open) against the alternative
-  // of a React portal, given this only ever happens for as long as a
-  // hover/selection lasts.
-  const anyControlsShown = selectedId != null || hoveredId != null;
+  const everyEntry = [
+    ...autoPlaced.map((entry) => ({ entry, isManual: false })),
+    ...manual.map((entry) => ({ entry, isManual: true })),
+  ];
 
   return (
-    // A stacking context of its own (position + a low, fixed z-index): a
-    // crowded roster's own z values (1..N per side, from layoutStage's
-    // rank, or MANUAL_Z for a dragged figure) only ever compete with EACH
-    // OTHER inside this box, never leak out to outrank the drawers'
-    // z-10/z-20 — without this wrapper, a side with more than ~10 summons
-    // (or a manually-placed one) would start painting over the GM's own
-    // controls. Bumped to CONTROLS_Z while `anyControlsShown` — see that
-    // constant's own comment for why a figure's corner buttons need the
-    // WRAPPER promoted, not themselves.
-    <div ref={wrapperRef} className={`absolute inset-0 ${anyControlsShown ? 'z-[15]' : 'z-[1]'}`}>
-      <AnimatePresence>
-        {autoPlaced.map((entry) => renderFigure(entry, { manual: false }))}
-        {manual.map((entry) => renderFigure(entry, { manual: true }))}
-      </AnimatePresence>
-    </div>
+    // **Two containers, not one (decided, revised — bugfix: selecting a
+    // character used to make the rest of the Scene UI unreachable).**
+    // The "crowd" container is a stacking context of its own (position + a
+    // low, fixed z-index): a crowded roster's own z values (1..N per side,
+    // from layoutStage's rank, or MANUAL_Z for a dragged figure) only ever
+    // compete with EACH OTHER inside this box, never leak out to outrank
+    // the drawers' own z-10 — without it, a side with more than ~10
+    // summons (or a manually-placed one) would start painting over the
+    // GM's own controls. This container's z-index is now FIXED — it used
+    // to bump to CONTROLS_Z whenever any figure was selected/hovered, but
+    // that promoted the WHOLE roster (not just the one figure whose
+    // buttons actually needed to clear the drawer), which meant every
+    // OTHER piece of Scene UI sharing that screen region became unreachable
+    // for as long as the selection lasted — reported live. It ALSO owns the
+    // one background click-catcher below: tapping any part of its own
+    // empty space (not a figure, not a button) clears `selectedId` —
+    // "clicking on a place where there are no characters deselects."
+    //
+    // The SECOND, "elevated" container is always mounted too, at a fixed
+    // CONTROLS_Z — but `pointer-events: none` on the container itself, so
+    // its own empty space never blocks anything behind it (a drawer
+    // control, or the crowd container's own click-catcher underneath).
+    // ONLY the currently selected/hovered figure (`elevatedId`) ever
+    // portals into it — `createPortal(..., entry.id)`'s own key argument
+    // is what lets React recognize this as the SAME figure moving to a new
+    // DOM parent across renders (not an unmount+remount): its drag/resize
+    // refs (`elRefs`, `gestureRef`) stay valid throughout, and framer's own
+    // `motion.div` exit animation still tracks correctly, since a portal
+    // changes where in the DOM a node lives, never where in the React tree
+    // it lives.
+    <>
+      <div
+        ref={setCrowdRef}
+        className="absolute inset-0 z-[1]"
+        onClick={(e) => {
+          if (e.target === e.currentTarget) setSelectedId(null);
+        }}
+      />
+      <div className="absolute inset-0" style={{ zIndex: CONTROLS_Z, pointerEvents: 'none' }} ref={setElevatedEl} />
+      {crowdEl && elevatedEl && (
+        <AnimatePresence>
+          {everyEntry.map(({ entry, isManual }) => (
+            <FigurePortal key={entry.id} target={entry.id === elevatedId ? elevatedEl : crowdEl}>
+              {renderFigure(entry, { manual: isManual })}
+            </FigurePortal>
+          ))}
+        </AnimatePresence>
+      )}
+    </>
   );
 }
