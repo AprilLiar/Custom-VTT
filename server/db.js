@@ -1546,6 +1546,40 @@ export async function initDb() {
   await ensureColumn('scene_summons', 'scale', 'REAL NOT NULL DEFAULT 1');
   // ---------------------------------------------------------------------
 
+  // GM Notes (decided, new). Two shapes, one dialog:
+  //   - **scene_notes**: any number per Scene, each pinned to exactly one
+  //     (the `scene_id` FK is NOT NULL — unlike scene_summons, which is
+  //     deliberately scene-independent, a Note's whole point here is to
+  //     belong to a specific Scene).
+  //   - **master_note**: a singleton, same `id=1` CHECK shape as
+  //     scene_state/combat_state above — one Note in the whole world,
+  //     reachable from any Scene's own Notes dialog via a switch, for
+  //     campaign-wide planning that isn't about any one Scene.
+  // **Genuinely GM-secret, not just GM-managed (decided).** Unlike the rest
+  // of this feature's own authoring content (Temp NPCs, Scenes — open REST,
+  // just not rendered for a Player), these are read behind the same
+  // `viewerFromQuery` 403 gate `/api/characters/:id/relationships` uses, and
+  // every broadcast goes only to GM-identified sockets (see emitToGm) —
+  // campaign notes are exactly the kind of spoiler-bearing text a GM does
+  // not want a technically-curious Player fetching straight off the API.
+  ddl(`
+    CREATE TABLE IF NOT EXISTS scene_notes (
+      id INTEGER PRIMARY KEY,
+      scene_id INTEGER NOT NULL REFERENCES scenes(id) ON DELETE CASCADE,
+      title TEXT NOT NULL DEFAULT '',
+      body TEXT NOT NULL DEFAULT '',
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  ddl(`
+    CREATE TABLE IF NOT EXISTS master_note (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      body TEXT NOT NULL DEFAULT ''
+    )
+  `);
+  ddl(`INSERT OR IGNORE INTO master_note (id, body) VALUES (1, '')`);
+  // ---------------------------------------------------------------------
+
   // The Perks compendium: master list of Perk templates. Just picture, name,
   // and description — no generic automation system (removed; see
   // server/perkAutomations.js for the manual per-Perk hook skeleton that
@@ -2288,6 +2322,8 @@ async function ensureIndexes() {
     ['scenes', 'folder_id'],
     ['scene_pictures', 'character_id'],
     ['scene_pictures', 'temp_npc_id'],
+    // The Notes dialog's own read, by whichever Scene is currently active.
+    ['scene_notes', 'scene_id'],
   ];
   for (const [table, column] of indexes) {
     ddl(`CREATE INDEX IF NOT EXISTS idx_${table}_${column} ON ${table}(${column})`);

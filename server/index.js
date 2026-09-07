@@ -1722,6 +1722,32 @@ app.get('/api/characters/:id/relationships', wrap(async (req, res) => {
   res.json(await getRelationshipBoard(Number(req.params.id)));
 }));
 
+// GM Notes (decided, new) — genuinely GM-secret, not merely GM-managed: the
+// same viewerFromQuery 403 gate the Relationships board's own read uses
+// above, and every broadcast (below) goes only to GM-identified sockets.
+// Unlike Temp NPCs/Scenes (open REST, just not rendered for a Player),
+// campaign notes are exactly the kind of spoiler-bearing text a GM does not
+// want a technically-curious Player pulling straight off the API.
+function emitToGm(event, payload) {
+  for (const socket of io.sockets.sockets.values()) {
+    if (socket.data?.identity?.role === 'gm') socket.emit(event, payload);
+  }
+}
+
+app.get('/api/scene-notes', wrap(async (req, res) => {
+  const viewer = viewerFromQuery(req.query);
+  if (viewer?.role !== 'gm') return res.status(403).json({ error: 'GM only' });
+  const sceneId = Number(req.query.sceneId);
+  if (!Number.isInteger(sceneId)) return res.json([]);
+  res.json(await all('SELECT * FROM scene_notes WHERE scene_id = ? ORDER BY id', [sceneId]));
+}));
+
+app.get('/api/master-note', wrap(async (req, res) => {
+  const viewer = viewerFromQuery(req.query);
+  if (viewer?.role !== 'gm') return res.status(403).json({ error: 'GM only' });
+  res.json(await one('SELECT * FROM master_note WHERE id = 1'));
+}));
+
 app.get('/api/character-folders', wrap(async (_req, res) => {
   res.json(await all('SELECT * FROM character_folders ORDER BY name'));
 }));
@@ -4383,8 +4409,9 @@ io.on('connection', (socket) => {
     const wasActive = state?.active_scene_id === scene.id;
     // Explicit, matching every other delete in this file. scene_state's own
     // FK is ON DELETE SET NULL (already correct), but nothing here trusts
-    // the DDL alone.
+    // the DDL alone. Same for scene_notes' own ON DELETE CASCADE.
     await run('UPDATE scene_state SET active_scene_id = NULL WHERE active_scene_id = ?', [scene.id]);
+    await run('DELETE FROM scene_notes WHERE scene_id = ?', [scene.id]);
     await run('DELETE FROM scenes WHERE id = ?', [scene.id]);
     io.emit('scene:deleted', { sceneId: scene.id });
     if (wasActive) io.emit('stage:updated', await getStagePayload());
@@ -4484,6 +4511,50 @@ io.on('connection', (socket) => {
     if (!mayWriteScenePicture(viewer, ownerType, ownerId)) return;
     await run('UPDATE scene_summons SET scale = ? WHERE id = ?', [clamp(Number(scale), 0.25, 4), summon.id]);
     io.emit('stage:updated', await getStagePayload());
+  });
+
+  // GM Notes (decided, new) — see the tables' own comment in db.js for why
+  // these are genuinely GM-secret rather than merely GM-managed: every
+  // handler here is GM-only, server-enforced (not just hidden client-side),
+  // and every broadcast goes through emitToGm, never io.emit.
+  on('scene_note:create', async ({ sceneId, title, body }) => {
+    if (socket.data.identity?.role !== 'gm') return;
+    const scene = await one('SELECT id FROM scenes WHERE id = ?', [sceneId]);
+    if (!scene) return;
+    const result = await run('INSERT INTO scene_notes (scene_id, title, body) VALUES (?, ?, ?)', [
+      scene.id,
+      String(title ?? ''),
+      String(body ?? ''),
+    ]);
+    emitToGm('scene_note:created', await one('SELECT * FROM scene_notes WHERE id = ?', [Number(result.lastInsertRowid)]));
+  });
+
+  on('scene_note:update', async ({ noteId, title, body }) => {
+    if (socket.data.identity?.role !== 'gm') return;
+    const note = await one('SELECT id FROM scene_notes WHERE id = ?', [noteId]);
+    if (!note) return;
+    await run('UPDATE scene_notes SET title = ?, body = ? WHERE id = ?', [
+      String(title ?? ''),
+      String(body ?? ''),
+      note.id,
+    ]);
+    emitToGm('scene_note:updated', await one('SELECT * FROM scene_notes WHERE id = ?', [note.id]));
+  });
+
+  on('scene_note:delete', async ({ noteId }) => {
+    if (socket.data.identity?.role !== 'gm') return;
+    const note = await one('SELECT id FROM scene_notes WHERE id = ?', [noteId]);
+    if (!note) return;
+    await run('DELETE FROM scene_notes WHERE id = ?', [note.id]);
+    emitToGm('scene_note:deleted', { noteId: note.id });
+  });
+
+  // The Master Note is a singleton (id=1, seeded at boot — see db.js) —
+  // update only, never create/delete.
+  on('master_note:update', async ({ body }) => {
+    if (socket.data.identity?.role !== 'gm') return;
+    await run('UPDATE master_note SET body = ? WHERE id = 1', [String(body ?? '')]);
+    emitToGm('master_note:updated', await one('SELECT * FROM master_note WHERE id = 1'));
   });
 
   on('move:revoke', async ({ characterId, moveId }) => {

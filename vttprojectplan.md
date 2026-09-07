@@ -4575,6 +4575,33 @@ difference), so a fraction is what keeps a drag looking right on every screen wi
   never hides"*), so the new drag/resize handlers needed no special-casing to keep working while
   hidden — they simply were never gated behind that flag to begin with.
 
+**GM Notes (decided, new).** A GM-only "Notes" button in `ScenePage.jsx`'s corner controls (hides
+along with the back-arrow while Hide Interface is on — see above — since it's a GM tool, not part
+of the cinematic view) opens a dialog with two shapes behind a switch:
+- **Scene Notes** — any number, each pinned to whichever Scene is currently active
+  (`scene_notes.scene_id`, `NOT NULL`, `ON DELETE CASCADE` off `scenes`). Create/edit/delete, plain
+  title + body.
+- **Master Note** — a singleton (`master_note`, `id=1` `CHECK`, same shape as `scene_state`/
+  `combat_state`'s own id=1 row), one Note for the whole campaign, reachable from any Scene's own
+  Notes dialog and always the same content regardless of which one you opened it from — for
+  planning that isn't about any single Scene.
+- **Genuinely GM-secret, not merely GM-managed (decided) — the one deliberate departure from this
+  feature's own established secrecy model.** Every other piece of Scene-tab authoring content (Temp
+  NPCs, Scenes themselves, Scene Pictures) is open REST + an unscoped `io.emit`, "GM-*managed*, not
+  GM-*secret*" — a Player's client simply never renders the drawers that would show it, matching
+  `GET /api/characters`. Campaign notes are the opposite kind of content: spoilers, upcoming twists,
+  NPC secrets a GM plans around — exactly what a technically-curious Player pulling the API directly
+  would be looking for. `GET /api/scene-notes` and `GET /api/master-note` both go through the same
+  `viewerFromQuery` 403 gate the Relationships board's own read already uses (`role !== 'gm'` →
+  refused), and every write (`scene_note:create/update/delete`, `master_note:update`) is a
+  server-enforced GM-only socket handler whose broadcast (`emitToGm`, new — mirrors
+  `emitRelationships`'s per-socket-filter shape) reaches only GM-identified sockets, never a plain
+  `io.emit`.
+- No dedicated "browse notes across every Scene" view — the dialog always shows the *currently
+  active* Scene's own notes, matching how the rest of the Scene tab already treats "one Scene at a
+  time" as the working set. With no Scene active, the Scene Notes side shows a message instead
+  (Notes need a concrete Scene to pin to); the Master Note side is unaffected either way.
+
 ## Implementation Risks & Recommendations
 A scope check for whoever picks this up: this grew well past "semi-simple website" over the course of design. Most of it (dice, inventory, injuries, stances, perks, counters) is standard CRUD-plus-broadcast work. Combat Timing (Tics/Startup/reveal/overflow) is the one genuinely hard piece — real software complexity, not just more forms — and it's also the most original part of the system, which is exactly why it deserves the most care rather than being rushed alongside everything else.
 
