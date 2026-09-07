@@ -28,6 +28,7 @@ const {
   clearPerkState,
   consumeOnce,
   perkAllowsRevealedDetail,
+  perkBypassesStyleRequirement,
   perkDefinitionsFor,
   perkMoveFrameDeltas,
   perkRollBonusTerms,
@@ -152,6 +153,20 @@ test('boolean seams OR — one yes is a yes, regardless of order', async () => {
     assert.equal(await perkAllowsRevealedDetail(characterId), true);
   } finally {
     unregister('Test Says No', 'Test Says Yes');
+  }
+});
+
+test('Endless Possibilities: bypassesStyleRequirement OR-s the same way canSeeRevealedDetail does', async () => {
+  const characterId = await makeCharacter('Versatile');
+  assert.equal(await perkBypassesStyleRequirement(characterId), false);
+  await grant(characterId, { name: 'Test Endless Possibilities', bypassesStyleRequirement: () => true });
+  try {
+    assert.equal(await perkBypassesStyleRequirement(characterId), true);
+    // Unrelated to the OTHER boolean seam — a character bypassing the Style
+    // requirement is not thereby granted Genius Observer's own seam too.
+    assert.equal(await perkAllowsRevealedDetail(characterId), false);
+  } finally {
+    unregister('Test Endless Possibilities');
   }
 });
 

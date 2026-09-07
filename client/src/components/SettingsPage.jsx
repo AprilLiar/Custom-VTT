@@ -13,6 +13,25 @@ import {
   loadCutsceneSpeed,
   saveCutsceneSpeed,
 } from '../lib/theme.js';
+import {
+  SCENE_HEIGHT_SCALE_MIN,
+  SCENE_HEIGHT_SCALE_MAX,
+  DEFAULT_SCENE_HEIGHT_SCALE,
+  loadSceneHeightScale,
+  saveSceneHeightScale,
+  SCENE_GAP_SCALE_MIN,
+  SCENE_GAP_SCALE_MAX,
+  DEFAULT_SCENE_GAP_SCALE,
+  loadSceneGapScale,
+  saveSceneGapScale,
+  SCENE_SIZE_SCALE_MIN,
+  SCENE_SIZE_SCALE_MAX,
+  DEFAULT_SCENE_SIZE_SCALE,
+  loadSceneSizeScale,
+  saveSceneSizeScale,
+  loadSceneShowNameplates,
+  saveSceneShowNameplates,
+} from '../lib/sceneSettings.js';
 
 // Per-device display preferences. The accent color live-previews on every
 // change (applyBrandHue) but only persists once a choice is actually made
@@ -23,6 +42,10 @@ import {
 export default function SettingsPage() {
   const [hue, setHue] = useState(() => loadSavedHue() ?? DEFAULT_HUE);
   const [speed, setSpeed] = useState(loadCutsceneSpeed);
+  const [sceneHeightScale, setSceneHeightScale] = useState(loadSceneHeightScale);
+  const [sceneGapScale, setSceneGapScale] = useState(loadSceneGapScale);
+  const [sceneSizeScale, setSceneSizeScale] = useState(loadSceneSizeScale);
+  const [sceneShowNameplates, setSceneShowNameplates] = useState(loadSceneShowNameplates);
 
   const choose = (nextHue) => {
     setHue(nextHue);
@@ -120,6 +143,87 @@ export default function SettingsPage() {
             Reset to default
           </button>
         </div>
+      </div>
+
+      <div className="panel-cut-lg space-y-4 border border-zinc-800 bg-zinc-900 p-4">
+        <div>
+          <h2 className="text-sm font-bold uppercase tracking-wide text-zinc-400">Scene Stage</h2>
+          <p className="mt-1 text-xs text-zinc-600">
+            How characters render on the Scene tab's stage. Only affects your own view — everyone
+            still sees the same Scene and the same summons, just sized to their own taste.
+          </p>
+        </div>
+
+        <SceneSlider
+          label="Character Height"
+          value={sceneHeightScale}
+          min={SCENE_HEIGHT_SCALE_MIN}
+          max={SCENE_HEIGHT_SCALE_MAX}
+          step={0.05}
+          onChange={(e) => setSceneHeightScale(saveSceneHeightScale(e.target.value))}
+          onReset={() => setSceneHeightScale(saveSceneHeightScale(DEFAULT_SCENE_HEIGHT_SCALE))}
+        />
+        <SceneSlider
+          label="Distance Apart"
+          value={sceneGapScale}
+          min={SCENE_GAP_SCALE_MIN}
+          max={SCENE_GAP_SCALE_MAX}
+          step={0.1}
+          onChange={(e) => setSceneGapScale(saveSceneGapScale(e.target.value))}
+          onReset={() => setSceneGapScale(saveSceneGapScale(DEFAULT_SCENE_GAP_SCALE))}
+        />
+        <SceneSlider
+          label="Picture Size"
+          value={sceneSizeScale}
+          min={SCENE_SIZE_SCALE_MIN}
+          max={SCENE_SIZE_SCALE_MAX}
+          step={0.05}
+          onChange={(e) => setSceneSizeScale(saveSceneSizeScale(e.target.value))}
+          onReset={() => setSceneSizeScale(saveSceneSizeScale(DEFAULT_SCENE_SIZE_SCALE))}
+        />
+
+        <label className="flex items-center gap-2 text-sm text-zinc-300">
+          <input
+            type="checkbox"
+            checked={sceneShowNameplates}
+            onChange={(e) => setSceneShowNameplates(saveSceneShowNameplates(e.target.checked))}
+            className="h-4 w-4"
+          />
+          Show name plates over characters
+        </label>
+      </div>
+    </div>
+  );
+}
+
+// One slider row, shared by the three Scene Stage scales above — same
+// range/value/reset shape as Cutscene Speed's own row, just parameterized
+// instead of copy-pasted three times.
+function SceneSlider({ label, value, min, max, step, onChange, onReset }) {
+  return (
+    <div>
+      <div className="mb-1 text-xs font-semibold text-zinc-400">{label}</div>
+      <div className="flex flex-wrap items-center gap-3">
+        <input
+          type="range"
+          min={min}
+          max={max}
+          step={step}
+          value={value}
+          onChange={onChange}
+          aria-label={label}
+          className="min-w-48 flex-1 accent-brand-500"
+        />
+        <span className="w-16 shrink-0 text-right font-mono text-sm text-zinc-200">
+          {Math.round(value * 100)}%
+        </span>
+        <button
+          type="button"
+          onClick={onReset}
+          className="panel-cut-sm border border-zinc-700 px-3 py-1.5 text-xs font-semibold text-zinc-400 hover:bg-zinc-800"
+        >
+          Reset
+        </button>
       </div>
     </div>
   );

@@ -44,6 +44,16 @@ import { motion } from 'framer-motion';
 //
 // Off by default because the ten dialogs that predate this all render near the
 // page root and work; a dialog opened from deep in a tab should pass it.
+//
+// **`centered` forces the panel to the middle of the screen on mobile too**,
+// instead of `sheet`'s own default bottom-edge anchor. For a dialog whose
+// content is short and can't be reached by scrolling past a taller one (the
+// usual bottom-sheet assumption), anchoring to the bottom lands it partly
+// under the app's own bottom nav bar instead — that bar isn't accounted for
+// anywhere in here (only the OS safe-area inset is), so a bottom-anchored
+// short panel can end up with its own lower controls covered. Centering
+// sidesteps the question entirely rather than trying to measure the nav
+// bar's height.
 export default function DialogShell({
   title,
   onClose,
@@ -51,6 +61,7 @@ export default function DialogShell({
   closeButton = dismissible,
   portal = false,
   variant = 'sheet', // 'sheet' | 'fullscreen' | 'theater'
+  centered = false,
   maxWidth = 'max-w-md',
   children,
   footer,
@@ -100,11 +111,16 @@ export default function DialogShell({
       ? 'h-full w-full md:h-[96dvh] md:w-[99vw] md:rounded-none md:panel-cut-lg'
       : variant === 'fullscreen'
         ? 'h-full w-full md:h-auto md:max-h-[90dvh] md:w-full md:rounded-none md:panel-cut-lg'
-        : 'w-full rounded-t-2xl md:rounded-none md:panel-cut-lg md:max-h-[90dvh]';
+        : centered
+          // A bottom sheet's flat-bottom/rounded-top shape only reads right
+          // anchored to the bottom edge it's flat against — floating in the
+          // middle of the screen, it wants all four corners rounded instead.
+          ? 'w-full rounded-2xl md:rounded-none md:panel-cut-lg md:max-h-[90dvh]'
+          : 'w-full rounded-t-2xl md:rounded-none md:panel-cut-lg md:max-h-[90dvh]';
 
   const shell = (
     <div
-      className={`fixed inset-0 z-50 flex items-end justify-center bg-black/60 md:items-center ${
+      className={`fixed inset-0 z-50 flex ${centered ? 'items-center' : 'items-end md:items-center'} justify-center bg-black/60 ${
         variant === 'theater' ? 'md:p-2' : 'md:p-4'
       }`}
       onClick={dismissible ? onClose : undefined}

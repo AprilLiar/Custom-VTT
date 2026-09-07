@@ -136,6 +136,7 @@ export default function CharacterCreationDialog({ character, stances = [], onClo
   const [moveSearch, setMoveSearch] = useState('');
   const [moveStyleFilter, setMoveStyleFilter] = useState(new Set());
   const [moveTagFilter, setMoveTagFilter] = useState(new Set());
+  const [hideLockedMoves, setHideLockedMoves] = useState(false);
   const [perkTagFilter, setPerkTagFilter] = useState(new Set());
   const toggleInSet = (setter) => (id) =>
     setter((prev) => {
@@ -394,6 +395,14 @@ export default function CharacterCreationDialog({ character, stances = [], onClo
     }
     return out;
   })();
+  // "Hide locked moves": a bundle is locked exactly when every one of its own
+  // variants is — the same `blocked` rule the row itself dims and badges by,
+  // so this can never disagree with what's on screen. Filtered into its own
+  // array, not skipped inline in the `.map()` below, so the empty-state
+  // message (`!shownBundles.length`) reflects it too.
+  const shownBundles = hideLockedMoves
+    ? visibleBundles.filter(({ moves: familyMoves }) => !familyMoves.every((m) => unlearnable(m)))
+    : visibleBundles;
 
   const browsablePerks = library.perks.filter((p) => !carriesSpecialTag(p.tag_ids, library.perkTags));
   const visiblePerks =
@@ -599,6 +608,17 @@ export default function CharacterCreationDialog({ character, stances = [], onClo
               Default Moves everybody already has are not listed. A Move with a Style can only be taken
               by someone whose stance carries that Style.
             </p>
+            <button
+              type="button"
+              onClick={() => setHideLockedMoves((v) => !v)}
+              className={`panel-cut-sm border px-3 py-1.5 text-xs font-semibold uppercase tracking-wide ${
+                hideLockedMoves
+                  ? 'border-brand-500 bg-brand-900/40 text-brand-300'
+                  : 'border-zinc-700 bg-zinc-800 text-zinc-400 hover:border-zinc-600'
+              }`}
+            >
+              {hideLockedMoves ? 'Locked moves hidden' : 'Hide locked moves'}
+            </button>
             {/* **The controls sit beside the list, not above it.** Stacked, the
                 Search box and two filter rows ate a third of the window and
                 left three or four Moves visible — which is the wrong way round
@@ -640,7 +660,7 @@ export default function CharacterCreationDialog({ character, stances = [], onClo
                   `sort_order` still decides where a family appears, and a
                   grapple's extensions are pulled up beneath it so they "appear
                   near each other" as asked. */}
-              {visibleBundles.map(({ bundle, moves: familyMoves, indent, freeWith }) => {
+              {shownBundles.map(({ bundle, moves: familyMoves, indent, freeWith }) => {
                 const picked = chosenKeys.has(bundle.key);
                 const blocked = familyMoves.every((m) => unlearnable(m));
                 const free = freedKeys.has(bundle.key);
@@ -705,7 +725,7 @@ export default function CharacterCreationDialog({ character, stances = [], onClo
                   </label>
                 );
               })}
-                {!visibleBundles.length && <p className="text-sm text-zinc-600">No Moves match that.</p>}
+                {!shownBundles.length && <p className="text-sm text-zinc-600">No Moves match that.</p>}
               </div>
             </div>
           </div>

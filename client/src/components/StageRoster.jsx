@@ -1,6 +1,12 @@
 import { useMemo } from 'react';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
-import { layoutStage } from '../lib/sceneLayout.js';
+import { layoutStage, SLOT_WIDTH, SLOT_GAP } from '../lib/sceneLayout.js';
+import HaloText from './HaloText.jsx';
+
+// The base the "character height" Setting scales (client/src/lib/
+// sceneSettings.js) — see this file's own `dvh`/70 comment below for why
+// this number and this unit.
+const BASE_HEIGHT_DVH = 70;
 
 // The stage itself (Scene tab plan, Phase 5: hard-cut positioning; Phase 6:
 // the entrance/exit motion). `summons` already arrives sorted `id DESC`
@@ -77,6 +83,15 @@ import { layoutStage } from '../lib/sceneLayout.js';
 // `bg-zinc-950/90` translucency already implied it might. `layoutStage`
 // still receives the FULL measured stage width — see ScenePage, which no
 // longer narrows it or applies any offset.
+//
+// **`heightScale`/`gapScale`/`sizeScale`/`showNameplates`** are the Scene
+// Settings sliders (client/src/lib/sceneSettings.js), read once by
+// ScenePage and handed down as plain props — this file stays exactly as
+// ignorant of WHERE they came from as it already was of `stageWidth`
+// itself. `heightScale` multiplies `BASE_HEIGHT_DVH` directly; `gapScale`/
+// `sizeScale` multiply `SLOT_GAP`/`SLOT_WIDTH` before they ever reach
+// `layoutStage`, which only ever sees a plain (possibly non-default)
+// `slotWidth`/`slotGap` and has no idea a setting exists.
 
 // Named variants, RoundCutscene.jsx's own vocabulary style: a plain object
 // of framer-motion keyframes/targets per name, rather than a switch full
@@ -92,15 +107,28 @@ const ENTER_RIGHT = { x: 140, opacity: 0 };
 const IDLE = { x: 0, opacity: 1 };
 const EXIT = { opacity: 0, scale: 0.85 };
 
-export default function StageRoster({ summons, stageWidth }) {
+export default function StageRoster({
+  summons,
+  stageWidth,
+  heightScale = 1,
+  gapScale = 1,
+  sizeScale = 1,
+  showNameplates = true,
+}) {
   const reduceMotion = useReducedMotion();
 
   const placed = useMemo(() => {
     const left = summons.filter((s) => s.side === 'left');
     const right = summons.filter((s) => s.side === 'right');
-    const result = layoutStage({ left, right, stageWidth });
+    const result = layoutStage({
+      left,
+      right,
+      stageWidth,
+      slotWidth: SLOT_WIDTH * sizeScale,
+      slotGap: SLOT_GAP * gapScale,
+    });
     return [...result.left, ...result.right];
-  }, [summons, stageWidth]);
+  }, [summons, stageWidth, sizeScale, gapScale]);
 
   return (
     // A stacking context of its own (position + a low, fixed z-index): a
@@ -128,7 +156,21 @@ export default function StageRoster({ summons, stageWidth }) {
               animate={IDLE}
               exit={EXIT}
               transition={reduceMotion ? { duration: 0 } : { type: 'spring', stiffness: 300, damping: 28 }}
+              // `relative`: the nameplate below is positioned against THIS
+              // box, which (having no width of its own) always ends up
+              // exactly as wide as the `img` it wraps — so `left-1/2`
+              // centers the name over whatever width this particular
+              // character actually rendered at, not a nominal column.
+              className="relative"
             >
+              {showNameplates && entry.name && (
+                <HaloText
+                  as="div"
+                  className="absolute bottom-full left-1/2 mb-1 -translate-x-1/2 whitespace-nowrap text-xs font-semibold text-zinc-100"
+                >
+                  {entry.name}
+                </HaloText>
+              )}
               <img
                 src={`data:${entry.image_mime_type || 'image/png'};base64,${entry.image_data}`}
                 alt={entry.name ?? ''}
@@ -139,7 +181,8 @@ export default function StageRoster({ summons, stageWidth }) {
                 // its auto-sized ancestor chain resolves to, defeating the
                 // whole height-only sizing rule above for exactly the
                 // aspect ratios it exists to fix.
-                className="block h-[70dvh] w-auto max-w-none"
+                className="block w-auto max-w-none"
+                style={{ height: `${BASE_HEIGHT_DVH * heightScale}dvh` }}
               />
             </motion.div>
           </div>

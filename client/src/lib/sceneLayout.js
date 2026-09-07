@@ -29,6 +29,13 @@ export const MIN_STEP_FACTOR = 0.35; // floor: a step never compresses past this
 // itself (worth exposing — Phase 6's motion pass and any future debugging
 // both want to know how crammed the stage currently is).
 //
+// `slotWidth`/`slotGap` default to the module constants above but may be
+// overridden per call — the Scene Settings' own "distance apart"/"picture
+// size" sliders (client/src/lib/sceneSettings.js) scale these before
+// calling in, rather than this file knowing anything about settings itself.
+// Still just the SPACING unit, never the rendered image's own size — see
+// this file's own header comment.
+//
 // **`x` is a distance from the entry's OWN edge, not an absolute
 // left-based coordinate** — 0 at rank 0, growing inward for higher ranks,
 // identically for both sides. The caller applies it as CSS `left` for the
@@ -45,17 +52,17 @@ export const MIN_STEP_FACTOR = 0.35; // floor: a step never compresses past this
 // of how wide the image actually renders, so a right-side character can
 // only ever grow further LEFT (into the drawer, still intended), never
 // further right (off the actual screen).
-export function layoutStage({ left, right, stageWidth }) {
+export function layoutStage({ left, right, stageWidth, slotWidth = SLOT_WIDTH, slotGap = SLOT_GAP }) {
   const n = left.length + right.length;
-  const naturalStep = SLOT_WIDTH + SLOT_GAP;
-  const naturalTotal = n > 0 ? n * SLOT_WIDTH + (n - 1) * SLOT_GAP : 0;
+  const naturalStep = slotWidth + slotGap;
+  const naturalTotal = n > 0 ? n * slotWidth + (n - 1) * slotGap : 0;
   // "equally, amongst the whole roster" — ONE shared factor, applied
   // identically to every character on stage, both sides combined, never a
   // per-character or per-side adjustment.
   const factor =
     n <= 1 || naturalTotal <= stageWidth
       ? 1
-      : Math.max(MIN_STEP_FACTOR, (stageWidth - SLOT_WIDTH) / ((n - 1) * naturalStep));
+      : Math.max(MIN_STEP_FACTOR, (stageWidth - slotWidth) / ((n - 1) * naturalStep));
   const step = naturalStep * factor;
   const place = (side) => side.map((entry, rank) => ({ ...entry, x: rank * step, z: side.length - rank }));
   return { left: place(left), right: place(right), factor };

@@ -90,6 +90,7 @@ import { effectiveFrames, idleStaminaRegenRate } from './perkAutomations.js';
 import {
   clearAllPerkState, perkAllowsRevealedDetail, perkStaminaCostDeltas, perkMoveFrameDeltas,
   perkWeaponOffers, takeWeaponOffer, perkSeesAttackHeight, perkSeesFeints,
+  perkBypassesStyleRequirement,
 } from './perkEngine.js';
 import { isAutomatedPerk, isManualPerk, perkDefinition } from './perks/index.js';
 import { validateCreation } from './characterCreation.js';
@@ -3150,7 +3151,11 @@ io.on('connection', (socket) => {
     for (const moveId of moveIds) {
       const move = await one('SELECT id, name, style_attribute_id FROM moves WHERE id = ?', [moveId]);
       if (!move) continue;
-      if (move.style_attribute_id != null && !(await characterHasStyle(character.id, move.style_attribute_id))) {
+      if (
+        move.style_attribute_id != null &&
+        !(await characterHasStyle(character.id, move.style_attribute_id)) &&
+        !(await perkBypassesStyleRequirement(character.id))
+      ) {
         skippedMoves.push(move.name);
         continue;
       }
@@ -3861,9 +3866,12 @@ io.on('connection', (socket) => {
     // other rejection in this handler.
     if (socket.data.identity?.role !== 'gm' && (await isSpecialMove(move.id))) return;
     // Learnability: a styled move needs at least one stance with that style
+    // — unless the character holds a Perk that says otherwise (Endless
+    // Possibilities).
     if (
       move.style_attribute_id != null &&
-      !(await characterHasStyle(character.id, move.style_attribute_id))
+      !(await characterHasStyle(character.id, move.style_attribute_id)) &&
+      !(await perkBypassesStyleRequirement(character.id))
     ) {
       return;
     }
@@ -5892,8 +5900,10 @@ io.on('connection', (socket) => {
       if (!granted) return;
     }
     // Learnability: a styled move is only usable while the character's
-    // ACTIVE stance carries that style (Tab 3 dims it otherwise).
-    if (move.style_attribute_id != null) {
+    // ACTIVE stance carries that style (Tab 3 dims it otherwise) — unless
+    // the character holds a Perk that says otherwise (Endless Possibilities),
+    // in which case their own active stance still stands for everything else.
+    if (move.style_attribute_id != null && !(await perkBypassesStyleRequirement(character.id))) {
       const stance = character.active_stance_id
         ? await one('SELECT * FROM stances WHERE id = ?', [character.active_stance_id])
         : null;

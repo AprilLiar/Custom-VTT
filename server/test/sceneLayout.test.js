@@ -137,3 +137,21 @@ test("a right-side entry's x is a distance from ITS OWN edge, not an absolute le
   assert.equal(mirroredRight[0].x, left[0].x);
   assert.equal(mirroredRight[1].x, left[1].x);
 });
+
+// Regression coverage for the Scene Settings sliders (client/src/lib/
+// sceneSettings.js): "distance apart" and "picture size" scale these two
+// params before calling in, rather than sceneLayout.js knowing anything
+// about settings — pin that the override actually takes effect, and that
+// omitting it still falls back to the module constants exactly as before.
+test('slotWidth/slotGap are overridable per call, defaulting to the module constants', () => {
+  const left = [entry('a'), entry('b')];
+  const withDefaults = layoutStage({ left, right: [], stageWidth: 2000 });
+  const doubled = layoutStage({ left, right: [], stageWidth: 2000, slotWidth: SLOT_WIDTH * 2, slotGap: SLOT_GAP * 2 });
+  // Room to spare either way (factor 1), so rank 1's distance is exactly
+  // the (possibly overridden) natural step.
+  assert.equal(withDefaults.left[1].x, SLOT_WIDTH + SLOT_GAP);
+  assert.equal(doubled.left[1].x, (SLOT_WIDTH + SLOT_GAP) * 2);
+  // Rank 0 is flush at its own edge regardless — the override changes
+  // spacing between characters, never where the newest one binds.
+  assert.equal(doubled.left[0].x, 0);
+});

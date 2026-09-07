@@ -176,7 +176,15 @@ export default function CounterAdjustDialog({ characterId, characterName, onClos
   const arenaOnly = (arena ?? []).filter((c) => !ownIds.has(c.id));
 
   return (
-    <DialogShell title="Counters" onClose={onClose} maxWidth="max-w-lg">
+    // `centered`: opened from a roll card in ChatPanel's own mobile-only
+    // stacking context, bottom-anchored it landed partly under the app's
+    // bottom nav bar (see DialogShell's own comment on `centered`).
+    // `portal`: ChatPanel's mobile chat panel is itself `absolute z-40`,
+    // which — same as the Gate editor DialogShell's own comment documents —
+    // scopes this dialog's `z-50` inside that stacking context instead of
+    // the page root, so without portalling to `document.body` the nav bar
+    // could still paint over it regardless of on-screen position.
+    <DialogShell title="Counters" onClose={onClose} maxWidth="max-w-lg" centered portal>
       <div className="flex flex-col gap-4">
         <section className="flex flex-col gap-2">
           <h4 className="font-display text-xs font-semibold uppercase tracking-wide text-zinc-500">
