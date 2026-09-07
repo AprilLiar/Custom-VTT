@@ -87,9 +87,20 @@ test('a fresh boot creates every Scene table with the columns each surface reads
   for (const column of ['character_id', 'temp_npc_id', 'name', 'image_data', 'image_mime_type']) {
     assert.match(byName.get('scene_pictures'), new RegExp(`\\b${column}\\b`));
   }
-  for (const column of ['scene_id', 'character_id', 'temp_npc_id', 'scene_picture_id', 'side', 'pos_x', 'pos_y', 'scale']) {
+  for (const column of ['scene_id', 'character_id', 'temp_npc_id', 'scene_picture_id', 'side', 'pos_x', 'pos_y', 'scale', 'is_hidden']) {
     assert.match(byName.get('scene_summons'), new RegExp(`\\b${column}\\b`));
   }
+});
+
+test('scene_drawings exists with every column SceneDrawingLayer reads/writes, and no author column', async () => {
+  const table = await one("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'scene_drawings'");
+  assert.ok(table, 'scene_drawings missing');
+  for (const column of ['scene_id', 'points', 'color', 'width', 'is_eraser']) {
+    assert.match(table.sql, new RegExp(`\\b${column}\\b`));
+  }
+  // The feature's own explicit requirement — no character_id, no socket/user
+  // reference, nothing that could later be used to attribute a stroke.
+  assert.doesNotMatch(table.sql, /character_id|player_id|user_id|author/i);
 });
 
 test('the library is indexed by folder, and pictures by their owner', async () => {
@@ -316,6 +327,19 @@ test('deleting a Scene CASCADEs its own stage seats away, at the schema level', 
   await run('DELETE FROM scenes WHERE id = ?', [scene]);
   assert.equal(
     (await all('SELECT * FROM scene_summons WHERE scene_id = ?', [scene])).length,
+    0
+  );
+});
+
+test('deleting a Scene CASCADEs its own drawings away too, at the schema level', async () => {
+  const scene = await makeScene('doomed-scene-drawings');
+  await run(
+    "INSERT INTO scene_drawings (scene_id, points, color, width) VALUES (?, '[[0.1,0.1],[0.2,0.2]]', '#ef4444', 0.01)",
+    [scene]
+  );
+  await run('DELETE FROM scenes WHERE id = ?', [scene]);
+  assert.equal(
+    (await all('SELECT * FROM scene_drawings WHERE scene_id = ?', [scene])).length,
     0
   );
 });

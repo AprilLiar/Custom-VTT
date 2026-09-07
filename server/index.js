@@ -1667,12 +1667,19 @@ function mayWriteScenePicture(viewer, ownerType, ownerId) {
 }
 
 // The live stage everyone shares (Scene tab plan, Phase 4): which Scene is
-// active right now, plus who's summoned onto it. `summons` stays [] until
-// Phase 5 wires scene_summons in — settling the shape now means that phase
-// only adds rows to an existing field, never changes what stage:updated
-// carries, which is what keeps the force-navigate listener's own diff (on
-// activeScene?.id alone, never the whole payload) correct across phases.
-async function getStagePayload() {
+// active right now, who's summoned onto it, and what's been drawn on it.
+// **Unfiltered** — includes every summon's `is_hidden` flag and every
+// stroke, regardless of viewer. Never sent to a socket directly; always go
+// through `stagePayloadFor` first (mirrors buildCombatUpdate/
+// combatUpdateFor's own split, for the identical reason: one query per
+// change, one cheap per-viewer redaction per socket, rather than
+// re-querying per viewer).
+// snake_case throughout, matching activeScene above and every other row
+// this feature reads verbatim off the DB (scene_pictures, temp_npcs, …) —
+// only outbound WRITE payloads (stage:summon's own emit target) use
+// camelCase in this app's convention. character_id/temp_npc_id decide
+// ownership client-side the same way scene_pictures' own rows do.
+async function buildStagePayload() {
   const state = await one('SELECT active_scene_id FROM scene_state WHERE id = 1');
   const activeScene = state?.active_scene_id
     ? await one(
@@ -1684,16 +1691,11 @@ async function getStagePayload() {
   // Scene now (scene_summons.scene_id, NOT NULL; see db.js's own comment
   // on the column), so this only ever reads the ACTIVE Scene's own roster.
   // No active Scene means nothing to show, same as the backdrop itself.**
-  // snake_case throughout, matching activeScene above and every other row
-  // this feature reads verbatim off the DB (scene_pictures, temp_npcs, …) —
-  // only outbound WRITE payloads (stage:summon's own emit target) use
-  // camelCase in this app's convention. character_id/temp_npc_id decide
-  // ownership client-side the same way scene_pictures' own rows do.
   const summons = activeScene
     ? await all(
         `
     SELECT ss.id, ss.side, ss.character_id, ss.temp_npc_id, ss.scene_picture_id,
-           ss.pos_x, ss.pos_y, ss.scale,
+           ss.pos_x, ss.pos_y, ss.scale, ss.is_hidden,
            sp.image_data, sp.image_mime_type,
            COALESCE(c.name, tn.name) AS name
     FROM scene_summons ss
@@ -1706,7 +1708,40 @@ async function getStagePayload() {
         [activeScene.id]
       )
     : [];
-  return { activeScene, summons };
+  // Drawings (decided, new) — every stroke on the active Scene, oldest
+  // first: `id ASC`, not summons' own `DESC`, because replay order is load-
+  // bearing here (see db.js's own comment on scene_drawings — an eraser
+  // stroke only erases what was drawn before it, in this exact order, on
+  // every viewer's own canvas).
+  const drawings = activeScene
+    ? await all(
+        'SELECT id, points, color, width, is_eraser FROM scene_drawings WHERE scene_id = ? ORDER BY id ASC',
+        [activeScene.id]
+      )
+    : [];
+  return { activeScene, summons, drawings };
+}
+
+// Per-viewer redaction of the unfiltered snapshot above — a Hidden summon
+// (`is_hidden`) is dropped entirely for anyone who isn't the GM, including
+// the character's own Player (see db.js's own comment on the column for
+// why that's read literally rather than scoped to "everyone but the
+// owner"). Drawings carry no ownership at all, so they need no filtering —
+// every viewer sees the exact same array.
+function stagePayloadFor(built, viewer) {
+  if (viewer?.role === 'gm') return built;
+  return { ...built, summons: built.summons.filter((s) => !s.is_hidden) };
+}
+
+// One query, one redaction per connected socket — same shape as
+// emitCombatUpdated, and for the same reason: a Hidden summon must never
+// cross the wire to a non-GM socket even transiently, so this can't be a
+// single io.emit the way stage:updated used to be before Hidden existed.
+async function emitStageUpdated() {
+  const built = await buildStagePayload();
+  for (const viewerSocket of io.sockets.sockets.values()) {
+    viewerSocket.emit('stage:updated', stagePayloadFor(built, viewerSocket.data?.identity));
+  }
 }
 
 // A private board must never cross the wire to another player, so this is a
@@ -1797,12 +1832,14 @@ app.get('/api/scene-folders', wrap(async (_req, res) => {
   res.json(await all('SELECT * FROM scene_folders ORDER BY name'));
 }));
 
-// The live stage everyone shares — open read, matching stage:updated's own
-// io.emit (nothing here is secret). `summons` stays [] until Phase 5 wires
-// scene_summons in; the shape is settled now so that phase only adds rows,
-// never a payload change.
-app.get('/api/stage', wrap(async (_req, res) => {
-  res.json(await getStagePayload());
+// The live stage everyone shares — open read (nothing here requires a 403,
+// unlike GM Notes), but per-viewer REDACTED same as the socket's own
+// stage:updated (see stagePayloadFor) — a Hidden summon must not leak
+// through this REST fetch either, so this takes an identity the same way
+// GET /api/combat does.
+app.get('/api/stage', wrap(async (req, res) => {
+  const viewer = viewerFromQuery(req.query);
+  res.json(stagePayloadFor(await buildStagePayload(), viewer));
 }));
 
 app.get('/api/characters/:id', wrap(async (req, res) => {
@@ -2331,7 +2368,7 @@ app.delete('/api/characters/:id', wrap(async (req, res) => {
 
   io.emit('character:deleted', { id: character.id });
   if (wasSeated) await emitCombatUpdated();
-  if (wasSummoned) io.emit('stage:updated', await getStagePayload());
+  if (wasSummoned) await emitStageUpdated();
   res.json({ ok: true });
 }));
 
@@ -4255,7 +4292,7 @@ io.on('connection', (socket) => {
     await run('DELETE FROM scene_pictures WHERE temp_npc_id = ?', [npc.id]);
     await run('DELETE FROM temp_npcs WHERE id = ?', [npc.id]);
     io.emit('temp_npc:deleted', { tempNpcId: npc.id });
-    if (wasSummoned) io.emit('stage:updated', await getStagePayload());
+    if (wasSummoned) await emitStageUpdated();
   });
 
   // ---------------------------------------------------------------------
@@ -4314,7 +4351,7 @@ io.on('connection', (socket) => {
     await run('DELETE FROM scene_summons WHERE scene_picture_id = ?', [picture.id]);
     await run('DELETE FROM scene_pictures WHERE id = ?', [picture.id]);
     io.emit('scene_picture:deleted', { scenePictureId: picture.id });
-    if (wasSummoned) io.emit('stage:updated', await getStagePayload());
+    if (wasSummoned) await emitStageUpdated();
   });
 
   // ---------------------------------------------------------------------
@@ -4395,7 +4432,7 @@ io.on('connection', (socket) => {
     // The active Scene's own background may have just changed — the stage
     // carries a copy of that row, not a live join, so it needs its own push.
     const state = await one('SELECT active_scene_id FROM scene_state WHERE id = 1');
-    if (state?.active_scene_id === scene.id) io.emit('stage:updated', await getStagePayload());
+    if (state?.active_scene_id === scene.id) await emitStageUpdated();
   });
 
   on('scene:set_folder', async ({ sceneId, folderId }) => {
@@ -4419,15 +4456,17 @@ io.on('connection', (socket) => {
     const wasActive = state?.active_scene_id === scene.id;
     // Explicit, matching every other delete in this file. scene_state's own
     // FK is ON DELETE SET NULL (already correct), but nothing here trusts
-    // the DDL alone. Same for scene_notes'/scene_summons' own ON DELETE
-    // CASCADE — deleting a Scene takes its own prepared roster with it,
-    // which is exactly what "scene-specific" (scene_summons.scene_id) means.
+    // the DDL alone. Same for scene_notes'/scene_summons'/scene_drawings'
+    // own ON DELETE CASCADE — deleting a Scene takes its own prepared
+    // roster and every stroke drawn on it with it, which is exactly what
+    // "scene-specific" (scene_summons.scene_id) means.
     await run('UPDATE scene_state SET active_scene_id = NULL WHERE active_scene_id = ?', [scene.id]);
     await run('DELETE FROM scene_notes WHERE scene_id = ?', [scene.id]);
     await run('DELETE FROM scene_summons WHERE scene_id = ?', [scene.id]);
+    await run('DELETE FROM scene_drawings WHERE scene_id = ?', [scene.id]);
     await run('DELETE FROM scenes WHERE id = ?', [scene.id]);
     io.emit('scene:deleted', { sceneId: scene.id });
-    if (wasActive) io.emit('stage:updated', await getStagePayload());
+    if (wasActive) await emitStageUpdated();
   });
 
   // The force-navigate signal (decision #3): every switch cuts every
@@ -4445,7 +4484,7 @@ io.on('connection', (socket) => {
       target = scene.id;
     }
     await run('UPDATE scene_state SET active_scene_id = ? WHERE id = 1', [target]);
-    io.emit('stage:updated', await getStagePayload());
+    await emitStageUpdated();
   });
 
   // Summoning (Phase 5) — the payload is deliberately just { scenePictureId
@@ -4501,7 +4540,7 @@ io.on('connection', (socket) => {
     } else {
       await run('UPDATE scene_summons SET scene_picture_id = ? WHERE id = ?', [picture.id, existing.id]);
     }
-    io.emit('stage:updated', await getStagePayload());
+    await emitStageUpdated();
   });
 
   // Manual drag-to-place and resize — the same ownership gate stage:summon
@@ -4524,7 +4563,7 @@ io.on('connection', (socket) => {
       clamp(Number(posY), 0, 1),
       summon.id,
     ]);
-    io.emit('stage:updated', await getStagePayload());
+    await emitStageUpdated();
   });
 
   on('stage:resize_summon', async ({ summonId, scale }) => {
@@ -4535,7 +4574,67 @@ io.on('connection', (socket) => {
     const ownerId = summon.character_id ?? summon.temp_npc_id;
     if (!mayWriteScenePicture(viewer, ownerType, ownerId)) return;
     await run('UPDATE scene_summons SET scale = ? WHERE id = ?', [clamp(Number(scale), 0.25, 4), summon.id]);
-    io.emit('stage:updated', await getStagePayload());
+    await emitStageUpdated();
+  });
+
+  // Hidden (decided, new) — GM-only regardless of ownership, unlike every
+  // other stage write above: this is a narrative control the GM exercises
+  // over the whole table, not a "may I edit my own character" permission,
+  // so it deliberately does NOT go through mayWriteScenePicture. The write
+  // itself is a plain toggle; what actually keeps a hidden summon secret is
+  // stagePayloadFor filtering it out of every non-GM emitStageUpdated()
+  // payload above, not anything client-side.
+  on('stage:toggle_hidden', async ({ summonId }) => {
+    if (socket.data.identity?.role !== 'gm') return;
+    const summon = await one('SELECT * FROM scene_summons WHERE id = ?', [summonId]);
+    if (!summon) return;
+    await run('UPDATE scene_summons SET is_hidden = ? WHERE id = ?', [summon.is_hidden ? 0 : 1, summon.id]);
+    await emitStageUpdated();
+  });
+
+  // Scene drawings (decided, new) — open to BOTH roles (a Player may draw
+  // and erase exactly like a GM), the opposite trust model from GM Notes
+  // just below: nothing here is secret, and nothing here is scoped to an
+  // owner the way stage:summon's own writes are. `scene_id` is resolved
+  // server-side off the active Scene, same pattern stage:summon already
+  // established — never client-claimed, and refused outright with no
+  // active Scene (nothing to pin a stroke to). Points are validated and
+  // capped rather than trusted verbatim: a malformed or absurdly long array
+  // from a misbehaving client should not be able to bloat the table or
+  // break every other viewer's own canvas replay.
+  const MAX_DRAWING_POINTS = 4000;
+  on('scene_draw:add', async ({ points, color, width, isEraser }) => {
+    const viewer = socket.data.identity;
+    if (!viewer) return;
+    const state = await one('SELECT active_scene_id FROM scene_state WHERE id = 1');
+    if (!state?.active_scene_id) return;
+    if (!Array.isArray(points) || points.length < 2 || points.length > MAX_DRAWING_POINTS) return;
+    const cleanPoints = points.map((p) => [clamp(Number(p?.[0]), 0, 1), clamp(Number(p?.[1]), 0, 1)]);
+    if (cleanPoints.some(([x, y]) => !Number.isFinite(x) || !Number.isFinite(y))) return;
+    await run(
+      'INSERT INTO scene_drawings (scene_id, points, color, width, is_eraser) VALUES (?, ?, ?, ?, ?)',
+      [
+        state.active_scene_id,
+        JSON.stringify(cleanPoints),
+        typeof color === 'string' && color ? color.slice(0, 32) : '#ef4444',
+        clamp(Number(width) || 0.01, 0.001, 0.2),
+        isEraser ? 1 : 0,
+      ]
+    );
+    await emitStageUpdated();
+  });
+
+  // The eraser's "double-press" gesture — wipes every stroke on the active
+  // Scene, regardless of who drew it (there is no author column to filter
+  // by even if this wanted to — see db.js's own comment on scene_drawings).
+  // Deliberately not GM-gated: the whole feature is a shared, anonymous
+  // tool by design, so the ability to clear it is shared too.
+  on('scene_draw:clear', async () => {
+    if (!socket.data.identity) return;
+    const state = await one('SELECT active_scene_id FROM scene_state WHERE id = 1');
+    if (!state?.active_scene_id) return;
+    await run('DELETE FROM scene_drawings WHERE scene_id = ?', [state.active_scene_id]);
+    await emitStageUpdated();
   });
 
   // GM Notes (decided, new) — see the tables' own comment in db.js for why

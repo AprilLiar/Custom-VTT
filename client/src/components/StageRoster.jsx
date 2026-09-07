@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
-import { Maximize2, X } from 'lucide-react';
+import { EyeOff, Maximize2, X } from 'lucide-react';
 import { layoutStage, SLOT_WIDTH, SLOT_GAP } from '../lib/sceneLayout.js';
+import { stageToImageFraction, imageFractionToStage } from '../lib/sceneProjection.js';
 import { socket } from '../socket.js';
 import HaloText from './HaloText.jsx';
 
@@ -179,6 +180,9 @@ const clamp = (value, lo, hi) => Math.min(hi, Math.max(lo, value));
 export default function StageRoster({
   summons,
   stageWidth,
+  stageHeight,
+  imageNaturalWidth,
+  imageNaturalHeight,
   heightScale = 1,
   gapScale = 1,
   sizeScale = 1,
@@ -187,6 +191,22 @@ export default function StageRoster({
   characterId,
 }) {
   const reduceMotion = useReducedMotion();
+  // A manually-placed summon's pos_x/pos_y are fractions of the ACTIVE
+  // SCENE's own background image (bugfix, decided, revised — see
+  // sceneProjection.js's own header comment), not of this viewer's own
+  // stage box the way they originally were. `object-cover` crops that
+  // background differently depending on each viewer's own aspect ratio, so
+  // "the same fraction of MY OWN box" routinely put a summon at a visually
+  // different spot in the artwork on a different screen — usually most
+  // visible vertically, since stage-box aspect ratios vary more in height
+  // than width across a GM's desktop and a Player's phone/tablet. Every
+  // read/write of pos_x/pos_y below goes through stageToImageFraction /
+  // imageFractionToStage so it means the same visual spot everywhere;
+  // `imageNaturalWidth`/`imageNaturalHeight` (0 until the backdrop's own
+  // onLoad fires, ScenePage.jsx) make both functions degrade to a plain
+  // stage-box fraction when there's no image loaded yet — the stage box IS
+  // the whole coordinate space in that case, same as before this fix.
+  const projectionGeometry = { containerWidth: stageWidth, containerHeight: stageHeight, naturalWidth: imageNaturalWidth, naturalHeight: imageNaturalHeight };
 
   // The resize handle and the un-summon "x" are hidden by default and
   // revealed two ways: real hover (CSS, `group-hover:`, desktop's own
@@ -291,9 +311,19 @@ export default function StageRoster({
       if (g.type === 'move') {
         const rect = wrapperRef.current?.getBoundingClientRect();
         if (!rect) return;
-        const posX = clamp((g.lastLeftPx ?? g.startLeftPx) / rect.width, 0, 1);
-        const posY = clamp((g.lastTopPx ?? g.startTopPx) / rect.height, 0, 1);
-        socket.emit('stage:reposition_summon', { summonId: g.summonId, posX, posY });
+        const { fx, fy } = stageToImageFraction({
+          x: g.lastLeftPx ?? g.startLeftPx,
+          y: g.lastTopPx ?? g.startTopPx,
+          containerWidth: rect.width,
+          containerHeight: rect.height,
+          naturalWidth: imageNaturalWidth,
+          naturalHeight: imageNaturalHeight,
+        });
+        socket.emit('stage:reposition_summon', {
+          summonId: g.summonId,
+          posX: clamp(fx, 0, 1),
+          posY: clamp(fy, 0, 1),
+        });
       } else {
         const nextScale = clamp(g.startScale * ((g.lastHeightPx ?? g.startHeightPx) / g.startHeightPx), 0.25, 4);
         socket.emit('stage:resize_summon', { summonId: g.summonId, scale: nextScale });
@@ -307,7 +337,12 @@ export default function StageRoster({
       window.removeEventListener('pointerup', onUp);
       window.removeEventListener('pointercancel', onUp);
     };
-  }, []);
+    // imageNaturalWidth/imageNaturalHeight only change once, when the
+    // backdrop's own onLoad fires (ScenePage.jsx) — re-subscribing then is
+    // harmless (gestureRef itself is a ref, untouched by this effect's own
+    // teardown, so an in-progress gesture survives it regardless), and
+    // omitting them here would let onUp close over a stale 0/0 forever.
+  }, [imageNaturalWidth, imageNaturalHeight]);
 
   const startMove = (e, entry) => {
     if (e.button !== undefined && e.button !== 0) return;
@@ -382,6 +417,20 @@ export default function StageRoster({
     setSelectedId((cur) => (cur === entry.id ? null : cur));
   };
 
+  // Hidden (decided, new) — GM-only regardless of ownership, unlike every
+  // other corner control above: this is a narrative tool the GM wields over
+  // the whole table, not a "may I edit my own character" permission, so it
+  // deliberately does NOT go through canEditSummon/editable. A Player never
+  // sees this button at all (canHide is false for them) — moot anyway,
+  // since a Hidden summon never reaches a Player's own `summons` prop in
+  // the first place (server-side redaction, stagePayloadFor).
+  const canHide = role === 'gm';
+  const toggleHidden = (e, entry) => {
+    e.stopPropagation();
+    if (!canHide) return;
+    socket.emit('stage:toggle_hidden', { summonId: entry.id });
+  };
+
   const setRefs = (id) => ({
     wrapper: (el) => {
       const cur = elRefs.current.get(id) ?? {};
@@ -406,12 +455,18 @@ export default function StageRoster({
       selected ? 'opacity-100' : 'opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto'
     }`;
     const positionStyle = isManual
-      ? {
-          left: `${(entry.pos_x ?? 0) * 100}%`,
-          top: `${(entry.pos_y ?? 0) * 100}%`,
-          transform: 'translate(-50%, -100%)',
-          zIndex: MANUAL_Z,
-        }
+      ? (() => {
+          // Pixels, not a plain CSS percentage — imageFractionToStage
+          // already resolves pos_x/pos_y through this viewer's own
+          // object-cover crop (see the constructor comment above), so the
+          // conversion has to happen in JS before it ever reaches `style`.
+          const { x, y } = imageFractionToStage({
+            fx: entry.pos_x ?? 0,
+            fy: entry.pos_y ?? 0,
+            ...projectionGeometry,
+          });
+          return { left: `${x}px`, top: `${y}px`, transform: 'translate(-50%, -100%)', zIndex: MANUAL_Z };
+        })()
       : { [entry.side === 'left' ? 'left' : 'right']: entry.x, zIndex: entry.z };
     return (
       <div
@@ -464,7 +519,14 @@ export default function StageRoster({
             // height-only sizing rule above for exactly the aspect ratios
             // it exists to fix.
             className="block w-auto max-w-none"
-            style={{ height: `${BASE_HEIGHT_DVH * heightScale * (entry.scale ?? 1)}dvh` }}
+            style={{
+              height: `${BASE_HEIGHT_DVH * heightScale * (entry.scale ?? 1)}dvh`,
+              // Half-transparent for the GM only — a Player never receives
+              // a Hidden summon's row at all (stagePayloadFor), so there is
+              // nothing for this branch to do on their side; `entry.is_hidden`
+              // is only ever true in a payload the GM themselves received.
+              opacity: entry.is_hidden ? 0.5 : 1,
+            }}
           />
           {editable && (
             <button
@@ -488,6 +550,20 @@ export default function StageRoster({
               style={{ touchAction: 'none' }}
             >
               <X size={14} aria-hidden />
+            </button>
+          )}
+          {canHide && (
+            <button
+              type="button"
+              onPointerDown={(e) => toggleHidden(e, entry)}
+              title={entry.is_hidden ? 'Reveal to Players' : 'Hide from Players'}
+              aria-label={entry.is_hidden ? 'Reveal to Players' : 'Hide from Players'}
+              // Stacked directly under the ✕ (top-10 = the ✕'s own h-8 plus
+              // a small gap), same corner — "under the x button", verbatim.
+              className={`${cornerButtonClass} right-0 top-10 ${entry.is_hidden ? 'border-brand-500 text-brand-300' : ''}`}
+              style={{ touchAction: 'none' }}
+            >
+              <EyeOff size={14} aria-hidden />
             </button>
           )}
         </motion.div>

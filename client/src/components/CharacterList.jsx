@@ -306,7 +306,7 @@ export default function CharacterList() {
                     onClick={() => navigate(`/character/${c.id}`)}
                     className="group flex cursor-pointer flex-col overflow-hidden panel-cut-lg border border-zinc-800 bg-zinc-900 transition hover:border-brand-600"
                   >
-                    <div className="flex h-56 items-center justify-center bg-zinc-800">
+                    <div className="relative flex h-56 items-center justify-center bg-zinc-800">
                       {src ? (
                         <CroppedImage src={src} alt={c.name} crop={cropOf(c)} loading="lazy" className="h-full w-full" />
                       ) : (
@@ -314,44 +314,59 @@ export default function CharacterList() {
                           {c.name.slice(0, 1).toUpperCase()}
                         </span>
                       )}
+                      {/* Action buttons live in the picture's own header, not
+                          the name row below (decided, revised) — two 44px
+                          touch targets plus the NPC/folder badges used to
+                          share ONE row with the name, and on a narrow card
+                          (2 columns on mobile) there was barely anything left
+                          for it, routinely down to a single letter before the
+                          ellipsis. Overlaid here instead, same hover-reveal
+                          mechanics as before (`hover-only-action` still makes
+                          them always-visible on a coarse/touch pointer, since
+                          there's nothing to hover), each its own small chip
+                          so it stays legible over any portrait behind it —
+                          the same corner-button look StageRoster's own
+                          Resize/Remove/Hide buttons already use. */}
+                      <div className="absolute inset-x-0 top-0 flex justify-end gap-1 p-1.5">
+                        {role === 'gm' && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setMoveTarget(c);
+                            }}
+                            title="Move to folder"
+                            className="hover-only-action flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-zinc-600 bg-zinc-900/80 text-zinc-300 opacity-0 transition hover:border-brand-500 hover:text-brand-300 group-hover:opacity-100"
+                          >
+                            ⇄
+                          </button>
+                        )}
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            remove(c);
+                          }}
+                          title="Delete character"
+                          className="hover-only-action flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-zinc-600 bg-zinc-900/80 text-zinc-300 opacity-0 transition hover:border-red-500 hover:text-red-400 group-hover:opacity-100"
+                        >
+                          ✕
+                        </button>
+                      </div>
                     </div>
                     <div className="flex items-center gap-2 p-3">
-                      <span className="truncate font-semibold">{c.name}</span>
+                      <span className="min-w-0 flex-1 truncate font-semibold">{c.name}</span>
                       {role === 'gm' && c.character_type === 'npc' && (
-                        <span className="panel-cut-sm bg-purple-600/30 px-1.5 text-xs font-bold uppercase text-purple-300">
+                        <span className="shrink-0 panel-cut-sm bg-purple-600/30 px-1.5 text-xs font-bold uppercase text-purple-300">
                           NPC
                         </span>
                       )}
                       {path && (
                         <span
                           title={path}
-                          className="truncate panel-cut-sm bg-zinc-700/50 px-1.5 text-xs text-zinc-400"
+                          className="max-w-[40%] shrink-0 truncate panel-cut-sm bg-zinc-700/50 px-1.5 text-xs text-zinc-400"
                         >
                           📁 {path}
                         </span>
                       )}
-                      {role === 'gm' && (
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setMoveTarget(c);
-                          }}
-                          title="Move to folder"
-                          className="hover-only-action ml-auto flex h-11 w-11 shrink-0 items-center justify-center panel-cut-sm text-zinc-600 opacity-0 transition hover:bg-zinc-800 hover:text-brand-300 group-hover:opacity-100"
-                        >
-                          ⇄
-                        </button>
-                      )}
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          remove(c);
-                        }}
-                        title="Delete character"
-                        className={`hover-only-action flex h-11 w-11 shrink-0 items-center justify-center panel-cut-sm text-zinc-600 opacity-0 transition hover:bg-red-900/40 hover:text-red-400 group-hover:opacity-100 md:h-auto md:w-auto md:px-1.5 ${role === 'gm' ? '' : 'ml-auto'}`}
-                      >
-                        ✕
-                      </button>
                     </div>
                   </div>
                 );

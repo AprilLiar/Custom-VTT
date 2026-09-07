@@ -62,6 +62,49 @@ export const loadSceneSizeScale = () =>
 export const saveSceneSizeScale = (v) =>
   saveScale(SIZE_KEY, v, SCENE_SIZE_SCALE_MIN, SCENE_SIZE_SCALE_MAX, DEFAULT_SCENE_SIZE_SCALE);
 
+// --- Draw tool: last-used pen color/width and eraser width, per device
+// (decided, new) — "remember the last color and width settings for each
+// user" reads, in this app's own no-login model, as "remember it on MY OWN
+// device," the same as every other Scene preference on this page. Not
+// server-synced and deliberately not attached to any drawn stroke either —
+// scene_drawings itself carries no author, so there is nowhere for a
+// per-user setting to live except locally. ---
+const DRAW_COLOR_KEY = 'vtt-scene-draw-color';
+export const DEFAULT_SCENE_DRAW_COLOR = '#ef4444';
+export function loadSceneDrawColor() {
+  try {
+    return localStorage.getItem(DRAW_COLOR_KEY) || DEFAULT_SCENE_DRAW_COLOR;
+  } catch {
+    return DEFAULT_SCENE_DRAW_COLOR;
+  }
+}
+export function saveSceneDrawColor(color) {
+  try {
+    localStorage.setItem(DRAW_COLOR_KEY, color);
+  } catch {
+    // Storage unavailable; the choice still works for this session.
+  }
+  return color;
+}
+
+const PEN_WIDTH_KEY = 'vtt-scene-draw-pen-width';
+export const SCENE_PEN_WIDTH_MIN = 1;
+export const SCENE_PEN_WIDTH_MAX = 20;
+export const DEFAULT_SCENE_PEN_WIDTH = 4;
+export const loadScenePenWidth = () =>
+  loadScale(PEN_WIDTH_KEY, SCENE_PEN_WIDTH_MIN, SCENE_PEN_WIDTH_MAX, DEFAULT_SCENE_PEN_WIDTH);
+export const saveScenePenWidth = (v) =>
+  saveScale(PEN_WIDTH_KEY, v, SCENE_PEN_WIDTH_MIN, SCENE_PEN_WIDTH_MAX, DEFAULT_SCENE_PEN_WIDTH);
+
+const ERASER_WIDTH_KEY = 'vtt-scene-draw-eraser-width';
+export const SCENE_ERASER_WIDTH_MIN = 8;
+export const SCENE_ERASER_WIDTH_MAX = 80;
+export const DEFAULT_SCENE_ERASER_WIDTH = 24;
+export const loadSceneEraserWidth = () =>
+  loadScale(ERASER_WIDTH_KEY, SCENE_ERASER_WIDTH_MIN, SCENE_ERASER_WIDTH_MAX, DEFAULT_SCENE_ERASER_WIDTH);
+export const saveSceneEraserWidth = (v) =>
+  saveScale(ERASER_WIDTH_KEY, v, SCENE_ERASER_WIDTH_MIN, SCENE_ERASER_WIDTH_MAX, DEFAULT_SCENE_ERASER_WIDTH);
+
 // --- Name plates over each character's own head — on by default ---
 const NAMEPLATES_KEY = 'vtt-scene-nameplates-hidden';
 export function loadSceneShowNameplates() {

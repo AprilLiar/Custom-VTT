@@ -1606,6 +1606,17 @@ export async function initDb() {
   await ensureColumn('scene_summons', 'pos_x', 'REAL');
   await ensureColumn('scene_summons', 'pos_y', 'REAL');
   await ensureColumn('scene_summons', 'scale', 'REAL NOT NULL DEFAULT 1');
+  // **Hidden (decided, new).** GM-only toggle, no schema split needed the
+  // way scene_notes required one — this is a per-summon flag, not a
+  // separate secret document, so a plain column plus per-viewer filtering
+  // of the SAME stage payload (server/index.js: buildStagePayload/
+  // stagePayloadFor) is enough. A hidden summon is still fully present and
+  // editable for the GM (rendered at reduced opacity — see StageRoster.jsx)
+  // but is dropped from the payload entirely for every non-GM viewer,
+  // including the character's own Player — "not leaving any trace behind"
+  // is read literally: this is a GM narrative tool, not a Player-facing
+  // stealth mechanic the owning Player gets to see through.
+  await ensureColumn('scene_summons', 'is_hidden', 'INTEGER NOT NULL DEFAULT 0');
   // ---------------------------------------------------------------------
 
   // GM Notes (decided, new). Two shapes, one dialog:
@@ -1640,6 +1651,45 @@ export async function initDb() {
     )
   `);
   ddl(`INSERT OR IGNORE INTO master_note (id, body) VALUES (1, '')`);
+  // ---------------------------------------------------------------------
+
+  // **Scene drawings (decided, new).** A shared pen/eraser annotation layer
+  // over the stage — the opposite trust model from GM Notes just above:
+  // open to BOTH roles (a Player may draw and erase exactly like a GM), and
+  // deliberately carries no author column at all, per the feature's own
+  // requirement ("do not keep info about who drew something, it is just a
+  // drawing for everybody"). `points` is a JSON-encoded array of `[x, y]
+  // pairs, fractions (0..1) of the drawer's own measured stage box at the
+  // moment they drew — the exact same reasoning as scene_summons.pos_x/
+  // pos_y above (no shared camera, so a fraction is what looks right on
+  // every viewer's own screen). `width` is ALSO a fraction, of the stage's
+  // own width specifically, for the same reason a raw pixel width would
+  // render inconsistently thick or thin across differently-sized screens.
+  // `color` is meaningless for an eraser stroke but stored anyway rather
+  // than made nullable — one less branch everywhere a row is read, and the
+  // column is never rendered with when `is_eraser` is set. An eraser
+  // stroke is not represented as a deletion or a geometric clip against
+  // earlier strokes — it is stored as an ordinary stroke row, and every
+  // client composites it with `globalCompositeOperation: 'destination-out'`
+  // instead of `'source-over'` when replaying (StageRoster's sibling
+  // component SceneDrawingLayer.jsx) — the ordering IS the eraser: it only
+  // ever erases whatever was drawn before it in `id` order, never anything
+  // drawn after, which is exactly what a person watching an eraser pass
+  // over a page would expect. `scene_id` is NOT NULL and CASCADEs off its
+  // Scene, same as scene_notes — a drawing belongs to exactly the Scene it
+  // was made on and never follows the roster between Scenes the way a
+  // summon briefly used to.
+  ddl(`
+    CREATE TABLE IF NOT EXISTS scene_drawings (
+      id INTEGER PRIMARY KEY,
+      scene_id INTEGER NOT NULL REFERENCES scenes(id) ON DELETE CASCADE,
+      points TEXT NOT NULL,
+      color TEXT NOT NULL DEFAULT '#ef4444',
+      width REAL NOT NULL DEFAULT 0.01,
+      is_eraser INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
   // ---------------------------------------------------------------------
 
   // The Perks compendium: master list of Perk templates. Just picture, name,
@@ -2386,6 +2436,9 @@ async function ensureIndexes() {
     ['scene_pictures', 'temp_npc_id'],
     // The Notes dialog's own read, by whichever Scene is currently active.
     ['scene_notes', 'scene_id'],
+    // The drawing layer's own read (buildStagePayload) and the eraser's
+    // "clear everything on this Scene" sweep, both by active Scene.
+    ['scene_drawings', 'scene_id'],
   ];
   for (const [table, column] of indexes) {
     ddl(`CREATE INDEX IF NOT EXISTS idx_${table}_${column} ON ${table}(${column})`);

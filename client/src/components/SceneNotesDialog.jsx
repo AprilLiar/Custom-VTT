@@ -22,10 +22,18 @@ export default function SceneNotesDialog({ activeScene, onClose }) {
   const [masterNote, setMasterNote] = useState(null);
   const identity = { role: 'gm' };
 
+  // Which note sits in the full-size middle workspace right now — `null`
+  // (nothing), `'new'` (a not-yet-created draft), or an existing note's id.
+  // A Scene Note reachable through `notes` this way is ALWAYS excluded from
+  // the side-box columns below (see `others`) — a note is either the one
+  // thing being read/edited in full, or a compact box, never both at once.
+  const [editingId, setEditingId] = useState(null);
+
   useEffect(() => {
     if (view !== 'scene' || !activeScene) return;
     let cancelled = false;
     setNotes(null);
+    setEditingId(null);
     getSceneNotes(activeScene.id, identity)
       .then((rows) => { if (!cancelled) setNotes(rows); })
       .catch(console.error);
@@ -53,8 +61,10 @@ export default function SceneNotesDialog({ activeScene, onClose }) {
       setNotes((prev) => (prev && note.scene_id === activeScene?.id ? [...prev, note] : prev));
     const onUpdated = (note) =>
       setNotes((prev) => (prev ? prev.map((n) => (n.id === note.id ? note : n)) : prev));
-    const onDeleted = ({ noteId }) =>
+    const onDeleted = ({ noteId }) => {
       setNotes((prev) => (prev ? prev.filter((n) => n.id !== noteId) : prev));
+      setEditingId((cur) => (cur === noteId ? null : cur));
+    };
     const onMasterUpdated = (row) => setMasterNote(row);
     socket.on('scene_note:created', onCreated);
     socket.on('scene_note:updated', onUpdated);
@@ -68,10 +78,41 @@ export default function SceneNotesDialog({ activeScene, onClose }) {
     };
   }, [activeScene?.id]);
 
-  const addNote = () => {
-    if (!activeScene) return;
-    socket.emit('scene_note:create', { sceneId: activeScene.id, title: '', body: '' });
+  // Saving (create OR update) is what moves a note OUT of the middle
+  // workspace and into a side box (decided, new) — it clears `editingId`
+  // immediately, before the server's own echo comes back. The just-created
+  // case briefly has no matching row in `notes` yet (a normal, accepted
+  // async gap this app already tolerates elsewhere) until `onCreated` above
+  // appends it — at which point it renders as a box like any other, with no
+  // special-casing needed here for "the new one."
+  const saveActive = (title, body) => {
+    if (editingId === 'new') {
+      if (!activeScene) return;
+      socket.emit('scene_note:create', { sceneId: activeScene.id, title, body });
+    } else {
+      socket.emit('scene_note:update', { noteId: editingId, title, body });
+    }
+    setEditingId(null);
   };
+  const deleteActive = () => {
+    if (editingId === 'new' || editingId == null) return;
+    const note = notes?.find((n) => n.id === editingId);
+    if (window.confirm(`Delete this note${note?.title ? ` ("${note.title}")` : ''}?`)) {
+      socket.emit('scene_note:delete', { noteId: editingId });
+      setEditingId(null);
+    }
+  };
+
+  const activeNote = editingId === 'new' ? { id: 'new', title: '', body: '' } : notes?.find((n) => n.id === editingId) ?? null;
+  // Every OTHER note becomes a compact side box — first filling the left
+  // column, then the right (decided, new, verbatim), a plain half/half
+  // split so both columns stay roughly balanced as more notes are added,
+  // rather than a fixed per-column capacity that would need an arbitrary
+  // constant nothing in the request actually specifies.
+  const others = (notes ?? []).filter((n) => n.id !== editingId);
+  const splitAt = Math.ceil(others.length / 2);
+  const leftNotes = others.slice(0, splitAt);
+  const rightNotes = others.slice(splitAt);
 
   const tabClass = (active) =>
     `min-h-11 flex-1 panel-cut-sm border px-3 text-sm font-semibold uppercase tracking-wide ${
@@ -81,7 +122,7 @@ export default function SceneNotesDialog({ activeScene, onClose }) {
     }`;
 
   return (
-    <DialogShell title="Notes" onClose={onClose} variant="fullscreen" maxWidth="max-w-2xl" portal>
+    <DialogShell title="Notes" onClose={onClose} variant="fullscreen" maxWidth="max-w-5xl" portal>
       <div className="mb-3 flex shrink-0 gap-2">
         <button type="button" onClick={() => setView('scene')} className={tabClass(view === 'scene')}>
           Scene Notes
@@ -89,6 +130,15 @@ export default function SceneNotesDialog({ activeScene, onClose }) {
         <button type="button" onClick={() => setView('master')} className={tabClass(view === 'master')}>
           Master Note
         </button>
+        {view === 'scene' && activeScene && (
+          <button
+            type="button"
+            onClick={() => setEditingId('new')}
+            className="min-h-11 shrink-0 panel-cut-sm border border-dashed border-zinc-700 px-3 text-xs font-bold uppercase tracking-wide text-zinc-500 hover:border-brand-600 hover:text-zinc-200"
+          >
+            + Add Note
+          </button>
+        )}
       </div>
 
       {view === 'scene' ? (
@@ -99,18 +149,32 @@ export default function SceneNotesDialog({ activeScene, onClose }) {
         ) : notes == null ? (
           <p className="text-sm text-zinc-500">Loading…</p>
         ) : (
-          <div className="space-y-3">
-            <p className="text-xs text-zinc-500">Pinned to {activeScene.name} — nowhere else.</p>
-            {notes.map((note) => (
-              <NoteCard key={note.id} note={note} />
-            ))}
-            <button
-              type="button"
-              onClick={addNote}
-              className="min-h-11 w-full panel-cut-sm border border-dashed border-zinc-700 text-xs font-bold uppercase tracking-wide text-zinc-500 hover:border-brand-600 hover:text-zinc-200"
-            >
-              + Add Note
-            </button>
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-[1fr_1.4fr_1fr]">
+            <NoteColumn notes={leftNotes} onOpen={setEditingId} order="order-2 md:order-1" />
+            <div className="order-1 min-h-[50dvh] md:order-2">
+              {activeNote ? (
+                <NoteEditor
+                  key={activeNote.id}
+                  note={activeNote}
+                  isNew={editingId === 'new'}
+                  onSave={saveActive}
+                  onCancel={() => setEditingId(null)}
+                  onDelete={editingId !== 'new' ? deleteActive : undefined}
+                />
+              ) : (
+                <div className="flex h-full min-h-[50dvh] flex-col items-center justify-center gap-3 panel-cut-sm border border-dashed border-zinc-800 p-6 text-center text-sm text-zinc-600">
+                  <p>Select a note to read or edit it in full, or add a new one.</p>
+                  <button
+                    type="button"
+                    onClick={() => setEditingId('new')}
+                    className="min-h-11 panel-cut-sm border border-zinc-700 px-4 text-xs font-bold uppercase tracking-wide text-zinc-400 hover:border-brand-600 hover:text-zinc-200"
+                  >
+                    + Add Note
+                  </button>
+                </div>
+              )}
+            </div>
+            <NoteColumn notes={rightNotes} onOpen={setEditingId} order="order-3" />
           </div>
         )
       ) : masterNote == null ? (
@@ -122,23 +186,42 @@ export default function SceneNotesDialog({ activeScene, onClose }) {
   );
 }
 
-// Local draft state seeded once from the note at mount, same shape
-// TempNpcEditor.jsx's own name field uses — this is a single-GM-at-a-time
-// tool, so there's no live-merge-while-typing case worth building for.
-function NoteCard({ note }) {
+// A side column of compact, already-saved notes — capped and independently
+// scrollable so a long list never pushes the middle workspace off-screen
+// (DialogShell's own body is ONE shared scroll container otherwise; this
+// nested one is what actually fixes "impossible to see it fully without
+// scrolling" for the note you're ACTUALLY working on, while still letting
+// a long list of others scroll on its own).
+function NoteColumn({ notes, onOpen, order }) {
+  return (
+    <div className={`${order} max-h-[70dvh] space-y-2 overflow-y-auto pr-1`}>
+      {notes.map((note) => (
+        <button
+          key={note.id}
+          type="button"
+          onClick={() => onOpen(note.id)}
+          className="block w-full panel-cut-sm border border-zinc-800 bg-zinc-900 p-3 text-left hover:border-brand-600"
+        >
+          <p className="truncate text-sm font-semibold text-zinc-200">{note.title || 'Untitled Note'}</p>
+          {note.body && <p className="mt-1 line-clamp-3 text-xs text-zinc-500">{note.body}</p>}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// The one full-size workspace — local draft state seeded once from the note
+// at mount (TempNpcEditor.jsx's own shape; this is a single-GM-at-a-time
+// tool, so there's no live-merge-while-typing case worth building), keyed
+// by the caller on `note.id` so switching which note is active always
+// re-seeds a fresh draft rather than reusing stale state across notes.
+function NoteEditor({ note, isNew, onSave, onCancel, onDelete }) {
   const [title, setTitle] = useState(note.title);
   const [body, setBody] = useState(note.body);
-  const dirty = title !== note.title || body !== note.body;
-
-  const save = () => socket.emit('scene_note:update', { noteId: note.id, title, body });
-  const remove = () => {
-    if (window.confirm(`Delete this note${note.title ? ` ("${note.title}")` : ''}?`)) {
-      socket.emit('scene_note:delete', { noteId: note.id });
-    }
-  };
+  const dirty = isNew || title !== note.title || body !== note.body;
 
   return (
-    <div className="space-y-2 panel-cut-sm border border-zinc-800 bg-zinc-900 p-3">
+    <div className="flex h-full min-h-[50dvh] flex-col gap-2 panel-cut-sm border border-zinc-800 bg-zinc-900 p-3">
       <input
         value={title}
         onChange={(e) => setTitle(e.target.value)}
@@ -148,21 +231,26 @@ function NoteCard({ note }) {
       <textarea
         value={body}
         onChange={(e) => setBody(e.target.value)}
-        rows={4}
         placeholder="Write anything…"
-        className="w-full panel-cut-sm border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm outline-none focus:border-brand-500"
+        // flex-1, not a fixed `rows` count — the whole point of this layout
+        // is that the note being worked on gets the workspace's full height
+        // rather than a cramped internally-scrolling box.
+        className="w-full flex-1 panel-cut-sm border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm outline-none focus:border-brand-500"
       />
       <div className="flex items-center justify-between gap-2">
+        <div className="flex gap-3">
+          <button type="button" onClick={onCancel} className="text-xs font-semibold text-zinc-500 hover:text-zinc-300">
+            Cancel
+          </button>
+          {onDelete && (
+            <button type="button" onClick={onDelete} className="text-xs font-semibold text-red-500 hover:text-red-400">
+              Delete
+            </button>
+          )}
+        </div>
         <button
           type="button"
-          onClick={remove}
-          className="text-xs font-semibold text-red-500 hover:text-red-400"
-        >
-          Delete
-        </button>
-        <button
-          type="button"
-          onClick={save}
+          onClick={() => onSave(title, body)}
           disabled={!dirty}
           className="min-h-9 panel-cut-sm bg-brand-600 px-4 text-xs font-semibold uppercase tracking-wide hover:bg-brand-500 disabled:opacity-40"
         >
@@ -187,7 +275,7 @@ function MasterNoteEditor({ note }) {
         value={body}
         onChange={(e) => setBody(e.target.value)}
         placeholder="Campaign notes…"
-        className="min-h-[40dvh] w-full flex-1 panel-cut-sm border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm outline-none focus:border-brand-500"
+        className="min-h-[60dvh] w-full flex-1 panel-cut-sm border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm outline-none focus:border-brand-500"
       />
       <button
         type="button"

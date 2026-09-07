@@ -48,10 +48,13 @@ export const getTempNpcs = () => fetch('/api/temp-npcs').then(json);
 export const getTempNpcFolders = () => fetch('/api/temp-npc-folders').then(json);
 export const getScenes = () => fetch('/api/scenes').then(json);
 export const getSceneFolders = () => fetch('/api/scene-folders').then(json);
-// The live stage everyone shares — { activeScene, summons }, see
-// getStagePayload in server/index.js for why this shape stays put across
-// phases even though summons is still always [] until Phase 5.
-export const getStage = () => fetch('/api/stage').then(json);
+// The live stage everyone shares — { activeScene, summons, drawings }.
+// Carries identity as query params, same as getCombat — not a 403 gate here
+// (nothing about the endpoint itself is secret), but the server still
+// redacts a Hidden summon out of the response per-viewer (stagePayloadFor),
+// so this REST fetch needs to identify itself exactly like the socket does.
+export const getStage = (identity) =>
+  fetch(`/api/stage${identity ? `?${new URLSearchParams(identity)}` : ''}`).then(json);
 
 // One character's Relationships board. Carries the identity as query params for
 // the same reason getCombat does — REST has no socket to carry it — and here it

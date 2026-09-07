@@ -9,12 +9,21 @@ import {
   loadSceneGapScale,
   loadSceneSizeScale,
   loadSceneShowNameplates,
+  loadSceneDrawColor,
+  saveSceneDrawColor,
+  loadScenePenWidth,
+  saveScenePenWidth,
+  loadSceneEraserWidth,
+  saveSceneEraserWidth,
 } from '../lib/sceneSettings.js';
+import { socket } from '../socket.js';
 import OrientationGate from './OrientationGate.jsx';
 import SceneCastDrawer from './SceneCastDrawer.jsx';
 import SceneListDrawer from './SceneListDrawer.jsx';
 import SceneNotesDialog from './SceneNotesDialog.jsx';
 import StageRoster from './StageRoster.jsx';
+import SceneDrawingLayer from './SceneDrawingLayer.jsx';
+import SceneDrawToolbar from './SceneDrawToolbar.jsx';
 import PlayerSummonDock from './PlayerSummonDock.jsx';
 
 // The Scene tab's fullscreen canvas (Scene tab plan, Phase 1: the route
@@ -36,21 +45,52 @@ export default function ScenePage() {
   const isDesktop = useIsDesktop();
   const isLandscape = useIsLandscape();
   const { role, characterId } = useRole();
-  const stage = useStage();
+  const identity = role === 'gm' ? { role: 'gm' } : role === 'player' ? { role: 'player', characterId } : undefined;
+  const stage = useStage(identity);
 
   // A callback ref, not useRef: the orientation gate below swaps in a
   // completely different tree, so the stage element itself can go from
   // absent to present (or back) across a render — a plain ref's own effect
-  // only runs once at mount and would miss that transition. `stageWidth`
-  // is what `layoutStage` needs to know how much room the roster has.
+  // only runs once at mount and would miss that transition. `stageWidth` is
+  // what `layoutStage` needs to know how much room the roster has;
+  // `stageHeight` joins it for the image-projection fix below (bugfix:
+  // manually-placed summons syncing wrong vertically between viewers) —
+  // `layoutStage` itself still only ever reads `stageWidth`, unchanged.
   const [stageEl, setStageEl] = useState(null);
   const [stageWidth, setStageWidth] = useState(0);
+  const [stageHeight, setStageHeight] = useState(0);
   useEffect(() => {
     if (!stageEl) return;
-    const observer = new ResizeObserver((entries) => setStageWidth(entries[0].contentRect.width));
+    const observer = new ResizeObserver((entries) => {
+      setStageWidth(entries[0].contentRect.width);
+      setStageHeight(entries[0].contentRect.height);
+    });
     observer.observe(stageEl);
     return () => observer.disconnect();
   }, [stageEl]);
+
+  // The backdrop's own natural pixel size — what `sceneProjection.js` needs
+  // to replicate `object-cover`'s crop math so a manually-placed summon's
+  // position means the same visual spot in the ARTWORK for every viewer,
+  // not just the same fraction of each viewer's own differently-shaped
+  // stage box (see StageRoster.jsx's own comment on `imageNaturalWidth`/
+  // `imageNaturalHeight` for the full reasoning). Reset alongside
+  // `backgroundSrc` itself (the effect below) so a Scene switch never
+  // renders new positions through the PREVIOUS image's own dimensions for
+  // the one frame before the new image's onLoad fires.
+  const [imageNatural, setImageNatural] = useState({ width: 0, height: 0 });
+  // Computed here (not down with `backgroundSrc`'s own former spot, after
+  // the orientation-gate return below) purely so this reset effect can key
+  // off it — every Hook in this component has to run on every render,
+  // including the portrait-gate's early return path, so anything a Hook
+  // depends on has to be computed before that return, not after it.
+  const activeScene = stage?.activeScene ?? null;
+  const backgroundSrc = activeScene?.image_data
+    ? `data:${activeScene.image_mime_type || 'image/jpeg'};base64,${activeScene.image_data}`
+    : null;
+  useEffect(() => {
+    setImageNatural({ width: 0, height: 0 });
+  }, [backgroundSrc]);
 
   // Cinematic mode: a purely local viewing preference (never socket-synced
   // — hiding your OWN interface says nothing about the shared game state,
@@ -82,6 +122,27 @@ export default function ScenePage() {
   const [sizeScale] = useState(loadSceneSizeScale);
   const [showNameplates] = useState(loadSceneShowNameplates);
 
+  // Draw tool (decided, new) — available to BOTH roles, unlike everything
+  // else on this page. `tool` itself ('select' | 'pen' | 'erase') is
+  // per-VIEWING-session state, same as `uiHidden`: whether YOUR OWN pointer
+  // is currently drawing says nothing about anyone else's. `color`/
+  // `penWidth`/`eraserWidth` start from this device's own remembered
+  // values (sceneSettings.js) and are re-saved on every change, unlike the
+  // read-once display sliders above — "remember the last … settings for
+  // each user" means live, not just at load.
+  const [tool, setTool] = useState('select');
+  const [drawColor, setDrawColor] = useState(loadSceneDrawColor);
+  const [penWidth, setPenWidth] = useState(loadScenePenWidth);
+  const [eraserWidth, setEraserWidth] = useState(loadSceneEraserWidth);
+  const changeDrawColor = (c) => setDrawColor(saveSceneDrawColor(c));
+  const changePenWidth = (w) => setPenWidth(saveScenePenWidth(w));
+  const changeEraserWidth = (w) => setEraserWidth(saveSceneEraserWidth(w));
+  const clearAllDrawings = () => {
+    if (window.confirm('Erase every drawing on this Scene? This cannot be undone.')) {
+      socket.emit('scene_draw:clear');
+    }
+  };
+
   // Decided: no portrait layout for the stage is ever built. Desktop is
   // never gated, regardless of window aspect — see useIsLandscape's own
   // comment for why the width check has to live with the caller.
@@ -98,11 +159,8 @@ export default function ScenePage() {
     );
   }
 
-  const activeScene = stage?.activeScene ?? null;
   const summons = stage?.summons ?? [];
-  const backgroundSrc = activeScene?.image_data
-    ? `data:${activeScene.image_mime_type || 'image/jpeg'};base64,${activeScene.image_data}`
-    : null;
+  const drawings = stage?.drawings ?? [];
 
   return (
     <div
@@ -113,6 +171,10 @@ export default function ScenePage() {
         <img
           src={backgroundSrc}
           alt=""
+          // Captures the ONE thing sceneProjection.js needs that CSS itself
+          // never exposes — the image's own natural size, before
+          // object-cover scales/crops it to fit.
+          onLoad={(e) => setImageNatural({ width: e.currentTarget.naturalWidth, height: e.currentTarget.naturalHeight })}
           className="absolute inset-0 h-full w-full object-cover"
           // Decorative — the Scene's own name is announced by the GM
           // activating it, not read off this backdrop image.
@@ -132,6 +194,9 @@ export default function ScenePage() {
         <StageRoster
           summons={summons}
           stageWidth={stageWidth}
+          stageHeight={stageHeight}
+          imageNaturalWidth={imageNatural.width}
+          imageNaturalHeight={imageNatural.height}
           heightScale={heightScale}
           gapScale={gapScale}
           sizeScale={sizeScale}
@@ -140,12 +205,34 @@ export default function ScenePage() {
           characterId={characterId}
         />
       )}
+      {/* A sibling of StageRoster, not a child — see this component's own
+          header comment for why nesting it inside the roster's own capped
+          stacking context would hide a drawing under a manually-placed
+          figure. Rendered unconditionally, same as StageRoster: drawings
+          are part of the Scene itself, not UI chrome, so cinematic mode
+          never hides them either. */}
+      {stageWidth > 0 && (
+        <SceneDrawingLayer
+          drawings={drawings}
+          stageWidth={stageWidth}
+          stageHeight={stageHeight}
+          imageNaturalWidth={imageNatural.width}
+          imageNaturalHeight={imageNatural.height}
+          tool={tool}
+          color={drawColor}
+          penWidth={penWidth}
+          eraserWidth={eraserWidth}
+        />
+      )}
       {/* The one way off this route (the back-arrow) plus the hide-interface
           toggle — rendered unconditionally now, outside the `!uiHidden` gate
           below, so the toggle itself stays reachable while hidden (see
           TopLeftControls: it hides the back-arrow but never itself while
-          `uiHidden`). z-20 so it stays above the drawers' own z-10, which
-          dock to the same corners for a GM, and above StageRoster's figures. */}
+          `uiHidden`). z-[1000] — above SceneDrawingLayer's own
+          STAGE_DRAWING_Z (700, see that file), so this corner's own toggle
+          stays clickable even while the whole stage is capturing pointer
+          events for an active draw/erase tool, not just above the drawers'
+          plain z-10. */}
       <TopLeftControls
         uiHidden={uiHidden}
         onToggleUi={() => setUiHidden((v) => !v)}
@@ -167,6 +254,20 @@ export default function ScenePage() {
           {role === 'gm' && <SceneCastDrawer />}
           {role === 'gm' && <SceneListDrawer activeSceneId={activeScene?.id ?? null} />}
           {role === 'player' && <PlayerSummonDock characterId={characterId} summons={summons} />}
+          {/* Both roles, unlike everything else in this block — see
+              SceneDrawToolbar's own header comment for the corner and
+              z-index reasoning. */}
+          <SceneDrawToolbar
+            tool={tool}
+            onSelectTool={setTool}
+            color={drawColor}
+            onColorChange={changeDrawColor}
+            penWidth={penWidth}
+            onPenWidthChange={changePenWidth}
+            eraserWidth={eraserWidth}
+            onEraserWidthChange={changeEraserWidth}
+            onClearAll={clearAllDrawings}
+          />
         </>
       )}
       {notesOpen && <SceneNotesDialog activeScene={activeScene} onClose={() => setNotesOpen(false)} />}
@@ -190,8 +291,8 @@ export default function ScenePage() {
 function TopLeftControls({ uiHidden, onToggleUi, onOpenNotes }) {
   return (
     <div
-      className="absolute left-3 top-3 z-20 flex gap-2"
-      style={{ marginTop: 'var(--safe-top)', marginLeft: 'var(--safe-left)' }}
+      className="absolute left-3 top-3 flex gap-2"
+      style={{ zIndex: 1000, marginTop: 'var(--safe-top)', marginLeft: 'var(--safe-left)' }}
     >
       {!uiHidden && (
         <Link
