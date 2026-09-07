@@ -4667,6 +4667,17 @@ Each side column is independently `max-h-[70dvh] overflow-y-auto` (nested inside
 single shared scroll container) so a long list of saved notes never pushes the workspace itself
 off-screen — the actual fix for "impossible to see it fully without scrolling."
 
+**Follow-up, same day: full screen width, and saved boxes show their full body (decided,
+revised).** Two further requests on the same dialog. First, `DialogShell`'s own `maxWidth` prop
+was still capping it at `max-w-5xl` (1024px) even though the `fullscreen` variant it uses already
+asks for `md:w-full` — changed to `maxWidth="max-w-none"`, the same override the `theater` variant
+already uses internally, so the cap comes off and the dialog actually fills the screen width
+(minus the shell's own small `md:p-4` margin). Second, `NoteColumn`'s own body preview dropped its
+`line-clamp-3` — a saved note's box now always shows its FULL text (growing to whatever height that
+needs) rather than an ellipsis-truncated 3-line preview, with `whitespace-pre-wrap` added so the
+box actually preserves the note's own line breaks instead of collapsing them into one flowed
+paragraph the way a plain `<p>` would.
+
 **Manually-placed summons are anchored to the Scene's own artwork, not to each viewer's own screen
 shape (bugfix, decided, revised).** Reported live: a GM repositioning a character saw it land in a
 visibly different vertical spot on a Player's own screen — same horizontal position, wrong height.
@@ -4761,6 +4772,48 @@ are remembered **per device** (`sceneSettings.js`'s existing localStorage conven
 `loadSceneDrawColor`/`loadScenePenWidth`/`loadSceneEraserWidth`), re-saved on every change rather
 than read once — "remember it for each user" means live, not just at load, and this app's no-login
 model has no other place for a per-user setting to live anyway.
+
+**Corner buttons: two containers instead of one wrapper bump, and tap-empty-space-to-deselect
+(bugfix, decided, revised).** Reported live: selecting a character on the Scene stage made the
+rest of the Scene UI (the GM's own drawers, the draw toolbar) unreachable for as long as the
+selection lasted. Root cause was the PREVIOUS fix for the corner-button/drawer bug above: it
+promoted the roster's single wrapper `<div>` to `CONTROLS_Z` (15, clearing the drawers' z-10)
+whenever ANY figure was selected/hovered — which correctly let that ONE figure's own corner buttons
+clear the drawer, but also lifted the WHOLE roster (every OTHER figure, and all its empty space)
+above the drawer at the same time, with no way to dismiss it short of re-tapping the exact same
+figure. Redesigned in `StageRoster.jsx` into two ALWAYS-mounted sibling containers instead of one
+dynamically-bumped wrapper:
+- The **"crowd" container** stays at a FIXED, low `z-[1]` always — never bumped — and every figure
+  lives there by default. It also owns a background click-catcher
+  (`onClick={(e) => e.target === e.currentTarget && setSelectedId(null)}`) — tapping any of its own
+  empty space (not a figure, not a button) clears the selection, which is what "clicking on a place
+  where there are no characters deselects" (verbatim) actually does.
+- The **"elevated" container** is a second, ALWAYS-mounted sibling at a fixed `CONTROLS_Z`, but with
+  `pointer-events: none` on the container itself — its own empty space is therefore invisible to
+  hit-testing and lets a click straight through to whatever is actually behind it (a drawer control,
+  or the crowd container's own click-catcher underneath), while the ONE figure portaled inside still
+  opts back in with its own `pointer-events: auto`. Only the currently selected-or-hovered figure
+  (`elevatedId = selectedId ?? hoveredId`) is ever routed there — every other figure, and all of the
+  screen the roster covers, is reachable through to the drawers immediately, with no dismiss-click
+  needed first.
+- Moving a figure between the two containers uses `createPortal(children, target, entry.id)` with a
+  STABLE key — confirmed live that this correctly preserves the figure's own DOM node (and therefore
+  its drag/resize refs, `elRefs`/`gestureRef`) across the container change rather than unmounting
+  and remounting it, since only the portal's OWN `containerInfo` changes between renders, never its
+  position in the React tree. **`AnimatePresence` cannot wrap a `createPortal()` result directly** —
+  confirmed live, the hard way: `React.isValidElement()` returns `false` for a raw Portal, so
+  `AnimatePresence` silently drops it from its own traversal and renders nothing, no error. Fixed
+  with a one-line wrapper component (`FigurePortal`) that calls `createPortal` internally — its OWN
+  return value (a normal function-component element) IS a valid element `AnimatePresence` can track
+  for mount/key/removal, and therefore correctly runs each figure's exit animation on un-summon,
+  regardless of which of the two containers that figure's content is portaled into underneath it.
+- `ACTIVE_GESTURE_Z` (9000, an in-progress drag/resize) deliberately was NOT added to the elevation
+  priority alongside `selectedId`/`hoveredId` — a fresh mobile drag that never went through a prior
+  tap-select or hover still only elevates within whichever container it's already in (matching the
+  established, pre-existing, out-of-scope limitation that a drag STARTING from directly under a
+  drawer was never specifically solved either); doing so would have meant a mid-gesture container
+  transition, a materially riskier moment for the same ref-preservation guarantee above, for a case
+  this request never actually reported.
 
 ## Implementation Risks & Recommendations
 A scope check for whoever picks this up: this grew well past "semi-simple website" over the course of design. Most of it (dice, inventory, injuries, stances, perks, counters) is standard CRUD-plus-broadcast work. Combat Timing (Tics/Startup/reveal/overflow) is the one genuinely hard piece — real software complexity, not just more forms — and it's also the most original part of the system, which is exactly why it deserves the most care rather than being rushed alongside everything else.

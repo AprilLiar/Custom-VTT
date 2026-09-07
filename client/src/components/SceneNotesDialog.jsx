@@ -122,7 +122,12 @@ export default function SceneNotesDialog({ activeScene, onClose }) {
     }`;
 
   return (
-    <DialogShell title="Notes" onClose={onClose} variant="fullscreen" maxWidth="max-w-5xl" portal>
+    // max-w-none (decided, revised — the same override `theater` variant
+    // uses internally, DialogShell.jsx): the dialog's own `fullscreen`
+    // variant already asks for `md:w-full`, so a `maxWidth` class was the
+    // only thing actually capping this narrower than the screen. "Extend
+    // the space for notes to match the entire screen width" reads literally.
+    <DialogShell title="Notes" onClose={onClose} variant="fullscreen" maxWidth="max-w-none" portal>
       <div className="mb-3 flex shrink-0 gap-2">
         <button type="button" onClick={() => setView('scene')} className={tabClass(view === 'scene')}>
           Scene Notes
@@ -191,7 +196,11 @@ export default function SceneNotesDialog({ activeScene, onClose }) {
 // (DialogShell's own body is ONE shared scroll container otherwise; this
 // nested one is what actually fixes "impossible to see it fully without
 // scrolling" for the note you're ACTUALLY working on, while still letting
-// a long list of others scroll on its own).
+// a long list of others scroll on its own). Each individual box shows its
+// FULL body (decided, revised — no `line-clamp`), growing to whatever
+// height its own text needs rather than being cut short with an ellipsis;
+// `whitespace-pre-wrap` keeps the line breaks the note was actually typed
+// with, which a plain `<p>` would otherwise collapse away.
 function NoteColumn({ notes, onOpen, order }) {
   return (
     <div className={`${order} max-h-[70dvh] space-y-2 overflow-y-auto pr-1`}>
@@ -203,7 +212,7 @@ function NoteColumn({ notes, onOpen, order }) {
           className="block w-full panel-cut-sm border border-zinc-800 bg-zinc-900 p-3 text-left hover:border-brand-600"
         >
           <p className="truncate text-sm font-semibold text-zinc-200">{note.title || 'Untitled Note'}</p>
-          {note.body && <p className="mt-1 line-clamp-3 text-xs text-zinc-500">{note.body}</p>}
+          {note.body && <p className="mt-1 whitespace-pre-wrap text-xs text-zinc-500">{note.body}</p>}
         </button>
       ))}
     </div>
