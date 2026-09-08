@@ -201,6 +201,7 @@ export default function StageRoster({
   stageHeight,
   imageNaturalWidth,
   imageNaturalHeight,
+  backgroundFit = 'cover',
   heightScale = 1,
   gapScale = 1,
   sizeScale = 1,
@@ -212,19 +213,27 @@ export default function StageRoster({
   // A manually-placed summon's pos_x/pos_y are fractions of the ACTIVE
   // SCENE's own background image (bugfix, decided, revised — see
   // sceneProjection.js's own header comment), not of this viewer's own
-  // stage box the way they originally were. `object-cover` crops that
-  // background differently depending on each viewer's own aspect ratio, so
-  // "the same fraction of MY OWN box" routinely put a summon at a visually
-  // different spot in the artwork on a different screen — usually most
-  // visible vertically, since stage-box aspect ratios vary more in height
-  // than width across a GM's desktop and a Player's phone/tablet. Every
+  // stage box the way they originally were. The backdrop's own fit mode
+  // (`backgroundFit` — per-Scene, decided, see db.js's own comment on
+  // scenes.background_fit) crops/letterboxes/stretches that background
+  // differently depending on each viewer's own aspect ratio, so "the same
+  // fraction of MY OWN box" routinely put a summon at a visually different
+  // spot in the artwork on a different screen — usually most visible
+  // vertically, since stage-box aspect ratios vary more in height than
+  // width across a GM's desktop and a Player's phone/tablet. Every
   // read/write of pos_x/pos_y below goes through stageToImageFraction /
   // imageFractionToStage so it means the same visual spot everywhere;
   // `imageNaturalWidth`/`imageNaturalHeight` (0 until the backdrop's own
   // onLoad fires, ScenePage.jsx) make both functions degrade to a plain
   // stage-box fraction when there's no image loaded yet — the stage box IS
   // the whole coordinate space in that case, same as before this fix.
-  const projectionGeometry = { containerWidth: stageWidth, containerHeight: stageHeight, naturalWidth: imageNaturalWidth, naturalHeight: imageNaturalHeight };
+  const projectionGeometry = {
+    containerWidth: stageWidth,
+    containerHeight: stageHeight,
+    naturalWidth: imageNaturalWidth,
+    naturalHeight: imageNaturalHeight,
+    fit: backgroundFit,
+  };
 
   // The resize handle and the un-summon "x" are hidden by default and
   // revealed two ways: real hover (CSS, `group-hover:`, desktop's own
@@ -387,6 +396,7 @@ export default function StageRoster({
           containerHeight: rect.height,
           naturalWidth: imageNaturalWidth,
           naturalHeight: imageNaturalHeight,
+          fit: backgroundFit,
         });
         socket.emit('stage:reposition_summon', {
           summonId: g.summonId,
@@ -411,7 +421,11 @@ export default function StageRoster({
     // harmless (gestureRef itself is a ref, untouched by this effect's own
     // teardown, so an in-progress gesture survives it regardless), and
     // omitting them here would let onUp close over a stale 0/0 forever.
-  }, [imageNaturalWidth, imageNaturalHeight]);
+    // backgroundFit changes at most once per Scene switch (or a GM editing
+    // the active Scene's own fit mid-session) — same reasoning applies:
+    // omitting it would let a drag committed right after either of those
+    // project through the PREVIOUS Scene's now-stale fit mode.
+  }, [imageNaturalWidth, imageNaturalHeight, backgroundFit]);
 
   const startMove = (e, entry) => {
     if (e.button !== undefined && e.button !== 0) return;
@@ -527,8 +541,8 @@ export default function StageRoster({
     const positionStyle = isManual
       ? (() => {
           // Pixels, not a plain CSS percentage — imageFractionToStage
-          // already resolves pos_x/pos_y through this viewer's own
-          // object-cover crop (see the constructor comment above), so the
+          // already resolves pos_x/pos_y through this viewer's own backdrop
+          // fit geometry (see the constructor comment above), so the
           // conversion has to happen in JS before it ever reaches `style`.
           const { x, y } = imageFractionToStage({
             fx: entry.pos_x ?? 0,

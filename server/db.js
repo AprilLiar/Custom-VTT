@@ -1524,8 +1524,29 @@ export async function initDb() {
     )
   `);
   // The right-drawer THUMBNAIL crop only. The live stage never reads these
-  // columns — it always renders the full, uncropped image, object-fit: cover.
+  // columns — it always renders the full, uncropped image, scaled per
+  // `background_fit` below.
   await ensureCropColumns('scenes');
+  // **Background fit (decided, new) — per-SCENE, not per-viewer.** Unlike
+  // the Settings page's own Scene Stage sliders (character height/gap/size,
+  // all deliberately per-device: "how big YOU like characters on your own
+  // screen"), how a Scene's own BACKDROP scales inside the stage box is an
+  // authored property of that Scene's art, the same trust level as the
+  // backdrop image itself — a battle map's own edges can carry real
+  // information (an NPC drawn into a corner, part of a room) that a
+  // Player's own device happening to crop with `cover` would hide from
+  // them specifically, which the GM has no way to know or fix per-viewer.
+  // So it lives on the row, applies identically to every viewer, and is
+  // edited in `SceneEditor.jsx` alongside the backdrop picker itself, not
+  // in Settings. One of a small fixed set (`server/index.js`'s own
+  // `VALID_BACKGROUND_FITS`) — `'cover'` (crop to fill, the previously
+  // hardcoded-only behavior and still the default) plus `contain`/`fill`,
+  // which map straight onto their own CSS `object-fit` keyword, and
+  // `fit-height`/`fit-width`, which don't exist as an `object-fit` keyword
+  // at all (`object-fit` always PICKS an axis itself, based on the image's
+  // own aspect ratio vs the box's; these two force a SPECIFIC axis
+  // regardless — see ScenePage.jsx's own `BACKDROP_FIT_CLASS` for how).
+  await ensureColumn('scenes', 'background_fit', "TEXT NOT NULL DEFAULT 'cover'");
 
   // Singleton: which Scene is currently active, same shape as combat_state's
   // own id=1 row.

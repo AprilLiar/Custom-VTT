@@ -4843,6 +4843,68 @@ over — a real, if secondary, wrinkle worth remembering if a future design ever
 an `AnimatePresence`-tracked child for an unrelated reason.
 </details>
 
+**Background Fit (decided, new).** How a Scene's own backdrop scales inside the stage box —
+Cover (crop to fill, the previous hardcoded-only behavior and still the default), Best Fit/Contain
+(show the whole image, letterboxed), Stretch/Fill (distort to fill exactly), Vertical Fit (match
+height exactly, width free) and Horizontal Fit (match width exactly, height free).
+
+- **Per-SCENE, not a per-viewer Settings slider — a real product decision, asked and confirmed
+  rather than assumed.** Every OTHER Scene Stage control (Character Height, Distance Apart, Picture
+  Size — Settings page) is deliberately per-device: how big YOU like characters on your own screen
+  is a property of the person looking, not of the game. Background Fit breaks that pattern on
+  purpose: a battle map's own edges can carry real information (an NPC drawn into a corner, part of
+  a room) that a Player's own device happening to crop away with Cover would hide from them
+  specifically, with no way for the GM to know or fix it per-viewer. So it's an authored property of
+  the Scene's own art — `scenes.background_fit` (server: db.js), edited in `SceneEditor.jsx`
+  alongside the backdrop picture itself, applying identically to every viewer, GM and Players alike.
+  `GET /api/scenes`'s existing `SELECT *` picks it up for free; `buildStagePayload`'s own narrower
+  `activeScene` query (server/index.js — deliberately NOT `SELECT *`, to avoid shipping thumbnail-
+  only crop columns to every client on every stage update) needed `background_fit` added to its
+  explicit column list by hand. `scene:update` always writes it alongside `name` (not the "absent
+  means unchanged" contract the image upload itself uses) — server-validated against a fixed set
+  (`VALID_BACKGROUND_FITS`) with a silent fallback to whatever the Scene already had for anything
+  outside it, never trusting a client-sent value straight into a column read back out as
+  CSS-affecting data. A `scenes` table that already existed under the pre-Background-Fit schema
+  upgrades cleanly via `ensureColumn` (verified live the same way `scene_timestamps`' own
+  `date`/`is_current` upgrade path was: hand-crafted the old schema, booted the server against it,
+  confirmed no error and a normal read/update round-trip).
+- **`fit-height`/`fit-width` have no `object-fit` keyword of their own — CSS `object-fit` always
+  PICKS an axis itself** (`cover` picks whichever axis needs MORE scale to fully cover; `contain`
+  picks whichever needs LESS), so there is no native way to force a SPECIFIC axis regardless of
+  which way that leaves the other one going. `client/src/lib/backgroundFit.js`'s own
+  `backdropFitClassName` instead sizes the `<img>` itself along just the one named axis (`height:
+  100%` or `width: 100%`, the other left `auto` — how a plain replaced element already scales
+  proportionally with zero help from `object-fit`) and centers it on the free axis with
+  `left/top: 50%` + a matching `-translate`; the stage's own `overflow-hidden` (ScenePage.jsx's
+  outer div) clips whatever overflows there, exactly like `cover` already relies on it doing.
+  `max-w-none` (or an explicit width) still has to beat Tailwind's own preflight `img { max-width:
+  100% }` reset, the same StageRoster.jsx height-only sizing already needed it for.
+- **A necessary correctness fix, not scope creep: `sceneProjection.js` used to hardcode `cover`'s
+  own crop math.** A manually-placed summon's `pos_x`/`pos_y` (and a drawing's own stored points)
+  are fractions of the BACKDROP IMAGE, projected to screen pixels at render time by replicating
+  whatever crop/letterbox/stretch the backdrop's own fit mode actually does — `coverGeometry`
+  generalized into `fitGeometry`/`fitScale`, taking the active Scene's own `fit` and computing each
+  mode's own scale-per-axis (uniform for cover/contain/fit-height/fit-width, independent X/Y for
+  fill) before the shared offset/round-trip math. Left unfixed, any Scene using a non-Cover fit mode
+  would have silently rendered every manually-placed figure and drawing in the WRONG spot the moment
+  this feature shipped. `StageRoster.jsx`/`SceneDrawingLayer.jsx` both thread the active Scene's own
+  `backgroundFit` through their existing `projectionGeometry`/`geometry` objects (added to each
+  effect's own dependency array too, so a mid-session fit-mode edit or Scene switch doesn't leave a
+  drag/stroke committing through a stale one); every function defaults `fit` to `'cover'` when
+  omitted, so no pre-existing call site anywhere needed touching. Verified two ways: new unit tests
+  (`server/test/sceneProjection.test.js` — each mode's own geometry promise, a stage->image->stage
+  round-trip for all five, the no-image-yet degrade-to-plain-fraction case) and a live Playwright
+  pass placing a summon at a known image fraction under `contain` on a real (canvas-generated, not
+  hand-edited-base64) tall image and confirming it renders at the exact computed pixel — not where
+  the old, unconditional Cover math would have put it.
+- **Verification:** unit tests above (all 10 pass); live Playwright pass cycling a Scene through
+  every fit mode via `SceneEditor.jsx`'s new `<select>` and confirming the backdrop `<img>`'s own
+  className/rendered box matches each mode's promise (Cover/Contain/Fill fill the box exactly
+  regardless of the image's own aspect ratio; Vertical/Horizontal Fit match their own named axis
+  exactly while the free axis auto-scales from the image's REAL natural size); `scene:update`
+  accepting `backgroundFit` alongside a fresh image upload in the same call; the schema-upgrade path
+  against a hand-crafted pre-feature `scenes` table.
+
 **Timestamp tool (decided, new; revised — real dates, a compact 7-column grid, "Current").** A
 GM-exclusive corner tool for narrative time markers played as a table-wide beat: dims the Scene 90%
 to black and fades a chosen Date/subtext in, big and bold, centered, then fades back out. Docked

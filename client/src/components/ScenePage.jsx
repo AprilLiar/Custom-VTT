@@ -17,6 +17,7 @@ import {
   saveSceneEraserWidth,
   loadTimestampDuration,
 } from '../lib/sceneSettings.js';
+import { DEFAULT_BACKGROUND_FIT, backdropFitClassName } from '../lib/backgroundFit.js';
 import { socket } from '../socket.js';
 import OrientationGate from './OrientationGate.jsx';
 import SceneCastDrawer from './SceneCastDrawer.jsx';
@@ -73,8 +74,9 @@ export default function ScenePage() {
   }, [stageEl]);
 
   // The backdrop's own natural pixel size — what `sceneProjection.js` needs
-  // to replicate `object-cover`'s crop math so a manually-placed summon's
-  // position means the same visual spot in the ARTWORK for every viewer,
+  // to replicate the active Scene's own fit-mode geometry so a manually-
+  // placed summon's position means the same visual spot in the ARTWORK for
+  // every viewer,
   // not just the same fraction of each viewer's own differently-shaped
   // stage box (see StageRoster.jsx's own comment on `imageNaturalWidth`/
   // `imageNaturalHeight` for the full reasoning). Reset alongside
@@ -91,6 +93,14 @@ export default function ScenePage() {
   const backgroundSrc = activeScene?.image_data
     ? `data:${activeScene.image_mime_type || 'image/jpeg'};base64,${activeScene.image_data}`
     : null;
+  // Per-Scene, not per-viewer (decided — db.js's own comment on
+  // scenes.background_fit): every viewer renders the SAME Scene's backdrop
+  // with the SAME fit mode, and StageRoster/SceneDrawingLayer both need it
+  // too (sceneProjection.js's own functions have to project a stored
+  // image-fraction position through whichever fit mode is actually
+  // rendering, or a manually-placed figure/drawing lands in the wrong spot
+  // relative to the backdrop).
+  const backgroundFit = activeScene?.background_fit || DEFAULT_BACKGROUND_FIT;
   useEffect(() => {
     setImageNatural({ width: 0, height: 0 });
   }, [backgroundSrc]);
@@ -181,10 +191,10 @@ export default function ScenePage() {
           src={backgroundSrc}
           alt=""
           // Captures the ONE thing sceneProjection.js needs that CSS itself
-          // never exposes — the image's own natural size, before
-          // object-cover scales/crops it to fit.
+          // never exposes — the image's own natural size, before its own
+          // fit mode scales/crops/stretches it to fit.
           onLoad={(e) => setImageNatural({ width: e.currentTarget.naturalWidth, height: e.currentTarget.naturalHeight })}
-          className="absolute inset-0 h-full w-full object-cover"
+          className={backdropFitClassName(backgroundFit)}
           // Decorative — the Scene's own name is announced by the GM
           // activating it, not read off this backdrop image.
           aria-hidden
@@ -206,6 +216,7 @@ export default function ScenePage() {
           stageHeight={stageHeight}
           imageNaturalWidth={imageNatural.width}
           imageNaturalHeight={imageNatural.height}
+          backgroundFit={backgroundFit}
           heightScale={heightScale}
           gapScale={gapScale}
           sizeScale={sizeScale}
@@ -227,6 +238,7 @@ export default function ScenePage() {
           stageHeight={stageHeight}
           imageNaturalWidth={imageNatural.width}
           imageNaturalHeight={imageNatural.height}
+          backgroundFit={backgroundFit}
           tool={tool}
           color={drawColor}
           penWidth={penWidth}
