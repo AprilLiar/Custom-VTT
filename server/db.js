@@ -1692,17 +1692,16 @@ export async function initDb() {
   `);
   // ---------------------------------------------------------------------
 
-  // **Timestamps (decided, new).** A GM-exclusive tool for narrative time
-  // markers ("Day 12", "Three years later…") played as a table-wide beat:
-  // dims the Scene and fades a chosen Date/subtext in, big and bold, then
-  // fades back out. Deliberately GLOBAL, not `scene_id`-scoped the way
-  // scene_notes/scene_drawings above are — a Timestamp is a moment in the
-  // CAMPAIGN's own timeline, not an annotation belonging to one particular
-  // backdrop, so a GM can play "Day 12" from whichever Scene happens to be
-  // active. Same "not about any one Scene" reasoning master_note above
-  // already uses, just as its own ordinary multi-row table rather than a
-  // singleton — there can be any number of these, unlike the one Master
-  // Note.
+  // **Timestamps (decided, new; revised).** A GM-exclusive tool for
+  // narrative time markers played as a table-wide beat: dims the Scene and
+  // fades a chosen Date/subtext in, big and bold, then fades back out.
+  // Deliberately GLOBAL, not `scene_id`-scoped the way scene_notes/
+  // scene_drawings above are — a Timestamp is a moment in the CAMPAIGN's
+  // own timeline, not an annotation belonging to one particular backdrop,
+  // so a GM can play one from whichever Scene happens to be active. Same
+  // "not about any one Scene" reasoning master_note above already uses,
+  // just as its own ordinary multi-row table rather than a singleton —
+  // there can be any number of these, unlike the one Master Note.
   // **Two different trust levels for the SAME row, split by verb.**
   // Managing them (create/edit/delete/list) is exactly as GM-secret as GM
   // Notes — emitToGm-only, never io.emit, and the REST read is behind the
@@ -1710,19 +1709,39 @@ export async function initDb() {
   // PLAYING one is the opposite of a Note: the whole point is for the
   // WHOLE TABLE to see it, so `stage:timestamp_play` broadcasts via a
   // plain `io.emit`, carrying only the one played Timestamp's own display
-  // text (`date_text`/`subtext`) resolved server-side from `timestampId` —
-  // a Player socket is never handed read access to the rest of the list,
-  // and can't play an arbitrary id either (the handler still checks
+  // fields (`date`/`subtext`) resolved server-side from `timestampId` — a
+  // Player socket is never handed read access to the rest of the list, and
+  // can't play an arbitrary id either (the handler still checks
   // `identity.role === 'gm'` before it will look one up at all).
+  // **`date` is a real calendar date (decided, revised — was free text),
+  // stored as an ISO `YYYY-MM-DD` string** (SQLite has no native DATE
+  // type, and plain ISO text both sorts and compares correctly as-is,
+  // exactly what `GET /api/scene-timestamps`'s own `ORDER BY date` below
+  // relies on) — the exact string an `<input type="date">` already
+  // produces/consumes, so the client needs no conversion either. `name`
+  // stays a separate free-text field purely for finding an entry again in
+  // the management grid; it is never shown when played. **`is_current`
+  // (decided, new) marks at most ONE row "the Current Timestamp" — an
+  // exclusivity the write side enforces (`scene_timestamp:set_current`,
+  // server/index.js: clears every row's flag before setting the new one),
+  // never left to the client to keep straight across two writes.
   ddl(`
     CREATE TABLE IF NOT EXISTS scene_timestamps (
       id INTEGER PRIMARY KEY,
       name TEXT NOT NULL DEFAULT '',
-      date_text TEXT NOT NULL DEFAULT '',
+      date TEXT NOT NULL DEFAULT '',
       subtext TEXT NOT NULL DEFAULT '',
+      is_current INTEGER NOT NULL DEFAULT 0,
       created_at TEXT DEFAULT CURRENT_TIMESTAMP
     )
   `);
+  // A table that already existed under the original (free-text `date_text`,
+  // no `is_current`) shape gets these two added in place — `date_text`
+  // itself is left standing, unused, rather than dropped: this codebase
+  // never DROP COLUMNs an existing table, only adds (see this function's
+  // own header/every other ensureColumn call for the same reasoning).
+  await ensureColumn('scene_timestamps', 'date', "TEXT NOT NULL DEFAULT ''");
+  await ensureColumn('scene_timestamps', 'is_current', 'INTEGER NOT NULL DEFAULT 0');
   // ---------------------------------------------------------------------
 
   // The Perks compendium: master list of Perk templates. Just picture, name,

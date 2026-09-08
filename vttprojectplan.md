@@ -4843,61 +4843,111 @@ over — a real, if secondary, wrinkle worth remembering if a future design ever
 an `AnimatePresence`-tracked child for an unrelated reason.
 </details>
 
-**Timestamp tool (decided, new).** A GM-exclusive corner tool for narrative time markers ("Day 12",
-"Three years later…") played as a table-wide beat: dims the Scene 90% to black and fades a chosen
-Date/subtext in, big and bold, centered, then fades back out. Docked bottom-right in
-`SceneDrawToolbar.jsx`'s own row (Clock icon), alongside Pen/Eraser — "alongside the other tools"
-(verbatim spec) reads as the SAME dock those already own, not a new corner, so the button is simply
-GM-gated inside that existing component rather than getting its own.
+**Timestamp tool (decided, new; revised — real dates, a compact 7-column grid, "Current").** A
+GM-exclusive corner tool for narrative time markers played as a table-wide beat: dims the Scene 90%
+to black and fades a chosen Date/subtext in, big and bold, centered, then fades back out. Docked
+bottom-right in `SceneDrawToolbar.jsx`'s own row (Clock icon), alongside Pen/Eraser — "alongside the
+other tools" (verbatim spec) reads as the SAME dock those already own, not a new corner, so the
+button is simply GM-gated inside that existing component rather than getting its own.
 
 - **Data model — one flat, GLOBAL table, not per-Scene (decided).** `scene_timestamps` (`id`, `name`,
-  `date_text`, `subtext`, `created_at`) carries no `scene_id` at all, unlike `scene_notes`/
+  `date`, `subtext`, `is_current`, `created_at`) carries no `scene_id` at all, unlike `scene_notes`/
   `scene_drawings`. A Timestamp is a moment in the CAMPAIGN's own timeline, not an annotation
   belonging to whichever backdrop happens to be active — the same "not about any one Scene"
   reasoning `master_note` already uses, just as its own ordinary multi-row table instead of a
-  singleton. A GM can play "Day 12" from any Scene; switching Scenes never changes the list.
+  singleton. A GM can play any Timestamp from any Scene; switching Scenes never changes the list.
 - **Two different trust levels for the same table, split by verb (decided).** Managing the list
-  (create/update/delete/the REST list read) is exactly as GM-secret as GM Notes: every socket
-  handler checks `identity.role === 'gm'` and broadcasts only via `emitToGm`, and
+  (create/update/delete/the REST list read/marking one Current) is exactly as GM-secret as GM Notes:
+  every socket handler checks `identity.role === 'gm'` and broadcasts only via `emitToGm`, and
   `GET /api/scene-timestamps` sits behind the same GM-only 403 gate `/api/master-note` uses — a
   Player can't enumerate the list over either transport. **Playing one is the opposite** — the whole
   point is for the WHOLE TABLE to see it, so `stage:timestamp_play` (GM-only to trigger) resolves the
   row server-side from `timestampId` and broadcasts `stage:timestamp_played` via a plain `io.emit`
-  carrying only that one row's `dateText`/`subtext` — never an id, never the rest of the list, so a
+  carrying only that one row's `date`/`subtext` — never an id, never the rest of the list, so a
   Player socket has nothing to look anything up with even if it wanted to.
-- **`date_text` is free text, not a real date (decided).** This game's calendar is whatever the
-  table's fiction says it is — "Day 47", "The Second Age", "Three Years Later…" are all valid, so
-  the field is a plain `<input>`, not a date picker. `name` is a separate field purely for finding it
-  again in the management grid — never shown when played.
+- **`date` is a real calendar date (decided, REVISED — was free text).** Originally a plain
+  `<input>` on the theory that this game's calendar is whatever the table's fiction says it is —
+  corrected once actual use made clear the point was auto-sorting a timeline, which needs a real,
+  comparable date underneath, not a string a GM could type "Day 47" or "Three Years Later" into.
+  Stored as an ISO `YYYY-MM-DD` string (SQLite has no native DATE type; ISO text both sorts and
+  compares correctly as-is and is exactly what an `<input type="date">` already produces/consumes,
+  so no conversion happens on either end) and displayed everywhere as `formatTimestampDate`
+  (`client/src/lib/timestampFormat.js`) renders it — `"May 12, 2015"`, `Date.UTC` +
+  `timeZone: 'UTC'` on both ends so the calendar date typed into the editor is the exact same one
+  shown back regardless of the viewer's own timezone. A table that already had the original
+  free-text shape gets `date`/`is_current` added via `ensureColumn` (server/db.js) rather than a
+  destructive rename — the old `date_text` column is left standing, unused (this codebase never
+  drops a column, only adds), verified live by hand-crafting the pre-revision schema, booting the
+  server against it, and confirming no error and a normal create/read round-trip. `name` stays a
+  separate free-text field purely for finding an entry again in the management grid — never shown
+  when played.
+- **Auto-sorted chronologically, undated last (decided, new).** `GET /api/scene-timestamps` orders
+  by `(date = '') ASC, date ASC, id ASC` — real dates first in calendar order, anything left blank
+  sorted to the very end rather than jumbled at the front (an empty string would otherwise sort
+  BEFORE every real date, lexicographically). `SceneTimestampDialog.jsx` never re-sorts client-side;
+  it only chunks the order it's handed into the grid below.
 - **Client — `SceneTimestampDialog.jsx`** (GM-only, opened from the toolbar button, `DialogShell`
   `fullscreen`+`portal`, mirroring `SceneNotesDialog.jsx`'s own shape minus its Scene/Master tab
-  split, since there's only ever the one flat list here): a card grid, `+ New Timestamp` dashed card,
+  split, since there's only ever the one flat list here): a compact card grid, a trailing `+` tile,
   and a Name/Date/Subtext editor (`editingId`: `null` | `'new'` | an id, same pattern Notes' own
   `NoteEditor` uses) reused for both create and edit.
-  - **Cards, not rows — because Play needs to be giant and Edit needs to be small and out of the way
-    (verbatim spec).** Modeled on a video-thumbnail hover: the card shows its name (plus a small
-    Date/subtext preview) at rest; hovering — or, on a coarse pointer, always, via the same
-    `.hover-only-action` class CharacterList.jsx's own card actions use — reveals a large centered
-    Play button and a small top-right Edit button, the same corner-chip look StageRoster's own
-    Resize/Remove/Hide buttons already use.
+  - **A fixed 7-column grid, infinite rows, and a new Date always hard-starts a fresh row even if
+    the previous one still had room (verbatim spec, decided, new).** Not expressible with CSS
+    `grid-auto-flow` alone — there is no "restart the row on a value change" rule in CSS grid — so
+    `groupIntoRows` builds the rows in JS: chunks the already-sorted list at 7, but also cuts a row
+    short the moment the date changes, even mid-row. Every row still renders with the identical
+    `grid-template-columns: repeat(7, minmax(0, 1fr))`, so despite being separate DOM rows they stay
+    visually aligned into one continuous grid. Verified live: a run of 8 same-date entries
+    correctly spans rows 2 and 3 uninterrupted (`[…,7]` then `[1]`), and the very next, different-
+    dated entry gets its OWN fresh row 4 rather than filling the 6 empty slots row 3 left behind.
+  - **Cards are now deliberately tiny (verbatim spec: "much smaller… so more fit simultaneously") —
+    name plus formatted date only, `h-14`, no subtext preview at rest** (subtext is secondary flavor
+    text, not needed to identify an entry at a glance, and the space it would cost isn't worth it at
+    this size). Play/Edit/Star all scaled down to match: **Play** (centered, giant relative to the
+    card but no longer literally giant) and **Star** and **Edit**, now side by side in the top-right
+    corner ("near the edit button", verbatim) — same video-thumbnail hover convention as before
+    (`.hover-only-action`/`group-hover`, CharacterList.jsx's own card-action convention, defaults
+    visible on a coarse pointer since there's no hover to reveal it there).
+  - **"Current" (decided, new) — a Star toggle, exclusive to at most one row at a time.** Clicking a
+    non-current row's Star marks IT current and un-marks whatever was current before, in the same
+    server write (`scene_timestamp:set_current`, server/index.js — clears every row's flag, then
+    sets the target, so the exclusivity is never something the client has to keep straight across
+    two separate writes); clicking the CURRENTLY-current row's own Star again clears it to none
+    (a toggle, not a one-way pin). The Current card's Star stays visible even without hovering
+    (unlike every other card's), doubling as an always-on badge — paired with a `border-brand-500`/
+    `bg-brand-900/30` tint on the card itself — so which one is Current reads at a glance across the
+    whole grid, not only on hover. `scene_timestamp:current_changed` broadcasts just `{ currentId }`
+    (the new current row's id, or `null` once toggled off) — enough for every open GM tab's own copy
+    of the list to patch itself locally without a refetch.
+  - **Opening the dialog auto-scrolls to the Current Timestamp, once (verbatim spec: "so after there
+    are a lot of them, I do not need to scroll for a long time").** `scrollIntoView({block:'center'})`
+    on the Current card's own ref, guarded by a ref-flag so it only fires the first time the list
+    loads with one — not on every subsequent live patch, which would otherwise yank the view out
+    from under whatever the GM is actually looking at mid-session. Verified live against a
+    120-Timestamp list with the Current one buried near the end: on open, it lands centered in the
+    viewport with no manual scrolling.
   - **Pressing Play closes the dialog first.** A full-screen dim-and-fade beat playing out behind the
     GM's own management window instead of over the Scene everyone else is looking at would defeat the
     point, so `play()` emits `stage:timestamp_play` and calls `onClose()` in the same action.
 - **Client — `TimestampCutscene.jsx`** — always mounted in `ScenePage.jsx`, like `StageRoster`/
   `SceneDrawingLayer`, regardless of `uiHidden`: this is narrative content, not a UI control, the
   same reasoning that already keeps summoned figures visible through cinematic mode. Listens for
-  `stage:timestamp_played` and renders nothing until one arrives. One continuous Framer Motion
-  keyframe run (`opacity: [0,1,1,0]`, `times:[0,0.2,0.8,1]`) covering fade-in/hold/fade-out as a
-  single timeline — the dim (a `bg-black` layer fixed at `0.9` opacity) and the text share the SAME
-  parent opacity, so one keyframe run animates both the "dim the Scene" and the "fade the text" halves
-  of the spec at once, rather than two things kept in sync by hand. `key={play.seq}` (a fresh
-  `Date.now()` each play) forces a remount — and therefore restarts the animation from t=0 — even if
-  the SAME Timestamp is played again before the previous run finished, the same trick
-  `RoundCutscene.jsx`'s own `ImpactBurst` uses for back-to-back hits. Reduced motion keeps the
-  information (the card shown for the full configured duration) and drops the fade ramp: straight to
-  fully shown, hold, straight back off, rather than skipping the beat entirely. `pointer-events-none`
-  on the whole overlay — the dim is purely visual, nothing underneath (the hide-interface toggle
-  included) is ever actually blocked from a click while a card plays.
+  `stage:timestamp_played` and renders nothing until one arrives; the played `date` is run through
+  the SAME `formatTimestampDate` the management grid uses, so the big bold text is never left in raw
+  `YYYY-MM-DD` — and, since it's now real prose ("May 12, 2015") rather than free-text flavor text,
+  the `uppercase` styling that used to shout it in caps was dropped (it would have rendered "MAY 12,
+  2015" regardless of the actual casing typed in). One continuous Framer Motion keyframe run
+  (`opacity: [0,1,1,0]`, `times:[0,0.2,0.8,1]`) covering fade-in/hold/fade-out as a single timeline —
+  the dim (a `bg-black` layer fixed at `0.9` opacity) and the text share the SAME parent opacity, so
+  one keyframe run animates both the "dim the Scene" and the "fade the text" halves of the spec at
+  once, rather than two things kept in sync by hand. `key={play.seq}` (a fresh `Date.now()` each
+  play) forces a remount — and therefore restarts the animation from t=0 — even if the SAME
+  Timestamp is played again before the previous run finished, the same trick `RoundCutscene.jsx`'s
+  own `ImpactBurst` uses for back-to-back hits. Reduced motion keeps the information (the card shown
+  for the full configured duration) and drops the fade ramp: straight to fully shown, hold, straight
+  back off, rather than skipping the beat entirely. `pointer-events-none` on the whole overlay — the
+  dim is purely visual, nothing underneath (the hide-interface toggle included) is ever actually
+  blocked from a click while a card plays.
 - **Settings — "Timestamp Card Duration" (decided, new).** Per-device, `sceneSettings.js`
   (`loadTimestampDuration`/`saveTimestampDuration`, 1–10s, default 3s — "roughly 3 seconds" per
   spec), same "read once at `ScenePage` mount, per-viewer, never socket-synced" shape every other
@@ -4905,13 +4955,20 @@ GM-gated inside that existing component rather than getting its own.
   each renders the fade timing on their own configured clock — an absolute duration rather than a
   multiplier like Cutscene Speed, since there's no existing pace here to scale.
 - **Verification:** `scripts/playtest-scene-timestamps.mjs` (GM-only management + REST 403 for a
-  Player, a forged `scene_timestamp:create` from a Player is silently refused, playing broadcasts
-  `dateText`/`subtext` to BOTH a GM and a Player socket with no id/name attached, a Player's own
-  `stage:timestamp_play` is refused). Manual Playwright pass (throwaway, deleted before committing):
-  the toolbar button sits in the same row as Pen, is absent entirely for a Player while Pen still
-  renders, the create/edit/delete round-trip through the dialog, Play centered/Edit top-right reveal
-  on hover, pressing Play closes the dialog and the big Date text plus subtext plus a 90%-opacity
-  black dim layer appear, and the whole thing clears itself once the configured duration elapses.
+  Player, a forged `scene_timestamp:create` from a Player is silently refused, chronological
+  auto-sort with undated rows last, Current's exclusivity — marking a second row current un-marks
+  the first, re-toggling the current one clears it to none — a Player may not trigger a play or set
+  Current, playing broadcasts `date`/`subtext` to BOTH a GM and a Player socket with no id/name
+  attached). Manual Playwright pass (throwaway, deleted before committing): the toolbar button sits
+  in the same row as Pen and is absent entirely for a Player while Pen still renders; the date
+  displays as "May 12, 2015"; the exact row layout (`[1,7,1,1,1]`) an 8-entry same-date run followed
+  by a different date produces, proving same-date entries span rows uninterrupted while a new date
+  always hard-starts a fresh one; the Current badge persists without hovering and moves correctly
+  when a different row is starred; auto-scroll centers the Current card on open even 120 entries
+  deep; the create/edit/delete round-trip through the dialog; pressing Play closes the dialog and the
+  big Date text plus subtext plus a 90%-opacity black dim layer appear, clearing itself once the
+  configured duration elapses; and booting the server against a hand-crafted pre-revision table
+  upgrades it cleanly with no error and no data loss.
 
 ## Implementation Risks & Recommendations
 A scope check for whoever picks this up: this grew well past "semi-simple website" over the course of design. Most of it (dice, inventory, injuries, stances, perks, counters) is standard CRUD-plus-broadcast work. Combat Timing (Tics/Startup/reveal/overflow) is the one genuinely hard piece — real software complexity, not just more forms — and it's also the most original part of the system, which is exactly why it deserves the most care rather than being rushed alongside everything else.
