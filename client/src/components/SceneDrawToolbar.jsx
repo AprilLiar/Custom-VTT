@@ -1,4 +1,4 @@
-import { Eraser, Pencil } from 'lucide-react';
+import { Clock, Eraser, Pencil } from 'lucide-react';
 import {
   SCENE_PEN_WIDTH_MIN,
   SCENE_PEN_WIDTH_MAX,
@@ -8,9 +8,12 @@ import {
 
 // Docked bottom-right — the one corner nothing else on this page claims:
 // PlayerSummonDock owns bottom-left, both GM drawers own the full left/
-// right edges, TopLeftControls owns top-left. Available to BOTH roles (a
-// Player may draw and erase exactly like a GM — decided, new), unlike
-// every OTHER docked control on this page, which is one role or the other.
+// right edges, TopLeftControls owns top-left. Pen/Eraser are available to
+// BOTH roles (a Player may draw and erase exactly like a GM — decided,
+// new); the Timestamp button (Clock icon, opens SceneTimestampDialog.jsx)
+// is GM-only, same trust level as GM Notes, and simply doesn't render for a
+// Player rather than needing a second corner of its own — "alongside the
+// other tools" (verbatim spec) reads as this same dock, not a new one.
 // Sits above SceneDrawingLayer's own STAGE_DRAWING_Z (see that file) so its
 // own buttons stay clickable even while the draw/erase tool has the whole
 // stage capturing pointer events — the exact bug StageRoster's corner
@@ -35,6 +38,8 @@ export default function SceneDrawToolbar({
   eraserWidth,
   onEraserWidthChange,
   onClearAll,
+  role,
+  onOpenTimestamps,
 }) {
   const toggle = (t) => onSelectTool((cur) => (cur === t ? 'select' : t));
 
@@ -103,6 +108,16 @@ export default function SceneDrawToolbar({
         >
           <Eraser size={18} aria-hidden />
         </button>
+        {role === 'gm' && onOpenTimestamps && (
+          <button
+            type="button"
+            onClick={onOpenTimestamps}
+            title="Timestamps"
+            className="flex h-11 w-11 items-center justify-center panel-cut-sm border border-zinc-700 bg-zinc-900/80 text-zinc-300 hover:border-brand-500"
+          >
+            <Clock size={18} aria-hidden />
+          </button>
+        )}
       </div>
     </div>
   );

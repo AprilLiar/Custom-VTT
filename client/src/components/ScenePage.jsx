@@ -15,12 +15,15 @@ import {
   saveScenePenWidth,
   loadSceneEraserWidth,
   saveSceneEraserWidth,
+  loadTimestampDuration,
 } from '../lib/sceneSettings.js';
 import { socket } from '../socket.js';
 import OrientationGate from './OrientationGate.jsx';
 import SceneCastDrawer from './SceneCastDrawer.jsx';
 import SceneListDrawer from './SceneListDrawer.jsx';
 import SceneNotesDialog from './SceneNotesDialog.jsx';
+import SceneTimestampDialog from './SceneTimestampDialog.jsx';
+import TimestampCutscene from './TimestampCutscene.jsx';
 import StageRoster from './StageRoster.jsx';
 import SceneDrawingLayer from './SceneDrawingLayer.jsx';
 import SceneDrawToolbar from './SceneDrawToolbar.jsx';
@@ -112,6 +115,11 @@ export default function ScenePage() {
   // than needed at a glance the whole time the GM is on this page.
   const [notesOpen, setNotesOpen] = useState(false);
 
+  // Timestamps (decided, new) — same on-demand dialog shape as Notes above,
+  // opened from SceneDrawToolbar's own bottom-right dock instead of
+  // TopLeftControls (see that file's own comment on why it lives there).
+  const [timestampsOpen, setTimestampsOpen] = useState(false);
+
   // Scene Settings (client/src/lib/sceneSettings.js) — same "read once,
   // per-device, never socket-synced" shape as Cutscene Speed on the
   // Settings page. Read here rather than inside StageRoster so a setting
@@ -121,6 +129,7 @@ export default function ScenePage() {
   const [gapScale] = useState(loadSceneGapScale);
   const [sizeScale] = useState(loadSceneSizeScale);
   const [showNameplates] = useState(loadSceneShowNameplates);
+  const [timestampDuration] = useState(loadTimestampDuration);
 
   // Draw tool (decided, new) — available to BOTH roles, unlike everything
   // else on this page. `tool` itself ('select' | 'pen' | 'erase') is
@@ -224,6 +233,12 @@ export default function ScenePage() {
           eraserWidth={eraserWidth}
         />
       )}
+      {/* Also unconditional, same reasoning as StageRoster/SceneDrawingLayer
+          above: a Timestamp's play beat is narrative content, not a UI
+          control, so cinematic mode never hides it either — nor does it
+          need `stageWidth > 0`, since it renders nothing until a
+          `stage:timestamp_played` event actually arrives. */}
+      <TimestampCutscene duration={timestampDuration} />
       {/* The one way off this route (the back-arrow) plus the hide-interface
           toggle — rendered unconditionally now, outside the `!uiHidden` gate
           below, so the toggle itself stays reachable while hidden (see
@@ -254,9 +269,9 @@ export default function ScenePage() {
           {role === 'gm' && <SceneCastDrawer />}
           {role === 'gm' && <SceneListDrawer activeSceneId={activeScene?.id ?? null} />}
           {role === 'player' && <PlayerSummonDock characterId={characterId} summons={summons} />}
-          {/* Both roles, unlike everything else in this block — see
-              SceneDrawToolbar's own header comment for the corner and
-              z-index reasoning. */}
+          {/* Pen/Eraser are both roles; the Timestamp button inside is
+              GM-only — see SceneDrawToolbar's own header comment for the
+              corner, z-index, and role reasoning. */}
           <SceneDrawToolbar
             tool={tool}
             onSelectTool={setTool}
@@ -267,10 +282,13 @@ export default function ScenePage() {
             eraserWidth={eraserWidth}
             onEraserWidthChange={changeEraserWidth}
             onClearAll={clearAllDrawings}
+            role={role}
+            onOpenTimestamps={role === 'gm' ? () => setTimestampsOpen(true) : undefined}
           />
         </>
       )}
       {notesOpen && <SceneNotesDialog activeScene={activeScene} onClose={() => setNotesOpen(false)} />}
+      {timestampsOpen && <SceneTimestampDialog onClose={() => setTimestampsOpen(false)} />}
     </div>
   );
 }

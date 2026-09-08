@@ -1793,6 +1793,15 @@ app.get('/api/master-note', wrap(async (req, res) => {
   res.json(await one('SELECT * FROM master_note WHERE id = 1'));
 }));
 
+// Timestamps — same GM-only 403 gate as the two GM Notes reads above (see
+// db.js's own comment on scene_timestamps for why managing the list is
+// GM-secret while actually PLAYING one is not).
+app.get('/api/scene-timestamps', wrap(async (req, res) => {
+  const viewer = viewerFromQuery(req.query);
+  if (viewer?.role !== 'gm') return res.status(403).json({ error: 'GM only' });
+  res.json(await all('SELECT * FROM scene_timestamps ORDER BY name COLLATE NOCASE'));
+}));
+
 app.get('/api/character-folders', wrap(async (_req, res) => {
   res.json(await all('SELECT * FROM character_folders ORDER BY name'));
 }));
@@ -4679,6 +4688,56 @@ io.on('connection', (socket) => {
     if (socket.data.identity?.role !== 'gm') return;
     await run('UPDATE master_note SET body = ? WHERE id = 1', [String(body ?? '')]);
     emitToGm('master_note:updated', await one('SELECT * FROM master_note WHERE id = 1'));
+  });
+
+  // Timestamps (decided, new) — see db.js's own comment on scene_timestamps
+  // for why management is GM-secret (emitToGm, exactly like GM Notes above)
+  // while playing one is not. Global, not Scene-scoped — no scene lookup or
+  // scene_id to carry, unlike scene_note:create above.
+  on('scene_timestamp:create', async ({ name, dateText, subtext }) => {
+    if (socket.data.identity?.role !== 'gm') return;
+    const result = await run(
+      'INSERT INTO scene_timestamps (name, date_text, subtext) VALUES (?, ?, ?)',
+      [String(name ?? ''), String(dateText ?? ''), String(subtext ?? '')]
+    );
+    emitToGm(
+      'scene_timestamp:created',
+      await one('SELECT * FROM scene_timestamps WHERE id = ?', [Number(result.lastInsertRowid)])
+    );
+  });
+
+  on('scene_timestamp:update', async ({ timestampId, name, dateText, subtext }) => {
+    if (socket.data.identity?.role !== 'gm') return;
+    const ts = await one('SELECT id FROM scene_timestamps WHERE id = ?', [timestampId]);
+    if (!ts) return;
+    await run('UPDATE scene_timestamps SET name = ?, date_text = ?, subtext = ? WHERE id = ?', [
+      String(name ?? ''),
+      String(dateText ?? ''),
+      String(subtext ?? ''),
+      ts.id,
+    ]);
+    emitToGm('scene_timestamp:updated', await one('SELECT * FROM scene_timestamps WHERE id = ?', [ts.id]));
+  });
+
+  on('scene_timestamp:delete', async ({ timestampId }) => {
+    if (socket.data.identity?.role !== 'gm') return;
+    const ts = await one('SELECT id FROM scene_timestamps WHERE id = ?', [timestampId]);
+    if (!ts) return;
+    await run('DELETE FROM scene_timestamps WHERE id = ?', [ts.id]);
+    emitToGm('scene_timestamp:deleted', { timestampId: ts.id });
+  });
+
+  // **The one Timestamp write that is NOT GM-secret.** Resolves the played
+  // row server-side from `timestampId` (never trusting client-sent display
+  // text) and broadcasts only its `date_text`/`subtext` to EVERY connected
+  // socket — a Player never gets to enumerate the rest of the list, just
+  // whichever one the GM actually played, same as everyone seeing a Scene
+  // activate without a Player getting to browse the Scene list itself.
+  on('stage:timestamp_play', async ({ timestampId }) => {
+    if (socket.data.identity?.role !== 'gm') return;
+    const ts = await one('SELECT * FROM scene_timestamps WHERE id = ?', [timestampId]);
+    if (!ts) return;
+    io.emit('stage:timestamp_played', { dateText: ts.date_text, subtext: ts.subtext });
   });
 
   on('move:revoke', async ({ characterId, moveId }) => {
