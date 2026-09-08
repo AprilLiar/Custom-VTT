@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import { EyeOff, Maximize2, X } from 'lucide-react';
 import { layoutStage, SLOT_WIDTH, SLOT_GAP } from '../lib/sceneLayout.js';
@@ -20,30 +19,36 @@ const BASE_HEIGHT_DVH = 70;
 // gesture.
 const MANUAL_Z = 500;
 const ACTIVE_GESTURE_Z = 9000;
-// **Two sibling containers, not one (decided, revised) — see the "two
-// containers" comment on this file's own return statement for the full
-// story.** The "crowd" container (`z-[1]`) is its own stacking context, a
-// deliberate cap so a crowded roster's own internal z values (1..N per
-// side, or MANUAL_Z for a placed figure) only ever compete with EACH
-// OTHER, never with the GM drawers' own z-10 (SceneCastDrawer/
-// SceneListDrawer, ScenePage.jsx) — bleeding art behind a translucent
-// drawer is intentional (this file's own header comment). CSS stacking
-// contexts nest strictly: no INTERNAL z-index, however high, can ever
-// out-rank a SIBLING context of that container itself — confirmed live,
-// the hard way, when this used to be ONE container whose OWN z-index got
-// bumped while any figure was selected: MANUAL_Z=500 still lost to the
-// drawer's z-10 from inside it, and promoting the WHOLE container to
-// escape that (the previous fix) then blocked every OTHER piece of Scene
-// UI underneath it for as long as ANY figure stayed selected — reported
-// live as "selecting a character makes other UI elements inaccessible."
-// This constant is now the fixed z of the SEPARATE "elevated" container
-// (always mounted, `pointer-events: none` on itself) that ONLY the
-// currently selected/hovered figure ever portals into — z-15 clears the
-// drawers' z-10 while staying below TopLeftControls'/the draw toolbar's
-// much higher values (SceneDrawToolbar.jsx), and its own `pointer-events:
-// none` is what lets a click on any OTHER, non-elevated part of the stage
-// (including a drawer control directly behind this container) reach
-// straight through it instead of being swallowed by empty space.
+// **The corner buttons are a separate, always-stable overlay — never part
+// of a figure's own DOM subtree (decided, revised twice over).** Two
+// earlier designs both tried to make a SELECTED figure's OWN buttons
+// escape the GM drawers' z-10 by moving the FIGURE (or the whole roster)
+// into a differently-stacked place, and both broke something live:
+//   1. Bumping the roster's single wrapper to CONTROLS_Z whenever any
+//      figure was selected/hovered cleared the drawer for that figure's
+//      buttons, but lifted the WHOLE roster with it — every OTHER piece of
+//      Scene UI sharing that screen region became unreachable for as long
+//      as the selection lasted ("selecting a character makes other UI
+//      elements inaccessible").
+//   2. Fixed that by portaling just the ONE selected/hovered figure into a
+//      second, always-elevated sibling container — but confirmed live, the
+//      hard way, that changing a `createPortal` call's OWN target between
+//      renders is NOT the identity-preserving DOM move it's assumed to be:
+//      React remounted the figure's entire subtree on every hover/un-hover,
+//      replaying its entrance slide-in and — far worse — orphaning
+//      `gestureRef`'s captured DOM node mid-gesture if a hover fired while
+//      a drag was live, silently breaking the drag ("characters re-play
+//      their summoning animation every time I hover... this also resets
+//      the position, making it difficult to position characters properly").
+// The figure itself now NEVER moves or remounts for either reason — it
+// lives in the ONE roster wrapper (`z-[1]`, never bumped) for its entire
+// life on stage. Only the three small, STATELESS corner buttons — which
+// carry no drag-gesture or animation state of their own — are rendered
+// separately, in an always-mounted `<ControlsOverlay>` (this file's own
+// return statement) at a fixed `position: fixed`, computed each time from
+// whichever figure is selected/hovered via a live `getBoundingClientRect()`
+// (`elRefs`). z-15 clears the drawers' z-10 while staying below
+// TopLeftControls'/the draw toolbar's much higher values.
 const CONTROLS_Z = 15;
 // Below this many pixels of real pointer movement, a press-and-release is
 // read as a tap, not a drag — matches RelationshipNode.jsx's own `moved > 4`
@@ -183,22 +188,12 @@ const EXIT = { opacity: 0, scale: 0.85 };
 
 const clamp = (value, lo, hi) => Math.min(hi, Math.max(lo, value));
 
-// A thin wrapper around createPortal, purely so AnimatePresence (below) has
-// something valid to look at. `React.isValidElement()` — which
-// AnimatePresence relies on internally to walk its own children — returns
-// `false` for a raw createPortal() result (a Portal is its own React
-// internal type, not a plain element), so AnimatePresence silently drops
-// any portal handed to it directly: confirmed live, the hard way, as
-// "every figure vanished the moment AnimatePresence wrapped the portal
-// list" — no error, no warning, just nothing rendered. A NORMAL component
-// like this one IS a valid element from AnimatePresence's point of view,
-// so it can track this wrapper's own mount/key/removal (and therefore run
-// its child's exit animation) exactly as it would any other child — what
-// THIS component does internally, including portaling its own children
-// elsewhere in the DOM, is invisible to and unconstrained by that.
-function FigurePortal({ target, children }) {
-  return createPortal(children, target);
-}
+// Corner-button geometry, shared between ControlsOverlay's own `btnClass`
+// (CSS `h-8 w-8` = 32px) and the `position: fixed` coordinates it computes
+// from a figure's live rect — kept in one place so the two can never drift
+// apart.
+const BTN_PX = 32;
+const BTN_GAP_PX = 8;
 
 export default function StageRoster({
   summons,
@@ -247,16 +242,16 @@ export default function StageRoster({
   const [selectedId, setSelectedId] = useState(null);
 
   // Real-hover companion to selectedId's tap-toggle (above) — tracked in JS,
-  // not left purely to CSS `group-hover`, because routing a figure into the
-  // elevated container (below) has to be React-driven to land in the same
-  // render as everything else; a CSS-only reveal can't move a figure to a
-  // different container.
+  // not left purely to CSS `group-hover`, because ControlsOverlay (this
+  // file's own return statement) needs to know WHICH figure's corner
+  // buttons to render regardless of input device, and only JS state can
+  // drive that decision.
   const [hoveredId, setHoveredId] = useState(null);
-  // The one figure, if any, currently routed into the elevated container —
-  // see this file's own return statement for why. Priority doesn't matter
-  // in practice (at most one of these is ever set on a given device: touch
-  // has no hover, and a mouse tap-select is rare enough on desktop not to
-  // collide with a real hover), so a plain fallback is enough.
+  // The one figure, if any, whose corner buttons ControlsOverlay currently
+  // shows. Priority doesn't matter in practice (at most one of these is
+  // ever set on a given device: touch has no hover, and a mouse tap-select
+  // is rare enough on desktop not to collide with a real hover), so a
+  // plain fallback is enough.
   const elevatedId = selectedId ?? hoveredId;
 
   // GM may drag/resize anyone; a Player only their own character's summon
@@ -286,29 +281,54 @@ export default function StageRoster({
 
   // --- drag-to-place / resize -----------------------------------------
   //
-  // `wrapperRef` is the "crowd" container's own top-level box (below) —
-  // already `inset-0` inside the stage, so its rect IS the stage's own
-  // box; no ref or ResizeObserver is threaded down from ScenePage for
-  // this. A plain ref (not state) so drag math always reads the live
-  // element with no re-render dependency; `crowdEl`/`elevatedEl` are the
-  // SAME two container elements again, but as state — createPortal needs
-  // an actual DOM node to target, which isn't available until after the
-  // first render mounts these, so a ref alone can't drive the portals'
-  // own render decision the way it can drive on-demand math in an event
-  // handler. `elRefs` maps a summon id to its position div AND its own
-  // `<img>`, both needed (the position div for a move-drag's `left`/`top`,
-  // the img for a resize-drag's `height`) without a second ref map.
-  // `gestureRef` holds the one in-progress gesture, if any — a plain ref,
-  // not state, so a frame of movement never triggers a re-render.
+  // `wrapperRef` is this component's own top-level box (below) — already
+  // `inset-0` inside the stage, so its rect IS the stage's own box; no ref
+  // or ResizeObserver is threaded down from ScenePage for this. A plain
+  // ref (not state): every figure lives in this ONE wrapper for its whole
+  // life on stage now (see CONTROLS_Z's own comment for why a figure is
+  // never moved to a second container anymore), so nothing here needs to
+  // wait on this element becoming available as state the way a portal
+  // target would. `elRefs` maps a summon id to its position div AND its
+  // own `<img>`, both needed (the position div for a move-drag's
+  // `left`/`top`, the img for a resize-drag's `height`) without a second
+  // ref map. `gestureRef` holds the one in-progress gesture, if any — a
+  // plain ref, not state, so a frame of movement never triggers a
+  // re-render.
   const wrapperRef = useRef(null);
-  const [crowdEl, setCrowdEl] = useState(null);
-  const [elevatedEl, setElevatedEl] = useState(null);
-  const setCrowdRef = (el) => {
-    wrapperRef.current = el;
-    setCrowdEl(el);
-  };
   const elRefs = useRef(new Map());
   const gestureRef = useRef(null);
+
+  // ControlsOverlay's own live position source — re-measured (not derived
+  // from React state/props) because a figure's true on-screen box depends
+  // on layoutStage's own crowding math and the raw DOM writes a drag makes,
+  // neither of which this component keeps a parallel copy of. Re-runs
+  // whenever WHICH figure is elevated changes, and on resize — a figure
+  // that's merely selected/hovered isn't expected to move on its own
+  // between those events, so no continuous (rAF/ResizeObserver) tracking is
+  // needed here. A live drag/resize of the CURRENTLY elevated figure is the
+  // one case that would go stale between those events (elevatedId itself
+  // doesn't change just because the same figure is being dragged) — handled
+  // separately below: startMove/startResize null this rect out the moment a
+  // gesture begins, and onUp re-measures once it ends, via `elevatedIdRef`
+  // (a ref, not this effect's own `elevatedId` closure, since onUp lives
+  // inside a different effect that doesn't re-subscribe on every hover/
+  // select change).
+  const [elevatedRect, setElevatedRect] = useState(null);
+  const elevatedIdRef = useRef(elevatedId);
+  useEffect(() => {
+    elevatedIdRef.current = elevatedId;
+    if (!elevatedId) {
+      setElevatedRect(null);
+      return;
+    }
+    const measure = () => {
+      const wrapper = elRefs.current.get(elevatedId)?.wrapper;
+      setElevatedRect(wrapper ? wrapper.getBoundingClientRect() : null);
+    };
+    measure();
+    window.addEventListener('resize', measure);
+    return () => window.removeEventListener('resize', measure);
+  }, [elevatedId]);
 
   useEffect(() => {
     const onMove = (e) => {
@@ -339,6 +359,14 @@ export default function StageRoster({
       if (els) {
         els.wrapper.style.zIndex = '';
         els.img.style.zIndex = '';
+      }
+      // The gesture just ended on the figure ControlsOverlay is currently
+      // showing buttons for (hidden for the gesture's duration — see
+      // startMove/startResize below) — bring it back at its now-final rect.
+      // A different figure's gesture (this one wasn't elevated) never hid
+      // anything, so there's nothing to restore.
+      if (els && elevatedIdRef.current === g.summonId) {
+        setElevatedRect(els.wrapper.getBoundingClientRect());
       }
       if (!g.moved) {
         // A tap, not a drag — the resize-handle/x gesture never reaches
@@ -412,6 +440,12 @@ export default function StageRoster({
     els.wrapper.style.bottom = 'auto';
     els.wrapper.style.transform = 'translate(-50%, -100%)';
     els.wrapper.style.zIndex = String(ACTIVE_GESTURE_Z);
+    // Hide ControlsOverlay's buttons for the duration of the gesture if
+    // they're showing for THIS figure — its rect is about to go stale on
+    // every frame the drag writes to `style.left`/`style.top` directly, and
+    // this effect has no continuous tracking to keep up (see elevatedRect's
+    // own comment above). onUp restores them at the final rect.
+    if (elevatedIdRef.current === entry.id) setElevatedRect(null);
     gestureRef.current = {
       type: 'move',
       summonId: entry.id,
@@ -434,6 +468,10 @@ export default function StageRoster({
     if (!els) return;
     const startHeightPx = els.img.getBoundingClientRect().height;
     els.wrapper.style.zIndex = String(ACTIVE_GESTURE_Z);
+    // Same as startMove above — this button only ever renders for the
+    // currently-elevated figure in the first place, so this is always true
+    // in practice, but the guard keeps the two call sites symmetric.
+    if (elevatedIdRef.current === entry.id) setElevatedRect(null);
     gestureRef.current = {
       type: 'resize',
       summonId: entry.id,
@@ -486,15 +524,6 @@ export default function StageRoster({
   const renderFigure = (entry, { manual: isManual }) => {
     const editable = canEditSummon(entry);
     const refs = setRefs(entry.id);
-    const selected = selectedId === entry.id;
-    // Hidden by default; shown on real hover (`group-hover`, desktop, free)
-    // or when tap-selected (`selected`, mobile — see the `selectedId`
-    // comment above). `pointer-events-none` while hidden, not just
-    // `opacity-0`, so an invisible corner button can never steal the
-    // pointerdown that should start a drag there instead.
-    const cornerButtonClass = `absolute flex h-8 w-8 items-center justify-center rounded-full border border-zinc-600 bg-zinc-900/80 text-zinc-300 transition-opacity hover:border-brand-500 hover:text-brand-300 ${
-      selected ? 'opacity-100' : 'opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto'
-    }`;
     const positionStyle = isManual
       ? (() => {
           // Pixels, not a plain CSS percentage — imageFractionToStage
@@ -521,13 +550,7 @@ export default function StageRoster({
         // page scroll/pinch-zoom instead of a drag (RelationshipNode.jsx
         // uses the same rule for the same reason). Has to live in `style`,
         // not as a bare JSX prop — there is no such DOM attribute.
-        // pointerEvents:'auto' unconditionally — a no-op in the crowd
-        // container (already the default there) but load-bearing when this
-        // figure is portaled into the elevated container instead, which
-        // sets pointer-events:none on ITSELF (see this file's own return
-        // statement) so its own empty space never blocks a drawer behind
-        // it; the one figure actually inside still needs to opt back in.
-        style={{ ...positionStyle, touchAction: editable ? 'none' : undefined, pointerEvents: 'auto' }}
+        style={{ ...positionStyle, touchAction: editable ? 'none' : undefined }}
         onPointerDown={editable ? (e) => startMove(e, entry) : undefined}
       >
         <motion.div
@@ -535,12 +558,14 @@ export default function StageRoster({
           animate={IDLE}
           exit={EXIT}
           transition={reduceMotion ? { duration: 0 } : { type: 'spring', stiffness: 300, damping: 28 }}
-          // `relative`: the nameplate and the corner buttons below are all
-          // positioned against THIS box, which (having no width of its
-          // own) always ends up exactly as wide as the `img` it wraps.
-          // `group`: what the corner buttons' own `group-hover:` reveal
-          // hangs off (see cornerButtonClass above).
-          className="group relative"
+          // `relative`: the nameplate is positioned against THIS box, which
+          // (having no width of its own) always ends up exactly as wide as
+          // the `img` it wraps. The corner buttons used to live here too
+          // (a `group`/`group-hover:` reveal) — moved out to
+          // ControlsOverlay (this file's own return statement) so this
+          // figure's own subtree, and therefore this animation, is never
+          // touched by hover/select state at all.
+          className="relative"
           style={{ cursor: editable ? 'grab' : undefined, touchAction: editable ? 'none' : undefined }}
           onMouseEnter={editable ? () => setHoveredId(entry.id) : undefined}
           onMouseLeave={editable ? () => setHoveredId((cur) => (cur === entry.id ? null : cur)) : undefined}
@@ -575,44 +600,6 @@ export default function StageRoster({
               opacity: entry.is_hidden ? 0.5 : 1,
             }}
           />
-          {editable && (
-            <button
-              type="button"
-              onPointerDown={(e) => startResize(e, entry)}
-              title="Resize"
-              aria-label="Resize"
-              className={`${cornerButtonClass} left-0 top-0`}
-              style={{ cursor: 'ns-resize', touchAction: 'none' }}
-            >
-              <Maximize2 size={14} aria-hidden />
-            </button>
-          )}
-          {editable && (
-            <button
-              type="button"
-              onPointerDown={(e) => unsummon(e, entry)}
-              title="Remove from stage"
-              aria-label="Remove from stage"
-              className={`${cornerButtonClass} right-0 top-0`}
-              style={{ touchAction: 'none' }}
-            >
-              <X size={14} aria-hidden />
-            </button>
-          )}
-          {canHide && (
-            <button
-              type="button"
-              onPointerDown={(e) => toggleHidden(e, entry)}
-              title={entry.is_hidden ? 'Reveal to Players' : 'Hide from Players'}
-              aria-label={entry.is_hidden ? 'Reveal to Players' : 'Hide from Players'}
-              // Stacked directly under the ✕ (top-10 = the ✕'s own h-8 plus
-              // a small gap), same corner — "under the x button", verbatim.
-              className={`${cornerButtonClass} right-0 top-10 ${entry.is_hidden ? 'border-brand-500 text-brand-300' : ''}`}
-              style={{ touchAction: 'none' }}
-            >
-              <EyeOff size={14} aria-hidden />
-            </button>
-          )}
         </motion.div>
       </div>
     );
@@ -623,54 +610,99 @@ export default function StageRoster({
     ...manual.map((entry) => ({ entry, isManual: true })),
   ];
 
+  const elevatedEntry = elevatedId != null ? summons.find((s) => s.id === elevatedId) : null;
+
   return (
-    // **Two containers, not one (decided, revised — bugfix: selecting a
-    // character used to make the rest of the Scene UI unreachable).**
-    // The "crowd" container is a stacking context of its own (position + a
-    // low, fixed z-index): a crowded roster's own z values (1..N per side,
-    // from layoutStage's rank, or MANUAL_Z for a dragged figure) only ever
-    // compete with EACH OTHER inside this box, never leak out to outrank
-    // the drawers' own z-10 — without it, a side with more than ~10
-    // summons (or a manually-placed one) would start painting over the
-    // GM's own controls. This container's z-index is now FIXED — it used
-    // to bump to CONTROLS_Z whenever any figure was selected/hovered, but
-    // that promoted the WHOLE roster (not just the one figure whose
-    // buttons actually needed to clear the drawer), which meant every
-    // OTHER piece of Scene UI sharing that screen region became unreachable
-    // for as long as the selection lasted — reported live. It ALSO owns the
-    // one background click-catcher below: tapping any part of its own
-    // empty space (not a figure, not a button) clears `selectedId` —
-    // "clicking on a place where there are no characters deselects."
-    //
-    // The SECOND, "elevated" container is always mounted too, at a fixed
-    // CONTROLS_Z — but `pointer-events: none` on the container itself, so
-    // its own empty space never blocks anything behind it (a drawer
-    // control, or the crowd container's own click-catcher underneath).
-    // ONLY the currently selected/hovered figure (`elevatedId`) ever
-    // portals into it — `createPortal(..., entry.id)`'s own key argument
-    // is what lets React recognize this as the SAME figure moving to a new
-    // DOM parent across renders (not an unmount+remount): its drag/resize
-    // refs (`elRefs`, `gestureRef`) stay valid throughout, and framer's own
-    // `motion.div` exit animation still tracks correctly, since a portal
-    // changes where in the DOM a node lives, never where in the React tree
-    // it lives.
+    // ONE container, always at a fixed, low z-index — never bumped, never
+    // targeted by a portal (see CONTROLS_Z's own comment for the two
+    // earlier designs that tried moving either the whole roster or one
+    // figure, and what each broke live). A crowded roster's own z values
+    // (1..N per side, from layoutStage's rank, or MANUAL_Z for a dragged
+    // figure) only ever compete with EACH OTHER inside this box, never
+    // leak out to outrank the drawers' own z-10 — without it, a side with
+    // more than ~10 summons (or a manually-placed one) would start
+    // painting over the GM's own controls. It also owns the one background
+    // click-catcher: tapping any part of its own empty space (not a
+    // figure) clears `selectedId` — "clicking on a place where there are
+    // no characters deselects."
     <>
       <div
-        ref={setCrowdRef}
+        ref={wrapperRef}
         className="absolute inset-0 z-[1]"
         onClick={(e) => {
           if (e.target === e.currentTarget) setSelectedId(null);
         }}
+      >
+        <AnimatePresence>{everyEntry.map(({ entry, isManual }) => renderFigure(entry, { manual: isManual }))}</AnimatePresence>
+      </div>
+      <ControlsOverlay
+        entry={elevatedEntry}
+        rect={elevatedRect}
+        editable={elevatedEntry ? canEditSummon(elevatedEntry) : false}
+        canHide={canHide}
+        onResizeStart={startResize}
+        onUnsummon={unsummon}
+        onToggleHidden={toggleHidden}
       />
-      <div className="absolute inset-0" style={{ zIndex: CONTROLS_Z, pointerEvents: 'none' }} ref={setElevatedEl} />
-      {crowdEl && elevatedEl && (
-        <AnimatePresence>
-          {everyEntry.map(({ entry, isManual }) => (
-            <FigurePortal key={entry.id} target={entry.id === elevatedId ? elevatedEl : crowdEl}>
-              {renderFigure(entry, { manual: isManual })}
-            </FigurePortal>
-          ))}
-        </AnimatePresence>
+    </>
+  );
+}
+
+// The three corner buttons, for whichever ONE figure is currently
+// selected/hovered — always mounted, rendering nothing when `entry` is
+// null. Deliberately stateless and never nested inside a figure's own
+// subtree (see CONTROLS_Z's own comment): `rect` is a plain snapshot
+// (`getBoundingClientRect()`, StageRoster's own `elevatedRect` effect),
+// and these buttons are positioned purely from it via `position: fixed` —
+// there is nothing here for hover/select churn to remount, so switching
+// which figure is elevated can never replay an entrance animation or
+// orphan a drag's own DOM references the way moving the FIGURE itself
+// once did.
+function ControlsOverlay({ entry, rect, editable, canHide, onResizeStart, onUnsummon, onToggleHidden }) {
+  if (!entry || !rect) return null;
+  const btnClass =
+    'absolute flex h-8 w-8 items-center justify-center rounded-full border border-zinc-600 bg-zinc-900/80 text-zinc-300 hover:border-brand-500 hover:text-brand-300';
+  const style = { position: 'fixed', zIndex: CONTROLS_Z, touchAction: 'none' };
+  return (
+    <>
+      {editable && (
+        <button
+          type="button"
+          onPointerDown={(e) => onResizeStart(e, entry)}
+          title="Resize"
+          aria-label="Resize"
+          className={btnClass}
+          style={{ ...style, left: rect.left, top: rect.top, cursor: 'ns-resize' }}
+        >
+          <Maximize2 size={14} aria-hidden />
+        </button>
+      )}
+      {editable && (
+        <button
+          type="button"
+          onPointerDown={(e) => onUnsummon(e, entry)}
+          title="Remove from stage"
+          aria-label="Remove from stage"
+          className={btnClass}
+          style={{ ...style, left: rect.right - BTN_PX, top: rect.top }}
+        >
+          <X size={14} aria-hidden />
+        </button>
+      )}
+      {canHide && (
+        <button
+          type="button"
+          onPointerDown={(e) => onToggleHidden(e, entry)}
+          title={entry.is_hidden ? 'Reveal to Players' : 'Hide from Players'}
+          aria-label={entry.is_hidden ? 'Reveal to Players' : 'Hide from Players'}
+          // Stacked directly under the ✕ (the same BTN_PX + BTN_GAP_PX gap
+          // this file's own corner buttons always used), same corner —
+          // "under the x button", verbatim.
+          className={`${btnClass} ${entry.is_hidden ? 'border-brand-500 text-brand-300' : ''}`}
+          style={{ ...style, left: rect.right - BTN_PX, top: rect.top + BTN_PX + BTN_GAP_PX }}
+        >
+          <EyeOff size={14} aria-hidden />
+        </button>
       )}
     </>
   );

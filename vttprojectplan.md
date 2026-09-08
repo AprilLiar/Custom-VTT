@@ -4773,47 +4773,74 @@ are remembered **per device** (`sceneSettings.js`'s existing localStorage conven
 than read once — "remember it for each user" means live, not just at load, and this app's no-login
 model has no other place for a per-user setting to live anyway.
 
-**Corner buttons: two containers instead of one wrapper bump, and tap-empty-space-to-deselect
-(bugfix, decided, revised).** Reported live: selecting a character on the Scene stage made the
-rest of the Scene UI (the GM's own drawers, the draw toolbar) unreachable for as long as the
-selection lasted. Root cause was the PREVIOUS fix for the corner-button/drawer bug above: it
-promoted the roster's single wrapper `<div>` to `CONTROLS_Z` (15, clearing the drawers' z-10)
-whenever ANY figure was selected/hovered — which correctly let that ONE figure's own corner buttons
-clear the drawer, but also lifted the WHOLE roster (every OTHER figure, and all its empty space)
-above the drawer at the same time, with no way to dismiss it short of re-tapping the exact same
-figure. Redesigned in `StageRoster.jsx` into two ALWAYS-mounted sibling containers instead of one
-dynamically-bumped wrapper:
-- The **"crowd" container** stays at a FIXED, low `z-[1]` always — never bumped — and every figure
-  lives there by default. It also owns a background click-catcher
-  (`onClick={(e) => e.target === e.currentTarget && setSelectedId(null)}`) — tapping any of its own
-  empty space (not a figure, not a button) clears the selection, which is what "clicking on a place
-  where there are no characters deselects" (verbatim) actually does.
-- The **"elevated" container** is a second, ALWAYS-mounted sibling at a fixed `CONTROLS_Z`, but with
-  `pointer-events: none` on the container itself — its own empty space is therefore invisible to
-  hit-testing and lets a click straight through to whatever is actually behind it (a drawer control,
-  or the crowd container's own click-catcher underneath), while the ONE figure portaled inside still
-  opts back in with its own `pointer-events: auto`. Only the currently selected-or-hovered figure
-  (`elevatedId = selectedId ?? hoveredId`) is ever routed there — every other figure, and all of the
-  screen the roster covers, is reachable through to the drawers immediately, with no dismiss-click
-  needed first.
-- Moving a figure between the two containers uses `createPortal(children, target, entry.id)` with a
-  STABLE key — confirmed live that this correctly preserves the figure's own DOM node (and therefore
-  its drag/resize refs, `elRefs`/`gestureRef`) across the container change rather than unmounting
-  and remounting it, since only the portal's OWN `containerInfo` changes between renders, never its
-  position in the React tree. **`AnimatePresence` cannot wrap a `createPortal()` result directly** —
-  confirmed live, the hard way: `React.isValidElement()` returns `false` for a raw Portal, so
-  `AnimatePresence` silently drops it from its own traversal and renders nothing, no error. Fixed
-  with a one-line wrapper component (`FigurePortal`) that calls `createPortal` internally — its OWN
-  return value (a normal function-component element) IS a valid element `AnimatePresence` can track
-  for mount/key/removal, and therefore correctly runs each figure's exit animation on un-summon,
-  regardless of which of the two containers that figure's content is portaled into underneath it.
-- `ACTIVE_GESTURE_Z` (9000, an in-progress drag/resize) deliberately was NOT added to the elevation
-  priority alongside `selectedId`/`hoveredId` — a fresh mobile drag that never went through a prior
-  tap-select or hover still only elevates within whichever container it's already in (matching the
-  established, pre-existing, out-of-scope limitation that a drag STARTING from directly under a
-  drawer was never specifically solved either); doing so would have meant a mid-gesture container
-  transition, a materially riskier moment for the same ref-preservation guarantee above, for a case
-  this request never actually reported.
+**Corner buttons: a separate, always-stable overlay, never a second container the figure itself
+moves through (bugfix, decided, THIRD design — supersedes the two-container/`FigurePortal` design
+below).** That two-container design (kept here for the record of what was tried and why it broke,
+rather than silently deleted) was itself found to be broken shortly after shipping: reported live
+as "characters in Scene re-play their summoning animation every time I hover or un-hover over
+them... this also resets the position of the characters, making it difficult to position characters
+properly." **Root cause: changing a `createPortal()` call's own `target` between renders is NOT the
+identity-preserving DOM move it was assumed (and, incorrectly, believed confirmed) to be.**
+Diagnosed live with a throwaway Playwright script: a `data-diag-marker` DOM attribute set on a
+figure's own wrapper vanished after a single hover, and `getComputedStyle` on a captured element
+reference went stale (empty string, i.e. detached) mid-hover, both proving React was fully
+unmounting and remounting the figure's subtree on every hover/un-hover — replaying its entrance
+slide-in every time, and, far worse, orphaning `gestureRef`'s captured DOM node if a hover fired
+while a drag was live, silently breaking the drag.
+
+Fixed by giving up on ever moving or portaling the figure's own DOM subtree for ANY reason. A figure
+now lives in exactly ONE wrapper (`wrapperRef`, `z-[1]`, never bumped) for its entire time on stage,
+full stop — nothing about it changes based on hover/select state. The three corner buttons (Resize,
+Remove from stage, Hide/Reveal) are rendered by a wholly separate, always-mounted, stateless sibling
+component, `ControlsOverlay`, which:
+- takes no figure DOM as `children` at all — it renders its OWN plain `<button>` elements,
+  positioned with `position: fixed` at coordinates read from `elRefs.current.get(elevatedId)?.wrapper
+  .getBoundingClientRect()` (a live snapshot, not a portal target);
+- re-measures that snapshot in a `useEffect` keyed on `elevatedId` (`selectedId ?? hoveredId`) plus a
+  `window` resize listener — not continuously (no rAF/ResizeObserver polling), since a
+  merely-selected/hovered figure isn't expected to move on its own between those events;
+- goes stale exactly once — a live drag/resize of the CURRENTLY elevated figure, which writes
+  `style.left`/`style.top`/`style.height` directly without a re-render — handled by having
+  `startMove`/`startResize` null the snapshot out the instant such a gesture begins (hiding the
+  buttons for its duration) and the pointer-up handler re-measure and restore it once the gesture
+  ends, via a plain ref (`elevatedIdRef`) mirroring `elevatedId` so the always-mounted pointer-event
+  effect can read the current value without re-subscribing its `window` listeners on every hover;
+- sits at `CONTROLS_Z` (15, clearing the drawers' z-10) as a plain sibling of the roster's own
+  wrapper `<div>`, never nested inside anything the wrapper's own `z-[1]` caps — the same
+  clears-the-drawer requirement the two earlier designs were both chasing, now satisfied with no
+  DOM identity ever at stake, since these buttons carry no drag-gesture or animation state of their
+  own to lose.
+
+The roster wrapper still owns the same background click-catcher as before
+(`onClick={(e) => e.target === e.currentTarget && setSelectedId(null)}`) — tapping any of its own
+empty space (not a figure) clears the selection, "clicking on a place where there are no characters
+deselects" (verbatim), unchanged by this redesign. `ACTIVE_GESTURE_Z` (9000, an in-progress
+drag/resize) still isn't part of the elevation priority (`selectedId ?? hoveredId`) — a fresh drag
+that never went through a prior tap-select or hover simply never shows corner buttons at all during
+that drag, matching the pre-existing, out-of-scope limitation that a drag starting from directly
+under a drawer was never specifically solved.
+
+<details><summary>Superseded: the two-container/<code>FigurePortal</code> design (kept for
+history — root cause of the remount regression above, do not resurrect)</summary>
+
+Reported live: selecting a character on the Scene stage made the rest of the Scene UI (the GM's own
+drawers, the draw toolbar) unreachable for as long as the selection lasted. Root cause was the fix
+for the corner-button/drawer bug before THAT one: it promoted the roster's single wrapper `<div>` to
+`CONTROLS_Z` whenever ANY figure was selected/hovered — which correctly let that ONE figure's own
+corner buttons clear the drawer, but also lifted the WHOLE roster with it, with no way to dismiss it
+short of re-tapping the exact same figure. "Fixed" (until the regression above) with two
+ALWAYS-mounted sibling containers instead of one dynamically-bumped wrapper: a fixed-low-z-index
+"crowd" container every figure lived in by default, and a fixed-`CONTROLS_Z` "elevated" container
+with `pointer-events: none` on itself (so its own empty space passed clicks through) that the
+currently selected-or-hovered figure was moved into via `createPortal(children, target, entry.id)`
+— believed, incorrectly, to preserve the figure's own DOM node (and therefore its drag/resize refs)
+across the container change, since only the portal's `containerInfo` was thought to change between
+renders. It did not: see the root-cause paragraph above. `AnimatePresence` also could not wrap a raw
+`createPortal()` result directly (`React.isValidElement()` returns `false` for a Portal, so
+`AnimatePresence` silently dropped it), which this design's `FigurePortal` wrapper component papered
+over — a real, if secondary, wrinkle worth remembering if a future design ever revisits portalling
+an `AnimatePresence`-tracked child for an unrelated reason.
+</details>
 
 ## Implementation Risks & Recommendations
 A scope check for whoever picks this up: this grew well past "semi-simple website" over the course of design. Most of it (dice, inventory, injuries, stances, perks, counters) is standard CRUD-plus-broadcast work. Combat Timing (Tics/Startup/reveal/overflow) is the one genuinely hard piece — real software complexity, not just more forms — and it's also the most original part of the system, which is exactly why it deserves the most care rather than being rushed alongside everything else.
