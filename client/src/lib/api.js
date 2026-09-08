@@ -77,3 +77,5 @@ export const getSceneNotes = (sceneId, identity) =>
   fetch(`/api/scene-notes?${new URLSearchParams({ sceneId, ...identity })}`).then(json);
 export const getMasterNote = (identity) =>
   fetch(`/api/master-note${identity ? `?${new URLSearchParams(identity)}` : ''}`).then(json);
+export const getSceneTimestamps = (identity) =>
+  fetch(`/api/scene-timestamps${identity ? `?${new URLSearchParams(identity)}` : ''}`).then(json);

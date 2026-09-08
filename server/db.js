@@ -1692,6 +1692,39 @@ export async function initDb() {
   `);
   // ---------------------------------------------------------------------
 
+  // **Timestamps (decided, new).** A GM-exclusive tool for narrative time
+  // markers ("Day 12", "Three years later…") played as a table-wide beat:
+  // dims the Scene and fades a chosen Date/subtext in, big and bold, then
+  // fades back out. Deliberately GLOBAL, not `scene_id`-scoped the way
+  // scene_notes/scene_drawings above are — a Timestamp is a moment in the
+  // CAMPAIGN's own timeline, not an annotation belonging to one particular
+  // backdrop, so a GM can play "Day 12" from whichever Scene happens to be
+  // active. Same "not about any one Scene" reasoning master_note above
+  // already uses, just as its own ordinary multi-row table rather than a
+  // singleton — there can be any number of these, unlike the one Master
+  // Note.
+  // **Two different trust levels for the SAME row, split by verb.**
+  // Managing them (create/edit/delete/list) is exactly as GM-secret as GM
+  // Notes — emitToGm-only, never io.emit, and the REST read is behind the
+  // same GM-only 403 gate (`/api/scene-timestamps`, server/index.js). But
+  // PLAYING one is the opposite of a Note: the whole point is for the
+  // WHOLE TABLE to see it, so `stage:timestamp_play` broadcasts via a
+  // plain `io.emit`, carrying only the one played Timestamp's own display
+  // text (`date_text`/`subtext`) resolved server-side from `timestampId` —
+  // a Player socket is never handed read access to the rest of the list,
+  // and can't play an arbitrary id either (the handler still checks
+  // `identity.role === 'gm'` before it will look one up at all).
+  ddl(`
+    CREATE TABLE IF NOT EXISTS scene_timestamps (
+      id INTEGER PRIMARY KEY,
+      name TEXT NOT NULL DEFAULT '',
+      date_text TEXT NOT NULL DEFAULT '',
+      subtext TEXT NOT NULL DEFAULT '',
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  // ---------------------------------------------------------------------
+
   // The Perks compendium: master list of Perk templates. Just picture, name,
   // and description — no generic automation system (removed; see
   // server/perkAutomations.js for the manual per-Perk hook skeleton that

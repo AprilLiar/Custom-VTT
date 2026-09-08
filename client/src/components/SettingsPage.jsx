@@ -31,6 +31,11 @@ import {
   saveSceneSizeScale,
   loadSceneShowNameplates,
   saveSceneShowNameplates,
+  TIMESTAMP_DURATION_MIN,
+  TIMESTAMP_DURATION_MAX,
+  DEFAULT_TIMESTAMP_DURATION,
+  loadTimestampDuration,
+  saveTimestampDuration,
 } from '../lib/sceneSettings.js';
 
 // Per-device display preferences. The accent color live-previews on every
@@ -46,6 +51,7 @@ export default function SettingsPage() {
   const [sceneGapScale, setSceneGapScale] = useState(loadSceneGapScale);
   const [sceneSizeScale, setSceneSizeScale] = useState(loadSceneSizeScale);
   const [sceneShowNameplates, setSceneShowNameplates] = useState(loadSceneShowNameplates);
+  const [timestampDuration, setTimestampDuration] = useState(loadTimestampDuration);
 
   const choose = (nextHue) => {
     setHue(nextHue);
@@ -138,6 +144,42 @@ export default function SettingsPage() {
           <button
             type="button"
             onClick={() => setSpeed(saveCutsceneSpeed(DEFAULT_CUTSCENE_SPEED))}
+            className="panel-cut-sm border border-zinc-700 px-3 py-1.5 text-xs font-semibold text-zinc-400 hover:bg-zinc-800"
+          >
+            Reset to default
+          </button>
+        </div>
+      </div>
+
+      <div className="panel-cut-lg space-y-3 border border-zinc-800 bg-zinc-900 p-4">
+        <div>
+          <h2 className="text-sm font-bold uppercase tracking-wide text-zinc-400">
+            Timestamp Card Duration
+          </h2>
+          <p className="mt-1 text-xs text-zinc-600">
+            How long the Scene tab's Timestamp tool dims in, holds, and fades back out when played.
+            Only affects your own view — everyone sees the same card play, just timed to their own
+            taste.
+          </p>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-3">
+          <input
+            type="range"
+            min={TIMESTAMP_DURATION_MIN}
+            max={TIMESTAMP_DURATION_MAX}
+            step={0.5}
+            value={timestampDuration}
+            onChange={(e) => setTimestampDuration(saveTimestampDuration(e.target.value))}
+            aria-label="Timestamp card duration"
+            className="min-w-48 flex-1 accent-brand-500"
+          />
+          <span className="w-16 shrink-0 text-right font-mono text-sm text-zinc-200">
+            {timestampDuration.toFixed(1)}s
+          </span>
+          <button
+            type="button"
+            onClick={() => setTimestampDuration(saveTimestampDuration(DEFAULT_TIMESTAMP_DURATION))}
             className="panel-cut-sm border border-zinc-700 px-3 py-1.5 text-xs font-semibold text-zinc-400 hover:bg-zinc-800"
           >
             Reset to default

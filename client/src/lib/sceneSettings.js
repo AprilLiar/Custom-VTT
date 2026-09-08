@@ -105,6 +105,23 @@ export const loadSceneEraserWidth = () =>
 export const saveSceneEraserWidth = (v) =>
   saveScale(ERASER_WIDTH_KEY, v, SCENE_ERASER_WIDTH_MIN, SCENE_ERASER_WIDTH_MAX, DEFAULT_SCENE_ERASER_WIDTH);
 
+// --- Timestamp card duration, in seconds — the whole dim-in/hold/dim-out
+// loop the Timestamp tool's "play" button triggers (TimestampCutscene.jsx).
+// Per-device, same as Cutscene Speed: how long you like to sit on a title
+// card is a property of the person watching, not of the game everyone
+// shares — every viewer's socket receives the same play event, but each
+// renders it on their own configured timer. An absolute duration, not a
+// speed multiplier like Cutscene Speed, because there's no existing pace to
+// scale here — "roughly 3 seconds" is the whole spec. ---
+const TIMESTAMP_DURATION_KEY = 'vtt-scene-timestamp-duration';
+export const TIMESTAMP_DURATION_MIN = 1;
+export const TIMESTAMP_DURATION_MAX = 10;
+export const DEFAULT_TIMESTAMP_DURATION = 3;
+export const loadTimestampDuration = () =>
+  loadScale(TIMESTAMP_DURATION_KEY, TIMESTAMP_DURATION_MIN, TIMESTAMP_DURATION_MAX, DEFAULT_TIMESTAMP_DURATION);
+export const saveTimestampDuration = (v) =>
+  saveScale(TIMESTAMP_DURATION_KEY, v, TIMESTAMP_DURATION_MIN, TIMESTAMP_DURATION_MAX, DEFAULT_TIMESTAMP_DURATION);
+
 // --- Name plates over each character's own head — on by default ---
 const NAMEPLATES_KEY = 'vtt-scene-nameplates-hidden';
 export function loadSceneShowNameplates() {

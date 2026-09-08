@@ -4843,6 +4843,76 @@ over — a real, if secondary, wrinkle worth remembering if a future design ever
 an `AnimatePresence`-tracked child for an unrelated reason.
 </details>
 
+**Timestamp tool (decided, new).** A GM-exclusive corner tool for narrative time markers ("Day 12",
+"Three years later…") played as a table-wide beat: dims the Scene 90% to black and fades a chosen
+Date/subtext in, big and bold, centered, then fades back out. Docked bottom-right in
+`SceneDrawToolbar.jsx`'s own row (Clock icon), alongside Pen/Eraser — "alongside the other tools"
+(verbatim spec) reads as the SAME dock those already own, not a new corner, so the button is simply
+GM-gated inside that existing component rather than getting its own.
+
+- **Data model — one flat, GLOBAL table, not per-Scene (decided).** `scene_timestamps` (`id`, `name`,
+  `date_text`, `subtext`, `created_at`) carries no `scene_id` at all, unlike `scene_notes`/
+  `scene_drawings`. A Timestamp is a moment in the CAMPAIGN's own timeline, not an annotation
+  belonging to whichever backdrop happens to be active — the same "not about any one Scene"
+  reasoning `master_note` already uses, just as its own ordinary multi-row table instead of a
+  singleton. A GM can play "Day 12" from any Scene; switching Scenes never changes the list.
+- **Two different trust levels for the same table, split by verb (decided).** Managing the list
+  (create/update/delete/the REST list read) is exactly as GM-secret as GM Notes: every socket
+  handler checks `identity.role === 'gm'` and broadcasts only via `emitToGm`, and
+  `GET /api/scene-timestamps` sits behind the same GM-only 403 gate `/api/master-note` uses — a
+  Player can't enumerate the list over either transport. **Playing one is the opposite** — the whole
+  point is for the WHOLE TABLE to see it, so `stage:timestamp_play` (GM-only to trigger) resolves the
+  row server-side from `timestampId` and broadcasts `stage:timestamp_played` via a plain `io.emit`
+  carrying only that one row's `dateText`/`subtext` — never an id, never the rest of the list, so a
+  Player socket has nothing to look anything up with even if it wanted to.
+- **`date_text` is free text, not a real date (decided).** This game's calendar is whatever the
+  table's fiction says it is — "Day 47", "The Second Age", "Three Years Later…" are all valid, so
+  the field is a plain `<input>`, not a date picker. `name` is a separate field purely for finding it
+  again in the management grid — never shown when played.
+- **Client — `SceneTimestampDialog.jsx`** (GM-only, opened from the toolbar button, `DialogShell`
+  `fullscreen`+`portal`, mirroring `SceneNotesDialog.jsx`'s own shape minus its Scene/Master tab
+  split, since there's only ever the one flat list here): a card grid, `+ New Timestamp` dashed card,
+  and a Name/Date/Subtext editor (`editingId`: `null` | `'new'` | an id, same pattern Notes' own
+  `NoteEditor` uses) reused for both create and edit.
+  - **Cards, not rows — because Play needs to be giant and Edit needs to be small and out of the way
+    (verbatim spec).** Modeled on a video-thumbnail hover: the card shows its name (plus a small
+    Date/subtext preview) at rest; hovering — or, on a coarse pointer, always, via the same
+    `.hover-only-action` class CharacterList.jsx's own card actions use — reveals a large centered
+    Play button and a small top-right Edit button, the same corner-chip look StageRoster's own
+    Resize/Remove/Hide buttons already use.
+  - **Pressing Play closes the dialog first.** A full-screen dim-and-fade beat playing out behind the
+    GM's own management window instead of over the Scene everyone else is looking at would defeat the
+    point, so `play()` emits `stage:timestamp_play` and calls `onClose()` in the same action.
+- **Client — `TimestampCutscene.jsx`** — always mounted in `ScenePage.jsx`, like `StageRoster`/
+  `SceneDrawingLayer`, regardless of `uiHidden`: this is narrative content, not a UI control, the
+  same reasoning that already keeps summoned figures visible through cinematic mode. Listens for
+  `stage:timestamp_played` and renders nothing until one arrives. One continuous Framer Motion
+  keyframe run (`opacity: [0,1,1,0]`, `times:[0,0.2,0.8,1]`) covering fade-in/hold/fade-out as a
+  single timeline — the dim (a `bg-black` layer fixed at `0.9` opacity) and the text share the SAME
+  parent opacity, so one keyframe run animates both the "dim the Scene" and the "fade the text" halves
+  of the spec at once, rather than two things kept in sync by hand. `key={play.seq}` (a fresh
+  `Date.now()` each play) forces a remount — and therefore restarts the animation from t=0 — even if
+  the SAME Timestamp is played again before the previous run finished, the same trick
+  `RoundCutscene.jsx`'s own `ImpactBurst` uses for back-to-back hits. Reduced motion keeps the
+  information (the card shown for the full configured duration) and drops the fade ramp: straight to
+  fully shown, hold, straight back off, rather than skipping the beat entirely. `pointer-events-none`
+  on the whole overlay — the dim is purely visual, nothing underneath (the hide-interface toggle
+  included) is ever actually blocked from a click while a card plays.
+- **Settings — "Timestamp Card Duration" (decided, new).** Per-device, `sceneSettings.js`
+  (`loadTimestampDuration`/`saveTimestampDuration`, 1–10s, default 3s — "roughly 3 seconds" per
+  spec), same "read once at `ScenePage` mount, per-viewer, never socket-synced" shape every other
+  Scene Settings slider already uses: every viewer's socket receives the identical play event, but
+  each renders the fade timing on their own configured clock — an absolute duration rather than a
+  multiplier like Cutscene Speed, since there's no existing pace here to scale.
+- **Verification:** `scripts/playtest-scene-timestamps.mjs` (GM-only management + REST 403 for a
+  Player, a forged `scene_timestamp:create` from a Player is silently refused, playing broadcasts
+  `dateText`/`subtext` to BOTH a GM and a Player socket with no id/name attached, a Player's own
+  `stage:timestamp_play` is refused). Manual Playwright pass (throwaway, deleted before committing):
+  the toolbar button sits in the same row as Pen, is absent entirely for a Player while Pen still
+  renders, the create/edit/delete round-trip through the dialog, Play centered/Edit top-right reveal
+  on hover, pressing Play closes the dialog and the big Date text plus subtext plus a 90%-opacity
+  black dim layer appear, and the whole thing clears itself once the configured duration elapses.
+
 ## Implementation Risks & Recommendations
 A scope check for whoever picks this up: this grew well past "semi-simple website" over the course of design. Most of it (dice, inventory, injuries, stances, perks, counters) is standard CRUD-plus-broadcast work. Combat Timing (Tics/Startup/reveal/overflow) is the one genuinely hard piece — real software complexity, not just more forms — and it's also the most original part of the system, which is exactly why it deserves the most care rather than being rushed alongside everything else.
 
