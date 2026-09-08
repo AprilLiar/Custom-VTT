@@ -59,6 +59,7 @@ export default function SceneDrawingLayer({
   stageHeight,
   imageNaturalWidth,
   imageNaturalHeight,
+  backgroundFit = 'cover',
   tool, // 'select' | 'pen' | 'erase'
   color,
   penWidth,
@@ -72,11 +73,18 @@ export default function SceneDrawingLayer({
   // (nobody but the drawer sees a stroke mid-gesture anyway — see the
   // commit-on-release comment on onPointerUp below).
   const liveStrokeRef = useRef(null);
+  // `backgroundFit` (per-Scene, decided — db.js's own comment on
+  // scenes.background_fit) joins the geometry the same way StageRoster.jsx's
+  // own projectionGeometry does — a stroke's own points are stored as
+  // fractions of the IMAGE, and projecting those through the wrong fit
+  // mode would draw them in the wrong spot relative to whatever the
+  // backdrop is actually doing.
   const geometry = {
     containerWidth: stageWidth,
     containerHeight: stageHeight,
     naturalWidth: imageNaturalWidth,
     naturalHeight: imageNaturalHeight,
+    fit: backgroundFit,
   };
 
   const redraw = () => {
@@ -96,7 +104,14 @@ export default function SceneDrawingLayer({
         const { x, y } = imageFractionToStage({ fx, fy, ...geometry });
         return [x, y];
       });
-      const widthPx = imageFractionLengthToStage(row.width, stageWidth, imageNaturalWidth, imageNaturalHeight, stageHeight);
+      const widthPx = imageFractionLengthToStage(
+        row.width,
+        stageWidth,
+        imageNaturalWidth,
+        imageNaturalHeight,
+        stageHeight,
+        backgroundFit
+      );
       strokePath(ctx, stagePoints, row.color, widthPx, Boolean(row.is_eraser));
     }
     // The local, not-yet-committed stroke (if the pointer is down right
@@ -125,12 +140,13 @@ export default function SceneDrawingLayer({
   }, [stageWidth, stageHeight]);
 
   // Replays everything from scratch whenever the canonical list changes
-  // (a stroke landed, a clear happened, or — via imageNaturalWidth/Height —
-  // the backdrop finished loading and every stored fraction now projects to
-  // a different pixel spot). Simpler and plenty fast for a per-Scene stroke
-  // count in the dozens-to-low-hundreds range; no incremental-append path.
+  // (a stroke landed, a clear happened, or — via imageNaturalWidth/Height/
+  // backgroundFit — the backdrop finished loading, or its own fit mode
+  // changed, and every stored fraction now projects to a different pixel
+  // spot). Simpler and plenty fast for a per-Scene stroke count in the
+  // dozens-to-low-hundreds range; no incremental-append path.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(redraw, [drawings, imageNaturalWidth, imageNaturalHeight]);
+  useEffect(redraw, [drawings, imageNaturalWidth, imageNaturalHeight, backgroundFit]);
 
   const widthPxFor = (t) => (t === 'erase' ? eraserWidth : penWidth);
 
@@ -178,7 +194,8 @@ export default function SceneDrawingLayer({
       stageWidth,
       imageNaturalWidth,
       imageNaturalHeight,
-      stageHeight
+      stageHeight,
+      backgroundFit
     );
     socket.emit('scene_draw:add', {
       points: imagePoints,

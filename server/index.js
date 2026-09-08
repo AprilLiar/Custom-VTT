@@ -1487,6 +1487,13 @@ const TRIGGER_LABELS = {
 // means the old crop described a different photograph, so it goes.
 const CROP_COLUMNS = 'crop_x = ?, crop_y = ?, crop_w = ?, crop_h = ?';
 
+// A Scene's own backdrop-scaling mode (server: scenes.background_fit — see
+// db.js's own comment on why this is per-Scene, not a per-viewer Settings
+// slider). Never trust a client-sent value straight into a column read
+// back out as CSS-affecting data — scene:update below falls back to
+// whatever the Scene already had for anything outside this set.
+const VALID_BACKGROUND_FITS = new Set(['cover', 'contain', 'fill', 'fit-height', 'fit-width']);
+
 function cropValues(payload) {
   const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
   const x = num(payload?.cropX);
@@ -1683,7 +1690,7 @@ async function buildStagePayload() {
   const state = await one('SELECT active_scene_id FROM scene_state WHERE id = 1');
   const activeScene = state?.active_scene_id
     ? await one(
-        'SELECT id, name, image_data, image_mime_type FROM scenes WHERE id = ?',
+        'SELECT id, name, image_data, image_mime_type, background_fit FROM scenes WHERE id = ?',
         [state.active_scene_id]
       )
     : null;
@@ -4430,18 +4437,24 @@ io.on('connection', (socket) => {
   // The name is always sent; a background is only sent when the file picker
   // in SceneEditor actually produced one — same "absent means leave it
   // alone" contract temp_npc:update/relationships:update_person use.
-  on('scene:update', async ({ sceneId, name, imageData, imageMimeType, ...payload }) => {
+  // `backgroundFit` is a THIRD, independent field — always sent alongside
+  // `name` (SceneEditor.jsx's own `<select>` always has a current value),
+  // but unlike the image it never needs an "absent means unchanged" branch
+  // of its own: an invalid/missing value just falls back to whatever the
+  // Scene already had, rather than being treated as "no change requested."
+  on('scene:update', async ({ sceneId, name, imageData, imageMimeType, backgroundFit, ...payload }) => {
     if (socket.data.identity?.role !== 'gm') return;
     const scene = await one('SELECT * FROM scenes WHERE id = ?', [sceneId]);
     const sceneName = String(name ?? '').trim();
     if (!scene || !sceneName) return;
+    const fit = VALID_BACKGROUND_FITS.has(backgroundFit) ? backgroundFit : scene.background_fit;
     await run(
       imageData
-        ? `UPDATE scenes SET name = ?, image_data = ?, image_mime_type = ?, ${CROP_COLUMNS} WHERE id = ?`
-        : 'UPDATE scenes SET name = ? WHERE id = ?',
+        ? `UPDATE scenes SET name = ?, background_fit = ?, image_data = ?, image_mime_type = ?, ${CROP_COLUMNS} WHERE id = ?`
+        : 'UPDATE scenes SET name = ?, background_fit = ? WHERE id = ?',
       imageData
-        ? [sceneName, String(imageData), String(imageMimeType ?? 'image/jpeg'), ...cropValues(payload), scene.id]
-        : [sceneName, scene.id]
+        ? [sceneName, fit, String(imageData), String(imageMimeType ?? 'image/jpeg'), ...cropValues(payload), scene.id]
+        : [sceneName, fit, scene.id]
     );
     io.emit('scene:updated', await one('SELECT * FROM scenes WHERE id = ?', [scene.id]));
     // The active Scene's own background may have just changed — the stage

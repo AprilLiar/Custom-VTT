@@ -5,6 +5,7 @@ import { cropOf } from '../lib/imageCrop.js';
 import { usePictureUpload } from '../lib/usePictureUpload.jsx';
 import CroppedImage from './CroppedImage.jsx';
 import DialogShell from './DialogShell.jsx';
+import { BACKGROUND_FIT_OPTIONS, DEFAULT_BACKGROUND_FIT } from '../lib/backgroundFit.js';
 
 // A Scene's editor (Scene tab plan, Phase 4) — double-clicking a row in
 // SceneListDrawer opens this; single-clicking it activates the Scene
@@ -12,12 +13,22 @@ import DialogShell from './DialogShell.jsx';
 // same shape as TempNpcEditor: a name field, a picture picker with the crop
 // dialog (scenes carries the same crop_* columns a portrait needs — that
 // crop is the right-drawer THUMBNAIL only, never what the live stage
-// renders), and a delete button. No embedded ScenePicturesEditor here —
-// Scene Pictures belong to a Character or a Temp NPC, never to a Scene
-// itself.
+// renders), a Background Fit picker, and a delete button. No embedded
+// ScenePicturesEditor here — Scene Pictures belong to a Character or a Temp
+// NPC, never to a Scene itself.
+//
+// **Background Fit is per-Scene, not a Settings-page slider (decided).**
+// How this Scene's own backdrop art scales inside the stage box is an
+// authored property of that art — a battle map's own edges can carry real
+// information a Player's device happening to crop away would hide from
+// them specifically, with no way for the GM to know or fix it per-viewer —
+// so it's edited HERE, alongside the picture itself, and applies
+// identically to every viewer (see db.js's own comment on
+// scenes.background_fit for the fuller reasoning).
 export default function SceneEditor({ scene, onClose }) {
   const [name, setName] = useState(scene.name);
   const [picture, setPicture] = useState(null);
+  const [backgroundFit, setBackgroundFit] = useState(scene.background_fit || DEFAULT_BACKGROUND_FIT);
   const fileRef = useRef(null);
 
   const preview = picture
@@ -41,7 +52,7 @@ export default function SceneEditor({ scene, onClose }) {
     e.preventDefault();
     const trimmed = name.trim();
     if (!trimmed) return;
-    socket.emit('scene:update', { sceneId: scene.id, name: trimmed, ...(picture ?? {}) });
+    socket.emit('scene:update', { sceneId: scene.id, name: trimmed, backgroundFit, ...(picture ?? {}) });
   };
 
   const remove = () => {
@@ -79,6 +90,22 @@ export default function SceneEditor({ scene, onClose }) {
             autoFocus
             className="min-h-11 min-w-0 flex-1 panel-cut-sm border border-zinc-700 bg-zinc-800 px-2 py-1 text-sm outline-none focus:border-brand-500"
           />
+        </div>
+        <div>
+          <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-zinc-500">
+            Background Fit
+          </label>
+          <select
+            value={backgroundFit}
+            onChange={(e) => setBackgroundFit(e.target.value)}
+            className="min-h-11 w-full panel-cut-sm border border-zinc-700 bg-zinc-800 px-2 py-1 text-sm outline-none focus:border-brand-500"
+          >
+            {BACKGROUND_FIT_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </select>
         </div>
         <button
           type="submit"
