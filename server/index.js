@@ -4367,6 +4367,30 @@ io.on('connection', (socket) => {
     );
   });
 
+  // "Copy picture from profile" (decided, new) — takes the FULL portrait
+  // (characters.image_data), not the zoomed-in view CharacterSheet shows.
+  // A character's own portrait crop (crop_x/crop_y/crop_w/crop_h) is a
+  // display-only transform read at render time (see CroppedImage.jsx) —
+  // the stored bytes are always the whole, uncropped upload, so this is
+  // exactly "reuse what's already there" with no re-processing needed.
+  // Only characters have a profile picture to copy from; a Temp NPC has no
+  // portrait at all, so this event doesn't accept one.
+  on('scene_picture:copy_from_profile', async ({ characterId }) => {
+    const id = Number(characterId);
+    if (!Number.isInteger(id)) return;
+    if (!mayWriteScenePicture(socket.data.identity, 'character', id)) return;
+    const character = await one('SELECT name, image_data, image_mime_type FROM characters WHERE id = ?', [id]);
+    if (!character?.image_data) return;
+    const result = await run(
+      'INSERT INTO scene_pictures (character_id, name, image_data, image_mime_type) VALUES (?, ?, ?, ?)',
+      [id, 'Profile', character.image_data, character.image_mime_type || 'image/jpeg']
+    );
+    io.emit(
+      'scene_picture:created',
+      await one('SELECT * FROM scene_pictures WHERE id = ?', [Number(result.lastInsertRowid)])
+    );
+  });
+
   on('scene_picture:update', async ({ scenePictureId, name }) => {
     const picture = await one('SELECT * FROM scene_pictures WHERE id = ?', [scenePictureId]);
     if (!picture) return;

@@ -364,7 +364,12 @@ export default function CharacterSheet() {
           {tab === 'roleplay' && <RoleplayTab data={data} />}
           {tab === 'relationships' && <RelationshipsTab data={data} />}
           {tab === 'scene_pictures' && (
-            <ScenePicturesEditor ownerType="character" ownerId={data.character.id} canEdit={canCreate} />
+            <ScenePicturesEditor
+              ownerType="character"
+              ownerId={data.character.id}
+              canEdit={canCreate}
+              hasPortrait={Boolean(data.character.image_data)}
+            />
           )}
         </motion.div>
       </AnimatePresence>
