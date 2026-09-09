@@ -1,4 +1,5 @@
 import { createClient } from '@libsql/client';
+import { writeSync } from 'node:fs';
 import { STYLES, COUNTER_BONUS, DEFEATS } from './ruleset.js';
 import { PERK_REGISTRY } from './perks/index.js';
 
@@ -99,11 +100,123 @@ export function buildClientConfig({ url, authToken, replicaPath, remote }) {
   };
 }
 
-export const db = createClient(
-  buildClientConfig({ url, authToken, replicaPath, remote: usingRemote })
-);
+// **Boot logging that actually reaches the log (bugfix — Render deploys that
+// timed out having printed nothing at all).**
+//
+// Under Render, stdout is a PIPE, and Node writes to a pipe *asynchronously*:
+// the bytes sit in a buffer until the event loop gets a turn. Every boot-time
+// call in this file blocks the event loop (see `connectDb` below), so an
+// ordinary `console.log` placed immediately before one is never flushed — the
+// process hangs holding its own explanation. `writeSync(1, ...)` puts the line
+// on the file descriptor before the blocking call starts, which is the whole
+// difference between a deploy that says where it stalled and one that says
+// nothing. Used only for the handful of boot lines that sit next to a blocking
+// call; everything else in the app logs normally.
+export function bootLog(line) {
+  try {
+    writeSync(1, `${line}\n`);
+  } catch {
+    console.log(line);
+  }
+}
+
+// **Nothing in this module touches the network at import time (bugfix — a
+// Render deploy that hung forever, silently).**
+//
+// `createClient` used to run right here, at module scope. With a `syncUrl` its
+// constructor performs a blocking `PullDb` (see the note above the sync loop
+// below for why the whole binding is synchronous), so if the primary does not
+// answer, the constructor **never returns** — verified directly against a
+// blackholed address: no throw, no timeout, no output, forever.
+//
+// ES module imports are hoisted and evaluated before a single statement of
+// server/index.js runs, so that hang happened before the first `console.log`
+// and before `httpServer.listen`. Render's own view of it is a service that
+// printed nothing and opened no port: "No open ports detected... Timed Out".
+// The whole diagnosis was invisible from the log.
+//
+// Deferring construction to an explicit `connectDb()` is what lets index.js
+// open the port *first* and probe the primary with an interruptible `fetch`
+// *before* handing control to a call that cannot be interrupted at all.
+let client = null;
+
+export function connectDb() {
+  if (client) return client;
+  if (usingRemote) {
+    bootLog(
+      `Database: opening replica ${replicaPath} and pulling from ${redactedPrimary()} — ` +
+        'this call blocks until the primary answers and cannot be timed out from JS'
+    );
+  }
+  const started = Date.now();
+  client = createClient(buildClientConfig({ url, authToken, replicaPath, remote: usingRemote }));
+  if (usingRemote) bootLog(`Database: primary answered, replica open in ${Date.now() - started}ms`);
+  return client;
+}
 
 export const replicaMode = usingRemote;
+
+// The primary's host without its credentials — safe to print into a log that
+// Render keeps and that the user pastes into chat.
+function redactedPrimary() {
+  try {
+    return new URL(url).host || url;
+  } catch {
+    return url;
+  }
+}
+
+// Turso speaks plain HTTP under its own `libsql://` scheme; the ws:// variants
+// are the same server too. Only used by the reachability probe below — the
+// client itself is still handed the URL exactly as configured.
+export function primaryHttpUrl(target = url) {
+  return target
+    .replace(/^libsql:/i, 'https:')
+    .replace(/^wss:/i, 'https:')
+    .replace(/^ws:/i, 'http:');
+}
+
+// How long the boot probe waits for the primary. A Turso database that has
+// been idle takes a moment to wake, so this is generous rather than tight;
+// setting it to 0 skips the probe entirely (and restores the old behaviour of
+// finding out by hanging).
+export const PROBE_TIMEOUT_MS = Number(process.env.TURSO_PROBE_TIMEOUT_MS ?? 10_000);
+
+// **An interruptible check for the thing that cannot be interrupted.**
+//
+// `connectDb()`/`db.sync()` are synchronous native calls: a `Promise.race`, a
+// `setTimeout`, a SIGTERM handler — none of them can cut one short, because
+// none of them get a turn on the event loop while it runs. `fetch` is the
+// opposite: ordinary async I/O with a real abort signal. So the primary is
+// checked over HTTP first, and only once it has actually answered does boot
+// hand control to the blocking call.
+//
+// **Any HTTP response counts as reachable**, 404 and 401 included. The
+// question this answers is "will a connection to this host complete", not "is
+// this URL correct" — a wrong path or a rejected token still proves the host
+// is up and the socket connects, which is all `connectDb()` needs to return.
+// Only a transport-level failure (DNS, refused, timeout) is a real negative,
+// and that is precisely the case that would otherwise hang forever.
+export async function probePrimary({ timeoutMs = PROBE_TIMEOUT_MS } = {}) {
+  if (!usingRemote || !(timeoutMs > 0)) return { skipped: true };
+  const target = new URL('/health', primaryHttpUrl()).toString();
+  const started = Date.now();
+  try {
+    const res = await fetch(target, {
+      signal: AbortSignal.timeout(timeoutMs),
+      headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
+    });
+    return { ok: true, status: res.status, ms: Date.now() - started, host: redactedPrimary() };
+  } catch (err) {
+    return {
+      ok: false,
+      error: err?.message ?? String(err),
+      ms: Date.now() - started,
+      host: redactedPrimary(),
+      timedOut: err?.name === 'TimeoutError',
+    };
+  }
+}
 
 // Pull the primary into the local replica, and push whatever is waiting.
 //
@@ -116,7 +229,7 @@ export const replicaMode = usingRemote;
 export async function syncReplica() {
   if (!usingRemote) return null;
   const started = Date.now();
-  await db.sync();
+  await connectDb().sync();
   const elapsed = Date.now() - started;
   lastSyncedAt = Date.now();
   consecutiveFailures = 0;
@@ -289,7 +402,7 @@ function rowsOf(result) {
 // before the next statement that might depend on it.
 export async function all(sql, args = []) {
   if (ddlQueue?.length) await flushDdl();
-  return rowsOf(await db.execute({ sql, args }));
+  return rowsOf(await connectDb().execute({ sql, args }));
 }
 
 export async function one(sql, args = []) {
@@ -299,7 +412,7 @@ export async function one(sql, args = []) {
 
 export async function run(sql, args = []) {
   if (ddlQueue?.length) await flushDdl();
-  return db.execute({ sql, args });
+  return connectDb().execute({ sql, args });
 }
 
 // **Many statements, one round trip (decided, new — Phase 2 of the round-trip
@@ -325,7 +438,7 @@ export async function readMany(statements) {
     const [sql, args = []] = list[0];
     return [await all(sql, args)];
   }
-  const results = await db.batch(
+  const results = await connectDb().batch(
     list.map(([sql, args = []]) => ({ sql, args })),
     'read'
   );
@@ -343,7 +456,7 @@ export async function writeMany(statements) {
     const [sql, args = []] = list[0];
     return [await run(sql, args)];
   }
-  return db.batch(
+  return connectDb().batch(
     list.map(([sql, args = []]) => ({ sql, args })),
     'write'
   );
