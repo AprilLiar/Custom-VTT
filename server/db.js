@@ -2277,6 +2277,15 @@ export async function initDb() {
   `);
   await ensureColumn('declared_moves', 'reveal_posted', 'INTEGER NOT NULL DEFAULT 0');
   await ensureColumn('declared_moves', 'stamina_committed', 'INTEGER NOT NULL DEFAULT 0');
+  // The EFFECTIVE (Perk-discounted) cost actually taken out of current_stamina
+  // when stamina_committed flipped to 1 — not the move's raw stamina_cost
+  // column. Every refund below this point (Interrupted, Forfeited, pushed
+  // into next round, Non-Committed taken back) has to pay back what was
+  // actually spent, and a Perk (Punches in Bunches, Perfect Player, ...) can
+  // move that away from the template figure. 0 for a row that was never
+  // committed, which keeps every `stamina_committed ? amount : 0` refund
+  // guard correct without a separate NULL check.
+  await ensureColumn('declared_moves', 'stamina_committed_amount', 'INTEGER NOT NULL DEFAULT 0');
   await ensureColumn('declared_moves', 'appendage_choice', "TEXT CHECK(appendage_choice IN ('left','right'))");
   // **Uneven Combat: who this move is coming for (decided, new).** NULL on
   // every move in a 1v1 and on every row written before this existed, which is

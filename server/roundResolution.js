@@ -44,7 +44,10 @@
 // if either one changes.
 
 import { all, one, run, readMany, writeMany } from './db.js';
-import { rollDie, applyHalfDamage, healHalfDamage, clamp, dieAtRank, rankOf, stepDie, rollTotal } from './gameLogic.js';
+import {
+  rollDie, applyHalfDamage, healHalfDamage, clamp, dieAtRank, rankOf, stepDie, rollTotal,
+  injuryPenaltyBySlot, applyRankPenalty,
+} from './gameLogic.js';
 import {
   parseConcreteAttackTargets,
   expandAttackTargets,
@@ -130,6 +133,7 @@ import {
   perkImposedRecoveryDelta,
   perkStaminaOverflowHealing,
   perkStatDamageThresholds,
+  perkRollBonusTerms,
 } from './perkEngine.js';
 import {
   getCombatRollBonus,
@@ -226,17 +230,31 @@ async function adjustStamina(io, characterId, delta, { emitEvent = null, tic = n
 // payout away. Damaged means below its locked baseline, carrying a pending half
 // step, or out entirely — an incapacitated Stat is exactly the one worth
 // spending it on, and `healHalfDamage` walks a die back out of it.
+//
+// **Measured against the Injury-adjusted baseline, not the raw locked value
+// (bugfix, mirrors Perfect Player's own note in perks/perfectPlayer.js).** A
+// permanent Injury caps how far a Stat can come back below its raw
+// `locked_size`; comparing against the raw column let overflow healing walk a
+// Stat straight past that cap. A baseline that is itself incapacitated has
+// nothing left to give back, whatever the die's live status happens to be.
 async function healFromStaminaOverflow(io, { character, overflow, tic = null, emitEvent = null }) {
   if (!(overflow > 0) || !character) return;
   let steps = await perkStaminaOverflowHealing(character.id, overflow);
   if (!(steps > 0)) return;
+  const injuries = await all('SELECT * FROM injuries WHERE character_id = ?', [character.id]);
+  const injuryPenalties = injuryPenaltyBySlot(injuries);
   const healed = [];
   while (steps > 0) {
     const dice = await getDice(character.id);
     const damaged = dice.filter((d) => {
+      if (d.locked_size == null) return d.status === 'incapacitated' || d.half_damage;
+      const baseline = applyRankPenalty(
+        { size: d.locked_size, bonus: d.locked_bonus ?? 0, status: d.locked_status ?? 'active' },
+        injuryPenalties.get(d.slot_name) ?? 0
+      );
+      if (baseline.status === 'incapacitated') return false;
       if (d.status === 'incapacitated' || d.half_damage) return true;
-      if (d.locked_size == null) return false;
-      return rankOf(d.current_size, d.bonus) < rankOf(d.locked_size, d.locked_bonus ?? 0);
+      return rankOf(d.current_size, d.bonus) < rankOf(baseline.size, baseline.bonus);
     });
     if (!damaged.length) break; // nothing left to put right
     const die = damaged[Math.floor(Math.random() * damaged.length)];
@@ -688,8 +706,16 @@ async function runAutomations(io, {
   // the reasoning and all three cases live in planImposedRecovery
   // (combatTiming.js), pure and unit-tested; this is only the read, the
   // write-back and the announcement.
+  // Returns `{ plan, appliedTics }` rather than the bare plan (bugfix, D7):
+  // `appliedTics` is what actually landed on the clock — after No Wasted
+  // Movements' own discount — and is what describeImposedRecovery has to
+  // narrate. The plan alone can't stand in for it: a discount can shrink
+  // what lands without changing which case (startup/in-flight/idle)
+  // planImposedRecovery picks, so reading the amount back off the plan is
+  // not an option, and the caller passing the pre-discount `amount` straight
+  // through is exactly how narration ended up saying more than was applied.
   const imposeRecovery = async (characterId, characterName, tics, atTic, trip = false) => {
-    if (characterId == null) return null;
+    if (characterId == null) return { plan: null, appliedTics: 0 };
     // **No Wasted Movements** — every Recovery frame a fighter RECEIVES, other
     // than a move's own base Recovery, is shortened by the Perk's figure. This
     // is the single door every imposed Recovery comes through (both automations,
@@ -700,7 +726,7 @@ async function runAutomations(io, {
     // did not happen, and a 0-Tic plan would otherwise displace moves and
     // announce a trip that puts nobody anywhere.
     const received = Math.max(0, tics - (await perkImposedRecoveryDelta(characterId)));
-    if (received <= 0) return null;
+    if (received <= 0) return { plan: null, appliedTics: 0 };
     tics = received;
     // The engine always knows the Tic it is resolving. server/index.js's
     // combat:apply_damage — the chat card's manual Apply button, the one
@@ -717,7 +743,7 @@ async function runAutomations(io, {
       );
       clockTic = seat?.tic;
     }
-    if (!Number.isInteger(clockTic)) return null;
+    if (!Number.isInteger(clockTic)) return { plan: null, appliedTics: 0 };
     const rows = await all(
       `SELECT dm.id, dm.placement_tic, dm.reveal_tic, dm.recovery_extension_tics,
               dm.trip_recovery_tics, m.active_tics, m.recovery_tics
@@ -772,7 +798,7 @@ async function runAutomations(io, {
         shiftedDeclaredMoveIds: shifted,
       });
     }
-    return plan;
+    return { plan, appliedTics: tics };
   };
 
   // Where on the clock an imposed Recovery lands. The engine always knows the
@@ -812,8 +838,13 @@ async function runAutomations(io, {
         // A negative trip is not "un-tripping" anything, so it is dropped
         // rather than quietly shortening a window the way self_recovery does.
         if (amount < 0) break;
-        const plan = await imposeRecovery(selfCharacterId, selfCharacter.name, amount, tic, trip);
-        effects.push(describeImposedRecovery(plan, amount, selfCharacter.name, false, trip));
+        const { plan, appliedTics } = await imposeRecovery(selfCharacterId, selfCharacter.name, amount, tic, trip);
+        // **The actual applied amount, not the requested one (bugfix, D7).**
+        // No Wasted Movements can shrink what lands without changing the
+        // narration's own words for it — announcing the pre-discount figure
+        // reported an extension bigger than the one on the clock, and
+        // reported one at all when the Perk erased it to nothing.
+        if (appliedTics > 0) effects.push(describeImposedRecovery(plan, appliedTics, selfCharacter.name, false, trip));
         break;
       }
       case 'opponent_trip_recovery':
@@ -825,8 +856,12 @@ async function runAutomations(io, {
         // "what are they doing right now", and the idle case is a real
         // answer rather than a missing one.
         const trip = automation.type === 'opponent_trip_recovery';
-        const plan = await imposeRecovery(opponentCharacterId, opponentCharacter.name, amount, tic, trip);
-        effects.push(describeImposedRecovery(plan, amount, opponentCharacter.name, true, trip));
+        const { plan, appliedTics } = await imposeRecovery(opponentCharacterId, opponentCharacter.name, amount, tic, trip);
+        // The actual applied amount, not the requested one — see the note on
+        // the self_recovery case above (D7).
+        if (appliedTics > 0) {
+          effects.push(describeImposedRecovery(plan, appliedTics, opponentCharacter.name, true, trip));
+        }
         break;
       }
       case 'self_stat_step':
@@ -1465,6 +1500,25 @@ async function stepStat(io, {
       next = { ...next, current_size: capped.size, bonus: capped.bonus };
     }
   }
+  // **Path To Mastery: Durability (bugfix, mirrors applyAutoDamage's own
+  // check).** A Stat that would go out is held at a bare d4 instead, for as
+  // many times as the holder has charges. self_stat_step is the OTHER door
+  // damage reaches a Stat through — a move automation dealing damage to its
+  // own user rather than an opponent — and it used to step a die straight
+  // through to incapacitated with no Durability check at all, so an
+  // automation could break a Stat Durability was supposed to protect.
+  //
+  // Asked only when a break would ACTUALLY happen, same as applyAutoDamage.
+  // Announced the same way too — a Perk that stops damage has to be visible
+  // at the moment it stops it (see applyAutoDamage's own note on this).
+  if (steps > 0 && die.status !== 'incapacitated' && next.status === 'incapacitated') {
+    if (await perkAbsorbBreak(characterId)) {
+      next = { current_size: 4, bonus: 0, status: 'active', half_damage: false };
+      if (characterName) {
+        await postSystemMessage(io, `${characterName}'s ${slotName} refuses to break — held at a d4.`);
+      }
+    }
+  }
   await run('UPDATE dice SET current_size = ?, bonus = ?, status = ?, half_damage = ? WHERE id = ?', [
     next.current_size,
     next.bonus,
@@ -1691,7 +1745,10 @@ async function checkInterrupt(io, {
   if (!interrupted) return;
 
   await run('DELETE FROM declared_moves WHERE id = ?', [startupDM.id]);
-  const refund = startupDM.stamina_committed ? Math.trunc(startupDM.stamina_cost / 2) : 0;
+  // Half of what was ACTUALLY paid (a Perk may have discounted it), not half
+  // of the move template's raw stamina_cost — see stamina_committed_amount's
+  // own comment in db.js.
+  const refund = startupDM.stamina_committed ? Math.trunc(startupDM.stamina_committed_amount / 2) : 0;
   if (refund) await adjustStamina(io, startupDM.character_id, refund, { emitEvent, tic, reason: 'interrupt-refund' });
   await postSystemMessage(
     io,
@@ -3129,15 +3186,13 @@ async function fizzleOnBrokenLeg(io, { row, tic, emitEvent }) {
   ]);
   if (!movementBlockedByLegs({ tagNames, legStatuses: legs.map((d) => d.status) })) return false;
 
-  // The template's cost, which is the basis every other refund in this engine
-  // already uses (see the Interrupt refund) — the *effective* per-character
-  // figure a Perk may have discounted is not recorded per declared move.
+  // The effective figure actually taken at commit, not the template's raw
+  // stamina_cost — see stamina_committed_amount's own comment in db.js.
   const dm = await one(
-    `SELECT dm.stamina_committed, m.stamina_cost
-     FROM declared_moves dm JOIN moves m ON m.id = dm.move_id WHERE dm.id = ?`,
+    `SELECT stamina_committed, stamina_committed_amount FROM declared_moves WHERE id = ?`,
     [row.declaredMoveId]
   );
-  const refund = dm?.stamina_committed ? Number(dm.stamina_cost) || 0 : 0;
+  const refund = dm?.stamina_committed ? Number(dm.stamina_committed_amount) || 0 : 0;
   await run('UPDATE declared_moves SET interactions_resolved = 1 WHERE id = ?', [row.declaredMoveId]);
   if (refund) {
     await adjustStamina(io, row.characterId, refund, { emitEvent, tic, reason: 'movement-fizzle-refund' });
@@ -4165,7 +4220,7 @@ async function planNonCommitPrompt(pairIndex, roundNumber) {
   const entries = [];
   for (const holder of holders) {
     const moves = await all(
-      `SELECT dm.id, dm.placement_tic, dm.stamina_committed, m.name AS move_name, m.stamina_cost,
+      `SELECT dm.id, dm.placement_tic, dm.stamina_committed, dm.stamina_committed_amount, m.name AS move_name,
               (m.startup_tics + m.active_tics + m.recovery_tics + dm.recovery_extension_tics) AS footprintTics
        FROM declared_moves dm JOIN moves m ON m.id = dm.move_id
        WHERE dm.character_id = ? AND dm.round_number = ?
@@ -4182,10 +4237,13 @@ async function planNonCommitPrompt(pairIndex, roundNumber) {
         moveName: m.move_name,
         placementTic: m.placement_tic,
         footprintTics: m.footprintTics,
-        // What cancelling would hand back. Zero for a move whose Stamina was
-        // never committed, which is what makes the prompt honest rather than
+        // What cancelling would hand back — the effective figure actually
+        // taken at commit (a Perk may have discounted it), not the move
+        // template's raw stamina_cost; see stamina_committed_amount's own
+        // comment in db.js. Zero for a move whose Stamina was never
+        // committed, which is what makes the prompt honest rather than
         // promising a refund that is not there.
-        staminaRefund: m.stamina_committed ? Number(m.stamina_cost) || 0 : 0,
+        staminaRefund: m.stamina_committed ? Number(m.stamina_committed_amount) || 0 : 0,
       })),
     });
   }
@@ -4669,9 +4727,11 @@ async function startPairDeclaration(io, pairIndex) {
       const die = staminaByChar.get(character.id);
       if (!die || die.status !== 'active') continue;
       const result = rollDie(die.current_size) + die.bonus;
-      const currentStamina = clamp(character.current_stamina + result, 0, character.max_stamina);
-      await run('UPDATE characters SET current_stamina = ? WHERE id = ?', [currentStamina, character.id]);
-      io.emit('character:updated', { ...character, current_stamina: currentStamina });
+      // Through adjustStamina now (bugfix, D4) — it is the one place that
+      // measures Stamina going over the cap and hands the overflow to Tip Top
+      // Shape; the raw clamp+UPDATE this used to do let the round's own
+      // regen roll walk straight past the Perk every round.
+      await adjustStamina(io, character.id, result, { reason: 'round-start-regen' });
       await logRoll(io, {
         characterId: character.id,
         characterName: character.name,
@@ -4698,8 +4758,29 @@ async function startPairDeclaration(io, pairIndex) {
     // the matchup does not reach Brain at all any more (MATCHUP_EXEMPT_SLOTS
     // in combatBonuses.js). Both copies drop it together, which is the same
     // discipline the bugfix was really about.
+    //
+    // **Perk roll bonuses apply too (bugfix).** Anime Protagonist, Cornered
+    // Animal, Never Tell Me the Odds and any other `rollBonus`-seam Perk are
+    // written as "every roll you make counts +N" — Initiative is a roll, and
+    // this used to be the one roll in the game that never asked the seam.
+    // Deliberately NOT the full getCombatRollBonusBreakdown: that also
+    // consumes one-shot next-roll credits/debts (Opening, Weakened) meant for
+    // this fighter's next actual move roll, and folds in grapple/Punisher/
+    // Ground Finisher terms that have never applied to Initiative — none of
+    // that is "behaves like Reasons to Fight", so only the Perk seam itself
+    // is asked here.
+    const sideCounts = {
+      mine: participants.filter((x) => x.side === p.side).length,
+      theirs: participants.filter((x) => x.side !== p.side).length,
+    };
+    const perkTerms = await perkRollBonusTerms(p.character_id, {
+      reasonsToFight: p.reasons_to_fight || 0,
+      sideCounts,
+    });
+    const perkBonus = perkTerms.reduce((sum, t) => sum + t.amount, 0);
     const modifier =
-      (p.reasons_to_fight || 0) -
+      (p.reasons_to_fight || 0) +
+      perkBonus -
       computeInitiativeOverflowPenalty({
         blockedUntilTic: blockedUntilByChar.get(p.character_id) ?? null,
         nextRoundStartTic,
@@ -4773,8 +4854,8 @@ async function rehomePushedMoves(io, { pairIndex, charIds, roundNumber, roundSta
   if (!charIds.length) return;
   const marks = charIds.map(() => '?').join(',');
   const rows = await all(
-    `SELECT dm.id, dm.character_id, dm.round_number, dm.placement_tic, dm.stamina_committed, m.stamina_cost,
-            ch.name AS character_name, m.name AS move_name,
+    `SELECT dm.id, dm.character_id, dm.round_number, dm.placement_tic, dm.stamina_committed,
+            dm.stamina_committed_amount, ch.name AS character_name, m.name AS move_name,
             (dm.reveal_tic + m.active_tics + m.recovery_tics + dm.recovery_extension_tics) AS recovery_end_tic
      FROM declared_moves dm
      JOIN moves m ON m.id = dm.move_id
@@ -4794,7 +4875,7 @@ async function rehomePushedMoves(io, { pairIndex, charIds, roundNumber, roundSta
     });
     if (!inThisRound || row.placement_tic < roundStartTic) continue;
 
-    const refund = row.stamina_committed ? Number(row.stamina_cost) || 0 : 0;
+    const refund = row.stamina_committed ? Number(row.stamina_committed_amount) || 0 : 0;
     await run(
       'UPDATE declared_moves SET round_number = ?, stamina_committed = 0 WHERE id = ?',
       [roundNumber, row.id]
@@ -5564,14 +5645,18 @@ async function resolveMoveConflict(pairIndex, { declaredMoveId, choice }, io) {
         'UPDATE declared_moves SET feint_masked = 0 WHERE character_id = ? AND placement_tic = ? AND id <> ?',
         [row.character_id, footprintEnd, row.id]
       );
-      if (row.stamina_committed && row.stamina_cost) {
-        await adjustStamina(io, row.character_id, row.stamina_cost, {
+      if (row.stamina_committed && row.stamina_committed_amount) {
+        await adjustStamina(io, row.character_id, row.stamina_committed_amount, {
           emitEvent,
           tic: pending.tic,
           reason: `${row.move_name} forfeited`,
         });
       }
-      forfeited = { declaredMoveId: row.id, moveName: row.move_name, staminaRefunded: row.stamina_committed ? row.stamina_cost : 0 };
+      forfeited = {
+        declaredMoveId: row.id,
+        moveName: row.move_name,
+        staminaRefunded: row.stamina_committed ? row.stamina_committed_amount : 0,
+      };
     }
   }
 
@@ -5616,7 +5701,7 @@ async function resolveMoveConflict(pairIndex, { declaredMoveId, choice }, io) {
     // makes it charge again if the player keeps it.
     let refunded = 0;
     if (shift.leavesRound && row.stamina_committed) {
-      refunded = row.stamina_cost ?? 0;
+      refunded = row.stamina_committed_amount ?? 0;
       await run('UPDATE declared_moves SET stamina_committed = 0 WHERE id = ?', [row.id]);
       if (refunded) {
         await adjustStamina(io, characterId, refunded, {

@@ -447,9 +447,15 @@ export async function perkStaminaPerHalfDamage(characterId) {
 // the previous version answered them one at a time — re-reading the granted Perk
 // list and the character row for each, twenty round-trips for one screen.
 //
-// Returns a Map of move id -> delta. The character-level facts (dice, Injuries,
-// the move thrown right before) are gathered once and shared by every move in
-// the list, since none of them vary per move.
+// Returns a Map keyed by `move.declared_move_id ?? move.id` -> delta — the
+// same disambiguation `previousFor` below already uses, so two declared
+// instances of the same move template each keep their own distinct delta
+// instead of the second silently overwriting the first (bugfix: this used to
+// key by `move.id` alone, so Punches in Bunches thrown twice in one
+// Declaration collapsed both rows onto one entry and every summation over
+// them double-counted the second's delta). The character-level facts (dice,
+// Injuries, the move thrown right before) are gathered once and shared by
+// every move in the list, since none of them vary per move.
 export async function perkStaminaCostDeltas({ characterId, moves, dice, injuries }) {
   const out = new Map();
   const list = moves ?? [];
@@ -496,7 +502,7 @@ export async function perkStaminaCostDeltas({ characterId, moves, dice, injuries
         Number(await definition.staminaCostDelta({ ...base, move: facts, getPreviousMove, characterPerkId })) || 0
       );
     }
-    out.set(move.id, total);
+    out.set(move.declared_move_id ?? move.id, total);
   }
   return out;
 }
