@@ -1039,8 +1039,15 @@ async function cascadeFixture(pairIndex, tag, queue) {
     if (q.staminaCost) await run('UPDATE moves SET stamina_cost = ? WHERE id = ?', [q.staminaCost, moveId]);
     const dmId = await declareMove({ characterId: defender, moveId, placementTic: q.at, startupTics: 1 });
     // Committed, as a real declaration is once its owner presses done —
-    // otherwise the refund branch has nothing to give back.
-    if (q.staminaCost) await run('UPDATE declared_moves SET stamina_committed = 1 WHERE id = ?', [dmId]);
+    // otherwise the refund branch has nothing to give back. Refund reads
+    // stamina_committed_amount now, not moves.stamina_cost, so this fixture
+    // has to stamp it the same way combat:character_done_declaring would.
+    if (q.staminaCost) {
+      await run('UPDATE declared_moves SET stamina_committed = 1, stamina_committed_amount = ? WHERE id = ?', [
+        q.staminaCost,
+        dmId,
+      ]);
+    }
     declaredIds.push(dmId);
   }
   await resolvePair(pairIndex);
@@ -1608,6 +1615,166 @@ test('Initiative does NOT carry the Stance matchup — Brain is exempt', async (
   // modifier 0 on both sides.
   assert.equal(mine.modifier, 0, 'the stance advantage must not reach Initiative');
   assert.equal(theirs.modifier, 0, 'nor its mirror on the other side');
+});
+
+test('a rollBonus-seam Perk (Cornered Animal) reaches Initiative — bugfix (D1)', async () => {
+  // Every `rollBonus`-seam Perk reads "every roll you make counts +N", and
+  // Initiative used to be the one roll in the game that never asked the seam
+  // (startPairDeclaration folded in Reasons to Fight and the overflow penalty
+  // by hand, but nothing else) — so Cornered Animal, Anime Protagonist, Never
+  // Tell Me the Odds all silently sat out the very first roll of a fight.
+  const pairIndex = 502;
+  const cornered = await createCharacter('Init Cornered');
+  const other = await createCharacter('Init Other');
+  await grantPerk(cornered, 'Cornered Animal');
+  // Cornered Animal's own condition: current_stamina at a quarter of max or
+  // below. 0 clears it unambiguously regardless of this character's rolled
+  // max_stamina.
+  await run('UPDATE characters SET current_stamina = 0 WHERE id = ?', [cornered]);
+  await seatPair(pairIndex, cornered, other);
+
+  await startPairDeclaration(mockIo, pairIndex);
+
+  const brainRolls = (await all("SELECT character_id, modifier, dice_rolled FROM chat_log WHERE kind = 'roll'"))
+    .filter((r) => JSON.parse(r.dice_rolled).some((d) => d.slot_name === 'Brain'));
+  const mine = brainRolls.find((r) => r.character_id === cornered);
+  assert.equal(mine.modifier, 2, 'Cornered Animal +2 must reach the Initiative roll');
+});
+
+// ---------- Tip Top Shape: round-start regen and the Injury baseline (D4/D5 bugfix) ----------
+
+test('round-start Stamina regen feeds Tip Top Shape overflow healing — bugfix (D4)', async () => {
+  // startPairDeclaration's own regen roll used to write current_stamina with
+  // a raw clamp+UPDATE instead of going through adjustStamina — the one place
+  // that measures overflow past the cap and hands it to Tip Top Shape. Every
+  // round's own regen therefore walked straight past the Perk.
+  const pairIndex = 503;
+  const banked = await createCharacter('Regen Banked');
+  const foe = await createCharacter('Regen Foe');
+  const characterPerkId = await grantPerk(banked, 'Tip Top Shape');
+  // A damaged Body: below its own locked baseline, with room to heal.
+  await run('UPDATE dice SET locked_size = 8, current_size = 6 WHERE character_id = ? AND slot_name = ?', [
+    banked,
+    'Body',
+  ]);
+
+  await seatPair(pairIndex, banked, foe);
+  await startPairDeclaration(mockIo, pairIndex); // round 1: Start Combat, no regen roll yet
+  await startPairDeclaration(mockIo, pairIndex); // round 2: the regen roll under test
+
+  // Math.random is pinned to its max face for this whole file, so the d8
+  // Stamina die regens the full 8 — already at max_stamina (createCharacter's
+  // own default), so all 8 is overflow. At Tip Top Shape's 5-per-step rate
+  // that is exactly one step, with 3 banked for next time.
+  const bodyDie = await one(
+    "SELECT current_size, half_damage FROM dice WHERE character_id = ? AND slot_name = 'Body'",
+    [banked]
+  );
+  assert.ok(
+    bodyDie.current_size !== 6 || bodyDie.half_damage,
+    'the overflow from round-start regen must reach Tip Top Shape'
+  );
+  const bank = await one(
+    "SELECT value FROM character_perk_state WHERE character_perk_id = ? AND key = 'overflow:Tip Top Shape'",
+    [characterPerkId]
+  );
+  assert.equal(Number(bank?.value ?? 0), 3, 'the remainder past one step banks for next time');
+});
+
+test("Tip Top Shape heals only up to the Injury-adjusted baseline — bugfix (D5)", async () => {
+  // A permanent Injury lowers how far a Stat can come back below its raw
+  // locked_size; healFromStaminaOverflow used to compare against the raw
+  // column, so overflow healing walked a Stat straight past what the Injury
+  // allows.
+  const pairIndex = 504;
+  const injured = await createCharacter('Overflow Injured');
+  await grantPerk(injured, 'Tip Top Shape');
+  // Body locked at d8, but a permanent Injury (-1 rank) caps its real ceiling
+  // at d6 — and current_size already sits exactly there. Nothing to heal.
+  await run('UPDATE dice SET locked_size = 8, current_size = 6 WHERE character_id = ? AND slot_name = ?', [
+    injured,
+    'Body',
+  ]);
+  await run(
+    "INSERT INTO injuries (character_id, name, effect, slot_name, penalty) VALUES (?, 'Old Scar', 'test', 'Body', 1)",
+    [injured]
+  );
+  const before = await one(
+    "SELECT current_size, half_damage, status FROM dice WHERE character_id = ? AND slot_name = 'Body'",
+    [injured]
+  );
+
+  const { adjustStamina } = await import('../roundResolution.js');
+  await adjustStamina(mockIo, injured, 5); // already at max_stamina: all 5 overflows, exactly one Tip Top Shape step
+
+  const after = await one(
+    "SELECT current_size, half_damage, status FROM dice WHERE character_id = ? AND slot_name = 'Body'",
+    [injured]
+  );
+  assert.deepEqual(after, before, 'a Stat already at its Injury-adjusted ceiling must not be picked to heal');
+});
+
+test('Path To Mastery: Durability absorbs a break from self_stat_step — bugfix (D6)', async () => {
+  // applyAutoDamage already asked perkAbsorbBreak before an attack's own
+  // damage breaks a Stat; stepStat — the door self_stat_step/opponent_stat_step
+  // move automations use instead — did not, so an automation dealing stepped
+  // damage could break a Stat Durability was supposed to protect.
+  const { applyMoveInteractions } = await import('../roundResolution.js');
+  const id = await createCharacter('Durability Trigger');
+  const characterPerkId = await grantPerk(id, 'Path To Mastery: Durability');
+  await setDieSize(id, 'Body', 4); // one full step (2 half-steps) from incapacitated
+  const mid = await createMove({
+    name: 'Durability Self Damage',
+    interactions: [{ trigger: 'hit', text: '', automations: [{ type: 'self_stat_step', amount: 2, slot: 'Body' }] }],
+  });
+  await applyMoveInteractions(mockIo, { moveId: mid, trigger: 'hit', selfCharacterId: id });
+
+  const body = await one("SELECT current_size, status FROM dice WHERE character_id = ? AND slot_name = 'Body'", [id]);
+  assert.equal(body.status, 'active', 'stepStat must ask Durability before letting a self-inflicted step break a Stat');
+  assert.equal(body.current_size, 4, 'held at a bare d4, exactly where the break would have left it');
+  const charge = await one(
+    "SELECT value FROM character_perk_state WHERE character_perk_id = ? AND key = 'absorbs-break:Path To Mastery: Durability'",
+    [characterPerkId]
+  );
+  assert.equal(Number(charge?.value ?? 0), 1, 'and consume exactly one charge for the save');
+});
+
+test('No Wasted Movements narration reports what actually landed, not the requested amount — bugfix (D7)', async () => {
+  // imposeRecovery already applied the Perk's discount to the clock
+  // (recovery_extension_tics came out right); describeImposedRecovery was
+  // handed the pre-discount `amount` anyway, so the narration said "+3
+  // Recovery" for an extension that actually landed as 2.
+  const { applyMoveInteractions } = await import('../roundResolution.js');
+  const id = await createCharacter('No Wasted');
+  await grantPerk(id, 'No Wasted Movements');
+  const mid = await createMove({
+    name: 'Impose Three',
+    activeTics: 2,
+    recoveryTics: 3,
+    interactions: [{ trigger: 'hit', text: '', automations: [{ type: 'self_recovery', amount: 3 }] }],
+  });
+  const declared = await declareMove({ characterId: id, moveId: mid, placementTic: 0, startupTics: 1 });
+  const events = [];
+  await applyMoveInteractions(mockIo, {
+    moveId: mid,
+    trigger: 'hit',
+    selfCharacterId: id,
+    selfDeclaredMoveId: declared,
+    tic: 1,
+    emitEvent: async (t, type, payload) => events.push({ t, type, payload }),
+  });
+
+  const dm = await one('SELECT recovery_extension_tics FROM declared_moves WHERE id = ?', [declared]);
+  assert.equal(dm.recovery_extension_tics, 2, 'the Perk still shortens what actually lands on the clock');
+  const fired = events.find((e) => e.type === 'automation_fired');
+  assert.ok(
+    fired?.payload.effects?.some((t) => t.startsWith('+2 Recovery')),
+    'the narration must report the 2 that actually landed, not the 3 that was requested'
+  );
+  assert.ok(
+    !fired?.payload.effects?.some((t) => t.startsWith('+3 Recovery')),
+    'and must not report the pre-discount figure'
+  );
 });
 
 // ---------- Combat Style (decided, new) ----------
@@ -2890,8 +3057,33 @@ test('a queued move is priced against ITS OWN predecessor, not the last one decl
     { ...(await moveRow(second)), declared_move_id: dm2 },
   ];
   const deltas = await perkStaminaCostDeltas({ characterId: fighter, moves: rows, dice: [], injuries: [] });
-  assert.equal(deltas.get(first), 0, 'the first punch of the round follows nothing and is full price');
-  assert.equal(deltas.get(second), -1, 'the second follows the first and is a Stamina cheaper');
+  // Keyed by declared_move_id, not move.id — see perkStaminaCostDeltas' own
+  // comment: two rows sharing a move.id (the same move template declared
+  // twice) must not collapse onto one entry.
+  assert.equal(deltas.get(dm1), 0, 'the first punch of the round follows nothing and is full price');
+  assert.equal(deltas.get(dm2), -1, 'the second follows the first and is a Stamina cheaper');
+});
+
+test('a move template declared twice keeps two distinct per-declaration deltas', async () => {
+  // The actual D2 regression: two rows sharing the SAME move.id (the same
+  // template thrown twice) used to collapse onto one Map entry, so the
+  // second declaration's delta silently overwrote the first's and any
+  // summation over both (getPendingStaminaCost) double-counted the second.
+  const fighter = await createCharacter('Twice Fighter');
+  await grantPerk(fighter, 'Punches in Bunches');
+  const straight = await createMove({ name: 'Twice Straight', rollSlots: ['Hand'], attackTargets: ['Skull'] });
+
+  const dm1 = await declareMove({ characterId: fighter, moveId: straight, placementTic: 0, startupTics: 1 });
+  const dm2 = await declareMove({ characterId: fighter, moveId: straight, placementTic: 3, startupTics: 1 });
+
+  const template = await moveRow(straight);
+  const rows = [
+    { ...template, declared_move_id: dm1 },
+    { ...template, declared_move_id: dm2 },
+  ];
+  const deltas = await perkStaminaCostDeltas({ characterId: fighter, moves: rows, dice: [], injuries: [] });
+  assert.equal(deltas.get(dm1), 0, 'the first declaration of this template follows nothing');
+  assert.equal(deltas.get(dm2), -1, 'the second declaration of the SAME template follows the first');
 });
 
 test('previousDeclaredMoveFacts orders by footprint end, not by when it was declared', async () => {
@@ -4058,8 +4250,9 @@ test('a Movement move whose owner lost a Leg mid-round is lost, and refunded', a
   await seatPair(pairIndex, runner, other);
   await startPairDeclaration(io, pairIndex);
   const dmId = await declareMove({ characterId: runner, moveId: dash, placementTic: 0, startupTics: 1 });
-  // Charged, as Done Declaring would have.
-  await run('UPDATE declared_moves SET stamina_committed = 1 WHERE id = ?', [dmId]);
+  // Charged, as Done Declaring would have — amount included, since the
+  // fizzle refund now reads stamina_committed_amount, not moves.stamina_cost.
+  await run('UPDATE declared_moves SET stamina_committed = 1, stamina_committed_amount = 4 WHERE id = ?', [dmId]);
   await run('UPDATE characters SET current_stamina = 5 WHERE id = ?', [runner]);
   const before = (await getCharacterRow(runner)).current_stamina;
 
@@ -4103,8 +4296,10 @@ test('a move whose whole footprint left its round is re-homed, uncommitted and r
   // what a Block's extended Recovery or an imposed Recovery does.
   const dmId = await declareMove({ characterId: a, moveId: punch, placementTic: 0, startupTics: 1 });
   const pushedTo = roundOne.round_start_tic + 8; // past a 7-Tic round
+  // Amount included, since the push-out refund now reads
+  // stamina_committed_amount, not moves.stamina_cost.
   await run(
-    'UPDATE declared_moves SET placement_tic = ?, reveal_tic = ?, stamina_committed = 1 WHERE id = ?',
+    'UPDATE declared_moves SET placement_tic = ?, reveal_tic = ?, stamina_committed = 1, stamina_committed_amount = 3 WHERE id = ?',
     [pushedTo, pushedTo + 1, dmId]
   );
   await run('UPDATE characters SET current_stamina = 5 WHERE id = ?', [a]);

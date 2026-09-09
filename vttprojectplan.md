@@ -1066,6 +1066,9 @@ Verified the way a check has to be: by deleting the import again and watching `n
   - **Cancelling refunds in full and frees the Tics, but nothing slides earlier** (decided). That is the
     engine's standing rule — nothing arrives earlier than it was thrown — and this is the same rule, not an
     exception to it. The freed Tics still matter: they no longer floor next round's placement.
+    **"In full" now means the effective, Perk-adjusted cost actually paid at commit (bugfix — see "Every
+    Stamina refund now pays back what was actually spent" below), not the move template's raw column**: a
+    discounted declaration used to be refunded at the undiscounted figure, over-paying the canceller.
   - **Keeping everything is a real answer**, and it is the primary button. The Perk is an option, not an
     obligation.
 
@@ -1539,6 +1542,88 @@ test is `overlapsRoundWindow` — the same pure helper the lane rendering alread
 uses to decide whether a move belongs to a round at all. An ordinary carryover,
 which *started* in its own round and merely runs long, is untouched: the
 placement Tic still being behind the new round's start is what separates the two.
+
+### QA audit fixes (2026-09, implemented)
+
+An external agent ran a full QA pass against the codebase and reported 7 confirmed bugs across the
+stamina/Perk engine, independently re-verified live (both a direct-import probe and a real
+socket.io-client probe against a running server) before any fix — every one reproduced exactly as
+reported. All 7 are fixed, each covered by a new unit test in `server/test/roundResolution.test.js`
+pinning the bug's own exact scenario so it cannot silently come back.
+
+- **A move template declared twice in the same Declaration was billed the second declaration's
+  discount for both.** `perkStaminaCostDeltas` (`server/perkEngine.js`) already computed a distinct
+  per-declaration discount (see "the previous move is per entry, not per batch" above) but wrote it
+  into a `Map` keyed by the shared template id (`move.id`) rather than by the unique
+  `declared_move_id` — so two rows sharing a template collided, and the second's delta silently
+  overwrote the first's. `resolveStaminaCosts` and `getPendingStaminaCost` (`server/index.js`) then
+  each re-keyed their own output by `move.id` too, carrying the collision to the actual commit. Fixed
+  by keying all three by `move.declared_move_id ?? move.id` — the picker's own call path never sets
+  `declared_move_id` and never has duplicate ids, so the fallback leaves it byte-for-byte unchanged;
+  only the commit path (which always sets `declared_move_id` uniquely per row) is disambiguated.
+  Concretely: a Punches in Bunches fighter declaring two 3-cost punches used to be quoted 5 and
+  charged 4 at Done Declaring.
+- **Every Stamina refund now pays back what was actually spent, not the move template's raw
+  column.** `declared_moves` gained `stamina_committed_amount` (default 0), stamped with the real,
+  Perk-discounted figure by `combat:character_done_declaring` at the moment it commits (the one place
+  cost actually leaves `current_stamina`) — replacing every refund site's read of `moves.stamina_cost`:
+  the Interrupt half-refund, a Movement move fizzling on a broken Leg, Non-Committed's own prompt and
+  its actual refund, a move pushed wholly out of its round (`rehomePushedMoves`), and both the Forfeit
+  and cascade-push branches of a move conflict. One of these (the broken-Leg fizzle) carried its own
+  code comment acknowledging the gap outright — *"the effective per-character figure a Perk may have
+  discounted is not recorded per declared move"* — which is exactly the column this fix adds.
+- **Initiative was the one roll in the game that never asked the Perk `rollBonus` seam.**
+  `startPairDeclaration` (`server/roundResolution.js`) and `combat:next_round`
+  (`server/index.js`) — the two copies of the Initiative Brain roll, a fight's first round and every
+  round after it — folded in Reasons to Fight and the overflow penalty by hand but never called
+  `perkRollBonusTerms`, so Anime Protagonist, Cornered Animal, Never Tell Me the Odds and any other
+  `rollBonus`-seam Perk silently sat out every Initiative roll. Fixed in both copies by asking
+  `perkRollBonusTerms` (not the full `getCombatRollBonusBreakdown` — that also consumes one-shot
+  next-roll credits/debts meant for a fighter's next actual move roll, and folds in grapple/Punisher/
+  Ground Finisher terms that have never applied to Initiative) and adding its total to the modifier.
+  The Stance matchup is still correctly excluded (Brain is `MATCHUP_EXEMPT_SLOTS` — see the "No Stance
+  matchup here" note in both copies), unchanged.
+- **Tip Top Shape never saw the round's own Stamina regeneration.** `startPairDeclaration`'s regen
+  roll (and `combat:next_round`'s own copy, for a fight's first eligible round) wrote
+  `current_stamina` with a raw `clamp`+`UPDATE` instead of going through `adjustStamina` — the one
+  function that measures overflow past the cap and hands it to `healFromStaminaOverflow` — so a
+  regen roll that overflowed the cap walked straight past the Perk every single round, the one moment
+  it is built to matter most. Both now call `adjustStamina`.
+- **Tip Top Shape could heal a Stat past its Injury-adjusted ceiling.** `healFromStaminaOverflow`'s
+  "is this Stat damaged" filter compared a die's `current_size` against its raw `locked_size` column;
+  a permanent Injury lowers the *real* ceiling below that raw value (the same distinction Perfect
+  Player's own seam already draws — see `perks/perfectPlayer.js`'s "measured against the
+  Injury-adjusted baseline" note), so a Stat already sitting exactly at its true, Injury-capped
+  maximum still read as damaged and got healed straight past what the Injury allows. Fixed by
+  measuring against `applyRankPenalty(lockedBaseline, injuryPenaltyFor(slot))`, same as Perfect
+  Player; a baseline the Injury itself incapacitates is treated as nothing left to give back.
+- **Path To Mastery: Durability only guarded one of the two doors damage reaches a Stat through.**
+  `applyAutoDamage` (an attack's own damage) already asked `perkAbsorbBreak` before letting a Stat go
+  out; `stepStat` — the door `self_stat_step`/`opponent_stat_step` move automations use instead —
+  did not, so an automation dealing stepped damage to its own user (or, via `opponent_stat_step`, to
+  someone else) could break a Stat Durability was supposed to protect, with no charge spent and no
+  announcement. Fixed by adding the identical check (and the identical "refuses to break — held at a
+  d4" Chat Log line, on the same "a Perk that stops damage has to be visible" doctrine
+  `applyAutoDamage` already follows) to `stepStat`.
+- **No Wasted Movements' own narration reported the pre-discount figure.** `imposeRecovery`
+  (`server/roundResolution.js`) already applied the Perk's -1-per-source discount to what actually
+  lands on the clock, but returned only the displacement `plan` — so `describeImposedRecovery` was
+  handed the caller's original, pre-discount `amount` and announced "+3 Recovery" for an extension
+  that had actually landed as 2. Worse case: a discount that erased the imposition entirely (reduced
+  to 0) still announced the full original figure for an effect that did not happen at all — a gap the
+  function's own comment already flagged (*"an imposition reduced to nothing did not happen"*) without
+  the caller honoring it. `imposeRecovery` now returns `{ plan, appliedTics }`, and both call sites
+  (`self_recovery`/`self_trip_recovery`, `opponent_recovery`/`opponent_trip_recovery`) narrate
+  `appliedTics` and skip the announcement entirely when it is 0.
+
+**Verified**: the full server suite (752/752, no regressions), `npm run lint` clean, and the QA's own
+two probe scripts re-run live against the fixed code — `deep-probes.mjs` (direct-import, mocked `io`)
+57/58 passing (the one remaining "failure" is the probe script itself reading its result Map by the
+old `move.id` convention rather than the new `declared_move_id` one — the equivalent live behavior is
+confirmed correct by both `socket-probes.mjs` below and this repo's own new unit test) and
+`socket-probes.mjs` (real socket.io-client against a running server) 72/72 passing, including all
+three of its previously-failing stamina assertions (`combo commit charges quoted total`,
+`Non-Committed refunds only amount spent`, `single discounted Jab refund equals actual cost`).
 
 ## Game mechanic — Attack Target (Change 001, implemented)
 **Status: fully built and wired end-to-end.** Every Move template now carries an **Attack Target**: which of the 6 abstract Stat slots (same vocabulary as a Roll — see Roll slot vocabulary under Moves & Tells above) its damage is allowed to land on. This is purely a *restriction* layered on top of Combat Automation's existing damage flow (4.1/4.2 above) — it doesn't touch the damage formula, Block/Dodge result math, or Full/Partial thresholds.

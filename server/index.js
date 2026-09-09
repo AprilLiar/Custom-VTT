@@ -90,7 +90,7 @@ import { effectiveFrames, idleStaminaRegenRate } from './perkAutomations.js';
 import {
   clearAllPerkState, perkAllowsRevealedDetail, perkStaminaCostDeltas, perkMoveFrameDeltas,
   perkWeaponOffers, takeWeaponOffer, perkSeesAttackHeight, perkSeesFeints,
-  perkBypassesStyleRequirement,
+  perkBypassesStyleRequirement, perkRollBonusTerms,
 } from './perkEngine.js';
 import { isAutomatedPerk, isManualPerk, perkDefinition } from './perks/index.js';
 import { validateCreation } from './characterCreation.js';
@@ -928,7 +928,14 @@ async function resolveStaminaCosts(characterId, moves, { knownDice = null } = {}
   const deltas = await perkStaminaCostDeltas({ characterId, moves, dice, injuries });
   const out = new Map();
   for (const move of moves) {
-    out.set(move.id, effectiveStaminaCost(move.stamina_cost, deltas.get(move.id) ?? 0));
+    // Keyed the same way perkStaminaCostDeltas keys its own output — by
+    // `declared_move_id` when the row has one, so two already-declared
+    // instances of the same move template each keep their own effective
+    // cost instead of the second collapsing onto the first (bugfix: this
+    // used to key by `move.id` alone, undercounting a repeated Punches in
+    // Bunches declaration at commit).
+    const key = move.declared_move_id ?? move.id;
+    out.set(key, effectiveStaminaCost(move.stamina_cost, deltas.get(key) ?? 0));
   }
   return out;
 }
@@ -944,9 +951,16 @@ async function getEffectiveStaminaCost(characterId, move) {
 // presses "done declaring" (combat:character_done_declaring commits them
 // all at once), so this is also exactly "how much is currently pending."
 //
+// Returns the per-declaration breakdown alongside the total: the commit
+// handler needs both — the total to move current_stamina by, and each row's
+// own figure to persist as declared_moves.stamina_committed_amount, so a
+// later refund (Interrupted, Forfeited, pushed into next round, Non-Committed
+// taken back) pays back exactly what this row actually cost instead of
+// re-deriving from the move template's raw stamina_cost.
+//
 // A fetch-then-fold rather than the SQL SUM it used to be, because the cost of
 // each row is now a per-character question rather than a column.
-async function getPendingStaminaCost(characterId) {
+async function pendingStaminaSpend(characterId) {
   // `dm.id` rides along so each row is priced against ITS OWN predecessor in the
   // queue rather than against whatever was declared last — see the bugfix note
   // in perkStaminaCostDeltas. Without it a combo is charged a different figure
@@ -956,9 +970,14 @@ async function getPendingStaminaCost(characterId) {
      WHERE dm.character_id = ? AND dm.stamina_committed = 0`,
     [characterId]
   );
-  if (!rows.length) return 0;
+  if (!rows.length) return { rows: [], costs: new Map(), total: 0 };
   const costs = await resolveStaminaCosts(characterId, rows);
-  return rows.reduce((sum, move) => sum + (costs.get(move.id) ?? 0), 0);
+  const total = rows.reduce((sum, move) => sum + (costs.get(move.declared_move_id ?? move.id) ?? 0), 0);
+  return { rows, costs, total };
+}
+
+async function getPendingStaminaCost(characterId) {
+  return (await pendingStaminaSpend(characterId)).total;
 }
 
 // Combat Automation overhaul: each pair now runs its own independent round/
@@ -6070,18 +6089,21 @@ io.on('connection', (socket) => {
         const die = staminaByChar.get(character.id);
         if (!die || die.status !== 'active') return null;
         const result = rollDie(die.current_size) + die.bonus;
-        const currentStamina = clamp(character.current_stamina + result, 0, character.max_stamina);
-        return { character, die, result, currentStamina };
+        return { character, die, result };
       })
       .filter(Boolean);
+    // Through adjustStamina now (bugfix, D4 — mirrors the sibling copy in
+    // roundResolution.js's startPairDeclaration) — it is the one place that
+    // measures Stamina going over the cap and hands the overflow to Tip Top
+    // Shape; the raw clamp+UPDATE this used to do let the round's own regen
+    // roll walk straight past the Perk every round. One call per character
+    // (distinct rows, so concurrent is safe), each doing its own UPDATE and
+    // character:updated emit — the batched write/emit above is folded into it.
     await Promise.all(
-      regenRolls.map(({ character, currentStamina }) =>
-        run('UPDATE characters SET current_stamina = ? WHERE id = ?', [currentStamina, character.id])
+      regenRolls.map(({ character, result }) =>
+        adjustStamina(io, character.id, result, { reason: 'round-start-regen' })
       )
     );
-    for (const { character, currentStamina } of regenRolls) {
-      io.emit('character:updated', { ...character, current_stamina: currentStamina });
-    }
     await Promise.all(
       regenRolls.map(({ character, die, result }) =>
         logRoll({
@@ -6124,8 +6146,27 @@ io.on('connection', (socket) => {
       // silently into `result`, so the chat log's dice-breakdown display
       // (raw die face + bonus/modifier = result) actually shows it instead
       // of misattributing it to the die face.
+      //
+      // **Perk roll bonuses apply too (bugfix, mirrors the sibling copy in
+      // roundResolution.js's startPairDeclaration).** Anime Protagonist,
+      // Cornered Animal, Never Tell Me the Odds and any other `rollBonus`-seam
+      // Perk read "every roll you make counts +N" — deliberately just the
+      // Perk seam, not the full getCombatRollBonusBreakdown, since that also
+      // consumes one-shot next-roll credits/debts meant for this fighter's
+      // next actual move roll and folds in terms (grapple, Punisher, Ground
+      // Finisher) that have never applied to Initiative.
+      const sideCounts = {
+        mine: eligibleParticipants.filter((x) => x.pair_index === p.pair_index && x.side === p.side).length,
+        theirs: eligibleParticipants.filter((x) => x.pair_index === p.pair_index && x.side !== p.side).length,
+      };
+      const perkTerms = await perkRollBonusTerms(p.character_id, {
+        reasonsToFight: p.reasons_to_fight || 0,
+        sideCounts,
+      });
+      const perkBonus = perkTerms.reduce((sum, t) => sum + t.amount, 0);
       const modifier =
-        (p.reasons_to_fight || 0) -
+        (p.reasons_to_fight || 0) +
+        perkBonus -
         computeInitiativeOverflowPenalty({
           blockedUntilTic: blockedUntilByChar.get(p.character_id) ?? null,
           nextRoundStartTic: nextRoundStartTicByPair.get(p.pair_index),
@@ -6537,8 +6578,8 @@ io.on('connection', (socket) => {
     // character now rather than batched per side, since declaring itself is.
     // Through the same resolver the picker and the affordability check use, so
     // what is actually spent is the number the player was shown.
-    const [pending, character] = await Promise.all([
-      getPendingStaminaCost(characterId),
+    const [{ rows: pendingRows, costs: pendingCosts, total: pending }, character] = await Promise.all([
+      pendingStaminaSpend(characterId),
       getCharacter(characterId),
     ]);
     if (character && pending !== 0) {
@@ -6547,9 +6588,15 @@ io.on('connection', (socket) => {
       io.emit('character:updated', { ...character, current_stamina: newStamina });
     }
     await Promise.all([
-      run('UPDATE declared_moves SET stamina_committed = 1 WHERE character_id = ? AND stamina_committed = 0', [
-        characterId,
-      ]),
+      // Each row's own effective cost is stamped on as stamina_committed_amount
+      // here, not just the flag — every later refund path reads it back instead
+      // of the move template's raw stamina_cost (see the column's own comment).
+      ...pendingRows.map((row) =>
+        run('UPDATE declared_moves SET stamina_committed = 1, stamina_committed_amount = ? WHERE id = ?', [
+          pendingCosts.get(row.declared_move_id ?? row.id) ?? 0,
+          row.declared_move_id,
+        ])
+      ),
       run('UPDATE combat_participants SET declared_this_round = 1 WHERE character_id = ?', [characterId]),
     ]);
 
