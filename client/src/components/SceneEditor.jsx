@@ -28,7 +28,22 @@ import { BACKGROUND_FIT_OPTIONS, DEFAULT_BACKGROUND_FIT } from '../lib/backgroun
 export default function SceneEditor({ scene, onClose }) {
   const [name, setName] = useState(scene.name);
   const [picture, setPicture] = useState(null);
-  const [backgroundFit, setBackgroundFit] = useState(scene.background_fit || DEFAULT_BACKGROUND_FIT);
+  // **Best Fit, not Cover, for a Scene that has no backdrop yet (decided).**
+  // `scenes.background_fit` defaults to 'cover' at the schema level (every
+  // Scene needs SOME value, and Cover was the only mode that existed before
+  // this setting shipped), so `scene.background_fit` is never actually
+  // falsy — reading it straight would always show "Cover" pre-selected,
+  // schema default or not. Read only once a backdrop already exists: at
+  // that point it's a real choice (the GM's own, or Cover from before this
+  // setting existed) and has to be respected as-is, never silently swapped
+  // out from under an already-placed backdrop. A Scene with nothing
+  // uploaded yet has no real choice to respect, so the picker opens on
+  // Best Fit — the mode that shows the whole image regardless of how a
+  // GM's own screen happens to be shaped, which is the safer thing to see
+  // first the moment there IS something to upload.
+  const [backgroundFit, setBackgroundFit] = useState(
+    scene.image_data ? scene.background_fit || DEFAULT_BACKGROUND_FIT : 'contain'
+  );
   const fileRef = useRef(null);
 
   const preview = picture

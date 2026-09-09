@@ -4307,6 +4307,20 @@ tests: a GM's full upload → rename → delete round trip, a Player uploading t
 (cross-checked against the REST read, not just the DOM), and the updated empty-state assertions
 above. All passing across the same three device projects as Phases 1-2.
 
+**"Copy picture from profile" (decided, new; implemented).** A second tile beside `+ Add picture`,
+character-only (a Temp NPC has no portrait to copy from) and shown only when that character actually
+has one. `scene_picture:copy_from_profile` (`{ characterId }`, same `mayWriteScenePicture` gate as
+`scene_picture:create`) reads `characters.image_data`/`image_mime_type` straight off the row and
+inserts it as a new Scene Picture named "Profile" — no client-side re-upload, re-resize, or
+re-encode, since the bytes already exist server-side. **Copies the FULL portrait, not the zoomed-in
+view the sheet shows elsewhere**: a character's crop (`crop_x/crop_y/crop_w/crop_h`) is a
+display-only transform `CroppedImage.jsx` applies at render time (see that file's own comment) — the
+stored `image_data` is always the whole, uncropped upload `fileToPortrait` produced, so reading it
+straight through is already "the full version," with nothing to undo. Verified live:
+`scripts/playtest-scene-copy-profile-picture.mjs` (8 checks) — the copy is byte-identical to the
+portrait regardless of a crop set on it, named "Profile," a Player may copy their own, may NOT copy
+another character's, the GM may copy anyone's, and a character with no portrait yields nothing.
+
 ### Phase 4 (implemented) — Scenes, activation, and the force-navigate cut
 
 `scene_folder:create/rename/delete` and `scene:create/update/set_folder/delete`, structurally
@@ -4989,6 +5003,38 @@ height exactly, width free) and Horizontal Fit (match width exactly, height free
   exactly while the free axis auto-scales from the image's REAL natural size); `scene:update`
   accepting `backgroundFit` alongside a fresh image upload in the same call; the schema-upgrade path
   against a hand-crafted pre-feature `scenes` table.
+- **Best Fit, not Cover, is what a GM sees pre-selected the first time a Scene gets a backdrop
+  (decided, revised).** `scenes.background_fit` defaults to `'cover'` at the schema level — every
+  Scene needs SOME stored value, and Cover was the only mode that existed before this setting shipped
+  — so `scene.background_fit` was never actually falsy, and `SceneEditor.jsx`'s own `<select>` always
+  opened on "Cover" even for a Scene with nothing uploaded yet to have an opinion about. Its initial
+  state now reads the stored value only once a backdrop already exists (`scene.image_data` truthy) —
+  at that point it's a real choice, the GM's own or Cover from before this setting existed, and has to
+  be respected exactly as stored; a Scene with no backdrop yet has no real choice to respect, so the
+  picker opens on Best Fit instead, the mode least likely to hide part of the art on an odd-shaped
+  screen. Purely the dialog's own initial React state — nothing about `scenes.background_fit`'s own
+  schema default, `DEFAULT_BACKGROUND_FIT`, or what an EXISTING Scene already has changes.
+- **Bugfix: a manually-placed figure moved DOWN from its default position never reached Players;
+  moving it UP always did.** Root cause was upstream of any of the fit-mode math above: a `data:` URI
+  backdrop (every Scene's own background is one) can finish decoding before React attaches the
+  `onLoad` listener that captures its natural size — no network round trip creates the usual gap — and
+  when that race is lost, the browser never fires `load` again for that same `src`, so `imageNatural`
+  stayed stuck at `{width:0, height:0}` for the rest of that backdrop's life. `stageToImageFraction`
+  silently falls back to a plain stage-box fraction whenever the natural size is unknown, and because
+  an auto-placed figure's own default position already sits exactly at the stage's bottom edge, ANY
+  downward drag from there instantly computed a fraction past 1 under that fallback and got clamped
+  right back to where it started — while an upward drag still had the whole box above it to work with,
+  so it always looked fine. `ScenePage.jsx` now also checks the backdrop `<img>`'s own `.complete`/
+  `.naturalWidth` once per `backgroundSrc` change (a ref, read in a `useEffect` right after the
+  existing reset-to-zero effect) and sets `imageNatural` from that if the image turns out to already
+  be loaded by then — `onLoad` still handles a genuinely fresh load; this only catches the race.
+  Verified live: reproduced with a real (non-degenerate-aspect-ratio) generated PNG backdrop under a
+  headless GM browser session — `imageNaturalWidth/Height` read `0` and a 150px downward drag produced
+  no visible movement (`pos_y` landing exactly at the clamp ceiling, `1`) before the fix; after it, a
+  sequence of alternating up/down drags all produced proportional, non-clamped `pos_y` values matching
+  their actual pixel distance in both directions. `scripts/playtest-scene-drag.mjs` (server-only, no
+  backdrop image involved) still passes unchanged — this bug was entirely in the client's own natural-
+  size capture, never in the server-enforced write path that script covers.
 
 **Timestamp tool (decided, new; revised — real dates, a compact 7-column grid, "Current").** A
 GM-exclusive corner tool for narrative time markers played as a table-wide beat: dims the Scene 90%

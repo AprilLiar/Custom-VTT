@@ -26,7 +26,7 @@ import Thumb from './Thumb.jsx';
 // and cropping a transparent character cutout the way a portrait photo
 // gets cropped doesn't make sense — the art already arrives framed the way
 // it's meant to show on the stage.
-export default function ScenePicturesEditor({ ownerType, ownerId, canEdit = false }) {
+export default function ScenePicturesEditor({ ownerType, ownerId, canEdit = false, hasPortrait = false }) {
   const [pictures, setPictures] = useState(null);
   const [busy, setBusy] = useState(false);
   const fileRef = useRef(null);
@@ -98,6 +98,15 @@ export default function ScenePicturesEditor({ ownerType, ownerId, canEdit = fals
     if (name?.trim()) socket.emit('scene_picture:update', { scenePictureId: picture.id, name: name.trim() });
   };
 
+  // The FULL profile picture, not the zoomed-in crop this same character's
+  // portrait shows elsewhere — the server reads characters.image_data
+  // directly (see scene_picture:copy_from_profile's own comment: a crop is
+  // display-only, the stored bytes are always the whole upload), so
+  // nothing to process or upload from here at all.
+  const copyFromProfile = () => {
+    socket.emit('scene_picture:copy_from_profile', { characterId: ownerId });
+  };
+
   const remove = (picture) => {
     if (window.confirm(`Delete this Scene Picture${picture.name ? ` ("${picture.name}")` : ''}?`)) {
       socket.emit('scene_picture:delete', { scenePictureId: picture.id });
@@ -150,6 +159,16 @@ export default function ScenePicturesEditor({ ownerType, ownerId, canEdit = fals
               className="flex h-20 flex-col items-center justify-center gap-1 panel-cut-sm border border-dashed border-zinc-700 text-[10px] font-bold uppercase tracking-wide text-zinc-500 hover:border-brand-600 hover:text-zinc-200 disabled:opacity-40"
             >
               {busy ? '…' : '+ Add picture'}
+            </button>
+          )}
+          {canEdit && ownerType === 'character' && hasPortrait && (
+            <button
+              type="button"
+              onClick={copyFromProfile}
+              title="Uses the full portrait, not the zoomed-in crop shown elsewhere"
+              className="flex h-20 flex-col items-center justify-center gap-1 p-1 text-center panel-cut-sm border border-dashed border-zinc-700 text-[10px] font-bold uppercase tracking-wide text-zinc-500 hover:border-brand-600 hover:text-zinc-200"
+            >
+              Copy picture from profile
             </button>
           )}
         </div>
