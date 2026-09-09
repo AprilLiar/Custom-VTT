@@ -147,11 +147,27 @@ gm.emit('stage:resize_summon', { summonId: aliceSummon.id, scale: 999 });
 await sleep(300);
 const clamped = await summonOf(alice.id, null);
 check(
-  'posX=5 clamped to 1, posY=-3 clamped to 0',
-  clamped.pos_x === 1 && clamped.pos_y === 0,
+  'posX=5 clamped to 2, posY=-3 clamped to -1 (SUMMON_POS_MIN/MAX)',
+  clamped.pos_x === 2 && clamped.pos_y === -1,
   JSON.stringify(clamped)
 );
 check('scale=999 clamped to 4', clamped.scale === 4, JSON.stringify(clamped));
+
+// **Outside the backdrop's own rectangle is a legal placement (bugfix).**
+// The bound used to be [0, 1] — the artwork's own edges — which read as
+// obviously correct and silently made dragging a figure DOWN a no-op on an
+// ordinary landscape Scene: `cover` scales such a backdrop until its bottom
+// edge sits exactly on the stage's, which is where an auto-placed figure
+// already stands, so every downward drag was clamped straight back to where
+// it started. Anything in [-1, 2] now survives the round trip untouched.
+gm.emit('stage:reposition_summon', { summonId: aliceSummon.id, posX: 0.5, posY: 1.3 });
+await sleep(300);
+const belowArtwork = await summonOf(alice.id, null);
+check(
+  'posY=1.3 (below the backdrop\'s own bottom edge) is stored as-is, not clamped to 1',
+  belowArtwork.pos_y === 1.3,
+  JSON.stringify(belowArtwork)
+);
 
 console.log(failures ? `\n${failures} FAILED` : '\nALL PASSED');
 gm.close();
