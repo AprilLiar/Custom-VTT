@@ -5,8 +5,9 @@ import express from 'express';
 import { createServer } from 'node:http';
 import { Server } from 'socket.io';
 import {
-  db, all, one, run, readMany, writeMany, initDb,
+  all, one, run, readMany, writeMany, initDb,
   syncReplica, syncOnce, syncHealth, startSyncLoop, replicaMode, SYNC_SECONDS,
+  bootLog, connectDb, probePrimary, PROBE_TIMEOUT_MS,
 } from './db.js';
 import { gateChatLine, gatesCrossed, isValidPip, visibleGates } from './counterGates.js';
 import {
@@ -118,6 +119,36 @@ const PORT = process.env.PORT || 3001;
 const pendingRollChecks = new Map();
 
 const app = express();
+
+// **The port opens before the database does, and everything answers 503 until
+// the database boot finishes (bugfix — Render deploys that timed out having
+// printed nothing).**
+//
+// Booting talks to the Turso primary through a synchronous native call that
+// cannot be interrupted (see `connectDb` in db.js). While it runs, this
+// process serves nothing — and it used to not be listening either, so Render's
+// port scan found nothing to scan, gave up, and killed the container before a
+// single buffered log line was ever flushed. Listening first turns that silent
+// timeout into an ordinary, readable startup: the port is open in milliseconds,
+// the log says what boot is waiting on, and `/api/health` reports 503 until the
+// database is genuinely ready, so Render's health check still refuses to call a
+// half-booted deploy live.
+//
+// Socket.io is attached at the end of boot rather than here, so a client that
+// connects during startup meets a plain HTTP 503 — a transport error the
+// client's own reconnection loop retries automatically — instead of a live
+// socket whose handlers would query tables that do not exist yet.
+let bootState = 'starting';
+let bootDetail = 'starting up';
+app.use((_req, res, next) => {
+  if (bootState === 'ready') return next();
+  res
+    .status(503)
+    .set('Retry-After', '5')
+    .type('text/plain')
+    .send(`Dogfight is still starting up (${bootDetail}). Retry in a moment.`);
+});
+
 app.use(express.json({ limit: '3mb' })); // portraits arrive as base64 JSON
 const httpServer = createServer(app);
 // Exported so a future server/perkAutomations.js PERK_HOOKS entry can
@@ -125,7 +156,8 @@ const httpServer = createServer(app);
 // maxHttpBufferSize raised from Socket.io's 1MB default: chat GIFs are sent
 // raw/unresized (to keep their animation) up to a 4MB client-side cap, which
 // is ~5.3MB once base64-encoded — the default would reject that payload.
-export const io = new Server(httpServer, { maxHttpBufferSize: 8 * 1024 * 1024 });
+// Constructed detached from httpServer on purpose; see the boot gate above.
+export const io = new Server({ maxHttpBufferSize: 8 * 1024 * 1024 });
 
 // ---------- shared lookups ----------
 
@@ -1556,7 +1588,7 @@ const wrap = (fn) => (req, res) =>
 app.get('/api/health', async (_req, res) => {
   try {
     const started = Date.now();
-    await db.execute('SELECT 1');
+    await run('SELECT 1');
     // The sync half is the part worth being able to read from outside. It is
     // the one thing about this deployment that cannot be reproduced locally
     // (offline writes need a real syncUrl), and `lastSyncMs` doubles as the
@@ -6904,6 +6936,58 @@ app.get('*', (_req, res) => {
   res.sendFile(path.join(clientDist, 'index.html'));
 });
 
+// **Listen first.** Everything below this line can block the event loop for an
+// unbounded time (see the boot gate near the top of this file), and a process
+// that is not listening while it does so is indistinguishable, from outside,
+// from a process that has died — which is exactly how the Render timeouts
+// presented. Requests answer 503 until `bootState` flips at the very end.
+httpServer.listen(PORT, () => {
+  // Against a plain local file the boot below finishes before this callback
+  // ever runs, and announcing a 503 window that has already closed would read
+  // as a fault rather than as progress.
+  bootLog(
+    bootState === 'ready'
+      ? `Dogfight server listening on port ${PORT}`
+      : `Dogfight server listening on port ${PORT} — answering 503 until the database boot finishes`
+  );
+});
+
+// **Is the primary actually there? Asked over HTTP, where the question can
+// still be given up on.**
+//
+// The two calls after this one — opening the replica and syncing it — are
+// synchronous native calls into libSQL. If the primary does not answer, they
+// do not fail and they do not time out; they simply never return, and no
+// `Promise.race`, `setTimeout` or signal handler can reach them, because none
+// of them get a turn on the event loop while a native call is running. A
+// deploy that hits that state hangs until Render kills it, having printed
+// nothing at all.
+//
+// `fetch` has none of that problem, so the reachability question is asked
+// there first, with a real abort. An unreachable primary now costs ten seconds
+// and an explanation instead of forever and silence — and exiting non-zero is
+// the right outcome for Render besides: a failed deploy leaves the previous
+// one serving, where a hung one leaves nothing.
+if (replicaMode) {
+  bootDetail = 'checking that the Turso primary is reachable';
+  const probe = await probePrimary();
+  if (probe.ok === false) {
+    console.error(
+      `Could not reach the Turso primary at ${probe.host} after ${probe.ms}ms ` +
+        `(${probe.timedOut ? `no answer within ${PROBE_TIMEOUT_MS}ms` : probe.error}), ` +
+        'so the server is stopping rather than hanging on a connection that never completes.\n' +
+        'Check that TURSO_DATABASE_URL points at a live database, that the database has not been ' +
+        'paused or archived for inactivity, and that TURSO_AUTH_TOKEN has not expired.\n' +
+        'Set TURSO_PROBE_TIMEOUT_MS=0 to skip this check (the server will then hang instead of ' +
+        'exiting if the primary is genuinely unreachable).'
+    );
+    process.exit(1);
+  }
+  if (probe.ok) {
+    bootLog(`Database: primary ${probe.host} answered in ${probe.ms}ms (HTTP ${probe.status})`);
+  }
+}
+
 // Pull the embedded replica up to date before touching the schema — see
 // syncReplica in db.js for why an unsynced replica must never reach initDb.
 // A no-op (and instant) when running against a plain local file.
@@ -6914,6 +6998,9 @@ app.get('*', (_req, res) => {
 // three into the primary.
 let syncMs = null;
 try {
+  bootDetail = 'opening the local replica of the database';
+  connectDb();
+  bootDetail = 'syncing the local replica from the Turso primary';
   syncMs = await syncReplica();
 } catch (err) {
   console.error(
@@ -6990,6 +7077,7 @@ if (
   process.on('SIGINT', () => flushAndExit('SIGINT'));
 }
 
+bootDetail = 'creating and migrating tables';
 await initDb();
 // Chat is intentionally ephemeral — see chat:clear below — and clearing it
 // on every boot doubles as clearing it between sessions on Render's free
@@ -6999,12 +7087,16 @@ await run('DELETE FROM chat_log');
 // sleep or cold-start mid-round; any pair left mid-resolution picks up from
 // its own resolved_through_tic and runs to completion (or back to a
 // genuine Dodge/conflict pause, both of which are DB-durable and so
-// survived the restart intact). Deliberately not awaited before listen():
-// a pair that can't finish resolving must not stop the server from coming
-// up, and the sweep needs no client to be connected to make progress.
+// survived the restart intact). Deliberately not awaited: a pair that can't
+// finish resolving must not hold the server in its booting state, and the
+// sweep needs no client to be connected to make progress.
 resumeAllPairsOnBoot(io).catch((err) => {
   console.error('Failed to resume in-flight round resolutions on boot:', err);
 });
-httpServer.listen(PORT, () => {
-  console.log(`Dogfight server listening on port ${PORT}`);
-});
+
+// Open for business: the 503 gate stands down and sockets are attached to the
+// already-listening HTTP server. Both in this order, so the first client to
+// get a socket through can never beat the gate.
+bootState = 'ready';
+io.attach(httpServer);
+console.log(`Dogfight server ready on port ${PORT}`);

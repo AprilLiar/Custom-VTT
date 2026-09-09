@@ -16,7 +16,7 @@ On every fresh page load, a modal asks who's playing: a **GM** button (unchanged
 - **Backend:** Node.js + Express — also serves the built frontend (single deployable app)
 - **Real-time:** Socket.io
 - **Database:** Turso — free, hosted, SQLite-compatible (libSQL), no credit card required. Used instead of a local SQLite file because Render's free tier has no persistent disk; same SQL, same schema. **Accessed through an embedded replica with offline writes, so neither reads nor writes cross the network on the request path — the local file is the truth of the moment and the primary is an asynchronous copy of it, pushed every 10s (decided, new — see Database round-trips below).**
-- **Hosting:** Render — free web service tier, no credit card required. Supports WebSockets natively while active. Tradeoff: the free tier sleeps after inactivity, so the first connection after a quiet period takes ~30-60 seconds to wake up (a one-time delay at the start of a session, not an ongoing issue).
+- **Hosting:** Render — free web service tier, no credit card required. Supports WebSockets natively while active. Tradeoff: the free tier sleeps after inactivity, so the first connection after a quiet period takes ~30-60 seconds to wake up (a one-time delay at the start of a session, not an ongoing issue). Configured by `render.yaml` (build/start commands, `healthCheckPath: /api/health`, the two `TURSO_*` secrets). **The Node version is pinned** — `.node-version` = `22`, matching `engines.node` — because an open `>=20` range let Render install a major version the tests had never run on. **The server listens before it opens the database** and answers `503` until boot finishes, so a slow or unreachable primary can never present as a service that opened no port at all — see Phase 5.4 under Database round-trips.
 - **Access:** one shared URL, no auth, no per-player restrictions
 - **Mobile:** installable PWA (manifest + service worker, see Mobile Readiness below); Playwright (`@playwright/test`) drives a 5-project mobile device matrix (`playwright.config.js`, `e2e-mobile/`) alongside the existing `node --test` server suite
 
@@ -368,6 +368,59 @@ the driver. If it were ever dropped upstream, every write would silently go back
 trip, every test would still pass, and the only symptom would be a game that feels slow again.
 Turso's own documentation calls the offline-sync story beta — that, rather than the ten seconds, is
 the standing risk to watch.
+
+**Phase 5.4 — booting hung on the primary, and said nothing (bugfix, shipped).** A Render deploy
+built fine, ran `npm start`, and then printed **nothing at all** — no log line, no error, no exit —
+until Render gave up eight minutes later with "No open ports detected… Timed Out". Nothing about the
+deploy said which of the dozens of things a boot does had stalled.
+
+**The cause is the same synchronous binding Phase 5.1 is about, hit one step earlier.**
+`createClient` ran at module scope in `server/db.js`, and with a `syncUrl` its constructor performs a
+blocking `PullDb`. Verified directly against a blackholed address: against a primary that does not
+answer, **the constructor never returns** — no throw, no timeout, no output, indefinitely. And
+because ES module imports are evaluated before a single statement of `server/index.js` runs, that
+hang happened before the first `console.log` and before `httpServer.listen`. A process that is not
+listening and has printed nothing is, from outside, indistinguishable from a dead one.
+
+Three changes, each addressing a different half of "invisible":
+
+- **The port opens first.** `httpServer.listen(PORT)` now runs *before* any database work, and an
+  Express gate answers every request `503 Service Unavailable` (with a `Retry-After` and a plain
+  sentence naming the current boot step) until boot completes. Socket.io is constructed **detached**
+  and `io.attach(httpServer)` is called only at the end of boot, so a client connecting during
+  startup meets a plain HTTP 503 — a transport error its own reconnection loop retries — rather than
+  a live socket whose handlers would query tables that do not exist yet. `healthCheckPath:
+  /api/health` (see `render.yaml`) sits behind the same gate, so Render still refuses to call a
+  half-booted deploy live; what changes is that the port scan now finds a port.
+- **An interruptible probe stands in for the un-interruptible call.** Before `connectDb()`, boot
+  `fetch`es the primary's `/health` with an `AbortSignal.timeout` (10s, `TURSO_PROBE_TIMEOUT_MS`, `0`
+  disables). `fetch` is ordinary async I/O and *can* be abandoned; the libSQL call cannot, because no
+  `Promise.race`, `setTimeout` or signal handler gets a turn on the event loop while a native call is
+  running. **Any HTTP response counts as reachable**, 401 and 404 included — the question is whether
+  a connection completes, not whether the URL is right. Only a transport failure is a negative, and
+  it now costs ten seconds and a named cause (paused/archived database, expired token, wrong URL)
+  followed by `process.exit(1)`. Exiting is also the better outcome for Render: a *failed* deploy
+  leaves the previous one serving, where a *hung* one leaves nothing.
+- **Boot lines are written with `fs.writeSync(1, …)`, not `console.log`.** Under Render stdout is a
+  pipe, and Node writes to a pipe asynchronously — the bytes wait for the event loop. A `console.log`
+  placed immediately before a call that blocks the event loop forever is therefore never flushed: the
+  process hangs holding its own explanation. Only the handful of boot lines that sit next to a
+  blocking call use it (`bootLog` in `db.js`); everything else logs normally.
+
+**The Node version is pinned too** (`.node-version` = `22`, `engines.node` = `22.x`). `>=20` let
+Render install Node 26 against a codebase developed and tested on 22, with `@libsql/client`'s native
+bindings restored from a build cache rather than rebuilt. That was never proven to be a cause — an
+ABI mismatch throws rather than hangs — but a deploy is the wrong place to discover a Node version
+nobody has run the tests on.
+
+`server/test/dbBoot.test.js` pins both halves: that importing `db.js` against an unroutable primary
+completes without connecting, and that the probe gives up on its own budget. Neither is observable
+from inside a healthy app, and a regression in either is silent until the next deploy against a slow
+primary.
+
+**The standing lesson, sharper than 5.1's.** *Check what blocks before putting it on a timer* was
+half of it. The other half: **a boot step that can block must not be able to block silently.** Open
+the port, name the step, and make the thing you cannot interrupt be preceded by something you can.
 
 ## Game mechanic — Dice Pools (Core Stats tab)
 Each character has 3 fixed dice pools, always the same slot names for every character:
