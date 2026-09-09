@@ -1513,6 +1513,24 @@ const CROP_COLUMNS = 'crop_x = ?, crop_y = ?, crop_w = ?, crop_h = ?';
 // whatever the Scene already had for anything outside this set.
 const VALID_BACKGROUND_FITS = new Set(['cover', 'contain', 'fill', 'fit-height', 'fit-width']);
 
+// **How far outside the backdrop's own rectangle a summon may be placed
+// (bugfix).** `scene_summons.pos_x`/`pos_y` are fractions of the BACKDROP
+// IMAGE, and this used to clamp them to `[0, 1]` — "somewhere on the
+// artwork", which sounds right and quietly broke dragging a figure DOWN on
+// an ordinary Scene. A landscape backdrop in a landscape stage is scaled by
+// `cover` until its own height matches the stage's exactly, so the image's
+// bottom edge IS the stage's bottom edge — where an auto-placed figure
+// already stands. Every downward drag therefore computed a fraction past
+// the ceiling and was clamped back to where it started, while upward drags
+// had the whole stage to move through; under Best Fit/`contain` (a new
+// Scene's default) the letterboxed part of the stage was unreachable for
+// the same reason. One whole image-dimension of slack past each edge is far
+// more than a real placement needs while still bounding what a hand-sent
+// event can store. Mirrored by POS_MIN/POS_MAX in
+// client/src/components/StageRoster.jsx.
+const SUMMON_POS_MIN = -1;
+const SUMMON_POS_MAX = 2;
+
 function cropValues(payload) {
   const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
   const x = num(payload?.cropX);
@@ -4630,8 +4648,8 @@ io.on('connection', (socket) => {
     const ownerId = summon.character_id ?? summon.temp_npc_id;
     if (!mayWriteScenePicture(viewer, ownerType, ownerId)) return;
     await run('UPDATE scene_summons SET pos_x = ?, pos_y = ? WHERE id = ?', [
-      clamp(Number(posX), 0, 1),
-      clamp(Number(posY), 0, 1),
+      clamp(Number(posX), SUMMON_POS_MIN, SUMMON_POS_MAX),
+      clamp(Number(posY), SUMMON_POS_MIN, SUMMON_POS_MAX),
       summon.id,
     ]);
     await emitStageUpdated();

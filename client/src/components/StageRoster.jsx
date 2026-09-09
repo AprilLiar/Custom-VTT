@@ -188,6 +188,35 @@ const EXIT = { opacity: 0, scale: 0.85 };
 
 const clamp = (value, lo, hi) => Math.min(hi, Math.max(lo, value));
 
+// **How far outside the backdrop's own rectangle a figure may be placed
+// (bugfix).** `pos_x`/`pos_y` are fractions of the BACKDROP IMAGE, so
+// `[0, 1]` means "somewhere on the artwork" — which sounds like the right
+// bound and is not: it made dragging a figure DOWN do nothing at all on a
+// perfectly ordinary Scene. A landscape backdrop in a landscape stage is
+// scaled by `cover` until its own height matches the stage's exactly
+// (`renderedHeight === containerHeight`, `offsetY === 0`), so the image's
+// bottom edge IS the stage's bottom edge — and an auto-placed figure
+// already stands exactly there. `fy` was therefore already 1.0 before the
+// drag began: every downward drag computed a fraction past the ceiling and
+// clamped straight back, while upward drags had the whole stage to move
+// through. "Moving a character down does nothing, moving up is fine" was
+// this, not a sync fault.
+//
+// Under Best Fit/`contain` — now the default for a new Scene's backdrop —
+// the same bound bites from the other side: the image is letterboxed, so
+// part of the visible stage lies OUTSIDE `[0, 1]` and could not be reached
+// at all. A figure standing "in front of" the artwork, feet below its
+// bottom edge, is an ordinary thing to want either way.
+//
+// One whole image-dimension of slack past each edge: far more than any
+// real placement needs (a figure a full backdrop-height below the artwork
+// is well off every screen), while still bounding what a hand-sent event
+// can store. Mirrored by SUMMON_POS_MIN/MAX in server/index.js — the
+// server is the real gate, this only keeps the client from sending
+// something it knows will be rejected.
+const POS_MIN = -1;
+const POS_MAX = 2;
+
 // Corner-button geometry, shared between ControlsOverlay's own `btnClass`
 // (CSS `h-8 w-8` = 32px) and the `position: fixed` coordinates it computes
 // from a figure's live rect — kept in one place so the two can never drift
@@ -400,8 +429,8 @@ export default function StageRoster({
         });
         socket.emit('stage:reposition_summon', {
           summonId: g.summonId,
-          posX: clamp(fx, 0, 1),
-          posY: clamp(fy, 0, 1),
+          posX: clamp(fx, POS_MIN, POS_MAX),
+          posY: clamp(fy, POS_MIN, POS_MAX),
         });
       } else {
         const nextScale = clamp(g.startScale * ((g.lastHeightPx ?? g.startHeightPx) / g.startHeightPx), 0.25, 4);

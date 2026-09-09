@@ -5035,6 +5035,40 @@ height exactly, width free) and Horizontal Fit (match width exactly, height free
   their actual pixel distance in both directions. `scripts/playtest-scene-drag.mjs` (server-only, no
   backdrop image involved) still passes unchanged — this bug was entirely in the client's own natural-
   size capture, never in the server-enforced write path that script covers.
+- **Bugfix, the SECOND half of the same report: a figure could not be dragged DOWN at all, and the
+  drop never survived a reload.** The natural-size race above was real and worth fixing, but it was
+  not the whole story — the report persisted after it shipped, with the telling detail that GM and
+  Player now AGREED, on a position that was not where the GM had dropped the figure. `pos_x`/`pos_y`
+  were clamped to `[0, 1]`: fractions of the backdrop image, so the bound reads as "somewhere on the
+  artwork" and sounds obviously right. It is not. **A landscape backdrop in a landscape stage is
+  scaled by `cover` until its own HEIGHT matches the stage's exactly** (`renderedHeight ===
+  containerHeight`, so `offsetY === 0`) — the image's bottom edge IS the stage's bottom edge, and an
+  auto-placed figure already stands precisely there. Its `fy` was therefore already `1.0` before any
+  drag began: every downward drag computed a fraction past the ceiling, was clamped straight back,
+  and stored `pos_y = 1` — while upward drags had the entire stage to travel through. That asymmetry
+  is the whole "moving down does nothing, moving up is fine" report, and the clamped value being
+  what persisted is why a reload "reset" the figure for the GM too. Under Best Fit/`contain` (now a
+  new Scene's default) the same bound bites from the other side: the letterboxed part of the stage
+  lies outside `[0, 1]` and could not be reached at all.
+  - **Fixed by widening the bound to `[-1, 2]`** — one whole image-dimension of slack past each
+    edge (`SUMMON_POS_MIN`/`SUMMON_POS_MAX` in server/index.js, mirrored as `POS_MIN`/`POS_MAX` in
+    StageRoster.jsx, the same mirror-with-a-cross-reference convention `VALID_BACKGROUND_FITS`
+    already uses). Far more than any real placement needs — a figure a full backdrop-height below
+    the artwork is well off every screen — while still bounding what a hand-sent event can store.
+    A figure standing "in front of" the scene with its feet below the artwork's bottom edge is an
+    ordinary thing to want, and is now expressible.
+  - **The earlier verification missed this because of the test image's own shape.** The natural-size
+    fix was proven against a synthetic 800x1400 PORTRAIT backdrop, which `cover` overflows massively
+    on a landscape stage (`renderedHeight` 2240 against a 800px box) — leaving ~719px of downward
+    headroom and hiding the clamp entirely. Re-run against a 1600x900 landscape backdrop (the shape
+    a real Scene actually uses) the bug reproduced immediately and exactly: `pos_y=1` after every
+    downward drag, `0.85` after an upward one. Worth remembering as a fixture lesson in its own
+    right — the aspect ratio of a test backdrop is load-bearing for anything touching `cover`.
+  - **Verified**: the same landscape reproduction after the fix — a 220px downward drag moves the
+    figure the full 220px and stores `pos_y=1.275`; **reloading the GM's own page leaves it exactly
+    where it was dropped (0px drift)**, and a Player's window agrees to the pixel.
+    `scripts/playtest-scene-drag.mjs` gained a check that a `pos_y` past the artwork's own bottom
+    edge survives the round trip unclamped, and its existing clamp check now pins the new bounds.
 
 **Timestamp tool (decided, new; revised — real dates, a compact 7-column grid, "Current").** A
 GM-exclusive corner tool for narrative time markers played as a table-wide beat: dims the Scene 90%
