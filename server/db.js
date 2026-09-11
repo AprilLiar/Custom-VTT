@@ -1,5 +1,6 @@
 import { createClient } from '@libsql/client';
 import { writeSync } from 'node:fs';
+import { IMAGE_COLUMNS, hashImageData } from './images.js';
 import { STYLES, COUNTER_BONUS, DEFEATS } from './ruleset.js';
 import { PERK_REGISTRY } from './perks/index.js';
 
@@ -613,6 +614,58 @@ function invalidateSchemaSnapshot() {
 async function ensureCropColumns(table) {
   for (const axis of ['x', 'y', 'w', 'h']) {
     await ensureColumn(table, `crop_${axis}`, 'REAL');
+  }
+}
+
+// **A cache key for every stored picture (bandwidth).** See server/images.js
+// for why the URL carries a content hash rather than relying on an ETag. Ten
+// columns across nine tables, derived from the same registry the router uses so
+// the two can never disagree about which tables hold an image.
+//
+// `image_hash` and `vitruvian_image_hash` appear in no existing CREATE TABLE
+// text — including inside a comment, which is the trap ensureColumn's own note
+// warns about — so both are safe to detect by word boundary. They do not
+// collide with each other either: `\bimage_hash\b` cannot match inside
+// `vitruvian_image_hash`, because the character before it is an underscore and
+// therefore not a word boundary.
+async function ensureImageHashColumns() {
+  for (const { table, hash } of IMAGE_COLUMNS) await ensureColumn(table, hash, 'TEXT');
+}
+
+// Fill in the hash for every picture stored before the column existed.
+//
+// Runs inside initDb, which server/index.js awaits **before** it flips
+// bootState to 'ready' — so no request is ever served against a row this has
+// not reached. On a database that is already current every one of these
+// queries returns nothing, which against the embedded replica is a local scan
+// of a table with tens of rows: cheaper than the sqlite_master read this boot
+// already makes.
+//
+// `chat_log` is deliberately skipped: index.js deletes the whole log on every
+// boot, so a chat row written before this column existed cannot survive long
+// enough to be read.
+async function backfillImageHashes() {
+  for (const { table, data, hash } of IMAGE_COLUMNS) {
+    if (table === 'chat_log') continue;
+    // **Check the column is really there before selecting it.** Most of these
+    // data columns live in a base CREATE TABLE rather than arriving through
+    // ensureColumn, and a base CREATE is frozen: `IF NOT EXISTS` will not
+    // repair a table that already exists in an older shape, and no ALTER is
+    // queued for it either. So a database whose `characters` predates
+    // `image_data` — which is exactly what server/test/migrationReasonsToFight
+    // builds, and what any sufficiently old deployment could be — would crash
+    // the whole boot here on `no such column`. Nothing else at boot reads these
+    // columns, so this backfill is the first thing that would ever have noticed.
+    const sql = await tableSql(table);
+    if (!sql || !new RegExp(`\\b${data}\\b`).test(sql)) continue;
+    const rows = await all(
+      `SELECT id, ${data} AS data FROM ${table} WHERE ${data} IS NOT NULL AND ${hash} IS NULL`
+    );
+    if (!rows.length) continue;
+    bootLog(`Database: hashing ${rows.length} stored image(s) in ${table}.${data}`);
+    await writeMany(
+      rows.map((r) => [`UPDATE ${table} SET ${hash} = ? WHERE id = ?`, [hashImageData(r.data), r.id]])
+    );
   }
 }
 
@@ -2648,6 +2701,8 @@ export async function initDb() {
   // was queued; playback itself is not.
   ddl(`UPDATE audio_state SET is_playing = 0 WHERE is_playing != 0`);
 
+  await ensureImageHashColumns();
+
   await ensureIndexes();
 
   await seedWorld();
@@ -2686,6 +2741,9 @@ export async function initDb() {
   // of it, but a database that needed nothing seeded leaves the tail here.
   await flushDdl();
   ddlQueue = null;
+
+  // After the queue is drained, so the columns exist to be written to.
+  await backfillImageHashes();
 }
 
 // **Indexes on the foreign keys this app actually looks rows up by (decided,

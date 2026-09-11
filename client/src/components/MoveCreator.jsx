@@ -26,7 +26,7 @@ function clampThresholdInput(value) {
   return Math.max(0, Math.min(20, Math.trunc(n)));
 }
 import { iconFor } from '../lib/styleIcons.js';
-import { fileToSmallImage } from '../lib/image.js';
+import { fileToSmallImage, localPreviewSrc } from '../lib/image.js';
 import { usePictureUpload } from '../lib/usePictureUpload.jsx';
 import {
   ROLL_SLOT_NAMES,
@@ -437,8 +437,12 @@ export default function MoveCreator({
       // no stored image to leave alone, so a copy would silently come out
       // blank. Only ever sent when copying: a plain new move has nothing to
       // inherit, and an edit must keep going through the untouched path.
-      ...(initial?.id == null && image === undefined && initial?.image_data
-        ? { imageData: initial.image_data, imageMimeType: initial.image_mime_type ?? 'image/png' }
+      //
+      // It sends the SOURCE'S ID rather than its bytes: the client no longer
+      // holds a picture's bytes at all (see portraitSrc), so the server copies
+      // the row's image across itself.
+      ...(initial?.id == null && image === undefined && initial?.copied_from_id
+        ? { copyImageFromMoveId: initial.copied_from_id }
         : {}),
       // Files the copy beside its source rather than at the top of a
       // hand-ordered library — see the sort_order note in writeMove.
@@ -448,8 +452,9 @@ export default function MoveCreator({
 
   const preview = image !== undefined
     ? {
-        image_data: image?.imageData,
-        image_mime_type: image?.imageMimeType,
+        // A file picked a moment ago has bytes but no URL yet — the one place
+        // a data: URI is still the right answer (see localPreviewSrc).
+        image_url: localPreviewSrc(image),
         crop_x: image?.cropX,
         crop_y: image?.cropY,
         crop_w: image?.cropW,

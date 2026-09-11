@@ -481,17 +481,56 @@ three separate problems: **base64 images in TEXT columns, shipped inside JSON.**
   measures HTTP over raw `node:http`, because `fetch` decompresses transparently and would
   report what the app produced rather than what Render charges for.
 
-### Phases 2 and 3 (decided, not yet built)
+### Phase 2 — images become cacheable URLs (shipped)
 
-- **Phase 2 — images become cacheable URLs.** They stay in Turso; only the transport
-  changes. A single `GET /api/img/:kind/:id/:hash` route, `kind` resolved through a frozen
-  allow-list (never interpolated into SQL), with the content hash **in the path** so the
-  response can be `immutable` for a year and a re-upload is simply a different URL. Payloads
-  carry `image_url` instead of bytes. **A security condition attaches to this and must ship
-  with it:** serving user-uploaded bytes from our own origin makes the stored
-  `image_mime_type` a content type the browser will obey, and this app has no auth by
-  design — so the mime must be allow-listed on both the read and write paths, with
-  `X-Content-Type-Options: nosniff`. Today, as inert `data:` URIs, those bytes are harmless.
+Images **stay in Turso**; only the transport changed. A row now carries
+`image_url` instead of base64, and the browser fetches each picture once.
+
+- **`GET /api/img/:kind/:id/:hash`**, one route for all ten image columns across
+  nine tables. `kind` is a **key lookup into a frozen registry** (`server/images.js`),
+  never a fragment spliced into SQL — an unknown kind is a 404 before a query is built.
+- **The content hash lives in the path, not an ETag.** An ETag still costs one
+  conditional request per image per page load; a hash makes a changed picture a
+  *different URL*, so the response is `immutable` for a year and a re-upload is picked
+  up instantly. The stale-image-after-upload failure mode is unrepresentable rather
+  than merely unlikely. Ten `image_hash` columns, backfilled at boot before the server
+  accepts a request; a row that somehow lacks one serves under a `live` sentinel with
+  `no-store` — correct, just uncacheable, never a 404.
+- **The route recomputes the hash from the bytes it is about to send** rather than
+  trusting the stored column. The column is an optimisation (it lets the hot paths
+  select a cache key without dragging bytes into the process); trusting it would make a
+  stale one dangerous, because a year-long cache entry could be pinned to bytes that had
+  moved on. Recomputing means a stale hash can only ever produce a URL that fails to
+  match, which is served and simply not cached.
+- **A security fix shipped with the route, not after it.** As inert `data:` URIs these
+  bytes were harmless; served from our own origin, the stored `image_mime_type` becomes
+  a content type the browser **obeys** — and this app has no auth by design, so anyone
+  with the link can upload. An allow-list guards both the read and write paths (SVG is
+  refused specifically: it looks like an image type and is really a document type), with
+  `X-Content-Type-Options: nosniff` and a null CSP behind it.
+- **Two chokepoints carried most of the win:** `attachInteractions` (every path to a move
+  row passes through it — `getMovesFor` runs once per **seated character** inside
+  `/api/combat`, so the whole compendium's art was duplicated per fighter) and
+  `buildStagePayload`, which is emitted per socket from thirteen call sites.
+- **`portraitSrc` kept its exact signature**, so all eleven call sites were untouched.
+  `client/src/lib/portraitCache.js` is **deleted** — a hand-rolled base64→blob decode
+  cache whose own header admitted it saved zero bytes; the browser does that natively for
+  a real URL.
+- **Two things genuinely broke and were fixed here.** Copy Move re-uploaded the source's
+  base64, which the client no longer holds — the server copies row to row now, as
+  `scene_picture:copy_from_profile` already did, which is also less traffic than before.
+  And `ScenePage`'s `img.complete` effect **stays**, with its comment rewritten: it
+  blamed `data:` URIs, but an `immutable` cached image completes just as instantly, so
+  the drag-down bug it guards is exactly as live.
+
+Measured: **a stage drag went 600 KB → 0.4 KB per viewer**, `GET /api/characters`
+600 KB → 0.3 KB, `GET /api/stage` 603 KB → 1.1 KB. `scripts/playtest-bandwidth.mjs`
+enforces those as ceilings now, and also asserts the cache and security headers.
+
+### Phase 3 (decided, not yet built)
+
+#### What remains
+
 - **Phase 3 — shrink the database, which shrinks the boot pull.** WebP with tighter caps
   (scene pictures are the largest rows in the schema and are currently lossless PNG), a
   one-shot re-encode of existing rows, `chat_log` capped to the 300 rows that are actually

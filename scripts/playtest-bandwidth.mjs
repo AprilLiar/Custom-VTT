@@ -148,8 +148,8 @@ const summon = stage.summons?.[0];
 if (!summon) bail(new Error('nothing summoned'));
 gm.emit('stage:reposition_summon', { summonId: summon.id, posX: 0.4, posY: 0.6 });
 await sleep(500);
-pending('stage:updated after a drag (GM)', lastSize(gm, 'stage:updated') ?? 0, 8);
-pending('stage:updated after a drag (Player)', lastSize(player, 'stage:updated') ?? 0, 8);
+underKb('stage:updated after a drag (GM)', lastSize(gm, 'stage:updated') ?? 0, 8);
+underKb('stage:updated after a drag (Player)', lastSize(player, 'stage:updated') ?? 0, 8);
 
 // ============================================ 3. a single pen stroke
 console.log('\n--- a GM draws one pen stroke ---');
@@ -196,12 +196,25 @@ const restSize = (path) =>
       .on('error', reject);
   });
 const chars = await restSize('/api/characters');
-pending('GET /api/characters (on the wire)', chars.bytes, 8);
+underKb('GET /api/characters (on the wire)', chars.bytes, 8);
 const stageRest = await restSize('/api/stage?role=gm');
-pending('GET /api/stage (on the wire)', stageRest.bytes, 8);
+underKb('GET /api/stage (on the wire)', stageRest.bytes, 8);
 
-console.log(`\ncontent-encoding on /api/characters: ${chars.encoding ?? '(none)'}`);
-check('HTTP responses are compressed', chars.encoding != null, 'no content-encoding header — compression middleware missing');
+// **Checked against a response big enough to qualify.** `compression` skips
+// anything under 1KB, where the gzip header would cost more than it saves — and
+// now that the image bytes are gone, most of this app's JSON is under that. So
+// the compression check has to use a response that is genuinely large:
+// /api/rules serves the whole rules document.
+const rules = await restSize('/api/rules');
+console.log(`\ncontent-encoding on /api/rules (${KB(rules.bytes)}): ${rules.encoding ?? '(none)'}`);
+check('a large HTTP response is compressed', rules.encoding === 'gzip', `got ${rules.encoding ?? 'no content-encoding'}`);
+
+// The picture itself still has to be fetchable, and cacheable forever.
+const img = await fetch(`${BASE}/api/img/character/${pc.id}/${'x'.repeat(16)}`);
+console.log(`\nan image URL with a WRONG hash: HTTP ${img.status}, cache-control ${img.headers.get('cache-control')}`);
+check('a mismatched hash is served but never cached', img.ok && img.headers.get('cache-control') === 'no-store');
+check('a picture is served as a real image type', (img.headers.get('content-type') ?? '').startsWith('image/'), img.headers.get('content-type'));
+check('nosniff is set on stored user bytes', img.headers.get('x-content-type-options') === 'nosniff');
 
 console.log(failures ? `\n${failures} FAILED` : BASELINE ? '\nBASELINE COMPLETE' : '\nALL PASSED');
 gm.close();

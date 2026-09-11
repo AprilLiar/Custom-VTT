@@ -375,7 +375,7 @@ export default function CharacterSheet() {
               ownerType="character"
               ownerId={data.character.id}
               canEdit={canCreate}
-              hasPortrait={Boolean(data.character.image_data)}
+              hasPortrait={Boolean(data.character.image_url)}
             />
           )}
         </motion.div>

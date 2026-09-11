@@ -44,7 +44,7 @@
 // if either one changes.
 
 import { all, one, run, readMany, writeMany } from './db.js';
-import { omitCharacterArt } from './payloads.js';
+import { shapeCharacter, imageUrl } from './images.js';
 import {
   rollDie, applyHalfDamage, healHalfDamage, clamp, dieAtRank, rankOf, stepDie, rollTotal,
   injuryPenaltyBySlot, applyRankPenalty,
@@ -204,7 +204,7 @@ async function adjustStamina(io, characterId, delta, { emitEvent = null, tic = n
   // engine hands out is covered by one read of the same subtraction.
   const overflow = Math.max(0, character.current_stamina + change - character.max_stamina);
   await run('UPDATE characters SET current_stamina = ? WHERE id = ?', [currentStamina, character.id]);
-  io.emit('character:updated', omitCharacterArt({ ...character, current_stamina: currentStamina }));
+  io.emit('character:updated', shapeCharacter({ ...character, current_stamina: currentStamina }));
   if (emitEvent && tic != null) {
     await emitEvent(tic, 'stamina_changed', {
       characterId: character.id,
@@ -945,7 +945,7 @@ async function runAutomations(io, {
         const held = await one('SELECT pending_roll_penalty AS n FROM characters WHERE id = ?', [
           opponentCharacterId,
         ]);
-        io.emit('character:updated', omitCharacterArt(await getCharacter(opponentCharacterId)));
+        io.emit('character:updated', shapeCharacter(await getCharacter(opponentCharacterId)));
         if (emitEvent && tic != null) {
           await emitEvent(tic, 'next_roll_penalty', {
             characterId: opponentCharacterId,
@@ -4394,7 +4394,7 @@ async function processTic(io, { pairIndex, tic, emitEvent, resolutionId }) {
               dm.recovery_extension_tics, dm.trip_recovery_tics, dm.appendage_choice,
               m.name AS move_name, m.startup_tics, m.active_tics, m.recovery_tics,
               m.defense_frame_positions,
-              m.image_data AS move_image_data, m.image_mime_type AS move_image_mime_type,
+              m.image_hash AS move_image_hash, (m.image_data IS NOT NULL) AS move_has_image,
               m.is_defensive, m.defense_kind, m.stamina_cost,
               ch.name AS character_name, ch.character_type,
               cp.side AS side
@@ -4554,7 +4554,7 @@ async function applyIdleTicStaminaRegen(io, pairIndex, tic, emitEvent = null) {
         p.character_id,
       ]),
     ]);
-    io.emit('character:updated', omitCharacterArt({ ...character, current_stamina: newStamina }));
+    io.emit('character:updated', shapeCharacter({ ...character, current_stamina: newStamina }));
     // Idle regen was the last Stamina movement with no trace in the round
     // log at all — the cutscene's fighter cards would drift below the real
     // value over a quiet round. `stamina_regen` already had a label and a
@@ -4719,7 +4719,7 @@ async function startPairDeclaration(io, pairIndex) {
       for (const character of charRows) {
         if (character.current_stamina !== character.max_stamina) {
           await run('UPDATE characters SET current_stamina = ? WHERE id = ?', [character.max_stamina, character.id]);
-          io.emit('character:updated', omitCharacterArt({ ...character, current_stamina: character.max_stamina }));
+          io.emit('character:updated', shapeCharacter({ ...character, current_stamina: character.max_stamina }));
         }
       }
     }
@@ -4944,8 +4944,9 @@ async function postMoveReveal(io, r) {
     move: {
       id: r.move_id,
       name: r.move_name,
-      imageData: r.move_image_data,
-      imageMimeType: r.move_image_mime_type,
+      // A URL, not the bytes — a reveal card is broadcast to the whole table
+      // (see the chat:message note in index.js for the same change).
+      imageUrl: imageUrl('move', r.move_id, { hash: r.move_image_hash, present: r.move_has_image }),
       startupTics: r.startup_tics,
       activeTics: r.active_tics,
       recoveryTics: r.recovery_tics,
@@ -5216,7 +5217,7 @@ async function resolvePairRound(pairIndex, io) {
               dm.recovery_extension_tics, dm.trip_recovery_tics, dm.appendage_choice,
               m.name AS move_name, m.startup_tics, m.active_tics, m.recovery_tics,
               m.defense_frame_positions,
-              m.image_data AS move_image_data, m.image_mime_type AS move_image_mime_type,
+              m.image_hash AS move_image_hash, (m.image_data IS NOT NULL) AS move_has_image,
               m.is_defensive, m.defense_kind, m.stamina_cost,
               ch.name AS character_name, ch.character_type,
               cp.side AS side

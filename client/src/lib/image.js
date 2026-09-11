@@ -28,16 +28,31 @@ export function fileToPortrait(file) {
   });
 }
 
-export const portraitSrc = (character) =>
-  character?.image_data
-    ? `data:${character.image_mime_type || 'image/jpeg'};base64,${character.image_data}`
-    : null;
+// **These used to BUILD the picture; now they just point at it.**
+//
+// Every row arrives from the server already carrying `image_url` — the server
+// knows which table a row came from, which is the one thing a row cannot tell
+// you about itself, so it is the only place the URL can be assembled. Keeping
+// the signature identical is deliberate: all eleven call sites are untouched by
+// the change from base64 to URLs.
+//
+// Why it mattered: a `data:` URI is not a URL, so nothing caches it — every
+// portrait was re-downloaded on every page load and every phone unlock, and the
+// scene backdrop rode along on every drag and every pen stroke. Behind a URL
+// keyed by content hash (see server/images.js), each picture is fetched once.
+export const portraitSrc = (record) => record?.image_url ?? null;
 
 // A GM-uploaded replacement for Tab 1's default backdrop figure, specific
 // to this character — null falls back to the built-in artwork.
-export const vitruvianSrc = (character) =>
-  character?.vitruvian_image_data
-    ? `data:${character.vitruvian_image_mime_type || 'image/jpeg'};base64,${character.vitruvian_image_data}`
+export const vitruvianSrc = (character) => character?.vitruvian_image_url ?? null;
+
+// **The only `data:` URI left in the app**, and the one place it is still
+// right: a picture the person chose a moment ago and has not saved yet. Those
+// bytes came out of this browser's own canvas and have never touched the
+// network, so there is no URL to point at and nothing to cache.
+export const localPreviewSrc = (picture) =>
+  picture?.imageData
+    ? `data:${picture.imageMimeType || 'image/jpeg'};base64,${picture.imageData}`
     : null;
 
 // Chat images/GIFs: never persisted long-term (wiped on Clear Chat and on

@@ -8,10 +8,10 @@ import CroppedImage from './CroppedImage.jsx';
 // edit: the record carries its own `crop_*` columns and this is the only place
 // that has to know they exist. A record without them renders exactly as before.
 export default function Thumb({ record, name, size = 'h-6 w-6', cut = 'panel-cut-sm' }) {
-  if (record?.image_data) {
+  if (record?.image_url) {
     return (
       <CroppedImage
-        src={`data:${record.image_mime_type || 'image/png'};base64,${record.image_data}`}
+        src={record.image_url}
         alt={name}
         crop={cropOf(record)}
         className={`${size} ${cut} shrink-0`}

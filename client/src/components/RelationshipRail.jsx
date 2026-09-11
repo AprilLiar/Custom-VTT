@@ -156,7 +156,7 @@ function SectionLabel({ children }) {
   );
 }
 
-// One person in the rail. Duck-typed on `{ name, image_data, image_mime_type }`
+// One person in the rail. Duck-typed on `{ name, image_url }`
 // so a world character row and a board-local person row render identically —
 // which is the point: once somebody is on the board, where they came from stops
 // mattering to everything except deletion.

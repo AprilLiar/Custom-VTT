@@ -3,7 +3,7 @@ import { X } from 'lucide-react';
 import { motion, useReducedMotion } from 'framer-motion';
 import { TEXT_VISIBLE_ZOOM } from '../lib/boardViewport.js';
 import { DOT_OUT, NODE_H, NODE_W, SIDES } from '../lib/relationshipGeometry.js';
-import { usePortraitUrl } from '../lib/portraitCache.js';
+import { portraitSrc } from '../lib/image.js';
 import { cropOf } from '../lib/imageCrop.js';
 import CroppedImage from './CroppedImage.jsx';
 import HaloText from './HaloText.jsx';
@@ -48,7 +48,12 @@ export default function RelationshipNode({
   const reduceMotion = useReducedMotion();
   // A shared blob URL rather than a data: URI — the same face can be on this
   // board many times, and a data: URI is decoded once per <img>.
-  const src = usePortraitUrl(person);
+  // **Was usePortraitUrl, a hand-rolled base64→blob decode cache.** It existed
+  // because a `data:` URI is not a URL, so nothing cached it and every node
+  // re-decoded the same bytes. `image_url` IS a URL, so the browser does that
+  // natively — one decode shared by every <img> pointing at it, with no ref
+  // counting and no "revoked while something still renders it" failure mode.
+  const src = portraitSrc(person);
   const showText = zoom >= TEXT_VISIBLE_ZOOM;
 
   const handlePointerDown = (e) => {

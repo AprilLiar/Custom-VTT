@@ -726,9 +726,9 @@ function CarriedFrameLane({ lane, squares, position }) {
   const initial = lane.name.slice(0, 1).toUpperCase();
   const caption = (
     <div className={`flex items-center gap-1.5 ${position === 'above' ? 'pb-0.5' : 'pt-0.5'}`}>
-      {lane.imageData ? (
+      {lane.imageUrl ? (
         <img
-          src={`data:${lane.imageMimeType ?? 'image/jpeg'};base64,${lane.imageData}`}
+          src={lane.imageUrl}
           alt=""
           className="h-5 w-5 shrink-0 panel-cut-sm object-cover"
         />
@@ -2879,8 +2879,7 @@ export default function CombatArena() {
           lane = {
             characterId: dm.characterId,
             name: entry.character.name,
-            imageData: entry.character.image_data,
-            imageMimeType: entry.character.image_mime_type,
+            imageUrl: entry.character.image_url,
             isNpc: entry.character.character_type === 'npc',
             byTic: new Map(),
           };

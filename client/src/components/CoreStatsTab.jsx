@@ -61,7 +61,7 @@ function NamePortrait({ character }) {
   };
 
   // The crop step sits between the file picker and the save. The Arena card
-  // still renders `image_data` whole — only the square frames use the crop.
+  // still renders the whole picture — only the square frames use the crop.
   const { pick, dialog, busy } = usePictureUpload({
     process: fileToPortrait,
     name,

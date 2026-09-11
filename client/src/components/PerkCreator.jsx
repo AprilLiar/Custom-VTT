@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react';
-import { fileToSmallImage } from '../lib/image.js';
+import { fileToSmallImage, localPreviewSrc } from '../lib/image.js';
 import { usePictureUpload } from '../lib/usePictureUpload.jsx';
 import Thumb from './Thumb.jsx';
 
@@ -49,8 +49,8 @@ export default function PerkCreator({ initial, tags = [], onSubmit, onCancel }) 
   const preview =
     image !== undefined
       ? {
-          image_data: image?.imageData,
-          image_mime_type: image?.imageMimeType,
+          // See MoveCreator: a just-picked file has bytes, not a URL.
+          image_url: localPreviewSrc(image),
           crop_x: image?.cropX,
           crop_y: image?.cropY,
           crop_w: image?.cropW,
