@@ -422,6 +422,160 @@ primary.
 half of it. The other half: **a boot step that can block must not be able to block silently.** Open
 the port, name the step, and make the thing you cannot interrupt be preceded by something you can.
 
+## Hosting cost — bandwidth and sync (decided, new; phase 1 shipped)
+
+The app went 60% over Render's included bandwidth (7.97GB against 5GB — 4.82GB
+WebSocket, 2.93GB HTTP) and pushed ~6GB through Turso's sync allowance in a single
+billing period. A forensic pass found all three numbers trace to one habit rather than
+three separate problems: **base64 images in TEXT columns, shipped inside JSON.**
+
+- **Turso.** `render.yaml` has no `disk:` block, so `replica.db` does not survive a
+  restart and **every cold start downloads the whole database**. Render's free tier spins
+  down after ~15 minutes idle and every deploy restarts it too, so a 30–150MB database
+  (that size *is* the images) times several boots a day is the entire 6GB. The sync loop
+  is rounding error beside it.
+- **WebSocket.** `emitStageUpdated()` re-sent the scene backdrop, every summoned figure's
+  full picture and every stroke ever drawn — to every socket — on all thirteen of its
+  triggers, including each figure drag and **each pen stroke**. Measured: **600KB per
+  gesture, per viewer.**
+- **HTTP.** No compression at all, and because every image was a `data:` URI inside JSON,
+  **the browser cache could not work** — every portrait re-downloaded on every page load
+  and every phone unlock.
+
+### Phase 1 — compression, deltas, and idle sync (shipped)
+
+- **gzip on every HTTP response** (`compression`, mounted above every route). Base64
+  gives back ~25% — it re-encodes already-compressed bytes into a 64-symbol alphabet —
+  but the *structural* JSON this app is mostly made of gives back **~95%**, and the built
+  client bundle drops from ~968KB to under 300KB on every cold load.
+- **`perMessageDeflate` on Socket.io**, which v4 leaves **off by default** for memory
+  reasons (one zlib context per connection). Right call at thousands of sockets, wrong
+  one for a single table shipping JSON. A `threshold` keeps the small deltas uncompressed,
+  where framing would cost more than it saves.
+- **`Cache-Control: immutable` on static assets** — safe because Vite content-hashes every
+  filename — with `index.html` explicitly `no-cache`, since its URL is stable while its
+  contents name the current bundle.
+- **A pen stroke is its own event** (`scene_draw:added` / `scene_draw:cleared`) instead of
+  a full stage rebuild, and coordinates are **rounded to 4 decimals** — a ten-thousandth
+  of the stage is far finer than a pixel, and full double precision cost ~41 bytes per
+  point against a 4000-point cap. **607KB → 3.2KB per stroke.**
+- **`character:updated` carries no picture bytes** (`omitCharacterArt`, `server/payloads.js`).
+  It fires on every Stamina change — several times per fighter per round — and was carrying
+  *two* base64 images to deliver a two-byte integer. **300KB → 0.3KB.**
+  - **Its consumers must MERGE, never replace.** Two of them replaced
+    (`CharacterSheet`, `CombatArena`) and were fixed in the same commit; a consumer that
+    replaces will blank the portrait until the next full fetch, and the fix is always to
+    make it merge rather than to put the bytes back.
+- **The sync loop skips when nothing has been written.** It used to push on a timer
+  regardless — 8,640 round trips a day against a database nobody had touched. Every write
+  path marks it dirty; a full sync still runs every 30th cycle so an external write is
+  eventually noticed.
+- **`.sync()`'s `frames_synced` is logged** (frames × 4096 = bytes). It was being thrown
+  away, which is why a 6GB bill could only be reasoned about by arithmetic. The boot pull
+  now prints its own size — the one number that says whether the later phases worked.
+- **The August Temporary-Damage migration is guarded.** It re-scanned every row of `dice`
+  with a correlated subquery on every boot, forever, to add zero. Kept (a database that has
+  genuinely never booted since must still be repaired) but behind a single existence check.
+- **`scripts/playtest-bandwidth.mjs`** asserts byte ceilings on real payloads, so a future
+  `SELECT *` carrying an image back into a broadcast fails a test rather than a bill. It
+  measures HTTP over raw `node:http`, because `fetch` decompresses transparently and would
+  report what the app produced rather than what Render charges for.
+
+### Phase 2 — images become cacheable URLs (shipped)
+
+Images **stay in Turso**; only the transport changed. A row now carries
+`image_url` instead of base64, and the browser fetches each picture once.
+
+- **`GET /api/img/:kind/:id/:hash`**, one route for all ten image columns across
+  nine tables. `kind` is a **key lookup into a frozen registry** (`server/images.js`),
+  never a fragment spliced into SQL — an unknown kind is a 404 before a query is built.
+- **The content hash lives in the path, not an ETag.** An ETag still costs one
+  conditional request per image per page load; a hash makes a changed picture a
+  *different URL*, so the response is `immutable` for a year and a re-upload is picked
+  up instantly. The stale-image-after-upload failure mode is unrepresentable rather
+  than merely unlikely. Ten `image_hash` columns, backfilled at boot before the server
+  accepts a request; a row that somehow lacks one serves under a `live` sentinel with
+  `no-store` — correct, just uncacheable, never a 404.
+- **The route recomputes the hash from the bytes it is about to send** rather than
+  trusting the stored column. The column is an optimisation (it lets the hot paths
+  select a cache key without dragging bytes into the process); trusting it would make a
+  stale one dangerous, because a year-long cache entry could be pinned to bytes that had
+  moved on. Recomputing means a stale hash can only ever produce a URL that fails to
+  match, which is served and simply not cached.
+- **A security fix shipped with the route, not after it.** As inert `data:` URIs these
+  bytes were harmless; served from our own origin, the stored `image_mime_type` becomes
+  a content type the browser **obeys** — and this app has no auth by design, so anyone
+  with the link can upload. An allow-list guards both the read and write paths (SVG is
+  refused specifically: it looks like an image type and is really a document type), with
+  `X-Content-Type-Options: nosniff` and a null CSP behind it.
+- **Two chokepoints carried most of the win:** `attachInteractions` (every path to a move
+  row passes through it — `getMovesFor` runs once per **seated character** inside
+  `/api/combat`, so the whole compendium's art was duplicated per fighter) and
+  `buildStagePayload`, which is emitted per socket from thirteen call sites.
+- **`portraitSrc` kept its exact signature**, so all eleven call sites were untouched.
+  `client/src/lib/portraitCache.js` is **deleted** — a hand-rolled base64→blob decode
+  cache whose own header admitted it saved zero bytes; the browser does that natively for
+  a real URL.
+- **Two things genuinely broke and were fixed here.** Copy Move re-uploaded the source's
+  base64, which the client no longer holds — the server copies row to row now, as
+  `scene_picture:copy_from_profile` already did, which is also less traffic than before.
+  And `ScenePage`'s `img.complete` effect **stays**, with its comment rewritten: it
+  blamed `data:` URIs, but an `immutable` cached image completes just as instantly, so
+  the drag-down bug it guards is exactly as live.
+
+Measured: **a stage drag went 600 KB → 0.4 KB per viewer**, `GET /api/characters`
+600 KB → 0.3 KB, `GET /api/stage` 603 KB → 1.1 KB. `scripts/playtest-bandwidth.mjs`
+enforces those as ceilings now, and also asserts the cache and security headers.
+
+### Phase 3 — shrink the database, which shrinks the boot pull (shipped)
+
+The phase that moves the Turso number, because the boot pull **is** the database.
+
+- **Everything encodes to WebP now.** The five upload pipelines saved JPEG, and passed
+  PNG through **losslessly** whenever the source was PNG — which is how `scene_pictures`
+  came to hold the largest rows in the schema (a 1024px transparent cutout is routinely
+  1–2MB before base64). WebP keeps the alpha those cutouts need. Measured on
+  artwork-like content: a 1024px scene picture went **1519KB → 24KB**, a 1600×900
+  backdrop **2103KB → 25KB**. On incompressible noise the same encoder saves only ~9%,
+  so the honest expectation for real art is a large multiple, not a fixed one.
+  Portraits also drop 800px → 512px; backdrops **stay at 1600px** and change format only.
+  **GIFs are never re-encoded** — a canvas export keeps one frame and kills the animation
+  — and their upload cap drops 4MB → 1MB.
+- **A GM-only "Re-encode Images" tool**, rather than a script. A one-shot migration would
+  need Turso credentials to reach the live database; this needs nothing but being logged
+  in as the GM. It reads `GET /api/image-inventory` (ids and sizes, never bytes — a
+  listing that carried the pictures would defeat its own purpose), then fetches each
+  picture, re-encodes it on a canvas, and sends back **only the results that came out
+  smaller**. Safe to re-run: an already-optimal picture is skipped, and the server refuses
+  a write that would make a row bigger, so the tool can only ever shrink the database.
+- **Chat is capped to what is readable.** `CHAT_HISTORY_LIMIT` is a *read* limit —
+  `GET /api/chat` returns the newest 300 — but nothing ever deleted the rest, so a long
+  session left everything older in the database, unreachable by anybody and re-downloaded
+  on every cold start. Whole rows go now, text and picture alike.
+- **An orphan sweep at boot.** `scene_pictures` cascades from both owners and
+  `relationship_people` from its character, so in a healthy database these find nothing —
+  but the six table-rebuild migrations run `PRAGMA foreign_keys = OFF`, and any delete
+  inside one of those windows skipped its cascade silently. **A NULL owner id is never an
+  orphan**: `scene_pictures` has exactly one of `character_id`/`temp_npc_id` by its own
+  CHECK, so reading a NULL as a missing owner would delete every picture in the world.
+  That property is pinned by test, because this deletes artwork unattended.
+- **Completed rounds are pruned to the current fight.** They outlive their fight so a
+  "Watch Round N" card still works — but those cards live in `chat_log`, which is wiped on
+  the same boot, so anything from an earlier fight was already unreachable. `round_events`
+  cascades off them, which is where the bulk is.
+- **`VACUUM` last.** SQLite never returns freed pages to the file on its own, so without
+  it the database stays at its high-water mark and the boot pull never shrinks — which is
+  the point of everything above. The whole block is wrapped: a world that cannot be tidied
+  is still a world that can be played.
+
+#### What remains
+
+**The one thing none of this fixes.** Render's free tier has no persistent disk, so the
+replica is still rebuilt on every cold start — the pull is simply of a much smaller
+database now. Attaching a persistent disk (a paid plan) would turn it into a delta;
+short of that, the `frames_synced` boot line added in phase 1 is how to tell whether the
+remaining number is acceptable.
+
 ## Game mechanic — Dice Pools (Core Stats tab)
 Each character has 3 fixed dice pools, always the same slot names for every character:
 

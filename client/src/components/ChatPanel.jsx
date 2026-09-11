@@ -103,9 +103,9 @@ function Entry({ entry, character, moveInfo, characters, defenseResolutions, onW
             {entry.message && (
               <p className="font-display whitespace-pre-wrap break-words text-zinc-300">{entry.message}</p>
             )}
-            {entry.imageData && (
+            {entry.imageUrl && (
               <img
-                src={`data:${entry.imageMimeType || 'image/png'};base64,${entry.imageData}`}
+                src={entry.imageUrl}
                 alt=""
                 className="mt-1 max-h-64 max-w-full panel-cut-sm object-contain"
               />
@@ -169,7 +169,7 @@ function Entry({ entry, character, moveInfo, characters, defenseResolutions, onW
                   capabilities.canSeeRevealedDetail ? 'hover:opacity-80' : 'cursor-default'
                 }`}
               >
-                <Thumb record={{ image_data: entry.move.imageData, image_mime_type: entry.move.imageMimeType }} name={entry.move.name} size="h-8 w-8" />
+                <Thumb record={{ image_url: entry.move.imageUrl }} name={entry.move.name} size="h-8 w-8" />
                 <div className="min-w-0 flex-1">
                   <div className="font-display truncate text-sm font-semibold text-zinc-100">{entry.move.name}</div>
                   {/* The public half of the card: what came out, and how long

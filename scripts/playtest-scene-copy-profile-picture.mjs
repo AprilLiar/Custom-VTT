@@ -74,8 +74,24 @@ await sleep(400);
 const afterOwn = await jf(`/api/scene-pictures?${new URLSearchParams({ ownerType: 'character', ownerId: withPortrait.id })}`);
 check('the Player\'s own copy created exactly one Scene Picture', afterOwn.length === 1, JSON.stringify(afterOwn));
 if (afterOwn[0]) {
-  check('the copy carries the FULL portrait bytes, not a re-crop', afterOwn[0].image_data === TINY_PNG, afterOwn[0].image_data);
-  check('the copy carries the portrait\'s own mime type', afterOwn[0].image_mime_type === 'image/png', afterOwn[0].image_mime_type);
+  // **Checked by fetching both pictures, not by comparing payload fields.**
+  // A row no longer carries its bytes anywhere — it carries a URL (see
+  // server/images.js) — so the only honest way to assert "this is the same
+  // picture" is to go and get both of them. That is a better test than the
+  // field comparison it replaces: it proves the whole path works, the route
+  // included, rather than that two strings in one JSON blob matched.
+  const copyRes = await fetch(BASE + afterOwn[0].image_url);
+  const copyBytes = Buffer.from(await copyRes.arrayBuffer());
+  check(
+    'the copy serves the FULL portrait bytes, not a re-crop',
+    copyBytes.equals(Buffer.from(TINY_PNG, 'base64')),
+    `${copyBytes.length} bytes from ${afterOwn[0].image_url}`
+  );
+  check(
+    "the copy is served with the portrait's own mime type",
+    copyRes.headers.get('content-type') === 'image/png',
+    copyRes.headers.get('content-type')
+  );
   check('the copy is named "Profile"', afterOwn[0].name === 'Profile', afterOwn[0].name);
 }
 

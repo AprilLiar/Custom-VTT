@@ -13,7 +13,7 @@ import { socket } from '../socket.js';
 import { getMoves, getRuleset, getTags, getTells } from '../lib/api.js';
 import { useRoster } from '../lib/useRoster.js';
 import { iconFor } from '../lib/styleIcons.js';
-import { fileToSmallImage, portraitSrc } from '../lib/image.js';
+import { fileToSmallImage, portraitSrc, localPreviewSrc } from '../lib/image.js';
 import { cropOf } from '../lib/imageCrop.js';
 import { usePictureUpload } from '../lib/usePictureUpload.jsx';
 import CroppedImage from './CroppedImage.jsx';
@@ -58,8 +58,8 @@ function TellManager({ tells, usedTellIds }) {
   const preview =
     image !== undefined
       ? {
-          image_data: image?.imageData,
-          image_mime_type: image?.imageMimeType,
+          // See MoveCreator: a just-picked file has bytes, not a URL.
+          image_url: localPreviewSrc(image),
           crop_x: image?.cropX,
           crop_y: image?.cropY,
           crop_w: image?.cropW,
@@ -484,7 +484,14 @@ export default function MovesCompendium() {
   const copyDraft = (move) => {
     if (!move) return null;
     const { id, granted_character_ids: _grants, ...rest } = move;
-    return { ...rest, name: `${move.name} (copy)` };
+    // **The id is kept, renamed.** A copy used to carry the source's base64
+    // picture back up the socket so the new row could be written with it —
+    // which no longer works, because the client does not hold the bytes any
+    // more, only a URL. Naming the source instead lets the server copy the
+    // row's picture across without it ever leaving the database, the same way
+    // scene_picture:copy_from_profile already does. It is also strictly less
+    // traffic than the old path.
+    return { ...rest, copied_from_id: id, name: `${move.name} (copy)` };
   };
 
   const onDropOnCharacter = (e, character) => {

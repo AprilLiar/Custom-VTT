@@ -623,7 +623,7 @@ export default function StageRoster({
           )}
           <img
             ref={refs.img}
-            src={`data:${entry.image_mime_type || 'image/png'};base64,${entry.image_data}`}
+            src={entry.image_url}
             alt={entry.name ?? ''}
             draggable={false}
             // `max-w-none` overrides Tailwind's own preflight reset

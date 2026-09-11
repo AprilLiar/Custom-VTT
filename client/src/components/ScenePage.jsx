@@ -93,8 +93,8 @@ export default function ScenePage() {
   // including the portrait-gate's early return path, so anything a Hook
   // depends on has to be computed before that return, not after it.
   const activeScene = stage?.activeScene ?? null;
-  const backgroundSrc = activeScene?.image_data
-    ? `data:${activeScene.image_mime_type || 'image/jpeg'};base64,${activeScene.image_data}`
+  const backgroundSrc = activeScene?.image_url
+    ? activeScene.image_url
     : null;
   // Per-Scene, not per-viewer (decided — db.js's own comment on
   // scenes.background_fit): every viewer renders the SAME Scene's backdrop
@@ -108,23 +108,21 @@ export default function ScenePage() {
     setImageNatural({ width: 0, height: 0 });
   }, [backgroundSrc]);
 
-  // **Bugfix: a manually-placed figure moved DOWN never reached Players,
-  // moving it UP always did.** A `data:` URI backdrop (every Scene's own
-  // background is one) can finish decoding before React attaches the
-  // `onLoad` handler below — no network round trip creates the usual gap —
-  // and when that race is lost, the browser never fires `load` again for
-  // the same `src`: `imageNatural` stayed stuck at `{0,0}` for the rest of
-  // that backdrop's life. `stageToImageFraction` (sceneProjection.js)
-  // silently falls back to a plain stage-box fraction whenever the natural
-  // size is unknown — and because an auto-placed figure's own default
-  // position already sits exactly at the stage's bottom edge, ANY downward
-  // drag from there instantly computed a fraction past 1 under that
-  // fallback and got clamped right back to where it started, while an
-  // upward drag still had the whole box above it to work with. Checked
-  // once per `backgroundSrc` change, right after the reset above, so it
-  // never clobbers a `load` event this same commit's `onLoad` handler is
-  // about to deliver on its own — this only fires when the image turns out
-  // to already be `complete` by the time the effect runs.
+  // **A backdrop can finish loading before React attaches `onLoad` below.**
+  //
+  // This used to be explained as a `data:` URI problem — no network round trip,
+  // so decoding could beat the listener. The URIs are gone (backdrops are now
+  // cacheable URLs), **and the race is exactly as live**: an `immutable` image
+  // served straight out of the HTTP cache completes just as instantly as a
+  // `data:` URI ever did. Anyone reading "this was a data: thing" and deleting
+  // the effect brings back the bug it guards — `imageNaturalWidth/Height` stuck
+  // at 0, `stageToImageFraction` falling back to {0,0}, and a figure that can be
+  // dragged up but not down.
+  //
+  // Runs once per `backgroundSrc` change, right after the reset above, so it
+  // never clobbers a `load` event this same commit's `onLoad` handler is about
+  // to deliver on its own — it only fires when the image turns out to already
+  // be `complete` by the time the effect runs.
   const backdropRef = useRef(null);
   useEffect(() => {
     const img = backdropRef.current;

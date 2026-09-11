@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react';
 import { socket } from '../socket.js';
-import { fileToSceneBackground, portraitSrc } from '../lib/image.js';
+import { fileToSceneBackground, portraitSrc, localPreviewSrc } from '../lib/image.js';
 import { cropOf } from '../lib/imageCrop.js';
 import { usePictureUpload } from '../lib/usePictureUpload.jsx';
 import CroppedImage from './CroppedImage.jsx';
@@ -42,12 +42,12 @@ export default function SceneEditor({ scene, onClose }) {
   // GM's own screen happens to be shaped, which is the safer thing to see
   // first the moment there IS something to upload.
   const [backgroundFit, setBackgroundFit] = useState(
-    scene.image_data ? scene.background_fit || DEFAULT_BACKGROUND_FIT : 'contain'
+    scene.image_url ? scene.background_fit || DEFAULT_BACKGROUND_FIT : 'contain'
   );
   const fileRef = useRef(null);
 
   const preview = picture
-    ? `data:${picture.imageMimeType};base64,${picture.imageData}`
+    ? localPreviewSrc(picture)
     : portraitSrc(scene);
   const previewCrop = picture
     ? cropOf({ crop_x: picture.cropX, crop_y: picture.cropY, crop_w: picture.cropW, crop_h: picture.cropH })

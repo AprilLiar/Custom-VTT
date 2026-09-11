@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { Dices, PauseOctagon, Wrench, X, Music } from 'lucide-react';
+import { Dices, PauseOctagon, Wrench, X, Music, ImageDown } from 'lucide-react';
 import { useRole } from '../roleContext.jsx';
 import AudioPlayerDialog from './AudioPlayerDialog.jsx';
+import ImageReencodeTool from './ImageReencodeTool.jsx';
 import { registerAudioPanelOpener } from '../lib/audioPanel.js';
 import { socket } from '../socket.js';
 import { getCharacters } from '../lib/api.js';
@@ -264,6 +265,15 @@ const TOOLS = [
     blurb: 'Run the table\u2019s music. Everyone hears the same song at the same moment.',
     icon: Music,
     standalone: true,
+  },
+  {
+    // Renders inside the drawer like the other tools: it is a progress bar and
+    // two buttons, not a workspace, so it has no need of the whole screen.
+    id: 'reencode-images',
+    name: 'Re-encode Images',
+    blurb: 'Shrink every stored picture to WebP. Run once after a batch of uploads.',
+    icon: ImageDown,
+    render: (props) => <ImageReencodeTool {...props} />,
   },
   {
     id: 'roll-requester',

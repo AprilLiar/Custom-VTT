@@ -104,7 +104,14 @@ export default function CharacterSheet() {
   useEffect(() => {
     const onCharacterUpdated = (character) => {
       if (character.id !== characterId) return;
-      setData((prev) => (prev ? { ...prev, character } : prev));
+      // **Merged, not replaced.** character:updated is a PARTIAL row — it
+      // deliberately carries no picture bytes, because it fires on every
+      // Stamina change and a portrait is hundreds of kilobytes (see
+      // omitCharacterArt in server/payloads.js). Replacing here would blank
+      // this sheet's portrait the first time anyone took damage.
+      setData((prev) =>
+        prev ? { ...prev, character: { ...prev.character, ...character } } : prev
+      );
     };
     const onCharacterDeleted = ({ id: deletedId }) => {
       if (deletedId === characterId) navigate('/', { replace: true });
@@ -368,7 +375,7 @@ export default function CharacterSheet() {
               ownerType="character"
               ownerId={data.character.id}
               canEdit={canCreate}
-              hasPortrait={Boolean(data.character.image_data)}
+              hasPortrait={Boolean(data.character.image_url)}
             />
           )}
         </motion.div>

@@ -2,11 +2,12 @@ import path from 'node:path';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
+import compression from 'compression';
 import { createServer } from 'node:http';
 import { Server } from 'socket.io';
 import {
   all, one, run, readMany, writeMany, initDb,
-  syncReplica, syncOnce, syncHealth, startSyncLoop, replicaMode, SYNC_SECONDS,
+  syncReplica, syncOnce, syncHealth, startSyncLoop, replicaMode, SYNC_SECONDS, syncedBytes,
   bootLog, connectDb, probePrimary, PROBE_TIMEOUT_MS,
 } from './db.js';
 import { gateChatLine, gatesCrossed, isValidPip, visibleGates } from './counterGates.js';
@@ -109,6 +110,11 @@ import {
 } from './combatTiming.js';
 import { clampRecoveryExtension } from './combatDamage.js';
 import { parseYouTubeId, expectedPositionMs, nextTrackId } from './audioSync.js';
+import {
+  IMAGE_KINDS, imageSpec, imageUrl, hashImageData, servableMime, sanitizeImageMime,
+  withImageUrl, shapeCharacter,
+} from './images.js';
+import { ORPHAN_SWEEPS, countOrphans, deleteOrphans, trimChatLog, pruneOldFightReplays } from './cleanup.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3001;
@@ -120,6 +126,15 @@ const PORT = process.env.PORT || 3001;
 const pendingRollChecks = new Map();
 
 const app = express();
+
+// **gzip everything (bandwidth).** The app went 60% over Render's included
+// bandwidth, and nothing here was compressed at all. It matters more than it
+// looks: this app's JSON is full of base64, and base64 gzips *well* even when
+// the underlying bytes are already compressed, because it re-encodes 8-bit
+// data into a 64-symbol alphabet with an obvious statistical structure. The
+// built client bundle alone drops from ~968KB to under 300KB on every cold
+// load. Mounted first so it wraps every route below, static assets included.
+app.use(compression());
 
 // **The port opens before the database does, and everything answers 503 until
 // the database boot finishes (bugfix — Render deploys that timed out having
@@ -155,10 +170,22 @@ const httpServer = createServer(app);
 // Exported so a future server/perkAutomations.js PERK_HOOKS entry can
 // broadcast (die:updated/character:updated/etc.) after a manual effect.
 // maxHttpBufferSize raised from Socket.io's 1MB default: chat GIFs are sent
-// raw/unresized (to keep their animation) up to a 4MB client-side cap, which
-// is ~5.3MB once base64-encoded — the default would reject that payload.
+// raw/unresized (to keep their animation) up to a 1MB client-side cap. The
+// headroom above that is deliberate: it is what an upload is allowed to be,
+// not what a broadcast carries — a picture goes out as a URL now (see
+// server/images.js), so this ceiling only ever applies on the way IN.
 // Constructed detached from httpServer on purpose; see the boot gate above.
-export const io = new Server({ maxHttpBufferSize: 8 * 1024 * 1024 });
+// **perMessageDeflate is opt-IN (bandwidth).** Socket.io v4 turns WebSocket
+// compression off by default, and the reason is memory: zlib keeps a context
+// per connection, which at thousands of sockets is real. This app serves one
+// table — a handful of sockets — while shipping JSON and base64, which is
+// exactly the payload compression was invented for. `threshold` leaves the
+// small deltas (die:updated, counter:updated) uncompressed, where the frame
+// overhead would cost more than it saved.
+export const io = new Server({
+  maxHttpBufferSize: 8 * 1024 * 1024,
+  perMessageDeflate: { threshold: 1024 },
+});
 
 // ---------- shared lookups ----------
 
@@ -170,7 +197,38 @@ const getCharacter = (id) => one('SELECT * FROM characters WHERE id = ?', [id]);
 // returning MULTIPLE characters at once strips it before responding, so a
 // phone on a slow connection isn't downloading a full base64 backdrop image
 // per character just to render name-and-portrait cards.
-const omitVitruvianArt = ({ vitruvian_image_data, vitruvian_image_mime_type, ...rest }) => rest;
+// **Stamp a freshly written picture with its cache key.**
+//
+// Done as a small step AFTER the write rather than folded into each of the
+// sixteen INSERT/UPDATE statements that touch an image, and that is a
+// deliberate trade: those statements have sixteen different column orders and
+// parameter arrays, and threading one more value through each of them by hand
+// is exactly the kind of edit that lands the hash in the crop column on the one
+// site nobody re-read. This reads the row back and hashes what is actually
+// there, so it cannot be wrong about which bytes it describes.
+//
+// The cost is one extra UPDATE per upload. Uploading a picture is a human
+// action measured in seconds; this is measured in microseconds against a local
+// replica, and it happens once per picture rather than once per render.
+async function stampImageHash(kind, id) {
+  const spec = imageSpec(kind);
+  const rowId = Number(id);
+  if (!spec || !Number.isInteger(rowId)) return;
+  const row = await one(`SELECT ${spec.data} AS data FROM ${spec.table} WHERE id = ?`, [rowId]);
+  await run(`UPDATE ${spec.table} SET ${spec.hash} = ? WHERE id = ?`, [hashImageData(row?.data), rowId]);
+}
+
+// `omitVitruvianArt` used to live here. It existed because the Tab 1 backdrop
+// was too heavy to include in a list response, which made the single-character
+// endpoint the only place it could come from. At ~60 bytes a URL it now rides
+// everywhere, so `shapeCharacter` (server/images.js) replaces it outright
+// rather than sitting beside it.
+
+// Payload shaping lives in server/images.js — roundResolution.js emits the same
+// events and index.js already imports it, so the helpers have to sit below both
+// or the import graph cycles. `shapeCharacter` there supersedes the
+// `omitCharacterArt` this file briefly held: removing the bytes and supplying a
+// URL in their place is one decision, not two.
 const getDice = (characterId) =>
   all('SELECT * FROM dice WHERE character_id = ? ORDER BY id', [characterId]);
 const getInventory = (characterId) =>
@@ -299,6 +357,19 @@ async function attachInteractions(moves) {
       m.requirement_move_id != null ? (requirementNames.get(m.requirement_move_id) ?? null) : null,
     defense_frame_positions: JSON.parse(m.defense_frame_positions ?? '[]'),
     attack_targets: sanitizeAttackTargets(JSON.parse(m.attack_targets ?? '[]')),
+    // **The move library's art, replaced by a URL — shaped HERE because every
+    // path to a move row passes through this function.** The one that mattered
+    // most is `getMovesFor`, which runs once per SEATED CHARACTER inside
+    // `GET /api/combat`: with `SELECT m.*` feeding it, the whole compendium's
+    // pictures were duplicated per fighter, so six seated characters meant six
+    // copies of every move picture in a single response. Shaping the shared
+    // chokepoint rather than each caller is also what stops a future caller
+    // from quietly reintroducing the bytes.
+    //
+    // Spread last on purpose: it only ever REMOVES `image_data`/`image_mime_type`
+    // and adds `image_url`, and it reads `m` rather than the object being built,
+    // so it cannot disturb any of the derived fields above it.
+    ...withImageUrl('move')(m),
   }));
 }
 
@@ -538,8 +609,7 @@ async function getCharacterPerks(characterId) {
     character_perk_id: r.character_perk_id,
     name: r.name,
     description: r.description,
-    image_data: r.image_data,
-    image_mime_type: r.image_mime_type,
+    image_url: imageUrl('perk', r.id, { data: r.image_data, hash: r.image_hash }),
     tag_ids: tagsBy.get(r.id) ?? [],
     // Whether this Perk has code behind it (server/perks/index.js). A Perk's
     // mechanics bind to its NAME, which is invisible from the outside — the
@@ -1586,6 +1656,70 @@ const wrap = (fn) => (req, res) =>
     }
   });
 
+// **Every stored picture, at a URL the browser can cache forever.**
+//
+// The change this route exists for: images used to travel as base64 `data:`
+// URIs inside JSON, which the browser cache cannot touch — so every portrait
+// was re-downloaded on every page load and every phone unlock, and the scene
+// backdrop rode along on every drag and every pen stroke. Behind a URL keyed by
+// content hash, each picture is fetched once and never again.
+//
+// **One route rather than ten.** `kind` is a KEY into a frozen registry, never
+// a fragment spliced into SQL: an unknown kind is a 404 before a query is built,
+// and the only identifiers that reach the statement are the ones written out in
+// server/images.js. Ten near-identical handlers would be ten places for the
+// cache headers to drift apart.
+//
+// **The three security headers are not decoration.** As inert `data:` URIs
+// these bytes were harmless; served from our own origin, the stored
+// `image_mime_type` becomes a content type the browser obeys — and this app has
+// no auth by design, so anyone with the link can upload. `servableMime` is the
+// real defence (an allow-list, applied on the way in as well); nosniff and the
+// null CSP are there for whatever it fails to imagine.
+app.get('/api/img/:kind/:id/:hash', wrap(async (req, res) => {
+  const spec = imageSpec(req.params.kind);
+  const id = Number(req.params.id);
+  if (!spec || !Number.isInteger(id) || id < 1) return res.status(404).end();
+
+  const row = await one(
+    `SELECT ${spec.data} AS data, ${spec.mime} AS mime, ${spec.hash} AS hash FROM ${spec.table} WHERE id = ?`,
+    [id]
+  );
+  if (!row?.data) return res.status(404).end();
+
+  // **`immutable` only where the URL is actually telling the truth**, and the
+  // truth is recomputed here rather than read out of the column.
+  //
+  // The stored `image_hash` is an optimisation — it lets the hot paths select a
+  // cache key without dragging the bytes into the process — but trusting it
+  // here would make a stale one dangerous: a write that updated the picture and
+  // missed the hash would still satisfy `req.params.hash === row.hash`, and a
+  // year-long cache entry would be pinned to bytes that have moved on. Hashing
+  // what we are actually about to send makes that unrepresentable: a stale
+  // stored hash can then only ever produce a URL that fails to match, which is
+  // served correctly and simply not cached. sha256 over a picture is
+  // microseconds, and a given client fetches a given URL at most once, ever.
+  const trueHash = hashImageData(row.data);
+  const exact = req.params.hash === trueHash;
+  res.set('Cache-Control', exact ? 'public, max-age=31536000, immutable' : 'no-store');
+  res.type(servableMime(row.mime));
+  res.set('X-Content-Type-Options', 'nosniff');
+  res.set('Content-Security-Policy', "default-src 'none'; sandbox");
+
+  // An ETag buys nothing while `immutable` holds — the browser will not ask —
+  // but a hard reload revalidates, and answering 304 there turns a GM's
+  // habitual force-refresh from "re-download every picture" into a handful of
+  // empty responses.
+  if (exact) {
+    res.set('ETag', `"${trueHash}"`);
+    if (req.fresh) return res.status(304).end();
+  }
+
+  const buffer = Buffer.from(row.data, 'base64');
+  res.set('Content-Length', String(buffer.length));
+  return res.end(buffer);
+}));
+
 app.get('/api/health', async (_req, res) => {
   try {
     const started = Date.now();
@@ -1625,7 +1759,7 @@ app.get('/api/characters', wrap(async (_req, res) => {
   }
   res.json(
     characters.map((character) => ({
-      ...omitVitruvianArt(character),
+      ...shapeCharacter(character),
       stances: stancesByCharacter.get(character.id) ?? [],
     }))
   );
@@ -1647,7 +1781,9 @@ async function getRelationshipBoard(ownerCharacterId) {
     ['SELECT * FROM relationship_nodes WHERE owner_character_id = ? ORDER BY id', [ownerCharacterId]],
     ['SELECT * FROM relationship_edges WHERE owner_character_id = ? ORDER BY id', [ownerCharacterId]],
   ]);
-  return { people, nodes, edges };
+  // The board's own people carry portraits; shaped here so the REST read and
+  // the emitRelationships broadcast can never disagree about the format.
+  return { people: people.map(withImageUrl('person')), nodes, edges };
 }
 
 // ---------------------------------------------------------------------------
@@ -1758,22 +1894,39 @@ function mayWriteScenePicture(viewer, ownerType, ownerId) {
 // ownership client-side the same way scene_pictures' own rows do.
 async function buildStagePayload() {
   const state = await one('SELECT active_scene_id FROM scene_state WHERE id = 1');
-  const activeScene = state?.active_scene_id
+  // **Hash and a presence flag, never the bytes (bandwidth).** The backdrop is
+  // the biggest single row in this payload, and this payload is emitted PER
+  // SOCKET from thirteen call sites — every drag, every resize, every summon.
+  // Selecting `image_hash` instead of `image_data` is most of why a stage
+  // broadcast went from hundreds of kilobytes to hundreds of bytes.
+  const sceneRow = state?.active_scene_id
     ? await one(
-        'SELECT id, name, image_data, image_mime_type, background_fit FROM scenes WHERE id = ?',
+        `SELECT id, name, image_hash, (image_data IS NOT NULL) AS has_image, background_fit
+         FROM scenes WHERE id = ?`,
         [state.active_scene_id]
       )
+    : null;
+  const activeScene = sceneRow
+    ? {
+        id: sceneRow.id,
+        name: sceneRow.name,
+        background_fit: sceneRow.background_fit,
+        image_url: imageUrl('scene', sceneRow.id, {
+          hash: sceneRow.image_hash,
+          present: sceneRow.has_image,
+        }),
+      }
     : null;
   // **Scene-scoped (decided, revised) — a summon belongs to exactly one
   // Scene now (scene_summons.scene_id, NOT NULL; see db.js's own comment
   // on the column), so this only ever reads the ACTIVE Scene's own roster.
   // No active Scene means nothing to show, same as the backdrop itself.**
-  const summons = activeScene
+  const summonRows = activeScene
     ? await all(
         `
     SELECT ss.id, ss.side, ss.character_id, ss.temp_npc_id, ss.scene_picture_id,
            ss.pos_x, ss.pos_y, ss.scale, ss.is_hidden,
-           sp.image_data, sp.image_mime_type,
+           sp.image_hash AS picture_hash,
            COALESCE(c.name, tn.name) AS name
     FROM scene_summons ss
     JOIN scene_pictures sp ON sp.id = ss.scene_picture_id
@@ -1785,6 +1938,18 @@ async function buildStagePayload() {
         [activeScene.id]
       )
     : [];
+  // **Not `withImageUrl` here.** That helper reads `row.id` by definition, and a
+  // summon row's own id is `scene_summons.id` — the PICTURE belongs to
+  // `scene_pictures.id`, which rides along as `scene_picture_id`. So this one is
+  // explicit. `present: true` is the schema speaking rather than an assumption:
+  // `scene_pictures.image_data` is NOT NULL.
+  const summons = summonRows.map(({ picture_hash, ...summon }) => ({
+    ...summon,
+    image_url: imageUrl('scene-picture', summon.scene_picture_id, {
+      hash: picture_hash,
+      present: true,
+    }),
+  }));
   // Drawings (decided, new) — every stroke on the active Scene, oldest
   // first: `id ASC`, not summons' own `DESC`, because replay order is load-
   // bearing here (see db.js's own comment on scene_drawings — an eraser
@@ -1864,6 +2029,31 @@ app.get('/api/scene-notes', wrap(async (req, res) => {
   res.json(await all('SELECT * FROM scene_notes WHERE scene_id = ? ORDER BY id', [sceneId]));
 }));
 
+// **What every stored picture costs, without sending any of them (GM only).**
+//
+// Feeds the Re-encode Images tool. Sizes and ids, never bytes: the tool's whole
+// job is to find the pictures that are too big, so a listing that shipped them
+// would be self-defeating. `LENGTH()` on the base64 column is within a few
+// percent of the decoded size (base64 is a fixed 4:3 expansion), which is far
+// more precision than "is this one worth re-encoding" needs.
+app.get('/api/image-inventory', wrap(async (req, res) => {
+  const viewer = viewerFromQuery(req.query);
+  if (viewer?.role !== 'gm') return res.status(403).json({ error: 'GM only' });
+  const items = [];
+  for (const [kind, spec] of Object.entries(IMAGE_KINDS)) {
+    // chat_log is wiped on every boot; there is nothing durable to re-encode.
+    if (spec.table === 'chat_log') continue;
+    const rows = await all(
+      `SELECT id, LENGTH(${spec.data}) AS bytes, ${spec.mime} AS mime, ${spec.hash} AS hash
+       FROM ${spec.table} WHERE ${spec.data} IS NOT NULL ORDER BY id`
+    );
+    for (const row of rows) {
+      items.push({ kind, id: row.id, bytes: row.bytes, mime: row.mime, hash: row.hash });
+    }
+  }
+  res.json({ items, totalBytes: items.reduce((sum, i) => sum + (i.bytes ?? 0), 0) });
+}));
+
 // **The whole music library in one trip, GM only.** Playlists and their tracks
 // are GM furniture — a Player never enumerates them, they only ever hear
 // whatever is currently playing (see the audio:state broadcast). Both lists
@@ -1908,7 +2098,7 @@ app.get('/api/character-folders', wrap(async (_req, res) => {
 // Scene tab: the Temp NPC roster's own library — open read, same reasoning
 // as character-folders above (GM-*managed*, not GM-*secret*).
 app.get('/api/temp-npcs', wrap(async (_req, res) => {
-  res.json(await all('SELECT * FROM temp_npcs ORDER BY name'));
+  res.json((await all('SELECT * FROM temp_npcs ORDER BY name')).map(withImageUrl('temp-npc')));
 }));
 
 app.get('/api/temp-npc-folders', wrap(async (_req, res) => {
@@ -1927,13 +2117,13 @@ app.get('/api/scene-pictures', wrap(async (req, res) => {
     return res.json([]);
   }
   const column = ownerType === 'character' ? 'character_id' : 'temp_npc_id';
-  res.json(await all(`SELECT * FROM scene_pictures WHERE ${column} = ? ORDER BY id`, [id]));
+  res.json((await all(`SELECT * FROM scene_pictures WHERE ${column} = ? ORDER BY id`, [id])).map(withImageUrl('scene-picture')));
 }));
 
 // Scene tab: the GM's Scenes library (Phase 4) — open read, same reasoning
 // as temp-npcs/character-folders above.
 app.get('/api/scenes', wrap(async (_req, res) => {
-  res.json(await all('SELECT * FROM scenes ORDER BY name'));
+  res.json((await all('SELECT * FROM scenes ORDER BY name')).map(withImageUrl('scene')));
 }));
 
 app.get('/api/scene-folders', wrap(async (_req, res) => {
@@ -2007,7 +2197,7 @@ app.get('/api/quirks', wrap(async (_req, res) => {
 }));
 
 app.get('/api/tells', wrap(async (_req, res) => {
-  res.json(await all('SELECT * FROM tells ORDER BY id'));
+  res.json((await all('SELECT * FROM tells ORDER BY id')).map(withImageUrl('tell')));
 }));
 
 app.get('/api/tags', wrap(async (_req, res) => {
@@ -2057,7 +2247,7 @@ app.get('/api/perks', wrap(async (_req, res) => {
   }
   res.json(
     perks.map((p) => ({
-      ...p,
+      ...withImageUrl('perk')(p),
       granted_character_ids: grantedBy.get(p.id) ?? [],
       tag_ids: tagsBy.get(p.id) ?? [],
       automated: isAutomatedPerk(p.name),
@@ -2274,7 +2464,7 @@ app.get('/api/combat', wrap(async (req, res) => {
 
   const characters = {};
   for (const character of charRows) {
-    characters[character.id] = { character: omitVitruvianArt(character), dice: [], stances: [], weapon: null };
+    characters[character.id] = { character: shapeCharacter(character), dice: [], stances: [], weapon: null };
   }
   for (const weapon of weaponRows) {
     if (characters[weapon.character_id]) characters[weapon.character_id].weapon = weapon;
@@ -2340,7 +2530,9 @@ app.post('/api/characters', wrap(async (req, res) => {
   );
 
   const character = await getCharacter(id);
-  io.emit('character:created', character);
+  await stampImageHash('character', character.id);
+  await stampImageHash('character-art', character.id);
+  io.emit('character:created', shapeCharacter(character));
   res.status(201).json(character);
 }));
 
@@ -2374,7 +2566,9 @@ app.put('/api/characters/:id', wrap(async (req, res) => {
   }
 
   const updated = await getCharacter(character.id);
-  io.emit('character:updated', updated);
+  await stampImageHash('character', updated.id);
+  await stampImageHash('character-art', updated.id);
+  io.emit('character:updated', shapeCharacter(updated));
   res.json(updated);
 }));
 
@@ -2501,10 +2695,11 @@ const CHAT_HISTORY_LIMIT = 300;
 app.get('/api/chat', wrap(async (_req, res) => {
   const rows = await all(`
     SELECT c.id, c.kind, c.character_id, c.modifier, c.dice_rolled, c.content,
-           c.image_data, c.image_mime_type, c.payload, c.created_at,
+           c.image_hash, (c.image_data IS NOT NULL) AS has_image, c.payload, c.created_at,
            ch.name AS character_name,
-           m.id AS move_id, m.name AS move_name, m.image_data AS move_image_data,
-           m.image_mime_type AS move_image_mime_type, m.startup_tics AS move_startup_tics,
+           m.id AS move_id, m.name AS move_name,
+           m.image_hash AS move_image_hash, (m.image_data IS NOT NULL) AS move_has_image,
+           m.startup_tics AS move_startup_tics,
            m.active_tics AS move_active_tics, m.recovery_tics AS move_recovery_tics,
            m.defense_frame_positions AS move_defense_frame_positions,
            m.stamina_cost AS move_stamina_cost
@@ -2574,7 +2769,7 @@ app.get('/api/chat', wrap(async (_req, res) => {
         // a deploy leaves none of them behind.)
         total: rollTotal(dice, row.modifier),
         message: row.content,
-        imageData: row.image_data,
+        imageUrl: imageUrl('chat', row.id, { hash: row.image_hash, present: row.has_image }),
         imageMimeType: row.image_mime_type,
         move: row.kind === 'move_reveal'
           ? row.move_id == null
@@ -2582,8 +2777,7 @@ app.get('/api/chat', wrap(async (_req, res) => {
             : {
                 id: row.move_id,
                 name: row.move_name,
-                imageData: row.move_image_data,
-                imageMimeType: row.move_image_mime_type,
+                imageUrl: imageUrl('move', row.move_id, { hash: row.move_image_hash, present: row.move_has_image }),
                 startupTics: row.move_startup_tics,
                 activeTics: row.move_active_tics,
                 recoveryTics: row.move_recovery_tics,
@@ -3322,7 +3516,7 @@ io.on('connection', (socket) => {
     ]);
     // Broadcast from the rows already in hand (current_size/bonus/status
     // aren't touched by this UPDATE, only locked_*) — no re-fetch needed.
-    io.emit('character:updated', { ...character, max_stamina: maxStamina, current_stamina: currentStamina });
+    io.emit('character:updated', shapeCharacter({ ...character, max_stamina: maxStamina, current_stamina: currentStamina }));
     for (const die of dice) {
       io.emit(
         'die:updated',
@@ -3642,9 +3836,9 @@ io.on('connection', (socket) => {
         diePayload({ ...die, locked_size: die.current_size, locked_bonus: die.bonus, locked_status: die.status })
       );
     }
-    io.emit('character:updated', {
+    io.emit('character:updated', shapeCharacter({
       ...(await getCharacter(character.id)),
-    });
+    }));
     await postSystemMessage(
       io,
       preset
@@ -3690,7 +3884,7 @@ io.on('connection', (socket) => {
       currentStamina,
       character.id,
     ]);
-    io.emit('character:updated', { ...character, current_stamina: currentStamina });
+    io.emit('character:updated', shapeCharacter({ ...character, current_stamina: currentStamina }));
     await logRoll(io, {
       characterId: character.id,
       characterName: character.name,
@@ -3722,7 +3916,7 @@ io.on('connection', (socket) => {
     ]);
     // Broadcast the row we already have plus the one field we just changed —
     // no need to round-trip back to the DB for data we already know.
-    io.emit('character:updated', { ...character, current_stamina: currentStamina });
+    io.emit('character:updated', shapeCharacter({ ...character, current_stamina: currentStamina }));
   });
 
   on('inventory:add', async ({ characterId, itemName, description }) => {
@@ -3851,9 +4045,10 @@ io.on('connection', (socket) => {
       'INSERT INTO tells (name, image_data, image_mime_type, crop_x, crop_y, crop_w, crop_h) VALUES (?, ?, ?, ?, ?, ?, ?)',
       [tellName, imageData ?? null, imageData ? (imageMimeType ?? 'image/png') : null, ...cropValues(payload)]
     );
-    io.emit('tell:created', await one('SELECT * FROM tells WHERE id = ?', [
+    await stampImageHash('tell', Number(result.lastInsertRowid));
+    io.emit('tell:created', withImageUrl('tell')(await one('SELECT * FROM tells WHERE id = ?', [
       Number(result.lastInsertRowid),
-    ]));
+    ])));
   });
 
   on('tell:update', async (payload) => {
@@ -3874,7 +4069,8 @@ io.on('connection', (socket) => {
     } else {
       await run('UPDATE tells SET name = ? WHERE id = ?', [tellName, tell.id]);
     }
-    io.emit('tell:updated', await one('SELECT * FROM tells WHERE id = ?', [tell.id]));
+    await stampImageHash('tell', tell.id);
+    io.emit('tell:updated', withImageUrl('tell')(await one('SELECT * FROM tells WHERE id = ?', [tell.id])));
   });
 
   on('tell:delete', async ({ tellId }) => {
@@ -4104,6 +4300,26 @@ io.on('connection', (socket) => {
           ...cropValues(payload)]
       );
       id = Number(result.lastInsertRowid);
+      // **Copying a move copies its picture, row to row (bandwidth).** The
+      // client used to send the source's base64 straight back up so the new row
+      // could be written with it; it no longer holds those bytes at all, only a
+      // URL. Naming the source instead keeps the picture inside the database —
+      // the same move `scene_picture:copy_from_profile` already makes — and
+      // costs nothing on the wire. The hash is copied across too: identical
+      // bytes, identical hash, and the copy's URL differs only by its own id.
+      if (payload.imageData === undefined && payload.copyImageFromMoveId != null) {
+        const source = await one(
+          'SELECT image_data, image_mime_type, image_hash, crop_x, crop_y, crop_w, crop_h FROM moves WHERE id = ?',
+          [Number(payload.copyImageFromMoveId)]
+        );
+        if (source?.image_data) {
+          await run(
+            `UPDATE moves SET image_data = ?, image_mime_type = ?, image_hash = ?, ${CROP_COLUMNS} WHERE id = ?`,
+            [source.image_data, source.image_mime_type, source.image_hash,
+              source.crop_x, source.crop_y, source.crop_w, source.crop_h, id]
+          );
+        }
+      }
     } else {
       await run(
         `UPDATE moves SET name = ?, is_default = ?, tell_id = ?, startup_tics = ?, active_tics = ?,
@@ -4187,14 +4403,15 @@ io.on('connection', (socket) => {
 
   on('move:create', async (payload) => {
     const move = await writeMove(null, payload ?? {});
-    if (move) io.emit('move:created', move);
+    if (move) await stampImageHash('move', move.id);
+    if (move) io.emit('move:created', withImageUrl('move')(move));
   });
 
   on('move:update', async (payload) => {
     const existing = await one('SELECT * FROM moves WHERE id = ?', [payload?.moveId]);
     if (!existing) return;
     const move = await writeMove(existing.id, payload);
-    if (move) io.emit('move:updated', move);
+    if (move) io.emit('move:updated', withImageUrl('move')(move));
   });
 
   on('move:delete', async ({ moveId }) => {
@@ -4370,7 +4587,8 @@ io.on('connection', (socket) => {
       if (folder) target = folder.id;
     }
     await run('UPDATE moves SET folder_id = ? WHERE id = ?', [target, move.id]);
-    io.emit('move:updated', await getMove(move.id));
+    await stampImageHash('move', move.id);
+    io.emit('move:updated', withImageUrl('move')(await getMove(move.id)));
   });
 
   // Custom Compendium ordering (decided, new). The client sends the full
@@ -4467,7 +4685,7 @@ io.on('connection', (socket) => {
       if (folder) target = folder.id;
     }
     await run('UPDATE characters SET folder_id = ? WHERE id = ?', [target, character.id]);
-    io.emit('character:updated', { ...character, folder_id: target });
+    io.emit('character:updated', shapeCharacter({ ...character, folder_id: target }));
   });
 
   // ---------------------------------------------------------------------
@@ -4530,7 +4748,8 @@ io.on('connection', (socket) => {
       if (row) folder = row.id;
     }
     const result = await run('INSERT INTO temp_npcs (name, folder_id) VALUES (?, ?)', [npcName, folder]);
-    io.emit('temp_npc:created', await one('SELECT * FROM temp_npcs WHERE id = ?', [Number(result.lastInsertRowid)]));
+    await stampImageHash('temp-npc', Number(result.lastInsertRowid));
+    io.emit('temp_npc:created', withImageUrl('temp-npc')(await one('SELECT * FROM temp_npcs WHERE id = ?', [Number(result.lastInsertRowid)])));
   });
 
   // The name is always sent; a picture is only sent when the file picker in
@@ -4549,7 +4768,8 @@ io.on('connection', (socket) => {
         ? [npcName, String(imageData), String(imageMimeType ?? 'image/jpeg'), ...cropValues(payload), npc.id]
         : [npcName, npc.id]
     );
-    io.emit('temp_npc:updated', await one('SELECT * FROM temp_npcs WHERE id = ?', [npc.id]));
+    await stampImageHash('temp-npc', npc.id);
+    io.emit('temp_npc:updated', withImageUrl('temp-npc')(await one('SELECT * FROM temp_npcs WHERE id = ?', [npc.id])));
   });
 
   on('temp_npc:set_folder', async ({ tempNpcId, folderId }) => {
@@ -4562,7 +4782,7 @@ io.on('connection', (socket) => {
       if (folder) target = folder.id;
     }
     await run('UPDATE temp_npcs SET folder_id = ? WHERE id = ?', [target, npc.id]);
-    io.emit('temp_npc:updated', { ...npc, folder_id: target });
+    io.emit('temp_npc:updated', withImageUrl('temp-npc')({ ...npc, folder_id: target }));
   });
 
   on('temp_npc:delete', async ({ tempNpcId }) => {
@@ -4605,9 +4825,12 @@ io.on('connection', (socket) => {
       `INSERT INTO scene_pictures (${ownerColumn(ownerType)}, name, image_data, image_mime_type) VALUES (?, ?, ?, ?)`,
       [id, pictureName, String(imageData), String(imageMimeType ?? 'image/png')]
     );
+    await stampImageHash('scene-picture', Number(result.lastInsertRowid));
     io.emit(
       'scene_picture:created',
-      await one('SELECT * FROM scene_pictures WHERE id = ?', [Number(result.lastInsertRowid)])
+      withImageUrl('scene-picture')(
+        await one('SELECT * FROM scene_pictures WHERE id = ?', [Number(result.lastInsertRowid)])
+      )
     );
   });
 
@@ -4629,9 +4852,12 @@ io.on('connection', (socket) => {
       'INSERT INTO scene_pictures (character_id, name, image_data, image_mime_type) VALUES (?, ?, ?, ?)',
       [id, 'Profile', character.image_data, character.image_mime_type || 'image/jpeg']
     );
+    await stampImageHash('scene-picture', Number(result.lastInsertRowid));
     io.emit(
       'scene_picture:created',
-      await one('SELECT * FROM scene_pictures WHERE id = ?', [Number(result.lastInsertRowid)])
+      withImageUrl('scene-picture')(
+        await one('SELECT * FROM scene_pictures WHERE id = ?', [Number(result.lastInsertRowid)])
+      )
     );
   });
 
@@ -4644,7 +4870,8 @@ io.on('connection', (socket) => {
     const pictureName = String(name ?? '').trim();
     if (!pictureName) return;
     await run('UPDATE scene_pictures SET name = ? WHERE id = ?', [pictureName, picture.id]);
-    io.emit('scene_picture:updated', await one('SELECT * FROM scene_pictures WHERE id = ?', [picture.id]));
+    await stampImageHash('scene-picture', picture.id);
+    io.emit('scene_picture:updated', withImageUrl('scene-picture')(await one('SELECT * FROM scene_pictures WHERE id = ?', [picture.id])));
   });
 
   on('scene_picture:delete', async ({ scenePictureId }) => {
@@ -4718,7 +4945,8 @@ io.on('connection', (socket) => {
       if (row) folder = row.id;
     }
     const result = await run('INSERT INTO scenes (name, folder_id) VALUES (?, ?)', [sceneName, folder]);
-    io.emit('scene:created', await one('SELECT * FROM scenes WHERE id = ?', [Number(result.lastInsertRowid)]));
+    await stampImageHash('scene', Number(result.lastInsertRowid));
+    io.emit('scene:created', withImageUrl('scene')(await one('SELECT * FROM scenes WHERE id = ?', [Number(result.lastInsertRowid)])));
   });
 
   // The name is always sent; a background is only sent when the file picker
@@ -4743,7 +4971,8 @@ io.on('connection', (socket) => {
         ? [sceneName, fit, String(imageData), String(imageMimeType ?? 'image/jpeg'), ...cropValues(payload), scene.id]
         : [sceneName, fit, scene.id]
     );
-    io.emit('scene:updated', await one('SELECT * FROM scenes WHERE id = ?', [scene.id]));
+    await stampImageHash('scene', scene.id);
+    io.emit('scene:updated', withImageUrl('scene')(await one('SELECT * FROM scenes WHERE id = ?', [scene.id])));
     // The active Scene's own background may have just changed — the stage
     // carries a copy of that row, not a live join, so it needs its own push.
     const state = await one('SELECT active_scene_id FROM scene_state WHERE id = 1');
@@ -4760,7 +4989,7 @@ io.on('connection', (socket) => {
       if (folder) target = folder.id;
     }
     await run('UPDATE scenes SET folder_id = ? WHERE id = ?', [target, scene.id]);
-    io.emit('scene:updated', { ...scene, folder_id: target });
+    io.emit('scene:updated', withImageUrl('scene')({ ...scene, folder_id: target }));
   });
 
   on('scene:delete', async ({ sceneId }) => {
@@ -4924,9 +5153,20 @@ io.on('connection', (socket) => {
     const state = await one('SELECT active_scene_id FROM scene_state WHERE id = 1');
     if (!state?.active_scene_id) return;
     if (!Array.isArray(points) || points.length < 2 || points.length > MAX_DRAWING_POINTS) return;
-    const cleanPoints = points.map((p) => [clamp(Number(p?.[0]), 0, 1), clamp(Number(p?.[1]), 0, 1)]);
+    // **Four decimals, not full double precision (bandwidth).** These are
+    // fractions of the stage, so the fourth decimal is a ten-thousandth of the
+    // canvas — far finer than a pixel on any screen, and invisible on every
+    // one. Stored verbatim they serialise as `0.43212345678901234`, ~41 bytes
+    // per point against a 4000-point cap, and the whole accumulated set used
+    // to be re-sent on every stage change. Rounding costs nothing visible and
+    // takes roughly two thirds off every stroke, stored and broadcast alike.
+    const round4 = (n) => Math.round(n * 10000) / 10000;
+    const cleanPoints = points.map((p) => [
+      round4(clamp(Number(p?.[0]), 0, 1)),
+      round4(clamp(Number(p?.[1]), 0, 1)),
+    ]);
     if (cleanPoints.some(([x, y]) => !Number.isFinite(x) || !Number.isFinite(y))) return;
-    await run(
+    const result = await run(
       'INSERT INTO scene_drawings (scene_id, points, color, width, is_eraser) VALUES (?, ?, ?, ?, ?)',
       [
         state.active_scene_id,
@@ -4936,7 +5176,21 @@ io.on('connection', (socket) => {
         isEraser ? 1 : 0,
       ]
     );
-    await emitStageUpdated();
+    // **The one new stroke, not the whole stage (bandwidth).** This handler
+    // used to call emitStageUpdated(), which rebuilds the ENTIRE stage — the
+    // scene backdrop, every summoned figure's picture, and every stroke ever
+    // drawn — and sends it to every connected socket. Measured at ~600KB per
+    // pen stroke, per viewer: a single sketch could run to a gigabyte across a
+    // table. A stroke is append-only by nature (see db.js's note on why an
+    // eraser is a stroke too, not a deletion), so a delta is not merely
+    // cheaper here, it is the honest shape.
+    io.emit('scene_draw:added', {
+      id: Number(result.lastInsertRowid),
+      points: cleanPoints,
+      color: typeof color === 'string' && color ? color.slice(0, 32) : '#ef4444',
+      width: clamp(Number(width) || 0.01, 0.001, 0.2),
+      is_eraser: isEraser ? 1 : 0,
+    });
   });
 
   // The eraser's "double-press" gesture — wipes every stroke on the active
@@ -4949,7 +5203,8 @@ io.on('connection', (socket) => {
     const state = await one('SELECT active_scene_id FROM scene_state WHERE id = 1');
     if (!state?.active_scene_id) return;
     await run('DELETE FROM scene_drawings WHERE scene_id = ?', [state.active_scene_id]);
-    await emitStageUpdated();
+    // Its own event too, for the same reason as scene_draw:added above.
+    io.emit('scene_draw:cleared', {});
   });
 
   // GM Notes (decided, new) — see the tables' own comment in db.js for why
@@ -5070,6 +5325,40 @@ io.on('connection', (socket) => {
     const ts = await one('SELECT * FROM scene_timestamps WHERE id = ?', [timestampId]);
     if (!ts) return;
     io.emit('stage:timestamp_played', { date: ts.date, subtext: ts.subtext });
+  });
+
+  // **Replace one stored picture with a smaller encoding of itself (GM only).**
+  //
+  // The counterpart of /api/image-inventory: the browser fetches a picture,
+  // re-encodes it to WebP on a canvas, and hands the result back here. Doing it
+  // client-side is what keeps the server free of an image library for work that
+  // only needs doing once — and it is the only way to reach the live database
+  // without handing anybody a set of Turso credentials.
+  //
+  // Writes the three image columns and nothing else, through the same registry
+  // the read route uses, so it cannot touch a column it was not meant to. The
+  // mime is allow-listed on the way in like every other image write.
+  on('image:reencode', async ({ kind, id, imageData, imageMimeType } = {}) => {
+    if (socket.data.identity?.role !== 'gm') return;
+    const spec = imageSpec(kind);
+    const rowId = Number(id);
+    const data = typeof imageData === 'string' && imageData ? imageData : null;
+    if (!spec || !Number.isInteger(rowId) || !data) return;
+    const existing = await one(`SELECT LENGTH(${spec.data}) AS bytes FROM ${spec.table} WHERE id = ?`, [rowId]);
+    if (!existing) return;
+    // **Never make a picture bigger.** A re-encode that came out worse than the
+    // original — a tiny image where WebP's header dominates, a photograph
+    // already saved at a lower quality — is refused rather than stored, so the
+    // tool can only ever shrink the database.
+    if (data.length >= (existing.bytes ?? 0)) {
+      socket.emit('image:reencoded', { kind, id: rowId, skipped: 'not-smaller', bytes: existing.bytes });
+      return;
+    }
+    await run(
+      `UPDATE ${spec.table} SET ${spec.data} = ?, ${spec.mime} = ?, ${spec.hash} = ? WHERE id = ?`,
+      [data, sanitizeImageMime(imageMimeType, 'image/webp'), hashImageData(data), rowId]
+    );
+    socket.emit('image:reencoded', { kind, id: rowId, was: existing.bytes, now: data.length });
   });
 
   // ======================================================== Audio Player
@@ -5474,14 +5763,16 @@ io.on('connection', (socket) => {
 
   on('perk:create', async (payload) => {
     const perk = await writePerk(null, payload ?? {});
-    if (perk) io.emit('perk:created', perk);
+    if (perk) await stampImageHash('perk', perk.id);
+    if (perk) io.emit('perk:created', withImageUrl('perk')(perk));
   });
 
   on('perk:update', async (payload) => {
     const existing = await one('SELECT * FROM perks WHERE id = ?', [payload?.perkId]);
     if (!existing) return;
     const perk = await writePerk(existing.id, payload);
-    if (perk) io.emit('perk:updated', perk);
+    if (perk) await stampImageHash('perk', perk.id);
+    if (perk) io.emit('perk:updated', withImageUrl('perk')(perk));
   });
 
   on('perk:delete', async ({ perkId }) => {
@@ -6056,6 +6347,13 @@ io.on('connection', (socket) => {
       [owner.id, personName, imageData ? String(imageData) : null, imageData ? String(imageMimeType ?? 'image/jpeg') : null,
         ...cropValues(payload)]
     );
+    if (imageData) {
+      const created = await one(
+        'SELECT id FROM relationship_people WHERE owner_character_id = ? ORDER BY id DESC LIMIT 1',
+        [owner.id]
+      );
+      await stampImageHash('person', created?.id);
+    }
     await emitRelationships(owner.id);
   });
 
@@ -6076,6 +6374,7 @@ io.on('connection', (socket) => {
         ? [personName, String(imageData), String(imageMimeType ?? 'image/jpeg'), ...cropValues(payload), person.id]
         : [personName, person.id]
     );
+    if (imageData) await stampImageHash('person', person.id);
     await emitRelationships(person.owner_character_id);
   });
 
@@ -6351,19 +6650,34 @@ io.on('connection', (socket) => {
       typeof text === 'string' ? text.trim().slice(0, MAX_CHAT_MESSAGE_LENGTH) : '';
     const image = typeof imageData === 'string' && imageData ? imageData : null;
     if (!message && !image) return;
-    const mimeType = image ? imageMimeType || 'image/png' : null;
-    await run(
-      `INSERT INTO chat_log (kind, character_id, dice_rolled, content, image_data, image_mime_type)
-       VALUES ('message', ?, '[]', ?, ?, ?)`,
-      [asGm ? GM_CHAT_SENTINEL_ID : character.id, message || null, image, mimeType]
+    const mimeType = image ? sanitizeImageMime(imageMimeType, 'image/png') : null;
+    const result = await run(
+      `INSERT INTO chat_log (kind, character_id, dice_rolled, content, image_data, image_mime_type, image_hash)
+       VALUES ('message', ?, '[]', ?, ?, ?, ?)`,
+      [asGm ? GM_CHAT_SENTINEL_ID : character.id, message || null, image, mimeType, hashImageData(image)]
     );
+    // **The picture goes out as a URL, not as bytes (bandwidth).** A chat GIF
+    // could be ~5.3MB base64, echoed to every socket including the uploader's
+    // own — and then re-sent inside GET /api/chat on every page load and every
+    // phone unlock for as long as it stayed in the readable tail. As a URL it
+    // is fetched once per person and cached.
+    //
+    // The row id is captured for the same reason: it is what the URL is built
+    // from, and ChatPanel can now key on it instead of falling back to the
+    // list index.
+    // **Keep only what anyone can scroll back to.** CHAT_HISTORY_LIMIT is a READ
+    // limit — GET /api/chat returns the newest N — but nothing ever deleted the
+    // rest, so a long session left everything older in the database, unreachable
+    // by anybody and re-downloaded on every cold start.
+    await run(trimChatLog(CHAT_HISTORY_LIMIT));
+    const id = Number(result.lastInsertRowid);
     io.emit('chat:message', {
+      id,
       kind: 'message',
       characterId: asGm ? null : character.id,
       characterName: asGm ? 'GM' : character.name,
       message: message || null,
-      imageData: image,
-      imageMimeType: mimeType,
+      imageUrl: imageUrl('chat', id, { data: image }),
       timestamp: new Date().toISOString(),
     });
   });
@@ -6665,7 +6979,7 @@ io.on('connection', (socket) => {
     );
     for (const c of firstRoundChars) {
       if (c.current_stamina !== c.max_stamina) {
-        io.emit('character:updated', { ...c, current_stamina: c.max_stamina });
+        io.emit('character:updated', shapeCharacter({ ...c, current_stamina: c.max_stamina }));
       }
     }
 
@@ -7179,7 +7493,7 @@ io.on('connection', (socket) => {
     if (character && pending !== 0) {
       const newStamina = clamp(character.current_stamina - pending, 0, character.max_stamina);
       await run('UPDATE characters SET current_stamina = ? WHERE id = ?', [newStamina, characterId]);
-      io.emit('character:updated', { ...character, current_stamina: newStamina });
+      io.emit('character:updated', shapeCharacter({ ...character, current_stamina: newStamina }));
     }
     await Promise.all([
       // Each row's own effective cost is stamped on as stamina_committed_amount
@@ -7451,8 +7765,17 @@ io.on('connection', (socket) => {
 // ---------- static frontend ----------
 
 const clientDist = path.join(__dirname, '..', 'client', 'dist');
-app.use(express.static(clientDist));
+// **Vite content-hashes every filename**, so an asset URL can never refer to
+// different bytes tomorrow — which is exactly the condition `immutable`
+// requires. Without this, Express defaults to `max-age=0` and every returning
+// visitor pays a conditional request per asset just to be told nothing
+// changed. `index.html` is the one file whose URL is stable while its contents
+// change on every deploy, so it is explicitly excluded below.
+app.use(express.static(clientDist, { maxAge: '1y', immutable: true, index: false }));
 app.get('*', (_req, res) => {
+  // The SPA shell names the current bundle, so a cached copy would pin a
+  // browser to the previous deploy's JavaScript.
+  res.set('Cache-Control', 'no-cache');
   res.sendFile(path.join(clientDist, 'index.html'));
 });
 
@@ -7537,6 +7860,14 @@ console.log(
     : `Database: embedded replica with offline writes, synced from the primary in ${syncMs}ms — ` +
       `reads AND writes are local, pushed every ${SYNC_SECONDS}s`
 );
+// **What the boot pull actually cost (bandwidth).** Render's free tier has no
+// persistent disk, so `replica.db` is gone on every cold start and this first
+// sync is a FULL database download — the dominant line item in the Turso bill,
+// multiplied by however many times a day the service spins back up. It was
+// invisible until now; this is the number to watch after the images shrink.
+if (syncMs != null) {
+  console.log(`Database: boot pull moved ${(syncedBytes() / 1024 / 1024).toFixed(1)}MB from the primary`);
+}
 
 // **The alarm (Phase 5).** Offline writes bound a crash to one sync window
 // *only while the push is actually succeeding*. A sync that starts failing
@@ -7603,6 +7934,42 @@ await initDb();
 // on every boot doubles as clearing it between sessions on Render's free
 // tier, which spins the server down after inactivity.
 await run('DELETE FROM chat_log');
+
+// **What this boot throws away, and why it is safe to (bandwidth).**
+//
+// Render's free tier has no persistent disk, so the embedded replica is rebuilt
+// on every cold start — which makes every row that is kept but never read a
+// recurring download rather than a one-off byte on disk. Three things were
+// accumulating with nothing to prune them. See server/cleanup.js for the
+// queries and server/test/cleanup.test.js for what each is allowed to touch;
+// the ownership sweep in particular deletes artwork unattended, so it is pinned
+// against live owners, deleted owners and deliberately-NULL owner ids before it
+// is ever run here.
+try {
+  // Completed rounds outlive their fight on purpose, so a "Watch Round N" card
+  // still works — but those cards live in chat_log, which the line above just
+  // wiped, so anything from an earlier fight was already unreachable.
+  const fight = await one('SELECT fight_number FROM combat_state WHERE id = 1');
+  if (fight?.fight_number > 1) await run(pruneOldFightReplays(fight.fight_number));
+
+  for (const sweep of ORPHAN_SWEEPS) {
+    const found = await one(countOrphans(sweep));
+    if (found?.n > 0) {
+      console.log(`Cleanup: removing ${found.n} ${sweep.label}`);
+      await run(deleteOrphans(sweep));
+    }
+  }
+
+  // **VACUUM last, and only here.** SQLite never returns freed pages to the file
+  // on its own, so without this the database stays at its high-water mark and
+  // the boot pull never actually shrinks — which is the whole point of
+  // everything above it.
+  await run('VACUUM');
+} catch (err) {
+  // Never fatal: a world that cannot be tidied is still a world that can be
+  // played, and a cleanup bug must not take the table's session down with it.
+  console.error('Cleanup at boot did not complete:', err);
+}
 // Combat Automation overhaul §2.4 — crash recovery. Render's free tier can
 // sleep or cold-start mid-round; any pair left mid-resolution picks up from
 // its own resolved_through_tic and runs to completion (or back to a

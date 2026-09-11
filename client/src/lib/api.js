@@ -85,3 +85,8 @@ export const getSceneTimestamps = (identity) =>
 // by construction (a name and an 11-character video id per row, never audio).
 export const getAudioLibrary = (identity) =>
   fetch(`/api/audio-library?${new URLSearchParams({ ...identity })}`).then(json);
+
+// Every stored picture's size, for the Re-encode Images tool. Sizes and ids
+// only — a listing that carried the pictures would defeat its own purpose.
+export const getImageInventory = (identity) =>
+  fetch(`/api/image-inventory?${new URLSearchParams({ ...identity })}`).then(json);

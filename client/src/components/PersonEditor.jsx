@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react';
 import { socket } from '../socket.js';
-import { fileToPortrait, portraitSrc } from '../lib/image.js';
+import { fileToPortrait, portraitSrc, localPreviewSrc } from '../lib/image.js';
 import { cropOf } from '../lib/imageCrop.js';
 import { usePictureUpload } from '../lib/usePictureUpload.jsx';
 import CroppedImage from './CroppedImage.jsx';
@@ -27,7 +27,7 @@ export default function PersonEditor({ ownerCharacterId, person, onClose }) {
   const fileRef = useRef(null);
 
   const preview = picture
-    ? `data:${picture.imageMimeType};base64,${picture.imageData}`
+    ? localPreviewSrc(picture)
     : portraitSrc(person);
   // A freshly chosen picture carries its own crop; an unchanged one keeps
   // whatever the stored row already has.

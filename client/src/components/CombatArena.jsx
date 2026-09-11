@@ -726,9 +726,9 @@ function CarriedFrameLane({ lane, squares, position }) {
   const initial = lane.name.slice(0, 1).toUpperCase();
   const caption = (
     <div className={`flex items-center gap-1.5 ${position === 'above' ? 'pb-0.5' : 'pt-0.5'}`}>
-      {lane.imageData ? (
+      {lane.imageUrl ? (
         <img
-          src={`data:${lane.imageMimeType ?? 'image/jpeg'};base64,${lane.imageData}`}
+          src={lane.imageUrl}
           alt=""
           className="h-5 w-5 shrink-0 panel-cut-sm object-cover"
         />
@@ -2360,7 +2360,14 @@ export default function CombatArena() {
               ...prev,
               characters: {
                 ...prev.characters,
-                [character.id]: { ...prev.characters[character.id], character },
+                [character.id]: {
+                  ...prev.characters[character.id],
+                  // **Merged, not replaced** — see CharacterSheet's own note.
+                  // The payload is a partial row with no picture bytes, so
+                  // overwriting the nested character wholesale would drop the
+                  // portrait out of every Arena card mid-fight.
+                  character: { ...prev.characters[character.id].character, ...character },
+                },
               },
             }
           : prev
@@ -2872,8 +2879,7 @@ export default function CombatArena() {
           lane = {
             characterId: dm.characterId,
             name: entry.character.name,
-            imageData: entry.character.image_data,
-            imageMimeType: entry.character.image_mime_type,
+            imageUrl: entry.character.image_url,
             isNpc: entry.character.character_type === 'npc',
             byTic: new Map(),
           };

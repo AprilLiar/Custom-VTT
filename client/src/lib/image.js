@@ -1,7 +1,44 @@
-// Client-side portrait processing: cap at 800px wide, save as JPEG (~80%
-// quality) so the base64 stored in Turso stays small.
-const MAX_WIDTH = 800;
-const JPEG_QUALITY = 0.8;
+// Client-side picture processing.
+//
+// **Everything here encodes to WebP (bandwidth).** The five pipelines below
+// used to save JPEG, and to pass PNG through LOSSLESSLY whenever the source was
+// PNG — which is how `scene_pictures` came to hold the largest rows in the
+// schema: a 1024px transparent character cutout is routinely 1–2MB before
+// base64. WebP keeps the alpha channel these cutouts need while being several
+// times smaller than lossless PNG, and is indistinguishable at the sizes any of
+// this is displayed at.
+//
+// That size is not only a transfer cost. Render's free tier has no persistent
+// disk, so the embedded replica is rebuilt on every cold start — which makes the
+// whole database a download, several times a day. Shrinking the pictures IS
+// shrinking the Turso bill.
+//
+// **GIFs are never re-encoded**, here or anywhere: a canvas export keeps one
+// frame and silently kills the animation. See fileToChatImage.
+
+// One encoder for all five pipelines, so they cannot drift apart on format.
+// `alpha` asks for a format that keeps transparency — WebP does, so it is the
+// same call either way; the flag exists to make the fallback correct, since a
+// browser too old for WebP must fall back to PNG for a cutout and JPEG for a
+// photograph.
+const WEBP_QUALITY = 0.82;
+function encode(canvas, { alpha = false } = {}) {
+  const webp = canvas.toDataURL('image/webp', WEBP_QUALITY);
+  // toDataURL falls back to PNG when it does not know the type asked for, so a
+  // prefix check is how you find out whether WebP was actually honoured.
+  if (webp.startsWith('data:image/webp')) {
+    return { imageData: webp.split(',')[1], imageMimeType: 'image/webp' };
+  }
+  const fallback = alpha ? canvas.toDataURL('image/png') : canvas.toDataURL('image/jpeg', 0.85);
+  return {
+    imageData: fallback.split(',')[1],
+    imageMimeType: alpha ? 'image/png' : 'image/jpeg',
+  };
+}
+
+// Portraits: 512px is ample — the largest frame any portrait renders in is a
+// character card, and the rest are 24–48px thumbnails.
+const MAX_WIDTH = 512;
 
 export function fileToPortrait(file) {
   return new Promise((resolve, reject) => {
@@ -16,11 +53,7 @@ export function fileToPortrait(file) {
         canvas.width = Math.round(img.width * scale);
         canvas.height = Math.round(img.height * scale);
         canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
-        const dataUrl = canvas.toDataURL('image/jpeg', JPEG_QUALITY);
-        resolve({
-          imageData: dataUrl.split(',')[1],
-          imageMimeType: 'image/jpeg',
-        });
+        resolve(encode(canvas));
       };
       img.src = reader.result;
     };
@@ -28,16 +61,31 @@ export function fileToPortrait(file) {
   });
 }
 
-export const portraitSrc = (character) =>
-  character?.image_data
-    ? `data:${character.image_mime_type || 'image/jpeg'};base64,${character.image_data}`
-    : null;
+// **These used to BUILD the picture; now they just point at it.**
+//
+// Every row arrives from the server already carrying `image_url` — the server
+// knows which table a row came from, which is the one thing a row cannot tell
+// you about itself, so it is the only place the URL can be assembled. Keeping
+// the signature identical is deliberate: all eleven call sites are untouched by
+// the change from base64 to URLs.
+//
+// Why it mattered: a `data:` URI is not a URL, so nothing caches it — every
+// portrait was re-downloaded on every page load and every phone unlock, and the
+// scene backdrop rode along on every drag and every pen stroke. Behind a URL
+// keyed by content hash (see server/images.js), each picture is fetched once.
+export const portraitSrc = (record) => record?.image_url ?? null;
 
 // A GM-uploaded replacement for Tab 1's default backdrop figure, specific
 // to this character — null falls back to the built-in artwork.
-export const vitruvianSrc = (character) =>
-  character?.vitruvian_image_data
-    ? `data:${character.vitruvian_image_mime_type || 'image/jpeg'};base64,${character.vitruvian_image_data}`
+export const vitruvianSrc = (character) => character?.vitruvian_image_url ?? null;
+
+// **The only `data:` URI left in the app**, and the one place it is still
+// right: a picture the person chose a moment ago and has not saved yet. Those
+// bytes came out of this browser's own canvas and have never touched the
+// network, so there is no URL to point at and nothing to cache.
+export const localPreviewSrc = (picture) =>
+  picture?.imageData
+    ? `data:${picture.imageMimeType || 'image/jpeg'};base64,${picture.imageData}`
     : null;
 
 // Chat images/GIFs: never persisted long-term (wiped on Clear Chat and on
@@ -46,13 +94,20 @@ export const vitruvianSrc = (character) =>
 // onto a canvas — canvas re-export only ever keeps one frame, which would
 // silently kill the animation.
 const CHAT_MAX_WIDTH = 480;
-const CHAT_GIF_MAX_BYTES = 4 * 1024 * 1024;
+// **1MB, down from 4 (bandwidth).** A GIF is the largest object this system
+// can produce, it is stored raw (re-encoding would flatten the animation, which
+// is the whole point of posting one), and it used to be echoed to every socket
+// AND re-sent inside GET /api/chat on every page load for as long as it stayed
+// in the readable tail. It is a URL now rather than an inline payload, so it is
+// fetched once per person — but 4MB was still four times more than a reaction
+// image needs to be.
+const CHAT_GIF_MAX_BYTES = 1024 * 1024;
 
 export function fileToChatImage(file) {
   if (file.type === 'image/gif') {
     return new Promise((resolve, reject) => {
       if (file.size > CHAT_GIF_MAX_BYTES) {
-        reject(new Error('GIF too large (max 4MB)'));
+        reject(new Error('GIF too large (max 1MB)'));
         return;
       }
       const reader = new FileReader();
@@ -79,13 +134,7 @@ export function fileToChatImage(file) {
         canvas.height = Math.round(img.height * scale);
         canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
         const png = file.type === 'image/png';
-        const dataUrl = png
-          ? canvas.toDataURL('image/png')
-          : canvas.toDataURL('image/jpeg', 0.85);
-        resolve({
-          imageData: dataUrl.split(',')[1],
-          imageMimeType: png ? 'image/png' : 'image/jpeg',
-        });
+        resolve(encode(canvas, { alpha: png }));
       };
       img.src = reader.result;
     };
@@ -117,11 +166,7 @@ export function fileToScenePicture(file) {
         canvas.height = Math.round(img.height * scale);
         canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
         const png = file.type === 'image/png';
-        const dataUrl = png ? canvas.toDataURL('image/png') : canvas.toDataURL('image/jpeg', 0.85);
-        resolve({
-          imageData: dataUrl.split(',')[1],
-          imageMimeType: png ? 'image/png' : 'image/jpeg',
-        });
+        resolve(encode(canvas, { alpha: png }));
       };
       img.src = reader.result;
     };
@@ -151,11 +196,7 @@ export function fileToSceneBackground(file) {
         canvas.height = Math.round(img.height * scale);
         canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
         const png = file.type === 'image/png';
-        const dataUrl = png ? canvas.toDataURL('image/png') : canvas.toDataURL('image/jpeg', 0.85);
-        resolve({
-          imageData: dataUrl.split(',')[1],
-          imageMimeType: png ? 'image/png' : 'image/jpeg',
-        });
+        resolve(encode(canvas, { alpha: png }));
       };
       img.src = reader.result;
     };
@@ -179,13 +220,7 @@ export function fileToSmallImage(file) {
         canvas.height = Math.round(img.height * scale);
         canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
         const png = file.type === 'image/png';
-        const dataUrl = png
-          ? canvas.toDataURL('image/png')
-          : canvas.toDataURL('image/jpeg', 0.85);
-        resolve({
-          imageData: dataUrl.split(',')[1],
-          imageMimeType: png ? 'image/png' : 'image/jpeg',
-        });
+        resolve(encode(canvas, { alpha: png }));
       };
       img.src = reader.result;
     };

@@ -59,10 +59,26 @@ export function useStage(identity) {
       })
       .catch(console.error);
     const onUpdated = (s) => setStage(s);
+    // **Strokes arrive one at a time, not as a fresh stage (bandwidth).**
+    // scene_draw:add used to broadcast the whole stage — backdrop, every
+    // summoned figure's picture, and every stroke already on the canvas — to
+    // every socket, on every single pen stroke. Appending the one new stroke
+    // here is the same end state for a fraction of the bytes, and it is also
+    // the truthful shape: a stroke is append-only, and an eraser is another
+    // stroke rather than a deletion (see server/db.js on scene_drawings), so
+    // the array only ever grows until it is cleared outright.
+    const onDrawAdded = (row) =>
+      setStage((prev) => (prev ? { ...prev, drawings: [...(prev.drawings ?? []), row] } : prev));
+    const onDrawCleared = () =>
+      setStage((prev) => (prev ? { ...prev, drawings: [] } : prev));
     socket.on('stage:updated', onUpdated);
+    socket.on('scene_draw:added', onDrawAdded);
+    socket.on('scene_draw:cleared', onDrawCleared);
     return () => {
       alive = false;
       socket.off('stage:updated', onUpdated);
+      socket.off('scene_draw:added', onDrawAdded);
+      socket.off('scene_draw:cleared', onDrawCleared);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [identity?.role, identity?.characterId]);
