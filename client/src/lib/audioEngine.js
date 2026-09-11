@@ -147,6 +147,11 @@ const CLOCK_RETRY_SAMPLES = 9;
 // tick until it either plays or has a reason it can state. It costs nothing in
 // the normal case, because a client that is playing is not silent.
 const RECOVERY_TICK_MS = 2500;
+// How long a player gets to actually start after we ask it to, before we call
+// it blocked. Generous: a cold YouTube embed on a slow connection can spend a
+// second or more in BUFFERING, and accusing the browser of refusing when it was
+// merely loading is how you teach people to ignore the indicator.
+const PLAY_WATCHDOG_MS = 4000;
 // A brief mobile reconnect blip must not chop the music — the anchor stays
 // correct across it as long as the GM changed nothing. Past this the odds that
 // a pause or a track change was missed stop being negligible.
@@ -168,7 +173,8 @@ let hostEl = null;
 let currentVideoId = null;
 let unlocked = false;
 let pendingUnlockGesture = false;
-let sawPlayback = false;
+let playWatchdog = null;
+let readyFallbackTimer = null;
 let weJustPaused = false;
 let corrections = 0;
 let lastAnchorId = null;
@@ -280,11 +286,30 @@ function onReady() {
   // is granted one explicitly. Current versions of the IFrame API set this
   // themselves; a cached older one may not, and a player without it can never
   // be unlocked however good the gesture was.
-  if (iframe && !/\bautoplay\b/.test(iframe.allow || '')) {
+  //
+  // **Once, and with a way out (bugfix).** Reassigning `src` reloads the embed
+  // and this returned early waiting for a second `onReady` — but whether the
+  // IFrame API re-runs its handshake against the same Player object after a
+  // manual reload is not guaranteed, and if it does not, `playerReady` stays
+  // false forever. Every reconcile then returns on its first line and the
+  // engine is simply dead, silently, with no indicator to say so. So the reload
+  // is attempted at most once, and a timer marks the player ready anyway if the
+  // second onReady never arrives: a player with the wrong `allow` might still
+  // fail to autoplay, but it can be started by a tap, which is infinitely
+  // better than one that can never be started at all.
+  if (iframe && !readyFallbackTimer && !/\bautoplay\b/.test(iframe.allow || '')) {
     iframe.allow = 'autoplay; encrypted-media';
     iframe.src = iframe.src; // eslint-disable-line no-self-assign -- permissions only apply at load
-    return; // onReady fires again once it has reloaded
+    readyFallbackTimer = setTimeout(() => {
+      if (!playerReady) markPlayerReady();
+    }, 5000);
+    return; // onReady normally fires again once it has reloaded
   }
+  markPlayerReady();
+}
+
+function markPlayerReady() {
+  clearTimeout(readyFallbackTimer);
   playerReady = true;
   applyVolume();
   if (pendingUnlockGesture) attemptUnlock();
@@ -322,7 +347,12 @@ function onStateChange({ data }) {
       break;
     case YT_STATE.PLAYING:
       buffering = false;
-      sawPlayback = true; // the unlock detector reads this
+      // Playback started, so nothing is blocked — whatever the watchdog was
+      // about to conclude is now moot, and a stale `blocked` must not survive
+      // the very event that disproves it.
+      clearTimeout(playWatchdog);
+      playWatchdog = null;
+      if (snapshot.status === 'blocked') set({ status: 'syncing', detail: 'yt-playing' });
       reconcile('yt-playing');
       break;
     case YT_STATE.PAUSED:
@@ -536,51 +566,85 @@ function updateRecoveryTick() {
 // `role` might survive Chrome's sticky activation but will not survive
 // Safari's.
 export function unlockAudioFromGesture() {
-  if (unlocked) return true;
   ensurePlayer();
   if (!playerReady || !player) {
+    // Bank it: onReady finishes the job. The browser's own sticky activation
+    // outlives this call, which is the part that actually matters.
     pendingUnlockGesture = true;
+    unlocked = true;
     return false;
   }
   return attemptUnlock();
 }
 
+// **Rewritten: trust the gesture, then VERIFY BY OBSERVING (bugfix — "audio
+// blocked, tap the record" that never cleared, on desktop).**
+//
+// The old version tried to *infer* whether the browser had granted permission,
+// by playing, pausing on the next animation frame, and checking two seconds
+// later whether a PLAYING state had been seen in between. It could essentially
+// never succeed, for two compounding reasons:
+//
+//  - **A YouTube player does not reach PLAYING within one animation frame.**
+//    Its state changes cross an iframe boundary by postMessage — BUFFERING
+//    first, then PLAYING, typically hundreds of milliseconds later. Pausing
+//    after ~16ms cancelled the play *before* the very event the detector was
+//    waiting for could ever fire. The comment there worried about the opposite
+//    race and picked a window an order of magnitude too small.
+//  - **At the moment it ran there was usually no video loaded at all.** The
+//    role modal fires this on page load, long before any track is chosen, so
+//    `playVideo()` had nothing to play and no state to change.
+//
+// Either one alone pins `unlocked` to false forever, and reconcile's gate then
+// parks on `blocked` permanently — with the remedy it offers ("tap the record")
+// re-running the identical broken probe.
+//
+// So there is no probe now. A user gesture IS the permission every browser
+// asks for, so having one is taken at face value; and the one thing that
+// reliably works on Safari and iOS — calling `playVideo()` synchronously
+// inside the click handler — is what a tap now actually does, rather than a
+// ceremony whose result had to be guessed at. If the optimism turns out to be
+// wrong, `armPlayWatchdog` notices that playback never started and says so,
+// which is a fact rather than an inference.
 function attemptUnlock() {
   pendingUnlockGesture = false;
-  sawPlayback = false;
+  unlocked = true;
   try {
-    // **unMute BEFORE play, not after.** Safari records what the element did
-    // during the interaction: a mute-then-play unlock teaches it "this element
-    // plays muted", and it will then refuse to ever unmute without another
-    // gesture. Volume 0 silences desktop; on iOS setVolume is a no-op, so up
-    // to one frame of audio can escape here — paid knowingly, because the
-    // alternative cannot be unmuted on Safari at all.
+    // unMute BEFORE anything else: Safari records what the element did during
+    // the interaction, and a mute-then-play unlock teaches it "this element
+    // plays muted" — after which it refuses to unmute without a fresh gesture.
     player.unMute();
-    player.setVolume(0);
-    player.playVideo();
-    // Next frame rather than synchronously: a synchronous pause can race the
-    // play promise inside the iframe and cancel the very activation it was
-    // meant to buy.
-    requestAnimationFrame(() => {
-      try {
-        weJustPaused = true;
-        player.pauseVideo();
-      } finally {
-        weJustPaused = false;
-      }
-    });
-  } catch {
-    /* fall through to the detector below */
-  }
-  // The browser will not tell us whether the gesture took, so watch for
-  // playback actually having happened.
-  setTimeout(() => {
-    unlocked = sawPlayback;
-    if (!unlocked) set({ status: 'blocked', detail: 'autoplay-denied' });
     applyVolume();
-    reconcile('unlock');
-  }, 2000);
+    // Play HERE, in the gesture's own task, when there is something to play.
+    // This is the whole remedy the indicator promises, and the previous version
+    // never actually did it.
+    if (serverState?.isPlaying && currentVideoId) {
+      player.playVideo();
+      armPlayWatchdog();
+    }
+  } catch {
+    /* reconcile below will try again through the normal path */
+  }
+  reconcile('gesture');
   return true;
+}
+
+// **How `blocked` is discovered now: by watching, not by guessing.**
+//
+// If the table is playing and this client has asked its player to play, then
+// PLAYING (or at least BUFFERING on the way to it) must follow within a couple
+// of seconds. When it does not, the browser has refused, and that is exactly
+// the state where a person can help by tapping. Cleared by the PLAYING handler,
+// so a slow buffer resolves itself silently rather than accusing the browser.
+function armPlayWatchdog() {
+  clearTimeout(playWatchdog);
+  playWatchdog = setTimeout(() => {
+    playWatchdog = null;
+    if (!serverState?.isPlaying) return;
+    const state = player?.getPlayerState?.();
+    if (state === YT_STATE.PLAYING || state === YT_STATE.BUFFERING) return;
+    set({ status: 'blocked', detail: 'autoplay-denied' });
+  }, PLAY_WATCHDOG_MS);
 }
 
 // ---------------------------------------------------------------- reconciling
@@ -618,8 +682,10 @@ function reconcile(reason) {
     const startAt = Math.max(0, expectedPositionMs(serverState, serverNow())) / 1000;
     silence('loading');
     try {
-      if (serverState.isPlaying) player.loadVideoById({ videoId: currentVideoId, startSeconds: startAt });
-      else player.cueVideoById({ videoId: currentVideoId, startSeconds: startAt });
+      if (serverState.isPlaying) {
+        player.loadVideoById({ videoId: currentVideoId, startSeconds: startAt });
+        armPlayWatchdog();
+      } else player.cueVideoById({ videoId: currentVideoId, startSeconds: startAt });
     } catch {
       set({ status: 'error', detail: 'load-failed' });
     }
@@ -641,6 +707,9 @@ function reconcile(reason) {
   //
   // `blocked` is kept distinct from `silent` because only one of them has a
   // remedy: a blocked client needs a tap, and the indicator says so.
+  // No gesture has happened on this page at all, so a browser cannot grant
+  // sound and there is nothing to try. The role modal makes this rare — it is
+  // a mandatory tap on every load — but a deep link that skipped it lands here.
   if (!unlocked) {
     silence('blocked');
     set({ status: 'blocked', detail: 'autoplay-denied' });
@@ -675,6 +744,9 @@ function reconcile(reason) {
     sound();
     try {
       player.playVideo();
+      // Asking is not starting. If the browser refuses, this is what turns a
+      // silently-dead player into "tap the record" — see armPlayWatchdog.
+      if (player.getPlayerState?.() !== YT_STATE.PLAYING) armPlayWatchdog();
     } catch {
       /* the play will be retried on the next event */
     }
@@ -759,3 +831,37 @@ loadYouTubeApi().catch(() => {
   /* reported through the store when a play is actually attempted */
 });
 if (socket.connected) runClockHandshake();
+
+// **A console hook, because this engine cannot be tested where it is built.**
+//
+// The YouTube embed is unreachable from the development sandbox (the egress
+// proxy refuses youtube.com), so every bug in the player half of this file has
+// had to be diagnosed by reading rather than by running — and two of them were
+// diagnosed wrong before being diagnosed right. The whole of the engine's
+// internal state is what distinguishes "the browser refused" from "the API
+// never loaded" from "the clock is not good enough", and none of it is visible
+// from the UI's one-word status.
+//
+// So: `__dogfightAudio()` in the browser console prints it. No UI, no cost, and
+// it turns "the audio does not work" into a single answer.
+window.__dogfightAudio = () => ({
+  status: snapshot.status,
+  detail: snapshot.detail,
+  reason: silentReason(),
+  track: snapshot.name,
+  serverSaysPlaying: Boolean(serverState?.isPlaying),
+  // The player half: did the API load, did the embed become usable, is a video
+  // actually in it, and what does YouTube itself think it is doing right now.
+  apiLoaded: Boolean(window.YT?.Player),
+  playerReady,
+  unlocked,
+  currentVideoId,
+  ytPlayerState: player?.getPlayerState?.() ?? null,
+  ytMuted: player?.isMuted?.() ?? null,
+  ytVolume: player?.getVolume?.() ?? null,
+  ytCurrentTime: player?.getCurrentTime?.() ?? null,
+  // The clock half: whether this device may make a sound at all.
+  clock: { ...clock, usable: clockUsable() },
+  expectedPositionMs: serverState ? Math.round(expectedPositionMs(serverState, serverNow())) : null,
+  driftMs: snapshot.driftMs,
+});

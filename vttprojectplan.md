@@ -3561,6 +3561,52 @@ in the middle of.
     position inside the wrong audio. Tolerance is 400ms because
     `getCurrentTime()` is only about that accurate; chasing a tighter number
     produces seek-thrash, which is far more audible than 400ms of drift.
+  - **The unlock is a gesture taken at face value, then VERIFIED (bugfix — "audio
+    blocked, tap the record", and tapping the record did nothing, on desktop).**
+    The original tried to *infer* permission: play, pause on the next animation
+    frame, and two seconds later check whether a PLAYING state had been seen in
+    between. **It could essentially never succeed**, for two compounding reasons:
+    a YouTube embed does not reach PLAYING within one animation frame (its state
+    changes cross an iframe by postMessage, hundreds of milliseconds later), so
+    the pause cancelled the play *before* the event the detector was waiting for
+    could fire; and at role-modal time there is usually no video loaded at all,
+    so `playVideo()` had nothing to play. Either alone pins `unlocked` to false
+    forever, and reconcile's gate then parks on `blocked` permanently — with the
+    remedy it offers re-running the identical broken probe.
+
+    **This is also the real cause of the earlier "re-syncing" report**, which was
+    diagnosed as the clock gate. That clock work was a genuine latent bug and is
+    worth keeping, but it was not what the table was hitting. Recorded as a
+    standing lesson: *a fix that cannot be reproduced is a hypothesis, and the
+    first thing it should buy is a better error message.*
+
+    There is no probe now. A user gesture **is** the permission browsers ask
+    for, so having one is taken at face value; and a tap now does the one thing
+    that reliably works on Safari and iOS — calls `playVideo()` synchronously
+    inside the click handler — rather than a ceremony whose result had to be
+    guessed. Optimism is then checked by observation: `armPlayWatchdog` gives the
+    player 4s to actually reach PLAYING or BUFFERING, and says `blocked` only
+    when it does not. That is a fact rather than an inference, and PLAYING clears
+    it.
+  - **`onReady`'s iframe reload can no longer dead-end the engine (bugfix, same
+    file).** When the embed's `allow` lacks `autoplay` it is set and the iframe
+    reloaded, and the handler returned early waiting for a second `onReady` —
+    but whether the IFrame API re-runs its handshake against the same Player
+    object after a manual reload is not guaranteed. If it does not, `playerReady`
+    stays false forever, every reconcile returns on its first line, and the
+    engine is silently dead with no indicator saying so. The reload is now
+    attempted at most once, with a 5s fallback that marks the player ready
+    anyway: a player with the wrong `allow` may still fail to autoplay, but it
+    can be started by a tap, which beats one that can never start at all.
+  - **`window.__dogfightAudio()` dumps the engine's whole internal state.** The
+    YouTube embed is unreachable from the development sandbox (the egress proxy
+    refuses youtube.com), so every bug in the player half of `audioEngine.js` has
+    had to be diagnosed by reading rather than running — and two were diagnosed
+    wrong before being diagnosed right. The distinction between "the browser
+    refused", "the API never loaded" and "the clock is not good enough" is
+    invisible in a one-word status but obvious in `{ apiLoaded, playerReady,
+    unlocked, currentVideoId, ytPlayerState, clock }`. No UI, no cost, and it
+    turns the next report into a single answer.
   - **Autoplay is unlocked by the role modal.** Browsers refuse sound until the
     person has interacted with the page, and picking Player/GM is the one
     mandatory tap on every load — so `roleContext.jsx` calls the engine's
