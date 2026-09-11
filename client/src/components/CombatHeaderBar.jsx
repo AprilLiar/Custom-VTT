@@ -4,6 +4,9 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { socket } from '../socket.js';
 import { getCombat, getTells } from '../lib/api.js';
 import { useRole } from '../roleContext.jsx';
+import NowPlaying from './NowPlaying.jsx';
+import { useAudioStatus } from '../lib/useAudioStatus.js';
+import { openAudioPanel } from '../lib/audioPanel.js';
 import { CompactTellFace, TicCounterCentral } from './CombatArena.jsx';
 import { setDraggingMove, onDraggingMoveChange } from '../lib/dragMoveState.js';
 import {
@@ -21,6 +24,13 @@ import MoveConflictDialog from './MoveConflictDialog.jsx';
 import NonCommitDialog from './NonCommitDialog.jsx';
 import DefensePromptDialog from './DefensePromptDialog.jsx';
 import GrapplePromptDialog from './GrapplePromptDialog.jsx';
+
+// The strip's own look, shared verbatim by both of this component's renders —
+// the combat one and the audio-only one — so "the same header as the Arena
+// Tics" stays true by construction rather than by two copied class lists.
+const STRIP_CLASS =
+  'flex flex-wrap items-center gap-3 border-b border-zinc-800 bg-gradient-to-r ' +
+  'from-zinc-950 via-zinc-900 to-zinc-950 px-4 py-2 text-sm';
 
 // This viewer's own current standing in the fight — "waiting for
 // declaration," "your turn," and so on (decided, Tic navigation redesign).
@@ -301,6 +311,7 @@ export default function CombatHeaderBar() {
   // per-pair switcher is Phase E's job (see vttprojectplan.md's Combat
   // Automation overhaul section), this is a deliberately simple placeholder
   // until then.
+  const audio = useAudioStatus();
   const myParticipant =
     role === 'player' ? (combat?.participants ?? []).find((p) => p.character_id === characterId) : null;
   const activePair =
@@ -310,8 +321,19 @@ export default function CombatHeaderBar() {
     // Still render whatever prompts we do have — a pause can be open before
     // this viewer has a pair to show (a Player not seated in this fight, a GM
     // on a page with no active pair), and the answer is what unsticks it.
+    //
+    // **And the strip now has a second reason to exist: music.** This bar used
+    // to be purely a combat artefact, absent from every page outside a fight.
+    // The Audio Player's now-playing indicator belongs in exactly this row on
+    // every page but the Scene, so when something is playing the same bar
+    // renders carrying only that — one bar, never two stacked ones.
     return (
       <>
+        {audio.name && (
+          <div className={STRIP_CLASS}>
+            <NowPlaying onOpen={() => openAudioPanel(audio.playlistId)} />
+          </div>
+        )}
         {conflictDialog}
         {defenseDialog}
         {nonCommitDialog}
@@ -420,7 +442,11 @@ export default function CombatHeaderBar() {
   //
   // Animated rather than snapped: a row appearing under your cursor without
   // warning is how you mis-click the thing that was there a frame ago.
-  const stripHidden = onArena && arenaCounterVisible;
+  // **Audio keeps the bar alive on the Arena.** The strip normally collapses
+  // there once the Arena's own Tic Counter is on screen, because two counters
+  // showing the same numbers is one too many — but collapsing it while music
+  // is playing would make the indicator vanish on exactly one page.
+  const stripHidden = onArena && arenaCounterVisible && !audio.name;
 
   return (
     <>
@@ -434,7 +460,7 @@ export default function CombatHeaderBar() {
             transition={{ duration: 0.18, ease: 'easeOut' }}
             className="overflow-hidden"
           >
-    <div className="flex flex-wrap items-center gap-3 border-b border-zinc-800 bg-gradient-to-r from-zinc-950 via-zinc-900 to-zinc-950 px-4 py-2 text-sm">
+    <div className={STRIP_CLASS}>
       <motion.span
         key={roundNumber}
         initial={{ scale: 1.6, filter: 'brightness(2)' }}
@@ -501,6 +527,8 @@ export default function CombatHeaderBar() {
           role={role}
           label="Tic Counter"
         />
+      {/* Music rides in the same row as the fight, never in a bar of its own. */}
+      <NowPlaying onOpen={() => openAudioPanel(audio.playlistId)} />
       {!onArena && (
         <Link
           to="/combat"

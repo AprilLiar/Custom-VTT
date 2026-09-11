@@ -141,3 +141,44 @@ export function saveSceneShowNameplates(shown) {
   }
   return next;
 }
+
+// --- Audio Player volume, per device ---
+//
+// **Per-device on purpose, and the one part of the Audio Player that is not
+// synced.** Everyone hears the same song at the same instant — that is the
+// whole feature — but how loud it should be is a property of the room the
+// listener is sitting in, not of the game. Same reasoning as Cutscene Speed
+// and Timestamp Duration above, and the same storage.
+//
+// **Not built on saveScale, unlike every other setting in this file, and the
+// reason is worth stating: `saveScale` coerces with `Number(value) || fallback`,
+// which turns a volume of exactly 0 back into the default.** Every other
+// setting here has a meaningless zero, so that has never mattered; for a
+// volume slider, zero is mute — the single most likely thing a player at a
+// noisy table reaches for. So this pair keeps the storage convention (absent
+// means default) and drops the falsy coercion.
+const AUDIO_VOLUME_KEY = 'vtt-audio-volume';
+export const DEFAULT_AUDIO_VOLUME = 0.5;
+
+export function loadAudioVolume() {
+  try {
+    const raw = localStorage.getItem(AUDIO_VOLUME_KEY);
+    if (raw == null) return DEFAULT_AUDIO_VOLUME;
+    const n = Number(raw);
+    return Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : DEFAULT_AUDIO_VOLUME;
+  } catch {
+    return DEFAULT_AUDIO_VOLUME;
+  }
+}
+
+export function saveAudioVolume(value) {
+  const n = Number(value);
+  const clamped = Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : DEFAULT_AUDIO_VOLUME;
+  try {
+    if (clamped === DEFAULT_AUDIO_VOLUME) localStorage.removeItem(AUDIO_VOLUME_KEY);
+    else localStorage.setItem(AUDIO_VOLUME_KEY, String(clamped));
+  } catch {
+    // Storage unavailable; the value still works for this session.
+  }
+  return clamped;
+}

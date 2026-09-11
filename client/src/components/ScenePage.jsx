@@ -3,6 +3,9 @@ import { Link } from 'react-router-dom';
 import { ArrowLeft, Eye, EyeOff, StickyNote } from 'lucide-react';
 import { useIsDesktop, useIsLandscape } from '../lib/useMediaQuery.js';
 import { useRole } from '../roleContext.jsx';
+import NowPlaying from './NowPlaying.jsx';
+import { useAudioStatus } from '../lib/useAudioStatus.js';
+import { openAudioPanel } from '../lib/audioPanel.js';
 import { useStage } from '../lib/useStage.js';
 import {
   loadSceneHeightScale,
@@ -291,6 +294,7 @@ export default function ScenePage() {
         onToggleUi={() => setUiHidden((v) => !v)}
         onOpenNotes={role === 'gm' ? () => setNotesOpen(true) : undefined}
       />
+      <TopRightAudio uiHidden={uiHidden} role={role} />
       {!uiHidden && (
         <>
           {/* z-[2]: summons are independent of the active Scene (decision
@@ -344,6 +348,28 @@ export default function ScenePage() {
 // cinematic mode is on, the toggle button really is meant to be the only
 // UI element shown, and leaving either reachable would be a second,
 // undocumented way out of it.
+// **What is playing, top-right over the stage.** Always present, not only in
+// cinematic mode: a Player's top-right corner is empty either way, so there is
+// nothing for it to fight with.
+//
+// The one collision is the GM's own SceneListDrawer, a full-height w-64 rail
+// down the right edge whenever the interface is showing. Rather than paint over
+// its first entry, the chip steps inboard of it in exactly that case — so it
+// never covers the drawer, and never moves at all for a Player.
+function TopRightAudio({ uiHidden, role }) {
+  const audio = useAudioStatus();
+  if (!audio.name) return null;
+  const clearOfDrawer = role === 'gm' && !uiHidden;
+  return (
+    <div
+      className={`absolute top-3 ${clearOfDrawer ? 'right-[17rem]' : 'right-3'}`}
+      style={{ zIndex: 1000, marginTop: 'var(--safe-top)', marginRight: 'var(--safe-right)' }}
+    >
+      <NowPlaying variant="scene" onOpen={() => openAudioPanel(audio.playlistId)} />
+    </div>
+  );
+}
+
 function TopLeftControls({ uiHidden, onToggleUi, onOpenNotes }) {
   return (
     <div

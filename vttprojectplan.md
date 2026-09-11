@@ -2752,6 +2752,64 @@ CREATE TABLE declared_moves (
   -- never reaches this column. See server/weapons.js.
   weapon_spent INTEGER NOT NULL DEFAULT 0
 );
+
+-- ============================================================ Audio Player
+-- The GM Tools drawer's third tool: a GM-run soundtrack every connected
+-- client hears at the same moment, wherever in the app they are.
+--
+-- **Tracks are YouTube LINKS, never uploaded audio.** Every other piece of
+-- media in this schema is base64 in a TEXT column (portraits, backdrops,
+-- scene pictures); a song is three orders of magnitude larger than a
+-- portrait, express.json caps a request at 3mb and Socket.io at 8mb, and the
+-- point of the feature is background music, not a media library. So the
+-- database stores an 11-character video id and YouTube does the serving.
+CREATE TABLE audio_playlists (
+  id INTEGER PRIMARY KEY,
+  name TEXT NOT NULL,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+-- A track cannot exist without a playlist (decided): the NOT NULL FK plus
+-- ON DELETE CASCADE is the entire enforcement — there is no "loose songs"
+-- state to design a UI around. sort_order follows moves.sort_order, this
+-- schema's only other hand-ordered list, read as `ORDER BY sort_order, id`
+-- so a playlist nobody has reordered still comes back in creation order.
+CREATE TABLE audio_tracks (
+  id INTEGER PRIMARY KEY,
+  playlist_id INTEGER NOT NULL REFERENCES audio_playlists(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  youtube_id TEXT NOT NULL,  -- 11-char video id, parsed from whatever URL was pasted
+  duration_ms INTEGER,       -- NULL until a client reports it: only YouTube knows a video's length
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+-- What the table is listening to. A singleton, same id = 1 CHECK shape as
+-- master_note.
+--
+-- **It stores an ANCHOR, not a position.** A stored position would be stale
+-- the millisecond after it was written and would need a ticking loop to keep
+-- current; this server has none and does not want one. "position_ms into the
+-- track, as of server instant anchored_at_ms" stays true forever untouched,
+-- and every client derives its own live position from it. Paused is the
+-- degenerate case needing no clock at all — the anchor IS the position, which
+-- is what makes pause/resume exact rather than approximate.
+--
+-- anchor_id is bumped on every state change: it de-duplicates N clients all
+-- reporting the same track ending, and lets a client spot its own staleness.
+-- Every boot forces is_playing = 0 — Render cold-starts between sessions, and
+-- resuming an anchor taken six hours ago computes a nonsense position.
+CREATE TABLE audio_state (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  track_id INTEGER REFERENCES audio_tracks(id) ON DELETE SET NULL,
+  is_playing INTEGER NOT NULL DEFAULT 0,
+  position_ms INTEGER NOT NULL DEFAULT 0,
+  anchored_at_ms INTEGER NOT NULL DEFAULT 0,
+  anchor_id INTEGER NOT NULL DEFAULT 0,
+  repeat_mode TEXT NOT NULL DEFAULT 'playlist' CHECK(repeat_mode IN ('off','playlist','track')),
+  shuffle INTEGER NOT NULL DEFAULT 0,
+  shuffle_seed INTEGER NOT NULL DEFAULT 0
+);
 ```
 When a character is created, auto-generate its 8 `dice` rows (2 head + 4 core + 2 legs) at a default size of d8, editable afterward via step up/down.
 
@@ -2842,6 +2900,16 @@ When a character is created, auto-generate its 8 `dice` rows (2 head + 4 core + 
 - `counter:toggle_show_in_combat` (client → server): `{ counterId }` — flips `show_in_combat`, broadcasts `counter:updated`
 - `counter:set_reward` (client → server): `{ counterId, rewardType }` — sets (one of the 5 values) or clears (anything else/omitted) a counter's reward tag; no-ops for a standalone counter (`character_id IS NULL`), same restriction as creation. Broadcasts `counter:updated`.
 - `counter:delete` (client → server): `{ counterId }` — broadcasts `counter:deleted`
+
+- **Audio Player (GM Tools' third tool — see its own section below for the design and the reasoning):**
+  - `audio:ping` (client → server): `{ t0 }` → replies `audio:pong` `{ t0, serverMs }` on that socket alone. **The only audio event a Player may send**, and the only one with no gate: stateless, no database, just a clock read. Device clocks are wrong by arbitrary amounts, so every client measures its offset from this rather than trusting `Date.now()`. `t0` is echoed back so out-of-order replies self-identify.
+  - `audio:state` (server → all clients): `{ trackId, youtubeId, name, playlistId, durationMs, isPlaying, positionMs, anchoredAtMs, anchorId, repeatMode, shuffle, serverMs }` — broadcast on every playback change, and pushed to a single socket by `identity:set`. That second path is what makes joining late work: a client connecting twenty seconds in learns the anchor and seeks straight to twenty seconds, because nothing else would ever tell it.
+  - `audio:play` / `audio:pause` / `audio:resume` / `audio:stop` / `audio:seek` / `audio:next` / `audio:previous` / `audio:set_mode` (client [GM only] → server) — each resolves the row server-side, recomputes the anchor, bumps `anchor_id` and broadcasts `audio:state`. **Pause anchors where the music actually is** by the server clock, not where it started, which is what makes resume exact. **Previous restarts the current track when more than 3s in**, as every media player does. `set_mode` carries `{ repeatMode?, shuffle? }` and never disturbs the anchor — changing shuffle mid-song must not interrupt it; toggling shuffle on re-seeds it so turning it off and on genuinely reshuffles.
+  - `audio:track_ended` (client → server): `{ trackId, anchorId }` — every listener's player reports this; the `anchorId` guard means the first valid one advances and every duplicate is a no-op, so six people at the table do not skip six songs. Ignored outright if it does not match the live anchor.
+  - `audio:duration` (client → server): `{ trackId, durationMs }` — only YouTube knows a video's length. **Reports under 5s are ignored and the largest is kept**, because a client sitting through a pre-roll ad reports the *advert's* length, which would arm the end-of-track timer to skip almost immediately. Self-correcting in whichever order the reports arrive.
+  - `audio:error` (client → server): `{ trackId, anchorId, code }` — a video YouTube refuses to embed (2 / 100 / 101 / 150) skips itself on the **first** report from any client, and `audio:track_unplayable` tells the GM which song and why. A track one person cannot hear has already broken the premise of a shared soundtrack, and silence with no explanation is worse. Code 5 is transient and retried client-side instead.
+  - `audio_playlist:create | rename | delete`, `audio_track:create | update | delete | reorder`, `audio:lookup_title` (client [GM only] → server) — management, broadcast with `emitToGm` rather than `io.emit`: playlists are GM furniture, a Player only ever hears what is playing. `audio_track:reorder` takes **the full ordered id list**, exactly like `move:reorder`. `audio_track:create` refuses a link that is not a YouTube video (`audio_track:rejected`) rather than storing a song that could never play. `audio:lookup_title` fetches the video's own title through YouTube's oEmbed endpoint server-side (a browser fetch would hit CORS) and answers `audio:title` — a suggestion that pre-fills an untouched name field, never a requirement, and never a reason a song cannot be saved.
+  - `GET /api/audio-library?role=gm` returns `{ playlists, tracks }` in one trip, GM only.
 
 ## Pages / views
 Every page's header also carries, in order: the "Dogfight" logo (links to the Combat Arena — see item 5), the **Compendium** link (**decided, revised: visible to every role**, not GM-only — see item 4 below for what's actually GM-gated inside it), the **Characters**/**Character** link (visible to every role; labeled and routed per role — see item 2 below), the **Search bar** (see Global UI — Search above), the Chat Log toggle, and a **Cog icon** linking to **Settings** (item 7 below) — all persistent regardless of which page is open.
@@ -3130,7 +3198,7 @@ deliberate: it puts the page out of focus rather than merely dimming it, so
 the sheet reads as a mode you're in rather than one more panel competing with
 a live page. Deliberately a *list*, because this exists to
 be the GM's drawer for the next tool too — Roll Requester was the first, Fight
-Pauses the second.
+Pauses the second, the Audio Player the third.
 
 Mounted in `App.jsx`, not on any page, so it is reachable from anywhere;
 GM-only client-side, the same trust model as every other GM-only control here
@@ -3141,6 +3209,142 @@ in the middle of.
 
 - **Closing the Roll Requester used to white-screen the whole app (bugfix).** `useEffect(load, [])` — where `load` is `() => getCharacters().then(setCharacters)` — hands React the **Promise** `load` returns, and React files it as the effect's *cleanup function*. Tearing the effect down then calls it: `TypeError: destroy is not a function`, thrown from inside React's commit phase, which unmounts the entire tree and leaves an empty `#root`. The teardown happens when the component unmounts — i.e. exactly when the GM closes the tool, which is how it was reported. Now `useEffect(() => { load(); }, [])`. The whole client was swept for the same shape; this was the only instance.
 - **And the app grew its first error boundary** (`client/src/components/ErrorBoundary.jsx`, wrapping the router in `main.jsx`). There was none anywhere before, so *any* component throwing during render or commit took the whole table's app down with it, mid-fight, with no clue what happened and no way back but a manual reload. It is deliberately one boundary at the very top rather than per-page: the failure mode it exists for is "something nobody predicted threw", and per-page boundaries only catch the pages somebody remembered to wrap. Reload is the only offered action, and it genuinely recovers — all real state lives on the server and arrives over the socket.
+- **Audio Player (the third tool, decided, new; implemented).** A GM-run
+  soundtrack that every connected client hears **at the same point in the same
+  song**, including somebody who joins twenty seconds late. Playback survives
+  changing tabs and navigating into and out of the chrome-free Scene route, and
+  stops only when the GM stops it.
+
+  **The hard rule, stated by the user and enforced rather than aspired to: it is
+  better to play nothing than to play out of sync.** A client that cannot
+  establish where it should be goes silent instead of guessing.
+
+  - **Songs are YouTube links, never uploads.** A song is three orders of
+    magnitude larger than a portrait, and `express.json` caps a request at 3mb —
+    so the database stores an 11-character video id and YouTube does the
+    serving. **Video is never shown**: the player is a real 240×135 iframe
+    parked 9999px off-screen. Deliberately not `display:none` (which removes it
+    from the render tree, and browsers then stop or refuse to start media in it)
+    nor `visibility:hidden` (treated inconsistently across engines) nor a 1×1 box
+    (YouTube's own player logic misbehaves at degenerate sizes). Off-screen is
+    the one variant every browser agrees about.
+  - **The server stores an ANCHOR, not a position** — see `audio_state` in the
+    Data model for the full reasoning. It is the first wall-clock-authoritative
+    state in this codebase; combat Tics are a plain counter that advances by
+    event, and nothing before this needed to make a claim about real time.
+  - **Clients measure their clock against the server's rather than trusting it.**
+    Five sequential `audio:ping` round trips, and `clockOffset` keeps the
+    **lowest-RTT** sample — a fast trip has less room to be asymmetric than a
+    slow one, and averaging drags the good sample toward the bad ones. Sequential
+    rather than parallel because simultaneous pings queue behind each other on
+    one connection and every RTT but the first would be inflated. Measured on
+    `performance.now()`, which is monotonic, so an NTP correction mid-session
+    cannot silently poison every position computed afterwards.
+  - **Re-sync happens on events only — no polling timer (decided, explicitly).**
+    The events are: a track starting or changing, play, pause, a GM seek, a
+    socket re-connect, the tab becoming visible again, and the player's own
+    transition out of buffering. **The accepted cost, recorded here so it is not
+    rediscovered as a bug:** a client that stays connected and visible through a
+    long track gets no correction, so drift can accumulate. If that turns out to
+    be audible in play, the fix is one slow timer calling the already-built
+    reconcile function.
+  - **What "silent rather than out of sync" actually means.** The engine mutes
+    itself when the clock offset is not established or is worse than ±250ms
+    (half the best round trip is an honest bound on how wrong it can be), while
+    buffering, after 30s offline, when three correction attempts have failed to
+    land inside tolerance, and when the player's reported duration disagrees with
+    the table's by more than 2s — **that last one is a pre-roll advert**, which
+    drift alone cannot detect because the position looks fine, it is just a
+    position inside the wrong audio. Tolerance is 400ms because
+    `getCurrentTime()` is only about that accurate; chasing a tighter number
+    produces seek-thrash, which is far more audible than 400ms of drift.
+  - **Autoplay is unlocked by the role modal.** Browsers refuse sound until the
+    person has interacted with the page, and picking Player/GM is the one
+    mandatory tap on every load — so `roleContext.jsx` calls the engine's
+    unlock synchronously from inside that click handler. Synchronously and from
+    the handler itself, not an effect reacting to `role`: that might survive
+    Chrome's sticky activation but will not survive Safari's. The unlock
+    unmutes *before* playing, because Safari records what the element did during
+    the interaction and a mute-then-play unlock teaches it the wrong lesson
+    permanently. Failure is detected (no playback within 2s) rather than assumed
+    away, and the indicator then reads **"Tap to enable audio"** — which is
+    itself a fresh gesture. **iOS is the standing risk here** and wants a real
+    device test; the blocked-state affordance is the mitigation.
+  - **Auto-advance without a ticking loop.** Clients report `audio:track_ended`
+    and the first valid report wins (`anchor_id` de-duplicates the rest); once
+    any client has reported a duration the server also arms a single
+    `setTimeout` as a safety net for the case where every listener is
+    backgrounded and no ENDED ever fires. One timer, re-armed on every state
+    change. **Repeat (off / playlist / track) and shuffle are GM toggles**,
+    defaulting to advance-and-loop. Shuffle is a *seeded* permutation so the
+    server and every client agree on what comes next without negotiating — and
+    so it can be unit-tested at all.
+  - **The panel** is a fullscreen `DialogShell`, like Notes and Timestamps, and
+    opens *instead of* the GM drawer rather than inside it (the drawer's scrim is
+    `z-[60]` and `DialogShell` is `z-50`, so a dialog rendered within would paint
+    underneath it). Playlists in a left rail, tracks on the right, a pinned
+    transport row above. **A track row puts the name in the left half, truncated
+    with `…`, and binds its tools to the right end** — Play/Pause, Move Up, Move
+    Down, Edit, Delete, in that order, so a sixth tool appends on the right
+    without moving the five already there. Delete is the only one that confirms.
+    The tools are revealed by hover on a pointer device and by a completed tap on
+    a touch one — **deliberately not this app's usual `.hover-only-action`
+    convention**, which makes such buttons permanently visible on touch rather
+    than revealing them; same bespoke approach `StageRoster` takes on the stage,
+    and for the same reason. Move Up/Down send the whole new order, like
+    `move:reorder`.
+  - **The now-playing indicator: one bar, never two.** `CombatHeaderBar` — the
+    global strip that used to exist only during a fight — gains a **second reason
+    to render**, so on every page but the Scene the record and song name appear
+    in exactly that row, in exactly its existing style. It also stops collapsing
+    on the Arena while music is playing, or the indicator would vanish on one
+    page. **On the Scene** there is no bar: the record and name sit top-right,
+    always (not only in cinematic mode), with the text on the same tinted plate
+    character nameplates use so the two read as one family over artwork. The chip
+    steps inboard to `right-[17rem]` for a GM whose Scene list drawer is open,
+    and sits at `right-3` otherwise — so it never covers the drawer and never
+    moves at all for a Player.
+  - **The record is a drawn SVG spun by Framer Motion, not a GIF.** There is no
+    GIF, Lottie or animated asset anywhere in this repo, and `index.css` zeroes
+    every CSS animation under `prefers-reduced-motion` — a GIF would ignore that,
+    ship a fixed resolution to a high-DPI phone, and not follow the theme. The
+    name scrolls only when it genuinely overflows. Both are materially smaller on
+    mobile (`h-4 w-4 md:h-6 md:w-6`, `text-[10px] md:text-xs`), since mobile is
+    the primary way this app is played.
+  - **Tapping the record opens the Audio Player on the playing song's playlist**
+    — GM only; for a Player it is a plain indicator. Routed through a
+    module-level registry (`lib/audioPanel.js`), the same answer this codebase
+    already gives three times for sibling components that cannot reach each
+    other through props (see `ticDropTarget.js`).
+  - **Volume is per-device and not synced** — everyone hears the same song at the
+    same instant, but how loud it should be is a property of the room the
+    listener is in. A Settings slider, localStorage, zero means muted. It does
+    **not** use `sceneSettings.js`'s shared `saveScale`, whose `Number(v) ||
+    fallback` coercion would turn a volume of exactly 0 back into the default —
+    harmless for every other setting there, fatal for the one control whose zero
+    is the point.
+  - **The engine is not a React component**, and that is load-bearing rather than
+    stylistic: `Shell()` in `App.jsx` has two separate `return` branches, so
+    anything React renders inside it is unmounted when you cross into `/scene` —
+    which would tear down and re-create the iframe, and re-parenting an iframe
+    reloads it. So `lib/audioEngine.js` is a module singleton imported for its
+    side effects in `main.jsx`, owning an element it appends to `document.body`
+    and never moves. React only ever *reads* it, through `useAudioStatus`.
+  - **What is playing is mirrored straight off the broadcast, separately from
+    whether this device can play it (bugfix, found by driving the app).** The two
+    were folded together at first, and the consequence was that a client whose
+    YouTube was blocked or still loading showed *nothing at all* on screen while
+    the rest of the table listened to a song. What is playing is a fact about the
+    table; only whether this device can join it is a fact about the player — and
+    a device that cannot reach YouTube now says so on the indicator.
+  - `server/audioSync.js` holds everything expressible as a number — URL
+    parsing, clock offset, expected position, seeded shuffle and next-track
+    selection — pure, with no I/O, imported by *both* sides
+    (`../../../server/audioSync.js`, the same cross-boundary sharing
+    `CharacterCreationDialog` already uses for the creation rules). 21 unit
+    tests, per CLAUDE.md's standing rule that the risky arithmetic is pinned
+    before any UI touches it.
+
 - **Fight Pauses (the second tool, decided, new).** Everything the fight is
   currently waiting on, asked of the server directly rather than read off the
   combat snapshot the dialogs normally come from, with a **Summon the prompt**

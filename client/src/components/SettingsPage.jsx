@@ -36,7 +36,11 @@ import {
   DEFAULT_TIMESTAMP_DURATION,
   loadTimestampDuration,
   saveTimestampDuration,
+  DEFAULT_AUDIO_VOLUME,
+  loadAudioVolume,
+  saveAudioVolume,
 } from '../lib/sceneSettings.js';
+import { refreshVolume } from '../lib/audioEngine.js';
 
 // Per-device display preferences. The accent color live-previews on every
 // change (applyBrandHue) but only persists once a choice is actually made
@@ -52,6 +56,7 @@ export default function SettingsPage() {
   const [sceneSizeScale, setSceneSizeScale] = useState(loadSceneSizeScale);
   const [sceneShowNameplates, setSceneShowNameplates] = useState(loadSceneShowNameplates);
   const [timestampDuration, setTimestampDuration] = useState(loadTimestampDuration);
+  const [audioVolume, setAudioVolume] = useState(loadAudioVolume);
 
   const choose = (nextHue) => {
     setHue(nextHue);
@@ -144,6 +149,49 @@ export default function SettingsPage() {
           <button
             type="button"
             onClick={() => setSpeed(saveCutsceneSpeed(DEFAULT_CUTSCENE_SPEED))}
+            className="panel-cut-sm border border-zinc-700 px-3 py-1.5 text-xs font-semibold text-zinc-400 hover:bg-zinc-800"
+          >
+            Reset to default
+          </button>
+        </div>
+      </div>
+
+      <div className="panel-cut-lg space-y-3 border border-zinc-800 bg-zinc-900 p-4">
+        <div>
+          <h2 className="text-sm font-bold uppercase tracking-wide text-zinc-400">Music Volume</h2>
+          <p className="mt-1 text-xs text-zinc-600">
+            How loud the GM's Audio Player is on this device. Everyone hears the same song at the
+            same moment — only the loudness is yours, because that is a property of the room you are
+            sitting in rather than of the game. Slide to zero to mute yourself entirely.
+          </p>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-3">
+          <input
+            type="range"
+            min={0}
+            max={1}
+            step={0.05}
+            value={audioVolume}
+            onChange={(e) => {
+              setAudioVolume(saveAudioVolume(e.target.value));
+              // Takes effect on the song already playing, not at the next
+              // track: a volume slider that does nothing until something else
+              // changes reads as broken.
+              refreshVolume();
+            }}
+            aria-label="Music volume"
+            className="min-w-48 flex-1 accent-brand-500"
+          />
+          <span className="w-16 shrink-0 text-right font-mono text-sm text-zinc-200">
+            {audioVolume === 0 ? 'Muted' : `${Math.round(audioVolume * 100)}%`}
+          </span>
+          <button
+            type="button"
+            onClick={() => {
+              setAudioVolume(saveAudioVolume(DEFAULT_AUDIO_VOLUME));
+              refreshVolume();
+            }}
             className="panel-cut-sm border border-zinc-700 px-3 py-1.5 text-xs font-semibold text-zinc-400 hover:bg-zinc-800"
           >
             Reset to default

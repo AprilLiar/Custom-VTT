@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { Dices, PauseOctagon, Wrench, X } from 'lucide-react';
+import { Dices, PauseOctagon, Wrench, X, Music } from 'lucide-react';
 import { useRole } from '../roleContext.jsx';
+import AudioPlayerDialog from './AudioPlayerDialog.jsx';
+import { registerAudioPanelOpener } from '../lib/audioPanel.js';
 import { socket } from '../socket.js';
 import { getCharacters } from '../lib/api.js';
 import { useSocketRefresh } from '../lib/connection.js';
@@ -252,6 +254,18 @@ function FightPauses({ onDone }) {
 
 const TOOLS = [
   {
+    // **`standalone` means "open instead of the drawer, not inside it".** The
+    // drawer's own scrim is z-[60] and DialogShell is z-50, so a fullscreen
+    // dialog rendered inside this sheet would be painted underneath it. The
+    // Audio Player wants the whole screen anyway — playlists beside tracks —
+    // which is the same call Notes and Timestamps already make.
+    id: 'audio-player',
+    name: 'Audio Player',
+    blurb: 'Run the table\u2019s music. Everyone hears the same song at the same moment.',
+    icon: Music,
+    standalone: true,
+  },
+  {
     id: 'roll-requester',
     name: 'Roll Requester',
     blurb: 'Ask a player to roll one of their Stats.',
@@ -271,6 +285,19 @@ export default function GmToolsWidget() {
   const { role } = useRole();
   const [open, setOpen] = useState(false);
   const [toolId, setToolId] = useState(null);
+  // A standalone tool replaces the drawer rather than rendering inside it.
+  const [audioOpen, setAudioOpen] = useState(false);
+
+  // The spinning now-playing record opens this panel, from wherever it happens
+  // to be rendered — see lib/audioPanel.js for why that is a registry.
+  useEffect(() => {
+    if (role !== 'gm') return undefined;
+    return registerAudioPanelOpener(() => {
+      setOpen(false);
+      setToolId(null);
+      setAudioOpen(true);
+    });
+  }, [role]);
 
   // Escape closes whatever layer is on top: the tool first, then the drawer.
   useEffect(() => {
@@ -286,7 +313,7 @@ export default function GmToolsWidget() {
 
   if (role !== 'gm') return null;
 
-  const tool = TOOLS.find((t) => t.id === toolId) ?? null;
+  const tool = TOOLS.find((t) => t.id === toolId && !t.standalone) ?? null;
 
   const close = () => {
     setToolId(null);
@@ -295,6 +322,8 @@ export default function GmToolsWidget() {
 
   return (
     <>
+      {audioOpen && <AudioPlayerDialog onClose={() => setAudioOpen(false)} />}
+
       <AnimatePresence>
         {open && (
           <motion.div
@@ -342,7 +371,16 @@ export default function GmToolsWidget() {
                       <button
                         key={id}
                         type="button"
-                        onClick={() => setToolId(id)}
+                        onClick={() => {
+                          const picked = TOOLS.find((t) => t.id === id);
+                          if (picked?.standalone) {
+                            setOpen(false);
+                            setToolId(null);
+                            if (id === 'audio-player') setAudioOpen(true);
+                            return;
+                          }
+                          setToolId(id);
+                        }}
                         className="flex min-h-11 items-center gap-3 panel-cut-sm border border-zinc-700 bg-zinc-800 px-3 py-2 text-left hover:border-brand-500"
                       >
                         <Icon size={20} className="shrink-0 text-brand-400" />
