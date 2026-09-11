@@ -79,3 +79,9 @@ export const getMasterNote = (identity) =>
   fetch(`/api/master-note${identity ? `?${new URLSearchParams(identity)}` : ''}`).then(json);
 export const getSceneTimestamps = (identity) =>
   fetch(`/api/scene-timestamps${identity ? `?${new URLSearchParams(identity)}` : ''}`).then(json);
+
+// The GM's whole music library in one trip — playlists and tracks together,
+// because the Audio Player panel always renders both and the library is small
+// by construction (a name and an 11-character video id per row, never audio).
+export const getAudioLibrary = (identity) =>
+  fetch(`/api/audio-library?${new URLSearchParams({ ...identity })}`).then(json);

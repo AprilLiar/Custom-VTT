@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useState } from 'react';
 import { socket } from './socket.js';
+import { unlockAudioFromGesture } from './lib/audioEngine.js';
 
 // Client-side display filter, not authentication — but 'player' now carries
 // a real characterId (decided): picking a specific character at the door,
@@ -48,12 +49,22 @@ export function RoleProvider({ children }) {
     };
   }, [role, characterId]);
 
+  // **Picking a role is what buys permission to play sound.** Browsers refuse
+  // audio until the person has interacted with the page, and this modal is the
+  // one mandatory tap on every single load — so the table's music can start on
+  // its own afterwards instead of every listener needing to find a button.
+  //
+  // Called synchronously from inside the click handler, deliberately: an effect
+  // reacting to `role` might survive Chrome's sticky activation, but it will
+  // not survive Safari's, and mobile is the primary way this app is played.
   const chooseGm = () => {
+    unlockAudioFromGesture();
     setRole('gm');
     setCharacterId(null);
     setCapabilities(NO_CAPABILITIES); // until the server answers
   };
   const choosePlayer = (id) => {
+    unlockAudioFromGesture(); // see chooseGm above
     setRole('player');
     setCharacterId(id);
     setCapabilities(NO_CAPABILITIES);

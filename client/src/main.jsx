@@ -4,6 +4,11 @@ import { BrowserRouter } from 'react-router-dom';
 import App from './App.jsx';
 import ErrorBoundary from './components/ErrorBoundary.jsx';
 import { initTheme } from './lib/theme.js';
+// Imported for its side effects, next to initTheme and for the same reason:
+// the audio engine is a module singleton that owns a YouTube iframe outside
+// the component tree, so that crossing the /scene route boundary (a separate
+// return branch in App.jsx's Shell) can never unmount it and kill the music.
+import './lib/audioEngine.js';
 import './index.css';
 
 initTheme();
