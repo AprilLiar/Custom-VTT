@@ -527,18 +527,54 @@ Measured: **a stage drag went 600 KB → 0.4 KB per viewer**, `GET /api/characte
 600 KB → 0.3 KB, `GET /api/stage` 603 KB → 1.1 KB. `scripts/playtest-bandwidth.mjs`
 enforces those as ceilings now, and also asserts the cache and security headers.
 
-### Phase 3 (decided, not yet built)
+### Phase 3 — shrink the database, which shrinks the boot pull (shipped)
+
+The phase that moves the Turso number, because the boot pull **is** the database.
+
+- **Everything encodes to WebP now.** The five upload pipelines saved JPEG, and passed
+  PNG through **losslessly** whenever the source was PNG — which is how `scene_pictures`
+  came to hold the largest rows in the schema (a 1024px transparent cutout is routinely
+  1–2MB before base64). WebP keeps the alpha those cutouts need. Measured on
+  artwork-like content: a 1024px scene picture went **1519KB → 24KB**, a 1600×900
+  backdrop **2103KB → 25KB**. On incompressible noise the same encoder saves only ~9%,
+  so the honest expectation for real art is a large multiple, not a fixed one.
+  Portraits also drop 800px → 512px; backdrops **stay at 1600px** and change format only.
+  **GIFs are never re-encoded** — a canvas export keeps one frame and kills the animation
+  — and their upload cap drops 4MB → 1MB.
+- **A GM-only "Re-encode Images" tool**, rather than a script. A one-shot migration would
+  need Turso credentials to reach the live database; this needs nothing but being logged
+  in as the GM. It reads `GET /api/image-inventory` (ids and sizes, never bytes — a
+  listing that carried the pictures would defeat its own purpose), then fetches each
+  picture, re-encodes it on a canvas, and sends back **only the results that came out
+  smaller**. Safe to re-run: an already-optimal picture is skipped, and the server refuses
+  a write that would make a row bigger, so the tool can only ever shrink the database.
+- **Chat is capped to what is readable.** `CHAT_HISTORY_LIMIT` is a *read* limit —
+  `GET /api/chat` returns the newest 300 — but nothing ever deleted the rest, so a long
+  session left everything older in the database, unreachable by anybody and re-downloaded
+  on every cold start. Whole rows go now, text and picture alike.
+- **An orphan sweep at boot.** `scene_pictures` cascades from both owners and
+  `relationship_people` from its character, so in a healthy database these find nothing —
+  but the six table-rebuild migrations run `PRAGMA foreign_keys = OFF`, and any delete
+  inside one of those windows skipped its cascade silently. **A NULL owner id is never an
+  orphan**: `scene_pictures` has exactly one of `character_id`/`temp_npc_id` by its own
+  CHECK, so reading a NULL as a missing owner would delete every picture in the world.
+  That property is pinned by test, because this deletes artwork unattended.
+- **Completed rounds are pruned to the current fight.** They outlive their fight so a
+  "Watch Round N" card still works — but those cards live in `chat_log`, which is wiped on
+  the same boot, so anything from an earlier fight was already unreachable. `round_events`
+  cascades off them, which is where the bulk is.
+- **`VACUUM` last.** SQLite never returns freed pages to the file on its own, so without
+  it the database stays at its high-water mark and the boot pull never shrinks — which is
+  the point of everything above. The whole block is wrapped: a world that cannot be tidied
+  is still a world that can be played.
 
 #### What remains
 
-- **Phase 3 — shrink the database, which shrinks the boot pull.** WebP with tighter caps
-  (scene pictures are the largest rows in the schema and are currently lossless PNG), a
-  one-shot re-encode of existing rows, `chat_log` capped to the 300 rows that are actually
-  readable rather than kept until a restart, a boot sweep for rows whose owner no longer
-  exists, completed-round replays pruned to the current fight (the chat cards that link to
-  older ones are wiped at boot anyway, so retention already exceeded reachability), and a
-  `VACUUM` — SQLite never returns freed pages on its own, so without it the file stays at
-  its high-water mark and the boot pull never shrinks.
+**The one thing none of this fixes.** Render's free tier has no persistent disk, so the
+replica is still rebuilt on every cold start — the pull is simply of a much smaller
+database now. Attaching a persistent disk (a paid plan) would turn it into a delta;
+short of that, the `frames_synced` boot line added in phase 1 is how to tell whether the
+remaining number is acceptable.
 
 ## Game mechanic — Dice Pools (Core Stats tab)
 Each character has 3 fixed dice pools, always the same slot names for every character:

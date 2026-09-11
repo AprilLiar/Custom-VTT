@@ -114,6 +114,7 @@ import {
   IMAGE_KINDS, imageSpec, imageUrl, hashImageData, servableMime, sanitizeImageMime,
   withImageUrl, shapeCharacter,
 } from './images.js';
+import { ORPHAN_SWEEPS, countOrphans, deleteOrphans, trimChatLog, pruneOldFightReplays } from './cleanup.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3001;
@@ -169,8 +170,10 @@ const httpServer = createServer(app);
 // Exported so a future server/perkAutomations.js PERK_HOOKS entry can
 // broadcast (die:updated/character:updated/etc.) after a manual effect.
 // maxHttpBufferSize raised from Socket.io's 1MB default: chat GIFs are sent
-// raw/unresized (to keep their animation) up to a 4MB client-side cap, which
-// is ~5.3MB once base64-encoded — the default would reject that payload.
+// raw/unresized (to keep their animation) up to a 1MB client-side cap. The
+// headroom above that is deliberate: it is what an upload is allowed to be,
+// not what a broadcast carries — a picture goes out as a URL now (see
+// server/images.js), so this ceiling only ever applies on the way IN.
 // Constructed detached from httpServer on purpose; see the boot gate above.
 // **perMessageDeflate is opt-IN (bandwidth).** Socket.io v4 turns WebSocket
 // compression off by default, and the reason is memory: zlib keeps a context
@@ -2024,6 +2027,31 @@ app.get('/api/scene-notes', wrap(async (req, res) => {
   const sceneId = Number(req.query.sceneId);
   if (!Number.isInteger(sceneId)) return res.json([]);
   res.json(await all('SELECT * FROM scene_notes WHERE scene_id = ? ORDER BY id', [sceneId]));
+}));
+
+// **What every stored picture costs, without sending any of them (GM only).**
+//
+// Feeds the Re-encode Images tool. Sizes and ids, never bytes: the tool's whole
+// job is to find the pictures that are too big, so a listing that shipped them
+// would be self-defeating. `LENGTH()` on the base64 column is within a few
+// percent of the decoded size (base64 is a fixed 4:3 expansion), which is far
+// more precision than "is this one worth re-encoding" needs.
+app.get('/api/image-inventory', wrap(async (req, res) => {
+  const viewer = viewerFromQuery(req.query);
+  if (viewer?.role !== 'gm') return res.status(403).json({ error: 'GM only' });
+  const items = [];
+  for (const [kind, spec] of Object.entries(IMAGE_KINDS)) {
+    // chat_log is wiped on every boot; there is nothing durable to re-encode.
+    if (spec.table === 'chat_log') continue;
+    const rows = await all(
+      `SELECT id, LENGTH(${spec.data}) AS bytes, ${spec.mime} AS mime, ${spec.hash} AS hash
+       FROM ${spec.table} WHERE ${spec.data} IS NOT NULL ORDER BY id`
+    );
+    for (const row of rows) {
+      items.push({ kind, id: row.id, bytes: row.bytes, mime: row.mime, hash: row.hash });
+    }
+  }
+  res.json({ items, totalBytes: items.reduce((sum, i) => sum + (i.bytes ?? 0), 0) });
 }));
 
 // **The whole music library in one trip, GM only.** Playlists and their tracks
@@ -5299,6 +5327,40 @@ io.on('connection', (socket) => {
     io.emit('stage:timestamp_played', { date: ts.date, subtext: ts.subtext });
   });
 
+  // **Replace one stored picture with a smaller encoding of itself (GM only).**
+  //
+  // The counterpart of /api/image-inventory: the browser fetches a picture,
+  // re-encodes it to WebP on a canvas, and hands the result back here. Doing it
+  // client-side is what keeps the server free of an image library for work that
+  // only needs doing once — and it is the only way to reach the live database
+  // without handing anybody a set of Turso credentials.
+  //
+  // Writes the three image columns and nothing else, through the same registry
+  // the read route uses, so it cannot touch a column it was not meant to. The
+  // mime is allow-listed on the way in like every other image write.
+  on('image:reencode', async ({ kind, id, imageData, imageMimeType } = {}) => {
+    if (socket.data.identity?.role !== 'gm') return;
+    const spec = imageSpec(kind);
+    const rowId = Number(id);
+    const data = typeof imageData === 'string' && imageData ? imageData : null;
+    if (!spec || !Number.isInteger(rowId) || !data) return;
+    const existing = await one(`SELECT LENGTH(${spec.data}) AS bytes FROM ${spec.table} WHERE id = ?`, [rowId]);
+    if (!existing) return;
+    // **Never make a picture bigger.** A re-encode that came out worse than the
+    // original — a tiny image where WebP's header dominates, a photograph
+    // already saved at a lower quality — is refused rather than stored, so the
+    // tool can only ever shrink the database.
+    if (data.length >= (existing.bytes ?? 0)) {
+      socket.emit('image:reencoded', { kind, id: rowId, skipped: 'not-smaller', bytes: existing.bytes });
+      return;
+    }
+    await run(
+      `UPDATE ${spec.table} SET ${spec.data} = ?, ${spec.mime} = ?, ${spec.hash} = ? WHERE id = ?`,
+      [data, sanitizeImageMime(imageMimeType, 'image/webp'), hashImageData(data), rowId]
+    );
+    socket.emit('image:reencoded', { kind, id: rowId, was: existing.bytes, now: data.length });
+  });
+
   // ======================================================== Audio Player
   //
   // **The clock handshake — the only audio event a Player may send.** Stateless,
@@ -6603,6 +6665,11 @@ io.on('connection', (socket) => {
     // The row id is captured for the same reason: it is what the URL is built
     // from, and ChatPanel can now key on it instead of falling back to the
     // list index.
+    // **Keep only what anyone can scroll back to.** CHAT_HISTORY_LIMIT is a READ
+    // limit — GET /api/chat returns the newest N — but nothing ever deleted the
+    // rest, so a long session left everything older in the database, unreachable
+    // by anybody and re-downloaded on every cold start.
+    await run(trimChatLog(CHAT_HISTORY_LIMIT));
     const id = Number(result.lastInsertRowid);
     io.emit('chat:message', {
       id,
@@ -7867,6 +7934,42 @@ await initDb();
 // on every boot doubles as clearing it between sessions on Render's free
 // tier, which spins the server down after inactivity.
 await run('DELETE FROM chat_log');
+
+// **What this boot throws away, and why it is safe to (bandwidth).**
+//
+// Render's free tier has no persistent disk, so the embedded replica is rebuilt
+// on every cold start — which makes every row that is kept but never read a
+// recurring download rather than a one-off byte on disk. Three things were
+// accumulating with nothing to prune them. See server/cleanup.js for the
+// queries and server/test/cleanup.test.js for what each is allowed to touch;
+// the ownership sweep in particular deletes artwork unattended, so it is pinned
+// against live owners, deleted owners and deliberately-NULL owner ids before it
+// is ever run here.
+try {
+  // Completed rounds outlive their fight on purpose, so a "Watch Round N" card
+  // still works — but those cards live in chat_log, which the line above just
+  // wiped, so anything from an earlier fight was already unreachable.
+  const fight = await one('SELECT fight_number FROM combat_state WHERE id = 1');
+  if (fight?.fight_number > 1) await run(pruneOldFightReplays(fight.fight_number));
+
+  for (const sweep of ORPHAN_SWEEPS) {
+    const found = await one(countOrphans(sweep));
+    if (found?.n > 0) {
+      console.log(`Cleanup: removing ${found.n} ${sweep.label}`);
+      await run(deleteOrphans(sweep));
+    }
+  }
+
+  // **VACUUM last, and only here.** SQLite never returns freed pages to the file
+  // on its own, so without this the database stays at its high-water mark and
+  // the boot pull never actually shrinks — which is the whole point of
+  // everything above it.
+  await run('VACUUM');
+} catch (err) {
+  // Never fatal: a world that cannot be tidied is still a world that can be
+  // played, and a cleanup bug must not take the table's session down with it.
+  console.error('Cleanup at boot did not complete:', err);
+}
 // Combat Automation overhaul §2.4 — crash recovery. Render's free tier can
 // sleep or cold-start mid-round; any pair left mid-resolution picks up from
 // its own resolved_through_tic and runs to completion (or back to a

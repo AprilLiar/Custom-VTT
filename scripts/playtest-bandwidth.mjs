@@ -216,6 +216,14 @@ check('a mismatched hash is served but never cached', img.ok && img.headers.get(
 check('a picture is served as a real image type', (img.headers.get('content-type') ?? '').startsWith('image/'), img.headers.get('content-type'));
 check('nosniff is set on stored user bytes', img.headers.get('x-content-type-options') === 'nosniff');
 
+// **Put the world back.** This script activates a Scene to have something to
+// drag, and an active Scene is global state the other playtests reasonably
+// assume nobody left lying around — playtest-scene.mjs checks that a Player
+// cannot activate one, which is not a question you can ask while one is already
+// up. Cleaning up keeps the suite runnable in any order.
+gm.emit('scene:delete', { sceneId: scene.id });
+await sleep(400);
+
 console.log(failures ? `\n${failures} FAILED` : BASELINE ? '\nBASELINE COMPLETE' : '\nALL PASSED');
 gm.close();
 player.close();
