@@ -15,7 +15,6 @@ import SearchBar from './components/SearchBar.jsx';
 import SettingsPage from './components/SettingsPage.jsx';
 import RulesPage from './components/RulesPage.jsx';
 import ConnectionBanner from './components/ConnectionBanner.jsx';
-import SyncHealthBanner from './components/SyncHealthBanner.jsx';
 import GmToolsWidget from './components/GmToolsWidget.jsx';
 import RollRequestPrompt from './components/RollRequestPrompt.jsx';
 import ScenePage from './components/ScenePage.jsx';
@@ -195,7 +194,6 @@ function Shell() {
     return (
       <div className="app-shell bg-arena flex flex-col text-zinc-100">
         <ConnectionBanner />
-        <SyncHealthBanner />
         <div className="flex flex-1 overflow-hidden">{routes}</div>
         <GmToolsWidget />
         <RollRequestPrompt />
@@ -206,7 +204,6 @@ function Shell() {
   return (
     <div className="app-shell bg-arena flex flex-col text-zinc-100">
       <ConnectionBanner />
-      <SyncHealthBanner />
       <header
         style={{ paddingTop: 'var(--safe-top)' }}
         className="flex shrink-0 items-center gap-3 border-b border-zinc-800 px-3 py-2 md:px-4"

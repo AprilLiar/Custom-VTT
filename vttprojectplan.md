@@ -47,8 +47,11 @@ seconds is that `server/db.js` sends one statement per call, so an action's wall
 At a cross-region round-trip of 150-250ms a 14-deep declare lands at 2.1-3.5s, which is exactly the
 reported band.
 
-**Phase 0 — the embedded replica (shipped).** `createClient({ url: 'file:replica.db', syncUrl:
-TURSO_DATABASE_URL, authToken })` keeps a full copy of the database on the server's own disk. Reads
+**Phase 0 — the embedded replica (shipped, then REMOVED — see Phase 6).** Kept below as the record of
+what was tried and why it looked right: everything in this phase was true of the replica itself, and
+none of it survived contact with a host that has no persistent disk. `createClient({ url:
+'file:replica.db', syncUrl: TURSO_DATABASE_URL, authToken })` keeps a full copy of the database on
+the server's own disk. Reads
 are answered locally in microseconds and never leave the process; only writes go to the primary.
 Three properties make this safe rather than merely fast, and all three were verified against the
 installed client before it was wired in:
@@ -216,7 +219,9 @@ is exactly what the table is about to become. Verified by diffing `sqlite_master
 against the old `initDb`: identical on a fresh database, on repeat boots, and on three vintages of
 legacy database upgraded forward.
 
-**Phase 5 — writes go local too (shipped, and it corrects the four phases above).**
+**Phase 5 — writes go local too (shipped, then REMOVED — see Phase 6).** Its diagnosis still stands
+and is the reason the batching work matters: *counts are not latency, and writes are not reads*. Its
+mechanism does not — `offline: true` needs the replica that Phase 6 deletes.
 
 **First, the correction, because it is the more useful half.** Phases 1–4 were steered by *trip
 counts*, measured against a local file where every statement is sub-millisecond, and then converted
@@ -422,6 +427,71 @@ primary.
 half of it. The other half: **a boot step that can block must not be able to block silently.** Open
 the port, name the step, and make the thing you cannot interrupt be preceded by something you can.
 
+**Phase 6 — the embedded replica is removed (decided, shipped; this reverses Phases 0 and 5).**
+Phase 5.4 opened the port before the database work and the next deploy still timed out — because
+binding a socket is necessary and **not sufficient**. The log says it exactly:
+
+```
+13:02:30  Dogfight server listening on port 10000 — answering 503 until the database boot finishes
+13:02:34  Database: primary answered, replica open in 3474ms
+13:03:03  ==> No open HTTP ports detected on 0.0.0.0, continuing to scan...   (x5, to 13:07:40)
+13:07:40  ==> Port scan timeout reached
+13:15:37  Database: ... synced from the primary in 783198ms
+13:16:59  ==> Timed Out
+```
+
+The port was open at 13:02:30 and Render saw nothing, because `db.sync()` then blocked the event loop
+for **783 seconds**: the process never reached `accept()`, and a listening server that cannot run its
+own accept loop is indistinguishable from a dead one. Render gives up after five minutes.
+
+**The cause is architectural, and it is the same one as the 6GB Turso bill.** Render's free tier has
+no persistent disk, so `replica.db` is gone on every cold start and every boot re-downloads the whole
+database. That was always the dominant cost; as the database grew it became the outage. And it was a
+trap with no exit from inside: the re-encode tool that would shrink the database needs the app to
+boot, and the app could not boot because the database was too big.
+
+So the replica is **gone from the code**, not switched off behind a flag — `buildClientConfig` returns
+`{ url, authToken }` and `libsql://` resolves to the Hrana-over-HTTP client: lazy, no native binding,
+no local file, no `sync()`, nothing that can block the event loop at boot or at any other time.
+Deleted with it: `syncReplica`, `syncOnce`, `startSyncLoop`, `nextSyncDelayMs`, `syncHealth`,
+`SYNC_SECONDS`, `TURSO_REPLICA_PATH`, the frame counters, the SIGTERM flush, the `db:sync_health`
+event and `SyncHealthBanner`. `probePrimary`, `bootLog` and the 503 gate all stay — no longer
+load-bearing, still the difference between a named boot failure and every request 500ing.
+
+Two lines in that log were **bugs of this project's own**, and both are fixed here:
+
+- **`boot pull moved 0.0MB` was wrong instrumentation, not good news.** Confirmed in the libSQL
+  source: on the pull path `try_push`/`try_pull` returns a hardcoded `frames_synced: 1`, and the
+  bootstrap `/export` download is not counted at all. The number was a constant being formatted, and
+  it is exactly the kind of confident zero that is worse than no logging. (`FRAME_BYTES = 4096` was
+  wrong too — a WAL frame is 4096 + a 24-byte header.)
+- **`VACUUM` at boot was actively harmful.** It rewrites every page, replication's unit is the
+  modified page, so under `offline: true` the next sync pushed the *entire database* — the
+  `sync took 72979ms` at the end of that deploy. It is removed: with no replica and no local file
+  there are no freed pages of ours to reclaim, so a VACUUM would now be a full-database rewrite
+  bought for nothing.
+
+**The risk, stated plainly: this may make actions feel slow again.** Phases 0–5 exist because a
+14-deep declare against a remote database took 3–5 seconds, and a remote connection puts the network
+back on each statement. What did not exist then and does now is the half of that work which was never
+tied to the replica: **`readMany`/`writeMany` collapse a group of statements into one round trip**,
+and the DDL queue does the same for the ~148 statements a boot used to make. The remaining depth is
+far below the depth that caused the original complaint — but that is a reasoned expectation, not a
+measurement, and it cannot be measured anywhere but production, because it depends on the real
+network path between Render and Turso.
+
+**So measure it.** `scripts/latency.mjs` (new, read-only, safe against a live game) reports the
+server-side cost of one round trip and the wall-clock of the read-heavy endpoints:
+`E2E_URL=https://… node scripts/latency.mjs`. `readMs` on `/api/health` is the per-statement number
+every handler pays. If it is bad, the honest options are more batching where the chains are deepest,
+or a paid Render plan with a persistent disk — which is the only thing that makes an embedded replica
+viable here at all.
+
+**The standing lesson.** The replica was not a bad idea; it was a bad fit for a host with no disk,
+and the arithmetic that made it a bad fit (bootstrap cost x cold starts per day) was available from
+the first day and never done. **Before adopting a cache, price the cache miss and count how often it
+happens.**
+
 ## Hosting cost — bandwidth and sync (decided, new; phase 1 shipped)
 
 The app went 60% over Render's included bandwidth (7.97GB against 5GB — 4.82GB
@@ -466,13 +536,17 @@ three separate problems: **base64 images in TEXT columns, shipped inside JSON.**
     (`CharacterSheet`, `CombatArena`) and were fixed in the same commit; a consumer that
     replaces will blank the portrait until the next full fetch, and the fix is always to
     make it merge rather than to put the bytes back.
-- **The sync loop skips when nothing has been written.** It used to push on a timer
-  regardless — 8,640 round trips a day against a database nobody had touched. Every write
-  path marks it dirty; a full sync still runs every 30th cycle so an external write is
-  eventually noticed.
-- **`.sync()`'s `frames_synced` is logged** (frames × 4096 = bytes). It was being thrown
-  away, which is why a 6GB bill could only be reasoned about by arithmetic. The boot pull
-  now prints its own size — the one number that says whether the later phases worked.
+- **The sync loop skips when nothing has been written** — *moot, and then deleted: Phase 6
+  removes the loop entirely.* It used to push on a timer regardless — 8,640 round trips a
+  day against a database nobody had touched.
+- **`.sync()`'s `frames_synced` is logged** (frames × 4096 = bytes) — **this was wrong, and
+  it is deleted.** The intent was right: a 6GB bill could only be reasoned about by
+  arithmetic, so the boot pull should print its own size. But the number is not a
+  measurement. libSQL's pull path returns a hardcoded `frames_synced: 1` and does not count
+  the bootstrap download at all, so a 13-minute full-database pull printed `0.0MB` — a
+  confident zero, which is worse than no logging. (The frame size was wrong too: 4096 plus
+  a 24-byte header.) The lesson is worth more than the line: **before trusting a metric,
+  find where the number is produced.**
 - **The August Temporary-Damage migration is guarded.** It re-scanned every row of `dice`
   with a correlated subquery on every boot, forever, to add zero. Kept (a database that has
   genuinely never booted since must still be repaired) but behind a single existence check.
@@ -563,18 +637,23 @@ The phase that moves the Turso number, because the boot pull **is** the database
   "Watch Round N" card still works — but those cards live in `chat_log`, which is wiped on
   the same boot, so anything from an earlier fight was already unreachable. `round_events`
   cascades off them, which is where the bulk is.
-- **`VACUUM` last.** SQLite never returns freed pages to the file on its own, so without
-  it the database stays at its high-water mark and the boot pull never shrinks — which is
-  the point of everything above. The whole block is wrapped: a world that cannot be tidied
-  is still a world that can be played.
+- **`VACUUM` last — WRONG, and removed in Phase 6.** The reasoning was that SQLite never
+  returns freed pages to the file on its own, so without it the database stays at its
+  high-water mark. True of a local file, and the exact opposite of helpful against an
+  embedded replica: a VACUUM rewrites every page, replication's unit is the modified page,
+  so the next sync pushed the whole database. It is gone, and there is nothing left for it
+  to reclaim now that Turso owns the pages. The whole block is still wrapped: a world that
+  cannot be tidied is still a world that can be played.
 
 #### What remains
 
-**The one thing none of this fixes.** Render's free tier has no persistent disk, so the
-replica is still rebuilt on every cold start — the pull is simply of a much smaller
-database now. Attaching a persistent disk (a paid plan) would turn it into a delta;
-short of that, the `frames_synced` boot line added in phase 1 is how to tell whether the
-remaining number is acceptable.
+**The thing none of this fixed, until it took the site down.** Render's free tier has no
+persistent disk, so the replica was rebuilt on every cold start — this work made that pull
+smaller, not absent, and the database grew back past Render's five-minute port scan anyway.
+**Phase 6 of the round-trip section resolves it by removing the replica**, which deletes
+the cold-start pull entirely rather than shrinking it. The sweeps above still matter and
+still run: they are now the *only* thing bounding the database's size, since nothing else
+was ever going to prune a table nobody prunes.
 
 ## Game mechanic — Dice Pools (Core Stats tab)
 Each character has 3 fixed dice pools, always the same slot names for every character:
@@ -3016,7 +3095,7 @@ When a character is created, auto-generate its 8 `dice` rows (2 head + 4 core + 
 - `move:grant` / `move:revoke` (client [GM] → server): `{ characterId, moveId }` — inserts/deletes a `character_moves` row (the drag-and-drop from the compendium). Grant is refused server-side when the move has a style and the character has no stance containing it (learnability rule). Broadcasts `move:granted` / `move:revoked`
 - `roleplay:save_answer` / `roleplay:add_question` / `roleplay:update_entry` / `roleplay:delete_question` (client → server): `{ characterId, question, answer }` (upserts a canonical-question answer) / `{ characterId, question }` (custom, capped at 20 per character) / `{ entryId, question, answer }` (question editable only on custom rows) / `{ entryId }` (custom rows only) — all broadcast `roleplay:updated` `{ characterId, entries }`
 - `combat:next_round` (client [GM] → server) — a no-op unless already in `tic_countdown` phase or the fight hasn't started yet (`phase` null), and at least one character is seated. Increments `round_number`, sets `current_tic` and `round_start_tic` together to `computeNextRoundStartTic({ phase, currentTic, roundStartTic, roundLength })` — `current_tic` itself for the very first round (`phase` null), otherwise `max(current_tic, round_start_tic + round_length)` so the new round's window can never overlap the previous round's own Tics even if the Tic Countdown was never (or only partially) stepped through (bugfix — see the Declaration Phase bullet above). **Stamina Regen (decided, new rule):** on every round *except* the first (`phase` was already non-null, i.e. this isn't the Start Combat full-restore below), rolls each seated character's Stamina die at its current size/bonus, adds the result to `current_stamina` (clamped to `max_stamina`), broadcasts `character:updated`, and logs each as a normal roll (`logRoll`, same shape `stamina:regen` already uses) — automatic, for every seated character at once, not just whoever presses the manual button. Also rolls the Brain die for every seated participant with an active Brain die — modifier = that character's own Reasons to Fight bonus minus `computeInitiativeOverflowPenalty` for any move-footprint overflow they're still carrying into this round (see the Declaration Phase's Initiative bullet above for both; the real modifier is now passed to `logRoll` so the Chat Log breakdown attributes it correctly instead of folding it into the raw die face — bugfix) — logged to `chat_log` as normal initiative rolls, same `logRoll` path as any other roll (an incapacitated/missing Brain die is silently dropped from its side's initiative, same as `pool:roll` drops incapacitated dice elsewhere), sets `phase = 'declaration'`, resets every seated character's `declared_this_round` to 0, then — **per pair (revised, combat redesign)** — for each `pair_index` that has participants, resolves that pair's own per-side initiative from just its own seated characters' Brain rolls plus current/locked Brain value and active-stance Speed (for the tie-break cascade — see the Initiative ties bullet above) via `resolveSideInitiative` (see `server/combatTiming.js`) and (re)inserts its `combat_pairs` row with `declaring_side` set to the losing side (or the only side, if the pair has just one); the whole `combat_pairs` table is cleared and rebuilt fresh each call. Broadcasts `combat:updated`.
-- `db:sync_health` (server → client): `{ mode, healthy, everySeconds, lastSyncedAt, staleSeconds, consecutiveFailures, lastError }` — **only ever emitted on a health *change*, and to a newly-connected socket only when already unhealthy.** A healthy sync is silent, because an alarm that fires routinely gets ignored and this one has exactly one job. The server writes locally and pushes to the primary every 10s (see Database round-trips, Phase 5); a push that starts failing is invisible from inside the game — everything lands, everything is fast — until the container recycles and takes the unsynced backlog with it. `SyncHealthBanner` renders this as a red, non-dismissible banner. `healthy` deliberately stays true through a short run of failures (a single flaky cycle is noise) and flips only once the staleness passes ~6 sync windows.
+- `db:sync_health` — **removed** (Database round-trips, Phase 6). It existed to raise an alarm when the push to the primary started failing silently and local writes were piling up in a replica that a container recycle would take with it. There is no replica and no local pile any more: a write is at the primary the moment it returns, so the failure it watched for cannot happen. `SyncHealthBanner` is deleted with it; `ConnectionBanner` still covers "the socket is down", which is the only connectivity state a player can act on.
 - `identity:set` (client → server): `{ role: 'gm' }` or `{ role: 'player', characterId }` — sets `socket.data.identity` for this connection (validated: a `player` identity's `characterId` must resolve to a real character, otherwise it's dropped to `null`/unidentified). Drives declared-move visibility (see Combat Timing's identity-based reveal rule); sent once from the Role Modal on pick, and re-sent on every reconnect (roleContext.jsx) since identity lives only in memory per-connection, not persisted. No broadcast — this only affects what *this* socket receives afterward. **The server answers it with a fresh `combat:updated` addressed to that socket alone** (`emitCombatUpdatedTo`): identity is the one moment the server reliably hears "someone is back", and a *paused* pair emits nothing further of its own accord, so without this a client that was away when a pause was raised had nothing coming and no reason to ask. See *Pause delivery*.
 - `move:declare` (client → server): `{ characterId, moveId, placementTic?, appendageChoice? }` — open access, same trust model as any other roll/declare in this app (declaring for a character isn't restricted to whoever's logged in as them — visibility is what's identity-gated, not the action itself). A no-op unless: `phase` is `'declaration'`; the character hasn't already pressed **Done Declaring** this round (`declared_this_round = 0`); their own `combat_pairs` row (keyed by their `pair_index`) has `declaring_side` matching their own `side` (**revised, combat redesign** — was a single arena-wide `declaring_side` check; now scoped to that character's own pair, so other pairs can be mid-Declaration independently — see Combat Timing above); the move is actually available to them (Default, or granted); if the move has a style, the character's **active** stance carries it (same learnability rule Tab 3 already dims by — checked against the active stance specifically, not "any stance" like `move:grant`'s rule); it's affordable — `current_stamina` minus every other move this character already has pending (not yet committed) this Declaration Phase, minus this move's own `stamina_cost`, must not go below 0 (see Stamina Cost above); and, if the move is ambiguous (`right_tell_id`/`left_tell_id` both set), `appendageChoice` is exactly `'left'` or `'right'` (see the Declaration Phase's Ambiguous moves bullet above) — for a non-ambiguous move, `appendageChoice` is simply ignored/stored as `null` even if one was sent. Computes the legal minimum Tic (`computePlacementTic` — the round's start Tic, or this character's own last-declared move's **full footprint end**, `reveal_tic + active_tics + recovery_tics`, if later, even from a previous round — **revised**, was Startup/reveal-only, see Combat Timing above for why); the "last-declared move" lookup joins `moves` to compute and order by that full-footprint end rather than raw `reveal_tic`. `placementTic`, if supplied (the drag-and-drop declare picker's drop Tic — see Combat Timing above), is used as-is when it's at or after that minimum, otherwise it's clamped up to the minimum instead of being rejected — omitting it entirely also just uses the minimum, so older/simpler callers keep working. `reveal_tic` (`computeMoveFootprint`, Startup-only) is computed from the resulting `placement_tic`, and a `declared_moves` row (including `appendage_choice`) is inserted. **Attack Target (Change 001, decided, new):** the same insert also snapshots `effective_attack_targets` — the move's current `attack_targets` expanded via `expandAttackTargets` using this declaration's own `appendageChoice` (both sides if the move has no ambiguous slot, or `appendageChoice` is null) — and `attack_target_source = 'move'`; written regardless of whether the move even has a Roll, since a Roll-less move simply never enters the damage/defense flow that reads it. Broadcasts `combat:updated` (see below — every connected socket gets its own tailored view based on its identity, computed fresh from the same DB rows); every viewer's `declaredMoves` entry always carries `appendageChoice` (and `tellId`/`rightTellId`/`leftTellId`), never withheld — only `moveId`/`moveName`/`staminaCost` are identity-gated.
 - `move:undeclare` (client → server): `{ declaredMoveId }` — open access, same trust model as `move:declare`. A no-op unless the row exists, `phase === 'declaration'`, and `stamina_committed = 0` (i.e. that character hasn't pressed **Done Declaring** yet — see Cancelling a declared move above). Deletes the `declared_moves` row outright, and clears `feint_masked` on whatever this character had placed at the deleted move's own footprint end — taking a **Feint** back has to take its concealment back too (see the Feint Tag under Tags & automation). Broadcasts `combat:updated`.

@@ -7,8 +7,7 @@ import { createServer } from 'node:http';
 import { Server } from 'socket.io';
 import {
   all, one, run, readMany, writeMany, initDb,
-  syncReplica, syncOnce, syncHealth, startSyncLoop, replicaMode, SYNC_SECONDS, syncedBytes,
-  bootLog, connectDb, probePrimary, PROBE_TIMEOUT_MS,
+  bootLog, connectDb, probePrimary, remoteMode, PROBE_TIMEOUT_MS,
 } from './db.js';
 import { gateChatLine, gatesCrossed, isValidPip, visibleGates } from './counterGates.js';
 import {
@@ -207,9 +206,9 @@ const getCharacter = (id) => one('SELECT * FROM characters WHERE id = ?', [id]);
 // site nobody re-read. This reads the row back and hashes what is actually
 // there, so it cannot be wrong about which bytes it describes.
 //
-// The cost is one extra UPDATE per upload. Uploading a picture is a human
-// action measured in seconds; this is measured in microseconds against a local
-// replica, and it happens once per picture rather than once per render.
+// The cost is one extra round trip per upload. Uploading a picture is a human
+// action measured in seconds, and this happens once per picture rather than
+// once per render, so it is not a trip worth folding away.
 async function stampImageHash(kind, id) {
   const spec = imageSpec(kind);
   const rowId = Number(id);
@@ -1724,16 +1723,16 @@ app.get('/api/health', async (_req, res) => {
   try {
     const started = Date.now();
     await run('SELECT 1');
-    // The sync half is the part worth being able to read from outside. It is
-    // the one thing about this deployment that cannot be reproduced locally
-    // (offline writes need a real syncUrl), and `lastSyncMs` doubles as the
-    // length of time the server answers nothing, because `db.sync()` blocks the
-    // event loop — see the note above the sync loop in db.js.
+    // `readMs` is the one number that cannot be reproduced locally: it is a
+    // real round trip to Turso from inside Render, which is what every
+    // statement in every handler now pays (see the note at the top of db.js for
+    // why the embedded replica that used to make it free is gone). Multiply it
+    // by an action's chain depth to predict how that action feels.
     res.json({
       ok: true,
       db: 'connected',
+      mode: remoteMode ? 'remote' : 'local-file',
       readMs: Date.now() - started,
-      sync: syncHealth(),
     });
   } catch (err) {
     res.status(500).json({ ok: false, db: 'error', message: err.message });
@@ -3027,13 +3026,6 @@ function armTrackEndTimer(payload) {
 }
 
 io.on('connection', (socket) => {
-  // A client joining while the push to the primary is already failing has to
-  // find out now, not at the next state change — the alarm exists precisely
-  // for the case where nothing else is happening. Only sent when there is
-  // something to say; a healthy sync is silent.
-  const health = syncHealth();
-  if (!health.healthy) socket.emit('db:sync_health', health);
-
   const on = (event, handler) => {
     socket.on(event, async (payload) => {
       try {
@@ -7795,138 +7787,42 @@ httpServer.listen(PORT, () => {
   );
 });
 
-// **Is the primary actually there? Asked over HTTP, where the question can
-// still be given up on.**
+// **Is the database actually there? Asked by name, at boot, once.**
 //
-// The two calls after this one — opening the replica and syncing it — are
-// synchronous native calls into libSQL. If the primary does not answer, they
-// do not fail and they do not time out; they simply never return, and no
-// `Promise.race`, `setTimeout` or signal handler can reach them, because none
-// of them get a turn on the event loop while a native call is running. A
-// deploy that hits that state hangs until Render kills it, having printed
-// nothing at all.
-//
-// `fetch` has none of that problem, so the reachability question is asked
-// there first, with a real abort. An unreachable primary now costs ten seconds
-// and an explanation instead of forever and silence — and exiting non-zero is
-// the right outcome for Render besides: a failed deploy leaves the previous
-// one serving, where a hung one leaves nothing.
-if (replicaMode) {
+// Not load-bearing any more — see probePrimary in db.js. A remote client is
+// lazy and cannot hang the boot the way the replica's blocking bootstrap
+// could, so this is no longer the difference between a deploy and a timeout.
+// It is kept because the alternative diagnosis for an expired token or a
+// paused database is "every request 500s with a driver error", and exiting
+// non-zero is the right outcome for Render besides: a failed deploy leaves the
+// previous one serving.
+if (remoteMode) {
   bootDetail = 'checking that the Turso primary is reachable';
   const probe = await probePrimary();
   if (probe.ok === false) {
     console.error(
-      `Could not reach the Turso primary at ${probe.host} after ${probe.ms}ms ` +
+      `Could not reach the Turso database at ${probe.host} after ${probe.ms}ms ` +
         `(${probe.timedOut ? `no answer within ${PROBE_TIMEOUT_MS}ms` : probe.error}), ` +
-        'so the server is stopping rather than hanging on a connection that never completes.\n' +
+        'so the server is stopping rather than starting up to 500 on every request.\n' +
         'Check that TURSO_DATABASE_URL points at a live database, that the database has not been ' +
         'paused or archived for inactivity, and that TURSO_AUTH_TOKEN has not expired.\n' +
-        'Set TURSO_PROBE_TIMEOUT_MS=0 to skip this check (the server will then hang instead of ' +
-        'exiting if the primary is genuinely unreachable).'
+        'Set TURSO_PROBE_TIMEOUT_MS=0 to skip this check.'
     );
     process.exit(1);
   }
   if (probe.ok) {
-    bootLog(`Database: primary ${probe.host} answered in ${probe.ms}ms (HTTP ${probe.status})`);
+    bootLog(`Database: ${probe.host} answered in ${probe.ms}ms (HTTP ${probe.status})`);
   }
 }
 
-// Pull the embedded replica up to date before touching the schema — see
-// syncReplica in db.js for why an unsynced replica must never reach initDb.
-// A no-op (and instant) when running against a plain local file.
-//
-// Deliberately fatal. The alternative is a server that came up holding an
-// empty replica, whose seed functions would then look at a world with no
-// ruleset, no Tells and no Perks and helpfully write a second copy of all
-// three into the primary.
-let syncMs = null;
-try {
-  bootDetail = 'opening the local replica of the database';
-  connectDb();
-  bootDetail = 'syncing the local replica from the Turso primary';
-  syncMs = await syncReplica();
-} catch (err) {
-  console.error(
-    'Could not sync the embedded replica from the Turso primary, so the server is stopping ' +
-      'rather than starting against an empty database.\n' +
-      'Check TURSO_DATABASE_URL and TURSO_AUTH_TOKEN, and that the primary is reachable.\n',
-    err
-  );
-  process.exit(1);
-}
-console.log(
-  syncMs == null
-    ? 'Database: local file (no replica)'
-    : `Database: embedded replica with offline writes, synced from the primary in ${syncMs}ms — ` +
-      `reads AND writes are local, pushed every ${SYNC_SECONDS}s`
-);
-// **What the boot pull actually cost (bandwidth).** Render's free tier has no
-// persistent disk, so `replica.db` is gone on every cold start and this first
-// sync is a FULL database download — the dominant line item in the Turso bill,
-// multiplied by however many times a day the service spins back up. It was
-// invisible until now; this is the number to watch after the images shrink.
-if (syncMs != null) {
-  console.log(`Database: boot pull moved ${(syncedBytes() / 1024 / 1024).toFixed(1)}MB from the primary`);
-}
-
-// **The alarm (Phase 5).** Offline writes bound a crash to one sync window
-// *only while the push is actually succeeding*. A sync that starts failing
-// quietly — expired token, network partition — looks exactly like a sync that
-// is working, right up until Render recycles the container and takes the whole
-// unsynced backlog with it. So a health *change* is announced in both
-// directions: it goes to the server log, and to every connected client, which
-// puts it in front of the one person who can do something about it.
-let syncsLogged = 0;
-if (
-  startSyncLoop((health) => {
-    if (health.healthy) {
-      console.log(`Database: sync to the primary recovered after ${health.consecutiveFailures} failure(s)`);
-    } else {
-      console.error(
-        `Database: NOT syncing to the primary — ${health.consecutiveFailures} consecutive failures, ` +
-          `last success ${health.staleSeconds ?? 'never'}s ago. Local writes are accumulating and ` +
-          `will be LOST if this container restarts. Last error: ${health.lastError}`
-      );
-    }
-    io.emit('db:sync_health', health);
-  },
-  (health) => {
-    // How long a real sync against the real primary costs was the one number
-    // this could not be reasoned about without — `db.sync()` blocks the event
-    // loop for exactly this long, so it is also the length of time the server
-    // answers nothing. Logged for the first few, then only when it is slow
-    // enough to have widened the interval, so a healthy server stays quiet.
-    const slow = health.nextInSeconds > health.everySeconds;
-    if (syncsLogged < 5 || slow) {
-      syncsLogged += 1;
-      console.log(
-        `Database: sync took ${health.lastSyncMs}ms` +
-          (slow ? ` — slow, so the next one is in ${health.nextInSeconds}s instead of ${health.everySeconds}s` : '')
-      );
-    }
-  })
-) {
-  // Render sends SIGTERM before recycling a service, which is the one moment a
-  // final push is both possible and worth the most — it turns the common,
-  // planned case (a redeploy, a free-tier spin-down) from "lose up to one
-  // window" into "lose nothing". Best effort and time-boxed: a shutdown that
-  // hangs waiting on an unreachable primary is worse than one that gives up.
-  let shuttingDown = false;
-  const flushAndExit = async (signal) => {
-    if (shuttingDown) return;
-    shuttingDown = true;
-    console.log(`${signal} received — pushing unsynced writes to the primary before exit`);
-    try {
-      await Promise.race([syncOnce(), new Promise((r) => setTimeout(r, 5000))]);
-      console.log('Final sync complete');
-    } catch (err) {
-      console.error('Final sync failed; the last writes may be lost:', err);
-    }
-    process.exit(0);
-  };
-  process.on('SIGTERM', () => flushAndExit('SIGTERM'));
-  process.on('SIGINT', () => flushAndExit('SIGINT'));
-}
+// Open the connection. Nothing is downloaded and nothing blocks: a remote
+// libSQL client is lazy and speaks Hrana over HTTP, so this is bookkeeping
+// until the first statement. That is the whole of what replaced a bootstrap
+// pull which, on the last deploy, held the event loop for 783 seconds and cost
+// the site its port scan — see the note at the top of db.js.
+bootDetail = 'connecting to the database';
+connectDb();
+console.log(remoteMode ? 'Database: remote (Turso)' : 'Database: local file');
 
 bootDetail = 'creating and migrating tables';
 await initDb();
@@ -7937,14 +7833,19 @@ await run('DELETE FROM chat_log');
 
 // **What this boot throws away, and why it is safe to (bandwidth).**
 //
-// Render's free tier has no persistent disk, so the embedded replica is rebuilt
-// on every cold start — which makes every row that is kept but never read a
-// recurring download rather than a one-off byte on disk. Three things were
-// accumulating with nothing to prune them. See server/cleanup.js for the
-// queries and server/test/cleanup.test.js for what each is allowed to touch;
-// the ownership sweep in particular deletes artwork unattended, so it is pinned
-// against live owners, deleted owners and deliberately-NULL owner ids before it
-// is ever run here.
+// Three things were accumulating with nothing to prune them: chat beyond the
+// visible window, replays of fights that are over, and images whose owner was
+// deleted out from under them. Every one of them is bytes Turso stores and,
+// when something does read them, bytes that cross the network.
+//
+// This sweep mattered when the whole database was pulled on every cold start;
+// it matters differently now, and still. With no replica the pull is gone, but
+// so is the only other thing that was ever going to bound the database's size —
+// a table nobody prunes grows for the life of the world. See server/cleanup.js
+// for the queries and server/test/cleanup.test.js for what each is allowed to
+// touch; the ownership sweep in particular deletes artwork unattended, so it is
+// pinned against live owners, deleted owners and deliberately-NULL owner ids
+// before it is ever run here.
 try {
   // Completed rounds outlive their fight on purpose, so a "Watch Round N" card
   // still works — but those cards live in chat_log, which the line above just
@@ -7960,11 +7861,19 @@ try {
     }
   }
 
-  // **VACUUM last, and only here.** SQLite never returns freed pages to the file
-  // on its own, so without this the database stays at its high-water mark and
-  // the boot pull never actually shrinks — which is the whole point of
-  // everything above it.
-  await run('VACUUM');
+  // **No VACUUM here (bugfix — it was actively harmful, and it was mine).**
+  //
+  // It was added so the file would actually shrink rather than sit at its
+  // high-water mark, which is true of SQLite and was the right instinct for a
+  // local file. Against the embedded replica it was the opposite of what it
+  // looked like: a VACUUM rewrites every page, replication's unit is the
+  // modified page, so the next sync pushed the *entire database* — which is
+  // exactly the 73-second sync at the end of the failed deploy.
+  //
+  // Now there is no replica and no local file to reclaim: the pages belong to
+  // Turso, which manages its own storage. So a VACUUM here would be a
+  // full-database rewrite bought for nothing at all. The sweeps above delete the
+  // rows; what the primary does with the freed pages is the primary's business.
 } catch (err) {
   // Never fatal: a world that cannot be tidied is still a world that can be
   // played, and a cleanup bug must not take the table's session down with it.

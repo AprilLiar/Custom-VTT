@@ -10,11 +10,13 @@
 // indistinguishable from a dead service — "No open ports detected... Timed
 // Out" — with nothing in the log to say why.
 //
-// Both halves of the fix are pinned here, because neither can be observed
-// from inside a healthy app: that importing db.js connects to nothing, and
-// that the reachability probe which now runs in the blocking call's place
-// actually gives up. A regression in either one is silent until the next
-// deploy against a slow primary, which is the worst possible time to find it.
+// The replica is gone now (see the note at the top of db.js), which removes
+// that particular blocking call — but the property it taught is the one worth
+// keeping, and it is broader than the bug: **importing this module must do no
+// I/O**, so index.js can bind its port and raise its 503 gate before anything
+// else is attempted. Both halves are pinned here because neither can be
+// observed from inside a healthy app: that importing db.js connects to
+// nothing, and that the boot probe gives up rather than waiting forever.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
@@ -26,11 +28,11 @@ process.env.TURSO_AUTH_TOKEN = 'not-a-real-token';
 process.env.TURSO_PROBE_TIMEOUT_MS = '300';
 
 const importStarted = Date.now();
-const { primaryHttpUrl, probePrimary, replicaMode, PROBE_TIMEOUT_MS } = await import('../db.js');
+const { primaryHttpUrl, probePrimary, remoteMode, PROBE_TIMEOUT_MS } = await import('../db.js');
 const importMs = Date.now() - importStarted;
 
 test('importing db.js against an unreachable primary neither connects nor blocks', () => {
-  assert.equal(replicaMode, true, 'this test is only meaningful in replica mode');
+  assert.equal(remoteMode, true, 'this test is only meaningful against a remote URL');
   // The old code would not have reached this line at all — the import itself
   // never completed. A couple of seconds is enormous slack for what should now
   // be pure module evaluation; the failure it guards against is unbounded.
