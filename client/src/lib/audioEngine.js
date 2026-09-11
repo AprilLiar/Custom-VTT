@@ -45,10 +45,37 @@ export const subscribe = (cb) => {
 };
 export const getSnapshot = () => snapshot;
 
+// **Why this device is not making a sound, in words (decided, new).**
+//
+// Every silent state used to render as the same "re-syncing", which is true of
+// all of them and useful about none — a person watching a device that will
+// start playing in two seconds and a person watching one that never will read
+// exactly the same string. The engine already knows which it is; this is what
+// puts that on screen, and it is the difference between "the audio is broken"
+// and "it is waiting for a clean clock reading".
+const SILENT_REASONS = {
+  loading: 'loading the track',
+  buffering: 'buffering',
+  'no-clock': 'measuring the clock',
+  offline: 'reconnecting',
+  advert: 'an advert is playing',
+  desynced: 'out of sync — retrying',
+  seeking: 'catching up',
+  'player-error': 'retrying',
+};
+export function silentReason(snap = snapshot) {
+  if (snap.status !== 'silent') return null;
+  return SILENT_REASONS[snap.detail] ?? 'syncing';
+}
+
 function set(patch) {
   const next = { ...snapshot, ...patch };
   if (Object.keys(next).every((k) => next[k] === snapshot[k])) return;
   snapshot = next;
+  // Arming the recovery tick from here rather than from each `silence()` call
+  // site is what makes it impossible to forget: every way this client can enter
+  // or leave a silent state goes through `set`.
+  updateRecoveryTick();
   for (const cb of listeners) cb();
 }
 
@@ -71,6 +98,55 @@ const MAX_CLOCK_UNCERTAINTY_MS = 250;
 const MAX_CORRECTIONS = 3;
 const CLOCK_SAMPLES = 5;
 const CLOCK_SPACING_MS = 120;
+
+// **Everything below is the fix for "it says re-syncing and never plays"
+// (bugfix).**
+//
+// The gate above is the right rule and it stays exactly as strict. What was
+// wrong is what happened when a device could not clear it: nothing. One
+// handshake ran, and if its best round trip came back over 500ms — routine on
+// mobile data against a free-tier host that has just woken up — the client went
+// silent and **never measured again**. Worse, every `visibilitychange` threw
+// away a perfectly good offset and re-ran that one-shot measurement, so on a
+// phone (where switching apps is constant) a good clock had to survive an
+// unbounded number of coin flips and a bad one was permanent.
+//
+// Three properties fix it without loosening the sync promise by a millisecond:
+//
+//  - **The best reading wins, and it is kept.** `clockOffset` already picks the
+//    lowest-RTT sample because a fast trip has less room to be asymmetric; that
+//    same logic applies ACROSS handshakes, so a 12ms reading from a minute ago
+//    is better evidence than a 600ms one taken just now. A measurement is only
+//    replaced by a better one, or once it is too old to trust.
+//  - **A handshake that fails to clear the gate is retried,** backing off, and
+//    with more samples each time. The minimum of N round trips can only improve
+//    as N grows: on a link where most trips are slow and a few are fine, this is
+//    the difference between "never" and "within a few seconds".
+//  - **Retries only run while there is something to play,** so an idle table
+//    costs nothing.
+//
+// A reading older than this is not trusted: a phone that suspended for twenty
+// minutes may have had its clock corrected by the network while it slept, and
+// `performance.now()` across a suspend is not something to bet audio on.
+const CLOCK_MAX_AGE_MS = 5 * 60_000;
+// Backoff between handshakes while the table is playing and we still have no
+// clock good enough to make a sound on. Fast at first — the common case is a
+// single slow round trip, and one retry clears it.
+const CLOCK_RETRY_MS = [750, 1500, 3000, 6000, 12_000, 20_000];
+// A retry casts a wider net than the first attempt: the whole point is that the
+// minimum improves with more samples.
+const CLOCK_RETRY_SAMPLES = 9;
+// **The silence recovery tick.** `reconcile` is deliberately event-driven, and
+// for drift that is the right call (see its own note). But several of the
+// states it can land in are silent ones waiting on something that fires no
+// event at all — an advert finishing, a buffer that filled while the tab was
+// hidden, a load that never produced a state change. Those latched, and a
+// latched silence is indistinguishable from a broken feature.
+//
+// So: while this client is silent AND the table is playing, re-check on a slow
+// tick until it either plays or has a reason it can state. It costs nothing in
+// the normal case, because a client that is playing is not silent.
+const RECOVERY_TICK_MS = 2500;
 // A brief mobile reconnect blip must not chop the music — the anchor stays
 // correct across it as long as the GM changed nothing. Past this the odds that
 // a pause or a track change was missed stop being negligible.
@@ -80,8 +156,11 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // ------------------------------------------------------------------ the state
 let serverState = null; // the last audio:state broadcast
-let clock = { ready: false, offsetMs: 0, uncertaintyMs: Infinity };
+let clock = { ready: false, offsetMs: 0, uncertaintyMs: Infinity, measuredAt: 0 };
 let clockRunning = false;
+let clockAttempt = 0;
+let clockRetryTimer = null;
+let recoveryTimer = null;
 let player = null;
 let playerReady = false;
 let creatingPlayer = false;
@@ -353,28 +432,98 @@ async function pingOnce(timeoutMs = 2000) {
   });
 }
 
-// Sequential, not five at once: simultaneous pings share one connection and
-// queue behind each other, so four of the five round trips would be inflated
+// Is the offset we hold good enough to make a sound on? Three separate
+// questions — do we have one, is it precise enough, is it recent enough — and
+// every caller wants all three, so they are asked in one place.
+function clockUsable() {
+  return (
+    clock.ready &&
+    clock.uncertaintyMs <= MAX_CLOCK_UNCERTAINTY_MS &&
+    Date.now() - clock.measuredAt <= CLOCK_MAX_AGE_MS
+  );
+}
+
+// Take a new measurement only if it actually beats what we already have, or if
+// what we have is too old to keep trusting. This is the same "lowest RTT wins"
+// rule `clockOffset` applies within one handshake, extended across handshakes —
+// see the note by CLOCK_MAX_AGE_MS for why that is the correct comparison
+// rather than "most recent wins".
+function adoptClock({ offsetMs, uncertaintyMs }) {
+  const expired = Date.now() - clock.measuredAt > CLOCK_MAX_AGE_MS;
+  if (clock.ready && !expired && uncertaintyMs >= clock.uncertaintyMs) return false;
+  clock = { ready: true, offsetMs, uncertaintyMs, measuredAt: Date.now() };
+  return true;
+}
+
+// Sequential, not all at once: simultaneous pings share one connection and
+// queue behind each other, so every round trip but the first would be inflated
 // by head-of-line delay and the lowest-RTT filter would have nothing clean to
 // choose from.
-async function runClockHandshake() {
+async function runClockHandshake({ samples = CLOCK_SAMPLES } = {}) {
   if (clockRunning) return;
   clockRunning = true;
   try {
-    const samples = [];
-    for (let i = 0; i < CLOCK_SAMPLES; i += 1) {
+    const collected = [];
+    for (let i = 0; i < samples; i += 1) {
       const s = await pingOnce();
-      if (s) samples.push(s);
-      if (i < CLOCK_SAMPLES - 1) await sleep(CLOCK_SPACING_MS);
+      if (s) collected.push(s);
+      if (i < samples - 1) await sleep(CLOCK_SPACING_MS);
     }
-    const result = clockOffset(samples);
-    clock = result
-      ? { ready: true, offsetMs: result.offsetMs, uncertaintyMs: result.rttMs / 2 }
-      : { ready: false, offsetMs: 0, uncertaintyMs: Infinity };
-    set({ clockReady: clock.ready });
+    const result = clockOffset(collected);
+    // A handshake that returned nothing usable does NOT wipe the clock. It used
+    // to, which meant one dropped connection turned a good offset into no
+    // offset — and then, with no retry, into permanent silence.
+    if (result) adoptClock({ offsetMs: result.offsetMs, uncertaintyMs: result.rttMs / 2 });
+    set({ clockReady: clockUsable() });
     reconcile('clock');
   } finally {
     clockRunning = false;
+    scheduleClockRetry();
+  }
+}
+
+// Keep measuring until the clock is good enough — but only while the table is
+// actually playing something, so a session sitting in silence is not pinging a
+// server it has no use for.
+function scheduleClockRetry() {
+  // Nothing to chase: stand down and forget the backoff, so the next time a
+  // clock IS needed it starts from the fast end again.
+  if (clockUsable() || !serverState?.isPlaying) {
+    clearTimeout(clockRetryTimer);
+    clockRetryTimer = null;
+    clockAttempt = 0;
+    return;
+  }
+  // **Idempotent, and that is the whole point.** This is called from several
+  // places that repeat — the recovery tick, reconcile's own no-clock gate, every
+  // audio:state broadcast. An earlier draft cleared and re-armed the timer on
+  // each call, which meant that once the backoff grew past the tick interval,
+  // every tick cancelled the pending retry and pushed it further out: it would
+  // never have fired at all. A retry already in flight is left strictly alone.
+  if (clockRetryTimer || clockRunning) return;
+  const delay = CLOCK_RETRY_MS[Math.min(clockAttempt, CLOCK_RETRY_MS.length - 1)];
+  clockAttempt += 1;
+  clockRetryTimer = setTimeout(() => {
+    clockRetryTimer = null;
+    runClockHandshake({ samples: CLOCK_RETRY_SAMPLES });
+  }, delay);
+}
+
+// See RECOVERY_TICK_MS. Armed whenever this client is silent while the table
+// plays, disarmed the moment it is not — so the normal case pays nothing.
+function updateRecoveryTick() {
+  const stuck = snapshot.status === 'silent' && Boolean(serverState?.isPlaying);
+  if (stuck && !recoveryTimer) {
+    recoveryTimer = setInterval(() => {
+      // A clock that expired while we sat here is the one gate this tick cannot
+      // clear on its own. `scheduleClockRetry` is a no-op when a measurement is
+      // already pending, so calling it every tick costs nothing.
+      scheduleClockRetry();
+      reconcile('recovery');
+    }, RECOVERY_TICK_MS);
+  } else if (!stuck && recoveryTimer) {
+    clearInterval(recoveryTimer);
+    recoveryTimer = null;
   }
 }
 
@@ -497,8 +646,11 @@ function reconcile(reason) {
     set({ status: 'blocked', detail: 'autoplay-denied' });
     return;
   }
-  if (!clock.ready || clock.uncertaintyMs > MAX_CLOCK_UNCERTAINTY_MS) {
+  if (!clockUsable()) {
+    // Not a dead end any more: scheduleClockRetry keeps measuring until this
+    // clears (see CLOCK_RETRY_MS), and the recovery tick re-runs reconcile.
     silence('no-clock');
+    scheduleClockRetry();
     return;
   }
   if (offlineSince != null && Date.now() - offlineSince > OFFLINE_GRACE_MS) {
@@ -567,15 +719,21 @@ socket.on('audio:state', (state) => {
   });
   ensurePlayer();
   reconcile('server-state');
+  // "Is anything playing" is what gates the clock retries, and this broadcast is
+  // how that answer changes. A GM pressing Play on a device whose clock is not
+  // good enough yet is precisely the case that used to stick.
+  scheduleClockRetry();
 });
 
 socket.on('connect', () => {
   offlineSince = null;
-  // The first connect counts here, unlike useSocketRefresh's deliberate skip:
-  // this IS the only chance to establish an offset, and without one the engine
-  // stays silent by design.
-  clock = { ...clock, ready: false, uncertaintyMs: Infinity };
-  set({ clockReady: false });
+  // **Re-measure, but do not throw away what we have.** This used to reset the
+  // clock to "unknown" first, which meant every reconnect — and on mobile there
+  // are many — opened a window of guaranteed silence, and a reconnect whose
+  // handshake came back slow closed that window permanently. The existing
+  // reading stays valid until a better or fresher one replaces it; `adoptClock`
+  // decides, and CLOCK_MAX_AGE_MS is what stops a stale one lingering.
+  clockAttempt = 0;
   runClockHandshake();
 });
 
@@ -583,12 +741,14 @@ socket.on('disconnect', () => {
   offlineSince = Date.now();
 });
 
-// A tab that was asleep has a clock we can no longer vouch for — a phone that
-// suspended for twenty minutes especially. Re-measure before making a sound.
+// A tab that was asleep has a clock worth re-checking — a phone that suspended
+// for twenty minutes especially. Re-measure, and let CLOCK_MAX_AGE_MS decide
+// whether what we held is still trustworthy in the meantime: a five-second app
+// switch should not silence the music, and a twenty-minute one should.
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState !== 'visible') return;
-  clock = { ...clock, ready: false, uncertaintyMs: Infinity };
-  set({ clockReady: false });
+  clockAttempt = 0;
+  set({ clockReady: clockUsable() });
   runClockHandshake();
 });
 

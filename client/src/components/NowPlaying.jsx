@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { motion, useReducedMotion } from 'framer-motion';
 import { useRole } from '../roleContext.jsx';
 import { useAudioStatus } from '../lib/useAudioStatus.js';
-import { unlockAudioFromGesture } from '../lib/audioEngine.js';
+import { unlockAudioFromGesture, silentReason } from '../lib/audioEngine.js';
 
 // What is playing, wherever you are in the app.
 //
@@ -114,7 +114,7 @@ export default function NowPlaying({ variant = 'bar', onOpen }) {
     : audio.status === 'error'
       ? `${audio.name} — can't play here`
       : audio.status === 'silent'
-        ? `${audio.name} (re-syncing)`
+        ? `${audio.name} (${silentReason(audio)})`
         : audio.name;
 
   const handle = () => {

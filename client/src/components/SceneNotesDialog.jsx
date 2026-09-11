@@ -115,7 +115,7 @@ export default function SceneNotesDialog({ activeScene, onClose }) {
   const rightNotes = others.slice(splitAt);
 
   const tabClass = (active) =>
-    `min-h-11 flex-1 panel-cut-sm border px-3 text-sm font-semibold uppercase tracking-wide ${
+    `min-h-11 flex-1 panel-cut-sm border px-3 text-sm font-semibold uppercase tracking-wide [@media(max-height:640px)]:min-h-9 ${
       active
         ? 'border-brand-500 bg-brand-900/40 text-brand-300'
         : 'border-zinc-700 bg-zinc-800 text-zinc-400 hover:border-zinc-600'
@@ -127,8 +127,21 @@ export default function SceneNotesDialog({ activeScene, onClose }) {
     // variant already asks for `md:w-full`, so a `maxWidth` class was the
     // only thing actually capping this narrower than the screen. "Extend
     // the space for notes to match the entire screen width" reads literally.
-    <DialogShell title="Notes" onClose={onClose} variant="fullscreen" maxWidth="max-w-none" portal>
-      <div className="mb-3 flex shrink-0 gap-2">
+    <DialogShell
+      title="Notes"
+      onClose={onClose}
+      variant="fullscreen"
+      maxWidth="max-w-none"
+      portal
+      panelClassName="[@media(max-height:640px)]:h-full"
+    >
+      {/* One flex column filling the dialog body, so the tab row and the
+          workspace SHARE the available height instead of stacking past it.
+          `h-full` on the workspace alone meant "the whole body" — plus the tabs
+          above it, which is exactly the overflow that pushed Save off a
+          landscape phone's screen. */}
+      <div className="flex h-full min-h-0 flex-col">
+      <div className="mb-3 flex shrink-0 gap-2 [@media(max-height:640px)]:mb-2">
         <button type="button" onClick={() => setView('scene')} className={tabClass(view === 'scene')}>
           Scene Notes
         </button>
@@ -139,7 +152,7 @@ export default function SceneNotesDialog({ activeScene, onClose }) {
           <button
             type="button"
             onClick={() => setEditingId('new')}
-            className="min-h-11 shrink-0 panel-cut-sm border border-dashed border-zinc-700 px-3 text-xs font-bold uppercase tracking-wide text-zinc-500 hover:border-brand-600 hover:text-zinc-200"
+            className="min-h-11 shrink-0 panel-cut-sm border border-dashed border-zinc-700 px-3 text-xs font-bold uppercase tracking-wide text-zinc-500 hover:border-brand-600 hover:text-zinc-200 [@media(max-height:640px)]:min-h-9"
           >
             + Add Note
           </button>
@@ -154,9 +167,9 @@ export default function SceneNotesDialog({ activeScene, onClose }) {
         ) : notes == null ? (
           <p className="text-sm text-zinc-500">Loading…</p>
         ) : (
-          <div className="grid grid-cols-1 gap-3 md:grid-cols-[1fr_1.4fr_1fr]">
+          <div className="grid min-h-0 grid-cols-1 gap-3 md:grid-cols-[1fr_1.4fr_1fr] [@media(max-height:640px)]:flex-1">
             <NoteColumn notes={leftNotes} onOpen={setEditingId} order="order-2 md:order-1" />
-            <div className="order-1 min-h-[50dvh] md:order-2">
+            <div className="order-1 min-h-[60dvh] md:order-2 [@media(max-height:640px)]:min-h-0">
               {activeNote ? (
                 <NoteEditor
                   key={activeNote.id}
@@ -167,7 +180,7 @@ export default function SceneNotesDialog({ activeScene, onClose }) {
                   onDelete={editingId !== 'new' ? deleteActive : undefined}
                 />
               ) : (
-                <div className="flex h-full min-h-[50dvh] flex-col items-center justify-center gap-3 panel-cut-sm border border-dashed border-zinc-800 p-6 text-center text-sm text-zinc-600">
+                <div className="flex h-full min-h-[60dvh] flex-col items-center justify-center gap-3 panel-cut-sm border border-dashed border-zinc-800 p-6 text-center text-sm text-zinc-600">
                   <p>Select a note to read or edit it in full, or add a new one.</p>
                   <button
                     type="button"
@@ -187,6 +200,7 @@ export default function SceneNotesDialog({ activeScene, onClose }) {
       ) : (
         <MasterNoteEditor note={masterNote} />
       )}
+      </div>
     </DialogShell>
   );
 }
@@ -203,7 +217,7 @@ export default function SceneNotesDialog({ activeScene, onClose }) {
 // with, which a plain `<p>` would otherwise collapse away.
 function NoteColumn({ notes, onOpen, order }) {
   return (
-    <div className={`${order} max-h-[70dvh] space-y-2 overflow-y-auto pr-1`}>
+    <div className={`${order} max-h-[70dvh] space-y-2 overflow-y-auto pr-1 [@media(max-height:640px)]:max-h-full`}>
       {notes.map((note) => (
         <button
           key={note.id}
@@ -211,8 +225,10 @@ function NoteColumn({ notes, onOpen, order }) {
           onClick={() => onOpen(note.id)}
           className="block w-full panel-cut-sm border border-zinc-800 bg-zinc-900 p-3 text-left hover:border-brand-600"
         >
-          <p className="truncate text-sm font-semibold text-zinc-200">{note.title || 'Untitled Note'}</p>
-          {note.body && <p className="mt-1 whitespace-pre-wrap text-xs text-zinc-500">{note.body}</p>}
+          <p className="truncate text-base font-semibold text-zinc-200">{note.title || 'Untitled Note'}</p>
+          {note.body && (
+            <p className="mt-1 whitespace-pre-wrap text-sm leading-relaxed text-zinc-400">{note.body}</p>
+          )}
         </button>
       ))}
     </div>
@@ -230,23 +246,42 @@ function NoteEditor({ note, isNew, onSave, onCancel, onDelete }) {
   const dirty = isNew || title !== note.title || body !== note.body;
 
   return (
-    <div className="flex h-full min-h-[50dvh] flex-col gap-2 panel-cut-sm border border-zinc-800 bg-zinc-900 p-3">
+    // **The breakpoint here is HEIGHT, not width (decided, revised — "notes are
+    // barely visible on mobile").**
+    //
+    // The Scene tab is landscape-only (OrientationGate), so "Notes on mobile"
+    // means a phone held sideways — about 844x390. That is WIDER than Tailwind's
+    // `md`, so every `md:` rule in this file already applies to it: a phone was
+    // getting the full desktop layout, three columns and all, inside 390px of
+    // height. Sizing this by width could never have fixed it, and 50dvh of a
+    // landscape phone is 195px — half of which the title field and the button
+    // row take, which is exactly the "barely visible" being reported.
+    //
+    // So the short-viewport rule is written against `max-height` and gives the
+    // open note nearly the whole dialog; the textarea below scrolls inside
+    // whatever that comes to.
+    <div className="flex h-full min-h-[60dvh] flex-col gap-2 panel-cut-sm border border-zinc-800 bg-zinc-900 p-3 [@media(max-height:640px)]:min-h-0 [@media(max-height:640px)]:gap-1.5 [@media(max-height:640px)]:p-2">
       <input
         value={title}
         onChange={(e) => setTitle(e.target.value)}
         placeholder="Untitled Note"
-        className="min-h-11 w-full panel-cut-sm border border-zinc-700 bg-zinc-800 px-2 py-1 text-sm font-semibold outline-none focus:border-brand-500"
+        // text-base on mobile is not only legibility: iOS Safari zooms the
+        // whole page in when a focused field's text is under 16px, and a
+        // dialog that zooms on every tap into the title is unusable one-handed.
+        className="min-h-11 w-full shrink-0 panel-cut-sm border border-zinc-700 bg-zinc-800 px-2.5 py-1 text-base font-semibold outline-none focus:border-brand-500 [@media(max-height:640px)]:min-h-9"
       />
       <textarea
         value={body}
         onChange={(e) => setBody(e.target.value)}
         placeholder="Write anything…"
-        // flex-1, not a fixed `rows` count — the whole point of this layout
-        // is that the note being worked on gets the workspace's full height
-        // rather than a cramped internally-scrolling box.
-        className="w-full flex-1 panel-cut-sm border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm outline-none focus:border-brand-500"
+        // `flex-1` gives it the workspace's full height, and `min-h-0` is what
+        // lets it actually SCROLL inside that height: without it a flex item
+        // floors at its content size, so a long note grew the box and pushed
+        // Save off the bottom of the dialog instead of scrolling within itself.
+        // leading-relaxed because a wall of notes is read, not just written.
+        className="w-full min-h-0 flex-1 resize-none overflow-y-auto panel-cut-sm border border-zinc-700 bg-zinc-800 px-2.5 py-2 text-base leading-relaxed outline-none focus:border-brand-500"
       />
-      <div className="flex items-center justify-between gap-2">
+      <div className="flex shrink-0 items-center justify-between gap-2">
         <div className="flex gap-3">
           <button type="button" onClick={onCancel} className="text-xs font-semibold text-zinc-500 hover:text-zinc-300">
             Cancel
@@ -276,15 +311,17 @@ function MasterNoteEditor({ note }) {
   const save = () => socket.emit('master_note:update', { body });
 
   return (
-    <div className="flex h-full flex-col gap-2">
-      <p className="text-xs text-zinc-500">
+    // Same height rule as a Scene Note: fill the dialog and scroll inside it,
+    // rather than a dvh guess that overflows a landscape phone.
+    <div className="flex h-full min-h-[60dvh] flex-col gap-2 [@media(max-height:640px)]:min-h-0 [@media(max-height:640px)]:flex-1">
+      <p className="shrink-0 text-xs text-zinc-500">
         One Note for the whole campaign — the same content, reachable from any Scene.
       </p>
       <textarea
         value={body}
         onChange={(e) => setBody(e.target.value)}
         placeholder="Campaign notes…"
-        className="min-h-[60dvh] w-full flex-1 panel-cut-sm border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm outline-none focus:border-brand-500"
+        className="min-h-0 w-full flex-1 resize-none overflow-y-auto panel-cut-sm border border-zinc-700 bg-zinc-800 px-3 py-2 text-base leading-relaxed outline-none focus:border-brand-500"
       />
       <button
         type="button"

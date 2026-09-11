@@ -174,3 +174,50 @@ test('shaping a null row is a no-op rather than a crash', () => {
   assert.equal(shapeCharacter(null), null);
   assert.equal(withImageUrl('move')(undefined), undefined);
 });
+
+// **`withImageUrl` carries the WHOLE row, and callers must spread it FIRST**
+// (bugfix — `attack_targets.map is not a function` in the live app).
+//
+// `attachInteractions` in server/index.js spread it LAST, under a comment
+// asserting it "only ever REMOVES image_data/image_mime_type and adds
+// image_url, so it cannot disturb any of the derived fields above it". The
+// belief was wrong in a way nothing caught: it returns every OTHER column too,
+// so spreading it last put the raw `attack_targets` and
+// `defense_frame_positions` JSON strings back on top of the parsed arrays the
+// same object had just derived.
+//
+// Nothing failed at the boundary — the payload was well-formed, just wrong —
+// and the client's own guard (`move.attack_targets?.length`) let a string
+// through because a string has a length. It surfaced two PRs later as a crash.
+//
+// So the property is pinned here rather than the bug: this is what makes spread
+// ORDER load-bearing at every call site, and a future reader who believes the
+// old comment fails this test instead of shipping it.
+test('withImageUrl returns every non-image column, so it must be spread first', () => {
+  const shaped = withImageUrl('move')({
+    id: 4,
+    name: 'Jab',
+    attack_targets: '["Skull"]',
+    defense_frame_positions: '[]',
+    image_data: 'AAAA',
+    image_mime_type: 'image/webp',
+    image_hash: 'dddddddddddddddd',
+  });
+  // The three image columns are the ONLY things it removes.
+  assert.ok(!('image_data' in shaped));
+  assert.ok(!('image_mime_type' in shaped));
+  assert.ok(!('image_hash' in shaped));
+  assert.equal(shaped.image_url, '/api/img/move/4/dddddddddddddddd');
+  // Everything else rides along untouched — including the raw JSON strings a
+  // caller means to parse. That is precisely why it cannot be spread last.
+  assert.equal(shaped.name, 'Jab');
+  assert.equal(shaped.attack_targets, '["Skull"]');
+  assert.equal(shaped.defense_frame_positions, '[]');
+
+  // The shape a caller must use: base row first, derived fields on top.
+  const correct = { ...withImageUrl('move')({ id: 4, attack_targets: '["Skull"]' }), attack_targets: ['Skull'] };
+  assert.deepEqual(correct.attack_targets, ['Skull']);
+  // ...and the shape that caused the bug, kept as an executable warning.
+  const wrong = { attack_targets: ['Skull'], ...withImageUrl('move')({ id: 4, attack_targets: '["Skull"]' }) };
+  assert.equal(wrong.attack_targets, '["Skull"]', 'spreading last silently reverts the parse');
+});

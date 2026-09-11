@@ -645,6 +645,31 @@ The phase that moves the Turso number, because the boot pull **is** the database
   to reclaim now that Turso owns the pages. The whole block is still wrapped: a world that
   cannot be tidied is still a world that can be played.
 
+**A derived field can be silently un-derived by a spread (bugfix — `attack_targets.map
+is not a function`).** `withImageUrl` returns `{ ...rest, image_url }`, where `rest` is
+the **whole row** minus the three image columns. `attachInteractions` spread it LAST,
+under a comment asserting it "only ever REMOVES image_data/image_mime_type and adds
+image_url, so it cannot disturb any of the derived fields above it". That was simply
+false, and it put the raw `attack_targets` and `defense_frame_positions` JSON strings
+straight back on top of the arrays the same object had just parsed.
+
+Three things made it survive two PRs:
+
+- **Nothing threw at the boundary.** The payload was well-formed JSON; it was just the
+  wrong type, in two fields, on every move-bearing endpoint.
+- **The client's guard let it through.** `move.attack_targets?.length` is truthy for a
+  string, so `'["Skull"]'` passed the check and died on `.map` — taking the page down
+  rather than showing one wrong line. That guard is now `Array.isArray`, so a
+  recurrence is a missing field instead of a white screen at the table.
+- **Every other call site had it right** (`shapeCharacter`, the perks list), so the
+  pattern looked proven.
+
+The fix is ordering: the shaped row is spread FIRST and every derived field is applied on
+top, which is the shape that cannot have this bug. `server/test/images.test.js` pins the
+property rather than the symptom — that `withImageUrl` carries every non-image column —
+including an executable demonstration of the wrong spread order, so a future reader who
+believes the old comment fails a test instead of shipping it.
+
 #### What remains
 
 **The thing none of this fixed, until it took the site down.** Render's free tier has no
@@ -3473,6 +3498,51 @@ in the middle of.
     one connection and every RTT but the first would be inflated. Measured on
     `performance.now()`, which is monotonic, so an NTP correction mid-session
     cannot silently poison every position computed afterwards.
+  - **A handshake that fails is retried, and a good reading is never thrown away
+    (bugfix — "it says re-syncing and does not play").** Reported from a phone,
+    and the gate was doing exactly what it was told: the clock must be inside
+    ±250ms, i.e. a best-of-five round trip under 500ms. On mobile data against a
+    free-tier host that has just woken up, that is a coin flip — and losing it
+    was **permanent**, because nothing measured again. Worse, every
+    `visibilitychange` **deleted** the existing offset before re-measuring, so on
+    a phone (where switching apps is constant) a working clock had to survive an
+    unbounded run of those coin flips while a broken one never recovered.
+
+    The gate itself is unchanged — the table's rule is still "better silent than
+    out of sync". What changed is that failing it is no longer terminal:
+
+      - **Lowest-RTT-wins now applies ACROSS handshakes, not just within one.** A
+        12ms reading from a minute ago is better evidence than a 600ms one taken
+        now, so a measurement is replaced only by a better one, or once it is
+        older than five minutes (`CLOCK_MAX_AGE_MS` — long enough that an app
+        switch does not chop the music, short enough not to bet audio on a clock
+        that slept through a suspend).
+      - **Retries back off (750ms → 20s) with more samples each time** (9, up
+        from 5): the minimum of N round trips can only improve as N grows, which
+        is the honest way to get a clean reading on a link where most trips are
+        slow and a few are fine.
+      - **Retries only run while something is actually playing**, so an idle
+        table pings nobody — verified by counting frames, not assumed.
+
+    `scheduleClockRetry` is **idempotent**, and that is load-bearing rather than
+    tidiness: it is called from the recovery tick, from reconcile's own no-clock
+    gate and from every broadcast, and a first draft that cleared and re-armed
+    the timer on each call would have pushed the retry further out on every tick
+    and never fired it at all.
+  - **A silent client re-checks itself until it converges (bugfix, same report).**
+    `reconcile` is event-driven by design, which is right for drift — but several
+    of the states it can land in are silent ones waiting on something that fires
+    no event: an advert finishing, a buffer that filled while the tab was hidden,
+    a load that never produced a state change. Those **latched**, and a latched
+    silence is indistinguishable from a broken feature. So while this client is
+    silent AND the table is playing, a 2.5s tick re-runs reconcile. It costs
+    nothing in the normal case, because a client that is playing is not silent.
+  - **The indicator says WHY it is silent, not just that it is.** Every silent
+    state rendered as the same "re-syncing" — true of all of them, useful about
+    none, and the reason the first report of this bug could not say more than
+    "it says syncing". `silentReason()` maps the engine's own detail to words:
+    *loading the track*, *buffering*, *measuring the clock*, *reconnecting*, *an
+    advert is playing*, *out of sync — retrying*.
   - **Re-sync happens on events only — no polling timer (decided, explicitly).**
     The events are: a track starting or changing, play, pause, a GM seek, a
     socket re-connect, the tab becoming visible again, and the player's own
@@ -5267,6 +5337,37 @@ already uses internally, so the cap comes off and the dialog actually fills the 
 needs) rather than an ellipsis-truncated 3-line preview, with `whitespace-pre-wrap` added so the
 box actually preserves the note's own line breaks instead of collapsing them into one flowed
 paragraph the way a plain `<p>` would.
+
+**Follow-up: legible on a phone — and the breakpoint is HEIGHT, not width (decided, revised).**
+Reported as "notes are barely visible on mobile; make the text scrollable when opened, with a
+larger text and text field". The diagnosis matters more than the numbers:
+
+- **The Scene tab is landscape-only** (`OrientationGate`), so "Notes on mobile" means a phone held
+  sideways — about 844x390. That is **wider** than Tailwind's `md`, so every `md:` rule in this
+  file already applied to it: a phone was being served the full desktop layout, three columns and
+  all, inside 390px of height. Any fix written against WIDTH would have missed entirely, which is
+  worth recording because the instinct is to reach for `md:` first.
+- **The scarce resource is vertical.** `50dvh` of a landscape phone is 195px, and the note's title
+  field plus the Cancel/Delete/Save row take most of it. That is the "barely visible".
+- **A `dvh` guess cannot fix it, and made it worse.** A first attempt at `78dvh` overflowed the
+  dialog and pushed Save off the bottom of the screen, because `fullscreen` resolves to
+  `md:h-auto md:max-h-[90dvh]` at that width and a percentage height inside an auto-height parent
+  resolves to auto. The fix is to give the panel a **definite** height on a short viewport
+  (`panelClassName="[@media(max-height:640px)]:h-full"`) and then let flex distribute it: the
+  dialog body is one flex column, the tab row is `shrink-0`, the workspace is `flex-1 min-h-0`, and
+  the textarea is `flex-1 min-h-0 overflow-y-auto`. `min-h-0` is the load-bearing half — without
+  it a flex item floors at its content size, so a long note grows the box instead of scrolling
+  inside it, which is exactly what "make the text scrollable when opened" was asking for.
+- **Text is 16px everywhere now**, with the `md:text-sm` downgrades dropped: notes are read, not
+  skimmed, and on iOS Safari a focused field under 16px zooms the whole page in, which makes the
+  dialog unusable one-handed. Side-box previews come up from `text-xs` to `text-sm` for the same
+  reason, keeping the untruncated bodies decided above.
+- Fixed chrome (tab row, title field, the editor's own padding) tightens under
+  `[@media(max-height:640px)]`, which is what takes the open note from 4 to 6 visible lines on a
+  real phone.
+
+Measured, not assumed — 127px of note at 844x390, 163px at 932x430, 418px on a desktop, with the
+Save button on screen and the dialog body not overflowing at any of the three.
 
 **Manually-placed summons are anchored to the Scene's own artwork, not to each viewer's own screen
 shape (bugfix, decided, revised).** Reported live: a GM repositioning a character saw it land in a
