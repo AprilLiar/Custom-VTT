@@ -2,11 +2,12 @@ import path from 'node:path';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
+import compression from 'compression';
 import { createServer } from 'node:http';
 import { Server } from 'socket.io';
 import {
   all, one, run, readMany, writeMany, initDb,
-  syncReplica, syncOnce, syncHealth, startSyncLoop, replicaMode, SYNC_SECONDS,
+  syncReplica, syncOnce, syncHealth, startSyncLoop, replicaMode, SYNC_SECONDS, syncedBytes,
   bootLog, connectDb, probePrimary, PROBE_TIMEOUT_MS,
 } from './db.js';
 import { gateChatLine, gatesCrossed, isValidPip, visibleGates } from './counterGates.js';
@@ -109,6 +110,7 @@ import {
 } from './combatTiming.js';
 import { clampRecoveryExtension } from './combatDamage.js';
 import { parseYouTubeId, expectedPositionMs, nextTrackId } from './audioSync.js';
+import { omitCharacterArt } from './payloads.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3001;
@@ -120,6 +122,15 @@ const PORT = process.env.PORT || 3001;
 const pendingRollChecks = new Map();
 
 const app = express();
+
+// **gzip everything (bandwidth).** The app went 60% over Render's included
+// bandwidth, and nothing here was compressed at all. It matters more than it
+// looks: this app's JSON is full of base64, and base64 gzips *well* even when
+// the underlying bytes are already compressed, because it re-encodes 8-bit
+// data into a 64-symbol alphabet with an obvious statistical structure. The
+// built client bundle alone drops from ~968KB to under 300KB on every cold
+// load. Mounted first so it wraps every route below, static assets included.
+app.use(compression());
 
 // **The port opens before the database does, and everything answers 503 until
 // the database boot finishes (bugfix — Render deploys that timed out having
@@ -158,7 +169,17 @@ const httpServer = createServer(app);
 // raw/unresized (to keep their animation) up to a 4MB client-side cap, which
 // is ~5.3MB once base64-encoded — the default would reject that payload.
 // Constructed detached from httpServer on purpose; see the boot gate above.
-export const io = new Server({ maxHttpBufferSize: 8 * 1024 * 1024 });
+// **perMessageDeflate is opt-IN (bandwidth).** Socket.io v4 turns WebSocket
+// compression off by default, and the reason is memory: zlib keeps a context
+// per connection, which at thousands of sockets is real. This app serves one
+// table — a handful of sockets — while shipping JSON and base64, which is
+// exactly the payload compression was invented for. `threshold` leaves the
+// small deltas (die:updated, counter:updated) uncompressed, where the frame
+// overhead would cost more than it saved.
+export const io = new Server({
+  maxHttpBufferSize: 8 * 1024 * 1024,
+  perMessageDeflate: { threshold: 1024 },
+});
 
 // ---------- shared lookups ----------
 
@@ -171,6 +192,10 @@ const getCharacter = (id) => one('SELECT * FROM characters WHERE id = ?', [id]);
 // phone on a slow connection isn't downloading a full base64 backdrop image
 // per character just to render name-and-portrait cards.
 const omitVitruvianArt = ({ vitruvian_image_data, vitruvian_image_mime_type, ...rest }) => rest;
+
+// omitCharacterArt lives in server/payloads.js — roundResolution.js emits the
+// same events and index.js already imports it, so the helper has to sit below
+// both. See that file for why these payloads are shaped at all.
 const getDice = (characterId) =>
   all('SELECT * FROM dice WHERE character_id = ? ORDER BY id', [characterId]);
 const getInventory = (characterId) =>
@@ -2340,7 +2365,7 @@ app.post('/api/characters', wrap(async (req, res) => {
   );
 
   const character = await getCharacter(id);
-  io.emit('character:created', character);
+  io.emit('character:created', omitCharacterArt(character));
   res.status(201).json(character);
 }));
 
@@ -2374,7 +2399,7 @@ app.put('/api/characters/:id', wrap(async (req, res) => {
   }
 
   const updated = await getCharacter(character.id);
-  io.emit('character:updated', updated);
+  io.emit('character:updated', omitCharacterArt(updated));
   res.json(updated);
 }));
 
@@ -3322,7 +3347,7 @@ io.on('connection', (socket) => {
     ]);
     // Broadcast from the rows already in hand (current_size/bonus/status
     // aren't touched by this UPDATE, only locked_*) — no re-fetch needed.
-    io.emit('character:updated', { ...character, max_stamina: maxStamina, current_stamina: currentStamina });
+    io.emit('character:updated', omitCharacterArt({ ...character, max_stamina: maxStamina, current_stamina: currentStamina }));
     for (const die of dice) {
       io.emit(
         'die:updated',
@@ -3642,9 +3667,9 @@ io.on('connection', (socket) => {
         diePayload({ ...die, locked_size: die.current_size, locked_bonus: die.bonus, locked_status: die.status })
       );
     }
-    io.emit('character:updated', {
+    io.emit('character:updated', omitCharacterArt({
       ...(await getCharacter(character.id)),
-    });
+    }));
     await postSystemMessage(
       io,
       preset
@@ -3690,7 +3715,7 @@ io.on('connection', (socket) => {
       currentStamina,
       character.id,
     ]);
-    io.emit('character:updated', { ...character, current_stamina: currentStamina });
+    io.emit('character:updated', omitCharacterArt({ ...character, current_stamina: currentStamina }));
     await logRoll(io, {
       characterId: character.id,
       characterName: character.name,
@@ -3722,7 +3747,7 @@ io.on('connection', (socket) => {
     ]);
     // Broadcast the row we already have plus the one field we just changed —
     // no need to round-trip back to the DB for data we already know.
-    io.emit('character:updated', { ...character, current_stamina: currentStamina });
+    io.emit('character:updated', omitCharacterArt({ ...character, current_stamina: currentStamina }));
   });
 
   on('inventory:add', async ({ characterId, itemName, description }) => {
@@ -4467,7 +4492,7 @@ io.on('connection', (socket) => {
       if (folder) target = folder.id;
     }
     await run('UPDATE characters SET folder_id = ? WHERE id = ?', [target, character.id]);
-    io.emit('character:updated', { ...character, folder_id: target });
+    io.emit('character:updated', omitCharacterArt({ ...character, folder_id: target }));
   });
 
   // ---------------------------------------------------------------------
@@ -4924,9 +4949,20 @@ io.on('connection', (socket) => {
     const state = await one('SELECT active_scene_id FROM scene_state WHERE id = 1');
     if (!state?.active_scene_id) return;
     if (!Array.isArray(points) || points.length < 2 || points.length > MAX_DRAWING_POINTS) return;
-    const cleanPoints = points.map((p) => [clamp(Number(p?.[0]), 0, 1), clamp(Number(p?.[1]), 0, 1)]);
+    // **Four decimals, not full double precision (bandwidth).** These are
+    // fractions of the stage, so the fourth decimal is a ten-thousandth of the
+    // canvas — far finer than a pixel on any screen, and invisible on every
+    // one. Stored verbatim they serialise as `0.43212345678901234`, ~41 bytes
+    // per point against a 4000-point cap, and the whole accumulated set used
+    // to be re-sent on every stage change. Rounding costs nothing visible and
+    // takes roughly two thirds off every stroke, stored and broadcast alike.
+    const round4 = (n) => Math.round(n * 10000) / 10000;
+    const cleanPoints = points.map((p) => [
+      round4(clamp(Number(p?.[0]), 0, 1)),
+      round4(clamp(Number(p?.[1]), 0, 1)),
+    ]);
     if (cleanPoints.some(([x, y]) => !Number.isFinite(x) || !Number.isFinite(y))) return;
-    await run(
+    const result = await run(
       'INSERT INTO scene_drawings (scene_id, points, color, width, is_eraser) VALUES (?, ?, ?, ?, ?)',
       [
         state.active_scene_id,
@@ -4936,7 +4972,21 @@ io.on('connection', (socket) => {
         isEraser ? 1 : 0,
       ]
     );
-    await emitStageUpdated();
+    // **The one new stroke, not the whole stage (bandwidth).** This handler
+    // used to call emitStageUpdated(), which rebuilds the ENTIRE stage — the
+    // scene backdrop, every summoned figure's picture, and every stroke ever
+    // drawn — and sends it to every connected socket. Measured at ~600KB per
+    // pen stroke, per viewer: a single sketch could run to a gigabyte across a
+    // table. A stroke is append-only by nature (see db.js's note on why an
+    // eraser is a stroke too, not a deletion), so a delta is not merely
+    // cheaper here, it is the honest shape.
+    io.emit('scene_draw:added', {
+      id: Number(result.lastInsertRowid),
+      points: cleanPoints,
+      color: typeof color === 'string' && color ? color.slice(0, 32) : '#ef4444',
+      width: clamp(Number(width) || 0.01, 0.001, 0.2),
+      is_eraser: isEraser ? 1 : 0,
+    });
   });
 
   // The eraser's "double-press" gesture — wipes every stroke on the active
@@ -4949,7 +4999,8 @@ io.on('connection', (socket) => {
     const state = await one('SELECT active_scene_id FROM scene_state WHERE id = 1');
     if (!state?.active_scene_id) return;
     await run('DELETE FROM scene_drawings WHERE scene_id = ?', [state.active_scene_id]);
-    await emitStageUpdated();
+    // Its own event too, for the same reason as scene_draw:added above.
+    io.emit('scene_draw:cleared', {});
   });
 
   // GM Notes (decided, new) — see the tables' own comment in db.js for why
@@ -6665,7 +6716,7 @@ io.on('connection', (socket) => {
     );
     for (const c of firstRoundChars) {
       if (c.current_stamina !== c.max_stamina) {
-        io.emit('character:updated', { ...c, current_stamina: c.max_stamina });
+        io.emit('character:updated', omitCharacterArt({ ...c, current_stamina: c.max_stamina }));
       }
     }
 
@@ -7179,7 +7230,7 @@ io.on('connection', (socket) => {
     if (character && pending !== 0) {
       const newStamina = clamp(character.current_stamina - pending, 0, character.max_stamina);
       await run('UPDATE characters SET current_stamina = ? WHERE id = ?', [newStamina, characterId]);
-      io.emit('character:updated', { ...character, current_stamina: newStamina });
+      io.emit('character:updated', omitCharacterArt({ ...character, current_stamina: newStamina }));
     }
     await Promise.all([
       // Each row's own effective cost is stamped on as stamina_committed_amount
@@ -7451,8 +7502,17 @@ io.on('connection', (socket) => {
 // ---------- static frontend ----------
 
 const clientDist = path.join(__dirname, '..', 'client', 'dist');
-app.use(express.static(clientDist));
+// **Vite content-hashes every filename**, so an asset URL can never refer to
+// different bytes tomorrow — which is exactly the condition `immutable`
+// requires. Without this, Express defaults to `max-age=0` and every returning
+// visitor pays a conditional request per asset just to be told nothing
+// changed. `index.html` is the one file whose URL is stable while its contents
+// change on every deploy, so it is explicitly excluded below.
+app.use(express.static(clientDist, { maxAge: '1y', immutable: true, index: false }));
 app.get('*', (_req, res) => {
+  // The SPA shell names the current bundle, so a cached copy would pin a
+  // browser to the previous deploy's JavaScript.
+  res.set('Cache-Control', 'no-cache');
   res.sendFile(path.join(clientDist, 'index.html'));
 });
 
@@ -7537,6 +7597,14 @@ console.log(
     : `Database: embedded replica with offline writes, synced from the primary in ${syncMs}ms — ` +
       `reads AND writes are local, pushed every ${SYNC_SECONDS}s`
 );
+// **What the boot pull actually cost (bandwidth).** Render's free tier has no
+// persistent disk, so `replica.db` is gone on every cold start and this first
+// sync is a FULL database download — the dominant line item in the Turso bill,
+// multiplied by however many times a day the service spins back up. It was
+// invisible until now; this is the number to watch after the images shrink.
+if (syncMs != null) {
+  console.log(`Database: boot pull moved ${(syncedBytes() / 1024 / 1024).toFixed(1)}MB from the primary`);
+}
 
 // **The alarm (Phase 5).** Offline writes bound a crash to one sync window
 // *only while the push is actually succeeding*. A sync that starts failing

@@ -229,13 +229,29 @@ export async function probePrimary({ timeoutMs = PROBE_TIMEOUT_MS } = {}) {
 export async function syncReplica() {
   if (!usingRemote) return null;
   const started = Date.now();
-  await connectDb().sync();
+  // **Keep the frame count (bandwidth).** `.sync()` returns
+  // `{ frames_synced, frame_no }` and this used to throw it away, which is why
+  // a 6GB Turso bill could only ever be reasoned about by arithmetic rather
+  // than read off a log. A frame is one 4KB page, so frames x 4096 is the
+  // bytes that actually moved — the one number that says whether a change to
+  // the schema or the images did anything.
+  const result = await connectDb().sync();
   const elapsed = Date.now() - started;
   lastSyncedAt = Date.now();
+  lastFramesSynced = Number(result?.frames_synced ?? 0) || 0;
+  syncedFramesTotal += lastFramesSynced;
   consecutiveFailures = 0;
   lastError = null;
+  // The write that prompted this sync has now left; anything that arrives
+  // from here on is what the next one is for.
+  pendingWrites = 0;
   return elapsed;
 }
+
+// ~4KB per libSQL frame. Exported so the server can report bytes rather than
+// an abstract frame count nobody can price.
+export const FRAME_BYTES = 4096;
+export const syncedBytes = () => syncedFramesTotal * FRAME_BYTES;
 
 // **`db.sync()` blocks the event loop, so the loop below has to be adaptive
 // (bugfix — Phase 5 shipped this wrong and broke the Arena).**
@@ -273,6 +289,17 @@ export async function syncReplica() {
 // at both of those moments there is nothing else to serve, and finishing the
 // push matters more than yielding.
 let lastSyncedAt = null;
+let lastFramesSynced = 0;
+let syncedFramesTotal = 0;
+// **Has anything actually changed since the last sync? (bandwidth.)** The loop
+// below used to push on a timer regardless — 8,640 round trips a day against a
+// database nobody had written to, because "is one already running" was the only
+// question it asked. Every write path bumps this; a sync that finds it at zero
+// does nothing. A full sync still runs every FORCE_SYNC_EVERY cycles, because
+// the pull half is how a write made anywhere else would ever be noticed.
+let pendingWrites = 0;
+let idleCycles = 0;
+const FORCE_SYNC_EVERY = 30;
 let consecutiveFailures = 0;
 let lastError = null;
 let lastSyncMs = null;
@@ -324,6 +351,9 @@ export function syncHealth() {
     // has quietly grown from 10s to 5 minutes is the thing worth seeing.
     nextInSeconds: Math.round(nextDelayMs() / 1000),
     lastSyncMs,
+    lastFramesSynced,
+    syncedBytes: syncedBytes(),
+    pendingWrites,
     lastSyncedAt,
     staleSeconds: staleMs == null ? null : Math.round(staleMs / 1000),
     consecutiveFailures,
@@ -333,8 +363,19 @@ export function syncHealth() {
 
 // One sync attempt, never throwing. Returns the health afterwards so the caller
 // can decide whether it has something to announce.
-export async function syncOnce() {
+export async function syncOnce({ force = false } = {}) {
   if (!usingRemote || syncInFlight) return syncHealth();
+  // Nothing written since the last sync: there is nothing to push, and the
+  // pull can wait for the periodic forced cycle. This is the whole of the
+  // idle-server saving — a table that is logged in but not playing costs
+  // nothing at all now.
+  if (!force && pendingWrites === 0) {
+    idleCycles += 1;
+    if (idleCycles < FORCE_SYNC_EVERY) return syncHealth();
+    idleCycles = 0;
+  } else {
+    idleCycles = 0;
+  }
   syncInFlight = true;
   const started = Date.now();
   try {
@@ -412,6 +453,7 @@ export async function one(sql, args = []) {
 
 export async function run(sql, args = []) {
   if (ddlQueue?.length) await flushDdl();
+  pendingWrites += 1;
   return connectDb().execute({ sql, args });
 }
 
@@ -456,6 +498,7 @@ export async function writeMany(statements) {
     const [sql, args = []] = list[0];
     return [await run(sql, args)];
   }
+  pendingWrites += list.length;
   return connectDb().batch(
     list.map(([sql, args = []]) => ({ sql, args })),
     'write'
@@ -2619,12 +2662,25 @@ export async function initDb() {
   // Must run after `flushDdl` has been drained by the seeds above, or the column
   // it writes may not exist yet on a fresh database.
   await flushDdl();
-  await run(
-    `UPDATE dice SET temporary_damage = temporary_damage + COALESCE(
-       (SELECT td.steps FROM temporary_damage td
-         WHERE td.character_id = dice.character_id AND td.slot_name = dice.slot_name), 0)`
-  );
-  await run('DELETE FROM temporary_damage');
+  // **Guarded on there being anything to move (bandwidth).** The claim above
+  // that this "costs one no-op statement" was true of the statement COUNT and
+  // false of the work: with no WHERE clause it scanned every row of `dice` —
+  // eight per character — running a correlated subquery against each, on every
+  // boot, forever, to add zero. Render cold-starts many times a day, so that is
+  // a lot of scanning and a lot of pages touched for a migration that finished
+  // in August. The guard is a single indexed existence check and skips the
+  // whole thing on any world that has already been folded; the migration itself
+  // is kept rather than deleted, because a database that has genuinely never
+  // booted since must still be repaired.
+  const pendingTempDamage = await one('SELECT 1 AS present FROM temporary_damage LIMIT 1');
+  if (pendingTempDamage) {
+    await run(
+      `UPDATE dice SET temporary_damage = temporary_damage + COALESCE(
+         (SELECT td.steps FROM temporary_damage td
+           WHERE td.character_id = dice.character_id AND td.slot_name = dice.slot_name), 0)`
+    );
+    await run('DELETE FROM temporary_damage');
+  }
 
   // Everything above only queued; the seeds' own reads will have drained most
   // of it, but a database that needed nothing seeded leaves the tail here.

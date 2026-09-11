@@ -3,7 +3,8 @@
 //   - scene_draw:add is refused outright with no active Scene
 //   - both a Player AND a GM may draw (no ownership gate at all)
 //   - drawings are scoped to the Scene they were made on, and ride the
-//     same stage:updated payload as summons
+//     scene_draw:added delta (NOT the whole stage — see the bandwidth note
+//     in the server handler), and are readable off GET /api/stage
 //   - points/width are clamped, not rejected wholesale, for out-of-range
 //     values sent directly over the socket
 //   - scene_draw:clear wipes every stroke on the active Scene, and a
@@ -65,7 +66,7 @@ let stage = await jf('/api/stage');
 check('nothing landed anywhere — no Scene to pin it to', !stage.drawings?.length, JSON.stringify(stage.drawings));
 
 // ============================================ 2. both roles can draw; scoped to the Scene
-console.log('\n--- both a Player and a GM can draw; drawings ride stage:updated, scoped per-Scene ---');
+console.log('\n--- both a Player and a GM can draw; strokes arrive as deltas, scoped per-Scene ---');
 gm.emit('scene:create', { name: `DrawSceneA${stamp}` });
 const sceneA = await wait(gm, 'scene:created', (s) => s.name === `DrawSceneA${stamp}`);
 gm.emit('scene:create', { name: `DrawSceneB${stamp}` });
@@ -74,14 +75,28 @@ const sceneB = await wait(gm, 'scene:created', (s) => s.name === `DrawSceneB${st
 gm.emit('scene:activate', { sceneId: sceneA.id });
 await sleep(300);
 
+// **A stroke must NOT re-send the stage (bandwidth).** This handler used to
+// call emitStageUpdated(), which rebuilds the scene backdrop, every summoned
+// figure's picture and every stroke already on the canvas, and sends all of it
+// to every socket — measured at ~600KB per pen stroke, per viewer. Watching for
+// a stray stage:updated here is what keeps that from creeping back.
+let sawStageUpdate = false;
+const watchStage = () => { sawStageUpdate = true; };
+gm.on('stage:updated', watchStage);
+
 player.emit('scene_draw:add', { points: [[0.1, 0.1], [0.3, 0.3]], color: '#00ff00', width: 0.01, isEraser: false });
-let afterPlayerDraw = await wait(gm, 'stage:updated', (s) => s.drawings?.length >= 1);
-check("a Player's own stroke lands (no ownership gate)", afterPlayerDraw.drawings.length === 1, JSON.stringify(afterPlayerDraw.drawings));
-check('the stored row carries no author field at all', !('character_id' in afterPlayerDraw.drawings[0]) && !('player_id' in afterPlayerDraw.drawings[0]));
+const playerStroke = await wait(gm, 'scene_draw:added', (d) => d.color === '#00ff00');
+check("a Player's own stroke lands (no ownership gate)", Boolean(playerStroke), JSON.stringify(playerStroke));
+check('the delta carries no author field at all', !('character_id' in playerStroke) && !('player_id' in playerStroke));
 
 gm.emit('scene_draw:add', { points: [[0.4, 0.4], [0.6, 0.6]], color: '#ef4444', width: 0.02, isEraser: false });
-let afterGmDraw = await wait(gm, 'stage:updated', (s) => s.drawings?.length >= 2);
-check("the GM's own stroke also lands", afterGmDraw.drawings.length === 2);
+await wait(gm, 'scene_draw:added', (d) => d.color === '#ef4444');
+await sleep(300);
+check('neither stroke re-broadcast the whole stage', !sawStageUpdate, 'a stroke triggered stage:updated — the 600KB-per-stroke regression is back');
+gm.off('stage:updated', watchStage);
+
+stage = await jf('/api/stage');
+check("both strokes are readable off GET /api/stage", stage.drawings.length === 2, JSON.stringify(stage.drawings.length));
 
 gm.emit('scene:activate', { sceneId: sceneB.id });
 await sleep(300);
@@ -91,23 +106,32 @@ check("Scene B's own drawings list starts empty — Scene A's strokes did not fo
 // ============================================ 3. clamping, not outright rejection
 console.log('\n--- out-of-range points/width are clamped, not rejected wholesale ---');
 gm.emit('scene_draw:add', { points: [[-3, 5], [0.5, 0.5]], color: '#ef4444', width: 999, isEraser: false });
-const clamped = await wait(gm, 'stage:updated', (s) => s.drawings?.length >= 1);
-const row = clamped.drawings[clamped.drawings.length - 1];
-const pts = JSON.parse(row.points);
+const row = await wait(gm, 'scene_draw:added', () => true);
+const pts = row.points;
 check('point x/y clamped into [0,1]', pts[0][0] === 0 && pts[0][1] === 1, JSON.stringify(pts));
 check('width clamped to the server max (0.2)', row.width === 0.2, String(row.width));
 
 // ============================================ 4. eraser replay semantics (order-dependent)
 console.log('\n--- an eraser stroke is stored as an ordinary row, is_eraser set ---');
 gm.emit('scene_draw:add', { points: [[0.1, 0.1], [0.9, 0.9]], color: '#000000', width: 0.05, isEraser: true });
-const afterEraser = await wait(gm, 'stage:updated', (s) => s.drawings?.some((d) => d.is_eraser));
-check('the eraser stroke is present with is_eraser set', afterEraser.drawings.some((d) => Boolean(d.is_eraser)));
+const afterEraser = await wait(gm, 'scene_draw:added', (d) => Boolean(d.is_eraser));
+check('the eraser stroke arrives as an ordinary row with is_eraser set', Boolean(afterEraser.is_eraser));
+
+// **Coordinates are rounded to 4 decimals (bandwidth).** Full double precision
+// serialises as ~41 bytes per point against a 4000-point cap; a ten-thousandth
+// of the stage is far finer than a pixel on any screen.
+check(
+  'points are rounded to 4 decimals, not stored at full precision',
+  afterEraser.points.every(([x, y]) => String(x).replace(/^-?\d*\.?/, '').length <= 4 && String(y).replace(/^-?\d*\.?/, '').length <= 4),
+  JSON.stringify(afterEraser.points)
+);
 
 // ============================================ 5. scene_draw:clear — a Player may trigger it too
 console.log("\n--- scene_draw:clear wipes every stroke on the active Scene, any role may trigger it ---");
 player.emit('scene_draw:clear');
-const afterClear = await wait(gm, 'stage:updated', (s) => s.drawings?.length === 0);
-check('every stroke on Scene B is gone', afterClear.drawings.length === 0);
+await wait(gm, 'scene_draw:cleared', () => true);
+stage = await jf('/api/stage');
+check('every stroke on Scene B is gone', stage.drawings.length === 0, JSON.stringify(stage.drawings));
 
 gm.emit('scene:activate', { sceneId: sceneA.id });
 await sleep(300);

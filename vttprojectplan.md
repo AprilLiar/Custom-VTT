@@ -422,6 +422,85 @@ primary.
 half of it. The other half: **a boot step that can block must not be able to block silently.** Open
 the port, name the step, and make the thing you cannot interrupt be preceded by something you can.
 
+## Hosting cost — bandwidth and sync (decided, new; phase 1 shipped)
+
+The app went 60% over Render's included bandwidth (7.97GB against 5GB — 4.82GB
+WebSocket, 2.93GB HTTP) and pushed ~6GB through Turso's sync allowance in a single
+billing period. A forensic pass found all three numbers trace to one habit rather than
+three separate problems: **base64 images in TEXT columns, shipped inside JSON.**
+
+- **Turso.** `render.yaml` has no `disk:` block, so `replica.db` does not survive a
+  restart and **every cold start downloads the whole database**. Render's free tier spins
+  down after ~15 minutes idle and every deploy restarts it too, so a 30–150MB database
+  (that size *is* the images) times several boots a day is the entire 6GB. The sync loop
+  is rounding error beside it.
+- **WebSocket.** `emitStageUpdated()` re-sent the scene backdrop, every summoned figure's
+  full picture and every stroke ever drawn — to every socket — on all thirteen of its
+  triggers, including each figure drag and **each pen stroke**. Measured: **600KB per
+  gesture, per viewer.**
+- **HTTP.** No compression at all, and because every image was a `data:` URI inside JSON,
+  **the browser cache could not work** — every portrait re-downloaded on every page load
+  and every phone unlock.
+
+### Phase 1 — compression, deltas, and idle sync (shipped)
+
+- **gzip on every HTTP response** (`compression`, mounted above every route). Base64
+  gives back ~25% — it re-encodes already-compressed bytes into a 64-symbol alphabet —
+  but the *structural* JSON this app is mostly made of gives back **~95%**, and the built
+  client bundle drops from ~968KB to under 300KB on every cold load.
+- **`perMessageDeflate` on Socket.io**, which v4 leaves **off by default** for memory
+  reasons (one zlib context per connection). Right call at thousands of sockets, wrong
+  one for a single table shipping JSON. A `threshold` keeps the small deltas uncompressed,
+  where framing would cost more than it saves.
+- **`Cache-Control: immutable` on static assets** — safe because Vite content-hashes every
+  filename — with `index.html` explicitly `no-cache`, since its URL is stable while its
+  contents name the current bundle.
+- **A pen stroke is its own event** (`scene_draw:added` / `scene_draw:cleared`) instead of
+  a full stage rebuild, and coordinates are **rounded to 4 decimals** — a ten-thousandth
+  of the stage is far finer than a pixel, and full double precision cost ~41 bytes per
+  point against a 4000-point cap. **607KB → 3.2KB per stroke.**
+- **`character:updated` carries no picture bytes** (`omitCharacterArt`, `server/payloads.js`).
+  It fires on every Stamina change — several times per fighter per round — and was carrying
+  *two* base64 images to deliver a two-byte integer. **300KB → 0.3KB.**
+  - **Its consumers must MERGE, never replace.** Two of them replaced
+    (`CharacterSheet`, `CombatArena`) and were fixed in the same commit; a consumer that
+    replaces will blank the portrait until the next full fetch, and the fix is always to
+    make it merge rather than to put the bytes back.
+- **The sync loop skips when nothing has been written.** It used to push on a timer
+  regardless — 8,640 round trips a day against a database nobody had touched. Every write
+  path marks it dirty; a full sync still runs every 30th cycle so an external write is
+  eventually noticed.
+- **`.sync()`'s `frames_synced` is logged** (frames × 4096 = bytes). It was being thrown
+  away, which is why a 6GB bill could only be reasoned about by arithmetic. The boot pull
+  now prints its own size — the one number that says whether the later phases worked.
+- **The August Temporary-Damage migration is guarded.** It re-scanned every row of `dice`
+  with a correlated subquery on every boot, forever, to add zero. Kept (a database that has
+  genuinely never booted since must still be repaired) but behind a single existence check.
+- **`scripts/playtest-bandwidth.mjs`** asserts byte ceilings on real payloads, so a future
+  `SELECT *` carrying an image back into a broadcast fails a test rather than a bill. It
+  measures HTTP over raw `node:http`, because `fetch` decompresses transparently and would
+  report what the app produced rather than what Render charges for.
+
+### Phases 2 and 3 (decided, not yet built)
+
+- **Phase 2 — images become cacheable URLs.** They stay in Turso; only the transport
+  changes. A single `GET /api/img/:kind/:id/:hash` route, `kind` resolved through a frozen
+  allow-list (never interpolated into SQL), with the content hash **in the path** so the
+  response can be `immutable` for a year and a re-upload is simply a different URL. Payloads
+  carry `image_url` instead of bytes. **A security condition attaches to this and must ship
+  with it:** serving user-uploaded bytes from our own origin makes the stored
+  `image_mime_type` a content type the browser will obey, and this app has no auth by
+  design — so the mime must be allow-listed on both the read and write paths, with
+  `X-Content-Type-Options: nosniff`. Today, as inert `data:` URIs, those bytes are harmless.
+- **Phase 3 — shrink the database, which shrinks the boot pull.** WebP with tighter caps
+  (scene pictures are the largest rows in the schema and are currently lossless PNG), a
+  one-shot re-encode of existing rows, `chat_log` capped to the 300 rows that are actually
+  readable rather than kept until a restart, a boot sweep for rows whose owner no longer
+  exists, completed-round replays pruned to the current fight (the chat cards that link to
+  older ones are wiped at boot anyway, so retention already exceeded reachability), and a
+  `VACUUM` — SQLite never returns freed pages on its own, so without it the file stays at
+  its high-water mark and the boot pull never shrinks.
+
 ## Game mechanic — Dice Pools (Core Stats tab)
 Each character has 3 fixed dice pools, always the same slot names for every character:
 

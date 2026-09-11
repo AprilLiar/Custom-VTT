@@ -44,6 +44,7 @@
 // if either one changes.
 
 import { all, one, run, readMany, writeMany } from './db.js';
+import { omitCharacterArt } from './payloads.js';
 import {
   rollDie, applyHalfDamage, healHalfDamage, clamp, dieAtRank, rankOf, stepDie, rollTotal,
   injuryPenaltyBySlot, applyRankPenalty,
@@ -203,7 +204,7 @@ async function adjustStamina(io, characterId, delta, { emitEvent = null, tic = n
   // engine hands out is covered by one read of the same subtraction.
   const overflow = Math.max(0, character.current_stamina + change - character.max_stamina);
   await run('UPDATE characters SET current_stamina = ? WHERE id = ?', [currentStamina, character.id]);
-  io.emit('character:updated', { ...character, current_stamina: currentStamina });
+  io.emit('character:updated', omitCharacterArt({ ...character, current_stamina: currentStamina }));
   if (emitEvent && tic != null) {
     await emitEvent(tic, 'stamina_changed', {
       characterId: character.id,
@@ -944,7 +945,7 @@ async function runAutomations(io, {
         const held = await one('SELECT pending_roll_penalty AS n FROM characters WHERE id = ?', [
           opponentCharacterId,
         ]);
-        io.emit('character:updated', await getCharacter(opponentCharacterId));
+        io.emit('character:updated', omitCharacterArt(await getCharacter(opponentCharacterId)));
         if (emitEvent && tic != null) {
           await emitEvent(tic, 'next_roll_penalty', {
             characterId: opponentCharacterId,
@@ -4553,7 +4554,7 @@ async function applyIdleTicStaminaRegen(io, pairIndex, tic, emitEvent = null) {
         p.character_id,
       ]),
     ]);
-    io.emit('character:updated', { ...character, current_stamina: newStamina });
+    io.emit('character:updated', omitCharacterArt({ ...character, current_stamina: newStamina }));
     // Idle regen was the last Stamina movement with no trace in the round
     // log at all — the cutscene's fighter cards would drift below the real
     // value over a quiet round. `stamina_regen` already had a label and a
@@ -4718,7 +4719,7 @@ async function startPairDeclaration(io, pairIndex) {
       for (const character of charRows) {
         if (character.current_stamina !== character.max_stamina) {
           await run('UPDATE characters SET current_stamina = ? WHERE id = ?', [character.max_stamina, character.id]);
-          io.emit('character:updated', { ...character, current_stamina: character.max_stamina });
+          io.emit('character:updated', omitCharacterArt({ ...character, current_stamina: character.max_stamina }));
         }
       }
     }

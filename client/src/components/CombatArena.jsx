@@ -2360,7 +2360,14 @@ export default function CombatArena() {
               ...prev,
               characters: {
                 ...prev.characters,
-                [character.id]: { ...prev.characters[character.id], character },
+                [character.id]: {
+                  ...prev.characters[character.id],
+                  // **Merged, not replaced** — see CharacterSheet's own note.
+                  // The payload is a partial row with no picture bytes, so
+                  // overwriting the nested character wholesale would drop the
+                  // portrait out of every Arena card mid-fight.
+                  character: { ...prev.characters[character.id].character, ...character },
+                },
               },
             }
           : prev
