@@ -279,8 +279,16 @@ export default function MoveCard({
         {hasRoll && (
           <div className="flex flex-wrap items-center gap-1.5 text-xs">
             <span className="font-semibold uppercase text-zinc-500">Attack Target:</span>
+            {/* **`Array.isArray`, not `?.length` (bugfix).** `attack_targets` is
+                a JSON column, and a server path that forgot to parse it handed
+                this the raw string — which has a `length`, sailed through the
+                old truthiness guard, and then died on `.map`, taking the whole
+                page down with it. The server bug is fixed and pinned (see
+                server/test/images.test.js), but the guard is what decides
+                whether a recurrence is a missing line of text or a white
+                screen, and this app is used live at a table. */}
             <span className={move.attack_targets?.length ? 'text-zinc-400' : 'text-zinc-600'}>
-              {move.attack_targets?.length
+              {Array.isArray(move.attack_targets) && move.attack_targets.length
                 ? move.attack_targets.map((s) => ROLL_SLOT_LABELS[s] ?? s).join(' + ')
                 : 'None'}
             </span>

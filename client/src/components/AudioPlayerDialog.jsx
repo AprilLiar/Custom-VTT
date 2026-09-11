@@ -7,6 +7,7 @@ import { socket } from '../socket.js';
 import { getAudioLibrary } from '../lib/api.js';
 import { useSocketRefresh } from '../lib/connection.js';
 import { useAudioStatus } from '../lib/useAudioStatus.js';
+import { silentReason } from '../lib/audioEngine.js';
 import DialogShell from './DialogShell.jsx';
 
 // The Audio Player — the GM Tools drawer's third tool.
@@ -265,7 +266,7 @@ function Transport({ audio }) {
       <span className="min-w-0 flex-1 truncate text-xs text-zinc-300">
         {idle ? 'Nothing playing' : audio.name}
         {audio.status === 'blocked' && <span className="text-amber-300"> — audio blocked, tap the record</span>}
-        {audio.status === 'silent' && <span className="text-zinc-500"> — re-syncing</span>}
+        {audio.status === 'silent' && <span className="text-zinc-500"> — {silentReason(audio)}</span>}
       </span>
       <div className="flex items-center gap-1.5">
         <button type="button" className={BTN} title="Previous" disabled={idle} onClick={() => socket.emit('audio:previous')}>

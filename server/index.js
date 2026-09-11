@@ -345,7 +345,32 @@ async function attachInteractions(moves) {
     });
   }
   return moves.map((m) => ({
-    ...m,
+    // **The move's art, replaced by a URL — shaped HERE because every path to a
+    // move row passes through this function.** The one that mattered most is
+    // `getMovesFor`, which runs once per SEATED CHARACTER inside
+    // `GET /api/combat`: with `SELECT m.*` feeding it, the whole compendium's
+    // pictures were duplicated per fighter, so six seated characters meant six
+    // copies of every move picture in a single response. Shaping the shared
+    // chokepoint rather than each caller is also what stops a future caller
+    // from quietly reintroducing the bytes.
+    //
+    // **Spread FIRST, and that is load-bearing (bugfix — `attack_targets.map is
+    // not a function`).** It used to be spread LAST, under a comment claiming it
+    // "only ever REMOVES image_data/image_mime_type and adds image_url, so it
+    // cannot disturb any of the derived fields above it". That was wrong:
+    // `withImageUrl` returns `{ ...rest, image_url }` where `rest` is the WHOLE
+    // row minus the three image columns — so spreading it last put every raw
+    // column back on top of the parsed one. `attack_targets` and
+    // `defense_frame_positions` are both columns AND both parsed here, so both
+    // silently reverted to raw JSON strings the moment that shaping landed.
+    //
+    // It surfaced as a crash rather than a wrong value because the client
+    // guards with `move.attack_targets?.length` — and a string has a length, so
+    // `'["Skull"]'` sails through the guard and dies on `.map`.
+    //
+    // Supplying the base row first and deriving on top is the shape that cannot
+    // have this bug: anything computed below wins by construction.
+    ...withImageUrl('move')(m),
     interactions: byMove.get(m.id) ?? [],
     tag_ids: tagsByMove.get(m.id) ?? [],
     roll_slots: rollSlotsByMove.get(m.id) ?? [],
@@ -356,19 +381,6 @@ async function attachInteractions(moves) {
       m.requirement_move_id != null ? (requirementNames.get(m.requirement_move_id) ?? null) : null,
     defense_frame_positions: JSON.parse(m.defense_frame_positions ?? '[]'),
     attack_targets: sanitizeAttackTargets(JSON.parse(m.attack_targets ?? '[]')),
-    // **The move library's art, replaced by a URL — shaped HERE because every
-    // path to a move row passes through this function.** The one that mattered
-    // most is `getMovesFor`, which runs once per SEATED CHARACTER inside
-    // `GET /api/combat`: with `SELECT m.*` feeding it, the whole compendium's
-    // pictures were duplicated per fighter, so six seated characters meant six
-    // copies of every move picture in a single response. Shaping the shared
-    // chokepoint rather than each caller is also what stops a future caller
-    // from quietly reintroducing the bytes.
-    //
-    // Spread last on purpose: it only ever REMOVES `image_data`/`image_mime_type`
-    // and adds `image_url`, and it reads `m` rather than the object being built,
-    // so it cannot disturb any of the derived fields above it.
-    ...withImageUrl('move')(m),
   }));
 }
 
