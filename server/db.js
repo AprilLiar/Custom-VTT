@@ -9,110 +9,73 @@ import { PERK_REGISTRY } from './perks/index.js';
 const url = process.env.TURSO_DATABASE_URL || 'file:local.db';
 const authToken = process.env.TURSO_AUTH_TOKEN;
 
-// **Reads are local; only writes cross the network (decided, new — Phase 0 of
-// the round-trip work).**
+// **This connects straight to the primary. There is no embedded replica any
+// more (decided, reversed — it was Phases 0 and 5 of the round-trip work, and
+// it took the site down).**
 //
-// Every helper below sends one statement per call, so against a plain remote
-// Turso connection an action costs (its await-chain length) x (the round-trip
-// to the database). That is the whole of the reported 3-5 second delay:
-// declaring a move is 26 queries in a 14-deep chain, and resolving a round is
-// 210 queries 145 deep. Nothing was slow — the trips were.
+// The original problem was real and is worth stating, because it is the thing
+// that must not come back: every helper below sends one statement per call, so
+// against a remote database an action costs (its await-chain length) x (the
+// round trip). Declaring a move was 26 queries in a 14-deep chain and took 3-5
+// seconds. Nothing was slow — the trips were.
 //
-// An **embedded replica** keeps a full copy of the database on this server's
-// own disk. Reads are answered from that file in microseconds and never leave
-// the process; writes still go to the primary and are pulled straight back.
-// This app is overwhelmingly read-heavy, so the depth that costs anything
-// collapses to the handful of writes an action actually makes.
+// An **embedded replica** (`syncUrl` + `offline: true`) answered that by keeping
+// a whole copy of the database on this server's disk: reads local, writes local,
+// pushed to the primary on a ten-second timer. It genuinely was fast. It was
+// also, on this host, unaffordable and then fatal:
 //
-// Three properties make it safe here rather than merely fast:
+//  - **Render's free tier has no persistent disk.** `replica.db` is gone on
+//    every cold start, so every boot re-downloaded the entire database. That is
+//    the 6 GB Turso sync bill: not the game, just the same bytes over and over.
+//  - **The whole libSQL binding is synchronous.** `createClient` with a
+//    `syncUrl` and `db.sync()` both do network I/O *on the calling thread*, so
+//    no `Promise.race`, timer or signal handler can shorten one.
+//  - **Those two met.** As the database grew, the bootstrap pull passed
+//    Render's five-minute port scan: the socket was bound at 13:02:30 and the
+//    event loop then blocked for **783 seconds**, so the process never reached
+//    `accept()` and answered nothing. A listening server that cannot run its
+//    own accept loop is indistinguishable from a dead one. "No open ports
+//    detected... Timed Out", with the site down and no way in — including no
+//    way to run the tool that would have shrunk the database.
 //
-//  - **`readYourWrites` defaults to true** in the libsql binding, so a write
-//    is visible to the very next local read. The engine reads back what it
-//    just wrote constantly (declare -> re-read the pair, resolve -> re-read the
-//    resolution row) and would be incorrect, not just stale, without this.
-//  - **One instance.** Render's free tier runs a single web service, so there
-//    is no second writer whose frames this replica would need to chase.
-//  - **The local file is disposable.** It is a cache of the primary, rebuilt on
-//    boot, so Render's ephemeral disk costs nothing. The primary is still the
-//    only durable copy.
+// So the replica is gone rather than merely switched off. What replaced it is
+// the half of that work which was never tied to it: **`readMany`/`writeMany`
+// collapse a group of statements into one round trip**, and the DDL queue does
+// the same for the ~148 statements a boot used to make. The depth that remains
+// is far below the depth that caused the original complaint, and it costs
+// nothing at boot. If actions turn out to feel slow again, the answer is more
+// batching where the chains are deepest — or a paid plan with a persistent
+// disk, which is the only thing that makes an embedded replica actually viable
+// here.
 //
-// The initial sync is mandatory (see syncReplica below) — starting up against
-// an empty replica would let the seed functions decide the world is unpopulated
-// and re-seed it into the primary.
-//
-// **Writes are local too, and pushed on a timer (decided, new — Phase 5).**
-//
-// Phase 0 above optimised the half that was not hurting. With reads answered
-// locally, what is left in the actions anybody notices — declaring, granting,
-// choosing — is almost entirely *writes*, and an embedded replica still sends
-// each one to the primary and waits. Worse, `readYourWrites` means it waits for
-// the replication frame to come back as well, so a write can cost two round
-// trips, not one. Measured trip counts never showed this because they counted
-// reads and writes as if they cost the same; a live playtest after Phase 0
-// showed only a slight improvement, which is what finally located it.
-//
-// `offline: true` closes that gap: a write lands in the local file immediately
-// and is pushed to the primary by `db.sync()`, which `startSyncLoop` runs every
-// ten seconds in the background. The user's own framing of the trade, and it is
-// the right one for this app: **losing the last few seconds of a fight is
-// cheaper than making every action of it wait.**
-//
-// What makes it safe here is the same thing that made Phase 0 safe — there is
-// exactly one writer. Reconciling concurrent writers is the hard and dangerous
-// part of local-first, and Render's free tier runs a single instance, so this
-// collapses to the easy case: the local file is the truth of the moment, the
-// primary is an asynchronous copy of it.
-//
-// **The failure mode is not "lose ten seconds".** Ten seconds is the bound only
-// while sync is actually succeeding. If it starts failing — an expired token, a
-// network partition, a primary that has moved on — writes pile up locally and
-// nothing is obviously wrong until Render recycles the container and takes the
-// whole unsynced pile with it. So the loop below does not swallow failures:
-// it counts them, and `syncHealth()` reports a backlog the server broadcasts
-// (see `db:sync_health` in index.js) so a silent divergence cannot run for an
-// hour unnoticed. That alarm is the price of admission for this trade, not a
-// nicety.
+// Writes now land at the primary the moment they return, so there is no local
+// pile that a container recycle can lose, and nothing to flush on SIGTERM.
 const REMOTE_SCHEMES = /^(libsql|https?|wss?):/i;
 const usingRemote = REMOTE_SCHEMES.test(url);
-const replicaPath = process.env.TURSO_REPLICA_PATH || 'replica.db';
-// How often the background loop pushes local writes to the primary, and so
-// also the size of the window a crash can lose. Ten seconds by default.
-export const SYNC_SECONDS = Number(process.env.TURSO_SYNC_SECONDS) || 10;
-// How long a run of failures is tolerated before the server calls the sync
-// unhealthy out loud. Two missed cycles is noise; a minute is a problem.
-const UNHEALTHY_AFTER_MS = Math.max(SYNC_SECONDS * 1000 * 6, 60_000);
 
-// Built as a pure function so the one thing that would fail *silently* can be
-// tested: if `offline` were ever dropped — renamed upstream, stripped by the
-// client's config expansion — every write would quietly go back to costing a
-// round trip and the deploy would look perfectly healthy. There is nothing to
-// observe from inside the app that would catch that, so it is pinned here
-// instead (see server/test/dbConfig.test.js).
-export function buildClientConfig({ url, authToken, replicaPath, remote }) {
-  if (!remote) return authToken ? { url, authToken } : { url };
-  return {
-    url: `file:${replicaPath}`,
-    syncUrl: url,
-    authToken,
-    // Deliberately NOT libSQL's own `syncInterval`. Its timer swallows the
-    // result, and an alarm that cannot see a failure is not an alarm — the
-    // loop below owns the cadence precisely so it can own the errors.
-    offline: true,
-  };
+// Built as a pure function so the regression that would be *silent* can be
+// pinned: reintroducing `syncUrl`/`offline` here would look perfectly healthy
+// in every test and locally, and would only reappear as a deploy that times out
+// against a database too big to pull. See server/test/dbConfig.test.js, which
+// asserts their absence.
+export function buildClientConfig({ url, authToken }) {
+  return authToken ? { url, authToken } : { url };
 }
 
 // **Boot logging that actually reaches the log (bugfix — Render deploys that
 // timed out having printed nothing at all).**
 //
 // Under Render, stdout is a PIPE, and Node writes to a pipe *asynchronously*:
-// the bytes sit in a buffer until the event loop gets a turn. Every boot-time
-// call in this file blocks the event loop (see `connectDb` below), so an
-// ordinary `console.log` placed immediately before one is never flushed — the
-// process hangs holding its own explanation. `writeSync(1, ...)` puts the line
-// on the file descriptor before the blocking call starts, which is the whole
-// difference between a deploy that says where it stalled and one that says
-// nothing. Used only for the handful of boot lines that sit next to a blocking
-// call; everything else in the app logs normally.
+// the bytes sit in a buffer until the event loop gets a turn. Anything that
+// blocks the loop therefore swallows the `console.log` placed immediately
+// before it — the process hangs holding its own explanation. That is how the
+// replica's blocking bootstrap managed to time out a deploy while printing
+// nothing at all. `writeSync(1, ...)` puts the line on the file descriptor
+// before the next call starts, so a boot that stalls says where.
+//
+// The replica is gone and with it the call that could hang, but boot lines
+// still use this: a slow boot on a cold free-tier container is exactly when the
+// log matters most, and it costs one syscall. Everything else logs normally.
 export function bootLog(line) {
   try {
     writeSync(1, `${line}\n`);
@@ -125,37 +88,29 @@ export function bootLog(line) {
 // Render deploy that hung forever, silently).**
 //
 // `createClient` used to run right here, at module scope. With a `syncUrl` its
-// constructor performs a blocking `PullDb` (see the note above the sync loop
-// below for why the whole binding is synchronous), so if the primary does not
-// answer, the constructor **never returns** — verified directly against a
-// blackholed address: no throw, no timeout, no output, forever.
+// constructor performed a blocking `PullDb`, so if the primary did not answer
+// it **never returned** — verified directly against a blackholed address: no
+// throw, no timeout, no output, forever. ES module imports are hoisted and
+// evaluated before a single statement of server/index.js runs, so that hang
+// happened before the first `console.log` and before `httpServer.listen`.
+// Render's view of it was a service that printed nothing and opened no port.
 //
-// ES module imports are hoisted and evaluated before a single statement of
-// server/index.js runs, so that hang happened before the first `console.log`
-// and before `httpServer.listen`. Render's own view of it is a service that
-// printed nothing and opened no port: "No open ports detected... Timed Out".
-// The whole diagnosis was invisible from the log.
-//
-// Deferring construction to an explicit `connectDb()` is what lets index.js
-// open the port *first* and probe the primary with an interruptible `fetch`
-// *before* handing control to a call that cannot be interrupted at all.
+// A remote client has no such constructor — it is lazy, and connects on the
+// first statement — so the hang itself is gone with the replica. Construction
+// stays deferred anyway, because the property worth keeping is broader than the
+// bug that produced it: **importing this module must never do I/O**, so
+// index.js can bind the port and put its 503 gate up before anything else is
+// attempted. `server/test/dbBoot.test.js` pins that.
 let client = null;
 
 export function connectDb() {
   if (client) return client;
-  if (usingRemote) {
-    bootLog(
-      `Database: opening replica ${replicaPath} and pulling from ${redactedPrimary()} — ` +
-        'this call blocks until the primary answers and cannot be timed out from JS'
-    );
-  }
-  const started = Date.now();
-  client = createClient(buildClientConfig({ url, authToken, replicaPath, remote: usingRemote }));
-  if (usingRemote) bootLog(`Database: primary answered, replica open in ${Date.now() - started}ms`);
+  if (usingRemote) bootLog(`Database: connecting to ${redactedPrimary()}`);
+  client = createClient(buildClientConfig({ url, authToken }));
   return client;
 }
 
-export const replicaMode = usingRemote;
+export const remoteMode = usingRemote;
 
 // The primary's host without its credentials — safe to print into a log that
 // Render keeps and that the user pastes into chat.
@@ -179,25 +134,27 @@ export function primaryHttpUrl(target = url) {
 
 // How long the boot probe waits for the primary. A Turso database that has
 // been idle takes a moment to wake, so this is generous rather than tight;
-// setting it to 0 skips the probe entirely (and restores the old behaviour of
-// finding out by hanging).
+// setting it to 0 skips the probe entirely.
 export const PROBE_TIMEOUT_MS = Number(process.env.TURSO_PROBE_TIMEOUT_MS ?? 10_000);
 
-// **An interruptible check for the thing that cannot be interrupted.**
+// **Find out at boot whether the database is there, by name.**
 //
-// `connectDb()`/`db.sync()` are synchronous native calls: a `Promise.race`, a
-// `setTimeout`, a SIGTERM handler — none of them can cut one short, because
-// none of them get a turn on the event loop while it runs. `fetch` is the
-// opposite: ordinary async I/O with a real abort signal. So the primary is
-// checked over HTTP first, and only once it has actually answered does boot
-// hand control to the blocking call.
+// This was load-bearing when the next call was the replica's blocking
+// bootstrap: that call could not be interrupted by any timer or signal, so the
+// reachability question had to be asked somewhere it *could* be given up on.
+// With a plain remote client there is no such call — a broken connection now
+// surfaces as a normal rejected promise on the first statement.
+//
+// It stays because the boot failure it names is still worth naming. An expired
+// token or a paused database otherwise appears as every request 500ing with a
+// driver error, on a host whose logs are the only thing the GM can see. Ten
+// seconds and one sentence at boot is a much better trade than that.
 //
 // **Any HTTP response counts as reachable**, 404 and 401 included. The
 // question this answers is "will a connection to this host complete", not "is
 // this URL correct" — a wrong path or a rejected token still proves the host
-// is up and the socket connects, which is all `connectDb()` needs to return.
-// Only a transport-level failure (DNS, refused, timeout) is a real negative,
-// and that is precisely the case that would otherwise hang forever.
+// is up and the socket connects. Only a transport-level failure (DNS, refused,
+// timeout) is a real negative.
 export async function probePrimary({ timeoutMs = PROBE_TIMEOUT_MS } = {}) {
   if (!usingRemote || !(timeoutMs > 0)) return { skipped: true };
   const target = new URL('/health', primaryHttpUrl()).toString();
@@ -217,210 +174,6 @@ export async function probePrimary({ timeoutMs = PROBE_TIMEOUT_MS } = {}) {
       timedOut: err?.name === 'TimeoutError',
     };
   }
-}
-
-// Pull the primary into the local replica, and push whatever is waiting.
-//
-// Called once before initDb (see server/index.js), where it is deliberately
-// allowed to throw: a server that came up against a half-synced replica would
-// re-seed the ruleset, the Tells and the Perks into the primary as duplicates.
-// Better to die and let Render restart. The background loop below catches
-// instead, because by then the world is real and dying would lose more than
-// waiting does.
-export async function syncReplica() {
-  if (!usingRemote) return null;
-  const started = Date.now();
-  // **Keep the frame count (bandwidth).** `.sync()` returns
-  // `{ frames_synced, frame_no }` and this used to throw it away, which is why
-  // a 6GB Turso bill could only ever be reasoned about by arithmetic rather
-  // than read off a log. A frame is one 4KB page, so frames x 4096 is the
-  // bytes that actually moved — the one number that says whether a change to
-  // the schema or the images did anything.
-  const result = await connectDb().sync();
-  const elapsed = Date.now() - started;
-  lastSyncedAt = Date.now();
-  lastFramesSynced = Number(result?.frames_synced ?? 0) || 0;
-  syncedFramesTotal += lastFramesSynced;
-  consecutiveFailures = 0;
-  lastError = null;
-  // The write that prompted this sync has now left; anything that arrives
-  // from here on is what the next one is for.
-  pendingWrites = 0;
-  return elapsed;
-}
-
-// ~4KB per libSQL frame. Exported so the server can report bytes rather than
-// an abstract frame count nobody can price.
-export const FRAME_BYTES = 4096;
-export const syncedBytes = () => syncedFramesTotal * FRAME_BYTES;
-
-// **`db.sync()` blocks the event loop, so the loop below has to be adaptive
-// (bugfix — Phase 5 shipped this wrong and broke the Arena).**
-//
-// The whole libSQL binding is synchronous — every symbol it exports is `*Sync`,
-// better-sqlite3 lineage — and `db.sync()` is `databaseSyncSync`, which does
-// **network I/O on the calling thread**. (`createClient` proves it: with a
-// `syncUrl` the constructor itself performs a blocking `PullDb` and throws if
-// the primary rejects it.) For local statements that costs microseconds and is
-// exactly why this app is fast. For a sync it means Node serves *nothing* for
-// the duration.
-//
-// Phase 0 called it once at boot, where a stall is harmless. Phase 5 then put
-// it on a ten-second timer, which turned a boot-time cost into a permanent one:
-// every ten seconds the server stopped answering for however long a sync takes.
-// A page needing one request slips between the stalls and feels fine; the Arena
-// fires five requests plus a move query per fighter, and re-runs that on a
-// dozen different events, so it is overwhelmingly the most likely thing to be
-// caught — which is exactly how it presented, as an Arena that never finished
-// loading while the rest of the app was fast.
-//
-// The fix is not to sync less often — that trades durability for latency, the
-// wrong way round. It is to make the loop **notice what it is costing**:
-//
-//  - Every sync is timed. A slow one widens the interval, so a sync that costs
-//    real time cannot run every ten seconds; a fast one narrows it back.
-//  - A failure backs off exponentially rather than hammering a blocking call
-//    into an unreachable primary once per cycle — the pathological case, and
-//    the one that can stall a server almost continuously.
-//  - The duration is logged either way, because the one number this could not
-//    be reasoned about without is how long a real sync against the real primary
-//    actually takes.
-//
-// The boot sync and the SIGTERM flush stay blocking and unthrottled on purpose:
-// at both of those moments there is nothing else to serve, and finishing the
-// push matters more than yielding.
-let lastSyncedAt = null;
-let lastFramesSynced = 0;
-let syncedFramesTotal = 0;
-// **Has anything actually changed since the last sync? (bandwidth.)** The loop
-// below used to push on a timer regardless — 8,640 round trips a day against a
-// database nobody had written to, because "is one already running" was the only
-// question it asked. Every write path bumps this; a sync that finds it at zero
-// does nothing. A full sync still runs every FORCE_SYNC_EVERY cycles, because
-// the pull half is how a write made anywhere else would ever be noticed.
-let pendingWrites = 0;
-let idleCycles = 0;
-const FORCE_SYNC_EVERY = 30;
-let consecutiveFailures = 0;
-let lastError = null;
-let lastSyncMs = null;
-let syncTimer = null;
-let syncInFlight = false;
-
-// A sync is allowed to occupy at most this share of wall-clock time. At the
-// default cadence a 100ms sync is 1% and stays at ten seconds; a 2s sync backs
-// off to a minute rather than stalling the server every ten.
-const MAX_SYNC_DUTY = 0.02;
-const MAX_BACKOFF_MS = 5 * 60_000;
-
-// Exported for tests: the whole point of this function is what it does in the
-// two cases that cannot be reproduced without a real primary — a slow sync and
-// a failing one — so it is pinned directly rather than through the loop.
-export function nextSyncDelayMs({ failures = consecutiveFailures, lastMs = lastSyncMs } = {}) {
-  const base = SYNC_SECONDS * 1000;
-  if (failures > 0) {
-    return Math.min(base * 2 ** Math.min(failures, 6), MAX_BACKOFF_MS);
-  }
-  if (lastMs == null) return base;
-  return Math.min(Math.max(base, lastMs / MAX_SYNC_DUTY), MAX_BACKOFF_MS);
-}
-
-function nextDelayMs() {
-  const base = SYNC_SECONDS * 1000;
-  // Failures back off hardest: an unreachable primary is where a blocking call
-  // costs the most and achieves the least.
-  if (consecutiveFailures > 0) {
-    return Math.min(base * 2 ** Math.min(consecutiveFailures, 6), MAX_BACKOFF_MS);
-  }
-  if (lastSyncMs == null) return base;
-  return Math.min(Math.max(base, lastSyncMs / MAX_SYNC_DUTY), MAX_BACKOFF_MS);
-}
-
-// What the server reports and broadcasts. `healthy` is false only once a run of
-// failures has lasted long enough to mean something — a single missed cycle on
-// a flaky connection is not worth shouting about, and an alarm that cries wolf
-// gets ignored, which would defeat the point of having one.
-export function syncHealth() {
-  if (!usingRemote) return { mode: 'local-file', healthy: true };
-  const staleMs = lastSyncedAt == null ? null : Date.now() - lastSyncedAt;
-  return {
-    mode: 'offline-writes',
-    healthy: consecutiveFailures === 0 || (staleMs ?? 0) < UNHEALTHY_AFTER_MS,
-    everySeconds: SYNC_SECONDS,
-    // What the loop is *actually* running at, which drifts from everySeconds
-    // whenever a sync turns out to be slow or is failing. A backlog window that
-    // has quietly grown from 10s to 5 minutes is the thing worth seeing.
-    nextInSeconds: Math.round(nextDelayMs() / 1000),
-    lastSyncMs,
-    lastFramesSynced,
-    syncedBytes: syncedBytes(),
-    pendingWrites,
-    lastSyncedAt,
-    staleSeconds: staleMs == null ? null : Math.round(staleMs / 1000),
-    consecutiveFailures,
-    lastError,
-  };
-}
-
-// One sync attempt, never throwing. Returns the health afterwards so the caller
-// can decide whether it has something to announce.
-export async function syncOnce({ force = false } = {}) {
-  if (!usingRemote || syncInFlight) return syncHealth();
-  // Nothing written since the last sync: there is nothing to push, and the
-  // pull can wait for the periodic forced cycle. This is the whole of the
-  // idle-server saving — a table that is logged in but not playing costs
-  // nothing at all now.
-  if (!force && pendingWrites === 0) {
-    idleCycles += 1;
-    if (idleCycles < FORCE_SYNC_EVERY) return syncHealth();
-    idleCycles = 0;
-  } else {
-    idleCycles = 0;
-  }
-  syncInFlight = true;
-  const started = Date.now();
-  try {
-    await syncReplica();
-    lastSyncMs = Date.now() - started;
-  } catch (err) {
-    lastSyncMs = Date.now() - started;
-    consecutiveFailures += 1;
-    lastError = err?.message ?? String(err);
-  } finally {
-    syncInFlight = false;
-  }
-  return syncHealth();
-}
-
-// The background push. `unref()` so a pending timer never holds the process
-// open, and the loop deliberately does not run against a plain local file —
-// there is nothing to push to.
-export function startSyncLoop(onHealthChange, onSyncMeasured) {
-  if (!usingRemote || syncTimer) return false;
-  let wasHealthy = true;
-  // setTimeout rather than setInterval: the delay is recomputed from what the
-  // last sync actually cost, and an interval cannot be rescheduled. It also
-  // means a slow sync can never have a second one queued up behind it.
-  const schedule = (delay) => {
-    syncTimer = setTimeout(async () => {
-      const health = await syncOnce();
-      onSyncMeasured?.(health);
-      if (health.healthy !== wasHealthy) {
-        wasHealthy = health.healthy;
-        onHealthChange?.(health);
-      }
-      schedule(nextDelayMs());
-    }, delay);
-    // Never hold the process open for a pending sync.
-    syncTimer.unref?.();
-  };
-  schedule(SYNC_SECONDS * 1000);
-  return true;
-}
-
-export function stopSyncLoop() {
-  if (syncTimer) clearTimeout(syncTimer);
-  syncTimer = null;
 }
 
 // One libSQL result set as plain objects keyed by column name. Shared by `all`
@@ -454,7 +207,6 @@ export async function one(sql, args = []) {
 
 export async function run(sql, args = []) {
   if (ddlQueue?.length) await flushDdl();
-  pendingWrites += 1;
   return connectDb().execute({ sql, args });
 }
 
@@ -464,9 +216,13 @@ export async function run(sql, args = []) {
 // `db.batch` posts a whole array of statements together and hands back one
 // result set each, so a group of independent reads costs what a single read
 // costs. `Promise.all([all(...), all(...)])` looks concurrent and is the shape
-// most of this codebase already uses, but it still puts N requests on the wire;
-// against the embedded replica that is cheap, and against a plain remote
-// connection it was most of the delay.
+// most of this codebase already uses, but it still puts N requests on the wire.
+//
+// **This is now the only thing standing between an action and its old 3-5
+// second cost.** The embedded replica that used to make per-statement depth
+// free is gone (see the note at the top of this file), so every trip saved here
+// is a trip actually saved. Reach for these two over `Promise.all` in any new
+// handler, and prefer them when touching an old one.
 //
 // Takes the same `[sql, args]` pairs the helpers take and returns an array of
 // row arrays in the same order, so converting a `Promise.all` of reads is a
@@ -499,7 +255,6 @@ export async function writeMany(statements) {
     const [sql, args = []] = list[0];
     return [await run(sql, args)];
   }
-  pendingWrites += list.length;
   return connectDb().batch(
     list.map(([sql, args = []]) => ({ sql, args })),
     'write'
@@ -637,9 +392,8 @@ async function ensureImageHashColumns() {
 // Runs inside initDb, which server/index.js awaits **before** it flips
 // bootState to 'ready' — so no request is ever served against a row this has
 // not reached. On a database that is already current every one of these
-// queries returns nothing, which against the embedded replica is a local scan
-// of a table with tens of rows: cheaper than the sqlite_master read this boot
-// already makes.
+// queries returns nothing — a scan of a table with tens of rows, the cost of
+// which is the round trip rather than the scan. Nine of them, once per boot.
 //
 // `chat_log` is deliberately skipped: index.js deletes the whole log on every
 // boot, so a chat row written before this column existed cannot survive long
@@ -2751,8 +2505,8 @@ export async function initDb() {
 // full table scan, and SQLite only indexes `INTEGER PRIMARY KEY` for free.
 //
 // Honest about the size of the win: most of these tables hold tens of rows,
-// where a scan and a seek are indistinguishable, and reads are answered from
-// the local replica anyway. Two of them are not like that — `chat_log` and
+// where a scan and a seek are indistinguishable, and a remote statement's cost
+// is the trip rather than the scan. Two of them are not like that — `chat_log` and
 // `round_events` grow for the life of a world and are read on every page load
 // and every replay — and the per-character ones are each fanned out over once
 // per fighter in every combat payload. They are declared here rather than
