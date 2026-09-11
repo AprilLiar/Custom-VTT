@@ -2532,6 +2532,79 @@ export async function initDb() {
   // is no second value that could drift out of agreement with the first.
   await ensureColumn('declared_moves', 'trip_recovery_tics', 'INTEGER NOT NULL DEFAULT 0');
 
+  // ---------------------------------------------------------------- Audio Player
+  //
+  // **The GM Tools drawer's third tool (decided, new).** A GM-run soundtrack
+  // that every connected client hears in sync, wherever in the app they are.
+  //
+  // **Tracks are YouTube LINKS, never uploaded audio.** Every other piece of
+  // media in this schema is base64 in a TEXT column (portraits, backdrops,
+  // scene pictures), and that is exactly what must not happen here: a song is
+  // three orders of magnitude larger than a portrait, `express.json` caps a
+  // request at 3mb and Socket.io at 8mb, and the whole point of the feature is
+  // background music for a session, not a media library. So the database
+  // stores an 11-character video id and YouTube does the serving.
+  ddl(`
+    CREATE TABLE IF NOT EXISTS audio_playlists (
+      id INTEGER PRIMARY KEY,
+      name TEXT NOT NULL,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  // **A track cannot exist without a playlist (decided).** The NOT NULL FK plus
+  // ON DELETE CASCADE is the entire enforcement — there is no "loose songs"
+  // state to design a UI around, and deleting a playlist takes its songs with
+  // it. `sort_order` follows `moves.sort_order`, this schema's only other
+  // hand-ordered list: read as `ORDER BY sort_order, id` so a playlist nobody
+  // has reordered (all zeroes) still comes back in creation order.
+  ddl(`
+    CREATE TABLE IF NOT EXISTS audio_tracks (
+      id INTEGER PRIMARY KEY,
+      playlist_id INTEGER NOT NULL REFERENCES audio_playlists(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      youtube_id TEXT NOT NULL,  -- the 11-char video id, parsed out of whatever URL was pasted
+      duration_ms INTEGER,       -- NULL until a client reports it: only YouTube knows a video's length
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  // **The one row that says what the table is listening to** — a singleton with
+  // the same `id = 1` CHECK shape as master_note above.
+  //
+  // **It stores an ANCHOR, not a position.** A stored position would be stale
+  // the millisecond after it was written and would need a ticking loop to keep
+  // current; this app has no such loop and does not want one. An anchor —
+  // "`position_ms` into the track, as of server instant `anchored_at_ms`" —
+  // stays true forever untouched, and every client derives its own live
+  // position from it (see expectedPositionMs in server/audioSync.js). Paused is
+  // the degenerate case that needs no clock at all: the anchor IS the position.
+  //
+  // `anchor_id` is bumped on every single state change. It is what lets the
+  // server ignore N clients all reporting the same track ending, and what lets
+  // a client notice its own state is stale.
+  ddl(`
+    CREATE TABLE IF NOT EXISTS audio_state (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      track_id INTEGER REFERENCES audio_tracks(id) ON DELETE SET NULL,
+      is_playing INTEGER NOT NULL DEFAULT 0,
+      position_ms INTEGER NOT NULL DEFAULT 0,
+      anchored_at_ms INTEGER NOT NULL DEFAULT 0,
+      anchor_id INTEGER NOT NULL DEFAULT 0,
+      repeat_mode TEXT NOT NULL DEFAULT 'playlist' CHECK(repeat_mode IN ('off','playlist','track')),
+      shuffle INTEGER NOT NULL DEFAULT 0,
+      shuffle_seed INTEGER NOT NULL DEFAULT 0
+    )
+  `);
+  ddl(`INSERT OR IGNORE INTO audio_state (id) VALUES (1)`);
+  // **Every boot comes up paused, deliberately.** Render's free tier cold-starts
+  // between sessions constantly, and resuming an anchor taken six hours ago
+  // would compute a position deep past the end of the track. What is worth
+  // keeping across a restart is the GM's repeat/shuffle choice and which song
+  // was queued; playback itself is not.
+  ddl(`UPDATE audio_state SET is_playing = 0 WHERE is_playing != 0`);
+
   await ensureIndexes();
 
   await seedWorld();
@@ -2595,6 +2668,7 @@ async function ensureIndexes() {
     ['roleplay_entries', 'character_id'],
     ['character_quirks', 'character_id'],
     ['inventory_items', 'character_id'],
+    ['audio_tracks', 'playlist_id'],
     // Read once per move, and a move sheet reads a lot of moves.
     ['move_roll_slots', 'move_id'],
     ['move_defensive_roll_slots', 'move_id'],

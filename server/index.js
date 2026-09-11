@@ -108,6 +108,7 @@ import {
   computeInitiativeOverflowPenalty,
 } from './combatTiming.js';
 import { clampRecoveryExtension } from './combatDamage.js';
+import { parseYouTubeId, expectedPositionMs, nextTrackId } from './audioSync.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3001;
@@ -1863,6 +1864,22 @@ app.get('/api/scene-notes', wrap(async (req, res) => {
   res.json(await all('SELECT * FROM scene_notes WHERE scene_id = ? ORDER BY id', [sceneId]));
 }));
 
+// **The whole music library in one trip, GM only.** Playlists and their tracks
+// are GM furniture — a Player never enumerates them, they only ever hear
+// whatever is currently playing (see the audio:state broadcast). Both lists
+// come back together because the panel always renders both and this library is
+// small by construction: a row is a name and an 11-character video id, never
+// audio.
+app.get('/api/audio-library', wrap(async (req, res) => {
+  const viewer = viewerFromQuery(req.query);
+  if (viewer?.role !== 'gm') return res.status(403).json({ error: 'GM only' });
+  const [playlists, tracks] = await readMany([
+    ['SELECT * FROM audio_playlists ORDER BY id', []],
+    ['SELECT * FROM audio_tracks ORDER BY playlist_id, sort_order, id', []],
+  ]);
+  res.json({ playlists, tracks });
+}));
+
 app.get('/api/master-note', wrap(async (req, res) => {
   const viewer = viewerFromQuery(req.query);
   if (viewer?.role !== 'gm') return res.status(403).json({ error: 'GM only' });
@@ -2644,6 +2661,177 @@ const GM_CHAT_SENTINEL_ID = 0;
 // ephemeral here — nothing durable is ever built on top of an Undo buffer.
 let lastDamageChange = null; // { dieId, current_size, bonus, status, half_damage } | null
 
+// ============================================================ Audio Player
+//
+// **The first wall-clock-authoritative state in this app.** Everything else
+// here advances by event — combat Tics are a plain integer counter — but
+// "everyone hears the same second of the same song at the same moment" is a
+// claim about real time, so the server publishes an instant and every client
+// translates it through a measured clock offset (see server/audioSync.js).
+//
+// The server owns three things and the clients own none of them: what is
+// playing, the anchor it is playing from, and what comes next.
+
+const AUDIO_STATE_SQL = 'SELECT * FROM audio_state WHERE id = 1';
+
+// What every client gets. Deliberately carries the track's own fields inline
+// rather than an id to look up: a Player never receives the playlist list (it
+// is GM furniture, emitToGm only), so without this they would have an id they
+// could not render. It is also the exact set of facts a client needs and no
+// more — the same "resolve it server-side, broadcast only what renders" shape
+// as stage:timestamp_play.
+async function getAudioPayload() {
+  const state = await one(AUDIO_STATE_SQL);
+  if (!state) return null;
+  const track = state.track_id
+    ? await one('SELECT * FROM audio_tracks WHERE id = ?', [state.track_id])
+    : null;
+  return {
+    trackId: track?.id ?? null,
+    youtubeId: track?.youtube_id ?? null,
+    name: track?.name ?? null,
+    playlistId: track?.playlist_id ?? null,
+    durationMs: track?.duration_ms ?? null,
+    isPlaying: Boolean(state.is_playing) && Boolean(track),
+    positionMs: state.position_ms,
+    anchoredAtMs: state.anchored_at_ms,
+    anchorId: state.anchor_id,
+    repeatMode: state.repeat_mode,
+    shuffle: Boolean(state.shuffle),
+    // **The server's own clock rides along with every state change.** A client
+    // that has just connected can compute where it should be from this alone,
+    // before its ping handshake has even finished — one fewer round trip
+    // between "the GM pressed play" and "I am in sync".
+    serverMs: Date.now(),
+  };
+}
+
+// The single write path. Every playback change goes through here so that
+// bumping `anchor_id`, re-arming the end-of-track timer and broadcasting can
+// never be forgotten at one call site and remembered at the others.
+async function writeAudioState(patch) {
+  const prev = await one(AUDIO_STATE_SQL);
+  const next = {
+    track_id: patch.trackId !== undefined ? patch.trackId : prev.track_id,
+    is_playing: patch.isPlaying !== undefined ? (patch.isPlaying ? 1 : 0) : prev.is_playing,
+    position_ms: patch.positionMs !== undefined ? Math.max(0, Math.round(patch.positionMs)) : prev.position_ms,
+    anchored_at_ms: patch.anchoredAtMs !== undefined ? patch.anchoredAtMs : prev.anchored_at_ms,
+    repeat_mode: patch.repeatMode !== undefined ? patch.repeatMode : prev.repeat_mode,
+    shuffle: patch.shuffle !== undefined ? (patch.shuffle ? 1 : 0) : prev.shuffle,
+    shuffle_seed: patch.shuffleSeed !== undefined ? patch.shuffleSeed : prev.shuffle_seed,
+  };
+  await run(
+    `UPDATE audio_state SET track_id = ?, is_playing = ?, position_ms = ?, anchored_at_ms = ?,
+       anchor_id = anchor_id + 1, repeat_mode = ?, shuffle = ?, shuffle_seed = ? WHERE id = 1`,
+    [
+      next.track_id,
+      next.is_playing,
+      next.position_ms,
+      next.anchored_at_ms,
+      next.repeat_mode,
+      next.shuffle,
+      next.shuffle_seed,
+    ]
+  );
+  const payload = await getAudioPayload();
+  armTrackEndTimer(payload);
+  io.emit('audio:state', payload);
+  return payload;
+}
+
+// Where the playing track is RIGHT NOW, by the server's own clock. Used to
+// anchor a pause exactly where the music actually is, rather than where it was
+// when it started.
+function livePositionMs(state) {
+  return expectedPositionMs(
+    { is_playing: state.is_playing, position_ms: state.position_ms, anchored_at_ms: state.anchored_at_ms },
+    Date.now()
+  );
+}
+
+// The playlist a given track belongs to, in its stored order — the input
+// nextTrackId needs.
+async function tracksAround(trackId) {
+  const track = await one('SELECT * FROM audio_tracks WHERE id = ?', [trackId]);
+  if (!track) return { track: null, tracks: [] };
+  const tracks = await all(
+    'SELECT id FROM audio_tracks WHERE playlist_id = ? ORDER BY sort_order, id',
+    [track.playlist_id]
+  );
+  return { track, tracks };
+}
+
+// Start a track from the top (or from `positionMs`), playing.
+async function startTrack(trackId, positionMs = 0) {
+  if (trackId == null) {
+    return writeAudioState({ trackId: null, isPlaying: false, positionMs: 0, anchoredAtMs: Date.now() });
+  }
+  return writeAudioState({
+    trackId,
+    isPlaying: true,
+    positionMs,
+    anchoredAtMs: Date.now(),
+  });
+}
+
+// Move by one, in either direction. `atNaturalEnd` distinguishes a track
+// finishing by itself (where 'repeat: off' means stop and 'repeat: track'
+// means loop) from a GM pressing a button (where neither applies) — see
+// nextTrackId's own comment.
+async function advance(direction, atNaturalEnd) {
+  const state = await one(AUDIO_STATE_SQL);
+  if (!state?.track_id) return null;
+  const { tracks } = await tracksAround(state.track_id);
+  const target = nextTrackId({
+    tracks,
+    currentId: state.track_id,
+    repeatMode: state.repeat_mode,
+    shuffle: Boolean(state.shuffle),
+    shuffleSeed: state.shuffle_seed,
+    direction,
+    atNaturalEnd,
+  });
+  return startTrack(target, 0);
+}
+
+// **Auto-advance without a ticking loop.** Two mechanisms, both guarded by the
+// same `anchor_id`, so whichever arrives first wins and the other is a no-op:
+//
+//  1. Clients report `audio:track_ended` when their own player hits the end.
+//     This is the primary path and needs no duration — the GM's browser is
+//     always in the room.
+//  2. Once any client has told us the track's length, this timer is armed for
+//     the remaining time plus a small grace. It is the safety net for the case
+//     where every client is backgrounded (phone browsers throttle timers and
+//     may never fire the ENDED event) and the music would otherwise just stop.
+//
+// Exactly one timer exists at a time and it is re-armed on every state change,
+// so there is no accumulation and nothing to clean up on shutdown.
+let trackEndTimer = null;
+const TRACK_END_GRACE_MS = 1500;
+
+function armTrackEndTimer(payload) {
+  if (trackEndTimer) clearTimeout(trackEndTimer);
+  trackEndTimer = null;
+  if (!payload?.isPlaying || !payload.durationMs || !payload.trackId) return;
+  const remaining = payload.durationMs - (Date.now() - payload.anchoredAtMs + payload.positionMs);
+  const delay = Math.max(0, remaining) + TRACK_END_GRACE_MS;
+  // A duration we cannot believe (a livestream reports 0, a bad report could be
+  // anything) must not schedule a timer days out or fire in a tight loop.
+  if (!Number.isFinite(delay) || delay > 6 * 60 * 60 * 1000) return;
+  const armedFor = payload.anchorId;
+  trackEndTimer = setTimeout(async () => {
+    try {
+      const current = await one(AUDIO_STATE_SQL);
+      if (!current || current.anchor_id !== armedFor || !current.is_playing) return;
+      await advance(1, true);
+    } catch (err) {
+      console.error('audio: failed to auto-advance at end of track:', err);
+    }
+  }, delay);
+  trackEndTimer.unref?.();
+}
+
 io.on('connection', (socket) => {
   // A client joining while the push to the primary is already failing has to
   // find out now, not at the next state change — the alarm exists precisely
@@ -2673,6 +2861,7 @@ io.on('connection', (socket) => {
       socket.data.identity = { role: 'gm' };
       socket.emit('identity:capabilities', await capabilitiesFor(socket.data.identity));
       await emitCombatUpdatedTo(socket);
+      socket.emit('audio:state', await getAudioPayload());
       return;
     }
     const id = Number(characterId);
@@ -2688,6 +2877,11 @@ io.on('connection', (socket) => {
     // or Block prompt went out used to come back to a silent screen and a fight
     // that could not be advanced by anyone. Now reconnecting is the resync.
     await emitCombatUpdatedTo(socket);
+    // **And the same for audio — this is what makes joining late work.** A
+    // client that connects twenty seconds into a song learns the anchor here
+    // and seeks straight to twenty seconds; nothing else would ever tell it,
+    // because audio:state is only broadcast when the state CHANGES.
+    socket.emit('audio:state', await getAudioPayload());
   });
 
   // **The gated half of a move-reveal chat card (decided, new).** The card
@@ -4876,6 +5070,332 @@ io.on('connection', (socket) => {
     const ts = await one('SELECT * FROM scene_timestamps WHERE id = ?', [timestampId]);
     if (!ts) return;
     io.emit('stage:timestamp_played', { date: ts.date, subtext: ts.subtext });
+  });
+
+  // ======================================================== Audio Player
+  //
+  // **The clock handshake — the only audio event a Player may send.** Stateless,
+  // ungated, no database: it answers with the server's own `Date.now()` so a
+  // client can measure the offset between its clock and this one. Device clocks
+  // are wrong by arbitrary amounts (minutes, on a phone that has not synced),
+  // and every client computes its playback position from a server instant, so
+  // this is load-bearing rather than a nicety. See clockOffset in
+  // server/audioSync.js for what the client does with several of these.
+  on('audio:ping', ({ t0 } = {}) => {
+    socket.emit('audio:pong', { t0, serverMs: Date.now() });
+  });
+
+  // **Duration is reported by clients because only YouTube knows it.** There is
+  // no server-side way to learn how long a video is without an API key, and the
+  // first client to load it has the answer for free. Used for the end-of-track
+  // safety timer and to show a length in the panel; never trusted for anything
+  // that would misbehave if a client lied (see armTrackEndTimer's own bounds).
+  on('audio:duration', async ({ trackId, durationMs } = {}) => {
+    const id = Number(trackId);
+    const ms = Math.round(Number(durationMs));
+    // **The floor and the max() are both about pre-roll ads.** A client sitting
+    // through an advert reports the ADVERT's length — fifteen seconds for a
+    // four-minute song — and taking that at face value would arm the
+    // end-of-track timer to skip the song almost immediately. Keeping the
+    // largest report ever seen is self-correcting: the first client past the ad
+    // supplies the real length and it wins permanently, in whichever order the
+    // two reports arrive.
+    if (!Number.isInteger(id) || !Number.isFinite(ms) || ms < 5000) return;
+    const track = await one('SELECT id, duration_ms FROM audio_tracks WHERE id = ?', [id]);
+    if (!track || (track.duration_ms ?? 0) >= ms) return;
+    await run('UPDATE audio_tracks SET duration_ms = ? WHERE id = ?', [ms, id]);
+    const state = await one(AUDIO_STATE_SQL);
+    // Learning the length of the song that is playing right now is exactly when
+    // the safety timer becomes armable.
+    if (state?.track_id === id) armTrackEndTimer(await getAudioPayload());
+    emitToGm('audio_track:updated', await one('SELECT * FROM audio_tracks WHERE id = ?', [id]));
+  });
+
+  // **A track ended.** Every client that was playing reports this; the
+  // `anchorId` guard means the first one advances and the rest are no-ops, so
+  // six people in the session do not skip six songs.
+  on('audio:track_ended', async ({ trackId, anchorId } = {}) => {
+    const state = await one(AUDIO_STATE_SQL);
+    if (!state || !state.is_playing) return;
+    if (Number(anchorId) !== state.anchor_id) return; // a stale client, from before the last change
+    if (Number(trackId) !== state.track_id) return;
+    await advance(1, true);
+  });
+
+  // **A track that cannot play anywhere skips itself.** YouTube refuses embeds
+  // for all sorts of reasons a GM cannot see when they paste the link — the
+  // uploader disabled embedding (101/150), the video is private or gone (100),
+  // the id is malformed (2). Without this the table sits in silence waiting for
+  // a song that will never start, and nobody can tell why.
+  //
+  // Acted on the FIRST report from any client rather than a majority: a track
+  // one person at the table cannot hear has already broken the premise of a
+  // shared soundtrack. The anchorId guard makes the other reports no-ops, and
+  // the GM is told which song was skipped and why.
+  on('audio:error', async ({ trackId, anchorId, code } = {}) => {
+    const state = await one(AUDIO_STATE_SQL);
+    if (!state || Number(anchorId) !== state.anchor_id || Number(trackId) !== state.track_id) return;
+    const fatal = [2, 100, 101, 150].includes(Number(code));
+    if (!fatal) return; // code 5 and friends are transient; the client retries them itself
+    const track = await one('SELECT * FROM audio_tracks WHERE id = ?', [state.track_id]);
+    emitToGm('audio:track_unplayable', { trackId: state.track_id, name: track?.name ?? null, code: Number(code) });
+    await advance(1, true);
+  });
+
+  // ---- everything below is GM-only ----
+
+  // Playlists and tracks are GM furniture: a Player never sees the library,
+  // only whatever is currently playing. So management broadcasts with
+  // emitToGm, exactly like Scene Notes and Timestamps.
+  on('audio_playlist:create', async ({ name } = {}) => {
+    if (socket.data.identity?.role !== 'gm') return;
+    const clean = String(name ?? '').trim().slice(0, 120) || 'New playlist';
+    const result = await run('INSERT INTO audio_playlists (name) VALUES (?)', [clean]);
+    emitToGm(
+      'audio_playlist:created',
+      await one('SELECT * FROM audio_playlists WHERE id = ?', [Number(result.lastInsertRowid)])
+    );
+  });
+
+  on('audio_playlist:rename', async ({ playlistId, name } = {}) => {
+    if (socket.data.identity?.role !== 'gm') return;
+    const list = await one('SELECT id FROM audio_playlists WHERE id = ?', [playlistId]);
+    if (!list) return;
+    const clean = String(name ?? '').trim().slice(0, 120);
+    if (!clean) return;
+    await run('UPDATE audio_playlists SET name = ? WHERE id = ?', [clean, list.id]);
+    emitToGm('audio_playlist:updated', await one('SELECT * FROM audio_playlists WHERE id = ?', [list.id]));
+  });
+
+  // **Deleting the playlist that is playing stops the music.** The tracks go
+  // with it (ON DELETE CASCADE), so there is nothing left to advance to — and
+  // silently jumping to some other playlist's song would be a stranger outcome
+  // than silence.
+  on('audio_playlist:delete', async ({ playlistId } = {}) => {
+    if (socket.data.identity?.role !== 'gm') return;
+    const list = await one('SELECT id FROM audio_playlists WHERE id = ?', [playlistId]);
+    if (!list) return;
+    const state = await one(AUDIO_STATE_SQL);
+    const playingHere = state?.track_id
+      ? await one('SELECT id FROM audio_tracks WHERE id = ? AND playlist_id = ?', [state.track_id, list.id])
+      : null;
+    await run('DELETE FROM audio_playlists WHERE id = ?', [list.id]);
+    emitToGm('audio_playlist:deleted', { playlistId: list.id });
+    if (playingHere) await startTrack(null);
+  });
+
+  // **The name YouTube gives the video is a suggestion, never a requirement.**
+  // Fetched server-side because a browser fetch to youtube.com would be refused
+  // by CORS, and through oEmbed because it needs no API key and no quota. A
+  // failure is answered rather than swallowed, so the dialog can just leave the
+  // field blank and let the GM type — looking up a title must never be the
+  // thing that stops a song being saved.
+  on('audio:lookup_title', async ({ url } = {}) => {
+    if (socket.data.identity?.role !== 'gm') return;
+    const youtubeId = parseYouTubeId(url);
+    if (!youtubeId) {
+      socket.emit('audio:title', { url, youtubeId: null, title: null, error: 'not-a-youtube-link' });
+      return;
+    }
+    try {
+      const res = await fetch(
+        `https://www.youtube.com/oembed?url=${encodeURIComponent(
+          `https://www.youtube.com/watch?v=${youtubeId}`
+        )}&format=json`,
+        { signal: AbortSignal.timeout(6000) }
+      );
+      if (!res.ok) throw new Error(`oembed answered ${res.status}`);
+      const data = await res.json();
+      socket.emit('audio:title', { url, youtubeId, title: String(data?.title ?? '').slice(0, 200) });
+    } catch (err) {
+      socket.emit('audio:title', { url, youtubeId, title: null, error: err?.message ?? 'lookup failed' });
+    }
+  });
+
+  on('audio_track:create', async ({ playlistId, name, url } = {}) => {
+    if (socket.data.identity?.role !== 'gm') return;
+    const list = await one('SELECT id FROM audio_playlists WHERE id = ?', [playlistId]);
+    if (!list) return;
+    const youtubeId = parseYouTubeId(url);
+    // A row whose link does not resolve could never play, so it is refused at
+    // the door rather than stored as a song that silently does nothing.
+    if (!youtubeId) {
+      socket.emit('audio_track:rejected', { playlistId: list.id, reason: 'not-a-youtube-link' });
+      return;
+    }
+    const last = await one(
+      'SELECT sort_order FROM audio_tracks WHERE playlist_id = ? ORDER BY sort_order DESC, id DESC LIMIT 1',
+      [list.id]
+    );
+    const result = await run(
+      'INSERT INTO audio_tracks (playlist_id, name, youtube_id, sort_order) VALUES (?, ?, ?, ?)',
+      [list.id, String(name ?? '').trim().slice(0, 200) || 'Untitled', youtubeId, (last?.sort_order ?? -1) + 1]
+    );
+    emitToGm(
+      'audio_track:created',
+      await one('SELECT * FROM audio_tracks WHERE id = ?', [Number(result.lastInsertRowid)])
+    );
+  });
+
+  // **Renaming is live; re-linking restarts.** Changing the label of the song
+  // that is playing must not interrupt it — the anchor is untouched and the
+  // header just relabels. Changing the LINK is a different song by definition,
+  // so it restarts from zero rather than dropping the listener into the middle
+  // of something they never heard the start of.
+  on('audio_track:update', async ({ trackId, name, url } = {}) => {
+    if (socket.data.identity?.role !== 'gm') return;
+    const track = await one('SELECT * FROM audio_tracks WHERE id = ?', [trackId]);
+    if (!track) return;
+    let youtubeId = track.youtube_id;
+    if (url !== undefined && String(url).trim() !== '') {
+      const parsed = parseYouTubeId(url);
+      if (!parsed) {
+        socket.emit('audio_track:rejected', { trackId: track.id, reason: 'not-a-youtube-link' });
+        return;
+      }
+      youtubeId = parsed;
+    }
+    const nextName = name !== undefined ? String(name).trim().slice(0, 200) || track.name : track.name;
+    const linkChanged = youtubeId !== track.youtube_id;
+    await run(
+      'UPDATE audio_tracks SET name = ?, youtube_id = ?, duration_ms = ? WHERE id = ?',
+      [nextName, youtubeId, linkChanged ? null : track.duration_ms, track.id]
+    );
+    emitToGm('audio_track:updated', await one('SELECT * FROM audio_tracks WHERE id = ?', [track.id]));
+    const state = await one(AUDIO_STATE_SQL);
+    if (state?.track_id === track.id) {
+      if (linkChanged) await startTrack(track.id, 0);
+      else io.emit('audio:state', await getAudioPayload()); // relabel only, anchor untouched
+    }
+  });
+
+  // **Deleting the playing song advances to the next one (decided).** The
+  // replacement is chosen BEFORE the row goes away, because once it is gone
+  // there is no playlist position left to reason from. `ON DELETE SET NULL` on
+  // audio_state.track_id is the backstop if any path ever misses this.
+  on('audio_track:delete', async ({ trackId } = {}) => {
+    if (socket.data.identity?.role !== 'gm') return;
+    const track = await one('SELECT * FROM audio_tracks WHERE id = ?', [trackId]);
+    if (!track) return;
+    const state = await one(AUDIO_STATE_SQL);
+    const wasPlaying = state?.track_id === track.id;
+    let replacement = null;
+    if (wasPlaying) {
+      const { tracks } = await tracksAround(track.id);
+      replacement = nextTrackId({
+        tracks: tracks.filter((t) => t.id !== track.id),
+        currentId: track.id,
+        repeatMode: state.repeat_mode,
+        shuffle: Boolean(state.shuffle),
+        shuffleSeed: state.shuffle_seed,
+        direction: 1,
+      });
+    }
+    await run('DELETE FROM audio_tracks WHERE id = ?', [track.id]);
+    emitToGm('audio_track:deleted', { trackId: track.id, playlistId: track.playlist_id });
+    if (wasPlaying) await startTrack(replacement, 0);
+  });
+
+  // **Move Up / Move Down send the whole new order, not a swap.** Same wire
+  // format as move:reorder, for the same reason: the server never has to
+  // reconstruct an intent from a delta, and two GMs reordering at once cannot
+  // interleave into an order neither of them asked for.
+  on('audio_track:reorder', async ({ playlistId, trackIds } = {}) => {
+    if (socket.data.identity?.role !== 'gm') return;
+    const list = await one('SELECT id FROM audio_playlists WHERE id = ?', [playlistId]);
+    if (!list || !Array.isArray(trackIds)) return;
+    const rows = await all('SELECT id FROM audio_tracks WHERE playlist_id = ? ORDER BY sort_order, id', [
+      list.id,
+    ]);
+    const known = new Set(rows.map((r) => r.id));
+    const sequence = [...new Set(trackIds.map(Number))].filter((id) => known.has(id));
+    // Anything the client left out keeps its relative order at the end, so a
+    // stale client cannot silently drop songs it had not heard about yet.
+    for (const row of rows) if (!sequence.includes(row.id)) sequence.push(row.id);
+    await writeMany(
+      sequence.map((id, i) => ['UPDATE audio_tracks SET sort_order = ? WHERE id = ?', [i, id]])
+    );
+    emitToGm('audio_tracks:reordered', { playlistId: list.id, trackIds: sequence });
+  });
+
+  // ---- transport ----
+
+  on('audio:play', async ({ trackId } = {}) => {
+    if (socket.data.identity?.role !== 'gm') return;
+    const track = await one('SELECT id FROM audio_tracks WHERE id = ?', [trackId]);
+    if (!track) return;
+    await startTrack(track.id, 0);
+  });
+
+  // Pause anchors the music where it ACTUALLY is by the server clock, not where
+  // it started — which is what makes resume exact rather than approximate.
+  on('audio:pause', async () => {
+    if (socket.data.identity?.role !== 'gm') return;
+    const state = await one(AUDIO_STATE_SQL);
+    if (!state?.is_playing) return;
+    await writeAudioState({ isPlaying: false, positionMs: livePositionMs(state), anchoredAtMs: Date.now() });
+  });
+
+  on('audio:resume', async () => {
+    if (socket.data.identity?.role !== 'gm') return;
+    const state = await one(AUDIO_STATE_SQL);
+    if (!state || state.is_playing || !state.track_id) return;
+    await writeAudioState({ isPlaying: true, anchoredAtMs: Date.now() });
+  });
+
+  on('audio:stop', async () => {
+    if (socket.data.identity?.role !== 'gm') return;
+    await startTrack(null);
+  });
+
+  on('audio:seek', async ({ positionMs } = {}) => {
+    if (socket.data.identity?.role !== 'gm') return;
+    const ms = Math.max(0, Math.round(Number(positionMs)));
+    if (!Number.isFinite(ms)) return;
+    const state = await one(AUDIO_STATE_SQL);
+    if (!state?.track_id) return;
+    await writeAudioState({ positionMs: ms, anchoredAtMs: Date.now() });
+  });
+
+  on('audio:next', async () => {
+    if (socket.data.identity?.role !== 'gm') return;
+    await advance(1, false);
+  });
+
+  // **Previous restarts the current track when it is more than three seconds
+  // in.** Every media player on earth behaves this way and it is what a hand
+  // reaches for — "take me back to the start of this" far more often than
+  // "take me to the song before it".
+  on('audio:previous', async () => {
+    if (socket.data.identity?.role !== 'gm') return;
+    const state = await one(AUDIO_STATE_SQL);
+    if (state?.track_id && livePositionMs(state) > 3000) {
+      await startTrack(state.track_id, 0);
+      return;
+    }
+    await advance(-1, false);
+  });
+
+  // Changing shuffle re-seeds it, so turning it off and on again genuinely
+  // reshuffles rather than replaying the same "random" order forever.
+  on('audio:set_mode', async ({ repeatMode, shuffle } = {}) => {
+    if (socket.data.identity?.role !== 'gm') return;
+    const state = await one(AUDIO_STATE_SQL);
+    if (!state) return;
+    const patch = {};
+    if (repeatMode !== undefined && ['off', 'playlist', 'track'].includes(repeatMode)) {
+      patch.repeatMode = repeatMode;
+    }
+    if (shuffle !== undefined) {
+      patch.shuffle = Boolean(shuffle);
+      if (Boolean(shuffle) !== Boolean(state.shuffle)) patch.shuffleSeed = Math.floor(Math.random() * 2 ** 31);
+    }
+    if (!Object.keys(patch).length) return;
+    // The anchor is carried forward untouched: changing shuffle or repeat must
+    // never interrupt the song that is already playing.
+    patch.positionMs = state.position_ms;
+    patch.anchoredAtMs = state.anchored_at_ms;
+    await writeAudioState(patch);
   });
 
   on('move:revoke', async ({ characterId, moveId }) => {
