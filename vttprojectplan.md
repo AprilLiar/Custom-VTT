@@ -5812,6 +5812,47 @@ button is simply GM-gated inside that existing component rather than getting its
   back off, rather than skipping the beat entirely. `pointer-events-none` on the whole overlay — the
   dim is purely visual, nothing underneath (the hide-interface toggle included) is ever actually
   blocked from a click while a card plays.
+- **A Scene can CUE a Timestamp, played automatically on activation (decided, new).**
+  `scenes.timestamp_id` — nullable, `ON DELETE SET NULL`, added by `ensureColumn` — and
+  `scene:activate` plays that Timestamp for the whole table straight after pushing the new
+  stage.
+  - **The column is on `scenes`, pointing AT a Timestamp — never a `scene_id` on
+    `scene_timestamps`.** That direction is what preserves the decision recorded above: a
+    Timestamp stays a moment in the CAMPAIGN's timeline, the list stays flat and global, and
+    many Scenes may cue the same moment. A `scene_id` on the Timestamp would have quietly
+    converted the feature into per-Scene annotations.
+  - **`ON DELETE SET NULL`, not CASCADE** — deleting a moment from the timeline must not
+    delete the Scene that happened to cue it. Pinned by the playtest, because the wrong
+    keyword here destroys authored content and nothing else would notice.
+  - **Every activation fires it, including re-activating the Scene already live (decided).**
+    Activating is a deliberate GM action, so it doubles as a way to replay the beat without
+    opening the Timestamp dialog.
+  - **It does NOT touch `is_current` (decided).** The star is the GM's own marker for where
+    the campaign sits and stays theirs to move; cueing a beat from a backdrop is a
+    presentation act, not a claim about the timeline.
+  - **`timestamp_id` is withheld from Players, unlike the rest of the Scene row.** Scenes are
+    GM-*managed* but not GM-*secret* — `GET /api/scenes` is an open read and `scene:updated`
+    reaches everyone — whereas the Timestamp list sits behind a GM-only 403 precisely so a
+    Player cannot enumerate the campaign's timeline, and `stage:timestamp_play` deliberately
+    broadcasts date/subtext but never an id. Leaking the cue id on the Scene row would chip at
+    that for no gain, so `publicScene` strips it: `GET /api/scenes` returns it only for
+    `?role=gm`, and `emitScene` sends the full row to GM sockets and the stripped row to
+    everyone else. The auto-play broadcast reuses `stage:timestamp_played` unchanged, so this
+    adds **no new event and no new way for a Player to learn anything**.
+  - **Client** — a "Timestamp on activate" `<select>` in `SceneEditor.jsx` below Background
+    Fit, defaulting to None, listing every Timestamp as `Name — May 12, 2015` via the same
+    `formatTimestampDate` the grid and the cutscene use. Always sent on save (`null` for
+    None), because the server reads `undefined` as "leave it alone" — which is the right
+    contract for the optional background but the wrong one for a picker that always has a
+    value. `getScenes` now takes an identity so the GM drawer's own fetch carries
+    `{ role: 'gm' }` and gets the cue back to pre-select.
+  - **`scripts/playtest-scene-timestamp-cue.mjs`** covers all of it against a live server with
+    a real second (Player) socket: that an uncued Scene is silent, that a cued one reaches a
+    PLAYER, that the payload carries date/subtext and **no id**, that re-activation replays,
+    that `is_current` is untouched, that a Player's Scene list has no `timestamp_id`, that
+    clearing the cue stops the beat, and that deleting the Timestamp leaves the Scene standing
+    with a NULL cue. None of that is unit-testable — every one is a question about what
+    crosses the socket and to whom.
 - **Settings — "Timestamp Card Duration" (decided, new).** Per-device, `sceneSettings.js`
   (`loadTimestampDuration`/`saveTimestampDuration`, 1–10s, default 3s — "roughly 3 seconds" per
   spec), same "read once at `ScenePage` mount, per-viewer, never socket-synced" shape every other

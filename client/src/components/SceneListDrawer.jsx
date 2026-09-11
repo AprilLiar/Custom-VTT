@@ -33,8 +33,11 @@ export default function SceneListDrawer({ activeSceneId }) {
 
   useEffect(() => {
     let alive = true;
+    // `{ role: 'gm' }` is what makes each Scene's `timestamp_id` come back —
+    // this drawer is GM-only furniture, and SceneEditor's Timestamp picker
+    // needs the current cue to show it pre-selected.
     const refetchScenes = () =>
-      getScenes()
+      getScenes({ role: 'gm' })
         .then((list) => {
           if (alive) setScenes(list);
         })

@@ -46,7 +46,11 @@ export const getScenePictures = (ownerType, ownerId) =>
   fetch(`/api/scene-pictures?${new URLSearchParams({ ownerType, ownerId })}`).then(json);
 export const getTempNpcs = () => fetch('/api/temp-npcs').then(json);
 export const getTempNpcFolders = () => fetch('/api/temp-npc-folders').then(json);
-export const getScenes = () => fetch('/api/scenes').then(json);
+// Carries identity so a GM gets each Scene's `timestamp_id` (which Timestamp it
+// cues) and a Player does not — the Scene list itself is an open read, but the
+// campaign's timeline is GM-secret. See publicScene in server/index.js.
+export const getScenes = (identity) =>
+  fetch(`/api/scenes${identity ? `?${new URLSearchParams(identity)}` : ''}`).then(json);
 export const getSceneFolders = () => fetch('/api/scene-folders').then(json);
 // The live stage everyone shares — { activeScene, summons, drawings }.
 // Carries identity as query params, same as getCombat — not a 403 gate here

@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { socket } from '../socket.js';
 import { fileToSceneBackground, portraitSrc, localPreviewSrc } from '../lib/image.js';
 import { cropOf } from '../lib/imageCrop.js';
@@ -6,6 +6,8 @@ import { usePictureUpload } from '../lib/usePictureUpload.jsx';
 import CroppedImage from './CroppedImage.jsx';
 import DialogShell from './DialogShell.jsx';
 import { BACKGROUND_FIT_OPTIONS, DEFAULT_BACKGROUND_FIT } from '../lib/backgroundFit.js';
+import { getSceneTimestamps } from '../lib/api.js';
+import { formatTimestampDate } from '../lib/timestampFormat.js';
 
 // A Scene's editor (Scene tab plan, Phase 4) — double-clicking a row in
 // SceneListDrawer opens this; single-clicking it activates the Scene
@@ -44,7 +46,26 @@ export default function SceneEditor({ scene, onClose }) {
   const [backgroundFit, setBackgroundFit] = useState(
     scene.image_url ? scene.background_fit || DEFAULT_BACKGROUND_FIT : 'contain'
   );
+  // **Which Timestamp this Scene cues, if any (decided, new).** Activating the
+  // Scene plays that beat for the whole table automatically — see
+  // `scene:activate` in server/index.js. `''` is the "None" option: the picker
+  // always has a value and is always sent, so clearing the cue is a normal save
+  // rather than a separate action.
+  const [timestampId, setTimestampId] = useState(scene.timestamp_id ?? '');
+  const [timestamps, setTimestamps] = useState([]);
   const fileRef = useRef(null);
+
+  // GM-only read (403 otherwise), and this editor is only ever reached from the
+  // GM's own Scene drawer. Fetched per open rather than held globally: the list
+  // is small, and a Timestamp added since this dialog last opened should be
+  // pickable without a reload.
+  useEffect(() => {
+    let alive = true;
+    getSceneTimestamps({ role: 'gm' })
+      .then((rows) => { if (alive) setTimestamps(Array.isArray(rows) ? rows : []); })
+      .catch(console.error);
+    return () => { alive = false; };
+  }, []);
 
   const preview = picture
     ? localPreviewSrc(picture)
@@ -67,7 +88,15 @@ export default function SceneEditor({ scene, onClose }) {
     e.preventDefault();
     const trimmed = name.trim();
     if (!trimmed) return;
-    socket.emit('scene:update', { sceneId: scene.id, name: trimmed, backgroundFit, ...(picture ?? {}) });
+    socket.emit('scene:update', {
+      sceneId: scene.id,
+      name: trimmed,
+      backgroundFit,
+      // Always sent, `null` for None — the server reads `undefined` as "leave
+      // it alone", which is not what an untouched-but-present picker means.
+      timestampId: timestampId === '' ? null : Number(timestampId),
+      ...(picture ?? {}),
+    });
   };
 
   const remove = () => {
@@ -121,6 +150,27 @@ export default function SceneEditor({ scene, onClose }) {
               </option>
             ))}
           </select>
+        </div>
+        <div>
+          <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-zinc-500">
+            Timestamp on activate
+          </label>
+          <select
+            value={timestampId}
+            onChange={(e) => setTimestampId(e.target.value)}
+            className="min-h-11 w-full panel-cut-sm border border-zinc-700 bg-zinc-800 px-2 py-1 text-sm outline-none focus:border-brand-500"
+          >
+            <option value="">None</option>
+            {timestamps.map((t) => (
+              <option key={t.id} value={t.id}>
+                {[t.name, formatTimestampDate(t.date)].filter(Boolean).join(' — ') || `Timestamp ${t.id}`}
+              </option>
+            ))}
+          </select>
+          <p className="mt-1 text-[11px] leading-snug text-zinc-500">
+            Plays this Timestamp for everyone each time the Scene is activated. The starred
+            &ldquo;Current&rdquo; Timestamp is left alone.
+          </p>
         </div>
         <button
           type="submit"

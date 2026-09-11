@@ -1726,6 +1726,26 @@ export async function initDb() {
   // own header/every other ensureColumn call for the same reasoning).
   await ensureColumn('scene_timestamps', 'date', "TEXT NOT NULL DEFAULT ''");
   await ensureColumn('scene_timestamps', 'is_current', 'INTEGER NOT NULL DEFAULT 0');
+
+  // **A Scene may CUE a Timestamp: activating it plays that beat automatically
+  // (decided, new).** The column lives on `scenes`, pointing AT a Timestamp —
+  // never a `scene_id` on `scene_timestamps`, which would undo the deliberate
+  // decision recorded above that a Timestamp is a moment in the CAMPAIGN's
+  // timeline rather than an annotation on one backdrop. Pointing this way round
+  // keeps that intact and costs nothing: the list stays flat and global, many
+  // Scenes may cue the same moment, and a Scene that cues nothing is simply
+  // NULL.
+  //
+  // Declared here rather than beside the other `scenes` columns because a
+  // REFERENCES clause names a table that has to exist first, and
+  // `scene_timestamps` is created immediately above. `ON DELETE SET NULL`
+  // rather than CASCADE for the obvious reason: deleting a moment from the
+  // timeline must not delete the Scene that happened to cue it.
+  await ensureColumn(
+    'scenes',
+    'timestamp_id',
+    'INTEGER REFERENCES scene_timestamps(id) ON DELETE SET NULL'
+  );
   // ---------------------------------------------------------------------
 
   // The Perks compendium: master list of Perk templates. Just picture, name,
