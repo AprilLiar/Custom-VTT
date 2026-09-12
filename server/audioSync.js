@@ -198,3 +198,46 @@ export function nextTrackId({
   if (repeatMode === 'off' && atNaturalEnd) return null;
   return step > 0 ? order[0] : order[order.length - 1];
 }
+
+// ------------------------------------------------------------------ the fades
+//
+// **A one-second fade at each end of a song (decided, new).** Expressed as a
+// pure function of WHERE IN THE TRACK we are, not as a timed ramp fired by an
+// event, and that choice is the whole design:
+//
+//  - It is self-correcting. A GM seek, a track change, a buffer stall or a
+//    resume all move the position; the envelope simply reads the new one. A
+//    timed ramp would have to be cancelled and re-aimed at each of those, and
+//    every one of those is a chance to leave a client stuck quiet.
+//  - It is testable. The player half of this feature cannot be exercised where
+//    this app is developed (the egress proxy refuses youtube.com), so the
+//    arithmetic being a pure function that can be pinned here is the difference
+//    between "verified" and "it looked right".
+//
+// `durationMs` is NULL until some client reports it — only YouTube knows how
+// long a video is — so an unknown length means **no tail fade at all** rather
+// than a guessed one that would duck the middle of a song.
+//
+// **Past the reported end the gain goes back to 1, deliberately.** The duration
+// is a number some other browser reported; if it was short, the song is still
+// playing and the alternative is a client that has muted itself with nothing
+// coming to put it right. Reading "we are past the end and still going" as "the
+// duration was wrong" is what makes one bad report cost a second of dip instead
+// of the rest of the song.
+export function fadeEnvelope(positionMs, durationMs, fadeMs) {
+  const fade = Number(fadeMs);
+  if (!Number.isFinite(fade) || fade <= 0) return 1;
+  const pos = Number(positionMs);
+  if (!Number.isFinite(pos) || pos < 0) return 1;
+
+  const total = Number(durationMs);
+  // A track shorter than both fades would never reach full volume; leave it
+  // alone rather than making it quieter than everything around it.
+  const hasTail = Number.isFinite(total) && total > fade * 2;
+  if (hasTail) {
+    const remaining = total - pos;
+    if (remaining >= 0 && remaining < fade) return remaining / fade;
+  }
+  if (pos < fade) return pos / fade;
+  return 1;
+}
