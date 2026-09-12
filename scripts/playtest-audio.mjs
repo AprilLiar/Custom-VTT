@@ -52,6 +52,17 @@ const gm = await connect({ role: 'gm' });
 const pc = await jpost('/api/characters', { name: `AudioPC${stamp}`, characterType: 'pc' });
 const player = await connect({ role: 'player', characterId: pc.id });
 
+// **State the preconditions rather than inheriting them.** `repeat_mode` and
+// `shuffle` live on a singleton row that outlives any one run, so whatever the
+// last session (or a scratch script) left there is what this run starts from.
+// That is not hypothetical: with `repeat_mode` left on 'track', the
+// de-duplication check below legitimately sees the track NOT advance — which is
+// correct behaviour for repeat-one and a completely misleading failure for a
+// test about three clients reporting the same ending. Pinning both here costs
+// one round trip and removes a whole class of false alarm.
+gm.emit('audio:set_mode', { repeatMode: 'playlist', shuffle: false });
+await sleep(300);
+
 const library = () => jf('/api/audio-library?role=gm');
 
 // ============================================ 1. the clock handshake

@@ -20,7 +20,7 @@
 // out where that anchor puts it right now, and the two agree by construction
 // rather than by two implementations that look similar.
 import { socket } from '../socket.js';
-import { clockOffset, expectedPositionMs } from '../../../server/audioSync.js';
+import { clockOffset, expectedPositionMs, fadeEnvelope } from '../../../server/audioSync.js';
 import { loadAudioVolume } from './sceneSettings.js';
 
 // ---------------------------------------------------------------- the store
@@ -152,6 +152,13 @@ const RECOVERY_TICK_MS = 2500;
 // second or more in BUFFERING, and accusing the browser of refusing when it was
 // merely loading is how you teach people to ignore the indicator.
 const PLAY_WATCHDOG_MS = 4000;
+// **A one-second fade at each end of a song (decided, new).** Long enough to
+// read as a deliberate cross-fade rather than a click, short enough that a GM
+// hitting Play does not wait on it.
+const FADE_MS = 1000;
+// 20 steps a second. Finer buys nothing audible against YouTube's own volume
+// quantisation (it takes whole percent values), and coarser starts to step.
+const FADE_STEP_MS = 50;
 // A brief mobile reconnect blip must not chop the music — the anchor stays
 // correct across it as long as the GM changed nothing. Past this the odds that
 // a pause or a track change was missed stop being negligible.
@@ -407,10 +414,36 @@ function looksLikeAd() {
 //
 // Per-device and never synced: everyone hears the same song at the same
 // moment, at whatever loudness suits their own room.
+// **A song fades in and out over a second (decided, new).**
+//
+// Every volume write in this file goes through `applyVolume`, and it is the
+// product of two independent things: the listener's own per-device volume, and
+// `fadeGain` — the envelope. Keeping them as a product rather than having the
+// fade write absolute volumes is what stops the two fighting: the GM can drag
+// the volume slider mid-fade and the fade simply continues against the new
+// ceiling, and an interrupted fade can never strand the listener's own setting
+// at some arbitrary value it happened to ramp through.
+//
+// The envelope itself is `fadeEnvelope` in server/audioSync.js — a pure
+// function of WHERE IN THE TRACK we are, deliberately not a timed ramp fired by
+// an event. See its own note for why; the short version is that a seek, a track
+// change, a stall and a resume all move the position, and a position-derived
+// shape reads the new one for free where a timed ramp would have to be
+// cancelled and re-aimed at every one of them.
+let fadeGain = 1;
+let fadeTimer = null;
+// `audible` is "this client is currently making sound", and `audibleSince` is
+// when it started. Together they are the ENTRY ramp — the fade a client gets
+// when it starts playing somewhere other than a track's first second: joining
+// the table mid-song, resuming, recovering from a seek. Without it those would
+// all slam on at full volume, which is the click this feature exists to remove.
+let audible = false;
+let audibleSince = 0;
+
 function applyVolume() {
   if (!playerReady) return;
   try {
-    player.setVolume(Math.round(loadAudioVolume() * 100));
+    player.setVolume(Math.round(loadAudioVolume() * fadeGain * 100));
   } catch {
     /* the player is not ready enough yet; the next reconcile sets it */
   }
@@ -419,7 +452,39 @@ export function refreshVolume() {
   applyVolume();
 }
 
+// The quieter of the two: the track's own head/tail envelope, and this client's
+// entry ramp. `min` rather than a product so neither can ever raise the other —
+// joining two seconds before the end fades in AND out, and ends silent.
+function currentGain() {
+  const entry = FADE_MS > 0 ? Math.min(1, (performance.now() - audibleSince) / FADE_MS) : 1;
+  const shape = serverState?.isPlaying
+    ? fadeEnvelope(expectedPositionMs(serverState, serverNow()), serverState?.durationMs, FADE_MS)
+    : 1;
+  return Math.max(0, Math.min(entry, shape));
+}
+
+// A plain interval, not rAF: a fade has to keep running while the tab is in the
+// background, which is exactly when rAF stops. Armed only while this client is
+// actually making sound, so a paused or silent table costs nothing.
+function updateFadeTick() {
+  const wanted = audible && Boolean(serverState?.isPlaying);
+  if (wanted && !fadeTimer) {
+    fadeTimer = setInterval(() => {
+      const next = currentGain();
+      if (Math.abs(next - fadeGain) < 0.005) return; // YouTube takes whole percents
+      fadeGain = next;
+      applyVolume();
+    }, FADE_STEP_MS);
+  } else if (!wanted && fadeTimer) {
+    clearInterval(fadeTimer);
+    fadeTimer = null;
+  }
+}
+
 function silence(detail) {
+  audible = false;
+  fadeGain = 1;
+  updateFadeTick();
   try {
     player?.mute?.();
   } catch {
@@ -428,10 +493,19 @@ function silence(detail) {
   set({ status: 'silent', detail });
 }
 
+// Becoming audible is where the entry ramp starts. Called on every reconcile
+// while playing, so the `audible` guard is what stops it restarting the fade
+// several times a second.
 function sound() {
   try {
     player?.unMute?.();
+    if (!audible) {
+      audible = true;
+      audibleSince = performance.now();
+    }
+    fadeGain = currentGain();
     applyVolume();
+    updateFadeTick();
   } catch {
     /* not ready; the next reconcile will try again */
   }
@@ -671,6 +745,11 @@ function reconcile(reason) {
       /* nothing loaded */
     }
     currentVideoId = null;
+    // Nothing is playing, so nothing is audible — and the next track to start
+    // must take the entry ramp rather than inheriting a stale `true`.
+    audible = false;
+    fadeGain = 1;
+    updateFadeTick();
     set({ status: 'idle', detail: null, driftMs: null });
     return;
   }
@@ -693,6 +772,11 @@ function reconcile(reason) {
   }
 
   if (!serverState.isPlaying) {
+    // Not audible any more, so the next resume takes the entry-ramp path rather
+    // than snapping back to full volume mid-bar.
+    audible = false;
+    fadeGain = 1;
+    updateFadeTick();
     try {
       weJustPaused = true;
       player.pauseVideo();
@@ -860,6 +944,11 @@ window.__dogfightAudio = () => ({
   ytMuted: player?.isMuted?.() ?? null,
   ytVolume: player?.getVolume?.() ?? null,
   ytCurrentTime: player?.getCurrentTime?.() ?? null,
+  // The fade envelope: `fadeGain` is what multiplies the listener's own volume
+  // right now, so a song stuck quiet shows up here as a gain that never
+  // returned to 1.
+  fadeGain: Number(fadeGain.toFixed(3)),
+  audible,
   // The clock half: whether this device may make a sound at all.
   clock: { ...clock, usable: clockUsable() },
   expectedPositionMs: serverState ? Math.round(expectedPositionMs(serverState, serverNow())) : null,

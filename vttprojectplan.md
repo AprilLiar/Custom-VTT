@@ -3607,6 +3607,37 @@ in the middle of.
     invisible in a one-word status but obvious in `{ apiLoaded, playerReady,
     unlocked, currentVideoId, ytPlayerState, clock }`. No UI, no cost, and it
     turns the next report into a single answer.
+  - **A one-second fade at each end of a song (decided, new).** `fadeEnvelope`
+    (server/audioSync.js, unit-tested) is a pure function of **where in the track
+    we are**, deliberately not a timed ramp fired by an event — a seek, a track
+    change, a stall and a resume all move the position, and a position-derived
+    shape reads the new one for free where a timed ramp would have to be
+    cancelled and re-aimed at every one of them (a first draft did exactly that,
+    and needed a rescue timer to stop one mis-aimed ramp muting a client for the
+    rest of a song).
+    - **Volume is a PRODUCT:** the listener's own per-device setting × the
+      envelope. So the GM can move the volume slider mid-fade and the fade
+      continues against the new ceiling, and an interrupted fade can never
+      strand the listener's setting at some value it happened to ramp through.
+    - **An unknown duration fades in but never out.** `duration_ms` is NULL
+      until a client reports it (only YouTube knows a video's length), and a
+      guessed tail would duck the middle of a song — far worse than no tail.
+    - **Past the reported end the gain returns to 1.** The duration is a number
+      some other browser reported; if it was short, the song is still playing,
+      and the alternative is a client that muted itself with nothing coming to
+      put it right. Reading "past the end and still going" as "that duration was
+      wrong" is what makes one bad report cost a second of dip instead of the
+      rest of the track.
+    - **A track shorter than two fades is left alone**, rather than being made
+      quieter than everything around it.
+    - **An entry ramp on top**, taken as `min` with the envelope: a client that
+      starts making sound somewhere other than a track's first second — joining
+      mid-song, resuming, recovering from a seek — ramps up over the same second
+      instead of slamming on. `min` rather than a product, so neither half can
+      ever raise the other: joining two seconds before the end fades in AND out.
+    - Driven by a 50ms `setInterval` (not rAF, which stops in a background tab)
+      armed **only while this client is actually audible**, so a paused or idle
+      table costs nothing.
   - **Autoplay is unlocked by the role modal.** Browsers refuse sound until the
     person has interacted with the page, and picking Player/GM is the one
     mandatory tap on every load — so `roleContext.jsx` calls the engine's

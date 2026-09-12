@@ -15,6 +15,7 @@ import {
   expectedPositionMs,
   nextTrackId,
   shuffleOrder,
+  fadeEnvelope,
 } from '../audioSync.js';
 
 // ------------------------------------------------------------------ parsing
@@ -223,4 +224,68 @@ test('a one-track playlist on repeat stays on that track', () => {
     nextTrackId({ tracks: [{ id: 7 }], currentId: 7, repeatMode: 'off', atNaturalEnd: true }),
     null
   );
+});
+
+// --- the fades ---------------------------------------------------------------
+//
+// The envelope is a pure function precisely so it CAN be pinned here: the
+// player half of this feature cannot be exercised where this app is developed
+// (the egress proxy refuses youtube.com), so every previous audio bug in this
+// file's neighbourhood was diagnosed by reading rather than running — twice
+// wrongly. These are the cases that decide whether a table hears a click, a
+// duck in the middle of a song, or silence for the rest of one.
+const FADE = 1000;
+
+test('a song fades in over its first second', () => {
+  assert.equal(fadeEnvelope(0, 200_000, FADE), 0);
+  assert.equal(fadeEnvelope(250, 200_000, FADE), 0.25);
+  assert.equal(fadeEnvelope(500, 200_000, FADE), 0.5);
+  assert.equal(fadeEnvelope(1000, 200_000, FADE), 1);
+});
+
+test('and out over its last', () => {
+  assert.equal(fadeEnvelope(199_000, 200_000, FADE), 1);
+  assert.equal(fadeEnvelope(199_500, 200_000, FADE), 0.5);
+  assert.equal(fadeEnvelope(200_000, 200_000, FADE), 0);
+});
+
+test('the middle of a song is never touched', () => {
+  for (const pos of [1001, 5_000, 100_000, 198_999]) {
+    assert.equal(fadeEnvelope(pos, 200_000, FADE), 1, `dipped at ${pos}ms`);
+  }
+});
+
+test('an unknown duration still fades IN but never out', () => {
+  // `duration_ms` is NULL until some client reports it — only YouTube knows how
+  // long a video is. Guessing a tail would duck the middle of a song, which is
+  // far worse than simply not fading out.
+  assert.equal(fadeEnvelope(0, null, FADE), 0);
+  assert.equal(fadeEnvelope(500, null, FADE), 0.5);
+  assert.equal(fadeEnvelope(500_000, null, FADE), 1, 'faded out against a length nobody knows');
+  assert.equal(fadeEnvelope(500_000, undefined, FADE), 1);
+});
+
+test('past the reported end the gain comes BACK, rather than sticking at zero', () => {
+  // The duration is a number some other browser reported. If it was short, the
+  // song is still playing — and the alternative to recovering here is a client
+  // that muted itself with nothing coming to put it right, which is the exact
+  // shape of every "it went silent and never came back" bug in this feature.
+  assert.equal(fadeEnvelope(200_001, 200_000, FADE), 1);
+  assert.equal(fadeEnvelope(260_000, 200_000, FADE), 1);
+});
+
+test('a track too short to hold both fades is left alone', () => {
+  // Two fades do not fit, so honouring them would make the whole thing quieter
+  // than everything around it rather than shaping it.
+  assert.equal(fadeEnvelope(1400, 1500, FADE), 1);
+  assert.equal(fadeEnvelope(900, 2000, FADE), 0.9, 'the head fade still applies at exactly 2x');
+});
+
+test('nonsense inputs are full volume, never silence', () => {
+  // Every one of these is reachable: a position computed before the clock is
+  // ready, a duration that arrived as a string, a fade length of zero.
+  assert.equal(fadeEnvelope(NaN, 200_000, FADE), 1);
+  assert.equal(fadeEnvelope(-5, 200_000, FADE), 1);
+  assert.equal(fadeEnvelope(500, 200_000, 0), 1);
+  assert.equal(fadeEnvelope(500, 200_000, NaN), 1);
 });
