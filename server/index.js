@@ -2032,6 +2032,27 @@ function emitToGm(event, payload) {
   }
 }
 
+// **A Scene row is public; which Timestamp it cues is not.**
+//
+// Scenes are GM-*managed* but not GM-*secret* — a Player's client is told a
+// Scene activated, and `GET /api/scenes` is an open read. `timestamp_id` is the
+// one field on the row that is not like the rest: the Timestamp list is behind
+// a GM-only 403 precisely so a Player cannot enumerate the campaign's timeline,
+// and `stage:timestamp_play` broadcasts a played Timestamp's date and subtext
+// but deliberately never its id, so a Player socket has nothing to correlate.
+// Leaking the id here would chip at that for no gain, so the field is dropped
+// for everyone but the GM — who is also the only client that has any use for
+// it (SceneEditor's own picker).
+const publicScene = ({ timestamp_id: _cue, ...rest }) => rest;
+
+function emitScene(event, row) {
+  if (!row) return;
+  const stripped = publicScene(row);
+  for (const socket of io.sockets.sockets.values()) {
+    socket.emit(event, socket.data?.identity?.role === 'gm' ? row : stripped);
+  }
+}
+
 app.get('/api/scene-notes', wrap(async (req, res) => {
   const viewer = viewerFromQuery(req.query);
   if (viewer?.role !== 'gm') return res.status(403).json({ error: 'GM only' });
@@ -2133,8 +2154,13 @@ app.get('/api/scene-pictures', wrap(async (req, res) => {
 
 // Scene tab: the GM's Scenes library (Phase 4) — open read, same reasoning
 // as temp-npcs/character-folders above.
-app.get('/api/scenes', wrap(async (_req, res) => {
-  res.json((await all('SELECT * FROM scenes ORDER BY name')).map(withImageUrl('scene')));
+app.get('/api/scenes', wrap(async (req, res) => {
+  // Not a 403 like the Timestamp list itself — the Scene list is open read by
+  // design (GM-managed, not GM-secret). Only the `timestamp_id` field is
+  // withheld; see publicScene.
+  const viewer = viewerFromQuery(req.query);
+  const rows = (await all('SELECT * FROM scenes ORDER BY name')).map(withImageUrl('scene'));
+  res.json(viewer?.role === 'gm' ? rows : rows.map(publicScene));
 }));
 
 app.get('/api/scene-folders', wrap(async (_req, res) => {
@@ -4950,7 +4976,7 @@ io.on('connection', (socket) => {
     }
     const result = await run('INSERT INTO scenes (name, folder_id) VALUES (?, ?)', [sceneName, folder]);
     await stampImageHash('scene', Number(result.lastInsertRowid));
-    io.emit('scene:created', withImageUrl('scene')(await one('SELECT * FROM scenes WHERE id = ?', [Number(result.lastInsertRowid)])));
+    emitScene('scene:created', withImageUrl('scene')(await one('SELECT * FROM scenes WHERE id = ?', [Number(result.lastInsertRowid)])));
   });
 
   // The name is always sent; a background is only sent when the file picker
@@ -4961,12 +4987,25 @@ io.on('connection', (socket) => {
   // but unlike the image it never needs an "absent means unchanged" branch
   // of its own: an invalid/missing value just falls back to whatever the
   // Scene already had, rather than being treated as "no change requested."
-  on('scene:update', async ({ sceneId, name, imageData, imageMimeType, backgroundFit, ...payload }) => {
+  on('scene:update', async ({ sceneId, name, imageData, imageMimeType, backgroundFit, timestampId, ...payload }) => {
     if (socket.data.identity?.role !== 'gm') return;
     const scene = await one('SELECT * FROM scenes WHERE id = ?', [sceneId]);
     const sceneName = String(name ?? '').trim();
     if (!scene || !sceneName) return;
     const fit = VALID_BACKGROUND_FITS.has(backgroundFit) ? backgroundFit : scene.background_fit;
+    // **Which Timestamp this Scene cues.** `undefined` is "leave it alone" —
+    // the same absent-means-untouched contract `imageData` uses above — while
+    // an explicit `null` clears the cue, which is what the picker's own "None"
+    // option sends. Resolved against the table rather than trusted, so a stale
+    // id from a deleted Timestamp lands as NULL instead of a dangling FK.
+    let cue = scene.timestamp_id;
+    if (timestampId !== undefined) {
+      cue =
+        timestampId == null
+          ? null
+          : ((await one('SELECT id FROM scene_timestamps WHERE id = ?', [timestampId]))?.id ?? null);
+    }
+    await run('UPDATE scenes SET timestamp_id = ? WHERE id = ?', [cue, scene.id]);
     await run(
       imageData
         ? `UPDATE scenes SET name = ?, background_fit = ?, image_data = ?, image_mime_type = ?, ${CROP_COLUMNS} WHERE id = ?`
@@ -4976,7 +5015,7 @@ io.on('connection', (socket) => {
         : [sceneName, fit, scene.id]
     );
     await stampImageHash('scene', scene.id);
-    io.emit('scene:updated', withImageUrl('scene')(await one('SELECT * FROM scenes WHERE id = ?', [scene.id])));
+    emitScene('scene:updated', withImageUrl('scene')(await one('SELECT * FROM scenes WHERE id = ?', [scene.id])));
     // The active Scene's own background may have just changed — the stage
     // carries a copy of that row, not a live join, so it needs its own push.
     const state = await one('SELECT active_scene_id FROM scene_state WHERE id = 1');
@@ -4993,7 +5032,7 @@ io.on('connection', (socket) => {
       if (folder) target = folder.id;
     }
     await run('UPDATE scenes SET folder_id = ? WHERE id = ?', [target, scene.id]);
-    io.emit('scene:updated', withImageUrl('scene')({ ...scene, folder_id: target }));
+    emitScene('scene:updated', withImageUrl('scene')({ ...scene, folder_id: target }));
   });
 
   on('scene:delete', async ({ sceneId }) => {
@@ -5026,13 +5065,35 @@ io.on('connection', (socket) => {
   on('scene:activate', async ({ sceneId }) => {
     if (socket.data.identity?.role !== 'gm') return;
     let target = null;
+    let cue = null;
     if (sceneId != null) {
-      const scene = await one('SELECT id FROM scenes WHERE id = ?', [sceneId]);
+      const scene = await one('SELECT id, timestamp_id FROM scenes WHERE id = ?', [sceneId]);
       if (!scene) return;
       target = scene.id;
+      cue = scene.timestamp_id ?? null;
     }
     await run('UPDATE scene_state SET active_scene_id = ? WHERE id = 1', [target]);
     await emitStageUpdated();
+
+    // **A Scene that cues a Timestamp plays it on activation (decided, new).**
+    //
+    // Two decisions taken deliberately and worth not re-litigating:
+    //
+    //  - **Every activation fires it**, including re-activating the Scene that
+    //    is already live. Activating is a deliberate GM action, so it doubles as
+    //    a way to re-play the beat without opening the Timestamp dialog.
+    //  - **It does NOT touch `is_current`.** The star is the GM's own marker for
+    //    where the campaign sits and stays theirs to move; cueing a beat from a
+    //    backdrop is a presentation act, not a statement about the timeline.
+    //
+    // Emitted after the stage so a client has the new backdrop before the card
+    // fades over it, and through the same `io.emit` of date/subtext only that
+    // `stage:timestamp_play` uses — never the id — so this adds no new way for a
+    // Player to learn anything about the list.
+    if (cue != null) {
+      const ts = await one('SELECT date, subtext FROM scene_timestamps WHERE id = ?', [cue]);
+      if (ts) io.emit('stage:timestamp_played', { date: ts.date, subtext: ts.subtext });
+    }
   });
 
   // Summoning (Phase 5) — the payload is deliberately just { scenePictureId
