@@ -214,6 +214,15 @@ async function stampImageHash(kind, id) {
   const rowId = Number(id);
   if (!spec || !Number.isInteger(rowId)) return;
   const row = await one(`SELECT ${spec.data} AS data FROM ${spec.table} WHERE id = ?`, [rowId]);
+  // **A row that borrows its picture must keep the OWNER's hash.** A copied
+  // Scene holds no bytes of its own (scenes.image_source_id), so hashing its
+  // empty data column would overwrite the one value its URL is built from and
+  // point it at a picture that does not exist. Only scenes can be in this
+  // state; every other kind always owns what it shows.
+  if (kind === 'scene' && row?.data == null) {
+    const borrowed = await one('SELECT image_source_id FROM scenes WHERE id = ?', [rowId]);
+    if (borrowed?.image_source_id != null) return;
+  }
   await run(`UPDATE ${spec.table} SET ${spec.hash} = ? WHERE id = ?`, [hashImageData(row?.data), rowId]);
 }
 
@@ -1912,7 +1921,8 @@ async function buildStagePayload() {
   // broadcast went from hundreds of kilobytes to hundreds of bytes.
   const sceneRow = state?.active_scene_id
     ? await one(
-        `SELECT id, name, image_hash, (image_data IS NOT NULL) AS has_image, background_fit
+        `SELECT id, name, image_hash, image_source_id,
+                (image_data IS NOT NULL) AS has_image, background_fit
          FROM scenes WHERE id = ?`,
         [state.active_scene_id]
       )
@@ -1922,9 +1932,11 @@ async function buildStagePayload() {
         id: sceneRow.id,
         name: sceneRow.name,
         background_fit: sceneRow.background_fit,
-        image_url: imageUrl('scene', sceneRow.id, {
+        // A copy's backdrop is served from whichever Scene owns the bytes —
+        // see shapeScene, and scenes.image_source_id for why.
+        image_url: imageUrl('scene', sceneRow.image_source_id ?? sceneRow.id, {
           hash: sceneRow.image_hash,
-          present: sceneRow.has_image,
+          present: sceneRow.has_image || sceneRow.image_source_id != null,
         }),
       }
     : null;
@@ -2045,6 +2057,27 @@ function emitToGm(event, payload) {
 // it (SceneEditor's own picker).
 const publicScene = ({ timestamp_id: _cue, ...rest }) => rest;
 
+// **A Scene's backdrop may live on ANOTHER Scene's row (see scenes.image_source_id).**
+//
+// A copy holds no bytes — only the hash, the mime type and a pointer at the
+// owner — so its URL has to be built from the OWNER's id and its own hash.
+// `withImageUrl` cannot know that (it is shared by ten kinds and only ever
+// looks at the row it is handed), so scenes get this wrapper instead, and every
+// path that ships a Scene row goes through it.
+//
+// No extra query, deliberately: the hash rides on the copy's own row, so the
+// URL is `image_source_id ?? id` plus that hash and nothing needs looking up.
+// That matters because the scenes list is read on every Scene-drawer open.
+const shapeScene = (row) => {
+  if (!row) return row;
+  const shaped = withImageUrl('scene')(row);
+  if (row.image_source_id == null) return shaped;
+  // `present: true` rather than `Boolean(image_data)`: a copy's own data column
+  // is empty by design, and the picture very much exists.
+  const url = imageUrl('scene', row.image_source_id, { hash: row.image_hash, present: true });
+  return url ? { ...shaped, image_url: url } : shaped;
+};
+
 function emitScene(event, row) {
   if (!row) return;
   const stripped = publicScene(row);
@@ -2159,7 +2192,7 @@ app.get('/api/scenes', wrap(async (req, res) => {
   // design (GM-managed, not GM-secret). Only the `timestamp_id` field is
   // withheld; see publicScene.
   const viewer = viewerFromQuery(req.query);
-  const rows = (await all('SELECT * FROM scenes ORDER BY name')).map(withImageUrl('scene'));
+  const rows = (await all('SELECT * FROM scenes ORDER BY name')).map(shapeScene);
   res.json(viewer?.role === 'gm' ? rows : rows.map(publicScene));
 }));
 
@@ -4976,7 +5009,7 @@ io.on('connection', (socket) => {
     }
     const result = await run('INSERT INTO scenes (name, folder_id) VALUES (?, ?)', [sceneName, folder]);
     await stampImageHash('scene', Number(result.lastInsertRowid));
-    emitScene('scene:created', withImageUrl('scene')(await one('SELECT * FROM scenes WHERE id = ?', [Number(result.lastInsertRowid)])));
+    emitScene('scene:created', shapeScene(await one('SELECT * FROM scenes WHERE id = ?', [Number(result.lastInsertRowid)])));
   });
 
   // The name is always sent; a background is only sent when the file picker
@@ -5006,16 +5039,19 @@ io.on('connection', (socket) => {
           : ((await one('SELECT id FROM scene_timestamps WHERE id = ?', [timestampId]))?.id ?? null);
     }
     await run('UPDATE scenes SET timestamp_id = ? WHERE id = ?', [cue, scene.id]);
+    // Giving a copy its own backdrop ends the borrowing: it now holds real
+    // bytes, and leaving the pointer set would have shapeScene serve the old
+    // Scene's picture over the new one.
     await run(
       imageData
-        ? `UPDATE scenes SET name = ?, background_fit = ?, image_data = ?, image_mime_type = ?, ${CROP_COLUMNS} WHERE id = ?`
+        ? `UPDATE scenes SET name = ?, background_fit = ?, image_data = ?, image_mime_type = ?, image_source_id = NULL, ${CROP_COLUMNS} WHERE id = ?`
         : 'UPDATE scenes SET name = ?, background_fit = ? WHERE id = ?',
       imageData
         ? [sceneName, fit, String(imageData), String(imageMimeType ?? 'image/jpeg'), ...cropValues(payload), scene.id]
         : [sceneName, fit, scene.id]
     );
     await stampImageHash('scene', scene.id);
-    emitScene('scene:updated', withImageUrl('scene')(await one('SELECT * FROM scenes WHERE id = ?', [scene.id])));
+    emitScene('scene:updated', shapeScene(await one('SELECT * FROM scenes WHERE id = ?', [scene.id])));
     // The active Scene's own background may have just changed — the stage
     // carries a copy of that row, not a live join, so it needs its own push.
     const state = await one('SELECT active_scene_id FROM scene_state WHERE id = 1');
@@ -5032,13 +5068,78 @@ io.on('connection', (socket) => {
       if (folder) target = folder.id;
     }
     await run('UPDATE scenes SET folder_id = ? WHERE id = ?', [target, scene.id]);
-    emitScene('scene:updated', withImageUrl('scene')({ ...scene, folder_id: target }));
+    emitScene('scene:updated', shapeScene({ ...scene, folder_id: target }));
+  });
+
+  // **Copying a Scene shares the backdrop instead of duplicating it (decided,
+  // new).** Only the picture and the name travel — `name (copy)`, same folder,
+  // same background fit and thumbnail crop, which are how that picture is
+  // framed rather than separate content. The prepared roster, the GM Notes,
+  // the drawings and the Timestamp cue are deliberately NOT copied: a copy is
+  // a fresh stage wearing the same backdrop.
+  //
+  // The bytes are shared rather than written twice — see scenes.image_source_id
+  // in db.js. Backdrops are the largest thing this schema stores, so a copy
+  // costs a row, not a picture.
+  on('scene:copy', async ({ sceneId }) => {
+    if (socket.data.identity?.role !== 'gm') return;
+    const scene = await one('SELECT * FROM scenes WHERE id = ?', [sceneId]);
+    if (!scene) return;
+    // Point at the OWNER, never at another copy: copying a copy still lands one
+    // hop from the bytes, so no chain can form to walk or to break.
+    const owner = scene.image_data != null ? scene.id : scene.image_source_id;
+    const result = await run(
+      `INSERT INTO scenes (name, folder_id, background_fit, image_mime_type, image_hash,
+                           image_source_id, crop_x, crop_y, crop_w, crop_h)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        `${scene.name} (copy)`,
+        scene.folder_id,
+        scene.background_fit,
+        scene.image_mime_type,
+        scene.image_hash,
+        owner ?? null,
+        scene.crop_x,
+        scene.crop_y,
+        scene.crop_w,
+        scene.crop_h,
+      ]
+    );
+    emitScene(
+      'scene:created',
+      shapeScene(await one('SELECT * FROM scenes WHERE id = ?', [Number(result.lastInsertRowid)]))
+    );
   });
 
   on('scene:delete', async ({ sceneId }) => {
     if (socket.data.identity?.role !== 'gm') return;
     const scene = await one('SELECT * FROM scenes WHERE id = ?', [sceneId]);
     if (!scene) return;
+    // **Hand the backdrop on before deleting the Scene that owns it.** Copies
+    // borrow these bytes (scenes.image_source_id); the column's own
+    // ON DELETE SET NULL would leave every one of them holding a hash and no
+    // picture. So one dependent inherits the bytes and the rest are repointed
+    // at it — deleting an original never blanks its copies, and the picture is
+    // still stored exactly once.
+    if (scene.image_data != null) {
+      const heirs = await all('SELECT id FROM scenes WHERE image_source_id = ?', [scene.id]);
+      if (heirs.length) {
+        const [heir, ...rest] = heirs;
+        await run(
+          'UPDATE scenes SET image_data = ?, image_mime_type = ?, image_hash = ?, image_source_id = NULL WHERE id = ?',
+          [scene.image_data, scene.image_mime_type, scene.image_hash, heir.id]
+        );
+        if (rest.length) {
+          await writeMany(
+            rest.map((r) => ['UPDATE scenes SET image_source_id = ? WHERE id = ?', [heir.id, r.id]])
+          );
+        }
+        // Their URLs just changed owner, so every client needs the new one.
+        for (const r of [heir, ...rest]) {
+          emitScene('scene:updated', shapeScene(await one('SELECT * FROM scenes WHERE id = ?', [r.id])));
+        }
+      }
+    }
     const state = await one('SELECT active_scene_id FROM scene_state WHERE id = 1');
     const wasActive = state?.active_scene_id === scene.id;
     // Explicit, matching every other delete in this file. scene_state's own
@@ -5423,6 +5524,27 @@ io.on('connection', (socket) => {
       `UPDATE ${spec.table} SET ${spec.data} = ?, ${spec.mime} = ?, ${spec.hash} = ? WHERE id = ?`,
       [data, sanitizeImageMime(imageMimeType, 'image/webp'), hashImageData(data), rowId]
     );
+    // **Carry the new hash to anything borrowing this picture.** A copied Scene
+    // stores the owner's hash on its own row (scenes.image_source_id) and its
+    // URL is built from it, so re-encoding the owner without this leaves every
+    // copy pointing at a hash that no longer matches. The picture would still
+    // be served — `/api/img` recomputes the true hash — but only with
+    // `no-store`, so it would never be cached again, which is the opposite of
+    // what the re-encode tool is for.
+    if (kind === 'scene') {
+      const heirs = await all('SELECT id FROM scenes WHERE image_source_id = ?', [rowId]);
+      if (heirs.length) {
+        await writeMany(
+          heirs.map((h) => [
+            'UPDATE scenes SET image_hash = ?, image_mime_type = ? WHERE id = ?',
+            [hashImageData(data), sanitizeImageMime(imageMimeType, 'image/webp'), h.id],
+          ])
+        );
+        for (const h of heirs) {
+          emitScene('scene:updated', shapeScene(await one('SELECT * FROM scenes WHERE id = ?', [h.id])));
+        }
+      }
+    }
     socket.emit('image:reencoded', { kind, id: rowId, was: existing.bytes, now: data.length });
   });
 

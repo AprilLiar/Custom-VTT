@@ -99,6 +99,20 @@ export default function SceneEditor({ scene, onClose }) {
     });
   };
 
+  // **Copy: the picture and the name, nothing else (decided).** Not the
+  // prepared roster, the Notes, the drawings or the Timestamp cue — a copy is a
+  // fresh stage wearing the same backdrop. The server shares the artwork rather
+  // than storing a second copy of it (scenes.image_source_id), so this costs a
+  // row rather than a picture however many times it is used.
+  //
+  // Closes immediately: the new Scene arrives on `scene:created` and the drawer
+  // behind this dialog is where you would go to open it, so leaving this editor
+  // open on the ORIGINAL would only be confusing about which one you just made.
+  const copy = () => {
+    socket.emit('scene:copy', { sceneId: scene.id });
+    onClose();
+  };
+
   const remove = () => {
     if (window.confirm(`Delete ${scene.name}? This cannot be undone.`)) {
       socket.emit('scene:delete', { sceneId: scene.id });
@@ -179,9 +193,18 @@ export default function SceneEditor({ scene, onClose }) {
         >
           Save
         </button>
-        <button type="button" onClick={remove} className="text-xs font-semibold text-red-500 hover:text-red-400">
-          Delete Scene
-        </button>
+        <div className="flex items-center justify-between gap-3">
+          <button
+            type="button"
+            onClick={copy}
+            className="text-xs font-semibold text-zinc-400 hover:text-brand-300"
+          >
+            Duplicate Scene
+          </button>
+          <button type="button" onClick={remove} className="text-xs font-semibold text-red-500 hover:text-red-400">
+            Delete Scene
+          </button>
+        </div>
       </form>
     </DialogShell>
   );

@@ -212,6 +212,14 @@ scenes = await jf('/api/scenes');
 const tavern = scenes.find((s) => s.name === `Tavern ${stamp}`);
 check("the GM's scene:create landed", Boolean(tavern), JSON.stringify(scenes));
 
+// **State the precondition rather than inheriting it.** The active Scene is a
+// singleton that outlives a run — and this very script leaves one set — so
+// without this the check below sees a Scene left active by the LAST run and
+// reads it as the Player's refused activate having worked. A false alarm that
+// only ever appears on the second run, which is the worst kind.
+gm.emit('scene:activate', { sceneId: null });
+await sleep(300);
+
 aliceSock.emit('scene:activate', { sceneId: tavern.id });
 await sleep(300);
 let stage = await jf('/api/stage');
@@ -378,6 +386,10 @@ check(
   JSON.stringify(bobSock.stages.at(-1))
 );
 carolSock.close();
+
+// Leave the stage as we found it, so the next run of anything starts clean.
+gm.emit('scene:activate', { sceneId: null });
+await sleep(250);
 
 console.log(failures === 0 ? '\nALL PASSED' : `\n${failures} FAILED`);
 gm.close();
