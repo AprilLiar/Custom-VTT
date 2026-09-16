@@ -1511,6 +1511,24 @@ export async function initDb() {
   // regardless — see ScenePage.jsx's own `BACKDROP_FIT_CLASS` for how).
   await ensureColumn('scenes', 'background_fit', "TEXT NOT NULL DEFAULT 'cover'");
 
+  // **A copied Scene SHARES its backdrop rather than storing a second copy of
+  // it (decided, new).** Self-referential: a copy holds NULL `image_data` and
+  // points at whichever Scene actually owns the bytes, keeping its own
+  // `image_hash`/`image_mime_type`/crop so its URL is the owner's id plus the
+  // same content hash — one row of bytes in the database, one cached fetch in
+  // the browser, however many copies exist.
+  //
+  // Backdrops are the largest thing this schema stores (see the whole Hosting
+  // cost section: they *are* the 6GB), so duplicating them per copy is the one
+  // thing this feature must not do.
+  //
+  // **Always points at the OWNER, never at another copy.** `scene:copy`
+  // resolves `source.image_source_id ?? source.id`, so copying a copy still
+  // points one hop at the bytes and no chain can form to walk or to break.
+  // `ON DELETE SET NULL` is the backstop only — `scene:delete` promotes the
+  // bytes to a dependent first, so a deleted original never blanks its copies.
+  await ensureColumn('scenes', 'image_source_id', 'INTEGER REFERENCES scenes(id) ON DELETE SET NULL');
+
   // Singleton: which Scene is currently active, same shape as combat_state's
   // own id=1 row.
   ddl(`

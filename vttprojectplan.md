@@ -4958,6 +4958,58 @@ straight through is already "the full version," with nothing to undo. Verified l
 portrait regardless of a crop set on it, named "Profile," a Player may copy their own, may NOT copy
 another character's, the GM may copy anyone's, and a character with no portrait yields nothing.
 
+**Copying a Scene shares its backdrop rather than duplicating it (decided, new).**
+`scene:copy` makes `<name> (copy)` in the same folder, carrying the picture, the background
+fit and the thumbnail crop — the last two being how that picture is *framed* rather than
+separate content. **Nothing else travels**: not the prepared roster, the GM Notes, the
+drawings, or the Timestamp cue. A copy is a fresh stage wearing the same backdrop.
+
+- **`scenes.image_source_id` (nullable, self-referential).** A copy stores NULL `image_data`
+  and points at whichever Scene owns the bytes, keeping its own `image_hash`/
+  `image_mime_type`, so its URL is the owner's id plus the same content hash: **one row of
+  bytes in the database and one cached fetch in the browser, however many copies exist.**
+  Backdrops are the largest thing this schema stores — they *are* the 6GB the whole Hosting
+  cost section is about — so duplicating one per copy is the single thing this feature must
+  not do.
+- **Always one hop.** `scene:copy` resolves `source.image_data != null ? source.id :
+  source.image_source_id`, so copying a copy still points straight at the bytes. No chain can
+  form, therefore none can be walked or broken.
+- **`shapeScene` is the one resolver, and every path that ships a Scene row goes through it.**
+  `withImageUrl` cannot do this itself — it is shared by ten kinds and only ever sees the row
+  it is handed — so scenes get a wrapper that rebuilds `image_url` from the owner's id. It
+  needs no extra query, because the hash rides on the copy's own row; that matters because
+  the scenes list is read on every drawer open. `buildStagePayload` resolves the same way
+  from its own SELECT.
+- **Three writes had to learn about borrowing, and each would have been silent:**
+  - `stampImageHash` would have hashed a copy's empty data column and overwritten the one
+    value its URL is built from, pointing it at a picture that does not exist.
+  - `scene:update` with a new backdrop now clears `image_source_id` — the copy owns bytes
+    now, and leaving the pointer would serve the old Scene's picture over the new one.
+  - `image:reencode` carries the new hash to every borrower. The picture would still be
+    served (`/api/img` recomputes the true hash) but only with `no-store`, so it would never
+    be cached again — the opposite of what the re-encode tool exists for.
+- **Deleting the owner promotes rather than orphans.** The column's own `ON DELETE SET NULL`
+  would leave every copy holding a hash and no picture, so `scene:delete` hands the bytes to
+  one dependent, repoints the rest at it, and re-broadcasts them. A deleted original never
+  blanks its copies, and the picture is still stored exactly once.
+- **Client:** a "Duplicate Scene" button in `SceneEditor` beside Delete, closing the dialog on
+  use — the new Scene arrives on `scene:created`, and leaving the editor open on the ORIGINAL
+  would only confuse which one was just made.
+- **`scripts/playtest-scene-copy.mjs`** (17 checks) pins the property that cannot be seen by
+  looking: it asserts against `/api/image-inventory`, which lists only rows that actually hold
+  bytes, so a copy that silently duplicated them would fail. Also covers copy-of-a-copy, that
+  no Notes or Timestamp cue travel, and the promote-on-delete — including that the picture is
+  *still* stored exactly once afterwards.
+
+**Two playtests were not idempotent, and both were found by running them twice (bugfix).**
+`playtest-scene` left a Scene active and then failed its own next run — the leftover made a
+Player's correctly-refused `scene:activate` look like it had worked, a false alarm that only
+ever appeared on the second run. It now clears the active Scene before that check and again at
+the end. `playtest-scene-copy` looked its teardown up by name, and two copies of one Scene
+share a name, so it deleted the same row twice and leaked the other; it tracks ids instead.
+Same class as the `repeat_mode` leak in `playtest-audio`: **a singleton that outlives a run is
+a precondition to state, not to inherit.**
+
 ### Phase 4 (implemented) — Scenes, activation, and the force-navigate cut
 
 `scene_folder:create/rename/delete` and `scene:create/update/set_folder/delete`, structurally
