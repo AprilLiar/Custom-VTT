@@ -645,6 +645,34 @@ The phase that moves the Turso number, because the boot pull **is** the database
   to reclaim now that Turso owns the pages. The whole block is still wrapped: a world that
   cannot be tidied is still a world that can be played.
 
+**A move may not be pushed more than ONE round into the future (decided, new).** A
+cascade that shoves a declaration into the NEXT round is an ordinary postponement — it keeps
+its place at the spot the cascade put it and hands its Stamina back, which is the existing
+`leavesRound` rule. A cascade that would shove it TWO rounds out is not a postponement: the
+player declared it for this round's shape, and two rounds of that shape have changed
+underneath it. Those are **refunded in full and taken off the board**.
+
+- **`pushHorizon` (`server/combatDamage.js`, unit-tested) is the single rule**, returning
+  `'this-round' | 'next-round' | 'too-far'`. Both push paths classify through it, so the
+  boundary is pinned by test rather than by two similar-looking inequalities in two files. It
+  asks `overlapsRoundWindow` once per window — "is it in this round" already has exactly one
+  answer everywhere in this codebase, and the next round is that same question one window
+  along. A move whose FOOTPRINT still reaches back into the next round is `'next-round'`, not
+  too far: some of it genuinely happens within one round of where it was declared.
+- **Both push paths, not just the obvious one.** The Block/conflict cascade got the new branch
+  in `resolveMoveConflict`; the **grapple chain had no round awareness at all** and could shove
+  a queued move arbitrarily far down the Tic strip. It reads its window from
+  `pair_round_resolutions` — the same source `planCascadeFor` uses, because `combat_pairs`
+  carries the round's START but not its LENGTH and so cannot answer the question alone. (Using
+  `combat_pairs` was a first attempt, and it failed loudly: the column does not exist, the query
+  threw, and `playtest-grapple-chain` went from green to nine failures.)
+- **`scripts/playtest-push-cap.mjs`** drives the real `combat:resolve_move_conflict` handler on
+  real rows, with the pause written directly so `blockedUntil` lands two rounds out — a
+  two-round push is not reachable from a natural fight. It proves the row is deleted AND that
+  the Stamina comes back, and it drains the pool first, because `adjustStamina` clamps at
+  `max_stamina` and a refund into a nearly-full pool passes a naive assertion for the wrong
+  reason (observed: a 3-point refund reading as +1).
+
 **A derived field can be silently un-derived by a spread (bugfix — `attack_targets.map
 is not a function`).** `withImageUrl` returns `{ ...rest, image_url }`, where `rest` is
 the **whole row** minus the three image columns. `attachInteractions` spread it LAST,

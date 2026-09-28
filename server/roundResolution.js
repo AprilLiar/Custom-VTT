@@ -68,6 +68,7 @@ import {
   selectDefenseMove,
   resolveBlockStamina,
   planCascade,
+  pushHorizon,
   resolveNoDamageOutcome,
   DEFAULT_SUCCESS_THRESHOLD,
 } from './combatDamage.js';
@@ -3077,7 +3078,49 @@ async function declareChainedMove(io, { row, chained, tic, emitEvent, chainRollB
     chainedFootprintTics: footprint,
     laterMoves,
   });
+  // **The same one-round push cap the Block/conflict cascade applies (decided,
+  // new).** This path had no round awareness at all: a chain could shove a
+  // queued move arbitrarily far down the Tic strip, and a move two rounds out
+  // is one that is never going to happen. Its own window is read here rather
+  // than assumed, because a chain resolves mid-round and the pair it belongs to
+  // is the only thing that knows where that round starts.
+  // Read from `pair_round_resolutions`, the same source `planCascadeFor` uses —
+  // `combat_pairs` carries the round's START but not its LENGTH, so it cannot
+  // answer "which round is this Tic in" on its own.
+  const chainWindow = await one(
+    `SELECT prr.round_start_tic AS roundStartTic, prr.round_length AS roundLength
+     FROM combat_participants cp
+     JOIN pair_round_resolutions prr ON prr.pair_index = cp.pair_index
+     WHERE cp.character_id = ?
+     ORDER BY prr.id DESC LIMIT 1`,
+    [row.characterId]
+  );
   for (const s of shifted) {
+    const horizon = chainWindow
+      ? pushHorizon({
+          placementTic: s.to,
+          footprintTics: laterMoves.find((m) => m.declaredMoveId === s.declaredMoveId)?.footprintTics ?? 0,
+          roundStartTic: chainWindow.roundStartTic,
+          roundLength: chainWindow.roundLength,
+        })
+      : 'this-round';
+    if (horizon === 'too-far') {
+      const pushed = await one(
+        `SELECT dm.stamina_committed, dm.stamina_committed_amount, m.name AS move_name
+         FROM declared_moves dm JOIN moves m ON m.id = dm.move_id WHERE dm.id = ?`,
+        [s.declaredMoveId]
+      );
+      await run('DELETE FROM declared_moves WHERE id = ?', [s.declaredMoveId]);
+      const back = pushed?.stamina_committed ? pushed.stamina_committed_amount ?? 0 : 0;
+      if (back) {
+        await adjustStamina(io, row.characterId, back, {
+          emitEvent,
+          tic,
+          reason: `${pushed?.move_name ?? 'a queued move'} pushed too far to happen`,
+        });
+      }
+      continue;
+    }
     await run('UPDATE declared_moves SET placement_tic = ?, reveal_tic = reveal_tic + ? WHERE id = ?', [
       s.to,
       s.to - s.from,
@@ -5691,6 +5734,36 @@ async function resolveMoveConflict(pairIndex, { declaredMoveId, choice }, io) {
       [shift.declaredMoveId]
     );
     if (!row) continue;
+
+    // **More than one round out is refused outright (decided, new).** A shift
+    // into the NEXT round is an ordinary postponement, handled below. A shift
+    // two rounds out is a move that is never going to happen — the player
+    // declared it for this round's shape, and two rounds of that shape have
+    // changed underneath it. Refunded in full and taken off the board, rather
+    // than parked somewhere nobody will ever reach.
+    if (shift.horizon === 'too-far') {
+      const back = row.stamina_committed ? row.stamina_committed_amount ?? 0 : 0;
+      await run('DELETE FROM declared_moves WHERE id = ?', [row.id]);
+      if (back) {
+        await adjustStamina(io, characterId, back, {
+          emitEvent,
+          tic: pending.tic,
+          reason: `${row.move_name} pushed too far to happen`,
+        });
+      }
+      applied.push({
+        declaredMoveId: row.id,
+        moveName: labels.get(row.id)?.moveName ?? row.move_name,
+        from: shift.from,
+        to: shift.to,
+        revealTic: null,
+        leftRound: true,
+        droppedTooFar: true,
+        staminaRefunded: back,
+      });
+      continue;
+    }
+
     const { revealTic } = computeMoveFootprint({
       placementTic: shift.to,
       startupTics: row.startup_tics,
