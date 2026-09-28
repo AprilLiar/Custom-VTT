@@ -90,6 +90,7 @@ import {
 import { effectiveFrames, idleStaminaRegenRate } from './perkAutomations.js';
 import {
   clearAllPerkState, perkAllowsRevealedDetail, perkStaminaCostDeltas, perkMoveFrameDeltas,
+  effectiveFramesFor,
   perkWeaponOffers, takeWeaponOffer, perkSeesAttackHeight, perkSeesFeints,
   perkBypassesStyleRequirement, perkRollBonusTerms,
 } from './perkEngine.js';
@@ -7515,11 +7516,18 @@ io.on('connection', (socket) => {
     //
     // The floor only, exactly like every other rule here — the round's own
     // start Tic still wins, so this can never reach back into a previous round.
+    // **This character's own frames, not the shared template's (bugfix).** Speed
+    // mastery, Osu! and any GM-granted per-character override all live here;
+    // the picker has always shown them and the board never used them. Every
+    // Tic computed below — the placement floor, the reveal, the footprint the
+    // engine later resolves — comes from these.
+    const frames = await effectiveFramesFor(character.id, move);
+
     const previousBlockedUntilTic = last
       ? placementFloorAfterTrip({
           blockedUntilTic: last.blocked_until_tic,
           tripRecoveryTics: last.trip_recovery_tics ?? 0,
-          startupTics: move.startup_tics,
+          startupTics: frames.startup_tics,
           offTheGround: carriesOffTheGroundTag(declaredTagNames),
         })
       : null;
@@ -7540,9 +7548,9 @@ io.on('connection', (socket) => {
         : Math.max(requestedPlacementTic, minPlacementTic);
     const { revealTic } = computeMoveFootprint({
       placementTic,
-      startupTics: move.startup_tics,
-      activeTics: move.active_tics,
-      recoveryTics: move.recovery_tics,
+      startupTics: frames.startup_tics,
+      activeTics: frames.active_tics,
+      recoveryTics: frames.recovery_tics,
     });
     const countRow = await one(
       'SELECT COUNT(*) AS count FROM declared_moves WHERE character_id = ? AND round_number = ?',
@@ -7600,9 +7608,13 @@ io.on('connection', (socket) => {
       recoveryTics: move.recovery_tics,
     });
     await run(
-      `INSERT INTO declared_moves (character_id, move_id, round_number, queue_order, placement_tic, reveal_tic, appendage_choice, effective_attack_targets, attack_target_source, feint_masked, target_character_id, trip_recovery_tics)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'move', ?, ?, ?)`,
-      [character.id, move.id, pair.round_number, queueOrder, placementTic, revealTic, storedAppendageChoice, JSON.stringify(effectiveAttackTargets), feintMasked ? 1 : 0, storedTargetId, groundingTripTics]
+      `INSERT INTO declared_moves (character_id, move_id, round_number, queue_order, placement_tic, reveal_tic, appendage_choice, effective_attack_targets, attack_target_source, feint_masked, target_character_id, trip_recovery_tics, effective_startup_tics, effective_active_tics, effective_recovery_tics)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'move', ?, ?, ?, ?, ?, ?)`,
+      [character.id, move.id, pair.round_number, queueOrder, placementTic, revealTic, storedAppendageChoice, JSON.stringify(effectiveAttackTargets), feintMasked ? 1 : 0, storedTargetId, groundingTripTics,
+       // Frozen with the declaration, like effective_attack_targets above: the
+       // engine resolves this row against the frames it was thrown with, not
+       // whatever the character's Perks say by the time it lands.
+       frames.startup_tics, frames.active_tics, frames.recovery_tics]
     );
     // Every connected socket gets its own tailored view via emitCombatUpdated
     // (see isRevealedToViewer/mapDeclaredMovesForViewer) — whoever's logged

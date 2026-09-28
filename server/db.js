@@ -2355,6 +2355,32 @@ export async function initDb() {
   // every other flat bonus in the game multiplies across dice, and a +5 in
   // `mod` on a three-die Roll would quietly be worth +15.
   await ensureColumn('declared_moves', 'chain_roll_bonus', 'INTEGER NOT NULL DEFAULT 0');
+
+  // **The frames this move was actually declared with (bugfix — "Speed mastery
+  // changes the Startup frames in the character sheet, but in actual combat
+  // mathematics it did not").**
+  //
+  // A character's real frames are the template's plus their own
+  // `character_move_overrides` plus any Perk `moveFrameDelta` (Speed mastery,
+  // Osu!). `getMovesFor` was the only place that folded those together — it
+  // publishes them as `effective_*_tics` beside the untouched template, and the
+  // sheet and the declare picker render that field. Every combat path, though,
+  // read the raw `moves` row: the picker promised a footprint and the engine
+  // resolved a different one.
+  //
+  // Snapshotted onto the declaration rather than joined at read time, exactly
+  // like `effective_attack_targets` above and for the same two reasons: a move
+  // already on the board is a fact, so a Perk granted or revoked mid-round must
+  // not retroactively move frames that have already been resolved against; and
+  // the engine reads these columns from a dozen queries, none of which should
+  // have to know what a Perk is.
+  //
+  // NULL means "declared before this existed", and every read COALESCEs back to
+  // the template — the pre-existing behaviour, which is the correct reading for
+  // a row that predates the column.
+  for (const seg of ['startup', 'active', 'recovery']) {
+    await ensureColumn('declared_moves', `effective_${seg}_tics`, 'INTEGER');
+  }
   await ensureColumn(
     'declared_moves',
     'attack_target_source',

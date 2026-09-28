@@ -1399,6 +1399,39 @@ comparison was measuring the refund plus whatever the round did. It asserts the 
 which is what the seam register is for — and one needed a genuinely new question asked of the payload.
 
 - **Path To Mastery: Speed** — "all your moves gain -1 to Startup", on the existing `moveFrameDelta` seam.
+
+  **Bugfix (reported): the Perk changed the sheet and not the fight.** `getMovesFor` was the
+  only place that folded `character_move_overrides` and `moveFrameDelta` together. It publishes
+  the result as `effective_*_tics` **beside** the untouched template — the sheet and the declare
+  picker render that field and were always right — but `move:declare` and every one of the
+  engine's ~22 frame queries read the raw `moves` row. The picker promised a footprint and the
+  engine resolved a different one. Speed mastery is just the easiest way to see it: a GM-granted
+  per-character override and **Osu!** were wrong in exactly the same way, and had been since
+  each shipped.
+
+  - **The frames are SNAPSHOTTED onto the declaration**, not joined at read time:
+    `declared_moves.effective_{startup,active,recovery}_tics`, written by `move:declare` and by
+    the grapple chain's own `declareChainedMove`. Same choice as `effective_attack_targets` and
+    for the same two reasons — a move already on the board is a fact, so a Perk granted or
+    revoked mid-round must not retroactively move frames that have already been resolved
+    against; and the engine reads these from a dozen queries, none of which should have to know
+    what a Perk is.
+  - **Every engine read is `COALESCE(dm.effective_x_tics, m.x_tics)`.** NULL means "declared
+    before this column existed", and the fallback is the template — precisely the old behaviour,
+    which is the right reading for such a row.
+  - **`effectiveFramesFor` lives in `perkEngine.js`**, not index.js: `roundResolution.js` needs
+    it too, and importing index.js boots an HTTP server. It asks the two questions that matter
+    rather than reusing `getMovesFor`, which is the heavy per-character builder — declaring is
+    the action a player is sitting there waiting on.
+  - **`scripts/playtest-effective-frames.mjs`** pins it where it actually broke: it compares the
+    sheet's `effective_startup_tics` against the `reveal_tic` the declare handler really wrote,
+    for a Perk holder and a fighter without the Perk, plus a GM-granted `-2` override, plus that
+    the stored row carries its own frames. Every function involved was individually correct —
+    the only place the disagreement existed was the row, so only a live playtest could see it.
+  - Verified against a **fresh** database that the 45 rewritten SQL references change nothing
+    else: baseline and fixed produce identical results across the engine playtests. (Two —
+    `playtest-grapple-engine` and `playtest-grapple-minigame` — fail *identically before and
+    after*, so they are pre-existing and untouched here.)
   **All** moves, not all attacks: a guard that comes up a Tic sooner is the same mastery as a punch that
   lands a Tic sooner, and the Perk does not qualify itself. `effectiveFrames` already clamps each segment
   to `0..FRAME_MAX`, so a 1-Startup move goes to 0 and no further — it comes out the instant it is placed,
