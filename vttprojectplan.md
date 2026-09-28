@@ -492,6 +492,65 @@ and the arithmetic that made it a bad fit (bootstrap cost x cold starts per day)
 the first day and never done. **Before adopting a cache, price the cache miss and count how often it
 happens.**
 
+## Action latency — measured, not estimated (decided, new)
+
+Reported twice, most recently as "even on perfect internet I experience a 3 sec delay between
+making an action and seeing the change". The earlier round-trip work (Phases 0-5, now reversed
+— see Database round-trips) was argued from **query counts**, and the Phase 5 note already
+records why that was the wrong unit. This is the right one.
+
+**Wall time ≈ sequential depth × round trip.** Queries issued together cost one trip; queries
+issued one after another cost one trip each. `readMany`/`writeMany` exist to turn the second
+into the first. So the number that matters is the **wave** count — a wave being a group of
+statements that were in flight at the same time, which makes the wave count the sequential
+depth exactly.
+
+**`server/dbProfile.js` measures it**, off unless `DOGFIGHT_PROFILE=1`, with
+`DOGFIGHT_TRACE=<event>` printing one action's waves in order. `scripts/profile-actions.mjs`
+drives the actions a player waits on and prints the table; `GET /api/profile?role=gm&rtt=N`
+reads it back. Measured against a local file, so the DEPTH is exact and only the multiplier is
+unknown — which is the right split, because the multiplier is the one thing a local run cannot
+know and `scripts/latency.mjs` measures against the deployment.
+
+| action | queries | **waves** | @40ms | @120ms | @200ms |
+| --- | --- | --- | --- | --- | --- |
+| `combat:character_done_declaring` | 114 | **78** | 3.1s | 9.4s | **15.7s** |
+| `combat:next_round` | 32 | **17** | 0.7s | 2.0s | 3.4s |
+| `move:declare` | 29 | **15** | 0.6s | 1.8s | **3.0s** |
+| `GET /api/combat` | 22 | **11** | 0.4s | 1.3s | 2.2s |
+| `GET /api/characters/:id` | 17 | **8** | 0.3s | 1.0s | 1.6s |
+| `stamina:adjust` | 2 | **2** | 0.1s | 0.2s | 0.4s |
+
+**`move:declare` at 15 waves is 3.0s at a 200ms round trip — the reported number, exactly.**
+Note what that implies: the delay is not the player's internet, it is the hop between Render
+and Turso, and it is paid fifteen times for one declare.
+
+The `move:declare` trace shows where they go: waves 2-10 are **nine independent reads in nine
+waves** — the pair, leg dice, move tags, character tag overrides, roll slots, the previous
+move, perk definitions, per-character frame overrides, a COUNT — almost none of which depend on
+each other's results. `character_perks` is read **twice** in that stretch (waves 8 and 9),
+once for tags/stamina and once for frame deltas, because `withPerkCache` does not wrap this
+path. Waves 12-15 are the `emitCombatUpdated` broadcast rebuilding the whole combat payload.
+
+**Ranked by payoff, and none of these are speculative — each names its own waves:**
+
+1. **Move the database next to the server.** Zero code, and it divides EVERY row above by the
+   same factor: at 40ms instead of 200ms, declare is 0.6s and the resolution is 3.1s. If the
+   Turso database and the Render service are in different regions this is the whole problem,
+   and `scripts/latency.mjs` against production says so in one number (`readMs`).
+2. **Batch waves 2-10 of `move:declare` into two or three `readMany` groups** (~6 waves saved,
+   1.2s at 200ms). They are already independent; nothing about the logic changes.
+3. **Wrap the declare path in `withPerkCache`** so `character_perks` is read once (~1 wave).
+4. **`combat:character_done_declaring` at 78 waves is the real monster** and needs its own
+   pass: it is the resolution loop, which walks Tics and moves with per-step queries. Worth
+   profiling with `DOGFIGHT_TRACE` before touching, because 78 waves will not come down by
+   guessing at it.
+5. **The broadcast costs 4 waves on every write.** Rebuilding the whole combat payload after
+   each declare is most of `GET /api/combat`'s own depth, paid again.
+
+Not done here — the ask was to investigate and suggest. The profiler is the deliverable that
+makes any of it verifiable afterwards rather than hopeful.
+
 ## Hosting cost — bandwidth and sync (decided, new; phase 1 shipped)
 
 The app went 60% over Render's included bandwidth (7.97GB against 5GB — 4.82GB

@@ -88,6 +88,7 @@ import {
   WEAPON_SLOT,
 } from './weapons.js';
 import { effectiveFrames, idleStaminaRegenRate } from './perkAutomations.js';
+import { profile, profileReport, PROFILING } from './dbProfile.js';
 import {
   clearAllPerkState, perkAllowsRevealedDetail, perkStaminaCostDeltas, perkMoveFrameDeltas,
   effectiveFramesFor,
@@ -1670,7 +1671,11 @@ function cropValues(payload) {
 }
 
 const wrap = (fn) => (req, res) =>
-  fn(req, res).catch((err) => {
+  // Same pass-through profiling as the socket handlers — a REST read like
+  // `GET /api/characters/:id` is exactly the kind of deep await-chain the
+  // report is looking for. Labelled by route rather than by URL so twenty
+  // character fetches aggregate into one row.
+  profile(`${req.method} ${req.route?.path ?? req.path}`, () => fn(req, res)).catch((err) => {
     console.error(`error in ${req.method} ${req.path}:`, err);
     if (!res.headersSent) {
       res.status(500).json({ error: err?.message ? `internal error: ${err.message}` : 'internal error' });
@@ -2102,6 +2107,18 @@ app.get('/api/scene-notes', wrap(async (req, res) => {
 // would be self-defeating. `LENGTH()` on the base64 column is within a few
 // percent of the decoded size (base64 is a fixed 4:3 expansion), which is far
 // more precision than "is this one worth re-encoding" needs.
+// **The profiler's report (see server/dbProfile.js).** Only meaningful with
+// DOGFIGHT_PROFILE=1; otherwise it says so rather than returning an empty table
+// that would read as "nothing is slow".
+app.get('/api/profile', wrap(async (req, res) => {
+  const viewer = viewerFromQuery(req.query);
+  if (viewer?.role !== 'gm') return res.status(403).json({ error: 'GM only' });
+  if (!PROFILING) {
+    return res.json({ profiling: false, hint: 'start the server with DOGFIGHT_PROFILE=1' });
+  }
+  res.type('text/plain').send(profileReport(Number(req.query.rtt) || 200));
+}));
+
 app.get('/api/image-inventory', wrap(async (req, res) => {
   const viewer = viewerFromQuery(req.query);
   if (viewer?.role !== 'gm') return res.status(403).json({ error: 'GM only' });
@@ -3101,7 +3118,9 @@ io.on('connection', (socket) => {
   const on = (event, handler) => {
     socket.on(event, async (payload) => {
       try {
-        await handler(payload ?? {});
+        // `profile` is a pass-through unless DOGFIGHT_PROFILE=1 — see
+        // server/dbProfile.js for what it measures and why waves, not counts.
+        await profile(event, () => handler(payload ?? {}));
       } catch (err) {
         console.error(`error handling ${event}:`, err);
       }

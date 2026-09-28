@@ -2,6 +2,7 @@ import { createClient } from '@libsql/client';
 import { writeSync } from 'node:fs';
 import { IMAGE_COLUMNS, hashImageData } from './images.js';
 import { STYLES, COUNTER_BONUS, DEFEATS } from './ruleset.js';
+import { trackTrip } from './dbProfile.js';
 import { PERK_REGISTRY } from './perks/index.js';
 
 // Turso in production (TURSO_DATABASE_URL + TURSO_AUTH_TOKEN env vars);
@@ -197,7 +198,7 @@ function rowsOf(result) {
 // before the next statement that might depend on it.
 export async function all(sql, args = []) {
   if (ddlQueue?.length) await flushDdl();
-  return rowsOf(await connectDb().execute({ sql, args }));
+  return rowsOf(await trackTrip(() => connectDb().execute({ sql, args }), sql));
 }
 
 export async function one(sql, args = []) {
@@ -207,7 +208,7 @@ export async function one(sql, args = []) {
 
 export async function run(sql, args = []) {
   if (ddlQueue?.length) await flushDdl();
-  return connectDb().execute({ sql, args });
+  return trackTrip(() => connectDb().execute({ sql, args }), sql);
 }
 
 // **Many statements, one round trip (decided, new — Phase 2 of the round-trip
@@ -237,9 +238,11 @@ export async function readMany(statements) {
     const [sql, args = []] = list[0];
     return [await all(sql, args)];
   }
-  const results = await connectDb().batch(
-    list.map(([sql, args = []]) => ({ sql, args })),
-    'read'
+  // One trip for the whole group — which is the entire point of this function,
+  // and why the profiler counts it as one.
+  const results = await trackTrip(
+    () => connectDb().batch(list.map(([sql, args = []]) => ({ sql, args })), 'read'),
+    `batch:read x${list.length}`
   );
   return results.map(rowsOf);
 }
@@ -255,9 +258,9 @@ export async function writeMany(statements) {
     const [sql, args = []] = list[0];
     return [await run(sql, args)];
   }
-  return connectDb().batch(
-    list.map(([sql, args = []]) => ({ sql, args })),
-    'write'
+  return trackTrip(
+    () => connectDb().batch(list.map(([sql, args = []]) => ({ sql, args })), 'write'),
+    `batch:write x${list.length}`
   );
 }
 
