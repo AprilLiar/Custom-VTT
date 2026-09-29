@@ -18,6 +18,7 @@ import {
   cascadeShift,
   planCascade,
   splashSteps,
+  pushHorizon,
 } from '../combatDamage.js';
 
 test('computeHitDamage: every 5 points is 1 Half-Damage step (0.5 damage)', () => {
@@ -511,9 +512,12 @@ test('planCascade carries the shift AND whether the move left the round', () => 
       { declaredMoveId: 11, placementTic: 13, footprintTics: 3 }, // -> 18, entirely next round
     ],
   });
+  // `horizon` rides alongside: 'this-round' is exactly !leavesRound, and the
+  // second move has left this round but only into the NEXT one, which is the
+  // postponement the push cap still permits.
   assert.deepEqual(plan, [
-    { declaredMoveId: 10, from: 12, to: 14, footprintTics: 4, leavesRound: false },
-    { declaredMoveId: 11, from: 13, to: 18, footprintTics: 3, leavesRound: true },
+    { declaredMoveId: 10, from: 12, to: 14, footprintTics: 4, leavesRound: false, horizon: 'this-round' },
+    { declaredMoveId: 11, from: 13, to: 18, footprintTics: 3, leavesRound: true, horizon: 'next-round' },
   ]);
 });
 
@@ -569,4 +573,51 @@ test('splashSteps never returns a negative or a fraction', () => {
   assert.equal(splashSteps(null), 0);
   assert.equal(splashSteps(undefined), 0);
   assert.equal(splashSteps('3'), 1);
+});
+
+// --- pushHorizon: a move may not be pushed more than one round ahead --------
+//
+// Decided rule: a cascade that shoves a declaration into the NEXT round is an
+// ordinary postponement (it keeps its place and hands its Stamina back); one
+// that would shove it two rounds out is a move that is never going to happen,
+// so it is refunded and taken off the board.
+//
+// The boundaries are the whole of it — a move ending exactly on a window's
+// first Tic, and one starting exactly on it — so they are pinned rather than
+// reasoned about at each of the two call sites.
+const WINDOW = { roundStartTic: 100, roundLength: 10 }; // round N = 100..109, N+1 = 110..119
+
+test('pushHorizon: still overlapping this round is this round', () => {
+  assert.equal(pushHorizon({ placementTic: 100, footprintTics: 2, ...WINDOW }), 'this-round');
+  assert.equal(pushHorizon({ placementTic: 109, footprintTics: 0, ...WINDOW }), 'this-round');
+  // Starts inside, ends well past: still this round's move, it just runs over.
+  assert.equal(pushHorizon({ placementTic: 108, footprintTics: 30, ...WINDOW }), 'this-round');
+});
+
+test('pushHorizon: the next round is an allowed postponement', () => {
+  assert.equal(pushHorizon({ placementTic: 110, footprintTics: 2, ...WINDOW }), 'next-round');
+  assert.equal(pushHorizon({ placementTic: 119, footprintTics: 0, ...WINDOW }), 'next-round');
+});
+
+test('pushHorizon: two rounds out is too far, and is refused', () => {
+  assert.equal(pushHorizon({ placementTic: 120, footprintTics: 1, ...WINDOW }), 'too-far');
+  assert.equal(pushHorizon({ placementTic: 500, footprintTics: 1, ...WINDOW }), 'too-far');
+});
+
+test('pushHorizon: a footprint reaching back into a window keeps the move there', () => {
+  // Placed in round N+2 but long enough to still overlap N+1 is NOT too far:
+  // some of it genuinely happens within one round of where it was declared.
+  assert.equal(pushHorizon({ placementTic: 118, footprintTics: 5, ...WINDOW }), 'next-round');
+});
+
+test('planCascade reports the horizon beside the flag it always had', () => {
+  const plan = planCascade({
+    moves: [{ declaredMoveId: 1, placementTic: 100, footprintTics: 2 }],
+    blockedUntil: 125,
+    ...WINDOW,
+  });
+  assert.equal(plan.length, 1);
+  assert.equal(plan[0].to, 125);
+  assert.equal(plan[0].leavesRound, true, 'it certainly left this round');
+  assert.equal(plan[0].horizon, 'too-far', 'and it left by more than one round');
 });

@@ -492,6 +492,65 @@ and the arithmetic that made it a bad fit (bootstrap cost x cold starts per day)
 the first day and never done. **Before adopting a cache, price the cache miss and count how often it
 happens.**
 
+## Action latency — measured, not estimated (decided, new)
+
+Reported twice, most recently as "even on perfect internet I experience a 3 sec delay between
+making an action and seeing the change". The earlier round-trip work (Phases 0-5, now reversed
+— see Database round-trips) was argued from **query counts**, and the Phase 5 note already
+records why that was the wrong unit. This is the right one.
+
+**Wall time ≈ sequential depth × round trip.** Queries issued together cost one trip; queries
+issued one after another cost one trip each. `readMany`/`writeMany` exist to turn the second
+into the first. So the number that matters is the **wave** count — a wave being a group of
+statements that were in flight at the same time, which makes the wave count the sequential
+depth exactly.
+
+**`server/dbProfile.js` measures it**, off unless `DOGFIGHT_PROFILE=1`, with
+`DOGFIGHT_TRACE=<event>` printing one action's waves in order. `scripts/profile-actions.mjs`
+drives the actions a player waits on and prints the table; `GET /api/profile?role=gm&rtt=N`
+reads it back. Measured against a local file, so the DEPTH is exact and only the multiplier is
+unknown — which is the right split, because the multiplier is the one thing a local run cannot
+know and `scripts/latency.mjs` measures against the deployment.
+
+| action | queries | **waves** | @40ms | @120ms | @200ms |
+| --- | --- | --- | --- | --- | --- |
+| `combat:character_done_declaring` | 114 | **78** | 3.1s | 9.4s | **15.7s** |
+| `combat:next_round` | 32 | **17** | 0.7s | 2.0s | 3.4s |
+| `move:declare` | 29 | **15** | 0.6s | 1.8s | **3.0s** |
+| `GET /api/combat` | 22 | **11** | 0.4s | 1.3s | 2.2s |
+| `GET /api/characters/:id` | 17 | **8** | 0.3s | 1.0s | 1.6s |
+| `stamina:adjust` | 2 | **2** | 0.1s | 0.2s | 0.4s |
+
+**`move:declare` at 15 waves is 3.0s at a 200ms round trip — the reported number, exactly.**
+Note what that implies: the delay is not the player's internet, it is the hop between Render
+and Turso, and it is paid fifteen times for one declare.
+
+The `move:declare` trace shows where they go: waves 2-10 are **nine independent reads in nine
+waves** — the pair, leg dice, move tags, character tag overrides, roll slots, the previous
+move, perk definitions, per-character frame overrides, a COUNT — almost none of which depend on
+each other's results. `character_perks` is read **twice** in that stretch (waves 8 and 9),
+once for tags/stamina and once for frame deltas, because `withPerkCache` does not wrap this
+path. Waves 12-15 are the `emitCombatUpdated` broadcast rebuilding the whole combat payload.
+
+**Ranked by payoff, and none of these are speculative — each names its own waves:**
+
+1. **Move the database next to the server.** Zero code, and it divides EVERY row above by the
+   same factor: at 40ms instead of 200ms, declare is 0.6s and the resolution is 3.1s. If the
+   Turso database and the Render service are in different regions this is the whole problem,
+   and `scripts/latency.mjs` against production says so in one number (`readMs`).
+2. **Batch waves 2-10 of `move:declare` into two or three `readMany` groups** (~6 waves saved,
+   1.2s at 200ms). They are already independent; nothing about the logic changes.
+3. **Wrap the declare path in `withPerkCache`** so `character_perks` is read once (~1 wave).
+4. **`combat:character_done_declaring` at 78 waves is the real monster** and needs its own
+   pass: it is the resolution loop, which walks Tics and moves with per-step queries. Worth
+   profiling with `DOGFIGHT_TRACE` before touching, because 78 waves will not come down by
+   guessing at it.
+5. **The broadcast costs 4 waves on every write.** Rebuilding the whole combat payload after
+   each declare is most of `GET /api/combat`'s own depth, paid again.
+
+Not done here — the ask was to investigate and suggest. The profiler is the deliverable that
+makes any of it verifiable afterwards rather than hopeful.
+
 ## Hosting cost — bandwidth and sync (decided, new; phase 1 shipped)
 
 The app went 60% over Render's included bandwidth (7.97GB against 5GB — 4.82GB
@@ -644,6 +703,34 @@ The phase that moves the Turso number, because the boot pull **is** the database
   so the next sync pushed the whole database. It is gone, and there is nothing left for it
   to reclaim now that Turso owns the pages. The whole block is still wrapped: a world that
   cannot be tidied is still a world that can be played.
+
+**A move may not be pushed more than ONE round into the future (decided, new).** A
+cascade that shoves a declaration into the NEXT round is an ordinary postponement — it keeps
+its place at the spot the cascade put it and hands its Stamina back, which is the existing
+`leavesRound` rule. A cascade that would shove it TWO rounds out is not a postponement: the
+player declared it for this round's shape, and two rounds of that shape have changed
+underneath it. Those are **refunded in full and taken off the board**.
+
+- **`pushHorizon` (`server/combatDamage.js`, unit-tested) is the single rule**, returning
+  `'this-round' | 'next-round' | 'too-far'`. Both push paths classify through it, so the
+  boundary is pinned by test rather than by two similar-looking inequalities in two files. It
+  asks `overlapsRoundWindow` once per window — "is it in this round" already has exactly one
+  answer everywhere in this codebase, and the next round is that same question one window
+  along. A move whose FOOTPRINT still reaches back into the next round is `'next-round'`, not
+  too far: some of it genuinely happens within one round of where it was declared.
+- **Both push paths, not just the obvious one.** The Block/conflict cascade got the new branch
+  in `resolveMoveConflict`; the **grapple chain had no round awareness at all** and could shove
+  a queued move arbitrarily far down the Tic strip. It reads its window from
+  `pair_round_resolutions` — the same source `planCascadeFor` uses, because `combat_pairs`
+  carries the round's START but not its LENGTH and so cannot answer the question alone. (Using
+  `combat_pairs` was a first attempt, and it failed loudly: the column does not exist, the query
+  threw, and `playtest-grapple-chain` went from green to nine failures.)
+- **`scripts/playtest-push-cap.mjs`** drives the real `combat:resolve_move_conflict` handler on
+  real rows, with the pause written directly so `blockedUntil` lands two rounds out — a
+  two-round push is not reachable from a natural fight. It proves the row is deleted AND that
+  the Stamina comes back, and it drains the pool first, because `adjustStamina` clamps at
+  `max_stamina` and a refund into a nearly-full pool passes a naive assertion for the wrong
+  reason (observed: a 3-point refund reading as +1).
 
 **A derived field can be silently un-derived by a spread (bugfix — `attack_targets.map
 is not a function`).** `withImageUrl` returns `{ ...rest, image_url }`, where `rest` is
@@ -1399,6 +1486,39 @@ comparison was measuring the refund plus whatever the round did. It asserts the 
 which is what the seam register is for — and one needed a genuinely new question asked of the payload.
 
 - **Path To Mastery: Speed** — "all your moves gain -1 to Startup", on the existing `moveFrameDelta` seam.
+
+  **Bugfix (reported): the Perk changed the sheet and not the fight.** `getMovesFor` was the
+  only place that folded `character_move_overrides` and `moveFrameDelta` together. It publishes
+  the result as `effective_*_tics` **beside** the untouched template — the sheet and the declare
+  picker render that field and were always right — but `move:declare` and every one of the
+  engine's ~22 frame queries read the raw `moves` row. The picker promised a footprint and the
+  engine resolved a different one. Speed mastery is just the easiest way to see it: a GM-granted
+  per-character override and **Osu!** were wrong in exactly the same way, and had been since
+  each shipped.
+
+  - **The frames are SNAPSHOTTED onto the declaration**, not joined at read time:
+    `declared_moves.effective_{startup,active,recovery}_tics`, written by `move:declare` and by
+    the grapple chain's own `declareChainedMove`. Same choice as `effective_attack_targets` and
+    for the same two reasons — a move already on the board is a fact, so a Perk granted or
+    revoked mid-round must not retroactively move frames that have already been resolved
+    against; and the engine reads these from a dozen queries, none of which should have to know
+    what a Perk is.
+  - **Every engine read is `COALESCE(dm.effective_x_tics, m.x_tics)`.** NULL means "declared
+    before this column existed", and the fallback is the template — precisely the old behaviour,
+    which is the right reading for such a row.
+  - **`effectiveFramesFor` lives in `perkEngine.js`**, not index.js: `roundResolution.js` needs
+    it too, and importing index.js boots an HTTP server. It asks the two questions that matter
+    rather than reusing `getMovesFor`, which is the heavy per-character builder — declaring is
+    the action a player is sitting there waiting on.
+  - **`scripts/playtest-effective-frames.mjs`** pins it where it actually broke: it compares the
+    sheet's `effective_startup_tics` against the `reveal_tic` the declare handler really wrote,
+    for a Perk holder and a fighter without the Perk, plus a GM-granted `-2` override, plus that
+    the stored row carries its own frames. Every function involved was individually correct —
+    the only place the disagreement existed was the row, so only a live playtest could see it.
+  - Verified against a **fresh** database that the 45 rewritten SQL references change nothing
+    else: baseline and fixed produce identical results across the engine playtests. (Two —
+    `playtest-grapple-engine` and `playtest-grapple-minigame` — fail *identically before and
+    after*, so they are pre-existing and untouched here.)
   **All** moves, not all attacks: a guard that comes up a Tic sooner is the same mastery as a punch that
   lands a Tic sooner, and the Perk does not qualify itself. `effectiveFrames` already clamps each segment
   to `0..FRAME_MAX`, so a 1-Startup move goes to 0 and no further — it comes out the instant it is placed,

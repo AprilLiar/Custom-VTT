@@ -2,6 +2,7 @@ import { createClient } from '@libsql/client';
 import { writeSync } from 'node:fs';
 import { IMAGE_COLUMNS, hashImageData } from './images.js';
 import { STYLES, COUNTER_BONUS, DEFEATS } from './ruleset.js';
+import { trackTrip } from './dbProfile.js';
 import { PERK_REGISTRY } from './perks/index.js';
 
 // Turso in production (TURSO_DATABASE_URL + TURSO_AUTH_TOKEN env vars);
@@ -197,7 +198,7 @@ function rowsOf(result) {
 // before the next statement that might depend on it.
 export async function all(sql, args = []) {
   if (ddlQueue?.length) await flushDdl();
-  return rowsOf(await connectDb().execute({ sql, args }));
+  return rowsOf(await trackTrip(() => connectDb().execute({ sql, args }), sql));
 }
 
 export async function one(sql, args = []) {
@@ -207,7 +208,7 @@ export async function one(sql, args = []) {
 
 export async function run(sql, args = []) {
   if (ddlQueue?.length) await flushDdl();
-  return connectDb().execute({ sql, args });
+  return trackTrip(() => connectDb().execute({ sql, args }), sql);
 }
 
 // **Many statements, one round trip (decided, new — Phase 2 of the round-trip
@@ -237,9 +238,11 @@ export async function readMany(statements) {
     const [sql, args = []] = list[0];
     return [await all(sql, args)];
   }
-  const results = await connectDb().batch(
-    list.map(([sql, args = []]) => ({ sql, args })),
-    'read'
+  // One trip for the whole group — which is the entire point of this function,
+  // and why the profiler counts it as one.
+  const results = await trackTrip(
+    () => connectDb().batch(list.map(([sql, args = []]) => ({ sql, args })), 'read'),
+    `batch:read x${list.length}`
   );
   return results.map(rowsOf);
 }
@@ -255,9 +258,9 @@ export async function writeMany(statements) {
     const [sql, args = []] = list[0];
     return [await run(sql, args)];
   }
-  return connectDb().batch(
-    list.map(([sql, args = []]) => ({ sql, args })),
-    'write'
+  return trackTrip(
+    () => connectDb().batch(list.map(([sql, args = []]) => ({ sql, args })), 'write'),
+    `batch:write x${list.length}`
   );
 }
 
@@ -2355,6 +2358,32 @@ export async function initDb() {
   // every other flat bonus in the game multiplies across dice, and a +5 in
   // `mod` on a three-die Roll would quietly be worth +15.
   await ensureColumn('declared_moves', 'chain_roll_bonus', 'INTEGER NOT NULL DEFAULT 0');
+
+  // **The frames this move was actually declared with (bugfix — "Speed mastery
+  // changes the Startup frames in the character sheet, but in actual combat
+  // mathematics it did not").**
+  //
+  // A character's real frames are the template's plus their own
+  // `character_move_overrides` plus any Perk `moveFrameDelta` (Speed mastery,
+  // Osu!). `getMovesFor` was the only place that folded those together — it
+  // publishes them as `effective_*_tics` beside the untouched template, and the
+  // sheet and the declare picker render that field. Every combat path, though,
+  // read the raw `moves` row: the picker promised a footprint and the engine
+  // resolved a different one.
+  //
+  // Snapshotted onto the declaration rather than joined at read time, exactly
+  // like `effective_attack_targets` above and for the same two reasons: a move
+  // already on the board is a fact, so a Perk granted or revoked mid-round must
+  // not retroactively move frames that have already been resolved against; and
+  // the engine reads these columns from a dozen queries, none of which should
+  // have to know what a Perk is.
+  //
+  // NULL means "declared before this existed", and every read COALESCEs back to
+  // the template — the pre-existing behaviour, which is the correct reading for
+  // a row that predates the column.
+  for (const seg of ['startup', 'active', 'recovery']) {
+    await ensureColumn('declared_moves', `effective_${seg}_tics`, 'INTEGER');
+  }
   await ensureColumn(
     'declared_moves',
     'attack_target_source',

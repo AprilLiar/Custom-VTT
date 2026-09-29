@@ -68,6 +68,7 @@ import {
   selectDefenseMove,
   resolveBlockStamina,
   planCascade,
+  pushHorizon,
   resolveNoDamageOutcome,
   DEFAULT_SUCCESS_THRESHOLD,
 } from './combatDamage.js';
@@ -119,6 +120,7 @@ import { idleStaminaRegenRate } from './perkAutomations.js';
 import {
   clearPerkState,
   consumeOnce,
+  effectiveFramesFor,
   minDamageThresholdFor,
   perkBlockRiposteSteps,
   perkDefinitionsFor,
@@ -685,7 +687,7 @@ async function runAutomations(io, {
   // nobody asked for a move to arrive sooner than it was thrown.
   const shrinkRecovery = async (declaredMoveId, delta) => {
     const dm = await one(
-      `SELECT dm.id, dm.recovery_extension_tics AS current_extension_tics, m.recovery_tics
+      `SELECT dm.id, dm.recovery_extension_tics AS current_extension_tics, COALESCE(dm.effective_recovery_tics, m.recovery_tics) AS recovery_tics
        FROM declared_moves dm JOIN moves m ON m.id = dm.move_id WHERE dm.id = ?`,
       [declaredMoveId]
     );
@@ -747,7 +749,7 @@ async function runAutomations(io, {
     if (!Number.isInteger(clockTic)) return { plan: null, appliedTics: 0 };
     const rows = await all(
       `SELECT dm.id, dm.placement_tic, dm.reveal_tic, dm.recovery_extension_tics,
-              dm.trip_recovery_tics, m.active_tics, m.recovery_tics
+              dm.trip_recovery_tics, COALESCE(dm.effective_active_tics, m.active_tics) AS active_tics, COALESCE(dm.effective_recovery_tics, m.recovery_tics) AS recovery_tics
        FROM declared_moves dm JOIN moves m ON m.id = dm.move_id
        WHERE dm.character_id = ?
        ORDER BY dm.placement_tic`,
@@ -1061,7 +1063,7 @@ async function movementMoveInPlay(characterId, tic) {
      FROM declared_moves dm JOIN moves m ON m.id = dm.move_id
      WHERE dm.character_id = ?
        AND dm.placement_tic <= ?
-       AND dm.reveal_tic + m.active_tics + m.recovery_tics + dm.recovery_extension_tics > ?
+       AND dm.reveal_tic + COALESCE(dm.effective_active_tics, m.active_tics) + COALESCE(dm.effective_recovery_tics, m.recovery_tics) + dm.recovery_extension_tics > ?
      ORDER BY dm.placement_tic DESC, dm.id DESC
      LIMIT 1`,
     [characterId, tic, tic]
@@ -1603,7 +1605,7 @@ async function checkInterrupt(io, {
   // The move's NAME is deliberately not among them; see the emit below.
   const startupDM = await one(
     `SELECT dm.*, m.stamina_cost, m.roll_type, m.custom_roll_size, m.roll_modifier,
-            m.active_tics, m.recovery_tics, m.defense_frame_positions,
+            COALESCE(dm.effective_active_tics, m.active_tics) AS active_tics, COALESCE(dm.effective_recovery_tics, m.recovery_tics) AS recovery_tics, m.defense_frame_positions,
             ch.name AS character_name, ch.character_type, cp.side AS side
      FROM declared_moves dm
      JOIN moves m ON m.id = dm.move_id
@@ -3023,7 +3025,7 @@ async function runGrappleContest(io, { row, targetCharacterId, targetName, tic, 
 // refunded, for the same reason — there is no failure path left to refund on.
 async function declareChainedMove(io, { row, chained, tic, emitEvent, chainRollBonus = 0 }) {
   const move = await one(
-    'SELECT startup_tics, active_tics, recovery_tics, stamina_cost, attack_targets FROM moves WHERE id = ?',
+    'SELECT id, startup_tics, active_tics, recovery_tics, stamina_cost, attack_targets FROM moves WHERE id = ?',
     [chained.id]
   );
   if (!move) return null;
@@ -3052,7 +3054,11 @@ async function declareChainedMove(io, { row, chained, tic, emitEvent, chainRollB
     return null;
   }
 
-  const footprint = move.startup_tics + move.active_tics + move.recovery_tics;
+  // The grappler's own frames, exactly as `move:declare` resolves them — a
+  // chained move is still that character throwing that move, so Speed mastery
+  // and any per-character override apply here too.
+  const frames = await effectiveFramesFor(row.characterId, move);
+  const footprint = frames.startup_tics + frames.active_tics + frames.recovery_tics;
   const grappleEnd = row.revealTic + row.activeTics; // Recovery is the grappler's own to spend
 
   // Only moves that have not yet revealed may be shifted — one already
@@ -3060,7 +3066,7 @@ async function declareChainedMove(io, { row, chained, tic, emitEvent, chainRollB
   const laterMoves = (
     await all(
       `SELECT dm.id AS declaredMoveId, dm.placement_tic AS placementTic,
-              (m.startup_tics + m.active_tics + m.recovery_tics) AS footprintTics
+              (COALESCE(dm.effective_startup_tics, m.startup_tics) + COALESCE(dm.effective_active_tics, m.active_tics) + COALESCE(dm.effective_recovery_tics, m.recovery_tics)) AS footprintTics
        FROM declared_moves dm JOIN moves m ON m.id = dm.move_id
        WHERE dm.character_id = ? AND dm.reveal_posted = 0 AND dm.placement_tic >= ?`,
       [row.characterId, grappleEnd]
@@ -3072,7 +3078,49 @@ async function declareChainedMove(io, { row, chained, tic, emitEvent, chainRollB
     chainedFootprintTics: footprint,
     laterMoves,
   });
+  // **The same one-round push cap the Block/conflict cascade applies (decided,
+  // new).** This path had no round awareness at all: a chain could shove a
+  // queued move arbitrarily far down the Tic strip, and a move two rounds out
+  // is one that is never going to happen. Its own window is read here rather
+  // than assumed, because a chain resolves mid-round and the pair it belongs to
+  // is the only thing that knows where that round starts.
+  // Read from `pair_round_resolutions`, the same source `planCascadeFor` uses —
+  // `combat_pairs` carries the round's START but not its LENGTH, so it cannot
+  // answer "which round is this Tic in" on its own.
+  const chainWindow = await one(
+    `SELECT prr.round_start_tic AS roundStartTic, prr.round_length AS roundLength
+     FROM combat_participants cp
+     JOIN pair_round_resolutions prr ON prr.pair_index = cp.pair_index
+     WHERE cp.character_id = ?
+     ORDER BY prr.id DESC LIMIT 1`,
+    [row.characterId]
+  );
   for (const s of shifted) {
+    const horizon = chainWindow
+      ? pushHorizon({
+          placementTic: s.to,
+          footprintTics: laterMoves.find((m) => m.declaredMoveId === s.declaredMoveId)?.footprintTics ?? 0,
+          roundStartTic: chainWindow.roundStartTic,
+          roundLength: chainWindow.roundLength,
+        })
+      : 'this-round';
+    if (horizon === 'too-far') {
+      const pushed = await one(
+        `SELECT dm.stamina_committed, dm.stamina_committed_amount, m.name AS move_name
+         FROM declared_moves dm JOIN moves m ON m.id = dm.move_id WHERE dm.id = ?`,
+        [s.declaredMoveId]
+      );
+      await run('DELETE FROM declared_moves WHERE id = ?', [s.declaredMoveId]);
+      const back = pushed?.stamina_committed ? pushed.stamina_committed_amount ?? 0 : 0;
+      if (back) {
+        await adjustStamina(io, row.characterId, back, {
+          emitEvent,
+          tic,
+          reason: `${pushed?.move_name ?? 'a queued move'} pushed too far to happen`,
+        });
+      }
+      continue;
+    }
     await run('UPDATE declared_moves SET placement_tic = ?, reveal_tic = reveal_tic + ? WHERE id = ?', [
       s.to,
       s.to - s.from,
@@ -3093,18 +3141,22 @@ async function declareChainedMove(io, { row, chained, tic, emitEvent, chainRollB
     `INSERT INTO declared_moves
        (character_id, move_id, round_number, placement_tic, reveal_tic, queue_order,
         stamina_committed, reveal_posted, interactions_resolved, effective_attack_targets,
-        grapple_source_declared_move_id, chain_roll_bonus)
-     VALUES (?, ?, ?, ?, ?, ?, 1, 0, 0, ?, ?, ?)`,
+        grapple_source_declared_move_id, chain_roll_bonus,
+        effective_startup_tics, effective_active_tics, effective_recovery_tics)
+     VALUES (?, ?, ?, ?, ?, ?, 1, 0, 0, ?, ?, ?, ?, ?, ?)`,
     [
       row.characterId,
       chained.id,
       pairRound?.roundNumber ?? 1,
       placementTic,
-      placementTic + move.startup_tics,
+      placementTic + frames.startup_tics,
       (pairRound?.queueOrder ?? 0) + 1,
       move.attack_targets ?? '[]',
       row.declaredMoveId,
       chainRollBonus,
+      frames.startup_tics,
+      frames.active_tics,
+      frames.recovery_tics,
     ]
   );
 
@@ -3123,7 +3175,7 @@ async function declareChainedMove(io, { row, chained, tic, emitEvent, chainRollB
     characterName: row.characterName,
     moveName: chained.name,
     placementTic,
-    revealTic: placementTic + move.startup_tics,
+    revealTic: placementTic + frames.startup_tics,
     shifted: shifted.length,
     chainRollBonus,
   });
@@ -3562,7 +3614,7 @@ async function resolveAttack(io, { row, pairIndex, tic, emitEvent }) {
   const defenderDM = await one(
     `SELECT dm.id, dm.character_id, dm.placement_tic, dm.reveal_tic, dm.appendage_choice,
             dm.recovery_extension_tics AS current_extension_tics,
-            m.id AS move_id, m.name AS move_name, m.active_tics, m.recovery_tics, m.is_defensive, m.defense_kind,
+            m.id AS move_id, m.name AS move_name, COALESCE(dm.effective_active_tics, m.active_tics) AS active_tics, COALESCE(dm.effective_recovery_tics, m.recovery_tics) AS recovery_tics, m.is_defensive, m.defense_kind,
             m.roll_type, m.custom_roll_size, m.roll_modifier, m.stamina_modifier,
             ch.name AS character_name
      FROM declared_moves dm JOIN moves m ON m.id = dm.move_id JOIN characters ch ON ch.id = dm.character_id
@@ -4143,7 +4195,7 @@ export async function resolveNonCommit(pairIndex, { declaredMoveIds } = {}, io) 
   for (const move of chosen) {
     const row = await one(
       `SELECT dm.id, dm.character_id, dm.reveal_tic, dm.recovery_extension_tics,
-              m.name AS move_name, m.active_tics, m.recovery_tics
+              m.name AS move_name, COALESCE(dm.effective_active_tics, m.active_tics) AS active_tics, COALESCE(dm.effective_recovery_tics, m.recovery_tics) AS recovery_tics
        FROM declared_moves dm JOIN moves m ON m.id = dm.move_id WHERE dm.id = ?`,
       [move.declaredMoveId]
     );
@@ -4222,7 +4274,7 @@ async function planNonCommitPrompt(pairIndex, roundNumber) {
   for (const holder of holders) {
     const moves = await all(
       `SELECT dm.id, dm.placement_tic, dm.stamina_committed, dm.stamina_committed_amount, m.name AS move_name,
-              (m.startup_tics + m.active_tics + m.recovery_tics + dm.recovery_extension_tics) AS footprintTics
+              (COALESCE(dm.effective_startup_tics, m.startup_tics) + COALESCE(dm.effective_active_tics, m.active_tics) + COALESCE(dm.effective_recovery_tics, m.recovery_tics) + dm.recovery_extension_tics) AS footprintTics
        FROM declared_moves dm JOIN moves m ON m.id = dm.move_id
        WHERE dm.character_id = ? AND dm.round_number = ?
        ORDER BY dm.placement_tic`,
@@ -4255,7 +4307,7 @@ async function planCascadeFor(characterId, { excludeDeclaredMoveId, blockedUntil
   const [rows, window] = await Promise.all([
     all(
       `SELECT dm.id AS declaredMoveId, dm.placement_tic AS placementTic,
-              (m.startup_tics + m.active_tics + m.recovery_tics + dm.recovery_extension_tics) AS footprintTics
+              (COALESCE(dm.effective_startup_tics, m.startup_tics) + COALESCE(dm.effective_active_tics, m.active_tics) + COALESCE(dm.effective_recovery_tics, m.recovery_tics) + dm.recovery_extension_tics) AS footprintTics
        FROM declared_moves dm JOIN moves m ON m.id = dm.move_id
        WHERE dm.character_id = ? AND dm.id != ? AND dm.reveal_posted = 0
        ORDER BY dm.placement_tic, dm.id`,
@@ -4392,7 +4444,7 @@ async function processTic(io, { pairIndex, tic, emitEvent, resolutionId }) {
     const revealRows = await all(
       `SELECT dm.id, dm.character_id, dm.move_id, dm.placement_tic, dm.reveal_tic,
               dm.recovery_extension_tics, dm.trip_recovery_tics, dm.appendage_choice,
-              m.name AS move_name, m.startup_tics, m.active_tics, m.recovery_tics,
+              m.name AS move_name, COALESCE(dm.effective_startup_tics, m.startup_tics) AS startup_tics, COALESCE(dm.effective_active_tics, m.active_tics) AS active_tics, COALESCE(dm.effective_recovery_tics, m.recovery_tics) AS recovery_tics,
               m.defense_frame_positions,
               m.image_hash AS move_image_hash, (m.image_data IS NOT NULL) AS move_has_image,
               m.is_defensive, m.defense_kind, m.stamina_cost,
@@ -4443,7 +4495,7 @@ async function processTic(io, { pairIndex, tic, emitEvent, resolutionId }) {
             dm.placement_tic AS placementTic, dm.reveal_tic AS revealTic,
             dm.appendage_choice AS appendageChoice, dm.effective_attack_targets AS effectiveAttackTargets,
             dm.chain_roll_bonus AS chainRollBonus, dm.target_character_id AS targetCharacterId,
-            m.name AS moveName, m.active_tics AS activeTics, m.roll_type AS rollType,
+            m.name AS moveName, COALESCE(dm.effective_active_tics, m.active_tics) AS activeTics, m.roll_type AS rollType,
             m.is_defensive AS isDefensive, m.is_grappling AS isGrappling,
             m.success_threshold AS successThreshold,
             m.custom_roll_size AS customRollSize, m.roll_modifier AS rollModifier,
@@ -4511,7 +4563,7 @@ async function applyIdleTicStaminaRegen(io, pairIndex, tic, emitEvent = null) {
     [`SELECT * FROM characters WHERE id IN (${marks})`, charIds],
     [
       `SELECT dm.character_id AS characterId, dm.placement_tic AS placementTic,
-              dm.reveal_tic + m.active_tics + m.recovery_tics + dm.recovery_extension_tics AS recoveryEndTic
+              dm.reveal_tic + COALESCE(dm.effective_active_tics, m.active_tics) + COALESCE(dm.effective_recovery_tics, m.recovery_tics) + dm.recovery_extension_tics AS recoveryEndTic
        FROM declared_moves dm JOIN moves m ON m.id = dm.move_id
        WHERE dm.character_id IN (${marks})`,
       charIds,
@@ -4696,7 +4748,7 @@ async function startPairDeclaration(io, pairIndex) {
   const blockedUntilRows = charIds.length
     ? await all(
         `SELECT dm.character_id AS characterId,
-                MAX(dm.reveal_tic + m.active_tics + m.recovery_tics + dm.recovery_extension_tics) AS blockedUntilTic
+                MAX(dm.reveal_tic + COALESCE(dm.effective_active_tics, m.active_tics) + COALESCE(dm.effective_recovery_tics, m.recovery_tics) + dm.recovery_extension_tics) AS blockedUntilTic
          FROM declared_moves dm JOIN moves m ON m.id = dm.move_id
          WHERE dm.character_id IN (${marks})
          GROUP BY dm.character_id`,
@@ -4857,7 +4909,7 @@ async function rehomePushedMoves(io, { pairIndex, charIds, roundNumber, roundSta
   const rows = await all(
     `SELECT dm.id, dm.character_id, dm.round_number, dm.placement_tic, dm.stamina_committed,
             dm.stamina_committed_amount, ch.name AS character_name, m.name AS move_name,
-            (dm.reveal_tic + m.active_tics + m.recovery_tics + dm.recovery_extension_tics) AS recovery_end_tic
+            (dm.reveal_tic + COALESCE(dm.effective_active_tics, m.active_tics) + COALESCE(dm.effective_recovery_tics, m.recovery_tics) + dm.recovery_extension_tics) AS recovery_end_tic
      FROM declared_moves dm
      JOIN moves m ON m.id = dm.move_id
      JOIN characters ch ON ch.id = dm.character_id
@@ -5215,7 +5267,7 @@ async function resolvePairRound(pairIndex, io) {
     const carried = await all(
       `SELECT dm.id, dm.character_id, dm.move_id, dm.placement_tic, dm.reveal_tic,
               dm.recovery_extension_tics, dm.trip_recovery_tics, dm.appendage_choice,
-              m.name AS move_name, m.startup_tics, m.active_tics, m.recovery_tics,
+              m.name AS move_name, COALESCE(dm.effective_startup_tics, m.startup_tics) AS startup_tics, COALESCE(dm.effective_active_tics, m.active_tics) AS active_tics, COALESCE(dm.effective_recovery_tics, m.recovery_tics) AS recovery_tics,
               m.defense_frame_positions,
               m.image_hash AS move_image_hash, (m.image_data IS NOT NULL) AS move_has_image,
               m.is_defensive, m.defense_kind, m.stamina_cost,
@@ -5226,7 +5278,7 @@ async function resolvePairRound(pairIndex, io) {
        JOIN characters ch ON ch.id = dm.character_id
        JOIN combat_participants cp ON cp.character_id = dm.character_id
        WHERE cp.pair_index = ? AND dm.reveal_posted = 1
-         AND dm.reveal_tic + m.active_tics + m.recovery_tics + dm.recovery_extension_tics > ?`,
+         AND dm.reveal_tic + COALESCE(dm.effective_active_tics, m.active_tics) + COALESCE(dm.effective_recovery_tics, m.recovery_tics) + dm.recovery_extension_tics > ?`,
       [pairIndex, pair.round_start_tic]
     );
     for (const r of carried) {
@@ -5393,7 +5445,7 @@ async function resolveDodge(pairIndex, { outcome, attackerDeclaredMoveId }, io) 
 
   const defenderDM = await one(
     `SELECT dm.id, dm.character_id, dm.reveal_tic, dm.appendage_choice,
-            m.id AS move_id, m.active_tics, m.recovery_tics, m.is_defensive, m.roll_type, m.custom_roll_size, m.roll_modifier,
+            m.id AS move_id, COALESCE(dm.effective_active_tics, m.active_tics) AS active_tics, COALESCE(dm.effective_recovery_tics, m.recovery_tics) AS recovery_tics, m.is_defensive, m.roll_type, m.custom_roll_size, m.roll_modifier,
             ch.name AS character_name
      FROM declared_moves dm JOIN moves m ON m.id = dm.move_id JOIN characters ch ON ch.id = dm.character_id
      WHERE dm.id = ?`,
@@ -5535,7 +5587,7 @@ async function resolveBlock(pairIndex, { outcome, attackerDeclaredMoveId }, io) 
   const defenderDM = await one(
     `SELECT dm.id, dm.character_id, dm.reveal_tic, dm.appendage_choice,
             dm.recovery_extension_tics AS current_extension_tics,
-            m.id AS move_id, m.name AS move_name, m.active_tics, m.recovery_tics, m.is_defensive,
+            m.id AS move_id, m.name AS move_name, COALESCE(dm.effective_active_tics, m.active_tics) AS active_tics, COALESCE(dm.effective_recovery_tics, m.recovery_tics) AS recovery_tics, m.is_defensive,
             m.defense_kind, m.roll_type, m.custom_roll_size, m.roll_modifier, m.stamina_modifier,
             ch.name AS character_name
      FROM declared_moves dm JOIN moves m ON m.id = dm.move_id JOIN characters ch ON ch.id = dm.character_id
@@ -5632,7 +5684,7 @@ async function resolveMoveConflict(pairIndex, { declaredMoveId, choice }, io) {
   let forfeited = null;
   if (choice === 'forfeit') {
     const row = await one(
-      `SELECT dm.*, m.name AS move_name, m.stamina_cost, m.active_tics, m.recovery_tics
+      `SELECT dm.*, m.name AS move_name, m.stamina_cost, COALESCE(dm.effective_active_tics, m.active_tics) AS active_tics, COALESCE(dm.effective_recovery_tics, m.recovery_tics) AS recovery_tics
        FROM declared_moves dm JOIN moves m ON m.id = dm.move_id WHERE dm.id = ?`,
       [pending.declaredMoveId]
     );
@@ -5677,11 +5729,41 @@ async function resolveMoveConflict(pairIndex, { declaredMoveId, choice }, io) {
   const applied = [];
   for (const shift of plan) {
     const row = await one(
-      `SELECT dm.*, m.startup_tics, m.active_tics, m.recovery_tics, m.stamina_cost, m.name AS move_name
+      `SELECT dm.*, COALESCE(dm.effective_startup_tics, m.startup_tics) AS startup_tics, COALESCE(dm.effective_active_tics, m.active_tics) AS active_tics, COALESCE(dm.effective_recovery_tics, m.recovery_tics) AS recovery_tics, m.stamina_cost, m.name AS move_name
        FROM declared_moves dm JOIN moves m ON m.id = dm.move_id WHERE dm.id = ?`,
       [shift.declaredMoveId]
     );
     if (!row) continue;
+
+    // **More than one round out is refused outright (decided, new).** A shift
+    // into the NEXT round is an ordinary postponement, handled below. A shift
+    // two rounds out is a move that is never going to happen — the player
+    // declared it for this round's shape, and two rounds of that shape have
+    // changed underneath it. Refunded in full and taken off the board, rather
+    // than parked somewhere nobody will ever reach.
+    if (shift.horizon === 'too-far') {
+      const back = row.stamina_committed ? row.stamina_committed_amount ?? 0 : 0;
+      await run('DELETE FROM declared_moves WHERE id = ?', [row.id]);
+      if (back) {
+        await adjustStamina(io, characterId, back, {
+          emitEvent,
+          tic: pending.tic,
+          reason: `${row.move_name} pushed too far to happen`,
+        });
+      }
+      applied.push({
+        declaredMoveId: row.id,
+        moveName: labels.get(row.id)?.moveName ?? row.move_name,
+        from: shift.from,
+        to: shift.to,
+        revealTic: null,
+        leftRound: true,
+        droppedTooFar: true,
+        staminaRefunded: back,
+      });
+      continue;
+    }
+
     const { revealTic } = computeMoveFootprint({
       placementTic: shift.to,
       startupTics: row.startup_tics,
@@ -5936,7 +6018,7 @@ async function loadResolutionRow(declaredMoveId) {
             dm.placement_tic AS placementTic, dm.reveal_tic AS revealTic,
             dm.appendage_choice AS appendageChoice, dm.effective_attack_targets AS effectiveAttackTargets,
             dm.chain_roll_bonus AS chainRollBonus,
-            m.name AS moveName, m.active_tics AS activeTics, m.roll_type AS rollType,
+            m.name AS moveName, COALESCE(dm.effective_active_tics, m.active_tics) AS activeTics, m.roll_type AS rollType,
             m.is_defensive AS isDefensive, m.is_grappling AS isGrappling,
             m.success_threshold AS successThreshold,
             m.custom_roll_size AS customRollSize, m.roll_modifier AS rollModifier,

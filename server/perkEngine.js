@@ -18,6 +18,7 @@ import { all, one, run } from './db.js';
 import { injuryPenaltyBySlot } from './gameLogic.js';
 import { MIN_DAMAGE_THRESHOLD } from './combatDamage.js';
 import { expandRollSlotRows, sanitizeAttackTargets } from './moveLogic.js';
+import { effectiveFrames } from './perkAutomations.js';
 import { perkDefinition } from './perks/index.js';
 
 // ---------------------------------------------------------------------------
@@ -518,6 +519,35 @@ export async function perkStaminaCostDeltas({ characterId, moves, dice, injuries
 //
 // Field by field and additive, like `interruptAmounts`. A Perk answering only
 // `{ recovery: 1 }` leaves the other two alone.
+// **One character's REAL frames for one move (bugfix — Speed mastery).**
+//
+// A character's frames are the template's, plus their own
+// `character_move_overrides`, plus every Perk `moveFrameDelta` (Speed mastery,
+// Osu!). `getMovesFor` folds those together for a whole move list and publishes
+// the result as `effective_*_tics`, which is what the sheet and the declare
+// picker render — but it is the heavy per-character builder, and the two places
+// that need this answer (`move:declare` and the grapple chain) want it for a
+// single move on the path a player is waiting on.
+//
+// Lives here rather than in index.js because roundResolution.js needs it too,
+// and importing index.js boots an HTTP server (see this file's own header).
+export async function effectiveFramesFor(characterId, move) {
+  const [stored, perkFrames] = await Promise.all([
+    one(
+      `SELECT startup_delta, active_delta, recovery_delta FROM character_move_overrides
+       WHERE character_id = ? AND move_id = ?`,
+      [characterId, move.id]
+    ),
+    perkMoveFrameDeltas({ characterId, moves: [move] }),
+  ]);
+  const fromPerks = perkFrames.get(move.id) ?? { startup: 0, active: 0, recovery: 0 };
+  return effectiveFrames(move, {
+    startup: (stored?.startup_delta ?? 0) + fromPerks.startup,
+    active: (stored?.active_delta ?? 0) + fromPerks.active,
+    recovery: (stored?.recovery_delta ?? 0) + fromPerks.recovery,
+  });
+}
+
 export async function perkMoveFrameDeltas({ characterId, moves }) {
   const out = new Map();
   const list = moves ?? [];

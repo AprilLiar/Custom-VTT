@@ -443,6 +443,41 @@ export function clampRecoveryExtension({ currentExtensionTics, recoveryTics, del
 // anything else has left. `overlapsRoundWindow` is the same half-open test the
 // Tic Counter and the lane snapshots already use, so "is it in this round" has
 // exactly one answer everywhere.
+// **How far past its own round a shifted move has landed (decided, new).**
+//
+// The rule: *a move may not be pushed more than one round into the future.* A
+// cascade that shoves a declaration from round 1 into round 2 is ordinary — it
+// keeps its place and hands its Stamina back (see planCascade's `leavesRound`
+// and the note above it). A cascade that would shove it into round 3 is not a
+// postponement any more, it is a move that is never going to happen: the
+// player declared it for this fight's shape, and two rounds of that shape have
+// changed underneath it. Those are refunded and taken off the board entirely.
+//
+// Expressed as one pure function so both push paths — the Block/conflict
+// cascade and the grapple chain — classify identically, and so the boundary
+// case is pinned by test rather than by two similar-looking inequalities.
+//
+// Uses `overlapsRoundWindow` for each window rather than comparing raw Tics:
+// "is it in this round" already has exactly one answer everywhere in this
+// codebase, and the next round is that same question asked one window along.
+export function pushHorizon({ placementTic, footprintTics = 0, roundStartTic, roundLength }) {
+  const recoveryEndTic = placementTic + footprintTics;
+  if (overlapsRoundWindow({ placementTic, recoveryEndTic, roundStartTic, roundLength })) {
+    return 'this-round';
+  }
+  if (
+    overlapsRoundWindow({
+      placementTic,
+      recoveryEndTic,
+      roundStartTic: roundStartTic + roundLength,
+      roundLength,
+    })
+  ) {
+    return 'next-round';
+  }
+  return 'too-far';
+}
+
 export function planCascade({ moves, blockedUntil, roundStartTic, roundLength }) {
   const byId = new Map((moves ?? []).map((m) => [m.declaredMoveId, m]));
   return cascadeShift({ moves: moves ?? [], blockedUntil }).map((shift) => {
@@ -453,6 +488,15 @@ export function planCascade({ moves, blockedUntil, roundStartTic, roundLength })
       leavesRound: !overlapsRoundWindow({
         placementTic: shift.to,
         recoveryEndTic: shift.to + footprintTics,
+        roundStartTic,
+        roundLength,
+      }),
+      // 'this-round' | 'next-round' | 'too-far' — see pushHorizon. `leavesRound`
+      // stays exactly what it was (this-round vs everything else); this splits
+      // that second half into the postponement we allow and the one we refuse.
+      horizon: pushHorizon({
+        placementTic: shift.to,
+        footprintTics,
         roundStartTic,
         roundLength,
       }),
