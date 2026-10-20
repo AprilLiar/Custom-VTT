@@ -1152,6 +1152,18 @@ export async function initDb() {
   // Accumulates: two moves can each leave a mark before the victim rolls, and
   // the next roll pays both.
   await ensureColumn('characters', 'pending_roll_penalty', 'INTEGER NOT NULL DEFAULT 0');
+  // **And the Tic it was imposed on, because the debt now expires (decided,
+  // revised).** "Their next roll, whenever that is" let a debuff imposed on
+  // Tic 3 be paid off two rounds later by a roll nobody could connect to it, so
+  // it is live for the three Tics after the one it landed on and then gone —
+  // see nextRollPenaltyLive in combatTiming.js. Refreshed rather than kept on
+  // accumulation: a second mark left while the first is still live restarts the
+  // window, so the most recent imposition is the one the clock runs from.
+  //
+  // Null means it was imposed with no Tic to measure from (an automation fired
+  // outside a round), which keeps the old unbounded behaviour — the only honest
+  // reading when the clock was not running.
+  await ensureColumn('characters', 'pending_roll_penalty_tic', 'INTEGER');
   // Custom Compendium ordering (decided, new) — the position a GM dragged
   // this move to. Rows created before this column read back as 0, and every
   // read path orders by (sort_order, id), so an un-reordered library keeps

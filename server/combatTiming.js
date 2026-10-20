@@ -269,6 +269,34 @@ export function findInterruptEligibleTic({ attackerActiveStart, attackerActiveEn
   return null;
 }
 
+// **How long a next-roll debuff waits (decided, new).** The
+// `opponent_next_roll_penalty` automation used to sit on its victim until
+// their next roll of any kind, whenever that happened — and "whenever" is the
+// problem: a debuff imposed on Tic 3 could be paid off by a roll two rounds
+// later, by which point nothing at the table remembers why that fighter is
+// rolling worse. So it is a window rather than a debt: **the three Tics after
+// the one it landed on, and the Tic it landed on itself.**
+export const NEXT_ROLL_PENALTY_TICS = 3;
+
+// Is a debuff imposed on `penaltyTic` still live for a roll happening on
+// `rollTic`?
+//
+// `penaltyTic == null` is a debuff imposed with no Tic to measure from — an
+// automation fired outside a round. There is no window to be inside, so it is
+// live for the next roll however late, which is the behaviour this rule
+// replaced and the only honest answer when the clock was not running.
+//
+// A roll EARLIER than the imposition (`rollTic < penaltyTic`) is not a roll
+// that has not happened yet — Tics only ever climb within a fight — it is a
+// different fight's clock, which starts over at 0. Expired, deliberately: a
+// window cannot outlive the counter it was measured in. (The debt is also
+// cleared outright when a fight ends, for the same reason; see combat:clear.)
+export function nextRollPenaltyLive({ penaltyTic, rollTic, windowTics = NEXT_ROLL_PENALTY_TICS }) {
+  if (penaltyTic == null) return true;
+  if (rollTic == null) return false;
+  return rollTic >= penaltyTic && rollTic <= penaltyTic + windowTics;
+}
+
 // Lane snapshot chat cards (decided, Chat Log redesign): a declared move's
 // squares only ever appear on a snapshot when its footprint overlaps the
 // round's own displayed Tic window — the snapshot mirrors the live Tic

@@ -8,7 +8,7 @@
 import { all, one, run } from './db.js';
 import { buildBeats, matchupStyles, pairScore } from '../client/src/lib/matchups.js';
 import { grapplePenaltyAt } from './grappleLogic.js';
-import { tripWindow } from './combatTiming.js';
+import { nextRollPenaltyLive, tripWindow } from './combatTiming.js';
 import { perkRollBonusTerms } from './perkEngine.js';
 import {
   carriesGroundFinisherTag,
@@ -150,6 +150,36 @@ export function matchupAppliesToSlots(slotNames) {
   const slots = (slotNames ?? []).filter(Boolean);
   if (!slots.length) return true;
   return !slots.every((slot) => MATCHUP_EXEMPT_SLOTS.includes(slot));
+}
+
+// **A contest scores the matchup ONCE, not once per side (decided, bugfix).**
+//
+// `pairScore` is antisymmetric: whatever a stance is worth against another, the
+// other is worth exactly the negative of it. So a contest that asked both
+// fighters for their own matchup paid the favoured one `+S` and charged the
+// other `−S` — a one-point advantage on the counter chart moved the comparison
+// by two, which is the "debuffing the weaker fighter and buffing the stronger
+// one" that was reported from the table, and it scaled with every point of
+// matchup.
+//
+// The fix is not to halve anything: it is to notice that only ONE of the two
+// rolls is somebody's action. An attack is thrown; a guard, an Interruption
+// resistance roll and a grapple's Resist Roll are all *answers* to it. The
+// matchup belongs to the roll being thrown, and the answering roll carries
+// none of it — which is also why nothing is lost by dropping it, since the
+// single application already scores the attacker's styles against the
+// DEFENDER's (stance plus whatever their own move is carrying). Both fighters'
+// choices are in that one number; they were simply in it twice.
+//
+// Every caller that makes an answering roll passes `reactive: true`; the ones
+// that throw the action pass nothing and are unchanged.
+//
+// Pure and unit-tested, so the rule can be pinned without a socket — and one
+// predicate rather than two conditions at the call site, because the Stat
+// exemption and the once-per-contest rule are both answering the same question:
+// does the matchup reach THIS roll?
+export function matchupAppliesToRoll({ slotNames = null, reactive = false } = {}) {
+  return matchupAppliesToSlots(slotNames) && !reactive;
 }
 
 // The matchup split into the two things it is actually made of: what the two
@@ -437,7 +467,19 @@ export async function getCombatRollBonusBreakdown(
   // or Interruption roll. Only `opponent_next_roll_bonus` reads it, and only to
   // decide whether a credit is good here; omitting it consumes nothing rather
   // than guessing, which is what keeps an Uneven Combat honest.
-  { moveId = null, tic = null, slotNames = null, declaredMoveId = null, againstCharacterId = null } = {}
+  //
+  // `reactive` marks this roll as the ANSWERING half of a contest — a Block's
+  // guard roll, an Interruption's resistance roll, a grapple's Resist Roll.
+  // Only the Stance matchup reads it, and only to drop itself; see
+  // matchupAppliesToRoll below for why that is the whole rule.
+  {
+    moveId = null,
+    tic = null,
+    slotNames = null,
+    declaredMoveId = null,
+    againstCharacterId = null,
+    reactive = false,
+  } = {}
 ) {
   // Two phases, because the Perk seam needs facts the first phase produces:
   // `reasonsToFight` is the very term Anime Protagonist doubles, and it would be
@@ -448,7 +490,7 @@ export async function getCombatRollBonusBreakdown(
     getReasonsToFightBonus(characterId),
     stanceMatchupParts(characterId, { moveId, tic }),
     getGrapplePenalty(characterId, tic),
-    consumeNextRollPenalty(characterId),
+    consumeNextRollPenalty(characterId, tic),
     consumeNextRollBonus(characterId, againstCharacterId),
     punisherRollBonus(characterId, moveId, tic),
     sideCountsFor(characterId),
@@ -472,7 +514,7 @@ export async function getCombatRollBonusBreakdown(
   });
   // Zeroed rather than skipped, so the shape below stays one expression and a
   // future term cannot be added on the wrong side of an early return.
-  const matchupApplies = matchupAppliesToSlots(slotNames);
+  const matchupApplies = matchupAppliesToRoll({ slotNames, reactive });
   const stanceTerm = matchupApplies ? matchup.stance : 0;
   const styleTerm = matchupApplies ? matchup.moveStyle : 0;
   const matchupTotal = matchupApplies ? matchup.total : 0;
@@ -534,19 +576,55 @@ export async function getCombatRollBonusBreakdown(
 // spending it twice would be worse.
 //
 // **The per-round Initiative roll is deliberately NOT one of them** (assumed —
-// worth confirming). It reads getStanceMatchupBonus directly rather than this,
-// so it never sees the debt. Taken literally, "the next roll of any kind"
+// worth confirming). It asks the Perk seam directly rather than coming through
+// here, so it never sees the debt. Taken literally, "the next roll of any kind"
 // would include it, and then a penalty applied mid-round would be paid off by
 // the *next round's* Initiative before its victim ever threw a move — which
 // would make the automation almost impossible to actually feel. The reading
 // here is "the next roll they make", where Initiative is bookkeeping the round
 // does on their behalf.
-async function consumeNextRollPenalty(characterId) {
-  const row = await one('SELECT pending_roll_penalty AS n FROM characters WHERE id = ?', [characterId]);
+//
+// **And it now expires (decided, revised).** It is live for the Tic it landed
+// on and the three after it (`nextRollPenaltyLive`), because "their next roll,
+// whenever that is" let a mark left on Tic 3 be paid by a roll two rounds later
+// that nobody at the table could connect to it. A roll outside the window
+// clears the debt without paying it — expiring it lazily here rather than on a
+// timer is what keeps this the single place the column is ever spent.
+//
+// `tic` is the Tic this roll is happening on. A roll that names none falls back
+// to the pair's own current Tic, exactly as the Stance matchup does for a
+// hand-thrown die (accurate precisely because no resolution is mid-flight when
+// a human clicks one); with no live fight at all there is no clock to be inside
+// and the debt is expired, which is also what clearing it at a fight's end
+// says.
+async function consumeNextRollPenalty(characterId, tic = null) {
+  const row = await one(
+    'SELECT pending_roll_penalty AS n, pending_roll_penalty_tic AS penaltyTic FROM characters WHERE id = ?',
+    [characterId]
+  );
   const owed = row?.n ?? 0;
   if (!owed) return 0;
-  await run('UPDATE characters SET pending_roll_penalty = 0 WHERE id = ?', [characterId]);
-  return owed;
+  const penaltyTic = row?.penaltyTic ?? null;
+  const rollTic = tic ?? (penaltyTic == null ? null : await currentTicOf(characterId));
+  const live = nextRollPenaltyLive({ penaltyTic, rollTic });
+  await run(
+    'UPDATE characters SET pending_roll_penalty = 0, pending_roll_penalty_tic = NULL WHERE id = ?',
+    [characterId]
+  );
+  return live ? owed : 0;
+}
+
+// The Tic a character's own fight is currently on, or null when they are not in
+// one that has started. Only consulted for a roll that named no Tic of its own.
+async function currentTicOf(characterId) {
+  const row = await one(
+    `SELECT pr.current_tic AS currentTic
+     FROM combat_participants cp
+     JOIN combat_pairs pr ON pr.pair_index = cp.pair_index
+     WHERE cp.character_id = ? AND pr.phase IS NOT NULL`,
+    [characterId]
+  );
+  return row?.currentTic ?? null;
 }
 
 // The `opponent_next_roll_bonus` automation's credit — the mirror of the debt

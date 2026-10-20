@@ -1786,19 +1786,20 @@ async function setCombatStyle(moveId, styleName) {
   await run('UPDATE moves SET combat_style_attribute_id = ? WHERE id = ?', [row.id, moveId]);
 }
 
-test("a move's Combat Style reaches BOTH fighters' rolls at the Tic it resolves on", async () => {
-  // Two bugs are pinned here at once.
+test("a move's Combat Style joins the matchup on the roll that threw it, and the guard carries none", async () => {
+  // Two rules are pinned here at once.
   //
   // The mechanic: a Combat Style joins its user's stance, duplicates kept, so
   // a Speed move thrown from a Speed stance scores Speed twice.
   //
-  // The trap: combat_pairs.current_tic is only written AFTER a Tic finishes
-  // processing (advancePairResolution's crash-recovery ordering), so reading
-  // it to find "what is the opponent doing right now" lags a Tic behind and
-  // the attacker's just-revealed move looked like it wasn't out yet. The
-  // attacker's own roll passes its moveId explicitly and was always right —
-  // only the DEFENDER's view of the attacker was wrong, which is why the
-  // assertion that matters most is the one on the defender's modifier.
+  // **And the matchup is scored ONCE per contest (bugfix).** `pairScore` is
+  // antisymmetric, so asking both fighters for their own matchup paid the
+  // favoured one `+S` and charged the other `−S` — one point on the counter
+  // chart moved the comparison by two. The guard is an ANSWER to the attack, so
+  // it carries none of it; nothing is lost, because the attacker's single
+  // application is already scored against the defender's stance PLUS whatever
+  // the defender's own move is carrying (three styles against three). See
+  // matchupAppliesToRoll in combatBonuses.js.
   const pairIndex = 520;
   const attacker = await createCharacter('CS Attacker');
   const defender = await createCharacter('CS Defender');
@@ -1843,10 +1844,61 @@ test("a move's Combat Style reaches BOTH fighters' rolls at the Tic it resolves 
   const atkRoll = rolls.find((r) => r.character_id === attacker);
   const defRoll = rolls.find((r) => r.character_id === defender);
   assert.equal(atkRoll.modifier, styled, "the attacker's own roll carries their move's Combat Style");
-  // The 3-vs-3 half: the defender is scored against the attacker's stance
-  // PLUS the attacker's Combat Style, so their modifier is the exact mirror.
-  // Before the tic fix this came back as -plain, silently ignoring the style.
-  assert.equal(defRoll.modifier, -styled, "the defender is scored against the attacker's move too");
+  // The half that used to double it. This was `-styled`; a guard that mirrored
+  // the attacker's matchup is the bug, not the rule.
+  assert.equal(defRoll.modifier, 0, 'the guard answering it carries none of the matchup');
+});
+
+test("the opponent's own move joins the matchup at the Tic being resolved, not a Tic late", async () => {
+  // The trap this exists for: combat_pairs.current_tic is only written AFTER a
+  // Tic finishes processing (advancePairResolution's crash-recovery ordering),
+  // so reading it to answer "what is the opponent doing right now" lags a Tic
+  // behind, and an opponent's just-revealed move looked like it was not out
+  // yet. It used to be pinned on the DEFENDER's roll, which no longer carries
+  // a matchup at all — but the lagging read is still there, on the one roll
+  // that does: the attacker is scored against the defender's stance plus the
+  // defender's Combat Style, read at `tic`.
+  //
+  // Asserted as a difference between the two reads rather than against a
+  // number, so retuning the counter chart cannot quietly void it.
+  const pairIndex = 522;
+  const attacker = await createCharacter('CS3 Attacker');
+  const defender = await createCharacter('CS3 Defender');
+  await giveStance(attacker, 'Speed', 'Power');
+  await giveStance(defender, 'Technique', 'Improvisation');
+  await seatPair(pairIndex, attacker, defender);
+
+  const jab = await createMove({ name: 'CS3 Jab', activeTics: 2, recoveryTics: 1, rollSlots: ['Skull'], attackTargets: ['Body'] });
+  const guard = await createMove({
+    name: 'CS3 Guard', activeTics: 2, recoveryTics: 1, rollSlots: ['Body'],
+    isDefensive: true, defenseKind: 'block', defenseFramePositions: [0, 1],
+  });
+  await startPairDeclaration(mockIo, pairIndex);
+
+  // The guard is out on Tic 1 and the pair's own counter is still on Tic 0 —
+  // exactly the one-Tic lag resolution runs with.
+  const guardDM = await declareMove({ characterId: defender, moveId: guard, placementTic: 0, startupTics: 1 });
+  await run('UPDATE declared_moves SET reveal_posted = 1 WHERE id = ?', [guardDM]);
+  await run('UPDATE combat_pairs SET current_tic = 0 WHERE pair_index = ?', [pairIndex]);
+
+  const { getStanceMatchupBonus } = await import('../combatBonuses.js');
+  // Measured rather than picked: a style whose net against the attacker's
+  // stance happens to be 0 would prove nothing (same reasoning as the test
+  // above).
+  const styles = await all('SELECT name FROM attributes');
+  let atTic = null;
+  let lagging = null;
+  for (const { name } of styles) {
+    await setCombatStyle(guard, name);
+    atTic = await getStanceMatchupBonus(attacker, { moveId: jab, tic: 1 });
+    lagging = await getStanceMatchupBonus(attacker, { moveId: jab, tic: 0 });
+    if (atTic !== lagging) break;
+  }
+  assert.notEqual(
+    atTic,
+    lagging,
+    'no Combat Style on the guard changes the attacker\'s matchup — pick a different stance pairing'
+  );
 });
 
 test('a move with no Combat Style leaves the matchup at the bare stance score', async () => {
@@ -1873,7 +1925,8 @@ test('a move with no Combat Style leaves the matchup at the bare stance score', 
 
   const rolls = await all("SELECT character_id, modifier FROM chat_log WHERE kind = 'roll'");
   assert.equal(rolls.find((r) => r.character_id === attacker).modifier, plain);
-  assert.equal(rolls.find((r) => r.character_id === defender).modifier, -plain);
+  // Not `-plain`: the guard answering an attack carries none of the matchup.
+  assert.equal(rolls.find((r) => r.character_id === defender).modifier, 0);
 });
 
 // ---------------------------------------------------------------------------
@@ -3582,6 +3635,49 @@ test('a credit is spent only by a roll actually aimed at the fighter who gave it
   assert.equal(
     (await all('SELECT * FROM pending_roll_bonuses WHERE character_id = ?', [bystander])).length, 0
   );
+});
+
+test('a next-roll debuff is live for three frames and then gone', async () => {
+  // "Their next roll, whenever that is" let a mark left on Tic 3 be paid off by
+  // a roll two rounds later that nobody at the table could connect to it. It is
+  // a window now: the Tic it landed on and the three after it.
+  const { getCombatRollBonusBreakdown } = await import('../combatBonuses.js');
+  const weakenedIn = (bd) => bd.terms.find((t) => t.key === 'next_roll_penalty');
+  const mark = async (characterId, penaltyTic) =>
+    run('UPDATE characters SET pending_roll_penalty = 2, pending_roll_penalty_tic = ? WHERE id = ?', [
+      penaltyTic,
+      characterId,
+    ]);
+
+  // Inside the window it pays, as its own named term and once.
+  const inside = await createCharacter('WEAK Inside');
+  await mark(inside, 4);
+  let bd = await getCombatRollBonusBreakdown(inside, { tic: 7 });
+  assert.equal(weakenedIn(bd)?.amount, -2, 'the third frame after it is still inside');
+  assert.equal(weakenedIn(bd)?.label, 'Weakened');
+  bd = await getCombatRollBonusBreakdown(inside, { tic: 7 });
+  assert.equal(weakenedIn(bd), undefined, 'and it is spent, not re-read');
+
+  // One frame later it has lapsed — and the roll that found it lapsed clears
+  // it, so it cannot lie in wait for a later one.
+  const late = await createCharacter('WEAK Late');
+  await mark(late, 4);
+  bd = await getCombatRollBonusBreakdown(late, { tic: 8 });
+  assert.equal(weakenedIn(bd), undefined, 'the fourth frame after it is too late');
+  assert.equal(
+    (await one('SELECT pending_roll_penalty AS n FROM characters WHERE id = ?', [late]))?.n,
+    0,
+    'an expired debt is cleared rather than left waiting'
+  );
+
+  // A mark imposed with no Tic to measure from keeps the old unbounded
+  // behaviour — an automation fired outside a round has no clock to be inside.
+  const noClock = await createCharacter('WEAK NoClock');
+  await run('UPDATE characters SET pending_roll_penalty = 3, pending_roll_penalty_tic = NULL WHERE id = ?', [
+    noClock,
+  ]);
+  bd = await getCombatRollBonusBreakdown(noClock, { tic: 999 });
+  assert.equal(weakenedIn(bd)?.amount, -3);
 });
 
 test('the engine actually reaches the credit on the attack roll it modifies', async () => {

@@ -40,7 +40,7 @@ import {
   dieAtRank,
   rollTotal,
 } from './gameLogic.js';
-import { getCombatRollBonus, getPairStanceMatchup, getStanceMatchupBonus } from './combatBonuses.js';
+import { getCombatRollBonus, getPairStanceMatchup } from './combatBonuses.js';
 import {
   clampFrame,
   validFrames,
@@ -6986,10 +6986,26 @@ io.on('connection', (socket) => {
   const discardUnfinishedResolutions = () =>
     run(`DELETE FROM pair_round_resolutions WHERE status != 'complete'`);
 
+  // **A next-roll debuff cannot outlive the clock it was measured in.** The
+  // debt is live for the three Tics after the one it landed on
+  // (nextRollPenaltyLive), and a fight ending resets the Tic counter — so a
+  // mark left on Tic 40 of one fight would come back into range once the next
+  // fight reached Tic 40, against a fighter nobody had touched. Cleared here and
+  // in combat:end, which are the two places the counter goes back to zero.
+  //
+  // This revises the column's original "it survives the fight ending" note (see
+  // characters.pending_roll_penalty): what that was protecting against is being
+  // able to shed the mark by re-seating mid-fight, and that still holds — the
+  // column is still on the character, and nothing short of the whole fight
+  // ending touches it.
+  const clearNextRollDebts = () =>
+    run('UPDATE characters SET pending_roll_penalty = 0, pending_roll_penalty_tic = NULL');
+
   on('combat:clear', async () => {
     await run('DELETE FROM combat_participants');
     await run('DELETE FROM declared_moves');
     await run('DELETE FROM combat_pairs');
+    await clearNextRollDebts();
     // Fight-scoped Perk charges. Cleared globally rather than per seat, because
     // a fight ending here IS global — every pair and every seat goes with it —
     // and a character who left the arena mid-fight has to lose theirs too.
@@ -7014,6 +7030,7 @@ io.on('connection', (socket) => {
   on('combat:end', async () => {
     await run('DELETE FROM declared_moves');
     await run('DELETE FROM combat_pairs');
+    await clearNextRollDebts(); // see combat:clear
     await clearAllPerkState('fight'); // see combat:clear
     await run('UPDATE combat_state SET fresh_start = 0 WHERE id = 1'); // see combat:clear
     await discardUnfinishedResolutions();

@@ -13,6 +13,8 @@ import {
   computeInitiativeOverflowPenalty,
   findInterruptEligibleTic,
   planImposedRecovery,
+  nextRollPenaltyLive,
+  NEXT_ROLL_PENALTY_TICS,
 } from '../combatTiming.js';
 
 const roll = (n) => ({ roll: n });
@@ -606,4 +608,40 @@ test('attackResolutionTic: junk positions cannot move the landing', () => {
     }),
     3
   );
+});
+
+// ---------- how long a next-roll debuff waits (decided, new) ----------
+//
+// The window is the Tic it landed on plus the three after it. Every boundary is
+// pinned, because "3 frames" is the whole rule and an off-by-one here is the
+// difference between a debuff that lands and one that quietly never does.
+
+test('nextRollPenaltyLive: the window is three Tics wide and the Tic it landed on counts', () => {
+  assert.equal(NEXT_ROLL_PENALTY_TICS, 3);
+  for (const rollTic of [4, 5, 6, 7]) {
+    assert.equal(nextRollPenaltyLive({ penaltyTic: 4, rollTic }), true, `tic ${rollTic}`);
+  }
+});
+
+test('nextRollPenaltyLive: the fourth Tic after it is too late', () => {
+  assert.equal(nextRollPenaltyLive({ penaltyTic: 4, rollTic: 8 }), false);
+  assert.equal(nextRollPenaltyLive({ penaltyTic: 4, rollTic: 40 }), false);
+});
+
+test('nextRollPenaltyLive: a roll EARLIER than the imposition is a different clock, so expired', () => {
+  // Only reachable across a fight, where the Tic counter starts over at 0 —
+  // which is exactly the misfire this guard exists for.
+  assert.equal(nextRollPenaltyLive({ penaltyTic: 40, rollTic: 0 }), false);
+  assert.equal(nextRollPenaltyLive({ penaltyTic: 40, rollTic: 39 }), false);
+});
+
+test('nextRollPenaltyLive: imposed with no Tic, it keeps the old unbounded behaviour', () => {
+  // An automation fired outside a round has no clock to measure from, and
+  // guessing one would be worse than the honest answer.
+  assert.equal(nextRollPenaltyLive({ penaltyTic: null, rollTic: null }), true);
+  assert.equal(nextRollPenaltyLive({ penaltyTic: null, rollTic: 99 }), true);
+});
+
+test('nextRollPenaltyLive: a windowed debuff and a roll outside any fight is expired', () => {
+  assert.equal(nextRollPenaltyLive({ penaltyTic: 4, rollTic: null }), false);
 });

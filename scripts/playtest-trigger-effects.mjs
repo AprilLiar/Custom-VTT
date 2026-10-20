@@ -4,12 +4,16 @@
 //      its direction in its name instead of in a minus sign, because "type −2
 //      to heal 2" is not an authoring affordance anybody finds.
 //   2. **Decrease Next Target Roll** — a debt rather than a modifier: it is
-//      spent by the very next roll that character makes, of any kind, and is
-//      then gone.
+//      spent by the next roll that character makes, of any kind, **within three
+//      frames**, and is then gone either way (revised — it used to wait
+//      indefinitely, so a mark left on Tic 3 could be paid off two rounds later
+//      by a roll nobody at the table could connect to it).
 //
-// One fight proves both. The attacker's punch lands on Tic 1 and fires them;
-// the victim's own move is placed late enough to be idle at that Tic (so it is
-// not Interrupted) and rolls afterwards, which is where the debt gets paid.
+// One fight proves all of it. The attacker's punch lands on the round's second
+// Tic and fires both effects; the victim's own move is placed late enough to be
+// idle at that Tic (so it is not Interrupted) and rolls afterwards, which is
+// where the debt gets paid. Round 1 puts that roll on the window's last frame
+// and round 2 puts it one frame past — the two rounds together are the window.
 //
 //   npm run dev   (or node server/index.js)
 //   node scripts/playtest-trigger-effects.mjs
@@ -93,29 +97,41 @@ await wait('combat:updated', (c) => c.participants.some((p) => p.character_id ==
 gm.emit('combat:next_round', {});
 await wait('combat:updated', (c) => c.pairs[0]?.phase === 'declaration');
 
-const st0 = await jf('/api/combat?role=gm');
-const start = st0.pairs[0].roundStartTic ?? 0;
-for (let i = 0; i < 2; i++) {
-  const st = await jf('/api/combat?role=gm');
-  const side = st.pairs[0].declaringSide;
-  if (!side) break;
-  const isAtk = side === 'left';
-  gm.emit('move:declare', {
-    characterId: isAtk ? atk.id : vic.id,
-    moveId: isAtk ? rattler.id : counter.id,
-    // The victim starts winding up at Tic 3, well clear of the punch's single
-    // Active Tic — idle when it lands, so nothing here is an Interruption.
-    placementTic: isAtk ? start : start + 3,
-  });
-  await sleep(600);
-  gm.emit('combat:character_done_declaring', { characterId: isAtk ? atk.id : vic.id });
-  await sleep(700);
+// One round. The punch goes in at the round's own first Tic and lands on the
+// next one; the victim's move is placed `victimOffset` Tics in, so — with its
+// single Startup frame — it rolls exactly `victimOffset` frames after the blow.
+// That offset is the whole instrument for the window below, and it also keeps
+// the victim idle when the punch lands, so nothing here is an Interruption.
+async function playRound(victimOffset) {
+  const open = await jf('/api/combat?role=gm');
+  if (open.pairs[0]?.phase !== 'declaration') {
+    gm.emit('combat:next_round', {});
+    await wait('combat:updated', (c) => c.pairs[0]?.phase === 'declaration');
+  }
+  const start = (await jf('/api/combat?role=gm')).pairs[0].roundStartTic ?? 0;
+  for (let i = 0; i < 2; i++) {
+    const st = await jf('/api/combat?role=gm');
+    const side = st.pairs[0].declaringSide;
+    if (!side) break;
+    const isAtk = side === 'left';
+    gm.emit('move:declare', {
+      characterId: isAtk ? atk.id : vic.id,
+      moveId: isAtk ? rattler.id : counter.id,
+      placementTic: isAtk ? start : start + victimOffset,
+    });
+    await sleep(600);
+    gm.emit('combat:character_done_declaring', { characterId: isAtk ? atk.id : vic.id });
+    await sleep(700);
+  }
+  await sleep(6000);
+  const log = await jf('/api/chat');
+  const card = log.filter((e) => e.kind === 'round_summary' && e.pairIndex === 0).pop();
+  return card ? (await jf(`/api/combat/round-replay/${card.resolutionId}`))?.events ?? [] : [];
 }
-await sleep(5000);
 
-const chat = await jf('/api/chat');
-const summary = chat.filter((e) => e.kind === 'round_summary' && e.pairIndex === 0).pop();
-const events = summary ? (await jf(`/api/combat/round-replay/${summary.resolutionId}`))?.events ?? [] : [];
+// Three frames after the blow is the last Tic the debt is good for, so round 1
+// is also the window's own upper boundary.
+const events = await playRound(3);
 console.log('  events:', events.map((e) => e.type).join(', '));
 
 // ============================================== 1. Increase Self Stat
@@ -172,6 +188,38 @@ check('...and the modifier really is that much lower',
 const afterVic = await charOf(vic.id);
 check('the debt is spent, not standing', afterVic.character.pending_roll_penalty === 0,
   JSON.stringify({ pending: afterVic.character.pending_roll_penalty }));
+check('...and the round log says how long it was good for',
+  owedEvent?.payload?.untilTic === (owedEvent?.tic ?? 0) + 3,
+  JSON.stringify({ tic: owedEvent?.tic, untilTic: owedEvent?.payload?.untilTic }));
+
+// ============================================== 3. ...and it expires
+//
+// The window is three frames, and round 1 above sits exactly on its last one.
+// Round 2 is the identical fight with the victim's move one Tic later, so their
+// roll is the FOURTH frame after the blow — the first one the mark should not
+// reach. Driven as a second round rather than asserted on a stored number,
+// because what was reported is a debuff landing on a roll nobody could connect
+// to it, and only a real round answers that.
+console.log('\n--- ...and the mark lapses after three frames ---');
+const late = await playRound(4);
+console.log('  events:', late.map((e) => e.type).join(', '));
+const lateOwed = late.find((e) => e.type === 'next_roll_penalty');
+check('the blow landed and left its mark again', lateOwed != null, late.map((e) => e.type).join(', '));
+const lateRoll = late.find((e) => e.type === 'roll' && e.payload?.characterId === vic.id);
+check('the victim still rolled', lateRoll != null, JSON.stringify(late.map((e) => e.type)));
+const lateTerms = lateRoll?.payload?.modifierBreakdown ?? [];
+console.log('  victim roll (4 frames later):', JSON.stringify({
+  hitTic: lateOwed?.tic, rollTic: lateRoll?.tic, modifier: lateRoll?.payload?.modifier, breakdown: lateTerms,
+}));
+check('...four frames after the blow, so the mark does not reach it',
+  (lateRoll?.tic ?? 0) - (lateOwed?.tic ?? 0) === 4,
+  JSON.stringify({ hitTic: lateOwed?.tic, rollTic: lateRoll?.tic }));
+check('...and the roll carries no Weakened term',
+  lateTerms.find((t) => t.key === 'next_roll_penalty') == null, JSON.stringify(lateTerms));
+const afterLate = await charOf(vic.id);
+check('an expired mark is cleared rather than left waiting for a later roll',
+  afterLate.character.pending_roll_penalty === 0,
+  JSON.stringify({ pending: afterLate.character.pending_roll_penalty }));
 
 console.log(failures ? `\n${failures} FAILURE(S)` : '\nall probes passed');
 gm.close();
