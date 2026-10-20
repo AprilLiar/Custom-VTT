@@ -11,7 +11,7 @@
 // into a loophole worth building moves around.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { MATCHUP_EXEMPT_SLOTS, matchupAppliesToSlots } from '../combatBonuses.js';
+import { MATCHUP_EXEMPT_SLOTS, matchupAppliesToRoll, matchupAppliesToSlots } from '../combatBonuses.js';
 import { DICE_TEMPLATE } from '../gameLogic.js';
 
 test('the exempt Stats are real Stats', () => {
@@ -48,4 +48,33 @@ test('a roll with no Stats named keeps the matchup, unchanged', () => {
   assert.equal(matchupAppliesToSlots(['Custom']), true);
   // Nulls in the list are ignored rather than counting as a non-exempt Stat.
   assert.equal(matchupAppliesToSlots([null, 'Brain']), false);
+});
+
+// ---------- and whether it reaches this HALF of a contest (decided, bugfix) ----------
+//
+// `pairScore` is antisymmetric, so asking both fighters in one contest for
+// their own matchup paid the favoured one +S and charged the other −S: one
+// point on the counter chart moved the comparison by two. Only one of the two
+// rolls is somebody's action — an attack is thrown, a guard and a resistance
+// roll are answers to it — so the answering roll carries none of it.
+
+test('an answering roll in a contest carries no matchup, whatever it rolls', () => {
+  assert.equal(matchupAppliesToRoll({ slotNames: ['Skull'], reactive: true }), false);
+  assert.equal(matchupAppliesToRoll({ slotNames: ['Body', 'Left Hand'], reactive: true }), false);
+  // A Custom Roll answering an attack is still an answer.
+  assert.equal(matchupAppliesToRoll({ slotNames: [], reactive: true }), false);
+});
+
+test('the roll being thrown keeps it, and the Stat exemption still applies to it', () => {
+  assert.equal(matchupAppliesToRoll({ slotNames: ['Skull'] }), true);
+  assert.equal(matchupAppliesToRoll({ slotNames: ['Skull'], reactive: false }), true);
+  // Both rules answer the same question, so neither overrides the other.
+  assert.equal(matchupAppliesToRoll({ slotNames: ['Brain'] }), false);
+  assert.equal(matchupAppliesToRoll({ slotNames: ['Brain'], reactive: true }), false);
+});
+
+test('called with nothing at all it matches the old behaviour', () => {
+  // Every hand-thrown roll path reaches it this way.
+  assert.equal(matchupAppliesToRoll(), true);
+  assert.equal(matchupAppliesToRoll({}), true);
 });

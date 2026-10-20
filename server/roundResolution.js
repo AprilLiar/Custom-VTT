@@ -115,6 +115,7 @@ import {
   resolveSideInitiative,
   findInterruptEligibleTic,
   planImposedRecovery,
+  NEXT_ROLL_PENALTY_TICS,
 } from './combatTiming.js';
 import { idleStaminaRegenRate } from './perkAutomations.js';
 import {
@@ -138,12 +139,7 @@ import {
   perkStatDamageThresholds,
   perkRollBonusTerms,
 } from './perkEngine.js';
-import {
-  getCombatRollBonus,
-  getCombatRollBonusBreakdown,
-  getStanceMatchupBonus,
-  moveTagNamesFor,
-} from './combatBonuses.js';
+import { getCombatRollBonusBreakdown, moveTagNamesFor } from './combatBonuses.js';
 import {
   getWeapon,
   removeWeapon,
@@ -936,14 +932,24 @@ async function runAutomations(io, {
       case 'opponent_next_roll_penalty': {
         // **A debt, not a modifier.** Every other roll modifier in the game is
         // a standing fact re-read at each roll (see combatBonuses.js); this one
-        // is spent by the very next roll that character makes, of any kind, and
-        // is then gone. Stored on the character rather than on a seat so it
-        // survives the fight ending and cannot be shed by being re-seated.
+        // is spent by the next roll that character makes, of any kind, and is
+        // then gone. Stored on the character rather than on a seat so it cannot
+        // be shed by being re-seated mid-fight — it is cleared outright when the
+        // whole fight ends, because the window below is measured in Tics and the
+        // Tic counter starts over (see combat:clear in index.js).
         if (!opponentCharacter || opponentCharacterId == null) break;
-        await run('UPDATE characters SET pending_roll_penalty = pending_roll_penalty + ? WHERE id = ?', [
-          amount,
-          opponentCharacterId,
-        ]);
+        // **The Tic rides along, because the debt expires (revised).** It is
+        // live for this Tic and the three after it — see nextRollPenaltyLive.
+        // A second mark left while the first is still live REFRESHES the
+        // window rather than keeping the older one: the points accumulate, and
+        // the clock runs from the most recent blow, which is what a table
+        // watching the second one land would expect.
+        await run(
+          `UPDATE characters
+           SET pending_roll_penalty = pending_roll_penalty + ?, pending_roll_penalty_tic = ?
+           WHERE id = ?`,
+          [amount, tic ?? null, opponentCharacterId]
+        );
         const held = await one('SELECT pending_roll_penalty AS n FROM characters WHERE id = ?', [
           opponentCharacterId,
         ]);
@@ -954,9 +960,17 @@ async function runAutomations(io, {
             characterName: opponentCharacter.name,
             amount,
             pending: held?.n ?? amount,
+            // The last Tic it is good for, so the cutscene and the Tic strip
+            // can say when it lapses instead of leaving a mark on somebody
+            // that nothing ever explains going away.
+            untilTic: tic + NEXT_ROLL_PENALTY_TICS,
           });
         }
-        effects.push(`−${amount} on ${opponentCharacter.name}'s next roll`);
+        effects.push(
+          tic != null
+            ? `−${amount} on ${opponentCharacter.name}'s next roll, within ${NEXT_ROLL_PENALTY_TICS} frames`
+            : `−${amount} on ${opponentCharacter.name}'s next roll`
+        );
         break;
       }
       case 'opponent_next_roll_bonus': {
@@ -1649,13 +1663,17 @@ async function checkInterrupt(io, {
         : ['Body'];
   // The move being interrupted is the one rolling, so its Combat Style is
   // the one that joins the matchup here.
-  const bonusMods = await getCombatRollBonus(targetCharacterId, {
+  const bonus = await getCombatRollBonusBreakdown(targetCharacterId, {
     moveId: startupDM.move_id,
     tic,
     slotNames: interruptSlots,
     againstCharacterId: attackerCharacterId,
+    // Holding a move together under a blow is an ANSWER to that blow, and a
+    // contest scores the Stance matchup once — on the attack that forced it.
+    // See matchupAppliesToRoll's note in combatBonuses.js.
+    reactive: true,
   });
-  const mod = bonusMods + startupDM.roll_modifier + rollBonusRow.bonus;
+  const mod = bonus.total + startupDM.roll_modifier + rollBonusRow.bonus;
 
   // Decision #8: the interrupted character rolls their own Startup move's
   // Roll if it has one, otherwise Body (generic toughness) instead of
@@ -1684,6 +1702,16 @@ async function checkInterrupt(io, {
     characterName: startupDM.character_name,
     modifier: mod,
     dice,
+    // Itemised for the same reason the guard roll now is: this roll decides
+    // whether a move survives, and every point of its modifier should be
+    // answerable. The two situational Interruption Tags are deliberately NOT in
+    // here — they move the contest rather than the roll, and are reported at the
+    // comparison below.
+    modifierTerms: rollModifierBreakdown({
+      rollModifier: startupDM.roll_modifier,
+      moveRollBonus: rollBonusRow.bonus,
+      terms: bonus.terms,
+    }),
   });
 
   // **Two attack rolls against each other (decided, corrected).** The punch's
@@ -2468,6 +2496,12 @@ async function rollFor(io, { characterId, characterName, moveId, moveName, slotN
       // Who this roll is aimed at, for the `opponent_next_roll_bonus` credit.
       // Null when the caller has no honest answer, which spends nothing.
       againstCharacterId,
+      // A grapple's Resist Roll is the answering half of a contest, so it
+      // carries no Stance matchup — the grab's own roll already scored it, for
+      // both fighters' styles at once. `defensive` is exactly that distinction
+      // and was already a parameter here. See matchupAppliesToRoll in
+      // combatBonuses.js.
+      reactive: defensive,
     }),
   ]);
   const mod = (rollModifier ?? 0) + rollBonusRow.bonus + bonus.total;
@@ -3773,18 +3807,31 @@ async function loadBlockGuard(defenderDM, tic, attackerCharacterId = null) {
     ),
     moveTagNamesFor(defenderDM.character_id, defenderDM.move_id),
   ]);
-  const defBonusMods = await getCombatRollBonus(defenderDM.character_id, {
+  // **The itemised breakdown, not just the total (new).** Every other roll in
+  // the game carries its modifier as named terms so the table can account for
+  // it; the guard roll carried a bare number, which meant a Punisher on the
+  // guard, a Stance matchup or a Weakened mark all showed up as an unexplained
+  // `+2` or `−1` on somebody's defence — and an unaccountable modifier is
+  // exactly what gets read as the engine paying a Tag out to the wrong
+  // fighter. Same funnel, same terms, now visible from both chairs.
+  const defBonus = await getCombatRollBonusBreakdown(defenderDM.character_id, {
     moveId: defenderDM.move_id,
     declaredMoveId: defenderDM.id,
     tic,
     // Base plus defensive pool: everything this guard actually rolls.
     slotNames: [...baseSlotRows, ...defensiveSlotRows].map((r) => r.slot_name),
     againstCharacterId: attackerCharacterId,
+    // A guard is an ANSWER to an attack, and a contest scores the Stance
+    // matchup once — on the roll being thrown. See matchupAppliesToRoll's note
+    // in combatBonuses.js.
+    reactive: true,
   });
   return {
     baseSlotRows,
     defensiveSlotRows,
-    defMod: defenderDM.roll_modifier + defRollBonusRow.bonus + defBonusMods,
+    defTerms: defBonus.terms,
+    defMoveRollBonus: defRollBonusRow.bonus,
+    defMod: defenderDM.roll_modifier + defRollBonusRow.bonus + defBonus.total,
     // Block Stamina (the Block Tag's automation). A move carrying the **Block
     // Tag** pays no up-front Stamina Cost and instead spends here, for exactly
     // as much of the attack as its guard absorbed, scaled by the move's own
@@ -3825,8 +3872,19 @@ async function runBlockLine(io, { pending, defenderDM, guard, line, emitEvent })
   //
   // Blocks only. A Dodge is getting out of the way and does not care how hard
   // you hit — it never reaches this function.
-  const defMod =
-    guard.defMod + (await perkBlockPenaltyAgainstYou(pending.attackerCharacterId ?? null));
+  const blockPenalty = await perkBlockPenaltyAgainstYou(pending.attackerCharacterId ?? null);
+  const defMod = guard.defMod + blockPenalty;
+  // ...and it gets its own line in the guard's breakdown, like every other
+  // named term. It is the one modifier on this roll that came from the other
+  // fighter, so it is the one that most needs saying out loud.
+  const defBreakdown = rollModifierBreakdown({
+    rollModifier: defenderDM.roll_modifier,
+    moveRollBonus: guard.defMoveRollBonus ?? 0,
+    terms: [
+      ...(guard.defTerms ?? []),
+      { key: 'block_penalty', label: 'Pressed by the attacker', amount: blockPenalty },
+    ],
+  });
   const defenseLabel = 'Block';
   const against = line ? ` against the strike to ${line}` : '';
 
@@ -3851,6 +3909,7 @@ async function runBlockLine(io, { pending, defenderDM, guard, line, emitEvent })
     characterName: defenderDM.character_name,
     modifier: defMod,
     dice: blockDice,
+    modifierTerms: defBreakdown,
   });
   // See the note on the Dodge branch's own roll event: without this the
   // defender's dice never appear on the timeline at all.
@@ -3861,6 +3920,7 @@ async function runBlockLine(io, { pending, defenderDM, guard, line, emitEvent })
     dice: blockDice,
     modifier: defMod,
     total: blockResult,
+    modifierBreakdown: defBreakdown,
     defensive: true,
     defenseType: defenderDM.defense_kind ?? 'block',
   });
