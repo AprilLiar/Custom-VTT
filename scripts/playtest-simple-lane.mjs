@@ -35,6 +35,11 @@ const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwA
 
 const stamp = Date.now();
 const gm = await connect({ role: 'gm' });
+// These probes assume one lane of ten; the lane count is a table-wide setting,
+// so set it for the run and put it back afterwards.
+const lanesBefore = (await jf('/api/table-settings')).simpleLanes;
+gm.emit('table_settings:set', { simpleLanes: 1 });
+await sleep(300);
 gm.emit('scene:create', { name: `Lane ${stamp}` });
 await sleep(300);
 const scene = (await jf('/api/scenes?role=gm')).find((s) => s.name === `Lane ${stamp}`);
@@ -107,6 +112,7 @@ const playerView = await stage('player');
 check("a hidden fighter's space looks empty to a Player", !playerView.summons.some((s) => s.lane_slot === 2));
 check('...and is still taken for the GM', slotOf(await stage(), fighters[2]) === 2);
 
+gm.emit('table_settings:set', { simpleLanes: lanesBefore });
 gm.emit('scene:delete', { sceneId: scene.id });
 await sleep(300);
 for (const c of fighters) await fetch(`${BASE}/api/characters/${c.id}`, { method: 'DELETE' });
