@@ -19,6 +19,7 @@ import {
 import { ORPHAN_SWEEPS, countOrphans, deleteOrphans, trimChatLog } from './cleanup.js';
 import {
   registerCombatSetupHandlers, deleteCombatSetupFor, parseOwner, loadProfile, loadReminders, loadAllProfiles,
+  loadStances,
 } from './combatSetup.js';
 import { LANE_SLOTS, TRAY, moveOnLane, packLane } from '../client/src/lib/simpleLane.js';
 
@@ -853,8 +854,8 @@ app.get('/api/temp-npc-folders', wrap(async (_req, res) => {
 app.get('/api/combat-setup', wrap(async (req, res) => {
   const owner = parseOwner(req.query.ownerType, req.query.ownerId);
   if (!owner) return res.status(400).json({ error: 'bad owner' });
-  const [profile, reminders] = await Promise.all([loadProfile(owner), loadReminders(owner)]);
-  res.json({ profile, reminders });
+  const [profile, reminders, stances] = await Promise.all([loadProfile(owner), loadReminders(owner), loadStances(owner)]);
+  res.json({ profile, reminders, stances });
 }));
 
 // Every fighter's combat profile at once, keyed `character:<id>` /

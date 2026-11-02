@@ -2807,7 +2807,8 @@ Every table the server creates (`server/db.js`, all `CREATE TABLE IF NOT EXISTS`
 - **audio_playlists, audio_tracks, audio_state** — the Audio Player
 - **chat_log** — `id, kind ('message'|'roll'), character_id, dice_rolled, modifier, content, image_*, payload, created_at` (`move_id` is a leftover column, unused)
 - **combat_profiles** — `id, character_id | temp_npc_id (UNIQUE each), image_data, image_mime_type, image_hash, crop_x/y/w/h, unique_tokens (JSON array)`
-- **combat_reminders** — `id, character_id | temp_npc_id, scope, timing, target, target_character_id, target_temp_npc_id, text, created_at`
+- **combat_reminders** — `id, character_id | temp_npc_id, scope, timing, target, target_character_id, target_temp_npc_id, text, stance_id, created_at`
+- **combat_stances** — `id, character_id | temp_npc_id, name, dice (JSON), created_at`
 - **scenes.combat_mode**, **scene_summons.lane_slot** — see Phase 2 as built.
 - **compendium_archive** — `id, archived_at, counts (JSON), payload (the archive document)`; append-only
 
@@ -2822,7 +2823,7 @@ Clients emit; the server validates, writes, and broadcasts. The surviving contra
 - **Scene tab:** `temp_npc*`, `temp_npc_folder:*`, `scene_picture:create|copy_from_profile|update|delete`, `scene_folder:*`, `scene:create|update|set_folder|copy|delete|activate`, `stage:summon|reposition_summon|resize_summon|toggle_hidden|timestamp_play`, `scene_draw:add|clear`, `scene_note:*`, `master_note:update`, `scene_timestamp:*` (see the Scene tab section).
 - **Audio:** `audio_playlist:*`, `audio_track:*`, `audio:play|pause|resume|stop|seek|next|previous|set_mode|ping|duration|track_ended|error|lookup_title` → `audio:state` (see Audio Player).
 - **Scene modes:** `scene:set_mode` (GM), `lane:move` → `stage:updated`.
-- **Combat tab:** `combat_profile:update` → `combat_profile:updated`; `combat_reminder:create|update|delete` → `combat_reminders:updated`.
+- **Combat tab:** `combat_profile:update` → `combat_profile:updated`; `combat_reminder:create|update|delete` → `combat_reminders:updated`; `combat_stance:create|update|delete` → `combat_stances:updated`.
 - **GM tools:** `image:reencode`.
 
 REST reads: `/api/health`, `/api/characters`, `/api/characters/:id` (→ `{ character, roleplay, counters }`), `/api/characters/:id/relationships`, `/api/character-folders`, `/api/counter-gates`, `/api/chat`, `/api/search`, `/api/temp-npcs`, `/api/temp-npc-folders`, `/api/scene-pictures`, `/api/scenes`, `/api/scene-folders`, `/api/stage`, `/api/scene-notes`, `/api/scene-timestamps`, `/api/master-note`, `/api/audio-library`, `/api/img/:kind/:id/:hash`, `/api/image-inventory`, `/api/profile`, `/api/compendium-archive[/:id]`, `/api/combat-setup`, `/api/combat-profiles`.
@@ -2889,7 +2890,7 @@ Clicking a token opens its panel; a click that turns into a drag closes the pane
 ### Delivery phases (each one commit to `main`, deploy and playtest)
 1. **Foundations — implemented.** Schema, the Unique token catalog, the Combat tab (token image, Unique picks, Reminders) on characters and Temp NPCs, and the pure initiative module with unit tests. Details under **Phase 1 as built** below.
 2. **The toggle and Simple Combat — implemented.** Scene/Simple/Combat state per Scene, the lane overlay, miniatures, drag and snap. Details under **Phase 2 as built** below.
-2b. **Stances — next.** The Stances section of the Combat tab (data and editor) and stance-bound Reminders; the turn-start roll and pick dialog arrive with Phase 5, the token-panel switch with Phase 4.
+2b. **Stances — implemented** (data, editor, stance-bound Reminders; see **Stances as built** below). The turn-start roll and pick dialog arrive with Phase 5, the token-panel switch with Phase 4.
 3. **Combat map.** Combat Background, the grid with its controls, placing and moving tokens, multiple copies.
 4. **Token panel.** Panic tokens with badges, Challenge with particles, the HP bar stack with break and Dizzy, on both modes.
 5. **Fights.** The Start Combat dialog, the initiative rail, rounds and turns, Reminders and the automatic End Phase reminders in chat.
@@ -2907,10 +2908,16 @@ Clicking a token opens its panel; a click that turns into a drag closes the pane
 - **`scene_summons.lane_slot`** — NULL until someone moves a miniature. `buildStagePayload` packs every summon (hidden ones included, before the per-viewer redaction) in summon order: explicit spaces kept, the rest filling free spaces from the left, beyond ten → the tray. `lane:move { summonId, slot }` saves the whole lane at once (so nobody shifts), swaps an occupied target's occupant into the mover's old space, and uses the figure-drag ownership rule; `slot: null` sends a fighter to the tray (GM only, stored as `-1` so it isn't packed back on by itself).
 - **`SimpleCombatLane.jsx`**: a trapezoid whose top edge is 83% of its bottom edge, centred at 5/7 of the stage height. It glows in the backdrop's most prominent colour (`client/src/lib/dominantColor.js`: hue buckets weighted by saturation and brightness, soft-white fallback), with white lines over a black outline. Miniatures are the summon's Scene Picture at 80% of a space's width, fading out over the bottom 38%, on an SVG plinth. Drag past a 5px threshold, snap to the space's centre, yellow highlight under the pointer; a click that isn't a drag is reserved for the token panel. A "Waiting" tray below the lane holds overflow (dropping there is GM-only). For the GM the lane fits between the two w-64 drawers; positions are spaces, so GM and Player agree even at different widths. Hidden fighters are ghosted for the GM; to a Player their space looks empty. z-index 5: above the figures, under the drawers.
 
+### Stances as built (2b)
+- **`client/src/lib/stanceDice.js`** (pure, shared, tested in `server/test/stanceDice.test.js`): a slot is `{ die: 4|6|8|10|12 }` or `{ fixed: 0..12 }`; `normalizeDice` accepts 1-8 valid slots or rejects the whole pool; `rollStance(dice, rng)` → `[{ die, result } | { fixed, result }]` in slot order; `describeDice` → "d10 d6 d6 5".
+- **`combat_stances`** (`character_id | temp_npc_id, name ≤60, dice JSON`, at most 20 per fighter; listed by id, so the **first is the default** active stance) and **`combat_reminders.stance_id`** (nullable).
+- **Events:** `combat_stance:create { ownerType, ownerId, name, dice }`, `combat_stance:update { stanceId, name?, dice? }`, `combat_stance:delete { stanceId }` → `combat_stances:updated { ownerType, ownerId, stances }`. Same write rule as the rest of the Combat tab. `combat_reminder:create|update` take an optional `stanceId` (null = any stance), which must be one of the reminder owner's own stances. Deleting a stance **unbinds** its reminders rather than deleting them. `GET /api/combat-setup` now also returns `stances`.
+- **UI:** a Stances section between Tokens and Reminders. Each stance shows its name, a "default" tag on the first, and its dice as die-shape icons with fixed numbers in amber boxes. The editor has a name field and per-slot selects (d4-d12 or Fixed, plus a 0-12 number), with + Die and ✕ within 1-8. The Reminder form gains an "Any stance / <stance>" select, and a bound reminder shows a violet chip with the stance's name.
+
 ## Implementation Phases (iterative — each ends with a deploy + playtest checkpoint)
 The old system's phases (1-9 and the playtest batches after them) are complete history in git. The current state:
 - **Pivot — done.** Old system archived and removed (this document's **The pivot**).
-- **Panic at the Dojo combat assistant**, in the five phases listed in its section above. Phases 1 and 2 are implemented; Stances (2b) are next, then Phase 3.
+- **Panic at the Dojo combat assistant**, in the five phases listed in its section above. Phases 1, 2 and 2b (Stances) are implemented; Phase 3 is next.
 
 ## Implementation Risks & Recommendations
 - **The archive is the only copy of the old Compendium's data.** It lives in `compendium_archive` and is downloadable from Settings; keep a downloaded copy outside the app. Restoring the old system would mean reverting the pivot commit's code and re-importing from the archive by hand — there is no importer.

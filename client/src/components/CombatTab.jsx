@@ -7,6 +7,16 @@ import { usePictureUpload } from '../lib/usePictureUpload.jsx';
 import { BASIC_TOKENS, STATUS_TOKENS, UNIQUE_TOKENS } from '../lib/panicTokens.js';
 import { ICON_CREDIT, KIND_CLASS, TokenIcon } from '../lib/panicIcons.jsx';
 import CroppedImage from './CroppedImage.jsx';
+import DiceIcon from './DiceIcon.jsx';
+import {
+  FIXED_MAX,
+  FIXED_MIN,
+  STANCE_DIE_SIZES,
+  STANCE_NAME_MAX,
+  STANCE_SLOTS_MAX,
+  STANCE_SLOTS_MIN,
+  describeDice,
+} from '../lib/stanceDice.js';
 
 // A fighter's Combat tab (Panic at the Dojo — see vttprojectplan.md, "Game
 // system — Panic at the Dojo combat assistant"): the round combat token, which
@@ -37,17 +47,20 @@ const fighterKey = (type, id) => `${type}:${id}`;
 export default function CombatTab({ ownerType, ownerId, canEdit = false, ownerName = '' }) {
   const [profile, setProfile] = useState(null);
   const [reminders, setReminders] = useState(null);
+  const [stances, setStances] = useState(null);
   const [fighters, setFighters] = useState([]); // [{ key, type, id, name }]
 
   useEffect(() => {
     let cancelled = false;
     setProfile(null);
     setReminders(null);
+    setStances(null);
     getCombatSetup(ownerType, ownerId)
-      .then(({ profile: p, reminders: r }) => {
+      .then(({ profile: p, reminders: r, stances: st }) => {
         if (cancelled) return;
         setProfile(p);
         setReminders(r);
+        setStances(st ?? []);
       })
       .catch(console.error);
     // Who a reminder can name: every character and every Temp NPC.
@@ -69,11 +82,14 @@ export default function CombatTab({ ownerType, ownerId, canEdit = false, ownerNa
     const mine = (p) => p.ownerType === ownerType && p.ownerId === ownerId;
     const onProfile = (p) => mine(p) && setProfile(p.profile);
     const onReminders = (p) => mine(p) && setReminders(p.reminders);
+    const onStances = (p) => mine(p) && setStances(p.stances);
     socket.on('combat_profile:updated', onProfile);
     socket.on('combat_reminders:updated', onReminders);
+    socket.on('combat_stances:updated', onStances);
     return () => {
       socket.off('combat_profile:updated', onProfile);
       socket.off('combat_reminders:updated', onReminders);
+      socket.off('combat_stances:updated', onStances);
     };
   }, [ownerType, ownerId]);
 
@@ -83,7 +99,7 @@ export default function CombatTab({ ownerType, ownerId, canEdit = false, ownerNa
     [fighters, ownerType, ownerId]
   );
 
-  if (!profile || !reminders) return <p className="text-sm text-zinc-500">Loading…</p>;
+  if (!profile || !reminders || !stances) return <p className="text-sm text-zinc-500">Loading…</p>;
 
   const toggleUnique = (key) => {
     const set = new Set(profile.unique_tokens);
@@ -153,6 +169,8 @@ export default function CombatTab({ ownerType, ownerId, canEdit = false, ownerNa
         </div>
       </section>
 
+      <StancesSection ownerType={ownerType} ownerId={ownerId} stances={stances} canEdit={canEdit} />
+
       <section>
         <h3 className="mb-1 font-display text-sm font-bold uppercase tracking-wide text-zinc-300">Reminders</h3>
         <p className="mb-3 text-xs text-zinc-500">
@@ -169,6 +187,7 @@ export default function CombatTab({ ownerType, ownerId, canEdit = false, ownerNa
               canEdit={canEdit}
               fighters={otherFighters}
               fighterName={fighterName}
+              stances={stances}
             />
           ))}
         </div>
@@ -237,7 +256,7 @@ function TokenPicture({ ownerType, ownerId, profile, canEdit, name }) {
   );
 }
 
-function ReminderColumn({ column, reminders, ownerType, ownerId, canEdit, fighters, fighterName }) {
+function ReminderColumn({ column, reminders, ownerType, ownerId, canEdit, fighters, fighterName, stances }) {
   const isOthers = column.scope === 'others';
   return (
     <div className="flex flex-col panel-cut border border-zinc-800 bg-zinc-900/60 p-2">
@@ -253,6 +272,7 @@ function ReminderColumn({ column, reminders, ownerType, ownerId, canEdit, fighte
             isOthers={isOthers}
             fighters={fighters}
             fighterName={fighterName}
+            stances={stances}
           />
         ))}
       </ul>
@@ -260,6 +280,7 @@ function ReminderColumn({ column, reminders, ownerType, ownerId, canEdit, fighte
         <ReminderForm
           isOthers={isOthers}
           fighters={fighters}
+          stances={stances}
           submitLabel="Add"
           onSubmit={(fields) =>
             socket.emit('combat_reminder:create', { ownerType, ownerId, scope: column.scope, ...fields })
@@ -275,7 +296,7 @@ function targetText(reminder, fighterName) {
   return fighterName[fighterKey(reminder.target_type, reminder.target_id)] ?? 'Someone';
 }
 
-function ReminderRow({ reminder, canEdit, isOthers, fighters, fighterName }) {
+function ReminderRow({ reminder, canEdit, isOthers, fighters, fighterName, stances }) {
   const [editing, setEditing] = useState(false);
   if (editing) {
     return (
@@ -283,6 +304,7 @@ function ReminderRow({ reminder, canEdit, isOthers, fighters, fighterName }) {
         <ReminderForm
           isOthers={isOthers}
           fighters={fighters}
+          stances={stances}
           initial={reminder}
           submitLabel="Save"
           onCancel={() => setEditing(false)}
@@ -309,6 +331,11 @@ function ReminderRow({ reminder, canEdit, isOthers, fighters, fighterName }) {
             {targetText(reminder, fighterName)}
           </span>
         )}
+        {reminder.stance_id != null && (
+          <span className="panel-cut-sm bg-violet-700/40 px-1.5 text-[10px] font-bold uppercase text-violet-200">
+            {stances.find((s) => s.id === reminder.stance_id)?.name ?? 'Stance'}
+          </span>
+        )}
         {canEdit && (
           <span className="ml-auto flex gap-2 text-[11px]">
             <button type="button" onClick={() => setEditing(true)} className="text-zinc-400 hover:text-zinc-100">
@@ -329,19 +356,21 @@ function ReminderRow({ reminder, canEdit, isOthers, fighters, fighterName }) {
   );
 }
 
-function ReminderForm({ isOthers, fighters, initial, submitLabel, onSubmit, onCancel }) {
+function ReminderForm({ isOthers, fighters, stances = [], initial, submitLabel, onSubmit, onCancel }) {
   const [timing, setTiming] = useState(initial?.timing ?? 'start');
   const [target, setTarget] = useState(initial?.target ?? 'any');
   const [one, setOne] = useState(
     initial?.target === 'one' && initial.target_id != null ? fighterKey(initial.target_type, initial.target_id) : ''
   );
   const [text, setText] = useState(initial?.text ?? '');
+  const [stanceId, setStanceId] = useState(initial?.stance_id != null ? String(initial.stance_id) : '');
 
   const submit = (e) => {
     e.preventDefault();
     const body = text.trim();
     if (!body) return;
-    const fields = { timing, text: body };
+    // Bound to a Stance: fires only while that Stance is active. '' = any.
+    const fields = { timing, text: body, stanceId: stanceId ? Number(stanceId) : null };
     if (isOthers) {
       fields.target = target;
       if (target === 'one') {
@@ -369,6 +398,22 @@ function ReminderForm({ isOthers, fighters, initial, submitLabel, onSubmit, onCa
             {Object.entries(TARGET_LABEL).map(([value, label]) => (
               <option key={value} value={value}>
                 {label}
+              </option>
+            ))}
+          </select>
+        )}
+        {stances.length > 0 && (
+          <select
+            value={stanceId}
+            onChange={(e) => setStanceId(e.target.value)}
+            className={selectClass}
+            aria-label="Only in stance"
+            title="Fire only while this stance is active"
+          >
+            <option value="">Any stance</option>
+            {stances.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.name}
               </option>
             ))}
           </select>
@@ -410,6 +455,210 @@ function ReminderForm({ isOthers, fighters, initial, submitLabel, onSubmit, onCa
             Cancel
           </button>
         )}
+      </div>
+    </form>
+  );
+}
+
+// ---------------------------------------------------------------- Stances
+//
+// A fighter's named dice pools (decided after scoping): 1 to 8 slots, each a
+// d4-d12 or a fixed number 0-12 in a die's place. The first stance is the
+// default active one; which one is active in a fight belongs to each placed
+// copy, so it is not shown or chosen here.
+function StancesSection({ ownerType, ownerId, stances, canEdit }) {
+  const [adding, setAdding] = useState(false);
+  return (
+    <section>
+      <h3 className="mb-1 font-display text-sm font-bold uppercase tracking-wide text-zinc-300">Stances</h3>
+      <p className="mb-2 text-xs text-zinc-500">
+        Each stance is a name and its Action Dice. At the start of this fighter’s turn the active stance’s dice roll into
+        chat — with several stances, you are asked which one first.
+      </p>
+      <ul className="mb-2 space-y-1.5">
+        {stances.length === 0 && <li className="text-xs italic text-zinc-600">No stances yet.</li>}
+        {stances.map((st, i) => (
+          <StanceRow key={st.id} stance={st} isDefault={i === 0} canEdit={canEdit} />
+        ))}
+      </ul>
+      {canEdit &&
+        (adding ? (
+          <StanceForm
+            submitLabel="Add stance"
+            onCancel={() => setAdding(false)}
+            onSubmit={(fields) => {
+              socket.emit('combat_stance:create', { ownerType, ownerId, ...fields });
+              setAdding(false);
+            }}
+          />
+        ) : (
+          <button
+            type="button"
+            onClick={() => setAdding(true)}
+            className="min-h-9 panel-cut-sm border border-zinc-700 bg-zinc-900 px-3 text-xs font-semibold text-zinc-200 hover:border-brand-500"
+          >
+            + Add stance
+          </button>
+        ))}
+    </section>
+  );
+}
+
+function DiceChips({ dice }) {
+  return (
+    <span className="flex flex-wrap items-center gap-1" title={describeDice(dice)}>
+      {dice.map((slot, i) =>
+        slot.die !== undefined ? (
+          <DiceIcon key={i} size={slot.die} className="h-6 w-6 text-zinc-200" />
+        ) : (
+          <span
+            key={i}
+            className="flex h-6 w-6 items-center justify-center rounded-sm border border-amber-500/70 text-[11px] font-bold text-amber-300"
+          >
+            {slot.fixed}
+          </span>
+        )
+      )}
+    </span>
+  );
+}
+
+function StanceRow({ stance, isDefault, canEdit }) {
+  const [editing, setEditing] = useState(false);
+  if (editing) {
+    return (
+      <li>
+        <StanceForm
+          initial={stance}
+          submitLabel="Save"
+          onCancel={() => setEditing(false)}
+          onSubmit={(fields) => {
+            socket.emit('combat_stance:update', { stanceId: stance.id, ...fields });
+            setEditing(false);
+          }}
+        />
+      </li>
+    );
+  }
+  return (
+    <li className="flex flex-wrap items-center gap-2 panel-cut-sm border border-zinc-800 bg-zinc-900 px-2 py-1.5">
+      <span className="font-display text-sm font-semibold uppercase tracking-wide text-zinc-100">{stance.name}</span>
+      {isDefault && <span className="text-[10px] uppercase text-zinc-500">default</span>}
+      <DiceChips dice={stance.dice} />
+      {canEdit && (
+        <span className="ml-auto flex gap-2 text-[11px]">
+          <button type="button" onClick={() => setEditing(true)} className="text-zinc-400 hover:text-zinc-100">
+            Edit
+          </button>
+          <button
+            type="button"
+            onClick={() =>
+              window.confirm(`Delete the stance "${stance.name}"? Reminders bound to it will fire in any stance.`) &&
+              socket.emit('combat_stance:delete', { stanceId: stance.id })
+            }
+            className="text-red-500 hover:text-red-400"
+          >
+            Delete
+          </button>
+        </span>
+      )}
+    </li>
+  );
+}
+
+// One slot's editor value: 'd4'..'d12' or 'fixed'.
+const slotKind = (slot) => (slot.die !== undefined ? `d${slot.die}` : 'fixed');
+
+function StanceForm({ initial, submitLabel, onSubmit, onCancel }) {
+  const [name, setName] = useState(initial?.name ?? '');
+  const [dice, setDice] = useState(initial?.dice ?? [{ die: 6 }, { die: 6 }]);
+  const setSlot = (i, slot) => setDice((d) => d.map((s, j) => (j === i ? slot : s)));
+  const valid = name.trim() && dice.length >= STANCE_SLOTS_MIN && dice.length <= STANCE_SLOTS_MAX;
+  const selectClass =
+    'min-h-9 panel-cut-sm border border-zinc-700 bg-zinc-800 px-1.5 text-xs outline-none focus:border-brand-500';
+  return (
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (valid) onSubmit({ name: name.trim(), dice });
+      }}
+      className="space-y-2 panel-cut-sm border border-zinc-700 bg-zinc-900 p-2"
+    >
+      <input
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        maxLength={STANCE_NAME_MAX}
+        placeholder="Stance name"
+        className="min-h-9 w-full panel-cut-sm border border-zinc-700 bg-zinc-800 px-2 text-sm outline-none focus:border-brand-500"
+      />
+      <div className="flex flex-wrap gap-1.5">
+        {dice.map((slot, i) => (
+          <div key={i} className="flex items-center gap-1 panel-cut-sm border border-zinc-800 bg-zinc-950/60 p-1">
+            <select
+              value={slotKind(slot)}
+              aria-label={`Die ${i + 1}`}
+              onChange={(e) =>
+                setSlot(i, e.target.value === 'fixed' ? { fixed: 5 } : { die: Number(e.target.value.slice(1)) })
+              }
+              className={selectClass}
+            >
+              {STANCE_DIE_SIZES.map((d) => (
+                <option key={d} value={`d${d}`}>
+                  d{d}
+                </option>
+              ))}
+              <option value="fixed">Fixed</option>
+            </select>
+            {slot.fixed !== undefined && (
+              <input
+                type="number"
+                min={FIXED_MIN}
+                max={FIXED_MAX}
+                value={slot.fixed}
+                aria-label={`Fixed number ${i + 1}`}
+                onChange={(e) => {
+                  const n = Math.max(FIXED_MIN, Math.min(FIXED_MAX, Math.trunc(Number(e.target.value) || 0)));
+                  setSlot(i, { fixed: n });
+                }}
+                className="min-h-9 w-14 panel-cut-sm border border-zinc-700 bg-zinc-800 px-1.5 text-xs outline-none focus:border-brand-500"
+              />
+            )}
+            {dice.length > STANCE_SLOTS_MIN && (
+              <button
+                type="button"
+                onClick={() => setDice((d) => d.filter((_, j) => j !== i))}
+                title="Remove this die"
+                className="px-1 text-xs text-zinc-500 hover:text-red-400"
+              >
+                ✕
+              </button>
+            )}
+          </div>
+        ))}
+        {dice.length < STANCE_SLOTS_MAX && (
+          <button
+            type="button"
+            onClick={() => setDice((d) => [...d, { die: 6 }])}
+            className="min-h-9 panel-cut-sm border border-dashed border-zinc-600 px-2 text-xs text-zinc-300 hover:border-brand-500"
+          >
+            + Die
+          </button>
+        )}
+      </div>
+      <p className="text-[11px] text-zinc-500">
+        {dice.length} of {STANCE_SLOTS_MAX} — {describeDice(dice)}
+      </p>
+      <div className="flex gap-2">
+        <button
+          type="submit"
+          disabled={!valid}
+          className="min-h-9 panel-cut-sm bg-brand-600 px-3 text-xs font-semibold hover:bg-brand-500 disabled:opacity-40"
+        >
+          {submitLabel}
+        </button>
+        <button type="button" onClick={onCancel} className="min-h-9 px-2 text-xs text-zinc-400 hover:text-zinc-100">
+          Cancel
+        </button>
       </div>
     </form>
   );

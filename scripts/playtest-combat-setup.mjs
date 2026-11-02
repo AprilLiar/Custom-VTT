@@ -111,6 +111,36 @@ bob.emit('combat_reminder:delete', { reminderId: first.id });
 await sleep(300);
 check("another player cannot delete it", (await setup('character', mira.id)).reminders.some((r) => r.id === first.id));
 
+console.log('\n--- Stances ---');
+miraSock.emit('combat_stance:create', { ownerType: 'character', ownerId: mira.id, name: ' Iron Wall ', dice: [{ die: 10 }, { die: 6 }, { fixed: 5 }] });
+miraSock.emit('combat_stance:create', { ownerType: 'character', ownerId: mira.id, name: 'Bad', dice: [{ die: 20 }] });
+miraSock.emit('combat_stance:create', { ownerType: 'character', ownerId: mira.id, name: 'TooMany', dice: Array.from({ length: 9 }, () => ({ die: 4 })) });
+miraSock.emit('combat_stance:create', { ownerType: 'character', ownerId: mira.id, name: '', dice: [{ die: 4 }] });
+miraSock.emit('combat_stance:create', { ownerType: 'character', ownerId: bo.id, name: 'Not yours', dice: [{ die: 4 }] });
+await sleep(500);
+s = await setup('character', mira.id);
+check('a valid stance saves (name trimmed); a d20, nine dice, a blank name and someone else\'s sheet are refused',
+  s.stances.length === 1 && s.stances[0].name === 'Iron Wall' && JSON.stringify(s.stances[0].dice) === JSON.stringify([{ die: 10 }, { die: 6 }, { fixed: 5 }]) && (await setup('character', bo.id)).stances.length === 0,
+  JSON.stringify(s.stances));
+const wall = s.stances[0];
+miraSock.emit('combat_stance:update', { stanceId: wall.id, dice: [{ fixed: 0 }, { fixed: 12 }] });
+await sleep(300);
+check('a stance\'s dice can be edited, fixed numbers 0 and 12 allowed', JSON.stringify((await setup('character', mira.id)).stances[0].dice) === '[{"fixed":0},{"fixed":12}]');
+miraSock.emit('combat_reminder:create', { ownerType: 'character', ownerId: mira.id, scope: 'self', timing: 'start', text: 'Wall up', stanceId: wall.id });
+await sleep(300);
+let bound = (await setup('character', mira.id)).reminders.find((r) => r.text === 'Wall up');
+check('a reminder can be bound to the owner\'s stance', bound?.stance_id === wall.id, JSON.stringify(bound));
+miraSock.emit('combat_reminder:create', { ownerType: 'character', ownerId: mira.id, scope: 'self', timing: 'start', text: 'Foreign', stanceId: 999999 });
+await sleep(300);
+check('...but not to a stance that is not theirs', !(await setup('character', mira.id)).reminders.some((r) => r.text === 'Foreign'));
+miraSock.emit('combat_stance:delete', { stanceId: wall.id });
+await sleep(400);
+s = await setup('character', mira.id);
+bound = s.reminders.find((r) => r.text === 'Wall up');
+check('deleting a stance unbinds its reminders, keeping their text', s.stances.length === 0 && bound?.stance_id === null, JSON.stringify(bound));
+miraSock.emit('combat_stance:create', { ownerType: 'character', ownerId: mira.id, name: 'Keep', dice: [{ die: 8 }] });
+await sleep(300);
+
 console.log('\n--- deletes ---');
 gm.emit('temp_npc:delete', { tempNpcId: goon.id });
 await sleep(400);
@@ -120,7 +150,7 @@ check("the deleted Temp NPC's own profile is gone", !(`temp_npc:${goon.id}` in (
 await fetch(`${BASE}/api/characters/${mira.id}`, { method: 'DELETE' });
 await fetch(`${BASE}/api/characters/${bo.id}`, { method: 'DELETE' });
 s = await setup('character', mira.id);
-check("a deleted character's Combat tab is gone with them", s.reminders.length === 0 && s.profile.unique_tokens.length === 0, JSON.stringify(s));
+check("a deleted character's Combat tab is gone with them", s.reminders.length === 0 && s.stances.length === 0 && s.profile.unique_tokens.length === 0, JSON.stringify(s));
 
 gm.close();
 miraSock.close();

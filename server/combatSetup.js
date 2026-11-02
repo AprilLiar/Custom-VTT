@@ -12,6 +12,7 @@
 import { all, one, run } from './db.js';
 import { imageUrl, sanitizeImageMime } from './images.js';
 import { normalizeUniqueKeys } from '../client/src/lib/panicTokens.js';
+import { STANCES_PER_OWNER_MAX, STANCE_NAME_MAX, normalizeDice } from '../client/src/lib/stanceDice.js';
 
 export const OWNER_TYPES = new Set(['character', 'temp_npc']);
 export const REMINDER_SCOPES = new Set(['self', 'others', 'round']);
@@ -78,8 +79,39 @@ export function shapeReminder(row) {
     target: row.target,
     target_type: row.target_character_id != null ? 'character' : row.target_temp_npc_id != null ? 'temp_npc' : null,
     target_id: row.target_character_id ?? row.target_temp_npc_id ?? null,
+    stance_id: row.stance_id ?? null,
     text: row.text,
   };
+}
+
+export function shapeStance(row) {
+  let dice = null;
+  try {
+    dice = normalizeDice(JSON.parse(row.dice));
+  } catch {
+    dice = null;
+  }
+  return { id: row.id, name: row.name, dice: dice ?? [{ die: 6 }] };
+}
+
+export async function loadStances(owner) {
+  const rows = await all(
+    `SELECT * FROM combat_stances WHERE ${ownerColumn(owner.ownerType)} = ? ORDER BY id`,
+    [owner.ownerId]
+  );
+  return rows.map(shapeStance);
+}
+
+// Every Stance of every fighter, keyed like loadAllProfiles — what a fight
+// needs to roll a turn or show a picker.
+export async function loadAllStances() {
+  const rows = await all('SELECT * FROM combat_stances ORDER BY id');
+  const out = {};
+  for (const row of rows) {
+    const key = row.character_id != null ? `character:${row.character_id}` : `temp_npc:${row.temp_npc_id}`;
+    (out[key] ??= []).push(shapeStance(row));
+  }
+  return out;
 }
 
 // Never selects the picture bytes — `has_image` says whether there is one.
@@ -136,6 +168,23 @@ async function resolveTarget(scope, target, targetType, targetId) {
 }
 
 const cleanText = (text) => String(text ?? '').trim().slice(0, REMINDER_TEXT_MAX);
+const cleanName = (name) => String(name ?? '').trim().slice(0, STANCE_NAME_MAX);
+
+const ownerOfRow = (row) =>
+  row.character_id != null
+    ? { ownerType: 'character', ownerId: row.character_id }
+    : { ownerType: 'temp_npc', ownerId: row.temp_npc_id };
+
+// A reminder's stance binding: null (any stance) or one of the OWNER's own
+// stances. `undefined` means "not given". Returns { ok, stanceId }.
+async function resolveStance(owner, stanceId) {
+  if (stanceId === undefined || stanceId === null || stanceId === '') return { ok: true, stanceId: null };
+  const row = await one(
+    `SELECT id FROM combat_stances WHERE id = ? AND ${ownerColumn(owner.ownerType)} = ?`,
+    [Number(stanceId), owner.ownerId]
+  );
+  return row ? { ok: true, stanceId: row.id } : { ok: false, stanceId: null };
+}
 
 // ---------------------------------------------------------------- handlers
 
@@ -151,6 +200,12 @@ export function registerCombatSetupHandlers({ on, socket, io, mayWrite, cropValu
 
   const emitProfile = async (owner) =>
     io.emit('combat_profile:updated', { ownerType: owner.ownerType, ownerId: owner.ownerId, profile: await loadProfile(owner) });
+  const emitStances = async (owner) =>
+    io.emit('combat_stances:updated', {
+      ownerType: owner.ownerType,
+      ownerId: owner.ownerId,
+      stances: await loadStances(owner),
+    });
   const emitReminders = async (owner) =>
     io.emit('combat_reminders:updated', {
       ownerType: owner.ownerType,
@@ -188,7 +243,52 @@ export function registerCombatSetupHandlers({ on, socket, io, mayWrite, cropValu
     await emitProfile(owner);
   });
 
-  on('combat_reminder:create', async ({ ownerType, ownerId, scope, timing, target, targetType, targetId, text }) => {
+  // ---- Stances
+  on('combat_stance:create', async ({ ownerType, ownerId, name, dice }) => {
+    const owner = parseOwner(ownerType, ownerId);
+    if (!allowed(owner) || !(await ownerExists(owner))) return;
+    const stanceName = cleanName(name);
+    const pool = normalizeDice(dice);
+    if (!stanceName || !pool) return;
+    const count = await one(
+      `SELECT COUNT(*) AS n FROM combat_stances WHERE ${ownerColumn(owner.ownerType)} = ?`,
+      [owner.ownerId]
+    );
+    if (Number(count?.n) >= STANCES_PER_OWNER_MAX) return;
+    await run(`INSERT INTO combat_stances (${ownerColumn(owner.ownerType)}, name, dice) VALUES (?, ?, ?)`, [
+      owner.ownerId,
+      stanceName,
+      JSON.stringify(pool),
+    ]);
+    await emitStances(owner);
+  });
+
+  on('combat_stance:update', async ({ stanceId, name, dice }) => {
+    const row = await one('SELECT * FROM combat_stances WHERE id = ?', [Number(stanceId)]);
+    if (!row) return;
+    const owner = ownerOfRow(row);
+    if (!allowed(owner)) return;
+    const stanceName = name === undefined ? row.name : cleanName(name);
+    const pool = dice === undefined ? JSON.parse(row.dice) : normalizeDice(dice);
+    if (!stanceName || !pool) return;
+    await run('UPDATE combat_stances SET name = ?, dice = ? WHERE id = ?', [stanceName, JSON.stringify(pool), row.id]);
+    await emitStances(owner);
+  });
+
+  // Reminders bound to it are unbound, not deleted — their text is kept.
+  on('combat_stance:delete', async ({ stanceId }) => {
+    const row = await one('SELECT * FROM combat_stances WHERE id = ?', [Number(stanceId)]);
+    if (!row) return;
+    const owner = ownerOfRow(row);
+    if (!allowed(owner)) return;
+    await run('UPDATE combat_reminders SET stance_id = NULL WHERE stance_id = ?', [row.id]);
+    await run('DELETE FROM combat_stances WHERE id = ?', [row.id]);
+    await emitStances(owner);
+    await emitReminders(owner);
+  });
+
+  // ---- Reminders
+  on('combat_reminder:create', async ({ ownerType, ownerId, scope, timing, target, targetType, targetId, text, stanceId }) => {
     const owner = parseOwner(ownerType, ownerId);
     if (!allowed(owner) || !(await ownerExists(owner))) return;
     if (!REMINDER_SCOPES.has(scope) || !REMINDER_TIMINGS.has(timing)) return;
@@ -201,16 +301,18 @@ export function registerCombatSetupHandlers({ on, socket, io, mayWrite, cropValu
     if (Number(count?.n) >= REMINDERS_PER_OWNER_MAX) return;
     const resolved = await resolveTarget(scope, target, targetType, targetId);
     if (!resolved) return;
+    const stance = await resolveStance(owner, stanceId);
+    if (!stance.ok) return;
     await run(
-      `INSERT INTO combat_reminders (${ownerColumn(owner.ownerType)}, scope, timing, target, target_character_id, target_temp_npc_id, text)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [owner.ownerId, scope, timing, resolved.target, resolved.characterId, resolved.tempNpcId, body]
+      `INSERT INTO combat_reminders (${ownerColumn(owner.ownerType)}, scope, timing, target, target_character_id, target_temp_npc_id, text, stance_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [owner.ownerId, scope, timing, resolved.target, resolved.characterId, resolved.tempNpcId, body, stance.stanceId]
     );
     await emitReminders(owner);
   });
 
   // The scope (column) never changes; timing, target and text may.
-  on('combat_reminder:update', async ({ reminderId, timing, target, targetType, targetId, text }) => {
+  on('combat_reminder:update', async ({ reminderId, timing, target, targetType, targetId, text, stanceId }) => {
     const row = await one('SELECT * FROM combat_reminders WHERE id = ?', [Number(reminderId)]);
     if (!row) return;
     const owner =
@@ -230,9 +332,15 @@ export function registerCombatSetupHandlers({ on, socket, io, mayWrite, cropValu
       resolved = await resolveTarget(row.scope, target, targetType, targetId);
       if (!resolved) return;
     }
+    let boundStance = row.stance_id ?? null;
+    if (stanceId !== undefined) {
+      const stance = await resolveStance(owner, stanceId);
+      if (!stance.ok) return;
+      boundStance = stance.stanceId;
+    }
     await run(
-      'UPDATE combat_reminders SET timing = ?, target = ?, target_character_id = ?, target_temp_npc_id = ?, text = ? WHERE id = ?',
-      [nextTiming, resolved.target, resolved.characterId, resolved.tempNpcId, body, row.id]
+      'UPDATE combat_reminders SET timing = ?, target = ?, target_character_id = ?, target_temp_npc_id = ?, text = ?, stance_id = ? WHERE id = ?',
+      [nextTiming, resolved.target, resolved.characterId, resolved.tempNpcId, body, boundStance, row.id]
     );
     await emitReminders(owner);
   });
@@ -258,6 +366,7 @@ export async function deleteCombatSetupFor(ownerType, ownerId) {
   const col = ownerColumn(ownerType);
   const targetCol = ownerType === 'character' ? 'target_character_id' : 'target_temp_npc_id';
   await run(`DELETE FROM combat_reminders WHERE ${col} = ?`, [ownerId]);
+  await run(`DELETE FROM combat_stances WHERE ${col} = ?`, [ownerId]);
   await run(`UPDATE combat_reminders SET target = 'any', ${targetCol} = NULL WHERE ${targetCol} = ?`, [ownerId]);
   await run(`DELETE FROM combat_profiles WHERE ${col} = ?`, [ownerId]);
 }

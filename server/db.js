@@ -1305,6 +1305,22 @@ export async function initDb() {
     )
   `);
 
+  // **Stances (decided after scoping).** A fighter's named dice pools: `dice`
+  // is a JSON array of 1-8 slots, each `{ die: 4..12 }` or `{ fixed: 0..12 }`
+  // (client/src/lib/stanceDice.js). Which one is ACTIVE belongs to each placed
+  // copy in a fight, not here.
+  ddl(`
+    CREATE TABLE IF NOT EXISTS combat_stances (
+      id INTEGER PRIMARY KEY,
+      character_id INTEGER REFERENCES characters(id) ON DELETE CASCADE,
+      temp_npc_id INTEGER REFERENCES temp_npcs(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      dice TEXT NOT NULL,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      CHECK ((character_id IS NULL) <> (temp_npc_id IS NULL))
+    )
+  `);
+
   // **Reminders: chat lines a fighter's player writes to remember a mechanic.**
   // `scope` is the column they sit in on the Combat tab — this fighter's own
   // turn, someone else's turn, or the round — and `timing` whether they fire at
@@ -1326,6 +1342,9 @@ export async function initDb() {
       CHECK ((character_id IS NULL) <> (temp_npc_id IS NULL))
     )
   `);
+  // Optional: a reminder bound to one of its owner's Stances fires only while
+  // that Stance is active. Deleting the Stance unbinds it, keeping the text.
+  await ensureColumn('combat_reminders', 'stance_id', 'INTEGER REFERENCES combat_stances(id) ON DELETE SET NULL');
 
   // ---------------------------------------------------------------- Audio Player
   //
@@ -1456,6 +1475,8 @@ async function ensureIndexes() {
     // The Combat tab's own read, by owner.
     ['combat_reminders', 'character_id'],
     ['combat_reminders', 'temp_npc_id'],
+    ['combat_stances', 'character_id'],
+    ['combat_stances', 'temp_npc_id'],
   ];
   for (const [table, column] of indexes) {
     ddl(`CREATE INDEX IF NOT EXISTS idx_${table}_${column} ON ${table}(${column})`);
