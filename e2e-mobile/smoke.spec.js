@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { chooseGm, expectNoHorizontalOverflow, goToArena, goToNavLabel } from './helpers.js';
+import { chooseGm, expectNoHorizontalOverflow, goToNavLabel } from './helpers.js';
 
 // §15.2: every top-level page must render without horizontal scroll at
 // whatever viewport this project runs at (320px up through tablet
@@ -16,7 +16,7 @@ test.describe('mobile smoke: every page loads without horizontal overflow', () =
     await expectNoHorizontalOverflow(page);
   });
 
-  test('Arena, Characters, Compendium reachable and overflow-free', async ({ page }, testInfo) => {
+  test('Characters and Settings reachable and overflow-free', async ({ page }, testInfo) => {
     await chooseGm(page);
     await expectNoHorizontalOverflow(page);
 
@@ -26,12 +26,12 @@ test.describe('mobile smoke: every page loads without horizontal overflow', () =
     await expect(page).toHaveURL(/\/$/);
     await expectNoHorizontalOverflow(page);
 
-    await goToNavLabel(page, 'Compendium');
-    await expect(page).toHaveURL(/\/compendium/);
-    await expectNoHorizontalOverflow(page);
-
-    await goToArena(page);
-    await expect(page).toHaveURL(/\/combat/);
+    // A fresh page.goto would re-ask the role, so reach Settings by clicking:
+    // the header cog on desktop, the "More" menu below md:.
+    if (isMobileNav) await page.locator('button[title="Search / Scene / Settings"]').click();
+    await page.locator('a[href="/settings"]:visible').first().click();
+    await expect(page).toHaveURL(/\/settings/);
+    await expect(page.getByText('Primary Color')).toBeVisible();
     await expectNoHorizontalOverflow(page);
 
     testInfo.annotations.push({ type: 'nav-mode', description: isMobileNav ? 'bottom-nav' : 'desktop-header' });

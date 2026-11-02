@@ -1,21 +1,17 @@
 import { useEffect, useState } from 'react';
 import { socket } from '../socket.js';
-import { getCharacter, getCombat } from '../lib/api.js';
-import { useRole } from '../roleContext.jsx';
+import { getCharacter } from '../lib/api.js';
 import { REWARD_LABELS, REWARD_COLORS } from '../lib/counterDisplay.js';
 import DialogShell from './DialogShell.jsx';
 
-// Counters from a roll card (decided, new). Counters existed in two places
-// that had nothing to do with each other — a character's own Counters tab,
-// and the Arena's standalone ones — so ticking one up after a roll meant
-// leaving the chat, finding the right screen, and coming back. This is the
-// same data reached from where the roll actually happened.
+// Counters from a roll card (decided, new). Ticking a Counter up after a roll
+// used to mean leaving the chat, finding the character's sheet, and coming
+// back. This is the same data reached from where the roll actually happened.
 //
-// Two sections, exactly as decided: the roller's own counters always, and
-// the Arena's counters only while a fight is running (there is nothing for
-// them to track otherwise). Both sections can create as well as adjust,
-// because "the counter I want doesn't exist yet" is the most common reason
-// to be here at all.
+// The roller's own counters, which can be created here as well as adjusted,
+// because "the counter I want doesn't exist yet" is the most common reason to
+// be here at all. (A second section listed the Combat Arena's counters during a
+// fight; it went with the Arena in the pivot.)
 
 function CounterRow({ counter, showOwner }) {
   const pips = Array.from({ length: counter.target_pips });
@@ -131,10 +127,7 @@ function CreateCounter({ characterId, label }) {
 }
 
 export default function CounterAdjustDialog({ characterId, characterName, onClose }) {
-  const { role, characterId: myCharacterId } = useRole();
   const [own, setOwn] = useState(null);
-  const [arena, setArena] = useState(null);
-  const [fightActive, setFightActive] = useState(false);
 
   const load = () => {
     if (characterId != null) {
@@ -144,15 +137,6 @@ export default function CounterAdjustDialog({ characterId, characterName, onClos
     } else {
       setOwn([]);
     }
-    getCombat(role === 'gm' ? { role: 'gm' } : { role: 'player', characterId: myCharacterId })
-      .then((c) => {
-        setArena(c?.counters ?? []);
-        setFightActive((c?.pairs ?? []).some((p) => p.phase != null));
-      })
-      .catch(() => {
-        setArena([]);
-        setFightActive(false);
-      });
   };
 
   // counter:* broadcasts are how an adjust becomes visible — refetch rather
@@ -160,20 +144,13 @@ export default function CounterAdjustDialog({ characterId, characterName, onClos
   // while this is open shows up too.
   useEffect(() => {
     load();
-    const events = ['counter:created', 'counter:updated', 'counter:deleted', 'combat:updated'];
+    const events = ['counter:created', 'counter:updated', 'counter:deleted'];
     for (const ev of events) socket.on(ev, load);
     return () => {
       for (const ev of events) socket.off(ev, load);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [characterId, role, myCharacterId]);
-
-  // The Arena section only lists counters that aren't already in the first
-  // section — a character-owned counter flagged Show in Combat appears in
-  // GET /api/combat too, and listing it twice with two sets of +/- buttons
-  // would look like two separate counters.
-  const ownIds = new Set((own ?? []).map((c) => c.id));
-  const arenaOnly = (arena ?? []).filter((c) => !ownIds.has(c.id));
+  }, [characterId]);
 
   return (
     // `centered`: opened from a roll card in ChatPanel's own mobile-only
@@ -203,22 +180,6 @@ export default function CounterAdjustDialog({ characterId, characterName, onClos
           )}
           {characterId != null && <CreateCounter characterId={characterId} label="New counter" />}
         </section>
-
-        {fightActive && (
-          <section className="flex flex-col gap-2 border-t border-zinc-800 pt-3">
-            <h4 className="font-display text-xs font-semibold uppercase tracking-wide text-zinc-500">
-              Combat counters
-            </h4>
-            {arena == null ? (
-              <p className="text-sm text-zinc-600">Loading…</p>
-            ) : arenaOnly.length === 0 ? (
-              <p className="text-sm text-zinc-600">No combat counters yet.</p>
-            ) : (
-              arenaOnly.map((c) => <CounterRow key={c.id} counter={c} showOwner />)
-            )}
-            {role === 'gm' && <CreateCounter characterId={null} label="New combat counter" />}
-          </section>
-        )}
       </div>
     </DialogShell>
   );

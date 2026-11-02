@@ -17,7 +17,6 @@ import {
   countOrphans,
   deleteOrphans,
   trimChatLog,
-  pruneOldFightReplays,
 } from '../cleanup.js';
 
 const dbPath = path.join(os.tmpdir(), `cleanup-${process.pid}-${Date.now()}.db`);
@@ -98,24 +97,4 @@ test('chat is trimmed to exactly the rows that are readable', async () => {
 test('trimming a log shorter than the limit keeps everything', async () => {
   await db.execute(trimChatLog(1000));
   assert.equal(await n('SELECT COUNT(*) FROM chat_log'), 10);
-});
-
-test('replays from earlier fights are pruned, the current fight is kept', async () => {
-  await db.execute(
-    'CREATE TABLE pair_round_resolutions (id INTEGER PRIMARY KEY, fight_number INTEGER NOT NULL, status TEXT)'
-  );
-  await db.execute("INSERT INTO pair_round_resolutions (id, fight_number, status) VALUES (1, 1, 'complete')");
-  await db.execute("INSERT INTO pair_round_resolutions (id, fight_number, status) VALUES (2, 2, 'complete')");
-  await db.execute("INSERT INTO pair_round_resolutions (id, fight_number, status) VALUES (3, 3, 'complete')");
-  await db.execute("INSERT INTO pair_round_resolutions (id, fight_number, status) VALUES (4, 3, 'running')");
-  await db.execute(pruneOldFightReplays(3));
-  const left = (await db.execute('SELECT id FROM pair_round_resolutions ORDER BY id')).rows.map((r) => Number(r[0]));
-  assert.deepEqual(left, [3, 4], 'fights 1 and 2 went; fight 3 — including a round still running — stayed');
-});
-
-test('fight 1 prunes nothing, so a brand-new world is untouched', async () => {
-  // `fight_number` starts at 1, so `< 1` must match no row at all. Getting this
-  // off by one would wipe the only fight a new world has.
-  await db.execute(pruneOldFightReplays(1));
-  assert.equal(await n('SELECT COUNT(*) FROM pair_round_resolutions'), 2);
 });

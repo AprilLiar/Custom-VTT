@@ -15,7 +15,8 @@
 // So this drives the actions a player actually waits on, then prints the depth
 // of each and what it predicts at a given round trip. Pass the round trip as an
 // argument; `scripts/latency.mjs` against the live deployment measures the real
-// one (`readMs` on /api/health).
+// one (`readMs` on /api/health). (It drove the old combat round until the pivot
+// removed it.)
 import { io } from 'socket.io-client';
 
 const BASE = process.env.E2E_URL || 'http://localhost:3044';
@@ -28,65 +29,43 @@ const jpost = (u, b) =>
 
 const gm = io(BASE);
 await new Promise((r) => gm.on('connect', r));
-const wait = (ev, pred = () => true, ms = 20000) =>
-  new Promise((res, rej) => {
-    const t = setTimeout(() => rej(new Error('timeout ' + ev)), ms);
-    const h = (p) => { if (pred(p)) { clearTimeout(t); gm.off(ev, h); res(p); } };
-    gm.on(ev, h);
-  });
 gm.emit('identity:set', { role: 'gm' });
 await sleep(400);
 const stamp = Date.now();
 
-console.log('Setting up a fight…');
-gm.emit('tell:create', { name: `Prof ${stamp}` });
-const tell = await wait('tell:created', (t) => t.name === `Prof ${stamp}`);
-const mk = async (name, extra = {}) => {
-  gm.emit('move:create', {
-    name: `${name}${stamp}`, isDefault: true, tellId: tell.id,
-    description: name, interactions: {}, staminaCost: 1,
-    startupTics: 1, activeTics: 2, recoveryTics: 1, rollSlots: ['Skull'], attackTargets: ['Body'],
-    ...extra,
-  });
-  return wait('move:created', (m) => m.name === `${name}${stamp}`);
-};
-const jab = await mk('ProfJab');
-await mk('ProfHook');
-await mk('ProfKick');
-
-const a = await jpost('/api/characters', { name: `ProfA${stamp}`, characterType: 'npc' });
-const b = await jpost('/api/characters', { name: `ProfB${stamp}`, characterType: 'npc' });
-gm.emit('combat:add_participant', { characterId: a.id, side: 'left', pairIndex: 0 });
-await wait('combat:updated', (c) => c.participants.some((p) => p.character_id === a.id));
-gm.emit('combat:add_participant', { characterId: b.id, side: 'right', pairIndex: 0 });
-await wait('combat:updated', (c) => c.participants.some((p) => p.character_id === b.id));
+console.log('Setting up a character, a counter and a Scene…');
+const pc = await jpost('/api/characters', { name: `ProfPC${stamp}`, characterType: 'pc' });
+gm.emit('counter:create', { characterId: pc.id, name: `ProfCounter${stamp}`, targetPips: 6 });
+await sleep(500);
+const counter = (await jf(`/api/characters/${pc.id}`)).counters.find((c) => c.name === `ProfCounter${stamp}`);
+gm.emit('scene:create', { name: `ProfScene${stamp}`, folderId: null });
+await sleep(500);
+const scene = (await jf('/api/scenes?role=gm')).find((s) => s.name === `ProfScene${stamp}`);
 
 // Everything above is setup. Only what follows is measured.
 await fetch(`${BASE}/api/profile?role=gm&reset=1`).catch(() => {});
 console.log('\nDriving the actions a player waits on…\n');
 
-// The three page loads.
-await jf('/api/combat?role=gm');
-await jf(`/api/characters/${a.id}?role=gm`);
+// The page loads.
 await jf('/api/characters');
+await jf(`/api/characters/${pc.id}`);
+await jf(`/api/characters/${pc.id}/relationships?role=gm`);
 await jf('/api/chat');
+await jf('/api/stage?role=gm');
 
-// A round: start it, declare, finish declaring.
-gm.emit('combat:next_round', {});
-await wait('combat:updated', (c) => c.pairs[0]?.phase === 'declaration');
-const start = (await jf('/api/combat?role=gm')).pairs[0].roundStartTic ?? 0;
-const want = { left: a.id, right: b.id };
-for (let i = 0; i < 2; i += 1) {
-  const side = (await jf('/api/combat?role=gm')).pairs[0].declaringSide;
-  if (!side) break;
-  gm.emit('move:declare', { characterId: want[side], moveId: jab.id, placementTic: start });
-  await sleep(500);
-  gm.emit('combat:character_done_declaring', { characterId: want[side] });
-  await sleep(900);
-}
-// A Stamina tick — the most frequent write in the game.
-gm.emit('stamina:adjust', { characterId: a.id, delta: -1 });
+// The writes that happen at the table.
+gm.emit('counter:adjust', { counterId: counter.id, delta: 1 });
 await sleep(400);
+gm.emit('roleplay:save_answer', { characterId: pc.id, question: 'Who are you?', answer: 'Someone.' });
+await sleep(400);
+gm.emit('chat:message', { characterId: pc.id, text: 'Hello' });
+await sleep(400);
+gm.emit('dice:roll_custom', { characterId: pc.id, size: 8, modifier: 2 });
+await sleep(400);
+if (scene) {
+  gm.emit('scene:activate', { sceneId: scene.id });
+  await sleep(600);
+}
 
 await sleep(800);
 const report = await fetch(`${BASE}/api/profile?role=gm&rtt=${RTT}`).then((r) => r.text());
@@ -96,7 +75,9 @@ console.log(
     `That column times the real round trip is the delay; the queries column is not.\n` +
     `Round trip used here: ${RTT}ms — measure the real one with scripts/latency.mjs.`
 );
-gm.emit('combat:clear', {});
+// Put the world back: an active Scene is global state other scripts assume
+// nobody left lying around.
+if (scene) gm.emit('scene:delete', { sceneId: scene.id });
 await sleep(400);
 gm.close();
 process.exit(0);

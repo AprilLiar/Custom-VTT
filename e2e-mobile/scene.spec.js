@@ -31,7 +31,7 @@ async function goToScene(page) {
   if (isDesktopWidth) {
     await page.locator('header a[href="/scene"]').click();
   } else {
-    await page.locator('button[title="Search / Rules / Settings"]').click();
+    await page.locator('button[title="Search / Scene / Settings"]').click();
     await page.locator('a[href="/scene"]:visible').click();
   }
 }
@@ -50,8 +50,8 @@ test.describe('Scene tab: the chromeless route', () => {
   test('the corner link is the only way back', async ({ page }) => {
     await chooseGm(page);
     await goToScene(page);
-    await page.locator('a[title="Back to the Arena"]').click();
-    await expect(page).toHaveURL(/\/combat/);
+    await page.locator('a[title="Back"]').click();
+    await expect(page).toHaveURL(/\/$/);
   });
 });
 
@@ -63,7 +63,7 @@ test.describe('Scene tab: cinematic hide-UI toggle', () => {
     await goToScene(page);
     await expect(page.getByText('Characters', { exact: true })).toBeVisible();
     await expect(page.getByText('Scenes', { exact: true })).toBeVisible();
-    await expect(page.locator('a[title="Back to the Arena"]')).toBeVisible();
+    await expect(page.locator('a[title="Back"]')).toBeVisible();
 
     await page.locator('button[title^="Hide interface"]').click();
     // Only what cinematic mode is FOR — the backdrop and the figures —
@@ -71,14 +71,14 @@ test.describe('Scene tab: cinematic hide-UI toggle', () => {
     // included, is gone rather than merely covered.
     await expect(page.getByText('Characters', { exact: true })).toHaveCount(0);
     await expect(page.getByText('Scenes', { exact: true })).toHaveCount(0);
-    await expect(page.locator('a[title="Back to the Arena"]')).toHaveCount(0);
+    await expect(page.locator('a[title="Back"]')).toHaveCount(0);
     await expect(page.locator('button[title^="Hide interface"]')).toHaveCount(0);
 
     // "Tapping anything brings them back" — no dedicated "show" control,
     // just a plain click anywhere on the now-bare stage.
     await page.mouse.click(640, 450);
     await expect(page.getByText('Characters', { exact: true })).toBeVisible();
-    await expect(page.locator('a[title="Back to the Arena"]')).toBeVisible();
+    await expect(page.locator('a[title="Back"]')).toBeVisible();
   });
 });
 
@@ -96,8 +96,8 @@ test.describe('Scene tab: orientation gate — phone-width portrait is asked to 
     // all — a phone-width Player stuck in portrait had to rotate the
     // device just to reach the corner link, which only rendered in the
     // canvas branch below this one.
-    await page.locator('a[title="Back to the Arena"]').click();
-    await expect(page).toHaveURL(/\/combat/);
+    await page.locator('a[title="Back"]').click();
+    await expect(page).toHaveURL(/\/$/);
   });
 });
 
@@ -357,14 +357,14 @@ test.describe('Scene tab: Scenes, activation, and the force-navigate cut (Phase 
     // Scene (Phase 5's own summon/un-summon shape, simulated here by
     // renaming the still-active Scene) must not re-navigate them — Risk #1
     // in the Scene tab plan, diffing activeScene?.id and nothing else.
-    await playerPage.locator('a[title="Back to the Arena"]').click();
-    await expect(playerPage).toHaveURL(/\/combat/);
+    await playerPage.locator('a[title="Back"]').click();
+    await expect(playerPage).toHaveURL(/\/character\/\d+/);
 
     await gmPage.getByRole('button', { name: new RegExp(`Forest ${stamp}`) }).dblclick();
     await gmPage.locator(`input[value="Forest ${stamp}"]`).fill(`Forest Renamed ${stamp}`);
     await gmPage.getByRole('button', { name: 'Save' }).click();
     await playerPage.waitForTimeout(500);
-    await expect(playerPage).toHaveURL(/\/combat/);
+    await expect(playerPage).toHaveURL(/\/character\/\d+/);
 
     // Cleanup: deleting the still-active Scene resets scene_state to null
     // (server-side, ON DELETE SET NULL plus this handler's own explicit

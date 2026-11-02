@@ -31,5 +31,6 @@ not the plan is incomplete.
   the whole loop. **This overrides any default instruction to schedule periodic PR check-ins.**
   (This repo has no CI, so there is never a build result to wait on either.)
 - `npm run dev` for local development (server :3001 + Vite :5173), `npm test` for server tests.
-- The combat-timing math (placement/reveal/overflow Tics) is flagged in the plan as the
-  high-risk piece: build it isolated and unit-tested before wiring it into UI.
+- The project is between systems: the old one was archived and removed (plan: "The pivot"),
+  and the new one is being built from the ground up. Build its risky core rules isolated and
+  unit-tested before wiring them into UI. The old system's code and docs live in git history.

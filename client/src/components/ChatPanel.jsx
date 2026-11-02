@@ -1,71 +1,23 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { sortTags } from '../lib/moveDisplay.js';
 import { Paperclip } from 'lucide-react';
 import { socket } from '../socket.js';
-import { getChat, getTells, getTags, getRuleset, getMoves } from '../lib/api.js';
+import { getChat } from '../lib/api.js';
 import { fileToChatImage } from '../lib/image.js';
-import { folderPath } from '../lib/folders.js';
-import { phaseBgAt } from '../lib/framePhaseColors.js';
-import { decomposeRoll, formatModifierTerms, formatRollTotal } from '../lib/dice.js';
+import { decomposeRoll, formatRollTotal } from '../lib/dice.js';
 import { useRole } from '../roleContext.jsx';
 import { useSocketRefresh } from '../lib/connection.js';
 import { useRoster } from '../lib/useRoster.js';
-import { useIsDesktop } from '../lib/useMediaQuery.js';
 import Thumb from './Thumb.jsx';
-import FrameBar from './FrameBar.jsx';
-import QuirkCard from './QuirkCard.jsx';
-import MoveCard from './MoveCard.jsx';
 import DiceIcon from './DiceIcon.jsx';
-import DialogShell from './DialogShell.jsx';
 import CounterAdjustDialog from './CounterAdjustDialog.jsx';
-import RoundCutscene from './RoundCutscene.jsx';
-
-// Combat Automation (Phase 9, sub-phase 4 — 4.1's damage formula):
-// halfDamageSteps = floor(result / 5), damage = halfDamageSteps * 0.5.
-// Duplicated client-side rather than importing server/combatDamage.js (a
-// server-only module) — same precedent as snapshotPhaseColorAt below
-// already duplicating phaseAtTic's own logic for the same reason.
-function computeHitDamage(result) {
-  const halfDamageSteps = Math.max(0, Math.floor(result / 5));
-  return { halfDamageSteps, damage: halfDamageSteps * 0.5 };
-}
 
 const DICE_TRAY_SIZES = [4, 6, 8, 10, 12];
 
-// Which phase(s) `move` occupies at `tic` — an array since two different
-// characters' moves in the same lane can genuinely overlap the same Tic
-// (both throwing at once); each gets its own thin colored segment in that
-// square rather than one hiding the other.
-//
-// The palette and the phase walk both live in framePhaseColors.js now
-// (Combat Automation overhaul §4.3) — this file used to carry its own copy
-// of each, one of four near-duplicates across the client.
-const snapshotPhaseColorAt = phaseBgAt;
-
-// Combat Automation overhaul §4.2 — one button per pair per round,
-// replacing chat:lane_snapshot's per-reveal spam. Deliberately ungated
-// (decision #11): a resolved round is public history, so anyone can watch
-// any round back, including one they weren't in.
-function RoundSummaryCard({ entry, onWatch }) {
-  const left = (entry.leftNames ?? []).join(' & ') || 'Left';
-  const right = (entry.rightNames ?? []).join(' & ') || 'Right';
-  return (
-    <button
-      type="button"
-      onClick={() => onWatch?.(entry.resolutionId)}
-      className="mt-1 flex w-full items-center gap-2 panel-cut-sm border border-brand-800/60 bg-brand-950/30 p-2 text-left hover:bg-brand-950/60"
-    >
-      <span className="font-display text-xs uppercase tracking-wide text-brand-300">▶ Watch</span>
-      <span className="font-display text-xs text-zinc-300">
-        Round {entry.roundNumber} between {left} and {right}
-      </span>
-    </button>
-  );
-}
-
-function Entry({ entry, character, moveInfo, characters, defenseResolutions, onWatchRound, onAdjustCounters, moveDetail, onRequestDetail }) {
-  const [expanded, setExpanded] = useState(false);
-  const { role, capabilities } = useRole();
+// One entry in the log. Two kinds remain (decided, revised — the pivot): a
+// message, with an optional picture or GIF, and a Dice Tray roll. The old
+// system's cards — move reveals, round summaries and their replays, Quirk cards,
+// and the damage line under an engine roll — went with it.
+function Entry({ entry, character, onAdjustCounters }) {
   const time = new Date(entry.timestamp).toLocaleTimeString([], {
     hour: '2-digit',
     minute: '2-digit',
@@ -84,8 +36,8 @@ function Entry({ entry, character, moveInfo, characters, defenseResolutions, onW
           <span className="font-display font-semibold text-zinc-200">{entry.characterName}</span>
           <span className="font-display ml-auto text-xs text-zinc-600">{time}</span>
           {/* Counters, reachable from the roll that earned them (decided,
-              new). Only on a roll: a plain chat message or a replay card has
-              no "this just happened, tick something" moment behind it. */}
+              new). Only on a roll: a plain chat message has no "this just
+              happened, tick something" moment behind it. */}
           {entry.kind === 'roll' && (
             <button
               type="button"
@@ -111,131 +63,6 @@ function Entry({ entry, character, moveInfo, characters, defenseResolutions, onW
               />
             )}
           </div>
-        ) : entry.kind === 'quirk' ? (
-          // **A Quirk, shown to the table** — the ↑ on a Quirk card on a
-          // character sheet. The same `QuirkCard` in the same colours, so what
-          // lands in the log is recognisably the thing that was pointed at
-          // rather than a paraphrase of it.
-          //
-          // Rendered entirely from the row's own payload, which was written at
-          // post time: the card still reads correctly after the Quirk is
-          // reworded, dropped, or its character deleted, exactly as every other
-          // non-roll card in this log does.
-          <div className="mt-1">
-            <QuirkCard
-              quirk={{
-                name: entry.quirkName,
-                description: entry.quirkDescription,
-                kind: entry.quirkKind,
-              }}
-              byline={entry.characterName ? `${entry.characterName}'s Quirk` : 'A Quirk'}
-            />
-          </div>
-        ) : entry.kind === 'round_summary' ? (
-          <RoundSummaryCard entry={entry} onWatch={onWatchRound} />
-        ) : entry.kind === 'move_reveal' ? (
-          entry.move ? (
-            <div className="mt-1 w-full panel-cut-sm bg-zinc-800/60 p-1.5">
-              <button
-                type="button"
-                onClick={() => {
-                  // **A real check now, not the honour-system prompt it
-                  // replaced.** This used to be a window.confirm asking "Does
-                  // your character have the Genius Observer Perk?" — a gate
-                  // that trusted the reader about the reader's own advantage.
-                  // The answer comes from the server against the logged-in
-                  // character's granted Perks (see capabilitiesFor in
-                  // server/index.js); the button simply isn't offered to a
-                  // viewer who hasn't earned it.
-                  if (!capabilities.canSeeRevealedDetail) return;
-                  // The full move is fetched the first time it is actually
-                  // asked for, not shipped with the card — see
-                  // move:request_detail server-side. Requested on every open
-                  // rather than once ever: the GM can edit a move between
-                  // rounds, and a card re-opened after that should show what
-                  // the move is now.
-                  if (!expanded) onRequestDetail?.(entry.move.id);
-                  setExpanded((prev) => !prev);
-                }}
-                disabled={!capabilities.canSeeRevealedDetail}
-                title={
-                  capabilities.canSeeRevealedDetail
-                    ? expanded
-                      ? 'Click to collapse'
-                      : 'Click to show the full move'
-                    : 'Reading a move in full takes the Genius Observer Perk.'
-                }
-                className={`flex w-full items-center gap-2 text-left ${
-                  capabilities.canSeeRevealedDetail ? 'hover:opacity-80' : 'cursor-default'
-                }`}
-              >
-                <Thumb record={{ image_url: entry.move.imageUrl }} name={entry.move.name} size="h-8 w-8" />
-                <div className="min-w-0 flex-1">
-                  <div className="font-display truncate text-sm font-semibold text-zinc-100">{entry.move.name}</div>
-                  {/* The public half of the card: what came out, and how long
-                      it takes. The bar is the picture of it and the numbers
-                      are the same fact said plainly — frame data is read as
-                      "1 / 2 / 1" at a table, and a row of coloured squares
-                      alone makes you count. */}
-                  <div className="mt-0.5 flex items-center gap-1.5">
-                    <FrameBar
-                      startup={entry.move.startupTics}
-                      active={entry.move.activeTics}
-                      recovery={entry.move.recoveryTics}
-                      defensePositions={entry.move.defenseFramePositions}
-                      size="h-2.5 w-2.5"
-                    />
-                    <span className="font-mono text-[10px] leading-none text-zinc-500">
-                      {entry.move.startupTics} / {entry.move.activeTics} / {entry.move.recoveryTics}
-                    </span>
-                  </div>
-                </div>
-                {/* Says which of the two cards this is, rather than leaving a
-                    Player to discover by clicking that nothing happens. */}
-                <span className="shrink-0 self-start font-display text-[10px] uppercase leading-none text-zinc-600">
-                  {capabilities.canSeeRevealedDetail ? (expanded ? 'Hide' : 'Read') : 'Locked'}
-                </span>
-              </button>
-              {expanded && (
-                moveDetail?.move && moveInfo ? (
-                  <div className="mt-1.5 border-t border-zinc-700 pt-1.5">
-                    <MoveCard
-                      move={moveDetail.move}
-                      allMoves={moveInfo.moves}
-                      tell={moveInfo.tellById.get(moveDetail.move.tell_id)}
-                      rightTell={moveDetail.move.right_tell_id ? moveInfo.tellById.get(moveDetail.move.right_tell_id) : null}
-                      leftTell={moveDetail.move.left_tell_id ? moveInfo.tellById.get(moveDetail.move.left_tell_id) : null}
-                      style={moveDetail.move.style_attribute_id ? moveInfo.styleById.get(moveDetail.move.style_attribute_id) : null}
-                      combatStyle={
-                        moveDetail.move.combat_style_attribute_id
-                          ? moveInfo.styleById.get(moveDetail.move.combat_style_attribute_id)
-                          : null
-                      }
-                      tags={sortTags((moveDetail.move.tag_ids ?? []).map((id) => moveInfo.tagById.get(id)).filter(Boolean))}
-                      folderLabel={folderPath(moveDetail.move.folder_id, moveInfo.moveFolders) ?? undefined}
-                    />
-                  </div>
-                ) : (
-                  // Nothing to fall back to on purpose. The compact card
-                  // carries no description any more — that is the gated half,
-                  // and a half-card would quietly hand out some of what the
-                  // Perk is for. So this says which of the three things
-                  // happened instead of showing a stub.
-                  <div className="mt-1.5 border-t border-zinc-700 pt-1.5 text-xs italic text-zinc-600">
-                    {moveDetail?.reason === 'deleted'
-                      ? 'This move has since been deleted.'
-                      : moveDetail?.reason === 'not_revealed'
-                      ? 'That move has not been revealed.'
-                      : moveDetail?.reason === 'perk'
-                      ? 'Reading a move in full takes the Genius Observer Perk.'
-                      : 'Reading…'}
-                  </div>
-                )
-              )}
-            </div>
-          ) : (
-            <p className="mt-1 italic text-zinc-600">(move deleted)</p>
-          )
         ) : (
           <>
             <div className="mt-1 space-y-0.5">
@@ -245,19 +72,14 @@ function Entry({ entry, character, moveInfo, characters, defenseResolutions, onW
                 // server-side), so it's recovered by subtracting the bonus
                 // back out. The roll's shared modifier is deliberately NOT in
                 // here: it modifies the roll, not each die, and is shown once
-                // on the total line below. Shown as its own breakdown ("what
-                // was rolled on the d8, then summed") per the plan's decided
-                // chat-card redesign — the final result is bolder and bigger
-                // so it strikes the eye at a glance. decomposeRoll is shared
-                // with the round cutscene's log so the two can't drift.
+                // on the total line below.
                 const { flat, raw } = decomposeRoll(d);
                 return (
                   <div key={i} className="font-display flex flex-wrap items-baseline gap-x-1.5">
                     <span className="text-zinc-500">{d.slot_name}</span>
-                    {/* With nothing to add — the common case now that the
-                        roll's modifier lives on the total line — the face IS
-                        the result, so "d4: 2 = 2" is dropped for a plain
-                        "d4:". Only a die carrying its own bonus prints a sum. */}
+                    {/* With nothing to add, the face IS the result, so "d4: 2 =
+                        2" is dropped for a plain "d4:". Only a die carrying its
+                        own bonus prints a sum. */}
                     <span className="font-mono text-xs text-zinc-400">
                       d{d.size}:{flat !== 0 ? ` ${raw} ${flat > 0 ? '+' : '−'} ${Math.abs(flat)} =` : ''}
                     </span>
@@ -267,85 +89,17 @@ function Entry({ entry, character, moveInfo, characters, defenseResolutions, onW
               })}
             </div>
             {/* Shown whenever there is more than one die OR a modifier to
-                apply — the modifier lands here, on the roll, and this is the
-                only place it is visible now that it is no longer folded into
-                every die. A single die with no modifier still prints nothing:
-                the total would just be the same number twice. */}
+                apply — the modifier lands here, on the roll. A single die with
+                no modifier prints nothing: the total would just be the same
+                number twice. */}
             {(multi || Boolean(entry.modifier)) && (
               <div className="font-display mt-1 text-right font-mono leading-none text-brand-300">
                 <span className="text-xs text-zinc-500">Total </span>
                 <span className="text-2xl font-black">
                   {formatRollTotal(entry.dice, entry.modifier, entry.total)}
                 </span>
-                {/* **What the modifier was made of.** Its own quiet line under
-                    the total, and only when there is more than one named piece
-                    to name — a roll of 11 with `+ 4 (Stance matchup) − 5 (Read
-                    on the grab)` used to print as a bare `11 + 4 = 15` while
-                    the engine went on to announce 10, and the log contradicted
-                    itself. Engine rolls carry `modifierTerms`; a Dice Tray roll
-                    has none and this renders nothing. */}
-                {Boolean(formatModifierTerms(entry.modifierTerms)) && (
-                  <div className="mt-0.5 text-[11px] font-normal leading-snug text-zinc-500">
-                    {formatModifierTerms(entry.modifierTerms)}
-                  </div>
-                )}
               </div>
             )}
-            {entry.declaredMoveId != null && (() => {
-              // Combat Automation (Phase 9, sub-phase 4 — 4.1's damage line
-              // + Apply button, 4.2's Partial-Block/Dodge override). Only a
-              // roll carrying the reveal-time roll-context payload (see
-              // buildRollContext server-side) ever gets these — a bare Dice
-              // Tray roll or a manual Stat roll from the Moves tab never
-              // has entry.declaredMoveId set, so they render exactly as
-              // before, untouched.
-              const raw = computeHitDamage(entry.total);
-              const resolved = defenseResolutions?.get(entry.declaredMoveId);
-              // A Full Block/Dodge zeroes the damage entirely; Partial
-              // substitutes the reduced (netResult-based) figure in place
-              // of the raw roll's own damage — "the reduced damage... can
-              // still be applied... via the same Apply/Damage-Application-
-              // dialog flow" (4.2). No resolution yet, or the pick came
-              // back Failed (falls through to the plain 4.1 Hit), both
-              // just use the raw roll's own damage, unmodified.
-              const steps = resolved
-                ? resolved.outcome === 'full'
-                  ? 0
-                  : resolved.halfDamageSteps
-                : raw.halfDamageSteps;
-              const damage = steps * 0.5;
-              // Attack Target (Change 001): a Successful Block's own
-              // combat:defense_resolved payload (resolved) carries the
-              // post-Block replacement; otherwise fall back to this roll's
-              // own declare-time snapshot (from buildRollContext live, or
-              // GET /api/chat's batched reload enrichment — see server/
-              // index.js) — either way, always the current server state,
-              // never something derived client-side.
-              const effectiveAttackTargets = resolved?.effectiveAttackTargets ?? entry.effectiveAttackTargets ?? [];
-              const attackTargetSource = resolved?.attackTargetSource ?? entry.attackTargetSource ?? 'move';
-              return (
-                <div className="mt-1.5 flex flex-wrap items-center gap-2 border-t border-zinc-800 pt-1.5">
-                  <span className="font-display text-sm text-zinc-400">
-                    Damage: <span className="font-mono font-bold text-red-400">{damage}</span>
-                  </span>
-                  {resolved && (
-                    <span className="text-xs italic text-zinc-500">
-                      ({resolved.outcome === 'full' ? 'Full' : resolved.outcome === 'partial' ? 'Partial' : 'Failed'}{' '}
-                      {resolved.defenseType === 'dodge' ? 'Dodge' : 'Block'})
-                    </span>
-                  )}
-                  <span className="w-full text-xs text-zinc-500">
-                    Effective Attack Target:{' '}
-                    <span className={effectiveAttackTargets.length ? 'text-zinc-300' : 'text-zinc-600'}>
-                      {effectiveAttackTargets.length ? effectiveAttackTargets.join(' + ') : 'None'}
-                    </span>
-                    {attackTargetSource === 'block' && (
-                      <span className="italic text-sky-400"> — changed by Block</span>
-                    )}
-                  </span>
-                </div>
-              );
-            })()}
           </>
         )}
       </div>
@@ -438,9 +192,9 @@ function Composer({ characters }) {
   };
 
   // Dice Tray (item 1): a raw d4-d12 roll plus an adjustable modifier, not
-  // tied to any character's own die — see dice:roll_custom server-side,
-  // shared with a move's Custom Roll type. Attributed to whoever's
-  // currently selected in the "post as" picker above, same as a message.
+  // tied to any character — see dice:roll_custom server-side. Attributed to
+  // whoever's currently selected in the "post as" picker above, same as a
+  // message.
   const rollCustomDie = (size) =>
     socket.emit('dice:roll_custom', { characterId: postingCharacterId, size, modifier: diceTrayMod });
 
@@ -552,42 +306,10 @@ function Composer({ characters }) {
 export default function ChatPanel({ open }) {
   const { role } = useRole();
   const [entries, setEntries] = useState([]);
-  // Which round the "Watch Round N" button opened, if any (§4.2) — the
-  // replay itself is a fullscreen RoundCutscene, matching how
-  // a fullscreen dialog already takes over the screen elsewhere in the app.
-  const [replayResolutionId, setReplayResolutionId] = useState(null);
   // Which roll card's "+" is open, if any — the whole entry, so the dialog
   // can name whoever made the roll.
   const [counterEntry, setCounterEntry] = useState(null);
   const roster = useRoster();
-  // Only needed to render a move_reveal card's expanded full MoveCard (see
-  // Entry above) — the same lookups CombatArena.jsx/MovesTab.jsx already
-  // fetch independently for the same purpose, no shared cache between them.
-  const [tells, setTells] = useState(null);
-  const [tags, setTags] = useState(null);
-  const [ruleset, setRuleset] = useState(null);
-  const [moveFolders, setMoveFolders] = useState(null);
-  // Attack Target (Change 001): flat move templates (roll_type/roll_slots),
-  // (kept for the move_reveal card's expanded MoveCard)
-  // client-side without a second fetch of its own.
-  const [moves, setMoves] = useState(null);
-  // Combat Automation (Phase 9, sub-phase 4): combat:resolve_defense's
-  // broadcast, keyed by the attacker's own declaredMoveId so the Entry
-  // whose roll triggered it can override its damage line (Full = 0,
-  // Partial = the reduced amount) — see Entry above. Never cleared on
-  // chat:cleared: a resolution is tied to a Tic-Countdown-scoped
-  // declaredMoveId, not a chat row, and a fresh fight starts with a fresh
-  // set of declared moves anyway (new ids), so a stale entry here can never
-  // wrongly match a future roll.
-  const [defenseResolutions, setDefenseResolutions] = useState(new Map());
-  // The gated half of a move-reveal card, keyed by moveId — answers to
-  // `move:request_detail`, which the server only fills in for a socket whose
-  // identity passes canSeeRevealedDetail. Kept here rather than per-Entry so
-  // the same move revealed three times this fight is fetched once per open
-  // rather than three times, and so a refusal is remembered too (a `move`
-  // of null with a `reason`), which is what stops a denied card retrying
-  // forever.
-  const [moveDetails, setMoveDetails] = useState(new Map());
   const bottomRef = useRef(null);
 
   // Mobile readiness (Change 002) §11.2: a broadcast missed while the tab
@@ -599,118 +321,26 @@ export default function ChatPanel({ open }) {
 
   useEffect(() => {
     getChat().then(setEntries).catch(console.error);
-    const onRoll = (entry) => setEntries((prev) => [...prev, entry]);
-    const onMessage = (entry) => setEntries((prev) => [...prev, entry]);
-    const onMoveReveal = (entry) => setEntries((prev) => [...prev, entry]);
-    const onRoundSummary = (entry) => setEntries((prev) => [...prev, entry]);
-    const onQuirk = (entry) => setEntries((prev) => [...prev, entry]);
+    const onEntry = (entry) => setEntries((prev) => [...prev, entry]);
     const onCleared = () => setEntries([]);
-    const onDefenseResolved = (payload) =>
-      setDefenseResolutions((prev) => new Map(prev).set(payload.attackerDeclaredMoveId, payload));
-    const onMoveDetail = (payload) =>
-      setMoveDetails((prev) => new Map(prev).set(payload.moveId, payload));
-    // A Perk granted mid-session changes the answer to every refusal already
-    // cached above, so the cache is dropped whenever capabilities move.
-    const onCapabilities = () => setMoveDetails(new Map());
-    socket.on('roll:result', onRoll);
-    socket.on('chat:message', onMessage);
-    socket.on('chat:move_reveal', onMoveReveal);
-    socket.on('chat:round_summary', onRoundSummary);
-    socket.on('chat:quirk', onQuirk);
+    socket.on('roll:result', onEntry);
+    socket.on('chat:message', onEntry);
     socket.on('chat:cleared', onCleared);
-    socket.on('combat:defense_resolved', onDefenseResolved);
-    socket.on('move:detail', onMoveDetail);
-    socket.on('identity:capabilities', onCapabilities);
     return () => {
-      socket.off('roll:result', onRoll);
-      socket.off('chat:message', onMessage);
-      socket.off('chat:move_reveal', onMoveReveal);
-      // Was missing, so an unmounted panel kept appending round summaries to
-      // a dead setState — the other four were always cleaned up.
-      socket.off('chat:round_summary', onRoundSummary);
-      socket.off('chat:quirk', onQuirk);
+      socket.off('roll:result', onEntry);
+      socket.off('chat:message', onEntry);
       socket.off('chat:cleared', onCleared);
-      socket.off('combat:defense_resolved', onDefenseResolved);
-      socket.off('move:detail', onMoveDetail);
-      socket.off('identity:capabilities', onCapabilities);
     };
   }, []);
 
   // Avatars for the feed — unfiltered by role, same as the rolls/messages
   // themselves (everyone sees everyone's chat activity, NPCs included).
-  // Through useRoster because this panel is mounted on *every* page, so it was
-  // the widest-reaching copy of the refetch-on-every-Stamina-change bug.
+  // Through useRoster because this panel is mounted on *every* page.
   const characters = useMemo(() => new Map((roster ?? []).map((c) => [c.id, c])), [roster]);
-
-  useEffect(() => {
-    const refresh = () => {
-      getTells().then(setTells).catch(console.error);
-      getTags().then(setTags).catch(console.error);
-      getRuleset().then(setRuleset).catch(console.error);
-      getMoves().then((d) => {
-        setMoveFolders(d.folders);
-        setMoves(d.moves);
-      }).catch(console.error);
-    };
-    refresh();
-    const events = [
-      'tell:created', 'tell:updated', 'tell:deleted',
-      'tag:created', 'tag:updated', 'tag:deleted',
-      'folder:created', 'folder:updated', 'folder:deleted',
-    ];
-    for (const ev of events) socket.on(ev, refresh);
-    return () => {
-      for (const ev of events) socket.off(ev, refresh);
-    };
-  }, []);
-
-  // `moves` is in here because MoveCard needs the whole library to name a
-  // move's Requirement and its grapple branches. It used to be read as a bare
-  // `moves` from inside Entry, which is a different scope — the expanded card
-  // would have thrown a ReferenceError the first time anybody opened one.
-  const moveInfo =
-    tells && tags && ruleset && moveFolders
-      ? {
-          tellById: new Map(tells.map((t) => [t.id, t])),
-          tagById: new Map(tags.map((t) => [t.id, t])),
-          styleById: new Map(ruleset.attributes.map((a) => [a.id, a])),
-          moveFolders,
-          moves: moves ?? [],
-        }
-      : null;
-
-  const requestMoveDetail = (moveId) => {
-    if (moveId == null) return;
-    // Drop any cached answer first so a reopen genuinely re-asks, and the
-    // card shows "Reading…" rather than a stale copy of an edited move.
-    setMoveDetails((prev) => {
-      if (!prev.has(moveId)) return prev;
-      const next = new Map(prev);
-      next.delete(moveId);
-      return next;
-    });
-    socket.emit('move:request_detail', { moveId });
-  };
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [entries, open]);
-
-  // Mobile: Chat is a real tab, so leaving it (App.jsx closes it on any
-  // route change below `md:`) has to take an open round replay with it —
-  // otherwise the dialog just stops being drawn (this component renders
-  // `null` while `open` is false) without its own state resetting, and
-  // tapping back into Chat popped the same replay open again unasked,
-  // as if it had been running behind the other tabs the whole time. This
-  // component instance never unmounts (`App.jsx` always renders it, `open`
-  // only gates its output), so that reset has to happen here rather than
-  // relying on mount/unmount to do it. Desktop is untouched: there Chat is
-  // a persistent side panel that never "closes" on navigation, so a replay
-  // left open should stay open.
-  const isDesktop = useIsDesktop();
-  useEffect(() => {
-    if (!open && !isDesktop) setReplayResolutionId(null);
-  }, [open, isDesktop]);
 
   if (!open) return null;
 
@@ -743,13 +373,7 @@ export default function ChatPanel({ open }) {
               key={entry.id ?? `live-${i}`}
               entry={entry}
               character={characters.get(entry.characterId)}
-              moveInfo={moveInfo}
-              characters={characters}
-              defenseResolutions={defenseResolutions}
-              onWatchRound={setReplayResolutionId}
               onAdjustCounters={setCounterEntry}
-              moveDetail={entry.move ? moveDetails.get(entry.move.id) : undefined}
-              onRequestDetail={requestMoveDetail}
             />
           ))
         )}
@@ -766,18 +390,6 @@ export default function ChatPanel({ open }) {
           characterName={counterEntry.characterName}
           onClose={() => setCounterEntry(null)}
         />
-      )}
-      {/* `theater`, not `fullscreen`: a replay is watched, not filled in, and
-          the fullscreen variant's centered max-w-md panel left the timeline
-          and its log squeezed into a column on desktop. */}
-      {replayResolutionId != null && (
-        <DialogShell
-          title="Round replay"
-          variant="theater"
-          onClose={() => setReplayResolutionId(null)}
-        >
-          <RoundCutscene resolutionId={replayResolutionId} />
-        </DialogShell>
       )}
     </aside>
   );

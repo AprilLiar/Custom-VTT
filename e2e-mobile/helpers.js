@@ -22,14 +22,6 @@ export async function goToNavLabel(page, label) {
   await page.locator(scope, { hasText: label }).first().click();
 }
 
-// The "Dogfight" logo (App.jsx) always links to the Arena and is never
-// `hidden` at any breakpoint — unlike Characters/Compendium, Arena has no
-// separate text link in the desktop header, so this is the one reliable way
-// to get there regardless of viewport.
-export async function goToArena(page) {
-  await page.locator('[title="Combat Arena"]').click();
-}
-
 // Fails the assertion if any element makes the document wider than its own
 // viewport — the concrete, measurable form of "no horizontal scroll on a
 // narrow phone" from §14.3.

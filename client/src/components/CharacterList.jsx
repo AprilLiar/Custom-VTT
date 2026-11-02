@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useRole } from '../roleContext.jsx';
 import { socket } from '../socket.js';
@@ -8,8 +8,9 @@ import {
   deleteCharacter,
   getCharacterFolders,
 } from '../lib/api.js';
-import { portraitSrc } from '../lib/image.js';
+import { fileToPortrait, portraitSrc } from '../lib/image.js';
 import { cropOf } from '../lib/imageCrop.js';
+import { usePictureUpload } from '../lib/usePictureUpload.jsx';
 import CroppedImage from './CroppedImage.jsx';
 import { flattenFolderTree, folderPath } from '../lib/folders.js';
 import FolderTreeNav from './FolderTreeNav.jsx';
@@ -58,13 +59,33 @@ function MoveToFolderDialog({ character, folders, onClose }) {
   );
 }
 
+// **Plain create (decided, revised — the pivot).** Name, PC/NPC, folder and an
+// optional profile picture, then straight to the sheet's own tabs. There used
+// to be a step-by-step Character Creation wizard on the sheet as well (Stats,
+// Stance, Moves, Perks, Quirks); everything it set up went with the old system.
 function AddCharacterForm({ folders, currentFolder, onDone }) {
   const { role } = useRole();
   const [name, setName] = useState('');
   const [type, setType] = useState('pc');
   const [folderId, setFolderId] = useState(currentFolder);
   const [busy, setBusy] = useState(false);
+  // The picked picture's fields, held until Create — the same shape the
+  // sheet's own portrait upload sends ({ imageData, imageMimeType, crop… }).
+  const [picture, setPicture] = useState(null);
+  const fileRef = useRef(null);
   const flatFolders = flattenFolderTree(folders);
+  const upload = usePictureUpload({
+    process: fileToPortrait,
+    name: name || 'New character',
+    previewSizes: [
+      { label: 'In the roster', px: 32 },
+      { label: 'On the sheet', px: 96 },
+    ],
+    onPicked: (fields) => setPicture(fields),
+  });
+  const previewCrop = picture
+    ? cropOf({ crop_x: picture.cropX, crop_y: picture.cropY, crop_w: picture.cropW, crop_h: picture.cropH })
+    : null;
 
   const submit = async (e) => {
     e.preventDefault();
@@ -77,6 +98,7 @@ function AddCharacterForm({ folders, currentFolder, onDone }) {
         name: name.trim(),
         characterType: role === 'gm' ? type : 'pc',
         folderId: role === 'gm' ? folderId : null,
+        ...(picture ?? {}),
       });
       onDone();
     } finally {
@@ -89,13 +111,36 @@ function AddCharacterForm({ folders, currentFolder, onDone }) {
       onSubmit={submit}
       className="flex flex-col gap-3 panel-cut-lg border border-zinc-700 bg-zinc-900 p-4"
     >
-      <input
-        autoFocus
-        value={name}
-        onChange={(e) => setName(e.target.value)}
-        placeholder="Character name"
-        className="panel-cut-sm border border-zinc-700 bg-zinc-800 px-3 py-2 text-zinc-100 outline-none focus:border-brand-500"
-      />
+      <div className="flex items-center gap-3">
+        <button
+          type="button"
+          onClick={() => fileRef.current?.click()}
+          title="Add a profile picture (optional)"
+          className="flex h-16 w-16 shrink-0 items-center justify-center overflow-hidden panel-cut-sm border border-zinc-700 bg-zinc-800 hover:border-brand-500"
+        >
+          {upload.busy ? (
+            <span className="text-xs text-zinc-500">…</span>
+          ) : picture ? (
+            <CroppedImage
+              src={`data:${picture.imageMimeType};base64,${picture.imageData}`}
+              alt="Profile picture"
+              crop={previewCrop}
+              className="h-full w-full"
+            />
+          ) : (
+            <span className="px-1 text-center text-[10px] text-zinc-500">Add picture</span>
+          )}
+        </button>
+        <input ref={fileRef} type="file" accept="image/*" hidden onChange={upload.pick} />
+        {upload.dialog}
+        <input
+          autoFocus
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="Character name"
+          className="min-w-0 flex-1 panel-cut-sm border border-zinc-700 bg-zinc-800 px-3 py-2 text-zinc-100 outline-none focus:border-brand-500"
+        />
+      </div>
       {role === 'gm' && (
         <div className="flex overflow-hidden panel-cut-sm border border-zinc-700 text-sm font-semibold">
           {['pc', 'npc'].map((t) => (
@@ -129,7 +174,7 @@ function AddCharacterForm({ folders, currentFolder, onDone }) {
       <div className="flex gap-2">
         <button
           type="submit"
-          disabled={!name.trim() || busy}
+          disabled={!name.trim() || busy || upload.busy}
           className="flex-1 panel-cut-sm bg-brand-600 py-2 font-semibold hover:bg-brand-500 disabled:opacity-40"
         >
           Create
@@ -186,7 +231,7 @@ export default function CharacterList() {
 
   const remove = async (character) => {
     const sure = window.confirm(
-      `Delete ${character.name}? This permanently removes their dice, inventory, and injuries.`
+      `Delete ${character.name}? This permanently removes their Counters, Role-play, Relationships board and Scene Pictures.`
     );
     if (sure) await deleteCharacter(character.id);
   };

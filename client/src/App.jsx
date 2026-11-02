@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
-import { Cog, Menu, Scroll, Search, Swords, Users, BookOpen, MessageSquare, Clapperboard } from 'lucide-react';
+import { Cog, Menu, Users, MessageSquare, Clapperboard } from 'lucide-react';
 import { RoleProvider, useRole } from './roleContext.jsx';
 import { socket } from './socket.js';
 import { useIsDesktop } from './lib/useMediaQuery.js';
@@ -8,28 +8,20 @@ import RoleModal from './components/RoleModal.jsx';
 import CharacterList from './components/CharacterList.jsx';
 import CharacterSheet from './components/CharacterSheet.jsx';
 import ChatPanel from './components/ChatPanel.jsx';
-import CompendiumPage from './components/CompendiumPage.jsx';
-import CombatArena from './components/CombatArena.jsx';
-import CombatHeaderBar from './components/CombatHeaderBar.jsx';
 import SearchBar from './components/SearchBar.jsx';
 import SettingsPage from './components/SettingsPage.jsx';
-import RulesPage from './components/RulesPage.jsx';
 import ConnectionBanner from './components/ConnectionBanner.jsx';
 import GmToolsWidget from './components/GmToolsWidget.jsx';
-import RollRequestPrompt from './components/RollRequestPrompt.jsx';
 import ScenePage from './components/ScenePage.jsx';
 
 // Mobile readiness (Change 002) §5.1/14.2: bottom navigation is the primary
-// mobile nav (recommended default) — Arena/Character(s)/Compendium/Chat,
-// each a real route except Chat (a toggle, not a page — see chatOpen
-// below). Settings/Search stay as top-bar icon actions on mobile too, same
-// as desktop, rather than crowding a 5th bottom-nav slot.
+// mobile nav — Character(s) and Chat (a toggle, not a page — see chatOpen
+// below). It also held the Arena and the Compendium until the pivot removed
+// them. Scene/Search/Settings stay in the top bar's menu on mobile.
 function BottomNav({ homePath, chatOpen, onToggleChat, onNavigate, unreadChat }) {
   const location = useLocation();
   const items = [
-    { to: '/combat', label: 'Arena', icon: Swords, match: (p) => p === '/combat' },
     { to: homePath, label: 'Characters', icon: Users, match: (p) => p === '/' || p.startsWith('/character') },
-    { to: '/compendium', label: 'Compendium', icon: BookOpen, match: (p) => p.startsWith('/compendium') },
   ];
   return (
     // The one legitimate bare use of the inset: this nav has no padding class
@@ -37,7 +29,7 @@ function BottomNav({ homePath, chatOpen, onToggleChat, onNavigate, unreadChat })
     // silently replacing one (see DialogShell for the bug that caused).
     <nav
       style={{ paddingBottom: 'var(--safe-bottom)' }}
-      className="grid shrink-0 grid-cols-4 border-t border-zinc-800 bg-zinc-950 md:hidden"
+      className="grid shrink-0 grid-cols-2 border-t border-zinc-800 bg-zinc-950 md:hidden"
     >
       {items.map(({ to, label, icon: Icon, match }) => {
         const active = match(location.pathname);
@@ -145,7 +137,7 @@ function Shell() {
       return;
     }
     const bump = () => setUnreadChat((n) => n + 1);
-    const events = ['roll:result', 'chat:message', 'chat:round_summary'];
+    const events = ['roll:result', 'chat:message'];
     for (const ev of events) socket.on(ev, bump);
     return () => {
       for (const ev of events) socket.off(ev, bump);
@@ -170,17 +162,14 @@ function Shell() {
         element={role === 'player' ? <Navigate to={homePath} replace /> : <CharacterList />}
       />
       <Route path="/character/:id" element={<CharacterSheet />} />
-      <Route path="/compendium" element={<CompendiumPage />} />
-      <Route path="/combat" element={<CombatArena />} />
       <Route path="/scene" element={<ScenePage />} />
       <Route path="/settings" element={<SettingsPage />} />
-      <Route path="/rules" element={<RulesPage />} />
       <Route path="*" element={<Navigate to={homePath} replace />} />
     </Routes>
   );
 
   // Scene tab (decided): this route needs to be genuinely chrome-free — no
-  // header, no mobile menu, no CombatHeaderBar, no Chat overlay, and
+  // header, no mobile menu, no Chat overlay, and
   // critically no BottomNav, since a still-mounted bottom nav under a
   // force-navigated page would let a Player tap their way back out, which is
   // exactly what force-navigating them here is meant to prevent. This is a
@@ -188,15 +177,14 @@ function Shell() {
   // portal-over-chrome trick used everywhere else in this app, because that
   // trick only ever paints OVER the chrome — the bottom nav is still there
   // underneath it, still tappable. `ScenePage` itself carries the one way
-  // off the route (a small corner link back to the Arena), since nothing
-  // else on this branch does.
+  // off the route (a small corner Back link), since nothing else on this
+  // branch does.
   if (location.pathname === '/scene') {
     return (
       <div className="app-shell bg-arena flex flex-col text-zinc-100">
         <ConnectionBanner />
         <div className="flex flex-1 overflow-hidden">{routes}</div>
         <GmToolsWidget />
-        <RollRequestPrompt />
       </div>
     );
   }
@@ -209,8 +197,8 @@ function Shell() {
         className="flex shrink-0 items-center gap-3 border-b border-zinc-800 px-3 py-2 md:px-4"
       >
         <Link
-          to="/combat"
-          title="Combat Arena"
+          to={homePath}
+          title="Home"
           className="font-display shrink-0 text-lg font-bold uppercase tracking-wide hover:text-brand-400 md:text-xl"
         >
           Dogfight
@@ -223,13 +211,7 @@ function Shell() {
           {role === 'gm' ? 'GM' : 'Player'}
         </span>
 
-        {/* Desktop: full inline links + inline search, unchanged. */}
-        <Link
-          to="/compendium"
-          className="panel-cut-sm font-display hidden px-2 py-1 text-sm font-semibold uppercase tracking-wide text-zinc-400 hover:text-brand-300 md:inline-block"
-        >
-          Compendium
-        </Link>
+        {/* Desktop: full inline links + inline search. */}
         <Link
           to={homePath}
           className="panel-cut-sm font-display hidden px-2 py-1 text-sm font-semibold uppercase tracking-wide text-zinc-400 hover:text-brand-300 md:inline-block"
@@ -261,24 +243,16 @@ function Shell() {
         </div>
 
         {/* Mobile: compact search action + a small "More" menu for
-            Rules/Settings (bottom nav already covers
-            Arena/Characters/Compendium/Chat). */}
+            Scene/Settings (bottom nav already covers Characters/Chat). */}
         <button
           type="button"
           onClick={() => setMobileMenuOpen((v) => !v)}
-          title="Search / Rules / Settings"
-          aria-label="Search / Rules / Settings"
+          title="Search / Scene / Settings"
+          aria-label="Search / Scene / Settings"
           className="flex h-11 w-11 shrink-0 items-center justify-center panel-cut-sm border border-zinc-700 text-zinc-400 hover:border-brand-500 hover:text-brand-300 md:hidden"
         >
           <Menu size={18} />
         </button>
-        <Link
-          to="/rules"
-          title="Rules"
-          className="hidden shrink-0 panel-cut-sm border border-zinc-700 p-1.5 text-zinc-400 hover:border-brand-500 hover:text-brand-300 md:block"
-        >
-          <Scroll size={18} />
-        </Link>
         <Link
           to="/settings"
           title="Settings"
@@ -303,17 +277,6 @@ function Shell() {
             Scene
           </Link>
           <Link
-            to="/rules"
-            onClick={() => {
-              setMobileMenuOpen(false);
-              setChatOpen(false);
-            }}
-            className="flex min-h-11 items-center gap-2 panel-cut-sm border border-zinc-700 px-3 text-sm font-semibold text-zinc-300 hover:bg-zinc-800"
-          >
-            <Scroll size={16} />
-            Rules
-          </Link>
-          <Link
             to="/settings"
             onClick={() => {
               setMobileMenuOpen(false);
@@ -326,8 +289,6 @@ function Shell() {
           </Link>
         </div>
       )}
-
-      <CombatHeaderBar />
 
       {/* `relative` so the mobile chat overlay can be absolutely positioned
           against this row rather than the viewport — that keeps it below the
@@ -352,12 +313,9 @@ function Shell() {
         unreadChat={unreadChat}
       />
 
-      {/* Both are global on purpose: the GM's tool drawer has to be reachable
-          from any page (it renders nothing for a Player), and a roll request
-          has to find its player wherever they are — the combat header bar,
-          the app's other global mount point, only exists during a fight. */}
+      {/* Global on purpose: the GM's tool drawer has to be reachable from any
+          page (it renders nothing for a Player). */}
       <GmToolsWidget />
-      <RollRequestPrompt />
     </div>
   );
 }

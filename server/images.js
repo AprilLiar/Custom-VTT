@@ -15,25 +15,18 @@
 // failure mode is not merely unlikely here, it is unrepresentable.
 import { createHash } from 'node:crypto';
 
-// **One registry, nine tables, ten columns.** Every image in the schema is
-// reachable through this map and nothing else, which is what lets the route
-// below be a single handler rather than ten near-identical ones drifting apart
-// on cache headers — and what makes `kind` a KEY LOOKUP rather than a fragment
-// spliced into SQL. Only identifiers written out here ever reach a statement.
+// **One registry, six tables.** Every image in the schema is reachable through
+// this map and nothing else, which is what lets the route below be a single
+// handler rather than several near-identical ones drifting apart on cache
+// headers — and what makes `kind` a KEY LOOKUP rather than a fragment spliced
+// into SQL. Only identifiers written out here ever reach a statement.
+//
+// The old system's four kinds (Move, Perk and Tell art, and the Core Stats
+// backdrop) went with their tables; a URL naming one of them is now simply an
+// unknown kind and 404s.
 export const IMAGE_KINDS = Object.freeze({
   character: { table: 'characters', data: 'image_data', mime: 'image_mime_type', hash: 'image_hash' },
-  // The GM's optional replacement for the Core Stats backdrop figure — a second
-  // image column on the same row, hence its own kind rather than its own table.
-  'character-art': {
-    table: 'characters',
-    data: 'vitruvian_image_data',
-    mime: 'vitruvian_image_mime_type',
-    hash: 'vitruvian_image_hash',
-  },
   chat: { table: 'chat_log', data: 'image_data', mime: 'image_mime_type', hash: 'image_hash' },
-  tell: { table: 'tells', data: 'image_data', mime: 'image_mime_type', hash: 'image_hash' },
-  move: { table: 'moves', data: 'image_data', mime: 'image_mime_type', hash: 'image_hash' },
-  perk: { table: 'perks', data: 'image_data', mime: 'image_mime_type', hash: 'image_hash' },
   person: { table: 'relationship_people', data: 'image_data', mime: 'image_mime_type', hash: 'image_hash' },
   'temp-npc': { table: 'temp_npcs', data: 'image_data', mime: 'image_mime_type', hash: 'image_hash' },
   scene: { table: 'scenes', data: 'image_data', mime: 'image_mime_type', hash: 'image_hash' },
@@ -110,17 +103,8 @@ export const withImageUrl = (kind) => (row) => {
   return url ? { ...rest, image_url: url } : rest;
 };
 
-// **This replaces omitVitruvianArt rather than joining it.** That helper existed
-// because the Tab 1 backdrop was too heavy to include in a list; at ~60 bytes a
-// URL it now rides everywhere, so the single-character endpoint stops being the
-// only place it can come from.
-export const shapeCharacter = (row) => {
-  if (!row) return row;
-  const { vitruvian_image_data, vitruvian_image_mime_type, vitruvian_image_hash, ...rest } =
-    withImageUrl('character')(row);
-  const url = imageUrl('character-art', row.id, {
-    data: vitruvian_image_data,
-    hash: vitruvian_image_hash,
-  });
-  return url ? { ...rest, vitruvian_image_url: url } : rest;
-};
+// A character row as every client receives it: the profile picture as a URL.
+// (It also carried the Core Stats backdrop's URL until the pivot removed that
+// picture.) Kept as its own name rather than inlined as withImageUrl, so every
+// character-shaped payload keeps going through one place.
+export const shapeCharacter = (row) => withImageUrl('character')(row);

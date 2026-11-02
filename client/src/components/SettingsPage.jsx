@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { Download } from 'lucide-react';
 import {
   DEFAULT_HUE,
   PRESET_HUES,
@@ -7,11 +8,6 @@ import {
   hueToBrandHex,
   loadSavedHue,
   saveHue,
-  CUTSCENE_SPEED_MIN,
-  CUTSCENE_SPEED_MAX,
-  DEFAULT_CUTSCENE_SPEED,
-  loadCutsceneSpeed,
-  saveCutsceneSpeed,
 } from '../lib/theme.js';
 import {
   SCENE_HEIGHT_SCALE_MIN,
@@ -41,6 +37,84 @@ import {
   saveAudioVolume,
 } from '../lib/sceneSettings.js';
 import { refreshVolume } from '../lib/audioEngine.js';
+import { compendiumArchiveUrl, getCompendiumArchives } from '../lib/api.js';
+import { useRole } from '../roleContext.jsx';
+
+// **The old system's archive (the pivot).** When the original combat system was
+// removed, its Compendium — Moves, Tells, Tags, Perks, Perk Tags, Quirks, Move
+// folders, the Styles their ids point into, and which character had what — was
+// written into the database as one JSON document before anything was deleted.
+// This is where the GM gets it back out. Pictures are not in it.
+//
+// Usually exactly one archive. A second appears only if the old tables ever came
+// back (a rollback to the previous deploy recreates them), and it never
+// replaces the first, so the list shows every one with its date.
+function OldSystemArchive() {
+  const [state, setState] = useState(null); // { archives, purge } | { error }
+  useEffect(() => {
+    getCompendiumArchives({ role: 'gm' })
+      .then(setState)
+      .catch((err) => setState({ error: err.message }));
+  }, []);
+
+  const total = (counts) => Object.values(counts ?? {}).reduce((a, b) => a + b, 0);
+  const label = (table) => table.replace(/_/g, ' ');
+
+  return (
+    <div className="panel-cut-lg space-y-3 border border-zinc-800 bg-zinc-900 p-4">
+      <div>
+        <h2 className="text-sm font-bold uppercase tracking-wide text-zinc-400">Old Compendium</h2>
+        <p className="mt-1 text-xs text-zinc-600">
+          Everything the old system's Compendium held, saved as JSON when it was removed, so it can be
+          recovered. Pictures are not included. GM-only.
+        </p>
+      </div>
+      {state == null ? (
+        <p className="text-sm text-zinc-600">Loading…</p>
+      ) : state.error ? (
+        <p className="text-sm text-red-400">Could not load the archive: {state.error}</p>
+      ) : !state.archives.length ? (
+        <p className="text-sm text-zinc-500">
+          {state.purge?.status === 'skipped'
+            ? `The old system was NOT removed, because its archive did not verify: ${state.purge.problems.join('; ')}`
+            : 'There is no archive on this database.'}
+        </p>
+      ) : (
+        <div className="space-y-2">
+          {state.archives.map((a) => (
+            <div key={a.id} className="panel-cut-sm border border-zinc-700 bg-zinc-800 p-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="font-display text-sm font-semibold text-zinc-100">
+                  Saved {new Date(a.archivedAt).toLocaleString()}
+                </span>
+                <span className="text-xs text-zinc-500">{total(a.counts)} rows</span>
+                <a
+                  href={compendiumArchiveUrl(a.id, { role: 'gm' })}
+                  download
+                  className="ml-auto flex min-h-11 items-center gap-1.5 panel-cut-sm border border-brand-600/60 bg-brand-900/40 px-3 text-xs font-semibold text-brand-200 hover:bg-brand-800/50 md:min-h-0 md:py-1.5"
+                >
+                  <Download size={14} aria-hidden />
+                  Download JSON
+                </a>
+              </div>
+              <p className="mt-2 text-xs leading-relaxed text-zinc-500">
+                {Object.entries(a.counts)
+                  .filter(([, n]) => n > 0)
+                  .map(([table, n]) => `${n} ${label(table)}`)
+                  .join(' · ')}
+              </p>
+            </div>
+          ))}
+          {state.purge?.problems?.length > 0 && (
+            <p className="text-xs text-amber-400">
+              Some old columns could not be dropped (their data was cleared): {state.purge.problems.join('; ')}
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 // Per-device display preferences. The accent color live-previews on every
 // change (applyBrandHue) but only persists once a choice is actually made
@@ -49,8 +123,8 @@ import { refreshVolume } from '../lib/audioEngine.js';
 // preview. Everything here is localStorage-only and affects nobody else's
 // view — these are properties of the person looking, not of the game.
 export default function SettingsPage() {
+  const { role } = useRole();
   const [hue, setHue] = useState(() => loadSavedHue() ?? DEFAULT_HUE);
-  const [speed, setSpeed] = useState(loadCutsceneSpeed);
   const [sceneHeightScale, setSceneHeightScale] = useState(loadSceneHeightScale);
   const [sceneGapScale, setSceneGapScale] = useState(loadSceneGapScale);
   const [sceneSizeScale, setSceneSizeScale] = useState(loadSceneSizeScale);
@@ -114,41 +188,6 @@ export default function SettingsPage() {
           <button
             type="button"
             onClick={reset}
-            className="panel-cut-sm border border-zinc-700 px-3 py-1.5 text-xs font-semibold text-zinc-400 hover:bg-zinc-800"
-          >
-            Reset to default
-          </button>
-        </div>
-      </div>
-
-      <div className="panel-cut-lg space-y-3 border border-zinc-800 bg-zinc-900 p-4">
-        <div>
-          <h2 className="text-sm font-bold uppercase tracking-wide text-zinc-400">
-            Cutscene Speed
-          </h2>
-          <p className="mt-1 text-xs text-zinc-600">
-            How fast a round's cutscene plays back, as a multiple of the normal pace. Lower is
-            slower. Only affects your own view.
-          </p>
-        </div>
-
-        <div className="flex flex-wrap items-center gap-3">
-          <input
-            type="range"
-            min={CUTSCENE_SPEED_MIN}
-            max={CUTSCENE_SPEED_MAX}
-            step={0.1}
-            value={speed}
-            onChange={(e) => setSpeed(saveCutsceneSpeed(e.target.value))}
-            aria-label="Cutscene speed"
-            className="min-w-48 flex-1 accent-brand-500"
-          />
-          <span className="w-16 shrink-0 text-right font-mono text-sm text-zinc-200">
-            {speed.toFixed(1)}x
-          </span>
-          <button
-            type="button"
-            onClick={() => setSpeed(saveCutsceneSpeed(DEFAULT_CUTSCENE_SPEED))}
             className="panel-cut-sm border border-zinc-700 px-3 py-1.5 text-xs font-semibold text-zinc-400 hover:bg-zinc-800"
           >
             Reset to default
@@ -282,13 +321,15 @@ export default function SettingsPage() {
           Show name plates over characters
         </label>
       </div>
+
+      {role === 'gm' && <OldSystemArchive />}
     </div>
   );
 }
 
-// One slider row, shared by the three Scene Stage scales above — same
-// range/value/reset shape as Cutscene Speed's own row, just parameterized
-// instead of copy-pasted three times.
+// One slider row, shared by the three Scene Stage scales above — the same
+// range/value/reset shape each time, parameterized instead of copy-pasted three
+// times.
 function SceneSlider({ label, value, min, max, step, onChange, onReset }) {
   return (
     <div>

@@ -42,26 +42,20 @@ function CounterRow({ counter, gates }) {
     <div className="panel-cut-lg border border-zinc-800 bg-zinc-900 p-3">
       {/* Mobile readiness (Change 002) §8.3: flex-wrap lets this row break
           onto multiple lines on a phone instead of squeezing the reward
-          tag, pip count, checkbox, and delete button into an unreadable
-          single line — desktop stays single-line since everything fits. */}
+          tag, pip count and delete button into an unreadable single line —
+          desktop stays single-line since everything fits. (A "Show in
+          Combat" checkbox sat here too; its only effect was on the Combat
+          Arena, which the pivot removed.) */}
       <div className="flex flex-wrap items-center gap-2">
         <span className="font-bold text-zinc-100">{counter.name}</span>
         <RewardSelect counter={counter} />
         <span className="font-mono text-xs text-zinc-500">
           {counter.current_pips}/{counter.target_pips}
         </span>
-        <label className="ml-auto flex shrink-0 items-center gap-1.5 text-xs text-zinc-400">
-          <input
-            type="checkbox"
-            checked={Boolean(counter.show_in_combat)}
-            onChange={() => socket.emit('counter:toggle_show_in_combat', { counterId: counter.id })}
-          />
-          Show in Combat
-        </label>
         <button
           onClick={() => socket.emit('counter:delete', { counterId: counter.id })}
           title="Delete"
-          className="flex h-11 w-11 shrink-0 items-center justify-center panel-cut-sm text-zinc-600 hover:bg-red-900/40 hover:text-red-400 md:h-8 md:w-8"
+          className="ml-auto flex h-11 w-11 shrink-0 items-center justify-center panel-cut-sm text-zinc-600 hover:bg-red-900/40 hover:text-red-400 md:h-8 md:w-8"
         >
           ✕
         </button>
