@@ -30,6 +30,13 @@ It runs once: a database with no old tables reports `clean` and writes nothing. 
 On every fresh page load, a modal asks who's playing: a **GM** button, or a scrollable **"Play as…"** list of every PC — picking one logs in as that character. This is a client-side display filter, not authentication: no login, no password, anyone can pick anyone (accepted trust model). The server tracks the chosen identity per connection (`identity:set`) and uses it where a per-viewer answer matters (secret Counter Gates, the Relationships board, Scene Picture write gates, GM-only endpoints via `?role=gm`).
 - **Player (picked a character):** the `/` home route, the header's roster link (labelled **Character**) and any unknown route go to that Player's own sheet. Direct-URL access to another sheet is not blocked (same trust model). A Player has no UI path to create a character.
 - **GM:** the roster shows all characters (`pc` and `npc`); can view/edit anything.
+- **NPCs assigned to a player (decided, new; implemented).** By default every NPC is the GM's alone. On an NPC's sheet the GM picks **Assigned to: Nobody (GM only) / <PC>'s player** (`character:assign { characterId, playerCharacterId | null }`, GM-only; only an NPC can be assigned, and only to a PC, because a player *is* the PC they picked at the door). From then on that player controls the NPC in every part of the system, exactly like their own character:
+  - **Sheet:** they can open it (other NPC sheets still send a Player home) and edit it; it is linked in the header beside **Character** (and in the mobile menu), and it shows up in their Search.
+  - **Chat and dice:** the composer's fixed name becomes a **Post as** picker of their own PC plus their NPCs.
+  - **Scene and combat:** the Summon dock and the Combat token dock list each controlled character; they can move, resize and unsummon its figure, drag its lane miniature or map token, edit its Panic tokens, HP, Challenge and Stance, set up its Combat tab and Scene Pictures, and pick its stance at turn start.
+  - **Enforcement:** one rule, `controlsCharacter(viewer, characterId)` in `server/control.js`, behind every server write gate that used to say "their own character" (Scene Pictures, summons, combat setup, map tokens, fighter state, stance picks, Relationships writes). Assignments are mirrored in memory (loaded at boot, updated on every change) so the gates stay synchronous. The client copy is `useControl()` (`client/src/lib/useControl.js`).
+  - Unassigning takes control away immediately; **deleting the PC hands their NPCs back to the GM**. The roster shows "→ <PC>" on an assigned NPC's card (GM view).
+  - Tested in `server/test/control.test.js` and `scripts/playtest-npc-assign.mjs`.
 - The choice is not remembered — it asks again on every reload. The identity is re-sent on every socket reconnect.
 - Activity is not hidden by role: rolls and edits are broadcast to everyone.
 - **Character-list folders are GM-managed and nest to any depth** (`character_folders.parent_id`); deleting one promotes its direct characters and child folders one level up.
@@ -816,7 +823,7 @@ Simple, persistent "clocks" — no automation, just a name, a target (2-20 pips)
 
 ## Game mechanic — Chat Log
 A single shared feed for the whole table (`ChatPanel.jsx`). Two entry kinds survive the pivot:
-- **Messages (`kind='message'`):** a compose box at the bottom — a Player posts as their own character (a fixed label); the GM defaults to a **GM** persona and may pick any character instead. `characterId: null` means "post as GM", stored with the sentinel `GM_CHAT_SENTINEL_ID = 0`. Text (≤2000 chars) and/or an image: pasted, or picked with the paperclip (`fileToChatImage` — static images capped at 480px wide; GIFs sent as raw bytes, ≤4MB, so they stay animated; Socket.io `maxHttpBufferSize` is 8MB). Each entry shows the poster's avatar, name and time.
+- **Messages (`kind='message'`):** a compose box at the bottom — a Player posts as their own character (a fixed label, or a **Post as** picker when the GM has assigned them NPCs — see Roles / access model); the GM defaults to a **GM** persona and may pick any character instead. `characterId: null` means "post as GM", stored with the sentinel `GM_CHAT_SENTINEL_ID = 0`. Text (≤2000 chars) and/or an image: pasted, or picked with the paperclip (`fileToChatImage` — static images capped at 480px wide; GIFs sent as raw bytes, ≤4MB, so they stay animated; Socket.io `maxHttpBufferSize` is 8MB). Each entry shows the poster's avatar, name and time.
 - **Rolls (`kind='roll'`) from the Dice Tray:** five small d4/d6/d8/d10/d12 buttons (`DiceIcon.jsx`, inline SVG) plus a ±20 modifier stepper above the compose box. Clicking a die emits `dice:roll_custom { characterId, size, modifier }`; the server rolls `1d{size}`, clamps the modifier, and posts `roll:result`. The line reads `d8: 6 + 3 = ` with the result bold and larger; the die face is recovered client-side as `result − modifier`. The tray's modifier persists between rolls.
 - **Counters from a roll card:** every roll card carries a small `+` opening `CounterAdjustDialog` — the roller's own Counters, each adjustable, plus a create form — reusing `counter:create`/`counter:adjust`. Centred on mobile so the bottom nav never covers it.
 - **System lines:** a Counter reaching an open Gate posts a plain line (see Counters).
@@ -2812,6 +2819,7 @@ Every table the server creates (`server/db.js`, all `CREATE TABLE IF NOT EXISTS`
 - **combat_stances** — `id, character_id | temp_npc_id, name, dice (JSON), created_at`
 - **scenes.combat_mode**, **scene_summons.lane_slot** — see Phase 2 as built.
 - **scenes.combat_image_*, grid_*** and **combatants** — see Phase 3 as built.
+- **characters.assigned_to** — the PC (player) an NPC is assigned to; NULL = the GM's alone. See Roles / access model.
 - **scenes.simple_weight / combat_weight**, **combatants.level / fighter_kind / bled_round** — see Cinematic Weight as built.
 - **table_settings** — `id = 1, simple_lanes` — see Multi-lane as built.
 - **fights** — see Phase 5 as built.
@@ -2831,6 +2839,7 @@ Clients emit; the server validates, writes, and broadcasts. The surviving contra
 - **Scene modes:** `scene:set_mode` (GM), `lane:move` → `stage:updated`.
 - **Table settings:** `table_settings:set` (GM) → `table_settings:updated`.
 - **Fights:** `fight:start|next|choose_stance|set_sides|end` → `stage:updated`; cards → `chat:card`; `fight:turn_ended { combatantId }` and `fight:ended { mode }` (io.emit) for the Scene's pinned roll cards.
+- **NPC assignment:** `character:assign { characterId, playerCharacterId | null }` (GM) → `character:updated { id, assigned_to }`.
 - **Fighter state:** `fighter:token|challenge|hp|set_hp|add_bar|remove_bar|clear_dizzy|set_stance|heal` → `stage:updated`; `fight:preset_weight` (GM) → `stage:updated`; a Bleed posts a `chat:card` reminder.
 - **Combat map:** `scene:set_grid`, `scene:set_combat_image`, `combat_token:place|move|remove|clear` → `stage:updated`.
 - **Combat tab:** `combat_profile:update` → `combat_profile:updated`; `combat_reminder:create|update|delete` → `combat_reminders:updated`; `combat_stance:create|update|delete` → `combat_stances:updated`.

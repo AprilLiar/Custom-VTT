@@ -39,7 +39,7 @@ export default function CombatMap({
   stageHeight,
   inset,
   role,
-  characterId,
+  controls = () => false,
   setup = {},
   weight = null,
 }) {
@@ -159,7 +159,8 @@ export default function CombatMap({
   };
   const toStagePx = (x, y) => ({ x: fit.left + x * fit.scale, y: fit.top + y * fit.scale });
 
-  const canDrag = (t) => role === 'gm' || (role === 'player' && t.character_id === characterId);
+  // The GM, or a Player who controls this character (their own, or an NPC assigned to them).
+  const canDrag = (t) => role === 'gm' || (t.character_id != null && controls(t.character_id));
 
   // ---- moving a placed token
   const [drag, setDrag] = useState(null); // { id, pointerId, startX, startY, x, y, moved }

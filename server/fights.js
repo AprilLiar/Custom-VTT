@@ -21,6 +21,7 @@ import { bonusDie } from '../client/src/lib/cinematicWeight.js';
 import { automaticReminders, remindersToFire } from '../client/src/lib/fightFlow.js';
 import { loadReminders, loadStances } from './combatSetup.js';
 import { resolveRef, serialized, shapeFightState } from './combatState.js';
+import { controlsCharacter } from './control.js';
 
 const MODES = new Set(['simple', 'combat']);
 const parseIds = (text) => {
@@ -325,8 +326,7 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
     const c = await one('SELECT * FROM combatants WHERE id = ?', [fight.pending_stance_combatant]);
     if (!c) return;
     const viewer = socket.data.identity;
-    const allowed =
-      viewer?.role === 'gm' || (viewer?.role === 'player' && c.character_id != null && viewer.characterId === c.character_id);
+    const allowed = viewer?.role === 'gm' || (c.character_id != null && controlsCharacter(viewer, c.character_id));
     if (!allowed) return;
     const col = c.character_id != null ? 'character_id' : 'temp_npc_id';
     const stance = await one(`SELECT id FROM combat_stances WHERE id = ? AND ${col} = ?`, [

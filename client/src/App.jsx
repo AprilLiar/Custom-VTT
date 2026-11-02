@@ -13,6 +13,7 @@ import SettingsPage from './components/SettingsPage.jsx';
 import ConnectionBanner from './components/ConnectionBanner.jsx';
 import GmToolsWidget from './components/GmToolsWidget.jsx';
 import ScenePage from './components/ScenePage.jsx';
+import { useControl } from './lib/useControl.js';
 
 // Mobile readiness (Change 002) §5.1/14.2: bottom navigation is the primary
 // mobile nav — Character(s) and Chat (a toggle, not a page — see chatOpen
@@ -79,6 +80,8 @@ function BottomNav({ homePath, chatOpen, onToggleChat, onNavigate, unreadChat })
 function Shell() {
   const { role, characterId } = useRole();
   const isDesktop = useIsDesktop();
+  // NPCs the GM assigned to this Player: linked beside "Character".
+  const { assignedNpcs } = useControl();
   // Mobile readiness (Change 002) §5.1: chatOpen can't be a single constant
   // for every viewport — a mobile first render must start closed (the whole
   // point of the redesign; see the mechanic's own audit note that this used
@@ -218,6 +221,17 @@ function Shell() {
         >
           {role === 'gm' ? 'Characters' : 'Character'}
         </Link>
+        {role === 'player' &&
+          assignedNpcs.map((npc) => (
+            <Link
+              key={npc.id}
+              to={`/character/${npc.id}`}
+              title="An NPC assigned to you"
+              className="panel-cut-sm font-display hidden max-w-[10rem] truncate px-2 py-1 text-sm font-semibold uppercase tracking-wide text-zinc-500 hover:text-brand-300 md:inline-block"
+            >
+              {npc.name}
+            </Link>
+          ))}
         {/* The Scene tab's only entry point on this branch — the route
             itself is chrome-free once you're on it (see above), so this is
             the sole link a GM (or, once a Scene is active, a Player) has to
@@ -265,6 +279,21 @@ function Shell() {
       {mobileMenuOpen && (
         <div className="flex shrink-0 flex-col gap-2 border-b border-zinc-800 bg-zinc-950 p-3 md:hidden">
           <SearchBar mobileFullWidth onNavigate={() => setMobileMenuOpen(false)} />
+          {role === 'player' &&
+            assignedNpcs.map((npc) => (
+              <Link
+                key={npc.id}
+                to={`/character/${npc.id}`}
+                onClick={() => {
+                  setMobileMenuOpen(false);
+                  setChatOpen(false);
+                }}
+                className="flex min-h-11 items-center gap-2 panel-cut-sm border border-zinc-700 px-3 text-sm font-semibold text-zinc-300 hover:bg-zinc-800"
+              >
+                <Users size={16} />
+                {npc.name} <span className="text-[11px] font-normal text-zinc-500">NPC</span>
+              </Link>
+            ))}
           <Link
             to="/scene"
             onClick={() => {

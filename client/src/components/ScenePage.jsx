@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { ArrowLeft, Eye, EyeOff, StickyNote } from 'lucide-react';
 import { useIsDesktop, useIsLandscape } from '../lib/useMediaQuery.js';
 import { useRole } from '../roleContext.jsx';
+import { useControl } from '../lib/useControl.js';
 import NowPlaying from './NowPlaying.jsx';
 import { useAudioStatus } from '../lib/useAudioStatus.js';
 import { openAudioPanel } from '../lib/audioPanel.js';
@@ -61,6 +62,8 @@ export default function ScenePage() {
   const isDesktop = useIsDesktop();
   const isLandscape = useIsLandscape();
   const { role, characterId } = useRole();
+  // Own PC plus NPCs the GM assigned to this player (see useControl).
+  const { controls, controlled } = useControl();
   const identity = role === 'gm' ? { role: 'gm' } : role === 'player' ? { role: 'player', characterId } : undefined;
   const stage = useStage(identity);
 
@@ -297,7 +300,7 @@ export default function ScenePage() {
           sizeScale={sizeScale}
           showNameplates={showNameplates}
           role={role}
-          characterId={characterId}
+          controls={controls}
         />
       )}
       {/* A sibling of StageRoster, not a child — see this component's own
@@ -330,7 +333,7 @@ export default function ScenePage() {
           stageHeight={stageHeight}
           glow={laneGlow}
           role={role}
-          characterId={characterId}
+          controls={controls}
           inset={drawerInset}
           lanes={stage?.simpleLanes ?? 1}
           setup={stage?.fighterSetup ?? {}}
@@ -347,7 +350,7 @@ export default function ScenePage() {
           stageHeight={stageHeight}
           inset={drawerInset}
           role={role}
-          characterId={characterId}
+          controls={controls}
         />
       )}
       {/* Also unconditional, same reasoning as StageRoster/SceneDrawingLayer
@@ -389,13 +392,13 @@ export default function ScenePage() {
             <>
               {role === 'gm' && <CombatFightersDrawer />}
               {role === 'gm' && <CombatMapDrawer scene={activeScene} tokenCount={combatTokens.length} />}
-              {role === 'player' && <PlayerTokenDock characterId={characterId} />}
+              {role === 'player' && <PlayerTokenDock characters={controlled} />}
             </>
           ) : (
             <>
               {role === 'gm' && <SceneCastDrawer />}
               {role === 'gm' && <SceneListDrawer activeSceneId={activeScene?.id ?? null} />}
-              {role === 'player' && <PlayerSummonDock characterId={characterId} summons={summons} />}
+              {role === 'player' && <PlayerSummonDock characters={controlled} summons={summons} />}
             </>
           )}
           {/* Pen/Eraser are both roles; the Timestamp button inside is
@@ -435,7 +438,7 @@ export default function ScenePage() {
           weight={weight}
         />
       )}
-      {fight && <StancePrompt mode={fightMode} fight={fight} fighters={fightFighters} role={role} characterId={characterId} />}
+      {fight && <StancePrompt mode={fightMode} fight={fight} fighters={fightFighters} role={role} controls={controls} />}
       {fightSetupOpen && fightMode && (
         <FightSetupDialog mode={fightMode} fighters={fightFighters} existing={fight} onClose={() => setFightSetupOpen(false)} />
       )}

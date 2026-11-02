@@ -404,6 +404,14 @@ export default function CharacterList() {
                           NPC
                         </span>
                       )}
+                      {role === 'gm' && c.assigned_to != null && (
+                        <span
+                          title="Assigned to this player, who controls it"
+                          className="max-w-[35%] shrink-0 truncate panel-cut-sm bg-sky-600/30 px-1.5 text-xs text-sky-300"
+                        >
+                          → {characters.find((pc) => pc.id === c.assigned_to)?.name ?? '?'}
+                        </span>
+                      )}
                       {path && (
                         <span
                           title={path}

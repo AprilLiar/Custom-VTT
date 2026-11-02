@@ -14,7 +14,7 @@ import CroppedImage from './CroppedImage.jsx';
 //   - CombatFightersDrawer (GM, left): every Character and Temp NPC, each
 //     dragged onto the map as many times as you like.
 //   - CombatMapDrawer (GM, right): the Combat Background and the grid.
-//   - PlayerTokenDock (Player): their own character, to drag onto the map.
+//   - PlayerTokenDock (Player): their own character and assigned NPCs, to drag onto the map.
 
 // Every fighter's combat profile, kept live — the token picture to drag.
 function useCombatProfiles() {
@@ -275,19 +275,23 @@ export function CombatMapDrawer({ scene, tokenCount }) {
   );
 }
 
-export function PlayerTokenDock({ characterId }) {
-  const characters = useRoster();
+export function PlayerTokenDock({ characters = [] }) {
+  // The Player's own character plus any NPC the GM assigned to them.
   const profiles = useCombatProfiles();
-  const character = characters?.find((c) => c.id === characterId);
-  if (!character) return null;
-  const fighter = fighterOf('character', character, profiles);
+  if (!characters.length) return null;
   return (
     <div
       className="absolute bottom-3 left-3 w-56 panel-cut-sm border border-zinc-700 bg-zinc-950/85 p-1.5"
       style={{ zIndex: 1000, marginBottom: 'var(--safe-bottom)', marginLeft: 'var(--safe-left)' }}
     >
-      <p className="mb-1 px-1 text-[10px] font-bold uppercase tracking-wide text-zinc-500">Drag your token onto the map</p>
-      <FighterChip fighter={fighter} />
+      <p className="mb-1 px-1 text-[10px] font-bold uppercase tracking-wide text-zinc-500">
+        {characters.length > 1 ? 'Drag your tokens onto the map' : 'Drag your token onto the map'}
+      </p>
+      <div className="max-h-48 space-y-1 overflow-y-auto">
+        {characters.map((c) => (
+          <FighterChip key={c.id} fighter={fighterOf('character', c, profiles)} label={c.character_type === 'npc' ? 'NPC' : ''} />
+        ))}
+      </div>
     </div>
   );
 }

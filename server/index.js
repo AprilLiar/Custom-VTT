@@ -25,6 +25,7 @@ import { TRAY, clampLanes, laneCapacity, moveOnLane, packLane } from '../client/
 import { loadCombatTokens, registerCombatMapHandlers, sceneGrid } from './combatMap.js';
 import { EMPTY_FIGHT_STATE, loadSimpleStates, registerCombatStateHandlers } from './combatState.js';
 import { loadFightState, registerFightHandlers } from './fights.js';
+import { controlsCharacter, dropAssignmentsTo, loadAssignments, setAssignment } from './control.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3001;
@@ -512,7 +513,7 @@ const undoDepthFor = (ownerCharacterId) => undoStacks.get(Number(ownerCharacterI
 function maySeeBoard(viewer, ownerCharacterId) {
   if (!viewer) return false;
   if (viewer.role === 'gm') return true;
-  return viewer.role === 'player' && viewer.characterId === Number(ownerCharacterId);
+  return controlsCharacter(viewer, ownerCharacterId);
 }
 
 // Who may write a Scene Picture for a given owner (Scene tab plan, Phase 3).
@@ -522,7 +523,8 @@ function maySeeBoard(viewer, ownerCharacterId) {
 function mayWriteScenePicture(viewer, ownerType, ownerId) {
   if (!viewer) return false;
   if (viewer.role === 'gm') return true;
-  return ownerType === 'character' && viewer.role === 'player' && viewer.characterId === Number(ownerId);
+  // A character the Player controls: their own PC, or an NPC assigned to them.
+  return ownerType === 'character' && controlsCharacter(viewer, ownerId);
 }
 
 // The live stage everyone shares (Scene tab plan, Phase 4): which Scene is
@@ -983,7 +985,7 @@ app.get('/api/search', wrap(async (req, res) => {
   const q = String(req.query.q ?? '').trim();
   if (!q) return res.json({ characters: [] });
   const characters = await all(
-    'SELECT id, name, character_type FROM characters WHERE name LIKE ? ORDER BY name',
+    'SELECT id, name, character_type, assigned_to FROM characters WHERE name LIKE ? ORDER BY name',
     [`%${q}%`]
   );
   res.json({ characters });
@@ -1123,6 +1125,11 @@ app.delete('/api/characters/:id', wrap(async (req, res) => {
   const wasInAFight = await one('SELECT id FROM combatants WHERE character_id = ?', [character.id]);
   await run('DELETE FROM combatants WHERE character_id = ?', [character.id]);
   await run('DELETE FROM characters WHERE id = ?', [character.id]);
+  // NPCs this PC controlled go back to the GM.
+  setAssignment(character.id, null);
+  const freed = dropAssignmentsTo(character.id);
+  if (freed.length) await run('UPDATE characters SET assigned_to = NULL WHERE assigned_to = ?', [character.id]);
+  for (const npcId of freed) io.emit('character:updated', { id: npcId, assigned_to: null });
 
   io.emit('character:deleted', { id: character.id });
   if (wasSummoned || wasInAFight) await emitStageUpdated();
@@ -1542,6 +1549,23 @@ io.on('connection', (socket) => {
     await run('UPDATE character_folders SET parent_id = ? WHERE parent_id = ?', [folder.parent_id, folder.id]);
     await run('DELETE FROM character_folders WHERE id = ?', [folder.id]);
     io.emit('character_folder:deleted', { folderId: folder.id, parentFolderId: folder.parent_id });
+  });
+
+  // **Assign an NPC to a player (GM only).** `playerCharacterId` is the PC the
+  // player picked at the door; null hands the NPC back to the GM. See control.js.
+  on('character:assign', async ({ characterId, playerCharacterId }) => {
+    if (socket.data.identity?.role !== 'gm') return;
+    const npc = await getCharacter(characterId);
+    if (!npc || npc.character_type !== 'npc') return;
+    let target = null;
+    if (playerCharacterId != null) {
+      const pc = await getCharacter(playerCharacterId);
+      if (!pc || pc.character_type !== 'pc') return;
+      target = pc.id;
+    }
+    await run('UPDATE characters SET assigned_to = ? WHERE id = ?', [target, npc.id]);
+    setAssignment(npc.id, target);
+    io.emit('character:updated', { id: npc.id, assigned_to: target });
   });
 
   // Drag-and-drop reassignment: touches only folder_id.
@@ -3392,6 +3416,7 @@ console.log(remoteMode ? 'Database: remote (Turso)' : 'Database: local file');
 
 bootDetail = 'creating and migrating tables';
 await initDb();
+await loadAssignments(all);
 // Chat is intentionally ephemeral — see chat:clear below — and clearing it
 // on every boot doubles as clearing it between sessions on Render's free
 // tier, which spins the server down after inactivity.

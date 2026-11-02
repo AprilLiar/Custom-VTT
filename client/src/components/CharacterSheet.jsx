@@ -11,6 +11,7 @@ import RoleplayTab from './RoleplayTab.jsx';
 import RelationshipsTab from './RelationshipsTab.jsx';
 import ScenePicturesEditor from './ScenePicturesEditor.jsx';
 import CombatTab from './CombatTab.jsx';
+import { useRoster } from '../lib/useRoster.js';
 
 // Mobile readiness (Change 002) §8.1: the active tab scrolls itself into
 // view inside the row's own horizontal scroller.
@@ -140,13 +141,16 @@ export default function CharacterSheet() {
 
   if (!data) return <p className="text-zinc-500">Loading…</p>;
 
-  // Players can't open NPC sheets — an NPC belongs to the GM.
-  if (role !== 'gm' && data.character.character_type === 'npc') {
+  // A Player controls their own PC and any NPC the GM assigned to them (see
+  // useControl / server/control.js). Other NPC sheets stay the GM's.
+  const controls =
+    role === 'gm' || myCharacterId === data.character.id || (myCharacterId != null && data.character.assigned_to === myCharacterId);
+  if (role !== 'gm' && data.character.character_type === 'npc' && !controls) {
     navigate('/', { replace: true });
     return null;
   }
 
-  const canEdit = role === 'gm' || myCharacterId === data.character.id;
+  const canEdit = controls;
 
   // A canvas tab drops the column cap and takes whatever width <main> has left
   // after the chat panel; every other tab keeps the readable 768px measure.
@@ -157,6 +161,7 @@ export default function CharacterSheet() {
   return (
     <div className={WIDE_TABS.has(tab) ? 'mx-auto w-full' : 'mx-auto max-w-3xl'}>
       <CharacterHeader character={data.character} />
+      {role === 'gm' && data.character.character_type === 'npc' && <AssignToPlayer character={data.character} />}
       {/* Mobile readiness (Change 002) §8.1: sticky under the mobile top
           bar so it stays reachable while a tall tab's content scrolls;
           scroll-snap-x makes the horizontal tab scroll land cleanly on
@@ -197,5 +202,36 @@ export default function CharacterSheet() {
         </motion.div>
       </AnimatePresence>
     </div>
+  );
+}
+
+// **Assign this NPC to a player (GM only).** The player then controls it like
+// their own character: sheet, Combat tab, Scene Pictures, summons, tokens,
+// fight state, chat and dice. "Nobody" (the default) keeps it the GM's alone.
+function AssignToPlayer({ character }) {
+  const roster = useRoster();
+  const pcs = (roster ?? []).filter((c) => c.character_type === 'pc').sort((a, b) => a.name.localeCompare(b.name));
+  return (
+    <label className="mb-2 flex flex-wrap items-center gap-2 text-xs text-zinc-400">
+      <span className="font-display font-semibold uppercase tracking-wide">Assigned to</span>
+      <select
+        value={character.assigned_to ?? ''}
+        onChange={(e) =>
+          socket.emit('character:assign', {
+            characterId: character.id,
+            playerCharacterId: e.target.value === '' ? null : Number(e.target.value),
+          })
+        }
+        className="min-h-9 panel-cut-sm border border-zinc-700 bg-zinc-900 px-2 text-sm text-zinc-200 outline-none focus:border-brand-500"
+      >
+        <option value="">Nobody (GM only)</option>
+        {pcs.map((pc) => (
+          <option key={pc.id} value={pc.id}>
+            {pc.name}&rsquo;s player
+          </option>
+        ))}
+      </select>
+      {character.assigned_to != null && <span className="text-[11px] text-zinc-500">That player controls this NPC fully.</span>}
+    </label>
   );
 }

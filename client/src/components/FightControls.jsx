@@ -253,10 +253,10 @@ export function InitiativeRail({ mode, fight, fighters, role, left = 12, onEditS
   );
 }
 
-export function StancePrompt({ mode, fight, fighters, role, characterId }) {
+export function StancePrompt({ mode, fight, fighters, role, controls = () => false }) {
   const pending = fight?.pending_stance;
   if (!pending) return null;
-  const mine = role === 'gm' || (role === 'player' && pending.character_id != null && pending.character_id === characterId);
+  const mine = role === 'gm' || (pending.character_id != null && controls(pending.character_id));
   if (!mine) return null;
   const fighter = fighters.find((f) => f.combatantId === pending.combatant_id);
   return (

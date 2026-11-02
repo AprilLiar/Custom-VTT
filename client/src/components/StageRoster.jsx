@@ -236,7 +236,7 @@ export default function StageRoster({
   sizeScale = 1,
   showNameplates = true,
   role,
-  characterId,
+  controls = () => false,
 }) {
   const reduceMotion = useReducedMotion();
   // A manually-placed summon's pos_x/pos_y are fractions of the ACTIVE
@@ -298,7 +298,7 @@ export default function StageRoster({
   // succeed. Nobody but the GM may touch a Temp NPC's (character_id is
   // null for one), which falls out of the same comparison for free.
   const canEditSummon = (summon) =>
-    role === 'gm' || (role === 'player' && summon.character_id === characterId);
+    role === 'gm' || (summon.character_id != null && controls(summon.character_id));
 
   const auto = [];
   const manual = [];

@@ -667,6 +667,8 @@ export async function initDb() {
     )
   `);
   await ensureColumn('characters', 'folder_id', 'INTEGER');
+  // The PC (= the player) an NPC is assigned to; NULL = the GM's alone. See server/control.js.
+  await ensureColumn('characters', 'assigned_to', 'INTEGER');
   await ensureCropColumns('characters');
 
   // The old system's archive (see archiveAndPurgeOldSystem). Declared here as

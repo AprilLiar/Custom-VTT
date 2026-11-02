@@ -15,7 +15,7 @@ const GROUPS = [{ key: 'characters', label: 'Characters' }];
 // result (or Enter) actually navigates, same as the desktop dropdown
 // already closes itself via `setOpen(false)`.
 export default function SearchBar({ mobileFullWidth = false, onNavigate }) {
-  const { role } = useRole();
+  const { role, characterId } = useRole();
   const navigate = useNavigate();
   const [query, setQuery] = useState('');
   const [results, setResults] = useState(null);
@@ -52,7 +52,7 @@ export default function SearchBar({ mobileFullWidth = false, onNavigate }) {
   const visibleResults = results && {
     ...results,
     characters:
-      role === 'gm' ? results.characters : results.characters.filter((c) => c.character_type === 'pc'),
+      role === 'gm' ? results.characters : results.characters.filter((c) => c.character_type === 'pc' || c.assigned_to === characterId),
   };
   const hasAny = visibleResults && GROUPS.some((g) => visibleResults[g.key]?.length);
 

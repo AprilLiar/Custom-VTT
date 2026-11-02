@@ -7,6 +7,7 @@ import { decomposeRoll, formatRollTotal } from '../lib/dice.js';
 import { useRole } from '../roleContext.jsx';
 import { useSocketRefresh } from '../lib/connection.js';
 import { useRoster } from '../lib/useRoster.js';
+import { useControl } from '../lib/useControl.js';
 import Thumb from './Thumb.jsx';
 import DiceIcon from './DiceIcon.jsx';
 import CounterAdjustDialog from './CounterAdjustDialog.jsx';
@@ -198,7 +199,7 @@ export function Entry({ entry, character, onAdjustCounters, compact = false }) {
   );
 }
 
-function Composer({ characters }) {
+function Composer({ characters, controlled = [] }) {
   const { role, characterId: myCharacterId } = useRole();
   // Defaults to posting without ever needing a pick: a Player always posts
   // as the one character they logged in as (fixed, no picker — see Roles /
@@ -215,13 +216,15 @@ function Composer({ characters }) {
 
   useEffect(() => {
     if (role === 'player') {
-      setCharacterId(String(myCharacterId ?? ''));
+      // A Player posts as their own character or an NPC assigned to them; if
+      // the pick stops being theirs (unassigned), fall back to their own.
+      if (!controlled.some((c) => String(c.id) === characterId)) setCharacterId(String(myCharacterId ?? ''));
       return;
     }
     if (characterId !== 'gm' && !characters.some((c) => String(c.id) === characterId)) {
       setCharacterId('gm');
     }
-  }, [role, myCharacterId, characters, characterId]);
+  }, [role, myCharacterId, characters, characterId, controlled]);
 
   const attachFile = async (file) => {
     if (!file) return;
@@ -259,7 +262,7 @@ function Composer({ characters }) {
   // Same "who's posting" resolution the message send below already used —
   // shared so the Dice Tray attributes its rolls identically.
   const postingCharacterId =
-    role === 'player' ? myCharacterId : characterId === 'gm' ? null : Number(characterId);
+    role === 'player' ? Number(characterId) || myCharacterId : characterId === 'gm' ? null : Number(characterId);
 
   const send = () => {
     const trimmed = text.trim();
@@ -343,7 +346,20 @@ function Composer({ characters }) {
         ))}
       </div>
       <div className="flex items-center gap-1">
-        {role === 'player' ? (
+        {role === 'player' && controlled.length > 1 ? (
+          <select
+            value={characterId}
+            onChange={(e) => setCharacterId(e.target.value)}
+            className="font-display max-w-[6.5rem] shrink-0 panel-cut-sm border border-zinc-700 bg-zinc-900 px-1 py-1.5 text-xs text-zinc-300"
+            title="Post as"
+          >
+            {controlled.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name}
+              </option>
+            ))}
+          </select>
+        ) : role === 'player' ? (
           <span
             title="You always post as your own character"
             className="font-display max-w-[6.5rem] shrink-0 truncate panel-cut-sm border border-zinc-800 bg-zinc-900 px-2 py-1.5 text-xs text-zinc-400"
@@ -401,6 +417,7 @@ export default function ChatPanel({ open }) {
   // can name whoever made the roll.
   const [counterEntry, setCounterEntry] = useState(null);
   const roster = useRoster();
+  const { controlled } = useControl(roster);
   const bottomRef = useRef(null);
 
   // Mobile readiness (Change 002) §11.2: a broadcast missed while the tab
@@ -473,6 +490,7 @@ export default function ChatPanel({ open }) {
         <div ref={bottomRef} />
       </div>
       <Composer
+        controlled={controlled}
         characters={[...characters.values()]
           .filter((c) => role === 'gm' || c.character_type === 'pc')
           .sort((a, b) => a.name.localeCompare(b.name))}

@@ -28,7 +28,7 @@ export default function SimpleCombatLane({
   stageHeight,
   glow,
   role,
-  characterId,
+  controls = () => false,
   inset,
   lanes = 1,
   setup = {},
@@ -59,7 +59,8 @@ export default function SimpleCombatLane({
     return pending ?? packed;
   }, [summons, pending]);
 
-  const canDrag = (s) => role === 'gm' || (role === 'player' && s.character_id === characterId);
+  // The GM, or a Player who controls this character (their own, or an NPC assigned to them).
+  const canDrag = (s) => role === 'gm' || (s.character_id != null && controls(s.character_id));
 
   const toStage = (e) => {
     const rect = rootRef.current?.getBoundingClientRect();
