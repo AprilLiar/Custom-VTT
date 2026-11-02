@@ -2813,6 +2813,8 @@ Every table the server creates (`server/db.js`, all `CREATE TABLE IF NOT EXISTS`
 - **scenes.combat_mode**, **scene_summons.lane_slot** — see Phase 2 as built.
 - **scenes.combat_image_*, grid_*** and **combatants** — see Phase 3 as built.
 - **table_settings** — `id = 1, simple_lanes` — see Multi-lane as built.
+- **fights** — see Phase 5 as built.
+- **chat_log.kind** also allows `reminder` and `stance_roll` (fight cards, JSON in `payload`).
 - **compendium_archive** — `id, archived_at, counts (JSON), payload (the archive document)`; append-only
 
 ## Real-time events (Socket.io)
@@ -2827,6 +2829,7 @@ Clients emit; the server validates, writes, and broadcasts. The surviving contra
 - **Audio:** `audio_playlist:*`, `audio_track:*`, `audio:play|pause|resume|stop|seek|next|previous|set_mode|ping|duration|track_ended|error|lookup_title` → `audio:state` (see Audio Player).
 - **Scene modes:** `scene:set_mode` (GM), `lane:move` → `stage:updated`.
 - **Table settings:** `table_settings:set` (GM) → `table_settings:updated`.
+- **Fights:** `fight:start|next|choose_stance|set_sides|end` → `stage:updated`; cards → `chat:card`.
 - **Fighter state:** `fighter:token|challenge|hp|set_hp|add_bar|remove_bar|clear_dizzy|set_stance` → `stage:updated`.
 - **Combat map:** `scene:set_grid`, `scene:set_combat_image`, `combat_token:place|move|remove|clear` → `stage:updated`.
 - **Combat tab:** `combat_profile:update` → `combat_profile:updated`; `combat_reminder:create|update|delete` → `combat_reminders:updated`; `combat_stance:create|update|delete` → `combat_stances:updated`.
@@ -2875,12 +2878,14 @@ A three-way toggle at the top of the Scene page, **shown to the GM only** (decid
   - Each Scene gains a **Combat Background**, a separate image from its Scene background.
   - A square grid overlays it, with GM controls: **square size in pixels** (±1 steps, live preview), **X/Y offset**, and **opacity** (slider). The grid stops at a **10% padding** inside the image's edges, and lines simply end there even if that cuts a square short.
   - Characters and Temp NPCs are dragged onto the map as round tokens, snapped to grid squares. **The same actor can be placed several times** (minions), and **each copy is independent**: its own HP bars, tokens, Challenge and initiative turns.
+  - **Zoom (decided, added with Phase 5):** each viewer can zoom the battle map, 1× to 5×, with the mouse wheel (about the pointer) or +/−/fit buttons in its bottom-right corner, and pan by dragging empty map. It is local to that viewer and never synced. Placing, moving and the drop highlight work at any zoom; the map and its tokens are clipped to the area between the drawers.
   - **Decided for Phase 3:** Combat mode is **map only** — the Scene's figures, drawings and lane are hidden while it is on. Grid size and offset are in the **map image's own pixels**. Tokens come from a GM **Fighters** drawer (left) and a Player's own **dock**; the right drawer holds the map settings. One token per square: **dropping onto another token swaps the two**, like the lane; a brand-new token can't swap, so an occupied square refuses it.
 
 ### The token panel (on a Combat token or a Simple Combat miniature)
 Clicking a token opens its panel; a click that turns into a drag closes the panel and moves the token instead.
 - **Upper panel — tokens:** one row of icons: Basic, Status, then the actor's checked Unique tokens. Icons come from an open-source game-icon set (game-icons.net, CC BY 3.0, credited in the app). Clicking an icon shows its name above it and **+ / − / −−** (add 1, remove 1, remove all) below it. Only one icon is open at a time. **Any token with a count of 1 or more stays shown above the token permanently**, with a high-contrast red count badge in its bottom-right quarter (half the icon's width and height).
 - **Upper panel — Challenge slot:** a small empty round button. Clicking it lists every fighter in this fight to its right; picking one fills the button with that fighter's portrait and keeps it shown permanently above the token, half-transparent. Sparse, small, half-transparent red particles drift from it toward the chosen Challenger, a gentle "threat" cue. Book meaning: this token's holder carries that fighter's Challenge. Cap 1.
+- **Quick spend (decided, added with Phase 5):** with the panel closed, clicking a token icon shown above a fighter removes one, the same as its "−" — tokens are spent far more often than gained. Only for whoever may edit that fighter.
 - **Decided for Phase 4:** a **compact HP bar stack is always visible** under every fighter (the full panel opens on click), and **everyone sees every fighter's HP and tokens**; only the owner (or GM) edits.
 - **Bottom panel — HP bars:** a bar with **−** at its left end and **+** at its right (±1; Max HP up to 99, so two digits). A golden **+** under it adds another bar. Every bar shares the first bar's Max HP, and new bars start full. Extra bars stack behind and slightly below the main bar, bottom half visible. When the current bar reaches 0 it plays a **breaking animation**, the next bar moves up, and a **Dizzy ("sleeping") icon** covers the whole token **until the end of the current turn**. The last bar breaking leaves the token Taken Out at 0 HP; healing revives it. Max HP and bar count are set here, per placed token.
 
@@ -2902,7 +2907,7 @@ Clicking a token opens its panel; a click that turns into a drag closes the pane
 2c. **Multi-lane Simple Combat — implemented** (added after scoping). A GM setting in Settings, **1 to 3 lanes** of ten (up to 3×10), for the whole table — not per browser, because lane positions are shared. Each lane count has its own pre-tuned look rather than one tilt stretched taller. Details under **Multi-lane as built** below.
 3. **Combat map — implemented.** Combat Background, the grid with its controls, placing and moving tokens, multiple copies. Details under **Phase 3 as built** below.
 4. **Token panel — implemented.** Panic tokens with badges, Challenge with particles, the HP bar stack with break and Dizzy, on both modes. Details under **Phase 4 as built** below.
-5. **Fights.** The Start Combat dialog, the initiative rail, rounds and turns, Reminders and the automatic End Phase reminders in chat.
+5. **Fights — implemented.** The Start Combat dialog, the initiative rail, rounds and turns, the turn-start Stance roll or pick, Reminders and the automatic End Phase reminders in chat. Details under **Phase 5 as built** below. The same commit added the **quick spend** (Phase 4) and **map zoom** (Phase 3).
 
 ### Phase 1 as built
 - **One catalog, two consumers.** `client/src/lib/panicTokens.js` is plain data (`BASIC_TOKENS`, `STATUS_TOKENS`, `UNIQUE_TOKENS`, `TOKEN_CAP = 9`, `tokensFor`, `normalizeUniqueKeys`), imported by the client and by the server alike (the repo is one ESM package), so the two ends can't disagree about which keys exist. Icons are separate (`client/src/lib/panicIcons.jsx`, game-icons.net via `react-icons/gi`, CC BY 3.0 — the credit line is shown under the Combat tab). Colours: Basic sky, Status orange, Unique violet, Super amber. Adding a Unique token is one catalog entry plus one icon.
@@ -2943,10 +2948,28 @@ Clicking a token opens its panel; a click that turns into a drag closes the pane
 - **Payload:** each `combatTokens[]` entry and each summon carries `fight: { combatant_id, tokens, challenge_id, hp, active_stance_id }`, and the stage carries `fighterSetup` — `{ "character:<id>": { unique_tokens, stances: [{ id, name }] } }`.
 - **Client:** `FighterOverlay.jsx`, shared by both views. Held tokens show above the fighter, each with a red count badge filling the icon's bottom-right quarter, plus the Challenger's portrait, half-transparent with a red ring. A compact HP stack sits underneath, with "×N" when there are back bars. The Dizzy icon floats over the fighter, a skull marks Taken Out, and a few faint red sparks drift towards the Challenger (`challenge-drift` in `index.css`, off under reduced motion). The open panel shows the whole token row (icons at least 28px), with the opened icon's name above it and + / − / −− below; the Challenge picker; the HP bar with − and + at its ends, a shatter-and-slide animation when a bar breaks, the golden +, "−bar" and Max; Clear Dizzy; and the Stance select. Clicking elsewhere closes it, and a drag closes it before moving. While a panel is open its view is raised above the drawers; the map's root is click-through, so the drawers stay usable.
 
+### Phase 5 as built
+- **`client/src/lib/fightFlow.js`** (pure, tested in `server/test/fightFlow.test.js`): `remindersToFire({ moment, active, fighters, remindersByOwner, defaultStanceByOwner })`. Reminders belong to an owner, so each fires at most once per moment, however many copies that owner has. `self` fires on the owner's own turn. `others` fires on another owner's turn — a copy's turn is not "someone else's" to another copy of the same owner — filtered by any / allies / enemies / one. `round` fires once per owner in the fight. A stance-bound reminder needs that stance active on the relevant copy, or on the owner's first stance when none is chosen. `automaticReminders({ active, fighters })` gives Burning, Speed (everyone holding it), Fatigue and Challenge (naming the Challenger).
+- **`fights`** — one per Scene per mode (`UNIQUE(scene_id, mode)`): `allies`/`enemies` (combatant ids), `round`, `turn_order` ([{ side, id }]), `turn_index`, `pending_stance_combatant`.
+- **Server:** `server/fights.js`, its writes on the same queue as the fighter writes.
+  - `fight:start { mode, allies, enemies, firstSide, opener }` (GM; refs, so Simple Combat summons get their combatant rows here).
+  - `fight:next { mode }` (GM): End reminders, then the automatic ones, Dizzy cleared for the whole fight, the next valid turn (removed fighters are skipped), and at the round's end Round End, a re-roll opened by the other side, a "— Round N —" line and Round Start. Then the new turn: one stance rolls at once, several set `pending_stance_combatant` and wait, and only after that do the Start reminders fire.
+  - `fight:choose_stance { mode, stanceId }`: the fighter's player or the GM.
+  - `fight:set_sides` (GM, from the next round).
+  - `fight:end` (GM; HP, tokens and positions stay).
+  - Turns per round = **unbroken bars at the round's start** (the agreed default), so breaking a bar shortens the next round.
+- **Chat:** `chat_log.kind` gains `'reminder'` and `'stance_roll'` (the CHECK is rebuilt by `migrateChatLogKind`). `postCard(kind, payload)` stores the card's whole content in `payload` and broadcasts `chat:card`; `GET /api/chat` returns `payload` for those kinds. A **Reminder** box is violet, an automatic **Rule reminder** orange; each has a title ("Start of Aya's turn", "End of round 2") and the fighters it concerns with their tokens. A **Stance roll** box is blue, with each die (or fixed number) in its own tile.
+- **Client:** `FightControls.jsx`.
+  - `StartCombatButton` (GM, top centre, when this mode has no fight).
+  - `FightSetupDialog`: Allies / Fighters / Enemies columns with arrow buttons, "Name ×N" turn counts, the side that starts, and the opener; reused as **Change sides**.
+  - `InitiativeRail`: down the right edge, left of the GM's drawer. It shows "Round N", side dots, portraits in rectangular frames and names; the current turn is outlined and scrolled into view, past turns are dimmed, and "stance…" shows while a pick is pending. GM controls: Next turn, Change sides, End Combat.
+  - `StancePrompt`: a dialog for the fighter's player and the GM. It still shows in cinematic mode, while the rest of the rail hides with the interface.
+- Fight cards count towards the mobile Chat unread badge.
+
 ## Implementation Phases (iterative — each ends with a deploy + playtest checkpoint)
 The old system's phases (1-9 and the playtest batches after them) are complete history in git. The current state:
 - **Pivot — done.** Old system archived and removed (this document's **The pivot**).
-- **Panic at the Dojo combat assistant**, in the five phases listed in its section above. Phases 1, 2, 2b (Stances) and 3 are implemented; so are multi-lane Simple Combat (2c) and Phase 4. Phase 5 is next.
+- **Panic at the Dojo combat assistant**, in the five phases listed in its section above. Phases 1, 2, 2b (Stances) and 3 are implemented; so are multi-lane Simple Combat (2c), Phase 4 and Phase 5 — the whole scoped assistant. Further changes are follow-ups from play.
 
 ## Implementation Risks & Recommendations
 - **The archive is the only copy of the old Compendium's data.** It lives in `compendium_archive` and is downloadable from Settings; keep a downloaded copy outside the app. Restoring the old system would mean reverting the pivot commit's code and re-importing from the archive by hand — there is no importer.
@@ -2956,7 +2979,7 @@ The old system's phases (1-9 and the playtest batches after them) are complete h
 
 ## Open items to decide later
 - **Panic at the Dojo assistant — details to settle in their phase**, with the default the build will use unless told otherwise:
-  - **Turns per round once bars break:** count only unbroken bars at the start of each round. (The book keeps the original count; the GM's design ties turns to bars.)
+  - **Turns per round once bars break:** count only unbroken bars at the start of each round — implemented. (The book keeps the original count; the GM's design ties turns to bars.)
   - **Simple Combat with more than 10 fighters:** the lane stays at 10 segments; extras wait in an off-lane tray.
   - **Joining or leaving mid-fight:** a fighter placed or removed after Start Combat joins or leaves from the next round's re-roll.
   - **End Combat** (GM): clears that mode's initiative; placements, HP and tokens stay until the GM clears them.

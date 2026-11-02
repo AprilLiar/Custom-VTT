@@ -10,6 +10,92 @@ import { useRoster } from '../lib/useRoster.js';
 import Thumb from './Thumb.jsx';
 import DiceIcon from './DiceIcon.jsx';
 import CounterAdjustDialog from './CounterAdjustDialog.jsx';
+import CroppedImage from './CroppedImage.jsx';
+import { cropOf } from '../lib/imageCrop.js';
+
+// A fighter as a fight card names them: their round token (or portrait).
+function FighterChip({ fighter }) {
+  const crop = fighter?.crop
+    ? cropOf({ crop_x: fighter.crop.x, crop_y: fighter.crop.y, crop_w: fighter.crop.w, crop_h: fighter.crop.h })
+    : null;
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      <span className="h-6 w-6 shrink-0 overflow-hidden rounded-full border border-zinc-600 bg-zinc-800">
+        {fighter?.image_url ? (
+          <CroppedImage src={fighter.image_url} crop={crop} alt="" className="h-full w-full rounded-full" />
+        ) : (
+          <span className="flex h-full w-full items-center justify-center text-[10px] font-bold uppercase text-zinc-400">
+            {(fighter?.name ?? '?').slice(0, 1)}
+          </span>
+        )}
+      </span>
+      <span className="font-display text-sm font-semibold text-zinc-100">{fighter?.name}</span>
+    </span>
+  );
+}
+
+// **Fight cards (Panic at the Dojo, Phase 5)** — posted by the table itself:
+// a Reminder box (a fighter's own, or an automatic End Phase one naming
+// everyone it applies to) and a turn-start Stance roll, each die shown on its
+// own so the player sees exactly what they are working with.
+function FightCard({ entry }) {
+  const p = entry.payload ?? {};
+  const time = new Date(entry.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  if (entry.kind === 'stance_roll') {
+    return (
+      <div className="border-b border-zinc-800 px-3 py-2">
+        <div className="panel-cut-sm border border-sky-700/60 bg-sky-950/40 p-2">
+          <div className="mb-1.5 flex items-center gap-2">
+            <FighterChip fighter={p.fighter} />
+            <span className="ml-auto font-display text-[10px] text-zinc-500">{time}</span>
+          </div>
+          <p className="mb-1.5 font-display text-[11px] font-semibold uppercase tracking-wide text-sky-300">
+            Stance: {p.stance}
+          </p>
+          <div className="flex flex-wrap gap-1.5">
+            {(p.results ?? []).map((r, i) => (
+              <span
+                key={i}
+                className={`flex min-w-11 flex-col items-center panel-cut-sm border px-1.5 py-1 ${
+                  r.die !== undefined ? 'border-zinc-600 bg-zinc-900' : 'border-amber-600/70 bg-amber-950/40'
+                }`}
+              >
+                <span className="font-mono text-[10px] text-zinc-500">{r.die !== undefined ? `d${r.die}` : 'fixed'}</span>
+                <span className="font-mono text-xl font-black leading-none text-white">{r.result}</span>
+              </span>
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="border-b border-zinc-800 px-3 py-2">
+      <div
+        className={`panel-cut-sm border p-2 ${
+          p.automatic ? 'border-orange-600/60 bg-orange-950/30' : 'border-violet-600/60 bg-violet-950/30'
+        }`}
+      >
+        <div className="mb-1 flex items-center gap-2">
+          <span
+            className={`font-display text-[10px] font-bold uppercase tracking-wide ${
+              p.automatic ? 'text-orange-300' : 'text-violet-300'
+            }`}
+          >
+            {p.automatic ? 'Rule reminder' : 'Reminder'} · {p.title}
+          </span>
+          <span className="ml-auto font-display text-[10px] text-zinc-500">{time}</span>
+        </div>
+        <div className="mb-1 flex flex-wrap gap-x-3 gap-y-1">
+          {(p.fighters ?? []).map((f, i) => (
+            <FighterChip key={i} fighter={f} />
+          ))}
+        </div>
+        <p className="whitespace-pre-wrap break-words text-sm text-zinc-200">{p.text}</p>
+      </div>
+    </div>
+  );
+}
 
 const DICE_TRAY_SIZES = [4, 6, 8, 10, 12];
 
@@ -18,6 +104,7 @@ const DICE_TRAY_SIZES = [4, 6, 8, 10, 12];
 // system's cards — move reveals, round summaries and their replays, Quirk cards,
 // and the damage line under an engine roll — went with it.
 function Entry({ entry, character, onAdjustCounters }) {
+  if (entry.kind === 'reminder' || entry.kind === 'stance_roll') return <FightCard entry={entry} />;
   const time = new Date(entry.timestamp).toLocaleTimeString([], {
     hour: '2-digit',
     minute: '2-digit',
@@ -325,10 +412,12 @@ export default function ChatPanel({ open }) {
     const onCleared = () => setEntries([]);
     socket.on('roll:result', onEntry);
     socket.on('chat:message', onEntry);
+    socket.on('chat:card', onEntry);
     socket.on('chat:cleared', onCleared);
     return () => {
       socket.off('roll:result', onEntry);
       socket.off('chat:message', onEntry);
+      socket.off('chat:card', onEntry);
       socket.off('chat:cleared', onCleared);
     };
   }, []);

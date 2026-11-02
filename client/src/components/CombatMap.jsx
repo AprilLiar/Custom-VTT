@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { X } from 'lucide-react';
+import { Maximize2, Minus, Plus, X } from 'lucide-react';
 import { socket } from '../socket.js';
 import {
   cellAt,
@@ -29,6 +29,7 @@ import FighterOverlay, { ChallengeSparks } from './FighterOverlay.jsx';
 // that isn't a drag calls `onSelect(token)` — the token panel hangs off it.
 
 const DRAG_THRESHOLD = 5;
+const MAX_ZOOM = 5;
 const HIGHLIGHT = 'rgba(250, 204, 21, 0.45)';
 
 export default function CombatMap({
@@ -57,10 +58,77 @@ export default function CombatMap({
   const grid = useMemo(() => normalizeGrid(scene?.grid ?? {}), [scene?.grid]);
   const insetLeft = inset?.left ?? 0;
   const insetRight = inset?.right ?? 0;
-  const fit = useMemo(
+  const baseFit = useMemo(
     () => fitImage(stageWidth, stageHeight, natural.width, natural.height, { left: insetLeft, right: insetRight }),
     [stageWidth, stageHeight, natural.width, natural.height, insetLeft, insetRight]
   );
+
+  // **Zoom (decided, added with Phase 5)** — per viewer, never synced: the
+  // wheel zooms about the pointer (1× to 5×), dragging empty map pans, and
+  // the corner buttons do the same for touch. `view` is the offset of the
+  // zoomed image's corner from where the fitted image would sit.
+  const [view, setView] = useState({ zoom: 1, offX: 0, offY: 0 });
+  useEffect(() => setView({ zoom: 1, offX: 0, offY: 0 }), [src]);
+  const area = { left: insetLeft, right: stageWidth - insetRight, top: 0, bottom: stageHeight };
+  // Keep the zoomed map covering the view: it can be panned to its edges, not past them.
+  const clampView = (v) => {
+    const zoom = Math.min(MAX_ZOOM, Math.max(1, v.zoom));
+    if (zoom === 1) return { zoom: 1, offX: 0, offY: 0 };
+    const w = baseFit.width * zoom;
+    const h = baseFit.height * zoom;
+    const clampAxis = (off, base, size, lo, hi) => {
+      const origin = base + off;
+      if (size <= hi - lo) return lo + (hi - lo - size) / 2 - base;
+      return Math.min(lo, Math.max(hi - size, origin)) - base;
+    };
+    return {
+      zoom,
+      offX: clampAxis(v.offX, baseFit.left, w, area.left, area.right),
+      offY: clampAxis(v.offY, baseFit.top, h, area.top, area.bottom),
+    };
+  };
+  // Zoom by `factor` keeping the stage point (sx, sy) where it is.
+  const zoomAt = (factor, sx, sy) =>
+    setView((v) => {
+      const scale = baseFit.scale * v.zoom;
+      const ox = baseFit.left + v.offX;
+      const oy = baseFit.top + v.offY;
+      const px = (sx - ox) / scale;
+      const py = (sy - oy) / scale;
+      const zoom = Math.min(MAX_ZOOM, Math.max(1, v.zoom * factor));
+      const ns = baseFit.scale * zoom;
+      return clampView({ zoom, offX: sx - px * ns - baseFit.left, offY: sy - py * ns - baseFit.top });
+    });
+  const fit = {
+    scale: baseFit.scale * view.zoom,
+    width: baseFit.width * view.zoom,
+    height: baseFit.height * view.zoom,
+    left: baseFit.left + view.offX,
+    top: baseFit.top + view.offY,
+  };
+  const panRef = useRef(null);
+  const onWheel = (e) => {
+    if (!baseFit.scale) return;
+    const rect = rootRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    zoomAt(Math.exp(-e.deltaY / 400), e.clientX - rect.left, e.clientY - rect.top);
+  };
+  const onPanDown = (e) => {
+    if (e.button !== 0 || view.zoom <= 1) return;
+    e.currentTarget.setPointerCapture(e.pointerId);
+    panRef.current = { id: e.pointerId, x: e.clientX, y: e.clientY };
+  };
+  const onPanMove = (e) => {
+    const p = panRef.current;
+    if (!p || p.id !== e.pointerId) return;
+    const dx = e.clientX - p.x;
+    const dy = e.clientY - p.y;
+    panRef.current = { ...p, x: e.clientX, y: e.clientY };
+    setView((v) => clampView({ ...v, offX: v.offX + dx, offY: v.offY + dy }));
+  };
+  const onPanUp = () => {
+    panRef.current = null;
+  };
   const lines = useMemo(
     () => (natural.width ? gridLines(natural.width, natural.height, grid) : null),
     [natural.width, natural.height, grid]
@@ -172,11 +240,29 @@ export default function CombatMap({
       // so the drawers beside the map stay usable even while it is raised.
       className="pointer-events-none absolute inset-0"
       // Above the GM's drawers while a token's panel is open.
-      style={{ zIndex: selectedTokenId != null ? 20 : 1 }}
+      // Clipped to the map area between the drawers, so a zoomed-in token off
+      // the edge never shows through a drawer — except while a panel is open,
+      // when the whole layer sits above the drawers instead.
+      style={{
+        zIndex: selectedTokenId != null ? 20 : 1,
+        clipPath: selectedTokenId != null ? undefined : `inset(0 ${insetRight}px 0 ${insetLeft}px)`,
+      }}
+      // The wheel bubbles here from the map and from the tokens on it alike.
+      onWheel={onWheel}
       onPointerMove={onTokenMove}
       onPointerUp={onTokenUp}
       onPointerCancel={() => setDrag(null)}
     >
+      {/* The visible map area, between the drawers: clips the zoomed map, and
+          catches the wheel (zoom) and drags on empty map (pan). */}
+      <div
+        className={`absolute overflow-hidden ${src ? 'pointer-events-auto' : ''} ${view.zoom > 1 ? 'cursor-grab active:cursor-grabbing' : ''}`}
+        style={{ left: area.left, top: 0, width: Math.max(0, area.right - area.left), height: stageHeight, touchAction: 'none' }}
+        onPointerDown={onPanDown}
+        onPointerMove={onPanMove}
+        onPointerUp={onPanUp}
+        onPointerCancel={onPanUp}
+      >
       {src ? (
         <img
           ref={imgRef}
@@ -188,7 +274,7 @@ export default function CombatMap({
           className="pointer-events-none absolute select-none"
           style={
             ready
-              ? { left: fit.left, top: fit.top, width: fit.width, height: fit.height }
+              ? { left: fit.left - area.left, top: fit.top, width: fit.width, height: fit.height, maxWidth: 'none' }
               : { visibility: 'hidden', left: 0, top: 0 }
           }
         />
@@ -201,7 +287,7 @@ export default function CombatMap({
       {ready && lines && (
         <svg
           className="pointer-events-none absolute"
-          style={{ left: fit.left, top: fit.top }}
+          style={{ left: fit.left - area.left, top: fit.top }}
           width={fit.width}
           height={fit.height}
           viewBox={`0 0 ${natural.width} ${natural.height}`}
@@ -226,6 +312,34 @@ export default function CombatMap({
             ))}
           </g>
         </svg>
+      )}
+      </div>
+
+      {ready && (
+        <div
+          className="pointer-events-auto absolute bottom-3 flex flex-col gap-1"
+          style={{ right: insetRight + 12, zIndex: 30, marginBottom: 'var(--safe-bottom)' }}
+        >
+          {[
+            [Plus, 'Zoom in', () => zoomAt(1.25, (area.left + area.right) / 2, stageHeight / 2)],
+            [Minus, 'Zoom out', () => zoomAt(0.8, (area.left + area.right) / 2, stageHeight / 2)],
+            [Maximize2, 'Fit the whole map', () => setView({ zoom: 1, offX: 0, offY: 0 })],
+          ].map(([Icon, label, onClick]) => (
+            <button
+              key={label}
+              type="button"
+              onClick={onClick}
+              title={label}
+              aria-label={label}
+              className="flex h-9 w-9 items-center justify-center panel-cut-sm border border-zinc-700 bg-zinc-900/85 text-zinc-300 hover:border-brand-500 hover:text-brand-300"
+            >
+              <Icon size={16} aria-hidden />
+            </button>
+          ))}
+          {view.zoom > 1.001 && (
+            <span className="text-center font-display text-[10px] tabular-nums text-zinc-400">{view.zoom.toFixed(1)}×</span>
+          )}
+        </div>
       )}
 
       {ready &&

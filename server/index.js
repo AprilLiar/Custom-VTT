@@ -24,6 +24,7 @@ import {
 import { TRAY, clampLanes, laneCapacity, moveOnLane, packLane } from '../client/src/lib/simpleLane.js';
 import { loadCombatTokens, registerCombatMapHandlers, sceneGrid } from './combatMap.js';
 import { EMPTY_FIGHT_STATE, loadSimpleStates, registerCombatStateHandlers } from './combatState.js';
+import { loadFightState, registerFightHandlers } from './fights.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3001;
@@ -634,7 +635,11 @@ async function buildStagePayload() {
   // their token row shows and the names of their Stances — what the token
   // panel needs, for both fights at once.
   const fighterSetup = activeScene ? await loadFighterSetup() : {};
-  return { activeScene, summons, drawings, combatTokens, simpleLanes, fighterSetup };
+  // Phase 5: each mode's fight (rounds, order, a pending Stance pick), or null.
+  const fights = activeScene
+    ? { simple: await loadFightState(activeScene.id, 'simple'), combat: await loadFightState(activeScene.id, 'combat') }
+    : { simple: null, combat: null };
+  return { activeScene, summons, drawings, combatTokens, simpleLanes, fighterSetup, fights };
 }
 
 async function loadFighterSetup() {
@@ -1146,7 +1151,7 @@ app.get('/api/chat', wrap(async (_req, res) => {
   // snapshots, round summaries, Quirk cards — are no longer written, and the
   // log is wiped on every boot, so none can be left over to render.
   const rows = await all(`
-    SELECT c.id, c.kind, c.character_id, c.modifier, c.dice_rolled, c.content,
+    SELECT c.id, c.kind, c.character_id, c.modifier, c.dice_rolled, c.content, c.payload,
            c.image_hash, (c.image_data IS NOT NULL) AS has_image, c.image_mime_type, c.created_at,
            ch.name AS character_name
     FROM (SELECT * FROM chat_log ORDER BY id DESC LIMIT ${CHAT_HISTORY_LIMIT}) c
@@ -1170,6 +1175,8 @@ app.get('/api/chat', wrap(async (_req, res) => {
         message: row.content,
         imageUrl: imageUrl('chat', row.id, { hash: row.image_hash, present: row.has_image }),
         imageMimeType: row.image_mime_type,
+        // Fight cards (Panic at the Dojo): a Reminder or a Stance roll.
+        payload: row.kind === 'reminder' || row.kind === 'stance_roll' ? safeJson(row.payload) : undefined,
         timestamp: sqliteToIso(row.created_at),
       };
     })
@@ -1227,6 +1234,30 @@ async function postSystemMessage(text) {
     imageMimeType: null,
     timestamp: new Date().toISOString(),
   });
+}
+
+// **A fight card in chat (Panic at the Dojo)** — a Reminder box or a Stance
+// roll, from the table rather than from anyone. Everything it shows rides in
+// `payload`, so the card renders the same after a reload.
+async function postCard(kind, payload) {
+  const result = await run(
+    "INSERT INTO chat_log (kind, character_id, dice_rolled, payload) VALUES (?, ?, '[]', ?)",
+    [kind, GM_CHAT_SENTINEL_ID, JSON.stringify(payload)]
+  );
+  io.emit('chat:card', {
+    id: Number(result.lastInsertRowid),
+    kind,
+    payload,
+    timestamp: new Date().toISOString(),
+  });
+}
+
+function safeJson(text) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
 }
 
 // ============================================================ Audio Player
@@ -1419,6 +1450,8 @@ io.on('connection', (socket) => {
   registerCombatMapHandlers({ on, socket, mayWrite: mayWriteScenePicture, emitStageUpdated, stampImageHash });
   // A fighter's HP, tokens, Challenge and Stance (Phase 4) — see server/combatState.js.
   registerCombatStateHandlers({ on, socket, mayWrite: mayWriteScenePicture, emitStageUpdated });
+  // Rounds, turns, Stance rolls and Reminders (Phase 5) — see server/fights.js.
+  registerFightHandlers({ on, socket, emitStageUpdated, postCard, postSystemMessage });
 
   // Who this connection is playing as — stored per-socket, in memory only
   // (lost on disconnect, matching the no-login/session-only model; the
@@ -1940,6 +1973,7 @@ io.on('connection', (socket) => {
     // "scene-specific" (scene_summons.scene_id) means.
     await run('UPDATE scene_state SET active_scene_id = NULL WHERE active_scene_id = ?', [scene.id]);
     await run('DELETE FROM scene_notes WHERE scene_id = ?', [scene.id]);
+    await run('DELETE FROM fights WHERE scene_id = ?', [scene.id]);
     await run('DELETE FROM combatants WHERE scene_id = ?', [scene.id]);
     await run('DELETE FROM scene_summons WHERE scene_id = ?', [scene.id]);
     await run('DELETE FROM scene_drawings WHERE scene_id = ?', [scene.id]);

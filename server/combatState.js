@@ -50,7 +50,7 @@ export async function loadSimpleStates(sceneId) {
 }
 
 // Find (or, for a summon, create) the combatant a ref names.
-async function resolveRef(ref) {
+export async function resolveRef(ref) {
   if (ref?.combatantId != null) {
     return one('SELECT * FROM combatants WHERE id = ?', [Number(ref.combatantId)]);
   }

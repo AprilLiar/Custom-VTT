@@ -507,11 +507,12 @@ async function migrateSceneSummonsSceneId() {
 // place and every shared Quirk refused at the insert.
 async function migrateChatLogKind() {
   const sql = await tableSql('chat_log');
-  if (!sql || sql.includes("'quirk'")) return;
+  // Newest values: 'reminder' and 'stance_roll' (Panic at the Dojo fights).
+  if (!sql || sql.includes("'stance_roll'")) return;
   await run(`
     CREATE TABLE chat_log_v2 (
       id INTEGER PRIMARY KEY,
-      kind TEXT NOT NULL DEFAULT 'roll' CHECK(kind IN ('roll','message','move_reveal','lane_snapshot','round_summary','quirk')),
+      kind TEXT NOT NULL DEFAULT 'roll' CHECK(kind IN ('roll','message','move_reveal','lane_snapshot','round_summary','quirk','reminder','stance_roll')),
       character_id INTEGER NOT NULL,
       dice_rolled TEXT NOT NULL,
       modifier INTEGER NOT NULL DEFAULT 0,
@@ -730,7 +731,7 @@ export async function initDb() {
   ddl(`
     CREATE TABLE IF NOT EXISTS chat_log (
       id INTEGER PRIMARY KEY,
-      kind TEXT NOT NULL DEFAULT 'roll' CHECK(kind IN ('roll','message','move_reveal','lane_snapshot','round_summary','quirk')),
+      kind TEXT NOT NULL DEFAULT 'roll' CHECK(kind IN ('roll','message','move_reveal','lane_snapshot','round_summary','quirk','reminder','stance_roll')),
       character_id INTEGER NOT NULL,
       dice_rolled TEXT NOT NULL, -- JSON array of {slot_name, size, bonus, result}
       modifier INTEGER NOT NULL DEFAULT 0,
@@ -1391,6 +1392,27 @@ export async function initDb() {
   // A Simple Combat fighter is created on its first change, keyed by its
   // summon: at most one row per summon, so INSERT OR IGNORE is race-free.
   ddl('CREATE UNIQUE INDEX IF NOT EXISTS idx_combatants_summon_unique ON combatants(summon_id) WHERE summon_id IS NOT NULL');
+
+  // **A fight (Panic at the Dojo, Phase 5)** — one per Scene per mode. The
+  // sides are JSON arrays of combatant ids; `turn_order` is this round's
+  // [{ side, id }] (client/src/lib/initiative.js); `pending_stance_combatant`
+  // is set while a fighter with several Stances is choosing one at the start
+  // of their turn. See server/fights.js.
+  ddl(`
+    CREATE TABLE IF NOT EXISTS fights (
+      id INTEGER PRIMARY KEY,
+      scene_id INTEGER NOT NULL REFERENCES scenes(id) ON DELETE CASCADE,
+      mode TEXT NOT NULL CHECK(mode IN ('simple','combat')),
+      allies TEXT NOT NULL DEFAULT '[]',
+      enemies TEXT NOT NULL DEFAULT '[]',
+      round INTEGER NOT NULL DEFAULT 1,
+      turn_order TEXT NOT NULL DEFAULT '[]',
+      turn_index INTEGER NOT NULL DEFAULT 0,
+      pending_stance_combatant INTEGER,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(scene_id, mode)
+    )
+  `);
 
   // **Table-wide settings the GM sets for everyone** (Settings page). A
   // singleton, like scene_state. `simple_lanes`: how many lanes Simple

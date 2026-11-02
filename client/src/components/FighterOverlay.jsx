@@ -41,7 +41,7 @@ function Portrait({ fighter, className }) {
 }
 
 // One token icon with its count badge.
-function CountedIcon({ tokenKey, count, size, dim = false, active = false, onClick, disabled }) {
+function CountedIcon({ tokenKey, count, size, dim = false, active = false, onClick, disabled, title }) {
   const def = TOKEN_BY_KEY[tokenKey];
   const Tag = onClick ? 'button' : 'span';
   return (
@@ -49,8 +49,10 @@ function CountedIcon({ tokenKey, count, size, dim = false, active = false, onCli
       type={onClick ? 'button' : undefined}
       onClick={onClick}
       disabled={onClick ? disabled : undefined}
-      title={def?.name}
+      title={title ?? def?.name}
       className={`relative flex shrink-0 items-center justify-center rounded-md border bg-zinc-950/85 ${
+        onClick ? 'pointer-events-auto' : ''
+      } ${
         active ? 'border-yellow-400' : 'border-zinc-700'
       } ${dim ? 'opacity-50' : ''}`}
       style={{ width: size, height: size }}
@@ -309,7 +311,20 @@ export default function FighterOverlay({
                 size={rowIcon}
                 active={selected && openKey === key}
                 dim={selected && !count}
-                onClick={selected ? () => setOpenKey((k) => (k === key ? null : key)) : undefined}
+                // **A quick spend (decided):** with the panel closed, clicking
+                // a held token takes one off — the same as its "−" — since
+                // tokens are spent far more often than they are gained.
+                onClick={
+                  selected
+                    ? () => setOpenKey((k) => (k === key ? null : key))
+                    : canEdit
+                      ? (e) => {
+                          e.stopPropagation();
+                          emit('fighter:token', { key, delta: -1 });
+                        }
+                      : undefined
+                }
+                title={!selected && canEdit ? `Spend 1 ${TOKEN_BY_KEY[key]?.name}` : undefined}
               />
             </div>
           ))}

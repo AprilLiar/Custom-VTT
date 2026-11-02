@@ -36,6 +36,8 @@ import SceneModeToggle from './SceneModeToggle.jsx';
 import SimpleCombatLane from './SimpleCombatLane.jsx';
 import CombatMap from './CombatMap.jsx';
 import { CombatFightersDrawer, CombatMapDrawer, PlayerTokenDock } from './CombatDrawers.jsx';
+import { FightSetupDialog, InitiativeRail, StancePrompt, StartCombatButton } from './FightControls.jsx';
+import { barsLeft } from '../lib/hpBars.js';
 import { useDominantColor } from '../lib/dominantColor.js';
 
 // The Scene tab's fullscreen canvas (Scene tab plan, Phase 1: the route
@@ -165,6 +167,9 @@ export default function ScenePage() {
   // TopLeftControls (see that file's own comment on why it lives there).
   const [timestampsOpen, setTimestampsOpen] = useState(false);
 
+  // Panic at the Dojo, Phase 5: the Start Combat / Change sides dialog.
+  const [fightSetupOpen, setFightSetupOpen] = useState(false);
+
   // Scene Settings (client/src/lib/sceneSettings.js) — same "read once,
   // per-device, never socket-synced" shape as Cutscene Speed on the
   // Settings page. Read here rather than inside StageRoster so a setting
@@ -221,6 +226,30 @@ export default function ScenePage() {
   const isCombat = sceneMode === 'combat';
   // Clear of the GM's two w-64 drawers while they are showing.
   const drawerInset = role === 'gm' && !uiHidden ? { left: 256, right: 256 } : undefined;
+  // The fight this mode shows (Phase 5) and every fighter in it.
+  const fightMode = sceneMode === 'simple' || sceneMode === 'combat' ? sceneMode : null;
+  const fight = fightMode ? (stage?.fights?.[fightMode] ?? null) : null;
+  const fightFighters = !fightMode
+    ? []
+    : fightMode === 'combat'
+      ? combatTokens.map((t) => ({
+          key: `c${t.id}`,
+          ref: { combatantId: t.id },
+          combatantId: t.id,
+          name: t.name,
+          image_url: t.image_url,
+          crop: t.crop,
+          turns: barsLeft(t.fight.hp),
+        }))
+      : summons.map((s) => ({
+          key: `s${s.id}`,
+          ref: { summonId: s.id },
+          combatantId: s.fight?.combatant_id ?? null,
+          name: s.name,
+          image_url: s.image_url,
+          top: true,
+          turns: barsLeft(s.fight?.hp ?? { bars: 1, broken: 0 }),
+        }));
 
   return (
     <div
@@ -382,6 +411,24 @@ export default function ScenePage() {
           />
           )}
         </>
+      )}
+      {/* The fight (Phase 5): Start Combat (GM), the initiative rail, and the
+          turn-start Stance pick — the prompt shows even in cinematic mode,
+          since a turn cannot go on without it. */}
+      {!uiHidden && role === 'gm' && fightMode && !fight && <StartCombatButton onClick={() => setFightSetupOpen(true)} />}
+      {!uiHidden && fight && (
+        <InitiativeRail
+          mode={fightMode}
+          fight={fight}
+          fighters={fightFighters}
+          role={role}
+          right={role === 'gm' ? 268 : 12}
+          onEditSides={() => setFightSetupOpen(true)}
+        />
+      )}
+      {fight && <StancePrompt mode={fightMode} fight={fight} fighters={fightFighters} role={role} characterId={characterId} />}
+      {fightSetupOpen && fightMode && (
+        <FightSetupDialog mode={fightMode} fighters={fightFighters} existing={fight} onClose={() => setFightSetupOpen(false)} />
       )}
       {notesOpen && <SceneNotesDialog activeScene={activeScene} onClose={() => setNotesOpen(false)} />}
       {timestampsOpen && <SceneTimestampDialog onClose={() => setTimestampsOpen(false)} />}
