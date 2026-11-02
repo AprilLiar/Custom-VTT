@@ -1,5 +1,8 @@
 import { useEffect, useState } from 'react';
 import { Download } from 'lucide-react';
+import { socket } from '../socket.js';
+import { getTableSettings } from '../lib/api.js';
+import { MAX_LANES } from '../lib/simpleLane.js';
 import {
   DEFAULT_HUE,
   PRESET_HUES,
@@ -49,6 +52,52 @@ import { useRole } from '../roleContext.jsx';
 // Usually exactly one archive. A second appears only if the old tables ever came
 // back (a rollback to the previous deploy recreates them), and it never
 // replaces the first, so the list shows every one with its date.
+// **Simple Combat lanes (GM, the whole table).** Unlike everything else on
+// this page this is NOT per-browser: lane positions are shared, so the lane
+// count is one server setting everybody's Simple Combat follows.
+function SimpleCombatLanes() {
+  const [lanes, setLanes] = useState(null);
+  useEffect(() => {
+    getTableSettings()
+      .then((s) => setLanes(s.simpleLanes))
+      .catch(console.error);
+    const onUpdated = (s) => setLanes(s.simpleLanes);
+    socket.on('table_settings:updated', onUpdated);
+    return () => socket.off('table_settings:updated', onUpdated);
+  }, []);
+  return (
+    <div className="panel-cut-lg space-y-3 border border-zinc-800 bg-zinc-900 p-4">
+      <div>
+        <h2 className="text-sm font-bold uppercase tracking-wide text-zinc-400">Simple Combat Lanes</h2>
+        <p className="mt-1 text-xs text-zinc-600">
+          How many lanes of ten spaces Simple Combat shows — for the whole table, not just you. Fighters in a lane
+          you remove step onto the lanes that remain. GM-only.
+        </p>
+      </div>
+      <div className="flex gap-2" role="radiogroup" aria-label="Simple Combat lanes">
+        {Array.from({ length: MAX_LANES }, (_, i) => i + 1).map((n) => (
+          <button
+            key={n}
+            type="button"
+            role="radio"
+            aria-checked={lanes === n}
+            disabled={lanes === null}
+            onClick={() => {
+              setLanes(n);
+              socket.emit('table_settings:set', { simpleLanes: n });
+            }}
+            className={`min-h-11 flex-1 panel-cut-sm border px-3 text-sm font-semibold ${
+              lanes === n ? 'border-brand-500 bg-brand-600 text-white' : 'border-zinc-700 bg-zinc-800 text-zinc-300 hover:border-brand-500'
+            }`}
+          >
+            {n} × 10
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function OldSystemArchive() {
   const [state, setState] = useState(null); // { archives, purge } | { error }
   useEffect(() => {
@@ -322,6 +371,7 @@ export default function SettingsPage() {
         </label>
       </div>
 
+      {role === 'gm' && <SimpleCombatLanes />}
       {role === 'gm' && <OldSystemArchive />}
     </div>
   );

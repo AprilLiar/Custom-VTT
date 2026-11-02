@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { socket } from '../socket.js';
-import { laneGeometry, moveOnLane, pointsAttr, slotAtX } from '../lib/simpleLane.js';
+import { laneGeometry, laneLinesPath, moveOnLane, pointsAttr, slotAt } from '../lib/simpleLane.js';
 
-// Simple Combat's overlay (Panic at the Dojo, Phase 2): a single lane of ten
-// spaces in perspective at 5/7 of the stage's height, glowing faintly in the
+// Simple Combat's overlay (Panic at the Dojo, Phase 2): one to three lanes of
+// ten spaces in perspective (the GM's table setting) at 5/7 of the stage's
+// height, glowing faintly in the
 // backdrop's own most prominent colour, with every summoned fighter standing
 // on it as a tabletop miniature.
 //
@@ -30,13 +31,14 @@ export default function SimpleCombatLane({
   onSelect,
   selectedSummonId = null,
   inset,
+  lanes = 1,
 }) {
   const rootRef = useRef(null);
   const insetLeft = inset?.left ?? 0;
   const insetRight = inset?.right ?? 0;
   const geometry = useMemo(
-    () => laneGeometry(stageWidth, stageHeight, { left: insetLeft, right: insetRight }),
-    [stageWidth, stageHeight, insetLeft, insetRight]
+    () => laneGeometry(stageWidth, stageHeight, { left: insetLeft, right: insetRight }, lanes),
+    [stageWidth, stageHeight, insetLeft, insetRight, lanes]
   );
   const [drag, setDrag] = useState(null); // { id, pointerId, startX, startY, x, y, moved }
   // A drop is shown where it landed straight away, rather than snapping back
@@ -60,7 +62,7 @@ export default function SimpleCombatLane({
   const trayY = geometry.bottomY + Math.max(36, geometry.height);
   const dropTarget = (point) => {
     if (role === 'gm' && point.y > trayY) return { tray: true, slot: null };
-    return { tray: false, slot: slotAtX(geometry, point.x) };
+    return { tray: false, slot: slotAt(geometry, point.x, point.y) };
   };
 
   const onPointerDown = (e, s) => {
@@ -103,19 +105,18 @@ export default function SimpleCombatLane({
   const onLane = summons.filter((s) => placed.get(s.id) != null);
   const inTray = summons.filter((s) => placed.get(s.id) == null);
 
-  const segWidth = geometry.segments[0]?.width ?? 0;
-  const mini = { width: segWidth * 0.8, maxHeight: segWidth * 2.6, plinthRx: segWidth * 0.42 };
+  // A miniature's size follows its space: back lanes are narrower, so their
+  // miniatures are smaller.
+  const frontWidth = geometry.segments[0]?.width ?? 0;
+  const miniFor = (scale = 1) => {
+    const w = frontWidth * scale;
+    return { width: w * 0.8, maxHeight: w * 2.6, plinthRx: w * 0.42 };
+  };
+  const mini = miniFor(1);
 
-  // The dividers between spaces, as one path, drawn twice: a black outline
-  // under a glowing white line.
-  const linesPath = useMemo(() => {
-    const parts = [`M ${pointsAttr(geometry.outline).replaceAll(' ', ' L ')} Z`];
-    for (let i = 1; i < geometry.segments.length; i++) {
-      const [tl, , , bl] = geometry.segments[i].points;
-      parts.push(`M ${tl[0].toFixed(1)},${tl[1].toFixed(1)} L ${bl[0].toFixed(1)},${bl[1].toFixed(1)}`);
-    }
-    return parts.join(' ');
-  }, [geometry]);
+  // The line work as one path, drawn twice: a black outline under a glowing
+  // white line.
+  const linesPath = useMemo(() => laneLinesPath(geometry), [geometry]);
 
   return (
     <div
@@ -158,13 +159,16 @@ export default function SimpleCombatLane({
         const seg = geometry.segments[placed.get(s.id)];
         if (!seg) return null;
         const isDragged = dragging?.id === s.id;
+        const size = miniFor(isDragged ? 1 : seg.scale);
         return (
           <Miniature
             key={s.id}
             summon={s}
             x={isDragged ? dragging.x : seg.center.x}
-            y={isDragged ? dragging.y + mini.plinthRx * 0.3 : seg.center.y}
-            size={mini}
+            y={isDragged ? dragging.y + size.plinthRx * 0.3 : seg.center.y}
+            size={size}
+            // Nearer lanes stand in front of farther ones.
+            layer={10 - seg.lane}
             lifted={isDragged}
             selected={selectedSummonId === s.id}
             draggable={canDrag(s)}
@@ -217,7 +221,7 @@ export default function SimpleCombatLane({
 // than a lane space, fading out at the bottom so the feet disperse rather than
 // end on a hard edge, standing on a small round plinth. (x, y) is where the
 // plinth's centre sits.
-function Miniature({ summon, x, y, size, lifted = false, selected = false, draggable, onPointerDown }) {
+function Miniature({ summon, x, y, size, lifted = false, selected = false, draggable, onPointerDown, layer = 1 }) {
   if (!summon) return null;
   const rx = size.plinthRx;
   const ry = rx * 0.32;
@@ -232,7 +236,7 @@ function Miniature({ summon, x, y, size, lifted = false, selected = false, dragg
         width: size.width,
         height: size.maxHeight + ry,
         transition: lifted ? 'none' : 'left 180ms ease-out, top 180ms ease-out',
-        zIndex: lifted ? 3 : 1,
+        zIndex: lifted ? 30 : layer,
         opacity: summon.is_hidden ? 0.5 : 1,
         filter: lifted ? 'drop-shadow(0 10px 14px rgba(0,0,0,0.65))' : 'drop-shadow(0 4px 6px rgba(0,0,0,0.5))',
         touchAction: 'none',

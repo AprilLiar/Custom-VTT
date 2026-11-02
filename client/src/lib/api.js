@@ -84,3 +84,5 @@ export const getCombatSetup = (ownerType, ownerId) =>
   fetch(`/api/combat-setup?${new URLSearchParams({ ownerType, ownerId })}`).then(json);
 // Every fighter's combat profile, keyed `character:<id>` / `temp_npc:<id>`.
 export const getCombatProfiles = () => fetch('/api/combat-profiles').then(json);
+// Table-wide GM settings: { simpleLanes }.
+export const getTableSettings = () => fetch('/api/table-settings').then(json);

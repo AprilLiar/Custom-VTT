@@ -299,6 +299,7 @@ export default function ScenePage() {
           role={role}
           characterId={characterId}
           inset={drawerInset}
+          lanes={stage?.simpleLanes ?? 1}
         />
       )}
       {stageWidth > 0 && isCombat && (

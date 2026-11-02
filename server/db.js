@@ -1377,6 +1377,17 @@ export async function initDb() {
     )
   `);
 
+  // **Table-wide settings the GM sets for everyone** (Settings page). A
+  // singleton, like scene_state. `simple_lanes`: how many lanes Simple
+  // Combat has (1-3) — shared, because lane positions are shared.
+  ddl(`
+    CREATE TABLE IF NOT EXISTS table_settings (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      simple_lanes INTEGER NOT NULL DEFAULT 1
+    )
+  `);
+  ddl('INSERT OR IGNORE INTO table_settings (id) VALUES (1)');
+
   // ---------------------------------------------------------------- Audio Player
   //
   // **The GM Tools drawer's third tool (decided, new).** A GM-run soundtrack

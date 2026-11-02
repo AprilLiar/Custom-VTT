@@ -2,7 +2,19 @@
 // and swapping, and the perspective geometry a drag is judged against.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { LANE_SLOTS, TRAY, laneGeometry, moveOnLane, packLane, slotAtX } from '../../client/src/lib/simpleLane.js';
+import {
+  LANE_SLOTS,
+  MAX_LANES,
+  TRAY,
+  clampLanes,
+  laneCapacity,
+  laneGeometry,
+  laneLinesPath,
+  moveOnLane,
+  packLane,
+  slotAt,
+  slotAtX,
+} from '../../client/src/lib/simpleLane.js';
 
 const summons = (...slots) => slots.map((lane_slot, i) => ({ id: i + 1, lane_slot }));
 const asObject = (map) => Object.fromEntries(map);
@@ -69,4 +81,45 @@ test('a point is judged against the lane centre line, and the ends catch oversho
   for (const seg of g.segments) assert.equal(slotAtX(g, seg.center.x), seg.index);
   assert.equal(slotAtX(g, -500), 0);
   assert.equal(slotAtX(g, 5000), LANE_SLOTS - 1);
+});
+
+// ---- more than one lane (a table-wide GM setting, 1-3)
+
+test('lane counts are clamped to 1-3, ten spaces each', () => {
+  assert.deepEqual([clampLanes(0), clampLanes(2), clampLanes(9), clampLanes('junk')], [1, 2, MAX_LANES, 1]);
+  assert.equal(laneCapacity(3), 30);
+});
+
+test('with two lanes the front lane fills first, then the back one, before the tray', () => {
+  const many = Array.from({ length: 22 }, () => null);
+  const packed = packLane(summons(...many), 2);
+  assert.equal(packed.get(1), 0);
+  assert.equal(packed.get(11), 10, 'the eleventh steps into the back lane');
+  assert.equal(packed.get(21), null);
+});
+
+test('turning lanes down repacks anyone standing in a removed lane', () => {
+  assert.deepEqual(asObject(packLane(summons(15, null), 1)), { 1: 0, 2: 1 });
+  assert.deepEqual(asObject(packLane(summons(15, null), 2)), { 1: 15, 2: 0 });
+});
+
+test('each lane count has its own shape: deeper boards, flatter tilt, thinner back rows', () => {
+  const one = laneGeometry(1400, 800, undefined, 1);
+  const three = laneGeometry(1400, 800, undefined, 3);
+  assert.equal(three.segments.length, 30);
+  assert.ok(three.height > one.height && three.height < one.height * 3, 'deeper, but less than three times');
+  const tilt = (g) => (g.outline[2][0] - g.outline[3][0]) / (g.outline[1][0] - g.outline[0][0]);
+  assert.ok(tilt(three) > tilt(one), 'a flatter back edge relative to the front');
+  const thick = three.rows.map((r) => r.bottomY - r.topY);
+  assert.ok(thick[0] > thick[1] && thick[1] > thick[2], 'rows thin towards the back');
+  assert.ok(three.segments[25].scale < three.segments[15].scale && three.segments[15].scale < three.segments[5].scale);
+  assert.equal(three.centerY, (800 * 5) / 7, 'still centred at 5/7');
+});
+
+test('a point finds its lane by height and its column within that lane', () => {
+  const g = laneGeometry(1200, 800, undefined, 3);
+  for (const seg of g.segments) assert.equal(slotAt(g, seg.center.x, seg.center.y), seg.index);
+  assert.equal(slotAt(g, -100, g.topY - 50), 20, 'above the board: back lane, first column');
+  assert.equal(slotAt(g, 5000, g.bottomY + 50), 9, 'below it: front lane, last column');
+  assert.ok(laneLinesPath(g).split('M').length - 1 === 1 + 2 + 9, 'outline, two lane lines, nine dividers');
 });

@@ -21,7 +21,7 @@ import {
   registerCombatSetupHandlers, deleteCombatSetupFor, parseOwner, loadProfile, loadReminders, loadAllProfiles,
   loadStances,
 } from './combatSetup.js';
-import { LANE_SLOTS, TRAY, moveOnLane, packLane } from '../client/src/lib/simpleLane.js';
+import { TRAY, clampLanes, laneCapacity, moveOnLane, packLane } from '../client/src/lib/simpleLane.js';
 import { loadCombatTokens, registerCombatMapHandlers, sceneGrid } from './combatMap.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -602,7 +602,8 @@ async function buildStagePayload() {
   // Simple Combat's lane, packed over EVERY summon (hidden ones included) in
   // summon order, before the per-viewer redaction — so a space a hidden
   // fighter stands in is taken for everyone, and looks empty to a Player.
-  const lane = packLane([...summonRows].sort((a, b) => a.id - b.id));
+  const simpleLanes = await readSimpleLanes();
+  const lane = packLane([...summonRows].sort((a, b) => a.id - b.id), simpleLanes);
   const summons = summonRows.map(({ picture_hash, ...summon }) => ({
     ...summon,
     lane_slot: lane.get(summon.id) ?? null,
@@ -625,7 +626,12 @@ async function buildStagePayload() {
   // The Combat map's tokens (Phase 3) — nothing on them is hidden, so every
   // viewer gets the same list.
   const combatTokens = activeScene ? await loadCombatTokens(activeScene.id) : [];
-  return { activeScene, summons, drawings, combatTokens };
+  return { activeScene, summons, drawings, combatTokens, simpleLanes };
+}
+
+// How many lanes Simple Combat has (table_settings.simple_lanes, 1-3).
+async function readSimpleLanes() {
+  return clampLanes((await one('SELECT simple_lanes FROM table_settings WHERE id = 1'))?.simple_lanes);
 }
 
 // Per-viewer redaction of the unfiltered snapshot above — a Hidden summon
@@ -879,6 +885,10 @@ app.get('/api/combat-setup', wrap(async (req, res) => {
 
 // Every fighter's combat profile at once, keyed `character:<id>` /
 // `temp_npc:<id>` — what the Scene's combat views draw tokens from.
+app.get('/api/table-settings', wrap(async (_req, res) => {
+  res.json({ simpleLanes: await readSimpleLanes() });
+}));
+
 app.get('/api/combat-profiles', wrap(async (_req, res) => {
   res.json(await loadAllProfiles());
 }));
@@ -2060,10 +2070,19 @@ io.on('connection', (socket) => {
     const ownerId = summon.character_id ?? summon.temp_npc_id;
     if (!mayWriteScenePicture(viewer, ownerType, ownerId)) return;
     const target = slot == null ? null : Number(slot);
-    if (target === null ? viewer.role !== 'gm' : !(Number.isInteger(target) && target >= 0 && target < LANE_SLOTS)) return;
+    const lanes = await readSimpleLanes();
+    if (target === null ? viewer.role !== 'gm' : !(Number.isInteger(target) && target >= 0 && target < laneCapacity(lanes))) return;
     const rows = await all('SELECT id, lane_slot FROM scene_summons WHERE scene_id = ? ORDER BY id', [summon.scene_id]);
-    const next = moveOnLane(packLane(rows), summon.id, target);
+    const next = moveOnLane(packLane(rows, lanes), summon.id, target);
     await writeMany([...next].map(([id, s]) => ['UPDATE scene_summons SET lane_slot = ? WHERE id = ?', [s ?? TRAY, id]]));
+    await emitStageUpdated();
+  });
+
+  // **Table settings (GM).** Simple Combat's lane count, for everyone.
+  on('table_settings:set', async ({ simpleLanes }) => {
+    if (socket.data.identity?.role !== 'gm' || simpleLanes === undefined) return;
+    await run('UPDATE table_settings SET simple_lanes = ? WHERE id = 1', [clampLanes(simpleLanes)]);
+    io.emit('table_settings:updated', { simpleLanes: await readSimpleLanes() });
     await emitStageUpdated();
   });
 

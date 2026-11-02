@@ -832,6 +832,7 @@ A red/black metallic fighting-game look (Tekken/Mortal Kombat reference). A `--c
 `/settings`, via the header's cog, every role; all settings persist per browser.
 - **Primary Color** — preset swatches plus a custom picker and reset (see Visual Theme).
 - **Scene Stage** (`client/src/lib/sceneSettings.js`) — Character Height (0.5–1.5×), Distance Apart (0–3×), Picture Size (0.5–2×) and Show name plates, applied to your own view of the stage only.
+- **Simple Combat Lanes** (GM-only, the whole table) — 1, 2 or 3 lanes of ten.
 - **Old System Archive** (GM-only) — lists the pivot's archive(s) with row counts and a **Download JSON** link, and shows the purge status, including any problem the boot recorded.
 
 ## Game mechanic — GM Tools
@@ -2811,6 +2812,7 @@ Every table the server creates (`server/db.js`, all `CREATE TABLE IF NOT EXISTS`
 - **combat_stances** — `id, character_id | temp_npc_id, name, dice (JSON), created_at`
 - **scenes.combat_mode**, **scene_summons.lane_slot** — see Phase 2 as built.
 - **scenes.combat_image_*, grid_*** and **combatants** — see Phase 3 as built.
+- **table_settings** — `id = 1, simple_lanes` — see Multi-lane as built.
 - **compendium_archive** — `id, archived_at, counts (JSON), payload (the archive document)`; append-only
 
 ## Real-time events (Socket.io)
@@ -2824,11 +2826,12 @@ Clients emit; the server validates, writes, and broadcasts. The surviving contra
 - **Scene tab:** `temp_npc*`, `temp_npc_folder:*`, `scene_picture:create|copy_from_profile|update|delete`, `scene_folder:*`, `scene:create|update|set_folder|copy|delete|activate`, `stage:summon|reposition_summon|resize_summon|toggle_hidden|timestamp_play`, `scene_draw:add|clear`, `scene_note:*`, `master_note:update`, `scene_timestamp:*` (see the Scene tab section).
 - **Audio:** `audio_playlist:*`, `audio_track:*`, `audio:play|pause|resume|stop|seek|next|previous|set_mode|ping|duration|track_ended|error|lookup_title` → `audio:state` (see Audio Player).
 - **Scene modes:** `scene:set_mode` (GM), `lane:move` → `stage:updated`.
+- **Table settings:** `table_settings:set` (GM) → `table_settings:updated`.
 - **Combat map:** `scene:set_grid`, `scene:set_combat_image`, `combat_token:place|move|remove|clear` → `stage:updated`.
 - **Combat tab:** `combat_profile:update` → `combat_profile:updated`; `combat_reminder:create|update|delete` → `combat_reminders:updated`; `combat_stance:create|update|delete` → `combat_stances:updated`.
 - **GM tools:** `image:reencode`.
 
-REST reads: `/api/health`, `/api/characters`, `/api/characters/:id` (→ `{ character, roleplay, counters }`), `/api/characters/:id/relationships`, `/api/character-folders`, `/api/counter-gates`, `/api/chat`, `/api/search`, `/api/temp-npcs`, `/api/temp-npc-folders`, `/api/scene-pictures`, `/api/scenes`, `/api/scene-folders`, `/api/stage`, `/api/scene-notes`, `/api/scene-timestamps`, `/api/master-note`, `/api/audio-library`, `/api/img/:kind/:id/:hash`, `/api/image-inventory`, `/api/profile`, `/api/compendium-archive[/:id]`, `/api/combat-setup`, `/api/combat-profiles`.
+REST reads: `/api/health`, `/api/characters`, `/api/characters/:id` (→ `{ character, roleplay, counters }`), `/api/characters/:id/relationships`, `/api/character-folders`, `/api/counter-gates`, `/api/chat`, `/api/search`, `/api/temp-npcs`, `/api/temp-npc-folders`, `/api/scene-pictures`, `/api/scenes`, `/api/scene-folders`, `/api/stage`, `/api/scene-notes`, `/api/scene-timestamps`, `/api/master-note`, `/api/audio-library`, `/api/img/:kind/:id/:hash`, `/api/image-inventory`, `/api/profile`, `/api/compendium-archive[/:id]`, `/api/combat-setup`, `/api/combat-profiles`, `/api/table-settings`.
 
 ## Pages / views
 Header: the "Dogfight" logo (→ your home: the roster for a GM, your sheet for a Player), the **Characters**/**Character** link, **Scene**, Search, Chat toggle, and the Settings cog. Below `md:` a bottom nav (Characters, Chat) and a "More" menu (Search, Scene, Settings) replace it.
@@ -2894,6 +2897,7 @@ Clicking a token opens its panel; a click that turns into a drag closes the pane
 1. **Foundations — implemented.** Schema, the Unique token catalog, the Combat tab (token image, Unique picks, Reminders) on characters and Temp NPCs, and the pure initiative module with unit tests. Details under **Phase 1 as built** below.
 2. **The toggle and Simple Combat — implemented.** Scene/Simple/Combat state per Scene, the lane overlay, miniatures, drag and snap. Details under **Phase 2 as built** below.
 2b. **Stances — implemented** (data, editor, stance-bound Reminders; see **Stances as built** below). The turn-start roll and pick dialog arrive with Phase 5, the token-panel switch with Phase 4.
+2c. **Multi-lane Simple Combat — implemented** (added after scoping). A GM setting in Settings, **1 to 3 lanes** of ten (up to 3×10), for the whole table — not per browser, because lane positions are shared. Each lane count has its own pre-tuned look rather than one tilt stretched taller. Details under **Multi-lane as built** below.
 3. **Combat map — implemented.** Combat Background, the grid with its controls, placing and moving tokens, multiple copies. Details under **Phase 3 as built** below.
 4. **Token panel.** Panic tokens with badges, Challenge with particles, the HP bar stack with break and Dizzy, on both modes.
 5. **Fights.** The Start Combat dialog, the initiative rail, rounds and turns, Reminders and the automatic End Phase reminders in chat.
@@ -2924,10 +2928,16 @@ Clicking a token opens its panel; a click that turns into a drag closes the pane
 - **Server:** `server/combatMap.js`. `scene:set_grid` (GM; writes only the fields it names, so quick ±1 clicks can't overwrite each other), `scene:set_combat_image { imageData, imageMimeType } | { clear }` (GM), `combat_token:place { ownerType, ownerId, col, row }`, `combat_token:move { combatantId, col, row }` (swaps), `combat_token:remove`, `combat_token:clear` (GM). Placing, moving and removing follow the figure rule: GM anything, a Player their own character. The stage payload gains `activeScene.combat_image_url`, `activeScene.grid` and `combatTokens` (`[{ id, owner_type, owner_id, name, col, row, image_url, crop }]` — the combat token picture when there is one, else the portrait).
 - **Client:** `CombatMap.jsx` (the fitted map, an SVG grid of black-under-white lines at the chosen opacity, round tokens with a ring and shadow, drag with a 5px threshold, a yellow highlight on the target square, a hover ✕ to remove, click reserved for the token panel), `CombatDrawers.jsx` (`CombatFightersDrawer` with search, `CombatMapDrawer` with upload/replace/remove, ±1 steppers and typed values for size and offsets, an opacity slider and Clear the map, `PlayerTokenDock`), and `client/src/lib/combatDrag.js` (a small pub/sub so a drawer entry can be dragged onto the map).
 
+### Multi-lane as built (2c)
+- **`table_settings`** — a singleton (`id = 1`) of table-wide GM settings: `simple_lanes` (1-3, default 1). `GET /api/table-settings` → `{ simpleLanes }`; `table_settings:set { simpleLanes }` (GM) → `table_settings:updated` plus a stage update. Every stage payload carries `simpleLanes`.
+- **Spaces:** lane L, column C is space `L * 10 + C`; lane 0 is the **front** lane, filled first. `packLane(summons, lanes)` treats a stored space beyond the current count as unset, so turning lanes down repacks those fighters onto the lanes that remain (overflow → Waiting tray). `lane:move` accepts spaces below `lanes * 10`.
+- **`LANE_PRESETS`** in `simpleLane.js` — one hand-tuned shape per count: back edge as a share of the front (0.83 / 0.80 / 0.77, a flatter tilt as lanes are added), total depth as a share of the front width (0.062 / 0.105 / 0.14, growing less than linearly), lane thickness front→back (1 / 1, 0.86 / 1, 0.87, 0.76), and the front width (100% / 97% / 94%). The board stays centred at 5/7. `slotAt(geometry, x, y)` picks the lane by height, then the column; `laneLinesPath` draws the outline, the lines between lanes and the straight column dividers. Miniatures scale with their space (back lanes smaller), and nearer lanes stand in front.
+- **Settings:** a GM-only **Simple Combat Lanes** section (1 × 10 / 2 × 10 / 3 × 10), live for everyone.
+
 ## Implementation Phases (iterative — each ends with a deploy + playtest checkpoint)
 The old system's phases (1-9 and the playtest batches after them) are complete history in git. The current state:
 - **Pivot — done.** Old system archived and removed (this document's **The pivot**).
-- **Panic at the Dojo combat assistant**, in the five phases listed in its section above. Phases 1, 2, 2b (Stances) and 3 are implemented; next are multi-lane Simple Combat (2c), then Phase 4.
+- **Panic at the Dojo combat assistant**, in the five phases listed in its section above. Phases 1, 2, 2b (Stances) and 3 are implemented; so is multi-lane Simple Combat (2c). Phase 4 is next.
 
 ## Implementation Risks & Recommendations
 - **The archive is the only copy of the old Compendium's data.** It lives in `compendium_archive` and is downloadable from Settings; keep a downloaded copy outside the app. Restoring the old system would mean reverting the pivot commit's code and re-importing from the archive by hand — there is no importer.
