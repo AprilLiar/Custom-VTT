@@ -182,7 +182,7 @@ export function FightSetupDialog({ mode, fighters, existing = null, onClose }) {
 // Top-left (decided: clear of the Scene's chat button and cards, which live
 // bottom-right), under the corner buttons — or just right of the GM's left
 // drawer while it shows. `left` is set by the page.
-export function InitiativeRail({ mode, fight, fighters, role, left = 12, onEditSides }) {
+export function InitiativeRail({ mode, fight, fighters, role, left = 12, onEditSides, weight = null }) {
   const byCombatant = useMemo(() => new Map(fighters.filter((f) => f.combatantId != null).map((f) => [f.combatantId, f])), [fighters]);
   const currentRef = useRef(null);
   useEffect(() => {
@@ -213,6 +213,12 @@ export function InitiativeRail({ mode, fight, fighters, role, left = 12, onEditS
           </span>
         )}
       </div>
+      {/* The fight's Cinematic Weight, when the GM has preset one. */}
+      {weight && (
+        <div className="border-b border-zinc-800 px-2 py-1 font-display text-[10px] uppercase tracking-wide text-zinc-400">
+          <span className="font-bold text-purple-300">{weight.name}</span> · Heal {weight.heal} · Bleed {weight.bleed}
+        </div>
+      )}
       <ol className="flex-1 space-y-1 overflow-y-auto p-1.5">
         {fight.order.map((entry, i) => {
           const f = byCombatant.get(entry.id);

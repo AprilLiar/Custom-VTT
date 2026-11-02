@@ -836,7 +836,7 @@ A red/black metallic fighting-game look (Tekken/Mortal Kombat reference). A `--c
 - **Old System Archive** (GM-only) — lists the pivot's archive(s) with row counts and a **Download JSON** link, and shows the purge status, including any problem the boot recorded.
 
 ## Game mechanic — GM Tools
-A small circular widget overlaid on every page, GM-only (`GmToolsWidget.jsx`, mounted in `App.jsx`). Tapping it darkens and blurs the page and opens a list of tools. Two remain: the **Audio Player** (below) and **Re-encode Images** (see Hosting cost, Phase 2). The server checks the GM role itself; hiding the widget is a convenience, not the boundary.
+A small circular widget overlaid on every page, GM-only (`GmToolsWidget.jsx`, mounted in `App.jsx`). Tapping it darkens and blurs the page and opens a list of tools. Three remain: **Preset Narrative Combat Weight** (see the Panic at the Dojo section, "Cinematic Weight as built"), the **Audio Player** (below) and **Re-encode Images** (see Hosting cost, Phase 2). The server checks the GM role itself; hiding the widget is a convenience, not the boundary.
 - **The app has one error boundary** (`ErrorBoundary.jsx`, wrapping the router in `main.jsx`): anything that throws during render shows a reload prompt instead of an empty page.
 - **Audio Player (the third tool, decided, new; implemented).** A GM-run
   soundtrack that every connected client hears **at the same point in the same
@@ -2812,6 +2812,7 @@ Every table the server creates (`server/db.js`, all `CREATE TABLE IF NOT EXISTS`
 - **combat_stances** — `id, character_id | temp_npc_id, name, dice (JSON), created_at`
 - **scenes.combat_mode**, **scene_summons.lane_slot** — see Phase 2 as built.
 - **scenes.combat_image_*, grid_*** and **combatants** — see Phase 3 as built.
+- **scenes.simple_weight / combat_weight**, **combatants.level / fighter_kind / bled_round** — see Cinematic Weight as built.
 - **table_settings** — `id = 1, simple_lanes` — see Multi-lane as built.
 - **fights** — see Phase 5 as built.
 - **chat_log.kind** also allows `reminder` and `stance_roll` (fight cards, JSON in `payload`).
@@ -2830,7 +2831,7 @@ Clients emit; the server validates, writes, and broadcasts. The surviving contra
 - **Scene modes:** `scene:set_mode` (GM), `lane:move` → `stage:updated`.
 - **Table settings:** `table_settings:set` (GM) → `table_settings:updated`.
 - **Fights:** `fight:start|next|choose_stance|set_sides|end` → `stage:updated`; cards → `chat:card`; `fight:turn_ended { combatantId }` and `fight:ended { mode }` (io.emit) for the Scene's pinned roll cards.
-- **Fighter state:** `fighter:token|challenge|hp|set_hp|add_bar|remove_bar|clear_dizzy|set_stance` → `stage:updated`.
+- **Fighter state:** `fighter:token|challenge|hp|set_hp|add_bar|remove_bar|clear_dizzy|set_stance|heal` → `stage:updated`; `fight:preset_weight` (GM) → `stage:updated`; a Bleed posts a `chat:card` reminder.
 - **Combat map:** `scene:set_grid`, `scene:set_combat_image`, `combat_token:place|move|remove|clear` → `stage:updated`.
 - **Combat tab:** `combat_profile:update` → `combat_profile:updated`; `combat_reminder:create|update|delete` → `combat_reminders:updated`; `combat_stance:create|update|delete` → `combat_stances:updated`.
 - **GM tools:** `image:reencode`.
@@ -2966,6 +2967,27 @@ Clicking a token opens its panel; a click that turns into a drag closes the pane
   - `StancePrompt`: a dialog for the fighter's player and the GM. It still shows in cinematic mode, while the rest of the rail hides with the interface.
 - Fight cards count towards the mobile Chat unread badge.
 
+### Cinematic Weight as built — the "Preset Narrative Combat Weight" GM tool
+The book's **Cinematic Weight** (p.38-40) sets how big a fight is. The GM picks a weight per fight, and each fighter gets a level and a level table:
+
+| Weight | HP per bar | Heal Value | Bleed Value | Super Moves per side per round |
+|---|---|---|---|---|
+| Featherweight | 10 | 1 | 2 | 0 |
+| Lightweight | 15 | 2 | 3 | 1 |
+| Middleweight | 20 | 2 | 4 | 1 |
+| Heavyweight | 25 | 3 | 5 | 1 |
+| Worldweight | 30 | 3 | 6 | 2 |
+
+- **Level bonus HP (decided: the book's tables, chosen per fighter), added to EVERY bar as the book says.** Hero table (Focused/Fused/Frantic), levels 1-10: 0,1,2,3,4,6,7,8,9,10. Warrior table: 0,2,3,5,7,8,10,12,13,15. The tool defaults PCs to Hero and NPCs / Temp NPCs to Warrior.
+- **Bonus Die (decided: rolled with the stance).** From level 2 a fighter adds d4 (Lv 2-3), d6 (4-5), d8 (6-7), d10 (8-9) or d12 (10) to the turn-start Stance roll. Its tile is labelled "bonus dN".
+- **The tool** (`CombatWeightTool.jsx`, the first GM Tools entry; the GM Tools sheet now sits at z 1100, above the Scene page's z-1000 controls such as Start Combat). It works only on `/scene` while the active Scene is in Simple Combat or Combat, and applies to **that mode's fight**. It offers the five weights, an "All at level" shortcut, and per fighter a Hero/Warrior toggle and a level, with the resulting HP shown. **Apply** sets `scenes.simple_weight` / `scenes.combat_weight` and resets every fighter in that fight to **one full bar** of weight HP + level bonus (broken bars, Dizzy and the Bleed mark cleared). Fighters added later keep the manual HP controls.
+- **The Bleed zone:** with a weight set, the last Bleed-Value HP of each bar is a purple band on the compact and full HP bars.
+- **Bleeding (decided: announced once per round, on crossing).** When damage (`fighter:hp` with a negative delta, or `fighter:set_hp` lowering current) takes a fighter from above the Bleed Value to at or below it, a global Rule reminder card names them ("Mira Bleeds (HP 4 ≤ 4) — "When you Bleed" abilities trigger"). `combatants.bled_round` holds the fight round of the last one, so it is not repeated that round (outside a fight it counts as round 0).
+- **Heal button:** the full HP panel gets "Heal +N", healing by the weight's Heal Value (`fighter:heal { ref }`, same write rule as the other HP controls).
+- **The weight on the rail (decided):** the initiative rail shows "Middleweight · Heal 2 · Bleed 4".
+- **Rules and code:** `client/src/lib/cinematicWeight.js` (tables, `barHp`, `bonusHp`, `bonusDie`, `crossesBleed`), tested in `server/test/cinematicWeight.test.js`. Server: `fight:preset_weight { mode, weight, fighters: [{ ref, level, kind }] }` (GM only, active Scene) and `fighter:heal` in `server/combatState.js`. The bonus die is added in `server/fights.js`. The stage payload carries `activeScene.weights { simple, combat }`, and each fighter's state has `level` and `kind`. Playtest: `scripts/playtest-combat-weight.mjs`.
+- **Not tracked (the user's choice):** the per-weight Super Move limit, the character-type **Bleed Ability** at the start of a turn while Bleeding, and the book's Complications (Guest Heroes, Uneven Fights, Stooges sharing a bar).
+
 ### Playtest follow-ups (mobile) — implemented
 - **The initiative rail stays up in cinematic mode**, Next turn included, and it now sits **top-left** under the corner buttons: at the left edge for Players and in cinematic mode, just right of the GM's left drawer otherwise. This keeps it clear of the chat button and cards on the right, and it stops above the bottom-left dock.
 - **An open token panel never leaves the screen.** If the row above the fighter or the panel below would cross an edge, both shift by the same distance (vertically, and horizontally on narrow screens), keeping their spacing. They're re-measured as their content changes. While a panel is open its layer sits at z 1001, above the docks and corner controls.
@@ -2977,7 +2999,7 @@ Clicking a token opens its panel; a click that turns into a drag closes the pane
 ## Implementation Phases (iterative — each ends with a deploy + playtest checkpoint)
 The old system's phases (1-9 and the playtest batches after them) are complete history in git. The current state:
 - **Pivot — done.** Old system archived and removed (this document's **The pivot**).
-- **Panic at the Dojo combat assistant**, in the five phases listed in its section above. Phases 1, 2, 2b (Stances) and 3 are implemented; so are multi-lane Simple Combat (2c), Phase 4 and Phase 5 — the whole scoped assistant. Further changes are follow-ups from play.
+- **Panic at the Dojo combat assistant**, in the five phases listed in its section above. Phases 1, 2, 2b (Stances) and 3 are implemented; so are multi-lane Simple Combat (2c), Phase 4 and Phase 5 — the whole scoped assistant — plus the Cinematic Weight GM tool. Further changes are follow-ups from play.
 
 ## Implementation Risks & Recommendations
 - **The archive is the only copy of the old Compendium's data.** It lives in `compendium_archive` and is downloadable from Settings; keep a downloaded copy outside the app. Restoring the old system would mean reverting the pivot commit's code and re-importing from the archive by hand — there is no importer.
@@ -2992,6 +3014,7 @@ The old system's phases (1-9 and the playtest batches after them) are complete h
   - **Joining or leaving mid-fight:** a fighter placed or removed after Start Combat joins or leaves from the next round's re-roll.
   - **End Combat** (GM): clears that mode's initiative; placements, HP and tokens stay until the GM clears them.
   - **Shields and Armor** aren't tracked in the first pass.
+  - **Cinematic Weight extras** not tracked yet: Super Move limits per round, the Bleed Ability at turn start, Complications (Guest Heroes, Uneven Fights, Stooges).
 - **Pre-pivot standalone Counters** still in the database (the Arena's): delete them, or give them a home in the new system.
 - **`chat_log.move_id`** is an unused leftover column; harmless, removable whenever `chat_log` next changes shape.
 - **Relationships "Planned, not yet built"** items (see that section).

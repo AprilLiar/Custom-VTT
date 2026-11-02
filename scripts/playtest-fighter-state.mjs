@@ -60,7 +60,7 @@ const boRef = { combatantId: tok(bo).id };
 
 console.log('\n--- a fresh fighter ---');
 check('a new token starts with no tokens, no Challenge and one unset bar',
-  JSON.stringify(tok(mira).fight) === JSON.stringify({ combatant_id: tok(mira).id, tokens: {}, challenge_id: null, hp: { max: null, current: 0, bars: 1, broken: 0, dizzy: false }, active_stance_id: null }),
+  JSON.stringify(tok(mira).fight) === JSON.stringify({ combatant_id: tok(mira).id, tokens: {}, challenge_id: null, hp: { max: null, current: 0, bars: 1, broken: 0, dizzy: false }, active_stance_id: null, level: 1, kind: null }),
   JSON.stringify(tok(mira).fight));
 const setupKey = `character:${mira.id}`;
 check("the payload carries each fighter's Unique picks and Stance names",

@@ -32,6 +32,7 @@ export default function SimpleCombatLane({
   inset,
   lanes = 1,
   setup = {},
+  weight = null,
 }) {
   // The miniature whose token panel is open (Phase 4). Click opens, drag closes.
   const [selectedSummonId, setSelectedSummonId] = useState(null);
@@ -226,6 +227,7 @@ export default function SimpleCombatLane({
                 canEdit={canDrag(s)}
                 fighterRef={{ summonId: s.id }}
                 bounds={{ width: stageWidth, height: stageHeight }}
+                weight={weight}
                 challenger={challenger ? { name: challenger.name, image_url: challenger.image_url } : null}
                 candidates={summons
                   .filter((o) => o.id !== s.id)

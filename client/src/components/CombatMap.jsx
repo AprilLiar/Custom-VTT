@@ -41,6 +41,7 @@ export default function CombatMap({
   role,
   characterId,
   setup = {},
+  weight = null,
 }) {
   // The token whose panel is open (Phase 4). A click opens it; a drag closes it.
   const [selectedTokenId, setSelectedTokenId] = useState(null);
@@ -396,6 +397,7 @@ export default function CombatMap({
                     canEdit={canDrag(t)}
                     fighterRef={{ combatantId: t.id }}
                     bounds={{ width: stageWidth, height: stageHeight }}
+                    weight={weight}
                     challenger={challenger}
                     candidates={placed
                       .filter((o) => o.id !== t.id)

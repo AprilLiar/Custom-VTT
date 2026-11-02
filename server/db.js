@@ -991,6 +991,10 @@ export async function initDb() {
   // 'combat' is the grid map. Per Scene, so each Scene remembers its own mode,
   // and switched by the GM alone.
   await ensureColumn('scenes', 'combat_mode', "TEXT NOT NULL DEFAULT 'scene'");
+  // The Cinematic Weight of each of the Scene's two fights (WEIGHTS keys), or
+  // NULL until the GM presets one.
+  await ensureColumn('scenes', 'simple_weight', 'TEXT');
+  await ensureColumn('scenes', 'combat_weight', 'TEXT');
   // **The Combat map (Phase 3):** a Combat Background separate from the Scene
   // backdrop (image kind 'scene-combat'), and its grid — square size and
   // offset in the MAP IMAGE's own pixels (decided), and line opacity. See
@@ -1389,6 +1393,12 @@ export async function initDb() {
   await ensureColumn('combatants', 'hp_broken', 'INTEGER NOT NULL DEFAULT 0');
   await ensureColumn('combatants', 'dizzy', 'INTEGER NOT NULL DEFAULT 0');
   await ensureColumn('combatants', 'active_stance_id', 'INTEGER');
+  // Cinematic Weight preset (client/src/lib/cinematicWeight.js): this copy's
+  // level and level table ('hero' | 'warrior'), and the round it last Bled in
+  // (Bleeding happens once per Round).
+  await ensureColumn('combatants', 'level', 'INTEGER NOT NULL DEFAULT 1');
+  await ensureColumn('combatants', 'fighter_kind', 'TEXT');
+  await ensureColumn('combatants', 'bled_round', 'INTEGER');
   // A Simple Combat fighter is created on its first change, keyed by its
   // summon: at most one row per summon, so INSERT OR IGNORE is race-free.
   ddl('CREATE UNIQUE INDEX IF NOT EXISTS idx_combatants_summon_unique ON combatants(summon_id) WHERE summon_id IS NOT NULL');

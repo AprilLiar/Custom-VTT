@@ -60,7 +60,9 @@ function FightCard({ entry }) {
                   r.die !== undefined ? 'border-zinc-600 bg-zinc-900' : 'border-amber-600/70 bg-amber-950/40'
                 }`}
               >
-                <span className="font-mono text-[10px] text-zinc-500">{r.die !== undefined ? `d${r.die}` : 'fixed'}</span>
+                <span className="font-mono text-[10px] text-zinc-500">
+                  {r.bonus ? `bonus d${r.die}` : r.die !== undefined ? `d${r.die}` : 'fixed'}
+                </span>
                 <span className="font-mono text-xl font-black leading-none text-white">{r.result}</span>
               </span>
             ))}

@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { Wrench, X, Music, ImageDown } from 'lucide-react';
+import { Wrench, X, Music, ImageDown, Scale } from 'lucide-react';
 import { useRole } from '../roleContext.jsx';
 import AudioPlayerDialog from './AudioPlayerDialog.jsx';
 import ImageReencodeTool from './ImageReencodeTool.jsx';
+import CombatWeightTool from './CombatWeightTool.jsx';
 import { registerAudioPanelOpener } from '../lib/audioPanel.js';
 
 // GM Tools (decided, new) — a small circular widget the GM can reach from
@@ -22,8 +23,17 @@ import { registerAudioPanelOpener } from '../lib/audioPanel.js';
 
 const TOOLS = [
   {
+    // Panic at the Dojo: the fight's Cinematic Weight, levels and HP. Works on
+    // the Scene page in Simple Combat or Combat; says so anywhere else.
+    id: 'combat-weight',
+    name: 'Preset Narrative Combat Weight',
+    blurb: 'Pick the fight\u2019s weight class and everyone\u2019s level: HP, Heal and Bleed for this fight.',
+    icon: Scale,
+    render: (props) => <CombatWeightTool {...props} />,
+  },
+  {
     // **`standalone` means "open instead of the drawer, not inside it".** The
-    // drawer's own scrim is z-[60] and DialogShell is z-50, so a fullscreen
+    // drawer's own scrim is z-[1100] (above the Scene page's z-1000 controls) and DialogShell is z-50, so a fullscreen
     // dialog rendered inside this sheet would be painted underneath it. The
     // Audio Player wants the whole screen anyway — playlists beside tracks —
     // which is the same call Notes and Timestamps already make.
@@ -98,7 +108,7 @@ export default function GmToolsWidget() {
             // The blur is the point: it puts the page behind out of focus
             // rather than merely dimming it, so the tool sheet reads as a
             // mode you're in, not a panel floating over a live page.
-            className="fixed inset-0 z-[60] flex items-end justify-center bg-black/70 backdrop-blur-sm md:items-center md:p-4"
+            className="fixed inset-0 z-[1100] flex items-end justify-center bg-black/70 backdrop-blur-sm md:items-center md:p-4"
             onClick={close}
           >
             <motion.div

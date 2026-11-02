@@ -39,6 +39,7 @@ import CombatMap from './CombatMap.jsx';
 import { CombatFightersDrawer, CombatMapDrawer, PlayerTokenDock } from './CombatDrawers.jsx';
 import { FightSetupDialog, InitiativeRail, StancePrompt, StartCombatButton } from './FightControls.jsx';
 import { barsLeft } from '../lib/hpBars.js';
+import { WEIGHT_BY_KEY } from '../lib/cinematicWeight.js';
 import { useDominantColor } from '../lib/dominantColor.js';
 
 // The Scene tab's fullscreen canvas (Scene tab plan, Phase 1: the route
@@ -230,6 +231,8 @@ export default function ScenePage() {
   // The fight this mode shows (Phase 5) and every fighter in it.
   const fightMode = sceneMode === 'simple' || sceneMode === 'combat' ? sceneMode : null;
   const fight = fightMode ? (stage?.fights?.[fightMode] ?? null) : null;
+  // This fight's Cinematic Weight (GM Tools → Preset Narrative Combat Weight).
+  const weight = fightMode ? (WEIGHT_BY_KEY[activeScene?.weights?.[fightMode]] ?? null) : null;
   const fightFighters = !fightMode
     ? []
     : fightMode === 'combat'
@@ -331,6 +334,7 @@ export default function ScenePage() {
           inset={drawerInset}
           lanes={stage?.simpleLanes ?? 1}
           setup={stage?.fighterSetup ?? {}}
+          weight={weight}
         />
       )}
       {stageWidth > 0 && isCombat && (
@@ -338,6 +342,7 @@ export default function ScenePage() {
           scene={activeScene}
           tokens={combatTokens}
           setup={stage?.fighterSetup ?? {}}
+          weight={weight}
           stageWidth={stageWidth}
           stageHeight={stageHeight}
           inset={drawerInset}
@@ -427,6 +432,7 @@ export default function ScenePage() {
           role={role}
           left={role === 'gm' && !uiHidden ? 268 : 12}
           onEditSides={() => setFightSetupOpen(true)}
+          weight={weight}
         />
       )}
       {fight && <StancePrompt mode={fightMode} fight={fight} fighters={fightFighters} role={role} characterId={characterId} />}

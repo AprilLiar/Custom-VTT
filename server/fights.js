@@ -17,6 +17,7 @@ import { imageUrl } from './images.js';
 import { buildRound, nextFirstSide } from '../client/src/lib/initiative.js';
 import { barsLeft } from '../client/src/lib/hpBars.js';
 import { rollStance } from '../client/src/lib/stanceDice.js';
+import { bonusDie } from '../client/src/lib/cinematicWeight.js';
 import { automaticReminders, remindersToFire } from '../client/src/lib/fightFlow.js';
 import { loadReminders, loadStances } from './combatSetup.js';
 import { resolveRef, serialized, shapeFightState } from './combatState.js';
@@ -201,12 +202,18 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
     const stance = (await loadStances({ ownerType: fighter.ownerType, ownerId: fighter.ownerId })).find((s) => s.id === stanceId);
     if (!stance) return;
     await run('UPDATE combatants SET active_stance_id = ? WHERE id = ?', [stance.id, combatantId]);
+    // The level's Bonus Die (from level 2, set by the Cinematic Weight
+    // preset) is rolled with the Stance's dice and goes into the same pool.
+    const level = (await one('SELECT level FROM combatants WHERE id = ?', [combatantId]))?.level ?? 1;
+    const extra = bonusDie(level);
+    const results = rollStance(stance.dice);
+    if (extra) results.push({ ...rollStance([{ die: extra }])[0], bonus: true });
     // `combatant_id` lets the Scene keep this card up until that fighter's
     // turn ends (fight:turn_ended).
     await postCard('stance_roll', {
       fighter: card(fighter),
       stance: stance.name,
-      results: rollStance(stance.dice),
+      results,
       combatant_id: combatantId,
     });
   };

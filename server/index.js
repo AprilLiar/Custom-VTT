@@ -550,7 +550,7 @@ async function buildStagePayload() {
         `SELECT id, name, image_hash, image_source_id,
                 (image_data IS NOT NULL) AS has_image, background_fit, combat_mode,
                 combat_image_hash, (combat_image_data IS NOT NULL) AS has_combat_image,
-                grid_size, grid_offset_x, grid_offset_y, grid_opacity
+                grid_size, grid_offset_x, grid_offset_y, grid_opacity, simple_weight, combat_weight
          FROM scenes WHERE id = ?`,
         [state.active_scene_id]
       )
@@ -567,6 +567,8 @@ async function buildStagePayload() {
           present: sceneRow.has_combat_image,
         }),
         grid: sceneGrid(sceneRow),
+        // Cinematic Weight per fight (keys of client/src/lib/cinematicWeight.js).
+        weights: { simple: sceneRow.simple_weight ?? null, combat: sceneRow.combat_weight ?? null },
         // A copy's backdrop is served from whichever Scene owns the bytes —
         // see shapeScene, and scenes.image_source_id for why.
         image_url: imageUrl('scene', sceneRow.image_source_id ?? sceneRow.id, {
@@ -1449,7 +1451,7 @@ io.on('connection', (socket) => {
   // The Combat map (Panic at the Dojo, Phase 3) — see server/combatMap.js.
   registerCombatMapHandlers({ on, socket, mayWrite: mayWriteScenePicture, emitStageUpdated, stampImageHash });
   // A fighter's HP, tokens, Challenge and Stance (Phase 4) — see server/combatState.js.
-  registerCombatStateHandlers({ on, socket, mayWrite: mayWriteScenePicture, emitStageUpdated });
+  registerCombatStateHandlers({ on, socket, mayWrite: mayWriteScenePicture, emitStageUpdated, postCard });
   // Rounds, turns, Stance rolls and Reminders (Phase 5) — see server/fights.js.
   registerFightHandlers({ on, socket, emitStageUpdated, postCard, postSystemMessage, emitAll: (event, payload) => io.emit(event, payload) });
 

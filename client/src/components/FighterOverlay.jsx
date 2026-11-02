@@ -78,7 +78,8 @@ function CountedIcon({ tokenKey, count, size, dim = false, active = false, onCli
 
 // The stacked bars. `compact` is the always-on strip; otherwise the full bar
 // with its buttons. A bar breaking plays a shatter, and the next bar slides up.
-function HpStack({ hp, compact, width, canEdit, fighterRef }) {
+// `weight`: the fight's Cinematic Weight (cinematicWeight.js), or null.
+function HpStack({ hp, compact, width, canEdit, fighterRef, weight = null }) {
   const left = barsLeft(hp);
   const behind = Math.max(0, left - 1);
   const pct = hp.max ? (hp.current / hp.max) * 100 : 0;
@@ -123,6 +124,26 @@ function HpStack({ hp, compact, width, canEdit, fighterRef }) {
             className={`h-full ${tone}`}
             style={{ width: `${pct}%`, transition: 'width 200ms ease-out' }}
           />
+          {/* **The Bleed zone (decided):** the last part of the bar — HP at or
+              below the fight's Bleed Value — in purple, so the table sees how
+              close a fighter is to Bleeding. A faint band where it is empty,
+              solid purple over the HP still in it, and a line at its edge. */}
+          {weight && hp.max != null && (
+            <>
+              <div
+                className="pointer-events-none absolute inset-y-0 left-0 bg-purple-500/25"
+                style={{ width: `${(Math.min(weight.bleed, hp.max) / hp.max) * 100}%` }}
+              />
+              <div
+                className="pointer-events-none absolute inset-y-0 left-0 bg-purple-500"
+                style={{ width: `${(Math.min(hp.current, weight.bleed) / hp.max) * 100}%`, transition: 'width 200ms ease-out' }}
+              />
+              <div
+                className="pointer-events-none absolute inset-y-0 w-px bg-purple-200/80"
+                style={{ left: `${(Math.min(weight.bleed, hp.max) / hp.max) * 100}%` }}
+              />
+            </>
+          )}
           {!compact && (
             <span className="absolute inset-0 flex items-center justify-center font-display text-xs font-bold tabular-nums text-white [text-shadow:0_1px_2px_black]">
               {hp.max == null ? 'Set Max HP' : `${hp.current} / ${hp.max}`}
@@ -169,13 +190,13 @@ function HpStack({ hp, compact, width, canEdit, fighterRef }) {
   );
 }
 
-function FullPanelHp({ hp, canEdit, fighterRef, width }) {
+function FullPanelHp({ hp, canEdit, fighterRef, width, weight = null }) {
   const [maxDraft, setMaxDraft] = useState(hp.max ?? '');
   useEffect(() => setMaxDraft(hp.max ?? ''), [hp.max]);
   const emit = (event, extra = {}) => socket.emit(event, { ref: fighterRef, ...extra });
   return (
     <div className="flex flex-col items-center gap-1.5">
-      <HpStack hp={hp} width={width} canEdit={canEdit} fighterRef={fighterRef} />
+      <HpStack hp={hp} width={width} canEdit={canEdit} fighterRef={fighterRef} weight={weight} />
       {canEdit && (
         <div className="flex items-center gap-2">
           <button
@@ -187,6 +208,18 @@ function FullPanelHp({ hp, canEdit, fighterRef, width }) {
           >
             <Plus size={16} strokeWidth={3} aria-hidden />
           </button>
+          {/* Heal by the fight's Heal Value (healing that names no number). */}
+          {weight && (
+            <button
+              type="button"
+              onClick={() => emit('fighter:heal')}
+              disabled={hp.max == null}
+              title={`Heal ${weight.heal} (the ${weight.name} Heal Value)`}
+              className="h-7 rounded-full border border-emerald-500 bg-emerald-500/15 px-2 font-display text-[11px] font-bold uppercase text-emerald-300 hover:bg-emerald-500/30 disabled:opacity-40"
+            >
+              Heal +{weight.heal}
+            </button>
+          )}
           {barsLeft(hp) > 1 && (
             <button
               type="button"
@@ -229,6 +262,7 @@ export default function FighterOverlay({
   challenger = null,
   onClose,
   bounds = null,
+  weight = null,
 }) {
   const panelRef = useRef(null);
   const belowRef = useRef(null);
@@ -452,7 +486,7 @@ export default function FighterOverlay({
                 <X size={14} aria-hidden />
               </button>
             </div>
-            <FullPanelHp hp={hp} canEdit={canEdit} fighterRef={fighterRef} width={Math.max(140, barWidth * 1.6)} />
+            <FullPanelHp hp={hp} canEdit={canEdit} fighterRef={fighterRef} width={Math.max(140, barWidth * 1.6)} weight={weight} />
             {hp.dizzy && canEdit && (
               <button type="button" onClick={() => emit('fighter:clear_dizzy')} className="text-[10px] text-sky-300 hover:text-sky-100">
                 Clear Dizzy
@@ -477,7 +511,7 @@ export default function FighterOverlay({
             )}
           </div>
         ) : (
-          hp.max != null && <HpStack hp={hp} compact width={barWidth} />
+          hp.max != null && <HpStack hp={hp} compact width={barWidth} weight={weight} />
         )}
       </div>
     </>
