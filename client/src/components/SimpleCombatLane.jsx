@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { socket } from '../socket.js';
 import { laneGeometry, laneLinesPath, moveOnLane, pointsAttr, slotAt } from '../lib/simpleLane.js';
+import FighterOverlay, { ChallengeSparks } from './FighterOverlay.jsx';
 
 // Simple Combat's overlay (Panic at the Dojo, Phase 2): one to three lanes of
 // ten spaces in perspective (the GM's table setting) at 5/7 of the stage's
@@ -28,11 +29,17 @@ export default function SimpleCombatLane({
   glow,
   role,
   characterId,
-  onSelect,
-  selectedSummonId = null,
   inset,
   lanes = 1,
+  setup = {},
 }) {
+  // The miniature whose token panel is open (Phase 4). Click opens, drag closes.
+  const [selectedSummonId, setSelectedSummonId] = useState(null);
+  const onSelect = (s) => setSelectedSummonId(s.id);
+  // Each picture's height / width, once loaded — so a fighter's token row
+  // sits just above their head rather than at the tallest a picture could be.
+  const [aspects, setAspects] = useState({});
+  const noteAspect = (id, ratio) => setAspects((a) => (a[id] === ratio ? a : { ...a, [id]: ratio }));
   const rootRef = useRef(null);
   const insetLeft = inset?.left ?? 0;
   const insetRight = inset?.right ?? 0;
@@ -80,6 +87,7 @@ export default function SimpleCombatLane({
     if (!drag || e.pointerId !== drag.pointerId) return;
     const p = toStage(e);
     const moved = drag.moved || Math.hypot(p.x - drag.startX, p.y - drag.startY) > DRAG_THRESHOLD;
+    if (moved && !drag.moved) setSelectedSummonId(null);
     setDrag({ ...drag, x: p.x, y: p.y, moved });
   };
   const onPointerUp = (e) => {
@@ -122,7 +130,8 @@ export default function SimpleCombatLane({
     <div
       ref={rootRef}
       className="pointer-events-none absolute inset-0"
-      style={{ zIndex: 5 }}
+      // Above the GM's drawers while a panel is open, so it is never under them.
+      style={{ zIndex: selectedSummonId != null ? 20 : 5 }}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
       onPointerCancel={() => setDrag(null)}
@@ -169,6 +178,7 @@ export default function SimpleCombatLane({
             size={size}
             // Nearer lanes stand in front of farther ones.
             layer={10 - seg.lane}
+            onAspect={(r) => noteAspect(s.id, r)}
             lifted={isDragged}
             selected={selectedSummonId === s.id}
             draggable={canDrag(s)}
@@ -176,6 +186,54 @@ export default function SimpleCombatLane({
           />
         );
       })}
+
+      {(() => {
+        // Phase 4: each fighter's tokens, HP and Challenge around its
+        // miniature; the open panel for the selected one.
+        const boxes = new Map();
+        for (const s of onLane) {
+          const seg = geometry.segments[placed.get(s.id)];
+          if (!seg) continue;
+          const size = miniFor(seg.scale);
+          const ry = size.plinthRx * 0.32;
+          const imgH = aspects[s.id] ? Math.min(size.maxHeight, size.width * aspects[s.id]) : size.maxHeight;
+          boxes.set(s.id, {
+            x: seg.center.x,
+            top: seg.center.y - imgH - ry * 0.9,
+            bottom: seg.center.y + size.plinthRx * 0.32,
+            mid: { x: seg.center.x, y: seg.center.y - imgH * 0.5 },
+            icon: Math.max(14, Math.min(24, size.width * 0.3)),
+          });
+        }
+        const byCombatant = new Map(summons.filter((s) => s.fight?.combatant_id != null).map((s) => [s.fight.combatant_id, s]));
+        return onLane.map((s) => {
+          const box = boxes.get(s.id);
+          if (!box || dragging?.id === s.id || !s.fight) return null;
+          const challenger = s.fight.challenge_id != null ? byCombatant.get(s.fight.challenge_id) : null;
+          const target = challenger ? boxes.get(challenger.id) : null;
+          const ownerKey = s.character_id != null ? `character:${s.character_id}` : `temp_npc:${s.temp_npc_id}`;
+          return (
+            <div key={`o${s.id}`}>
+              {target && <ChallengeSparks from={box.mid} to={target.mid} />}
+              <FighterOverlay
+                name={s.name}
+                fight={s.fight}
+                setup={setup[ownerKey]}
+                anchor={box}
+                iconSize={box.icon}
+                selected={selectedSummonId === s.id}
+                canEdit={canDrag(s)}
+                fighterRef={{ summonId: s.id }}
+                challenger={challenger ? { name: challenger.name, image_url: challenger.image_url } : null}
+                candidates={summons
+                  .filter((o) => o.id !== s.id)
+                  .map((o) => ({ key: o.id, ref: { summonId: o.id }, name: o.name, image_url: o.image_url }))}
+                onClose={() => setSelectedSummonId(null)}
+              />
+            </div>
+          );
+        });
+      })()}
 
       {/* Fighters who don't fit on the lane, or whom the GM set aside. */}
       {(inTray.length > 0 || (role === 'gm' && dragging)) && (
@@ -221,7 +279,7 @@ export default function SimpleCombatLane({
 // than a lane space, fading out at the bottom so the feet disperse rather than
 // end on a hard edge, standing on a small round plinth. (x, y) is where the
 // plinth's centre sits.
-function Miniature({ summon, x, y, size, lifted = false, selected = false, draggable, onPointerDown, layer = 1 }) {
+function Miniature({ summon, x, y, size, lifted = false, selected = false, draggable, onPointerDown, layer = 1, onAspect }) {
   if (!summon) return null;
   const rx = size.plinthRx;
   const ry = rx * 0.32;
@@ -274,6 +332,7 @@ function Miniature({ summon, x, y, size, lifted = false, selected = false, dragg
         src={summon.image_url}
         alt={summon.name}
         draggable={false}
+        onLoad={(e) => onAspect?.(e.currentTarget.naturalHeight / Math.max(1, e.currentTarget.naturalWidth))}
         className="relative mt-auto w-auto select-none object-contain"
         style={{
           maxWidth: size.width,

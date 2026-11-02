@@ -282,3 +282,28 @@ textarea {
     scroll-behavior: auto !important;
   }
 }
+
+/* Panic at the Dojo — a Challenge's "threat" particles (FighterOverlay.jsx):
+   small, half-transparent red sparks drifting from the challenged fighter
+   towards their Challenger, few and slow — a gentle reminder, not an effect. */
+@keyframes challenge-drift {
+  0% {
+    transform: translate(0, 0) scale(1);
+    opacity: 0;
+  }
+  15% {
+    opacity: 0.55;
+  }
+  85% {
+    opacity: 0.4;
+  }
+  100% {
+    transform: translate(var(--dx), var(--dy)) scale(0.5);
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .challenge-spark {
+    display: none;
+  }
+}

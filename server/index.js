@@ -19,10 +19,11 @@ import {
 import { ORPHAN_SWEEPS, countOrphans, deleteOrphans, trimChatLog } from './cleanup.js';
 import {
   registerCombatSetupHandlers, deleteCombatSetupFor, parseOwner, loadProfile, loadReminders, loadAllProfiles,
-  loadStances,
+  loadStances, loadAllStances,
 } from './combatSetup.js';
 import { TRAY, clampLanes, laneCapacity, moveOnLane, packLane } from '../client/src/lib/simpleLane.js';
 import { loadCombatTokens, registerCombatMapHandlers, sceneGrid } from './combatMap.js';
+import { EMPTY_FIGHT_STATE, loadSimpleStates, registerCombatStateHandlers } from './combatState.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3001;
@@ -604,9 +605,12 @@ async function buildStagePayload() {
   // fighter stands in is taken for everyone, and looks empty to a Player.
   const simpleLanes = await readSimpleLanes();
   const lane = packLane([...summonRows].sort((a, b) => a.id - b.id), simpleLanes);
+  // Simple Combat fight state (Phase 4), per summon.
+  const simpleStates = activeScene ? await loadSimpleStates(activeScene.id) : new Map();
   const summons = summonRows.map(({ picture_hash, ...summon }) => ({
     ...summon,
     lane_slot: lane.get(summon.id) ?? null,
+    fight: simpleStates.get(summon.id) ?? EMPTY_FIGHT_STATE,
     image_url: imageUrl('scene-picture', summon.scene_picture_id, {
       hash: picture_hash,
       present: true,
@@ -626,7 +630,21 @@ async function buildStagePayload() {
   // The Combat map's tokens (Phase 3) — nothing on them is hidden, so every
   // viewer gets the same list.
   const combatTokens = activeScene ? await loadCombatTokens(activeScene.id) : [];
-  return { activeScene, summons, drawings, combatTokens, simpleLanes };
+  // Per fighter (`character:<id>` / `temp_npc:<id>`): which Unique tokens
+  // their token row shows and the names of their Stances — what the token
+  // panel needs, for both fights at once.
+  const fighterSetup = activeScene ? await loadFighterSetup() : {};
+  return { activeScene, summons, drawings, combatTokens, simpleLanes, fighterSetup };
+}
+
+async function loadFighterSetup() {
+  const [profiles, stances] = await Promise.all([loadAllProfiles(), loadAllStances()]);
+  const out = {};
+  for (const [key, p] of Object.entries(profiles)) out[key] = { unique_tokens: p.unique_tokens, stances: [] };
+  for (const [key, list] of Object.entries(stances)) {
+    out[key] = { unique_tokens: out[key]?.unique_tokens ?? [], stances: list.map((s) => ({ id: s.id, name: s.name })) };
+  }
+  return out;
 }
 
 // How many lanes Simple Combat has (table_settings.simple_lanes, 1-3).
@@ -1399,6 +1417,8 @@ io.on('connection', (socket) => {
   registerCombatSetupHandlers({ on, socket, io, mayWrite: mayWriteScenePicture, cropValues, stampImageHash });
   // The Combat map (Panic at the Dojo, Phase 3) — see server/combatMap.js.
   registerCombatMapHandlers({ on, socket, mayWrite: mayWriteScenePicture, emitStageUpdated, stampImageHash });
+  // A fighter's HP, tokens, Challenge and Stance (Phase 4) — see server/combatState.js.
+  registerCombatStateHandlers({ on, socket, mayWrite: mayWriteScenePicture, emitStageUpdated });
 
   // Who this connection is playing as — stored per-socket, in memory only
   // (lost on disconnect, matching the no-login/session-only model; the

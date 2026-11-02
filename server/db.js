@@ -1376,6 +1376,21 @@ export async function initDb() {
       CHECK ((character_id IS NULL) <> (temp_npc_id IS NULL))
     )
   `);
+  // Phase 4 — the fighter's state (server/combatState.js, client/src/lib/
+  // hpBars.js): Panic token counts as JSON {key: n}, the Challenge it holds
+  // (another combatant in the same fight), the HP bar stack, Dizzy, and the
+  // active Stance (NULL = the owner's first).
+  await ensureColumn('combatants', 'tokens', "TEXT NOT NULL DEFAULT '{}'");
+  await ensureColumn('combatants', 'challenge_id', 'INTEGER');
+  await ensureColumn('combatants', 'hp_max', 'INTEGER');
+  await ensureColumn('combatants', 'hp_current', 'INTEGER NOT NULL DEFAULT 0');
+  await ensureColumn('combatants', 'hp_bars', 'INTEGER NOT NULL DEFAULT 1');
+  await ensureColumn('combatants', 'hp_broken', 'INTEGER NOT NULL DEFAULT 0');
+  await ensureColumn('combatants', 'dizzy', 'INTEGER NOT NULL DEFAULT 0');
+  await ensureColumn('combatants', 'active_stance_id', 'INTEGER');
+  // A Simple Combat fighter is created on its first change, keyed by its
+  // summon: at most one row per summon, so INSERT OR IGNORE is race-free.
+  ddl('CREATE UNIQUE INDEX IF NOT EXISTS idx_combatants_summon_unique ON combatants(summon_id) WHERE summon_id IS NOT NULL');
 
   // **Table-wide settings the GM sets for everyone** (Settings page). A
   // singleton, like scene_state. `simple_lanes`: how many lanes Simple

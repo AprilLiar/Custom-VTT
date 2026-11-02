@@ -300,12 +300,14 @@ export default function ScenePage() {
           characterId={characterId}
           inset={drawerInset}
           lanes={stage?.simpleLanes ?? 1}
+          setup={stage?.fighterSetup ?? {}}
         />
       )}
       {stageWidth > 0 && isCombat && (
         <CombatMap
           scene={activeScene}
           tokens={combatTokens}
+          setup={stage?.fighterSetup ?? {}}
           stageWidth={stageWidth}
           stageHeight={stageHeight}
           inset={drawerInset}

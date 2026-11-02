@@ -15,6 +15,7 @@ import {
 import { subscribeFighterDrag } from '../lib/combatDrag.js';
 import { cropOf } from '../lib/imageCrop.js';
 import CroppedImage from './CroppedImage.jsx';
+import FighterOverlay, { ChallengeSparks } from './FighterOverlay.jsx';
 
 // The Combat view (Panic at the Dojo, Phase 3): the Scene's Combat Background,
 // fitted whole into the stage, its square grid, and every placed token.
@@ -38,9 +39,11 @@ export default function CombatMap({
   inset,
   role,
   characterId,
-  onSelect,
-  selectedTokenId = null,
+  setup = {},
 }) {
+  // The token whose panel is open (Phase 4). A click opens it; a drag closes it.
+  const [selectedTokenId, setSelectedTokenId] = useState(null);
+  const onSelect = (t) => setSelectedTokenId(t.id);
   const rootRef = useRef(null);
   const [natural, setNatural] = useState({ width: 0, height: 0 });
   const src = scene?.combat_image_url ?? null;
@@ -104,6 +107,7 @@ export default function CombatMap({
   const onTokenMove = (e) => {
     if (!drag || e.pointerId !== drag.pointerId) return;
     const moved = drag.moved || Math.hypot(e.clientX - drag.startX, e.clientY - drag.startY) > DRAG_THRESHOLD;
+    if (moved && !drag.moved) setSelectedTokenId(null);
     setDrag({ ...drag, x: e.clientX, y: e.clientY, moved });
   };
   const onTokenUp = (e) => {
@@ -164,8 +168,11 @@ export default function CombatMap({
   return (
     <div
       ref={rootRef}
-      className="absolute inset-0"
-      style={{ zIndex: 1 }}
+      // Click-through: only the tokens (and an open panel) catch the pointer,
+      // so the drawers beside the map stay usable even while it is raised.
+      className="pointer-events-none absolute inset-0"
+      // Above the GM's drawers while a token's panel is open.
+      style={{ zIndex: selectedTokenId != null ? 20 : 1 }}
       onPointerMove={onTokenMove}
       onPointerUp={onTokenUp}
       onPointerCancel={() => setDrag(null)}
@@ -244,6 +251,47 @@ export default function CombatMap({
           );
         })}
 
+      {ready &&
+        (() => {
+          // Where every token stands, for the overlays and the Challenge sparks.
+          const centers = new Map(
+            placed.map((t) => {
+              const c = cellCenter(grid, t.col, t.row);
+              return [t.id, toStagePx(c.x, c.y)];
+            })
+          );
+          const iconSize = Math.max(14, Math.min(26, tokenSize * 0.42));
+          const byId = new Map(placed.map((t) => [t.id, t]));
+          return placed.map((t) => {
+            if (dragging?.id === t.id) return null;
+            const center = centers.get(t.id);
+            const fight = t.fight;
+            const challenger = fight?.challenge_id != null ? byId.get(fight.challenge_id) : null;
+            return (
+              <div key={`o${t.id}`}>
+                {challenger && <ChallengeSparks from={center} to={centers.get(challenger.id)} />}
+                {fight && (
+                  <FighterOverlay
+                    name={t.name}
+                    fight={fight}
+                    setup={setup[`${t.owner_type}:${t.owner_id}`]}
+                    anchor={{ x: center.x, top: center.y - tokenSize / 2, bottom: center.y + tokenSize / 2 }}
+                    iconSize={iconSize}
+                    selected={selectedTokenId === t.id}
+                    canEdit={canDrag(t)}
+                    fighterRef={{ combatantId: t.id }}
+                    challenger={challenger}
+                    candidates={placed
+                      .filter((o) => o.id !== t.id)
+                      .map((o) => ({ key: o.id, ref: { combatantId: o.id }, name: o.name, image_url: o.image_url, crop: o.crop }))}
+                    onClose={() => setSelectedTokenId(null)}
+                  />
+                )}
+              </div>
+            );
+          });
+        })()}
+
       {paletteDrag && rootRect && (
         <Token
           token={{ name: paletteDrag.fighter.name, image_url: paletteDrag.fighter.image_url, crop: paletteDrag.fighter.crop }}
@@ -264,7 +312,7 @@ const cropFrom = (c) => (c ? cropOf({ crop_x: c.x, crop_y: c.y, crop_w: c.w, cro
 export function Token({ token, center, size, lifted = false, selected = false, ghost = false, canEdit = false, onPointerDown }) {
   return (
     <div
-      className={`group absolute ${onPointerDown ? (canEdit ? (lifted ? 'cursor-grabbing' : 'cursor-grab') : 'cursor-pointer') : 'pointer-events-none'}`}
+      className={`group absolute ${onPointerDown ? `pointer-events-auto ${canEdit ? (lifted ? 'cursor-grabbing' : 'cursor-grab') : 'cursor-pointer'}` : 'pointer-events-none'}`}
       style={{
         left: center.x - size / 2,
         top: center.y - size / 2,

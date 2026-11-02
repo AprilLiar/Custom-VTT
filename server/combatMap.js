@@ -14,6 +14,7 @@
 import { all, one, run, writeMany } from './db.js';
 import { imageUrl, sanitizeImageMime } from './images.js';
 import { moveToken, normalizeGrid } from '../client/src/lib/combatGrid.js';
+import { releaseChallengesOf, serialized, shapeFightState } from './combatState.js';
 
 // Cells are integers in image-pixel grid space. The client never offers a
 // cell outside the map's padding; this only bounds what a hand-sent event
@@ -37,6 +38,7 @@ export function sceneGrid(sceneRow) {
 export async function loadCombatTokens(sceneId) {
   const rows = await all(
     `SELECT cb.id, cb.character_id, cb.temp_npc_id, cb.grid_col, cb.grid_row,
+            cb.tokens, cb.challenge_id, cb.hp_max, cb.hp_current, cb.hp_bars, cb.hp_broken, cb.dizzy, cb.active_stance_id,
             COALESCE(c.name, tn.name) AS name,
             cp.id AS profile_id, cp.image_hash AS token_hash, (cp.image_data IS NOT NULL) AS has_token,
             cp.crop_x AS token_crop_x, cp.crop_y AS token_crop_y, cp.crop_w AS token_crop_w, cp.crop_h AS token_crop_h,
@@ -74,13 +76,18 @@ export async function loadCombatTokens(sceneId) {
       crop: tokenUrl
         ? { x: r.token_crop_x, y: r.token_crop_y, w: r.token_crop_w, h: r.token_crop_h }
         : { x: r.crop_x, y: r.crop_y, w: r.crop_w, h: r.crop_h },
+      // Phase 4: HP, tokens, Challenge, Dizzy, Stance.
+      fight: shapeFightState(r),
     };
   });
 }
 
 // deps: on, socket, mayWrite(viewer, ownerType, ownerId), emitStageUpdated,
 // stampImageHash(kind, id)
-export function registerCombatMapHandlers({ on, socket, mayWrite, emitStageUpdated, stampImageHash }) {
+export function registerCombatMapHandlers({ on: onRaw, socket, mayWrite, emitStageUpdated, stampImageHash }) {
+  // One at a time, through the same queue as the fighter writes: placing and
+  // moving read the map, then write it.
+  const on = (event, handler) => onRaw(event, serialized(handler));
   const viewer = () => socket.data.identity;
   const activeSceneId = async () =>
     (await one('SELECT active_scene_id FROM scene_state WHERE id = 1'))?.active_scene_id ?? null;
@@ -173,6 +180,7 @@ export function registerCombatMapHandlers({ on, socket, mayWrite, emitStageUpdat
     const token = await one("SELECT * FROM combatants WHERE id = ? AND mode = 'combat'", [Number(combatantId)]);
     if (!token || !mayTouch(token)) return;
     await run('DELETE FROM combatants WHERE id = ?', [token.id]);
+    await releaseChallengesOf([token.id]);
     await emitStageUpdated();
   });
 
@@ -181,7 +189,9 @@ export function registerCombatMapHandlers({ on, socket, mayWrite, emitStageUpdat
     if (viewer()?.role !== 'gm') return;
     const sceneId = await activeSceneId();
     if (!sceneId) return;
+    const ids = (await all("SELECT id FROM combatants WHERE scene_id = ? AND mode = 'combat'", [sceneId])).map((r) => r.id);
     await run("DELETE FROM combatants WHERE scene_id = ? AND mode = 'combat'", [sceneId]);
+    await releaseChallengesOf(ids);
     await emitStageUpdated();
   });
 }
