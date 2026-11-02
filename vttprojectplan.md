@@ -3,7 +3,7 @@
 ## Overview
 A small, self-hosted virtual tabletop for one group (GM + players), accessed remotely over the internet from multiple devices simultaneously. No login system — one shared link, everyone sees everything within their role. Presentation-focused, fighting-game visual style.
 
-**Status: between systems.** The original game system was removed in one pass (see **The pivot** below). What remains is the table's shell — characters, the Scene tab, chat with a Dice Tray, music — and a new system is to be built on it from the ground up. Everything this document used to say about the old system (Moves, Perks, Quirks, Stances, the 8 Stat dice, Stamina, the Combat Arena and its timing engine, the Rules page) is in git history: the last commit carrying it is the parent of the pivot commit.
+**Status: between systems.** The original game system was removed in one pass (see **The pivot** below). What remains is the table’s shell — characters, the Scene tab, chat with a Dice Tray, music. The new system is **Panic at the Dojo** as a visual combat assistant — see **Game system — Panic at the Dojo combat assistant**. Everything this document used to say about the old system (Moves, Perks, Quirks, Stances, the 8 Stat dice, Stamina, the Combat Arena and its timing engine, the Rules page) is in git history: the last commit carrying it is the parent of the pivot commit.
 
 ## The pivot (decided, implemented)
 The GM hard-pivoted away from the original system. What was asked for, and what was decided in answering it:
@@ -2831,10 +2831,63 @@ Header: the "Dogfight" logo (→ your home: the roster for a GM, your sheet for 
 5. **Settings** (`/settings`).
 Chat is a side panel on desktop (open by default) and a full-screen overlay on mobile (closed by default, with an unread badge on `roll:result`/`chat:message`).
 
+## Game system — Panic at the Dojo combat assistant (decided, planned)
+The new system is **Panic at the Dojo: Patch'd Up** (Vel Mini / Liberi Gothica, 2024-2025 revision; the book is CC-BY-SA 4.0, so token names and short rules text may appear in the app with attribution). **The app is a visual assistant, not a rules engine:** it shows the fight — positions, HP bars, tokens, turn order — and posts reminders. It never rolls Action Dice, resolves Actions, applies damage, or spends tokens on anyone's behalf. Every number changes because a person pressed a button.
+
+Rules facts the design leans on (book pages in brackets):
+- **Tokens [p.75-78].** Four kinds. **Basic**: Iron, Power, Speed. **Status**: Burning, Challenge, Fatigue, Weakness. **Unique**: tokens specific to an Archetype, Form or Style. **Super**: Unique tokens created by a Super Move. The book caps each type at 10 (Training at 4, Challenge at 1); **decided: the app caps every type at 9** (single-digit counter), Challenge at 1.
+- **The Unique token catalog** (hardcoded from the book, decided): **Control** (Control Form; also granted by the Counter bonus), **Chaos** (Demon; also given by Mastermind Style's Diabolical Plan), **Luck** (Underdog), **Mentor** (Teacher), **Inspired** (Teacher / Motivating Style), **Poltergeist** (Phantom), **Training** (Training Style), **Rapid Strike** (Super token, the Underdog's Blur Super Move). The book says "and others", so the catalog is one constant in one module and gains entries by a one-line change.
+- **End Phase [p.68]**, in order: End of Turn Abilities; Traps; then tokens: the active character takes damage equal to their Burning tokens and discards half of them (rounded up), Iron can't reduce it; a Challenge is removed if its holder tried to damage their Challenger this turn; **everyone** discards 3 Speed tokens (all of them if fewer); the active character may discard up to 3 Fatigue if they didn't leave their starting space.
+- **Health bars [p.62]:** damage never carries from one bar into the next. A broken bar makes you **Dizzy until the end of the current turn**. Breaking the last bar means **Taken Out** (0 HP, revived by any healing).
+
+### Character sheet — new **Combat** tab
+Also available for **Temp NPCs** (decided: a mini combat setup in the Scene's Temp NPC editor, the same three parts).
+1. **Token image** — a round combat token, separate from the profile picture and the Scene Pictures; uploaded with the same picture pipeline and crop.
+2. **Unique tokens** — the catalog above, one checkbox each. A placed token shows every Basic and Status token plus the checked Unique ones.
+3. **Reminders** — three columns of user-written reminders, each a text and a trigger. They post to chat as reminder boxes, public to everyone (decided), carrying the character's name and portrait.
+   - **Your turn:** start or end of this character's turn.
+   - **Others' turns:** start or end of someone else's turn, filtered to **anyone / allies / enemies / one named character** (decided). Sides come from Start Combat.
+   - **Round:** start or end of a round.
+   - **Automatic (global) reminders**, never authored, from the End Phase: **Burning** (active character holds X: "take X damage, Iron can't reduce it, then discard ⌈X/2⌉"), **Speed** (every character holding Speed: "discard 3 Speed"), **Fatigue** (active character holds Fatigue: "if you didn't leave your starting space, you may discard up to 3 Fatigue"), **Challenge** (active character holds a Challenge: "if you tried to damage <Challenger> this turn, discard their Challenge"). All fire at the end of the turn. One reminder box per rule, listing every character it applies to with their portraits. Reminders only remind: the app never removes the tokens itself.
+- **Max HP and HP bar count are not on the sheet** (decided): they're set on each placed token.
+
+### Scene page — the **Scene / Simple Combat / Combat** toggle
+A three-way toggle at the top of the Scene page, GM-only to change; everyone's view follows (like Scene activation). It is hidden while the cinematic hide-UI mode (the crossed-eye button) is on. Combat state is **per Scene**, one fight at a time per mode; switching Scenes pauses that Scene's fight. **Simple Combat and Combat are separate fights** (decided), each with its own placements, HP, tokens and initiative.
+- **Scene** — everything the Scene tab does today.
+- **Simple Combat** — the Scene as it is, plus an overlay: a single lane of 10 segments in perspective (see the sketch: a trapezoid strip, outer segments slanting outward), centred at **5/7 of the screen height from the top**. The lane glows faintly in the dominant colour of the Scene background; the lane lines glow soft white with a black outline. Every summoned character stands on it as a **miniature**: their current Scene Picture, scaled slightly smaller than a segment, fading to transparent toward the bottom edge so the feet disperse, on a small vector plinth like a tabletop mini's base. They start packed from the left in any order. One per segment, drag to move, snap to the segment's centre; while dragging, the segment under the pointer fills with a half-transparent yellow glow. Clicking a miniature opens the same token panel as Combat (below).
+- **Combat** — a top-down map:
+  - Each Scene gains a **Combat Background**, a separate image from its Scene background.
+  - A square grid overlays it, with GM controls: **square size in pixels** (±1 steps, live preview), **X/Y offset**, and **opacity** (slider). The grid stops at a **10% padding** inside the image's edges, and lines simply end there even if that cuts a square short.
+  - Characters and Temp NPCs are dragged onto the map as round tokens, snapped to grid squares. **The same actor can be placed several times** (minions), and **each copy is independent**: its own HP bars, tokens, Challenge and initiative turns.
+
+### The token panel (on a Combat token or a Simple Combat miniature)
+Clicking a token opens its panel; a click that turns into a drag closes the panel and moves the token instead.
+- **Upper panel — tokens:** one row of icons: Basic, Status, then the actor's checked Unique tokens. Icons come from an open-source game-icon set (game-icons.net, CC BY 3.0, credited in the app). Clicking an icon shows its name above it and **+ / − / −−** (add 1, remove 1, remove all) below it. Only one icon is open at a time. **Any token with a count of 1 or more stays shown above the token permanently**, with a high-contrast red count badge in its bottom-right quarter (half the icon's width and height).
+- **Upper panel — Challenge slot:** a small empty round button. Clicking it lists every fighter in this fight to its right; picking one fills the button with that fighter's portrait and keeps it shown permanently above the token, half-transparent. Sparse, small, half-transparent red particles drift from it toward the chosen Challenger, a gentle "threat" cue. Book meaning: this token's holder carries that fighter's Challenge. Cap 1.
+- **Bottom panel — HP bars:** a bar with **−** at its left end and **+** at its right (±1; Max HP up to 99, so two digits). A golden **+** under it adds another bar. Every bar shares the first bar's Max HP, and new bars start full. Extra bars stack behind and slightly below the main bar, bottom half visible. When the current bar reaches 0 it plays a **breaking animation**, the next bar moves up, and a **Dizzy ("sleeping") icon** covers the whole token **until the end of the current turn**. The last bar breaking leaves the token Taken Out at 0 HP; healing revives it. Max HP and bar count are set here, per placed token.
+
+### Initiative and rounds
+- **Start Combat** (GM-only, in Simple Combat or Combat): a dialog lists every fighter in the fight in a middle column, each as "Name ×N", where N is its HP bar count. Arrow buttons send each fighter to the **Allies** (left) or **Enemies** (right) column. The GM then picks which side starts and which character opens.
+- **The order** (the GM's own design, decided over the book's side-slot meter):
+  - Each HP bar is one turn per round.
+  - After the GM's opener, the rest of round 1 is filled at random, alternating ally and enemy turns one-for-one for as long as both sides have turns left. Leftover turns of the bigger side follow.
+  - Wherever there's a choice, the same character is never placed in two adjacent slots.
+  - Every new round re-rolls the order, opening with a random fighter from the side **opposite** the last turn of the previous round.
+  - Randomisation is not a dice roll and never posts to chat.
+- **Initiative rail:** a vertical, auto-scrolling list on the right: portrait in a rectangular frame, then the name; the current turn is highlighted. The GM advances turns. Advancing fires End-of-turn reminders, then Start-of-turn ones, and round reminders at round boundaries.
+- This order logic is the system's one piece of real algorithm. It's built first as a pure module with unit tests (alternation, the uneven tail, no adjacent repeats, the opposite-side opener).
+
+### Delivery phases (each one PR, deploy and playtest)
+1. **Foundations.** Schema, the Unique token catalog, the Combat tab (token image, Unique picks, Reminders) on characters and Temp NPCs, and the pure initiative module with unit tests.
+2. **The toggle and Simple Combat.** Scene/Simple/Combat state per Scene, the lane overlay, miniatures, drag and snap.
+3. **Combat map.** Combat Background, the grid with its controls, placing and moving tokens, multiple copies.
+4. **Token panel.** Panic tokens with badges, Challenge with particles, the HP bar stack with break and Dizzy, on both modes.
+5. **Fights.** The Start Combat dialog, the initiative rail, rounds and turns, Reminders and the automatic End Phase reminders in chat.
+
 ## Implementation Phases (iterative — each ends with a deploy + playtest checkpoint)
 The old system's phases (1-9 and the playtest batches after them) are complete history in git. The current state:
 - **Pivot — done.** Old system archived and removed (this document's **The pivot**).
-- **Next: the new system, built from the ground up.** Its mechanics, data model and events are not decided yet; they will be added here as they are, in numbered phases that each end with a deploy and playtest.
+- **Next: the Panic at the Dojo combat assistant**, in the five phases listed in its section above. Phase 1 is next.
 
 ## Implementation Risks & Recommendations
 - **The archive is the only copy of the old Compendium's data.** It lives in `compendium_archive` and is downloadable from Settings; keep a downloaded copy outside the app. Restoring the old system would mean reverting the pivot commit's code and re-importing from the archive by hand — there is no importer.
@@ -2843,7 +2896,12 @@ The old system's phases (1-9 and the playtest batches after them) are complete h
 - **Identity is a client-side pick, not a login** — accepted. Anything the new system needs to keep secret must be protected by absence from the payload (as Counter Gates and the Relationships board do), never by a client-side flag.
 
 ## Open items to decide later
-- **The new game system** — everything about it.
+- **Panic at the Dojo assistant — details to settle in their phase**, with the default the build will use unless told otherwise:
+  - **Turns per round once bars break:** count only unbroken bars at the start of each round. (The book keeps the original count; the GM's design ties turns to bars.)
+  - **Simple Combat with more than 10 fighters:** the lane stays at 10 segments; extras wait in an off-lane tray.
+  - **Joining or leaving mid-fight:** a fighter placed or removed after Start Combat joins or leaves from the next round's re-roll.
+  - **End Combat** (GM): clears that mode's initiative; placements, HP and tokens stay until the GM clears them.
+  - **Shields and Armor** aren't tracked in the first pass.
 - **Pre-pivot standalone Counters** still in the database (the Arena's): delete them, or give them a home in the new system.
 - **`chat_log.move_id`** is an unused leftover column; harmless, removable whenever `chat_log` next changes shape.
 - **Relationships "Planned, not yet built"** items (see that section).
