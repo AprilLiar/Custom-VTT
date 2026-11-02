@@ -2806,6 +2806,8 @@ Every table the server creates (`server/db.js`, all `CREATE TABLE IF NOT EXISTS`
 - **scenes, scene_folders, scene_state** (`active_scene_id`), **scene_summons** (`scene_id, character_id | temp_npc_id, scene_picture_id, side, pos_x, pos_y, scale, is_hidden`), **scene_drawings**, **scene_notes**, **scene_timestamps**, **master_note**
 - **audio_playlists, audio_tracks, audio_state** — the Audio Player
 - **chat_log** — `id, kind ('message'|'roll'), character_id, dice_rolled, modifier, content, image_*, payload, created_at` (`move_id` is a leftover column, unused)
+- **combat_profiles** — `id, character_id | temp_npc_id (UNIQUE each), image_data, image_mime_type, image_hash, crop_x/y/w/h, unique_tokens (JSON array)`
+- **combat_reminders** — `id, character_id | temp_npc_id, scope, timing, target, target_character_id, target_temp_npc_id, text, created_at`
 - **compendium_archive** — `id, archived_at, counts (JSON), payload (the archive document)`; append-only
 
 ## Real-time events (Socket.io)
@@ -2818,9 +2820,10 @@ Clients emit; the server validates, writes, and broadcasts. The surviving contra
 - **Chat:** `chat:message { characterId, text, imageData? }` → `chat:message`; `dice:roll_custom { characterId, size, modifier }` → `roll:result`; `chat:clear` → `chat:cleared`.
 - **Scene tab:** `temp_npc*`, `temp_npc_folder:*`, `scene_picture:create|copy_from_profile|update|delete`, `scene_folder:*`, `scene:create|update|set_folder|copy|delete|activate`, `stage:summon|reposition_summon|resize_summon|toggle_hidden|timestamp_play`, `scene_draw:add|clear`, `scene_note:*`, `master_note:update`, `scene_timestamp:*` (see the Scene tab section).
 - **Audio:** `audio_playlist:*`, `audio_track:*`, `audio:play|pause|resume|stop|seek|next|previous|set_mode|ping|duration|track_ended|error|lookup_title` → `audio:state` (see Audio Player).
+- **Combat tab:** `combat_profile:update` → `combat_profile:updated`; `combat_reminder:create|update|delete` → `combat_reminders:updated`.
 - **GM tools:** `image:reencode`.
 
-REST reads: `/api/health`, `/api/characters`, `/api/characters/:id` (→ `{ character, roleplay, counters }`), `/api/characters/:id/relationships`, `/api/character-folders`, `/api/counter-gates`, `/api/chat`, `/api/search`, `/api/temp-npcs`, `/api/temp-npc-folders`, `/api/scene-pictures`, `/api/scenes`, `/api/scene-folders`, `/api/stage`, `/api/scene-notes`, `/api/scene-timestamps`, `/api/master-note`, `/api/audio-library`, `/api/img/:kind/:id/:hash`, `/api/image-inventory`, `/api/profile`, `/api/compendium-archive[/:id]`.
+REST reads: `/api/health`, `/api/characters`, `/api/characters/:id` (→ `{ character, roleplay, counters }`), `/api/characters/:id/relationships`, `/api/character-folders`, `/api/counter-gates`, `/api/chat`, `/api/search`, `/api/temp-npcs`, `/api/temp-npc-folders`, `/api/scene-pictures`, `/api/scenes`, `/api/scene-folders`, `/api/stage`, `/api/scene-notes`, `/api/scene-timestamps`, `/api/master-note`, `/api/audio-library`, `/api/img/:kind/:id/:hash`, `/api/image-inventory`, `/api/profile`, `/api/compendium-archive[/:id]`, `/api/combat-setup`, `/api/combat-profiles`.
 
 ## Pages / views
 Header: the "Dogfight" logo (→ your home: the roster for a GM, your sheet for a Player), the **Characters**/**Character** link, **Scene**, Search, Chat toggle, and the Settings cog. Below `md:` a bottom nav (Characters, Chat) and a "More" menu (Search, Scene, Settings) replace it.
@@ -2877,17 +2880,24 @@ Clicking a token opens its panel; a click that turns into a drag closes the pane
 - **Initiative rail:** a vertical, auto-scrolling list on the right: portrait in a rectangular frame, then the name; the current turn is highlighted. The GM advances turns. Advancing fires End-of-turn reminders, then Start-of-turn ones, and round reminders at round boundaries.
 - This order logic is the system's one piece of real algorithm. It's built first as a pure module with unit tests (alternation, the uneven tail, no adjacent repeats, the opposite-side opener).
 
-### Delivery phases (each one PR, deploy and playtest)
-1. **Foundations.** Schema, the Unique token catalog, the Combat tab (token image, Unique picks, Reminders) on characters and Temp NPCs, and the pure initiative module with unit tests.
+### Delivery phases (each one commit to `main`, deploy and playtest)
+1. **Foundations — implemented.** Schema, the Unique token catalog, the Combat tab (token image, Unique picks, Reminders) on characters and Temp NPCs, and the pure initiative module with unit tests. Details under **Phase 1 as built** below.
 2. **The toggle and Simple Combat.** Scene/Simple/Combat state per Scene, the lane overlay, miniatures, drag and snap.
 3. **Combat map.** Combat Background, the grid with its controls, placing and moving tokens, multiple copies.
 4. **Token panel.** Panic tokens with badges, Challenge with particles, the HP bar stack with break and Dizzy, on both modes.
 5. **Fights.** The Start Combat dialog, the initiative rail, rounds and turns, Reminders and the automatic End Phase reminders in chat.
 
+### Phase 1 as built
+- **One catalog, two consumers.** `client/src/lib/panicTokens.js` is plain data (`BASIC_TOKENS`, `STATUS_TOKENS`, `UNIQUE_TOKENS`, `TOKEN_CAP = 9`, `tokensFor`, `normalizeUniqueKeys`), imported by the client and by the server alike (the repo is one ESM package), so the two ends can't disagree about which keys exist. Icons are separate (`client/src/lib/panicIcons.jsx`, game-icons.net via `react-icons/gi`, CC BY 3.0 — the credit line is shown under the Combat tab). Colours: Basic sky, Status orange, Unique violet, Super amber. Adding a Unique token is one catalog entry plus one icon.
+- **`client/src/lib/initiative.js`** — `buildRound({ allies, enemies, firstSide, openerId, rng })` → `[{ side, id }]` and `nextFirstSide(order)`. Pure, also shared. Choosing a slot: never whoever took the slot just before (if anyone else can), preferably not whoever took that side's previous slot, then someone with the most turns left (the greedy rule that keeps a 3-bar boss's tail from going back to back), random among ties. Pinned by `server/test/initiative.test.js` with a seeded rng.
+- **Tables:** `combat_profiles` (one per Character or Temp NPC, created on first save: the token picture with its crop, and `unique_tokens` as a JSON array) and `combat_reminders` (`scope` self/others/round, `timing` start/end, `target` any/allies/enemies/one with `target_character_id`/`target_temp_npc_id`, `text` ≤500, at most 60 per fighter). The token picture is image kind `combat-token`.
+- **Server:** `server/combatSetup.js` (kept out of index.js). Events `combat_profile:update` (any of: `imageData`+crop, `clearImage`, `uniqueTokens`; absent fields untouched) → `combat_profile:updated { ownerType, ownerId, profile }`; `combat_reminder:create|update|delete` → `combat_reminders:updated { ownerType, ownerId, reminders }`. Reads `GET /api/combat-setup?ownerType&ownerId` → `{ profile, reminders }` and `GET /api/combat-profiles` → every profile keyed `character:<id>`/`temp_npc:<id>`. Write access is the Scene Pictures rule: GM always, a Player for their own character, Temp NPCs GM-only. Deleting a fighter deletes their profile and reminders; reminders elsewhere that **named** them fall back to "Anyone" with their text kept.
+- **UI:** the sheet's **Combat** tab sits second, after Counters. The Temp NPC editor gains a Scene Pictures / Combat switch (widening while on Combat). The tab shows the round token (crop previewed at 48/64/96px), the always-present Basic and Status tokens as chips, the eight Unique tokens as checkbox cards (source and one-line rule), three Reminder columns with Start/End badges, target chips, inline edit and delete, and a collapsed list of the four automatic reminders.
+
 ## Implementation Phases (iterative — each ends with a deploy + playtest checkpoint)
 The old system's phases (1-9 and the playtest batches after them) are complete history in git. The current state:
 - **Pivot — done.** Old system archived and removed (this document's **The pivot**).
-- **Next: the Panic at the Dojo combat assistant**, in the five phases listed in its section above. Phase 1 is next.
+- **Panic at the Dojo combat assistant**, in the five phases listed in its section above. Phase 1 is implemented; Phase 2 is next.
 
 ## Implementation Risks & Recommendations
 - **The archive is the only copy of the old Compendium's data.** It lives in `compendium_archive` and is downloadable from Settings; keep a downloaded copy outside the app. Restoring the old system would mean reverting the pivot commit's code and re-importing from the archive by hand — there is no importer.

@@ -17,6 +17,9 @@ import {
   withImageUrl, shapeCharacter,
 } from './images.js';
 import { ORPHAN_SWEEPS, countOrphans, deleteOrphans, trimChatLog } from './cleanup.js';
+import {
+  registerCombatSetupHandlers, deleteCombatSetupFor, parseOwner, loadProfile, loadReminders, loadAllProfiles,
+} from './combatSetup.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3001;
@@ -834,6 +837,22 @@ app.get('/api/temp-npc-folders', wrap(async (_req, res) => {
 // above: this is GM-*managed* content, not GM-*secret* content, so nothing
 // here is gated server-side. The write side (Phase 3) is where ownership
 // actually gets enforced.
+// A fighter's Combat tab (Panic at the Dojo): token picture, Unique tokens,
+// Reminders. Readable by everyone — nothing on it is secret, and every
+// token's row is public on the board anyway.
+app.get('/api/combat-setup', wrap(async (req, res) => {
+  const owner = parseOwner(req.query.ownerType, req.query.ownerId);
+  if (!owner) return res.status(400).json({ error: 'bad owner' });
+  const [profile, reminders] = await Promise.all([loadProfile(owner), loadReminders(owner)]);
+  res.json({ profile, reminders });
+}));
+
+// Every fighter's combat profile at once, keyed `character:<id>` /
+// `temp_npc:<id>` — what the Scene's combat views draw tokens from.
+app.get('/api/combat-profiles', wrap(async (_req, res) => {
+  res.json(await loadAllProfiles());
+}));
+
 app.get('/api/scene-pictures', wrap(async (req, res) => {
   const { ownerType, ownerId } = req.query;
   const id = Number(ownerId);
@@ -1035,6 +1054,7 @@ app.delete('/api/characters/:id', wrap(async (req, res) => {
     [character.id]
   );
   await run('DELETE FROM counters WHERE character_id = ?', [character.id]);
+  await deleteCombatSetupFor('character', character.id);
   await run('DELETE FROM characters WHERE id = ?', [character.id]);
 
   io.emit('character:deleted', { id: character.id });
@@ -1333,6 +1353,9 @@ io.on('connection', (socket) => {
     });
   };
 
+  // The Combat tab (Panic at the Dojo) — see server/combatSetup.js.
+  registerCombatSetupHandlers({ on, socket, io, mayWrite: mayWriteScenePicture, cropValues, stampImageHash });
+
   // Who this connection is playing as — stored per-socket, in memory only
   // (lost on disconnect, matching the no-login/session-only model; the
   // client re-sends it on every reconnect — see roleContext.jsx). Decides what
@@ -1542,6 +1565,7 @@ io.on('connection', (socket) => {
     const wasSummoned = await one('SELECT id FROM scene_summons WHERE temp_npc_id = ?', [npc.id]);
     await run('DELETE FROM scene_summons WHERE temp_npc_id = ?', [npc.id]);
     await run('DELETE FROM scene_pictures WHERE temp_npc_id = ?', [npc.id]);
+    await deleteCombatSetupFor('temp_npc', npc.id);
     await run('DELETE FROM temp_npcs WHERE id = ?', [npc.id]);
     io.emit('temp_npc:deleted', { tempNpcId: npc.id });
     if (wasSummoned) await emitStageUpdated();

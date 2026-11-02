@@ -10,6 +10,7 @@ import CountersTab from './CountersTab.jsx';
 import RoleplayTab from './RoleplayTab.jsx';
 import RelationshipsTab from './RelationshipsTab.jsx';
 import ScenePicturesEditor from './ScenePicturesEditor.jsx';
+import CombatTab from './CombatTab.jsx';
 
 // Mobile readiness (Change 002) §8.1: the active tab scrolls itself into
 // view inside the row's own horizontal scroller.
@@ -44,6 +45,8 @@ function TabButton({ tab: t, active, onClick }) {
 // the tabs, so they are still editable.
 const TABS = [
   { key: 'counters', label: 'Counters' },
+  // Panic at the Dojo: the combat token, Unique tokens and Reminders.
+  { key: 'combat', label: 'Combat' },
   { key: 'roleplay', label: 'Role-play' },
   // PC-only (see PC_ONLY_TABS): a Relationships board belongs to a player, and
   // an NPC has nobody to keep one for.
@@ -173,6 +176,14 @@ export default function CharacterSheet() {
           transition={{ duration: 0.15, ease: 'easeOut' }}
         >
           {tab === 'counters' && <CountersTab data={data} />}
+          {tab === 'combat' && (
+            <CombatTab
+              ownerType="character"
+              ownerId={data.character.id}
+              ownerName={data.character.name}
+              canEdit={canEdit}
+            />
+          )}
           {tab === 'roleplay' && <RoleplayTab data={data} />}
           {tab === 'relationships' && <RelationshipsTab data={data} />}
           {tab === 'scene_pictures' && (

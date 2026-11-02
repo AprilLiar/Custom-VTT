@@ -31,6 +31,8 @@ export const IMAGE_KINDS = Object.freeze({
   'temp-npc': { table: 'temp_npcs', data: 'image_data', mime: 'image_mime_type', hash: 'image_hash' },
   scene: { table: 'scenes', data: 'image_data', mime: 'image_mime_type', hash: 'image_hash' },
   'scene-picture': { table: 'scene_pictures', data: 'image_data', mime: 'image_mime_type', hash: 'image_hash' },
+  // The round combat token on a fighter's Combat tab (Panic at the Dojo).
+  'combat-token': { table: 'combat_profiles', data: 'image_data', mime: 'image_mime_type', hash: 'image_hash' },
 });
 
 // Derived rather than written twice, so db.js's migration and backfill can

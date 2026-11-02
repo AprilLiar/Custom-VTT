@@ -1266,6 +1266,56 @@ export async function initDb() {
     )
   `);
 
+  // ---------------------------------------------------------------- Panic at the Dojo
+  //
+  // **A fighter's combat setup — the sheet's Combat tab (decided, new).** One
+  // row per Character or Temp NPC, owned by exactly one of them (the same
+  // discriminator scene_pictures uses), created the first time anything is
+  // saved. It holds the round combat-token picture (separate from the profile
+  // picture and the Scene Pictures) and which Unique tokens this fighter uses,
+  // as a JSON array of catalog keys (client/src/lib/panicTokens.js).
+  //
+  // Max HP and bar count are deliberately NOT here: they are set per placed
+  // token, so three copies of one Temp NPC can differ.
+  ddl(`
+    CREATE TABLE IF NOT EXISTS combat_profiles (
+      id INTEGER PRIMARY KEY,
+      character_id INTEGER UNIQUE REFERENCES characters(id) ON DELETE CASCADE,
+      temp_npc_id INTEGER UNIQUE REFERENCES temp_npcs(id) ON DELETE CASCADE,
+      image_data TEXT,
+      image_mime_type TEXT,
+      image_hash TEXT,
+      crop_x REAL,
+      crop_y REAL,
+      crop_w REAL,
+      crop_h REAL,
+      unique_tokens TEXT NOT NULL DEFAULT '[]',
+      CHECK ((character_id IS NULL) <> (temp_npc_id IS NULL))
+    )
+  `);
+
+  // **Reminders: chat lines a fighter's player writes to remember a mechanic.**
+  // `scope` is the column they sit in on the Combat tab — this fighter's own
+  // turn, someone else's turn, or the round — and `timing` whether they fire at
+  // its start or end. For `others`, `target` narrows whose turns: anyone, this
+  // fighter's allies, its enemies, or one named fighter (`target_character_id`
+  // or `target_temp_npc_id`). Sides come from Start Combat.
+  ddl(`
+    CREATE TABLE IF NOT EXISTS combat_reminders (
+      id INTEGER PRIMARY KEY,
+      character_id INTEGER REFERENCES characters(id) ON DELETE CASCADE,
+      temp_npc_id INTEGER REFERENCES temp_npcs(id) ON DELETE CASCADE,
+      scope TEXT NOT NULL CHECK(scope IN ('self','others','round')),
+      timing TEXT NOT NULL CHECK(timing IN ('start','end')),
+      target TEXT NOT NULL DEFAULT 'any' CHECK(target IN ('any','allies','enemies','one')),
+      target_character_id INTEGER REFERENCES characters(id) ON DELETE SET NULL,
+      target_temp_npc_id INTEGER REFERENCES temp_npcs(id) ON DELETE SET NULL,
+      text TEXT NOT NULL,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      CHECK ((character_id IS NULL) <> (temp_npc_id IS NULL))
+    )
+  `);
+
   // ---------------------------------------------------------------- Audio Player
   //
   // **The GM Tools drawer's third tool (decided, new).** A GM-run soundtrack
@@ -1392,6 +1442,9 @@ async function ensureIndexes() {
     // The drawing layer's own read (buildStagePayload) and the eraser's
     // "clear everything on this Scene" sweep, both by active Scene.
     ['scene_drawings', 'scene_id'],
+    // The Combat tab's own read, by owner.
+    ['combat_reminders', 'character_id'],
+    ['combat_reminders', 'temp_npc_id'],
   ];
   for (const [table, column] of indexes) {
     ddl(`CREATE INDEX IF NOT EXISTS idx_${table}_${column} ON ${table}(${column})`);
