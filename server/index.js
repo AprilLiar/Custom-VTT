@@ -20,6 +20,7 @@ import { ORPHAN_SWEEPS, countOrphans, deleteOrphans, trimChatLog } from './clean
 import {
   registerCombatSetupHandlers, deleteCombatSetupFor, parseOwner, loadProfile, loadReminders, loadAllProfiles,
 } from './combatSetup.js';
+import { LANE_SLOTS, TRAY, moveOnLane, packLane } from '../client/src/lib/simpleLane.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3001;
@@ -264,6 +265,9 @@ const CROP_COLUMNS = 'crop_x = ?, crop_y = ?, crop_w = ?, crop_h = ?';
 // back out as CSS-affecting data — scene:update below falls back to
 // whatever the Scene already had for anything outside this set.
 const VALID_BACKGROUND_FITS = new Set(['cover', 'contain', 'fill', 'fit-height', 'fit-width']);
+
+// The Scene page's three views (Panic at the Dojo) — see scenes.combat_mode.
+const SCENE_MODES = new Set(['scene', 'simple', 'combat']);
 
 // **How far outside the backdrop's own rectangle a summon may be placed
 // (bugfix).** `scene_summons.pos_x`/`pos_y` are fractions of the BACKDROP
@@ -540,7 +544,7 @@ async function buildStagePayload() {
   const sceneRow = state?.active_scene_id
     ? await one(
         `SELECT id, name, image_hash, image_source_id,
-                (image_data IS NOT NULL) AS has_image, background_fit
+                (image_data IS NOT NULL) AS has_image, background_fit, combat_mode
          FROM scenes WHERE id = ?`,
         [state.active_scene_id]
       )
@@ -550,6 +554,7 @@ async function buildStagePayload() {
         id: sceneRow.id,
         name: sceneRow.name,
         background_fit: sceneRow.background_fit,
+        combat_mode: SCENE_MODES.has(sceneRow.combat_mode) ? sceneRow.combat_mode : 'scene',
         // A copy's backdrop is served from whichever Scene owns the bytes —
         // see shapeScene, and scenes.image_source_id for why.
         image_url: imageUrl('scene', sceneRow.image_source_id ?? sceneRow.id, {
@@ -566,7 +571,7 @@ async function buildStagePayload() {
     ? await all(
         `
     SELECT ss.id, ss.side, ss.character_id, ss.temp_npc_id, ss.scene_picture_id,
-           ss.pos_x, ss.pos_y, ss.scale, ss.is_hidden,
+           ss.pos_x, ss.pos_y, ss.scale, ss.is_hidden, ss.lane_slot,
            sp.image_hash AS picture_hash,
            COALESCE(c.name, tn.name) AS name
     FROM scene_summons ss
@@ -584,8 +589,13 @@ async function buildStagePayload() {
   // `scene_pictures.id`, which rides along as `scene_picture_id`. So this one is
   // explicit. `present: true` is the schema speaking rather than an assumption:
   // `scene_pictures.image_data` is NOT NULL.
+  // Simple Combat's lane, packed over EVERY summon (hidden ones included) in
+  // summon order, before the per-viewer redaction — so a space a hidden
+  // fighter stands in is taken for everyone, and looks empty to a Player.
+  const lane = packLane([...summonRows].sort((a, b) => a.id - b.id));
   const summons = summonRows.map(({ picture_hash, ...summon }) => ({
     ...summon,
+    lane_slot: lane.get(summon.id) ?? null,
     image_url: imageUrl('scene-picture', summon.scene_picture_id, {
       hash: picture_hash,
       present: true,
@@ -1981,6 +1991,36 @@ io.on('connection', (socket) => {
       clamp(Number(posY), SUMMON_POS_MIN, SUMMON_POS_MAX),
       summon.id,
     ]);
+    await emitStageUpdated();
+  });
+
+  // **The Scene / Simple Combat / Combat toggle — GM only.** Applies to the
+  // active Scene; every viewer's page follows through stage:updated.
+  on('scene:set_mode', async ({ mode }) => {
+    if (socket.data.identity?.role !== 'gm' || !SCENE_MODES.has(mode)) return;
+    const state = await one('SELECT active_scene_id FROM scene_state WHERE id = 1');
+    if (!state?.active_scene_id) return;
+    await run('UPDATE scenes SET combat_mode = ? WHERE id = ?', [mode, state.active_scene_id]);
+    await emitStageUpdated();
+  });
+
+  // **Simple Combat: move a miniature to a lane space (0-9), or to the tray
+  // (`null`, GM only).** Same ownership rule as dragging a figure. The whole
+  // lane is saved at once (moveOnLane), so the packed positions everyone was
+  // standing in become explicit and nobody shifts when one fighter moves; an
+  // occupied target swaps its occupant into the mover's old place.
+  on('lane:move', async ({ summonId, slot }) => {
+    const viewer = socket.data.identity;
+    const summon = await one('SELECT * FROM scene_summons WHERE id = ?', [Number(summonId)]);
+    if (!viewer || !summon) return;
+    const ownerType = summon.character_id != null ? 'character' : 'temp_npc';
+    const ownerId = summon.character_id ?? summon.temp_npc_id;
+    if (!mayWriteScenePicture(viewer, ownerType, ownerId)) return;
+    const target = slot == null ? null : Number(slot);
+    if (target === null ? viewer.role !== 'gm' : !(Number.isInteger(target) && target >= 0 && target < LANE_SLOTS)) return;
+    const rows = await all('SELECT id, lane_slot FROM scene_summons WHERE scene_id = ? ORDER BY id', [summon.scene_id]);
+    const next = moveOnLane(packLane(rows), summon.id, target);
+    await writeMany([...next].map(([id, s]) => ['UPDATE scene_summons SET lane_slot = ? WHERE id = ?', [s ?? TRAY, id]]));
     await emitStageUpdated();
   });
 

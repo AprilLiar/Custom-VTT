@@ -32,6 +32,9 @@ import StageRoster from './StageRoster.jsx';
 import SceneDrawingLayer from './SceneDrawingLayer.jsx';
 import SceneDrawToolbar from './SceneDrawToolbar.jsx';
 import PlayerSummonDock from './PlayerSummonDock.jsx';
+import SceneModeToggle from './SceneModeToggle.jsx';
+import SimpleCombatLane from './SimpleCombatLane.jsx';
+import { useDominantColor } from '../lib/dominantColor.js';
 
 // The Scene tab's fullscreen canvas (Scene tab plan, Phase 1: the route
 // skeleton; Phase 4 wired the live backdrop via `useStage()`; Phase 5 adds
@@ -104,6 +107,10 @@ export default function ScenePage() {
   // rendering, or a manually-placed figure/drawing lands in the wrong spot
   // relative to the backdrop).
   const backgroundFit = activeScene?.background_fit || DEFAULT_BACKGROUND_FIT;
+  // Panic at the Dojo: which view this Scene is in (GM's toggle), and the
+  // backdrop colour Simple Combat's lane glows in.
+  const sceneMode = activeScene?.combat_mode ?? 'scene';
+  const laneGlow = useDominantColor(sceneMode === 'simple' ? backgroundSrc : null);
   useEffect(() => {
     setImageNatural({ width: 0, height: 0 });
   }, [backgroundSrc]);
@@ -272,6 +279,21 @@ export default function ScenePage() {
           eraserWidth={eraserWidth}
         />
       )}
+      {/* Simple Combat's lane — on top of the stage, under the drawers. Not
+          hidden by cinematic mode: like the figures, it is part of the
+          scene rather than interface chrome. */}
+      {stageWidth > 0 && sceneMode === 'simple' && (
+        <SimpleCombatLane
+          summons={summons}
+          stageWidth={stageWidth}
+          stageHeight={stageHeight}
+          glow={laneGlow}
+          role={role}
+          characterId={characterId}
+          // Clear of the GM's two w-64 drawers while they are showing.
+          inset={role === 'gm' && !uiHidden ? { left: 256, right: 256 } : undefined}
+        />
+      )}
       {/* Also unconditional, same reasoning as StageRoster/SceneDrawingLayer
           above: a Timestamp's play beat is narrative content, not a UI
           control, so cinematic mode never hides it either — nor does it
@@ -293,6 +315,7 @@ export default function ScenePage() {
         onOpenNotes={role === 'gm' ? () => setNotesOpen(true) : undefined}
       />
       <TopRightAudio uiHidden={uiHidden} role={role} />
+      {!uiHidden && role === 'gm' && activeScene && <SceneModeToggle mode={sceneMode} />}
       {!uiHidden && (
         <>
           {/* z-[2]: summons are independent of the active Scene (decision

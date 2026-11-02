@@ -985,6 +985,12 @@ export async function initDb() {
   // bytes to a dependent first, so a deleted original never blanks its copies.
   await ensureColumn('scenes', 'image_source_id', 'INTEGER REFERENCES scenes(id) ON DELETE SET NULL');
 
+  // **Which view the Scene is in (Panic at the Dojo, decided).** 'scene' is
+  // the stage as it always was; 'simple' adds Simple Combat's ten-space lane;
+  // 'combat' is the grid map. Per Scene, so each Scene remembers its own mode,
+  // and switched by the GM alone.
+  await ensureColumn('scenes', 'combat_mode', "TEXT NOT NULL DEFAULT 'scene'");
+
   // Singleton: which Scene is currently active, same shape as combat_state's
   // own id=1 row.
   ddl(`
@@ -1075,6 +1081,11 @@ export async function initDb() {
   // is read literally: this is a GM narrative tool, not a Player-facing
   // stealth mechanic the owning Player gets to see through.
   await ensureColumn('scene_summons', 'is_hidden', 'INTEGER NOT NULL DEFAULT 0');
+  // **Simple Combat: the lane space (0-9) this summon stands in.** NULL until
+  // someone moves a miniature; until then the stage payload packs everyone
+  // from the left (packLane in client/src/lib/simpleLane.js), so a new summon
+  // finds a space by itself.
+  await ensureColumn('scene_summons', 'lane_slot', 'INTEGER');
   // ---------------------------------------------------------------------
 
   // GM Notes (decided, new). Two shapes, one dialog:
