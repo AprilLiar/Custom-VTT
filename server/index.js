@@ -1451,7 +1451,7 @@ io.on('connection', (socket) => {
   // A fighter's HP, tokens, Challenge and Stance (Phase 4) — see server/combatState.js.
   registerCombatStateHandlers({ on, socket, mayWrite: mayWriteScenePicture, emitStageUpdated });
   // Rounds, turns, Stance rolls and Reminders (Phase 5) — see server/fights.js.
-  registerFightHandlers({ on, socket, emitStageUpdated, postCard, postSystemMessage });
+  registerFightHandlers({ on, socket, emitStageUpdated, postCard, postSystemMessage, emitAll: (event, payload) => io.emit(event, payload) });
 
   // Who this connection is playing as — stored per-socket, in memory only
   // (lost on disconnect, matching the no-login/session-only model; the

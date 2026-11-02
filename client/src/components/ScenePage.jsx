@@ -33,6 +33,7 @@ import SceneDrawingLayer from './SceneDrawingLayer.jsx';
 import SceneDrawToolbar from './SceneDrawToolbar.jsx';
 import PlayerSummonDock from './PlayerSummonDock.jsx';
 import SceneModeToggle from './SceneModeToggle.jsx';
+import SceneChat from './SceneChat.jsx';
 import SimpleCombatLane from './SimpleCombatLane.jsx';
 import CombatMap from './CombatMap.jsx';
 import { CombatFightersDrawer, CombatMapDrawer, PlayerTokenDock } from './CombatDrawers.jsx';
@@ -416,13 +417,15 @@ export default function ScenePage() {
           turn-start Stance pick — the prompt shows even in cinematic mode,
           since a turn cannot go on without it. */}
       {!uiHidden && role === 'gm' && fightMode && !fight && <StartCombatButton onClick={() => setFightSetupOpen(true)} />}
-      {!uiHidden && fight && (
+      {/* The rail stays up in cinematic mode too (decided, mobile fix): the
+          turn order and Next turn are needed mid-fight whatever the GM hides. */}
+      {fight && (
         <InitiativeRail
           mode={fightMode}
           fight={fight}
           fighters={fightFighters}
           role={role}
-          right={role === 'gm' ? 268 : 12}
+          left={role === 'gm' && !uiHidden ? 268 : 12}
           onEditSides={() => setFightSetupOpen(true)}
         />
       )}
@@ -430,6 +433,9 @@ export default function ScenePage() {
       {fightSetupOpen && fightMode && (
         <FightSetupDialog mode={fightMode} fighters={fightFighters} existing={fight} onClose={() => setFightSetupOpen(false)} />
       )}
+      {/* Chat on the Scene: floating cards for new entries and a chat button
+          that opens the full log — both even with the interface hidden. */}
+      <SceneChat />
       {notesOpen && <SceneNotesDialog activeScene={activeScene} onClose={() => setNotesOpen(false)} />}
       {timestampsOpen && <SceneTimestampDialog onClose={() => setTimestampsOpen(false)} />}
     </div>

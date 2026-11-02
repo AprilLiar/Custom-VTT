@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Minus, Plus, X } from 'lucide-react';
 import { GiDeathSkull, GiSleepy } from 'react-icons/gi';
@@ -228,9 +228,45 @@ export default function FighterOverlay({
   candidates = [],
   challenger = null,
   onClose,
+  bounds = null,
 }) {
   const panelRef = useRef(null);
   const belowRef = useRef(null);
+  // **An open panel never leaves the screen (decided, mobile fix).** The row
+  // above the fighter and the panel below it move as ONE: if either would
+  // cross an edge of the stage (`bounds`), both shift by the same distance,
+  // so the gap between them — and the fighter they belong to — stays as it
+  // is. Measured after layout, and again whenever their content changes size
+  // (opening a token adds its buttons).
+  const [shift, setShift] = useState({ x: 0, y: 0 });
+  useLayoutEffect(() => {
+    if (!selected || !bounds) {
+      setShift((s) => (s.x || s.y ? { x: 0, y: 0 } : s));
+      return undefined;
+    }
+    const measure = () => {
+      const above = panelRef.current;
+      const below = belowRef.current;
+      if (!above || !below) return;
+      const margin = 8;
+      const top = anchor.top - 4 - above.offsetHeight;
+      const bottom = anchor.bottom + 4 + below.offsetHeight;
+      let y = 0;
+      if (bottom > bounds.height - margin) y = bounds.height - margin - bottom;
+      if (top + y < margin) y = margin - top;
+      const half = Math.max(above.offsetWidth, below.offsetWidth) / 2;
+      let x = 0;
+      if (anchor.x + half > bounds.width - margin) x = bounds.width - margin - (anchor.x + half);
+      if (anchor.x - half + x < margin) x = margin - (anchor.x - half);
+      setShift((s) => (Math.abs(s.x - x) < 0.5 && Math.abs(s.y - y) < 0.5 ? s : { x, y }));
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    if (panelRef.current) observer.observe(panelRef.current);
+    if (belowRef.current) observer.observe(belowRef.current);
+    return () => observer.disconnect();
+  }, [selected, bounds?.width, bounds?.height, anchor.x, anchor.top, anchor.bottom]);
+  const blockTransform = `translate(calc(-50% + ${selected ? shift.x : 0}px), ${selected ? shift.y : 0}px)`;
   const [openKey, setOpenKey] = useState(null);
   const [pickingChallenge, setPickingChallenge] = useState(false);
   useEffect(() => {
@@ -294,8 +330,8 @@ export default function FighterOverlay({
       {/* Above: held tokens and the Challenge (always), or the full row (panel). */}
       <div
         ref={panelRef}
-        className={`absolute flex -translate-x-1/2 flex-col items-center ${selected ? 'pointer-events-auto' : 'pointer-events-none'}`}
-        style={{ left: anchor.x, bottom: `calc(100% - ${anchor.top - 4}px)`, zIndex: selected ? 60 : 35 }}
+        className={`absolute flex flex-col items-center ${selected ? 'pointer-events-auto' : 'pointer-events-none'}`}
+        style={{ left: anchor.x, bottom: `calc(100% - ${anchor.top - 4}px)`, zIndex: selected ? 60 : 35, transform: blockTransform }}
       >
         {selected && openKey && (
           <span className="mb-1 rounded-sm bg-zinc-950/90 px-1.5 py-0.5 font-display text-[11px] font-bold uppercase tracking-wide text-zinc-100">
@@ -402,8 +438,8 @@ export default function FighterOverlay({
 
       {/* Below: the compact HP stack (always), or the full HP panel. */}
       <div
-        className={`absolute flex -translate-x-1/2 flex-col items-center gap-1 ${selected ? 'pointer-events-auto' : 'pointer-events-none'}`}
-        style={{ left: anchor.x, top: anchor.bottom + 4, zIndex: selected ? 60 : 35 }}
+        className={`absolute flex flex-col items-center gap-1 ${selected ? 'pointer-events-auto' : 'pointer-events-none'}`}
+        style={{ left: anchor.x, top: anchor.bottom + 4, zIndex: selected ? 60 : 35, transform: blockTransform }}
         ref={belowRef}
       >
         {selected ? (

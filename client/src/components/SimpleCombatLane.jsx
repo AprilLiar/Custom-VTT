@@ -131,7 +131,8 @@ export default function SimpleCombatLane({
       ref={rootRef}
       className="pointer-events-none absolute inset-0"
       // Above the GM's drawers while a panel is open, so it is never under them.
-      style={{ zIndex: selectedSummonId != null ? 20 : 5 }}
+      // (1001: above the docks and corner controls too, which sit at 1000.)
+      style={{ zIndex: selectedSummonId != null ? 1001 : 5 }}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
       onPointerCancel={() => setDrag(null)}
@@ -224,6 +225,7 @@ export default function SimpleCombatLane({
                 selected={selectedSummonId === s.id}
                 canEdit={canDrag(s)}
                 fighterRef={{ summonId: s.id }}
+                bounds={{ width: stageWidth, height: stageHeight }}
                 challenger={challenger ? { name: challenger.name, image_url: challenger.image_url } : null}
                 candidates={summons
                   .filter((o) => o.id !== s.id)

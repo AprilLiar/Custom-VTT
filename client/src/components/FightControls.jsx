@@ -179,7 +179,10 @@ export function FightSetupDialog({ mode, fighters, existing = null, onClose }) {
   );
 }
 
-export function InitiativeRail({ mode, fight, fighters, role, right = 12, onEditSides }) {
+// Top-left (decided: clear of the Scene's chat button and cards, which live
+// bottom-right), under the corner buttons — or just right of the GM's left
+// drawer while it shows. `left` is set by the page.
+export function InitiativeRail({ mode, fight, fighters, role, left = 12, onEditSides }) {
   const byCombatant = useMemo(() => new Map(fighters.filter((f) => f.combatantId != null).map((f) => [f.combatantId, f])), [fighters]);
   const currentRef = useRef(null);
   useEffect(() => {
@@ -189,7 +192,8 @@ export function InitiativeRail({ mode, fight, fighters, role, right = 12, onEdit
   return (
     <div
       className="absolute top-16 flex w-48 flex-col panel-cut-sm border border-zinc-700 bg-zinc-950/85 shadow-xl backdrop-blur"
-      style={{ right, zIndex: 900, maxHeight: '72%', marginTop: 'var(--safe-top)' }}
+      // Stops above the bottom-left dock, so on a short screen the two never overlap.
+      style={{ left, zIndex: 900, maxHeight: 'calc(100% - 140px)', minHeight: 120, marginTop: 'var(--safe-top)', marginLeft: 'var(--safe-left)' }}
     >
       <div className="flex items-center justify-between border-b border-zinc-800 px-2 py-1.5">
         <span className="font-display text-xs font-bold uppercase tracking-wide text-zinc-200">Round {fight.round}</span>

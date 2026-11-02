@@ -244,7 +244,8 @@ export default function CombatMap({
       // the edge never shows through a drawer — except while a panel is open,
       // when the whole layer sits above the drawers instead.
       style={{
-        zIndex: selectedTokenId != null ? 20 : 1,
+        // 1001 while a panel is open: above the drawers, docks and corner controls.
+        zIndex: selectedTokenId != null ? 1001 : 1,
         clipPath: selectedTokenId != null ? undefined : `inset(0 ${insetRight}px 0 ${insetLeft}px)`,
       }}
       // The wheel bubbles here from the map and from the tokens on it alike.
@@ -394,6 +395,7 @@ export default function CombatMap({
                     selected={selectedTokenId === t.id}
                     canEdit={canDrag(t)}
                     fighterRef={{ combatantId: t.id }}
+                    bounds={{ width: stageWidth, height: stageHeight }}
                     challenger={challenger}
                     candidates={placed
                       .filter((o) => o.id !== t.id)

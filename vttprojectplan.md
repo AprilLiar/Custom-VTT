@@ -2829,7 +2829,7 @@ Clients emit; the server validates, writes, and broadcasts. The surviving contra
 - **Audio:** `audio_playlist:*`, `audio_track:*`, `audio:play|pause|resume|stop|seek|next|previous|set_mode|ping|duration|track_ended|error|lookup_title` → `audio:state` (see Audio Player).
 - **Scene modes:** `scene:set_mode` (GM), `lane:move` → `stage:updated`.
 - **Table settings:** `table_settings:set` (GM) → `table_settings:updated`.
-- **Fights:** `fight:start|next|choose_stance|set_sides|end` → `stage:updated`; cards → `chat:card`.
+- **Fights:** `fight:start|next|choose_stance|set_sides|end` → `stage:updated`; cards → `chat:card`; `fight:turn_ended { combatantId }` and `fight:ended { mode }` (io.emit) for the Scene's pinned roll cards.
 - **Fighter state:** `fighter:token|challenge|hp|set_hp|add_bar|remove_bar|clear_dizzy|set_stance` → `stage:updated`.
 - **Combat map:** `scene:set_grid`, `scene:set_combat_image`, `combat_token:place|move|remove|clear` → `stage:updated`.
 - **Combat tab:** `combat_profile:update` → `combat_profile:updated`; `combat_reminder:create|update|delete` → `combat_reminders:updated`; `combat_stance:create|update|delete` → `combat_stances:updated`.
@@ -2962,9 +2962,17 @@ Clicking a token opens its panel; a click that turns into a drag closes the pane
 - **Client:** `FightControls.jsx`.
   - `StartCombatButton` (GM, top centre, when this mode has no fight).
   - `FightSetupDialog`: Allies / Fighters / Enemies columns with arrow buttons, "Name ×N" turn counts, the side that starts, and the opener; reused as **Change sides**.
-  - `InitiativeRail`: down the right edge, left of the GM's drawer. It shows "Round N", side dots, portraits in rectangular frames and names; the current turn is outlined and scrolled into view, past turns are dimmed, and "stance…" shows while a pick is pending. GM controls: Next turn, Change sides, End Combat.
+  - `InitiativeRail`: top-left (see the mobile follow-ups below), right of the GM's left drawer. It shows "Round N", side dots, portraits in rectangular frames and names; the current turn is outlined and scrolled into view, past turns are dimmed, and "stance…" shows while a pick is pending. GM controls: Next turn, Change sides, End Combat.
   - `StancePrompt`: a dialog for the fighter's player and the GM. It still shows in cinematic mode, while the rest of the rail hides with the interface.
 - Fight cards count towards the mobile Chat unread badge.
+
+### Playtest follow-ups (mobile) — implemented
+- **The initiative rail stays up in cinematic mode**, Next turn included, and it now sits **top-left** under the corner buttons: at the left edge for Players and in cinematic mode, just right of the GM's left drawer otherwise. This keeps it clear of the chat button and cards on the right, and it stops above the bottom-left dock.
+- **An open token panel never leaves the screen.** If the row above the fighter or the panel below would cross an edge, both shift by the same distance (vertically, and horizontally on narrow screens), keeping their spacing. They're re-measured as their content changes. While a panel is open its layer sits at z 1001, above the docks and corner controls.
+- **Chat on the Scene** (`SceneChat.jsx`; the Scene route has no Chat panel of its own):
+  - **Floating cards:** every new entry (message, roll, fight card) appears bottom-right as a card, newer ones pushing older ones up. At most four show, clipped at the top on a short screen. One countdown restarts with every new card, and 6 seconds after the last one they all go.
+  - **Pinned stance roll (decided):** a turn-start Stance roll ignores the countdown. It stays until that fighter's turn ends — the server broadcasts `fight:turn_ended { combatantId }` on Next turn, and `fight:ended` on End Combat — because the player needs those numbers for the whole turn. Stance roll cards carry `combatant_id` for this.
+  - **Chat button:** a round button above the GM Tools wrench opens the full Chat as an overlay over the Scene (full screen on a phone, a 20rem column otherwise) and closes it on a second press. It is visible even with the interface hidden.
 
 ## Implementation Phases (iterative — each ends with a deploy + playtest checkpoint)
 The old system's phases (1-9 and the playtest batches after them) are complete history in git. The current state:

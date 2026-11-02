@@ -113,7 +113,8 @@ export async function loadFightState(sceneId, mode) {
 }
 
 // deps: on, socket, emitStageUpdated, postCard(kind, payload), postSystemMessage(text)
-export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, postCard, postSystemMessage }) {
+// `emitAll(event, payload)` broadcasts to every socket (io.emit).
+export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, postCard, postSystemMessage, emitAll }) {
   const on = (event, handler) => onRaw(event, serialized(handler));
   const isGm = () => socket.data.identity?.role === 'gm';
   const activeSceneId = async () =>
@@ -200,7 +201,14 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
     const stance = (await loadStances({ ownerType: fighter.ownerType, ownerId: fighter.ownerId })).find((s) => s.id === stanceId);
     if (!stance) return;
     await run('UPDATE combatants SET active_stance_id = ? WHERE id = ?', [stance.id, combatantId]);
-    await postCard('stance_roll', { fighter: card(fighter), stance: stance.name, results: rollStance(stance.dice) });
+    // `combatant_id` lets the Scene keep this card up until that fighter's
+    // turn ends (fight:turn_ended).
+    await postCard('stance_roll', {
+      fighter: card(fighter),
+      stance: stance.name,
+      results: rollStance(stance.dice),
+      combatant_id: combatantId,
+    });
   };
 
   // The start of the turn at fight.turn_index: Stance, then Start reminders.
@@ -293,6 +301,8 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
     if (!fight) return;
     const current = orderOf(fight)[fight.turn_index];
     if (current && (await valid(fight, current.id))) await fire(fight, 'turn_end', current.id);
+    // The Scene's floating chat keeps a fighter's turn-start roll up until now.
+    if (current) emitAll?.('fight:turn_ended', { combatantId: current.id });
     // Dizzy lasts until the end of the current turn (book p.62).
     await run('UPDATE combatants SET dizzy = 0 WHERE scene_id = ? AND mode = ?', [fight.scene_id, fight.mode]);
     await advance(fight);
@@ -344,6 +354,7 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
     await run('DELETE FROM fights WHERE id = ?', [fight.id]);
     await run('UPDATE combatants SET dizzy = 0 WHERE scene_id = ? AND mode = ?', [fight.scene_id, fight.mode]);
     await postSystemMessage('— Combat ends —');
+    emitAll?.('fight:ended', { mode: fight.mode });
     await emitStageUpdated();
   });
 }

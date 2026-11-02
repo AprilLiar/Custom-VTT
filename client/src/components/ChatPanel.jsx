@@ -103,7 +103,9 @@ const DICE_TRAY_SIZES = [4, 6, 8, 10, 12];
 // message, with an optional picture or GIF, and a Dice Tray roll. The old
 // system's cards — move reveals, round summaries and their replays, Quirk cards,
 // and the damage line under an engine roll — went with it.
-function Entry({ entry, character, onAdjustCounters }) {
+// Exported for the Scene's floating chat cards (SceneChat.jsx); `compact`
+// drops the roll card's Counters button there.
+export function Entry({ entry, character, onAdjustCounters, compact = false }) {
   if (entry.kind === 'reminder' || entry.kind === 'stance_roll') return <FightCard entry={entry} />;
   const time = new Date(entry.timestamp).toLocaleTimeString([], {
     hour: '2-digit',
@@ -125,7 +127,7 @@ function Entry({ entry, character, onAdjustCounters }) {
           {/* Counters, reachable from the roll that earned them (decided,
               new). Only on a roll: a plain chat message has no "this just
               happened, tick something" moment behind it. */}
-          {entry.kind === 'roll' && (
+          {entry.kind === 'roll' && !compact && (
             <button
               type="button"
               onClick={() => onAdjustCounters?.(entry)}
