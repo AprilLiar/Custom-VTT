@@ -1,9 +1,15 @@
 import { createClient } from '@libsql/client';
 import { writeSync } from 'node:fs';
 import { IMAGE_COLUMNS, hashImageData } from './images.js';
-import { STYLES, COUNTER_BONUS, DEFEATS } from './ruleset.js';
 import { trackTrip } from './dbProfile.js';
-import { PERK_REGISTRY } from './perks/index.js';
+import {
+  ARCHIVED_TABLES,
+  OLD_CHARACTER_COLUMNS,
+  OLD_COUNTER_COLUMNS,
+  PURGED_TABLES,
+  buildArchive,
+  verifyArchive,
+} from './compendiumArchive.js';
 
 // Turso in production (TURSO_DATABASE_URL + TURSO_AUTH_TOKEN env vars);
 // a local libSQL file otherwise — same client, same SQL.
@@ -436,61 +442,6 @@ async function ensureColumn(table, column, columnDdl) {
   }
 }
 
-// move_interactions.trigger originally had a 3-value CHECK ('hit','block',
-// 'miss'). SQLite can't ALTER a CHECK constraint in place, so an existing
-// table stuck with the old constraint gets rebuilt: a v2 table with the
-// expanded 5-value CHECK, every row copied across, the old table dropped,
-// then v2 renamed into place. A fresh database's CREATE TABLE IF NOT EXISTS
-// above already gets the expanded CHECK directly, so this only fires
-// against a database created before defense_success/defense_failure existed.
-async function migrateMoveInteractionsTrigger() {
-  const sql = await tableSql('move_interactions');
-  if (!sql || sql.includes('defense_success')) return;
-  await run(`
-    CREATE TABLE move_interactions_v2 (
-      id INTEGER PRIMARY KEY,
-      move_id INTEGER NOT NULL REFERENCES moves(id) ON DELETE CASCADE,
-      trigger TEXT NOT NULL CHECK(trigger IN ('hit','block','miss','defense_success','defense_failure')),
-      text TEXT NOT NULL DEFAULT '',
-      automations TEXT NOT NULL DEFAULT '[]'
-    )
-  `);
-  await run(`
-    INSERT INTO move_interactions_v2 (id, move_id, trigger, text, automations)
-    SELECT id, move_id, trigger, text, automations FROM move_interactions
-  `);
-  await run('DROP TABLE move_interactions');
-  await run('ALTER TABLE move_interactions_v2 RENAME TO move_interactions');
-  invalidateSchemaSnapshot();
-}
-
-// Grappling (decided, new) adds a sixth trigger: **On Successful Grapple**,
-// which fires when a grapple wins its contest. Same table-rebuild shape and
-// the same reason as the migration above — SQLite cannot ALTER a CHECK.
-// Guarded on the new value rather than on a version number, so this is a
-// no-op on a database that already has it.
-async function migrateMoveInteractionsGrappleTrigger() {
-  const sql = await tableSql('move_interactions');
-  if (!sql || sql.includes('grapple_success')) return;
-  await run(`
-    CREATE TABLE move_interactions_v3 (
-      id INTEGER PRIMARY KEY,
-      move_id INTEGER NOT NULL REFERENCES moves(id) ON DELETE CASCADE,
-      trigger TEXT NOT NULL
-        CHECK(trigger IN ('hit','block','miss','defense_success','defense_failure','grapple_success')),
-      text TEXT NOT NULL DEFAULT '',
-      automations TEXT NOT NULL DEFAULT '[]'
-    )
-  `);
-  await run(`
-    INSERT INTO move_interactions_v3 (id, move_id, trigger, text, automations)
-    SELECT id, move_id, trigger, text, automations FROM move_interactions
-  `);
-  await run('DROP TABLE move_interactions');
-  await run('ALTER TABLE move_interactions_v3 RENAME TO move_interactions');
-  invalidateSchemaSnapshot();
-}
-
 // scene_summons gained a NOT NULL scene_id (decided, revised — see the
 // table's own CREATE-time comment for why summons stopped being
 // Scene-independent). SQLite can't ALTER a UNIQUE constraint in place
@@ -581,205 +532,109 @@ async function migrateChatLogKind() {
   invalidateSchemaSnapshot();
 }
 
-// A finished round's replay ("Watch Round N" in chat) used to die with the
-// fight: combat:end/combat:clear deleted every pair_round_resolutions row,
-// and round_events cascades off it. Those rows are kept now — but a fresh
-// fight restarts each pair at round 1, which collides with the old
-// UNIQUE(pair_index, round_number). Scoping that uniqueness to the fight
-// (combat_state.fight_number, bumped per Start Combat) is what lets both
-// coexist. A CHECK/UNIQUE can't be ALTERed in SQLite, so this rebuilds the
-// table — same shape as migrateChatLogKind above. Existing rows all belong
-// to whatever fight was last running, which is fight 1 by definition of the
-// column's own default.
-async function migratePairRoundResolutionsFightNumber() {
-  const sql = await tableSql('pair_round_resolutions');
-  if (!sql || sql.includes('fight_number')) return;
-  // Foreign keys are ON in this database (unlike stock SQLite), so dropping
-  // the old table would cascade every round_events row — i.e. delete exactly
-  // the replay history this change exists to preserve. SQLite's own
-  // documented table-rebuild procedure is to turn them off for the swap;
-  // safe here because the copy below preserves `id` exactly, so every
-  // round_events.resolution_id still points at the same row afterwards.
-  await run('PRAGMA foreign_keys = OFF');
-  await run(`
-    CREATE TABLE pair_round_resolutions_v2 (
-      id INTEGER PRIMARY KEY,
-      pair_index INTEGER NOT NULL,
-      round_number INTEGER NOT NULL,
-      fight_number INTEGER NOT NULL DEFAULT 1,
-      round_start_tic INTEGER NOT NULL,
-      round_length INTEGER NOT NULL,
-      status TEXT NOT NULL DEFAULT 'running' CHECK(status IN ('running','paused_dodge','paused_conflict','complete')),
-      resolved_through_tic INTEGER NOT NULL DEFAULT 0,
-      pending_dodge_json TEXT,
-      pending_conflict_json TEXT,
-      created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      completed_at TEXT,
-      UNIQUE(pair_index, round_number, fight_number)
-    )
-  `);
-  await run(`
-    INSERT INTO pair_round_resolutions_v2
-      (id, pair_index, round_number, fight_number, round_start_tic, round_length, status,
-       resolved_through_tic, pending_dodge_json, pending_conflict_json, created_at, completed_at)
-    SELECT id, pair_index, round_number, 1, round_start_tic, round_length, status,
-           resolved_through_tic, pending_dodge_json, pending_conflict_json, created_at, completed_at
-    FROM pair_round_resolutions
-  `);
-  await run('DROP TABLE pair_round_resolutions');
-  await run('ALTER TABLE pair_round_resolutions_v2 RENAME TO pair_round_resolutions');
-  invalidateSchemaSnapshot();
-  await run('PRAGMA foreign_keys = ON');
-}
-
-// Defences now stop for the GM (decided, revised — this reverses the
-// overhaul's own decision #1, "Block is fully automatic, zero GM clicks
-// ever"). The reason is a rule no amount of code can decide: a Straight and
-// a Haymaker can both target the head, but a front block stops one and not
-// the other. Only a human knows whether the defence that happened to overlap
-// was the RIGHT defence, so any defence covering the attack's first Active
-// frame now pauses and asks — a third pause status alongside the Dodge and
-// move-conflict ones, with its own pending payload. Same table-rebuild shape
-// as the two migrations above; a CHECK can't be ALTERed in SQLite.
-async function migratePairRoundResolutionsDefenseConfirm() {
-  const sql = await tableSql('pair_round_resolutions');
-  if (!sql || sql.includes('paused_defense')) return;
-  // Same foreign-key dance and the same reason as the fight_number rebuild:
-  // round_events cascades off this table, and `id` is preserved exactly so
-  // every stored replay still points at its own resolution afterwards.
-  await run('PRAGMA foreign_keys = OFF');
-  await run(`
-    CREATE TABLE pair_round_resolutions_v3 (
-      id INTEGER PRIMARY KEY,
-      pair_index INTEGER NOT NULL,
-      round_number INTEGER NOT NULL,
-      fight_number INTEGER NOT NULL DEFAULT 1,
-      round_start_tic INTEGER NOT NULL,
-      round_length INTEGER NOT NULL,
-      status TEXT NOT NULL DEFAULT 'running'
-        CHECK(status IN ('running','paused_dodge','paused_conflict','paused_defense','complete')),
-      resolved_through_tic INTEGER NOT NULL DEFAULT 0,
-      pending_dodge_json TEXT,
-      pending_conflict_json TEXT,
-      pending_defense_json TEXT,
-      created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      completed_at TEXT,
-      UNIQUE(pair_index, round_number, fight_number)
-    )
-  `);
-  await run(`
-    INSERT INTO pair_round_resolutions_v3
-      (id, pair_index, round_number, fight_number, round_start_tic, round_length, status,
-       resolved_through_tic, pending_dodge_json, pending_conflict_json, created_at, completed_at)
-    SELECT id, pair_index, round_number, fight_number, round_start_tic, round_length, status,
-           resolved_through_tic, pending_dodge_json, pending_conflict_json, created_at, completed_at
-    FROM pair_round_resolutions
-  `);
-  await run('DROP TABLE pair_round_resolutions');
-  await run('ALTER TABLE pair_round_resolutions_v3 RENAME TO pair_round_resolutions');
-  invalidateSchemaSnapshot();
-  await run('PRAGMA foreign_keys = ON');
-}
-
-// Grappling (decided, new) is the engine's **fourth** pause, and the first
-// that is genuinely two-party: a grapple stops and asks the grappler which
-// direction they are taking the grab AND asks the target to guess it, and
-// cannot continue until both have answered. Both halves live in one
-// pending_grapple_json, filled in independently — see resolveGrappleContest
-// and the grapple branch in roundResolution.js.
+// **Archive the old system, then remove it (decided, new — the pivot).**
 //
-// Fourth rebuild of this table, same shape and the same foreign-key dance as
-// the two above. The dormant 'paused_defense' status (groundwork for the
-// queued Defence rework, still unwired) is carried through untouched — this
-// change must not disturb it.
-async function migratePairRoundResolutionsGrapple() {
-  const sql = await tableSql('pair_round_resolutions');
-  if (!sql || sql.includes('paused_grapple')) return;
-  await run('PRAGMA foreign_keys = OFF');
-  await run(`
-    CREATE TABLE pair_round_resolutions_v4 (
-      id INTEGER PRIMARY KEY,
-      pair_index INTEGER NOT NULL,
-      round_number INTEGER NOT NULL,
-      fight_number INTEGER NOT NULL DEFAULT 1,
-      round_start_tic INTEGER NOT NULL,
-      round_length INTEGER NOT NULL,
-      status TEXT NOT NULL DEFAULT 'running'
-        CHECK(status IN ('running','paused_dodge','paused_conflict','paused_defense','paused_grapple','complete')),
-      resolved_through_tic INTEGER NOT NULL DEFAULT 0,
-      pending_dodge_json TEXT,
-      pending_conflict_json TEXT,
-      pending_defense_json TEXT,
-      pending_grapple_json TEXT,
-      created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      completed_at TEXT,
-      UNIQUE(pair_index, round_number, fight_number)
-    )
-  `);
-  await run(`
-    INSERT INTO pair_round_resolutions_v4
-      (id, pair_index, round_number, fight_number, round_start_tic, round_length, status,
-       resolved_through_tic, pending_dodge_json, pending_conflict_json, pending_defense_json,
-       created_at, completed_at)
-    SELECT id, pair_index, round_number, fight_number, round_start_tic, round_length, status,
-           resolved_through_tic, pending_dodge_json, pending_conflict_json, pending_defense_json,
-           created_at, completed_at
-    FROM pair_round_resolutions
-  `);
-  await run('DROP TABLE pair_round_resolutions');
-  await run('ALTER TABLE pair_round_resolutions_v4 RENAME TO pair_round_resolutions');
-  invalidateSchemaSnapshot();
-  await run('PRAGMA foreign_keys = ON');
-}
-
-// **A fifth pause: `paused_noncommit` (Non-Committed).** The Perk stops the
-// round at its very head — after everyone has declared, before anything
-// reveals — so its holder can take their own moves back. Same table rebuild as
-// the four before it, and for the same reason: SQLite cannot ALTER a CHECK in
-// place.
+// One boot does both, and the order is the whole safety argument:
 //
-// The four existing pause payloads are carried across untouched. A round paused
-// mid-flight while this migration runs would be a genuine problem, which is why
-// this runs at boot, before any pair can advance.
-async function migratePairRoundResolutionsNonCommit() {
-  const sql = await tableSql('pair_round_resolutions');
-  if (!sql || sql.includes('paused_noncommit')) return;
-  await run('PRAGMA foreign_keys = OFF');
-  await run(`
-    CREATE TABLE pair_round_resolutions_v5 (
-      id INTEGER PRIMARY KEY,
-      pair_index INTEGER NOT NULL,
-      round_number INTEGER NOT NULL,
-      fight_number INTEGER NOT NULL DEFAULT 1,
-      round_start_tic INTEGER NOT NULL,
-      round_length INTEGER NOT NULL,
-      status TEXT NOT NULL DEFAULT 'running'
-        CHECK(status IN ('running','paused_dodge','paused_conflict','paused_defense','paused_grapple','paused_noncommit','complete')),
-      resolved_through_tic INTEGER NOT NULL DEFAULT 0,
-      pending_dodge_json TEXT,
-      pending_conflict_json TEXT,
-      pending_defense_json TEXT,
-      pending_grapple_json TEXT,
-      pending_noncommit_json TEXT,
-      created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      completed_at TEXT,
-      UNIQUE(pair_index, round_number, fight_number)
-    )
-  `);
-  await run(`
-    INSERT INTO pair_round_resolutions_v5
-      (id, pair_index, round_number, fight_number, round_start_tic, round_length, status,
-       resolved_through_tic, pending_dodge_json, pending_conflict_json, pending_defense_json,
-       pending_grapple_json, created_at, completed_at)
-    SELECT id, pair_index, round_number, fight_number, round_start_tic, round_length, status,
-           resolved_through_tic, pending_dodge_json, pending_conflict_json, pending_defense_json,
-           pending_grapple_json, created_at, completed_at
-    FROM pair_round_resolutions
-  `);
-  await run('DROP TABLE pair_round_resolutions');
-  await run('ALTER TABLE pair_round_resolutions_v5 RENAME TO pair_round_resolutions');
+//   1. Every archived table and its row count are read in ONE batch, which is
+//      one read transaction — the counts describe exactly the rows that came
+//      back, with nothing written in between.
+//   2. The archive is built and checked (`verifyArchive`): every table's count
+//      matches, and the stored text parses back to exactly what was built. If
+//      either fails, **nothing is deleted** — the boot carries on with the old
+//      tables still in place, says why in the log, and tries again next boot.
+//   3. The archive row and every `DROP TABLE` go out in ONE write batch, which
+//      is one transaction. Either the archive is stored and the tables are
+//      gone, or neither happened. There is no moment where the data has been
+//      dropped and the archive has not landed.
+//
+// Archives are append-only. A second one is only ever written if old tables
+// reappear (a rollback to the previous deploy recreates them), and it never
+// replaces the first.
+//
+// Column drops come after, one at a time and best-effort: SQLite can refuse a
+// DROP COLUMN for reasons that have nothing to do with the data, and a refusal
+// must not take the boot down. The heavy one — the backdrop picture — is
+// cleared inside the transaction first, so its bytes are gone even if its
+// column stays.
+export let oldSystemPurge = { status: 'not-run', problems: [] };
+
+async function archiveAndPurgeOldSystem() {
+  const tables = await schemaTables();
+  const presentPurged = PURGED_TABLES.filter((t) => tables.has(t));
+  const columnPresent = (table, column) => new RegExp(`\\b${column}\\b`).test(tables.get(table) ?? '');
+  const oldCharacterColumns = OLD_CHARACTER_COLUMNS.filter((c) => columnPresent('characters', c));
+  const oldCounterColumns = OLD_COUNTER_COLUMNS.filter((c) => columnPresent('counters', c));
+  if (!presentPurged.length && !oldCharacterColumns.length && !oldCounterColumns.length) {
+    oldSystemPurge = { status: 'clean', problems: [] };
+    return;
+  }
+
+  const writes = [];
+  const archived = ARCHIVED_TABLES.filter((t) => tables.has(t));
+  let archiveSummary = null;
+  if (archived.length) {
+    const results = await readMany([
+      ...archived.map((t) => [`SELECT * FROM ${t} ORDER BY rowid`]),
+      ...archived.map((t) => [`SELECT COUNT(*) AS n FROM ${t}`]),
+      tables.has('characters') ? ['SELECT id, name FROM characters ORDER BY id'] : null,
+    ]);
+    const rowsByTable = {};
+    const expectedCounts = {};
+    archived.forEach((t, i) => {
+      rowsByTable[t] = results[i];
+      expectedCounts[t] = Number(results[archived.length + i][0].n);
+    });
+    const characterNames = tables.has('characters') ? results[archived.length * 2] : [];
+    const archive = buildArchive({ rowsByTable, characterNames, archivedAt: new Date().toISOString() });
+    const serialized = JSON.stringify(archive);
+    const check = verifyArchive({ archive, serialized, expectedCounts });
+    if (!check.ok) {
+      oldSystemPurge = { status: 'skipped', problems: check.problems };
+      bootLog(`Database: old system NOT removed — the archive did not verify: ${check.problems.join('; ')}`);
+      return;
+    }
+    writes.push(
+      [
+        `CREATE TABLE IF NOT EXISTS compendium_archive (
+          id INTEGER PRIMARY KEY,
+          archived_at TEXT NOT NULL,
+          counts TEXT NOT NULL,
+          payload TEXT NOT NULL
+        )`,
+      ],
+      [
+        'INSERT INTO compendium_archive (archived_at, counts, payload) VALUES (?, ?, ?)',
+        [archive.archivedAt, JSON.stringify(archive.counts), serialized],
+      ]
+    );
+    archiveSummary = archive.counts;
+  }
+  if (columnPresent('characters', 'vitruvian_image_data')) {
+    writes.push(['UPDATE characters SET vitruvian_image_data = NULL, vitruvian_image_mime_type = NULL']);
+  }
+  for (const t of presentPurged) writes.push([`DROP TABLE IF EXISTS ${t}`]);
+  await writeMany(writes);
+
+  const columnProblems = [];
+  for (const [table, columns] of [['characters', oldCharacterColumns], ['counters', oldCounterColumns]]) {
+    for (const column of columns) {
+      try {
+        await run(`ALTER TABLE ${table} DROP COLUMN ${column}`);
+      } catch (err) {
+        columnProblems.push(`${table}.${column}: ${err.message}`);
+      }
+    }
+  }
   invalidateSchemaSnapshot();
-  await run('PRAGMA foreign_keys = ON');
+  await schemaTables();
+  oldSystemPurge = { status: 'purged', problems: columnProblems, archived: archiveSummary };
+  if (archiveSummary) {
+    const rows = Object.values(archiveSummary).reduce((a, b) => a + b, 0);
+    bootLog(`Database: archived ${rows} old-system row(s) from ${Object.keys(archiveSummary).length} table(s)`);
+  }
+  bootLog(`Database: removed ${presentPurged.length} old-system table(s)`);
+  if (columnProblems.length) bootLog(`Database: columns left in place (data already cleared): ${columnProblems.join('; ')}`);
 }
 
 export async function initDb() {
@@ -792,6 +647,10 @@ export async function initDb() {
   // a version stamp that skips the work.
   await schemaTables();
 
+  // Before anything else touches the schema: archive the old system and take
+  // it out. See archiveAndPurgeOldSystem above.
+  await archiveAndPurgeOldSystem();
+
   // Phase 0's demo table is no longer used.
   ddl('DROP TABLE IF EXISTS pings');
 
@@ -800,22 +659,26 @@ export async function initDb() {
       id INTEGER PRIMARY KEY,
       name TEXT NOT NULL,
       character_type TEXT NOT NULL DEFAULT 'pc' CHECK(character_type IN ('pc','npc')),
-      image_data TEXT,          -- base64-encoded image, stored directly in Turso
+      image_data TEXT,          -- the profile picture, base64, stored directly in Turso
       image_mime_type TEXT,     -- e.g. 'image/jpeg', needed to render image_data correctly
-      vitruvian_image_data TEXT,      -- GM-uploaded replacement for the default Tab 1 backdrop figure
-      vitruvian_image_mime_type TEXT,
-      active_stance_id INTEGER, -- FK to stances(id), set once stances exist (Phase 2)
-      stamina_multiplier INTEGER NOT NULL DEFAULT 4,
-      max_stamina INTEGER NOT NULL DEFAULT 0,
-      current_stamina INTEGER NOT NULL DEFAULT 0,
       created_at TEXT DEFAULT CURRENT_TIMESTAMP,
       folder_id INTEGER -- character list folder; NULL = root
     )
   `);
   await ensureColumn('characters', 'folder_id', 'INTEGER');
-  await ensureColumn('characters', 'vitruvian_image_data', 'TEXT');
-  await ensureColumn('characters', 'vitruvian_image_mime_type', 'TEXT');
   await ensureCropColumns('characters');
+
+  // The old system's archive (see archiveAndPurgeOldSystem). Declared here as
+  // well as inside the purge so a brand-new database has it too, and the
+  // download endpoint never has to ask whether the table exists.
+  ddl(`
+    CREATE TABLE IF NOT EXISTS compendium_archive (
+      id INTEGER PRIMARY KEY,
+      archived_at TEXT NOT NULL,
+      counts TEXT NOT NULL,     -- JSON {table: rows}, so a listing need not load the payload
+      payload TEXT NOT NULL     -- the whole archive document, JSON
+    )
+  `);
 
   // GM-created folders for organizing the character list — same structural
   // pattern as move_folders (create/rename/delete). Nested: parent_id is a
@@ -830,94 +693,6 @@ export async function initDb() {
     )
   `);
   await ensureColumn('character_folders', 'parent_id', 'INTEGER REFERENCES character_folders(id) ON DELETE SET NULL');
-
-  ddl(`
-    CREATE TABLE IF NOT EXISTS dice (
-      id INTEGER PRIMARY KEY,
-      character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
-      pool TEXT NOT NULL CHECK(pool IN ('head','core','legs')),
-      slot_name TEXT NOT NULL,
-      -- d4 is the ruleset's starting baseline for every Stat (Character
-      -- Creation in game_rules.md); a new character then spends a budget of
-      -- step-ups. Only affects rows inserted from here on.
-      current_size INTEGER NOT NULL DEFAULT 4 CHECK(current_size IN (4,6,8,10,12)),
-      bonus INTEGER NOT NULL DEFAULT 0,
-      status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','incapacitated')),
-      -- Matches current_size's baseline: a brand-new character must not read
-      -- as already two steps below their own locked base, and Revert Stats
-      -- must not jump every die up to a base they never had.
-      locked_size INTEGER NOT NULL DEFAULT 4 CHECK(locked_size IN (4,6,8,10,12)),
-      locked_bonus INTEGER NOT NULL DEFAULT 0,
-      locked_status TEXT NOT NULL DEFAULT 'active' CHECK(locked_status IN ('active','incapacitated')),
-      -- Half-Damage (decided): a raw on/off flag, toggled manually (a plain
-      -- flip, no other side effect) or by a future automated effect via
-      -- applyHalfDamage in gameLogic.js, which — only when called — clears
-      -- this flag and steps current_size/bonus/status down by one rank
-      -- instead of just setting the flag a second time.
-      half_damage INTEGER NOT NULL DEFAULT 0
-    )
-  `);
-  await ensureColumn('dice', 'half_damage', 'INTEGER NOT NULL DEFAULT 0');
-
-  ddl(`
-    CREATE TABLE IF NOT EXISTS inventory_items (
-      id INTEGER PRIMARY KEY,
-      character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
-      item_name TEXT NOT NULL,
-      description TEXT NOT NULL DEFAULT ''
-    )
-  `);
-  // Existing deployments predate the description field
-  await ensureColumn('inventory_items', 'description', "TEXT NOT NULL DEFAULT ''");
-
-  ddl(`
-    CREATE TABLE IF NOT EXISTS attributes (
-      id INTEGER PRIMARY KEY,
-      name TEXT NOT NULL UNIQUE,
-      icon TEXT NOT NULL DEFAULT '' -- lucide icon name, rendered client-side
-    )
-  `);
-
-  ddl(`
-    CREATE TABLE IF NOT EXISTS attribute_counters (
-      id INTEGER PRIMARY KEY,
-      attacker_attribute_id INTEGER NOT NULL REFERENCES attributes(id),
-      defender_attribute_id INTEGER NOT NULL REFERENCES attributes(id),
-      bonus INTEGER NOT NULL
-    )
-  `);
-
-  ddl(`
-    CREATE TABLE IF NOT EXISTS stances (
-      id INTEGER PRIMARY KEY,
-      character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
-      name TEXT NOT NULL,
-      attribute_a_id INTEGER NOT NULL REFERENCES attributes(id),
-      attribute_b_id INTEGER NOT NULL REFERENCES attributes(id) CHECK(attribute_b_id != attribute_a_id)
-    )
-  `);
-
-  ddl(`
-    CREATE TABLE IF NOT EXISTS injuries (
-      id INTEGER PRIMARY KEY,
-      character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
-      name TEXT NOT NULL,
-      effect TEXT NOT NULL,
-      -- Optional die slot this Injury penalizes (decided): NULL for a purely
-      -- descriptive Injury with no mechanical stat effect. Applied only when
-      -- the character reverts to their locked/base stats (character:revert_stats)
-      -- — see applyRankPenalty in gameLogic.js — never live, and never during
-      -- character:lock_stats itself.
-      slot_name TEXT CHECK(slot_name IN ('Skull','Brain','Left Hand','Stamina','Body','Right Hand','Left Leg','Right Leg')),
-      penalty INTEGER NOT NULL DEFAULT 0
-    )
-  `);
-  await ensureColumn(
-    'injuries',
-    'slot_name',
-    "TEXT CHECK(slot_name IN ('Skull','Brain','Left Hand','Stamina','Body','Right Hand','Left Leg','Right Leg'))"
-  );
-  await ensureColumn('injuries', 'penalty', 'INTEGER NOT NULL DEFAULT 0');
 
   // No FK clause on character_id: libsql enforces foreign keys, and chat
   // entries must survive character deletion (history shows "(deleted)").
@@ -977,340 +752,6 @@ export async function initDb() {
   await ensureColumn('chat_log', 'image_mime_type', 'TEXT');
   await ensureColumn('chat_log', 'payload', 'TEXT');
   await migrateChatLogKind();
-
-  // World-level Tell list, GM-editable at any time (unlike the fixed styles).
-  // Tells carry small uploaded images (commissioned art), not icons — the
-  // legacy icon column remains on old deployments but is unused.
-  ddl(`
-    CREATE TABLE IF NOT EXISTS tells (
-      id INTEGER PRIMARY KEY,
-      name TEXT NOT NULL,
-      image_data TEXT,      -- base64 small image
-      image_mime_type TEXT
-    )
-  `);
-  await ensureColumn('tells', 'image_data', 'TEXT');
-  await ensureColumn('tells', 'image_mime_type', 'TEXT');
-  await ensureCropColumns('tells');
-
-  // GM-created folders for organizing the Moves compendium. Nested, same
-  // parent_id self-reference pattern as character_folders above.
-  ddl(`
-    CREATE TABLE IF NOT EXISTS move_folders (
-      id INTEGER PRIMARY KEY,
-      name TEXT NOT NULL,
-      parent_id INTEGER REFERENCES move_folders(id) ON DELETE SET NULL
-    )
-  `);
-  await ensureColumn('move_folders', 'parent_id', 'INTEGER REFERENCES move_folders(id) ON DELETE SET NULL');
-
-  // The compendium: master list of move templates with frame data
-  ddl(`
-    CREATE TABLE IF NOT EXISTS moves (
-      id INTEGER PRIMARY KEY,
-      name TEXT NOT NULL,
-      is_default INTEGER NOT NULL DEFAULT 0, -- 1 = auto-granted to every character
-      tell_id INTEGER NOT NULL REFERENCES tells(id),
-      startup_tics INTEGER NOT NULL DEFAULT 1,
-      active_tics INTEGER NOT NULL DEFAULT 1,
-      recovery_tics INTEGER NOT NULL DEFAULT 0,
-      -- Current Stamina spent by the declaring character the moment their
-      -- side finishes declaring (combat:side_done_declaring) — required at
-      -- creation, but 0 is a valid "free" cost; a negative cost restores
-      -- Stamina instead of spending it.
-      stamina_cost INTEGER NOT NULL DEFAULT 0,
-      description TEXT NOT NULL DEFAULT '',
-      style_attribute_id INTEGER REFERENCES attributes(id), -- NULL only on legacy rows
-      folder_id INTEGER,    -- compendium folder; NULL = root
-      image_data TEXT,      -- base64 small image (commissioned art)
-      image_mime_type TEXT,
-      -- Flat bonus baked into this move's own Roll (distinct from the
-      -- per-character roll_bonus a Perk can separately grant a move).
-      roll_modifier INTEGER NOT NULL DEFAULT 0,
-      -- Only set when the Roll includes an ambiguous Hand/Leg slot (see
-      -- move_roll_slots): the two Tells the header shows side by side, one
-      -- per appendage choice. tell_id above is left pointing at one of them
-      -- in that case, purely to satisfy its NOT NULL constraint — the
-      -- Tell header ignores it once right/left are both set.
-      right_tell_id INTEGER REFERENCES tells(id),
-      left_tell_id INTEGER REFERENCES tells(id),
-      -- 1 = this move has On Successful Defense / On Failed Defense
-      -- interactions available (see move_interactions below)
-      is_defensive INTEGER NOT NULL DEFAULT 0,
-      -- Roll type (decided, new): 'stat' is the original body-part Roll
-      -- (move_roll_slots below); 'custom' replaces it entirely with one
-      -- flat base die (custom_roll_size), not tied to any character stat —
-      -- for weapons, where the damage die belongs to the item, not the
-      -- wielder. Mutually exclusive: a 'custom' move always has empty
-      -- move_roll_slots (writeMove enforces this), and a 'stat' move always
-      -- has a NULL custom_roll_size.
-      roll_type TEXT NOT NULL DEFAULT 'stat' CHECK(roll_type IN ('stat','custom')),
-      custom_roll_size INTEGER CHECK(custom_roll_size IN (4,6,8,10,12)),
-      -- Combat Automation overhaul: which of the two defensive mechanics
-      -- this move's Defense Frames represent. Block resolves fully
-      -- automatically (dice math only); Dodge is the one remaining
-      -- human-in-the-loop call (the GM's Successful/Failed prompt). Required
-      -- by writeMove whenever is_defensive=1 with at least one Defense Frame
-      -- placed (see the sibling positions column below); NULL otherwise.
-      -- See the migration below for how every pre-existing Defensive move
-      -- is backfilled. (Deliberately not spelling out that sibling column's
-      -- own name here in full, word for word — ensureColumn's "does this
-      -- column already exist" check matches against the whole stored CREATE
-      -- TABLE text, comments included, so writing it out would make that
-      -- check see a false match and skip adding it on a fresh database.)
-      defense_kind TEXT CHECK(defense_kind IN ('block','dodge'))
-    )
-  `);
-  await ensureColumn('moves', 'style_attribute_id', 'INTEGER REFERENCES attributes(id)');
-  await ensureColumn('moves', 'folder_id', 'INTEGER');
-  await ensureColumn('moves', 'image_data', 'TEXT');
-  await ensureColumn('moves', 'image_mime_type', 'TEXT');
-  await ensureCropColumns('moves');
-  await ensureColumn('moves', 'roll_modifier', 'INTEGER NOT NULL DEFAULT 0');
-  await ensureColumn('moves', 'right_tell_id', 'INTEGER REFERENCES tells(id)');
-  await ensureColumn('moves', 'left_tell_id', 'INTEGER REFERENCES tells(id)');
-  await ensureColumn('moves', 'is_defensive', 'INTEGER NOT NULL DEFAULT 0');
-  await ensureColumn('moves', 'stamina_cost', 'INTEGER NOT NULL DEFAULT 0');
-  // Block Stamina (decided, new — the first Tag automation): a move carrying
-  // the **Block** Tag has no up-front Stamina Cost at all. It pays at
-  // resolution instead, for exactly as much of the attack as its guard
-  // actually absorbed, scaled by this multiplier. REAL, not INTEGER: the
-  // whole point is that it can sit either side of 1 (a cheap guard at 0.5, a
-  // punishing one at 2). Never 0 or negative — see clampStaminaModifier.
-  // Meaningless on a move without the Block Tag, and simply ignored there.
-  await ensureColumn('moves', 'stamina_modifier', 'REAL NOT NULL DEFAULT 1');
-  await ensureColumn('moves', 'roll_type', "TEXT NOT NULL DEFAULT 'stat' CHECK(roll_type IN ('stat','custom'))");
-  await ensureColumn('moves', 'custom_roll_size', 'INTEGER CHECK(custom_roll_size IN (4,6,8,10,12))');
-  // JSON array of 0-based indices into the move's full frame sequence
-  // (Startup squares first, then Active, then Recovery) marking which
-  // squares also grant a defensive window — see sanitizeDefensePositions in
-  // moveLogic.js. Purely a display annotation, not a timing phase.
-  await ensureColumn('moves', 'defense_frame_positions', "TEXT NOT NULL DEFAULT '[]'");
-  // Attack Target (Change 001): JSON array of the abstract Stat names (see
-  // ATTACK_TARGET_NAMES in moveLogic.js) a Roll's damage may be applied to.
-  // Default '["Skull"]' is a one-time migration value for every pre-existing
-  // Move (every legacy Move gets exactly Skull); a brand-new Move created
-  // after this column exists is written with an explicit [] by writeMove —
-  // the DB default only ever fires for the migration, never for new rows.
-  await ensureColumn('moves', 'attack_targets', `TEXT NOT NULL DEFAULT '["Skull"]'`);
-  await ensureColumn('moves', 'defense_kind', "TEXT CHECK(defense_kind IN ('block','dodge'))");
-  // Combat Style (decided, new): the move's OWN style, joined onto its user's
-  // active stance when the Stance matchup is scored for that move's roll —
-  // three styles against three instead of two against two. Deliberately a
-  // second column rather than a mechanical reading of style_attribute_id
-  // above: that one is a *gate* (which characters may learn and use this move
-  // at all) and is required, this one is a *contribution* and is optional.
-  // They may be the same style or different ones, and a move may carry this
-  // and no gate style or the reverse. Duplicates are the point — a Strength
-  // move in a Strength stance counts Strength twice, doubling that style's
-  // half of the matchup in both directions. See getStanceMatchupBonus.
-  await ensureColumn('moves', 'combat_style_attribute_id', 'INTEGER REFERENCES attributes(id)');
-  // Grappling (decided, new). A grappling move does not simply land or miss:
-  // it opens a four-way branch (see move_grapple_directions below), the
-  // grappler picks a direction in secret and the target guesses it, and the
-  // whole thing is settled by an opposed roll against the target's Resist
-  // Roll rather than by the ordinary damage flow. **Dodge can evade a
-  // grapple; Block cannot** — a declared Block is never consulted against
-  // one.
-  await ensureColumn('moves', 'is_grappling', 'INTEGER NOT NULL DEFAULT 0');
-  // The floor a **No Damage** move's roll must clear to count as successful.
-  // Belongs to the No Damage tag rather than to grappling — a non-grappling
-  // No Damage move uses it on its own — but a grapple must clear it AND beat
-  // the target, so it can fail two distinct ways. Default 5 matches the
-  // Half-Damage step size, which is the only other threshold in the game.
-  await ensureColumn('moves', 'success_threshold', 'INTEGER NOT NULL DEFAULT 5');
-  // Requirement (decided, new). A non-mandatory pointer at another move: this
-  // move may only be declared **immediately** after that one — not later in
-  // the round, and never without it. Combo Moves and Grappling Chains are the
-  // motivating cases. Deliberately a plain nullable column rather than a child
-  // table: a move has at most one Requirement, so there is nothing to group.
-  //
-  // The self-referencing FK is load-bearing in the same way
-  // move_grapple_directions.target_move_id is: it makes deleting a move that
-  // something else requires fail loudly unless move:delete clears the inbound
-  // pointers first, rather than leaving a Requirement aimed at nothing.
-  await ensureColumn('moves', 'requirement_move_id', 'INTEGER REFERENCES moves(id)');
-  // Secondary (decided, new) — a move that can be granted, read and seen on a
-  // character's sheet, but never declared off the picker by hand. It reaches
-  // the board only the two ways the engine puts a move there for you: as a
-  // Requirement follow-up (declarable, but only in the slot right after the
-  // move it names) or as a Grappling direction the grappler picks mid-hold.
-  //
-  // A plain flag rather than an enum of those two routes: which one applies is
-  // already implied by the rest of the move (a Requirement, or being named by
-  // some grapple's cross), and storing it twice would let the two disagree.
-  await ensureColumn('moves', 'is_secondary', 'INTEGER NOT NULL DEFAULT 0');
-  // The `opponent_next_roll_penalty` automation's debt (decided, new): points
-  // owed on this character's NEXT roll, of any kind, after which it is spent.
-  //
-  // **On the character, not the seat.** Every other combat modifier is a
-  // standing fact re-read at each roll (see combatBonuses.js) and lives on
-  // combat_participants, where it evaporates when the fight ends. This one is
-  // a debt someone already incurred, so it has to survive the fight ending and
-  // must not be sheddable by being re-seated.
-  //
-  // Accumulates: two moves can each leave a mark before the victim rolls, and
-  // the next roll pays both.
-  await ensureColumn('characters', 'pending_roll_penalty', 'INTEGER NOT NULL DEFAULT 0');
-  // **And the Tic it was imposed on, because the debt now expires (decided,
-  // revised).** "Their next roll, whenever that is" let a debuff imposed on
-  // Tic 3 be paid off two rounds later by a roll nobody could connect to it, so
-  // it is live for the three Tics after the one it landed on and then gone —
-  // see nextRollPenaltyLive in combatTiming.js. Refreshed rather than kept on
-  // accumulation: a second mark left while the first is still live restarts the
-  // window, so the most recent imposition is the one the clock runs from.
-  //
-  // Null means it was imposed with no Tic to measure from (an automation fired
-  // outside a round), which keeps the old unbounded behaviour — the only honest
-  // reading when the clock was not running.
-  await ensureColumn('characters', 'pending_roll_penalty_tic', 'INTEGER');
-  // Custom Compendium ordering (decided, new) — the position a GM dragged
-  // this move to. Rows created before this column read back as 0, and every
-  // read path orders by (sort_order, id), so an un-reordered library keeps
-  // its old id order exactly.
-  await ensureColumn('moves', 'sort_order', 'INTEGER NOT NULL DEFAULT 0');
-  // Every move that was already Defensive before this column existed was
-  // authored back when Block/Dodge were an in-the-moment GM call rather than
-  // data on the move — migrate them all to 'block' (the fully-automatic,
-  // no-judgment-call default) since that's what most of them are; a GM
-  // reviewing a move that was narratively meant as a Dodge can flip it once.
-  ddl(
-    `UPDATE moves SET defense_kind = 'block' WHERE is_defensive = 1 AND defense_kind IS NULL`
-  );
-  // A Default move is usable by anyone, anytime — it never made sense for
-  // one to also carry a Style gate. writeMove now refuses to set one going
-  // forward; this is the one-time cleanup for any Default move that already
-  // had one from before that rule existed.
-  ddl(
-    `UPDATE moves SET style_attribute_id = NULL WHERE is_default = 1 AND style_attribute_id IS NOT NULL`
-  );
-
-  // Which of a move's optional Roll dice it's made of — a move with no rows
-  // here has no Roll. slot_name is either a concrete DICE_TEMPLATE slot
-  // (Skull/Brain/Stamina/Body) or one of the two ambiguous appendage
-  // choices, 'Hand' or 'Leg' — resolved to the character's actual Left or
-  // Right die only at roll time, per the player's choice (see moveLogic.js).
-  ddl(`
-    CREATE TABLE IF NOT EXISTS move_roll_slots (
-      id INTEGER PRIMARY KEY,
-      move_id INTEGER NOT NULL REFERENCES moves(id) ON DELETE CASCADE,
-      slot_name TEXT NOT NULL,
-      UNIQUE(move_id, slot_name)
-    )
-  `);
-  // How many of that slot the Roll takes. Only ever >1 for the two ambiguous
-  // appendage slots, where 2 means "both sides at once" — a Straight Block
-  // guards with both hands (see maxRollSlotCount in moveLogic.js). Stored as
-  // a count on the existing one-row-per-slot shape rather than by relaxing
-  // the UNIQUE above, because SQLite can't drop a constraint without
-  // rebuilding the table, and every reader already groups by slot anyway.
-  // Defaulting to 1 makes every pre-existing row mean exactly what it meant
-  // before, so no data migration is needed.
-  await ensureColumn('move_roll_slots', 'count', 'INTEGER NOT NULL DEFAULT 1');
-
-  // Combat Automation (Phase 9, planned — see vttprojectplan.md): an
-  // additional pool of Stat slots a Defensive move rolls *only* during
-  // Block/Dodge resolution (4.2), on top of its own normal Roll (whichever
-  // of move_roll_slots/custom_roll_size that is). Same slot_name vocabulary
-  // and ambiguous-Hand/Leg handling as move_roll_slots — mirrors it exactly,
-  // just a separate table since a slot can independently be in one, the
-  // other, both, or neither. Only ever populated when the move's own
-  // is_defensive = 1 (enforced in writeMove, same pattern move_roll_slots'
-  // ambiguous-Tell requirement already uses) — not yet wired up; this table
-  // exists ahead of the socket-event/UI work that will actually populate it.
-  ddl(`
-    CREATE TABLE IF NOT EXISTS move_defensive_roll_slots (
-      id INTEGER PRIMARY KEY,
-      move_id INTEGER NOT NULL REFERENCES moves(id) ON DELETE CASCADE,
-      slot_name TEXT NOT NULL,
-      UNIQUE(move_id, slot_name)
-    )
-  `);
-  // Same count column, same meaning, for the same reason as move_roll_slots'
-  // above — this table mirrors that one exactly and its readers expand it
-  // through the same helper.
-  await ensureColumn('move_defensive_roll_slots', 'count', 'INTEGER NOT NULL DEFAULT 1');
-
-  // What the TARGET of a grapple throws to resist it (Grappling, decided).
-  // Authored on the grappling move itself, so a headlock and an ankle pick
-  // can contest different Stats. A literal mirror of the defensive table
-  // above — same columns, same UNIQUE, read through the same
-  // expandRollSlotRows helper — because it is the same idea pointed at the
-  // other fighter. Empty means the target resists with nothing and the
-  // grappler need only clear the Success Threshold.
-  ddl(`
-    CREATE TABLE IF NOT EXISTS move_resist_roll_slots (
-      id INTEGER PRIMARY KEY,
-      move_id INTEGER NOT NULL REFERENCES moves(id) ON DELETE CASCADE,
-      slot_name TEXT NOT NULL,
-      UNIQUE(move_id, slot_name)
-    )
-  `);
-  await ensureColumn('move_resist_roll_slots', 'count', 'INTEGER NOT NULL DEFAULT 1');
-
-  // The four-way branch on a grappling move. Each direction may name ANY
-  // move — grappling or not — which is temporarily declared right after the
-  // grapple if that direction wins. One row per assigned direction; an
-  // unassigned direction simply has no row, so counting rows is what decides
-  // whether the mini-game runs at all (it needs at least 2).
-  //
-  // target_move_id is ON DELETE CASCADE on the *pointed-at* move: deleting a
-  // move that some grapple branches into removes that branch rather than
-  // leaving a dangling direction that would resolve into nothing.
-  ddl(`
-    CREATE TABLE IF NOT EXISTS move_grapple_directions (
-      id INTEGER PRIMARY KEY,
-      move_id INTEGER NOT NULL REFERENCES moves(id) ON DELETE CASCADE,
-      direction TEXT NOT NULL CHECK(direction IN ('up','down','left','right')),
-      target_move_id INTEGER NOT NULL REFERENCES moves(id) ON DELETE CASCADE,
-      UNIQUE(move_id, direction)
-    )
-  `);
-
-  // World-level Tag list, GM-managed like Tells (Phase 4 pulls in
-  // per-character tag overrides; the base tables land now for Move tagging)
-  ddl(`
-    CREATE TABLE IF NOT EXISTS tags (
-      id INTEGER PRIMARY KEY,
-      name TEXT NOT NULL,
-      description TEXT NOT NULL DEFAULT ''
-    )
-  `);
-  await ensureColumn('tags', 'description', "TEXT NOT NULL DEFAULT ''");
-
-  ddl(`
-    CREATE TABLE IF NOT EXISTS move_tags (
-      id INTEGER PRIMARY KEY,
-      move_id INTEGER NOT NULL REFERENCES moves(id) ON DELETE CASCADE,
-      tag_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
-      UNIQUE(move_id, tag_id)
-    )
-  `);
-
-  // On Hit / On Block / On Miss (every move) plus On Successful Defense /
-  // On Failed Defense (Defensive moves only, gated client + server side by
-  // moves.is_defensive) — text plus optional automations (JSON).
-  ddl(`
-    CREATE TABLE IF NOT EXISTS move_interactions (
-      id INTEGER PRIMARY KEY,
-      move_id INTEGER NOT NULL REFERENCES moves(id) ON DELETE CASCADE,
-      trigger TEXT NOT NULL CHECK(trigger IN ('hit','block','miss','defense_success','defense_failure')),
-      text TEXT NOT NULL DEFAULT '',
-      automations TEXT NOT NULL DEFAULT '[]' -- JSON [{type, amount}]
-    )
-  `);
-  await migrateMoveInteractionsTrigger();
-  await migrateMoveInteractionsGrappleTrigger();
-
-  // Grants a Unique move to a specific character (Default moves need no row)
-  ddl(`
-    CREATE TABLE IF NOT EXISTS character_moves (
-      id INTEGER PRIMARY KEY,
-      character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
-      move_id INTEGER NOT NULL REFERENCES moves(id) ON DELETE CASCADE,
-      UNIQUE(character_id, move_id)
-    )
-  `);
 
   // Role-play tab: per-character question/answer entries. The 6 canonical
   // questions live in client code; their answers are upserted here keyed by
@@ -1781,199 +1222,11 @@ export async function initDb() {
   );
   // ---------------------------------------------------------------------
 
-  // The Perks compendium: master list of Perk templates. Just picture, name,
-  // and description — no generic automation system (removed; see
-  // server/perkAutomations.js for the manual per-Perk hook skeleton that
-  // replaced it) and no folders/style filter, unlike Moves.
-  ddl(`
-    CREATE TABLE IF NOT EXISTS perks (
-      id INTEGER PRIMARY KEY,
-      name TEXT NOT NULL,
-      description TEXT NOT NULL DEFAULT '',
-      image_data TEXT,
-      image_mime_type TEXT
-    )
-  `);
-  await ensureCropColumns('perks');
-
-  ddl(`
-    CREATE TABLE IF NOT EXISTS character_perks (
-      id INTEGER PRIMARY KEY,
-      character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
-      perk_id INTEGER NOT NULL REFERENCES perks(id) ON DELETE CASCADE,
-      UNIQUE(character_id, perk_id)
-    )
-  `);
-
-  // One grant's private scratch space — charges, cooldowns, "once per round"
-  // (decided, new; see server/perks/index.js for the whole Perk architecture).
-  //
-  // **This is data storage, not an effect system**, which is the distinction
-  // that keeps it clear of the generic Perk-automation registry that was built
-  // and removed. Nothing here describes what a Perk *does*; a Perk's code says
-  // that, and uses this to remember what it has already done.
-  //
-  // `scope` is when the row is wiped, and it is the whole reason the column
-  // exists — "once per round" and "once per fight" are the two shapes almost
-  // every stateful Perk turns out to want, and neither can be expressed by a
-  // value alone. Keyed on character_perk_id, not character_id: revoking the
-  // Perk takes its state with it, which is what ON DELETE CASCADE is for.
-  ddl(`
-    CREATE TABLE IF NOT EXISTS character_perk_state (
-      id INTEGER PRIMARY KEY,
-      character_perk_id INTEGER NOT NULL REFERENCES character_perks(id) ON DELETE CASCADE,
-      key TEXT NOT NULL,
-      value INTEGER NOT NULL DEFAULT 0,
-      scope TEXT NOT NULL DEFAULT 'round' CHECK(scope IN ('round','fight','permanent')),
-      UNIQUE(character_perk_id, key)
-    )
-  `);
-
-  // Perk Tags (decided, new): a categorisation vocabulary for Perks, and
-  // **deliberately its own list**, not the `tags` table Moves use. Move tags
-  // are no longer purely cosmetic — the Block tag drives real Stamina
-  // automation (see tagAutomations.js) — so sharing one vocabulary would put
-  // mechanically-loaded names in a Perk's picker where they mean nothing.
-  // These are optional and carry no mechanics at all, now or by design.
-  ddl(`
-    CREATE TABLE IF NOT EXISTS perk_tags (
-      id INTEGER PRIMARY KEY,
-      name TEXT NOT NULL,
-      description TEXT NOT NULL DEFAULT ''
-    )
-  `);
-
-  // Join table — mirrors move_tags' shape against the vocabulary above.
-  ddl(`
-    CREATE TABLE IF NOT EXISTS perk_tag_links (
-      id INTEGER PRIMARY KEY,
-      perk_id INTEGER NOT NULL REFERENCES perks(id) ON DELETE CASCADE,
-      perk_tag_id INTEGER NOT NULL REFERENCES perk_tags(id) ON DELETE CASCADE,
-      UNIQUE(perk_id, perk_tag_id)
-    )
-  `);
-
-  // ---------------------------------------------------------------------------
-  // Quirks — narrative only, and deliberately NOT shaped like Perks
-  // ---------------------------------------------------------------------------
-  //
-  // A Quirk is a name, a description and a side: **positive** or **negative**.
-  // It has no mechanics and never will — there is no seam register here and no
-  // `server/quirks/` to write code in, because a Quirk is a thing the table
-  // remembers about a character, not a rule the engine applies. That is the
-  // whole difference from a Perk, and it is why these two tables are not the
-  // `perks`/`character_perks` pair with an extra column.
-  //
-  // **Two tables, and they are not a template and its grants.** `quirks` is the
-  // GM's Compendium shelf of *examples*; `character_quirks` is what a character
-  // actually has, **stored by value** — its own name, description and kind on
-  // its own row. Taking an example COPIES it.
-  //
-  // Copy rather than link, for three reasons that all point the same way:
-  //   - "exemplary quirks, that everyone can see and take" (the ask, in those
-  //     words). An example is something you take a copy of; a template that
-  //     rewrites itself under everyone who took it is a different promise.
-  //   - A Quirk invented on a character sheet or in the Creator has no business
-  //     appearing on the GM's curated shelf. With copies it simply never does,
-  //     with no `owner_character_id` column and no filter to remember.
-  //   - Your Quirk is yours to reword. A link would make every edit the GM's.
-  //
-  // Both tables are plain `IF NOT EXISTS` CREATEs at their final shape because
-  // they are new — nothing in any existing database has to be migrated into
-  // them, which is exactly the case the ensureColumn convention exists to
-  // handle and this does not need.
-  ddl(`
-    CREATE TABLE IF NOT EXISTS quirks (
-      id INTEGER PRIMARY KEY,
-      name TEXT NOT NULL,
-      description TEXT NOT NULL DEFAULT '',
-      kind TEXT NOT NULL DEFAULT 'positive' CHECK(kind IN ('positive','negative'))
-    )
-  `);
-
-  ddl(`
-    CREATE TABLE IF NOT EXISTS character_quirks (
-      id INTEGER PRIMARY KEY,
-      character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
-      name TEXT NOT NULL,
-      description TEXT NOT NULL DEFAULT '',
-      kind TEXT NOT NULL DEFAULT 'positive' CHECK(kind IN ('positive','negative'))
-    )
-  `);
-
-  // Per-character Move Tag overrides granted by a Perk (personal, not
-  // global — the shared move_tags template is untouched). A character's
-  // effective tags on a move = move_tags, plus 'add' rows, minus 'remove'
-  // rows here.
-  ddl(`
-    CREATE TABLE IF NOT EXISTS character_move_tags (
-      id INTEGER PRIMARY KEY,
-      character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
-      move_id INTEGER NOT NULL REFERENCES moves(id) ON DELETE CASCADE,
-      tag_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
-      action TEXT NOT NULL CHECK(action IN ('add','remove')),
-      source_character_perk_id INTEGER REFERENCES character_perks(id) ON DELETE CASCADE
-    )
-  `);
-
-  // Per-character frame-data deltas on a specific move, granted by a Perk —
-  // "the move copy on the character," not the shared template. Multiple
-  // Perks can each contribute deltas to the same move; they sum.
-  ddl(`
-    CREATE TABLE IF NOT EXISTS character_move_overrides (
-      id INTEGER PRIMARY KEY,
-      character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
-      move_id INTEGER NOT NULL REFERENCES moves(id) ON DELETE CASCADE,
-      startup_delta INTEGER NOT NULL DEFAULT 0,
-      active_delta INTEGER NOT NULL DEFAULT 0,
-      recovery_delta INTEGER NOT NULL DEFAULT 0,
-      source_character_perk_id INTEGER REFERENCES character_perks(id) ON DELETE CASCADE
-    )
-  `);
-
-  // Per-character bonus that only applies to rolls made using a specific
-  // move. Stored and displayed now; there is no move-triggered roll yet to
-  // apply it to (that's Phase 7's declared-move reveal-and-roll) — see the
-  // plan's open items.
-  ddl(`
-    CREATE TABLE IF NOT EXISTS character_move_roll_bonuses (
-      id INTEGER PRIMARY KEY,
-      character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
-      move_id INTEGER NOT NULL REFERENCES moves(id) ON DELETE CASCADE,
-      amount INTEGER NOT NULL,
-      source_character_perk_id INTEGER REFERENCES character_perks(id) ON DELETE CASCADE
-    )
-  `);
-
-  // Character-owned counters (Phase 5). character_id nullable for standalone
-  // arena counters (GM-only, created directly in the Combat Arena) — that
-  // creation path arrives in Phase 6, this table just already accepts it.
-  // **Weapons (decided, new).** A character's one carried weapon, or no row at
-  // all — which is the default for everybody, and the point: the Weapon slot on
-  // the Vitruvian figure starts genuinely empty rather than holding a d4 nobody
-  // asked for. One per character (UNIQUE), because the figure has one slot and
-  // "the weapon in your hands" is singular in every rule written about it.
-  //
-  // Deliberately its own table rather than a ninth `dice` row: a weapon has a
-  // name and a Durability, it comes and goes mid-fight, and every one of the 8
-  // Stats is load-bearing elsewhere (the creation budget, Injuries, Stat Lock,
-  // max Stamina). Adding a ninth would have rippled through all of it to model
-  // something that is not a body part.
-  //
-  // `durability` is a positive integer, spent only by USING the weapon in a
-  // Move — see spendWeaponDurability in server/weapons.js. Rolling it on its own
-  // costs nothing.
-  ddl(`
-    CREATE TABLE IF NOT EXISTS weapons (
-      id INTEGER PRIMARY KEY,
-      character_id INTEGER NOT NULL UNIQUE REFERENCES characters(id) ON DELETE CASCADE,
-      name TEXT NOT NULL,
-      die_size INTEGER NOT NULL,
-      bonus INTEGER NOT NULL DEFAULT 0,
-      durability INTEGER NOT NULL
-    )
-  `);
-
+  // Character-owned counters (Phase 5). character_id is nullable for the
+  // standalone counters the Combat Arena once created; the Arena is gone, but
+  // the column keeps accepting NULL so no existing row becomes invalid.
+  // (The old `show_in_combat` flag only fed the Arena card and was dropped
+  // with it — see OLD_COUNTER_COLUMNS.)
   ddl(`
     CREATE TABLE IF NOT EXISTS counters (
       id INTEGER PRIMARY KEY,
@@ -1981,10 +1234,10 @@ export async function initDb() {
       name TEXT NOT NULL,
       target_pips INTEGER NOT NULL CHECK(target_pips BETWEEN 2 AND 20),
       current_pips INTEGER NOT NULL DEFAULT 0,
-      show_in_combat INTEGER NOT NULL DEFAULT 0,
       -- Purely cosmetic tracking tag — no mechanical effect. Character-owned
       -- counters only (server rejects it for a standalone character_id=NULL
-      -- counter); still shown if that counter is flagged Show in Combat.
+      -- counter). The value list is left exactly as it was, so a Counter
+      -- already tagged with one of the old system's rewards stays valid.
       reward_type TEXT CHECK(reward_type IN ('story','statistic','perk','move','combat_prowess'))
     )
   `);
@@ -2012,454 +1265,6 @@ export async function initDb() {
       UNIQUE(counter_id, pip_index)
     )
   `);
-
-  // **"Improve their next roll AGAINST YOU" (decided, new).** The mirror of
-  // `characters.pending_roll_penalty`, and a table rather than a column for one
-  // reason: this credit names *who it is good against*, and in an Uneven Combat
-  // one fighter can be owed one by each of several opponents at once. A column
-  // could hold the number but not the "against whom", and dropping that is
-  // dropping the whole point of the effect.
-  //
-  // On the characters, not on seats — same reasoning as the penalty column: this
-  // is a mark somebody already left, so it survives the fight ending and cannot
-  // be shed by being re-seated. Accumulates per pair via the UNIQUE, so two
-  // moves leaving a mark before the beneficiary rolls are both paid at once.
-  // **Temporary Damage (decided, new)**: how many half-steps of damage on this
-  // Stat came from a move carrying the Tag and are still owed back. Decremented
-  // one half-step per Stat per finished Round (see healTemporaryDamage in
-  // roundResolution.js).
-  //
-  // **A column on `dice`, revised from its own table.** It shipped as
-  // `temporary_damage(character_id, slot_name, steps)` on the reasoning that it
-  // is a running total outliving any one blow — true, but it is one number per
-  // (character, slot), which is exactly one `dice` row. The pressure that showed
-  // it up was making the Stat draw purple: every die read path in the app
-  // (`SELECT * FROM dice` on the sheet, the roster, the combat payload,
-  // `die:updated`) picks a column up for free, where a side table would have had
-  // to be threaded into five places by hand.
-  //
-  // The old table is still declared, and its rows are folded in below rather
-  // than abandoned: a deployed world may have played a Round between the two
-  // shapes, and a debt silently forgiven is a Stat that never comes back.
-  ddl(`
-    CREATE TABLE IF NOT EXISTS temporary_damage (
-      id INTEGER PRIMARY KEY,
-      character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
-      slot_name TEXT NOT NULL,
-      steps INTEGER NOT NULL DEFAULT 0,
-      UNIQUE(character_id, slot_name)
-    )
-  `);
-  await ensureColumn('dice', 'temporary_damage', 'INTEGER NOT NULL DEFAULT 0');
-
-  ddl(`
-    CREATE TABLE IF NOT EXISTS pending_roll_bonuses (
-      id INTEGER PRIMARY KEY,
-      character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
-      against_character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
-      amount INTEGER NOT NULL DEFAULT 0,
-      UNIQUE(character_id, against_character_id)
-    )
-  `);
-
-  await ensureColumn(
-    'counters',
-    'reward_type',
-    "TEXT CHECK(reward_type IN ('story','statistic','perk','move','combat_prowess'))"
-  );
-
-  // Singleton row holding the Combat Arena's global state. Phase 7 adds the
-  // round/Tic timing columns: phase is null until the first Next Round press.
-  // declaring_side/pending_declare_side are Phase 7 leftovers, now unused —
-  // Phase 9's combat redesign moved declaration ordering to per-pair state
-  // (combat_pairs below) since declaration now runs independently per pair
-  // instead of as one global side-vs-side batch. The columns stay (SQLite
-  // migrations in this app are additive-only) but nothing reads/writes them
-  // anymore.
-  ddl(`
-    CREATE TABLE IF NOT EXISTS combat_state (
-      id INTEGER PRIMARY KEY CHECK (id = 1),
-      uneven_combat_enabled INTEGER NOT NULL DEFAULT 0,
-      phase TEXT CHECK(phase IN ('declaration','tic_countdown')),
-      round_number INTEGER NOT NULL DEFAULT 0,
-      current_tic INTEGER NOT NULL DEFAULT 0,
-      round_start_tic INTEGER NOT NULL DEFAULT 0,
-      round_length INTEGER NOT NULL DEFAULT 7,
-      declaring_side TEXT CHECK(declaring_side IN ('left','right')),
-      pending_declare_side TEXT CHECK(pending_declare_side IN ('left','right'))
-    )
-  `);
-  ddl(`INSERT OR IGNORE INTO combat_state (id, uneven_combat_enabled) VALUES (1, 0)`);
-  // "Fresh" (decided, new): whether starting a fight restores every seated
-  // character to full Stamina. OFF by default and reset to off by End
-  // Combat / Clear Arena, so it is a deliberate per-fight choice rather than
-  // something that quietly carries over — a run of consecutive fights is
-  // supposed to wear people down. It governs the fight's FIRST round only;
-  // the automatic per-round Stamina Regen from round 2 on is a separate rule
-  // and is unaffected either way.
-  await ensureColumn('combat_state', 'fresh_start', 'INTEGER NOT NULL DEFAULT 0');
-  // Which fight the arena is currently on. Bumped once per Start Combat, and
-  // stamped onto every pair_round_resolutions row so a finished round's
-  // stored replay stays addressable after that fight ends — see the
-  // fight_number note on that table below. Starts at 1 so a database created
-  // before this column reads as "fight 1", matching the rows already in it.
-  await ensureColumn('combat_state', 'fight_number', 'INTEGER NOT NULL DEFAULT 1');
-  await ensureColumn('combat_state', 'phase', "TEXT CHECK(phase IN ('declaration','tic_countdown'))");
-  await ensureColumn('combat_state', 'round_number', 'INTEGER NOT NULL DEFAULT 0');
-  await ensureColumn('combat_state', 'current_tic', 'INTEGER NOT NULL DEFAULT 0');
-  await ensureColumn('combat_state', 'round_start_tic', 'INTEGER NOT NULL DEFAULT 0');
-  await ensureColumn('combat_state', 'round_length', 'INTEGER NOT NULL DEFAULT 7');
-  // Round length was extended from 5 to 7 Tics after playtesting — bump any
-  // existing singleton row still sitting at the old default (a GM who has
-  // since customized it, if that's ever exposed, is left alone).
-  ddl(`UPDATE combat_state SET round_length = 7 WHERE id = 1 AND round_length = 5`);
-  await ensureColumn(
-    'combat_state',
-    'declaring_side',
-    "TEXT CHECK(declaring_side IN ('left','right'))"
-  );
-  await ensureColumn(
-    'combat_state',
-    'pending_declare_side',
-    "TEXT CHECK(pending_declare_side IN ('left','right'))"
-  );
-
-  // Who's currently seated in the arena. side + pair_index group participants
-  // into facing pairs; a side/pair_index can hold more than one character
-  // when Uneven Combat is on (the app doesn't enforce the toggle, it's just
-  // a GM-facing flag). A character can only be seated once.
-  // declared_this_round (Phase 9 combat redesign): has THIS character
-  // individually pressed "done declaring" for the round currently in
-  // combat_state.round_number — declaration is per-character now, not a
-  // single batched press for a whole side (see combat_pairs below). Reset to
-  // 0 for everyone at combat:next_round/clear/end.
-  ddl(`
-    CREATE TABLE IF NOT EXISTS combat_participants (
-      id INTEGER PRIMARY KEY,
-      character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
-      side TEXT NOT NULL CHECK(side IN ('left','right')),
-      pair_index INTEGER NOT NULL,
-      declared_this_round INTEGER NOT NULL DEFAULT 0,
-      -- "Reasons to Fight": 0-3, GM/player-adjustable while seated, +1 to all
-      -- of this character's rolls (die:roll/pool:roll) per point while
-      -- combat is active. Lives on the seat, not the character, so it
-      -- naturally resets whenever they're re-seated for a new fight.
-      reasons_to_fight INTEGER NOT NULL DEFAULT 0 CHECK(reasons_to_fight BETWEEN 0 AND 3),
-      -- Idle-Tic Stamina Regen (see plan, server/staminaRegen.js): qualifying
-      -- idle Tics accumulated toward this character's next +1 Stamina.
-      -- Resets to 0 (with carryover of any remainder) every time it crosses
-      -- the required threshold — see applyIdleTicStaminaRegen in index.js.
-      -- Base rate is 1 Tic per point; a future Perk can require more via
-      -- IDLE_STAMINA_REGEN_HOOKS in perkAutomations.js.
-      idle_regen_progress INTEGER NOT NULL DEFAULT 0,
-      UNIQUE(character_id)
-    )
-  `);
-  await ensureColumn('combat_participants', 'declared_this_round', 'INTEGER NOT NULL DEFAULT 0');
-  await ensureColumn(
-    'combat_participants',
-    'reasons_to_fight',
-    'INTEGER NOT NULL DEFAULT 0 CHECK(reasons_to_fight BETWEEN 0 AND 3)'
-  );
-  await ensureColumn('combat_participants', 'idle_regen_progress', 'INTEGER NOT NULL DEFAULT 0');
-  // Grappling (decided, new): while a grapple has hold of you, every roll you
-  // make takes -2. The window ends with the grappling move's last ACTIVE Tic
-  // (inclusive) — not its Recovery, and not the end of the round. Null means
-  // no penalty. Read by getCombatRollBonus, which every roll path already
-  // goes through and which already receives the Tic being resolved.
-  await ensureColumn('combat_participants', 'grapple_penalty_until_tic', 'INTEGER');
-
-  // Phase 9 combat redesign: declaration now runs independently per pair —
-  // pair 1's losing side and pair 2's losing side can be declaring
-  // simultaneously even though they might be literal opposite "sides", so a
-  // single global declaring_side (combat_state, now unused — see above) no
-  // longer describes who may currently call move:declare. One row per
-  // pair_index that has participants, (re)computed fresh every
-  // combat:next_round from that pair's own per-side Brain initiative
-  // (resolveSideInitiative, scoped to just this pair's seated characters).
-  // declaring_side is whichever side of THIS pair may currently declare —
-  // NULL once both sides of this pair have every character marked
-  // declared_this_round (both trivially "done" if a pair has only one side
-  // seated). Rows are cleared and recreated by combat:next_round, and wiped
-  // entirely by combat:clear/combat:end.
-  ddl(`
-    CREATE TABLE IF NOT EXISTS combat_pairs (
-      pair_index INTEGER PRIMARY KEY,
-      declaring_side TEXT CHECK(declaring_side IN ('left','right')),
-      -- Combat Automation overhaul: each pair now runs its own independent
-      -- round/phase/Tic clock instead of sharing combat_state's single
-      -- global one (see vttprojectplan.md) — fight A can be on round 5 while
-      -- fight B is still on round 3. Unlike declaring_side above, these
-      -- columns are NOT reset by combat:next_round; they're only ever
-      -- updated in place, since they must persist and increment
-      -- independently per pair across rounds. phase is NULL until this
-      -- pair's first round is seeded.
-      round_number INTEGER NOT NULL DEFAULT 0,
-      phase TEXT CHECK(phase IN ('declaration','resolving')),
-      round_start_tic INTEGER NOT NULL DEFAULT 0,
-      current_tic INTEGER NOT NULL DEFAULT 0
-    )
-  `);
-  await ensureColumn('combat_pairs', 'round_number', 'INTEGER NOT NULL DEFAULT 0');
-  await ensureColumn('combat_pairs', 'phase', "TEXT CHECK(phase IN ('declaration','resolving'))");
-  await ensureColumn('combat_pairs', 'round_start_tic', 'INTEGER NOT NULL DEFAULT 0');
-  await ensureColumn('combat_pairs', 'current_tic', 'INTEGER NOT NULL DEFAULT 0');
-
-  // Combat Automation overhaul: one row per pair-round that has started
-  // automatic resolution. Tracks the resumable stepper's progress
-  // (advancePairResolution in index.js) — resolved_through_tic is the last
-  // Tic fully computed and persisted, so a crash/restart mid-round can
-  // safely redo just that one Tic rather than needing a transaction. The
-  // pending_*_json columns hold the one piece of state that genuinely can't
-  // be recomputed: a human decision that's still outstanding.
-  ddl(`
-    CREATE TABLE IF NOT EXISTS pair_round_resolutions (
-      id INTEGER PRIMARY KEY,
-      pair_index INTEGER NOT NULL,
-      round_number INTEGER NOT NULL,
-      fight_number INTEGER NOT NULL DEFAULT 1,
-      round_start_tic INTEGER NOT NULL,
-      round_length INTEGER NOT NULL,
-      status TEXT NOT NULL DEFAULT 'running' CHECK(status IN ('running','paused_dodge','paused_conflict','complete')),
-      resolved_through_tic INTEGER NOT NULL DEFAULT 0,
-      pending_dodge_json TEXT,
-      pending_conflict_json TEXT,
-      created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      completed_at TEXT,
-      UNIQUE(pair_index, round_number, fight_number)
-    )
-  `);
-  await migratePairRoundResolutionsFightNumber();
-  await migratePairRoundResolutionsDefenseConfirm();
-  await migratePairRoundResolutionsGrapple();
-  await migratePairRoundResolutionsNonCommit();
-
-  // Combat Automation overhaul: the replayable event log for one pair's
-  // round — the single source of truth for both the live cutscene push and
-  // any later chat "Watch Round X" replay, so the two are guaranteed
-  // identical by construction (same rows, same client renderer). pair_index/
-  // round_number are denormalized off pair_round_resolutions purely to
-  // avoid a join on "give me this pair's log." seq is this resolution's own
-  // monotonic order (independent of tic, since more than one event can
-  // share a Tic).
-  ddl(`
-    CREATE TABLE IF NOT EXISTS round_events (
-      id INTEGER PRIMARY KEY,
-      resolution_id INTEGER NOT NULL REFERENCES pair_round_resolutions(id) ON DELETE CASCADE,
-      pair_index INTEGER NOT NULL,
-      round_number INTEGER NOT NULL,
-      seq INTEGER NOT NULL,
-      tic INTEGER NOT NULL,
-      type TEXT NOT NULL,
-      payload TEXT NOT NULL,
-      created_at TEXT NOT NULL DEFAULT (datetime('now'))
-    )
-  `);
-
-  // Per-round queued moves — see server/combatTiming.js for the placement/
-  // reveal math this feeds. Persisted (not ephemeral like chat) so they
-  // survive a mid-round reload; the server withholds move_id/move_name from
-  // a viewer until the reveal Tic UNLESS they're entitled to see it early —
-  // the player logged in as the declaring character, or the GM for an NPC's
-  // move (see isRevealedToViewer/mapDeclaredMovesForViewer in index.js) —
-  // Tells are never secret, only the real move is.
-  // reveal_posted tracks whether this row's move_reveal chat card has
-  // already gone out, since reveal state itself is recomputed live (stepping
-  // the Tic counter back and forth must not re-post — see combat:tic_forward).
-  ddl(`
-    CREATE TABLE IF NOT EXISTS declared_moves (
-      id INTEGER PRIMARY KEY,
-      character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
-      move_id INTEGER NOT NULL REFERENCES moves(id),
-      round_number INTEGER NOT NULL,
-      queue_order INTEGER NOT NULL,
-      placement_tic INTEGER NOT NULL,
-      reveal_tic INTEGER NOT NULL,
-      reveal_posted INTEGER NOT NULL DEFAULT 0,
-      -- 1 once this move's Stamina Cost has actually been subtracted from
-      -- (or added to, for a negative cost) the character's current_stamina —
-      -- happens in one batch when the declaring side presses "done
-      -- declaring" (combat:side_done_declaring), not at move:declare time.
-      -- Until then the cost is only a *visual* preview client-side.
-      stamina_committed INTEGER NOT NULL DEFAULT 0,
-      -- 'left' or 'right', recorded once at declare time via a client
-      -- popup, for a move whose Roll includes an ambiguous Hand/Leg slot
-      -- (see move_roll_slots) — NULL for a move with no ambiguous slot.
-      -- Drives which single Tell is shown pre-reveal (both are shown only
-      -- as a legacy-data fallback) and which appendage's die is included
-      -- once the move auto-rolls at reveal.
-      appendage_choice TEXT CHECK(appendage_choice IN ('left','right'))
-    )
-  `);
-  await ensureColumn('declared_moves', 'reveal_posted', 'INTEGER NOT NULL DEFAULT 0');
-  await ensureColumn('declared_moves', 'stamina_committed', 'INTEGER NOT NULL DEFAULT 0');
-  // The EFFECTIVE (Perk-discounted) cost actually taken out of current_stamina
-  // when stamina_committed flipped to 1 — not the move's raw stamina_cost
-  // column. Every refund below this point (Interrupted, Forfeited, pushed
-  // into next round, Non-Committed taken back) has to pay back what was
-  // actually spent, and a Perk (Punches in Bunches, Perfect Player, ...) can
-  // move that away from the template figure. 0 for a row that was never
-  // committed, which keeps every `stamina_committed ? amount : 0` refund
-  // guard correct without a separate NULL check.
-  await ensureColumn('declared_moves', 'stamina_committed_amount', 'INTEGER NOT NULL DEFAULT 0');
-  await ensureColumn('declared_moves', 'appendage_choice', "TEXT CHECK(appendage_choice IN ('left','right'))");
-  // **Uneven Combat: who this move is coming for (decided, new).** NULL on
-  // every move in a 1v1 and on every row written before this existed, which is
-  // exactly right — with one opponent there is nothing to choose, and the
-  // engine's own deterministic rule (lowest character_id among the opposing
-  // side) is still the fallback whenever this is NULL or names someone no
-  // longer seated opposite. Recorded once at declare time; the fighter commits
-  // to a target with the same information they commit to a Tic with.
-  await ensureColumn('declared_moves', 'target_character_id', 'INTEGER');
-  // Combat Automation (Phase 9, sub-phase 3 — see vttprojectplan.md): how
-  // many extra Recovery Tics this declared move's window has been extended
-  // by. Only ever set nonzero for a successfully-Blocked defender whose
-  // Defense Frame ran out before the attacker's Active window did (4.3's
-  // "too-short" coverage — see classifyDefenseCoverage in combatDamage.js and
-  // combat:resolve_defense in index.js). Added into every place a declared
-  // move's Recovery end is computed (reveal_tic + active_tics +
-  // recovery_tics + recovery_extension_tics) so a fight that never touches
-  // Combat Automation sees no behavior change at all — this column defaults
-  // to, and stays, 0 for every other move.
-  await ensureColumn('declared_moves', 'recovery_extension_tics', 'INTEGER NOT NULL DEFAULT 0');
-  // Combat Automation (Phase 9, sub-phase 5 — see vttprojectplan.md): set
-  // once this declared move's own attacker-side outcome (Hit or Blocked/
-  // Dodged) has fired its move_interactions automations, so a Partial
-  // Block's later damage Apply (same combat:apply_damage flow a plain Hit
-  // uses) doesn't also re-fire the move's 'hit' trigger on top of the
-  // 'block' trigger combat:resolve_defense already fired. Only ever read/
-  // written for the attacking side's own declared move — the defending
-  // side's defense_success/defense_failure firing is unrelated and unguarded
-  // (see applyMoveInteractions/combat:resolve_defense in index.js).
-  await ensureColumn('declared_moves', 'interactions_resolved', 'INTEGER NOT NULL DEFAULT 0');
-  // Attack Target (Change 001): snapshot of this declared attack's concrete
-  // effective targets (from moves.attack_targets, Hand/Leg expanded to the
-  // declaring character's own appendage_choice) plus where that snapshot
-  // came from. Taken once at move:declare and frozen — a later edit to the
-  // Move template in the Compendium MUST NOT retroactively change an
-  // already-declared attack. attack_target_source flips to 'block' only when
-  // combat:resolve_defense records a Successful Block replacing it with the
-  // blocking move's own base Stat Roll slots (never 'dodge' — Dodge target
-  // replacement is a deferred, separate change).
-  await ensureColumn('declared_moves', 'effective_attack_targets', `TEXT NOT NULL DEFAULT '["Skull"]'`);
-  // Grappling (decided, new): which grapple chained this move into being.
-  //
-  // **There is deliberately no "temporary move" and no saved prior placement.**
-  // The spec describes the chained move as temporarily declared during the
-  // contest and rolled back on failure, but nobody ever observes that state —
-  // the mini-game answers, the roll happens and the outcome lands in the same
-  // step. So the engine simply does not create it until the grapple has
-  // already won: during the pause the board shows a *ghost* drawn from the
-  // grapple's own round_event, and a failed grapple has nothing to undo.
-  //
-  // That matters because a rollback here would be the only reversible write in
-  // the engine. cascadeShift and the Postpone path are both forward-only, and
-  // nothing else in the schema remembers where a move used to sit. Not
-  // creating the row is strictly safer than creating one and restoring it.
-  await ensureColumn('declared_moves', 'grapple_source_declared_move_id', 'INTEGER');
-  // The **total-level** bonus a retroactively declared follow-up carries — the
-  // ±5 from whether the defender read the grapple's direction right (decided,
-  // revised: the ±5 now lands on the *follow-up's* roll rather than on the
-  // grapple contest, because the contest is settled before anyone is asked
-  // which way it went).
-  //
-  // Stored on the declaration rather than recomputed at roll time because by
-  // the time this move resolves — possibly in a later round, since a chain
-  // overflows like any other move — the pause that produced the number is long
-  // gone. Applied to the summed total, never folded into the per-die modifier:
-  // every other flat bonus in the game multiplies across dice, and a +5 in
-  // `mod` on a three-die Roll would quietly be worth +15.
-  await ensureColumn('declared_moves', 'chain_roll_bonus', 'INTEGER NOT NULL DEFAULT 0');
-
-  // **The frames this move was actually declared with (bugfix — "Speed mastery
-  // changes the Startup frames in the character sheet, but in actual combat
-  // mathematics it did not").**
-  //
-  // A character's real frames are the template's plus their own
-  // `character_move_overrides` plus any Perk `moveFrameDelta` (Speed mastery,
-  // Osu!). `getMovesFor` was the only place that folded those together — it
-  // publishes them as `effective_*_tics` beside the untouched template, and the
-  // sheet and the declare picker render that field. Every combat path, though,
-  // read the raw `moves` row: the picker promised a footprint and the engine
-  // resolved a different one.
-  //
-  // Snapshotted onto the declaration rather than joined at read time, exactly
-  // like `effective_attack_targets` above and for the same two reasons: a move
-  // already on the board is a fact, so a Perk granted or revoked mid-round must
-  // not retroactively move frames that have already been resolved against; and
-  // the engine reads these columns from a dozen queries, none of which should
-  // have to know what a Perk is.
-  //
-  // NULL means "declared before this existed", and every read COALESCEs back to
-  // the template — the pre-existing behaviour, which is the correct reading for
-  // a row that predates the column.
-  for (const seg of ['startup', 'active', 'recovery']) {
-    await ensureColumn('declared_moves', `effective_${seg}_tics`, 'INTEGER');
-  }
-  await ensureColumn(
-    'declared_moves',
-    'attack_target_source',
-    `TEXT NOT NULL DEFAULT 'move' CHECK(attack_target_source IN ('move','block'))`
-  );
-  // Feint Tag (decided, new): 1 when this declaration was made IMMEDIATELY
-  // after a move carrying the **Feint** Tag — same "right after" test the
-  // Requirement gate uses, plus contiguity in time (it starts on the Tic the
-  // Feint's own frames end). Such a move is dealt out of every non-owner's
-  // combat payload entirely until it reveals: no Tell, no attack telegraph,
-  // no row at all (see mapDeclaredMovesForViewer).
-  //
-  // Frozen at declare time rather than derived at read time on purpose. Two
-  // things would otherwise change the answer after the fact: a Block
-  // extending the Feint's Recovery (recovery_extension_tics) would break the
-  // contiguity test mid-round, and a GM adding or removing the Tag on the
-  // Move template would retroactively mask or unmask a declaration already
-  // on the board.
-  await ensureColumn('declared_moves', 'feint_masked', 'INTEGER NOT NULL DEFAULT 0');
-
-  // **How this move's guard was judged (decided, new).** 'success' or 'failed'
-  // once a defence has been adjudicated, NULL for every move that never was one
-  // — which is most of them.
-  //
-  // Written by the three funnels that carry a verdict for a whole move:
-  // applySuccessfulDodge, applyFailedDefense (a failed Dodge, or a Block the GM
-  // said applied nowhere), and finishBlock's held path. A Block is adjudicated
-  // one Stat at a time and its individual lines have no single answer, so the
-  // column records the move-level one finishBlock already computes
-  // (`heldAnywhere`) rather than the last line's.
-  //
-  // Added for Deadly Pendulum, which needs to know whether the Dodge you threw
-  // right before this attack actually worked. Stored on the row rather than in
-  // that Perk's private state because "did that guard hold?" is a plain fact
-  // about the fight, not a thing one Perk gets to know — the round log already
-  // says it out loud, this just makes it queryable.
-  await ensureColumn(
-    'declared_moves',
-    'defense_outcome',
-    "TEXT CHECK(defense_outcome IN ('success','failed'))"
-  );
-
-  // **Has this move already paid its Weapon Durability? (decided, new.)**
-  // Using a weapon in a Move costs 1 Durability — once per Move, not once per
-  // roll. Several paths can roll the same declaration's Roll (a Block is rolled
-  // once per attacked Stat; a grapple chain re-rolls a follow-up), so the spend
-  // is recorded on the declaration itself rather than counted at each roll
-  // site. Rolling a weapon outside a Move — the sheet's own die, a GM's roll
-  // request — never touches Durability and never reaches this column.
-  await ensureColumn('declared_moves', 'weapon_spent', 'INTEGER NOT NULL DEFAULT 0');
-
-  // **How many of this move's trailing Recovery Tics are Trip frames (decided,
-  // new).** Trip Recovery behaves exactly like Recovery for timing — it
-  // blocks, it displaces, it ends the footprint — but the fighter is on the
-  // ground for it, and two rules read that difference: the **Off The Ground**
-  // Tag lets a move's Startup overlap them (and only them), and they draw
-  // differently.
-  //
-  // A count rather than a range, because trip frames are always the *tail* of
-  // a footprint: they are imposed at the moment the trip lands and go on after
-  // whatever the fighter was already doing, exactly where imposed Recovery
-  // already goes. So the window is derivable from the footprint end, and there
-  // is no second value that could drift out of agreement with the first.
-  await ensureColumn('declared_moves', 'trip_recovery_tics', 'INTEGER NOT NULL DEFAULT 0');
 
   // ---------------------------------------------------------------- Audio Player
   //
@@ -2538,40 +1343,9 @@ export async function initDb() {
 
   await ensureIndexes();
 
-  await seedWorld();
-
-  // **Fold the old Temporary Damage table into the `dice` column (one-time).**
-  // The shape changed between two deploys hours apart, and a world that played a
-  // Round in between holds real debts in the old table. Written as an UPDATE
-  // rather than a rebuild because the two are 1:1 on (character, slot); the
-  // DELETE after it is what makes this idempotent — on every boot after the
-  // first there is nothing to move, and this costs one no-op statement.
-  //
-  // Must run after `flushDdl` has been drained by the seeds above, or the column
-  // it writes may not exist yet on a fresh database.
-  await flushDdl();
-  // **Guarded on there being anything to move (bandwidth).** The claim above
-  // that this "costs one no-op statement" was true of the statement COUNT and
-  // false of the work: with no WHERE clause it scanned every row of `dice` —
-  // eight per character — running a correlated subquery against each, on every
-  // boot, forever, to add zero. Render cold-starts many times a day, so that is
-  // a lot of scanning and a lot of pages touched for a migration that finished
-  // in August. The guard is a single indexed existence check and skips the
-  // whole thing on any world that has already been folded; the migration itself
-  // is kept rather than deleted, because a database that has genuinely never
-  // booted since must still be repaired.
-  const pendingTempDamage = await one('SELECT 1 AS present FROM temporary_damage LIMIT 1');
-  if (pendingTempDamage) {
-    await run(
-      `UPDATE dice SET temporary_damage = temporary_damage + COALESCE(
-         (SELECT td.steps FROM temporary_damage td
-           WHERE td.character_id = dice.character_id AND td.slot_name = dice.slot_name), 0)`
-    );
-    await run('DELETE FROM temporary_damage');
-  }
-
-  // Everything above only queued; the seeds' own reads will have drained most
-  // of it, but a database that needed nothing seeded leaves the tail here.
+  // Everything above only queued; send it in one trip. (There used to be world
+  // seeds here — Perks, Tags, Tells, the Styles — whose reads drained most of
+  // the queue early. They went with the old system.)
   await flushDdl();
   ddlQueue = null;
 
@@ -2585,47 +1359,17 @@ export async function initDb() {
 //
 // Honest about the size of the win: most of these tables hold tens of rows,
 // where a scan and a seek are indistinguishable, and a remote statement's cost
-// is the trip rather than the scan. Two of them are not like that — `chat_log` and
-// `round_events` grow for the life of a world and are read on every page load
-// and every replay — and the per-character ones are each fanned out over once
-// per fighter in every combat payload. They are declared here rather than
-// inside each CREATE TABLE so that adding one later needs no table rebuild,
-// and they ride the same batch as the rest of the schema, so the whole set
-// costs nothing extra at boot.
+// is the trip rather than the scan. They are declared here rather than inside
+// each CREATE TABLE so that adding one later needs no table rebuild, and they
+// ride the same batch as the rest of the schema, so the whole set costs nothing
+// extra at boot. (The old system's indexes went with its tables: dropping a
+// table drops its indexes.)
 async function ensureIndexes() {
   const indexes = [
-    // Grow without bound.
-    ['round_events', 'resolution_id'],
-    ['chat_log', 'move_id'],
-    ['declared_moves', 'character_id'],
-    ['declared_moves', 'move_id'],
-    ['pair_round_resolutions', 'pair_index'],
-    // Read once per fighter, per combat payload.
-    ['dice', 'character_id'],
+    // Read once per character on the sheet.
     ['counters', 'character_id'],
-    ['stances', 'character_id'],
-    ['weapons', 'character_id'],
-    ['injuries', 'character_id'],
-    ['combat_participants', 'character_id'],
-    ['combat_participants', 'pair_index'],
-    ['character_moves', 'character_id'],
-    ['character_perks', 'character_id'],
-    ['character_perk_state', 'character_perk_id'],
-    ['character_move_roll_bonuses', 'character_id'],
     ['roleplay_entries', 'character_id'],
-    ['character_quirks', 'character_id'],
-    ['inventory_items', 'character_id'],
     ['audio_tracks', 'playlist_id'],
-    // Read once per move, and a move sheet reads a lot of moves.
-    ['move_roll_slots', 'move_id'],
-    ['move_defensive_roll_slots', 'move_id'],
-    ['move_resist_roll_slots', 'move_id'],
-    ['move_grapple_directions', 'move_id'],
-    ['move_interactions', 'move_id'],
-    ['move_tags', 'move_id'],
-    ['character_move_overrides', 'character_id'],
-    ['character_move_tags', 'character_id'],
-    ['perk_tag_links', 'perk_id'],
     // A board is read whole, by owner; and `character_id` is the lookup that
     // finds every node to convert when the GM deletes a world NPC.
     ['relationship_people', 'owner_character_id'],
@@ -2636,15 +1380,8 @@ async function ensureIndexes() {
     // neither column can serve the other's lookup.
     ['relationship_edges', 'from_node_id'],
     ['relationship_edges', 'to_node_id'],
-    // Every Counter render asks for its Gates, and the Arena asks for a
-    // screenful at once.
+    // Every Counter render asks for its Gates.
     ['counter_gates', 'counter_id'],
-    // Asked once per roll, by the roller — the UNIQUE already covers the
-    // (character, against) pair, and this covers the housekeeping sweep that
-    // clears a character's credits when a fight is cleared.
-    ['pending_roll_bonuses', 'character_id'],
-    // Asked once per character at the end of every Round.
-    ['temporary_damage', 'character_id'],
     // The Scene tab's roster/library reads, by folder and by owner.
     ['temp_npcs', 'folder_id'],
     ['scenes', 'folder_id'],
@@ -2659,228 +1396,4 @@ async function ensureIndexes() {
   for (const [table, column] of indexes) {
     ddl(`CREATE INDEX IF NOT EXISTS idx_${table}_${column} ON ${table}(${column})`);
   }
-}
-
-// **Every seed's "is it already there?" question, asked in one read (decided,
-// new — Phase 4 of the round-trip work).**
-//
-// The seven seeds below used to ask individually: a COUNT for the attributes,
-// another for the counters, another for the Tells, one SELECT per Tag, and one
-// SELECT per registered Perk. That is 27 awaited statements on a database
-// where the answer is "yes, all of it" every single time — the single largest
-// remaining block of boot depth once the schema was batched.
-//
-// Nothing about *what* they seed changes: same case-insensitive
-// adopt-don't-duplicate guards, same rows, same order. The lookups are now one
-// batched read, and the inserts one batched write, because none of them
-// depends on another's result. The one exception is the counter tournament,
-// which needs the attribute ids the attribute insert hands out, so it stays a
-// separate step below.
-async function seedWorld() {
-  const [attributeCount, counterCount, tellCount, tagRows, perkTagRows, perkRows] = await readMany([
-    ['SELECT COUNT(*) AS count FROM attributes'],
-    ['SELECT COUNT(*) AS count FROM attribute_counters'],
-    ['SELECT COUNT(*) AS count FROM tells'],
-    ['SELECT name FROM tags'],
-    ['SELECT name FROM perk_tags'],
-    ['SELECT name FROM perks'],
-  ]);
-
-  const writes = [];
-  seedTells(Number(tellCount[0].count), writes);
-  seedTags(tagRows, writes);
-  seedPerkTags(perkTagRows, writes);
-  seedPerks(perkRows, writes);
-  await writeMany(writes);
-
-  await seedRuleset(Number(attributeCount[0].count), Number(counterCount[0].count));
-}
-
-const normalise = (name) => String(name ?? '').trim().toLowerCase();
-
-// Every Perk that has code behind it gets its compendium row created here if
-// the world does not already have one (decided, new).
-//
-// A Perk's mechanics bind to its **name** (see server/perks/index.js for why),
-// which leaves one obvious way for the whole thing to quietly not work: the GM
-// never creates the row, or creates it under a slightly different spelling, and
-// the Perk is ungrantable or inert. Seeding removes that failure entirely — the
-// same reasoning, and the same case-insensitive adopt-don't-duplicate guard, as
-// the Tags below. A world that already has its own "Genius Observer" keeps
-// it, description and picture and all.
-function seedPerks(existingRows, writes) {
-  const have = new Set(existingRows.map((row) => normalise(row.name)));
-  for (const definition of Object.values(PERK_REGISTRY)) {
-    if (have.has(normalise(definition.name))) continue;
-    writes.push([
-      'INSERT INTO perks (name, description) VALUES (?, ?)',
-      [definition.name, definition.description ?? ''],
-    ]);
-  }
-}
-
-// The Tags that mechanics bind to by NAME (decided).
-//
-// Block Stamina came first: the **Block** Tag is the first Tag in the game
-// that does something mechanical rather than describing something — it
-// switches a move onto the absorb-based Stamina rule (see
-// server/tagAutomations.js). **No Damage** was the second: a move tagged with
-// it never applies damage, and is measured against its own Success Threshold
-// instead — grappling moves usually carry it, but nothing requires that. Then
-// **Feint**, which hides the move declared immediately after it: that
-// follow-up shows no Tell and no attack telegraph to anyone but its owner
-// until it reveals in the cutscene, while the Feint itself is entirely public
-// — a Tell everybody reads and nobody should trust. And finally **Movement**
-// and **Movement Punisher**, seeded together because neither means anything
-// without the other: Movement is a liability a move admits to, and Movement
-// Punisher is the move built to collect on it.
-//
-// Every one of them is matched by NAME, case-insensitively, and never by id,
-// because the GM owns this list: a world that already has its own "Block" tag
-// keeps it, tag ids differ between databases, and a GM renaming or re-creating
-// a tag must not silently detach the mechanic. Only seeded when no
-// case-insensitive match exists at all, so this never duplicates a tag the GM
-// already made.
-const SEEDED_TAGS = [
-  [
-    'Block',
-    'This move guards. It has no up-front Stamina Cost — instead it spends Stamina at resolution for exactly as much of the attack as it absorbed, scaled by its Stamina Modifier.',
-  ],
-  [
-    'No Damage',
-    'This move deals no damage. It succeeds if its roll reaches the move’s Success Threshold (5 by default) — used on grapples, grabs and setups that move a fight without hurting anyone.',
-  ],
-  [
-    'Feint',
-    'This move sells a lie. Its own Tell is shown as normal — but whatever you declare immediately after it goes on the timeline hidden: no Tell, no wind-up, nothing for your opponent to read until it lands.',
-  ],
-  [
-    'Movement',
-    'This move takes you somewhere. Useful, and a liability: a move tagged Movement Punisher that connects with you while you are using it puts you on the floor.',
-  ],
-  [
-    'Movement Punisher',
-    'Built to catch someone mid-stride. If this connects for real damage against a move tagged Movement, its user is tripped — 3 Trip Recovery frames, imposed on the spot.',
-  ],
-  [
-    'Off The Ground',
-    'Thrown from the floor. This move may be declared so that its Startup overlaps your own Trip Recovery frames — you are getting up as you wind up. Only Trip Recovery: ordinary Recovery still has to finish, and the move\u2019s Active frames can never begin before you are back on your feet.',
-  ],
-  // **Special — the one Tag that is about who may SEE a move, not what it does.**
-  // A move carrying it is invisible in the Compendium to a Player and cannot be
-  // taken by one, in Character Creation or by hand. GM-authored plot moves, boss
-  // techniques and anything a Player is meant to meet rather than shop for.
-  //
-  // Deliberately a Tag rather than a column: it is a property the GM hangs on a
-  // move exactly like every other, it shows on the card, and the perk side needs
-  // the identical thing in its own vocabulary.
-  [
-    'Special',
-    'GM-only. This move does not appear in the Compendium for Players, and a Player cannot take it in Character Creation or learn it themselves. The GM grants it like anything else, and once granted it shows on the sheet normally.',
-  ],
-  [
-    'Grounding',
-    'This move puts you on the floor. Every one of its Recovery frames is a Trip Recovery frame instead of an ordinary one \u2014 the same frames, the same count, spent on the ground. Pairs with Off The Ground, which is the only thing that can be thrown out of them.',
-  ],
-  [
-    'Ground Finisher',
-    'Built to finish somebody already on the floor. If this move\u2019s Active frames land on even one of the target\u2019s Trip Recovery frames, its Roll gets +5. The mirror of Off The Ground: that Tag gets you up early, this one punishes you for still being down.',
-  ],
-  // **The five Punishers, seeded rather than left to be typed.** The two
-  // Interruption Tags are parameterised too and are not seeded, because their
-  // parameter is an arbitrary number and there is no list to offer. This one's
-  // parameter is a closed list of five Stats, so the whole vocabulary can be put
-  // in front of the GM \u2014 and a Punisher naming anything else does nothing at
-  // all, which is a much worse thing to discover by typing.
-  [
-    'Temporary Damage',
-    'The damage this move deals wears off. It lands in full — the Stat drops, and it can still be destroyed — but every half-point of it is given back at 0.5 per finished Round, on each Stat separately, until it is all gone.',
-  ],
-  ...['Skull', 'Brain', 'Body', 'Hand', 'Leg'].map((stat) => [
-    `Punisher - ${stat}`,
-    `Built to catch a ${stat} attack mid-throw. +2 to this move's Roll while an opponent has a move on the clock \u2014 anywhere in its Startup, Active or Recovery frames \u2014 whose own Roll includes ${stat}${
-      stat === 'Hand' || stat === 'Leg' ? ' (either side, or both)' : ''
-    }. Whatever else that move rolls makes no difference.`,
-  ]),
-];
-
-// **The Perk vocabulary's own Special**, seeded for the same reason the move
-// one is: a Tag that decides who may see a thing is useless if the GM has to
-// guess its spelling, and it is matched by name like every other Tag mechanic.
-// The only perk tag the app seeds — the rest of that vocabulary is entirely the
-// GM's to invent.
-const SEEDED_PERK_TAGS = [
-  [
-    'Special',
-    'GM-only. This Perk does not appear in the Perks Compendium for Players, and a Player cannot take it in Character Creation or grant it to themselves. The GM grants it like anything else, and once granted it shows on the sheet normally.',
-  ],
-];
-
-function seedPerkTags(existingRows, writes) {
-  const have = new Set(existingRows.map((row) => normalise(row.name)));
-  for (const [name, description] of SEEDED_PERK_TAGS) {
-    if (have.has(normalise(name))) continue;
-    writes.push(['INSERT INTO perk_tags (name, description) VALUES (?, ?)', [name, description]]);
-  }
-}
-
-function seedTags(existingRows, writes) {
-  const have = new Set(existingRows.map((row) => normalise(row.name)));
-  for (const [name, description] of SEEDED_TAGS) {
-    if (have.has(normalise(name))) continue;
-    writes.push(['INSERT INTO tags (name, description) VALUES (?, ?)', [name, description]]);
-  }
-}
-
-// Two placeholder Tells so moves can be created immediately; the GM replaces
-// them with real Tells (name + icon) in the Compendium.
-function seedTells(existingCount, writes) {
-  if (existingCount > 0) return;
-  writes.push(["INSERT INTO tells (name) VALUES ('Tell 1')", []]);
-  writes.push(["INSERT INTO tells (name) VALUES ('Tell 2')", []]);
-}
-
-// Seed the 7 styles and their complete counter tournament exactly once.
-//
-// The only seed that cannot ride seedWorld's single batch: the tournament rows
-// reference the attribute ids the insert above hands out, so the ids have to be
-// read back in between. On any database that has already been seeded — which is
-// every boot after the first — this costs exactly the one UPDATE below.
-async function seedRuleset(attributeCount, counterCount) {
-  if (attributeCount === 0) {
-    await writeMany(
-      STYLES.map((style) => [
-        'INSERT INTO attributes (name, icon) VALUES (?, ?)',
-        [style.name, style.icon],
-      ])
-    );
-  }
-
-  if (counterCount > 0) {
-    // The seed below only ever runs against an empty table, so a database
-    // created before COUNTER_BONUS changed still carries the old value —
-    // including the deployed one. Re-point every *unmodified* row at the
-    // current constant.
-    //
-    // Deliberately scoped to rows that still hold a previously-shipped
-    // default (2, the only value this constant has ever had besides the
-    // current one), not a blanket UPDATE: `bonus` is per-row precisely so a
-    // table can hand-tune an individual matchup, and a migration must not
-    // silently flatten that back to the default.
-    await run('UPDATE attribute_counters SET bonus = ? WHERE bonus = 2', [COUNTER_BONUS]);
-    return;
-  }
-
-  const rows = await all('SELECT id, name FROM attributes');
-  const idByName = Object.fromEntries(rows.map((r) => [r.name, r.id]));
-  const tournament = [];
-  for (const [winner, losers] of Object.entries(DEFEATS)) {
-    for (const loser of losers) {
-      tournament.push([
-        'INSERT INTO attribute_counters (attacker_attribute_id, defender_attribute_id, bonus) VALUES (?, ?, ?)',
-        [idByName[winner], idByName[loser], COUNTER_BONUS],
-      ]);
-    }
-  }
-  await writeMany(tournament);
 }

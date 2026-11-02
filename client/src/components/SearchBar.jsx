@@ -3,17 +3,10 @@ import { useNavigate } from 'react-router-dom';
 import { useRole } from '../roleContext.jsx';
 import { search } from '../lib/api.js';
 
-const GROUPS = [
-  { key: 'characters', label: 'Characters' },
-  { key: 'moves', label: 'Moves' },
-  { key: 'perks', label: 'Perks' },
-  { key: 'tells', label: 'Tells' },
-  { key: 'tags', label: 'Tags' },
-];
-
-// Compendium entries (Moves/Perks/Tells/Tags) link to the Compendium page,
-// which every role can browse (read-only for Players).
-const COMPENDIUM_TAB = { moves: 'moves', perks: 'perks', tells: 'moves', tags: 'moves' };
+// Characters only, since the pivot removed the Compendium (Moves, Perks, Tells
+// and Tags were searchable groups here too). Kept as a list of groups so the
+// next searchable thing is one more entry.
+const GROUPS = [{ key: 'characters', label: 'Characters' }];
 
 // `mobileFullWidth` (Change 002, §5.2): the mobile "More" menu renders this
 // full-width and auto-focused instead of the desktop inline `w-64` box —
@@ -52,11 +45,7 @@ export default function SearchBar({ mobileFullWidth = false, onNavigate }) {
   const goTo = (group, item) => {
     setOpen(false);
     setQuery('');
-    if (group === 'characters') {
-      navigate(`/character/${item.id}`);
-    } else {
-      navigate('/compendium', { state: { tab: COMPENDIUM_TAB[group] } });
-    }
+    if (group === 'characters') navigate(`/character/${item.id}`);
     onNavigate?.();
   };
 

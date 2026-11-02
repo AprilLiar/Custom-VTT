@@ -24,9 +24,9 @@
 //
 // The endpoint timings below are wall-clock from wherever you run this, so they
 // include your own latency to the host. Compare them to each other, not to an
-// absolute budget: /api/rules is a small fixed read and /api/combat is the
-// deepest thing the Arena asks for on load, so the gap between them is the part
-// that is about database depth rather than about your wifi.
+// absolute budget: /api/character-folders is a single small read and /api/stage
+// is several queries deep, so the gap between them is the part that is about
+// database depth rather than about your wifi.
 //
 // Read-only by design — it is meant to be safe to run against a live game.
 const BASE = (process.env.E2E_URL || 'http://localhost:3001').replace(/\/$/, '');
@@ -81,7 +81,7 @@ if (trip > 1) {
   console.log('  (readMany/writeMany collapse a group into ONE trip — that is the margin.)\n');
 }
 
-const endpoints = ['/api/rules', '/api/characters', '/api/combat', '/api/scenes'];
+const endpoints = ['/api/character-folders', '/api/characters', '/api/scenes', '/api/stage'];
 console.log('endpoint wall-clock (includes your own latency to the host):');
 for (const path of endpoints) {
   const samples = [];

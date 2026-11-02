@@ -163,15 +163,22 @@ const strokeCost =
   (lastSize(player, 'scene_draw:added') ?? 0) + (lastSize(player, 'stage:updated') ?? 0);
 underKb('one pen stroke, total bytes to a Player', strokeCost, 24);
 
-// ============================================ 4. a stamina change in combat
-console.log('\n--- one stamina change (fires constantly during a fight) ---');
+// ============================================ 4. a character update
+// The most frequently broadcast row in the schema. It used to fire on every
+// Stamina tick of a fight; a rename is the same event and the same payload, and
+// the point is unchanged: it carries the picture's URL, never its bytes.
+console.log('\n--- one character update ---');
 clear(gm);
 clear(player);
-gm.emit('stamina:adjust', { characterId: pc.id, delta: -1 });
+await fetch(`${BASE}/api/characters/${pc.id}`, {
+  method: 'PUT',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ name: `BwPC-renamed-${stamp}` }),
+});
 await sleep(400);
-const staminaCost = lastSize(gm, 'character:updated');
-if (staminaCost == null) bail(new Error('no character:updated seen after stamina:adjust'));
-underKb('character:updated after a stamina change', staminaCost, 8);
+const updateCost = lastSize(gm, 'character:updated');
+if (updateCost == null) bail(new Error('no character:updated seen after a rename'));
+underKb('character:updated after a rename', updateCost, 8);
 
 // ============================================ 6. REST responses
 console.log('\n--- REST responses ---');
@@ -203,11 +210,13 @@ underKb('GET /api/stage (on the wire)', stageRest.bytes, 8);
 // **Checked against a response big enough to qualify.** `compression` skips
 // anything under 1KB, where the gzip header would cost more than it saves — and
 // now that the image bytes are gone, most of this app's JSON is under that. So
-// the compression check has to use a response that is genuinely large:
-// /api/rules serves the whole rules document.
-const rules = await restSize('/api/rules');
-console.log(`\ncontent-encoding on /api/rules (${KB(rules.bytes)}): ${rules.encoding ?? '(none)'}`);
-check('a large HTTP response is compressed', rules.encoding === 'gzip', `got ${rules.encoding ?? 'no content-encoding'}`);
+// the check posts one long chat message and reads the log back. (It read the
+// rulebook until the pivot removed it.)
+gm.emit('chat:message', { characterId: null, text: 'A long line for the compression check. '.repeat(80) });
+await sleep(400);
+const chatRest = await restSize('/api/chat');
+console.log(`\ncontent-encoding on /api/chat (${KB(chatRest.bytes)}): ${chatRest.encoding ?? '(none)'}`);
+check('a large HTTP response is compressed', chatRest.encoding === 'gzip', `got ${chatRest.encoding ?? 'no content-encoding'}`);
 
 // The picture itself still has to be fetchable, and cacheable forever.
 const img = await fetch(`${BASE}/api/img/character/${pc.id}/${'x'.repeat(16)}`);

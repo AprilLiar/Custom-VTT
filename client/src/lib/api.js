@@ -19,28 +19,7 @@ export const updateCharacter = (id, body) =>
 export const deleteCharacter = (id) =>
   fetch(`/api/characters/${id}`, { method: 'DELETE' }).then(json);
 export const getChat = () => fetch('/api/chat').then(json);
-export const getRuleset = () => fetch('/api/ruleset').then(json);
-// The rule book itself (game_rules.md at the repo root), rendered by the
-// Rules page. Distinct from getRuleset above, which is the GM-editable
-// per-table config — this one is authored text, the same for everyone.
-export const getRules = () => fetch('/api/rules').then(json);
-export const getTells = () => fetch('/api/tells').then(json);
-export const getTags = () => fetch('/api/tags').then(json);
-export const getMoves = () => fetch('/api/moves').then(json);
-export const getPerks = () => fetch('/api/perks').then(json);
-// Perk Tags are their own vocabulary, not the Move tag list above — see
-// perk_tags in server/db.js for why.
-export const getPerkTags = () => fetch('/api/perk-tags').then(json);
-// The Quirk Compendium's shelf of examples. No grant counts on these rows —
-// a Quirk is copied when taken, never linked (see character_quirks in db.js).
-export const getQuirks = () => fetch('/api/quirks').then(json);
 export const search = (q) => fetch(`/api/search?q=${encodeURIComponent(q)}`).then(json);
-// `identity` ({ role: 'gm' } | { role: 'player', characterId }) rides as
-// query params — REST has no socket to carry it the way identity:set does
-// (see roleContext.jsx/server's viewerFromQuery) — so a viewer-tailored
-// declaredMoves list comes back even on this initial/refresh fetch.
-export const getCombat = (identity) =>
-  fetch(`/api/combat${identity ? `?${new URLSearchParams(identity)}` : ''}`).then(json);
 // ownerType is 'character' | 'temp_npc' — see scene_pictures' own CHECK.
 export const getScenePictures = (ownerType, ownerId) =>
   fetch(`/api/scene-pictures?${new URLSearchParams({ ownerType, ownerId })}`).then(json);
@@ -53,7 +32,9 @@ export const getScenes = (identity) =>
   fetch(`/api/scenes${identity ? `?${new URLSearchParams(identity)}` : ''}`).then(json);
 export const getSceneFolders = () => fetch('/api/scene-folders').then(json);
 // The live stage everyone shares — { activeScene, summons, drawings }.
-// Carries identity as query params, same as getCombat — not a 403 gate here
+// `identity` ({ role: 'gm' } | { role: 'player', characterId }) rides as
+// query params — REST has no socket to carry it the way identity:set does
+// (see roleContext.jsx/server's viewerFromQuery). Not a 403 gate here
 // (nothing about the endpoint itself is secret), but the server still
 // redacts a Hidden summon out of the response per-viewer (stagePayloadFor),
 // so this REST fetch needs to identify itself exactly like the socket does.
@@ -61,19 +42,13 @@ export const getStage = (identity) =>
   fetch(`/api/stage${identity ? `?${new URLSearchParams(identity)}` : ''}`).then(json);
 
 // One character's Relationships board. Carries the identity as query params for
-// the same reason getCombat does — REST has no socket to carry it — and here it
+// the same reason getStage does — REST has no socket to carry it — and here it
 // is a real gate rather than a filter: the server answers 403 to anyone who is
 // neither the board's owner nor the GM.
 export const getRelationshipBoard = (characterId, identity) =>
   fetch(
     `/api/characters/${characterId}/relationships${identity ? `?${new URLSearchParams(identity)}` : ''}`
   ).then(json);
-
-// Combat Automation overhaul §3 — a completed round's stored event log,
-// behind the chat log's "Watch Round N" button. Takes no identity: a
-// resolved round is public history, watchable by anyone (decision #11).
-export const getRoundReplay = (resolutionId) =>
-  fetch(`/api/combat/round-replay/${resolutionId}`).then(json);
 
 // GM Notes — genuinely GM-secret (403 for anyone else), the same identity-
 // as-query-params shape getRelationshipBoard uses above.
@@ -94,3 +69,12 @@ export const getAudioLibrary = (identity) =>
 // only — a listing that carried the pictures would defeat its own purpose.
 export const getImageInventory = (identity) =>
   fetch(`/api/image-inventory?${new URLSearchParams({ ...identity })}`).then(json);
+
+// **The old system's archive (the pivot).** The Compendium as it stood when the
+// old system was removed, kept in the database as JSON. GM-only (403 for anyone
+// else). The listing carries counts, never the document; the download is a
+// plain link to `compendiumArchiveUrl`, which the server sends back as a file.
+export const getCompendiumArchives = (identity) =>
+  fetch(`/api/compendium-archive?${new URLSearchParams({ ...identity })}`).then(json);
+export const compendiumArchiveUrl = (id, identity) =>
+  `/api/compendium-archive/${id}?${new URLSearchParams({ ...identity })}`;

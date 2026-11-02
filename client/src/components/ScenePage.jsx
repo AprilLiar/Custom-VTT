@@ -376,8 +376,8 @@ function TopLeftControls({ uiHidden, onToggleUi, onOpenNotes }) {
     >
       {!uiHidden && (
         <Link
-          to="/combat"
-          title="Back to the Arena"
+          to="/"
+          title="Back"
           className="flex h-11 w-11 items-center justify-center panel-cut-sm border border-zinc-700 bg-zinc-900/80 text-zinc-400 hover:border-brand-500 hover:text-brand-300"
         >
           <ArrowLeft size={18} aria-hidden />

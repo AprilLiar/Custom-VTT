@@ -15,13 +15,8 @@ import { getCharacters } from './api.js';
 //
 // The payload already carries the whole updated character, so an update needs
 // no request at all — it is merged into the row we are already holding.
-// Merging rather than replacing matters: `/api/characters` attaches `stances`
-// to each row and a `character:updated` payload does not carry them, so
-// spreading the old row first is what keeps them.
-//
-// Stance events *are* refetched, because stances now ride on this payload and
-// nothing else carries them — but a GM editing a stance is a rare, deliberate
-// act, not something that happens several times a round.
+// (Stances rode on these rows and were refetched on their own events until the
+// pivot removed them.)
 //
 // **Returns `null` until the first fetch lands**, so a caller can tell "not
 // loaded yet" from "loaded, and the world has no characters" — several of them
@@ -47,7 +42,7 @@ export function useRoster() {
     const onDeleted = ({ id }) =>
       setCharacters((prev) => (prev ? prev.filter((c) => c.id !== id) : prev));
 
-    const refetchOn = ['character:created', 'stance:created', 'stance:updated', 'stance:deleted'];
+    const refetchOn = ['character:created'];
     for (const ev of refetchOn) socket.on(ev, refetch);
     socket.on('character:updated', onUpdated);
     socket.on('character:deleted', onDeleted);

@@ -50,17 +50,13 @@ test('one boot adds every ensureColumn column, not just the base CREATE', async 
   // A spread across the tables whose base CREATE is furthest behind: each of
   // these exists only because ensureColumn adds it.
   const expected = [
-    ['moves', ['stamina_modifier', 'attack_targets', 'is_secondary', 'sort_order', 'success_threshold']],
-    ['combat_state', ['fresh_start', 'fight_number']],
-    ['combat_participants', ['grapple_penalty_until_tic']],
-    ['declared_moves', ['feint_masked', 'defense_outcome', 'weapon_spent', 'chain_roll_bonus']],
-    ['move_roll_slots', ['count']],
-    ['characters', ['folder_id', 'vitruvian_image_data', 'pending_roll_penalty']],
+    ['characters', ['folder_id', 'crop_x', 'crop_y', 'crop_w', 'crop_h', 'image_hash']],
     ['chat_log', ['payload', 'image_data']],
-    // Scene tab: both tables' crop columns arrive only via ensureCropColumns,
-    // same shape as relationship_people's own crop columns above them.
     ['temp_npcs', ['crop_x', 'crop_y', 'crop_w', 'crop_h']],
-    ['scenes', ['crop_x', 'crop_y', 'crop_w', 'crop_h']],
+    ['scenes', ['crop_x', 'crop_y', 'crop_w', 'crop_h', 'background_fit', 'image_source_id', 'timestamp_id']],
+    ['scene_summons', ['pos_x', 'pos_y', 'scale', 'is_hidden']],
+    ['scene_timestamps', ['date', 'is_current']],
+    ['relationship_edges', ['bend', 'bend_u']],
   ];
   for (const [table, columns] of expected) {
     const have = await columnsOf(table);
@@ -70,71 +66,43 @@ test('one boot adds every ensureColumn column, not just the base CREATE', async 
   }
 });
 
+test('a fresh world is born without the old system', async () => {
+  // The pivot removed the old system's tables and columns from the schema
+  // itself, not just from existing databases — a brand-new world must never
+  // grow them back.
+  const { PURGED_TABLES, OLD_CHARACTER_COLUMNS, OLD_COUNTER_COLUMNS } = await import('../compendiumArchive.js');
+  const tables = new Set((await all("SELECT name FROM sqlite_master WHERE type = 'table'")).map((r) => r.name));
+  for (const table of PURGED_TABLES) assert.ok(!tables.has(table), `${table} exists on a fresh world`);
+  const characterColumns = await columnsOf('characters');
+  for (const column of OLD_CHARACTER_COLUMNS) {
+    assert.ok(!characterColumns.has(column), `characters.${column} exists on a fresh world`);
+  }
+  const counterColumns = await columnsOf('counters');
+  for (const column of OLD_COUNTER_COLUMNS) {
+    assert.ok(!counterColumns.has(column), `counters.${column} exists on a fresh world`);
+  }
+  // The archive table is there from the start, empty — so the download
+  // endpoint never has to ask whether it exists.
+  assert.ok(tables.has('compendium_archive'));
+  assert.equal(Number((await one('SELECT COUNT(*) AS c FROM compendium_archive')).c), 0);
+});
+
 test('one boot runs the table-rebuilding migrations too', async () => {
   const sqlFor = async (table) =>
     (await one("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?", [table])).sql;
-
-  // The base CREATE for move_interactions still declares the 5-value CHECK;
-  // grapple_success only arrives via the rebuild.
-  assert.match(await sqlFor('move_interactions'), /grapple_success/);
+  // chat_log's base CREATE predates some of its kinds; scene_summons' predates
+  // its scene_id. Both only arrive through a rebuild.
   assert.match(await sqlFor('chat_log'), /round_summary/);
-  for (const marker of ['fight_number', 'paused_defense', 'paused_grapple']) {
-    assert.match(await sqlFor('pair_round_resolutions'), new RegExp(marker));
-  }
+  assert.match(await sqlFor('scene_summons'), /scene_id/);
 });
 
-test('one boot seeds the world exactly once', async () => {
-  const counts = Object.fromEntries(
-    await Promise.all(
-      ['attributes', 'attribute_counters', 'tells', 'tags', 'perks'].map(async (table) => [
-        table,
-        Number((await one(`SELECT COUNT(*) AS c FROM ${table}`)).c),
-      ])
-    )
-  );
-  assert.equal(counts.attributes, 7);
-  assert.equal(counts.tells, 2);
-  assert.ok(counts.attribute_counters > 0);
-  assert.ok(counts.tags >= 5);
-  assert.ok(counts.perks > 0);
-
-  // A second boot must be a no-op, not a duplicator — the seeds' guards are
-  // now a set membership test against one batched read rather than a SELECT
-  // per row, and that is precisely where a duplicate would appear.
+test('a second boot is a no-op: nothing archived, nothing purged', async () => {
+  const { oldSystemPurge } = await import('../db.js');
+  assert.equal(oldSystemPurge.status, 'clean');
   await initDb();
-  for (const [table, before] of Object.entries(counts)) {
-    const after = Number((await one(`SELECT COUNT(*) AS c FROM ${table}`)).c);
-    assert.equal(after, before, `${table} was re-seeded on the second boot`);
-  }
-});
-
-test('a fresh boot has both Quirk tables, with the kind CHECK on each', async () => {
-  // New tables, declared at their final shape — so what is worth pinning is
-  // the constraint, not the migration: `kind` is what every surface colours a
-  // Quirk by, and a row that slipped through as 'Positive' or '' would be a
-  // Quirk that belongs to neither column and renders in the wrong one.
-  const sqlFor = async (table) =>
-    (await one("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?", [table]))?.sql ?? '';
-
-  for (const table of ['quirks', 'character_quirks']) {
-    const sql = await sqlFor(table);
-    assert.ok(sql, `${table} was not created on the first boot`);
-    assert.match(sql, /kind IN \('positive','negative'\)/, `${table} is missing the kind CHECK`);
-  }
-  // Stored BY VALUE, which is the whole design: a character's Quirk carries its
-  // own text and does not reference the Compendium's shelf. A `quirk_id` here
-  // would be the link semantics this feature deliberately does not have.
-  const characterQuirkColumns = await columnsOf('character_quirks');
-  for (const column of ['character_id', 'name', 'description', 'kind']) {
-    assert.ok(characterQuirkColumns.has(column), `character_quirks.${column} missing`);
-  }
-  assert.ok(!characterQuirkColumns.has('quirk_id'), 'a Quirk is copied onto a character, never linked');
-
-  // ...and the CHECK is real, not decoration.
-  await assert.rejects(
-    () => run("INSERT INTO quirks (name, kind) VALUES ('Bad', 'Positive')"),
-    'a mis-cased kind must be refused by the database, not stored'
-  );
+  const again = (await import('../db.js')).oldSystemPurge;
+  assert.equal(again.status, 'clean');
+  assert.equal(Number((await one('SELECT COUNT(*) AS c FROM compendium_archive')).c), 0);
 });
 
 test('the foreign keys the app looks rows up by are indexed', async () => {
@@ -142,12 +110,12 @@ test('the foreign keys the app looks rows up by are indexed', async () => {
     (await all("SELECT name FROM sqlite_master WHERE type = 'index'")).map((row) => row.name)
   );
   for (const name of [
-    'idx_round_events_resolution_id',
-    'idx_declared_moves_character_id',
-    'idx_dice_character_id',
-    'idx_move_roll_slots_move_id',
-    'idx_chat_log_move_id',
-    'idx_character_quirks_character_id',
+    'idx_counters_character_id',
+    'idx_roleplay_entries_character_id',
+    'idx_counter_gates_counter_id',
+    'idx_relationship_nodes_owner_character_id',
+    'idx_scene_pictures_character_id',
+    'idx_scene_drawings_scene_id',
   ]) {
     assert.ok(indexed.has(name), `${name} was not created`);
   }

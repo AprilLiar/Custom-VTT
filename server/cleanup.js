@@ -7,10 +7,10 @@
 // things were accumulating with nothing to prune them.
 //
 // The queries live here, separately from the handlers that run them, because
-// **one of them deletes artwork unattended**. That one is held to the same bar
-// as the combat maths (CLAUDE.md's standing rule): built pure, pinned by tests
-// against live owners, deleted owners and NULL owner ids, before it is ever
-// wired to a boot path.
+// **one of them deletes artwork unattended**. That one is held to CLAUDE.md's
+// standing rule for risky logic: built pure, pinned by tests against live
+// owners, deleted owners and NULL owner ids, before it is ever wired to a boot
+// path.
 
 // Tables whose rows belong to an owner that may have gone away.
 //
@@ -63,16 +63,3 @@ export const deleteOrphans = (sweep) => `DELETE ${orphanWhere(sweep)}`;
 // history, it is residue.
 export const trimChatLog = (limit) =>
   `DELETE FROM chat_log WHERE id NOT IN (SELECT id FROM chat_log ORDER BY id DESC LIMIT ${Number(limit)})`;
-
-// **Completed rounds are kept only for the current fight.**
-//
-// `combat:end` deliberately keeps finished rounds so their "Watch Round N" chat
-// card still works. But the chat log is wiped on every boot, so the cards that
-// are the only route to an older fight's replays do not survive the restart that
-// this runs on — retention already exceeded reachability, and the excess grew
-// with every fight ever played.
-//
-// `round_events` cascades off these rows, which is where the bulk actually is:
-// one row per engine event, tens to hundreds per round.
-export const pruneOldFightReplays = (currentFightNumber) =>
-  `DELETE FROM pair_round_resolutions WHERE fight_number < ${Number(currentFightNumber)}`;

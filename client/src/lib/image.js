@@ -75,10 +75,6 @@ export function fileToPortrait(file) {
 // keyed by content hash (see server/images.js), each picture is fetched once.
 export const portraitSrc = (record) => record?.image_url ?? null;
 
-// A GM-uploaded replacement for Tab 1's default backdrop figure, specific
-// to this character — null falls back to the built-in artwork.
-export const vitruvianSrc = (character) => character?.vitruvian_image_url ?? null;
-
 // **The only `data:` URI left in the app**, and the one place it is still
 // right: a picture the person chose a moment ago and has not saved yet. Those
 // bytes came out of this browser's own canvas and have never touched the

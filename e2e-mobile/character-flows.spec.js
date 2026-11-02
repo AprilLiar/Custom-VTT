@@ -51,15 +51,15 @@ test.describe('Character Sheet: tab strip', () => {
     await page.locator('[class*="cursor-pointer"]').first().click();
     await expect(page).toHaveURL(/\/character\/\d+/);
 
-    const movesTab = page.getByRole('button', { name: 'Moves' });
-    await expect(movesTab).toBeVisible();
-    await movesTab.click();
+    const countersTab = page.getByRole('button', { name: 'Counters' });
+    await expect(countersTab).toBeVisible();
+    await countersTab.click();
 
-    const perksTab = page.getByRole('button', { name: 'Perks' });
-    await perksTab.click();
+    const roleplayTab = page.getByRole('button', { name: 'Role-play' });
+    await roleplayTab.click();
     // The active tab's underline is a motion.span sibling — cheaper and
     // less brittle than asserting on animation state is just confirming
     // the tab click actually navigated to a different panel.
-    await expect(perksTab).toHaveClass(/text-zinc-100/);
+    await expect(roleplayTab).toHaveClass(/text-zinc-100/);
   });
 });

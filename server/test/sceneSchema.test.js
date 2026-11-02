@@ -45,8 +45,8 @@ after(() => {
 let seq = 0;
 const makeCharacter = async (name, type = 'npc') => {
   const result = await run(
-    'INSERT INTO characters (name, character_type, max_stamina, current_stamina) VALUES (?, ?, ?, ?)',
-    [`${name}-${++seq}`, type, 20, 20]
+    'INSERT INTO characters (name, character_type) VALUES (?, ?)',
+    [`${name}-${++seq}`, type]
   );
   return Number(result.lastInsertRowid);
 };

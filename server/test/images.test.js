@@ -78,7 +78,7 @@ test('a caller holding the bytes gets the same URL the backfill would have store
   // column existed: hashing what we are already holding lands on the identical
   // string, so the URL is cacheable rather than merely functional.
   const data = 'aaaabbbbcccc';
-  assert.equal(imageUrl('move', 3, { data }), `/api/img/move/3/${hashImageData(data)}`);
+  assert.equal(imageUrl('scene', 3, { data }), `/api/img/scene/3/${hashImageData(data)}`);
 });
 
 test('a row with neither bytes nor hash falls back to the live sentinel, never a 404', () => {
@@ -122,14 +122,14 @@ test('the same allow-list guards the way in, with a per-caller fallback', () => 
 
 // ------------------------------------------------------------- row shaping
 test('a shaped row carries a URL and none of the bytes', () => {
-  const shaped = withImageUrl('tell')({
+  const shaped = withImageUrl('person')({
     id: 4,
-    name: 'A raised guard',
+    name: 'Mira',
     image_data: 'BYTES',
     image_mime_type: 'image/png',
     image_hash: 'hash1234hash1234',
   });
-  assert.deepEqual(shaped, { id: 4, name: 'A raised guard', image_url: '/api/img/tell/4/hash1234hash1234' });
+  assert.deepEqual(shaped, { id: 4, name: 'Mira', image_url: '/api/img/person/4/hash1234hash1234' });
   assert.ok(!('image_data' in shaped), 'the bytes must not survive shaping — this is the whole point');
   assert.ok(!('image_mime_type' in shaped), 'Content-Type carries the mime now');
 });
@@ -141,27 +141,32 @@ test('a row with no picture is shaped without an image_url key at all', () => {
   assert.deepEqual(shaped, { id: 9, name: 'Durability' });
 });
 
-test('a character loses BOTH of its pictures and gains both URLs', () => {
-  // characters is the only two-image row in the schema, and the most
-  // frequently broadcast one — character:updated fires on every Stamina change.
+test('a character loses its picture bytes and gains the profile picture URL', () => {
+  // The most frequently broadcast row in the schema. It carried a second
+  // picture — the Core Stats backdrop — until the pivot removed it.
   const shaped = shapeCharacter({
     id: 12,
     name: 'Vera',
-    current_stamina: 7,
+    folder_id: 3,
     image_data: 'PORTRAIT',
     image_mime_type: 'image/webp',
     image_hash: 'aaaaaaaaaaaaaaaa',
-    vitruvian_image_data: 'BACKDROP',
-    vitruvian_image_mime_type: 'image/webp',
-    vitruvian_image_hash: 'bbbbbbbbbbbbbbbb',
   });
   assert.deepEqual(shaped, {
     id: 12,
     name: 'Vera',
-    current_stamina: 7,
+    folder_id: 3,
     image_url: '/api/img/character/12/aaaaaaaaaaaaaaaa',
-    vitruvian_image_url: '/api/img/character-art/12/bbbbbbbbbbbbbbbb',
   });
+});
+
+test("the old system's picture kinds are gone, so their URLs are unknown kinds", () => {
+  // Move, Perk and Tell art, and the Core Stats backdrop, went with their
+  // tables. A stale URL naming one must 404 rather than reach a missing table.
+  for (const kind of ['move', 'perk', 'tell', 'character-art']) {
+    assert.equal(imageSpec(kind), null, kind);
+    assert.equal(imageUrl(kind, 1, { data: 'AAAA' }), null, kind);
+  }
 });
 
 test('a character with only a portrait gets only the one URL', () => {
@@ -194,11 +199,11 @@ test('shaping a null row is a no-op rather than a crash', () => {
 // ORDER load-bearing at every call site, and a future reader who believes the
 // old comment fails this test instead of shipping it.
 test('withImageUrl returns every non-image column, so it must be spread first', () => {
-  const shaped = withImageUrl('move')({
+  const shaped = withImageUrl('scene')({
     id: 4,
-    name: 'Jab',
-    attack_targets: '["Skull"]',
-    defense_frame_positions: '[]',
+    name: 'Rooftop',
+    tags: '["night"]',
+    background_fit: 'cover',
     image_data: 'AAAA',
     image_mime_type: 'image/webp',
     image_hash: 'dddddddddddddddd',
@@ -207,17 +212,18 @@ test('withImageUrl returns every non-image column, so it must be spread first', 
   assert.ok(!('image_data' in shaped));
   assert.ok(!('image_mime_type' in shaped));
   assert.ok(!('image_hash' in shaped));
-  assert.equal(shaped.image_url, '/api/img/move/4/dddddddddddddddd');
-  // Everything else rides along untouched — including the raw JSON strings a
+  assert.equal(shaped.image_url, '/api/img/scene/4/dddddddddddddddd');
+  // Everything else rides along untouched — including a raw JSON string a
   // caller means to parse. That is precisely why it cannot be spread last.
-  assert.equal(shaped.name, 'Jab');
-  assert.equal(shaped.attack_targets, '["Skull"]');
-  assert.equal(shaped.defense_frame_positions, '[]');
+  assert.equal(shaped.name, 'Rooftop');
+  assert.equal(shaped.tags, '["night"]');
+  assert.equal(shaped.background_fit, 'cover');
 
   // The shape a caller must use: base row first, derived fields on top.
-  const correct = { ...withImageUrl('move')({ id: 4, attack_targets: '["Skull"]' }), attack_targets: ['Skull'] };
-  assert.deepEqual(correct.attack_targets, ['Skull']);
-  // ...and the shape that caused the bug, kept as an executable warning.
-  const wrong = { attack_targets: ['Skull'], ...withImageUrl('move')({ id: 4, attack_targets: '["Skull"]' }) };
-  assert.equal(wrong.attack_targets, '["Skull"]', 'spreading last silently reverts the parse');
+  const correct = { ...withImageUrl('scene')({ id: 4, tags: '["night"]' }), tags: ['night'] };
+  assert.deepEqual(correct.tags, ['night']);
+  // ...and the shape that caused the bug (an "attack_targets.map is not a
+  // function" crash), kept as an executable warning.
+  const wrong = { tags: ['night'], ...withImageUrl('scene')({ id: 4, tags: '["night"]' }) };
+  assert.equal(wrong.tags, '["night"]', 'spreading last silently reverts the parse');
 });
