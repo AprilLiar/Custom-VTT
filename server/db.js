@@ -990,6 +990,17 @@ export async function initDb() {
   // 'combat' is the grid map. Per Scene, so each Scene remembers its own mode,
   // and switched by the GM alone.
   await ensureColumn('scenes', 'combat_mode', "TEXT NOT NULL DEFAULT 'scene'");
+  // **The Combat map (Phase 3):** a Combat Background separate from the Scene
+  // backdrop (image kind 'scene-combat'), and its grid — square size and
+  // offset in the MAP IMAGE's own pixels (decided), and line opacity. See
+  // client/src/lib/combatGrid.js.
+  await ensureColumn('scenes', 'combat_image_data', 'TEXT');
+  await ensureColumn('scenes', 'combat_image_mime_type', 'TEXT');
+  await ensureColumn('scenes', 'combat_image_hash', 'TEXT');
+  await ensureColumn('scenes', 'grid_size', 'INTEGER NOT NULL DEFAULT 70');
+  await ensureColumn('scenes', 'grid_offset_x', 'INTEGER NOT NULL DEFAULT 0');
+  await ensureColumn('scenes', 'grid_offset_y', 'INTEGER NOT NULL DEFAULT 0');
+  await ensureColumn('scenes', 'grid_opacity', 'REAL NOT NULL DEFAULT 0.6');
 
   // Singleton: which Scene is currently active, same shape as combat_state's
   // own id=1 row.
@@ -1346,6 +1357,26 @@ export async function initDb() {
   // that Stance is active. Deleting the Stance unbinds it, keeping the text.
   await ensureColumn('combat_reminders', 'stance_id', 'INTEGER REFERENCES combat_stances(id) ON DELETE SET NULL');
 
+  // **A fighter in a fight (Panic at the Dojo).** One placed copy of a
+  // Character or Temp NPC on a Scene, in one of the two separate fights
+  // (decided): 'combat' rows stand on the map at a grid cell; 'simple' rows
+  // (Phase 4) belong to a Simple Combat summon. Every copy is independent —
+  // HP, tokens and the Challenge (Phase 4) live on this row, not on the actor.
+  ddl(`
+    CREATE TABLE IF NOT EXISTS combatants (
+      id INTEGER PRIMARY KEY,
+      scene_id INTEGER NOT NULL REFERENCES scenes(id) ON DELETE CASCADE,
+      mode TEXT NOT NULL CHECK(mode IN ('simple','combat')),
+      summon_id INTEGER REFERENCES scene_summons(id) ON DELETE CASCADE,
+      character_id INTEGER REFERENCES characters(id) ON DELETE CASCADE,
+      temp_npc_id INTEGER REFERENCES temp_npcs(id) ON DELETE CASCADE,
+      grid_col INTEGER,
+      grid_row INTEGER,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      CHECK ((character_id IS NULL) <> (temp_npc_id IS NULL))
+    )
+  `);
+
   // ---------------------------------------------------------------- Audio Player
   //
   // **The GM Tools drawer's third tool (decided, new).** A GM-run soundtrack
@@ -1477,6 +1508,8 @@ async function ensureIndexes() {
     ['combat_reminders', 'temp_npc_id'],
     ['combat_stances', 'character_id'],
     ['combat_stances', 'temp_npc_id'],
+    // The stage payload reads a Scene's fighters on every broadcast.
+    ['combatants', 'scene_id'],
   ];
   for (const [table, column] of indexes) {
     ddl(`CREATE INDEX IF NOT EXISTS idx_${table}_${column} ON ${table}(${column})`);

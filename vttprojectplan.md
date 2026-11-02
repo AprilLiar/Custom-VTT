@@ -2810,6 +2810,7 @@ Every table the server creates (`server/db.js`, all `CREATE TABLE IF NOT EXISTS`
 - **combat_reminders** — `id, character_id | temp_npc_id, scope, timing, target, target_character_id, target_temp_npc_id, text, stance_id, created_at`
 - **combat_stances** — `id, character_id | temp_npc_id, name, dice (JSON), created_at`
 - **scenes.combat_mode**, **scene_summons.lane_slot** — see Phase 2 as built.
+- **scenes.combat_image_*, grid_*** and **combatants** — see Phase 3 as built.
 - **compendium_archive** — `id, archived_at, counts (JSON), payload (the archive document)`; append-only
 
 ## Real-time events (Socket.io)
@@ -2823,6 +2824,7 @@ Clients emit; the server validates, writes, and broadcasts. The surviving contra
 - **Scene tab:** `temp_npc*`, `temp_npc_folder:*`, `scene_picture:create|copy_from_profile|update|delete`, `scene_folder:*`, `scene:create|update|set_folder|copy|delete|activate`, `stage:summon|reposition_summon|resize_summon|toggle_hidden|timestamp_play`, `scene_draw:add|clear`, `scene_note:*`, `master_note:update`, `scene_timestamp:*` (see the Scene tab section).
 - **Audio:** `audio_playlist:*`, `audio_track:*`, `audio:play|pause|resume|stop|seek|next|previous|set_mode|ping|duration|track_ended|error|lookup_title` → `audio:state` (see Audio Player).
 - **Scene modes:** `scene:set_mode` (GM), `lane:move` → `stage:updated`.
+- **Combat map:** `scene:set_grid`, `scene:set_combat_image`, `combat_token:place|move|remove|clear` → `stage:updated`.
 - **Combat tab:** `combat_profile:update` → `combat_profile:updated`; `combat_reminder:create|update|delete` → `combat_reminders:updated`; `combat_stance:create|update|delete` → `combat_stances:updated`.
 - **GM tools:** `image:reencode`.
 
@@ -2869,6 +2871,7 @@ A three-way toggle at the top of the Scene page, **shown to the GM only** (decid
   - Each Scene gains a **Combat Background**, a separate image from its Scene background.
   - A square grid overlays it, with GM controls: **square size in pixels** (±1 steps, live preview), **X/Y offset**, and **opacity** (slider). The grid stops at a **10% padding** inside the image's edges, and lines simply end there even if that cuts a square short.
   - Characters and Temp NPCs are dragged onto the map as round tokens, snapped to grid squares. **The same actor can be placed several times** (minions), and **each copy is independent**: its own HP bars, tokens, Challenge and initiative turns.
+  - **Decided for Phase 3:** Combat mode is **map only** — the Scene's figures, drawings and lane are hidden while it is on. Grid size and offset are in the **map image's own pixels**. Tokens come from a GM **Fighters** drawer (left) and a Player's own **dock**; the right drawer holds the map settings. One token per square: **dropping onto another token swaps the two**, like the lane; a brand-new token can't swap, so an occupied square refuses it.
 
 ### The token panel (on a Combat token or a Simple Combat miniature)
 Clicking a token opens its panel; a click that turns into a drag closes the panel and moves the token instead.
@@ -2891,7 +2894,7 @@ Clicking a token opens its panel; a click that turns into a drag closes the pane
 1. **Foundations — implemented.** Schema, the Unique token catalog, the Combat tab (token image, Unique picks, Reminders) on characters and Temp NPCs, and the pure initiative module with unit tests. Details under **Phase 1 as built** below.
 2. **The toggle and Simple Combat — implemented.** Scene/Simple/Combat state per Scene, the lane overlay, miniatures, drag and snap. Details under **Phase 2 as built** below.
 2b. **Stances — implemented** (data, editor, stance-bound Reminders; see **Stances as built** below). The turn-start roll and pick dialog arrive with Phase 5, the token-panel switch with Phase 4.
-3. **Combat map.** Combat Background, the grid with its controls, placing and moving tokens, multiple copies.
+3. **Combat map — implemented.** Combat Background, the grid with its controls, placing and moving tokens, multiple copies. Details under **Phase 3 as built** below.
 4. **Token panel.** Panic tokens with badges, Challenge with particles, the HP bar stack with break and Dizzy, on both modes.
 5. **Fights.** The Start Combat dialog, the initiative rail, rounds and turns, Reminders and the automatic End Phase reminders in chat.
 
@@ -2914,10 +2917,17 @@ Clicking a token opens its panel; a click that turns into a drag closes the pane
 - **Events:** `combat_stance:create { ownerType, ownerId, name, dice }`, `combat_stance:update { stanceId, name?, dice? }`, `combat_stance:delete { stanceId }` → `combat_stances:updated { ownerType, ownerId, stances }`. Same write rule as the rest of the Combat tab. `combat_reminder:create|update` take an optional `stanceId` (null = any stance), which must be one of the reminder owner's own stances. Deleting a stance **unbinds** its reminders rather than deleting them. `GET /api/combat-setup` now also returns `stances`.
 - **UI:** a Stances section between Tokens and Reminders. Each stance shows its name, a "default" tag on the first, and its dice as die-shape icons with fixed numbers in amber boxes. The editor has a name field and per-slot selects (d4-d12 or Fixed, plus a 0-12 number), with + Die and ✕ within 1-8. The Reminder form gains an "Any stance / <stance>" select, and a bound reminder shows a violet chip with the stance's name.
 
+### Phase 3 as built
+- **`client/src/lib/combatGrid.js`** (pure, shared, tested in `server/test/combatGrid.test.js`): `normalizeGrid` (size 8-400, offsets ±400, opacity 0-1; default 70/0/0/0.6), `innerRect` (10% padding), `gridLines` (lines every square from the offset, framed by the padding edges and stopping there), `cellAt`/`cellCenter`/`cellRect`, `cellInside` (a cell holds a token when its centre is inside the padding), `fitImage` (contain, centred between drawers), `moveToken` (move or swap).
+- **Scenes:** `combat_image_data/mime/hash` (image kind `scene-combat`, sent as `combat_image_url` — `shapeScene` strips the bytes) and `grid_size`, `grid_offset_x`, `grid_offset_y`, `grid_opacity`. A copied Scene carries its grid and its map picture (copied as bytes). The map is processed like a backdrop (`fileToSceneBackground`), so "pixels" are the stored picture's.
+- **`combatants`** — one placed copy of a fighter on a Scene: `scene_id, mode ('simple'|'combat'), summon_id, character_id | temp_npc_id, grid_col, grid_row`. Phase 4 hangs HP, tokens and the Challenge off it. Deleting a character, a Temp NPC or a Scene removes its rows.
+- **Server:** `server/combatMap.js`. `scene:set_grid` (GM; writes only the fields it names, so quick ±1 clicks can't overwrite each other), `scene:set_combat_image { imageData, imageMimeType } | { clear }` (GM), `combat_token:place { ownerType, ownerId, col, row }`, `combat_token:move { combatantId, col, row }` (swaps), `combat_token:remove`, `combat_token:clear` (GM). Placing, moving and removing follow the figure rule: GM anything, a Player their own character. The stage payload gains `activeScene.combat_image_url`, `activeScene.grid` and `combatTokens` (`[{ id, owner_type, owner_id, name, col, row, image_url, crop }]` — the combat token picture when there is one, else the portrait).
+- **Client:** `CombatMap.jsx` (the fitted map, an SVG grid of black-under-white lines at the chosen opacity, round tokens with a ring and shadow, drag with a 5px threshold, a yellow highlight on the target square, a hover ✕ to remove, click reserved for the token panel), `CombatDrawers.jsx` (`CombatFightersDrawer` with search, `CombatMapDrawer` with upload/replace/remove, ±1 steppers and typed values for size and offsets, an opacity slider and Clear the map, `PlayerTokenDock`), and `client/src/lib/combatDrag.js` (a small pub/sub so a drawer entry can be dragged onto the map).
+
 ## Implementation Phases (iterative — each ends with a deploy + playtest checkpoint)
 The old system's phases (1-9 and the playtest batches after them) are complete history in git. The current state:
 - **Pivot — done.** Old system archived and removed (this document's **The pivot**).
-- **Panic at the Dojo combat assistant**, in the five phases listed in its section above. Phases 1, 2 and 2b (Stances) are implemented; Phase 3 is next.
+- **Panic at the Dojo combat assistant**, in the five phases listed in its section above. Phases 1, 2, 2b (Stances) and 3 are implemented; next are multi-lane Simple Combat (2c), then Phase 4.
 
 ## Implementation Risks & Recommendations
 - **The archive is the only copy of the old Compendium's data.** It lives in `compendium_archive` and is downloadable from Settings; keep a downloaded copy outside the app. Restoring the old system would mean reverting the pivot commit's code and re-importing from the archive by hand — there is no importer.

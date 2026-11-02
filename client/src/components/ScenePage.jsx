@@ -34,6 +34,8 @@ import SceneDrawToolbar from './SceneDrawToolbar.jsx';
 import PlayerSummonDock from './PlayerSummonDock.jsx';
 import SceneModeToggle from './SceneModeToggle.jsx';
 import SimpleCombatLane from './SimpleCombatLane.jsx';
+import CombatMap from './CombatMap.jsx';
+import { CombatFightersDrawer, CombatMapDrawer, PlayerTokenDock } from './CombatDrawers.jsx';
 import { useDominantColor } from '../lib/dominantColor.js';
 
 // The Scene tab's fullscreen canvas (Scene tab plan, Phase 1: the route
@@ -213,13 +215,19 @@ export default function ScenePage() {
 
   const summons = stage?.summons ?? [];
   const drawings = stage?.drawings ?? [];
+  const combatTokens = stage?.combatTokens ?? [];
+  // Combat mode is map only (decided): the backdrop, figures, drawings and
+  // lane give way to the Combat Background, its grid and the tokens.
+  const isCombat = sceneMode === 'combat';
+  // Clear of the GM's two w-64 drawers while they are showing.
+  const drawerInset = role === 'gm' && !uiHidden ? { left: 256, right: 256 } : undefined;
 
   return (
     <div
       ref={setStageEl}
       className="relative flex h-full w-full flex-col items-center justify-center overflow-hidden bg-zinc-950 text-zinc-500"
     >
-      {backgroundSrc && (
+      {!isCombat && backgroundSrc && (
         <img
           ref={backdropRef}
           src={backgroundSrc}
@@ -243,7 +251,7 @@ export default function ScenePage() {
           `bg-zinc-950/90` — intended, not a layout bug. Rendered
           regardless of `uiHidden` — the figures themselves are the one
           thing cinematic mode never hides. */}
-      {stageWidth > 0 && (
+      {stageWidth > 0 && !isCombat && (
         <StageRoster
           summons={summons}
           stageWidth={stageWidth}
@@ -265,7 +273,7 @@ export default function ScenePage() {
           figure. Rendered unconditionally, same as StageRoster: drawings
           are part of the Scene itself, not UI chrome, so cinematic mode
           never hides them either. */}
-      {stageWidth > 0 && (
+      {stageWidth > 0 && !isCombat && (
         <SceneDrawingLayer
           drawings={drawings}
           stageWidth={stageWidth}
@@ -290,8 +298,18 @@ export default function ScenePage() {
           glow={laneGlow}
           role={role}
           characterId={characterId}
-          // Clear of the GM's two w-64 drawers while they are showing.
-          inset={role === 'gm' && !uiHidden ? { left: 256, right: 256 } : undefined}
+          inset={drawerInset}
+        />
+      )}
+      {stageWidth > 0 && isCombat && (
+        <CombatMap
+          scene={activeScene}
+          tokens={combatTokens}
+          stageWidth={stageWidth}
+          stageHeight={stageHeight}
+          inset={drawerInset}
+          role={role}
+          characterId={characterId}
         />
       )}
       {/* Also unconditional, same reasoning as StageRoster/SceneDrawingLayer
@@ -326,15 +344,26 @@ export default function ScenePage() {
           {!activeScene && (
             <p className="relative z-[2] font-display text-sm uppercase tracking-wide">No Scene active yet.</p>
           )}
-          {activeScene && !backgroundSrc && (
+          {activeScene && !backgroundSrc && !isCombat && (
             <p className="relative z-[2] font-display text-sm uppercase tracking-wide">{activeScene.name}</p>
           )}
-          {role === 'gm' && <SceneCastDrawer />}
-          {role === 'gm' && <SceneListDrawer activeSceneId={activeScene?.id ?? null} />}
-          {role === 'player' && <PlayerSummonDock characterId={characterId} summons={summons} />}
+          {isCombat ? (
+            <>
+              {role === 'gm' && <CombatFightersDrawer />}
+              {role === 'gm' && <CombatMapDrawer scene={activeScene} tokenCount={combatTokens.length} />}
+              {role === 'player' && <PlayerTokenDock characterId={characterId} />}
+            </>
+          ) : (
+            <>
+              {role === 'gm' && <SceneCastDrawer />}
+              {role === 'gm' && <SceneListDrawer activeSceneId={activeScene?.id ?? null} />}
+              {role === 'player' && <PlayerSummonDock characterId={characterId} summons={summons} />}
+            </>
+          )}
           {/* Pen/Eraser are both roles; the Timestamp button inside is
               GM-only — see SceneDrawToolbar's own header comment for the
               corner, z-index, and role reasoning. */}
+          {!isCombat && (
           <SceneDrawToolbar
             tool={tool}
             onSelectTool={setTool}
@@ -348,6 +377,7 @@ export default function ScenePage() {
             role={role}
             onOpenTimestamps={role === 'gm' ? () => setTimestampsOpen(true) : undefined}
           />
+          )}
         </>
       )}
       {notesOpen && <SceneNotesDialog activeScene={activeScene} onClose={() => setNotesOpen(false)} />}

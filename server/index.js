@@ -22,6 +22,7 @@ import {
   loadStances,
 } from './combatSetup.js';
 import { LANE_SLOTS, TRAY, moveOnLane, packLane } from '../client/src/lib/simpleLane.js';
+import { loadCombatTokens, registerCombatMapHandlers, sceneGrid } from './combatMap.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3001;
@@ -545,7 +546,9 @@ async function buildStagePayload() {
   const sceneRow = state?.active_scene_id
     ? await one(
         `SELECT id, name, image_hash, image_source_id,
-                (image_data IS NOT NULL) AS has_image, background_fit, combat_mode
+                (image_data IS NOT NULL) AS has_image, background_fit, combat_mode,
+                combat_image_hash, (combat_image_data IS NOT NULL) AS has_combat_image,
+                grid_size, grid_offset_x, grid_offset_y, grid_opacity
          FROM scenes WHERE id = ?`,
         [state.active_scene_id]
       )
@@ -556,6 +559,12 @@ async function buildStagePayload() {
         name: sceneRow.name,
         background_fit: sceneRow.background_fit,
         combat_mode: SCENE_MODES.has(sceneRow.combat_mode) ? sceneRow.combat_mode : 'scene',
+        // The Combat map (Phase 3): its own picture and grid.
+        combat_image_url: imageUrl('scene-combat', sceneRow.id, {
+          hash: sceneRow.combat_image_hash,
+          present: sceneRow.has_combat_image,
+        }),
+        grid: sceneGrid(sceneRow),
         // A copy's backdrop is served from whichever Scene owns the bytes —
         // see shapeScene, and scenes.image_source_id for why.
         image_url: imageUrl('scene', sceneRow.image_source_id ?? sceneRow.id, {
@@ -613,7 +622,10 @@ async function buildStagePayload() {
         [activeScene.id]
       )
     : [];
-  return { activeScene, summons, drawings };
+  // The Combat map's tokens (Phase 3) — nothing on them is hidden, so every
+  // viewer gets the same list.
+  const combatTokens = activeScene ? await loadCombatTokens(activeScene.id) : [];
+  return { activeScene, summons, drawings, combatTokens };
 }
 
 // Per-viewer redaction of the unfiltered snapshot above — a Hidden summon
@@ -699,6 +711,13 @@ const publicScene = ({ timestamp_id: _cue, ...rest }) => rest;
 // That matters because the scenes list is read on every Scene-drawer open.
 const shapeScene = (row) => {
   if (!row) return row;
+  // The Combat Background (Panic at the Dojo) is a second picture on the same
+  // row: it goes out as a URL like the backdrop, never as bytes.
+  const { combat_image_data, combat_image_mime_type, combat_image_hash, ...rest } = row;
+  row = {
+    ...rest,
+    combat_image_url: imageUrl('scene-combat', row.id, { data: combat_image_data, hash: combat_image_hash }),
+  };
   const shaped = withImageUrl('scene')(row);
   if (row.image_source_id == null) return shaped;
   // `present: true` rather than `Boolean(image_data)`: a copy's own data column
@@ -1066,10 +1085,12 @@ app.delete('/api/characters/:id', wrap(async (req, res) => {
   );
   await run('DELETE FROM counters WHERE character_id = ?', [character.id]);
   await deleteCombatSetupFor('character', character.id);
+  const wasInAFight = await one('SELECT id FROM combatants WHERE character_id = ?', [character.id]);
+  await run('DELETE FROM combatants WHERE character_id = ?', [character.id]);
   await run('DELETE FROM characters WHERE id = ?', [character.id]);
 
   io.emit('character:deleted', { id: character.id });
-  if (wasSummoned) await emitStageUpdated();
+  if (wasSummoned || wasInAFight) await emitStageUpdated();
   res.json({ ok: true });
 }));
 
@@ -1366,6 +1387,8 @@ io.on('connection', (socket) => {
 
   // The Combat tab (Panic at the Dojo) — see server/combatSetup.js.
   registerCombatSetupHandlers({ on, socket, io, mayWrite: mayWriteScenePicture, cropValues, stampImageHash });
+  // The Combat map (Panic at the Dojo, Phase 3) — see server/combatMap.js.
+  registerCombatMapHandlers({ on, socket, mayWrite: mayWriteScenePicture, emitStageUpdated, stampImageHash });
 
   // Who this connection is playing as — stored per-socket, in memory only
   // (lost on disconnect, matching the no-login/session-only model; the
@@ -1577,9 +1600,11 @@ io.on('connection', (socket) => {
     await run('DELETE FROM scene_summons WHERE temp_npc_id = ?', [npc.id]);
     await run('DELETE FROM scene_pictures WHERE temp_npc_id = ?', [npc.id]);
     await deleteCombatSetupFor('temp_npc', npc.id);
+    const wasInAFight = await one('SELECT id FROM combatants WHERE temp_npc_id = ?', [npc.id]);
+    await run('DELETE FROM combatants WHERE temp_npc_id = ?', [npc.id]);
     await run('DELETE FROM temp_npcs WHERE id = ?', [npc.id]);
     io.emit('temp_npc:deleted', { tempNpcId: npc.id });
-    if (wasSummoned) await emitStageUpdated();
+    if (wasSummoned || wasInAFight) await emitStageUpdated();
   });
 
   // ---------------------------------------------------------------------
@@ -1824,6 +1849,22 @@ io.on('connection', (socket) => {
         scene.crop_h,
       ]
     );
+    // The Combat map's grid and background come along (Panic at the Dojo). The
+    // map picture is copied as bytes: it has no shared-owner scheme of its own.
+    await run(
+      `UPDATE scenes SET grid_size = ?, grid_offset_x = ?, grid_offset_y = ?, grid_opacity = ?,
+         combat_image_data = ?, combat_image_mime_type = ?, combat_image_hash = ? WHERE id = ?`,
+      [
+        scene.grid_size ?? 70,
+        scene.grid_offset_x ?? 0,
+        scene.grid_offset_y ?? 0,
+        scene.grid_opacity ?? 0.6,
+        scene.combat_image_data ?? null,
+        scene.combat_image_mime_type ?? null,
+        scene.combat_image_hash ?? null,
+        Number(result.lastInsertRowid),
+      ]
+    );
     emitScene(
       'scene:created',
       shapeScene(await one('SELECT * FROM scenes WHERE id = ?', [Number(result.lastInsertRowid)]))
@@ -1869,6 +1910,7 @@ io.on('connection', (socket) => {
     // "scene-specific" (scene_summons.scene_id) means.
     await run('UPDATE scene_state SET active_scene_id = NULL WHERE active_scene_id = ?', [scene.id]);
     await run('DELETE FROM scene_notes WHERE scene_id = ?', [scene.id]);
+    await run('DELETE FROM combatants WHERE scene_id = ?', [scene.id]);
     await run('DELETE FROM scene_summons WHERE scene_id = ?', [scene.id]);
     await run('DELETE FROM scene_drawings WHERE scene_id = ?', [scene.id]);
     await run('DELETE FROM scenes WHERE id = ?', [scene.id]);
