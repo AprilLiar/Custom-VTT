@@ -21,6 +21,7 @@ import {
   GiLightningSlashes,
   GiCrossedSwords,
   GiBreastplate,
+  GiShield,
 } from 'react-icons/gi';
 
 export const TOKEN_ICONS = {
@@ -40,6 +41,7 @@ export const TOKEN_ICONS = {
   training: GiPunchingBag,
   rapid_strike: GiLightningSlashes,
   armor: GiBreastplate,
+  shield: GiShield,
 };
 
 // Each kind keeps the book's colour coding where it has one (Unique tokens

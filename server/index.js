@@ -19,11 +19,11 @@ import {
 import { ORPHAN_SWEEPS, countOrphans, deleteOrphans, trimChatLog } from './cleanup.js';
 import {
   registerCombatSetupHandlers, deleteCombatSetupFor, parseOwner, loadProfile, loadReminders, loadAllProfiles,
-  loadStances, loadAllStances,
+  loadStances, loadAllStances, presetNotesFromRows,
 } from './combatSetup.js';
-import { TRAY, clampLanes, laneCapacity, moveOnLane, packLane } from '../client/src/lib/simpleLane.js';
+import { TRAY, clampLaneY, clampLanes, laneCapacity, moveOnLane, packLane } from '../client/src/lib/simpleLane.js';
 import { loadCombatTokens, registerCombatMapHandlers, sceneGrid } from './combatMap.js';
-import { EMPTY_FIGHT_STATE, loadSimpleStates, registerCombatStateHandlers } from './combatState.js';
+import { EMPTY_FIGHT_STATE, loadSimpleStates, registerCombatStateHandlers, releaseChallengesOf } from './combatState.js';
 import { loadFightState, registerFightHandlers } from './fights.js';
 import { loadMapTiles, registerMapTileHandlers } from './mapTiles.js';
 import { controlsCharacter, dropAssignmentsTo, loadAssignments, setAssignment } from './control.js';
@@ -613,10 +613,24 @@ async function buildStagePayload() {
   const lane = packLane([...summonRows].sort((a, b) => a.id - b.id), simpleLanes);
   // Simple Combat fight state (Phase 4), per summon.
   const simpleStates = activeScene ? await loadSimpleStates(activeScene.id) : new Map();
+  // A miniature with no fight row yet shows its character's preset notes —
+  // the same ones its row will start with once it is created.
+  const presetRows = activeScene
+    ? await all('SELECT id, character_id, note_left, note_right FROM combat_stances WHERE character_id IS NOT NULL ORDER BY id')
+    : [];
+  const presetsByCharacter = new Map();
+  for (const r of presetRows) {
+    if (!presetsByCharacter.has(r.character_id)) presetsByCharacter.set(r.character_id, []);
+    presetsByCharacter.get(r.character_id).push(r);
+  }
+  const freshState = (summon) =>
+    summon.character_id != null && presetsByCharacter.has(summon.character_id)
+      ? { ...EMPTY_FIGHT_STATE, notes: presetNotesFromRows(presetsByCharacter.get(summon.character_id)) }
+      : EMPTY_FIGHT_STATE;
   const summons = summonRows.map(({ picture_hash, ...summon }) => ({
     ...summon,
     lane_slot: lane.get(summon.id) ?? null,
-    fight: simpleStates.get(summon.id) ?? EMPTY_FIGHT_STATE,
+    fight: simpleStates.get(summon.id) ?? freshState(summon),
     image_url: imageUrl('scene-picture', summon.scene_picture_id, {
       hash: picture_hash,
       present: true,
@@ -646,7 +660,8 @@ async function buildStagePayload() {
     : { simple: null, combat: null };
   // Map tiles, per mode — public, like the tokens.
   const tiles = await loadMapTiles(activeScene?.id ?? null);
-  return { activeScene, summons, drawings, combatTokens, simpleLanes, fighterSetup, fights, tiles };
+  const laneY = (await readTableSettings()).laneY;
+  return { activeScene, summons, drawings, combatTokens, simpleLanes, laneY, fighterSetup, fights, tiles };
 }
 
 async function loadFighterSetup() {
@@ -657,6 +672,24 @@ async function loadFighterSetup() {
     out[key] = { unique_tokens: out[key]?.unique_tokens ?? [], stances: list.map((s) => ({ id: s.id, name: s.name })) };
   }
   return out;
+}
+
+// **A miniature's fight state goes with it.** Un-summoning deletes the Simple
+// Combat row (tokens, HP, notes — decided: notes live only as long as the
+// token) and frees any Challenge naming it. Spelled out rather than trusting
+// the summon_id FK's ON DELETE CASCADE, like every delete in this file.
+async function dropSummonFightState(summonIds) {
+  for (const summonId of summonIds) {
+    const rows = await all('SELECT id FROM combatants WHERE summon_id = ?', [summonId]);
+    await releaseChallengesOf(rows.map((r) => r.id));
+    await run('DELETE FROM combatants WHERE summon_id = ?', [summonId]);
+  }
+}
+
+// The table settings as the client sees them: { simpleLanes, laneY }.
+async function readTableSettings() {
+  const row = await one('SELECT simple_lanes, lane_y FROM table_settings WHERE id = 1');
+  return { simpleLanes: clampLanes(row?.simple_lanes), laneY: clampLaneY(row?.lane_y ?? undefined) };
 }
 
 // How many lanes Simple Combat has (table_settings.simple_lanes, 1-3).
@@ -916,7 +949,7 @@ app.get('/api/combat-setup', wrap(async (req, res) => {
 // Every fighter's combat profile at once, keyed `character:<id>` /
 // `temp_npc:<id>` — what the Scene's combat views draw tokens from.
 app.get('/api/table-settings', wrap(async (_req, res) => {
-  res.json({ simpleLanes: await readSimpleLanes() });
+  res.json(await readTableSettings());
 }));
 
 app.get('/api/combat-profiles', wrap(async (_req, res) => {
@@ -1784,6 +1817,7 @@ io.on('connection', (socket) => {
     // own FK is already ON DELETE CASCADE, but nothing here trusts the DDL
     // alone. Un-summons whoever was showing this picture, if anyone was.
     const wasSummoned = await one('SELECT id FROM scene_summons WHERE scene_picture_id = ?', [picture.id]);
+    if (wasSummoned) await dropSummonFightState([wasSummoned.id]);
     await run('DELETE FROM scene_summons WHERE scene_picture_id = ?', [picture.id]);
     await run('DELETE FROM scene_pictures WHERE id = ?', [picture.id]);
     io.emit('scene_picture:deleted', { scenePictureId: picture.id });
@@ -2102,6 +2136,7 @@ io.on('connection', (socket) => {
         [state.active_scene_id, ownerId, picture.id, side]
       );
     } else if (existing.scene_picture_id === picture.id) {
+      await dropSummonFightState([existing.id]);
       await run('DELETE FROM scene_summons WHERE id = ?', [existing.id]);
     } else {
       await run('UPDATE scene_summons SET scene_picture_id = ? WHERE id = ?', [picture.id, existing.id]);
@@ -2164,10 +2199,12 @@ io.on('connection', (socket) => {
   });
 
   // **Table settings (GM).** Simple Combat's lane count, for everyone.
-  on('table_settings:set', async ({ simpleLanes }) => {
-    if (socket.data.identity?.role !== 'gm' || simpleLanes === undefined) return;
-    await run('UPDATE table_settings SET simple_lanes = ? WHERE id = 1', [clampLanes(simpleLanes)]);
-    io.emit('table_settings:updated', { simpleLanes: await readSimpleLanes() });
+  // Also the lanes' height (laneY, a share of the stage height; null resets).
+  on('table_settings:set', async ({ simpleLanes, laneY }) => {
+    if (socket.data.identity?.role !== 'gm' || (simpleLanes === undefined && laneY === undefined)) return;
+    if (simpleLanes !== undefined) await run('UPDATE table_settings SET simple_lanes = ? WHERE id = 1', [clampLanes(simpleLanes)]);
+    if (laneY !== undefined) await run('UPDATE table_settings SET lane_y = ? WHERE id = 1', [laneY === null ? null : clampLaneY(laneY)]);
+    io.emit('table_settings:updated', await readTableSettings());
     await emitStageUpdated();
   });
 

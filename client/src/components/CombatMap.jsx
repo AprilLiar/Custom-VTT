@@ -431,7 +431,7 @@ export default function CombatMap({
                     name={t.name}
                     fight={fight}
                     setup={setup[`${t.owner_type}:${t.owner_id}`]}
-                    anchor={{ x: center.x, top: center.y - tokenSize / 2, bottom: center.y + tokenSize / 2 }}
+                    anchor={{ x: center.x, top: center.y - tokenSize / 2, bottom: center.y + tokenSize / 2, halfWidth: tokenSize / 2 }}
                     iconSize={iconSize}
                     selected={selectedTokenId === t.id}
                     canEdit={canDrag(t)}

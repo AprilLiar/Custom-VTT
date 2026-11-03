@@ -3,7 +3,7 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { Minus, Plus, X } from 'lucide-react';
 import { GiDeathSkull, GiSleepy } from 'react-icons/gi';
 import { socket } from '../socket.js';
-import { SPECIAL_KEYS, SPECIAL_TOKENS, TOKEN_BY_KEY, TOKEN_CAP, tokensFor } from '../lib/panicTokens.js';
+import { SPECIAL_KEYS, SPECIAL_TOKENS, TOKEN_BY_KEY, capOf, tokensFor } from '../lib/panicTokens.js';
 import { KIND_CLASS, TokenIcon } from '../lib/panicIcons.jsx';
 import { HP_MAX, barsLeft, isTakenOut } from '../lib/hpBars.js';
 import { cropOf } from '../lib/imageCrop.js';
@@ -79,7 +79,12 @@ function CountedIcon({ tokenKey, count, size, dim = false, active = false, onCli
 // The stacked bars. `compact` is the always-on strip; otherwise the full bar
 // with its buttons. A bar breaking plays a shatter, and the next bar slides up.
 // `weight`: the fight's Cinematic Weight (cinematicWeight.js), or null.
-function HpStack({ hp, compact, width, canEdit, fighterRef, weight = null }) {
+function HpStack({ hp, compact, width, canEdit, fighterRef, weight = null, shield = 0 }) {
+  // **Shield on the bar (decided):** a blue extension after the bar, as long
+  // relative to the bar as the Shield is to the current bar's Max HP. Both
+  // share the bar's width (flex-grow 1 : ratio), so the proportion holds and
+  // the stack still fits its panel.
+  const shieldRatio = hp.max && shield > 0 ? shield / hp.max : 0;
   const left = barsLeft(hp);
   const behind = Math.max(0, left - 1);
   const pct = hp.max ? (hp.current / hp.max) * 100 : 0;
@@ -115,7 +120,10 @@ function HpStack({ hp, compact, width, canEdit, fighterRef, weight = null }) {
             <Minus size={14} aria-hidden />
           </button>
         )}
-        <div className="relative h-full flex-1 overflow-hidden rounded-sm border border-black bg-zinc-900/90">
+        <div
+          className={`relative h-full min-w-0 overflow-hidden border border-black bg-zinc-900/90 ${shieldRatio ? 'rounded-l-sm' : 'rounded-sm'}`}
+          style={{ flex: '1 1 0' }}
+        >
           <motion.div
             key={hp.broken}
             initial={hp.broken > 0 ? { y: barH / 2, opacity: 0.4 } : false}
@@ -150,6 +158,19 @@ function HpStack({ hp, compact, width, canEdit, fighterRef, weight = null }) {
             </span>
           )}
         </div>
+        {shieldRatio > 0 && (
+          <div
+            className="relative h-full min-w-0 overflow-hidden rounded-r-sm border border-l-0 border-black bg-sky-500"
+            style={{ flex: `${shieldRatio} 1 0`, transition: 'flex-grow 200ms ease-out' }}
+            title={`Shield ${shield}`}
+          >
+            {!compact && (
+              <span className="absolute inset-0 flex items-center justify-center font-display text-[10px] font-bold tabular-nums text-white [text-shadow:0_1px_2px_black]">
+                {shield}
+              </span>
+            )}
+          </div>
+        )}
         {!compact && canEdit && (
           <button
             type="button"
@@ -190,13 +211,13 @@ function HpStack({ hp, compact, width, canEdit, fighterRef, weight = null }) {
   );
 }
 
-function FullPanelHp({ hp, canEdit, fighterRef, width, weight = null }) {
+function FullPanelHp({ hp, canEdit, fighterRef, width, weight = null, shield = 0 }) {
   const [maxDraft, setMaxDraft] = useState(hp.max ?? '');
   useEffect(() => setMaxDraft(hp.max ?? ''), [hp.max]);
   const emit = (event, extra = {}) => socket.emit(event, { ref: fighterRef, ...extra });
   return (
     <div className="flex flex-col items-center gap-1.5">
-      <HpStack hp={hp} width={width} canEdit={canEdit} fighterRef={fighterRef} weight={weight} />
+      <HpStack hp={hp} width={width} canEdit={canEdit} fighterRef={fighterRef} weight={weight} shield={shield} />
       {canEdit && (
         <div className="flex items-center gap-2">
           <button
@@ -266,6 +287,7 @@ export default function FighterOverlay({
 }) {
   const panelRef = useRef(null);
   const belowRef = useRef(null);
+  const notesRef = useRef(null);
   // **An open panel never leaves the screen (decided, mobile fix).** The row
   // above the fighter and the panel below it move as ONE: if either would
   // cross an edge of the stage (`bounds`), both shift by the same distance,
@@ -314,7 +336,7 @@ export default function FighterOverlay({
   useEffect(() => {
     if (!selected) return undefined;
     const onDown = (e) => {
-      if (panelRef.current?.contains(e.target) || belowRef.current?.contains(e.target)) return;
+      if (panelRef.current?.contains(e.target) || belowRef.current?.contains(e.target) || notesRef.current?.contains(e.target)) return;
       if (e.target.closest?.('[data-combat-token],[data-lane-mini]')) return;
       onClose?.();
     };
@@ -473,7 +495,7 @@ export default function FighterOverlay({
         {selected && openKey && canEdit && (
           <div className="mt-1 flex gap-1">
             {[
-              ['+', { delta: 1 }, 'Add 1', (fight.tokens[openKey] ?? 0) >= TOKEN_CAP],
+              ['+', { delta: 1 }, 'Add 1', (fight.tokens[openKey] ?? 0) >= capOf(openKey)],
               ['−', { delta: -1 }, 'Remove 1', !(fight.tokens[openKey] > 0)],
               ['−−', { clear: true }, 'Remove all', !(fight.tokens[openKey] > 0)],
             ].map(([label, payload, title, disabled]) => (
@@ -508,7 +530,7 @@ export default function FighterOverlay({
                 <X size={14} aria-hidden />
               </button>
             </div>
-            <FullPanelHp hp={hp} canEdit={canEdit} fighterRef={fighterRef} width={Math.max(140, barWidth * 1.6)} weight={weight} />
+            <FullPanelHp hp={hp} canEdit={canEdit} fighterRef={fighterRef} width={Math.max(140, barWidth * 1.6)} weight={weight} shield={fight.tokens.shield ?? 0} />
             {hp.dizzy && canEdit && (
               <button type="button" onClick={() => emit('fighter:clear_dizzy')} className="text-[10px] text-sky-300 hover:text-sky-100">
                 Clear Dizzy
@@ -533,10 +555,104 @@ export default function FighterOverlay({
             )}
           </div>
         ) : (
-          hp.max != null && <HpStack hp={hp} compact width={barWidth} weight={weight} />
+          hp.max != null && <HpStack hp={hp} compact width={barWidth} weight={weight} shield={fight.tokens.shield ?? 0} />
         )}
       </div>
+      {/* **Character notes (decided, new):** shown only while the token is
+          tapped, one each side of it, for the Stance it is in now. */}
+      {selected && (
+        <div ref={notesRef}>
+          <TokenNotes
+            notes={fight.notes?.[activeStance != null ? String(activeStance) : 'none'] ?? {}}
+            stanceId={activeStance}
+            canEdit={canEdit}
+            anchor={anchor}
+            bounds={bounds}
+            onSave={(side, text) => emit('fighter:set_note', { stanceId: activeStance, side, text })}
+          />
+        </div>
+      )}
     </>
+  );
+}
+
+const NOTE_W = 150;
+const NOTE_GAP = 10;
+
+// The two notes beside a tapped token. Whoever may edit the fighter writes
+// them (saved as they pause typing, and on leaving the box); everyone else
+// reads them, and an empty one is not shown to them at all.
+function TokenNotes({ notes, stanceId, canEdit, anchor, bounds, onSave }) {
+  const half = anchor.halfWidth ?? 24;
+  const midY = (anchor.top + anchor.bottom) / 2;
+  const clampX = (x) => (bounds ? Math.max(8, Math.min(bounds.width - NOTE_W - 8, x)) : x);
+  const sides = [
+    ['left', clampX(anchor.x - half - NOTE_GAP - NOTE_W)],
+    ['right', clampX(anchor.x + half + NOTE_GAP)],
+  ];
+  return sides.map(([side, left]) =>
+    canEdit || notes[side] ? (
+      <NoteCard
+        key={`${side}:${stanceId ?? 'none'}`}
+        side={side}
+        text={notes[side] ?? ''}
+        canEdit={canEdit}
+        style={{ left, top: midY, transform: 'translateY(-50%)', width: NOTE_W }}
+        onSave={(text) => onSave(side, text)}
+      />
+    ) : null
+  );
+}
+
+function NoteCard({ side, text, canEdit, style, onSave }) {
+  const [draft, setDraft] = useState(text);
+  const focused = useRef(false);
+  const timer = useRef(null);
+  // Someone else's edit arrives while this box isn't being typed in.
+  useEffect(() => {
+    if (!focused.current) setDraft(text);
+  }, [text]);
+  const save = (value) => {
+    clearTimeout(timer.current);
+    timer.current = null;
+    if (value !== text) onSave(value);
+  };
+  // Closing the panel mid-typing still saves what was typed.
+  const pending = useRef(null);
+  pending.current = () => timer.current && save(draft);
+  useEffect(() => () => pending.current?.(), []);
+  return (
+    <div
+      className="pointer-events-auto absolute rounded-md border border-amber-200/40 bg-amber-50/95 p-1.5 shadow-xl"
+      style={{ ...style, zIndex: 60 }}
+      data-token-note={side}
+    >
+      {canEdit ? (
+        <textarea
+          value={draft}
+          maxLength={500}
+          rows={4}
+          placeholder={`Note (${side})…`}
+          aria-label={`Token note, ${side}`}
+          onFocus={() => {
+            focused.current = true;
+          }}
+          onBlur={() => {
+            focused.current = false;
+            save(draft);
+          }}
+          onChange={(e) => {
+            const v = e.target.value;
+            setDraft(v);
+            clearTimeout(timer.current);
+            timer.current = setTimeout(() => save(v), 700);
+          }}
+          className="block w-full resize-none bg-transparent text-xs leading-snug text-zinc-900 outline-none placeholder:text-zinc-500"
+        />
+      ) : (
+        <p className="max-h-40 overflow-y-auto whitespace-pre-wrap text-xs leading-snug text-zinc-900">{text}</p>
+      )}
+    </div>
   );
 }
 

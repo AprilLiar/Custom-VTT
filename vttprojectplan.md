@@ -804,6 +804,7 @@ was ever going to prune a table nobody prunes.
 - **Roster** (`/`, GM only — a Player is sent to their own sheet): cards in a responsive grid with an edge-to-edge portrait, an NPC badge and a folder-path chip; a nested folder tree (`FolderTreeNav`) beside it (a "Change…" drawer below `md:`), drag a card onto a folder to file it or tap its ⇄ button. Folder create/rename/delete and filing are GM-only.
 - **+ Add Character** (decided, revised — plain create): name, PC/NPC toggle, folder picker, and an optional profile picture (`usePictureUpload`/`fileToPortrait`, with the crop preview) — sent in the one `POST /api/characters`. Delete asks for confirmation and cascades through everything the character owns (Counters and their Gates, Role-play, Relationships boards, Scene Pictures and summons).
 - **Character sheet** (`/character/:id`): a header with the editable **name** and **profile picture** (click to replace, crop editor), then four tabs — **Counters** (default), **Role-play**, **Relationships** (PCs only) and **Scene Pictures**. Same open-access editing as everywhere else.
+  - **Back arrow (decided, new):** for the GM, "Back to folder" returns to the roster in the folder the sheet was opened from (`location.state.fromFolder` → the roster's `location.state.folder`). A sheet opened another way, such as from Search, returns to the character's own folder, and a folder deleted meanwhile falls back to the root. A Player has no roster: on an NPC assigned to them the arrow is "Back to my character", and on their own sheet there is none.
   - **Role-play:** persistent free-text answers under seven canonical questions (what they love and can't pass by on the street; biggest traumatic memory; irrational fear; favourite food; what infuriates them; biggest vice; what they would fight for, no matter what), plus up to 20 custom questions per character. Answers are keyed by the question's exact text, so appending to `FIXED_QUESTIONS` is safe and rewording one orphans its answers.
   - Relationships and Scene Pictures are described in their own sections below.
 
@@ -839,7 +840,8 @@ A red/black metallic fighting-game look (Tekken/Mortal Kombat reference). A `--c
 `/settings`, via the header's cog, every role; all settings persist per browser.
 - **Primary Color** — preset swatches plus a custom picker and reset (see Visual Theme).
 - **Scene Stage** (`client/src/lib/sceneSettings.js`) — Character Height (0.5–1.5×), Distance Apart (0–3×), Picture Size (0.5–2×) and Show name plates, applied to your own view of the stage only.
-- **Simple Combat Lanes** (GM-only, the whole table) — 1, 2 or 3 lanes of ten.
+- **Simple Combat Lanes** (GM-only, the whole table): 1, 2 or 3 lanes of ten.
+  - **Lane height (decided, new):** a slider that moves the lanes up or down the screen (still centred), from 20% to 90% of the stage height, with Reset to the original 5/7. It is table-wide: `table_settings.lane_y` (NULL = 5/7), sent as `table_settings:set { laneY }`, and the stage payload carries `laneY`. `laneGeometry` takes it as its centre.
 - **Old System Archive** (GM-only) — lists the pivot's archive(s) with row counts and a **Download JSON** link, and shows the purge status, including any problem the boot recorded.
 
 ## Game mechanic — GM Tools
@@ -2892,6 +2894,7 @@ A three-way toggle at the top of the Scene page, **shown to the GM only** (decid
   - Characters and Temp NPCs are dragged onto the map as round tokens, snapped to grid squares. **The same actor can be placed several times** (minions), and **each copy is independent**: its own HP bars, tokens, Challenge and initiative turns.
   - **Zoom (decided, added with Phase 5):** each viewer can zoom the battle map, 1× to 5×, with the mouse wheel (about the pointer) or +/−/fit buttons in its bottom-right corner, and pan by dragging empty map. It is local to that viewer and never synced. Placing, moving and the drop highlight work at any zoom; the map and its tokens are clipped to the area between the drawers.
   - **Tokens stick to their squares (fix):** a token slides (160ms) only when it moves itself (a drop, a swap). Any render where the view moved (pan, zoom, resize) turns the slide off, so tokens move with the map in the same frame instead of trailing it.
+  - **Stage figures locked in Simple Combat (decided, new):** while the Scene is in Simple Combat, the full-size figures behind the lane can't be moved, resized or unsummoned from the stage by anyone (`StageRoster locked`), so a drag aimed at the lane never shifts them.
   - **Kept mounted (fix):** the Scene's backdrop, figures and drawings stay mounted (hidden) while the Scene is in Combat, so leaving Combat shows them at once instead of reloading. Once shown, the Combat map likewise stays mounted outside Combat. A hidden map ignores palette drags (`active` prop).
   - **Decided for Phase 3:** Combat mode is **map only** — the Scene's figures, drawings and lane are hidden while it is on. Grid size and offset are in the **map image's own pixels**. Tokens come from a GM **Fighters** drawer (left) and a Player's own **dock**; the right drawer holds the map settings. One token per square: **dropping onto another token swaps the two**, like the lane; a brand-new token can't swap, so an occupied square refuses it.
 
@@ -3001,13 +3004,20 @@ The book's **Cinematic Weight** (p.38-40) sets how big a fight is. The GM picks 
 - **Rules and code:** `client/src/lib/cinematicWeight.js` (tables, `barHp`, `bonusHp`, `bonusDie`, `crossesBleed`), tested in `server/test/cinematicWeight.test.js`. Server: `fight:preset_weight { mode, weight, fighters: [{ ref, level, kind }] }` (GM only, active Scene) and `fighter:heal` in `server/combatState.js`. The bonus die is added in `server/fights.js`. The stage payload carries `activeScene.weights { simple, combat }`, and each fighter's state has `level` and `kind`. Playtest: `scripts/playtest-combat-weight.mjs`.
 - **Not tracked (the user's choice):** the per-weight Super Move limit, the character-type **Bleed Ability** at the start of a turn while Bleeding, and the book's Complications (Guest Heroes, Uneven Fights, Stooges sharing a bar).
 
+### Token notes — implemented (decided, new)
+- **Two notes per token, left and right**, shown beside the token **only while it is tapped** (its panel open), and **only for the Stance it is in now**. Each Stance keeps its own pair; a fighter without Stances keeps one pair under `none`.
+- **Who (decided):** whoever controls the token (its player, an assigned player, the GM) writes them. Everyone who taps the token reads them, and an empty note is not shown to readers. They save as the writer pauses typing, on leaving the box, and when the panel closes mid-typing.
+- **They live only as long as the token (decided):** stored on its own `combatants` row (`notes`, JSON `{ "<stanceId>" | "none": { left, right } }`, at most 500 characters each). Removing a map token deletes them. Un-summoning a miniature now also deletes its fight row (`dropSummonFightState`: tokens, HP and notes, freeing any Challenge naming it) rather than leaving it orphaned. A token placed again starts fresh.
+- **Preset notes on the character sheet (decided, new):** for real characters (PCs and NPCs, not Temp NPCs), each Stance on the Combat tab has **Token notes**, a left and a right note (`combat_stances.note_left/right`, set via `combat_stance:update { notes }`). Every new token or miniature of that character starts with them, so a returning character arrives with their notes already there. A miniature with no fight row yet shows them straight from the presets, and its row starts with them. Changing a token's copy in play leaves the presets alone, and changing a preset doesn't touch tokens already out.
+- Event: `fighter:set_note { ref, stanceId | null, side: 'left' | 'right', text }` (empty text deletes). UI: `TokenNotes`/`NoteCard` in `FighterOverlay.jsx` (anchors carry `halfWidth`), `PresetNotes` in `CombatTab.jsx`. Playtest: `scripts/playtest-token-notes.mjs`.
+
 ### Map tiles — implemented (decided, new)
 Special squares from the book's **Obstacles** (p.70-72) and the Battle Parameters, placed on the Combat map (a grid cell) or a Simple Combat lane (a lane space). Each mode keeps its own tiles, the way each mode keeps its own fight.
 - **The list (decided):**
   - **Obstacles:** Fog, Pit, Pit Trap (a Pit and a Trap in one space), Rubble, Trap, Wall.
   - **Markers:** Danger Zone (Traffic), King Zone (King of the Hill), Control Zone and the Important Thing (Secure the McGuffin).
   - **Not included (the user's choice):** Copies, Stairs and Conveyor Belts.
-- **The palette:** a round overlay button at the left of the screen, shown only in Simple Combat and Combat (right of the GM's drawer, hidden with the interface). It opens a small vertical list of every tile, each with its look and name.
+- **The palette:** a round overlay button at the left of the screen, shown only in Simple Combat and Combat (right of the GM's drawer). It **stays up with the interface hidden (decided)**, so tiles can be placed in cinematic mode. It opens a small vertical list of every tile, each with its look and name.
   - **Drag** one onto a square to place it.
   - **Tap** one for a small window with a brief mechanical description.
   - The GM also gets **Clear all tiles** for this mode.
@@ -3057,7 +3067,7 @@ The old system's phases (1-9 and the playtest batches after them) are complete h
   - **Simple Combat with more than 10 fighters:** the lane stays at 10 segments; extras wait in an off-lane tray.
   - **Joining or leaving mid-fight:** a fighter placed or removed after Start Combat joins or leaves from the next round's re-roll.
   - **End Combat** (GM): clears that mode's initiative; placements, HP and tokens stay until the GM clears them.
-  - **Shields** aren't tracked yet.
+  - **Shield — implemented (decided, new):** a special token after Armor (`shield`, cap 8, the book's Shield Cap; per-token caps via `capOf`). It is tracked by hand (decided): HP "−" never spends it. It is also drawn on the HP bar as a **blue extension** after the bar, as long relative to the bar as the Shield is to the current bar's Max HP. The two share the bar's width (flex 1 : ratio), so the proportion holds and the panel keeps its size. The full panel prints the value in it. Only a damage Shield is modelled, not the book's Status-token or "Nothing" kinds.
   - **Armor — implemented (decided, new):** a special token, `armor` in `panicTokens.js`'s `SPECIAL_TOKENS`, shown for every fighter in the token row just **after the Challenge slot**. It is a count like any token (how many sources of Armor the fighter has), with the same +/−, quick spend and cap. The book's rule (p.24) is in its description: each turn the first hit is reduced by 3, a second source by 2, the rest by 1. It works on any damage, including Fall, Burning and Traps, but not on HP costs. Temporary Armor isn't tracked separately.
   - **Cinematic Weight extras** not tracked yet: Super Move limits per round, the Bleed Ability at turn start, Complications (Guest Heroes, Uneven Fights, Stooges).
 - **Pre-pivot standalone Counters** still in the database (the Arena's): delete them, or give them a home in the new system.

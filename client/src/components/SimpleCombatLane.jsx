@@ -32,6 +32,7 @@ export default function SimpleCombatLane({
   controls = () => false,
   inset,
   lanes = 1,
+  laneY,
   setup = {},
   weight = null,
   tiles = [],
@@ -47,8 +48,8 @@ export default function SimpleCombatLane({
   const insetLeft = inset?.left ?? 0;
   const insetRight = inset?.right ?? 0;
   const geometry = useMemo(
-    () => laneGeometry(stageWidth, stageHeight, { left: insetLeft, right: insetRight }, lanes),
-    [stageWidth, stageHeight, insetLeft, insetRight, lanes]
+    () => laneGeometry(stageWidth, stageHeight, { left: insetLeft, right: insetRight }, lanes, laneY),
+    [stageWidth, stageHeight, insetLeft, insetRight, lanes, laneY]
   );
   const [drag, setDrag] = useState(null); // { id, pointerId, startX, startY, x, y, moved }
   // A drop is shown where it landed straight away, rather than snapping back
@@ -236,6 +237,7 @@ export default function SimpleCombatLane({
             bottom: seg.center.y + size.plinthRx * 0.32,
             mid: { x: seg.center.x, y: seg.center.y - imgH * 0.5 },
             icon: Math.max(14, Math.min(24, size.width * 0.3)),
+            halfWidth: size.width / 2,
           });
         }
         const byCombatant = new Map(summons.filter((s) => s.fight?.combatant_id != null).map((s) => [s.fight.combatant_id, s]));

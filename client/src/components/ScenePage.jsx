@@ -312,6 +312,7 @@ export default function ScenePage() {
           showNameplates={showNameplates}
           role={role}
           controls={controls}
+          locked={sceneMode === 'simple'}
         />
       )}
       {/* A sibling of StageRoster, not a child — see this component's own
@@ -348,6 +349,7 @@ export default function ScenePage() {
           controls={controls}
           inset={drawerInset}
           lanes={stage?.simpleLanes ?? 1}
+          laneY={stage?.laneY}
           setup={stage?.fighterSetup ?? {}}
           weight={weight}
           tiles={stage?.tiles?.simple ?? []}
@@ -444,7 +446,8 @@ export default function ScenePage() {
           turn-start Stance pick — the prompt shows even in cinematic mode,
           since a turn cannot go on without it. */}
       {/* Map tiles (decided, new): the palette, at the left, in either fight mode. */}
-      {!uiHidden && fightMode && <MapTilePalette mode={fightMode} role={role} left={role === 'gm' ? 256 : 0} />}
+      {/* Stays up with the interface hidden (decided), so tiles can be placed in cinematic mode. */}
+      {fightMode && <MapTilePalette mode={fightMode} role={role} left={role === 'gm' && !uiHidden ? 256 : 0} />}
       {!uiHidden && role === 'gm' && fightMode && !fight && <StartCombatButton onClick={() => setFightSetupOpen(true)} />}
       {/* The rail stays up in cinematic mode too (decided, mobile fix): the
           turn order and Next turn are needed mid-fight whatever the GM hides. */}

@@ -52,10 +52,24 @@ export const SPECIAL_TOKENS = [
     summary:
       'The first time you take damage each turn, reduce it by 3. More sources trigger again that turn, weaker: the 2nd blocks 2, the 3rd and beyond 1. Works on any damage (Fall, Burning, Traps, Super Moves) but not on HP costs.',
   },
+  // **Shield (decided, new)** — p.24. A value, not stacked sources: you hold
+  // one Shield, and gaining another either replaces it or raises it by 1.
+  // Capped at 8 (the book's Shield Cap). Tracked by hand (decided): HP "−"
+  // never spends it. It is also drawn as a blue extension of the HP bar.
+  {
+    key: 'shield',
+    name: 'Shield',
+    kind: 'special',
+    cap: 8,
+    summary:
+      'Blocks incoming damage from any Action or Ability that targets you, up to its value; when used up it breaks and the rest hits you. One Shield at a time: a new one replaces it, or raises it by 1. Cannot be healed. Cap 8.',
+  },
 ];
 
 export const ALL_TOKENS = [...BASIC_TOKENS, ...STATUS_TOKENS, ...UNIQUE_TOKENS, ...SPECIAL_TOKENS];
 export const SPECIAL_KEYS = new Set(SPECIAL_TOKENS.map((t) => t.key));
+// A token's own cap: TOKEN_CAP unless the token has a lower one (Shield: 8).
+export const capOf = (key) => TOKEN_BY_KEY[key]?.cap ?? TOKEN_CAP;
 export const UNIQUE_KEYS = new Set(UNIQUE_TOKENS.map((t) => t.key));
 export const TOKEN_BY_KEY = Object.fromEntries(ALL_TOKENS.map((t) => [t.key, t]));
 

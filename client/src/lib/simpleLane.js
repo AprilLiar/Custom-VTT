@@ -10,6 +10,15 @@
 // Spaces per lane.
 export const LANE_SLOTS = 10;
 export const MAX_LANES = 3;
+// **Lane height (decided, new):** where the board's centre sits, as a share of
+// the stage's height — a table-wide GM setting. 5/7 is the original spot.
+export const LANE_Y_DEFAULT = 5 / 7;
+export const LANE_Y_MIN = 0.2;
+export const LANE_Y_MAX = 0.9;
+export const clampLaneY = (y) => {
+  const v = Number(y);
+  return Number.isFinite(v) ? Math.min(LANE_Y_MAX, Math.max(LANE_Y_MIN, v)) : LANE_Y_DEFAULT;
+};
 export const clampLanes = (n) => Math.min(MAX_LANES, Math.max(1, Math.trunc(Number(n)) || 1));
 // Every space on the board: lane L, column C is space L * 10 + C. Lane 0 is
 // the FRONT lane (nearest the viewer), and packing fills it first.
@@ -99,7 +108,7 @@ export const LANE_PRESETS = {
 // two drawers — by fitting it into the space between them. Positions are
 // spaces, not pixels, so a GM and a Player drawing it at different widths
 // still agree on who stands where.
-export function laneGeometry(stageWidth, stageHeight, inset = { left: 0, right: 0 }, lanes = 1) {
+export function laneGeometry(stageWidth, stageHeight, inset = { left: 0, right: 0 }, lanes = 1, laneY = LANE_Y_DEFAULT) {
   const count = clampLanes(lanes);
   const preset = LANE_PRESETS[count];
   const left = Math.max(0, inset.left || 0);
@@ -108,7 +117,7 @@ export function laneGeometry(stageWidth, stageHeight, inset = { left: 0, right: 
   const bottomWidth = Math.min(usable * (left || inset.right ? 0.94 : 0.84), stageHeight * 2.4) * preset.width;
   const topWidth = bottomWidth * preset.backRatio;
   const height = Math.max(28 * count, bottomWidth * preset.depth);
-  const centerY = (stageHeight * 5) / 7;
+  const centerY = stageHeight * clampLaneY(laneY);
   const topY = centerY - height / 2;
   const bottomY = centerY + height / 2;
   // The board's edges are straight lines, so its width at any height is a

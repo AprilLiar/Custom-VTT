@@ -1,8 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Download } from 'lucide-react';
 import { socket } from '../socket.js';
 import { getTableSettings } from '../lib/api.js';
-import { MAX_LANES } from '../lib/simpleLane.js';
+import { LANE_Y_DEFAULT, LANE_Y_MAX, LANE_Y_MIN, MAX_LANES } from '../lib/simpleLane.js';
 import {
   DEFAULT_HUE,
   PRESET_HUES,
@@ -57,11 +57,19 @@ import { useRole } from '../roleContext.jsx';
 // count is one server setting everybody's Simple Combat follows.
 function SimpleCombatLanes() {
   const [lanes, setLanes] = useState(null);
+  const [laneY, setLaneY] = useState(null);
+  const sendY = useRef(null);
   useEffect(() => {
     getTableSettings()
-      .then((s) => setLanes(s.simpleLanes))
+      .then((s) => {
+        setLanes(s.simpleLanes);
+        setLaneY(s.laneY);
+      })
       .catch(console.error);
-    const onUpdated = (s) => setLanes(s.simpleLanes);
+    const onUpdated = (s) => {
+      setLanes(s.simpleLanes);
+      setLaneY(s.laneY);
+    };
     socket.on('table_settings:updated', onUpdated);
     return () => socket.off('table_settings:updated', onUpdated);
   }, []);
@@ -93,6 +101,45 @@ function SimpleCombatLanes() {
             {n} × 10
           </button>
         ))}
+      </div>
+      {/* **Lane height (decided, new)** — where the lanes sit on the screen,
+          still centred; table-wide. Sent shortly after the slider settles. */}
+      <div className="space-y-1">
+        <div className="flex items-center justify-between text-xs text-zinc-400">
+          <label htmlFor="lane-y" className="font-semibold uppercase tracking-wide">
+            Lane height
+          </label>
+          <span className="tabular-nums">{laneY == null ? '…' : `${Math.round(laneY * 100)}% down the screen`}</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <input
+            id="lane-y"
+            type="range"
+            min={LANE_Y_MIN}
+            max={LANE_Y_MAX}
+            step={0.01}
+            value={laneY ?? LANE_Y_DEFAULT}
+            disabled={laneY === null}
+            onChange={(e) => {
+              const v = Number(e.target.value);
+              setLaneY(v);
+              clearTimeout(sendY.current);
+              sendY.current = setTimeout(() => socket.emit('table_settings:set', { laneY: v }), 150);
+            }}
+            className="flex-1 accent-brand-500"
+          />
+          <button
+            type="button"
+            disabled={laneY === null || Math.abs(laneY - LANE_Y_DEFAULT) < 0.005}
+            onClick={() => {
+              setLaneY(LANE_Y_DEFAULT);
+              socket.emit('table_settings:set', { laneY: null });
+            }}
+            className="min-h-9 panel-cut-sm border border-zinc-700 px-2 text-xs text-zinc-300 hover:border-brand-500 disabled:opacity-40"
+          >
+            Reset
+          </button>
+        </div>
       </div>
     </div>
   );

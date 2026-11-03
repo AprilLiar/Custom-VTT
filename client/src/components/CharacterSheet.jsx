@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useLocation, useNavigate, useParams } from 'react-router-dom';
+import { ArrowLeft } from 'lucide-react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { useRole } from '../roleContext.jsx';
 import { socket } from '../socket.js';
@@ -67,6 +68,7 @@ export default function CharacterSheet() {
   const { id } = useParams();
   const { role, characterId: myCharacterId } = useRole();
   const navigate = useNavigate();
+  const location = useLocation();
   const [data, setData] = useState(null); // { character, roleplay, counters }
   const [tab, setTab] = useState('counters');
   const characterId = Number(id);
@@ -160,6 +162,13 @@ export default function CharacterSheet() {
 
   return (
     <div className={WIDE_TABS.has(tab) ? 'mx-auto w-full' : 'mx-auto max-w-3xl'}>
+      <BackArrow
+        role={role}
+        myCharacterId={myCharacterId}
+        character={data.character}
+        fromFolder={location.state?.fromFolder}
+        navigate={navigate}
+      />
       <CharacterHeader character={data.character} />
       {role === 'gm' && data.character.character_type === 'npc' && <AssignToPlayer character={data.character} />}
       {/* Mobile readiness (Change 002) §8.1: sticky under the mobile top
@@ -233,5 +242,29 @@ function AssignToPlayer({ character }) {
       </select>
       {character.assigned_to != null && <span className="text-[11px] text-zinc-500">That player controls this NPC fully.</span>}
     </label>
+  );
+}
+
+// **Back to the folder view (decided, new).** The GM returns to the roster,
+// in the folder the sheet was opened from (passed in the navigation state);
+// a sheet opened another way (Search, a link) returns to the character's own
+// folder. A Player has no roster: on an NPC assigned to them the arrow leads
+// back to their own sheet, and on their own sheet there is none.
+function BackArrow({ role, myCharacterId, character, fromFolder, navigate }) {
+  if (role !== 'gm' && character.id === myCharacterId) return null;
+  const toRoster = role === 'gm';
+  const go = () =>
+    toRoster
+      ? navigate('/', { state: { folder: fromFolder !== undefined ? fromFolder : (character.folder_id ?? null) } })
+      : navigate(`/character/${myCharacterId}`);
+  return (
+    <button
+      type="button"
+      onClick={go}
+      className="mb-2 inline-flex min-h-9 items-center gap-1.5 panel-cut-sm border border-zinc-700 px-2 text-xs font-semibold uppercase tracking-wide text-zinc-400 hover:border-brand-500 hover:text-brand-300"
+    >
+      <ArrowLeft size={14} aria-hidden />
+      {toRoster ? 'Back to folder' : 'Back to my character'}
+    </button>
   );
 }

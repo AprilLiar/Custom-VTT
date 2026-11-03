@@ -237,6 +237,10 @@ export default function StageRoster({
   showNameplates = true,
   role,
   controls = () => false,
+  // **Locked in Simple Combat (decided, new):** the figures behind the lane
+  // can't be moved, resized or unsummoned from the stage by anyone, so a drag
+  // aimed at the lane never shifts them by accident.
+  locked = false,
 }) {
   const reduceMotion = useReducedMotion();
   // A manually-placed summon's pos_x/pos_y are fractions of the ACTIVE
@@ -298,7 +302,7 @@ export default function StageRoster({
   // succeed. Nobody but the GM may touch a Temp NPC's (character_id is
   // null for one), which falls out of the same comparison for free.
   const canEditSummon = (summon) =>
-    role === 'gm' || (summon.character_id != null && controls(summon.character_id));
+    !locked && (role === 'gm' || (summon.character_id != null && controls(summon.character_id)));
 
   const auto = [];
   const manual = [];

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { useRole } from '../roleContext.jsx';
 import { socket } from '../socket.js';
 import { useRoster } from '../lib/useRoster.js';
@@ -194,10 +194,13 @@ function AddCharacterForm({ folders, currentFolder, onDone }) {
 export default function CharacterList() {
   const { role } = useRole();
   const navigate = useNavigate();
+  const location = useLocation();
   const characters = useRoster();
   const [folders, setFolders] = useState(null);
   const [adding, setAdding] = useState(false);
-  const [currentFolder, setCurrentFolder] = useState(null); // folder id | null = root
+  // folder id | null = root. A sheet's back arrow returns here with the folder
+  // it was opened from (`location.state.folder`).
+  const [currentFolder, setCurrentFolder] = useState(() => location.state?.folder ?? null);
   const [mobileFoldersOpen, setMobileFoldersOpen] = useState(false);
   const [moveTarget, setMoveTarget] = useState(null); // character being re-filed on mobile
 
@@ -224,6 +227,11 @@ export default function CharacterList() {
   }, []);
 
   if (!characters || !folders) return <p className="text-zinc-500">Loading…</p>;
+  // A folder that no longer exists (deleted while the sheet was open) → root.
+  if (currentFolder != null && !folders.some((f) => f.id === currentFolder)) {
+    setCurrentFolder(null);
+    return null;
+  }
 
   const roleVisible =
     role === 'gm' ? characters : characters.filter((c) => c.character_type === 'pc');
@@ -348,7 +356,7 @@ export default function CharacterList() {
                     key={c.id}
                     draggable={role === 'gm'}
                     onDragStart={(e) => e.dataTransfer.setData('text/character-id', String(c.id))}
-                    onClick={() => navigate(`/character/${c.id}`)}
+                    onClick={() => navigate(`/character/${c.id}`, { state: { fromFolder: currentFolder } })}
                     className="group flex cursor-pointer flex-col overflow-hidden panel-cut-lg border border-zinc-800 bg-zinc-900 transition hover:border-brand-600"
                   >
                     <div className="relative flex h-56 items-center justify-center bg-zinc-800">

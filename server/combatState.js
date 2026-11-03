@@ -11,7 +11,8 @@
 // `{ summonId }` (a Simple Combat miniature). Writes follow the figure rule:
 // the GM edits anyone, a Player their own character's copies.
 import { all, one, run } from './db.js';
-import { TOKEN_BY_KEY, TOKEN_CAP } from '../client/src/lib/panicTokens.js';
+import { TOKEN_BY_KEY, capOf } from '../client/src/lib/panicTokens.js';
+import { presetNotesFor } from './combatSetup.js';
 import { addBar, applyHpDelta, normalizeHp, removeBar, setHp } from '../client/src/lib/hpBars.js';
 import { FIGHTER_KINDS, WEIGHT_BY_KEY, barHp, clampLevel, crossesBleed } from '../client/src/lib/cinematicWeight.js';
 import { imageUrl } from './images.js';
@@ -26,7 +27,7 @@ export function shapeFightState(row) {
   const clean = {};
   for (const [k, v] of Object.entries(tokens)) {
     const n = Math.trunc(Number(v));
-    if (TOKEN_BY_KEY[k] && n > 0) clean[k] = Math.min(TOKEN_CAP, n);
+    if (TOKEN_BY_KEY[k] && n > 0) clean[k] = Math.min(capOf(k), n);
   }
   return {
     combatant_id: row?.id ?? null,
@@ -43,7 +44,32 @@ export function shapeFightState(row) {
     // Cinematic Weight preset: this copy's level (1-10) and level table.
     level: clampLevel(row?.level ?? 1),
     kind: FIGHTER_KINDS.includes(row?.fighter_kind) ? row.fighter_kind : null,
+    notes: parseNotes(row?.notes),
   };
+}
+
+// **Character notes (decided, new)**: a token's notes, two per Stance —
+// { "<stanceId>" | "none": { left?, right? } }. Shown only while the token is
+// in the Stance they were written in. Cleaned on the way out.
+export const NOTE_MAX = 500;
+export function parseNotes(raw) {
+  let notes = {};
+  try {
+    notes = JSON.parse(raw || '{}');
+  } catch {
+    notes = {};
+  }
+  const clean = {};
+  if (!notes || typeof notes !== 'object') return clean;
+  for (const [stance, pair] of Object.entries(notes)) {
+    if (!pair || typeof pair !== 'object') continue;
+    const out = {};
+    for (const side of ['left', 'right']) {
+      if (typeof pair[side] === 'string' && pair[side].trim()) out[side] = pair[side].slice(0, NOTE_MAX);
+    }
+    if (Object.keys(out).length) clean[stance] = out;
+  }
+  return clean;
 }
 
 // The weight set for a fighter's fight (scenes.simple_weight / combat_weight).
@@ -94,11 +120,15 @@ export async function resolveRef(ref) {
   if (ref?.summonId != null) {
     const summon = await one('SELECT * FROM scene_summons WHERE id = ?', [Number(ref.summonId)]);
     if (!summon) return null;
-    await run(
-      `INSERT OR IGNORE INTO combatants (scene_id, mode, summon_id, character_id, temp_npc_id)
-       VALUES (?, 'simple', ?, ?, ?)`,
-      [summon.scene_id, summon.id, summon.character_id, summon.temp_npc_id]
-    );
+    // A new miniature starts with its character's preset notes.
+    const existing = await one('SELECT id FROM combatants WHERE summon_id = ?', [summon.id]);
+    if (!existing) {
+      await run(
+        `INSERT OR IGNORE INTO combatants (scene_id, mode, summon_id, character_id, temp_npc_id, notes)
+         VALUES (?, 'simple', ?, ?, ?, ?)`,
+        [summon.scene_id, summon.id, summon.character_id, summon.temp_npc_id, JSON.stringify(await presetNotesFor(summon.character_id))]
+      );
+    }
     return one('SELECT * FROM combatants WHERE summon_id = ?', [summon.id]);
   }
   return null;
@@ -145,10 +175,37 @@ export function registerCombatStateHandlers({ on: onRaw, socket, mayWrite, emitS
     const row = await editable(ref);
     if (!row) return;
     const tokens = shapeFightState(row).tokens;
-    const next = clear ? 0 : Math.min(TOKEN_CAP, Math.max(0, (tokens[key] ?? 0) + Math.trunc(Number(delta) || 0)));
+    const next = clear ? 0 : Math.min(capOf(key), Math.max(0, (tokens[key] ?? 0) + Math.trunc(Number(delta) || 0)));
     if (next > 0) tokens[key] = next;
     else delete tokens[key];
     await run('UPDATE combatants SET tokens = ? WHERE id = ?', [JSON.stringify(tokens), row.id]);
+    await emitStageUpdated();
+  });
+
+  // A note on this token, for the Stance it is shown in (`stanceId`, one of
+  // the owner's, or null for a fighter without Stances). Empty text deletes it.
+  on('fighter:set_note', async ({ ref, stanceId, side, text }) => {
+    if (side !== 'left' && side !== 'right') return;
+    const row = await editable(ref);
+    if (!row) return;
+    let key = 'none';
+    if (stanceId != null) {
+      const col = row.character_id != null ? 'character_id' : 'temp_npc_id';
+      const stance = await one(`SELECT id FROM combat_stances WHERE id = ? AND ${col} = ?`, [
+        Number(stanceId),
+        row.character_id ?? row.temp_npc_id,
+      ]);
+      if (!stance) return;
+      key = String(stance.id);
+    }
+    const notes = parseNotes(row.notes);
+    const value = typeof text === 'string' ? text.slice(0, NOTE_MAX) : '';
+    const pair = { ...(notes[key] ?? {}) };
+    if (value.trim()) pair[side] = value;
+    else delete pair[side];
+    if (Object.keys(pair).length) notes[key] = pair;
+    else delete notes[key];
+    await run('UPDATE combatants SET notes = ? WHERE id = ?', [JSON.stringify(notes), row.id]);
     await emitStageUpdated();
   });
 

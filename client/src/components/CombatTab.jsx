@@ -115,7 +115,7 @@ export default function CombatTab({ ownerType, ownerId, canEdit = false, ownerNa
       <section>
         <h3 className="mb-1 font-display text-sm font-bold uppercase tracking-wide text-zinc-300">Tokens</h3>
         <p className="mb-2 text-xs text-zinc-500">
-          Every fighter always has the Basic and Status tokens, the Challenge and Armor. Check the Unique tokens this fighter uses — they join
+          Every fighter always has the Basic and Status tokens, the Challenge, Armor and Shield. Check the Unique tokens this fighter uses — they join
           the token row in combat.
         </p>
         <div className="mb-3 flex flex-wrap gap-1.5">
@@ -488,7 +488,7 @@ function StancesSection({ ownerType, ownerId, stances, canEdit }) {
       <ul className="mb-2 space-y-1.5">
         {stances.length === 0 && <li className="text-xs italic text-zinc-600">No stances yet.</li>}
         {stances.map((st, i) => (
-          <StanceRow key={st.id} stance={st} isDefault={i === 0} canEdit={canEdit} />
+          <StanceRow key={st.id} stance={st} isDefault={i === 0} canEdit={canEdit} withNotes={ownerType === 'character'} />
         ))}
       </ul>
       {canEdit &&
@@ -533,8 +533,10 @@ function DiceChips({ dice }) {
   );
 }
 
-function StanceRow({ stance, isDefault, canEdit }) {
+function StanceRow({ stance, isDefault, canEdit, withNotes = false }) {
   const [editing, setEditing] = useState(false);
+  const [notesOpen, setNotesOpen] = useState(false);
+  const noteCount = (stance.notes?.left ? 1 : 0) + (stance.notes?.right ? 1 : 0);
   if (editing) {
     return (
       <li>
@@ -555,6 +557,17 @@ function StanceRow({ stance, isDefault, canEdit }) {
       <span className="font-display text-sm font-semibold uppercase tracking-wide text-zinc-100">{stance.name}</span>
       {isDefault && <span className="text-[10px] uppercase text-zinc-500">default</span>}
       <DiceChips dice={stance.dice} />
+      {(canEdit || noteCount > 0) && withNotes && (
+        <button
+          type="button"
+          onClick={() => setNotesOpen((v) => !v)}
+          aria-expanded={notesOpen}
+          title="Notes every new token of this character starts with, shown while it is in this stance"
+          className={`text-[11px] ${notesOpen ? 'text-amber-200' : 'text-zinc-400 hover:text-zinc-100'}`}
+        >
+          Token notes{noteCount ? ` (${noteCount})` : ''}
+        </button>
+      )}
       {canEdit && (
         <span className="ml-auto flex gap-2 text-[11px]">
           <button type="button" onClick={() => setEditing(true)} className="text-zinc-400 hover:text-zinc-100">
@@ -572,7 +585,44 @@ function StanceRow({ stance, isDefault, canEdit }) {
           </button>
         </span>
       )}
+      {withNotes && notesOpen && <PresetNotes stance={stance} canEdit={canEdit} />}
     </li>
+  );
+}
+
+// **Preset token notes (decided, new)** — characters only. The left and right
+// notes for this stance that every new token or miniature of the character
+// starts with, so a returning character arrives with them. Saved on leaving
+// the box. A token's own copy can then be changed in play without touching
+// these.
+function PresetNotes({ stance, canEdit }) {
+  return (
+    <div className="grid w-full gap-2 sm:grid-cols-2">
+      {['left', 'right'].map((side) => (
+        <PresetNote key={side} side={side} stance={stance} canEdit={canEdit} />
+      ))}
+    </div>
+  );
+}
+
+function PresetNote({ side, stance, canEdit }) {
+  const saved = stance.notes?.[side] ?? '';
+  const [draft, setDraft] = useState(saved);
+  useEffect(() => setDraft(saved), [saved]);
+  return (
+    <label className="block">
+      <span className="text-[10px] uppercase tracking-wide text-zinc-500">{side === 'left' ? 'Left note' : 'Right note'}</span>
+      <textarea
+        value={draft}
+        readOnly={!canEdit}
+        maxLength={500}
+        rows={3}
+        placeholder={canEdit ? `Shown to the ${side} of the token in ${stance.name}` : ''}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={() => draft !== saved && socket.emit('combat_stance:update', { stanceId: stance.id, notes: { [side]: draft } })}
+        className="mt-0.5 block w-full resize-none rounded-sm border border-amber-200/30 bg-amber-50/95 p-1.5 text-xs leading-snug text-zinc-900 outline-none focus:border-amber-400"
+      />
+    </label>
   );
 }
 
