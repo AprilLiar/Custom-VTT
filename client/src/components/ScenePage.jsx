@@ -120,6 +120,11 @@ export default function ScenePage() {
   // Panic at the Dojo: which view this Scene is in (GM's toggle), and the
   // backdrop colour Simple Combat's lane glows in.
   const sceneMode = activeScene?.combat_mode ?? 'scene';
+  // The Combat map stays mounted once it has been shown (see the render below).
+  const [combatSeen, setCombatSeen] = useState(false);
+  useEffect(() => {
+    if (sceneMode === 'combat') setCombatSeen(true);
+  }, [sceneMode]);
   const laneGlow = useDominantColor(sceneMode === 'simple' ? backgroundSrc : null);
   useEffect(() => {
     setImageNatural({ width: 0, height: 0 });
@@ -264,7 +269,12 @@ export default function ScenePage() {
       ref={setStageEl}
       className="relative flex h-full w-full flex-col items-center justify-center overflow-hidden bg-zinc-950 text-zinc-500"
     >
-      {!isCombat && backgroundSrc && (
+      {/* **Kept mounted through Combat (decided, fix).** The backdrop, figures
+          and drawings are hidden, not unmounted, while the Scene is in Combat,
+          so leaving Combat shows them at once instead of reloading them.
+          `display: contents` adds no box, so their layering is unchanged. */}
+      <div style={{ display: isCombat ? 'none' : 'contents' }}>
+      {backgroundSrc && (
         <img
           ref={backdropRef}
           src={backgroundSrc}
@@ -288,7 +298,7 @@ export default function ScenePage() {
           `bg-zinc-950/90` — intended, not a layout bug. Rendered
           regardless of `uiHidden` — the figures themselves are the one
           thing cinematic mode never hides. */}
-      {stageWidth > 0 && !isCombat && (
+      {stageWidth > 0 && (
         <StageRoster
           summons={summons}
           stageWidth={stageWidth}
@@ -310,7 +320,7 @@ export default function ScenePage() {
           figure. Rendered unconditionally, same as StageRoster: drawings
           are part of the Scene itself, not UI chrome, so cinematic mode
           never hides them either. */}
-      {stageWidth > 0 && !isCombat && (
+      {stageWidth > 0 && (
         <SceneDrawingLayer
           drawings={drawings}
           stageWidth={stageWidth}
@@ -324,6 +334,7 @@ export default function ScenePage() {
           eraserWidth={eraserWidth}
         />
       )}
+      </div>
       {/* Simple Combat's lane — on top of the stage, under the drawers. Not
           hidden by cinematic mode: like the figures, it is part of the
           scene rather than interface chrome. */}
@@ -342,8 +353,12 @@ export default function ScenePage() {
           tiles={stage?.tiles?.simple ?? []}
         />
       )}
-      {stageWidth > 0 && isCombat && (
+      {/* Likewise the Combat map stays mounted once seen, hidden outside
+          Combat, so switching back is instant too. */}
+      {stageWidth > 0 && (isCombat || combatSeen) && (
+        <div style={{ display: isCombat ? 'contents' : 'none' }}>
         <CombatMap
+          active={isCombat}
           scene={activeScene}
           tokens={combatTokens}
           setup={stage?.fighterSetup ?? {}}
@@ -355,6 +370,7 @@ export default function ScenePage() {
           controls={controls}
           tiles={stage?.tiles?.combat ?? []}
         />
+        </div>
       )}
       {/* Also unconditional, same reasoning as StageRoster/SceneDrawingLayer
           above: a Timestamp's play beat is narrative content, not a UI

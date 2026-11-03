@@ -4,7 +4,7 @@ import { getCharacters, getCombatSetup, getTempNpcs } from '../lib/api.js';
 import { fileToPortrait } from '../lib/image.js';
 import { cropOf } from '../lib/imageCrop.js';
 import { usePictureUpload } from '../lib/usePictureUpload.jsx';
-import { BASIC_TOKENS, STATUS_TOKENS, UNIQUE_TOKENS } from '../lib/panicTokens.js';
+import { BASIC_TOKENS, SPECIAL_TOKENS, STATUS_TOKENS, UNIQUE_TOKENS } from '../lib/panicTokens.js';
 import { ICON_CREDIT, KIND_CLASS, TokenIcon } from '../lib/panicIcons.jsx';
 import CroppedImage from './CroppedImage.jsx';
 import DiceIcon from './DiceIcon.jsx';
@@ -115,7 +115,7 @@ export default function CombatTab({ ownerType, ownerId, canEdit = false, ownerNa
       <section>
         <h3 className="mb-1 font-display text-sm font-bold uppercase tracking-wide text-zinc-300">Tokens</h3>
         <p className="mb-2 text-xs text-zinc-500">
-          Every fighter always has the Basic and Status tokens. Check the Unique tokens this fighter uses — they join
+          Every fighter always has the Basic and Status tokens, the Challenge and Armor. Check the Unique tokens this fighter uses — they join
           the token row in combat.
         </p>
         <div className="mb-3 flex flex-wrap gap-1.5">
@@ -136,6 +136,16 @@ export default function CombatTab({ ownerType, ownerId, canEdit = false, ownerNa
             <TokenIcon tokenKey="challenge" className={`h-4 w-4 ${KIND_CLASS.status}`} />
             Challenge
           </span>
+          {SPECIAL_TOKENS.map((t) => (
+            <span
+              key={t.key}
+              title={t.summary}
+              className="inline-flex items-center gap-1 panel-cut-sm border border-zinc-800 bg-zinc-900 px-2 py-1 text-xs text-zinc-300"
+            >
+              <TokenIcon tokenKey={t.key} className={`h-4 w-4 ${KIND_CLASS[t.kind]}`} />
+              {t.name}
+            </span>
+          ))}
         </div>
         <div className="grid gap-2 sm:grid-cols-2">
           {UNIQUE_TOKENS.map((t) => {

@@ -20,6 +20,7 @@ import {
   GiPunchingBag,
   GiLightningSlashes,
   GiCrossedSwords,
+  GiBreastplate,
 } from 'react-icons/gi';
 
 export const TOKEN_ICONS = {
@@ -38,6 +39,7 @@ export const TOKEN_ICONS = {
   poltergeist: GiGhost,
   training: GiPunchingBag,
   rapid_strike: GiLightningSlashes,
+  armor: GiBreastplate,
 };
 
 // Each kind keeps the book's colour coding where it has one (Unique tokens
@@ -49,6 +51,7 @@ export const KIND_CLASS = {
   status: 'text-orange-300',
   unique: 'text-violet-300',
   super: 'text-amber-300',
+  special: 'text-zinc-200',
 };
 
 export function TokenIcon({ tokenKey, className = '', title }) {

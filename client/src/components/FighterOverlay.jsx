@@ -3,7 +3,7 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { Minus, Plus, X } from 'lucide-react';
 import { GiDeathSkull, GiSleepy } from 'react-icons/gi';
 import { socket } from '../socket.js';
-import { TOKEN_BY_KEY, TOKEN_CAP, tokensFor } from '../lib/panicTokens.js';
+import { SPECIAL_KEYS, SPECIAL_TOKENS, TOKEN_BY_KEY, TOKEN_CAP, tokensFor } from '../lib/panicTokens.js';
 import { KIND_CLASS, TokenIcon } from '../lib/panicIcons.jsx';
 import { HP_MAX, barsLeft, isTakenOut } from '../lib/hpBars.js';
 import { cropOf } from '../lib/imageCrop.js';
@@ -324,9 +324,38 @@ export default function FighterOverlay({
 
   const hp = fight.hp;
   const takenOut = isTakenOut(hp);
-  const held = Object.entries(fight.tokens).filter(([, n]) => n > 0);
+  // Armor (a special token) sits after the Challenge slot; the rest before it.
+  const heldAll = Object.entries(fight.tokens).filter(([, n]) => n > 0);
+  const held = heldAll.filter(([k]) => !SPECIAL_KEYS.has(k));
+  const heldSpecial = heldAll.filter(([k]) => SPECIAL_KEYS.has(k));
   const allTokens = tokensFor(setup?.unique_tokens ?? []);
   const emit = (event, extra = {}) => socket.emit(event, { ref: fighterRef, ...extra });
+  // One token in the row: the open panel's picker, or a quick spend.
+  const tokenCell = ([key, count]) => (
+            <div key={key} className="flex flex-col items-center">
+              <CountedIcon
+                tokenKey={key}
+                count={count}
+                size={rowIcon}
+                active={selected && openKey === key}
+                dim={selected && !count}
+                // **A quick spend (decided):** with the panel closed, clicking
+                // a held token takes one off — the same as its "−" — since
+                // tokens are spent far more often than they are gained.
+                onClick={
+                  selected
+                    ? () => setOpenKey((k) => (k === key ? null : key))
+                    : canEdit
+                      ? (e) => {
+                          e.stopPropagation();
+                          emit('fighter:token', { key, delta: -1 });
+                        }
+                      : undefined
+                }
+                title={!selected && canEdit ? `Spend 1 ${TOKEN_BY_KEY[key]?.name}` : undefined}
+              />
+            </div>
+          );
   const barWidth = Math.max(56, iconSize * 3.2);
   // The open panel is for clicking, so its icons never shrink with the map.
   const rowIcon = selected ? Math.max(iconSize, 28) : iconSize;
@@ -373,31 +402,7 @@ export default function FighterOverlay({
           </span>
         )}
         <div className={`flex items-end gap-1 ${selected ? 'rounded-md border border-zinc-700 bg-zinc-950/85 p-1' : ''}`}>
-          {(selected ? allTokens.map((t) => [t.key, fight.tokens[t.key] ?? 0]) : held).map(([key, count]) => (
-            <div key={key} className="flex flex-col items-center">
-              <CountedIcon
-                tokenKey={key}
-                count={count}
-                size={rowIcon}
-                active={selected && openKey === key}
-                dim={selected && !count}
-                // **A quick spend (decided):** with the panel closed, clicking
-                // a held token takes one off — the same as its "−" — since
-                // tokens are spent far more often than they are gained.
-                onClick={
-                  selected
-                    ? () => setOpenKey((k) => (k === key ? null : key))
-                    : canEdit
-                      ? (e) => {
-                          e.stopPropagation();
-                          emit('fighter:token', { key, delta: -1 });
-                        }
-                      : undefined
-                }
-                title={!selected && canEdit ? `Spend 1 ${TOKEN_BY_KEY[key]?.name}` : undefined}
-              />
-            </div>
-          ))}
+          {(selected ? allTokens.map((t) => [t.key, fight.tokens[t.key] ?? 0]) : held).map(tokenCell)}
           {/* The Challenge slot. */}
           {(selected || fight.challenge_id != null) && (
             <div className="relative">
@@ -462,6 +467,8 @@ export default function FighterOverlay({
               )}
             </div>
           )}
+          {/* Armor (decided): after the Challenge, stackable like any token. */}
+          {(selected ? SPECIAL_TOKENS.map((t) => [t.key, fight.tokens[t.key] ?? 0]) : heldSpecial).map(tokenCell)}
         </div>
         {selected && openKey && canEdit && (
           <div className="mt-1 flex gap-1">

@@ -71,7 +71,7 @@ const pointsAttr = (quad) => quad.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1
 // Everything a view needs to show and edit its tiles: the drawn layer (an SVG
 // of the view's size), and the popup. `rootRef` is the view's positioned root,
 // whose top-left is (0, 0) of `quadOf`.
-export function MapTileLayer({ mode, tiles, squareAt, quadOf, width, height, rootRef, zIndex = 1 }) {
+export function MapTileLayer({ active = true, mode, tiles, squareAt, quadOf, width, height, rootRef, zIndex = 1 }) {
   const squares = useMemo(() => [...groupSquares(tiles).values()], [tiles]);
   const [drag, setDrag] = useState(null); // { key, from, pointerId, startX, startY, x, y, moved }
   const [paletteDrag, setPaletteDrag] = useState(null); // { kind, x, y }
@@ -81,10 +81,12 @@ export function MapTileLayer({ mode, tiles, squareAt, quadOf, width, height, roo
   useEffect(() => setPending(null), [tiles]);
 
   const latest = useRef({});
-  latest.current = { squareAt, mode };
+  latest.current = { squareAt, mode, active };
   useEffect(
     () =>
       subscribeTileDrag((ev) => {
+        // A hidden view (the Combat map kept mounted outside Combat) ignores drags.
+        if (!latest.current.active) return;
         if (ev.type === 'move') setPaletteDrag({ kind: ev.item.kind, x: ev.x, y: ev.y });
         else {
           setPaletteDrag(null);

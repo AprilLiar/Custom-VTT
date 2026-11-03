@@ -34,6 +34,7 @@ const MAX_ZOOM = 5;
 const HIGHLIGHT = 'rgba(250, 204, 21, 0.45)';
 
 export default function CombatMap({
+  active = true,
   scene,
   tokens,
   stageWidth,
@@ -109,6 +110,15 @@ export default function CombatMap({
     left: baseFit.left + view.offX,
     top: baseFit.top + view.offY,
   };
+  // **Tokens stick to their squares (fix).** A token slides when IT moves (a
+  // drop, a swap), but when the view moves — pan, zoom, a resize — every token
+  // must move with the map in the same frame, or they trail behind it.
+  const viewKey = `${fit.left.toFixed(2)},${fit.top.toFixed(2)},${fit.scale.toFixed(5)}`;
+  const lastViewKey = useRef(viewKey);
+  const viewMoved = lastViewKey.current !== viewKey;
+  useEffect(() => {
+    lastViewKey.current = viewKey;
+  });
   const panRef = useRef(null);
   const onWheel = (e) => {
     if (!baseFit.scale) return;
@@ -211,14 +221,15 @@ export default function CombatMap({
   // ---- dropping a new token from a palette
   const [paletteDrag, setPaletteDrag] = useState(null); // { fighter, x, y }
   const latest = useRef({});
-  latest.current = { cellUnder, placed };
+  latest.current = { cellUnder, placed, active };
   useEffect(
     () =>
       subscribeFighterDrag((ev) => {
+        if (!latest.current.active) return;
         if (ev.type === 'move') setPaletteDrag({ fighter: ev.fighter, x: ev.x, y: ev.y });
         else {
           setPaletteDrag(null);
-          if (ev.type !== 'drop') return;
+          if (ev.type !== 'drop' || !latest.current.active) return;
           const cell = latest.current.cellUnder(ev.x, ev.y);
           if (!cell || cellTaken(latest.current.placed, cell.col, cell.row)) return;
           socket.emit('combat_token:place', {
@@ -333,6 +344,7 @@ export default function CombatMap({
       {/* Above the grid, below every token (tokens are z 10). */}
       {ready && (
         <MapTileLayer
+          active={active}
           mode="combat"
           tiles={tiles}
           squareAt={cellUnder}
@@ -387,6 +399,7 @@ export default function CombatMap({
               center={center}
               size={tokenSize}
               lifted={isDragged}
+              animate={!viewMoved}
               selected={selectedTokenId === t.id}
               canEdit={canDrag(t)}
               onPointerDown={(e) => onTokenDown(e, t)}
@@ -454,7 +467,7 @@ const cropFrom = (c) => (c ? cropOf({ crop_x: c.x, crop_y: c.y, crop_w: c.w, cro
 
 // A round combat token: the fighter's combat-token picture (or portrait), a
 // light ring and a drop shadow. Lifted while dragged.
-export function Token({ token, center, size, lifted = false, selected = false, ghost = false, canEdit = false, onPointerDown }) {
+export function Token({ token, center, size, lifted = false, animate = true, selected = false, ghost = false, canEdit = false, onPointerDown }) {
   return (
     <div
       className={`group absolute ${onPointerDown ? `pointer-events-auto ${canEdit ? (lifted ? 'cursor-grabbing' : 'cursor-grab') : 'cursor-pointer'}` : 'pointer-events-none'}`}
@@ -465,7 +478,7 @@ export function Token({ token, center, size, lifted = false, selected = false, g
         height: size,
         zIndex: lifted ? 30 : selected ? 20 : 10,
         opacity: ghost ? 0.45 : 1,
-        transition: lifted ? 'none' : 'left 160ms ease-out, top 160ms ease-out',
+        transition: lifted || !animate ? 'none' : 'left 160ms ease-out, top 160ms ease-out',
         touchAction: 'none',
       }}
       title={token.name}

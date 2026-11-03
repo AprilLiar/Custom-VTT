@@ -40,7 +40,22 @@ export const UNIQUE_TOKENS = [
   { key: 'rapid_strike', name: 'Rapid Strike', kind: 'super', source: 'Underdog — Blur Super Move', summary: 'Spend (your turn or as a Reactive Action) to move 1, then deal 1 damage to an adjacent enemy.' },
 ];
 
-export const ALL_TOKENS = [...BASIC_TOKENS, ...STATUS_TOKENS, ...UNIQUE_TOKENS];
+// **Armor (decided, new)** — p.24, "Armor, Shields, Unblockable". Not a token
+// in the book but a stackable defence, tracked like one: the count is how
+// many sources of Armor the fighter has. Every fighter shows it, in the token
+// row just after the Challenge slot.
+export const SPECIAL_TOKENS = [
+  {
+    key: 'armor',
+    name: 'Armor',
+    kind: 'special',
+    summary:
+      'The first time you take damage each turn, reduce it by 3. More sources trigger again that turn, weaker: the 2nd blocks 2, the 3rd and beyond 1. Works on any damage (Fall, Burning, Traps, Super Moves) but not on HP costs.',
+  },
+];
+
+export const ALL_TOKENS = [...BASIC_TOKENS, ...STATUS_TOKENS, ...UNIQUE_TOKENS, ...SPECIAL_TOKENS];
+export const SPECIAL_KEYS = new Set(SPECIAL_TOKENS.map((t) => t.key));
 export const UNIQUE_KEYS = new Set(UNIQUE_TOKENS.map((t) => t.key));
 export const TOKEN_BY_KEY = Object.fromEntries(ALL_TOKENS.map((t) => [t.key, t]));
 

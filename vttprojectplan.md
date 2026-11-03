@@ -2891,6 +2891,8 @@ A three-way toggle at the top of the Scene page, **shown to the GM only** (decid
   - A square grid overlays it, with GM controls: **square size in pixels** (±1 steps, live preview), **X/Y offset**, and **opacity** (slider). The grid stops at a **10% padding** inside the image's edges, and lines simply end there even if that cuts a square short.
   - Characters and Temp NPCs are dragged onto the map as round tokens, snapped to grid squares. **The same actor can be placed several times** (minions), and **each copy is independent**: its own HP bars, tokens, Challenge and initiative turns.
   - **Zoom (decided, added with Phase 5):** each viewer can zoom the battle map, 1× to 5×, with the mouse wheel (about the pointer) or +/−/fit buttons in its bottom-right corner, and pan by dragging empty map. It is local to that viewer and never synced. Placing, moving and the drop highlight work at any zoom; the map and its tokens are clipped to the area between the drawers.
+  - **Tokens stick to their squares (fix):** a token slides (160ms) only when it moves itself (a drop, a swap). Any render where the view moved (pan, zoom, resize) turns the slide off, so tokens move with the map in the same frame instead of trailing it.
+  - **Kept mounted (fix):** the Scene's backdrop, figures and drawings stay mounted (hidden) while the Scene is in Combat, so leaving Combat shows them at once instead of reloading. Once shown, the Combat map likewise stays mounted outside Combat. A hidden map ignores palette drags (`active` prop).
   - **Decided for Phase 3:** Combat mode is **map only** — the Scene's figures, drawings and lane are hidden while it is on. Grid size and offset are in the **map image's own pixels**. Tokens come from a GM **Fighters** drawer (left) and a Player's own **dock**; the right drawer holds the map settings. One token per square: **dropping onto another token swaps the two**, like the lane; a brand-new token can't swap, so an occupied square refuses it.
 
 ### The token panel (on a Combat token or a Simple Combat miniature)
@@ -3055,7 +3057,8 @@ The old system's phases (1-9 and the playtest batches after them) are complete h
   - **Simple Combat with more than 10 fighters:** the lane stays at 10 segments; extras wait in an off-lane tray.
   - **Joining or leaving mid-fight:** a fighter placed or removed after Start Combat joins or leaves from the next round's re-roll.
   - **End Combat** (GM): clears that mode's initiative; placements, HP and tokens stay until the GM clears them.
-  - **Shields and Armor** aren't tracked in the first pass.
+  - **Shields** aren't tracked yet.
+  - **Armor — implemented (decided, new):** a special token, `armor` in `panicTokens.js`'s `SPECIAL_TOKENS`, shown for every fighter in the token row just **after the Challenge slot**. It is a count like any token (how many sources of Armor the fighter has), with the same +/−, quick spend and cap. The book's rule (p.24) is in its description: each turn the first hit is reduced by 3, a second source by 2, the rest by 1. It works on any damage, including Fall, Burning and Traps, but not on HP costs. Temporary Armor isn't tracked separately.
   - **Cinematic Weight extras** not tracked yet: Super Move limits per round, the Bleed Ability at turn start, Complications (Guest Heroes, Uneven Fights, Stooges).
 - **Pre-pivot standalone Counters** still in the database (the Arena's): delete them, or give them a home in the new system.
 - **`chat_log.move_id`** is an unused leftover column; harmless, removable whenever `chat_log` next changes shape.
