@@ -70,7 +70,7 @@ console.log('\n--- assigned ---');
 gm.emit('character:assign', { characterId: mira.id, playerCharacterId: bo.id });
 gm.emit('character:assign', { characterId: grunt.id, playerCharacterId: grunt.id });
 await sleep(300);
-check('a PC cannot be assigned, nor to a non-PC', (await roster()).every((c) => c.assigned_to == null));
+check('a PC cannot be assigned, nor to a non-PC', (await roster()).filter((c) => [mira.id, bo.id, grunt.id].includes(c.id)).every((c) => c.assigned_to == null));
 const updates = [];
 p.on('character:updated', (c) => updates.push(c));
 gm.emit('character:assign', { characterId: grunt.id, playerCharacterId: mira.id });

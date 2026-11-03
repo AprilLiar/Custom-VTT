@@ -36,6 +36,7 @@ import PlayerSummonDock from './PlayerSummonDock.jsx';
 import SceneModeToggle from './SceneModeToggle.jsx';
 import SceneChat from './SceneChat.jsx';
 import SimpleCombatLane from './SimpleCombatLane.jsx';
+import { MapTilePalette } from './MapTiles.jsx';
 import CombatMap from './CombatMap.jsx';
 import { CombatFightersDrawer, CombatMapDrawer, PlayerTokenDock } from './CombatDrawers.jsx';
 import { FightSetupDialog, InitiativeRail, StancePrompt, StartCombatButton } from './FightControls.jsx';
@@ -338,6 +339,7 @@ export default function ScenePage() {
           lanes={stage?.simpleLanes ?? 1}
           setup={stage?.fighterSetup ?? {}}
           weight={weight}
+          tiles={stage?.tiles?.simple ?? []}
         />
       )}
       {stageWidth > 0 && isCombat && (
@@ -351,6 +353,7 @@ export default function ScenePage() {
           inset={drawerInset}
           role={role}
           controls={controls}
+          tiles={stage?.tiles?.combat ?? []}
         />
       )}
       {/* Also unconditional, same reasoning as StageRoster/SceneDrawingLayer
@@ -424,6 +427,8 @@ export default function ScenePage() {
       {/* The fight (Phase 5): Start Combat (GM), the initiative rail, and the
           turn-start Stance pick — the prompt shows even in cinematic mode,
           since a turn cannot go on without it. */}
+      {/* Map tiles (decided, new): the palette, at the left, in either fight mode. */}
+      {!uiHidden && fightMode && <MapTilePalette mode={fightMode} role={role} left={role === 'gm' ? 256 : 0} />}
       {!uiHidden && role === 'gm' && fightMode && !fight && <StartCombatButton onClick={() => setFightSetupOpen(true)} />}
       {/* The rail stays up in cinematic mode too (decided, mobile fix): the
           turn order and Next turn are needed mid-fight whatever the GM hides. */}

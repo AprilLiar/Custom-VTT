@@ -25,6 +25,7 @@ import { TRAY, clampLanes, laneCapacity, moveOnLane, packLane } from '../client/
 import { loadCombatTokens, registerCombatMapHandlers, sceneGrid } from './combatMap.js';
 import { EMPTY_FIGHT_STATE, loadSimpleStates, registerCombatStateHandlers } from './combatState.js';
 import { loadFightState, registerFightHandlers } from './fights.js';
+import { loadMapTiles, registerMapTileHandlers } from './mapTiles.js';
 import { controlsCharacter, dropAssignmentsTo, loadAssignments, setAssignment } from './control.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -643,7 +644,9 @@ async function buildStagePayload() {
   const fights = activeScene
     ? { simple: await loadFightState(activeScene.id, 'simple'), combat: await loadFightState(activeScene.id, 'combat') }
     : { simple: null, combat: null };
-  return { activeScene, summons, drawings, combatTokens, simpleLanes, fighterSetup, fights };
+  // Map tiles, per mode — public, like the tokens.
+  const tiles = await loadMapTiles(activeScene?.id ?? null);
+  return { activeScene, summons, drawings, combatTokens, simpleLanes, fighterSetup, fights, tiles };
 }
 
 async function loadFighterSetup() {
@@ -1459,6 +1462,7 @@ io.on('connection', (socket) => {
   registerCombatMapHandlers({ on, socket, mayWrite: mayWriteScenePicture, emitStageUpdated, stampImageHash });
   // A fighter's HP, tokens, Challenge and Stance (Phase 4) — see server/combatState.js.
   registerCombatStateHandlers({ on, socket, mayWrite: mayWriteScenePicture, emitStageUpdated, postCard });
+  registerMapTileHandlers({ on, socket, emitStageUpdated });
   // Rounds, turns, Stance rolls and Reminders (Phase 5) — see server/fights.js.
   registerFightHandlers({ on, socket, emitStageUpdated, postCard, postSystemMessage, emitAll: (event, payload) => io.emit(event, payload) });
 
@@ -2000,6 +2004,7 @@ io.on('connection', (socket) => {
     await run('UPDATE scene_state SET active_scene_id = NULL WHERE active_scene_id = ?', [scene.id]);
     await run('DELETE FROM scene_notes WHERE scene_id = ?', [scene.id]);
     await run('DELETE FROM fights WHERE scene_id = ?', [scene.id]);
+    await run('DELETE FROM map_tiles WHERE scene_id = ?', [scene.id]);
     await run('DELETE FROM combatants WHERE scene_id = ?', [scene.id]);
     await run('DELETE FROM scene_summons WHERE scene_id = ?', [scene.id]);
     await run('DELETE FROM scene_drawings WHERE scene_id = ?', [scene.id]);

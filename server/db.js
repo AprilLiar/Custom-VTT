@@ -1405,6 +1405,21 @@ export async function initDb() {
   // summon: at most one row per summon, so INSERT OR IGNORE is race-free.
   ddl('CREATE UNIQUE INDEX IF NOT EXISTS idx_combatants_summon_unique ON combatants(summon_id) WHERE summon_id IS NOT NULL');
 
+  // Map tiles (server/mapTiles.js, client/src/lib/mapTiles.js): one row per
+  // tile kind on a square of a Scene's Combat map (grid cell) or Simple Combat
+  // lane (col = lane space, row = 0).
+  ddl(`
+    CREATE TABLE IF NOT EXISTS map_tiles (
+      id INTEGER PRIMARY KEY,
+      scene_id INTEGER NOT NULL REFERENCES scenes(id) ON DELETE CASCADE,
+      mode TEXT NOT NULL CHECK(mode IN ('simple','combat')),
+      col INTEGER NOT NULL,
+      row INTEGER NOT NULL,
+      kind TEXT NOT NULL
+    )
+  `);
+  ddl('CREATE INDEX IF NOT EXISTS idx_map_tiles_scene ON map_tiles(scene_id, mode, col, row)');
+
   // **A fight (Panic at the Dojo, Phase 5)** — one per Scene per mode. The
   // sides are JSON arrays of combatant ids; `turn_order` is this round's
   // [{ side, id }] (client/src/lib/initiative.js); `pending_stance_combatant`

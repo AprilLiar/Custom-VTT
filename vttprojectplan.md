@@ -2819,6 +2819,7 @@ Every table the server creates (`server/db.js`, all `CREATE TABLE IF NOT EXISTS`
 - **combat_stances** — `id, character_id | temp_npc_id, name, dice (JSON), created_at`
 - **scenes.combat_mode**, **scene_summons.lane_slot** — see Phase 2 as built.
 - **scenes.combat_image_*, grid_*** and **combatants** — see Phase 3 as built.
+- **map_tiles** — see Map tiles.
 - **characters.assigned_to** — the PC (player) an NPC is assigned to; NULL = the GM's alone. See Roles / access model.
 - **scenes.simple_weight / combat_weight**, **combatants.level / fighter_kind / bled_round** — see Cinematic Weight as built.
 - **table_settings** — `id = 1, simple_lanes` — see Multi-lane as built.
@@ -2839,6 +2840,7 @@ Clients emit; the server validates, writes, and broadcasts. The surviving contra
 - **Scene modes:** `scene:set_mode` (GM), `lane:move` → `stage:updated`.
 - **Table settings:** `table_settings:set` (GM) → `table_settings:updated`.
 - **Fights:** `fight:start|next|choose_stance|set_sides|end` → `stage:updated`; cards → `chat:card`; `fight:turn_ended { combatantId }` and `fight:ended { mode }` (io.emit) for the Scene's pinned roll cards.
+- **Map tiles:** `map_tile:place|remove|destroy|move|clear` → `stage:updated` (see Map tiles).
 - **NPC assignment:** `character:assign { characterId, playerCharacterId | null }` (GM) → `character:updated { id, assigned_to }`.
 - **Fighter state:** `fighter:token|challenge|hp|set_hp|add_bar|remove_bar|clear_dizzy|set_stance|heal` → `stage:updated`; `fight:preset_weight` (GM) → `stage:updated`; a Bleed posts a `chat:card` reminder.
 - **Combat map:** `scene:set_grid`, `scene:set_combat_image`, `combat_token:place|move|remove|clear` → `stage:updated`.
@@ -2895,7 +2897,7 @@ A three-way toggle at the top of the Scene page, **shown to the GM only** (decid
 Clicking a token opens its panel; a click that turns into a drag closes the panel and moves the token instead.
 - **Upper panel — tokens:** one row of icons: Basic, Status, then the actor's checked Unique tokens. Icons come from an open-source game-icon set (game-icons.net, CC BY 3.0, credited in the app). Clicking an icon shows its name above it and **+ / − / −−** (add 1, remove 1, remove all) below it. Only one icon is open at a time. **Any token with a count of 1 or more stays shown above the token permanently**, with a high-contrast red count badge in its bottom-right quarter (half the icon's width and height).
 - **Upper panel — Challenge slot:** a small empty round button. Clicking it lists every fighter in this fight to its right; picking one fills the button with that fighter's portrait and keeps it shown permanently above the token, half-transparent. Sparse, small, half-transparent red particles drift from it toward the chosen Challenger, a gentle "threat" cue. Book meaning: this token's holder carries that fighter's Challenge. Cap 1.
-- **Quick spend (decided, added with Phase 5):** with the panel closed, clicking a token icon shown above a fighter removes one, the same as its "−" — tokens are spent far more often than gained. Only for whoever may edit that fighter.
+- **Quick spend (decided, added with Phase 5):** with the panel closed, clicking a token icon shown above a fighter removes one, the same as its "−" — tokens are spent far more often than gained. Only for whoever may edit that fighter. **The held Challenge works the same way (decided, fix):** clicking it with the panel closed removes it (`fighter:challenge { target: null }`); with the panel open it still opens the Challenger picker.
 - **Decided for Phase 4:** a **compact HP bar stack is always visible** under every fighter (the full panel opens on click), and **everyone sees every fighter's HP and tokens**; only the owner (or GM) edits.
 - **Bottom panel — HP bars:** a bar with **−** at its left end and **+** at its right (±1; Max HP up to 99, so two digits). A golden **+** under it adds another bar. Every bar shares the first bar's Max HP, and new bars start full. Extra bars stack behind and slightly below the main bar, bottom half visible. When the current bar reaches 0 it plays a **breaking animation**, the next bar moves up, and a **Dizzy ("sleeping") icon** covers the whole token **until the end of the current turn**. The last bar breaking leaves the token Taken Out at 0 HP; healing revives it. Max HP and bar count are set here, per placed token.
 
@@ -2996,6 +2998,37 @@ The book's **Cinematic Weight** (p.38-40) sets how big a fight is. The GM picks 
 - **The weight on the rail (decided):** the initiative rail shows "Middleweight · Heal 2 · Bleed 4".
 - **Rules and code:** `client/src/lib/cinematicWeight.js` (tables, `barHp`, `bonusHp`, `bonusDie`, `crossesBleed`), tested in `server/test/cinematicWeight.test.js`. Server: `fight:preset_weight { mode, weight, fighters: [{ ref, level, kind }] }` (GM only, active Scene) and `fighter:heal` in `server/combatState.js`. The bonus die is added in `server/fights.js`. The stage payload carries `activeScene.weights { simple, combat }`, and each fighter's state has `level` and `kind`. Playtest: `scripts/playtest-combat-weight.mjs`.
 - **Not tracked (the user's choice):** the per-weight Super Move limit, the character-type **Bleed Ability** at the start of a turn while Bleeding, and the book's Complications (Guest Heroes, Uneven Fights, Stooges sharing a bar).
+
+### Map tiles — implemented (decided, new)
+Special squares from the book's **Obstacles** (p.70-72) and the Battle Parameters, placed on the Combat map (a grid cell) or a Simple Combat lane (a lane space). Each mode keeps its own tiles, the way each mode keeps its own fight.
+- **The list (decided):**
+  - **Obstacles:** Fog, Pit, Pit Trap (a Pit and a Trap in one space), Rubble, Trap, Wall.
+  - **Markers:** Danger Zone (Traffic), King Zone (King of the Hill), Control Zone and the Important Thing (Secure the McGuffin).
+  - **Not included (the user's choice):** Copies, Stairs and Conveyor Belts.
+- **The palette:** a round overlay button at the left of the screen, shown only in Simple Combat and Combat (right of the GM's drawer, hidden with the interface). It opens a small vertical list of every tile, each with its look and name.
+  - **Drag** one onto a square to place it.
+  - **Tap** one for a small window with a brief mechanical description.
+  - The GM also gets **Clear all tiles** for this mode.
+- **Who (decided):** everyone, GM and Players, places, moves and removes tiles, as in the book's Free Placement. Clearing a whole mode is GM-only.
+- **Stacking (decided: the book's rules)** — `client/src/lib/mapTiles.js` (`placeTile`, `removeTile`, `destroyTile`, `mergeInto`, tested in `server/test/mapTiles.test.js`):
+  - Fog, Pits and Traps share a space; a Pit and a Trap together display as one **Pit Trap**.
+  - Rubble clears the other obstacles in its space, and an obstacle placed on Rubble replaces it (Fog included).
+  - A Wall shares only with Fog. Any other obstacle placed on a Wall destroys it into Rubble, and that Rubble destroys the new obstacle, so the square becomes Rubble.
+  - Markers share a square with anything (one of each per square), and survive Rubble. The book's "no obstacles inside a King/Control Zone" is described on the tile but not enforced.
+- **Placed tiles (decided):**
+  - **Tapping** a square opens the description of each tile on it, with **Remove**. Walls and Rubble also get **Destroy**: a Wall becomes Rubble, and Rubble is gone.
+  - **Dragging** a square moves its whole stack onto another square, by the same rules. Dragging it off the map or lane removes it.
+  - A token or miniature standing on a square covers it; move it to reach the tile.
+- **The look** (`client/src/lib/tileArt.js`):
+  - A frame just inside the square, with each tile's motif in the four corners: bricks (Wall), loose rocks (Rubble), spikes (Trap), depth rings (Pit), spikes and rings (Pit Trap), wisps (Fog), hazard stripes (Danger), crowns (King), brackets (Control) and sparkles (Important Thing).
+  - Each tile is colour-coded, with its name (or names) in the middle.
+  - The art is authored for a unit square and bent into each square's real shape, so on a lane it follows the space's perspective.
+  - The layer sits above the grid / lane lines and below every token and miniature.
+- **Data and events:**
+  - Table `map_tiles (scene_id, mode, col, row, kind)`: one row per kind per square. Lane spaces are col = space index, row 0. Cleared with the Scene.
+  - The stage payload carries `tiles { simple, combat }`.
+  - Events: `map_tile:place { mode, col, row, kind }`, `map_tile:remove`, `map_tile:destroy`, `map_tile:move { mode, from, to | null }`, `map_tile:clear { mode }` (GM). All run through the server-wide write queue and answer with `stage:updated`.
+- **Code:** server `server/mapTiles.js`; client `MapTiles.jsx` (`MapTileLayer`, `MapTilePalette`). `combatDrag.js` now has a second channel for tile drags. Playtest: `scripts/playtest-map-tiles.mjs`.
 
 ### Playtest follow-ups (mobile) — implemented
 - **The initiative rail stays up in cinematic mode**, Next turn included, and it now sits **top-left** under the corner buttons: at the left edge for Players and in cinematic mode, just right of the GM's left drawer otherwise. This keeps it clear of the chat button and cards on the right, and it stops above the bottom-left dock.

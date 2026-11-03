@@ -16,6 +16,7 @@ import { subscribeFighterDrag } from '../lib/combatDrag.js';
 import { cropOf } from '../lib/imageCrop.js';
 import CroppedImage from './CroppedImage.jsx';
 import FighterOverlay, { ChallengeSparks } from './FighterOverlay.jsx';
+import { MapTileLayer } from './MapTiles.jsx';
 
 // The Combat view (Panic at the Dojo, Phase 3): the Scene's Combat Background,
 // fitted whole into the stage, its square grid, and every placed token.
@@ -42,6 +43,7 @@ export default function CombatMap({
   controls = () => false,
   setup = {},
   weight = null,
+  tiles = [],
 }) {
   // The token whose panel is open (Phase 4). A click opens it; a drag closes it.
   const [selectedTokenId, setSelectedTokenId] = useState(null);
@@ -158,6 +160,16 @@ export default function CombatMap({
     return cellInside(natural.width, natural.height, grid, c.col, c.row) ? c : null;
   };
   const toStagePx = (x, y) => ({ x: fit.left + x * fit.scale, y: fit.top + y * fit.scale });
+
+  // Map tiles: a grid cell's square in stage pixels (only cells that can hold
+  // a token).
+  const tileQuadOf = (col, row) => {
+    if (!ready || !cellInside(natural.width, natural.height, grid, col, row)) return null;
+    const r = cellRect(natural.width, natural.height, grid, col, row);
+    const a = toStagePx(r.x, r.y);
+    const b = toStagePx(r.x + r.width, r.y + r.height);
+    return [[a.x, a.y], [b.x, a.y], [b.x, b.y], [a.x, b.y]];
+  };
 
   // The GM, or a Player who controls this character (their own, or an NPC assigned to them).
   const canDrag = (t) => role === 'gm' || (t.character_id != null && controls(t.character_id));
@@ -317,6 +329,20 @@ export default function CombatMap({
         </svg>
       )}
       </div>
+
+      {/* Above the grid, below every token (tokens are z 10). */}
+      {ready && (
+        <MapTileLayer
+          mode="combat"
+          tiles={tiles}
+          squareAt={cellUnder}
+          quadOf={tileQuadOf}
+          width={stageWidth}
+          height={stageHeight}
+          rootRef={rootRef}
+          zIndex={5}
+        />
+      )}
 
       {ready && (
         <div

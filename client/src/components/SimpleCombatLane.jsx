@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { socket } from '../socket.js';
 import { laneGeometry, laneLinesPath, moveOnLane, pointsAttr, slotAt } from '../lib/simpleLane.js';
 import FighterOverlay, { ChallengeSparks } from './FighterOverlay.jsx';
+import { MapTileLayer } from './MapTiles.jsx';
 
 // Simple Combat's overlay (Panic at the Dojo, Phase 2): one to three lanes of
 // ten spaces in perspective (the GM's table setting) at 5/7 of the stage's
@@ -33,6 +34,7 @@ export default function SimpleCombatLane({
   lanes = 1,
   setup = {},
   weight = null,
+  tiles = [],
 }) {
   // The miniature whose token panel is open (Phase 4). Click opens, drag closes.
   const [selectedSummonId, setSelectedSummonId] = useState(null);
@@ -124,6 +126,22 @@ export default function SimpleCombatLane({
   };
   const mini = miniFor(1);
 
+  // Map tiles (lane space = col, row 0). A point counts as on the lane only
+  // inside the board, with a little margin — further off removes a dragged tile.
+  const tileSquareAt = (clientX, clientY) => {
+    const r = rootRef.current?.getBoundingClientRect();
+    if (!r) return null;
+    const x = clientX - r.left;
+    const y = clientY - r.top;
+    const margin = Math.max(12, geometry.height * 0.25);
+    if (y < geometry.topY - margin || y > geometry.bottomY + margin) return null;
+    const cy = Math.min(geometry.bottomY, Math.max(geometry.topY, y));
+    if (x < geometry.leftAt(cy) - margin || x > geometry.leftAt(cy) + geometry.widthAt(cy) + margin) return null;
+    const slot = slotAt(geometry, x, y);
+    return slot == null ? null : { col: slot, row: 0 };
+  };
+  const tileQuadOf = (col, row) => (row === 0 ? geometry.segments[col]?.points ?? null : null);
+
   // The line work as one path, drawn twice: a black outline under a glowing
   // white line.
   const linesPath = useMemo(() => laneLinesPath(geometry), [geometry]);
@@ -166,6 +184,18 @@ export default function SimpleCombatLane({
           filter="url(#lane-line-glow)"
         />
       </svg>
+
+      {/* Above the lane lines, below every miniature. */}
+      <MapTileLayer
+        mode="simple"
+        tiles={tiles}
+        squareAt={tileSquareAt}
+        quadOf={tileQuadOf}
+        width={stageWidth}
+        height={stageHeight}
+        rootRef={rootRef}
+        zIndex={1}
+      />
 
       {onLane.map((s) => {
         const seg = geometry.segments[placed.get(s.id)];

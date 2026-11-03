@@ -403,12 +403,27 @@ export default function FighterOverlay({
             <div className="relative">
               <button
                 type="button"
-                disabled={!selected || !canEdit}
-                onClick={() => setPickingChallenge((v) => !v)}
-                title={challenger ? `${challenger.name}'s Challenge` : 'Challenge'}
+                disabled={!canEdit}
+                // **A quick remove (decided):** with the panel closed, clicking
+                // the held Challenge removes it — like a quick spend of a token.
+                onClick={
+                  selected
+                    ? () => setPickingChallenge((v) => !v)
+                    : (e) => {
+                        e.stopPropagation();
+                        emit('fighter:challenge', { target: null });
+                      }
+                }
+                title={
+                  !selected && canEdit
+                    ? `Remove ${challenger?.name ?? 'the'}${challenger ? '\u2019s' : ''} Challenge`
+                    : challenger
+                      ? `${challenger.name}'s Challenge`
+                      : 'Challenge'
+                }
                 className={`flex items-center justify-center overflow-hidden rounded-full border-2 ${
                   challenger ? 'border-red-500' : 'border-dashed border-zinc-500 bg-zinc-950/80'
-                } ${selected ? '' : 'opacity-60'}`}
+                } ${selected ? '' : 'opacity-60'} ${!selected && canEdit ? 'pointer-events-auto cursor-pointer' : ''}`}
                 style={{ width: rowIcon, height: rowIcon }}
               >
                 {challenger && <Portrait fighter={challenger} className="h-full w-full rounded-full" />}
