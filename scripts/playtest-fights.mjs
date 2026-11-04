@@ -160,7 +160,7 @@ for (let i = 0; i < 6 && st.fights.combat.round === 1; i++) {
 check("Bo's single stance rolled on its own at the start of his turn", rolledBo);
 check("Bo's own End reminder fired", cards.some((c) => c.payload.text === 'Bo: drop guard'));
 fight = st.fights.combat;
-check('a second round started, re-rolled — four turns now: Mira broke a bar, and turns count unbroken bars', fight.round === 2 && fight.order.length === 4, JSON.stringify(fight));
+check('a second round started, re-rolled — still five turns: Mira broke a bar but keeps a turn per bar (the book)', fight.round === 2 && fight.order.length === 5, JSON.stringify(fight));
 check('...opened by the side opposite the last turn of round 1 (allies ended it → enemies open)', fight.order[0].side === 'enemies', JSON.stringify(fight.order));
 check('...with the Round reminder again and a round line', cards.some((c) => /Start of round 2/.test(c.payload.title ?? '')) && lines.some((l) => /Round 2/.test(l)));
 

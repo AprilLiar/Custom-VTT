@@ -2,7 +2,14 @@
 // rules (p.62) — no carry-over, break + Dizzy, Taken Out on the last bar.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { HP_MAX, addBar, applyHpDelta, barsLeft, isTakenOut, normalizeHp, removeBar, setHp } from '../../client/src/lib/hpBars.js';
+import { HP_MAX, addBar, applyHpDelta, barsLeft, isTakenOut, normalizeHp, removeBar, setHp, turnsPerRound } from '../../client/src/lib/hpBars.js';
+
+test('turns per round: one per bar, broken bars still count (the book, p.60-61)', () => {
+  assert.equal(turnsPerRound({ bars: 4, broken: 0 }), 4);
+  assert.equal(turnsPerRound({ bars: 4, broken: 3 }), 4);
+  assert.equal(turnsPerRound({ bars: 1, broken: 0, current: 0 }), 1);
+  assert.equal(turnsPerRound(null), 1);
+});
 
 test('a fresh fighter has one bar and no Max yet; ± does nothing until Max is set', () => {
   const s = normalizeHp({});

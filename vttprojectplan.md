@@ -2974,7 +2974,7 @@ Clicking a token opens its panel; a click that turns into a drag closes the pane
   - `fight:choose_stance { mode, stanceId }`: the fighter's player or the GM.
   - `fight:set_sides` (GM, from the next round).
   - `fight:end` (GM; HP, tokens and positions stay).
-  - Turns per round = **unbroken bars at the round's start** (the agreed default), so breaking a bar shortens the next round.
+  - **Turns per round = every HP bar the fighter has, broken ones included (decided, revised: the book's rule, p.60-61).** "Even after some of the Boss's health bars are lost, they will still take 4 Turns each Round, to keep the fight even." So breaking a bar no longer costs a turn next round. A Taken Out fighter's turns still come up (Heroic Spirit lets them donate a turn). Only adding or removing a bar changes the count. `turnsPerRound` in `hpBars.js`. (It used to count only unbroken bars; that was the earlier default, now replaced.)
 - **Chat:** `chat_log.kind` gains `'reminder'` and `'stance_roll'` (the CHECK is rebuilt by `migrateChatLogKind`). `postCard(kind, payload)` stores the card's whole content in `payload` and broadcasts `chat:card`; `GET /api/chat` returns `payload` for those kinds. A **Reminder** box is violet, an automatic **Rule reminder** orange; each has a title ("Start of Aya's turn", "End of round 2") and the fighters it concerns with their tokens. A **Stance roll** box is blue, with each die (or fixed number) in its own tile.
 - **Client:** `FightControls.jsx`.
   - `StartCombatButton` (GM, top centre, when this mode has no fight).
@@ -3004,12 +3004,8 @@ The book's **Cinematic Weight** (p.38-40) sets how big a fight is. The GM picks 
 - **Rules and code:** `client/src/lib/cinematicWeight.js` (tables, `barHp`, `bonusHp`, `bonusDie`, `crossesBleed`), tested in `server/test/cinematicWeight.test.js`. Server: `fight:preset_weight { mode, weight, fighters: [{ ref, level, kind }] }` (GM only, active Scene) and `fighter:heal` in `server/combatState.js`. The bonus die is added in `server/fights.js`. The stage payload carries `activeScene.weights { simple, combat }`, and each fighter's state has `level` and `kind`. Playtest: `scripts/playtest-combat-weight.mjs`.
 - **Not tracked (the user's choice):** the per-weight Super Move limit, the character-type **Bleed Ability** at the start of a turn while Bleeding, and the book's Complications (Guest Heroes, Uneven Fights, Stooges sharing a bar).
 
-### Token notes — implemented (decided, new)
-- **Two notes per token, left and right**, shown beside the token **only while it is tapped** (its panel open), and **only for the Stance it is in now**. Each Stance keeps its own pair; a fighter without Stances keeps one pair under `none`.
-- **Who (decided):** whoever controls the token (its player, an assigned player, the GM) writes them. Everyone who taps the token reads them, and an empty note is not shown to readers. They save as the writer pauses typing, on leaving the box, and when the panel closes mid-typing.
-- **They live only as long as the token (decided):** stored on its own `combatants` row (`notes`, JSON `{ "<stanceId>" | "none": { left, right } }`, at most 500 characters each). Removing a map token deletes them. Un-summoning a miniature now also deletes its fight row (`dropSummonFightState`: tokens, HP and notes, freeing any Challenge naming it) rather than leaving it orphaned. A token placed again starts fresh.
-- **Preset notes on the character sheet (decided, new):** for real characters (PCs and NPCs, not Temp NPCs), each Stance on the Combat tab has **Token notes**, a left and a right note (`combat_stances.note_left/right`, set via `combat_stance:update { notes }`). Every new token or miniature of that character starts with them, so a returning character arrives with their notes already there. A miniature with no fight row yet shows them straight from the presets, and its row starts with them. Changing a token's copy in play leaves the presets alone, and changing a preset doesn't touch tokens already out.
-- Event: `fighter:set_note { ref, stanceId | null, side: 'left' | 'right', text }` (empty text deletes). UI: `TokenNotes`/`NoteCard` in `FighterOverlay.jsx` (anchors carry `halfWidth`), `PresetNotes` in `CombatTab.jsx`. Playtest: `scripts/playtest-token-notes.mjs`.
+### Token notes — removed (decided)
+Token notes (two per token per Stance) and their presets on the character sheet were built, then **removed at the user's request as unnecessary and disruptive**. Nothing in the app reads or writes them any more. Databases that ran that version keep two unused leftovers: `combatants.notes` and `combat_stances.note_left/note_right`. They are harmless, like `chat_log.move_id`. The GM's own **Scene Notes** are a separate feature and stay. One part was kept as a general fix: un-summoning a miniature deletes its Simple Combat fight row (`dropSummonFightState`), freeing any Challenge naming it, instead of leaving it orphaned.
 
 ### Map tiles — implemented (decided, new)
 Special squares from the book's **Obstacles** (p.70-72) and the Battle Parameters, placed on the Combat map (a grid cell) or a Simple Combat lane (a lane space). Each mode keeps its own tiles, the way each mode keeps its own fight.
@@ -3063,7 +3059,7 @@ The old system's phases (1-9 and the playtest batches after them) are complete h
 
 ## Open items to decide later
 - **Panic at the Dojo assistant — details to settle in their phase**, with the default the build will use unless told otherwise:
-  - **Turns per round once bars break:** count only unbroken bars at the start of each round — implemented. (The book keeps the original count; the GM's design ties turns to bars.)
+  - **Turns per round once bars break:** settled (decided, revised): the book's rule, every bar keeps its turn. See Phase 5 as built.
   - **Simple Combat with more than 10 fighters:** the lane stays at 10 segments; extras wait in an off-lane tray.
   - **Joining or leaving mid-fight:** a fighter placed or removed after Start Combat joins or leaves from the next round's re-roll.
   - **End Combat** (GM): clears that mode's initiative; placements, HP and tokens stay until the GM clears them.
@@ -3071,5 +3067,6 @@ The old system's phases (1-9 and the playtest batches after them) are complete h
   - **Armor — implemented (decided, new):** a special token, `armor` in `panicTokens.js`'s `SPECIAL_TOKENS`, shown for every fighter in the token row just **after the Challenge slot**. It is a count like any token (how many sources of Armor the fighter has), with the same +/−, quick spend and cap. The book's rule (p.24) is in its description: each turn the first hit is reduced by 3, a second source by 2, the rest by 1. It works on any damage, including Fall, Burning and Traps, but not on HP costs. Temporary Armor isn't tracked separately.
   - **Cinematic Weight extras** not tracked yet: Super Move limits per round, the Bleed Ability at turn start, Complications (Guest Heroes, Uneven Fights, Stooges).
 - **Pre-pivot standalone Counters** still in the database (the Arena's): delete them, or give them a home in the new system.
+- **`combatants.notes`, `combat_stances.note_left/note_right`** are unused leftovers of the removed token notes; harmless, removable whenever those tables next change shape.
 - **`chat_log.move_id`** is an unused leftover column; harmless, removable whenever `chat_log` next changes shape.
 - **Relationships "Planned, not yet built"** items (see that section).

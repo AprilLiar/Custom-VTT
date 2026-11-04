@@ -30,6 +30,12 @@ export function normalizeHp(s = {}) {
 }
 
 export const barsLeft = (s) => s.bars - s.broken;
+// **Turns per round (decided, revised — the book's rule, p.60-61):** one per
+// Health Bar the fighter has, broken bars included — "Even after some of the
+// Boss's health bars are lost, they will still take 4 Turns each Round, to
+// keep the fight even." A Taken Out fighter's turns still come up too (Heroic
+// Spirit lets them donate a turn).
+export const turnsPerRound = (s) => Math.max(1, Math.trunc(Number(s?.bars) || 1));
 export const isTakenOut = (s) => s.max != null && barsLeft(s) === 1 && s.current === 0;
 
 // Lands `current` on a value, breaking the bar if it reached 0 with another

@@ -237,7 +237,6 @@ export default function SimpleCombatLane({
             bottom: seg.center.y + size.plinthRx * 0.32,
             mid: { x: seg.center.x, y: seg.center.y - imgH * 0.5 },
             icon: Math.max(14, Math.min(24, size.width * 0.3)),
-            halfWidth: size.width / 2,
           });
         }
         const byCombatant = new Map(summons.filter((s) => s.fight?.combatant_id != null).map((s) => [s.fight.combatant_id, s]));

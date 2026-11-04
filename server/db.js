@@ -1362,11 +1362,6 @@ export async function initDb() {
   `);
   // Optional: a reminder bound to one of its owner's Stances fires only while
   // that Stance is active. Deleting the Stance unbinds it, keeping the text.
-  // Preset token notes (decided, new): a character's notes for this Stance,
-  // copied onto every new token or miniature of them. Characters only — a
-  // Temp NPC's Stances have none.
-  await ensureColumn('combat_stances', 'note_left', 'TEXT');
-  await ensureColumn('combat_stances', 'note_right', 'TEXT');
   await ensureColumn('combat_reminders', 'stance_id', 'INTEGER REFERENCES combat_stances(id) ON DELETE SET NULL');
 
   // **A fighter in a fight (Panic at the Dojo).** One placed copy of a
@@ -1406,10 +1401,6 @@ export async function initDb() {
   await ensureColumn('combatants', 'level', 'INTEGER NOT NULL DEFAULT 1');
   await ensureColumn('combatants', 'fighter_kind', 'TEXT');
   await ensureColumn('combatants', 'bled_round', 'INTEGER');
-  // Character notes (decided, new): this token's two notes per Stance, JSON
-  // { "<stanceId>|none": { left, right } }. They live on the token's own row,
-  // so they go when the token does.
-  await ensureColumn('combatants', 'notes', "TEXT NOT NULL DEFAULT '{}'");
   // A Simple Combat fighter is created on its first change, keyed by its
   // summon: at most one row per summon, so INSERT OR IGNORE is race-free.
   ddl('CREATE UNIQUE INDEX IF NOT EXISTS idx_combatants_summon_unique ON combatants(summon_id) WHERE summon_id IS NOT NULL');

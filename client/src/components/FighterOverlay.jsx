@@ -287,7 +287,6 @@ export default function FighterOverlay({
 }) {
   const panelRef = useRef(null);
   const belowRef = useRef(null);
-  const notesRef = useRef(null);
   // **An open panel never leaves the screen (decided, mobile fix).** The row
   // above the fighter and the panel below it move as ONE: if either would
   // cross an edge of the stage (`bounds`), both shift by the same distance,
@@ -336,7 +335,7 @@ export default function FighterOverlay({
   useEffect(() => {
     if (!selected) return undefined;
     const onDown = (e) => {
-      if (panelRef.current?.contains(e.target) || belowRef.current?.contains(e.target) || notesRef.current?.contains(e.target)) return;
+      if (panelRef.current?.contains(e.target) || belowRef.current?.contains(e.target)) return;
       if (e.target.closest?.('[data-combat-token],[data-lane-mini]')) return;
       onClose?.();
     };
@@ -558,101 +557,7 @@ export default function FighterOverlay({
           hp.max != null && <HpStack hp={hp} compact width={barWidth} weight={weight} shield={fight.tokens.shield ?? 0} />
         )}
       </div>
-      {/* **Character notes (decided, new):** shown only while the token is
-          tapped, one each side of it, for the Stance it is in now. */}
-      {selected && (
-        <div ref={notesRef}>
-          <TokenNotes
-            notes={fight.notes?.[activeStance != null ? String(activeStance) : 'none'] ?? {}}
-            stanceId={activeStance}
-            canEdit={canEdit}
-            anchor={anchor}
-            bounds={bounds}
-            onSave={(side, text) => emit('fighter:set_note', { stanceId: activeStance, side, text })}
-          />
-        </div>
-      )}
     </>
-  );
-}
-
-const NOTE_W = 150;
-const NOTE_GAP = 10;
-
-// The two notes beside a tapped token. Whoever may edit the fighter writes
-// them (saved as they pause typing, and on leaving the box); everyone else
-// reads them, and an empty one is not shown to them at all.
-function TokenNotes({ notes, stanceId, canEdit, anchor, bounds, onSave }) {
-  const half = anchor.halfWidth ?? 24;
-  const midY = (anchor.top + anchor.bottom) / 2;
-  const clampX = (x) => (bounds ? Math.max(8, Math.min(bounds.width - NOTE_W - 8, x)) : x);
-  const sides = [
-    ['left', clampX(anchor.x - half - NOTE_GAP - NOTE_W)],
-    ['right', clampX(anchor.x + half + NOTE_GAP)],
-  ];
-  return sides.map(([side, left]) =>
-    canEdit || notes[side] ? (
-      <NoteCard
-        key={`${side}:${stanceId ?? 'none'}`}
-        side={side}
-        text={notes[side] ?? ''}
-        canEdit={canEdit}
-        style={{ left, top: midY, transform: 'translateY(-50%)', width: NOTE_W }}
-        onSave={(text) => onSave(side, text)}
-      />
-    ) : null
-  );
-}
-
-function NoteCard({ side, text, canEdit, style, onSave }) {
-  const [draft, setDraft] = useState(text);
-  const focused = useRef(false);
-  const timer = useRef(null);
-  // Someone else's edit arrives while this box isn't being typed in.
-  useEffect(() => {
-    if (!focused.current) setDraft(text);
-  }, [text]);
-  const save = (value) => {
-    clearTimeout(timer.current);
-    timer.current = null;
-    if (value !== text) onSave(value);
-  };
-  // Closing the panel mid-typing still saves what was typed.
-  const pending = useRef(null);
-  pending.current = () => timer.current && save(draft);
-  useEffect(() => () => pending.current?.(), []);
-  return (
-    <div
-      className="pointer-events-auto absolute rounded-md border border-amber-200/40 bg-amber-50/95 p-1.5 shadow-xl"
-      style={{ ...style, zIndex: 60 }}
-      data-token-note={side}
-    >
-      {canEdit ? (
-        <textarea
-          value={draft}
-          maxLength={500}
-          rows={4}
-          placeholder={`Note (${side})…`}
-          aria-label={`Token note, ${side}`}
-          onFocus={() => {
-            focused.current = true;
-          }}
-          onBlur={() => {
-            focused.current = false;
-            save(draft);
-          }}
-          onChange={(e) => {
-            const v = e.target.value;
-            setDraft(v);
-            clearTimeout(timer.current);
-            timer.current = setTimeout(() => save(v), 700);
-          }}
-          className="block w-full resize-none bg-transparent text-xs leading-snug text-zinc-900 outline-none placeholder:text-zinc-500"
-        />
-      ) : (
-        <p className="max-h-40 overflow-y-auto whitespace-pre-wrap text-xs leading-snug text-zinc-900">{text}</p>
-      )}
-    </div>
   );
 }
 

@@ -91,31 +91,7 @@ export function shapeStance(row) {
   } catch {
     dice = null;
   }
-  const notes = {};
-  if (row.note_left) notes.left = row.note_left;
-  if (row.note_right) notes.right = row.note_right;
-  return { id: row.id, name: row.name, dice: dice ?? [{ die: 6 }], notes };
-}
-
-// **Preset token notes (decided, new).** A character's per-Stance notes as a
-// token's `notes` JSON ({ "<stanceId>": { left, right } }) — what a new token
-// or miniature of them starts with. Temp NPCs get none.
-export async function presetNotesFor(characterId) {
-  if (characterId == null) return {};
-  const rows = await all('SELECT id, note_left, note_right FROM combat_stances WHERE character_id = ? ORDER BY id', [
-    Number(characterId),
-  ]);
-  return presetNotesFromRows(rows);
-}
-export function presetNotesFromRows(rows) {
-  const out = {};
-  for (const r of rows) {
-    const pair = {};
-    if (r.note_left) pair.left = r.note_left;
-    if (r.note_right) pair.right = r.note_right;
-    if (Object.keys(pair).length) out[String(r.id)] = pair;
-  }
-  return out;
+  return { id: row.id, name: row.name, dice: dice ?? [{ die: 6 }] };
 }
 
 export async function loadStances(owner) {
@@ -287,21 +263,11 @@ export function registerCombatSetupHandlers({ on, socket, io, mayWrite, cropValu
     await emitStances(owner);
   });
 
-  on('combat_stance:update', async ({ stanceId, name, dice, notes }) => {
+  on('combat_stance:update', async ({ stanceId, name, dice }) => {
     const row = await one('SELECT * FROM combat_stances WHERE id = ?', [Number(stanceId)]);
     if (!row) return;
     const owner = ownerOfRow(row);
     if (!allowed(owner)) return;
-    // Preset token notes: `notes: { left?, right? }` (characters only; '' clears).
-    if (notes && typeof notes === 'object' && row.character_id != null) {
-      const clip = (v) => (typeof v === 'string' && v.trim() ? v.slice(0, 500) : null);
-      if ('left' in notes) await run('UPDATE combat_stances SET note_left = ? WHERE id = ?', [clip(notes.left), row.id]);
-      if ('right' in notes) await run('UPDATE combat_stances SET note_right = ? WHERE id = ?', [clip(notes.right), row.id]);
-      if (name === undefined && dice === undefined) {
-        await emitStances(owner);
-        return;
-      }
-    }
     const stanceName = name === undefined ? row.name : cleanName(name);
     const pool = dice === undefined ? JSON.parse(row.dice) : normalizeDice(dice);
     if (!stanceName || !pool) return;

@@ -15,7 +15,7 @@
 import { all, one, run } from './db.js';
 import { imageUrl } from './images.js';
 import { buildRound, nextFirstSide } from '../client/src/lib/initiative.js';
-import { barsLeft } from '../client/src/lib/hpBars.js';
+import { turnsPerRound } from '../client/src/lib/hpBars.js';
 import { rollStance } from '../client/src/lib/stanceDice.js';
 import { bonusDie } from '../client/src/lib/cinematicWeight.js';
 import { automaticReminders, remindersToFire } from '../client/src/lib/fightFlow.js';
@@ -165,7 +165,7 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
     const fighters = await loadFighters(fight.scene_id, fight.mode);
     const turnsOf = (id) => {
       const f = fighters.find((x) => x.combatantId === id);
-      return f ? barsLeft(f.hp) : 0;
+      return f ? turnsPerRound(f.hp) : 0;
     };
     const side = (ids) => ids.map((id) => ({ id, turns: turnsOf(id) })).filter((x) => x.turns > 0);
     return buildRound({

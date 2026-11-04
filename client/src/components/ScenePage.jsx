@@ -40,7 +40,7 @@ import { MapTilePalette } from './MapTiles.jsx';
 import CombatMap from './CombatMap.jsx';
 import { CombatFightersDrawer, CombatMapDrawer, PlayerTokenDock } from './CombatDrawers.jsx';
 import { FightSetupDialog, InitiativeRail, StancePrompt, StartCombatButton } from './FightControls.jsx';
-import { barsLeft } from '../lib/hpBars.js';
+import { turnsPerRound } from '../lib/hpBars.js';
 import { WEIGHT_BY_KEY } from '../lib/cinematicWeight.js';
 import { useDominantColor } from '../lib/dominantColor.js';
 
@@ -252,7 +252,7 @@ export default function ScenePage() {
           name: t.name,
           image_url: t.image_url,
           crop: t.crop,
-          turns: barsLeft(t.fight.hp),
+          turns: turnsPerRound(t.fight.hp),
         }))
       : summons.map((s) => ({
           key: `s${s.id}`,
@@ -261,7 +261,7 @@ export default function ScenePage() {
           name: s.name,
           image_url: s.image_url,
           top: true,
-          turns: barsLeft(s.fight?.hp ?? { bars: 1, broken: 0 }),
+          turns: turnsPerRound(s.fight?.hp ?? { bars: 1, broken: 0 }),
         }));
 
   return (

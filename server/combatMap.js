@@ -15,7 +15,6 @@ import { all, one, run, writeMany } from './db.js';
 import { imageUrl, sanitizeImageMime } from './images.js';
 import { moveToken, normalizeGrid } from '../client/src/lib/combatGrid.js';
 import { releaseChallengesOf, serialized, shapeFightState } from './combatState.js';
-import { presetNotesFor } from './combatSetup.js';
 
 // Cells are integers in image-pixel grid space. The client never offers a
 // cell outside the map's padding; this only bounds what a hand-sent event
@@ -39,7 +38,7 @@ export function sceneGrid(sceneRow) {
 export async function loadCombatTokens(sceneId) {
   const rows = await all(
     `SELECT cb.id, cb.character_id, cb.temp_npc_id, cb.grid_col, cb.grid_row,
-            cb.tokens, cb.challenge_id, cb.hp_max, cb.hp_current, cb.hp_bars, cb.hp_broken, cb.dizzy, cb.active_stance_id, cb.level, cb.fighter_kind, cb.notes,
+            cb.tokens, cb.challenge_id, cb.hp_max, cb.hp_current, cb.hp_bars, cb.hp_broken, cb.dizzy, cb.active_stance_id, cb.level, cb.fighter_kind,
             COALESCE(c.name, tn.name) AS name,
             cp.id AS profile_id, cp.image_hash AS token_hash, (cp.image_data IS NOT NULL) AS has_token,
             cp.crop_x AS token_crop_x, cp.crop_y AS token_crop_y, cp.crop_w AS token_crop_w, cp.crop_h AS token_crop_h,
@@ -153,14 +152,11 @@ export function registerCombatMapHandlers({ on: onRaw, socket, mayWrite, emitSta
     );
     if (taken) return;
     const column = ownerType === 'character' ? 'character_id' : 'temp_npc_id';
-    // A new token starts with its character's preset notes (none for a Temp NPC).
-    const notes = ownerType === 'character' ? await presetNotesFor(id) : {};
-    await run(`INSERT INTO combatants (scene_id, mode, ${column}, grid_col, grid_row, notes) VALUES (?, 'combat', ?, ?, ?, ?)`, [
+    await run(`INSERT INTO combatants (scene_id, mode, ${column}, grid_col, grid_row) VALUES (?, 'combat', ?, ?, ?)`, [
       sceneId,
       id,
       col,
       row,
-      JSON.stringify(notes),
     ]);
     await emitStageUpdated();
   });

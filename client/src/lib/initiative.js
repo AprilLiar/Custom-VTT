@@ -20,7 +20,8 @@ export const otherSide = (side) => (side === 'allies' ? 'enemies' : 'allies');
 
 // `allies` / `enemies`: [{ id, turns }]. `id` must be unique across both sides
 // (the caller's fighter key). `turns` is how many turns that fighter takes
-// this round — its unbroken HP bars. A fighter with 0 turns is simply absent.
+// this round — one per HP bar, broken ones included (hpBars.js turnsPerRound).
+// A fighter with 0 turns is simply absent.
 //
 // `firstSide` opens the round; `openerId` (optional) names the exact fighter
 // who takes the first turn — round 1's GM pick. When it is missing, or not a

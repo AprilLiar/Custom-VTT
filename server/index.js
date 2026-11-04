@@ -19,7 +19,7 @@ import {
 import { ORPHAN_SWEEPS, countOrphans, deleteOrphans, trimChatLog } from './cleanup.js';
 import {
   registerCombatSetupHandlers, deleteCombatSetupFor, parseOwner, loadProfile, loadReminders, loadAllProfiles,
-  loadStances, loadAllStances, presetNotesFromRows,
+  loadStances, loadAllStances,
 } from './combatSetup.js';
 import { TRAY, clampLaneY, clampLanes, laneCapacity, moveOnLane, packLane } from '../client/src/lib/simpleLane.js';
 import { loadCombatTokens, registerCombatMapHandlers, sceneGrid } from './combatMap.js';
@@ -613,24 +613,10 @@ async function buildStagePayload() {
   const lane = packLane([...summonRows].sort((a, b) => a.id - b.id), simpleLanes);
   // Simple Combat fight state (Phase 4), per summon.
   const simpleStates = activeScene ? await loadSimpleStates(activeScene.id) : new Map();
-  // A miniature with no fight row yet shows its character's preset notes —
-  // the same ones its row will start with once it is created.
-  const presetRows = activeScene
-    ? await all('SELECT id, character_id, note_left, note_right FROM combat_stances WHERE character_id IS NOT NULL ORDER BY id')
-    : [];
-  const presetsByCharacter = new Map();
-  for (const r of presetRows) {
-    if (!presetsByCharacter.has(r.character_id)) presetsByCharacter.set(r.character_id, []);
-    presetsByCharacter.get(r.character_id).push(r);
-  }
-  const freshState = (summon) =>
-    summon.character_id != null && presetsByCharacter.has(summon.character_id)
-      ? { ...EMPTY_FIGHT_STATE, notes: presetNotesFromRows(presetsByCharacter.get(summon.character_id)) }
-      : EMPTY_FIGHT_STATE;
   const summons = summonRows.map(({ picture_hash, ...summon }) => ({
     ...summon,
     lane_slot: lane.get(summon.id) ?? null,
-    fight: simpleStates.get(summon.id) ?? freshState(summon),
+    fight: simpleStates.get(summon.id) ?? EMPTY_FIGHT_STATE,
     image_url: imageUrl('scene-picture', summon.scene_picture_id, {
       hash: picture_hash,
       present: true,
@@ -675,8 +661,7 @@ async function loadFighterSetup() {
 }
 
 // **A miniature's fight state goes with it.** Un-summoning deletes the Simple
-// Combat row (tokens, HP, notes — decided: notes live only as long as the
-// token) and frees any Challenge naming it. Spelled out rather than trusting
+// Combat row (its tokens, HP and Stance) and frees any Challenge naming it. Spelled out rather than trusting
 // the summon_id FK's ON DELETE CASCADE, like every delete in this file.
 async function dropSummonFightState(summonIds) {
   for (const summonId of summonIds) {
