@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Shapes, Trash2, X } from 'lucide-react';
 import { socket } from '../socket.js';
 import { DESTRUCTIBLE, TILES, TILE_BY_KEY, displayKinds, groupSquares, mergeInto, placeTile, squareKey } from '../lib/mapTiles.js';
-import { quadCenter, quadSize, tileShapes } from '../lib/tileArt.js';
+import { MAX_LAYERS, quadCenter, quadSize, tileShapes } from '../lib/tileArt.js';
 import { beginTileDrag, subscribeTileDrag } from '../lib/combatDrag.js';
 
 // Map tiles on the Scene (decided, new) — the Combat map and Simple Combat
@@ -18,18 +18,25 @@ const HIGHLIGHT = 'rgba(250, 204, 21, 0.35)';
 
 // One square's tiles, drawn into `quad`. `label` adds the names in the middle.
 export function TileFrame({ quad, kinds, label = true, opacity = 1 }) {
-  const shown = displayKinds(kinds);
+  // **Up to three effects stacked (decided, new):** each its own nested frame
+  // (the first at the square's edge, the next ones inside it) and its own name
+  // line; more than three show the first three and "+N".
+  const all = displayKinds(kinds).filter((k) => TILE_BY_KEY[k]);
+  const shown = all.slice(0, MAX_LAYERS);
+  const extra = all.length - shown.length;
   const { w, h } = quadSize(quad);
   const [cx, cy] = quadCenter(quad);
-  const lines = shown.map((k) => TILE_BY_KEY[k]).filter(Boolean);
-  // Fits the square: the longest name within ~85% of its width (Rajdhani's
-  // capitals run about 0.55em each), and every line within its height.
+  const lines = shown.map((k) => TILE_BY_KEY[k]);
+  const rows = lines.length + (extra > 0 ? 1 : 0);
+  // Fits the square: the longest name within the innermost frame's width
+  // (Rajdhani's capitals run about 0.55em each), and every line within its height.
+  const inner = 1 - (shown.length - 1) * 0.17;
   const longest = Math.max(1, ...lines.map((t) => t.name.length));
-  const font = Math.max(6, Math.min(14, (w * 0.85) / (longest * 0.55), (h * 0.55) / Math.max(1, lines.length)));
+  const font = Math.max(6, Math.min(14, (w * 0.85 * Math.max(0.7, inner)) / (longest * 0.55), (h * 0.6) / Math.max(1, rows)));
   return (
     <g opacity={opacity}>
-      {shown.map((k) =>
-        tileShapes(k, quad, TILE_BY_KEY[k]?.color ?? '#fff').map((s, i) => (
+      {shown.map((k, layer) =>
+        tileShapes(k, quad, TILE_BY_KEY[k].color, layer).map((s, i) => (
           <path
             key={`${k}${i}`}
             d={s.d}
@@ -44,22 +51,22 @@ export function TileFrame({ quad, kinds, label = true, opacity = 1 }) {
         ))
       )}
       {label &&
-        lines.map((t, i) => (
+        [...lines.map((t) => [t.key, t.name, t.color]), ...(extra > 0 ? [['more', `+${extra}`, '#e4e4e7']] : [])].map(([key, text, color], i) => (
           <text
-            key={t.key}
+            key={key}
             x={cx}
-            y={cy + (i - (lines.length - 1) / 2) * font * 1.05}
+            y={cy + (i - (rows - 1) / 2) * font * 1.05}
             textAnchor="middle"
             dominantBaseline="central"
             fontSize={font}
             fontWeight="700"
-            fill={t.color}
+            fill={color}
             stroke="rgba(0,0,0,0.85)"
             strokeWidth={Math.max(2, font * 0.28)}
             paintOrder="stroke"
             style={{ fontFamily: 'Rajdhani, sans-serif', textTransform: 'uppercase', letterSpacing: '0.03em' }}
           >
-            {t.name}
+            {text}
           </text>
         ))}
     </g>

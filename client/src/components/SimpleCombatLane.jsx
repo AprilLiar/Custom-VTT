@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { socket } from '../socket.js';
 import { laneGeometry, laneLinesPath, moveOnLane, pointsAttr, slotAt } from '../lib/simpleLane.js';
-import FighterOverlay, { ChallengeSparks } from './FighterOverlay.jsx';
+import FighterOverlay, { ChallengeLock } from './FighterOverlay.jsx';
 import { MapTileLayer } from './MapTiles.jsx';
 
 // Simple Combat's overlay (Panic at the Dojo, Phase 2): one to three lanes of
@@ -36,6 +36,8 @@ export default function SimpleCombatLane({
   setup = {},
   weight = null,
   tiles = [],
+  // The combatant whose turn it is (a fight in this mode), or null.
+  activeCombatantId = null,
 }) {
   // The miniature whose token panel is open (Phase 4). Click opens, drag closes.
   const [selectedSummonId, setSelectedSummonId] = useState(null);
@@ -248,7 +250,10 @@ export default function SimpleCombatLane({
           const ownerKey = s.character_id != null ? `character:${s.character_id}` : `temp_npc:${s.temp_npc_id}`;
           return (
             <div key={`o${s.id}`}>
-              {target && <ChallengeSparks from={box.mid} to={target.mid} />}
+              {/* Only during the Challenge holder's own turn (decided). */}
+              {target && activeCombatantId != null && s.fight.combatant_id === activeCombatantId && (
+                <ChallengeLock from={box.mid} to={target.mid} radius={target.icon * 1.4} />
+              )}
               <FighterOverlay
                 name={s.name}
                 fight={s.fight}

@@ -230,6 +230,9 @@ export default function ScenePage() {
   }
 
   const summons = stage?.summons ?? [];
+  // **Temp NPCs take no part in combat (decided):** they stay on the Scene as
+  // figures, but never stand on a Simple Combat lane or join a fight.
+  const laneSummons = summons.filter((s) => s.character_id != null);
   const drawings = stage?.drawings ?? [];
   const combatTokens = stage?.combatTokens ?? [];
   // Combat mode is map only (decided): the backdrop, figures, drawings and
@@ -254,7 +257,7 @@ export default function ScenePage() {
           crop: t.crop,
           turns: turnsPerRound(t.fight.hp),
         }))
-      : summons.map((s) => ({
+      : laneSummons.map((s) => ({
           key: `s${s.id}`,
           ref: { summonId: s.id },
           combatantId: s.fight?.combatant_id ?? null,
@@ -341,7 +344,7 @@ export default function ScenePage() {
           scene rather than interface chrome. */}
       {stageWidth > 0 && sceneMode === 'simple' && (
         <SimpleCombatLane
-          summons={summons}
+          summons={laneSummons}
           stageWidth={stageWidth}
           stageHeight={stageHeight}
           glow={laneGlow}
@@ -353,6 +356,7 @@ export default function ScenePage() {
           setup={stage?.fighterSetup ?? {}}
           weight={weight}
           tiles={stage?.tiles?.simple ?? []}
+          activeCombatantId={sceneMode === 'simple' ? (fight?.order?.[fight.turn_index]?.id ?? null) : null}
         />
       )}
       {/* Likewise the Combat map stays mounted once seen, hidden outside
@@ -371,6 +375,7 @@ export default function ScenePage() {
           role={role}
           controls={controls}
           tiles={stage?.tiles?.combat ?? []}
+          activeCombatantId={isCombat ? (fight?.order?.[fight.turn_index]?.id ?? null) : null}
         />
         </div>
       )}

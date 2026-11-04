@@ -64,7 +64,7 @@ check('a new token starts with no tokens, no Challenge and one unset bar',
   JSON.stringify(tok(mira).fight));
 const setupKey = `character:${mira.id}`;
 check("the payload carries each fighter's Unique picks and Stance names",
-  JSON.stringify(st.fighterSetup[setupKey]) === JSON.stringify({ unique_tokens: ['chaos'], stances: st.fighterSetup[setupKey].stances }) &&
+  JSON.stringify(st.fighterSetup[setupKey]) === JSON.stringify({ unique_tokens: ['chaos'], armor_sources: [], stances: st.fighterSetup[setupKey].stances }) &&
     st.fighterSetup[setupKey].stances.map((s) => s.name).join() === 'Calm,Fury', JSON.stringify(st.fighterSetup[setupKey]));
 
 console.log('\n--- Panic tokens ---');

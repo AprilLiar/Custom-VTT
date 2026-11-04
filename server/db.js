@@ -1322,6 +1322,9 @@ export async function initDb() {
       CHECK ((character_id IS NULL) <> (temp_npc_id IS NULL))
     )
   `);
+  // Armor sources (decided, new): JSON ['always' | stanceId, ...] — see
+  // panicTokens.js normalizeArmorSources.
+  await ensureColumn('combat_profiles', 'armor_sources', "TEXT NOT NULL DEFAULT '[]'");
 
   // **Stances (decided after scoping).** A fighter's named dice pools: `dice`
   // is a JSON array of 1-8 slots, each `{ die: 4..12 }` or `{ fixed: 0..12 }`

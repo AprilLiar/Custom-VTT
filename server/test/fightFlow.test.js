@@ -1,7 +1,7 @@
 // Which Reminders fire when (client/src/lib/fightFlow.js).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { automaticReminders, remindersToFire } from '../../client/src/lib/fightFlow.js';
+import { automaticReminders, fightersOnTraps, remindersToFire } from '../../client/src/lib/fightFlow.js';
 
 const f = (combatantId, ownerKey, side, extra = {}) => ({ combatantId, ownerKey, side, name: ownerKey, ...extra });
 const r = (id, scope, timing, extra = {}) => ({ id, scope, timing, target: 'any', stance_id: null, ...extra });
@@ -71,4 +71,16 @@ test('automatic End Phase reminders: Burning, Speed (everyone), Fatigue, Challen
   assert.deepEqual(out[1].fighters.map((x) => x.combatantId), [1, 2]);
   assert.match(out[3].text, /damage Goon/);
   assert.deepEqual(automaticReminders({ active: { ...bo, tokens: {} }, fighters: [bo] }), []);
+});
+
+test('Traps: at the end of every turn, everyone standing on a Trap is named', () => {
+  const a = { name: 'A', square: '1,1', tokens: {} };
+  const b = { name: 'B', square: '2,1', tokens: {} };
+  const c = { name: 'C', square: null, tokens: {} };
+  const on = fightersOnTraps([a, b, c], new Set(['2,1', '5,5']));
+  assert.deepEqual(on.map((f) => f.name), ['B']);
+  const out = automaticReminders({ active: a, fighters: [a, b, c], onTraps: on });
+  assert.equal(out[0].rule, 'trap');
+  assert.deepEqual(out[0].fighters.map((f) => f.name), ['B']);
+  assert.equal(automaticReminders({ active: a, fighters: [a], onTraps: [] }).length, 0);
 });

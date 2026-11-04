@@ -49,9 +49,7 @@ gm.emit('scene:set_mode', { mode: 'combat' });
 await sleep(300);
 const mira = await jpost('/api/characters', { name: `Mira${stamp}`, characterType: 'pc' });
 const bo = await jpost('/api/characters', { name: `Bo${stamp}`, characterType: 'pc' });
-gm.emit('temp_npc:create', { name: `Goon${stamp}` });
-await sleep(300);
-const goon = (await jf('/api/temp-npcs')).find((n) => n.name === `Goon${stamp}`);
+const goon = await jpost('/api/characters', { name: `Goon${stamp}`, characterType: 'npc' });
 const own = (c) => ({ ownerType: 'character', ownerId: c.id });
 gm.emit('combat_stance:create', { ...own(mira), name: 'Calm', dice: [{ die: 6 }] });
 gm.emit('combat_stance:create', { ...own(mira), name: 'Fury', dice: [{ die: 10 }, { fixed: 4 }] });
@@ -62,9 +60,9 @@ const fury = miraStances.find((s) => s.name === 'Fury');
 gm.emit('combat_reminder:create', { ...own(mira), scope: 'self', timing: 'start', text: 'Fury: +2 Power', stanceId: fury.id });
 gm.emit('combat_reminder:create', { ...own(mira), scope: 'self', timing: 'start', text: 'Calm only', stanceId: miraStances[0].id });
 gm.emit('combat_reminder:create', { ...own(mira), scope: 'others', timing: 'start', target: 'enemies', text: 'Watch the enemy' });
-gm.emit('combat_reminder:create', { ownerType: 'temp_npc', ownerId: goon.id, scope: 'round', timing: 'start', text: 'Goons regroup' });
+gm.emit('combat_reminder:create', { ownerType: 'character', ownerId: goon.id, scope: 'round', timing: 'start', text: 'Goons regroup' });
 gm.emit('combat_reminder:create', { ...own(bo), scope: 'self', timing: 'end', text: 'Bo: drop guard' });
-for (const [o, col] of [[own(mira), 2], [own(bo), 4], [{ ownerType: 'temp_npc', ownerId: goon.id }, 6], [{ ownerType: 'temp_npc', ownerId: goon.id }, 7]]) {
+for (const [o, col] of [[own(mira), 2], [own(bo), 4], [{ ownerType: 'character', ownerId: goon.id }, 6], [{ ownerType: 'character', ownerId: goon.id }, 7]]) {
   gm.emit('combat_token:place', { ...o, col, row: 3 });
 }
 await sleep(700);
@@ -72,7 +70,7 @@ let st = await jf('/api/stage?role=gm');
 const tokenOf = (pred) => st.combatTokens.find(pred);
 const tMira = tokenOf((t) => t.character_id === mira.id);
 const tBo = tokenOf((t) => t.character_id === bo.id);
-const [tG1, tG2] = st.combatTokens.filter((t) => t.temp_npc_id === goon.id);
+const [tG1, tG2] = st.combatTokens.filter((t) => t.character_id === goon.id);
 gm.emit('fighter:set_hp', { ref: { combatantId: tMira.id }, max: 5 });
 gm.emit('fighter:add_bar', { ref: { combatantId: tMira.id } });
 gm.emit('fighter:token', { ref: { combatantId: tMira.id }, key: 'burning', delta: 3 });
@@ -191,8 +189,7 @@ check('End Combat clears the fight but keeps the tokens and their HP',
 
 gm.emit('scene:delete', { sceneId: scene.id });
 await sleep(300);
-for (const c of [mira, bo]) await fetch(`${BASE}/api/characters/${c.id}`, { method: 'DELETE' });
-gm.emit('temp_npc:delete', { tempNpcId: goon.id });
+for (const c of [mira, bo, goon]) await fetch(`${BASE}/api/characters/${c.id}`, { method: 'DELETE' });
 await sleep(200);
 for (const s of [gm, p, pb]) s.close();
 console.log(failures ? `\n${failures} FAILURE(S)` : '\nall probes passed');

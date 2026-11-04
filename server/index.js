@@ -19,7 +19,7 @@ import {
 import { ORPHAN_SWEEPS, countOrphans, deleteOrphans, trimChatLog } from './cleanup.js';
 import {
   registerCombatSetupHandlers, deleteCombatSetupFor, parseOwner, loadProfile, loadReminders, loadAllProfiles,
-  loadStances, loadAllStances,
+  loadStances, loadAllStances, purgeTempNpcCombat,
 } from './combatSetup.js';
 import { TRAY, clampLaneY, clampLanes, laneCapacity, moveOnLane, packLane } from '../client/src/lib/simpleLane.js';
 import { loadCombatTokens, registerCombatMapHandlers, sceneGrid } from './combatMap.js';
@@ -610,7 +610,8 @@ async function buildStagePayload() {
   // summon order, before the per-viewer redaction — so a space a hidden
   // fighter stands in is taken for everyone, and looks empty to a Player.
   const simpleLanes = await readSimpleLanes();
-  const lane = packLane([...summonRows].sort((a, b) => a.id - b.id), simpleLanes);
+  // Characters only: a Temp NPC's figure never takes a lane space (decided).
+  const lane = packLane([...summonRows].filter((s) => s.character_id != null).sort((a, b) => a.id - b.id), simpleLanes);
   // Simple Combat fight state (Phase 4), per summon.
   const simpleStates = activeScene ? await loadSimpleStates(activeScene.id) : new Map();
   const summons = summonRows.map(({ picture_hash, ...summon }) => ({
@@ -653,9 +654,13 @@ async function buildStagePayload() {
 async function loadFighterSetup() {
   const [profiles, stances] = await Promise.all([loadAllProfiles(), loadAllStances()]);
   const out = {};
-  for (const [key, p] of Object.entries(profiles)) out[key] = { unique_tokens: p.unique_tokens, stances: [] };
+  for (const [key, p] of Object.entries(profiles)) out[key] = { unique_tokens: p.unique_tokens, armor_sources: p.armor_sources, stances: [] };
   for (const [key, list] of Object.entries(stances)) {
-    out[key] = { unique_tokens: out[key]?.unique_tokens ?? [], stances: list.map((s) => ({ id: s.id, name: s.name })) };
+    out[key] = {
+      unique_tokens: out[key]?.unique_tokens ?? [],
+      armor_sources: out[key]?.armor_sources ?? [],
+      stances: list.map((s) => ({ id: s.id, name: s.name })),
+    };
   }
   return out;
 }
@@ -1475,7 +1480,7 @@ io.on('connection', (socket) => {
   };
 
   // The Combat tab (Panic at the Dojo) — see server/combatSetup.js.
-  registerCombatSetupHandlers({ on, socket, io, mayWrite: mayWriteScenePicture, cropValues, stampImageHash });
+  registerCombatSetupHandlers({ on, socket, io, mayWrite: mayWriteScenePicture, cropValues, stampImageHash, emitStageUpdated });
   // The Combat map (Panic at the Dojo, Phase 3) — see server/combatMap.js.
   registerCombatMapHandlers({ on, socket, mayWrite: mayWriteScenePicture, emitStageUpdated, stampImageHash });
   // A fighter's HP, tokens, Challenge and Stance (Phase 4) — see server/combatState.js.
@@ -2170,14 +2175,13 @@ io.on('connection', (socket) => {
   on('lane:move', async ({ summonId, slot }) => {
     const viewer = socket.data.identity;
     const summon = await one('SELECT * FROM scene_summons WHERE id = ?', [Number(summonId)]);
-    if (!viewer || !summon) return;
-    const ownerType = summon.character_id != null ? 'character' : 'temp_npc';
-    const ownerId = summon.character_id ?? summon.temp_npc_id;
-    if (!mayWriteScenePicture(viewer, ownerType, ownerId)) return;
+    // Temp NPCs never stand on the lane (decided).
+    if (!viewer || !summon || summon.character_id == null) return;
+    if (!mayWriteScenePicture(viewer, 'character', summon.character_id)) return;
     const target = slot == null ? null : Number(slot);
     const lanes = await readSimpleLanes();
     if (target === null ? viewer.role !== 'gm' : !(Number.isInteger(target) && target >= 0 && target < laneCapacity(lanes))) return;
-    const rows = await all('SELECT id, lane_slot FROM scene_summons WHERE scene_id = ? ORDER BY id', [summon.scene_id]);
+    const rows = await all('SELECT id, lane_slot FROM scene_summons WHERE scene_id = ? AND character_id IS NOT NULL ORDER BY id', [summon.scene_id]);
     const next = moveOnLane(packLane(rows, lanes), summon.id, target);
     await writeMany([...next].map(([id, s]) => ['UPDATE scene_summons SET lane_slot = ? WHERE id = ?', [s ?? TRAY, id]]));
     await emitStageUpdated();
@@ -3444,6 +3448,7 @@ console.log(remoteMode ? 'Database: remote (Turso)' : 'Database: local file');
 bootDetail = 'creating and migrating tables';
 await initDb();
 await loadAssignments(all);
+await purgeTempNpcCombat();
 // Chat is intentionally ephemeral — see chat:clear below — and clearing it
 // on every boot doubles as clearing it between sessions on Render's free
 // tier, which spins the server down after inactivity.

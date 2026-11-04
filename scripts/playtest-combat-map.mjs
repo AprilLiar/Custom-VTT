@@ -44,9 +44,10 @@ gm.emit('scene:set_mode', { mode: 'combat' });
 await sleep(400);
 const mira = await jpost('/api/characters', { name: `MapMira${stamp}`, characterType: 'pc' });
 const bo = await jpost('/api/characters', { name: `MapBo${stamp}`, characterType: 'pc' });
-gm.emit('temp_npc:create', { name: `MapGoon${stamp}` });
+const goon = await jpost('/api/characters', { name: `MapGoon${stamp}`, characterType: 'npc' });
+gm.emit('temp_npc:create', { name: `MapTemp${stamp}` });
 await sleep(300);
-const goon = (await jf('/api/temp-npcs')).find((n) => n.name === `MapGoon${stamp}`);
+const temp = (await jf('/api/temp-npcs')).find((n) => n.name === `MapTemp${stamp}`);
 const p = await connect({ role: 'player', characterId: mira.id });
 const stage = () => jf('/api/stage?role=gm');
 
@@ -80,15 +81,16 @@ gm.emit('scene:set_grid', { size: 70, offsetX: 0, offsetY: 0 });
 await sleep(300);
 
 console.log('\n--- placing ---');
-gm.emit('combat_token:place', { ownerType: 'temp_npc', ownerId: goon.id, col: 2, row: 2 });
-gm.emit('combat_token:place', { ownerType: 'temp_npc', ownerId: goon.id, col: 3, row: 2 });
+gm.emit('combat_token:place', { ownerType: 'character', ownerId: goon.id, col: 2, row: 2 });
+gm.emit('combat_token:place', { ownerType: 'character', ownerId: goon.id, col: 3, row: 2 });
+gm.emit('combat_token:place', { ownerType: 'temp_npc', ownerId: temp.id, col: 5, row: 2 });
 p.emit('combat_token:place', { ownerType: 'character', ownerId: mira.id, col: 4, row: 4 });
 await sleep(500);
 st = await stage();
-check('the GM places two copies of one Temp NPC; a Player places their own character',
-  st.combatTokens.length === 3 && st.combatTokens.filter((t) => t.temp_npc_id === goon.id).length === 2, JSON.stringify(st.combatTokens));
+check('the GM places two copies of one NPC (a Temp NPC is refused: no Temp NPCs in combat); a Player places their own character',
+  st.combatTokens.length === 3 && st.combatTokens.filter((t) => t.character_id === goon.id).length === 2 && !st.combatTokens.some((t) => t.temp_npc_id != null), JSON.stringify(st.combatTokens));
 p.emit('combat_token:place', { ownerType: 'character', ownerId: bo.id, col: 6, row: 6 });
-p.emit('combat_token:place', { ownerType: 'temp_npc', ownerId: goon.id, col: 6, row: 6 });
+p.emit('combat_token:place', { ownerType: 'character', ownerId: goon.id, col: 6, row: 6 });
 gm.emit('combat_token:place', { ownerType: 'character', ownerId: bo.id, col: 2, row: 2 });
 gm.emit('combat_token:place', { ownerType: 'character', ownerId: bo.id, col: 2.5, row: 1 });
 await sleep(500);
@@ -104,10 +106,10 @@ check('...the combat token picture, once the fighter has one', /\/api\/img\/comb
   st.combatTokens.find((t) => t.id === miraTok.id).image_url);
 
 console.log('\n--- moving ---');
-const [g1, g2] = st.combatTokens.filter((t) => t.temp_npc_id === goon.id);
+const [g1, g2] = st.combatTokens.filter((t) => t.character_id === goon.id);
 p.emit('combat_token:move', { combatantId: g1.id, col: 9, row: 9 });
 await sleep(300);
-check("a Player can't move a Temp NPC", (await stage()).combatTokens.find((t) => t.id === g1.id).col === 2);
+check("a Player can't move an NPC they don't control", (await stage()).combatTokens.find((t) => t.id === g1.id).col === 2);
 p.emit('combat_token:move', { combatantId: miraTok.id, col: 5, row: 4 });
 await sleep(300);
 check('a Player moves their own token', (await stage()).combatTokens.find((t) => t.id === miraTok.id).col === 5);
@@ -121,13 +123,14 @@ check('moving onto another token swaps the two',
 console.log('\n--- removing ---');
 p.emit('combat_token:remove', { combatantId: g1.id });
 await sleep(300);
-check("a Player can't remove a Temp NPC", (await stage()).combatTokens.some((t) => t.id === g1.id));
+check("a Player can't remove an NPC they don't control", (await stage()).combatTokens.some((t) => t.id === g1.id));
 gm.emit('combat_token:remove', { combatantId: g1.id });
 await sleep(300);
 check('the GM removes one copy; the other stays', !(await stage()).combatTokens.some((t) => t.id === g1.id) && (await stage()).combatTokens.some((t) => t.id === g2.id));
-gm.emit('temp_npc:delete', { tempNpcId: goon.id });
+await fetch(`${BASE}/api/characters/${goon.id}`, { method: 'DELETE' });
+gm.emit('temp_npc:delete', { tempNpcId: temp.id });
 await sleep(400);
-check("deleting a Temp NPC takes their copies off the map", !(await stage()).combatTokens.some((t) => t.temp_npc_id === goon.id));
+check("deleting an NPC takes their copies off the map", !(await stage()).combatTokens.some((t) => t.character_id === goon.id));
 gm.emit('combat_token:clear');
 await sleep(300);
 check('Clear the map removes every token', (await stage()).combatTokens.length === 0);

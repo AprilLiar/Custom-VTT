@@ -3,7 +3,7 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { Minus, Plus, X } from 'lucide-react';
 import { GiDeathSkull, GiSleepy } from 'react-icons/gi';
 import { socket } from '../socket.js';
-import { SPECIAL_KEYS, SPECIAL_TOKENS, TOKEN_BY_KEY, capOf, tokensFor } from '../lib/panicTokens.js';
+import { SPECIAL_KEYS, SPECIAL_TOKENS, TOKEN_BY_KEY, TOKEN_CAP, capOf, innateArmor, tokensFor } from '../lib/panicTokens.js';
 import { KIND_CLASS, TokenIcon } from '../lib/panicIcons.jsx';
 import { HP_MAX, barsLeft, isTakenOut } from '../lib/hpBars.js';
 import { cropOf } from '../lib/imageCrop.js';
@@ -346,7 +346,14 @@ export default function FighterOverlay({
   const hp = fight.hp;
   const takenOut = isTakenOut(hp);
   // Armor (a special token) sits after the Challenge slot; the rest before it.
-  const heldAll = Object.entries(fight.tokens).filter(([, n]) => n > 0);
+  // **Armor sources (decided, new):** each source on the fighter's Combat tab
+  // that holds in their current Stance adds 1 Armor to what is shown, on top
+  // of Armor added by hand (which the buttons change).
+  const fighterStances = setup?.stances ?? [];
+  const currentStance = fight.active_stance_id ?? fighterStances[0]?.id ?? null;
+  const innate = innateArmor(setup?.armor_sources ?? [], currentStance);
+  const shown = innate ? { ...fight.tokens, armor: Math.min(TOKEN_CAP, (fight.tokens.armor ?? 0) + innate) } : fight.tokens;
+  const heldAll = Object.entries(shown).filter(([, n]) => n > 0);
   const held = heldAll.filter(([k]) => !SPECIAL_KEYS.has(k));
   const heldSpecial = heldAll.filter(([k]) => SPECIAL_KEYS.has(k));
   const allTokens = tokensFor(setup?.unique_tokens ?? []);
@@ -420,10 +427,15 @@ export default function FighterOverlay({
         {selected && openKey && (
           <span className="mb-1 rounded-sm bg-zinc-950/90 px-1.5 py-0.5 font-display text-[11px] font-bold uppercase tracking-wide text-zinc-100">
             {TOKEN_BY_KEY[openKey]?.name}
+            {openKey === 'armor' && innate > 0 && (
+              <span className="ml-1 font-sans text-[10px] font-normal normal-case text-zinc-400">
+                ({innate} from Armor sources{fight.tokens.armor ? `, ${fight.tokens.armor} added` : ''})
+              </span>
+            )}
           </span>
         )}
         <div className={`flex items-end gap-1 ${selected ? 'rounded-md border border-zinc-700 bg-zinc-950/85 p-1' : ''}`}>
-          {(selected ? allTokens.map((t) => [t.key, fight.tokens[t.key] ?? 0]) : held).map(tokenCell)}
+          {(selected ? allTokens.map((t) => [t.key, shown[t.key] ?? 0]) : held).map(tokenCell)}
           {/* The Challenge slot. */}
           {(selected || fight.challenge_id != null) && (
             <div className="relative">
@@ -489,7 +501,7 @@ export default function FighterOverlay({
             </div>
           )}
           {/* Armor (decided): after the Challenge, stackable like any token. */}
-          {(selected ? SPECIAL_TOKENS.map((t) => [t.key, fight.tokens[t.key] ?? 0]) : heldSpecial).map(tokenCell)}
+          {(selected ? SPECIAL_TOKENS.map((t) => [t.key, shown[t.key] ?? 0]) : heldSpecial).map(tokenCell)}
         </div>
         {selected && openKey && canEdit && (
           <div className="mt-1 flex gap-1">
@@ -561,32 +573,84 @@ export default function FighterOverlay({
   );
 }
 
-// A Challenge's reminder: a few faint red sparks drifting from the fighter
-// holding it towards their Challenger. `from`/`to` in stage pixels.
-export function ChallengeSparks({ from, to }) {
+// **The Challenge target lock (decided, new; replaces the drifting sparks).**
+// Shown ONLY during the turn of the fighter holding the Challenge, so it pops
+// the moment their turn starts and tells them who they must target: a red
+// reticle locked onto the Challenger (an outer ring of segments turning, an
+// inner ring pulsing, four ticks) and an arrow from the holder to it, its
+// dashes flowing toward the target. One small SVG, animated by CSS transforms
+// and a dash offset only. `from`/`to` in view pixels; `radius` sizes the
+// reticle to the Challenger's token.
+export function ChallengeLock({ from, to, radius = 24 }) {
+  const r = Math.max(14, radius);
   const dx = to.x - from.x;
   const dy = to.y - from.y;
+  const len = Math.hypot(dx, dy);
+  const ux = len ? dx / len : 0;
+  const uy = len ? dy / len : 0;
+  // The arrow runs from just outside the holder to the edge of the reticle.
+  const start = { x: from.x + ux * Math.min(r * 0.9, len / 3), y: from.y + uy * Math.min(r * 0.9, len / 3) };
+  const end = { x: to.x - ux * (r + 8), y: to.y - uy * (r + 8) };
+  const showArrow = len > r * 2 + 16;
+  const angle = (Math.atan2(dy, dx) * 180) / Math.PI;
+  const red = '#ef4444';
   return (
-    <>
-      {[0, 1, 2].map((i) => (
-        <span
-          key={i}
-          className="challenge-spark pointer-events-none absolute rounded-full"
-          style={{
-            left: from.x - 2.5 + (i - 1) * 4,
-            top: from.y - 2.5,
-            width: 5,
-            height: 5,
-            background: 'rgba(239, 68, 68, 0.7)',
-            boxShadow: '0 0 6px rgba(239, 68, 68, 0.6)',
-            zIndex: 34,
-            opacity: 0,
-            '--dx': `${dx}px`,
-            '--dy': `${dy}px`,
-            animation: `challenge-drift 3.2s linear ${i * 1.1}s infinite`,
-          }}
-        />
-      ))}
-    </>
+    <svg
+      className="challenge-lock pointer-events-none absolute left-0 top-0"
+      width="1"
+      height="1"
+      style={{ overflow: 'visible', zIndex: 34 }}
+      aria-hidden
+    >
+      {showArrow && (
+        <g>
+          <line x1={start.x} y1={start.y} x2={end.x} y2={end.y} stroke="rgba(0,0,0,0.6)" strokeWidth="5" strokeLinecap="round" />
+          <line
+            className="challenge-lock-flow"
+            x1={start.x}
+            y1={start.y}
+            x2={end.x}
+            y2={end.y}
+            stroke={red}
+            strokeWidth="2.5"
+            strokeLinecap="round"
+            strokeDasharray="8 6"
+          />
+          <polygon
+            points="0,0 -11,-6 -8,0 -11,6"
+            fill={red}
+            stroke="rgba(0,0,0,0.6)"
+            strokeWidth="1"
+            transform={`translate(${end.x} ${end.y}) rotate(${angle})`}
+          />
+        </g>
+      )}
+      <g transform={`translate(${to.x} ${to.y})`}>
+        <g className="challenge-lock-pop">
+          {/* The outer ring: four segments, turning. */}
+          <g className="challenge-lock-spin">
+            <circle r={r + 7} fill="none" stroke="rgba(0,0,0,0.55)" strokeWidth="6" strokeDasharray={`${(r + 7) * 0.9} ${(r + 7) * 0.67}`} />
+            <circle r={r + 7} fill="none" stroke={red} strokeWidth="3" strokeDasharray={`${(r + 7) * 0.9} ${(r + 7) * 0.67}`} />
+          </g>
+          {/* The inner ring and the four ticks, pulsing. */}
+          <g className="challenge-lock-pulse">
+            <circle r={r} fill="none" stroke={red} strokeWidth="1.5" opacity="0.9" />
+            {[0, 90, 180, 270].map((deg) => (
+              <line
+                key={deg}
+                x1={r - 5}
+                y1="0"
+                x2={r + 13}
+                y2="0"
+                stroke={red}
+                strokeWidth="2.5"
+                strokeLinecap="round"
+                transform={`rotate(${deg})`}
+              />
+            ))}
+          </g>
+        </g>
+      </g>
+    </svg>
   );
 }

@@ -2870,7 +2870,7 @@ Rules facts the design leans on (book pages in brackets):
 - **Health bars [p.62]:** damage never carries from one bar into the next. A broken bar makes you **Dizzy until the end of the current turn**. Breaking the last bar means **Taken Out** (0 HP, revived by any healing).
 
 ### Character sheet — new **Combat** tab
-Also available for **Temp NPCs** (decided: a mini combat setup in the Scene's Temp NPC editor, the same three parts).
+~~Also available for Temp NPCs~~ — **superseded (decided, revised): Temp NPCs take no part in combat at all.** See "Temp NPCs out of combat" below.
 1. **Token image** — a round combat token, separate from the profile picture and the Scene Pictures; uploaded with the same picture pipeline and crop.
 2. **Unique tokens** — the catalog above, one checkbox each. A placed token shows every Basic and Status token plus the checked Unique ones.
 3. **Reminders** — three columns of user-written reminders, each a text and a trigger. They post to chat as reminder boxes, public to everyone (decided), carrying the character's name and portrait.
@@ -2963,7 +2963,7 @@ Clicking a token opens its panel; a click that turns into a drag closes the pane
 - **`combatants` gains** `tokens` (JSON counts, capped at 9), `challenge_id` (another combatant in the same Scene **and** mode), `hp_max`, `hp_current`, `hp_bars`, `hp_broken`, `dizzy` and `active_stance_id`. A Simple Combat fighter's row (`mode 'simple'`, keyed by `summon_id`, unique) is created on its first change, so the two fights stay separate.
 - **Server:** `server/combatState.js`. Events name a fighter by ref `{ combatantId }` (map) or `{ summonId }` (lane): `fighter:token { ref, key, delta | clear }`, `fighter:challenge { ref, target: ref | null }`, `fighter:hp { ref, delta }`, `fighter:set_hp { ref, max?, current? }`, `fighter:add_bar`, `fighter:remove_bar`, `fighter:clear_dizzy` (until turns end Dizzy by themselves in Phase 5), and `fighter:set_stance { ref, stanceId }` (own stances only). Write rule as for figures. **Every fighter and map write runs through one server-wide queue**, because each is read-change-write and quick clicks on "+" would otherwise both read 3 and both write 4. Removing a token frees any Challenge naming it.
 - **Payload:** each `combatTokens[]` entry and each summon carries `fight: { combatant_id, tokens, challenge_id, hp, active_stance_id }`, and the stage carries `fighterSetup` — `{ "character:<id>": { unique_tokens, stances: [{ id, name }] } }`.
-- **Client:** `FighterOverlay.jsx`, shared by both views. Held tokens show above the fighter, each with a red count badge filling the icon's bottom-right quarter, plus the Challenger's portrait, half-transparent with a red ring. A compact HP stack sits underneath, with "×N" when there are back bars. The Dizzy icon floats over the fighter, a skull marks Taken Out, and a few faint red sparks drift towards the Challenger (`challenge-drift` in `index.css`, off under reduced motion). The open panel shows the whole token row (icons at least 28px), with the opened icon's name above it and + / − / −− below; the Challenge picker; the HP bar with − and + at its ends, a shatter-and-slide animation when a bar breaks, the golden +, "−bar" and Max; Clear Dizzy; and the Stance select. Clicking elsewhere closes it, and a drag closes it before moving. While a panel is open its view is raised above the drawers; the map's root is click-through, so the drawers stay usable.
+- **Client:** `FighterOverlay.jsx`, shared by both views. Held tokens show above the fighter, each with a red count badge filling the icon's bottom-right quarter, plus the Challenger's portrait, half-transparent with a red ring. A compact HP stack sits underneath, with "×N" when there are back bars. The Dizzy icon floats over the fighter, a skull marks Taken Out, and, **only during the turn of the fighter holding a Challenge**, a target lock on their Challenger (see "Challenge target lock" below; it replaced the earlier faint sparks). The open panel shows the whole token row (icons at least 28px), with the opened icon's name above it and + / − / −− below; the Challenge picker; the HP bar with − and + at its ends, a shatter-and-slide animation when a bar breaks, the golden +, "−bar" and Max; Clear Dizzy; and the Stance select. Clicking elsewhere closes it, and a drag closes it before moving. While a panel is open its view is raised above the drawers; the map's root is click-through, so the drawers stay usable.
 
 ### Phase 5 as built
 - **`client/src/lib/fightFlow.js`** (pure, tested in `server/test/fightFlow.test.js`): `remindersToFire({ moment, active, fighters, remindersByOwner, defaultStanceByOwner })`. Reminders belong to an owner, so each fires at most once per moment, however many copies that owner has. `self` fires on the owner's own turn. `others` fires on another owner's turn — a copy's turn is not "someone else's" to another copy of the same owner — filtered by any / allies / enemies / one. `round` fires once per owner in the fight. A stance-bound reminder needs that stance active on the relevant copy, or on the owner's first stance when none is chosen. `automaticReminders({ active, fighters })` gives Burning, Speed (everyone holding it), Fatigue and Challenge (naming the Challenger).
@@ -3004,6 +3004,22 @@ The book's **Cinematic Weight** (p.38-40) sets how big a fight is. The GM picks 
 - **Rules and code:** `client/src/lib/cinematicWeight.js` (tables, `barHp`, `bonusHp`, `bonusDie`, `crossesBleed`), tested in `server/test/cinematicWeight.test.js`. Server: `fight:preset_weight { mode, weight, fighters: [{ ref, level, kind }] }` (GM only, active Scene) and `fighter:heal` in `server/combatState.js`. The bonus die is added in `server/fights.js`. The stage payload carries `activeScene.weights { simple, combat }`, and each fighter's state has `level` and `kind`. Playtest: `scripts/playtest-combat-weight.mjs`.
 - **Not tracked (the user's choice):** the per-weight Super Move limit, the character-type **Bleed Ability** at the start of a turn while Bleeding, and the book's Complications (Guest Heroes, Uneven Fights, Stooges sharing a bar).
 
+### Temp NPCs out of combat (decided, new)
+The GM will never use Temp NPCs in combat, so they take **no part in it anywhere**. They remain Scene figures (Scene Pictures, summons, folders), and nothing else changes for them on the Scene.
+- **Gone for them:** the Combat section of the Temp NPC editor; the Temp NPCs list in the GM's Fighters drawer; Reminder targets; map tokens (`combat_token:place` refuses them); lane miniatures (they never take a lane space or appear in the Waiting tray, and `lane:move` refuses them); fight state (`resolveRef` refuses them); fights and the Combat Weight tool. Combat setup writes for a Temp NPC owner are refused, and so is a Reminder naming one.
+- **Existing data:** at every boot, `purgeTempNpcCombat` deletes any Temp NPC combat data left from before: their combatants (freeing Challenges naming them), Combat setup and Reminders, and resets Reminders that named one to "Anyone". It is idempotent.
+- Earlier sections that mention Temp NPCs in combat describe the history; this decision supersedes them. NPC **characters** are the way to bring enemies into a fight.
+
+### Armor sources (decided, new)
+On a character's **Combat tab**, the Armor chip opens **Armor sources**: lasting Armor the fighter always has, any number up to 9. Each source is **Always** or **in one Stance** of theirs.
+- In a fight, every source whose condition holds (Always, or the token's current Stance) adds **1 Armor** to the token row, on top of Armor added by hand. The open token's label shows "(N from Armor sources, M added)". The +/− buttons change only the hand-added part.
+- Stored on the profile as `combat_profiles.armor_sources` (JSON `['always' | stanceId]`), set with `combat_profile:update { armorSources }`, which keeps only the owner's own Stances. Deleting a Stance drops the sources bound to it. The stage payload's `fighterSetup` carries `armor_sources`.
+- Pure rules: `normalizeArmorSources`, `innateArmor` in `panicTokens.js`, tested in `server/test/armorSources.test.js`.
+- **Fix that came with it:** Combat-setup changes (profile, Stances) now also refresh the Scene (`stage:updated`), so a token row shows new Unique tokens, Armor sources or Stance names at once instead of on the next unrelated update.
+
+### Challenge target lock (decided, new)
+The Challenge's on-board reminder is now a **target lock**, shown **only during the turn of the fighter holding the Challenge**. It pops the moment their turn starts, reminding them who they must target, and is gone otherwise. A red reticle locks onto the Challenger: an outer ring of four turning segments, an inner ring with four ticks pulsing, and a red glow. An arrow runs from the holder to it, its dashes flowing toward the target. It is one small SVG (`ChallengeLock` in `FighterOverlay.jsx`), animated only by CSS transforms and a dash offset (`challenge-lock-*` in `index.css`, still under reduced motion), and only mounted while it is showing. The views get `activeCombatantId` (the current turn's combatant) from `ScenePage`. It replaced the faint drifting sparks.
+
 ### Token notes — removed (decided)
 Token notes (two per token per Stance) and their presets on the character sheet were built, then **removed at the user's request as unnecessary and disruptive**. Nothing in the app reads or writes them any more. Databases that ran that version keep two unused leftovers: `combatants.notes` and `combat_stances.note_left/note_right`. They are harmless, like `chat_log.move_id`. The GM's own **Scene Notes** are a separate feature and stay. One part was kept as a general fix: un-summoning a miniature deletes its Simple Combat fight row (`dropSummonFightState`), freeing any Challenge naming it, instead of leaving it orphaned.
 
@@ -3018,11 +3034,25 @@ Special squares from the book's **Obstacles** (p.70-72) and the Battle Parameter
   - **Tap** one for a small window with a brief mechanical description.
   - The GM also gets **Clear all tiles** for this mode.
 - **Who (decided):** everyone, GM and Players, places, moves and removes tiles, as in the book's Free Placement. Clearing a whole mode is GM-only.
-- **Stacking (decided: the book's rules)** — `client/src/lib/mapTiles.js` (`placeTile`, `removeTile`, `destroyTile`, `mergeInto`, tested in `server/test/mapTiles.test.js`):
+- **Stacking (decided: the book's rules, p.72-73, re-checked)** — `client/src/lib/mapTiles.js` (`placeTile`, `removeTile`, `destroyTile`, `mergeInto`, and `STACKING_MATRIX` as data). Every pair is tested in `server/test/mapTiles.test.js`.
   - Fog, Pits and Traps share a space; a Pit and a Trap together display as one **Pit Trap**.
-  - Rubble clears the other obstacles in its space, and an obstacle placed on Rubble replaces it (Fog included).
-  - A Wall shares only with Fog. Any other obstacle placed on a Wall destroys it into Rubble, and that Rubble destroys the new obstacle, so the square becomes Rubble.
-  - Markers share a square with anything (one of each per square), and survive Rubble. The book's "no obstacles inside a King/Control Zone" is described on the tile but not enforced.
+  - **Rubble and Walls are destructive:** placing either clears every other obstacle from the space first, Fog included.
+  - **Fog is the only obstacle that may be placed onto Rubble or a Wall**, and it then shares their space. (Fixed: Fog used to replace Rubble, and a Wall used to keep Fog when placed.)
+  - A Pit or Trap placed on Rubble replaces it (Fog stays). Placed on a Wall it destroys the Wall into Rubble, and that Rubble destroys it, so the space becomes Rubble.
+  - An obstacle placed on itself changes nothing.
+  - Destroying a Wall leaves Rubble, which, being placed, clears the space. Destroying Rubble leaves whatever Fog was on it.
+  - A moved stack is placed destructive-first and Fog last, so a Fog + Rubble or Fog + Wall arrives intact.
+  - Markers share a square with anything (one of each per square), and survive Rubble and Walls. The book's "no obstacles inside a King/Control Zone" is described on the tile but not enforced.
+  - The matrix (what a space holds after placing ROW onto COLUMN):
+
+    | Placing ↓ onto → | Fog | Pit | Trap | Rubble | Wall |
+    |---|---|---|---|---|---|
+    | **Fog** | Fog | Fog + Pit | Fog + Trap | Fog + Rubble | Fog + Wall |
+    | **Pit** | Fog + Pit | Pit | Pit Trap | Pit | Rubble |
+    | **Trap** | Fog + Trap | Pit Trap | Trap | Trap | Rubble |
+    | **Rubble** | Rubble | Rubble | Rubble | Rubble | Rubble |
+    | **Wall** | Wall | Wall | Wall | Wall | Wall |
+- **Visual stacking (decided, new): up to three effects per square** (a Pit Trap counts as one), each drawn as its own **nested frame**. The first sits at the square's edge, and each next one is shrunk 17% toward the centre (`tileShapes(kind, quad, color, layer)`), so every frame's corner motif stays visible. Each gets its own name line, sized to fit the innermost frame. A square with more than three shows the first three and "+N"; tapping it still lists every tile.
 - **Placed tiles (decided):**
   - **Tapping** a square opens the description of each tile on it, with **Remove**. Walls and Rubble also get **Destroy**: a Wall becomes Rubble, and Rubble is gone.
   - **Dragging** a square moves its whole stack onto another square, by the same rules. Dragging it off the map or lane removes it.
@@ -3032,6 +3062,7 @@ Special squares from the book's **Obstacles** (p.70-72) and the Battle Parameter
   - Each tile is colour-coded, with its name (or names) in the middle.
   - The art is authored for a unit square and bent into each square's real shape, so on a lane it follows the space's perspective.
   - The layer sits above the grid / lane lines and below every token and miniature.
+- **Trap reminder (decided, new):** at the end of every turn, a global automatic reminder (orange **Rule reminder**) names every fighter of the fight standing on a Trap or Pit Trap: "everyone standing on a Trap or Pit Trap takes 1 damage". It covers map tokens by grid cell and lane miniatures by lane space. `fightersOnTraps` / `automaticReminders` in `fightFlow.js`; the squares come from `server/fights.js`.
 - **Data and events:**
   - Table `map_tiles (scene_id, mode, col, row, kind)`: one row per kind per square. Lane spaces are col = space index, row 0. Cleared with the Scene.
   - The stage payload carries `tiles { simple, combat }`.

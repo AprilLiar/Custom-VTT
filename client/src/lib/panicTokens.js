@@ -68,6 +68,26 @@ export const SPECIAL_TOKENS = [
 
 export const ALL_TOKENS = [...BASIC_TOKENS, ...STATUS_TOKENS, ...UNIQUE_TOKENS, ...SPECIAL_TOKENS];
 export const SPECIAL_KEYS = new Set(SPECIAL_TOKENS.map((t) => t.key));
+// **Armor sources (decided, new):** a fighter's lasting Armor, set on their
+// Combat tab — each source is 'always' or the id of one of their Stances.
+// Every source whose condition holds adds 1 Armor to the token row, on top of
+// any Armor added by hand. Stored cleaned: at most TOKEN_CAP sources.
+export const ARMOR_ALWAYS = 'always';
+export function normalizeArmorSources(value) {
+  if (!Array.isArray(value)) return [];
+  const out = [];
+  for (const v of value) {
+    if (v === ARMOR_ALWAYS) out.push(ARMOR_ALWAYS);
+    else if (Number.isInteger(v) && v > 0) out.push(v);
+    if (out.length >= TOKEN_CAP) break;
+  }
+  return out;
+}
+// How many sources hold while the fighter is in `activeStanceId` (null: no
+// Stance — only 'always' sources count).
+export const innateArmor = (sources, activeStanceId) =>
+  normalizeArmorSources(sources).filter((s) => s === ARMOR_ALWAYS || (activeStanceId != null && s === activeStanceId)).length;
+
 // A token's own cap: TOKEN_CAP unless the token has a lower one (Shield: 8).
 export const capOf = (key) => TOKEN_BY_KEY[key]?.cap ?? TOKEN_CAP;
 export const UNIQUE_KEYS = new Set(UNIQUE_TOKENS.map((t) => t.key));

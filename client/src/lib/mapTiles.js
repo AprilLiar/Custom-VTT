@@ -104,12 +104,13 @@ const markersOf = (kinds) => kinds.filter((k) => !OBSTACLES.has(k));
 // Placing `kind` (a palette key) on a square that holds `kinds`. Returns the
 // square's new kinds. The book's stacking rules (p.72):
 //   - Fog, Pits and Traps share a space with one another.
-//   - Rubble clears every other obstacle in its space; an obstacle placed on
-//     Rubble replaces it.
-//   - A Wall shares only with Fog (placing a Wall keeps the Fog and clears the
-//     rest). Any other obstacle placed on a Wall destroys it into Rubble, and
-//     that Rubble then destroys the new obstacle — the square becomes Rubble.
+//   - Rubble and Walls clear every other obstacle (Fog too) when placed.
+//   - Fog is the only obstacle that may be placed onto Rubble or a Wall, and
+//     then shares their space.
+//   - A Pit or Trap placed on Rubble replaces it; placed on a Wall it destroys
+//     the Wall into Rubble, which destroys it — the space becomes Rubble.
 //   - Markers (zones, the Important Thing) share with anything.
+//   See STACKING_MATRIX.
 export function placeTile(kinds, kind) {
   const have = new Set(kinds);
   if (kind === 'pit_trap') {
@@ -124,16 +125,19 @@ export function placeTile(kinds, kind) {
     return sorted(have);
   }
   const markers = markersOf([...have]);
+  // Rubble and Walls are destructive: placing one clears every other obstacle
+  // from the space first (Fog included).
   if (kind === 'rubble') return sorted(new Set([...markers, 'rubble']));
-  if (kind === 'wall') return sorted(new Set([...markers, ...(have.has('fog') ? ['fog'] : []), 'wall']));
+  if (kind === 'wall') return sorted(new Set([...markers, 'wall']));
+  // "Fog is the only obstacle that may be placed onto Rubble or a Wall" — it
+  // shares a space with every other obstacle.
   if (kind === 'fog') {
-    // Fog on Rubble replaces it (an obstacle placed on Rubble replaces it);
-    // Fog on a Wall is the one thing a Wall shares with.
-    have.delete('rubble');
     have.add('fog');
     return sorted(have);
   }
-  // A Pit or a Trap.
+  // A Pit or a Trap. On a Wall it destroys the Wall, which becomes Rubble,
+  // and that Rubble destroys it (and clears the space). On Rubble it simply
+  // replaces the Rubble (Fog stays).
   if (have.has('wall')) return sorted(new Set([...markers, 'rubble']));
   have.delete('rubble');
   have.add(kind);
@@ -160,9 +164,25 @@ export function destroyTile(kinds, kind) {
 // the target in turn (a Pit and a Trap travel together as a Pit Trap).
 export function mergeInto(targetKinds, movingKinds) {
   let out = [...targetKinds];
-  for (const k of displayKinds(movingKinds)) out = placeTile(out, k);
+  // Destructive obstacles first and Fog last, so a moved Fog + Rubble (or
+  // Fog + Wall) arrives as it was rather than the Rubble clearing the Fog.
+  const rank = { wall: 0, rubble: 1, pit_trap: 2, pit: 3, trap: 4, fog: 5 };
+  const ordered = [...displayKinds(movingKinds)].sort((a, b) => (rank[a] ?? 9) - (rank[b] ?? 9));
+  for (const k of ordered) out = placeTile(out, k);
   return out;
 }
+
+// **The stacking matrix (decided, from the book p.72-73)** — what a space
+// holds after placing ROW onto a space holding COLUMN, for the obstacles.
+// Markers share with anything. Kept here as data so the tests and the plan
+// can quote it; placeTile is the rule.
+export const STACKING_MATRIX = {
+  fog: { fog: ['fog'], pit: ['fog', 'pit'], trap: ['fog', 'trap'], rubble: ['fog', 'rubble'], wall: ['fog', 'wall'] },
+  pit: { fog: ['fog', 'pit'], pit: ['pit'], trap: ['pit', 'trap'], rubble: ['pit'], wall: ['rubble'] },
+  trap: { fog: ['fog', 'trap'], pit: ['pit', 'trap'], trap: ['trap'], rubble: ['trap'], wall: ['rubble'] },
+  rubble: { fog: ['rubble'], pit: ['rubble'], trap: ['rubble'], rubble: ['rubble'], wall: ['rubble'] },
+  wall: { fog: ['wall'], pit: ['wall'], trap: ['wall'], rubble: ['wall'], wall: ['wall'] },
+};
 
 // The kinds as shown and described: a Pit and a Trap together read as one
 // Pit Trap.

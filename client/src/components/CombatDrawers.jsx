@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Minus, Plus } from 'lucide-react';
 import { socket } from '../socket.js';
-import { getCombatProfiles, getTempNpcs } from '../lib/api.js';
+import { getCombatProfiles } from '../lib/api.js';
 import { useRoster } from '../lib/useRoster.js';
 import { beginFighterDrag } from '../lib/combatDrag.js';
 import { fileToSceneBackground } from '../lib/image.js';
@@ -33,25 +33,6 @@ function useCombatProfiles() {
     };
   }, []);
   return profiles;
-}
-
-function useTempNpcs() {
-  const [npcs, setNpcs] = useState([]);
-  useEffect(() => {
-    let alive = true;
-    const refetch = () =>
-      getTempNpcs()
-        .then((rows) => alive && setNpcs(rows))
-        .catch(console.error);
-    refetch();
-    const events = ['temp_npc:created', 'temp_npc:updated', 'temp_npc:deleted'];
-    for (const ev of events) socket.on(ev, refetch);
-    return () => {
-      alive = false;
-      for (const ev of events) socket.off(ev, refetch);
-    };
-  }, []);
-  return npcs;
 }
 
 // The picture a fighter is dragged (and drawn) with: their combat token if
@@ -91,13 +72,11 @@ function FighterChip({ fighter, label }) {
 
 export function CombatFightersDrawer() {
   const characters = useRoster();
-  const npcs = useTempNpcs();
   const profiles = useCombatProfiles();
   const [query, setQuery] = useState('');
   const q = query.trim().toLowerCase();
   const match = (r) => !q || r.name.toLowerCase().includes(q);
   const chars = (characters ?? []).filter(match);
-  const temps = npcs.filter(match);
   return (
     <div className="absolute left-0 top-0 z-10 flex h-full w-64 flex-col gap-3 overflow-y-auto border-r border-zinc-800 bg-zinc-950/90 p-3 pt-16">
       <div>
@@ -114,13 +93,6 @@ export function CombatFightersDrawer() {
         <h3 className="text-[10px] font-bold uppercase tracking-wide text-zinc-500">Characters</h3>
         {chars.map((c) => (
           <FighterChip key={`c${c.id}`} fighter={fighterOf('character', c, profiles)} label={c.character_type === 'npc' ? 'NPC' : ''} />
-        ))}
-      </section>
-      <section className="space-y-1">
-        <h3 className="text-[10px] font-bold uppercase tracking-wide text-zinc-500">Temp NPCs</h3>
-        {temps.length === 0 && <p className="text-[11px] italic text-zinc-600">None.</p>}
-        {temps.map((n) => (
-          <FighterChip key={`t${n.id}`} fighter={fighterOf('temp_npc', n, profiles)} />
         ))}
       </section>
     </div>

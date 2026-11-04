@@ -68,6 +68,10 @@ check('a Player places tiles; a Pit Trap is a Pit and a Trap; Fog joins them', J
 check('a Wall shares with Fog', JSON.stringify(t['4,3']) === JSON.stringify(['fog', 'wall']));
 check('a Trap placed on a Wall leaves Rubble', JSON.stringify(t['5,3']) === JSON.stringify(['rubble']));
 check('a zone survives Rubble; unknown tiles are refused', JSON.stringify(t['6,3']) === JSON.stringify(['king', 'rubble']) && !t['7,3'], JSON.stringify(t));
+place(p, 'combat', 9, 1, 'rubble');
+place(p, 'combat', 9, 1, 'fog');
+await sleep(400);
+check('Fog joins Rubble on one square (the one obstacle that may)', JSON.stringify((await tiles('combat'))['9,1']) === JSON.stringify(['fog', 'rubble']));
 
 console.log('\n--- moving, removing, destroying ---');
 p.emit('map_tile:move', { mode: 'combat', from: { col: 3, row: 3 }, to: { col: 8, row: 8 } });
@@ -77,7 +81,7 @@ check('a square moves as a whole stack', !t['3,3'] && JSON.stringify(t['8,8']) =
 p.emit('map_tile:move', { mode: 'combat', from: { col: 8, row: 8 }, to: { col: 4, row: 3 } });
 await sleep(400);
 t = await tiles('combat');
-check('...onto a Wall: the obstacles destroy it into Rubble', !t['8,8'] && JSON.stringify(t['4,3']) === JSON.stringify(['rubble']), JSON.stringify(t));
+check('...onto a Fog-covered Wall: the obstacles destroy it into Rubble, and the moved Fog sits on it', !t['8,8'] && JSON.stringify(t['4,3']) === JSON.stringify(['fog', 'rubble']), JSON.stringify(t));
 p.emit('map_tile:destroy', { mode: 'combat', col: 4, row: 3, kind: 'rubble' });
 place(gm, 'combat', 1, 1, 'wall');
 await sleep(400);
@@ -85,7 +89,7 @@ gm.emit('map_tile:destroy', { mode: 'combat', col: 1, row: 1, kind: 'wall' });
 p.emit('map_tile:remove', { mode: 'combat', col: 6, row: 3, kind: 'king' });
 await sleep(400);
 t = await tiles('combat');
-check('Destroy: Rubble is gone, a Wall becomes Rubble; Remove takes one tile', !t['4,3'] && JSON.stringify(t['1,1']) === JSON.stringify(['rubble']) && JSON.stringify(t['6,3']) === JSON.stringify(['rubble']), JSON.stringify(t));
+check('Destroy: Rubble is gone (its Fog stays), a Wall becomes Rubble; Remove takes one tile', JSON.stringify(t['4,3']) === JSON.stringify(['fog']) && JSON.stringify(t['1,1']) === JSON.stringify(['rubble']) && JSON.stringify(t['6,3']) === JSON.stringify(['rubble']), JSON.stringify(t));
 p.emit('map_tile:move', { mode: 'combat', from: { col: 1, row: 1 }, to: null });
 await sleep(400);
 check('dragging a square off the map removes it', !(await tiles('combat'))['1,1']);

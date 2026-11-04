@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { socket } from '../socket.js';
-import { getCharacters, getCombatSetup, getTempNpcs } from '../lib/api.js';
+import { getCharacters, getCombatSetup } from '../lib/api.js';
 import { fileToPortrait } from '../lib/image.js';
 import { cropOf } from '../lib/imageCrop.js';
 import { usePictureUpload } from '../lib/usePictureUpload.jsx';
-import { BASIC_TOKENS, SPECIAL_TOKENS, STATUS_TOKENS, UNIQUE_TOKENS } from '../lib/panicTokens.js';
+import { ARMOR_ALWAYS, BASIC_TOKENS, SPECIAL_TOKENS, STATUS_TOKENS, TOKEN_CAP, UNIQUE_TOKENS } from '../lib/panicTokens.js';
 import { ICON_CREDIT, KIND_CLASS, TokenIcon } from '../lib/panicIcons.jsx';
 import CroppedImage from './CroppedImage.jsx';
 import DiceIcon from './DiceIcon.jsx';
@@ -49,6 +49,7 @@ export default function CombatTab({ ownerType, ownerId, canEdit = false, ownerNa
   const [reminders, setReminders] = useState(null);
   const [stances, setStances] = useState(null);
   const [fighters, setFighters] = useState([]); // [{ key, type, id, name }]
+  const [armorOpen, setArmorOpen] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -63,14 +64,11 @@ export default function CombatTab({ ownerType, ownerId, canEdit = false, ownerNa
         setStances(st ?? []);
       })
       .catch(console.error);
-    // Who a reminder can name: every character and every Temp NPC.
-    Promise.all([getCharacters(), getTempNpcs()])
-      .then(([characters, npcs]) => {
+    // Who a reminder can name: every character (Temp NPCs take no part in combat).
+    getCharacters()
+      .then((characters) => {
         if (cancelled) return;
-        setFighters([
-          ...characters.map((c) => ({ key: fighterKey('character', c.id), type: 'character', id: c.id, name: c.name })),
-          ...npcs.map((n) => ({ key: fighterKey('temp_npc', n.id), type: 'temp_npc', id: n.id, name: `${n.name} (Temp NPC)` })),
-        ]);
+        setFighters(characters.map((c) => ({ key: fighterKey('character', c.id), type: 'character', id: c.id, name: c.name })));
       })
       .catch(console.error);
     return () => {
@@ -101,6 +99,7 @@ export default function CombatTab({ ownerType, ownerId, canEdit = false, ownerNa
 
   if (!profile || !reminders || !stances) return <p className="text-sm text-zinc-500">Loading…</p>;
 
+  const armorSources = profile.armor_sources ?? [];
   const toggleUnique = (key) => {
     const set = new Set(profile.unique_tokens);
     if (set.has(key)) set.delete(key);
@@ -136,17 +135,43 @@ export default function CombatTab({ ownerType, ownerId, canEdit = false, ownerNa
             <TokenIcon tokenKey="challenge" className={`h-4 w-4 ${KIND_CLASS.status}`} />
             Challenge
           </span>
-          {SPECIAL_TOKENS.map((t) => (
-            <span
-              key={t.key}
-              title={t.summary}
-              className="inline-flex items-center gap-1 panel-cut-sm border border-zinc-800 bg-zinc-900 px-2 py-1 text-xs text-zinc-300"
-            >
-              <TokenIcon tokenKey={t.key} className={`h-4 w-4 ${KIND_CLASS[t.kind]}`} />
-              {t.name}
-            </span>
-          ))}
+          {SPECIAL_TOKENS.map((t) =>
+            t.key === 'armor' ? (
+              // **Armor sources (decided, new):** the Armor chip opens them.
+              <button
+                key={t.key}
+                type="button"
+                title={`${t.summary} Click to set this fighter's lasting Armor sources.`}
+                aria-expanded={armorOpen}
+                onClick={() => setArmorOpen((v) => !v)}
+                className={`inline-flex items-center gap-1 panel-cut-sm border px-2 py-1 text-xs ${
+                  armorOpen || armorSources.length ? 'border-zinc-400 bg-zinc-800 text-zinc-100' : 'border-zinc-800 bg-zinc-900 text-zinc-300 hover:border-zinc-500'
+                }`}
+              >
+                <TokenIcon tokenKey={t.key} className={`h-4 w-4 ${KIND_CLASS[t.kind]}`} />
+                {t.name}
+                {armorSources.length > 0 && <span className="text-[10px] text-zinc-400">×{armorSources.length}</span>}
+              </button>
+            ) : (
+              <span
+                key={t.key}
+                title={t.summary}
+                className="inline-flex items-center gap-1 panel-cut-sm border border-zinc-800 bg-zinc-900 px-2 py-1 text-xs text-zinc-300"
+              >
+                <TokenIcon tokenKey={t.key} className={`h-4 w-4 ${KIND_CLASS[t.kind]}`} />
+                {t.name}
+              </span>
+            )
+          )}
         </div>
+        {armorOpen && (
+          <ArmorSources
+            sources={armorSources}
+            stances={stances}
+            canEdit={canEdit}
+            onChange={(next) => socket.emit('combat_profile:update', { ownerType, ownerId, armorSources: next })}
+          />
+        )}
         <div className="grid gap-2 sm:grid-cols-2">
           {UNIQUE_TOKENS.map((t) => {
             const checked = profile.unique_tokens.includes(t.key);
@@ -511,6 +536,65 @@ function StancesSection({ ownerType, ownerId, stances, canEdit }) {
           </button>
         ))}
     </section>
+  );
+}
+
+// **Armor sources (decided, new).** Lasting Armor this fighter always has:
+// each source is "Always" or one of their Stances. In a fight, every source
+// whose condition holds adds 1 Armor to the token row (book p.24: more
+// sources trigger again, weaker), on top of Armor added by hand.
+function ArmorSources({ sources, stances, canEdit, onChange }) {
+  const stanceName = (id) => stances.find((s) => s.id === id)?.name ?? 'a deleted stance';
+  const set = (i, value) => onChange(sources.map((s, j) => (j === i ? value : s)));
+  const parse = (v) => (v === ARMOR_ALWAYS ? ARMOR_ALWAYS : Number(v));
+  return (
+    <div className="mb-3 space-y-1.5 panel-cut-sm border border-zinc-700 bg-zinc-900 p-2">
+      <p className="text-[11px] text-zinc-400">
+        <b className="text-zinc-200">Armor sources.</b> Each source adds 1 Armor to this fighter&rsquo;s token whenever its condition holds —
+        always, or while in a chosen stance. Add one per source of Armor they have.
+      </p>
+      {sources.length === 0 && <p className="text-xs italic text-zinc-600">No lasting Armor.</p>}
+      {sources.map((src, i) => (
+        <div key={i} className="flex items-center gap-2">
+          <TokenIcon tokenKey="armor" className={`h-4 w-4 shrink-0 ${KIND_CLASS.special}`} />
+          {canEdit ? (
+            <select
+              value={String(src)}
+              onChange={(e) => set(i, parse(e.target.value))}
+              aria-label={`Armor source ${i + 1}`}
+              className="min-h-9 flex-1 panel-cut-sm border border-zinc-700 bg-zinc-800 px-1.5 text-xs outline-none focus:border-brand-500"
+            >
+              <option value={ARMOR_ALWAYS}>Always</option>
+              {stances.map((st) => (
+                <option key={st.id} value={st.id}>
+                  In {st.name}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <span className="flex-1 text-xs text-zinc-300">{src === ARMOR_ALWAYS ? 'Always' : `In ${stanceName(src)}`}</span>
+          )}
+          {canEdit && (
+            <button
+              type="button"
+              onClick={() => onChange(sources.filter((_, j) => j !== i))}
+              className="text-[11px] text-red-500 hover:text-red-400"
+            >
+              Remove
+            </button>
+          )}
+        </div>
+      ))}
+      {canEdit && sources.length < TOKEN_CAP && (
+        <button
+          type="button"
+          onClick={() => onChange([...sources, ARMOR_ALWAYS])}
+          className="min-h-9 panel-cut-sm border border-zinc-700 bg-zinc-800 px-3 text-xs font-semibold text-zinc-200 hover:border-brand-500"
+        >
+          + Add Armor source
+        </button>
+      )}
+    </div>
   );
 }
 

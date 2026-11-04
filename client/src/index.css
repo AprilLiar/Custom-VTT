@@ -283,27 +283,60 @@ textarea {
   }
 }
 
-/* Panic at the Dojo — a Challenge's "threat" particles (FighterOverlay.jsx):
-   small, half-transparent red sparks drifting from the challenged fighter
-   towards their Challenger, few and slow — a gentle reminder, not an effect. */
-@keyframes challenge-drift {
-  0% {
-    transform: translate(0, 0) scale(1);
+/* Panic at the Dojo — the Challenge target lock (FighterOverlay.jsx
+   ChallengeLock): shown only during the Challenge holder's turn. Transforms
+   and a dash offset only, so it stays cheap. */
+.challenge-lock {
+  filter: drop-shadow(0 0 4px rgba(239, 68, 68, 0.75));
+}
+.challenge-lock-pop {
+  animation: challenge-lock-pop 320ms cubic-bezier(0.2, 1.4, 0.4, 1) both;
+}
+.challenge-lock-spin {
+  animation: challenge-lock-spin 5s linear infinite;
+}
+.challenge-lock-pulse {
+  animation: challenge-lock-pulse 1.4s ease-in-out infinite;
+}
+.challenge-lock-flow {
+  animation: challenge-lock-flow 0.7s linear infinite;
+}
+@keyframes challenge-lock-pop {
+  from {
+    transform: scale(1.8);
     opacity: 0;
   }
-  15% {
-    opacity: 0.55;
+  to {
+    transform: scale(1);
+    opacity: 1;
   }
-  85% {
-    opacity: 0.4;
+}
+@keyframes challenge-lock-spin {
+  to {
+    transform: rotate(360deg);
   }
+}
+@keyframes challenge-lock-pulse {
+  0%,
   100% {
-    transform: translate(var(--dx), var(--dy)) scale(0.5);
-    opacity: 0;
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.08);
+    opacity: 0.75;
+  }
+}
+@keyframes challenge-lock-flow {
+  to {
+    stroke-dashoffset: -14;
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .challenge-spark {
-    display: none;
+  .challenge-lock-pop,
+  .challenge-lock-spin,
+  .challenge-lock-pulse,
+  .challenge-lock-flow {
+    animation: none;
   }
 }

@@ -39,7 +39,7 @@ export default function CombatWeightTool({ onDone }) {
           level: t.fight.level,
           kind: t.fight.kind ?? kindFor(t.character_id),
         }))
-      : stage.summons.map((s) => ({
+      : stage.summons.filter((s) => s.character_id != null).map((s) => ({
           key: `s${s.id}`,
           ref: { summonId: s.id },
           name: s.name,

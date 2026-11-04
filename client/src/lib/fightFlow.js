@@ -59,11 +59,29 @@ export function remindersToFire({ moment, active = null, fighters, remindersByOw
   return out;
 }
 
+// Who stands on a Trap (a Trap or a Pit Trap — both hold a `trap` tile):
+// `fighters[i].square` is their "col,row" on this board, `trapSquares` the
+// squares holding a Trap.
+export function fightersOnTraps(fighters, trapSquares) {
+  const traps = trapSquares instanceof Set ? trapSquares : new Set(trapSquares ?? []);
+  return fighters.filter((f) => f.square != null && traps.has(f.square));
+}
+
 // The End Phase steps the app reminds about by itself (book p.68), at the end
 // of a turn. `fighters[i].tokens` are Panic token counts; `active` is the
-// fighter whose turn is ending. Returns [{ rule, text, fighters }].
-export function automaticReminders({ active, fighters, nameOf = (f) => f.name }) {
+// fighter whose turn is ending; `onTraps` whoever stands on a Trap.
+// Returns [{ rule, text, fighters }].
+export function automaticReminders({ active, fighters, nameOf = (f) => f.name, onTraps = [] }) {
   const out = [];
+  // **Traps (decided, new):** "At the end of every single turn, everyone
+  // standing on a Trap takes 1 damage" (p.72) — a global reminder naming them.
+  if (onTraps.length) {
+    out.push({
+      rule: 'trap',
+      text: 'Traps: everyone standing on a Trap or Pit Trap takes 1 damage (each Trap deals damage once per turn).',
+      fighters: onTraps,
+    });
+  }
   const burning = active?.tokens?.burning ?? 0;
   if (burning > 0) {
     out.push({

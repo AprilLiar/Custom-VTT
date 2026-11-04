@@ -52,7 +52,7 @@ export async function loadCombatTokens(sceneId) {
      LEFT JOIN combat_profiles cp
        ON (cb.character_id IS NOT NULL AND cp.character_id = cb.character_id)
        OR (cb.temp_npc_id IS NOT NULL AND cp.temp_npc_id = cb.temp_npc_id)
-     WHERE cb.scene_id = ? AND cb.mode = 'combat'
+     WHERE cb.scene_id = ? AND cb.mode = 'combat' AND cb.character_id IS NOT NULL
      ORDER BY cb.id`,
     [sceneId]
   );
@@ -140,7 +140,8 @@ export function registerCombatMapHandlers({ on: onRaw, socket, mayWrite, emitSta
   // A new copy of a fighter on a free cell of the active Scene's map.
   on('combat_token:place', async ({ ownerType, ownerId, col, row }) => {
     const id = Number(ownerId);
-    if ((ownerType !== 'character' && ownerType !== 'temp_npc') || !Number.isInteger(id)) return;
+    // Characters only: Temp NPCs take no part in combat (decided).
+    if (ownerType !== 'character' || !Number.isInteger(id)) return;
     if (!mayWrite(viewer(), ownerType, id) || !validCell(col, row)) return;
     const sceneId = await activeSceneId();
     if (!sceneId) return;

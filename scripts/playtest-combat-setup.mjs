@@ -44,6 +44,7 @@ const miraSock = await connect({ role: 'player', characterId: mira.id });
 gm.emit('temp_npc:create', { name: `Goon${stamp}` });
 await sleep(300);
 const goon = (await jf('/api/temp-npcs')).find((n) => n.name === `Goon${stamp}`);
+const thug = await jpost('/api/characters', { name: `CombatThug${stamp}`, characterType: 'npc' });
 
 console.log('\n--- an empty Combat tab ---');
 let s = await setup('character', mira.id);
@@ -60,12 +61,14 @@ check('a player saves their own picks — unknown keys and duplicates dropped, c
 miraSock.emit('combat_profile:update', { ownerType: 'character', ownerId: bo.id, uniqueTokens: ['luck'] });
 await sleep(300);
 check("...but not someone else's", (await setup('character', bo.id)).profile.unique_tokens.length === 0);
-miraSock.emit('combat_profile:update', { ownerType: 'temp_npc', ownerId: goon.id, uniqueTokens: ['luck'] });
-await sleep(300);
-check('a Temp NPC is GM-only', (await setup('temp_npc', goon.id)).profile.unique_tokens.length === 0);
 gm.emit('combat_profile:update', { ownerType: 'temp_npc', ownerId: goon.id, uniqueTokens: ['luck'] });
+gm.emit('combat_stance:create', { ownerType: 'temp_npc', ownerId: goon.id, name: 'Brawl', dice: [{ die: 4 }] });
 await sleep(300);
-check('...and the GM can', JSON.stringify((await setup('temp_npc', goon.id)).profile.unique_tokens) === '["luck"]');
+check('a Temp NPC has no Combat setup, not even from the GM (no Temp NPCs in combat)',
+  (await setup('temp_npc', goon.id)).profile.unique_tokens.length === 0 && (await setup('temp_npc', goon.id)).stances.length === 0);
+gm.emit('combat_profile:update', { ownerType: 'character', ownerId: thug.id, uniqueTokens: ['luck'] });
+await sleep(300);
+check('...while the GM sets up an NPC', JSON.stringify((await setup('character', thug.id)).profile.unique_tokens) === '["luck"]');
 
 console.log('\n--- the token picture ---');
 const updated = new Promise((r) => gm.once('combat_profile:updated', r));
@@ -78,7 +81,7 @@ check('...and the crop', ev.profile.crop_w === 0.5, JSON.stringify(ev.profile));
 const pic = await fetch(BASE + ev.profile.image_url);
 check('the URL serves the picture', pic.ok && pic.headers.get('content-type') === 'image/png', `${pic.status} ${pic.headers.get('content-type')}`);
 const all = await jf('/api/combat-profiles');
-check('every profile is listed by fighter key', all[`character:${mira.id}`]?.image_url === ev.profile.image_url && Boolean(all[`temp_npc:${goon.id}`]), JSON.stringify(Object.keys(all)));
+check('every profile is listed by fighter key', all[`character:${mira.id}`]?.image_url === ev.profile.image_url && Boolean(all[`character:${thug.id}`]) && !all[`temp_npc:${goon.id}`], JSON.stringify(Object.keys(all)));
 miraSock.emit('combat_profile:update', { ownerType: 'character', ownerId: mira.id, clearImage: true });
 await sleep(300);
 check('the picture can be removed', (await setup('character', mira.id)).profile.image_url === null);
@@ -87,12 +90,13 @@ console.log('\n--- Reminders ---');
 miraSock.emit('combat_reminder:create', { ownerType: 'character', ownerId: mira.id, scope: 'self', timing: 'start', text: '  Pick a stance  ' });
 miraSock.emit('combat_reminder:create', { ownerType: 'character', ownerId: mira.id, scope: 'round', timing: 'end', text: 'Super Move is back' });
 miraSock.emit('combat_reminder:create', { ownerType: 'character', ownerId: mira.id, scope: 'others', timing: 'end', target: 'enemies', text: 'Reactive Chaos?' });
-miraSock.emit('combat_reminder:create', { ownerType: 'character', ownerId: mira.id, scope: 'others', timing: 'start', target: 'one', targetType: 'temp_npc', targetId: goon.id, text: 'Watch the goon' });
+miraSock.emit('combat_reminder:create', { ownerType: 'character', ownerId: mira.id, scope: 'others', timing: 'start', target: 'one', targetType: 'character', targetId: thug.id, text: 'Watch the goon' });
+miraSock.emit('combat_reminder:create', { ownerType: 'character', ownerId: mira.id, scope: 'others', timing: 'start', target: 'one', targetType: 'temp_npc', targetId: goon.id, text: 'Temp target' });
 await sleep(500);
 s = await setup('character', mira.id);
 check('one reminder per column saved, text trimmed', s.reminders.length === 4 && s.reminders[0].text === 'Pick a stance', JSON.stringify(s.reminders));
 const named = s.reminders.find((r) => r.target === 'one');
-check('an Others reminder can name one fighter', named?.target_type === 'temp_npc' && named?.target_id === goon.id, JSON.stringify(named));
+check('an Others reminder can name one fighter (a character — a Temp NPC is refused)', named?.target_type === 'character' && named?.target_id === thug.id && !s.reminders.some((r) => r.text === 'Temp target'), JSON.stringify(named));
 check("a non-Others reminder never carries a target", s.reminders.find((r) => r.scope === 'round').target === 'any');
 miraSock.emit('combat_reminder:create', { ownerType: 'character', ownerId: mira.id, scope: 'sometimes', timing: 'start', text: 'x' });
 miraSock.emit('combat_reminder:create', { ownerType: 'character', ownerId: mira.id, scope: 'self', timing: 'start', text: '   ' });
@@ -142,11 +146,12 @@ miraSock.emit('combat_stance:create', { ownerType: 'character', ownerId: mira.id
 await sleep(300);
 
 console.log('\n--- deletes ---');
+await fetch(`${BASE}/api/characters/${thug.id}`, { method: 'DELETE' });
 gm.emit('temp_npc:delete', { tempNpcId: goon.id });
 await sleep(400);
 const after = (await setup('character', mira.id)).reminders.find((r) => r.text === 'Watch the goon');
 check("a reminder naming a deleted fighter falls back to Anyone, text kept", after?.target === 'any' && after?.target_id === null, JSON.stringify(after));
-check("the deleted Temp NPC's own profile is gone", !(`temp_npc:${goon.id}` in (await jf('/api/combat-profiles'))));
+check("the deleted NPC's own profile is gone", !(`character:${thug.id}` in (await jf('/api/combat-profiles'))));
 await fetch(`${BASE}/api/characters/${mira.id}`, { method: 'DELETE' });
 await fetch(`${BASE}/api/characters/${bo.id}`, { method: 'DELETE' });
 s = await setup('character', mira.id);

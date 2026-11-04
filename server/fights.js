@@ -18,7 +18,8 @@ import { buildRound, nextFirstSide } from '../client/src/lib/initiative.js';
 import { turnsPerRound } from '../client/src/lib/hpBars.js';
 import { rollStance } from '../client/src/lib/stanceDice.js';
 import { bonusDie } from '../client/src/lib/cinematicWeight.js';
-import { automaticReminders, remindersToFire } from '../client/src/lib/fightFlow.js';
+import { automaticReminders, fightersOnTraps, remindersToFire } from '../client/src/lib/fightFlow.js';
+import { packLane, clampLanes } from '../client/src/lib/simpleLane.js';
 import { loadReminders, loadStances } from './combatSetup.js';
 import { resolveRef, serialized, shapeFightState } from './combatState.js';
 import { controlsCharacter } from './control.js';
@@ -49,7 +50,7 @@ export async function loadFighters(sceneId, mode) {
      LEFT JOIN combat_profiles cp
        ON (cb.character_id IS NOT NULL AND cp.character_id = cb.character_id)
        OR (cb.temp_npc_id IS NOT NULL AND cp.temp_npc_id = cb.temp_npc_id)
-     WHERE cb.scene_id = ? AND cb.mode = ?`,
+     WHERE cb.scene_id = ? AND cb.mode = ? AND cb.character_id IS NOT NULL`,
     [sceneId, mode]
   );
   return rows.map((r) => {
@@ -124,6 +125,30 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
 
   const card = (f) => ({ name: f.name, image_url: f.image_url, crop: f.crop });
 
+  // Squares holding a Trap tile on this fight's board (map_tiles; a Pit Trap is
+  // a Pit and a Trap).
+  const trapSquares = async (fight) =>
+    new Set(
+      (await all("SELECT col, row FROM map_tiles WHERE scene_id = ? AND mode = ? AND kind = 'trap'", [fight.scene_id, fight.mode])).map(
+        (r) => `${r.col},${r.row}`
+      )
+    );
+  // Each fighter's square: a map token's grid cell, a miniature's lane space.
+  const withSquares = async (fight, fighters) => {
+    if (fight.mode === 'combat') {
+      const rows = await all("SELECT id, grid_col, grid_row FROM combatants WHERE scene_id = ? AND mode = 'combat'", [fight.scene_id]);
+      const at = new Map(rows.map((r) => [r.id, r.grid_col != null ? `${r.grid_col},${r.grid_row}` : null]));
+      return fighters.map((f) => ({ ...f, square: at.get(f.combatantId) ?? null }));
+    }
+    const lanes = clampLanes((await one('SELECT simple_lanes FROM table_settings WHERE id = 1'))?.simple_lanes);
+    const summons = await all('SELECT id, lane_slot FROM scene_summons WHERE scene_id = ? AND character_id IS NOT NULL ORDER BY id', [fight.scene_id]);
+    const packed = packLane(summons, lanes);
+    return fighters.map((f) => {
+      const slot = f.summonId != null ? packed.get(f.summonId) : null;
+      return { ...f, square: slot != null ? `${slot},0` : null };
+    });
+  };
+
   // ---- reminders
   const fire = async (fight, moment, activeId = null) => {
     const fighters = (await loadFighters(fight.scene_id, fight.mode)).filter((f) =>
@@ -151,7 +176,8 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
       await postCard('reminder', { title: when, text: reminder.text, fighters: [card(fighter)] });
     }
     if (moment === 'turn_end' && active) {
-      for (const auto of automaticReminders({ active, fighters })) {
+      const onTraps = fightersOnTraps(await withSquares(fight, await loadFighters(fight.scene_id, fight.mode)), await trapSquares(fight));
+      for (const auto of automaticReminders({ active, fighters, onTraps })) {
         await postCard('reminder', { title: when, text: auto.text, fighters: auto.fighters.map(card), automatic: auto.rule });
       }
     }

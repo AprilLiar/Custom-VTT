@@ -121,11 +121,22 @@ export const quadCenter = (quad) => mapQuad(quad, [0.5, 0.5]);
 const path = (pts, close) =>
   `M ${pts.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(' L ')}${close ? ' Z' : ''}`;
 
-// Everything to draw for one tile kind in `quad`:
+// **Stacked tiles (decided, new):** up to three effects share a square as
+// nested frames — layer 0 at the edge, each next one shrunk toward the centre
+// (LAYER_SHRINK of the square per layer), so every frame's corner motif stays
+// visible. Pure geometry: the whole unit-square design is scaled about the
+// centre before being bent into the quad.
+export const MAX_LAYERS = 3;
+const LAYER_SHRINK = 0.17;
+
+// Everything to draw for one tile kind in `quad`, at nesting `layer`:
 // [{ d, fill?, stroke?, strokeWidth?, opacity? }].
-export function tileShapes(kind, quad, color) {
+export function tileShapes(kind, quad, color, layer = 0) {
+  const k = 1 - Math.min(layer, MAX_LAYERS - 1) * LAYER_SHRINK;
+  const shrink = ([u, v]) => [0.5 + (u - 0.5) * k, 0.5 + (v - 0.5) * k];
+  const mq = (p) => mapQuad(quad, shrink(p));
   const { w, h } = quadSize(quad);
-  const s = Math.min(w, h);
+  const s = Math.min(w, h) * (0.6 + 0.4 * k);
   const out = [];
   const inset = MARKERS.has(kind) ? E / 2 : E;
   const frame = [
@@ -133,9 +144,9 @@ export function tileShapes(kind, quad, color) {
     [1 - inset, inset],
     [1 - inset, 1 - inset],
     [inset, 1 - inset],
-  ].map((p) => mapQuad(quad, p));
+  ].map(mq);
   // A faint tint inside the frame (markers: fainter, they cover areas).
-  out.push({ d: path(frame, true), fill: color, opacity: MARKERS.has(kind) ? 0.08 : 0.14 });
+  out.push({ d: path(frame, true), fill: color, opacity: (MARKERS.has(kind) ? 0.08 : 0.14) * (layer ? 0.6 : 1) });
   out.push({
     d: path(frame, true),
     fill: 'none',
@@ -146,7 +157,7 @@ export function tileShapes(kind, quad, color) {
   });
   for (const shape of MOTIFS[kind] ?? []) {
     for (const corner of CORNERS) {
-      const pts = shape.points.map((p) => mapQuad(quad, corner(p)));
+      const pts = shape.points.map((p) => mq(corner(p)));
       if (shape.t === 'line') {
         out.push({ d: path(pts, false), fill: 'none', stroke: shape.fill ?? color, strokeWidth: Math.max(1, s * shape.width), opacity: shape.opacity ?? 1 });
       } else {

@@ -6,7 +6,6 @@ import { usePictureUpload } from '../lib/usePictureUpload.jsx';
 import CroppedImage from './CroppedImage.jsx';
 import DialogShell from './DialogShell.jsx';
 import ScenePicturesEditor from './ScenePicturesEditor.jsx';
-import CombatTab from './CombatTab.jsx';
 
 // The Temp NPC's whole editor (Scene tab plan, decision #9): unlike a real
 // NPC, which already has a full CharacterSheet, a Temp NPC has nothing else
@@ -28,9 +27,6 @@ import CombatTab from './CombatTab.jsx';
 export default function TempNpcEditor({ tempNpc, onClose }) {
   const [name, setName] = useState(tempNpc.name);
   const [picture, setPicture] = useState(null);
-  // Scene Pictures or the Combat setup (Panic at the Dojo) — a Temp NPC has
-  // no sheet, so its Combat tab lives here, behind a two-way switch.
-  const [section, setSection] = useState('pictures');
   const fileRef = useRef(null);
 
   const preview = picture
@@ -68,7 +64,7 @@ export default function TempNpcEditor({ tempNpc, onClose }) {
     <DialogShell
       title={tempNpc.name}
       onClose={onClose}
-      maxWidth={section === 'combat' ? 'max-w-3xl' : 'max-w-sm'}
+      maxWidth="max-w-sm"
       portal
     >
       <form onSubmit={save} className="space-y-3">
@@ -113,31 +109,10 @@ export default function TempNpcEditor({ tempNpc, onClose }) {
           Delete Temp NPC
         </button>
       </form>
+      {/* Temp NPCs take no part in combat (decided): Scene Pictures only. */}
       <div className="mt-4 border-t border-zinc-800 pt-3">
-        <div className="mb-3 flex gap-1" role="tablist">
-          {[
-            ['pictures', 'Scene Pictures'],
-            ['combat', 'Combat'],
-          ].map(([key, label]) => (
-            <button
-              key={key}
-              type="button"
-              role="tab"
-              aria-selected={section === key}
-              onClick={() => setSection(key)}
-              className={`min-h-9 panel-cut-sm px-3 font-display text-xs font-semibold uppercase tracking-wide ${
-                section === key ? 'bg-brand-600 text-white' : 'bg-zinc-800 text-zinc-400 hover:text-zinc-100'
-              }`}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-        {section === 'pictures' ? (
-          <ScenePicturesEditor ownerType="temp_npc" ownerId={tempNpc.id} canEdit />
-        ) : (
-          <CombatTab ownerType="temp_npc" ownerId={tempNpc.id} ownerName={tempNpc.name} canEdit />
-        )}
+        <h3 className="mb-2 font-display text-xs font-semibold uppercase tracking-wide text-zinc-400">Scene Pictures</h3>
+        <ScenePicturesEditor ownerType="temp_npc" ownerId={tempNpc.id} canEdit />
       </div>
     </DialogShell>
   );

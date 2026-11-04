@@ -11,7 +11,7 @@
 // tables, and index.js is already the size that makes a file hard to read.
 import { all, one, run } from './db.js';
 import { imageUrl, sanitizeImageMime } from './images.js';
-import { normalizeUniqueKeys } from '../client/src/lib/panicTokens.js';
+import { normalizeArmorSources, normalizeUniqueKeys } from '../client/src/lib/panicTokens.js';
 import { STANCES_PER_OWNER_MAX, STANCE_NAME_MAX, normalizeDice } from '../client/src/lib/stanceDice.js';
 
 export const OWNER_TYPES = new Set(['character', 'temp_npc']);
@@ -52,8 +52,15 @@ export function shapeProfile(row, owner) {
     crop_w: null,
     crop_h: null,
     unique_tokens: [],
+    armor_sources: [],
   };
   if (!row) return base;
+  let armor = [];
+  try {
+    armor = normalizeArmorSources(JSON.parse(row.armor_sources || '[]'));
+  } catch {
+    armor = [];
+  }
   let unique = [];
   try {
     unique = normalizeUniqueKeys(JSON.parse(row.unique_tokens || '[]'));
@@ -68,6 +75,7 @@ export function shapeProfile(row, owner) {
     crop_w: row.crop_w,
     crop_h: row.crop_h,
     unique_tokens: unique,
+    armor_sources: armor,
   };
 }
 
@@ -116,7 +124,7 @@ export async function loadAllStances() {
 
 // Never selects the picture bytes — `has_image` says whether there is one.
 const PROFILE_COLUMNS =
-  'id, image_hash, crop_x, crop_y, crop_w, crop_h, unique_tokens, (image_data IS NOT NULL) AS has_image';
+  'id, image_hash, crop_x, crop_y, crop_w, crop_h, unique_tokens, armor_sources, (image_data IS NOT NULL) AS has_image';
 
 export async function loadProfile(owner) {
   const row = await one(
@@ -159,7 +167,8 @@ async function resolveTarget(scope, target, targetType, targetId) {
   const t = REMINDER_TARGETS.has(target) ? target : 'any';
   if (t !== 'one') return { target: t, characterId: null, tempNpcId: null };
   const named = parseOwner(targetType, targetId);
-  if (!named || !(await ownerExists(named))) return null;
+  // Only a character can be named (Temp NPCs take no part in combat).
+  if (!named || named.ownerType !== 'character' || !(await ownerExists(named))) return null;
   return {
     target: 'one',
     characterId: named.ownerType === 'character' ? named.ownerId : null,
@@ -195,17 +204,24 @@ async function resolveStance(owner, stanceId) {
 //   mayWrite(viewer, ownerType, ownerId)
 //   cropValues(payload) → [x, y, w, h]
 //   stampImageHash(kind, id)
-export function registerCombatSetupHandlers({ on, socket, io, mayWrite, cropValues, stampImageHash }) {
-  const allowed = (owner) => owner && mayWrite(socket.data.identity, owner.ownerType, owner.ownerId);
+export function registerCombatSetupHandlers({ on, socket, io, mayWrite, cropValues, stampImageHash, emitStageUpdated = async () => {} }) {
+  // Characters only: Temp NPCs take no part in combat (decided).
+  const allowed = (owner) => owner && owner.ownerType === 'character' && mayWrite(socket.data.identity, owner.ownerType, owner.ownerId);
 
-  const emitProfile = async (owner) =>
+  // Both also refresh the Scene: its token rows read Unique tokens, Armor
+  // sources and Stance names from the stage payload's fighterSetup.
+  const emitProfile = async (owner) => {
     io.emit('combat_profile:updated', { ownerType: owner.ownerType, ownerId: owner.ownerId, profile: await loadProfile(owner) });
-  const emitStances = async (owner) =>
+    await emitStageUpdated();
+  };
+  const emitStances = async (owner) => {
     io.emit('combat_stances:updated', {
       ownerType: owner.ownerType,
       ownerId: owner.ownerId,
       stances: await loadStances(owner),
     });
+    await emitStageUpdated();
+  };
   const emitReminders = async (owner) =>
     io.emit('combat_reminders:updated', {
       ownerType: owner.ownerType,
@@ -216,7 +232,7 @@ export function registerCombatSetupHandlers({ on, socket, io, mayWrite, cropValu
   // Saves whichever parts are present: a new token picture (with its crop),
   // `clearImage` to remove it, and/or the Unique token selection. Absent
   // fields are left alone — the same contract temp_npc:update uses.
-  on('combat_profile:update', async ({ ownerType, ownerId, imageData, imageMimeType, clearImage, uniqueTokens, ...crop }) => {
+  on('combat_profile:update', async ({ ownerType, ownerId, imageData, imageMimeType, clearImage, uniqueTokens, armorSources, ...crop }) => {
     const owner = parseOwner(ownerType, ownerId);
     if (!allowed(owner) || !(await ownerExists(owner))) return;
     const col = ownerColumn(owner.ownerType);
@@ -239,6 +255,12 @@ export function registerCombatSetupHandlers({ on, socket, io, mayWrite, cropValu
         JSON.stringify(normalizeUniqueKeys(uniqueTokens)),
         row.id,
       ]);
+    }
+    if (armorSources !== undefined) {
+      // A Stance source must be one of this fighter's own Stances.
+      const own = new Set((await loadStances(owner)).map((s) => s.id));
+      const clean = normalizeArmorSources(armorSources).filter((s) => s === 'always' || own.has(s));
+      await run('UPDATE combat_profiles SET armor_sources = ? WHERE id = ?', [JSON.stringify(clean), row.id]);
     }
     await emitProfile(owner);
   });
@@ -283,6 +305,20 @@ export function registerCombatSetupHandlers({ on, socket, io, mayWrite, cropValu
     if (!allowed(owner)) return;
     await run('UPDATE combat_reminders SET stance_id = NULL WHERE stance_id = ?', [row.id]);
     await run('DELETE FROM combat_stances WHERE id = ?', [row.id]);
+    // Armor sources bound to it go with it.
+    const prof = await one(`SELECT id, armor_sources FROM combat_profiles WHERE ${ownerColumn(owner.ownerType)} = ?`, [owner.ownerId]);
+    if (prof) {
+      let list = [];
+      try {
+        list = normalizeArmorSources(JSON.parse(prof.armor_sources || '[]'));
+      } catch {
+        list = [];
+      }
+      if (list.includes(row.id)) {
+        await run('UPDATE combat_profiles SET armor_sources = ? WHERE id = ?', [JSON.stringify(list.filter((x) => x !== row.id)), prof.id]);
+        await emitProfile(owner);
+      }
+    }
     await emitStances(owner);
     await emitReminders(owner);
   });
@@ -362,6 +398,21 @@ export function registerCombatSetupHandlers({ on, socket, io, mayWrite, cropValu
 // index.js rather than trusted to the DDL. Reminders that NAME the deleted
 // fighter as their target fall back to "anyone" rather than vanishing, so a
 // player's written text is never lost to someone else's deletion.
+// **Temp NPCs take no part in combat (decided).** Run at every boot: removes
+// any combat data a Temp NPC still holds from before that decision — their
+// tokens and miniatures' fight state, Combat setup, and Reminders naming them.
+// Idempotent; nothing creates such rows any more.
+export async function purgeTempNpcCombat() {
+  const rows = await all('SELECT id FROM combatants WHERE temp_npc_id IS NOT NULL');
+  for (const r of rows) await run('UPDATE combatants SET challenge_id = NULL WHERE challenge_id = ?', [r.id]);
+  await run('DELETE FROM combatants WHERE temp_npc_id IS NOT NULL');
+  await run('DELETE FROM combat_reminders WHERE temp_npc_id IS NOT NULL');
+  await run('DELETE FROM combat_stances WHERE temp_npc_id IS NOT NULL');
+  await run('DELETE FROM combat_profiles WHERE temp_npc_id IS NOT NULL');
+  await run("UPDATE combat_reminders SET target = 'any', target_temp_npc_id = NULL WHERE target_temp_npc_id IS NOT NULL");
+  return rows.length;
+}
+
 export async function deleteCombatSetupFor(ownerType, ownerId) {
   const col = ownerColumn(ownerType);
   const targetCol = ownerType === 'character' ? 'target_character_id' : 'target_temp_npc_id';

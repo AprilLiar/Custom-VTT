@@ -88,12 +88,13 @@ export async function loadSimpleStates(sceneId) {
 
 // Find (or, for a summon, create) the combatant a ref names.
 export async function resolveRef(ref) {
+  // Characters only: Temp NPCs take no part in combat (decided).
   if (ref?.combatantId != null) {
-    return one('SELECT * FROM combatants WHERE id = ?', [Number(ref.combatantId)]);
+    return one('SELECT * FROM combatants WHERE id = ? AND character_id IS NOT NULL', [Number(ref.combatantId)]);
   }
   if (ref?.summonId != null) {
     const summon = await one('SELECT * FROM scene_summons WHERE id = ?', [Number(ref.summonId)]);
-    if (!summon) return null;
+    if (!summon || summon.character_id == null) return null;
     await run(
       `INSERT OR IGNORE INTO combatants (scene_id, mode, summon_id, character_id, temp_npc_id)
        VALUES (?, 'simple', ?, ?, ?)`,
