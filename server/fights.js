@@ -361,6 +361,9 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
     const fight = await fightFor(mode);
     if (!fight) return;
     const current = orderOf(fight)[fight.turn_index];
+    // The ending turn's unanswered questions close first (decided), so its
+    // End triggers and the next turn's never wait behind them.
+    triggers?.turnOver({ ...fight });
     if (current && (await valid(fight, current.id))) {
       await fire(fight, 'turn_end', current.id);
       triggers?.schedule({ ...fight }, current.id, 'end');
@@ -382,6 +385,7 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
     if (!isGm()) return;
     const fight = await fightFor(mode);
     if (!fight) return;
+    triggers?.turnOver({ ...fight });
     const current = orderOf(fight)[fight.turn_index];
     let index = fight.turn_index - 1;
     while (index >= 0 && !(await valid(fight, orderOf(fight)[index].id))) index--;

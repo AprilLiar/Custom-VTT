@@ -57,9 +57,17 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
   const gens = new Map();
   const gen = (key) => gens.get(key) ?? 0;
   const stale = (env) => gen(env.key) !== env.gen;
-  const ask = (fighter, fightKey, g) => (request) =>
+  // **Turn generations.** A turn's questions belong to that turn: when it ends
+  // (Next / Previous turn) the ones still open close as declined, and a turn's
+  // triggers still running after it ended ask nothing more (they keep their
+  // automatic effects). Without this an unanswered prompt held the fight's
+  // chain, and every later turn's prompts queued behind it, popping up on
+  // later turns (Trickster's steal "on a random turn").
+  const turnGens = new Map();
+  const turnGen = (key) => turnGens.get(key) ?? 0;
+  const ask = (fighter, fightKey, g, tg, when) => (request) =>
     new Promise((resolve) => {
-      if (gen(fightKey) !== g) return resolve(null);
+      if (gen(fightKey) !== g || turnGen(fightKey) !== tg) return resolve(null);
       const id = `t${nextId++}`;
       const prompt = {
         id,
@@ -72,9 +80,10 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
         options: request.options ?? null,
         minimum: request.minimum ?? 0,
         maximum: request.maximum ?? 1,
+        when: when ?? null,
       };
       const timer = setTimeout(() => finish(id, null), PROMPT_TIMEOUT_MS);
-      pending.set(id, { resolve, prompt, timer, fightKey });
+      pending.set(id, { resolve, prompt, timer, fightKey, tg });
       sendPrompt(prompt);
     });
   const finish = (id, answer) => {
@@ -263,7 +272,7 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
           ability,
           event: eventPayload,
           log: (l) => lines.push(l),
-          ask: ask(fighter, env.key, env.gen),
+          ask: ask(fighter, env.key, env.gen, env.tg, env.when),
           // A Text notification: an orange reminder, like any rule left to people.
           notify: (text) => postCard('reminder', { title: ability.name, text, fighters: [{ name: fighter.name }], automatic: 'ability_text' }),
           emit: depth < FOLLOW_ON_DEPTH ? (ev, f, payload) => runFor(f, [ev], env, payload, depth + 1) : null,
@@ -373,7 +382,7 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     return true;
   }
 
-  const envFor = async (fightRow) => {
+  const envFor = async (fightRow, tg = null) => {
     const key = `${fightRow.scene_id}:${fightRow.mode}`;
     if (!fightState.has(key)) fightState.set(key, { states: new Map(), usage: {} });
     const fs = fightState.get(key);
@@ -381,6 +390,8 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     const env = {
       key,
       gen: gen(key),
+      tg: tg ?? turnGen(key),
+      when: null,
       world,
       usage: fs.usage,
       stateOf: (id) => {
@@ -401,12 +412,13 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
   }
 
   // Start or end of the active fighter's turn: everyone's matching rules.
-  async function runTurn(fightRow, activeId, moment) {
-    const { fs, env, world, fighters, byId, onTrap } = await envFor(fightRow);
+  async function runTurn(fightRow, activeId, moment, tg) {
+    const { fs, env, world, fighters, byId, onTrap } = await envFor(fightRow, tg);
     // Usage limits per turn reset at each turn start.
     if (moment === 'start') for (const k of Object.keys(fs.usage)) if (k.endsWith(':turn')) delete fs.usage[k];
     const active = byId(activeId);
     if (!active) return;
+    env.when = `${moment === 'start' ? 'Start' : 'End'} of ${active.name}'s turn`;
     world.context.activeCharacter = active;
     const order = [active, ...fighters.filter((f) => f.id !== active.id)];
     for (const f of order) {
@@ -444,7 +456,26 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     },
     // Queues the triggers of a turn moment on the fight's own chain (never awaited by the caller).
     schedule(fightRow, activeId, moment) {
-      return onChain(fightRow, () => runTurn(fightRow, activeId, moment));
+      const tg = turnGen(`${fightRow.scene_id}:${fightRow.mode}`);
+      return onChain(fightRow, () => runTurn(fightRow, activeId, moment, tg));
+    },
+    // The turn is over (Next / Previous turn): its open questions close as
+    // declined, with a note, and its still-running triggers ask nothing more.
+    turnOver(fightRow) {
+      const key = `${fightRow.scene_id}:${fightRow.mode}`;
+      const old = turnGen(key);
+      turnGens.set(key, old + 1);
+      for (const [id, p] of pending) {
+        if (p.fightKey !== key || p.tg !== old) continue;
+        finish(id, null);
+        postCard('reminder', {
+          title: p.prompt.title,
+          text: `${p.prompt.fighterName}: not answered before the turn ended — skipped.`,
+          fighters: [{ name: p.prompt.fighterName }],
+          automatic: 'ability',
+          notice: true,
+        }).catch(() => {});
+      }
     },
     // A fight ended: forget its choices and cancel its open prompts.
     endFight(sceneId, mode) {

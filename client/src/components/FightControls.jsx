@@ -411,6 +411,8 @@ function TriggerPromptDialog({ prompt }) {
   const multi = prompt.kind === 'targets' || (prompt.kind === 'choose' && prompt.maximum > 1);
   return (
     <DialogShell title={`${prompt.fighterName}: ${prompt.title}`} onClose={() => {}} maxWidth="max-w-sm" portal>
+      {/* Whose turn this belongs to: it closes when that turn ends. */}
+      {prompt.when && <p className="mb-1 font-display text-[10px] font-bold uppercase tracking-wide text-amber-300">{prompt.when}</p>}
       {prompt.text && <p className="mb-3 whitespace-pre-line text-xs text-zinc-400">{prompt.text}</p>}
       {prompt.kind === 'confirm' && (
         <div className="flex gap-2">
