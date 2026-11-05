@@ -19,7 +19,7 @@ import {
 import { ORPHAN_SWEEPS, countOrphans, deleteOrphans, trimChatLog } from './cleanup.js';
 import {
   registerCombatSetupHandlers, deleteCombatSetupFor, parseOwner, loadProfile, loadReminders, loadAllProfiles,
-  loadStances, loadAllStances, purgeTempNpcCombat,
+  loadStances, loadAllStances, purgeTempNpcCombat, purgeHandmadeCombatSetup,
 } from './combatSetup.js';
 import { TRAY, clampLaneY, clampLanes, laneCapacity, moveOnLane, packLane } from '../client/src/lib/simpleLane.js';
 import { loadCombatTokens, registerCombatMapHandlers, sceneGrid } from './combatMap.js';
@@ -3449,6 +3449,7 @@ bootDetail = 'creating and migrating tables';
 await initDb();
 await loadAssignments(all);
 await purgeTempNpcCombat();
+await purgeHandmadeCombatSetup();
 // Chat is intentionally ephemeral — see chat:clear below — and clearing it
 // on every boot doubles as clearing it between sessions on Render's free
 // tier, which spins the server down after inactivity.

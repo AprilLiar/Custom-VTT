@@ -1,6 +1,6 @@
 // Playtest: Preset Narrative Combat Weight (GM tool) through the real
 // handlers — weight + level HP, one bar each, Heal by the Heal Value, Bleed
-// announced once per round, and the level's Bonus Die on the turn-start roll.
+// announced once per round.
 //
 //   npm run dev   (or node server/index.js)
 //   node scripts/playtest-combat-weight.mjs
@@ -46,7 +46,6 @@ gm.emit('scene:set_mode', { mode: 'combat' });
 await sleep(300);
 const mira = await jpost('/api/characters', { name: `WMira${stamp}`, characterType: 'pc' });
 const grim = await jpost('/api/characters', { name: `WGrim${stamp}`, characterType: 'npc' });
-gm.emit('combat_stance:create', { ownerType: 'character', ownerId: mira.id, name: 'Only', dice: [{ die: 6 }] });
 gm.emit('combat_token:place', { ownerType: 'character', ownerId: mira.id, col: 3, row: 3 });
 gm.emit('combat_token:place', { ownerType: 'character', ownerId: grim.id, col: 5, row: 3 });
 await sleep(600);
@@ -102,9 +101,8 @@ gm.emit('fighter:heal', { ref: m });
 await sleep(400);
 gm.emit('fight:start', { mode: 'combat', allies: [m], enemies: [g], firstSide: 'allies', opener: m });
 await sleep(900);
-const roll = cards.find((c) => c.kind === 'stance_roll');
-const bonus = roll?.payload.results.find((r) => r.bonus);
-check('a level 6 fighter rolls a Bonus d8 with the stance dice', bonus?.die === 8 && bonus.result >= 1 && bonus.result <= 8, JSON.stringify(roll?.payload.results));
+// (The level's Bonus Die rides the turn-start Stance roll, which returns with
+// the builder's derived Stances — builder phase 2.)
 gm.emit('fighter:hp', { ref: m, delta: -20 });
 await sleep(400);
 bleeds = cards.filter((c) => c.payload.automatic === 'bleed');

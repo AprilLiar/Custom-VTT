@@ -1,0 +1,5430 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:panic-at-the-dojo:character-content:1.0.0",
+  "title": "Panic at the Dojo character content export",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "$schema",
+    "schemaVersion",
+    "metadata",
+    "sources",
+    "composition",
+    "heroTypes",
+    "forms",
+    "freestyles",
+    "archetypes",
+    "styles",
+    "builds",
+    "skills",
+    "basicActionIds",
+    "actions",
+    "abilities",
+    "superMoves",
+    "resourceMechanics",
+    "advancementTracks",
+    "features",
+    "warriorPaths",
+    "characterTypes",
+    "systemGroups"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "schemaVersion": {
+      "const": "1.0.0"
+    },
+    "metadata": {
+      "$ref": "#/$defs/Value"
+    },
+    "sources": {
+      "$ref": "#/$defs/Value"
+    },
+    "composition": {
+      "$ref": "#/$defs/Value"
+    },
+    "heroTypes": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/HeroType"
+      }
+    },
+    "forms": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Form"
+      }
+    },
+    "freestyles": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Freestyle"
+      }
+    },
+    "archetypes": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Archetype"
+      }
+    },
+    "styles": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Style"
+      }
+    },
+    "builds": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Build"
+      }
+    },
+    "skills": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Skill"
+      }
+    },
+    "basicActionIds": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/EntityId"
+      }
+    },
+    "actions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Action"
+      }
+    },
+    "abilities": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Ability"
+      }
+    },
+    "superMoves": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/SuperMove"
+      }
+    },
+    "resourceMechanics": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/ResourceMechanic"
+      }
+    },
+    "advancementTracks": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/AdvancementTrack"
+      }
+    },
+    "features": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Feature"
+      }
+    },
+    "warriorPaths": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Feature"
+      }
+    },
+    "characterTypes": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/CharacterType"
+      }
+    },
+    "systemGroups": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "$ref": "#/$defs/EntityId"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "$defs": {
+    "EntityId": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*(?:\\.[a-z0-9-]+)+$"
+    },
+    "Reference": {
+      "type": "object",
+      "properties": {
+        "ref": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "ref"
+      ],
+      "additionalProperties": false
+    },
+    "Expression": {
+      "type": "object",
+      "properties": {
+        "operator": {
+          "type": "string"
+        },
+        "args": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Value"
+          }
+        }
+      },
+      "required": [
+        "operator",
+        "args"
+      ],
+      "additionalProperties": false
+    },
+    "Value": {
+      "anyOf": [
+        {
+          "type": [
+            "null",
+            "boolean",
+            "number",
+            "string"
+          ]
+        },
+        {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Value"
+          }
+        },
+        {
+          "$ref": "#/$defs/Reference"
+        },
+        {
+          "$ref": "#/$defs/Expression"
+        },
+        {
+          "$ref": "#/$defs/Node"
+        },
+        {
+          "type": "object",
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "op"
+                ]
+              },
+              {
+                "required": [
+                  "ref"
+                ]
+              },
+              {
+                "required": [
+                  "operator"
+                ]
+              }
+            ]
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/Value"
+          }
+        }
+      ]
+    },
+    "Source": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "sourceId": {
+              "const": "source.pdf"
+            },
+            "pdfPage": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 275
+            },
+            "printedPage": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "sourceId",
+            "pdfPage",
+            "printedPage"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "sourceId": {
+              "const": "source.builds"
+            },
+            "region": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "sourceId",
+            "region"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "Die": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "die"
+            },
+            "sides": {
+              "type": "integer",
+              "enum": [
+                4,
+                6,
+                8,
+                10,
+                12
+              ]
+            },
+            "color": {
+              "type": "string",
+              "enum": [
+                "purple",
+                "green"
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "sides"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "fixed"
+            },
+            "value": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "color": {
+              "type": "string",
+              "enum": [
+                "purple",
+                "green"
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "value"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "Range": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "minimum": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "maximum": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "minimum",
+            "maximum"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "Limit": {
+      "type": "object",
+      "properties": {
+        "maximum": {
+          "$ref": "#/$defs/Value"
+        },
+        "period": {
+          "type": "string"
+        },
+        "metric": {
+          "type": "string"
+        },
+        "scope": {
+          "type": "string"
+        },
+        "sharedAcrossEvents": {
+          "type": "boolean"
+        },
+        "sharedAcrossUsers": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "maximum",
+        "period",
+        "metric"
+      ],
+      "additionalProperties": false
+    },
+    "CostComponent": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "pool_number",
+            "token",
+            "hp",
+            "shield",
+            "challenge_token_on_enemy"
+          ]
+        },
+        "minimum": {
+          "$ref": "#/$defs/Value"
+        },
+        "maximum": {
+          "$ref": "#/$defs/Value"
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "matching": {
+          "type": "boolean"
+        },
+        "consume": {
+          "type": "boolean"
+        },
+        "token": {
+          "type": "string"
+        },
+        "amount": {
+          "$ref": "#/$defs/Value"
+        },
+        "destroy": {
+          "type": "boolean"
+        },
+        "bindValue": {
+          "type": "string"
+        },
+        "bind": {
+          "type": "string"
+        },
+        "issuer": {
+          "type": "string"
+        },
+        "holderSelector": {
+          "$ref": "#/$defs/Value"
+        },
+        "bindHolder": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "consume"
+      ],
+      "additionalProperties": false
+    },
+    "CostOption": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "category": {
+          "type": "string",
+          "enum": [
+            "dice",
+            "token",
+            "free",
+            "super"
+          ]
+        },
+        "components": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CostComponent"
+          }
+        },
+        "rating": {
+          "$ref": "#/$defs/Value"
+        }
+      },
+      "required": [
+        "id",
+        "category",
+        "components"
+      ],
+      "additionalProperties": false
+    },
+    "AdditionalCostOption": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "components": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CostComponent"
+          }
+        },
+        "bind": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "components",
+        "bind"
+      ],
+      "additionalProperties": false
+    },
+    "Cost": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "selection": {
+          "type": "string",
+          "enum": [
+            "exactly_one",
+            "one_or_more_distinct"
+          ]
+        },
+        "options": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/CostOption"
+          }
+        },
+        "additionalOptions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/AdditionalCostOption"
+          }
+        },
+        "maximumSelections": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "rating": {
+          "$ref": "#/$defs/Value"
+        }
+      },
+      "required": [
+        "text",
+        "selection",
+        "options",
+        "additionalOptions"
+      ],
+      "additionalProperties": false
+    },
+    "Node": {
+      "type": "object",
+      "required": [
+        "op"
+      ],
+      "properties": {
+        "op": {
+          "type": "string",
+          "enum": [
+            "add_pool_number",
+            "append_to_current_action",
+            "assemble_stance",
+            "become_taken_out",
+            "challenge",
+            "change_current_stance_component",
+            "choose",
+            "choose_mode",
+            "choose_warrior_path",
+            "combine_pool_numbers",
+            "convert_tokens",
+            "copy_declared_action",
+            "damage",
+            "delegate_actions",
+            "destroy_obstacle",
+            "destroy_shield",
+            "discard_tokens",
+            "distribute_distinct_basic_tokens",
+            "dodge_declared_action",
+            "duplicate_pool_number",
+            "duplicate_token",
+            "ensure_target",
+            "for_each",
+            "gain_shield",
+            "gain_tokens",
+            "gain_tokens_until",
+            "grant_archetype_variant",
+            "grant_armor",
+            "heal",
+            "heroic_spirit.use_maximum_dice_results",
+            "if",
+            "increase_distinct_pool_numbers",
+            "increase_pool_number",
+            "joint_choice",
+            "limited",
+            "modify_action_numbers",
+            "modify_pool_numbers",
+            "modify_rule",
+            "move",
+            "move_obstacles",
+            "narrative_permission",
+            "negate_declared_action",
+            "optional",
+            "pay_hp",
+            "perform_action",
+            "place_obstacle",
+            "prepend_to_current_action",
+            "pull",
+            "pull_until",
+            "push",
+            "reduce_damage",
+            "reduce_forced_movement",
+            "reduce_shield",
+            "register_trigger",
+            "remove_from_play",
+            "remove_lowest_action_die",
+            "repeat",
+            "replace_obstacle",
+            "replace_pool_number",
+            "replace_token_gain",
+            "replay_start_effects",
+            "reroll_dice",
+            "reroll_die",
+            "retain_pool_numbers",
+            "return_to_play",
+            "roll_die",
+            "schedule",
+            "select",
+            "select_token",
+            "selector_by_gate",
+            "sequence",
+            "set_pool_number",
+            "set_state",
+            "set_variable",
+            "spend_optional_tokens",
+            "spend_tokens",
+            "split_incoming_damage",
+            "split_pool_number",
+            "steal_tokens",
+            "substitute_cost",
+            "swap_spaces",
+            "swap_twins",
+            "switch",
+            "teleport",
+            "teleport_to",
+            "temporary",
+            "trigger_warrior_path",
+            "unresolved",
+            "upgrade_archetype_variant"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "add_pool_number"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_add_pool_number"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "append_to_current_action"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_append_to_current_action"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "assemble_stance"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_assemble_stance"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "become_taken_out"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_become_taken_out"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "challenge"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_challenge"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "change_current_stance_component"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_change_current_stance_component"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "choose"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_choose"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "choose_mode"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_choose_mode"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "choose_warrior_path"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_choose_warrior_path"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "combine_pool_numbers"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_combine_pool_numbers"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "convert_tokens"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_convert_tokens"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "copy_declared_action"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_copy_declared_action"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "damage"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_damage"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "delegate_actions"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_delegate_actions"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "destroy_obstacle"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_destroy_obstacle"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "destroy_shield"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_destroy_shield"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "discard_tokens"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_discard_tokens"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "distribute_distinct_basic_tokens"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_distribute_distinct_basic_tokens"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "dodge_declared_action"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_dodge_declared_action"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "duplicate_pool_number"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_duplicate_pool_number"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "duplicate_token"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_duplicate_token"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "ensure_target"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_ensure_target"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "for_each"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_for_each"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "gain_shield"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_gain_shield"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "gain_tokens"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_gain_tokens"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "gain_tokens_until"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_gain_tokens_until"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "grant_archetype_variant"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_grant_archetype_variant"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "grant_armor"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_grant_armor"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "heal"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_heal"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "heroic_spirit.use_maximum_dice_results"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_heroic_spirit_use_maximum_dice_results"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "if"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_if"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "increase_distinct_pool_numbers"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_increase_distinct_pool_numbers"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "increase_pool_number"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_increase_pool_number"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "joint_choice"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_joint_choice"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "limited"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_limited"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "modify_action_numbers"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_modify_action_numbers"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "modify_pool_numbers"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_modify_pool_numbers"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "modify_rule"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_modify_rule"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "move"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_move"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "move_obstacles"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_move_obstacles"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "narrative_permission"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_narrative_permission"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "negate_declared_action"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_negate_declared_action"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "optional"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_optional"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "pay_hp"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_pay_hp"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "perform_action"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_perform_action"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "place_obstacle"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_place_obstacle"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "prepend_to_current_action"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_prepend_to_current_action"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "pull"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_pull"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "pull_until"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_pull_until"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "push"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_push"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "reduce_damage"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_reduce_damage"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "reduce_forced_movement"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_reduce_forced_movement"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "reduce_shield"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_reduce_shield"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "register_trigger"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_register_trigger"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "remove_from_play"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_remove_from_play"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "remove_lowest_action_die"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_remove_lowest_action_die"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "repeat"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_repeat"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "replace_obstacle"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_replace_obstacle"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "replace_pool_number"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_replace_pool_number"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "replace_token_gain"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_replace_token_gain"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "replay_start_effects"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_replay_start_effects"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "reroll_dice"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_reroll_dice"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "reroll_die"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_reroll_die"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "retain_pool_numbers"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_retain_pool_numbers"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "return_to_play"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_return_to_play"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "roll_die"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_roll_die"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "schedule"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_schedule"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "select"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_select"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "select_token"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_select_token"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "selector_by_gate"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_selector_by_gate"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "sequence"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_sequence"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "set_pool_number"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_set_pool_number"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "set_state"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_set_state"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "set_variable"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_set_variable"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "spend_optional_tokens"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_spend_optional_tokens"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "spend_tokens"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_spend_tokens"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "split_incoming_damage"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_split_incoming_damage"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "split_pool_number"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_split_pool_number"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "steal_tokens"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_steal_tokens"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "substitute_cost"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_substitute_cost"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "swap_spaces"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_swap_spaces"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "swap_twins"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_swap_twins"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "switch"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_switch"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "teleport"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_teleport"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "teleport_to"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_teleport_to"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "temporary"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_temporary"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "trigger_warrior_path"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_trigger_warrior_path"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "unresolved"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_unresolved"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "upgrade_archetype_variant"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/Node_upgrade_archetype_variant"
+          }
+        }
+      ]
+    },
+    "Node_add_pool_number": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "add_pool_number"
+        },
+        "target": {
+          "$ref": "#/$defs/Value"
+        },
+        "value": {
+          "$ref": "#/$defs/Value"
+        }
+      },
+      "required": [
+        "op",
+        "value",
+        "target"
+      ],
+      "additionalProperties": false
+    },
+    "Node_append_to_current_action": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "append_to_current_action"
+        },
+        "effect": {
+          "$ref": "#/$defs/Node"
+        }
+      },
+      "required": [
+        "op",
+        "effect"
+      ],
+      "additionalProperties": false
+    },
+    "Node_assemble_stance": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "assemble_stance"
+        },
+        "excludeEachUsedOnPreviousOwnTurn": {
+          "$ref": "#/$defs/Value"
+        },
+        "pickArchetypeAbility": {
+          "$ref": "#/$defs/Value"
+        },
+        "pickForm": {
+          "$ref": "#/$defs/Value"
+        },
+        "pickStyle": {
+          "$ref": "#/$defs/Value"
+        }
+      },
+      "required": [
+        "op",
+        "excludeEachUsedOnPreviousOwnTurn",
+        "pickArchetypeAbility",
+        "pickForm",
+        "pickStyle"
+      ],
+      "additionalProperties": false
+    },
+    "Node_become_taken_out": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "become_taken_out"
+        }
+      },
+      "required": [
+        "op"
+      ],
+      "additionalProperties": false
+    },
+    "Node_challenge": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "challenge"
+        },
+        "challenger": {
+          "$ref": "#/$defs/Value"
+        },
+        "target": {
+          "$ref": "#/$defs/Value"
+        }
+      },
+      "required": [
+        "op",
+        "target",
+        "challenger"
+      ],
+      "additionalProperties": false
+    },
+    "Node_change_current_stance_component": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "change_current_stance_component"
+        },
+        "chooseOneOf": {
+          "$ref": "#/$defs/Value"
+        }
+      },
+      "required": [
+        "op",
+        "chooseOneOf"
+      ],
+      "additionalProperties": false
+    },
+    "Node_choose": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "choose"
+        },
+        "chooser": {
+          "$ref": "#/$defs/Value"
+        },
+        "maximum": {
+          "$ref": "#/$defs/Value"
+        },
+        "minimum": {
+          "$ref": "#/$defs/Value"
+        },
+        "options": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "effect": {
+                "$ref": "#/$defs/Node"
+              }
+            },
+            "required": [
+              "id",
+              "effect"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "resolveOrder": {
+          "$ref": "#/$defs/Value"
+        },
+        "unique": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "op",
+        "minimum",
+        "maximum",
+        "unique",
+        "resolveOrder",
+        "chooser",
+        "options"
+      ],
+      "additionalProperties": false
+    },
+    "Node_choose_mode": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "choose_mode"
+        },
+        "exclude": {
+          "$ref": "#/$defs/Value"
+        },
+        "options": {
+          "$ref": "#/$defs/Value"
+        },
+        "stateKey": {
+          "$ref": "#/$defs/Value"
+        }
+      },
+      "required": [
+        "op",
+        "stateKey",
+        "options"
+      ],
+      "additionalProperties": false
+    },
+    "Node_choose_warrior_path": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "choose_warrior_path"
+        },
+        "count": {
+          "$ref": "#/$defs/Value"
+        }
+      },
+      "required": [
+        "op",
+        "count"
+      ],
+      "additionalProperties": false
+    },
+    "Node_combine_pool_numbers": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "combine_pool_numbers"
+        },
+        "count": {
+          "$ref": "#/$defs/Value"
+        },
+        "method": {
+          "$ref": "#/$defs/Value"
+        }
+      },
+      "required": [
+        "op",
+        "count",
+        "method"
+      ],
+      "additionalProperties": false
+    },
+    "Node_convert_tokens": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "convert_tokens"
+        },
+        "target": {
+          "$ref": "#/$defs/Value"
+        },
+        "to": {
+          "$ref": "#/$defs/Value"
+        }
+      },
+      "required": [
+        "op",
+        "target",
+        "to"
+      ],
+      "additionalProperties": false
+    },
+    "Node_copy_declared_action": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "copy_declared_action"
+        },
+        "afterOriginal": {
+          "$ref": "#/$defs/Value"
+        },
+        "excludeOncePerTurnActions": {
+          "$ref": "#/$defs/Value"
+        },
+        "rating": {
+          "$ref": "#/$defs/Value"
+        }
+      },
+      "required": [
+        "op",
+        "afterOriginal",
+        "excludeOncePerTurnActions",
+        "rating"
+      ],
+      "additionalProperties": false
+    },
+    "Node_damage": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "damage"
+        },
+        "actor": {
+          "$ref": "#/$defs/Value"
+        },
+        "allowIronTokens": {
+          "$ref": "#/$defs/Value"
+        },
+        "amount": {
+          "$ref": "#/$defs/Value"
+        },
+        "ignoreDefenses": {
+          "$ref": "#/$defs/Value"
+        },
+        "target": {
+          "$ref": "#/$defs/Value"
+        }
+      },
+      "required": [
+        "op",
+        "amount",
+        "target"
+      ],
+      "additionalProperties": false
+    },
+    "Node_delegate_actions": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "delegate_actions"
+        },
+        "actorSelector": {
+          "$ref": "#/$defs/Value"
+        },
+        "payer": {
+          "$ref": "#/$defs/Value"
+        },
+        "useActorsLocationRangeAndStance": {
+          "$ref": "#/$defs/Value"
+        }
+      },
+      "required": [
+        "op",
+        "actorSelector",
+        "payer",
+        "useActorsLocationRangeAndStance"
+      ],
+      "additionalProperties": false
+    },
+    "Node_destroy_obstacle": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "destroy_obstacle"
+        },
+        "target": {
+          "$ref": "#/$defs/Value"
+        }
+      },
+      "required": [
+        "op",
+        "target"
+      ],
+      "additionalProperties": false
+    },
+    "Node_destroy_shield": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "destroy_shield"
+        },
+        "target": {
+          "$ref": "#/$defs/Value"
+        }
+      },
+      "required": [
+        "op",
+        "target"
+      ],
+      "additionalProperties": false
+    },
+    "Node_discard_tokens": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "discard_tokens"
+        },
+        "amount": {
+          "$ref": "#/$defs/Value"
+        },
+        "chooser": {
+          "$ref": "#/$defs/Value"
+        },
+        "exclude": {
+          "$ref": "#/$defs/Value"
+        },
+        "ifAvailable": {
+          "$ref": "#/$defs/Value"
+        },
+        "perTarget": {
+          "$ref": "#/$defs/Value"
+        },
+        "target": {
+          "$ref": "#/$defs/Value"
+        },
+        "tokenFilter": {
+          "$ref": "#/$defs/Value"
+        },
+        "totalAcrossTargets": {
+          "$ref": "#/$defs/Value"
+        },
+        "upTo": {
+          "type": "boolean"
+        },
+        "upToAvailable": {
+          "$ref": "#/$defs/Value"
+        }
+      },
+      "required": [
+        "op",
+        "amount",
+        "target",
+        "tokenFilter"
+      ],
+      "additionalProperties": false
+    },
+    "Node_distribute_distinct_basic_tokens": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "distribute_distinct_basic_tokens"
+        },
+        "amounts": {
+          "$ref": "#/$defs/Value"
+        },
+        "types": {
+          "$ref": "#/$defs/Value"
+        }
+      },
+      "required": [
+        "op",
+        "amounts",
+        "types"
+      ],
+      "additionalProperties": false
+    },
+    "Node_dodge_declared_action": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "dodge_declared_action"
+        },
+        "target": {
+          "$ref": "#/$defs/Value"
+        }
+      },
+      "required": [
+        "op",
+        "target"
+      ],
+      "additionalProperties": false
+    },
+    "Node_duplicate_pool_number": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "duplicate_pool_number"
+        },
+        "target": {
+          "$ref": "#/$defs/Value"
+        }
+      },
+      "required": [
+        "op",
+        "target"
+      ],
+      "additionalProperties": false
+    },
+    "Node_duplicate_token": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "duplicate_token"
+        },
+        "target": {
+          "$ref": "#/$defs/Value"
+        }
+      },
+      "required": [
+        "op",
+        "target"
+      ],
+      "additionalProperties": false
+    },
+    "Node_ensure_target": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "ensure_target"
+        },
+        "binding": {
+          "$ref": "#/$defs/Value"
+        },
+        "selector": {
+          "$ref": "#/$defs/Value"
+        }
+      },
+      "required": [
+        "op",
+        "binding",
+        "selector"
+      ],
+      "additionalProperties": false
+    },
+    "Node_for_each": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "for_each"
+        },
+        "binding": {
+          "$ref": "#/$defs/Value"
+        },
+        "effect": {
+          "$ref": "#/$defs/Node"
+        },
+        "selector": {
+          "$ref": "#/$defs/Value"
+        }
+      },
+      "required": [
+        "op",
+        "selector",
+        "binding",
+        "effect"
+      ],
+      "additionalProperties": false
+    },
+    "Node_gain_shield": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "gain_shield"
+        },
+        "target": {
+          "$ref": "#/$defs/Value"
+        },
+        "value": {
+          "$ref": "#/$defs/Value"
+        }
+      },
+      "required": [
+        "op",
+        "value",
+        "target"
+      ],
+      "additionalProperties": false
+    },
+    "Node_gain_tokens": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "gain_tokens"
+        },
+        "amount": {
+          "$ref": "#/$defs/Value"
+        },
+        "target": {
+          "$ref": "#/$defs/Value"
+        },
+        "token": {
+          "$ref": "#/$defs/Value"
+        }
+      },
+      "required": [
+        "op",
+        "token",
+        "amount",
+        "target"
+      ],
+      "additionalProperties": false
+    },
+    "Node_gain_tokens_until": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "gain_tokens_until"
+        },
+        "target": {
+          "$ref": "#/$defs/Value"
+        },
+        "token": {
+          "$ref": "#/$defs/Value"
+        },
+        "total": {
+          "$ref": "#/$defs/Value"
+        }
+      },
+      "required": [
+        "op",
+        "token",
+        "total",
+        "target"
+      ],
+      "additionalProperties": false
+    },
+    "Node_grant_archetype_variant": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "grant_archetype_variant"
+        },
+        "archetype": {
+          "$ref": "#/$defs/Value"
+        },
+        "retainExisting": {
+          "$ref": "#/$defs/Value"
+        },
+        "variant": {
+          "$ref": "#/$defs/Value"
+        }
+      },
+      "required": [
+        "op",
+        "archetype",
+        "variant"
+      ],
+      "additionalProperties": false
+    },
+    "Node_grant_armor": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "grant_armor"
+        },
+        "onlyDamageSource": {
+          "$ref": "#/$defs/Value"
+        },
+        "target": {
+          "$ref": "#/$defs/Value"
+        },
+        "temporary": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "op",
+        "target",
+        "temporary"
+      ],
+      "additionalProperties": false
+    },
+    "Node_heal": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "heal"
+        },
+        "amount": {
+          "$ref": "#/$defs/Value"
+        },
+        "target": {
+          "$ref": "#/$defs/Value"
+        }
+      },
+      "required": [
+        "op",
+        "amount",
+        "target"
+      ],
+      "additionalProperties": false
+    },
+    "Node_heroic_spirit_use_maximum_dice_results": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "heroic_spirit.use_maximum_dice_results"
+        }
+      },
+      "required": [
+        "op"
+      ],
+      "additionalProperties": false
+    },
+    "Node_if": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "if"
+        },
+        "condition": {
+          "$ref": "#/$defs/Value"
+        },
+        "else": {
+          "$ref": "#/$defs/Node"
+        },
+        "then": {
+          "$ref": "#/$defs/Node"
+        }
+      },
+      "required": [
+        "op",
+        "condition",
+        "then"
+      ],
+      "additionalProperties": false
+    },
+    "Node_increase_distinct_pool_numbers": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "increase_distinct_pool_numbers"
+        },
+        "amounts": {
+          "$ref": "#/$defs/Value"
+        },
+        "maximum": {
+          "$ref": "#/$defs/Value"
+        }
+      },
+      "required": [
+        "op",
+        "amounts",
+        "maximum"
+      ],
+      "additionalProperties": false
+    },
+    "Node_increase_pool_number": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "increase_pool_number"
+        },
+        "amount": {
+          "$ref": "#/$defs/Value"
+        },
+        "target": {
+          "$ref": "#/$defs/Value"
+        }
+      },
+      "required": [
+        "op",
+        "amount",
+        "target"
+      ],
+      "additionalProperties": false
+    },
+    "Node_joint_choice": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "joint_choice"
+        },
+        "groups": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "chooser": {
+                "$ref": "#/$defs/Value"
+              },
+              "count": {
+                "$ref": "#/$defs/Value"
+              }
+            },
+            "required": [
+              "chooser",
+              "count"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "options": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "effect": {
+                "$ref": "#/$defs/Node"
+              }
+            },
+            "required": [
+              "id",
+              "effect"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "resolveOrder": {
+          "$ref": "#/$defs/Value"
+        },
+        "unique": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "op",
+        "groups",
+        "options",
+        "unique",
+        "resolveOrder"
+      ],
+      "additionalProperties": false
+    },
+    "Node_limited": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "limited"
+        },
+        "effect": {
+          "$ref": "#/$defs/Node"
+        },
+        "maximum": {
+          "$ref": "#/$defs/Value"
+        },
+        "period": {
+          "$ref": "#/$defs/Value"
+        },
+        "scope": {
+          "$ref": "#/$defs/Value"
+        }
+      },
+      "required": [
+        "op",
+        "maximum",
+        "period",
+        "scope",
+        "effect"
+      ],
+      "additionalProperties": false
+    },
+    "Node_modify_action_numbers": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "modify_action_numbers"
+        },
+        "amount": {
+          "$ref": "#/$defs/Value"
+        },
+        "count": {
+          "$ref": "#/$defs/Value"
+        },
+        "exclude": {
+          "$ref": "#/$defs/Value"
+        }
+      },
+      "required": [
+        "op",
+        "count",
+        "amount",
+        "exclude"
+      ],
+      "additionalProperties": false
+    },
+    "Node_modify_pool_numbers": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "modify_pool_numbers"
+        },
+        "amount": {
+          "$ref": "#/$defs/Value"
+        },
+        "minimum": {
+          "$ref": "#/$defs/Value"
+        },
+        "target": {
+          "$ref": "#/$defs/Value"
+        }
+      },
+      "required": [
+        "op",
+        "amount",
+        "minimum",
+        "target"
+      ],
+      "additionalProperties": false
+    },
+    "Node_modify_rule": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "modify_rule"
+        },
+        "movementTypes": {
+          "$ref": "#/$defs/Value"
+        },
+        "rule": {
+          "$ref": "#/$defs/Value"
+        },
+        "target": {
+          "$ref": "#/$defs/Value"
+        },
+        "value": {
+          "$ref": "#/$defs/Value"
+        }
+      },
+      "required": [
+        "op",
+        "rule",
+        "value",
+        "target"
+      ],
+      "additionalProperties": false
+    },
+    "Node_move": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "move"
+        },
+        "distance": {
+          "$ref": "#/$defs/Value"
+        },
+        "ignoreObstacles": {
+          "$ref": "#/$defs/Value"
+        },
+        "target": {
+          "$ref": "#/$defs/Value"
+        },
+        "upTo": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "op",
+        "distance",
+        "target",
+        "upTo"
+      ],
+      "additionalProperties": false
+    },
+    "Node_move_obstacles": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "move_obstacles"
+        },
+        "distance": {
+          "$ref": "#/$defs/Value"
+        },
+        "optionalPerObstacle": {
+          "$ref": "#/$defs/Value"
+        },
+        "selector": {
+          "$ref": "#/$defs/Value"
+        },
+        "uniqueDestinations": {
+          "$ref": "#/$defs/Value"
+        },
+        "upTo": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "op",
+        "distance",
+        "optionalPerObstacle",
+        "selector",
+        "uniqueDestinations",
+        "upTo"
+      ],
+      "additionalProperties": false
+    },
+    "Node_narrative_permission": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "narrative_permission"
+        },
+        "text": {
+          "$ref": "#/$defs/Value"
+        }
+      },
+      "required": [
+        "op",
+        "text"
+      ],
+      "additionalProperties": false
+    },
+    "Node_negate_declared_action": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "negate_declared_action"
+        }
+      },
+      "required": [
+        "op"
+      ],
+      "additionalProperties": false
+    },
+    "Node_optional": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "optional"
+        },
+        "chooser": {
+          "$ref": "#/$defs/Value"
+        },
+        "effect": {
+          "$ref": "#/$defs/Node"
+        }
+      },
+      "required": [
+        "op",
+        "effect",
+        "chooser"
+      ],
+      "additionalProperties": false
+    },
+    "Node_pay_hp": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "pay_hp"
+        },
+        "amount": {
+          "$ref": "#/$defs/Value"
+        },
+        "target": {
+          "$ref": "#/$defs/Value"
+        }
+      },
+      "required": [
+        "op",
+        "amount",
+        "target"
+      ],
+      "additionalProperties": false
+    },
+    "Node_perform_action": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "perform_action"
+        },
+        "actor": {
+          "$ref": "#/$defs/Value"
+        },
+        "payCost": {
+          "type": "boolean"
+        },
+        "rating": {
+          "$ref": "#/$defs/Value"
+        },
+        "resultingActionType": {
+          "type": "string"
+        },
+        "selector": {
+          "$ref": "#/$defs/Value"
+        }
+      },
+      "required": [
+        "op",
+        "selector",
+        "rating",
+        "actor",
+        "payCost",
+        "resultingActionType"
+      ],
+      "additionalProperties": false
+    },
+    "Node_place_obstacle": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "place_obstacle"
+        },
+        "binding": {
+          "$ref": "#/$defs/Value"
+        },
+        "count": {
+          "$ref": "#/$defs/Value"
+        },
+        "obstacle": {
+          "$ref": "#/$defs/Value"
+        },
+        "target": {
+          "$ref": "#/$defs/Value"
+        }
+      },
+      "required": [
+        "op",
+        "obstacle",
+        "count",
+        "target"
+      ],
+      "additionalProperties": false
+    },
+    "Node_prepend_to_current_action": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "prepend_to_current_action"
+        },
+        "effect": {
+          "$ref": "#/$defs/Node"
+        }
+      },
+      "required": [
+        "op",
+        "effect"
+      ],
+      "additionalProperties": false
+    },
+    "Node_pull": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "pull"
+        },
+        "distance": {
+          "$ref": "#/$defs/Value"
+        },
+        "origin": {
+          "$ref": "#/$defs/Value"
+        },
+        "target": {
+          "$ref": "#/$defs/Value"
+        },
+        "upTo": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "op",
+        "distance",
+        "target"
+      ],
+      "additionalProperties": false
+    },
+    "Node_pull_until": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "pull_until"
+        },
+        "origin": {
+          "$ref": "#/$defs/Value"
+        },
+        "step": {
+          "$ref": "#/$defs/Value"
+        },
+        "stopCondition": {
+          "$ref": "#/$defs/Value"
+        },
+        "target": {
+          "$ref": "#/$defs/Value"
+        }
+      },
+      "required": [
+        "op",
+        "origin",
+        "step",
+        "stopCondition",
+        "target"
+      ],
+      "additionalProperties": false
+    },
+    "Node_push": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "push"
+        },
+        "distance": {
+          "$ref": "#/$defs/Value"
+        },
+        "origin": {
+          "$ref": "#/$defs/Value"
+        },
+        "target": {
+          "$ref": "#/$defs/Value"
+        },
+        "upTo": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "op",
+        "distance",
+        "target"
+      ],
+      "additionalProperties": false
+    },
+    "Node_reduce_damage": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "reduce_damage"
+        },
+        "allowsAlreadyReduced": {
+          "$ref": "#/$defs/Value"
+        },
+        "amount": {
+          "$ref": "#/$defs/Value"
+        },
+        "ignoresUnblockable": {
+          "$ref": "#/$defs/Value"
+        }
+      },
+      "required": [
+        "op",
+        "allowsAlreadyReduced",
+        "amount",
+        "ignoresUnblockable"
+      ],
+      "additionalProperties": false
+    },
+    "Node_reduce_forced_movement": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "reduce_forced_movement"
+        },
+        "amount": {
+          "$ref": "#/$defs/Value"
+        },
+        "minimum": {
+          "$ref": "#/$defs/Value"
+        }
+      },
+      "required": [
+        "op",
+        "amount",
+        "minimum"
+      ],
+      "additionalProperties": false
+    },
+    "Node_reduce_shield": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "reduce_shield"
+        },
+        "amount": {
+          "$ref": "#/$defs/Value"
+        },
+        "target": {
+          "$ref": "#/$defs/Value"
+        },
+        "upTo": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "op",
+        "amount",
+        "target",
+        "upTo"
+      ],
+      "additionalProperties": false
+    },
+    "Node_register_trigger": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "register_trigger"
+        },
+        "effect": {
+          "$ref": "#/$defs/Node"
+        },
+        "events": {
+          "$ref": "#/$defs/Value"
+        }
+      },
+      "required": [
+        "op",
+        "events",
+        "effect"
+      ],
+      "additionalProperties": false
+    },
+    "Node_remove_from_play": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "remove_from_play"
+        },
+        "allowComeback": {
+          "$ref": "#/$defs/Value"
+        },
+        "allowRescue": {
+          "$ref": "#/$defs/Value"
+        },
+        "duration": {
+          "$ref": "#/$defs/Value"
+        },
+        "heroicSpiritContinues": {
+          "$ref": "#/$defs/Value"
+        },
+        "target": {
+          "$ref": "#/$defs/Value"
+        }
+      },
+      "required": [
+        "op",
+        "allowComeback",
+        "allowRescue",
+        "duration",
+        "heroicSpiritContinues",
+        "target"
+      ],
+      "additionalProperties": false
+    },
+    "Node_remove_lowest_action_die": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "remove_lowest_action_die"
+        },
+        "fallbackOrder": {
+          "$ref": "#/$defs/Value"
+        },
+        "target": {
+          "$ref": "#/$defs/Value"
+        }
+      },
+      "required": [
+        "op",
+        "fallbackOrder",
+        "target"
+      ],
+      "additionalProperties": false
+    },
+    "Node_repeat": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "repeat"
+        },
+        "continueChooser": {
+          "$ref": "#/$defs/Value"
+        },
+        "effect": {
+          "$ref": "#/$defs/Node"
+        },
+        "maximum": {
+          "$ref": "#/$defs/Value"
+        },
+        "minimum": {
+          "$ref": "#/$defs/Value"
+        },
+        "onStop": {
+          "$ref": "#/$defs/Node"
+        },
+        "stopWhen": {
+          "$ref": "#/$defs/Value"
+        }
+      },
+      "required": [
+        "op",
+        "minimum",
+        "maximum",
+        "effect"
+      ],
+      "additionalProperties": false
+    },
+    "Node_replace_obstacle": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "replace_obstacle"
+        },
+        "replacement": {
+          "$ref": "#/$defs/Value"
+        },
+        "target": {
+          "$ref": "#/$defs/Value"
+        }
+      },
+      "required": [
+        "op",
+        "replacement",
+        "target"
+      ],
+      "additionalProperties": false
+    },
+    "Node_replace_pool_number": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "replace_pool_number"
+        },
+        "target": {
+          "$ref": "#/$defs/Value"
+        },
+        "value": {
+          "$ref": "#/$defs/Value"
+        }
+      },
+      "required": [
+        "op",
+        "target",
+        "value"
+      ],
+      "additionalProperties": false
+    },
+    "Node_replace_token_gain": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "replace_token_gain"
+        },
+        "amount": {
+          "$ref": "#/$defs/Value"
+        },
+        "fromToken": {
+          "$ref": "#/$defs/Value"
+        },
+        "toToken": {
+          "$ref": "#/$defs/Value"
+        }
+      },
+      "required": [
+        "op",
+        "amount",
+        "fromToken",
+        "toToken"
+      ],
+      "additionalProperties": false
+    },
+    "Node_replay_start_effects": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "replay_start_effects"
+        },
+        "asActionEffects": {
+          "$ref": "#/$defs/Value"
+        },
+        "sources": {
+          "$ref": "#/$defs/Value"
+        }
+      },
+      "required": [
+        "op",
+        "asActionEffects",
+        "sources"
+      ],
+      "additionalProperties": false
+    },
+    "Node_reroll_dice": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "reroll_dice"
+        },
+        "maximum": {
+          "$ref": "#/$defs/Value"
+        },
+        "mustKeepNew": {
+          "$ref": "#/$defs/Value"
+        }
+      },
+      "required": [
+        "op",
+        "maximum",
+        "mustKeepNew"
+      ],
+      "additionalProperties": false
+    },
+    "Node_reroll_die": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "reroll_die"
+        },
+        "mustKeepNew": {
+          "$ref": "#/$defs/Value"
+        },
+        "repeatWhile": {
+          "$ref": "#/$defs/Value"
+        },
+        "target": {
+          "$ref": "#/$defs/Value"
+        }
+      },
+      "required": [
+        "op",
+        "target"
+      ],
+      "additionalProperties": false
+    },
+    "Node_retain_pool_numbers": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "retain_pool_numbers"
+        },
+        "maximumCount": {
+          "$ref": "#/$defs/Value"
+        },
+        "maximumTotal": {
+          "$ref": "#/$defs/Value"
+        }
+      },
+      "required": [
+        "op",
+        "maximumCount",
+        "maximumTotal"
+      ],
+      "additionalProperties": false
+    },
+    "Node_return_to_play": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "return_to_play"
+        },
+        "destination": {
+          "$ref": "#/$defs/Value"
+        },
+        "target": {
+          "$ref": "#/$defs/Value"
+        }
+      },
+      "required": [
+        "op",
+        "target",
+        "destination"
+      ],
+      "additionalProperties": false
+    },
+    "Node_roll_die": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "roll_die"
+        },
+        "binding": {
+          "$ref": "#/$defs/Value"
+        },
+        "sides": {
+          "$ref": "#/$defs/Value"
+        }
+      },
+      "required": [
+        "op",
+        "binding",
+        "sides"
+      ],
+      "additionalProperties": false
+    },
+    "Node_schedule": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "schedule"
+        },
+        "at": {
+          "$ref": "#/$defs/Value"
+        },
+        "effect": {
+          "$ref": "#/$defs/Node"
+        }
+      },
+      "required": [
+        "op",
+        "at",
+        "effect"
+      ],
+      "additionalProperties": false
+    },
+    "Node_select": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "select"
+        },
+        "binding": {
+          "$ref": "#/$defs/Value"
+        },
+        "selector": {
+          "$ref": "#/$defs/Value"
+        }
+      },
+      "required": [
+        "op",
+        "binding",
+        "selector"
+      ],
+      "additionalProperties": false
+    },
+    "Node_select_token": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "select_token"
+        },
+        "binding": {
+          "$ref": "#/$defs/Value"
+        },
+        "count": {
+          "$ref": "#/$defs/Value"
+        },
+        "holder": {
+          "$ref": "#/$defs/Value"
+        },
+        "tokenFilter": {
+          "$ref": "#/$defs/Value"
+        }
+      },
+      "required": [
+        "op",
+        "binding",
+        "holder",
+        "count"
+      ],
+      "additionalProperties": false
+    },
+    "Node_selector_by_gate": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "selector_by_gate"
+        },
+        "cases": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "minimum": {
+                "type": "number"
+              },
+              "selector": {
+                "$ref": "#/$defs/Value"
+              }
+            },
+            "required": [
+              "minimum",
+              "selector"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "op",
+        "cases"
+      ],
+      "additionalProperties": false
+    },
+    "Node_sequence": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "sequence"
+        },
+        "steps": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Node"
+          }
+        }
+      },
+      "required": [
+        "op",
+        "steps"
+      ],
+      "additionalProperties": false
+    },
+    "Node_set_pool_number": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "set_pool_number"
+        },
+        "target": {
+          "$ref": "#/$defs/Value"
+        },
+        "value": {
+          "$ref": "#/$defs/Value"
+        }
+      },
+      "required": [
+        "op",
+        "target",
+        "value"
+      ],
+      "additionalProperties": false
+    },
+    "Node_set_state": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "set_state"
+        },
+        "key": {
+          "$ref": "#/$defs/Value"
+        },
+        "value": {
+          "$ref": "#/$defs/Value"
+        }
+      },
+      "required": [
+        "op",
+        "key",
+        "value"
+      ],
+      "additionalProperties": false
+    },
+    "Node_set_variable": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "set_variable"
+        },
+        "name": {
+          "$ref": "#/$defs/Value"
+        },
+        "value": {
+          "$ref": "#/$defs/Value"
+        }
+      },
+      "required": [
+        "op",
+        "name",
+        "value"
+      ],
+      "additionalProperties": false
+    },
+    "Node_spend_optional_tokens": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "spend_optional_tokens"
+        },
+        "maximum": {
+          "$ref": "#/$defs/Value"
+        },
+        "target": {
+          "$ref": "#/$defs/Value"
+        },
+        "token": {
+          "$ref": "#/$defs/Value"
+        }
+      },
+      "required": [
+        "op",
+        "maximum",
+        "target",
+        "token"
+      ],
+      "additionalProperties": false
+    },
+    "Node_spend_tokens": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "spend_tokens"
+        },
+        "amount": {
+          "$ref": "#/$defs/Value"
+        },
+        "target": {
+          "$ref": "#/$defs/Value"
+        },
+        "token": {
+          "$ref": "#/$defs/Value"
+        }
+      },
+      "required": [
+        "op",
+        "token",
+        "amount",
+        "target"
+      ],
+      "additionalProperties": false
+    },
+    "Node_split_incoming_damage": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "split_incoming_damage"
+        },
+        "maximumRedirectors": {
+          "$ref": "#/$defs/Value"
+        },
+        "originalShare": {
+          "$ref": "#/$defs/Value"
+        },
+        "originalTarget": {
+          "$ref": "#/$defs/Value"
+        },
+        "recipient": {
+          "$ref": "#/$defs/Value"
+        },
+        "recipientShare": {
+          "$ref": "#/$defs/Value"
+        }
+      },
+      "required": [
+        "op",
+        "maximumRedirectors",
+        "originalShare",
+        "originalTarget",
+        "recipient",
+        "recipientShare"
+      ],
+      "additionalProperties": false
+    },
+    "Node_split_pool_number": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "split_pool_number"
+        },
+        "minimumOriginal": {
+          "$ref": "#/$defs/Value"
+        },
+        "parts": {
+          "$ref": "#/$defs/Value"
+        }
+      },
+      "required": [
+        "op",
+        "minimumOriginal",
+        "parts"
+      ],
+      "additionalProperties": false
+    },
+    "Node_steal_tokens": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "steal_tokens"
+        },
+        "recipient": {
+          "$ref": "#/$defs/Value"
+        },
+        "target": {
+          "$ref": "#/$defs/Value"
+        }
+      },
+      "required": [
+        "op",
+        "recipient",
+        "target"
+      ],
+      "additionalProperties": false
+    },
+    "Node_substitute_cost": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "substitute_cost"
+        },
+        "amount": {
+          "$ref": "#/$defs/Value"
+        },
+        "replaceOneOf": {
+          "$ref": "#/$defs/Value"
+        },
+        "spendToken": {
+          "$ref": "#/$defs/Value"
+        }
+      },
+      "required": [
+        "op",
+        "amount",
+        "replaceOneOf",
+        "spendToken"
+      ],
+      "additionalProperties": false
+    },
+    "Node_swap_spaces": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "swap_spaces"
+        },
+        "actor": {
+          "$ref": "#/$defs/Value"
+        },
+        "target": {
+          "$ref": "#/$defs/Value"
+        }
+      },
+      "required": [
+        "op",
+        "target",
+        "actor"
+      ],
+      "additionalProperties": false
+    },
+    "Node_swap_twins": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "swap_twins"
+        }
+      },
+      "required": [
+        "op"
+      ],
+      "additionalProperties": false
+    },
+    "Node_switch": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "switch"
+        },
+        "cases": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "condition": {
+                "$ref": "#/$defs/Value"
+              },
+              "effect": {
+                "$ref": "#/$defs/Node"
+              }
+            },
+            "required": [
+              "condition",
+              "effect"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "match": {
+          "$ref": "#/$defs/Value"
+        }
+      },
+      "required": [
+        "op",
+        "cases",
+        "match"
+      ],
+      "additionalProperties": false
+    },
+    "Node_teleport": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "teleport"
+        },
+        "distance": {
+          "$ref": "#/$defs/Value"
+        },
+        "target": {
+          "$ref": "#/$defs/Value"
+        }
+      },
+      "required": [
+        "op",
+        "distance",
+        "target"
+      ],
+      "additionalProperties": false
+    },
+    "Node_teleport_to": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "teleport_to"
+        },
+        "chooser": {
+          "$ref": "#/$defs/Value"
+        },
+        "destination": {
+          "$ref": "#/$defs/Value"
+        },
+        "target": {
+          "$ref": "#/$defs/Value"
+        }
+      },
+      "required": [
+        "op",
+        "target",
+        "destination"
+      ],
+      "additionalProperties": false
+    },
+    "Node_temporary": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "temporary"
+        },
+        "duration": {
+          "$ref": "#/$defs/Value"
+        },
+        "effect": {
+          "$ref": "#/$defs/Node"
+        }
+      },
+      "required": [
+        "op",
+        "duration",
+        "effect"
+      ],
+      "additionalProperties": false
+    },
+    "Node_trigger_warrior_path": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "trigger_warrior_path"
+        }
+      },
+      "required": [
+        "op"
+      ],
+      "additionalProperties": false
+    },
+    "Node_unresolved": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "unresolved"
+        },
+        "sourceText": {
+          "$ref": "#/$defs/Value"
+        }
+      },
+      "required": [
+        "op",
+        "sourceText"
+      ],
+      "additionalProperties": false
+    },
+    "Node_upgrade_archetype_variant": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "upgrade_archetype_variant"
+        },
+        "fromVariant": {
+          "$ref": "#/$defs/Value"
+        },
+        "selection": {
+          "$ref": "#/$defs/Value"
+        },
+        "toVariant": {
+          "$ref": "#/$defs/Value"
+        }
+      },
+      "required": [
+        "op",
+        "fromVariant",
+        "selection",
+        "toVariant"
+      ],
+      "additionalProperties": false
+    },
+    "AbilityRule": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/EntityId"
+        },
+        "events": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        },
+        "effect": {
+          "$ref": "#/$defs/Node"
+        },
+        "optional": {
+          "type": "boolean"
+        },
+        "condition": {
+          "$ref": "#/$defs/Value"
+        },
+        "limit": {
+          "$ref": "#/$defs/Limit"
+        },
+        "duration": {
+          "type": "string"
+        },
+        "chooser": {
+          "$ref": "#/$defs/Value"
+        }
+      },
+      "required": [
+        "id",
+        "events",
+        "effect",
+        "optional"
+      ],
+      "additionalProperties": false
+    },
+    "Action": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/EntityId"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source": {
+          "$ref": "#/$defs/Source"
+        },
+        "automationState": {
+          "type": "string",
+          "enum": [
+            "structured",
+            "requires_ruling"
+          ]
+        },
+        "descriptionText": {
+          "type": "string"
+        },
+        "abilityIds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EntityId"
+          }
+        },
+        "actionIds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EntityId"
+          }
+        },
+        "keywords": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "aggro",
+              "desperation",
+              "guard",
+              "mobility",
+              "preparation",
+              "ruinous",
+              "support",
+              "technical",
+              "zoning"
+            ]
+          }
+        },
+        "sourceExplanations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "source": {
+                "$ref": "#/$defs/Source"
+              },
+              "text": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "source",
+              "text"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "ownerId": {
+          "$ref": "#/$defs/EntityId"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "basic",
+            "unique"
+          ]
+        },
+        "cost": {
+          "$ref": "#/$defs/Cost"
+        },
+        "rulesText": {
+          "type": "string",
+          "minLength": 1
+        },
+        "effect": {
+          "$ref": "#/$defs/Node"
+        },
+        "gates": {
+          "type": "object",
+          "properties": {
+            "headerThresholds": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "minimum": 1
+              }
+            },
+            "effectThresholds": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "minimum": 1
+              }
+            },
+            "mayStopAtEarlierGate": {
+              "type": "boolean"
+            },
+            "modificationsApplyBeforeExecution": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "headerThresholds",
+            "effectThresholds",
+            "mayStopAtEarlierGate",
+            "modificationsApplyBeforeExecution"
+          ],
+          "additionalProperties": false
+        },
+        "limits": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Limit"
+          }
+        },
+        "conditions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Value"
+          }
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "usableWhileTakenOut": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "ownerId",
+        "kind",
+        "source",
+        "cost",
+        "rulesText",
+        "effect",
+        "gates",
+        "limits",
+        "conditions",
+        "tags",
+        "usableWhileTakenOut",
+        "automationState"
+      ],
+      "additionalProperties": false
+    },
+    "Ability": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/EntityId"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source": {
+          "$ref": "#/$defs/Source"
+        },
+        "automationState": {
+          "type": "string",
+          "enum": [
+            "structured",
+            "requires_ruling"
+          ]
+        },
+        "descriptionText": {
+          "type": "string"
+        },
+        "abilityIds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EntityId"
+          }
+        },
+        "actionIds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EntityId"
+          }
+        },
+        "keywords": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "aggro",
+              "desperation",
+              "guard",
+              "mobility",
+              "preparation",
+              "ruinous",
+              "support",
+              "technical",
+              "zoning"
+            ]
+          }
+        },
+        "sourceExplanations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "source": {
+                "$ref": "#/$defs/Source"
+              },
+              "text": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "source",
+              "text"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "ownerId": {
+          "$ref": "#/$defs/EntityId"
+        },
+        "rulesText": {
+          "type": "string",
+          "minLength": 1
+        },
+        "rules": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/AbilityRule"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "ownerId",
+        "source",
+        "rulesText",
+        "rules",
+        "automationState"
+      ],
+      "additionalProperties": false
+    },
+    "Form": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/EntityId"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source": {
+          "$ref": "#/$defs/Source"
+        },
+        "automationState": {
+          "type": "string",
+          "enum": [
+            "structured",
+            "requires_ruling"
+          ]
+        },
+        "descriptionText": {
+          "type": "string"
+        },
+        "abilityIds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EntityId"
+          }
+        },
+        "actionIds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EntityId"
+          }
+        },
+        "keywords": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "aggro",
+              "desperation",
+              "guard",
+              "mobility",
+              "preparation",
+              "ruinous",
+              "support",
+              "technical",
+              "zoning"
+            ]
+          }
+        },
+        "sourceExplanations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "source": {
+                "$ref": "#/$defs/Source"
+              },
+              "text": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "source",
+              "text"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "complexity": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3
+        },
+        "aliases": {
+          "type": "array",
+          "minItems": 5,
+          "maxItems": 5,
+          "items": {
+            "type": "string"
+          }
+        },
+        "actionDice": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Die"
+          }
+        },
+        "skillId": {
+          "$ref": "#/$defs/EntityId"
+        },
+        "resourceMechanicIds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EntityId"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "keywords",
+        "source",
+        "abilityIds",
+        "actionIds",
+        "descriptionText",
+        "automationState",
+        "complexity",
+        "aliases",
+        "actionDice",
+        "skillId"
+      ],
+      "additionalProperties": false
+    },
+    "Style": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/EntityId"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source": {
+          "$ref": "#/$defs/Source"
+        },
+        "automationState": {
+          "type": "string",
+          "enum": [
+            "structured",
+            "requires_ruling"
+          ]
+        },
+        "descriptionText": {
+          "type": "string"
+        },
+        "abilityIds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EntityId"
+          }
+        },
+        "actionIds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EntityId"
+          }
+        },
+        "keywords": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "aggro",
+              "desperation",
+              "guard",
+              "mobility",
+              "preparation",
+              "ruinous",
+              "support",
+              "technical",
+              "zoning"
+            ]
+          }
+        },
+        "sourceExplanations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "source": {
+                "$ref": "#/$defs/Source"
+              },
+              "text": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "source",
+              "text"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "range": {
+          "$ref": "#/$defs/Range"
+        },
+        "archetypeId": {
+          "$ref": "#/$defs/EntityId"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "keywords",
+        "source",
+        "abilityIds",
+        "actionIds",
+        "descriptionText",
+        "automationState",
+        "range",
+        "archetypeId"
+      ],
+      "additionalProperties": false
+    },
+    "Freestyle": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/EntityId"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source": {
+          "$ref": "#/$defs/Source"
+        },
+        "automationState": {
+          "type": "string",
+          "enum": [
+            "structured",
+            "requires_ruling"
+          ]
+        },
+        "descriptionText": {
+          "type": "string"
+        },
+        "abilityIds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EntityId"
+          }
+        },
+        "actionIds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EntityId"
+          }
+        },
+        "keywords": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "aggro",
+              "desperation",
+              "guard",
+              "mobility",
+              "preparation",
+              "ruinous",
+              "support",
+              "technical",
+              "zoning"
+            ]
+          }
+        },
+        "sourceExplanations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "source": {
+                "$ref": "#/$defs/Source"
+              },
+              "text": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "source",
+              "text"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "range": {
+          "$ref": "#/$defs/Range"
+        },
+        "bannedFormIds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EntityId"
+          }
+        },
+        "actionDice": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Die"
+          }
+        },
+        "diceMode": {
+          "const": "replace_form_green_keep_form_purple"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "keywords",
+        "source",
+        "abilityIds",
+        "actionIds",
+        "descriptionText",
+        "automationState",
+        "range",
+        "bannedFormIds",
+        "actionDice",
+        "diceMode"
+      ],
+      "additionalProperties": false
+    },
+    "Archetype": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/EntityId"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source": {
+          "$ref": "#/$defs/Source"
+        },
+        "automationState": {
+          "type": "string",
+          "enum": [
+            "structured",
+            "requires_ruling"
+          ]
+        },
+        "descriptionText": {
+          "type": "string"
+        },
+        "abilityIds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EntityId"
+          }
+        },
+        "actionIds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EntityId"
+          }
+        },
+        "keywords": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "aggro",
+              "desperation",
+              "guard",
+              "mobility",
+              "preparation",
+              "ruinous",
+              "support",
+              "technical",
+              "zoning"
+            ]
+          }
+        },
+        "sourceExplanations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "source": {
+                "$ref": "#/$defs/Source"
+              },
+              "text": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "source",
+              "text"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "player",
+            "villain"
+          ]
+        },
+        "complexity": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1,
+          "maximum": 3
+        },
+        "abilityVariants": {
+          "type": "object",
+          "properties": {
+            "focused": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/EntityId"
+              }
+            },
+            "fused": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/EntityId"
+              }
+            },
+            "frantic": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/EntityId"
+              }
+            }
+          },
+          "required": [],
+          "additionalProperties": false
+        },
+        "styleIds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EntityId"
+          }
+        },
+        "unresolvedStyleNames": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "superMoveIds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EntityId"
+          }
+        },
+        "resourceMechanicIds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EntityId"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "kind",
+        "source",
+        "complexity",
+        "keywords",
+        "descriptionText",
+        "abilityVariants",
+        "abilityIds",
+        "actionIds",
+        "styleIds",
+        "superMoveIds",
+        "resourceMechanicIds",
+        "automationState"
+      ],
+      "additionalProperties": false
+    },
+    "Build": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/EntityId"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source": {
+          "$ref": "#/$defs/Source"
+        },
+        "automationState": {
+          "type": "string",
+          "enum": [
+            "structured",
+            "requires_ruling"
+          ]
+        },
+        "descriptionText": {
+          "type": "string"
+        },
+        "abilityIds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EntityId"
+          }
+        },
+        "actionIds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EntityId"
+          }
+        },
+        "keywords": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "aggro",
+              "desperation",
+              "guard",
+              "mobility",
+              "preparation",
+              "ruinous",
+              "support",
+              "technical",
+              "zoning"
+            ]
+          }
+        },
+        "sourceExplanations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "source": {
+                "$ref": "#/$defs/Source"
+              },
+              "text": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "source",
+              "text"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "unblockable": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "source",
+        "descriptionText",
+        "abilityIds",
+        "actionIds",
+        "unblockable",
+        "automationState"
+      ],
+      "additionalProperties": false
+    },
+    "Skill": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/EntityId"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source": {
+          "$ref": "#/$defs/Source"
+        },
+        "automationState": {
+          "type": "string",
+          "enum": [
+            "structured",
+            "requires_ruling"
+          ]
+        },
+        "descriptionText": {
+          "type": "string"
+        },
+        "abilityIds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EntityId"
+          }
+        },
+        "actionIds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EntityId"
+          }
+        },
+        "keywords": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "aggro",
+              "desperation",
+              "guard",
+              "mobility",
+              "preparation",
+              "ruinous",
+              "support",
+              "technical",
+              "zoning"
+            ]
+          }
+        },
+        "sourceExplanations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "source": {
+                "$ref": "#/$defs/Source"
+              },
+              "text": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "source",
+              "text"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "rulesText": {
+          "type": "string"
+        },
+        "formId": {
+          "$ref": "#/$defs/EntityId"
+        },
+        "effect": {
+          "$ref": "#/$defs/Node"
+        },
+        "requiresPlayerInput": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "source",
+        "rulesText",
+        "formId",
+        "effect",
+        "requiresPlayerInput"
+      ],
+      "additionalProperties": false
+    },
+    "SuperMove": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/EntityId"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source": {
+          "$ref": "#/$defs/Source"
+        },
+        "automationState": {
+          "type": "string",
+          "enum": [
+            "structured",
+            "requires_ruling"
+          ]
+        },
+        "descriptionText": {
+          "type": "string"
+        },
+        "abilityIds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EntityId"
+          }
+        },
+        "actionIds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EntityId"
+          }
+        },
+        "keywords": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "aggro",
+              "desperation",
+              "guard",
+              "mobility",
+              "preparation",
+              "ruinous",
+              "support",
+              "technical",
+              "zoning"
+            ]
+          }
+        },
+        "sourceExplanations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "source": {
+                "$ref": "#/$defs/Source"
+              },
+              "text": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "source",
+              "text"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "ownerId": {
+          "$ref": "#/$defs/EntityId"
+        },
+        "variant": {
+          "type": "string",
+          "enum": [
+            "alpha",
+            "delta",
+            "villain"
+          ]
+        },
+        "rulesText": {
+          "type": "string"
+        },
+        "cost": {
+          "$ref": "#/$defs/Cost"
+        },
+        "effect": {
+          "$ref": "#/$defs/Node"
+        },
+        "conditions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Value"
+          }
+        },
+        "limits": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Limit"
+          }
+        },
+        "timing": {
+          "type": "string"
+        },
+        "isAction": {
+          "const": false
+        },
+        "triggersAbilities": {
+          "const": false
+        },
+        "allowsTokenResponses": {
+          "const": false
+        },
+        "armorApplies": {
+          "const": true
+        },
+        "grantedObject": {
+          "$ref": "#/$defs/Value"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "ownerId",
+        "variant",
+        "source",
+        "rulesText",
+        "cost",
+        "effect",
+        "conditions",
+        "limits",
+        "timing",
+        "isAction",
+        "triggersAbilities",
+        "allowsTokenResponses",
+        "armorApplies",
+        "automationState"
+      ],
+      "additionalProperties": false
+    },
+    "ResourceMechanic": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/EntityId"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source": {
+          "$ref": "#/$defs/Source"
+        },
+        "automationState": {
+          "type": "string",
+          "enum": [
+            "structured",
+            "requires_ruling"
+          ]
+        },
+        "descriptionText": {
+          "type": "string"
+        },
+        "abilityIds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EntityId"
+          }
+        },
+        "actionIds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EntityId"
+          }
+        },
+        "keywords": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "aggro",
+              "desperation",
+              "guard",
+              "mobility",
+              "preparation",
+              "ruinous",
+              "support",
+              "technical",
+              "zoning"
+            ]
+          }
+        },
+        "sourceExplanations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "source": {
+                "$ref": "#/$defs/Source"
+              },
+              "text": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "source",
+              "text"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "ownerId": {
+          "$ref": "#/$defs/EntityId"
+        },
+        "tokenKey": {
+          "type": "string"
+        },
+        "rulesText": {
+          "type": "string"
+        },
+        "tokenCap": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "ownerId",
+        "tokenKey",
+        "source",
+        "rulesText",
+        "tokenCap",
+        "abilityIds",
+        "actionIds",
+        "automationState"
+      ],
+      "additionalProperties": false
+    },
+    "Feature": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/EntityId"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source": {
+          "$ref": "#/$defs/Source"
+        },
+        "automationState": {
+          "type": "string",
+          "enum": [
+            "structured",
+            "requires_ruling"
+          ]
+        },
+        "descriptionText": {
+          "type": "string"
+        },
+        "abilityIds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EntityId"
+          }
+        },
+        "actionIds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EntityId"
+          }
+        },
+        "keywords": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "aggro",
+              "desperation",
+              "guard",
+              "mobility",
+              "preparation",
+              "ruinous",
+              "support",
+              "technical",
+              "zoning"
+            ]
+          }
+        },
+        "sourceExplanations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "source": {
+                "$ref": "#/$defs/Source"
+              },
+              "text": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "source",
+              "text"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "rulesText": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "source",
+        "rulesText",
+        "abilityIds",
+        "actionIds"
+      ],
+      "additionalProperties": false
+    },
+    "HeroType": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/EntityId"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source": {
+          "$ref": "#/$defs/Source"
+        },
+        "automationState": {
+          "type": "string",
+          "enum": [
+            "structured",
+            "requires_ruling"
+          ]
+        },
+        "descriptionText": {
+          "type": "string"
+        },
+        "abilityIds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EntityId"
+          }
+        },
+        "actionIds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EntityId"
+          }
+        },
+        "keywords": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "aggro",
+              "desperation",
+              "guard",
+              "mobility",
+              "preparation",
+              "ruinous",
+              "support",
+              "technical",
+              "zoning"
+            ]
+          }
+        },
+        "sourceExplanations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "source": {
+                "$ref": "#/$defs/Source"
+              },
+              "text": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "source",
+              "text"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "archetypeCount": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3
+        },
+        "archetypesUnique": {
+          "const": true
+        },
+        "abilityVariant": {
+          "type": "string",
+          "enum": [
+            "focused",
+            "fused",
+            "frantic"
+          ]
+        },
+        "stylesPerArchetype": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "stanceMode": {
+          "type": "string",
+          "enum": [
+            "fixed_pairings",
+            "assemble_each_turn"
+          ]
+        },
+        "advancementTrackId": {
+          "$ref": "#/$defs/EntityId"
+        },
+        "freestyleArchetypeSelection": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "source",
+        "archetypeCount",
+        "archetypesUnique",
+        "abilityVariant",
+        "stylesPerArchetype",
+        "stanceMode",
+        "abilityIds",
+        "advancementTrackId",
+        "freestyleArchetypeSelection"
+      ],
+      "additionalProperties": false
+    },
+    "AdvancementLevel": {
+      "type": "object",
+      "properties": {
+        "level": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10
+        },
+        "totalXp": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "bonusDie": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/Die"
+            }
+          ]
+        },
+        "bonusHpPerBar": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "grants": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Value"
+          }
+        }
+      },
+      "required": [
+        "level",
+        "totalXp",
+        "bonusDie",
+        "bonusHpPerBar",
+        "grants"
+      ],
+      "additionalProperties": false
+    },
+    "AdvancementTrack": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/EntityId"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source": {
+          "$ref": "#/$defs/Source"
+        },
+        "automationState": {
+          "type": "string",
+          "enum": [
+            "structured",
+            "requires_ruling"
+          ]
+        },
+        "descriptionText": {
+          "type": "string"
+        },
+        "abilityIds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EntityId"
+          }
+        },
+        "actionIds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EntityId"
+          }
+        },
+        "keywords": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "aggro",
+              "desperation",
+              "guard",
+              "mobility",
+              "preparation",
+              "ruinous",
+              "support",
+              "technical",
+              "zoning"
+            ]
+          }
+        },
+        "sourceExplanations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "source": {
+                "$ref": "#/$defs/Source"
+              },
+              "text": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "source",
+              "text"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "levels": {
+          "type": "array",
+          "minItems": 10,
+          "maxItems": 10,
+          "items": {
+            "$ref": "#/$defs/AdvancementLevel"
+          }
+        },
+        "xpAwards": {
+          "$ref": "#/$defs/Value"
+        },
+        "maximumLevel": {
+          "const": 10
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "source",
+        "levels",
+        "xpAwards",
+        "maximumLevel"
+      ],
+      "additionalProperties": false
+    },
+    "CharacterType": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/EntityId"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source": {
+          "$ref": "#/$defs/Source"
+        },
+        "automationState": {
+          "type": "string",
+          "enum": [
+            "structured",
+            "requires_ruling"
+          ]
+        },
+        "descriptionText": {
+          "type": "string"
+        },
+        "abilityIds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EntityId"
+          }
+        },
+        "actionIds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EntityId"
+          }
+        },
+        "keywords": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "aggro",
+              "desperation",
+              "guard",
+              "mobility",
+              "preparation",
+              "ruinous",
+              "support",
+              "technical",
+              "zoning"
+            ]
+          }
+        },
+        "sourceExplanations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "source": {
+                "$ref": "#/$defs/Source"
+              },
+              "text": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "source",
+              "text"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "kind": {
+          "const": "npc"
+        },
+        "stanceCount": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "healthBarCount": {
+          "$ref": "#/$defs/Value"
+        },
+        "buildCount": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "archetypeAbilityVariant": {
+          "type": "string"
+        },
+        "mustMatchStyleArchetype": {
+          "type": "boolean"
+        },
+        "villainArchetypeAllowedIfStyleListed": {
+          "type": "boolean"
+        },
+        "advancementTrackId": {
+          "$ref": "#/$defs/EntityId"
+        },
+        "turnsPerRound": {
+          "type": "string"
+        },
+        "sharedStance": {
+          "type": "boolean"
+        },
+        "initialUnitCount": {
+          "type": "integer"
+        },
+        "sharedTurn": {
+          "type": "boolean"
+        },
+        "countsAsHealthBars": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "kind",
+        "source",
+        "stanceCount"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

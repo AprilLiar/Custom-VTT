@@ -51,17 +51,13 @@ const mira = await jpost('/api/characters', { name: `Mira${stamp}`, characterTyp
 const bo = await jpost('/api/characters', { name: `Bo${stamp}`, characterType: 'pc' });
 const goon = await jpost('/api/characters', { name: `Goon${stamp}`, characterType: 'npc' });
 const own = (c) => ({ ownerType: 'character', ownerId: c.id });
+// Hand-made Stances and Reminders were purged for the character builder
+// (phase 0): their events do nothing any more.
 gm.emit('combat_stance:create', { ...own(mira), name: 'Calm', dice: [{ die: 6 }] });
-gm.emit('combat_stance:create', { ...own(mira), name: 'Fury', dice: [{ die: 10 }, { fixed: 4 }] });
-gm.emit('combat_stance:create', { ...own(bo), name: 'Steady', dice: [{ die: 8 }, { die: 8 }] });
+gm.emit('combat_reminder:create', { ...own(mira), scope: 'self', timing: 'start', text: 'gone' });
 await sleep(400);
-const miraStances = (await jf(`/api/combat-setup?ownerType=character&ownerId=${mira.id}`)).stances;
-const fury = miraStances.find((s) => s.name === 'Fury');
-gm.emit('combat_reminder:create', { ...own(mira), scope: 'self', timing: 'start', text: 'Fury: +2 Power', stanceId: fury.id });
-gm.emit('combat_reminder:create', { ...own(mira), scope: 'self', timing: 'start', text: 'Calm only', stanceId: miraStances[0].id });
-gm.emit('combat_reminder:create', { ...own(mira), scope: 'others', timing: 'start', target: 'enemies', text: 'Watch the enemy' });
-gm.emit('combat_reminder:create', { ownerType: 'character', ownerId: goon.id, scope: 'round', timing: 'start', text: 'Goons regroup' });
-gm.emit('combat_reminder:create', { ...own(bo), scope: 'self', timing: 'end', text: 'Bo: drop guard' });
+const purged = await jf(`/api/combat-setup?ownerType=character&ownerId=${mira.id}`);
+check('hand-made Stances and Reminders can no longer be created', purged.stances.length === 0 && purged.reminders.length === 0, JSON.stringify(purged));
 for (const [o, col] of [[own(mira), 2], [own(bo), 4], [{ ownerType: 'character', ownerId: goon.id }, 6], [{ ownerType: 'character', ownerId: goon.id }, 7]]) {
   gm.emit('combat_token:place', { ...o, col, row: 3 });
 }
@@ -99,27 +95,9 @@ check('one turn per HP bar: Mira has two bars, so five turns, alternating while 
   fight.order.length === 5 && fight.order.map((o) => o.side[0]).join('') === 'aeaea' && fight.order[0].id === tMira.id,
   JSON.stringify(fight.order));
 check('Simple Combat has its own (no) fight', st.fights.simple === null);
-check('the opener has two stances, so the turn waits for a pick', fight.pending_stance?.combatant_id === tMira.id && fight.pending_stance.stances.length === 2,
-  JSON.stringify(fight.pending_stance));
-check('round 1 started with the Round reminder', cards.some((c) => c.payload.text === 'Goons regroup' && /Start of round 1/.test(c.payload.title)));
-check('...but no Start-of-turn reminder before the stance is chosen', !cards.some((c) => /Start of Mira/.test(c.payload.title ?? '')));
+check('without Stances (until the builder) the turn starts at once: no pick, no roll',
+  fight.pending_stance === null && !cards.some((c) => c.kind === 'stance_roll'), JSON.stringify(fight.pending_stance));
 check('a combat-begins line was posted', lines.some((l) => /Combat begins/.test(l)));
-
-console.log('\n--- the Stance pick ---');
-pb.emit('fight:choose_stance', { mode: 'combat', stanceId: fury.id });
-await sleep(300);
-check("another player can't pick Mira's stance", (await jf('/api/stage?role=gm')).fights.combat.pending_stance != null);
-p.emit('fight:choose_stance', { mode: 'combat', stanceId: fury.id });
-await sleep(600);
-const roll = cards.find((c) => c.kind === 'stance_roll');
-check("Mira's player picks; only that stance's dice roll, each shown separately",
-  roll?.payload.stance === 'Fury' && roll.payload.results.length === 2 && roll.payload.results[1].result === 4 && roll.payload.results[0].result >= 1 && roll.payload.results[0].result <= 10,
-  JSON.stringify(roll?.payload));
-const startCards = cards.filter((c) => /Start of Mira/.test(c.payload.title ?? '')).map((c) => c.payload.text);
-check('then the Start reminders fire — the Fury-bound one, not the Calm-bound one', startCards.includes('Fury: +2 Power') && !startCards.includes('Calm only'),
-  JSON.stringify(startCards));
-st = await jf('/api/stage?role=gm');
-check('the pick became the active stance', st.combatTokens.find((t) => t.id === tMira.id).fight.active_stance_id === fury.id);
 
 console.log('\n--- next turn ---');
 gm.emit('fighter:hp', { ref: { combatantId: tMira.id }, delta: -5 });
@@ -138,29 +116,18 @@ check('...and the Speed one, listing whoever holds Speed', endCards.some((c) => 
 st = await jf('/api/stage?role=gm');
 fight = st.fights.combat;
 check('Dizzy ended with the turn', st.combatTokens.find((t) => t.id === tMira.id).fight.hp.dizzy === false);
-check('the next turn is an enemy (a Goon, no stances, so no pick)', fight.turn_index === 1 && fight.order[1].side === 'enemies' && fight.pending_stance === null);
-check("an enemy's turn starts Mira's 'others: enemies' reminder", endCards.some((c) => c.payload.text === 'Watch the enemy' && /Start of Goon/.test(c.payload.title)));
+check('the next turn is an enemy, with no pick', fight.turn_index === 1 && fight.order[1].side === 'enemies' && fight.pending_stance === null);
 
 console.log('\n--- through the round ---');
-let rolledBo = false;
 for (let i = 0; i < 6 && st.fights.combat.round === 1; i++) {
-  const n = cards.length;
   gm.emit('fight:next', { mode: 'combat' });
   await sleep(700);
   st = await jf('/api/stage?role=gm');
-  if (cards.slice(n).some((c) => c.kind === 'stance_roll' && c.payload.stance === 'Steady')) rolledBo = true;
-  if (st.fights.combat.pending_stance) {
-    gm.emit('fight:choose_stance', { mode: 'combat', stanceId: st.fights.combat.pending_stance.stances[0].id });
-    await sleep(600);
-    st = await jf('/api/stage?role=gm');
-  }
 }
-check("Bo's single stance rolled on its own at the start of his turn", rolledBo);
-check("Bo's own End reminder fired", cards.some((c) => c.payload.text === 'Bo: drop guard'));
 fight = st.fights.combat;
 check('a second round started, re-rolled — still five turns: Mira broke a bar but keeps a turn per bar (the book)', fight.round === 2 && fight.order.length === 5, JSON.stringify(fight));
 check('...opened by the side opposite the last turn of round 1 (allies ended it → enemies open)', fight.order[0].side === 'enemies', JSON.stringify(fight.order));
-check('...with the Round reminder again and a round line', cards.some((c) => /Start of round 2/.test(c.payload.title ?? '')) && lines.some((l) => /Round 2/.test(l)));
+check('...with a round line', lines.some((l) => /Round 2/.test(l)));
 
 console.log('\n--- sides, removal, the chat log, the end ---');
 gm.emit('combat_token:remove', { combatantId: tG2.id });
@@ -169,18 +136,13 @@ for (let i = 0; i < 6; i++) {
   gm.emit('fight:next', { mode: 'combat' });
   await sleep(500);
   st = await jf('/api/stage?role=gm');
-  if (st.fights.combat.pending_stance) {
-    gm.emit('fight:choose_stance', { mode: 'combat', stanceId: st.fights.combat.pending_stance.stances[0].id });
-    await sleep(500);
-    st = await jf('/api/stage?role=gm');
-  }
   const entry = st.fights.combat.order[st.fights.combat.turn_index];
   if (entry?.id === tG2.id) check('a removed fighter never gets a turn', false, JSON.stringify(entry));
 }
 check('the fight carries on without the removed fighter', st.fights.combat != null);
 const log = await jf('/api/chat');
 check('cards are in the chat log with their payload, for a reload',
-  log.some((e) => e.kind === 'reminder' && e.payload?.text) && log.some((e) => e.kind === 'stance_roll' && Array.isArray(e.payload?.results)));
+  log.some((e) => e.kind === 'reminder' && e.payload?.text && e.payload.automatic));
 gm.emit('fight:end', { mode: 'combat' });
 await sleep(400);
 st = await jf('/api/stage?role=gm');

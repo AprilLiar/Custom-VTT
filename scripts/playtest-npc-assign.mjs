@@ -56,7 +56,7 @@ const pics = () => jf(`/api/scene-pictures?ownerType=character&ownerId=${grunt.i
 
 console.log('\n--- by default nobody but the GM ---');
 check('a new NPC is assigned to nobody', (await roster()).find((c) => c.id === grunt.id).assigned_to === null);
-p.emit('combat_stance:create', { ownerType: 'character', ownerId: grunt.id, name: 'Nope', dice: [{ die: 6 }] });
+p.emit('combat_profile:update', { ownerType: 'character', ownerId: grunt.id, imageData: PNG, imageMimeType: 'image/png' });
 p.emit('scene_picture:create', { ownerType: 'character', ownerId: grunt.id, name: 'x', imageData: PNG, imageMimeType: 'image/png' });
 p.emit('combat_token:place', { ownerType: 'character', ownerId: grunt.id, col: 2, row: 2 });
 await sleep(500);
@@ -77,13 +77,13 @@ gm.emit('character:assign', { characterId: grunt.id, playerCharacterId: mira.id 
 await sleep(300);
 check('the GM assigns the NPC to the player; everyone hears it',
   (await roster()).find((c) => c.id === grunt.id).assigned_to === mira.id && updates.some((u) => u.id === grunt.id && u.assigned_to === mira.id));
-p.emit('combat_stance:create', { ownerType: 'character', ownerId: grunt.id, name: 'Grunt', dice: [{ die: 6 }] });
+p.emit('combat_profile:update', { ownerType: 'character', ownerId: grunt.id, imageData: PNG, imageMimeType: 'image/png' });
 p.emit('scene_picture:create', { ownerType: 'character', ownerId: grunt.id, name: 'x', imageData: PNG, imageMimeType: 'image/png' });
 p.emit('combat_token:place', { ownerType: 'character', ownerId: grunt.id, col: 2, row: 2 });
 await sleep(600);
 let st = await stage();
 const tok = st.combatTokens.find((t) => t.character_id === grunt.id);
-check('the player sets up, pictures and places the NPC', (await pics()).length === 1 && tok != null && st.fighterSetup[`character:${grunt.id}`]?.stances.length === 1);
+check('the player sets up, pictures and places the NPC', (await pics()).length === 1 && tok != null && (await jf(`/api/combat-setup?ownerType=character&ownerId=${grunt.id}`)).profile.image_url != null);
 p.emit('fighter:token', { ref: { combatantId: tok.id }, key: 'iron', delta: 2 });
 other.emit('fighter:token', { ref: { combatantId: tok.id }, key: 'speed', delta: 1 });
 await sleep(400);
@@ -103,9 +103,9 @@ check('the player summons the NPC onto the stage', (await stage()).summons.some(
 console.log('\n--- handed back ---');
 gm.emit('character:assign', { characterId: grunt.id, playerCharacterId: null });
 await sleep(300);
-p.emit('combat_stance:create', { ownerType: 'character', ownerId: grunt.id, name: 'Late', dice: [{ die: 4 }] });
+p.emit('combat_profile:update', { ownerType: 'character', ownerId: grunt.id, clearImage: true });
 await sleep(400);
-check('unassigned: the player loses control again', (await stage()).fighterSetup[`character:${grunt.id}`]?.stances.length === 1);
+check('unassigned: the player loses control again', (await jf(`/api/combat-setup?ownerType=character&ownerId=${grunt.id}`)).profile.image_url != null);
 gm.emit('character:assign', { characterId: grunt.id, playerCharacterId: mira.id });
 await sleep(300);
 await fetch(`${BASE}/api/characters/${mira.id}`, { method: 'DELETE' });

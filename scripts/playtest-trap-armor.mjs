@@ -1,5 +1,5 @@
-// Playtest: the Trap end-of-turn reminder, Armor sources (Always / per
-// Stance) and Temp NPCs being kept out of combat.
+// Playtest: the Trap end-of-turn reminder, hand-set Armor sources being
+// refused, and Temp NPCs being kept out of combat.
 //
 //   npm run dev   (or node server/index.js)
 //   node scripts/playtest-trap-armor.mjs
@@ -74,22 +74,10 @@ check('a Temp NPC gets no map token, no Combat setup, no lane space, no fight st
   JSON.stringify(st.summons.find((s) => s.id === tsum.id)));
 check('...but stays on the Scene as a figure', st.summons.some((s) => s.id === tsum.id));
 
-console.log('\n--- Armor sources ---');
-gm.emit('combat_stance:create', { ownerType: 'character', ownerId: mira.id, name: 'Calm', dice: [{ die: 6 }] });
-gm.emit('combat_stance:create', { ownerType: 'character', ownerId: mira.id, name: 'Iron', dice: [{ die: 8 }] });
+console.log('\n--- Armor sources (purged; they come from the build in phase 2) ---');
+p.emit('combat_profile:update', { ownerType: 'character', ownerId: mira.id, armorSources: ['always'] });
 await sleep(400);
-const [calm, iron] = (await jf(`/api/combat-setup?ownerType=character&ownerId=${mira.id}`)).stances;
-p.emit('combat_profile:update', { ownerType: 'character', ownerId: mira.id, armorSources: ['always', iron.id, iron.id, 999999, 'nope'] });
-await sleep(400);
-st = await jf('/api/stage?role=gm');
-check("a player sets their character's Armor sources; foreign stances and junk are dropped; the Scene hears it",
-  JSON.stringify(st.fighterSetup[`character:${mira.id}`]?.armor_sources) === JSON.stringify(['always', iron.id, iron.id]),
-  JSON.stringify(st.fighterSetup[`character:${mira.id}`]));
-gm.emit('combat_stance:delete', { stanceId: iron.id });
-await sleep(400);
-st = await jf('/api/stage?role=gm');
-check("deleting a stance drops the Armor sources bound to it", JSON.stringify(st.fighterSetup[`character:${mira.id}`]?.armor_sources) === JSON.stringify(['always']));
-void calm;
+check('hand-set Armor sources are no longer accepted', ((await jf('/api/stage?role=gm')).fighterSetup[`character:${mira.id}`]?.armor_sources ?? []).length === 0);
 
 console.log('\n--- the Trap reminder ---');
 gm.emit('combat_token:place', { ownerType: 'character', ownerId: mira.id, col: 2, row: 2 });

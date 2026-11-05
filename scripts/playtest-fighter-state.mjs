@@ -1,5 +1,5 @@
 // Playtest: a fighter's state in a fight (Panic at the Dojo, Phase 4) — Panic
-// tokens, the Challenge, HP bars, Dizzy and the Stance — on both a Combat map
+// tokens, the Challenge, HP bars and Dizzy — on both a Combat map
 // token and a Simple Combat miniature, through the real handlers.
 //
 //   npm run dev   (or node server/index.js)
@@ -44,10 +44,6 @@ gm.emit('scene:set_mode', { mode: 'combat' });
 await sleep(300);
 const mira = await jpost('/api/characters', { name: `FMira${stamp}`, characterType: 'pc' });
 const bo = await jpost('/api/characters', { name: `FBo${stamp}`, characterType: 'pc' });
-gm.emit('combat_stance:create', { ownerType: 'character', ownerId: mira.id, name: 'Calm', dice: [{ die: 6 }] });
-gm.emit('combat_stance:create', { ownerType: 'character', ownerId: mira.id, name: 'Fury', dice: [{ die: 10 }] });
-gm.emit('combat_stance:create', { ownerType: 'character', ownerId: bo.id, name: 'BoOnly', dice: [{ die: 4 }] });
-gm.emit('combat_profile:update', { ownerType: 'character', ownerId: mira.id, uniqueTokens: ['chaos'] });
 gm.emit('combat_token:place', { ownerType: 'character', ownerId: mira.id, col: 3, row: 3 });
 gm.emit('combat_token:place', { ownerType: 'character', ownerId: bo.id, col: 5, row: 3 });
 await sleep(600);
@@ -63,9 +59,8 @@ check('a new token starts with no tokens, no Challenge and one unset bar',
   JSON.stringify(tok(mira).fight) === JSON.stringify({ combatant_id: tok(mira).id, tokens: {}, challenge_id: null, hp: { max: null, current: 0, bars: 1, broken: 0, dizzy: false }, active_stance_id: null, level: 1, kind: null }),
   JSON.stringify(tok(mira).fight));
 const setupKey = `character:${mira.id}`;
-check("the payload carries each fighter's Unique picks and Stance names",
-  JSON.stringify(st.fighterSetup[setupKey]) === JSON.stringify({ unique_tokens: ['chaos'], armor_sources: [], stances: st.fighterSetup[setupKey].stances }) &&
-    st.fighterSetup[setupKey].stances.map((s) => s.name).join() === 'Calm,Fury', JSON.stringify(st.fighterSetup[setupKey]));
+check('no hand-made setup rides the payload any more (builder phase 0 purge)',
+  !st.fighterSetup[setupKey] || (st.fighterSetup[setupKey].stances.length === 0 && st.fighterSetup[setupKey].unique_tokens.length === 0), JSON.stringify(st.fighterSetup[setupKey]));
 
 console.log('\n--- Panic tokens ---');
 for (let i = 0; i < 12; i++) p.emit('fighter:token', { ref: miraRef, key: 'iron', delta: 1 });
@@ -124,17 +119,6 @@ gm.emit('combat_token:remove', { combatantId: boRef.combatantId });
 await sleep(400);
 check('a Challenger leaving the map frees whoever held their Challenge',
   (await stage()).combatTokens.find((t) => t.id === miraRef.combatantId).fight.challenge_id === null);
-
-console.log('\n--- the Stance ---');
-const [calm, fury] = st.fighterSetup[setupKey].stances;
-const boStance = st.fighterSetup[`character:${bo.id}`].stances[0];
-p.emit('fighter:set_stance', { ref: miraRef, stanceId: fury.id });
-await sleep(300);
-check('the active stance switches any time', (await stage()).combatTokens.find((t) => t.id === miraRef.combatantId).fight.active_stance_id === fury.id);
-p.emit('fighter:set_stance', { ref: miraRef, stanceId: boStance.id });
-await sleep(300);
-check("...but only to one of the fighter's own", (await stage()).combatTokens.find((t) => t.id === miraRef.combatantId).fight.active_stance_id === fury.id);
-void calm;
 
 console.log('\n--- Simple Combat: the same state on a miniature ---');
 gm.emit('scene:set_mode', { mode: 'simple' });

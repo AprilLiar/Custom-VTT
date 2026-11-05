@@ -12,7 +12,7 @@
 import { all, one, run } from './db.js';
 import { imageUrl, sanitizeImageMime } from './images.js';
 import { normalizeArmorSources, normalizeUniqueKeys } from '../client/src/lib/panicTokens.js';
-import { STANCES_PER_OWNER_MAX, STANCE_NAME_MAX, normalizeDice } from '../client/src/lib/stanceDice.js';
+import { normalizeDice } from '../client/src/lib/stanceDice.js';
 
 export const OWNER_TYPES = new Set(['character', 'temp_npc']);
 export const REMINDER_SCOPES = new Set(['self', 'others', 'round']);
@@ -157,44 +157,6 @@ export async function loadAllProfiles() {
   return out;
 }
 
-// ---------------------------------------------------------------- validation
-
-// A reminder's target, resolved against the database: only `others` reminders
-// target anyone, and `one` must name a fighter who exists. Returns the column
-// values, or null when the target is unusable.
-async function resolveTarget(scope, target, targetType, targetId) {
-  if (scope !== 'others') return { target: 'any', characterId: null, tempNpcId: null };
-  const t = REMINDER_TARGETS.has(target) ? target : 'any';
-  if (t !== 'one') return { target: t, characterId: null, tempNpcId: null };
-  const named = parseOwner(targetType, targetId);
-  // Only a character can be named (Temp NPCs take no part in combat).
-  if (!named || named.ownerType !== 'character' || !(await ownerExists(named))) return null;
-  return {
-    target: 'one',
-    characterId: named.ownerType === 'character' ? named.ownerId : null,
-    tempNpcId: named.ownerType === 'temp_npc' ? named.ownerId : null,
-  };
-}
-
-const cleanText = (text) => String(text ?? '').trim().slice(0, REMINDER_TEXT_MAX);
-const cleanName = (name) => String(name ?? '').trim().slice(0, STANCE_NAME_MAX);
-
-const ownerOfRow = (row) =>
-  row.character_id != null
-    ? { ownerType: 'character', ownerId: row.character_id }
-    : { ownerType: 'temp_npc', ownerId: row.temp_npc_id };
-
-// A reminder's stance binding: null (any stance) or one of the OWNER's own
-// stances. `undefined` means "not given". Returns { ok, stanceId }.
-async function resolveStance(owner, stanceId) {
-  if (stanceId === undefined || stanceId === null || stanceId === '') return { ok: true, stanceId: null };
-  const row = await one(
-    `SELECT id FROM combat_stances WHERE id = ? AND ${ownerColumn(owner.ownerType)} = ?`,
-    [Number(stanceId), owner.ownerId]
-  );
-  return row ? { ok: true, stanceId: row.id } : { ok: false, stanceId: null };
-}
-
 // ---------------------------------------------------------------- handlers
 
 // `deps`: index.js's own helpers, passed in rather than imported so this file
@@ -208,31 +170,15 @@ export function registerCombatSetupHandlers({ on, socket, io, mayWrite, cropValu
   // Characters only: Temp NPCs take no part in combat (decided).
   const allowed = (owner) => owner && owner.ownerType === 'character' && mayWrite(socket.data.identity, owner.ownerType, owner.ownerId);
 
-  // Both also refresh the Scene: its token rows read Unique tokens, Armor
-  // sources and Stance names from the stage payload's fighterSetup.
+  // Also refreshes the Scene, whose token rows read the profile.
   const emitProfile = async (owner) => {
     io.emit('combat_profile:updated', { ownerType: owner.ownerType, ownerId: owner.ownerId, profile: await loadProfile(owner) });
     await emitStageUpdated();
   };
-  const emitStances = async (owner) => {
-    io.emit('combat_stances:updated', {
-      ownerType: owner.ownerType,
-      ownerId: owner.ownerId,
-      stances: await loadStances(owner),
-    });
-    await emitStageUpdated();
-  };
-  const emitReminders = async (owner) =>
-    io.emit('combat_reminders:updated', {
-      ownerType: owner.ownerType,
-      ownerId: owner.ownerId,
-      reminders: await loadReminders(owner),
-    });
-
-  // Saves whichever parts are present: a new token picture (with its crop),
-  // `clearImage` to remove it, and/or the Unique token selection. Absent
-  // fields are left alone — the same contract temp_npc:update uses.
-  on('combat_profile:update', async ({ ownerType, ownerId, imageData, imageMimeType, clearImage, uniqueTokens, armorSources, ...crop }) => {
+  // Saves whichever parts are present: a new token picture (with its crop), or
+  // `clearImage` to remove it. Absent fields are left alone. (Unique token
+  // picks and Armor sources were removed with the builder's phase 0 purge.)
+  on('combat_profile:update', async ({ ownerType, ownerId, imageData, imageMimeType, clearImage, ...crop }) => {
     const owner = parseOwner(ownerType, ownerId);
     if (!allowed(owner) || !(await ownerExists(owner))) return;
     const col = ownerColumn(owner.ownerType);
@@ -250,148 +196,9 @@ export function registerCombatSetupHandlers({ on, socket, io, mayWrite, cropValu
         [row.id]
       );
     }
-    if (uniqueTokens !== undefined) {
-      await run('UPDATE combat_profiles SET unique_tokens = ? WHERE id = ?', [
-        JSON.stringify(normalizeUniqueKeys(uniqueTokens)),
-        row.id,
-      ]);
-    }
-    if (armorSources !== undefined) {
-      // A Stance source must be one of this fighter's own Stances.
-      const own = new Set((await loadStances(owner)).map((s) => s.id));
-      const clean = normalizeArmorSources(armorSources).filter((s) => s === 'always' || own.has(s));
-      await run('UPDATE combat_profiles SET armor_sources = ? WHERE id = ?', [JSON.stringify(clean), row.id]);
-    }
     await emitProfile(owner);
   });
 
-  // ---- Stances
-  on('combat_stance:create', async ({ ownerType, ownerId, name, dice }) => {
-    const owner = parseOwner(ownerType, ownerId);
-    if (!allowed(owner) || !(await ownerExists(owner))) return;
-    const stanceName = cleanName(name);
-    const pool = normalizeDice(dice);
-    if (!stanceName || !pool) return;
-    const count = await one(
-      `SELECT COUNT(*) AS n FROM combat_stances WHERE ${ownerColumn(owner.ownerType)} = ?`,
-      [owner.ownerId]
-    );
-    if (Number(count?.n) >= STANCES_PER_OWNER_MAX) return;
-    await run(`INSERT INTO combat_stances (${ownerColumn(owner.ownerType)}, name, dice) VALUES (?, ?, ?)`, [
-      owner.ownerId,
-      stanceName,
-      JSON.stringify(pool),
-    ]);
-    await emitStances(owner);
-  });
-
-  on('combat_stance:update', async ({ stanceId, name, dice }) => {
-    const row = await one('SELECT * FROM combat_stances WHERE id = ?', [Number(stanceId)]);
-    if (!row) return;
-    const owner = ownerOfRow(row);
-    if (!allowed(owner)) return;
-    const stanceName = name === undefined ? row.name : cleanName(name);
-    const pool = dice === undefined ? JSON.parse(row.dice) : normalizeDice(dice);
-    if (!stanceName || !pool) return;
-    await run('UPDATE combat_stances SET name = ?, dice = ? WHERE id = ?', [stanceName, JSON.stringify(pool), row.id]);
-    await emitStances(owner);
-  });
-
-  // Reminders bound to it are unbound, not deleted — their text is kept.
-  on('combat_stance:delete', async ({ stanceId }) => {
-    const row = await one('SELECT * FROM combat_stances WHERE id = ?', [Number(stanceId)]);
-    if (!row) return;
-    const owner = ownerOfRow(row);
-    if (!allowed(owner)) return;
-    await run('UPDATE combat_reminders SET stance_id = NULL WHERE stance_id = ?', [row.id]);
-    await run('DELETE FROM combat_stances WHERE id = ?', [row.id]);
-    // Armor sources bound to it go with it.
-    const prof = await one(`SELECT id, armor_sources FROM combat_profiles WHERE ${ownerColumn(owner.ownerType)} = ?`, [owner.ownerId]);
-    if (prof) {
-      let list = [];
-      try {
-        list = normalizeArmorSources(JSON.parse(prof.armor_sources || '[]'));
-      } catch {
-        list = [];
-      }
-      if (list.includes(row.id)) {
-        await run('UPDATE combat_profiles SET armor_sources = ? WHERE id = ?', [JSON.stringify(list.filter((x) => x !== row.id)), prof.id]);
-        await emitProfile(owner);
-      }
-    }
-    await emitStances(owner);
-    await emitReminders(owner);
-  });
-
-  // ---- Reminders
-  on('combat_reminder:create', async ({ ownerType, ownerId, scope, timing, target, targetType, targetId, text, stanceId }) => {
-    const owner = parseOwner(ownerType, ownerId);
-    if (!allowed(owner) || !(await ownerExists(owner))) return;
-    if (!REMINDER_SCOPES.has(scope) || !REMINDER_TIMINGS.has(timing)) return;
-    const body = cleanText(text);
-    if (!body) return;
-    const count = await one(
-      `SELECT COUNT(*) AS n FROM combat_reminders WHERE ${ownerColumn(owner.ownerType)} = ?`,
-      [owner.ownerId]
-    );
-    if (Number(count?.n) >= REMINDERS_PER_OWNER_MAX) return;
-    const resolved = await resolveTarget(scope, target, targetType, targetId);
-    if (!resolved) return;
-    const stance = await resolveStance(owner, stanceId);
-    if (!stance.ok) return;
-    await run(
-      `INSERT INTO combat_reminders (${ownerColumn(owner.ownerType)}, scope, timing, target, target_character_id, target_temp_npc_id, text, stance_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      [owner.ownerId, scope, timing, resolved.target, resolved.characterId, resolved.tempNpcId, body, stance.stanceId]
-    );
-    await emitReminders(owner);
-  });
-
-  // The scope (column) never changes; timing, target and text may.
-  on('combat_reminder:update', async ({ reminderId, timing, target, targetType, targetId, text, stanceId }) => {
-    const row = await one('SELECT * FROM combat_reminders WHERE id = ?', [Number(reminderId)]);
-    if (!row) return;
-    const owner =
-      row.character_id != null
-        ? { ownerType: 'character', ownerId: row.character_id }
-        : { ownerType: 'temp_npc', ownerId: row.temp_npc_id };
-    if (!allowed(owner)) return;
-    const nextTiming = REMINDER_TIMINGS.has(timing) ? timing : row.timing;
-    const body = text === undefined ? row.text : cleanText(text);
-    if (!body) return;
-    let resolved = {
-      target: row.target,
-      characterId: row.target_character_id,
-      tempNpcId: row.target_temp_npc_id,
-    };
-    if (target !== undefined) {
-      resolved = await resolveTarget(row.scope, target, targetType, targetId);
-      if (!resolved) return;
-    }
-    let boundStance = row.stance_id ?? null;
-    if (stanceId !== undefined) {
-      const stance = await resolveStance(owner, stanceId);
-      if (!stance.ok) return;
-      boundStance = stance.stanceId;
-    }
-    await run(
-      'UPDATE combat_reminders SET timing = ?, target = ?, target_character_id = ?, target_temp_npc_id = ?, text = ?, stance_id = ? WHERE id = ?',
-      [nextTiming, resolved.target, resolved.characterId, resolved.tempNpcId, body, boundStance, row.id]
-    );
-    await emitReminders(owner);
-  });
-
-  on('combat_reminder:delete', async ({ reminderId }) => {
-    const row = await one('SELECT * FROM combat_reminders WHERE id = ?', [Number(reminderId)]);
-    if (!row) return;
-    const owner =
-      row.character_id != null
-        ? { ownerType: 'character', ownerId: row.character_id }
-        : { ownerType: 'temp_npc', ownerId: row.temp_npc_id };
-    if (!allowed(owner)) return;
-    await run('DELETE FROM combat_reminders WHERE id = ?', [row.id]);
-    await emitReminders(owner);
-  });
 }
 
 // The cascade for a deleted owner, spelled out like every other delete in
@@ -402,6 +209,18 @@ export function registerCombatSetupHandlers({ on, socket, io, mayWrite, cropValu
 // any combat data a Temp NPC still holds from before that decision — their
 // tokens and miniatures' fight state, Combat setup, and Reminders naming them.
 // Idempotent; nothing creates such rows any more.
+// **Builder phase 0 (decided): the hand-made Combat setup is purged.** Run at
+// every boot until the builder's phase 2 replaces these sources: deletes every
+// hand-made Stance and Reminder, clears Unique token picks and Armor sources,
+// and every token's chosen Stance. Nothing can create them any more (their
+// events are gone), so this is idempotent. Only the token picture stays.
+export async function purgeHandmadeCombatSetup() {
+  await run('UPDATE combatants SET active_stance_id = NULL WHERE active_stance_id IS NOT NULL');
+  await run('DELETE FROM combat_reminders');
+  await run('DELETE FROM combat_stances');
+  await run("UPDATE combat_profiles SET unique_tokens = '[]', armor_sources = '[]' WHERE unique_tokens != '[]' OR armor_sources != '[]'");
+}
+
 export async function purgeTempNpcCombat() {
   const rows = await all('SELECT id FROM combatants WHERE temp_npc_id IS NOT NULL');
   for (const r of rows) await run('UPDATE combatants SET challenge_id = NULL WHERE challenge_id = ?', [r.id]);
