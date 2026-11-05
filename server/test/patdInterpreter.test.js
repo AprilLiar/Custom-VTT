@@ -1,0 +1,149 @@
+// The turn-trigger interpreter (client/src/lib/patd/interpreter.js), run on
+// real rules from the content against a small fake world.
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { patdContent } from '../patdContent.js';
+import { lineOfSight, ruleSupport, runRule, targetable } from '../../client/src/lib/patd/interpreter.js';
+
+const idx = patdContent();
+const rulesOf = (abilityId, event) => idx.get(abilityId).rules.filter((r) => r.events.includes(event));
+
+function makeWorld(fighters) {
+  const log = [];
+  const w = {
+    context: { healValue: 2, bleedValue: 4, round: 2 },
+    fighters: () => fighters,
+    enemiesOf: (f) => fighters.filter((x) => x.side !== f.side),
+    alliesOf: (f) => fighters.filter((x) => x.side === f.side),
+    inRange: () => true,
+    heldTokens: (f) => ({ ...f.tokens }),
+    gainTokens: async (f, k, n) => (f.tokens[k] = (f.tokens[k] ?? 0) + n),
+    discardTokens: async (f, keys, n) => {
+      let left = n;
+      for (const k of keys) {
+        const take = Math.min(left, f.tokens[k] ?? 0);
+        f.tokens[k] -= take;
+        left -= take;
+      }
+      return n - left;
+    },
+    gainShield: async (f, v) => (f.tokens.shield = Math.max(v, (f.tokens.shield ?? 0) + 1)),
+    heal: async (f, n) => ((f.hp += n), n),
+    payHp: async (f, n) => (f.hp -= n),
+    tempArmor: async (f) => (f.tokens.armor = (f.tokens.armor ?? 0) + 1),
+    damage: async (f, n) => {
+      const before = f.hp;
+      f.hp -= n;
+      return { dealt: n, bled: before > 4 && f.hp <= 4 };
+    },
+    challenge: async (t, c) => (t.challengeId = c.id),
+    addPoolNumber: async (f, v) => log.push(`pool ${v}`),
+  };
+  return { w, log };
+}
+const fighter = (id, side, extra = {}) => ({ id, name: `F${id}`, side, tokens: {}, hp: 10, bleeding: false, ...extra });
+
+async function fire(abilityId, event, self, world, answers = [], extra = {}) {
+  const lines = [];
+  const asked = [];
+  const ctx = {
+    world,
+    self,
+    state: extra.state ?? {},
+    usage: {},
+    ability: idx.get(abilityId),
+    log: (l) => lines.push(l),
+    ask: async (req) => {
+      asked.push(req);
+      return answers.shift();
+    },
+    emit: extra.emit,
+    event: extra.event,
+  };
+  for (const r of rulesOf(abilityId, event)) {
+    assert.ok(ruleSupport(r).ok, `${r.id}: ${ruleSupport(r).reason}`);
+    await runRule(r, ctx);
+  }
+  return { lines, asked };
+}
+
+test('Wild Form: gain 2 Power at the start of the turn, no questions', async () => {
+  const me = fighter(1, 'a');
+  const { w } = makeWorld([me]);
+  const { asked } = await fire('ability.form-wild.wild-form', 'own_turn.start', me, w);
+  assert.equal(me.tokens.power, 2);
+  assert.equal(asked.length, 0);
+});
+
+test('Song Form: choose a song, gain 3 of it, each other ally gains 1', async () => {
+  const me = fighter(1, 'a');
+  const pal = fighter(2, 'a');
+  const foe = fighter(3, 'b');
+  const { w } = makeWorld([me, pal, foe]);
+  const state = {};
+  const { asked } = await fire('ability.form-song.song-form', 'own_turn.start', me, w, ['speed'], { state });
+  assert.equal(asked[0].kind, 'choose');
+  assert.equal(state.song, 'speed');
+  assert.equal(me.tokens.speed, 3);
+  assert.equal(pal.tokens.speed, 1);
+  assert.equal(foe.tokens.speed, undefined);
+});
+
+test('Focused Angel: may heal, then Challenge an enemy and deal 1 — and the follow-on "after you Challenge" deals 1 and heals 1', async () => {
+  const me = fighter(1, 'a', { hp: 5 });
+  const foe = fighter(3, 'b');
+  const { w } = makeWorld([me, foe]);
+  const follow = [];
+  const emit = async (event, f, payload) => {
+    follow.push(event);
+    if (event === 'self.challenge_given_to_enemy') {
+      for (const r of rulesOf('ability.archetype-angel.focused-angel', event)) {
+        await runRule(r, { world: w, self: f, state: {}, usage: {}, ability: idx.get('ability.archetype-angel.focused-angel'), log: () => {}, ask: async () => null, event: payload });
+      }
+    }
+  };
+  await fire('ability.archetype-angel.focused-angel', 'own_turn.start', me, w, [true, ['3']], { emit });
+  assert.equal(foe.challengeId, 1);
+  assert.equal(foe.hp, 8, '1 from the start rule + 1 from the follow-on');
+  assert.equal(me.hp, 5 + 2 + 1, 'Heal Value 2, then 1');
+  assert.ok(follow.includes('self.challenge_given_to_enemy'));
+});
+
+test('declining a "you may" does nothing', async () => {
+  const me = fighter(1, 'a', { hp: 5 });
+  const foe = fighter(3, 'b');
+  const { w } = makeWorld([me, foe]);
+  await fire('ability.archetype-angel.focused-angel', 'own_turn.start', me, w, [false]);
+  assert.equal(me.hp, 5);
+  assert.equal(foe.challengeId, undefined);
+});
+
+test('Vigilance Form: discard up to 2 Status tokens, then heal only if Bleeding', async () => {
+  const me = fighter(1, 'a', { tokens: { burning: 1, weakness: 3, iron: 2 }, bleeding: true, hp: 3 });
+  const { w } = makeWorld([me]);
+  await fire('ability.form-vigilance.vigilance-form', 'own_turn.start', me, w, ['burning']);
+  assert.equal(me.tokens.burning, 0);
+  assert.equal(me.tokens.weakness, 2);
+  assert.equal(me.tokens.iron, 2, 'Iron is not a Status token');
+  assert.equal(me.hp, 5);
+});
+
+test('rules with movement or placing are not automated at all', () => {
+  const jumping = idx.get('ability.style-jumping.jumping-style').rules.find((r) => r.events.includes('own_turn.start'));
+  assert.equal(ruleSupport(jumping).ok, false);
+  const volcanic = idx.get('ability.style-volcanic.volcanic-style').rules.find((r) => r.events.includes('own_turn.start'));
+  assert.equal(ruleSupport(volcanic).ok, false);
+});
+
+test('range and sight: diagonal counts 1, Walls block a centre line, Fog limits enemies to Range 1', () => {
+  const walls = new Set(['2,0']);
+  assert.equal(lineOfSight({ col: 0, row: 0 }, { col: 4, row: 0 }, walls), false);
+  assert.equal(lineOfSight({ col: 0, row: 1 }, { col: 4, row: 1 }, walls), true);
+  assert.equal(lineOfSight({ col: 1, row: 1 }, { col: 2, row: 0 }, new Set(['1,0', '2,1'])), true, 'a diagonal through the corner point only grazes the Walls beside it');
+  const fogged = (sq) => sq.col === 5;
+  const base = { from: { col: 0, row: 0 }, walls: new Set(), fogged, enemy: true, stanceRange: { minimum: 1, maximum: 6 } };
+  assert.equal(targetable({ ...base, to: { col: 3, row: 3 }, range: { mode: 'stance' } }), true, 'diagonal 3 is Range 3');
+  assert.equal(targetable({ ...base, to: { col: 5, row: 0 }, range: { mode: 'stance' } }), false, 'in Fog, 5 away');
+  assert.equal(targetable({ ...base, to: { col: 5, row: 0 }, range: { mode: 'stance' }, enemy: false }), true, 'an ally in Fog is fine');
+  assert.equal(targetable({ ...base, to: { col: 1, row: 1 }, range: { mode: 'adjacent' } }), true);
+});

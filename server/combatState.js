@@ -49,13 +49,13 @@ export function shapeFightState(row) {
 }
 
 // The weight set for a fighter's fight (scenes.simple_weight / combat_weight).
-async function weightOf(row) {
+export async function weightOf(row) {
   const scene = await one('SELECT simple_weight, combat_weight FROM scenes WHERE id = ?', [row.scene_id]);
   return WEIGHT_BY_KEY[row.mode === 'simple' ? scene?.simple_weight : scene?.combat_weight] ?? null;
 }
 
 // The current round of that fight, or 0 before one starts.
-async function roundOf(row) {
+export async function roundOf(row) {
   return (await one('SELECT round FROM fights WHERE scene_id = ? AND mode = ?', [row.scene_id, row.mode]))?.round ?? 0;
 }
 
@@ -107,10 +107,10 @@ export async function resolveRef(ref) {
   return null;
 }
 
-const hpOf = (row) =>
+export const hpOf = (row) =>
   normalizeHp({ max: row.hp_max, current: row.hp_current, bars: row.hp_bars, broken: row.hp_broken, dizzy: row.dizzy });
 
-const saveHp = (id, s) =>
+export const saveHp = (id, s) =>
   run('UPDATE combatants SET hp_max = ?, hp_current = ?, hp_bars = ?, hp_broken = ?, dizzy = ? WHERE id = ?', [
     s.max,
     s.current,

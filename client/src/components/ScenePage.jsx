@@ -39,7 +39,7 @@ import SimpleCombatLane from './SimpleCombatLane.jsx';
 import { MapTilePalette } from './MapTiles.jsx';
 import CombatMap from './CombatMap.jsx';
 import { CombatFightersDrawer, CombatMapDrawer, PlayerTokenDock } from './CombatDrawers.jsx';
-import { FightSetupDialog, InitiativeRail, StancePrompt, StartCombatButton } from './FightControls.jsx';
+import { FightSetupDialog, InitiativeRail, StancePrompt, StartCombatButton, TriggerPrompts } from './FightControls.jsx';
 import { turnsPerRound } from '../lib/hpBars.js';
 import { WEIGHT_BY_KEY } from '../lib/cinematicWeight.js';
 import { useDominantColor } from '../lib/dominantColor.js';
@@ -468,6 +468,7 @@ export default function ScenePage() {
         />
       )}
       {fight && <StancePrompt mode={fightMode} fight={fight} fighters={fightFighters} role={role} controls={controls} />}
+      <TriggerPrompts />
       {fightSetupOpen && fightMode && (
         <FightSetupDialog mode={fightMode} fighters={fightFighters} existing={fight} onClose={() => setFightSetupOpen(false)} />
       )}

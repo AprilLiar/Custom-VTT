@@ -113,7 +113,8 @@ export async function loadFightState(sceneId, mode) {
 
 // deps: on, socket, emitStageUpdated, postCard(kind, payload), postSystemMessage(text)
 // `emitAll(event, payload)` broadcasts to every socket (io.emit).
-export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, postCard, postSystemMessage, emitAll }) {
+// `triggers` is the turn-trigger engine (server/triggers.js); optional.
+export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, postCard, postSystemMessage, emitAll, triggers = null }) {
   const on = (event, handler) => onRaw(event, serialized(handler));
   const isGm = () => socket.data.identity?.role === 'gm';
   const activeSceneId = async () =>
@@ -238,6 +239,8 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
     }
     if (stances.length === 1) await rollStanceIntoChat(fight, entry.id, stances[0].id);
     await fire(fight, 'turn_start', entry.id);
+    // Abilities' "start of turn" rules — run after this handler, never awaited.
+    triggers?.schedule({ ...fight }, entry.id, 'start');
   };
 
   // Move on to the next valid turn, starting a new round when this one is done.
@@ -310,7 +313,10 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
     const fight = await fightFor(mode);
     if (!fight) return;
     const current = orderOf(fight)[fight.turn_index];
-    if (current && (await valid(fight, current.id))) await fire(fight, 'turn_end', current.id);
+    if (current && (await valid(fight, current.id))) {
+      await fire(fight, 'turn_end', current.id);
+      triggers?.schedule({ ...fight }, current.id, 'end');
+    }
     // The Scene's floating chat keeps a fighter's turn-start roll up until now.
     if (current) emitAll?.('fight:turn_ended', { combatantId: current.id });
     // Dizzy lasts until the end of the current turn (book p.62).
@@ -336,6 +342,7 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
     await save(fight);
     await rollStanceIntoChat(fight, c.id, stance.id);
     await fire(fight, 'turn_start', c.id);
+    triggers?.schedule({ ...fight }, c.id, 'start');
     await emitStageUpdated();
   });
 
@@ -357,6 +364,7 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
     const fight = await fightFor(mode);
     if (!fight) return;
     await run('DELETE FROM fights WHERE id = ?', [fight.id]);
+    triggers?.endFight(fight.scene_id, fight.mode);
     await run('UPDATE combatants SET dizzy = 0 WHERE scene_id = ? AND mode = ?', [fight.scene_id, fight.mode]);
     await postSystemMessage('— Combat ends —');
     emitAll?.('fight:ended', { mode: fight.mode });

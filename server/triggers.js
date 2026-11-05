@@ -1,0 +1,298 @@
+// **Turn triggers (builder phase 3 — vttprojectplan.md, "Character builder &
+// turn automation").** At the start and end of every turn, each fighter's
+// abilities listening to that moment (their own turn, an ally's, an enemy's,
+// any turn) run through the interpreter (client/src/lib/patd/interpreter.js)
+// against this world: the fight's fighters, their squares on the map or lane,
+// the map tiles (Walls, Fog) and the database.
+//
+// Choices and targets are asked of whoever controls the fighter (and the GM)
+// with `trigger:prompt`; the answer comes back as `trigger:answer`. Because a
+// prompt waits for a person, triggers never run inside the server-wide write
+// queue — each write is queued on its own — and each fight's triggers run one
+// after another on their own chain.
+import { all, one, run } from './db.js';
+import { applyHpDelta } from '../client/src/lib/hpBars.js';
+import { WEIGHT_BY_KEY, crossesBleed } from '../client/src/lib/cinematicWeight.js';
+import { TOKEN_BY_KEY, capOf } from '../client/src/lib/panicTokens.js';
+import { packLane, clampLanes } from '../client/src/lib/simpleLane.js';
+import { chebyshev, ruleSupport, runRule, targetable } from '../client/src/lib/patd/interpreter.js';
+import { controlsCharacter } from './control.js';
+import { hpOf, saveHp, serialized, shapeFightState } from './combatState.js';
+import { derivedFor } from './fighterStances.js';
+import { patdContent } from './patdContent.js';
+
+const MIDDLEWEIGHT = WEIGHT_BY_KEY.middle;
+const PROMPT_TIMEOUT_MS = 10 * 60 * 1000;
+const FOLLOW_ON_DEPTH = 3;
+
+// Which events a fighter listens to at a moment, by their relation to the
+// active fighter. ("allied_turn" includes the owner's own turn.)
+function eventsFor(moment, relation) {
+  const end = moment === 'end';
+  if (relation === 'self') return end ? ['own_turn.end_abilities', 'allied_turn.end_abilities', 'any_turn.end_abilities'] : ['own_turn.start', 'allied_turn.start', 'any_turn.start'];
+  if (relation === 'ally') return end ? ['allied_turn.end_abilities', 'any_turn.end_abilities'] : ['allied_turn.start', 'any_turn.start'];
+  return end ? ['any_turn.end_abilities'] : ['enemy_turn.start', 'enemy.turn.start', 'any_turn.start'];
+}
+
+export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
+  const pending = new Map(); // prompt id → { resolve, characterId, request }
+  const chains = new Map(); // "sceneId:mode" → Promise
+  const fightState = new Map(); // "sceneId:mode" → { states: Map(combatantId → {}), usage: {} }
+  let nextId = 1;
+  const queued = (fn) => serialized(fn)();
+
+  const sendPrompt = (prompt) => {
+    for (const s of io.sockets.sockets.values()) {
+      const v = s.data?.identity;
+      if (v?.role === 'gm' || controlsCharacter(v, prompt.characterId)) s.emit('trigger:prompt', prompt);
+    }
+  };
+  const ask = (fighter, fightKey) => (request) =>
+    new Promise((resolve) => {
+      const id = `t${nextId++}`;
+      const prompt = {
+        id,
+        characterId: fighter.characterId,
+        combatantId: fighter.id,
+        fighterName: fighter.name,
+        kind: request.kind,
+        title: request.title,
+        text: request.text,
+        options: request.options ?? null,
+        minimum: request.minimum ?? 0,
+        maximum: request.maximum ?? 1,
+      };
+      const timer = setTimeout(() => finish(id, null), PROMPT_TIMEOUT_MS);
+      pending.set(id, { resolve, prompt, timer, fightKey });
+      sendPrompt(prompt);
+    });
+  const finish = (id, answer) => {
+    const p = pending.get(id);
+    if (!p) return;
+    clearTimeout(p.timer);
+    pending.delete(id);
+    io.emit('trigger:resolved', { id });
+    p.resolve(answer);
+  };
+
+  // ---- the world of one fight
+  async function buildWorld(fight) {
+    const { scene_id: sceneId, mode } = fight;
+    const ids = new Set([...JSON.parse(fight.allies || '[]'), ...JSON.parse(fight.enemies || '[]')]);
+    const sideOf = (id) => (JSON.parse(fight.allies || '[]').includes(id) ? 'allies' : 'enemies');
+    const rows = (await all('SELECT cb.*, c.name FROM combatants cb JOIN characters c ON c.id = cb.character_id WHERE cb.scene_id = ? AND cb.mode = ?', [sceneId, mode])).filter((r) => ids.has(r.id));
+    const scene = await one('SELECT simple_weight, combat_weight FROM scenes WHERE id = ?', [sceneId]);
+    const weight = WEIGHT_BY_KEY[mode === 'simple' ? scene?.simple_weight : scene?.combat_weight] ?? MIDDLEWEIGHT;
+    // Squares: a map cell, or a lane space as (column, lane).
+    let squareOf = (r) => (r.grid_col != null ? { col: r.grid_col, row: r.grid_row } : null);
+    const tiles = await all('SELECT col, row, kind FROM map_tiles WHERE scene_id = ? AND mode = ?', [sceneId, mode]);
+    let tileSquare = (t) => ({ col: t.col, row: t.row });
+    if (mode === 'simple') {
+      const lanes = clampLanes((await one('SELECT simple_lanes FROM table_settings WHERE id = 1'))?.simple_lanes);
+      const packed = packLane(await all('SELECT id, lane_slot FROM scene_summons WHERE scene_id = ? AND character_id IS NOT NULL ORDER BY id', [sceneId]), lanes);
+      squareOf = (r) => {
+        const slot = r.summon_id != null ? packed.get(r.summon_id) : null;
+        return slot == null ? null : { col: slot % 10, row: Math.floor(slot / 10) };
+      };
+      tileSquare = (t) => ({ col: t.col % 10, row: Math.floor(t.col / 10) });
+    }
+    const walls = new Set(tiles.filter((t) => t.kind === 'wall').map((t) => { const q = tileSquare(t); return `${q.col},${q.row}`; }));
+    const fogSquares = tiles.filter((t) => t.kind === 'fog').map(tileSquare);
+    const fogged = (sq) => fogSquares.some((f) => chebyshev(f, sq) <= 1);
+
+    const fighters = [];
+    for (const r of rows) {
+      const d = await derivedFor(r.character_id);
+      const state = shapeFightState(r);
+      const stance = d?.stances.find((s) => s.key === state.active_stance_id) ?? d?.stances.find((s) => s.formId && s.styleId) ?? null;
+      fighters.push({
+        id: r.id,
+        characterId: r.character_id,
+        name: r.name,
+        side: sideOf(r.id),
+        tokens: { ...state.tokens },
+        bleeding: state.hp.max != null && state.hp.current <= weight.bleed,
+        currentBar: { damage: state.hp.max != null ? state.hp.max - state.hp.current : 0 },
+        square: squareOf(r),
+        stance,
+        derived: d,
+        abilityIds: d ? [...d.constantAbilityIds, ...(stance?.abilityIds ?? [])] : [],
+      });
+    }
+    const byId = (id) => fighters.find((f) => f.id === id);
+
+    const readRow = (id) => one('SELECT * FROM combatants WHERE id = ?', [id]);
+    const writeTokens = async (f, change) => {
+      await queued(async () => {
+        const row = await readRow(f.id);
+        if (!row) return;
+        const tokens = shapeFightState(row).tokens;
+        change(tokens);
+        for (const k of Object.keys(tokens)) if (!(tokens[k] > 0)) delete tokens[k];
+        await run('UPDATE combatants SET tokens = ? WHERE id = ?', [JSON.stringify(tokens), f.id]);
+        f.tokens = { ...tokens };
+      });
+    };
+    const changeHp = async (f, delta) => {
+      let result = { landed: null, before: null };
+      await queued(async () => {
+        const row = await readRow(f.id);
+        if (!row) return;
+        const before = hpOf(row);
+        if (before.max == null) return;
+        const next = applyHpDelta(before, delta).state;
+        await saveHp(f.id, next);
+        result = { before, landed: before.current + delta, row };
+        f.bleeding = next.current <= weight.bleed;
+        f.currentBar = { damage: next.max - next.current };
+      });
+      return result;
+    };
+
+    const world = {
+      context: { healValue: weight.heal, bleedValue: weight.bleed, round: fight.round },
+      fighters: () => fighters,
+      enemiesOf: (f) => fighters.filter((x) => x.side !== f.side),
+      alliesOf: (f) => fighters.filter((x) => x.side === f.side),
+      inRange: (from, to, range) =>
+        targetable({ from: from.square, to: to.square, range, stanceRange: from.stance?.range, walls, fogged, enemy: from.side !== to.side }),
+      heldTokens: (f) => ({ ...f.tokens }),
+      gainTokens: (f, key, n) =>
+        TOKEN_BY_KEY[key] && key !== 'challenge' ? writeTokens(f, (t) => (t[key] = Math.min(capOf(key), (t[key] ?? 0) + n))) : null,
+      discardTokens: async (f, keys, n) => {
+        let taken = 0;
+        await writeTokens(f, (t) => {
+          for (const k of keys) {
+            const take = Math.min(n - taken, t[k] ?? 0);
+            t[k] = (t[k] ?? 0) - take;
+            taken += take;
+          }
+        });
+        return taken;
+      },
+      // A new Shield replaces the old or raises it by 1 — whichever is more.
+      gainShield: (f, v) => writeTokens(f, (t) => (t.shield = Math.min(capOf('shield'), Math.max(Number(v) || 0, (t.shield ?? 0) + 1)))),
+      tempArmor: (f) => writeTokens(f, (t) => (t.armor = Math.min(capOf('armor'), (t.armor ?? 0) + 1))),
+      heal: async (f, n) => {
+        await changeHp(f, Math.max(0, Number(n) || 0));
+        return n;
+      },
+      payHp: (f, n) => changeHp(f, -Math.max(0, Number(n) || 0)),
+      damage: async (f, n) => {
+        const { before, landed, row } = await changeHp(f, -Math.max(0, Number(n) || 0));
+        let bled = false;
+        if (before && crossesBleed(before.current, landed, weight.bleed) && row.bled_round !== fight.round) {
+          bled = true;
+          await queued(() => run('UPDATE combatants SET bled_round = ? WHERE id = ?', [fight.round, f.id]));
+          await postCard('reminder', {
+            title: `Round ${fight.round}`,
+            text: `${f.name} Bleeds (HP ${Math.max(0, landed)} ≤ ${weight.bleed}) — "When you Bleed" abilities trigger.`,
+            fighters: [{ name: f.name }],
+            automatic: 'bleed',
+          });
+        }
+        return { dealt: n, bled };
+      },
+      challenge: (target, challenger) => queued(() => run('UPDATE combatants SET challenge_id = ? WHERE id = ?', [challenger.id, target.id])),
+      addPoolNumber: () => null, // posted in the ability's card
+    };
+    return { world, fighters, byId };
+  }
+
+  // ---- running one fighter's rules for some events
+  async function runFor(fighter, events, env, eventPayload = null, depth = 0) {
+    const idx = patdContent();
+    for (const abilityId of fighter.abilityIds) {
+      const ability = idx.get(abilityId);
+      for (const rule of ability?.rules ?? []) {
+        if (!rule.events.some((e) => events.includes(e))) continue;
+        const support = ruleSupport(rule);
+        if (!support.ok) {
+          await postCard('reminder', {
+            title: `${ability.name} — by hand`,
+            text: ability.rulesText,
+            fighters: [{ name: fighter.name }],
+            automatic: 'ability_manual',
+          });
+          continue;
+        }
+        const lines = [];
+        const ctx = {
+          world: env.world,
+          self: fighter,
+          state: env.stateOf(fighter.id),
+          usage: env.usage,
+          ability,
+          event: eventPayload,
+          log: (l) => lines.push(l),
+          ask: ask(fighter, env.key),
+          emit: depth < FOLLOW_ON_DEPTH ? (ev, f, payload) => runFor(f, [ev], env, payload, depth + 1) : null,
+        };
+        try {
+          await runRule(rule, ctx);
+        } catch (err) {
+          lines.push(`stopped: ${err.message}`);
+        }
+        if (lines.length) {
+          await postCard('reminder', { title: ability.name, text: `${lines.join('; ')}.`, fighters: [{ name: fighter.name }], automatic: 'ability' });
+          await emitStageUpdated();
+        }
+      }
+    }
+  }
+
+  // Start or end of the active fighter's turn: everyone's matching rules.
+  async function runTurn(fightRow, activeId, moment) {
+    const key = `${fightRow.scene_id}:${fightRow.mode}`;
+    if (!fightState.has(key)) fightState.set(key, { states: new Map(), usage: {} });
+    const fs = fightState.get(key);
+    // Usage limits per turn reset at each turn start; per round at round start.
+    if (moment === 'start') for (const k of Object.keys(fs.usage)) if (k.endsWith(':turn')) delete fs.usage[k];
+    const { world, fighters, byId } = await buildWorld(fightRow);
+    const active = byId(activeId);
+    if (!active) return;
+    const env = {
+      key,
+      world,
+      usage: fs.usage,
+      stateOf: (id) => {
+        if (!fs.states.has(id)) fs.states.set(id, {});
+        return fs.states.get(id);
+      },
+    };
+    world.context.activeCharacter = active;
+    const order = [active, ...fighters.filter((f) => f.id !== active.id)];
+    for (const f of order) {
+      const relation = f.id === active.id ? 'self' : f.side === active.side ? 'ally' : 'enemy';
+      await runFor(f, eventsFor(moment, relation), env, { activeCharacter: active });
+    }
+  }
+
+  return {
+    // Queues the triggers of a turn moment on the fight's own chain (never awaited by the caller).
+    schedule(fightRow, activeId, moment) {
+      const key = `${fightRow.scene_id}:${fightRow.mode}`;
+      const prev = chains.get(key) ?? Promise.resolve();
+      const next = prev.then(() => runTurn(fightRow, activeId, moment)).catch((err) => console.error('turn triggers', err));
+      chains.set(key, next);
+      return next;
+    },
+    // A fight ended: forget its choices and cancel its open prompts.
+    endFight(sceneId, mode) {
+      const key = `${sceneId}:${mode}`;
+      fightState.delete(key);
+      for (const [id, p] of pending) if (p.fightKey === key) finish(id, null);
+    },
+    answer(socket, { id, answer }) {
+      const p = pending.get(id);
+      if (!p) return;
+      const v = socket.data.identity;
+      if (v?.role !== 'gm' && !controlsCharacter(v, p.prompt.characterId)) return;
+      finish(id, answer);
+    },
+    openPromptsFor(socket) {
+      const v = socket.data.identity;
+      return [...pending.values()].map((p) => p.prompt).filter((p) => v?.role === 'gm' || controlsCharacter(v, p.characterId));
+    },
+  };
+}

@@ -25,6 +25,7 @@ import { TRAY, clampLaneY, clampLanes, laneCapacity, moveOnLane, packLane } from
 import { loadCombatTokens, registerCombatMapHandlers, sceneGrid } from './combatMap.js';
 import { EMPTY_FIGHT_STATE, loadSimpleStates, registerCombatStateHandlers, releaseChallengesOf } from './combatState.js';
 import { loadFightState, registerFightHandlers } from './fights.js';
+import { createTriggerEngine } from './triggers.js';
 import { loadMapTiles, registerMapTileHandlers } from './mapTiles.js';
 import { deleteBuild, loadBuild, registerBuildHandlers } from './builds.js';
 import { loadAllDerived, setupFromDerived } from './fighterStances.js';
@@ -1468,6 +1469,11 @@ function armTrackEndTimer(payload) {
   trackEndTimer.unref?.();
 }
 
+// One turn-trigger engine for the whole server, made on first use (postCard
+// and emitStageUpdated are defined above as function declarations).
+let triggers = null;
+const triggerEngine = () => (triggers ??= createTriggerEngine({ io, postCard, emitStageUpdated }));
+
 io.on('connection', (socket) => {
   const on = (event, handler) => {
     socket.on(event, async (payload) => {
@@ -1490,7 +1496,9 @@ io.on('connection', (socket) => {
   registerMapTileHandlers({ on, socket, emitStageUpdated });
   registerBuildHandlers({ on, socket, io, mayWrite: mayWriteScenePicture, emitStageUpdated });
   // Rounds, turns, Stance rolls and Reminders (Phase 5) — see server/fights.js.
-  registerFightHandlers({ on, socket, emitStageUpdated, postCard, postSystemMessage, emitAll: (event, payload) => io.emit(event, payload) });
+  registerFightHandlers({ on, socket, emitStageUpdated, postCard, postSystemMessage, emitAll: (event, payload) => io.emit(event, payload), triggers: triggerEngine() });
+  // Turn triggers' choices and targets (builder phase 3) — see server/triggers.js.
+  on('trigger:answer', (payload) => triggerEngine().answer(socket, payload));
 
   // Who this connection is playing as — stored per-socket, in memory only
   // (lost on disconnect, matching the no-login/session-only model; the
@@ -1514,6 +1522,8 @@ io.on('connection', (socket) => {
     // straight to twenty seconds; nothing else would ever tell it, because
     // audio:state is only broadcast when the state CHANGES.
     socket.emit('audio:state', await getAudioPayload());
+    // Any turn-trigger prompt still waiting on this viewer.
+    for (const p of triggerEngine().openPromptsFor(socket)) socket.emit('trigger:prompt', p);
   });
 
   // **The Dice Tray** — one die of any size (d4-d12) plus the modifier typed

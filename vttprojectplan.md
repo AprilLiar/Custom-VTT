@@ -3139,7 +3139,24 @@ The Combat tab's hand-made setup (Stances as name + dice, Unique token picks, Re
    - Frantic Heroes have no fixed Stances (phase 4), so no automatic roll yet. Playtest: `scripts/playtest-build-fights.mjs`.
    - Plan as written:
     Derived Stances drive the turn-start pick and roll (die colours shown in the roll card). Option tokens (Chaos, Control, Luck, Mentor, Poltergeist, Training, Rapid Strike) join the token row automatically. Continuous `grant_armor` rules feed Armor (always, or while the granting Stance is active). Level and bonus HP feed the Combat Weight tool. HP bars from the type (Boss 2-5) are a default.
-3. **Turn triggers.** A pure interpreter (`client/src/lib/patd/interpreter.js`) for `own_turn.start` / `own_turn.end_abilities` rules (plus `allied_turn` / `any_turn` starts where simple), with the operation subset above. Prompts for choices and targets go to the fighter's controller (like the Stance prompt). Board range and sight checks come from `combatGrid` / `simpleLane` geometry plus map tiles. Follow-on events (`self.challenge_given_to_enemy`, `self.bleed`, `self.damage_taken`, ...) run when an automated effect caused them. Reminder cards cover the rest. Heavily unit-tested against the content's own rules.
+3. **Turn triggers — implemented.**
+   - **The interpreter:** `client/src/lib/patd/interpreter.js` (pure; tested in `server/test/patdInterpreter.test.js`).
+     - `ruleSupport(rule)` pre-scans a rule: every op, `{ref}` path, selector and limit must be in the supported subset, or the whole rule is left to a reminder card (never half-run). 83 of the content's 123 turn-start / turn-end rules are fully automatic.
+     - `runRule(rule, ctx)` walks the op tree with an explicit dispatch table (no `eval`). It covers tokens (gain, discard, distribute, choose), Shield, heal, pay HP, damage, temporary Armor, Challenge, Action Pool numbers, `optional`, `choose_one`, `choose_mode`, conditions, `for_each`, per-fighter fight state and usage limits.
+     - Geometry: `chebyshev`, `lineOfSight(a, b, walls)` and `targetable`. Sight is a straight line between the two squares' centres; a Wall square it passes through blocks it, and grazing a Wall's corner does not. Fighters fill one square, so this is the plan's "from anywhere in your space" rule for one-square fighters. Fog around the target (in it or next to it) limits targeting an enemy to Range 1.
+   - **The engine:** `server/triggers.js`, `createTriggerEngine({ io, postCard, emitStageUpdated })`, one per server.
+     - `server/fights.js` calls `schedule(fight, activeId, 'start')` after the turn-start roll (and after `fight:choose_stance`), and `schedule(…, 'end')` on `fight:next` before the turn ends. It is never awaited, so a prompt waiting on a person never holds the write queue. Each write is queued on its own, and each fight's triggers run one after another on their own chain.
+     - **Who listens:** the active fighter's `own_turn` / `allied_turn` / `any_turn` rules, allies' `allied_turn` / `any_turn` rules, enemies' `enemy_turn` / `any_turn` rules. Abilities are the build's always-on ones plus the active Stance's.
+     - **The world:** the fight's fighters, their squares (map cell, or lane space as column and lane row), Walls and Fog from `map_tiles`, and the fight's Combat Weight (Heal and Bleed Values; Middleweight when none is set).
+     - **Effects:** they write to `combatants` (tokens capped as usual, HP through the bars, Bleed once per round with its card, `challenge_id`). Each ability that did something posts a rule card (`automatic: 'ability'`) saying what happened. An unsupported rule posts "{Ability} — by hand" with its rules text (`automatic: 'ability_manual'`).
+     - **Follow-ons:** `self.damage_taken`, `self.bleed` and `self.challenge_given_to_enemy` run for app-caused events, up to 3 deep.
+   - **Prompts:** server → client `trigger:prompt { id, characterId, combatantId, fighterName, kind: 'confirm'|'choose'|'targets', title, text, options: [{id, label}], minimum, maximum }`, sent to the GM and whoever controls the fighter.
+     - Client → server `trigger:answer { id, answer }` (true / false, an option id, or a list of ids). The first allowed answer wins, and `trigger:resolved { id }` closes it everywhere.
+     - Open prompts are re-sent on `identity:set` (a reconnect). They time out after 10 minutes. `fight:end` closes that fight's prompts and forgets its fight state.
+     - The dialog is `TriggerPrompts` in `FightControls.jsx`, shown on the Scene one prompt at a time.
+   - Playtest: `scripts/playtest-turn-triggers.mjs`. It covers Wild Form, Aura Style, Fused Phantom and Fused Demon running on their own, the Fused Angel heal-and-Challenge prompts answered by its player, Heroic Style healing, and a reconnect and fight end with a prompt open.
+   - Plan as written:
+    A pure interpreter (`client/src/lib/patd/interpreter.js`) for `own_turn.start` / `own_turn.end_abilities` rules (plus `allied_turn` / `any_turn` starts where simple), with the operation subset above. Prompts for choices and targets go to the fighter's controller (like the Stance prompt). Board range and sight checks come from `combatGrid` / `simpleLane` geometry plus map tiles. Follow-on events (`self.challenge_given_to_enemy`, `self.bleed`, `self.damage_taken`, ...) run when an automated effect caused them. Reminder cards cover the rest. Heavily unit-tested against the content's own rules.
 4. **Frantic and NPC types.** Frantic per-turn Stance assembly with previous-turn exclusions. Warrior (Warrior's Path triggers), Boss (several Stances and bars) and Stooges (one shared Stance, turn and health bar across several bodies) behaviour in fights.
 
 ### Open questions to settle in their phase
@@ -3150,7 +3167,7 @@ The Combat tab's hand-made setup (Stances as name + dice, Unique token picks, Re
 ## Implementation Phases (iterative — each ends with a deploy + playtest checkpoint)
 The old system's phases (1-9 and the playtest batches after them) are complete history in git. The current state:
 - **Pivot — done.** Old system archived and removed (this document's **The pivot**).
-- **Character builder & turn automation — planned**, in phases 0-4 (see its section above). Phases 0-2 are implemented; phase 3 is next.
+- **Character builder & turn automation — planned**, in phases 0-4 (see its section above). Phases 0-3 are implemented; phase 4 is next.
 - **Panic at the Dojo combat assistant**, in the five phases listed in its section above. Phases 1, 2, 2b (Stances) and 3 are implemented; so are multi-lane Simple Combat (2c), Phase 4 and Phase 5 — the whole scoped assistant — plus the Cinematic Weight GM tool. Further changes are follow-ups from play.
 
 ## Implementation Risks & Recommendations

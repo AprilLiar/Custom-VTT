@@ -277,3 +277,95 @@ export function StancePrompt({ mode, fight, fighters, role, controls = () => fal
     </DialogShell>
   );
 }
+
+// **Turn-trigger prompts (builder phase 3).** A start/end-of-turn ability's
+// choice or targets, asked of whoever controls that fighter and of the GM;
+// the first answer wins (server/triggers.js). Several queue one at a time.
+export function TriggerPrompts() {
+  const [prompts, setPrompts] = useState([]);
+  useEffect(() => {
+    const onPrompt = (p) => setPrompts((list) => (list.some((x) => x.id === p.id) ? list : [...list, p]));
+    const onResolved = ({ id }) => setPrompts((list) => list.filter((x) => x.id !== id));
+    socket.on('trigger:prompt', onPrompt);
+    socket.on('trigger:resolved', onResolved);
+    return () => {
+      socket.off('trigger:prompt', onPrompt);
+      socket.off('trigger:resolved', onResolved);
+    };
+  }, []);
+  const p = prompts[0];
+  if (!p) return null;
+  return <TriggerPromptDialog key={p.id} prompt={p} />;
+}
+
+function TriggerPromptDialog({ prompt }) {
+  const [picked, setPicked] = useState([]);
+  const answer = (value) => socket.emit('trigger:answer', { id: prompt.id, answer: value });
+  const button =
+    'min-h-11 panel-cut-sm border border-zinc-700 bg-zinc-900 px-3 font-display text-sm font-semibold uppercase tracking-wide text-zinc-100 hover:border-brand-500 hover:bg-brand-950/40';
+  const options = prompt.options ?? [];
+  return (
+    <DialogShell title={`${prompt.fighterName}: ${prompt.title}`} onClose={() => {}} maxWidth="max-w-sm" portal>
+      {prompt.text && <p className="mb-3 whitespace-pre-line text-xs text-zinc-400">{prompt.text}</p>}
+      {prompt.kind === 'confirm' && (
+        <div className="flex gap-2">
+          <button type="button" onClick={() => answer(true)} className={`${button} flex-1`}>
+            Yes
+          </button>
+          <button type="button" onClick={() => answer(false)} className={`${button} flex-1`}>
+            No
+          </button>
+        </div>
+      )}
+      {prompt.kind === 'choose' && (
+        <div className="flex flex-col gap-2">
+          {options.map((o) => (
+            <button key={o.id} type="button" onClick={() => answer(o.id)} className={button}>
+              {o.label}
+            </button>
+          ))}
+        </div>
+      )}
+      {prompt.kind === 'targets' && (
+        <div className="space-y-2">
+          <p className="text-[11px] text-zinc-500">
+            Choose {prompt.minimum === prompt.maximum ? prompt.maximum : `${prompt.minimum}–${prompt.maximum}`}.
+          </p>
+          <div className="flex flex-col gap-1.5">
+            {options.map((o) => {
+              const on = picked.includes(o.id);
+              return (
+                <button
+                  key={o.id}
+                  type="button"
+                  aria-pressed={on}
+                  onClick={() =>
+                    setPicked((list) => (on ? list.filter((v) => v !== o.id) : list.length < prompt.maximum ? [...list, o.id] : list))
+                  }
+                  className={`${button} ${on ? 'border-brand-500 bg-brand-950/50' : ''}`}
+                >
+                  {o.label}
+                </button>
+              );
+            })}
+          </div>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              disabled={picked.length < prompt.minimum}
+              onClick={() => answer(picked)}
+              className="min-h-10 flex-1 panel-cut-sm bg-brand-600 px-3 text-sm font-semibold text-white hover:bg-brand-500 disabled:opacity-40"
+            >
+              Confirm
+            </button>
+            {prompt.minimum === 0 && (
+              <button type="button" onClick={() => answer([])} className="min-h-10 panel-cut-sm border border-zinc-700 px-3 text-sm text-zinc-300">
+                Skip
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+    </DialogShell>
+  );
+}
