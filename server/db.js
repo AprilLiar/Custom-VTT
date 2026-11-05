@@ -1423,6 +1423,20 @@ export async function initDb() {
     )
   `);
 
+  // The turn's dice board (server/diceMarks.js): per Stance roll, which dice
+  // are crossed out and which Action each was laid on. Purely visual.
+  ddl(`
+    CREATE TABLE IF NOT EXISTS dice_marks (
+      roll_id TEXT PRIMARY KEY,
+      combatant_id INTEGER,
+      character_id INTEGER,
+      dice INTEGER NOT NULL DEFAULT 0,
+      data TEXT NOT NULL DEFAULT '{}',
+      active INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
   // Homebrew content (server/homebrew.js, client/src/lib/patd/homebrew.js):
   // the GM's own Forms, Styles and Archetypes, one cleaned item per row.
   ddl(`

@@ -8,6 +8,7 @@ import {
   DIE_SIDES,
   HOMEBREW_TOKENS,
   MOMENTS,
+  OTHER_SKILL,
   STEP_KINDS,
   VARIANT_KEYS,
   WHO,
@@ -260,15 +261,45 @@ function ItemEditor({ item, setItem, idx, book, onClose }) {
               />
             </Field>
             <Field label="Skill">
-              <select value={item.skillId ?? ''} onChange={(e) => set({ skillId: e.target.value || null })} className={`${selectClass} w-full`}>
+              <select
+                value={item.customSkill ? OTHER_SKILL : (item.skillId ?? '')}
+                onChange={(e) =>
+                  e.target.value === OTHER_SKILL
+                    ? set({ skillId: OTHER_SKILL, customSkill: item.customSkill ?? { name: '', rulesText: '' } })
+                    : set({ skillId: e.target.value || null, customSkill: null })
+                }
+                className={`${selectClass} w-full`}
+              >
                 <option value="">— none —</option>
                 {book.content.skills.map((s) => (
                   <option key={s.id} value={s.id}>
                     {s.name}
                   </option>
                 ))}
+                <option value={OTHER_SKILL}>Other (write your own)…</option>
               </select>
             </Field>
+            {item.customSkill && (
+              <div className="space-y-2 sm:col-span-2">
+                <Field label="Custom Skill name">
+                  <input
+                    value={item.customSkill.name}
+                    maxLength={40}
+                    placeholder="e.g. Fire Breathing"
+                    onChange={(e) => set({ customSkill: { ...item.customSkill, name: e.target.value } })}
+                    className={inputClass}
+                  />
+                </Field>
+                <Field label="What the Skill lets you do">
+                  <textarea
+                    value={item.customSkill.rulesText}
+                    rows={2}
+                    onChange={(e) => set({ customSkill: { ...item.customSkill, rulesText: e.target.value } })}
+                    className={`${inputClass} py-1.5`}
+                  />
+                </Field>
+              </div>
+            )}
           </>
         )}
       </section>

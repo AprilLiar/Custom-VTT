@@ -22,6 +22,7 @@ import { assembles, derivedFor, franticPickOf, rollDerived, stanceByKey, stances
 import { franticOptions, franticPickAllowed } from '../client/src/lib/patd/build.js';
 import { patdContent } from './patdContent.js';
 import { addXp } from './builds.js';
+import { endTurnDice, resumeRoll, startRoll } from './diceMarks.js';
 import { XP_AWARDS } from '../client/src/lib/patd/build.js';
 import { resolveRef, serialized, shapeFightState } from './combatState.js';
 import { controlsCharacter } from './control.js';
@@ -251,12 +252,18 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
     }
     const results = rollDerived(stance.dice);
     // `combatant_id` lets the Scene keep this card up until that fighter's
-    // turn ends (fight:turn_ended).
+    // turn ends (fight:turn_ended). `roll_id`, `character_id` and
+    // `stance_key` open the turn's dice board from it (server/diceMarks.js).
+    const rollId = `${combatantId}-${Date.now().toString(36)}${Math.floor(Math.random() * 1296).toString(36)}`;
+    await startRoll({ rollId, combatantId, characterId: fighter.characterId, dice: results.length }, emitAll);
     await postCard('stance_roll', {
       fighter: card(fighter),
       stance: stance.name,
       results,
       combatant_id: combatantId,
+      roll_id: rollId,
+      character_id: fighter.characterId,
+      stance_key: stance.id,
     });
   };
 
@@ -360,6 +367,7 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
     }
     // The Scene's floating chat keeps a fighter's turn-start roll up until now.
     if (current) emitAll?.('fight:turn_ended', { combatantId: current.id });
+    if (current) await endTurnDice([current.id], emitAll);
     // Dizzy lasts until the end of the current turn (book p.62).
     await run('UPDATE combatants SET dizzy = 0 WHERE scene_id = ? AND mode = ?', [fight.scene_id, fight.mode]);
     await advance(fight);
@@ -390,6 +398,9 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
     fight.pending_stance_combatant = null;
     await save(fight);
     if (current) emitAll?.('fight:turn_ended', { combatantId: current.id });
+    if (current) await endTurnDice([current.id], emitAll);
+    const back = orderOf(fight)[fight.turn_index];
+    if (back) await resumeRoll(back.id, emitAll);
     await emitStageUpdated();
   });
 
@@ -471,6 +482,7 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
       await postSystemMessage(`— ${outcome === 'allies' ? 'The allies' : 'The enemies'} win — XP: ${lines.length ? lines.join(', ') : 'nobody on an XP track'}`);
     }
     await run('DELETE FROM fights WHERE id = ?', [fight.id]);
+    await endTurnDice([...parseIds(fight.allies), ...parseIds(fight.enemies)], emitAll);
     triggers?.endFight(fight.scene_id, fight.mode);
     await run('UPDATE combatants SET dizzy = 0 WHERE scene_id = ? AND mode = ?', [fight.scene_id, fight.mode]);
     await postSystemMessage('— Combat ends —');

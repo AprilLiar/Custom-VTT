@@ -3194,6 +3194,22 @@ The Combat tab's hand-made setup (Stances as name + dice, Unique token picks, Re
 Small, named patches to the book's content, applied when it is indexed on both server and client (`client/src/lib/patd/rulings.js`, `applyRulings`). The content file stays the user's export, and each ruling's note is added to the Ability's rules text so the sheet shows it.
 - **Halcyon Style:** "at the start of your turn, you may discard one token". Ruled: **only a Status token** (Burning, Fatigue, Weakness), never a basic one. With none held it is skipped silently; otherwise a choice of which, or "Don't discard". Its "gain that many Iron" half now runs as a follow-on.
 
+### Action cards and the dice board (decided)
+- **Cards like the book's** (`components/actions/ActionCards.jsx`, matched against the PDF):
+  - An Action is a dark-green slanted header reading "cost: Name" over a mint-green body with a brighter green right edge. The base effect comes first, then each Gate on its own line with its threshold in bold.
+  - A Super Move is a dark card with its mark: Alpha (purple, "α Super") or Delta (teal, "Δ Super").
+- **The sheet:** Actions are a section of their own, apart from the Abilities, which are now headed "Active effects".
+  - **Basic Actions** (the 10, collapsed by default) and **Personal Actions** (always available, then each Stance's, or each Form and Style for Frantic, then Super Moves) sit side by side with a divider on wide screens and stacked on phones.
+- **The turn's dice board** (`components/actions/DiceBoard.jsx`). While a fighter's turn lasts, whoever controls them (or the GM) taps the dice on that turn's Stance roll card, in the chat or the Scene's pinned card, to open it.
+  - **Layout:** a full-screen overlay that closes with ✕ or Escape. A scrollable list of the Actions this turn can use runs in two columns with a vertical line between them: **Basic** on the left, **Personal** on the right (only the rolled Stance's, plus the always-available ones and Super Moves; decided). The roll's dice sit enlarged along the bottom.
+  - **Dragging a die onto an Action** (pointer events, so touch, pen and mouse) crosses the die out and lights the Action and the Gate its number reaches in mild green (`gateFor`: the highest header threshold at or below the number). The card's header shows the die.
+  - **Tapping (decided, revised):** tapping a die crosses it out and selects it (a ring). Tapping an Action then lays the die on it, the same as dragging. Tapping the selected die again brings it back. Tapping a die that's on an Action takes it off and selects it, to lay elsewhere. Tapping the empty board deselects.
+  - **Purely visual:** nothing is paid, spent or resolved.
+- **Shared and kept for the turn** (`server/diceMarks.js`, table `dice_marks (roll_id, combatant_id, character_id, dice, data, active, created_at)`, the last 300 rolls).
+  - Each Stance roll card now carries `roll_id`, `character_id` and `stance_key`. Its marks `{ used, assign: { dieIndex: { actionId, threshold } } }` are editable while the roll is **active**: from the roll until that fighter's turn ends (Next turn, End Combat). Previous turn makes their latest roll active again.
+  - The client sends `dice:mark { rollId, used, assign }` (controllers or GM only, cleaned by `cleanMarks`). Everyone gets `dice:marks { rollId, used, assign, active }`, and `GET /api/dice-marks` returns the recent ones (`lib/diceMarks.js`, `useDiceMarks`).
+  - Crossed dice show crossed on the chat card for everyone. Closing and reopening the board shows the same state.
+
 ### The sheet's rules reference
 - Rules text keeps its line breaks. An Action's or Super Move's **Gates** ("3+: …") are split from the base effect (`client/src/lib/patd/gates.js`, `splitGates`) and listed one per line with the threshold in amber.
 
@@ -3239,6 +3255,7 @@ A GM-only page (`/homebrew`, the flask icon in the header and the mobile menu) f
 - **UI:** `components/HomebrewPage.jsx`.
   - On the left: new Form / Style / Archetype, Copy from book, and the items with Draft / Published.
   - On the right, the editor: name, the kind's fields, the dice editor with a live dice row, description, Abilities with their rules and effects, and Actions. Create / Save, Delete (with a confirm) and Close.
+- **A Form's Skill: a book Skill or "Other" (decided).** "Other (write your own)…" asks for a name and what it lets you do. The item stores `customSkill { name, rulesText }`, which becomes a Skill entry `skill.<tail>.s1` in the merged content: listed among the Skills and used as the Form's Skill.
 - **Not in homebrew (yet):** Freestyles, Super Moves, Builds, Features, and movement or placing effects (write those as text).
 - Playtest: `scripts/playtest-homebrew.mjs`.
 

@@ -5,6 +5,7 @@ import { useContent } from '../../lib/patd/useContent.js';
 import { LEVEL_MAX, XP_AWARDS, deriveBuild, emptyBuild, normalizeBuild, withXp } from '../../lib/patd/build.js';
 import { STEPS, StepBody, grantText } from './BuildSteps.jsx';
 import { DiceRow, RulesEntry, rangeText } from './BuildParts.jsx';
+import { ActionCard, SuperMoveCard } from '../actions/ActionCards.jsx';
 
 // **The character builder (builder phase 1 — decided).** On the Combat tab.
 // The first run walks through the steps (Type → Archetypes → Stances → Build →
@@ -211,6 +212,7 @@ function Overview({ saved, idx, canEdit, editing, setEditing, save, characterId 
         </div>
       )}
       {d.level.xpLevel != null && <XpTracker build={normalizeBuild(saved, idx)} level={d.level} canEdit={canEdit} save={save} />}
+      <ActionsReference d={d} idx={idx} />
       <RulesReference d={d} idx={idx} />
       {canEdit && (
         <button
@@ -298,25 +300,22 @@ function Warnings({ derived }) {
   );
 }
 
-// **The rules reference (decided: on the sheet only).** What this character
-// always has, then each Stance's own Abilities and Actions, then Super Moves.
+// **Active effects (decided: on the sheet only).** The Abilities this
+// character always has, the Frantic ones, then each Stance's. Actions live in
+// their own section below (ActionsReference).
 function RulesReference({ d, idx }) {
   const [open, setOpen] = useState(null);
   const groups = [
-    { key: 'always', title: 'Always in effect', abilities: d.constantAbilityIds, actions: d.constantActionIds },
+    { key: 'always', title: 'Always in effect', abilities: d.constantAbilityIds },
     ...(d.franticAbilityIds?.length ? [{ key: 'frantic', title: 'Frantic Abilities (one each turn)', abilities: d.franticAbilityIds }] : []),
-    ...d.stances.map((s) => ({ key: s.key, title: s.name, abilities: s.abilityIds, actions: s.actionIds })),
+    ...d.stances.map((s) => ({ key: s.key, title: s.name, abilities: s.abilityIds })),
     ...(d.type.assemble
-      ? [
-          ...d.formIds.map((id) => ({ key: id, title: idx.get(id)?.name, abilities: idx.get(id)?.abilityIds ?? [], actions: idx.get(id)?.actionIds ?? [] })),
-          ...d.styleIds.map((id) => ({ key: id, title: idx.get(id)?.name, abilities: idx.get(id)?.abilityIds ?? [], actions: idx.get(id)?.actionIds ?? [] })),
-        ]
+      ? [...d.formIds, ...d.styleIds].map((id) => ({ key: id, title: idx.get(id)?.name, abilities: idx.get(id)?.abilityIds ?? [] }))
       : []),
-    { key: 'supers', title: 'Super Moves', supers: d.superMoveIds },
-  ];
+  ].filter((g) => g.abilities.length);
   return (
     <section className="space-y-1.5">
-      <h3 className="font-display text-xs font-bold uppercase tracking-wide text-zinc-300">Rules reference</h3>
+      <h3 className="font-display text-xs font-bold uppercase tracking-wide text-zinc-300">Active effects</h3>
       {groups.map((g) => (
         <div key={g.key} className="panel-cut-sm border border-zinc-800 bg-zinc-900/50">
           <button
@@ -330,20 +329,82 @@ function RulesReference({ d, idx }) {
           </button>
           {open === g.key && (
             <ul className="space-y-1 px-2 pb-2">
-              {(g.abilities ?? []).map((id) => (
+              {g.abilities.map((id) => (
                 <RulesEntry key={id} entry={idx.get(id)} kind="Ability" />
               ))}
-              {(g.actions ?? []).map((id) => (
-                <RulesEntry key={id} entry={idx.get(id)} kind="Action" />
-              ))}
-              {(g.supers ?? []).map((id) => (
-                <RulesEntry key={id} entry={idx.get(id)} kind="Super Move" />
-              ))}
-              {g.supers && g.supers.length === 0 && <li className="text-xs italic text-zinc-600">None chosen.</li>}
             </ul>
           )}
         </div>
       ))}
+    </section>
+  );
+}
+
+// **Actions (decided):** apart from the active effects, drawn as the book's
+// cards, in two parts — Basic (everyone's) and Personal (this character's:
+// always available, then each Stance's, then Super Moves).
+function ActionsReference({ d, idx }) {
+  const basic = idx.content.basicActionIds ?? [];
+  const isBasic = new Set(basic);
+  const personal = [
+    { title: 'Always available', ids: d.constantActionIds.filter((id) => !isBasic.has(id)) },
+    ...d.stances.map((s) => ({ title: s.name, ids: s.actionIds })),
+    ...(d.type.assemble ? [...d.formIds, ...d.styleIds].map((id) => ({ title: idx.get(id)?.name, ids: idx.get(id)?.actionIds ?? [] })) : []),
+  ].filter((g) => g.ids.length);
+  const [show, setShow] = useState({ basic: false, personal: true });
+  const part = (key, title, body) => (
+    <div className="space-y-2">
+      <button
+        type="button"
+        onClick={() => setShow((v) => ({ ...v, [key]: !v[key] }))}
+        aria-expanded={show[key]}
+        className="flex w-full items-center justify-between font-display text-[11px] font-bold uppercase tracking-wide text-emerald-300"
+      >
+        {title}
+        <span className="text-zinc-500">{show[key] ? '−' : '+'}</span>
+      </button>
+      {show[key] && body}
+    </div>
+  );
+  return (
+    <section className="space-y-3">
+      <h3 className="font-display text-xs font-bold uppercase tracking-wide text-zinc-300">Actions</h3>
+      <div className="grid gap-4 md:grid-cols-2 md:divide-x md:divide-zinc-800">
+        {part(
+          'basic',
+          `Basic Actions (${basic.length})`,
+          <div className="space-y-1.5">
+            {basic.map((id) => (
+              <ActionCard key={id} action={idx.get(id)} />
+            ))}
+          </div>
+        )}
+        <div className="md:pl-4">
+          {part(
+            'personal',
+            'Personal Actions',
+            <div className="space-y-3">
+              {personal.length === 0 && d.superMoveIds.length === 0 && <p className="text-xs italic text-zinc-600">None yet.</p>}
+              {personal.map((g, i) => (
+                <div key={i} className="space-y-1.5">
+                  <p className="text-[10px] font-bold uppercase tracking-wide text-zinc-500">{g.title}</p>
+                  {g.ids.map((id) => (
+                    <ActionCard key={id} action={idx.get(id)} />
+                  ))}
+                </div>
+              ))}
+              {d.superMoveIds.length > 0 && (
+                <div className="space-y-1.5">
+                  <p className="text-[10px] font-bold uppercase tracking-wide text-zinc-500">Super Moves</p>
+                  {d.superMoveIds.map((id) => (
+                    <SuperMoveCard key={id} move={idx.get(id)} />
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
     </section>
   );
 }

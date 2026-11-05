@@ -22,6 +22,8 @@
 import { BASIC_TOKENS, STATUS_TOKENS, UNIQUE_TOKENS } from '../panicTokens.js';
 
 export const HB_KINDS = ['form', 'style', 'archetype'];
+// The Skill picker's "Other" — a custom Skill written on the Form.
+export const OTHER_SKILL = 'other';
 // Tokens a step may give or name (Shield and Armor have their own steps).
 export const HOMEBREW_TOKENS = [...BASIC_TOKENS, ...STATUS_TOKENS, ...UNIQUE_TOKENS];
 export const HOMEBREW_TOKEN_KEYS = HOMEBREW_TOKENS.map((t) => t.key);
@@ -248,7 +250,10 @@ export function cleanHomebrew(raw, idx, tokenKeys) {
         if (d?.kind === 'fixed') return { kind: 'fixed', value: clampInt(d.value, 1, 12, 1), color };
         return { kind: 'die', sides: DIE_SIDES.includes(Number(d?.sides)) ? Number(d.sides) : 6, color };
       });
-    item.skillId = idx.get(raw.skillId)?.id?.startsWith('skill.') ? raw.skillId : null;
+    // A book Skill, or "Other": the GM's own Skill, written here.
+    const custom = raw.skillId === OTHER_SKILL || (raw.skillId == null && raw.customSkill?.name);
+    item.skillId = custom ? null : idx.get(raw.skillId)?.id?.startsWith('skill.') ? raw.skillId : null;
+    item.customSkill = custom ? { name: text(raw.customSkill?.name, 40) || 'Custom Skill', rulesText: text(raw.customSkill?.rulesText, 1000) } : null;
   }
   if (kind === 'style') {
     const minimum = clampInt(raw.range?.minimum, 0, 9, 1);
@@ -318,8 +323,9 @@ export function itemToContent(item) {
     actionIds: actions.map((a) => a.id),
   };
   let entity;
+  const skills = item.customSkill ? [{ id: `skill.${tail}.s1`, name: item.customSkill.name, rulesText: item.customSkill.rulesText, homebrew: true }] : [];
   if (item.kind === 'form') {
-    entity = { ...base, aliases: item.aliases, actionDice: item.actionDice, skillId: item.skillId, abilityIds: abilities.map((a) => a.id) };
+    entity = { ...base, aliases: item.aliases, actionDice: item.actionDice, skillId: skills[0]?.id ?? item.skillId, abilityIds: abilities.map((a) => a.id) };
   } else if (item.kind === 'style') {
     entity = { ...base, range: item.range, archetypeId: item.archetypeId, abilityIds: abilities.map((a) => a.id) };
   } else {
@@ -333,7 +339,7 @@ export function itemToContent(item) {
       superMoveIds: [],
     };
   }
-  return { entity, abilities, actions };
+  return { entity, abilities, actions, skills };
 }
 
 // The book's content with homebrew items added. Published items (or all, with
@@ -342,7 +348,7 @@ export function itemToContent(item) {
 export function mergeHomebrew(content, items, { listDrafts = true } = {}) {
   if (!items?.length) return content;
   const out = { ...content };
-  for (const key of ['forms', 'styles', 'archetypes', 'abilities', 'actions']) out[key] = [...content[key]];
+  for (const key of ['forms', 'styles', 'archetypes', 'abilities', 'actions', 'skills']) out[key] = [...content[key]];
   out.homebrewUnlisted = [];
   const archetypes = new Map(out.archetypes.map((a, i) => [a.id, i]));
   const contents = items.map(itemToContent);
@@ -363,6 +369,7 @@ export function mergeHomebrew(content, items, { listDrafts = true } = {}) {
     }
     out.abilities.push(...c.abilities);
     out.actions.push(...c.actions);
+    out.skills.push(...c.skills);
   }
   return out;
 }
@@ -395,7 +402,7 @@ export function copyFromBook(entry, idx) {
     abilities: abilities.filter(Boolean),
     actions,
   };
-  if (kind === 'form') Object.assign(item, { aliases: [...(entry.aliases ?? [])], actionDice: (entry.actionDice ?? []).map((d) => ({ ...d })), skillId: entry.skillId ?? null });
+  if (kind === 'form') Object.assign(item, { aliases: [...(entry.aliases ?? [])], actionDice: (entry.actionDice ?? []).map((d) => ({ ...d })), skillId: entry.skillId ?? null, customSkill: null });
   if (kind === 'style') Object.assign(item, { range: { ...(entry.range ?? { minimum: 1, maximum: 1 }) }, archetypeId: entry.archetypeId ?? null });
   if (kind === 'archetype') item.archetypeKind = entry.kind === 'villain' ? 'villain' : 'player';
   return item;

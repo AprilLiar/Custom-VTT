@@ -13,6 +13,8 @@ import DiceIcon from './DiceIcon.jsx';
 import CounterAdjustDialog from './CounterAdjustDialog.jsx';
 import CroppedImage from './CroppedImage.jsx';
 import { cropOf } from '../lib/imageCrop.js';
+import { useDiceMarks } from '../lib/diceMarks.js';
+import DiceBoard, { DieFace } from './actions/DiceBoard.jsx';
 
 // A fighter as a fight card names them: their round token (or portrait).
 function FighterChip({ fighter }) {
@@ -39,6 +41,36 @@ function FighterChip({ fighter }) {
 // a Reminder box (a fighter's own, or an automatic End Phase one naming
 // everyone it applies to) and a turn-start Stance roll, each die shown on its
 // own so the player sees exactly what they are working with.
+// A Stance roll's dice (builder: the turn's dice board). Dice crossed out on
+// the board show crossed here for everyone. While that fighter's turn lasts,
+// whoever controls them (or the GM) taps the dice to open the board.
+function StanceDice({ payload }) {
+  const marks = useDiceMarks(payload.roll_id);
+  const { controls } = useControl();
+  const [open, setOpen] = useState(false);
+  const used = new Set(marks.used);
+  const canOpen = Boolean(payload.roll_id) && marks.active && controls(payload.character_id);
+  const dice = (payload.results ?? []).map((r, i) => <DieFace key={i} r={r} crossed={used.has(i)} />);
+  return (
+    <>
+      {canOpen ? (
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          title="Open this turn's Actions"
+          className="pointer-events-auto flex flex-wrap gap-1.5 rounded-sm text-left outline-none ring-lime-300/60 hover:ring-2 focus-visible:ring-2"
+        >
+          {dice}
+        </button>
+      ) : (
+        <div className="flex flex-wrap gap-1.5">{dice}</div>
+      )}
+      {canOpen && <p className="mt-1 text-[10px] text-lime-300/80">Tap the dice to lay them on your Actions</p>}
+      {open && <DiceBoard payload={payload} canEdit={canOpen} onClose={() => setOpen(false)} />}
+    </>
+  );
+}
+
 function FightCard({ entry }) {
   const p = entry.payload ?? {};
   const time = new Date(entry.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -53,31 +85,7 @@ function FightCard({ entry }) {
           <p className="mb-1.5 font-display text-[11px] font-semibold uppercase tracking-wide text-sky-300">
             Stance: {p.stance}
           </p>
-          <div className="flex flex-wrap gap-1.5">
-            {(p.results ?? []).map((r, i) => (
-              <span
-                key={i}
-                // Book colours (builder phase 2): purple / green Action Dice, the
-                // level's bonus die in amber.
-                className={`flex min-w-11 flex-col items-center panel-cut-sm border px-1.5 py-1 ${
-                  r.bonus
-                    ? 'border-amber-500/80 bg-amber-950/40'
-                    : r.color === 'purple'
-                      ? 'border-purple-500/70 bg-purple-950/40'
-                      : r.color === 'green'
-                        ? 'border-emerald-500/70 bg-emerald-950/40'
-                        : r.die !== undefined
-                          ? 'border-zinc-600 bg-zinc-900'
-                          : 'border-amber-600/70 bg-amber-950/40'
-                }`}
-              >
-                <span className="font-mono text-[10px] text-zinc-500">
-                  {r.bonus ? `bonus d${r.die}` : r.die !== undefined ? `d${r.die}` : 'fixed'}
-                </span>
-                <span className="font-mono text-xl font-black leading-none text-white">{r.result}</span>
-              </span>
-            ))}
-          </div>
+          <StanceDice payload={p} />
         </div>
       </div>
     );
