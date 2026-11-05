@@ -3077,9 +3077,56 @@ Special squares from the book's **Obstacles** (p.70-72) and the Battle Parameter
   - **Pinned stance roll (decided):** a turn-start Stance roll ignores the countdown. It stays until that fighter's turn ends — the server broadcasts `fight:turn_ended { combatantId }` on Next turn, and `fight:ended` on End Combat — because the player needs those numbers for the whole turn. Stance roll cards carry `combatant_id` for this.
   - **Chat button:** a round button above the GM Tools wrench opens the full Chat as an overlay over the Scene (full screen on a phone, a 20rem column otherwise) and closes it on a second press. It is visible even with the interface hidden.
 
+## Character builder & turn automation (decided, planned)
+
+The Combat tab's hand-made setup (Stances as name + dice, Unique token picks, Reminders, Armor sources) is **replaced by a real character builder** driven by the user's exported rules content. Characters are created by choosing a hero type, Archetypes, Forms, Styles and so on. The app then derives the Stances and their dice, and runs the simple start- and end-of-turn triggers. **Players still roll their dice**; the dice are pre-configured. Playing Actions stays manual.
+
+### The content (decided)
+- **Source:** the user's export of *Panic at the Dojo 2e / PATCH'D UP Beta* (CC-BY-SA 4.0), in three files: `panic-at-the-dojo.content.json` (the catalog), `.schema.json` (JSON Schema 2020-12) and `.import-guide.md` (data model, resolution contract, operation reference). The original Builds and the Focused / Fused / Frantic Bleed abilities are replaced by the user's six Builds. Bleed interactions of Forms, Styles and villain Archetypes stay.
+- **What it holds:** 12 Forms (coloured dice: purple / green, fixed numbers, aliases, Skills), 65 Styles (range, Archetype) and 12 Freestyles (replace the Form's green dice and keep its purple ones; one banned Form each). 13 player and 8 villain Archetypes, each with Focused / Fused / Frantic ability variants. 6 Builds, 12 Skills, 183 Actions (10 Basic), 169 Abilities split into event rules, and 34 Super Moves. The advancement tracks for Focused, Fused, Frantic and Warrior (bonus die, bonus HP per bar, grants per level, XP), 12 Features, 7 Warrior's Paths, the NPC types (Warrior, Boss, Stooges) and 7 option-specific token mechanics. Every entity has a stable string `id`; saved characters store ids, never names.
+- **It is declarative, not an engine:** effects are trees of `op` nodes, values are `{ ref }` paths or `{ operator, args }` expressions. The app interprets a safe subset with an explicit dispatch table, **never `eval`/`Function`**. Entries marked `requires_ruling` (only The Untouchable, which is unfinished) are shown as text and never automated.
+- **In the repo:** the JSON lives in the repo as shared data, so the server and the client read the same file. A unit test validates it against the schema, checks ids are unique and every reference resolves, and pins the counts.
+
+### Decisions (the user's answers)
+- **Purge:** the Combat tab loses its Stances, Unique picks, Reminders and Armor sources; **only the token picture stays**. Existing characters' data there is **deleted outright** (no archive).
+- **Everyone uses the builder, and nothing is locked:** any character, PC or NPC, may pick any hero type (Focused / Fused / Frantic) or NPC type (Warrior / Boss / Stooges), and any player or villain Archetype. The type's numbers (Stances, HP bars, turns) are defaults.
+- **Legality: warn only.** The construction rules (3 Forms, Styles matching the Archetypes, at most one Freestyle and its banned Form, unique picks, counts per hero type) are checked and shown as warnings, never blocking.
+- **Advancement: level, grants and XP.** Level 1-10 on the sheet, XP tracked with the book's awards (Victory 2 / Defeat 1) and level-ups prompted at the XP thresholds. A level unlocks its grants (Super Moves, Features, extra Forms for Frantic, Warrior's Path) for the player to pick. Its bonus die and bonus HP per bar feed the fight, and the Combat Weight tool reads the level and hero type from the sheet.
+- **Builder UI: step by step, then editable.** A guided first run (hero type → Archetypes → Forms → Styles / Freestyle → Build → Skills), then one overview page where any part can be changed. It shows the derived Stances ("{Style} {Form alias} Stance": dice from the Form, or Freestyle-modified, plus the level's bonus die; range from the Style).
+- **Actions and Super Moves: on the character sheet only** (decided), as a read-only reference: what each Stance can do, with costs, Gates and rules text. Not in the combat token panel.
+- **Dice: the automatic turn-start roll stays.** The chosen Stance's pre-configured pool (with colours) rolls into chat as now.
+- **Token cap stays 9** (Training 4, Shield 8), though the content says 10.
+- **Triggers automated** (phase 3):
+  - **Self effects** (tokens, Shield, heal, temporary Armor, Action Pool numbers): applied automatically.
+  - **Choices** ("you may", "choose one": Song, Mood, Ammo, Weapon): a quick prompt to whoever controls the fighter, then applied. Persistent choices are kept per token for the fight.
+  - **Targets** (Challenge, damage, tokens to an enemy or ally): a target picker, then applied. Angel's turn-start Challenge lives here.
+  - **Movement and placing** (move, push, teleport, place obstacles) are **not** automated: they become reminder cards with the rule's text.
+  - Anything unsupported likewise becomes a reminder card naming the ability.
+- **HP changes from triggers are applied** to the HP bars, with a chat card saying what happened; Bleed announcements follow. Armor, Iron and Shields are **not** subtracted automatically: the card reminds the defender.
+- **Follow-on triggers: for app-caused events.** When an automated effect Challenges, damages or makes someone Bleed, the matching "after / when" rules run too (Focused Angel's "after you Challenge an enemy, deal 1 and heal 1"). Events from manual play (HP edited by hand) only get reminder cards.
+- **Range is computed on the board:**
+  - **Map:** square-grid distance with **a diagonal counting 1** (Chebyshev, `max(|dx|, |dy|)`).
+  - **Lanes:** a small grid (each lane a row, each space a column), same rule.
+  - **Sight:** Walls block a straight line from anywhere in your space to anywhere in the target's. Fog limits targeting enemies in or next to it to Range 1; allies in Fog are fine.
+  - Stance range comes from the Style (plus modifiers such as Blaster's).
+- **Frantic Heroes** assemble a new Stance each turn (Form, Style and Archetype ability, excluding last turn's) **in phase 4**. Until then their Stances are fixed Form + Style pairs.
+
+### Phases (each one commit to `main`, deploy, playtest)
+0. **Content and purge.** Add the content JSON and its schema to the repo, with a shared loader (`client/src/lib/patd/content.js`: index by id, resolve) and the validation test. Delete the Combat tab's Stances, Unique picks, Reminders and Armor sources, their tables' data, events and UI; keep the token picture. Fights fall back to "no Stance" (no automatic roll) until phase 2.
+1. **The builder.** A `character_builds` row per character: hero/NPC type, Archetypes with their variant, Forms, Styles and Freestyle, Build, Skills (3 from Forms, up to 1 replacement, 1 free two-word), level, XP and grant picks. The step-by-step first run and the overview with warnings. Derived Stances (name, dice with colours, bonus die, range). The read-only Actions / Abilities / Super Moves reference. Pure derivation and legality rules unit-tested.
+2. **Fights use the build.** Derived Stances drive the turn-start pick and roll (die colours shown in the roll card). Option tokens (Chaos, Control, Luck, Mentor, Poltergeist, Training, Rapid Strike) join the token row automatically. Continuous `grant_armor` rules feed Armor (always, or while the granting Stance is active). Level and bonus HP feed the Combat Weight tool. HP bars from the type (Boss 2-5) are a default.
+3. **Turn triggers.** A pure interpreter (`client/src/lib/patd/interpreter.js`) for `own_turn.start` / `own_turn.end_abilities` rules (plus `allied_turn` / `any_turn` starts where simple), with the operation subset above. Prompts for choices and targets go to the fighter's controller (like the Stance prompt). Board range and sight checks come from `combatGrid` / `simpleLane` geometry plus map tiles. Follow-on events (`self.challenge_given_to_enemy`, `self.bleed`, `self.damage_taken`, ...) run when an automated effect caused them. Reminder cards cover the rest. Heavily unit-tested against the content's own rules.
+4. **Frantic and NPC types.** Frantic per-turn Stance assembly with previous-turn exclusions. Warrior (Warrior's Path triggers), Boss (several Stances and bars) and Stooges (one shared Stance, turn and health bar across several bodies) behaviour in fights.
+
+### Open questions to settle in their phase
+- How Stooges (several bodies, one unit) appear on the lane and the map.
+- Which `modify_rule` passives get visible badges (e.g. "Unblockable by Shields") versus staying in the rules text.
+- Super Move round limits, once Actions exist only on the sheet.
+
 ## Implementation Phases (iterative — each ends with a deploy + playtest checkpoint)
 The old system's phases (1-9 and the playtest batches after them) are complete history in git. The current state:
 - **Pivot — done.** Old system archived and removed (this document's **The pivot**).
+- **Character builder & turn automation — planned**, in phases 0-4 (see its section above). Phase 0 is next.
 - **Panic at the Dojo combat assistant**, in the five phases listed in its section above. Phases 1, 2, 2b (Stances) and 3 are implemented; so are multi-lane Simple Combat (2c), Phase 4 and Phase 5 — the whole scoped assistant — plus the Cinematic Weight GM tool. Further changes are follow-ups from play.
 
 ## Implementation Risks & Recommendations
