@@ -49,8 +49,17 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
       if (v?.role === 'gm' || controlsCharacter(v, prompt.characterId)) s.emit('trigger:prompt', prompt);
     }
   };
-  const ask = (fighter, fightKey) => (request) =>
+  // **Fight generations.** Ending or starting a fight on a Scene bumps its
+  // generation: queued work from before is skipped, work already running stops
+  // at its next ability, and it asks no new questions. Without this, a prompt
+  // opened just as a fight ended kept that Scene's chain waiting (up to the
+  // timeout), and the next fight there — a reused Scene id too — got no triggers.
+  const gens = new Map();
+  const gen = (key) => gens.get(key) ?? 0;
+  const stale = (env) => gen(env.key) !== env.gen;
+  const ask = (fighter, fightKey, g) => (request) =>
     new Promise((resolve) => {
+      if (gen(fightKey) !== g) return resolve(null);
       const id = `t${nextId++}`;
       const prompt = {
         id,
@@ -231,6 +240,7 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
   async function runFor(fighter, events, env, eventPayload = null, depth = 0) {
     const idx = patdContent();
     for (const abilityId of fighter.abilityIds) {
+      if (stale(env)) return;
       const ability = idx.get(abilityId);
       for (const rule of ability?.rules ?? []) {
         if (!rule.events.some((e) => events.includes(e))) continue;
@@ -253,7 +263,7 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
           ability,
           event: eventPayload,
           log: (l) => lines.push(l),
-          ask: ask(fighter, env.key),
+          ask: ask(fighter, env.key, env.gen),
           emit: depth < FOLLOW_ON_DEPTH ? (ev, f, payload) => runFor(f, [ev], env, payload, depth + 1) : null,
         };
         try {
@@ -368,6 +378,7 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     const { world, fighters, byId, onTrap } = await buildWorld(fightRow);
     const env = {
       key,
+      gen: gen(key),
       world,
       usage: fs.usage,
       stateOf: (id) => {
@@ -405,16 +416,24 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
 
   const onChain = (fightRow, job) => {
     const key = `${fightRow.scene_id}:${fightRow.mode}`;
+    const g = gen(key);
     const prev = chains.get(key) ?? Promise.resolve();
-    const next = prev.then(job).catch((err) => console.error('turn triggers', err));
+    const next = prev.then(() => (gen(key) === g ? job() : null)).catch((err) => console.error('turn triggers', err));
     chains.set(key, next);
     return next;
+  };
+  // A fresh start for a Scene's fight: old work dropped, its prompts closed.
+  const reset = (key) => {
+    gens.set(key, gen(key) + 1);
+    chains.set(key, Promise.resolve());
+    fightState.delete(key);
+    for (const [id, p] of pending) if (p.fightKey === key) finish(id, null);
   };
 
   return {
     // A fight began: forget any old fight state, then "start of combat" rules.
     startFight(fightRow) {
-      fightState.delete(`${fightRow.scene_id}:${fightRow.mode}`);
+      reset(`${fightRow.scene_id}:${fightRow.mode}`);
       return onChain(fightRow, () => runFightStart(fightRow));
     },
     // Damage from an Action to a fighter of this fight, on its chain.
@@ -427,9 +446,7 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     },
     // A fight ended: forget its choices and cancel its open prompts.
     endFight(sceneId, mode) {
-      const key = `${sceneId}:${mode}`;
-      fightState.delete(key);
-      for (const [id, p] of pending) if (p.fightKey === key) finish(id, null);
+      reset(`${sceneId}:${mode}`);
     },
     answer(socket, { id, answer }) {
       const p = pending.get(id);
