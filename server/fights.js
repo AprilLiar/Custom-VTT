@@ -166,7 +166,9 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
     }[moment];
     if (moment === 'turn_end' && active) {
       const onTraps = fightersOnTraps(await withSquares(fight, await loadFighters(fight.scene_id, fight.mode)), await trapSquares(fight));
-      for (const auto of automaticReminders({ active, fighters, onTraps })) {
+      // Traps and Speed are done by the turn-trigger engine's End Phase (decided).
+      const automated = triggers ? new Set(['trap', 'speed']) : new Set();
+      for (const auto of automaticReminders({ active, fighters, onTraps }).filter((x) => !automated.has(x.rule))) {
         await postCard('reminder', { title: when, text: auto.text, fighters: auto.fighters.map(card), automatic: auto.rule });
       }
     }
@@ -210,11 +212,12 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
   };
 
   const save = (fight) =>
-    run('UPDATE fights SET round = ?, turn_order = ?, turn_index = ?, pending_stance_combatant = ? WHERE id = ?', [
+    run('UPDATE fights SET round = ?, turn_order = ?, turn_index = ?, pending_stance_combatant = ?, prev_turn_order = ? WHERE id = ?', [
       fight.round,
       fight.turn_order,
       fight.turn_index,
       fight.pending_stance_combatant ?? null,
+      fight.prev_turn_order ?? null,
       fight.id,
     ]);
 
@@ -282,6 +285,8 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
       await fire(fight, 'round_end');
       const firstSide = nextFirstSide(order, 'allies');
       order = await newRound(fight, firstSide);
+      // Kept so "Previous turn" can step back into the last round.
+      fight.prev_turn_order = fight.turn_order;
       fight.round += 1;
       index = 0;
       fight.turn_order = JSON.stringify(order);
@@ -356,6 +361,33 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
     // Dizzy lasts until the end of the current turn (book p.62).
     await run('UPDATE combatants SET dizzy = 0 WHERE scene_id = ? AND mode = ?', [fight.scene_id, fight.mode]);
     await advance(fight);
+    await emitStageUpdated();
+  });
+
+  // **Previous turn (GM).** Steps the marker back one turn — into the last
+  // round when at the first turn of this one (its order is kept). It only
+  // moves the marker: nothing rolls or triggers again, and tokens and HP stay
+  // as they are (decided).
+  on('fight:previous', async ({ mode }) => {
+    if (!isGm()) return;
+    const fight = await fightFor(mode);
+    if (!fight) return;
+    const current = orderOf(fight)[fight.turn_index];
+    let index = fight.turn_index - 1;
+    while (index >= 0 && !(await valid(fight, orderOf(fight)[index].id))) index--;
+    if (index < 0) {
+      if (fight.round <= 1 || !fight.prev_turn_order) return;
+      fight.turn_order = fight.prev_turn_order;
+      fight.prev_turn_order = null;
+      fight.round -= 1;
+      index = orderOf(fight).length - 1;
+      while (index > 0 && !(await valid(fight, orderOf(fight)[index].id))) index--;
+      await postSystemMessage(`— Back to round ${fight.round} —`);
+    }
+    fight.turn_index = index;
+    fight.pending_stance_combatant = null;
+    await save(fight);
+    if (current) emitAll?.('fight:turn_ended', { combatantId: current.id });
     await emitStageUpdated();
   });
 

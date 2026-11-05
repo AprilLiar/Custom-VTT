@@ -6,6 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { indexContent } from '../client/src/lib/patd/content.js';
 import { mergeHomebrew } from '../client/src/lib/patd/homebrew.js';
+import { applyRulings } from '../client/src/lib/patd/rulings.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const CONTENT_PATH = path.join(here, '..', 'client', 'src', 'data', 'patd', 'content.json');
@@ -16,9 +17,9 @@ let homebrew = [];
 let cached = null;
 let version = 0;
 
-// The book's own content, never with homebrew.
+// The book's own content (with the table's rulings), never with homebrew.
 export function bookContent() {
-  if (!book) book = indexContent(JSON.parse(fs.readFileSync(CONTENT_PATH, 'utf8')));
+  if (!book) book = indexContent(applyRulings(JSON.parse(fs.readFileSync(CONTENT_PATH, 'utf8'))));
   return book;
 }
 

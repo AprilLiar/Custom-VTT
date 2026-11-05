@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { indexContent } from './content.js';
 import { mergeHomebrew } from './homebrew.js';
+import { applyRulings } from './rulings.js';
 import { getHomebrew } from '../api.js';
 import { socket } from '../../socket.js';
 import { useRole } from '../../roleContext.jsx';
@@ -12,7 +13,7 @@ import { useRole } from '../../roleContext.jsx';
 // published items (drafts stay resolvable for characters already using them).
 let pending = null;
 export function loadContent() {
-  if (!pending) pending = import('../../data/patd/content.json').then((m) => indexContent(m.default ?? m));
+  if (!pending) pending = import('../../data/patd/content.json').then((m) => indexContent(applyRulings(m.default ?? m)));
   return pending;
 }
 

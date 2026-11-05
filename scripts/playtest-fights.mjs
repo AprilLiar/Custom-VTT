@@ -112,7 +112,7 @@ await sleep(900);
 const endCards = cards.slice(before);
 check("Mira's turn ended with the automatic Burning reminder (3 damage, discard 2)",
   endCards.some((c) => c.payload.automatic === 'burning' && /take 3 damage.*discard 2/.test(c.payload.text)), JSON.stringify(endCards.map((c) => c.payload.text)));
-check('...and the Speed one, listing whoever holds Speed', endCards.some((c) => c.payload.automatic === 'speed' && c.payload.fighters.some((f) => f.name === `Bo${stamp}`)));
+check('...and Speed is discarded automatically (a notice naming whoever lost some)', endCards.some((c) => c.payload.automatic === 'speed' && c.payload.notice && c.payload.text.includes(`Bo${stamp}`)), JSON.stringify(endCards.map((c) => c.payload.text)));
 st = await jf('/api/stage?role=gm');
 fight = st.fights.combat;
 check('Dizzy ended with the turn', st.combatTokens.find((t) => t.id === tMira.id).fight.hp.dizzy === false);

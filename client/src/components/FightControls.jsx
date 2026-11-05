@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, ArrowRight, ChevronRight, Swords, Users, X } from 'lucide-react';
+import { ArrowLeft, ArrowRight, ChevronLeft, ChevronRight, Swords, Users, X } from 'lucide-react';
 import { socket } from '../socket.js';
 import { cropOf } from '../lib/imageCrop.js';
 import CroppedImage from './CroppedImage.jsx';
@@ -241,13 +241,26 @@ export function InitiativeRail({ mode, fight, fighters, role, left = 12, onEditS
         })}
       </ol>
       {role === 'gm' && (
-        <button
-          type="button"
-          onClick={() => socket.emit('fight:next', { mode })}
-          className="flex items-center justify-center gap-1 border-t border-zinc-800 bg-brand-600 px-2 py-2 font-display text-xs font-bold uppercase tracking-wide text-white hover:bg-brand-500"
-        >
-          Next turn <ChevronRight size={14} aria-hidden />
-        </button>
+        <div className="flex border-t border-zinc-800">
+          {/* Previous turn (GM): moves the marker back; nothing re-rolls or re-triggers. */}
+          <button
+            type="button"
+            onClick={() => socket.emit('fight:previous', { mode })}
+            disabled={fight.round <= 1 && fight.turn_index === 0}
+            title="Previous turn"
+            aria-label="Previous turn"
+            className="flex items-center justify-center border-r border-zinc-800 bg-zinc-900 px-2.5 py-2 text-zinc-300 hover:bg-zinc-800 hover:text-white disabled:opacity-40"
+          >
+            <ChevronLeft size={14} aria-hidden />
+          </button>
+          <button
+            type="button"
+            onClick={() => socket.emit('fight:next', { mode })}
+            className="flex flex-1 items-center justify-center gap-1 bg-brand-600 px-2 py-2 font-display text-xs font-bold uppercase tracking-wide text-white hover:bg-brand-500"
+          >
+            Next turn <ChevronRight size={14} aria-hidden />
+          </button>
+        </div>
       )}
     </div>
   );
@@ -356,6 +369,8 @@ function TriggerPromptDialog({ prompt }) {
   const button =
     'min-h-11 panel-cut-sm border border-zinc-700 bg-zinc-900 px-3 font-display text-sm font-semibold uppercase tracking-wide text-zinc-100 hover:border-brand-500 hover:bg-brand-950/40';
   const options = prompt.options ?? [];
+  // A pick of several (targets, or "choose one or both").
+  const multi = prompt.kind === 'targets' || (prompt.kind === 'choose' && prompt.maximum > 1);
   return (
     <DialogShell title={`${prompt.fighterName}: ${prompt.title}`} onClose={() => {}} maxWidth="max-w-sm" portal>
       {prompt.text && <p className="mb-3 whitespace-pre-line text-xs text-zinc-400">{prompt.text}</p>}
@@ -369,7 +384,7 @@ function TriggerPromptDialog({ prompt }) {
           </button>
         </div>
       )}
-      {prompt.kind === 'choose' && (
+      {prompt.kind === 'choose' && !multi && (
         <div className="flex flex-col gap-2">
           {options.map((o) => (
             <button key={o.id} type="button" onClick={() => answer(o.id)} className={button}>
@@ -378,7 +393,7 @@ function TriggerPromptDialog({ prompt }) {
           ))}
         </div>
       )}
-      {prompt.kind === 'targets' && (
+      {multi && (
         <div className="space-y-2">
           <p className="text-[11px] text-zinc-500">
             Choose {prompt.minimum === prompt.maximum ? prompt.maximum : `${prompt.minimum}–${prompt.maximum}`}.

@@ -82,6 +82,22 @@ function FightCard({ entry }) {
       </div>
     );
   }
+  // **Automation notices (decided):** something the app already did for you
+  // (`notice`) — grey and quiet, and it fades fast on the Scene. Everything
+  // that still needs a person stays orange (rules) or violet.
+  if (p.notice) {
+    return (
+      <div className="border-b border-zinc-800 px-3 py-1.5">
+        <div className="panel-cut-sm border border-zinc-600/60 bg-zinc-900/60 px-2 py-1.5">
+          <div className="flex items-center gap-2">
+            <span className="font-display text-[10px] font-bold uppercase tracking-wide text-zinc-400">Automated · {p.title}</span>
+            <span className="ml-auto font-display text-[10px] text-zinc-600">{time}</span>
+          </div>
+          <p className="whitespace-pre-wrap break-words text-xs text-zinc-400">{p.text}</p>
+        </div>
+      </div>
+    );
+  }
   return (
     <div className="border-b border-zinc-800 px-3 py-2">
       <div

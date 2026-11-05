@@ -1471,6 +1471,8 @@ export async function initDb() {
       UNIQUE(scene_id, mode)
     )
   `);
+  // The previous round's order, so "Previous turn" can step back into it.
+  await ensureColumn('fights', 'prev_turn_order', 'TEXT');
 
   // **Table-wide settings the GM sets for everyone** (Settings page). A
   // singleton, like scene_state. `simple_lanes`: how many lanes Simple

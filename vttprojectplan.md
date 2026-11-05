@@ -2970,6 +2970,7 @@ Clicking a token opens its panel; a click that turns into a drag closes the pane
 - **`fights`** — one per Scene per mode (`UNIQUE(scene_id, mode)`): `allies`/`enemies` (combatant ids), `round`, `turn_order` ([{ side, id }]), `turn_index`, `pending_stance_combatant`.
 - **Server:** `server/fights.js`, its writes on the same queue as the fighter writes.
   - `fight:start { mode, allies, enemies, firstSide, opener }` (GM; refs, so Simple Combat summons get their combatant rows here).
+  - `fight:previous { mode }` (GM, decided): steps the marker back one valid turn, and from a round's first turn back into the last round (its order is kept in `fights.prev_turn_order`, saved when a round is re-rolled). It only moves the marker: nothing rolls or triggers again, and tokens and HP stay. It broadcasts `fight:turn_ended` for the turn being left. The rail's **‹** button, left of Next turn; it is disabled on round 1's first turn.
   - `fight:next { mode }` (GM): End reminders, then the automatic ones, Dizzy cleared for the whole fight, the next valid turn (removed fighters are skipped), and at the round's end Round End, a re-roll opened by the other side, a "— Round N —" line and Round Start. Then the new turn: one stance rolls at once, several set `pending_stance_combatant` and wait, and only after that do the Start reminders fire.
   - `fight:choose_stance { mode, stanceId }`: the fighter's player or the GM.
   - `fight:set_sides` (GM, from the next round).
@@ -2979,7 +2980,7 @@ Clicking a token opens its panel; a click that turns into a drag closes the pane
 - **Client:** `FightControls.jsx`.
   - `StartCombatButton` (GM, top centre, when this mode has no fight).
   - `FightSetupDialog`: Allies / Fighters / Enemies columns with arrow buttons, "Name ×N" turn counts, the side that starts, and the opener; reused as **Change sides**.
-  - `InitiativeRail`: top-left (see the mobile follow-ups below), right of the GM's left drawer. It shows "Round N", side dots, portraits in rectangular frames and names; the current turn is outlined and scrolled into view, past turns are dimmed, and "stance…" shows while a pick is pending. GM controls: Next turn, Change sides, End Combat.
+  - `InitiativeRail`: top-left (see the mobile follow-ups below), right of the GM's left drawer. It shows "Round N", side dots, portraits in rectangular frames and names; the current turn is outlined and scrolled into view, past turns are dimmed, and "stance…" shows while a pick is pending. GM controls: Previous turn (‹), Next turn, Change sides, End Combat.
   - `StancePrompt`: a dialog for the fighter's player and the GM. It still shows in cinematic mode, while the rest of the rail hides with the interface.
 - Fight cards count towards the mobile Chat unread badge.
 
@@ -3062,7 +3063,7 @@ Special squares from the book's **Obstacles** (p.70-72) and the Battle Parameter
   - Each tile is colour-coded, with its name (or names) in the middle.
   - The art is authored for a unit square and bent into each square's real shape, so on a lane it follows the space's perspective.
   - The layer sits above the grid / lane lines and below every token and miniature.
-- **Trap reminder (decided, new):** at the end of every turn, a global automatic reminder (orange **Rule reminder**) names every fighter of the fight standing on a Trap or Pit Trap: "everyone standing on a Trap or Pit Trap takes 1 damage". It covers map tokens by grid cell and lane miniatures by lane space. `fightersOnTraps` / `automaticReminders` in `fightFlow.js`; the squares come from `server/fights.js`.
+- **Trap damage — automated (decided, revised):** at the end of every turn the turn-trigger engine's End Phase deals 1 damage to everyone on a Trap or Pit Trap (with Bleed and its follow-ons), posted as a notice. A fighter with **Armor** (an Armor token, or Armor from their build for the active Stance) gets an orange reminder instead and takes no damage. A **Shield** holder does too, since Shields aren't subtracted automatically. The reminder below is now only the fallback when the engine isn't running. Was: **Trap reminder (decided, new):** at the end of every turn, a global automatic reminder (orange **Rule reminder**) names every fighter of the fight standing on a Trap or Pit Trap: "everyone standing on a Trap or Pit Trap takes 1 damage". It covers map tokens by grid cell and lane miniatures by lane space. `fightersOnTraps` / `automaticReminders` in `fightFlow.js`; the squares come from `server/fights.js`.
 - **Data and events:**
   - Table `map_tiles (scene_id, mode, col, row, kind)`: one row per kind per square. Lane spaces are col = space index, row 0. Cleared with the Scene.
   - The stage payload carries `tiles { simple, combat }`.
@@ -3074,6 +3075,7 @@ Special squares from the book's **Obstacles** (p.70-72) and the Battle Parameter
 - **An open token panel never leaves the screen.** If the row above the fighter or the panel below would cross an edge, both shift by the same distance (vertically, and horizontally on narrow screens), keeping their spacing. They're re-measured as their content changes. While a panel is open its layer sits at z 1001, above the docks and corner controls.
 - **Chat on the Scene** (`SceneChat.jsx`; the Scene route has no Chat panel of its own):
   - **Floating cards:** every new entry (message, roll, fight card) appears bottom-right as a card, newer ones pushing older ones up. At most four show, clipped at the top on a short screen. One countdown restarts with every new card, and 6 seconds after the last one they all go.
+  - **Automation notices (decided):** a fight card with `notice: true` reports something the app already did. That covers abilities that ran, Trap damage dealt and the Speed discard. It is drawn grey ("Automated · {title}", smaller text) in the chat, and on the Scene it fades on its own after 2.5 s without restarting the shared countdown. Everything that still needs a person keeps its colour: orange rule reminders (including "by hand" abilities, Bleed, Burning, Fatigue, Challenge and the Armor-on-Trap reminder) and violet reminders.
   - **Pinned stance roll (decided):** a turn-start Stance roll ignores the countdown. It stays until that fighter's turn ends — the server broadcasts `fight:turn_ended { combatantId }` on Next turn, and `fight:ended` on End Combat — because the player needs those numbers for the whole turn. Stance roll cards carry `combatant_id` for this.
   - **Chat button:** a round button above the GM Tools wrench opens the full Chat as an overlay over the Scene (full screen on a phone, a 20rem column otherwise) and closes it on a second press. It is visible even with the interface hidden.
 
@@ -3149,7 +3151,10 @@ The Combat tab's hand-made setup (Stances as name + dice, Unique token picks, Re
      - **Who listens:** the active fighter's `own_turn` / `allied_turn` / `any_turn` rules, allies' `allied_turn` / `any_turn` rules, enemies' `enemy_turn` / `any_turn` rules. Abilities are the build's always-on ones plus the active Stance's.
      - **The world:** the fight's fighters, their squares (map cell, or lane space as column and lane row), Walls and Fog from `map_tiles`, and the fight's Combat Weight (Heal and Bleed Values; Middleweight when none is set).
      - **Effects:** they write to `combatants` (tokens capped as usual, HP through the bars, Bleed once per round with its card, `challenge_id`). Each ability that did something posts a rule card (`automatic: 'ability'`) saying what happened. An unsupported rule posts "{Ability} — by hand" with its rules text (`automatic: 'ability_manual'`).
-     - **Follow-ons:** `self.damage_taken`, `self.bleed` and `self.challenge_given_to_enemy` run for app-caused events, up to 3 deep.
+     - **Follow-ons:** `self.damage_taken`, `self.bleed`, `self.challenge_given_to_enemy` and `self.tokens_discarded_by_action_or_ability` (Halcyon's Iron) run for app-caused events, up to 3 deep.
+     - **"You may" rules:** a rule with `optional: true` asks a Yes / No first (Decoy Style). If it opens by picking something (a token to discard, a token to take), the pick itself offers "Don't discard" / "Skip" instead, and with nothing to pick it is skipped without asking.
+     - **Trickster (decided: automated):** `select_token` (a non-Unique token, so Power, Iron, Speed or a Status token, held by someone else in Stance range; Copies aren't tracked, so "you or your Copies" is your own range), then `steal_tokens` and / or `convert_tokens` (to Iron), picked together in one multi-choice. Stealing then converting turns the stolen token into Iron.
+     - **The End Phase, automated (decided):** after the turn's end abilities, Trap damage (see the Trap note above), then everyone discards 3 Speed, or all if fewer. A continuous `end_phase.speed_discard` 0 (Shadow Form, Silent Freestyle) keeps all of it, and `end_phase.speed_discard_floor` (Scrambling Style: 2) never goes below that. The Speed and Trap reminders are no longer posted.
    - **Prompts:** server → client `trigger:prompt { id, characterId, combatantId, fighterName, kind: 'confirm'|'choose'|'targets', title, text, options: [{id, label}], minimum, maximum }`, sent to the GM and whoever controls the fighter.
      - Client → server `trigger:answer { id, answer }` (true / false, an option id, or a list of ids). The first allowed answer wins, and `trigger:resolved { id }` closes it everywhere.
      - Open prompts are re-sent on `identity:set` (a reconnect). They time out after 10 minutes. `fight:end` closes that fight's prompts and forgets its fight state.
@@ -3178,6 +3183,13 @@ The Combat tab's hand-made setup (Stances as name + dice, Unique token picks, Re
    - Playtest: `scripts/playtest-frantic-npcs.mjs`.
    - Plan as written:
     Frantic per-turn Stance assembly with previous-turn exclusions. Warrior (Warrior's Path triggers), Boss (several Stances and bars) and Stooges (one shared Stance, turn and health bar across several bodies) behaviour in fights.
+
+### Rulings (decided)
+Small, named patches to the book's content, applied when it is indexed on both server and client (`client/src/lib/patd/rulings.js`, `applyRulings`). The content file stays the user's export, and each ruling's note is added to the Ability's rules text so the sheet shows it.
+- **Halcyon Style:** "at the start of your turn, you may discard one token". Ruled: **only a Status token** (Burning, Fatigue, Weakness), never a basic one. With none held it is skipped silently; otherwise a choice of which, or "Don't discard". Its "gain that many Iron" half now runs as a follow-on.
+
+### The sheet's rules reference
+- Rules text keeps its line breaks. An Action's or Super Move's **Gates** ("3+: …") are split from the base effect (`client/src/lib/patd/gates.js`, `splitGates`) and listed one per line with the threshold in amber.
 
 ### Open questions to settle in their phase
 - Stooges: whether the unit should also share one Health Bar across its bodies (today each body has its own HP; see phase 4).

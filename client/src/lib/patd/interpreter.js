@@ -51,6 +51,9 @@ export const SUPPORTED_OPS = new Set([
   'distribute_distinct_basic_tokens',
   'limited',
   'trigger_warrior_path',
+  'select_token',
+  'steal_tokens',
+  'convert_tokens',
 ]);
 export const SUPPORTED_EVENTS = new Set([
   'own_turn.start',
@@ -65,9 +68,11 @@ export const SUPPORTED_EVENTS = new Set([
   'self.bleed',
   'self.damage_taken',
   'warrior_path.trigger',
+  'self.tokens_discarded_by_action_or_ability',
 ]);
 const SELECTOR_KINDS = new Set(['enemy', 'ally', 'unit', 'self_and_allies', 'self_or_ally']);
-const RANGE_MODES = new Set(['stance', 'visible', 'adjacent', 'explicit', 'none', 'map']);
+// Copies aren't tracked on the board, so "you or your Copies" is your own range.
+const RANGE_MODES = new Set(['stance', 'visible', 'adjacent', 'explicit', 'none', 'map', 'self_or_copies_range']);
 const REF_OK = [
   /^self$/,
   /^self\.bleeding$/,
@@ -78,7 +83,7 @@ const REF_OK = [
   /^bindings\.[A-Za-z]+$/,
   /^variables\.[A-Za-z]+$/,
   /^state\.[A-Za-z]+$/,
-  /^event\.(target|activeCharacter|attacker|amount)$/,
+  /^event\.(target|activeCharacter|attacker|amount|isCostPayment)$/,
 ];
 const OPERATORS = {
   add: (a) => a.reduce((x, y) => x + y, 0),
@@ -161,6 +166,10 @@ export function evalValue(v, scope) {
   return v;
 }
 
+const STATUS = ['burning', 'fatigue', 'weakness'];
+const NOT_DISCARDABLE = new Set(['shield', 'armor', 'challenge']);
+const NON_UNIQUE = new Set(['power', 'iron', 'speed', 'burning', 'fatigue', 'weakness']);
+const SKIP = '__skip';
 const asList = (v) => (v == null ? [] : Array.isArray(v) ? v : [v]);
 const isSelector = (v) => v && typeof v === 'object' && typeof v.kind === 'string' && v.range;
 const tokenName = (k) => String(k).charAt(0).toUpperCase() + String(k).slice(1).replace(/_/g, ' ');
@@ -188,6 +197,12 @@ export function describe(node) {
       return `discard ${n(node.amount)} token${node.amount === 1 ? '' : 's'}`;
     case 'optional':
       return `may ${describe(node.effect)}`;
+    case 'steal_tokens':
+      return 'steal the token';
+    case 'convert_tokens':
+      return `convert it into ${tokenName(node.to ?? 'iron')}`;
+    case 'select_token':
+      return 'pick a token';
     default:
       return node.op?.replace(/_/g, ' ') ?? '';
   }
@@ -217,9 +232,23 @@ export async function runRule(rule, ctx) {
     if ((ctx.usage[key] ?? 0) >= max) return { ran: false };
     ctx.usage[key] = (ctx.usage[key] ?? 0) + 1;
   }
-  await run(rule.effect, scope, ctx);
-  return { ran: true };
+  // **A "you may" rule (`optional` on the rule).** When it opens by picking
+  // something (a token to discard or take), the pick itself offers "skip" and
+  // a rule with nothing to pick is skipped without asking. Otherwise it asks.
+  if (rule.optional && rule.effect?.op !== 'optional') {
+    if (opensWithPick(rule.effect)) scope.mayDecline = true;
+    else {
+      const yes = await ctx.ask({ kind: 'confirm', fighter: ctx.self, title: ctx.ability?.name ?? 'Optional', text: `You may ${describe(rule.effect) || 'use this'}.` });
+      if (!yes) return { ran: false };
+    }
+  }
+  const out = await run(rule.effect, scope, ctx);
+  return { ran: out !== DECLINED };
 }
+
+const DECLINED = Symbol('declined');
+const PICK_OPS = new Set(['discard_tokens', 'select_token']);
+const opensWithPick = (e) => PICK_OPS.has(e?.op) || (e?.op === 'sequence' && PICK_OPS.has(e.steps?.[0]?.op));
 
 async function targetsOf(v, scope, ctx, label) {
   if (isSelector(v)) return select(v, scope, ctx, label);
@@ -261,7 +290,7 @@ async function run(node, scope, ctx) {
   const val = (v) => evalValue(v, scope);
   switch (node.op) {
     case 'sequence':
-      for (const s of node.steps) await run(s, scope, ctx);
+      for (const s of node.steps) if ((await run(s, scope, ctx)) === DECLINED) return DECLINED;
       return;
     case 'if':
       if (val(node.condition)) await run(node.then, scope, ctx);
@@ -285,7 +314,7 @@ async function run(node, scope, ctx) {
     }
     case 'choose': {
       const options = node.options.map((o, i) => ({ id: o.id, label: describe(o.effect) || `Option ${i + 1}` }));
-      const ans = await ctx.ask({ kind: 'choose', fighter: scope.self, title: ctx.ability?.name ?? 'Choose', text: 'Choose one.', options, minimum: 1, maximum: node.maximum ?? 1 });
+      const ans = await ctx.ask({ kind: 'choose', fighter: scope.self, title: ctx.ability?.name ?? 'Choose', text: (node.maximum ?? 1) > 1 ? `Choose ${node.minimum ?? 1}–${node.maximum}.` : 'Choose one.', options, minimum: node.minimum ?? 1, maximum: node.maximum ?? 1 });
       const ids = asList(ans).map(String);
       for (const o of node.options) if (ids.includes(o.id)) await run(o.effect, scope, ctx);
       return;
@@ -357,28 +386,89 @@ async function run(node, scope, ctx) {
     }
     case 'discard_tokens': {
       const amount = val(node.amount);
-      const STATUS = ['burning', 'fatigue', 'weakness'];
+      const decline = scope.mayDecline;
+      scope.mayDecline = false;
       for (const f of await targetsOf(node.target, scope, ctx)) {
         const held = world.heldTokens(f);
         const filter = val(node.tokenFilter);
-        let keys = Object.keys(held).filter((k) => held[k] > 0 && (filter === 'status' ? STATUS.includes(k) : filter === 'any' || filter == null || k === filter));
-        if (!keys.length) continue;
-        if (keys.length > 1 && amount < Object.values(held).reduce((a, b) => a + b, 0)) {
+        // Shield, Armor and Challenge are never "tokens you hold" to discard here.
+        let keys = Object.keys(held).filter(
+          (k) => held[k] > 0 && !NOT_DISCARDABLE.has(k) && (filter === 'status' ? STATUS.includes(k) : filter === 'any' || filter == null || k === filter)
+        );
+        if (!keys.length) {
+          if (decline) return DECLINED;
+          continue;
+        }
+        const total = keys.reduce((n, k) => n + held[k], 0);
+        if (decline || (keys.length > 1 && amount < total)) {
+          const options = keys.map((k) => ({ id: k, label: `${tokenName(k)} (${held[k]})` }));
+          if (decline) options.push({ id: SKIP, label: "Don't discard" });
           const ans = await ctx.ask({
             kind: 'choose',
             fighter: scope.self,
             title: ctx.ability?.name ?? 'Discard',
-            text: `Discard ${amount === 1 ? 'which token' : `up to ${amount}: which first`}?`,
-            options: keys.map((k) => ({ id: k, label: `${tokenName(k)} (${held[k]})` })),
+            text: `${decline ? 'You may discard' : 'Discard'} ${amount === 1 ? 'one token' : `up to ${amount}`}: which ${amount === 1 ? '' : 'first'}?`.replace(/ \?$/, '?'),
+            options,
             minimum: 1,
             maximum: 1,
           });
           const first = asList(ans)[0];
+          if (decline && (first == null || first === SKIP)) return DECLINED;
           if (keys.includes(first)) keys = [first, ...keys.filter((k) => k !== first)];
         }
         const n = await world.discardTokens(f, keys, amount);
-        if (n) ctx.log(`${f.name} discards ${n} token${n === 1 ? '' : 's'}`);
+        if (n) {
+          ctx.log(`${f.name} discards ${n} token${n === 1 ? '' : 's'}`);
+          await ctx.emit?.('self.tokens_discarded_by_action_or_ability', f, { amount: n, isCostPayment: false });
+        }
       }
+      return;
+    }
+    // **Trickster (decided: automated).** Pick one non-Unique token held by
+    // someone in range; later steps steal or convert it (`targets.<binding>`
+    // is { holder, key }).
+    case 'select_token': {
+      const decline = scope.mayDecline;
+      scope.mayDecline = false;
+      const pool = world.fighters().filter((f) => f.id !== scope.self.id && world.inRange(scope.self, f, node.holder?.range));
+      const options = [];
+      for (const f of pool) {
+        const held = world.heldTokens(f);
+        for (const k of Object.keys(held)) {
+          if (!(held[k] > 0) || NOT_DISCARDABLE.has(k)) continue;
+          if (val(node.tokenFilter) === 'non_unique' && !NON_UNIQUE.has(k)) continue;
+          options.push({ id: `${f.id}:${k}`, label: `${f.name}: ${tokenName(k)} (${held[k]})`, holder: f, key: k });
+        }
+      }
+      if (!options.length) return decline ? DECLINED : undefined;
+      const choices = options.map(({ id, label }) => ({ id, label }));
+      if (decline) choices.push({ id: SKIP, label: 'Skip' });
+      const ans = asList(
+        await ctx.ask({ kind: 'choose', fighter: scope.self, title: ctx.ability?.name ?? 'Pick a token', text: `${decline ? 'You may pick' : 'Pick'} a token held by someone in range.`, options: choices, minimum: 1, maximum: 1 })
+      )[0];
+      const pick = options.find((o) => o.id === ans);
+      if (!pick) return decline ? DECLINED : undefined;
+      scope.targets[node.binding] = { holder: pick.holder, key: pick.key };
+      return;
+    }
+    case 'steal_tokens': {
+      const t = val(node.target);
+      const to = asList(val(node.recipient))[0] ?? scope.self;
+      if (!t?.holder || !t.key) return;
+      if (!(await world.discardTokens(t.holder, [t.key], 1))) return;
+      await world.gainTokens(to, t.key, 1);
+      ctx.log(`${to.name} steals 1 ${tokenName(t.key)} from ${t.holder.name}`);
+      scope.targets = Object.fromEntries(Object.entries(scope.targets).map(([k, v]) => [k, v === t ? { holder: to, key: t.key } : v]));
+      return;
+    }
+    case 'convert_tokens': {
+      const t = val(node.target);
+      const into = val(node.to) ?? 'iron';
+      if (!t?.holder || !t.key) return;
+      if (!(await world.discardTokens(t.holder, [t.key], 1))) return;
+      await world.gainTokens(t.holder, into, 1);
+      ctx.log(`${t.holder.name}'s ${tokenName(t.key)} becomes ${tokenName(into)}`);
+      t.key = into;
       return;
     }
     case 'gain_shield': {

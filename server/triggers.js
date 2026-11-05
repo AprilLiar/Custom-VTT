@@ -13,13 +13,13 @@
 import { all, one, run } from './db.js';
 import { applyHpDelta } from '../client/src/lib/hpBars.js';
 import { WEIGHT_BY_KEY, crossesBleed } from '../client/src/lib/cinematicWeight.js';
-import { TOKEN_BY_KEY, capOf } from '../client/src/lib/panicTokens.js';
+import { TOKEN_BY_KEY, capOf, innateArmor } from '../client/src/lib/panicTokens.js';
 import { packLane, clampLanes } from '../client/src/lib/simpleLane.js';
 import { chebyshev, ruleSupport, runRule, targetable } from '../client/src/lib/patd/interpreter.js';
 import { controlsCharacter } from './control.js';
 import { hpOf, saveHp, serialized, shapeFightState } from './combatState.js';
 import { assembles, derivedFor, franticPickOf } from './fighterStances.js';
-import { stanceOfBuild } from '../client/src/lib/patd/build.js';
+import { armorSourcesOf, stanceOfBuild } from '../client/src/lib/patd/build.js';
 import { patdContent } from './patdContent.js';
 
 const MIDDLEWEIGHT = WEIGHT_BY_KEY.middle;
@@ -98,6 +98,7 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
       };
       tileSquare = (t) => ({ col: t.col % 10, row: Math.floor(t.col / 10) });
     }
+    const traps = new Set(tiles.filter((t) => t.kind === 'trap').map((t) => { const q = tileSquare(t); return `${q.col},${q.row}`; }));
     const walls = new Set(tiles.filter((t) => t.kind === 'wall').map((t) => { const q = tileSquare(t); return `${q.col},${q.row}`; }));
     const fogSquares = tiles.filter((t) => t.kind === 'fog').map(tileSquare);
     const fogged = (sq) => fogSquares.some((f) => chebyshev(f, sq) <= 1);
@@ -127,6 +128,8 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
         stance,
         derived: d,
         abilityIds: d && !follower ? [...d.constantAbilityIds, ...(frantic ? [frantic] : []), ...(stance?.abilityIds ?? [])] : [],
+        // Armor from the build (always, or while this Stance is active).
+        innateArmor: d ? innateArmor(armorSourcesOf(d, idx), stance?.key ?? null) : 0,
       });
     }
     const byId = (id) => fighters.find((f) => f.id === id);
@@ -206,7 +209,8 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
       challenge: (target, challenger) => queued(() => run('UPDATE combatants SET challenge_id = ? WHERE id = ?', [challenger.id, target.id])),
       addPoolNumber: () => null, // posted in the ability's card
     };
-    return { world, fighters, byId };
+    const onTrap = (f) => f.square != null && traps.has(`${f.square.col},${f.square.row}`);
+    return { world, fighters, byId, onTrap, weight };
   }
 
   // ---- running one fighter's rules for some events
@@ -244,18 +248,75 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
           lines.push(`stopped: ${err.message}`);
         }
         if (lines.length) {
-          await postCard('reminder', { title: ability.name, text: `${lines.join('; ')}.`, fighters: [{ name: fighter.name }], automatic: 'ability' });
+          // Done for you: a notice (grey, fades fast — decided).
+          await postCard('reminder', { title: ability.name, text: `${lines.join('; ')}.`, fighters: [{ name: fighter.name }], automatic: 'ability', notice: true });
           await emitStageUpdated();
         }
       }
     }
   }
 
+  // Whether any of a fighter's abilities sets an End Phase rule
+  // (`modify_rule end_phase.<rule>`), and to what: Shadow Form and Silent
+  // Freestyle discard no Speed, Scrambling Style keeps at least 2.
+  const endPhaseRule = (f, rule) => {
+    const idx = patdContent();
+    for (const id of f.abilityIds) {
+      for (const r of idx.get(id)?.rules ?? []) {
+        if (!r.events.includes('continuous')) continue;
+        const nodes = r.effect?.op === 'sequence' ? r.effect.steps : [r.effect];
+        const hit = nodes.find((n) => n?.op === 'modify_rule' && n.rule === rule);
+        if (hit) return hit.value;
+      }
+    }
+    return null;
+  };
+
+  // **The End Phase, automated (decided).** After the turn's end abilities:
+  // everyone on a Trap (or Pit Trap) takes 1 damage — unless they have Armor
+  // or a Shield, which the app doesn't subtract: a reminder instead. Then
+  // everyone discards 3 Speed (all if fewer; not Shadow Form / Silent
+  // Freestyle; Scrambling Style keeps 2).
+  async function runEndPhase(env, fighters, onTrap) {
+    for (const f of fighters.filter(onTrap)) {
+      const armored = (f.tokens.armor ?? 0) > 0 || f.innateArmor > 0;
+      const shielded = (f.tokens.shield ?? 0) > 0;
+      if (armored || shielded) {
+        await postCard('reminder', {
+          title: 'Trap',
+          text: `${f.name} stands on a Trap: 1 damage — they have ${armored ? 'Armor' : 'a Shield'}, so resolve it by hand.`,
+          fighters: [{ name: f.name }],
+          automatic: 'trap',
+        });
+        continue;
+      }
+      const { bled } = await env.world.damage(f, 1);
+      await postCard('reminder', { title: 'Trap', text: `${f.name} takes 1 damage from a Trap.`, fighters: [{ name: f.name }], automatic: 'trap', notice: true });
+      await runFor(f, ['self.damage_taken'], env, { amount: 1 });
+      if (bled) await runFor(f, ['self.bleed'], env, {});
+    }
+    const lost = [];
+    for (const f of fighters) {
+      const held = f.tokens.speed ?? 0;
+      if (!held) continue;
+      if (endPhaseRule(f, 'end_phase.speed_discard') === 0) continue;
+      const floor = Number(endPhaseRule(f, 'end_phase.speed_discard_floor')) || 0;
+      const n = Math.min(3, Math.max(0, held - floor));
+      if (!n) continue;
+      await env.world.discardTokens(f, ['speed'], n);
+      lost.push(`${f.name} ${n}`);
+    }
+    if (lost.length) {
+      await postCard('reminder', { title: 'Speed', text: `End Phase: Speed discarded — ${lost.join(', ')}.`, fighters: [], automatic: 'speed', notice: true });
+    }
+    await emitStageUpdated();
+  }
+
   const envFor = async (fightRow) => {
     const key = `${fightRow.scene_id}:${fightRow.mode}`;
     if (!fightState.has(key)) fightState.set(key, { states: new Map(), usage: {} });
     const fs = fightState.get(key);
-    const { world, fighters, byId } = await buildWorld(fightRow);
+    const { world, fighters, byId, onTrap } = await buildWorld(fightRow);
     const env = {
       key,
       world,
@@ -265,7 +326,7 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
         return fs.states.get(id);
       },
     };
-    return { fs, env, world, fighters, byId };
+    return { fs, env, world, fighters, byId, onTrap };
   };
 
   // Start of combat: Improved Warrior gives the Warrior's Path's benefit (its
@@ -279,7 +340,7 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
 
   // Start or end of the active fighter's turn: everyone's matching rules.
   async function runTurn(fightRow, activeId, moment) {
-    const { fs, env, world, fighters, byId } = await envFor(fightRow);
+    const { fs, env, world, fighters, byId, onTrap } = await envFor(fightRow);
     // Usage limits per turn reset at each turn start.
     if (moment === 'start') for (const k of Object.keys(fs.usage)) if (k.endsWith(':turn')) delete fs.usage[k];
     const active = byId(activeId);
@@ -290,6 +351,7 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
       const relation = f.id === active.id ? 'self' : f.side === active.side ? 'ally' : 'enemy';
       await runFor(f, eventsFor(moment, relation), env, { activeCharacter: active });
     }
+    if (moment === 'end') await runEndPhase(env, fighters, onTrap);
   }
 
   const onChain = (fightRow, job) => {

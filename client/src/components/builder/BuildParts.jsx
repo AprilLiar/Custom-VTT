@@ -1,5 +1,6 @@
 import DiceIcon from '../DiceIcon.jsx';
 import { shortStyleName } from '../../lib/patd/build.js';
+import { splitGates } from '../../lib/patd/gates.js';
 
 // Small shared pieces of the character builder (BuildTab.jsx).
 
@@ -56,7 +57,27 @@ export function RulesEntry({ entry, kind }) {
         {typeof entry.cost === 'string' && <span className="text-[11px] font-semibold text-amber-300">{entry.cost}</span>}
         {entry.automationState === 'requires_ruling' && <span className="text-[10px] uppercase text-red-400">needs a ruling</span>}
       </p>
-      <p className="mt-0.5 whitespace-pre-line text-xs leading-snug text-zinc-400">{entry.rulesText}</p>
+      <RulesText text={entry.rulesText} gated={kind === 'Action' || kind === 'Super Move'} />
     </li>
+  );
+}
+
+// Rules text keeping its line breaks; an Action's Gates ("3+: …") as a list.
+function RulesText({ text, gated }) {
+  const { base, gates } = gated ? splitGates(text) : { base: text ?? '', gates: [] };
+  return (
+    <div className="mt-0.5 text-xs leading-snug text-zinc-400">
+      {base && <p className="whitespace-pre-line">{base}</p>}
+      {gates.length > 0 && (
+        <ul className="mt-1 space-y-0.5">
+          {gates.map((g, i) => (
+            <li key={i} className="flex gap-2">
+              <span className="w-8 shrink-0 text-right font-mono font-bold text-amber-300">{g.threshold}</span>
+              <span className="whitespace-pre-line">{g.text}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }

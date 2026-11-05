@@ -18,11 +18,16 @@ import ChatPanel, { Entry } from './ChatPanel.jsx';
 //     and stays until THAT fighter's turn ends (`fight:turn_ended`) or the
 //     fight ends — the player needs those numbers for the whole turn. Every
 //     other card, before or after it, fades as usual.
+//   - **Automation notices fade fast (decided):** each on its own 2.5 s timer,
+//     not restarting the shared one.
 //   - **A round chat button** that opens the full Chat as an overlay over the
 //     Scene and closes it on a second press. It stays visible with the
 //     interface hidden.
 
 const HIDE_AFTER_MS = 6000;
+// An automation notice (`payload.notice`: something the app already did) goes
+// on its own after this, without holding the other cards up (decided).
+const NOTICE_MS = 2500;
 const MAX_CARDS = 4;
 const EVENTS = ['roll:result', 'chat:message', 'chat:card'];
 
@@ -52,7 +57,9 @@ export default function SceneChat({ cardsRight = 12 }) {
         const loose = next.filter((c) => c.pin == null).slice(-MAX_CARDS);
         return next.filter((c) => c.pin != null || loose.includes(c));
       });
-      if (pin == null) {
+      if (entry.payload?.notice && pin == null) {
+        setTimeout(() => setCards((prev) => prev.filter((c) => c.key !== key)), NOTICE_MS);
+      } else if (pin == null) {
         clearTimeout(timerRef.current);
         timerRef.current = setTimeout(() => setCards((prev) => prev.filter((c) => c.pin != null)), HIDE_AFTER_MS);
       }

@@ -157,3 +157,62 @@ test("Greater Warrior: the turn start triggers the Warrior's Path (Path of the T
   await fire('ability.feature-greater-warrior.greater-warrior', 'own_turn.start', me, w, [], { emit });
   assert.equal(me.tokens.power, 2);
 });
+
+test('Halcyon Style (ruling): never a basic token; skipped without Status tokens; otherwise a choice, which may be declined', async () => {
+  const halcyon = 'ability.style-halcyon.halcyon-style';
+  const me = fighter(1, 'a', { tokens: { power: 3, iron: 2 } });
+  const { w } = makeWorld([me]);
+  let r = await fire(halcyon, 'own_turn.start', me, w);
+  assert.equal(r.asked.length, 0, 'no Status token: nothing asked');
+  assert.deepEqual(me.tokens, { power: 3, iron: 2 });
+  me.tokens.weakness = 2;
+  me.tokens.burning = 1;
+  r = await fire(halcyon, 'own_turn.start', me, w, ['__skip']);
+  assert.equal(r.asked.length, 1);
+  assert.deepEqual(r.asked[0].options.map((o) => o.id), ['weakness', 'burning', '__skip'], 'only Status tokens, plus "Don\'t discard"');
+  assert.equal(me.tokens.weakness, 2, 'declined');
+  const emitted = [];
+  r = await fire(halcyon, 'own_turn.start', me, w, ['burning'], { emit: async (ev, f, p) => emitted.push([ev, p.amount]) });
+  assert.equal(me.tokens.burning, 0);
+  assert.deepEqual(emitted, [['self.tokens_discarded_by_action_or_ability', 1]], 'the discard is a follow-on (Halcyon: gain that much Iron)');
+  const rule2 = rulesOf(halcyon, 'self.tokens_discarded_by_action_or_ability')[0];
+  assert.ok(ruleSupport(rule2).ok);
+  await runRule(rule2, { world: w, self: me, state: {}, usage: {}, log: () => {}, ask: async () => null, event: { amount: 1, isCostPayment: false } });
+  assert.equal(me.tokens.iron, 3);
+});
+
+test('a rule-level "you may" asks first (Decoy Style), and No does nothing', async () => {
+  const me = fighter(1, 'a');
+  const foe = fighter(2, 'b');
+  const { w } = makeWorld([me, foe]);
+  w.context.activeCharacter = foe;
+  const rule = rulesOf('ability.style-decoy.decoy-style', 'enemy_turn.start')[0];
+  const asked = [];
+  const ctx = { world: w, self: me, state: {}, usage: {}, log: () => {}, ask: async (q) => (asked.push(q), false) };
+  await runRule(rule, ctx);
+  assert.equal(asked[0].kind, 'confirm');
+  assert.equal(me.hp, 10);
+  assert.equal(foe.challengeId, undefined);
+});
+
+test('Trickster: pick a non-Unique token in range, then steal it and/or convert it to Iron', async () => {
+  const me = fighter(1, 'a');
+  const foe = fighter(2, 'b', { tokens: { power: 2, chaos: 1, shield: 3 } });
+  const { w } = makeWorld([me, foe]);
+  const rule = rulesOf('ability.archetype-trickster.focused-trickster', 'any_turn.start')[0];
+  assert.ok(ruleSupport(rule).ok, ruleSupport(rule).reason);
+  const asked = [];
+  const answers = ['2:power', ['option-1', 'option-2']];
+  await runRule(rule, { world: w, self: me, state: {}, usage: {}, log: () => {}, ask: async (q) => (asked.push(q), answers.shift()) });
+  assert.deepEqual(asked[0].options.map((o) => o.id), ['2:power', '__skip'], 'Unique tokens and Shields are not offered');
+  assert.equal(asked[1].maximum, 2);
+  assert.equal(foe.tokens.power, 1);
+  assert.equal(me.tokens.iron, 1, 'stolen, then converted');
+  assert.ok(!me.tokens.power);
+  // Nobody with a token in range: no question at all.
+  const lonely = fighter(3, 'a');
+  const { w: w2 } = makeWorld([lonely]);
+  const asked2 = [];
+  await runRule(rule, { world: w2, self: lonely, state: {}, usage: {}, log: () => {}, ask: async (q) => (asked2.push(q), null) });
+  assert.equal(asked2.length, 0);
+});
