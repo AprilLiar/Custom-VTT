@@ -5,13 +5,14 @@ import { fileToPortrait } from '../lib/image.js';
 import { cropOf } from '../lib/imageCrop.js';
 import { usePictureUpload } from '../lib/usePictureUpload.jsx';
 import CroppedImage from './CroppedImage.jsx';
+import BuildTab from './builder/BuildTab.jsx';
 
 // A character's Combat tab (Panic at the Dojo). **Purged for the character
 // builder (decided, builder phase 0):** the hand-made Stances, Unique token
 // picks, Reminders and Armor sources are gone; only the combat token picture
-// stays. The builder (phase 1) brings hero type, Archetypes, Forms, Styles,
-// Build, Skills and level, with Stances derived from them — see
-// vttprojectplan.md, "Character builder & turn automation".
+// stays, above the character builder (builder/BuildTab.jsx): hero type,
+// Archetypes, Forms, Styles, Build, Skills and level, with Stances derived
+// from them — see vttprojectplan.md, "Character builder & turn automation".
 //
 // `canEdit` only decides whether controls render; the server checks for itself.
 
@@ -41,13 +42,7 @@ export default function CombatTab({ ownerType, ownerId, canEdit = false, ownerNa
   return (
     <div className="space-y-6">
       <TokenPicture ownerType={ownerType} ownerId={ownerId} profile={profile} canEdit={canEdit} name={ownerName} />
-      <section className="panel-cut-sm border border-zinc-800 bg-zinc-900 p-3">
-        <h3 className="font-display text-sm font-bold uppercase tracking-wide text-zinc-300">Character build</h3>
-        <p className="mt-1 text-xs text-zinc-500">
-          The character builder is on its way: hero type, Archetypes, Forms, Styles, Build, Skills and level, with
-          Stances and their dice worked out for you.
-        </p>
-      </section>
+      {ownerType === 'character' && <BuildTab characterId={ownerId} canEdit={canEdit} />}
     </div>
   );
 }

@@ -26,6 +26,7 @@ import { loadCombatTokens, registerCombatMapHandlers, sceneGrid } from './combat
 import { EMPTY_FIGHT_STATE, loadSimpleStates, registerCombatStateHandlers, releaseChallengesOf } from './combatState.js';
 import { loadFightState, registerFightHandlers } from './fights.js';
 import { loadMapTiles, registerMapTileHandlers } from './mapTiles.js';
+import { deleteBuild, loadBuild, registerBuildHandlers } from './builds.js';
 import { controlsCharacter, dropAssignmentsTo, loadAssignments, setAssignment } from './control.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -929,6 +930,11 @@ app.get('/api/temp-npc-folders', wrap(async (_req, res) => {
 // A fighter's Combat tab (Panic at the Dojo): token picture, Unique tokens,
 // Reminders. Readable by everyone — nothing on it is secret, and every
 // token's row is public on the board anyway.
+// A character's build (builder phase 1), or null when none is saved yet.
+app.get('/api/characters/:id/build', wrap(async (req, res) => {
+  res.json({ build: await loadBuild(req.params.id) });
+}));
+
 app.get('/api/combat-setup', wrap(async (req, res) => {
   const owner = parseOwner(req.query.ownerType, req.query.ownerId);
   if (!owner) return res.status(400).json({ error: 'bad owner' });
@@ -1148,6 +1154,7 @@ app.delete('/api/characters/:id', wrap(async (req, res) => {
   );
   await run('DELETE FROM counters WHERE character_id = ?', [character.id]);
   await deleteCombatSetupFor('character', character.id);
+  await deleteBuild(character.id);
   const wasInAFight = await one('SELECT id FROM combatants WHERE character_id = ?', [character.id]);
   await run('DELETE FROM combatants WHERE character_id = ?', [character.id]);
   await run('DELETE FROM characters WHERE id = ?', [character.id]);
@@ -1486,6 +1493,7 @@ io.on('connection', (socket) => {
   // A fighter's HP, tokens, Challenge and Stance (Phase 4) — see server/combatState.js.
   registerCombatStateHandlers({ on, socket, mayWrite: mayWriteScenePicture, emitStageUpdated, postCard });
   registerMapTileHandlers({ on, socket, emitStageUpdated });
+  registerBuildHandlers({ on, socket, io, mayWrite: mayWriteScenePicture, emitStageUpdated });
   // Rounds, turns, Stance rolls and Reminders (Phase 5) — see server/fights.js.
   registerFightHandlers({ on, socket, emitStageUpdated, postCard, postSystemMessage, emitAll: (event, payload) => io.emit(event, payload) });
 

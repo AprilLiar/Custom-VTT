@@ -1408,6 +1408,16 @@ export async function initDb() {
   // summon: at most one row per summon, so INSERT OR IGNORE is race-free.
   ddl('CREATE UNIQUE INDEX IF NOT EXISTS idx_combatants_summon_unique ON combatants(summon_id) WHERE summon_id IS NOT NULL');
 
+  // Character builds (server/builds.js, client/src/lib/patd/build.js): the
+  // player's choices as JSON, one row per character.
+  ddl(`
+    CREATE TABLE IF NOT EXISTS character_builds (
+      character_id INTEGER PRIMARY KEY REFERENCES characters(id) ON DELETE CASCADE,
+      data TEXT NOT NULL,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
   // Map tiles (server/mapTiles.js, client/src/lib/mapTiles.js): one row per
   // tile kind on a square of a Scene's Combat map (grid cell) or Simple Combat
   // lane (col = lane space, row = 0).

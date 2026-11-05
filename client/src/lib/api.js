@@ -80,6 +80,8 @@ export const compendiumArchiveUrl = (id, identity) =>
   `/api/compendium-archive/${id}?${new URLSearchParams({ ...identity })}`;
 // A fighter's Combat tab (Panic at the Dojo): { profile, reminders }.
 // ownerType is 'character' | 'temp_npc'.
+// A character's build (builder phase 1): { build } (null until saved).
+export const getBuild = (characterId) => fetch(`/api/characters/${characterId}/build`).then(json);
 export const getCombatSetup = (ownerType, ownerId) =>
   fetch(`/api/combat-setup?${new URLSearchParams({ ownerType, ownerId })}`).then(json);
 // Every fighter's combat profile, keyed `character:<id>` / `temp_npc:<id>`.
