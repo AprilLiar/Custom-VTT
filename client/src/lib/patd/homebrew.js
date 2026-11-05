@@ -72,6 +72,7 @@ export const STEP_KINDS = [
   { id: 'discard_tokens', label: 'Discard tokens', who: ['self', 'ally', 'enemy'], amount: true, filter: true },
   { id: 'temp_armor', label: 'Gain temporary Armor', who: ['self', 'ally'] },
   { id: 'add_pool', label: 'Add a number to the Action Pool', who: ['self'], amount: true },
+  { id: 'notify', label: 'Text notification', who: [], text: true },
   { id: 'choose', label: 'Choose one of…', who: [] },
 ];
 const STEP_BY_ID = Object.fromEntries(STEP_KINDS.map((s) => [s.id, s]));
@@ -119,6 +120,8 @@ export function cleanStep(raw, tokenKeys, depth = 0) {
     return options.length >= 2 ? { kind: 'choose', options } : null;
   }
   const out = { kind: def.id, who: def.who.includes(raw.who) ? raw.who : def.who[0] };
+  // A Text notification: what the chat card says (empty → the Ability's rules text).
+  if (def.text) out.text = text(raw.text, 300);
   if (def.amount) out.amount = def.healValue && raw.amount === 'heal_value' ? 'heal_value' : clampInt(raw.amount, 1, 12, 1);
   if (def.token) out.token = tokenKeys.includes(raw.token) ? raw.token : tokenKeys[0];
   if (def.filter) out.filter = raw.filter === 'status' ? 'status' : 'any';
@@ -147,6 +150,8 @@ export function compileStep(step) {
       return { op: 'grant_armor', temporary: true, target };
     case 'add_pool':
       return { op: 'add_pool_number', value: amount, target };
+    case 'notify':
+      return { op: 'notify', text: step.text ?? '' };
     case 'choose':
       return {
         op: 'choose',
@@ -196,6 +201,7 @@ export function specFromRule(rule) {
     const who = whoOf(n.target);
     const map = { gain_tokens: 'gain_tokens', gain_shield: 'gain_shield', heal: 'heal', damage: 'damage', pay_hp: 'pay_hp', challenge: 'challenge', discard_tokens: 'discard_tokens', add_pool_number: 'add_pool' };
     if (n.op === 'grant_armor' && n.temporary && who) return { kind: 'temp_armor', who };
+    if (n.op === 'notify') return { kind: 'notify', text: typeof n.text === 'string' ? n.text : '' };
     const kind = map[n.op];
     if (!kind || !who) return null;
     const s = { kind, who };
@@ -434,6 +440,8 @@ export function describeSpec(spec, tokenName = (k) => k) {
         return `${whoText(s.who)} gain${s.who === 'self' ? '' : 's'} temporary Armor`;
       case 'add_pool':
         return `add a ${n} to your Action Pool`;
+      case 'notify':
+        return s.text ? `post "${s.text}" in the chat` : 'post the rules text in the chat';
       case 'choose':
         return `choose one: ${s.options.map(one).join(' -or- ')}`;
       default:

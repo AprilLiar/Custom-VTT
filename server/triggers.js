@@ -264,6 +264,8 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
           event: eventPayload,
           log: (l) => lines.push(l),
           ask: ask(fighter, env.key, env.gen),
+          // A Text notification: an orange reminder, like any rule left to people.
+          notify: (text) => postCard('reminder', { title: ability.name, text, fighters: [{ name: fighter.name }], automatic: 'ability_text' }),
           emit: depth < FOLLOW_ON_DEPTH ? (ev, f, payload) => runFor(f, [ev], env, payload, depth + 1) : null,
         };
         try {

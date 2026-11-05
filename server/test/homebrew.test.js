@@ -142,3 +142,18 @@ test('Copy from book: simple rules become editable steps, the rest is kept as is
   assert.deepEqual(raw.effect, book.get('ability.form-wild.wild-form').rules[0].effect);
   assert.deepEqual(specFromRule(book.get('ability.form-wild.wild-form').rules[1]), { moment: 'own_turn.start', optional: false, steps: [{ kind: 'gain_tokens', who: 'self', amount: 2, token: 'power' }] });
 });
+
+test('a Text notification step posts its message (or the rules text) through ctx.notify', async () => {
+  const item = {
+    ...clean({ kind: 'form', name: 'Note Form', abilities: [{ name: 'Note Form', rulesText: 'Remember to glow.', rules: [{ moment: 'own_turn.start', steps: [{ kind: 'notify', text: 'Ember flares!' }, { kind: 'notify' }] }] }] }),
+    id: 'form.hb-note-0000',
+  };
+  assert.deepEqual(item.abilities[0].rules[0].steps, [{ kind: 'notify', who: undefined, text: 'Ember flares!' }, { kind: 'notify', who: undefined, text: '' }]);
+  const { abilities } = itemToContent(item);
+  const rule = abilities[0].rules[0];
+  assert.ok(ruleSupport(rule).ok, ruleSupport(rule).reason);
+  const notes = [];
+  await runRule(rule, { world: { context: {} }, self: { id: 1, name: 'Me' }, state: {}, usage: {}, log: () => {}, ask: async () => null, ability: abilities[0], notify: async (t) => notes.push(t) });
+  assert.deepEqual(notes, ['Ember flares!', 'Remember to glow.']);
+  assert.deepEqual(specFromRule(rule).steps.map((s) => s.kind), ['notify', 'notify']);
+});

@@ -63,7 +63,7 @@ gm.emit('homebrew:save', {
   item: {
     kind: 'form', name: `Ember Form ${stamp}`, aliases: ['Ember'], published: false,
     actionDice: [{ kind: 'die', sides: 8, color: 'purple' }, { kind: 'fixed', value: 3, color: 'green' }],
-    abilities: [{ name: 'Ember Form', rulesText: '', rules: [{ moment: 'own_turn.start', steps: [{ kind: 'gain_tokens', token: 'power', amount: 3, who: 'self' }, { kind: 'damage', amount: 2, who: 'enemy' }] }] }],
+    abilities: [{ name: 'Ember Form', rulesText: '', rules: [{ moment: 'own_turn.start', steps: [{ kind: 'gain_tokens', token: 'power', amount: 3, who: 'self' }, { kind: 'damage', amount: 2, who: 'enemy' }] }, { moment: 'own_turn.start', steps: [{ kind: 'notify', text: 'Ember flares — move 1 by hand.' }] }] }],
     actions: [],
   },
 });
@@ -107,6 +107,7 @@ const fh = st.combatTokens.find((t) => t.id === th.id).fight;
 const roll = cards.find((c) => c.kind === 'stance_roll');
 check('the homebrew dice roll: a purple d8 and a fixed green 3', roll && roll.payload.results.length === 2 && roll.payload.results[1].color === 'green', JSON.stringify(roll?.payload.results));
 check("homebrew Abilities run as turn triggers: Ember 3 Power, Focused Pyre 1 Speed", fh.tokens.power === 3 && fh.tokens.speed === 1, JSON.stringify(fh.tokens));
+check('a Text notification posts an orange reminder with its message', cards.some((c) => c.payload?.automatic === 'ability_text' && !c.payload.notice && c.payload.text === 'Ember flares — move 1 by hand.'), JSON.stringify(cards.map((c) => c.payload?.text)));
 check('…and the chosen enemy takes 2 damage', st.combatTokens.find((t) => t.id === tf.id).fight.hp.current === hp0 - 2);
 
 console.log('\n--- publish and delete ---');

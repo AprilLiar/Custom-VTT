@@ -3237,6 +3237,7 @@ A GM-only page (`/homebrew`, the flask icon in the header and the mobile menu) f
 ### Decisions (the user's answers)
 - **Abilities: a simple rule editor.** Each Ability has rules text and rules. A rule has a moment (start or end of your turn, an ally's turn, an enemy's turn, every turn, when you Bleed, when you take damage, after you Challenge) and an optional "you may".
   - Its effects: gain tokens, a Shield, heal (a number or the Heal Value), deal damage, pay HP, Challenge, discard tokens (any or Status), temporary Armor, add a number to the Action Pool, or "choose one of" up to 4 of these.
+  - **Text notification (decided):** an effect that just posts an orange reminder card in the chat at the rule's moment, like any rule left to people (`op: 'notify'`, `automatic: 'ability_text'`). It shows its own message, or the Ability's rules text when the message is empty, so movement, placing and anything else not automated can still prompt the table at the right time.
   - Each effect is aimed at you, a chosen ally or enemy in Stance range, you and every ally in range, or every enemy in range.
   - These compile to the content's own op trees and **run automatically** like the book's. A "Text only" rule becomes a "by hand" card.
   - An Ability left without rules text gets its rules' summary.

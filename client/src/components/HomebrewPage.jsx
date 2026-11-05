@@ -427,6 +427,7 @@ function AbilitiesEditor({ kind, abilities, set }) {
 const newStep = (kind) => {
   const def = STEP_KINDS.find((s) => s.id === kind);
   if (kind === 'choose') return { kind, options: [newStep('gain_tokens'), newStep('heal')] };
+  if (kind === 'notify') return { kind, text: '' };
   return { kind, who: def.who[0], ...(def.amount ? { amount: 1 } : {}), ...(def.token ? { token: 'power' } : {}), ...(def.filter ? { filter: 'any' } : {}) };
 };
 
@@ -514,6 +515,16 @@ function StepEditor({ step, set, remove, nested = false }) {
             </label>
           )}
         </>
+      )}
+      {def.text && (
+        <input
+          value={step.text ?? ''}
+          maxLength={300}
+          onChange={(e) => set({ ...step, text: e.target.value })}
+          placeholder="Message for the chat (empty: the Ability's rules text)"
+          className={`${selectClass} min-w-0 flex-1 basis-56`}
+          aria-label="Notification text"
+        />
       )}
       {def.token && (
         <select value={step.token} onChange={(e) => set({ ...step, token: e.target.value })} className={selectClass} aria-label="Token">

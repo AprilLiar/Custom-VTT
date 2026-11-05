@@ -54,6 +54,7 @@ export const SUPPORTED_OPS = new Set([
   'select_token',
   'steal_tokens',
   'convert_tokens',
+  'notify',
 ]);
 export const SUPPORTED_EVENTS = new Set([
   'own_turn.start',
@@ -205,6 +206,8 @@ export function describe(node) {
       return `convert it into ${tokenName(node.to ?? 'iron')}`;
     case 'select_token':
       return 'pick a token';
+    case 'notify':
+      return 'a note in the chat';
     default:
       return node.op?.replace(/_/g, ' ') ?? '';
   }
@@ -517,6 +520,11 @@ async function run(node, scope, ctx) {
       }
       return;
     }
+    // **A Text notification** (homebrew, decided): a reminder card in the chat
+    // with this text — or the Ability's rules text when it has none.
+    case 'notify':
+      await ctx.notify?.(String(val(node.text) || ctx.ability?.rulesText || ''));
+      return;
     // The character's Warrior's Path rules run as a follow-on event.
     case 'trigger_warrior_path':
       await ctx.emit?.('warrior_path.trigger', scope.self, {});
