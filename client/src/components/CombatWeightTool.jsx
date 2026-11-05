@@ -30,21 +30,29 @@ export default function CombatWeightTool({ onDone }) {
   const typeOf = useMemo(() => new Map((roster ?? []).map((c) => [c.id, c.character_type])), [roster]);
   const fighters = useMemo(() => {
     if (!stage || !mode) return [];
-    const kindFor = (characterId) => (characterId != null && typeOf.get(characterId) === 'pc' ? 'hero' : 'warrior');
+    // **From the sheet (decided, builder phase 2):** a character with a build
+    // brings its level, HP table (hero types: Hero, NPC types: Warrior) and
+    // Health Bars; otherwise the token's own, or PC → Hero / NPC → Warrior.
+    const setupOf = (characterId) => stage.fighterSetup?.[`character:${characterId}`] ?? null;
+    const kindFor = (characterId) => setupOf(characterId)?.kind ?? (characterId != null && typeOf.get(characterId) === 'pc' ? 'hero' : 'warrior');
+    const levelFor = (characterId, own) => setupOf(characterId)?.level ?? own ?? 1;
+    const barsFor = (characterId) => setupOf(characterId)?.health_bars ?? 1;
     return mode === 'combat'
       ? stage.combatTokens.map((t) => ({
           key: `c${t.id}`,
           ref: { combatantId: t.id },
           name: t.name,
-          level: t.fight.level,
-          kind: t.fight.kind ?? kindFor(t.character_id),
+          level: levelFor(t.character_id, t.fight.level),
+          kind: setupOf(t.character_id)?.kind ?? t.fight.kind ?? kindFor(t.character_id),
+          bars: barsFor(t.character_id),
         }))
       : stage.summons.filter((s) => s.character_id != null).map((s) => ({
           key: `s${s.id}`,
           ref: { summonId: s.id },
           name: s.name,
-          level: s.fight?.level ?? 1,
-          kind: s.fight?.kind ?? kindFor(s.character_id),
+          level: levelFor(s.character_id, s.fight?.level),
+          kind: setupOf(s.character_id)?.kind ?? s.fight?.kind ?? kindFor(s.character_id),
+          bars: barsFor(s.character_id),
         }));
   }, [stage, mode, typeOf]);
 
@@ -79,7 +87,7 @@ export default function CombatWeightTool({ onDone }) {
     socket.emit('fight:preset_weight', {
       mode,
       weight,
-      fighters: fighters.map((f) => ({ ref: f.ref, level: rows[f.key]?.level ?? 1, kind: rows[f.key]?.kind ?? 'hero' })),
+      fighters: fighters.map((f) => ({ ref: f.ref, level: rows[f.key]?.level ?? 1, kind: rows[f.key]?.kind ?? 'hero', bars: f.bars ?? 1 })),
     });
     onDone?.();
   };
@@ -87,8 +95,8 @@ export default function CombatWeightTool({ onDone }) {
   return (
     <div className="space-y-3">
       <p className="text-xs text-zinc-500">
-        For this Scene&rsquo;s <b className="text-zinc-300">{mode === 'simple' ? 'Simple Combat' : 'Combat'}</b> fight. Applying resets everyone
-        listed to one full Health Bar.
+        For this Scene&rsquo;s <b className="text-zinc-300">{mode === 'simple' ? 'Simple Combat' : 'Combat'}</b> fight. Applying resets everyone listed
+        to full Health Bars — one each, or as many as their build says (a Boss). Levels and HP tables come from their builds.
       </p>
       <div className="grid gap-1.5">
         {WEIGHTS.map((opt) => (

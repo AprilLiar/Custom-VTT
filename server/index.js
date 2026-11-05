@@ -19,7 +19,7 @@ import {
 import { ORPHAN_SWEEPS, countOrphans, deleteOrphans, trimChatLog } from './cleanup.js';
 import {
   registerCombatSetupHandlers, deleteCombatSetupFor, parseOwner, loadProfile, loadReminders, loadAllProfiles,
-  loadStances, loadAllStances, purgeTempNpcCombat, purgeHandmadeCombatSetup,
+  loadStances, purgeTempNpcCombat, purgeHandmadeCombatSetup,
 } from './combatSetup.js';
 import { TRAY, clampLaneY, clampLanes, laneCapacity, moveOnLane, packLane } from '../client/src/lib/simpleLane.js';
 import { loadCombatTokens, registerCombatMapHandlers, sceneGrid } from './combatMap.js';
@@ -27,6 +27,7 @@ import { EMPTY_FIGHT_STATE, loadSimpleStates, registerCombatStateHandlers, relea
 import { loadFightState, registerFightHandlers } from './fights.js';
 import { loadMapTiles, registerMapTileHandlers } from './mapTiles.js';
 import { deleteBuild, loadBuild, registerBuildHandlers } from './builds.js';
+import { loadAllDerived, setupFromDerived } from './fighterStances.js';
 import { controlsCharacter, dropAssignmentsTo, loadAssignments, setAssignment } from './control.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -652,17 +653,11 @@ async function buildStagePayload() {
   return { activeScene, summons, drawings, combatTokens, simpleLanes, laneY, fighterSetup, fights, tiles };
 }
 
+// Per fighter (`character:<id>`), from their build (builder phase 2): option
+// tokens, Armor sources, Stance names, level, HP table and Health Bars.
 async function loadFighterSetup() {
-  const [profiles, stances] = await Promise.all([loadAllProfiles(), loadAllStances()]);
   const out = {};
-  for (const [key, p] of Object.entries(profiles)) out[key] = { unique_tokens: p.unique_tokens, armor_sources: p.armor_sources, stances: [] };
-  for (const [key, list] of Object.entries(stances)) {
-    out[key] = {
-      unique_tokens: out[key]?.unique_tokens ?? [],
-      armor_sources: out[key]?.armor_sources ?? [],
-      stances: list.map((s) => ({ id: s.id, name: s.name })),
-    };
-  }
+  for (const [characterId, d] of await loadAllDerived()) out[`character:${characterId}`] = setupFromDerived(d);
   return out;
 }
 

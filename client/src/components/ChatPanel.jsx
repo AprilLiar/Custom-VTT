@@ -57,8 +57,18 @@ function FightCard({ entry }) {
             {(p.results ?? []).map((r, i) => (
               <span
                 key={i}
+                // Book colours (builder phase 2): purple / green Action Dice, the
+                // level's bonus die in amber.
                 className={`flex min-w-11 flex-col items-center panel-cut-sm border px-1.5 py-1 ${
-                  r.die !== undefined ? 'border-zinc-600 bg-zinc-900' : 'border-amber-600/70 bg-amber-950/40'
+                  r.bonus
+                    ? 'border-amber-500/80 bg-amber-950/40'
+                    : r.color === 'purple'
+                      ? 'border-purple-500/70 bg-purple-950/40'
+                      : r.color === 'green'
+                        ? 'border-emerald-500/70 bg-emerald-950/40'
+                        : r.die !== undefined
+                          ? 'border-zinc-600 bg-zinc-900'
+                          : 'border-amber-600/70 bg-amber-950/40'
                 }`}
               >
                 <span className="font-mono text-[10px] text-zinc-500">

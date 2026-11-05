@@ -553,7 +553,7 @@ export default function FighterOverlay({
                 <select
                   value={activeStance ?? ''}
                   disabled={!canEdit}
-                  onChange={(e) => emit('fighter:set_stance', { stanceId: Number(e.target.value) })}
+                  onChange={(e) => emit('fighter:set_stance', { stanceId: e.target.value })}
                   className="h-7 rounded-sm border border-zinc-700 bg-zinc-900 px-1 text-xs normal-case text-zinc-100 outline-none focus:border-brand-500"
                 >
                   {stances.map((s) => (

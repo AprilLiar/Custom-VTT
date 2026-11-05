@@ -117,3 +117,18 @@ test('a saved build is cleaned: unknown ids dropped, numbers clamped', () => {
   assert.equal(n.xp, 0);
   assert.equal(n.buildId, null);
 });
+
+test('Armor from the build: unconditional Armor passives, always or per Stance', async () => {
+  const { armorSourcesOf, hpTableOf } = await import('../../client/src/lib/patd/build.js');
+  const d = deriveBuild(
+    {
+      type: 'character-type.warrior',
+      archetypes: [{ id: 'archetype.the-tank' }],
+      stances: [{ formId: 'form.iron', styleId: 'style.hidden' }],
+    },
+    idx
+  );
+  const key = d.stances[0].key;
+  assert.deepEqual(armorSourcesOf(d, idx).sort(), ['always', key].sort(), 'The Tank always; Iron Form in its Stance; Hidden (in Fog only) not counted');
+  assert.equal(hpTableOf(d), 'warrior');
+});

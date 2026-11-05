@@ -3130,7 +3130,15 @@ The Combat tab's hand-made setup (Stances as name + dice, Unique token picks, Re
    - The content loads on first use as its own ~86KB (gzipped) chunk (`lib/patd/useContent.js`). Playtest: `scripts/playtest-builds.mjs`.
    - Plan as written:
     A `character_builds` row per character: hero/NPC type, Archetypes with their variant, Forms, Styles and Freestyle, Build, Skills (3 from Forms, up to 1 replacement, 1 free two-word), level, XP and grant picks. The step-by-step first run and the overview with warnings. Derived Stances (name, dice with colours, bonus die, range). The read-only Actions / Abilities / Super Moves reference. Pure derivation and legality rules unit-tested.
-2. **Fights use the build.** Derived Stances drive the turn-start pick and roll (die colours shown in the roll card). Option tokens (Chaos, Control, Luck, Mentor, Poltergeist, Training, Rapid Strike) join the token row automatically. Continuous `grant_armor` rules feed Armor (always, or while the granting Stance is active). Level and bonus HP feed the Combat Weight tool. HP bars from the type (Boss 2-5) are a default.
+2. **Fights use the build — implemented.** `server/fighterStances.js` derives each character's build: `stancesOf`, `rollDerived`, and `setupFromDerived` for the stage payload's `fighterSetup`.
+   - **Stances:** a derived Stance's id is its key "form.x+style.y". The token's choice lives in `combatants.active_stance_key` (shown as `fight.active_stance_id`); `fighter:set_stance` takes a key, but only one of the build's own.
+   - **Turn start:** the pick and the roll use the derived Stances. Their dice keep their colours, and the build level's bonus die is marked `bonus`. The chat card tints the tiles purple, green and amber. The combatant's own level no longer adds a second bonus die.
+   - **Fighter setup:** `fighterSetup` per character now holds the build's option tokens (`unique_tokens`), Armor sources (`armorSourcesOf`: unconditional continuous `grant_armor` rules, 'always' or per Stance key), Stance names, level, HP table (hero types: Hero, NPC types: Warrior) and Health Bars.
+   - **Combat Weight tool:** it takes level, table and Health Bars from that setup, and `fight:preset_weight` accepts `bars`.
+   - **Removed:** the hand-made Reminder firing.
+   - Frantic Heroes have no fixed Stances (phase 4), so no automatic roll yet. Playtest: `scripts/playtest-build-fights.mjs`.
+   - Plan as written:
+    Derived Stances drive the turn-start pick and roll (die colours shown in the roll card). Option tokens (Chaos, Control, Luck, Mentor, Poltergeist, Training, Rapid Strike) join the token row automatically. Continuous `grant_armor` rules feed Armor (always, or while the granting Stance is active). Level and bonus HP feed the Combat Weight tool. HP bars from the type (Boss 2-5) are a default.
 3. **Turn triggers.** A pure interpreter (`client/src/lib/patd/interpreter.js`) for `own_turn.start` / `own_turn.end_abilities` rules (plus `allied_turn` / `any_turn` starts where simple), with the operation subset above. Prompts for choices and targets go to the fighter's controller (like the Stance prompt). Board range and sight checks come from `combatGrid` / `simpleLane` geometry plus map tiles. Follow-on events (`self.challenge_given_to_enemy`, `self.bleed`, `self.damage_taken`, ...) run when an automated effect caused them. Reminder cards cover the rest. Heavily unit-tested against the content's own rules.
 4. **Frantic and NPC types.** Frantic per-turn Stance assembly with previous-turn exclusions. Warrior (Warrior's Path triggers), Boss (several Stances and bars) and Stooges (one shared Stance, turn and health bar across several bodies) behaviour in fights.
 
@@ -3142,7 +3150,7 @@ The Combat tab's hand-made setup (Stances as name + dice, Unique token picks, Re
 ## Implementation Phases (iterative — each ends with a deploy + playtest checkpoint)
 The old system's phases (1-9 and the playtest batches after them) are complete history in git. The current state:
 - **Pivot — done.** Old system archived and removed (this document's **The pivot**).
-- **Character builder & turn automation — planned**, in phases 0-4 (see its section above). Phases 0 and 1 are implemented; phase 2 is next.
+- **Character builder & turn automation — planned**, in phases 0-4 (see its section above). Phases 0-2 are implemented; phase 3 is next.
 - **Panic at the Dojo combat assistant**, in the five phases listed in its section above. Phases 1, 2, 2b (Stances) and 3 are implemented; so are multi-lane Simple Combat (2c), Phase 4 and Phase 5 — the whole scoped assistant — plus the Cinematic Weight GM tool. Further changes are follow-ups from play.
 
 ## Implementation Risks & Recommendations

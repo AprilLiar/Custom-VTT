@@ -215,7 +215,6 @@ export function registerCombatSetupHandlers({ on, socket, io, mayWrite, cropValu
 // and every token's chosen Stance. Nothing can create them any more (their
 // events are gone), so this is idempotent. Only the token picture stays.
 export async function purgeHandmadeCombatSetup() {
-  await run('UPDATE combatants SET active_stance_id = NULL WHERE active_stance_id IS NOT NULL');
   await run('DELETE FROM combat_reminders');
   await run('DELETE FROM combat_stances');
   await run("UPDATE combat_profiles SET unique_tokens = '[]', armor_sources = '[]' WHERE unique_tokens != '[]' OR armor_sources != '[]'");

@@ -1398,6 +1398,9 @@ export async function initDb() {
   await ensureColumn('combatants', 'hp_broken', 'INTEGER NOT NULL DEFAULT 0');
   await ensureColumn('combatants', 'dizzy', 'INTEGER NOT NULL DEFAULT 0');
   await ensureColumn('combatants', 'active_stance_id', 'INTEGER');
+  // The active Stance as a derived Stance's key ("form.x+style.y", builder
+  // phase 2); active_stance_id is the purged hand-made Stances' leftover.
+  await ensureColumn('combatants', 'active_stance_key', 'TEXT');
   // Cinematic Weight preset (client/src/lib/cinematicWeight.js): this copy's
   // level and level table ('hero' | 'warrior'), and the round it last Bled in
   // (Bleeding happens once per Round).

@@ -12,6 +12,7 @@
 // the GM edits anyone, a Player their own character's copies.
 import { all, one, run } from './db.js';
 import { TOKEN_BY_KEY, capOf } from '../client/src/lib/panicTokens.js';
+import { stancesOf } from './fighterStances.js';
 import { addBar, applyHpDelta, normalizeHp, removeBar, setHp } from '../client/src/lib/hpBars.js';
 import { FIGHTER_KINDS, WEIGHT_BY_KEY, barHp, clampLevel, crossesBleed } from '../client/src/lib/cinematicWeight.js';
 import { imageUrl } from './images.js';
@@ -39,7 +40,8 @@ export function shapeFightState(row) {
       broken: row?.hp_broken,
       dizzy: row?.dizzy,
     }),
-    active_stance_id: row?.active_stance_id ?? null,
+    // The derived Stance's key (builder phase 2), or null = the first one.
+    active_stance_id: row?.active_stance_key ?? null,
     // Cinematic Weight preset: this copy's level (1-10) and level table.
     level: clampLevel(row?.level ?? 1),
     kind: FIGHTER_KINDS.includes(row?.fighter_kind) ? row.fighter_kind : null,
@@ -230,10 +232,12 @@ export function registerCombatStateHandlers({ on: onRaw, socket, mayWrite, emitS
       const level = clampLevel(f.level);
       const kind = FIGHTER_KINDS.includes(f.kind) ? f.kind : 'hero';
       const hp = barHp(weight, kind, level);
+      // Health Bars: the tool's number (a Boss's bars from their build), 1-9.
+      const bars = Math.min(9, Math.max(1, Math.trunc(Number(f.bars)) || 1));
       await run(
-        `UPDATE combatants SET level = ?, fighter_kind = ?, hp_max = ?, hp_current = ?, hp_bars = 1, hp_broken = 0,
+        `UPDATE combatants SET level = ?, fighter_kind = ?, hp_max = ?, hp_current = ?, hp_bars = ?, hp_broken = 0,
            dizzy = 0, bled_round = NULL WHERE id = ?`,
-        [level, kind, hp, hp, row.id]
+        [level, kind, hp, hp, bars, row.id]
       );
     }
     await emitStageUpdated();
@@ -267,17 +271,14 @@ export function registerCombatStateHandlers({ on: onRaw, socket, mayWrite, emitS
   on('fighter:set_stance', async ({ ref, stanceId }) => {
     const row = await editable(ref);
     if (!row) return;
+    // One of the character's derived Stances (their build), or null.
     let id = null;
     if (stanceId != null) {
-      const col = row.character_id != null ? 'character_id' : 'temp_npc_id';
-      const stance = await one(`SELECT id FROM combat_stances WHERE id = ? AND ${col} = ?`, [
-        Number(stanceId),
-        row.character_id ?? row.temp_npc_id,
-      ]);
+      const stance = (await stancesOf(row.character_id)).find((s) => s.id === String(stanceId));
       if (!stance) return;
       id = stance.id;
     }
-    await run('UPDATE combatants SET active_stance_id = ? WHERE id = ?', [id, row.id]);
+    await run('UPDATE combatants SET active_stance_key = ? WHERE id = ?', [id, row.id]);
     await emitStageUpdated();
   });
 }

@@ -17,3 +17,10 @@ test('each source that holds adds 1: Always, plus those of the current Stance', 
   assert.equal(innateArmor(src, null), 1);
   assert.equal(innateArmor([], 4), 0);
 });
+
+test('a derived Stance key is a source too (builder phase 2)', () => {
+  const k = 'form.iron+style.halcyon';
+  assert.deepEqual(normalizeArmorSources(['always', k, 'not a key']), ['always', k]);
+  assert.equal(innateArmor(['always', k, k], k), 3);
+  assert.equal(innateArmor(['always', k], 'form.power+style.halcyon'), 1);
+});

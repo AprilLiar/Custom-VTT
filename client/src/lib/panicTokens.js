@@ -79,6 +79,8 @@ export function normalizeArmorSources(value) {
   for (const v of value) {
     if (v === ARMOR_ALWAYS) out.push(ARMOR_ALWAYS);
     else if (Number.isInteger(v) && v > 0) out.push(v);
+    // A derived Stance's key ("form.x+style.y", builder phase 2).
+    else if (typeof v === 'string' && v.length <= 120 && /^[a-z0-9.-]+\+[a-z0-9.-]+$/.test(v)) out.push(v);
     if (out.length >= TOKEN_CAP) break;
   }
   return out;

@@ -16,11 +16,9 @@ import { all, one, run } from './db.js';
 import { imageUrl } from './images.js';
 import { buildRound, nextFirstSide } from '../client/src/lib/initiative.js';
 import { turnsPerRound } from '../client/src/lib/hpBars.js';
-import { rollStance } from '../client/src/lib/stanceDice.js';
-import { bonusDie } from '../client/src/lib/cinematicWeight.js';
-import { automaticReminders, fightersOnTraps, remindersToFire } from '../client/src/lib/fightFlow.js';
+import { automaticReminders, fightersOnTraps } from '../client/src/lib/fightFlow.js';
 import { packLane, clampLanes } from '../client/src/lib/simpleLane.js';
-import { loadReminders, loadStances } from './combatSetup.js';
+import { rollDerived, stancesOf } from './fighterStances.js';
 import { resolveRef, serialized, shapeFightState } from './combatState.js';
 import { controlsCharacter } from './control.js';
 
@@ -92,11 +90,9 @@ export async function loadFightState(sceneId, mode) {
   }
   let pending = null;
   if (row.pending_stance_combatant != null) {
-    const c = await one('SELECT character_id, temp_npc_id FROM combatants WHERE id = ?', [row.pending_stance_combatant]);
+    const c = await one('SELECT character_id FROM combatants WHERE id = ?', [row.pending_stance_combatant]);
     if (c) {
-      const stances = await loadStances(
-        c.character_id != null ? { ownerType: 'character', ownerId: c.character_id } : { ownerType: 'temp_npc', ownerId: c.temp_npc_id }
-      );
+      const stances = await stancesOf(c.character_id);
       pending = {
         combatant_id: row.pending_stance_combatant,
         character_id: c.character_id,
@@ -156,25 +152,12 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
     );
     for (const f of fighters) f.side = sideOf(fight, f.combatantId);
     const active = activeId != null ? fighters.find((f) => f.combatantId === activeId) ?? null : null;
-    const owners = [...new Set(fighters.map((f) => f.ownerKey))];
-    const remindersByOwner = {};
-    const defaultStanceByOwner = {};
-    for (const key of owners) {
-      const [ownerType, id] = key.split(':');
-      const owner = { ownerType, ownerId: Number(id) };
-      remindersByOwner[key] = await loadReminders(owner);
-      defaultStanceByOwner[key] = (await loadStances(owner))[0]?.id ?? null;
-    }
-    const fired = remindersToFire({ moment, active, fighters, remindersByOwner, defaultStanceByOwner });
     const when = {
       turn_start: `Start of ${active?.name}'s turn`,
       turn_end: `End of ${active?.name}'s turn`,
       round_start: `Start of round ${fight.round}`,
       round_end: `End of round ${fight.round}`,
     }[moment];
-    for (const { fighter, reminder } of fired) {
-      await postCard('reminder', { title: when, text: reminder.text, fighters: [card(fighter)] });
-    }
     if (moment === 'turn_end' && active) {
       const onTraps = fightersOnTraps(await withSquares(fight, await loadFighters(fight.scene_id, fight.mode)), await trapSquares(fight));
       for (const auto of automaticReminders({ active, fighters, onTraps })) {
@@ -226,15 +209,12 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
   const rollStanceIntoChat = async (fight, combatantId, stanceId) => {
     const fighter = (await loadFighters(fight.scene_id, fight.mode)).find((f) => f.combatantId === combatantId);
     if (!fighter) return;
-    const stance = (await loadStances({ ownerType: fighter.ownerType, ownerId: fighter.ownerId })).find((s) => s.id === stanceId);
+    // The Stances come from the character's build (builder phase 2); their
+    // dice already hold the level's bonus die, from the build's level.
+    const stance = (await stancesOf(fighter.characterId)).find((s) => s.id === stanceId);
     if (!stance) return;
-    await run('UPDATE combatants SET active_stance_id = ? WHERE id = ?', [stance.id, combatantId]);
-    // The level's Bonus Die (from level 2, set by the Cinematic Weight
-    // preset) is rolled with the Stance's dice and goes into the same pool.
-    const level = (await one('SELECT level FROM combatants WHERE id = ?', [combatantId]))?.level ?? 1;
-    const extra = bonusDie(level);
-    const results = rollStance(stance.dice);
-    if (extra) results.push({ ...rollStance([{ die: extra }])[0], bonus: true });
+    await run('UPDATE combatants SET active_stance_key = ? WHERE id = ?', [stance.id, combatantId]);
+    const results = rollDerived(stance.dice);
     // `combatant_id` lets the Scene keep this card up until that fighter's
     // turn ends (fight:turn_ended).
     await postCard('stance_roll', {
@@ -249,12 +229,8 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
   const beginTurn = async (fight) => {
     const entry = orderOf(fight)[fight.turn_index];
     if (!entry) return;
-    const row = await one('SELECT character_id, temp_npc_id FROM combatants WHERE id = ?', [entry.id]);
-    const stances = row
-      ? await loadStances(
-          row.character_id != null ? { ownerType: 'character', ownerId: row.character_id } : { ownerType: 'temp_npc', ownerId: row.temp_npc_id }
-        )
-      : [];
+    const row = await one('SELECT character_id FROM combatants WHERE id = ?', [entry.id]);
+    const stances = row ? await stancesOf(row.character_id) : [];
     if (stances.length > 1) {
       fight.pending_stance_combatant = entry.id;
       await save(fight);
@@ -354,11 +330,7 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
     const viewer = socket.data.identity;
     const allowed = viewer?.role === 'gm' || (c.character_id != null && controlsCharacter(viewer, c.character_id));
     if (!allowed) return;
-    const col = c.character_id != null ? 'character_id' : 'temp_npc_id';
-    const stance = await one(`SELECT id FROM combat_stances WHERE id = ? AND ${col} = ?`, [
-      Number(stanceId),
-      c.character_id ?? c.temp_npc_id,
-    ]);
+    const stance = (await stancesOf(c.character_id)).find((s) => s.id === String(stanceId));
     if (!stance) return;
     fight.pending_stance_combatant = null;
     await save(fight);

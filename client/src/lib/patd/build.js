@@ -375,3 +375,32 @@ export function buildWarnings(d, idx) {
     w.push(`${type.name}: ${type.healthBarRange.minimum}-${type.healthBarRange.maximum} Health Bars.`);
   return w;
 }
+
+// ------------------------------------------------------------------ fights
+
+// **Armor from the build (decided, builder phase 2):** every unconditional
+// continuous `grant_armor` rule is one Armor source — 'always' when it comes
+// from something always in effect (an Archetype, a Build, a Feature), or the
+// Stance's key when it comes from that Stance's Form or Style. Conditional
+// ones (Hidden Style in Fog, Inferno against Burning) stay rules text.
+export function armorSourcesOf(derived, idx) {
+  const grants = (abilityIds) => {
+    let n = 0;
+    for (const id of abilityIds) {
+      for (const r of idx.get(id)?.rules ?? []) {
+        if (!r.events.includes('continuous') || r.condition) continue;
+        const e = r.effect;
+        if (e?.op === 'grant_armor' && !e.temporary && !e.onlyDamageSource) n++;
+      }
+    }
+    return n;
+  };
+  const out = [];
+  for (let i = 0; i < grants(derived.constantAbilityIds); i++) out.push('always');
+  for (const s of derived.stances) for (let i = 0; i < grants(s.abilityIds); i++) out.push(s.key);
+  return out;
+}
+
+// Which level-bonus HP table a type uses (cinematicWeight.js): heroes the
+// Hero table, NPC types the Warrior one.
+export const hpTableOf = (derived) => (derived.type.kind === 'hero' ? 'hero' : 'warrior');
