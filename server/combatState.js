@@ -11,7 +11,7 @@
 // `{ summonId }` (a Simple Combat miniature). Writes follow the figure rule:
 // the GM edits anyone, a Player their own character's copies.
 import { all, one, run } from './db.js';
-import { TOKEN_BY_KEY, capOf } from '../client/src/lib/panicTokens.js';
+import { TOKEN_BY_KEY, absorbWithShield, capOf } from '../client/src/lib/panicTokens.js';
 import { stanceByKey } from './fighterStances.js';
 import { addBar, applyHpDelta, normalizeHp, removeBar, setHp } from '../client/src/lib/hpBars.js';
 import { FIGHTER_KINDS, WEIGHT_BY_KEY, barHp, clampLevel, crossesBleed } from '../client/src/lib/cinematicWeight.js';
@@ -132,7 +132,8 @@ export const serialized = (fn) => (payload) => {
 };
 
 // deps: on, socket, mayWrite(viewer, ownerType, ownerId), emitStageUpdated
-export function registerCombatStateHandlers({ on: onRaw, socket, mayWrite, emitStageUpdated, postCard }) {
+// `triggers`: the turn-trigger engine (server/triggers.js), for damage inside a fight.
+export function registerCombatStateHandlers({ on: onRaw, socket, mayWrite, emitStageUpdated, postCard, triggers = null }) {
   const on = (event, handler) => onRaw(event, serialized(handler));
   // Resolve a ref and check the sender may edit it. Returns the row or null.
   const editable = async (ref) => {
@@ -194,6 +195,36 @@ export function registerCombatStateHandlers({ on: onRaw, socket, mayWrite, emitS
     const before = hpOf(row);
     await saveHp(row.id, applyHpDelta(before, delta).state);
     if (Number(delta) < 0) await checkBleed(row, before, before.current + Math.trunc(Number(delta)));
+    await emitStageUpdated();
+  });
+
+  // **Take damage (decided, revised):** damage from an Action, entered as one
+  // number — the Shield absorbs first (and breaks when used up), the rest hits
+  // HP. In a fight the trigger engine applies it on the fight's own chain (never
+  // awaited here), so "after your Shield absorbs" abilities run (Thorns Form);
+  // outside one it is applied directly. HP − / + stay raw HP changes (costs, fixes).
+  on('fighter:damage', async ({ ref, amount }) => {
+    const row = await editable(ref);
+    const n = Math.min(99, Math.max(0, Math.trunc(Number(amount) || 0)));
+    if (!row || !n) return;
+    const fight = await one('SELECT * FROM fights WHERE scene_id = ? AND mode = ?', [row.scene_id, row.mode]);
+    const inFight = fight && [...JSON.parse(fight.allies || '[]'), ...JSON.parse(fight.enemies || '[]')].includes(row.id);
+    if (inFight && triggers && row.character_id != null) {
+      triggers.actionDamage({ ...fight }, row, n);
+      return;
+    }
+    const tokens = shapeFightState(row).tokens;
+    const r = absorbWithShield(tokens.shield ?? 0, n);
+    if (r.absorbed) {
+      if (r.shield) tokens.shield = r.shield;
+      else delete tokens.shield;
+      await run('UPDATE combatants SET tokens = ? WHERE id = ?', [JSON.stringify(tokens), row.id]);
+    }
+    const before = hpOf(row);
+    if (r.rest && before.max != null) {
+      await saveHp(row.id, applyHpDelta(before, -r.rest).state);
+      await checkBleed(row, before, before.current - r.rest);
+    }
     await emitStageUpdated();
   });
 

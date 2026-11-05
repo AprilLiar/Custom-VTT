@@ -23,6 +23,9 @@ export const LEVEL_MIN = 1;
 export const LEVEL_MAX = 10;
 export const MAX_STANCES = 12;
 export const CUSTOM_SKILL_MAX = 40;
+export const XP_LOG_MAX = 30;
+// The book's fight awards: Victory 2, Defeat 1.
+export const XP_AWARDS = { victory: 2, defeat: 1 };
 
 // ------------------------------------------------------------------ types
 
@@ -86,6 +89,8 @@ export function emptyBuild(typeId = 'hero-type.focused') {
     skills: { replaceFromId: null, replaceToId: null, custom: '' },
     level: 1,
     xp: 0,
+    // XP history, newest last: [{ at: ISO date, amount, reason }] (kept to XP_LOG_MAX).
+    xpLog: [],
     superMoveIds: [],
     warriorPathId: null,
     healthBars: null,
@@ -129,10 +134,26 @@ export function normalizeBuild(raw, idx) {
   };
   out.level = clampInt(b.level, LEVEL_MIN, LEVEL_MAX, 1);
   out.xp = clampInt(b.xp, 0, 9999, 0);
+  out.xpLog = (Array.isArray(b.xpLog) ? b.xpLog : [])
+    .filter((e) => e && typeof e === 'object')
+    .map((e) => ({
+      at: typeof e.at === 'string' ? e.at.slice(0, 30) : null,
+      amount: clampInt(e.amount, -9999, 9999, 0),
+      reason: typeof e.reason === 'string' ? e.reason.trim().slice(0, 80) : '',
+    }))
+    .slice(-XP_LOG_MAX);
   out.superMoveIds = uniq((Array.isArray(b.superMoveIds) ? b.superMoveIds : []).filter((id) => isKind(idx, id, 'super-move.'))).slice(0, 10);
   out.warriorPathId = isKind(idx, b.warriorPathId, 'warrior-path.') ? b.warriorPathId : null;
   out.healthBars = b.healthBars == null ? null : clampInt(b.healthBars, 1, 9, null);
   return out;
+}
+
+// A build with XP added (or taken away, never below 0) and the change logged.
+export function withXp(build, amount, reason, at = new Date().toISOString()) {
+  const xp = Math.max(0, Math.min(9999, (build.xp ?? 0) + amount));
+  const real = xp - (build.xp ?? 0);
+  if (!real) return build;
+  return { ...build, xp, xpLog: [...(build.xpLog ?? []), { at, amount: real, reason }].slice(-XP_LOG_MAX) };
 }
 
 // ------------------------------------------------------------------ advancement

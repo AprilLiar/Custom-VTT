@@ -189,7 +189,10 @@ export function InitiativeRail({ mode, fight, fighters, role, left = 12, onEditS
     currentRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' });
   }, [fight.turn_index, fight.round]);
   const pending = fight.pending_stance;
+  const [ending, setEnding] = useState(false);
   return (
+    <>
+    {ending && <EndFightDialog mode={mode} fight={fight} byCombatant={byCombatant} onClose={() => setEnding(false)} />}
     <div
       className="absolute top-16 flex w-48 flex-col panel-cut-sm border border-zinc-700 bg-zinc-950/85 shadow-xl backdrop-blur"
       // Stops above the bottom-left dock, so on a short screen the two never overlap.
@@ -204,7 +207,7 @@ export function InitiativeRail({ mode, fight, fighters, role, left = 12, onEditS
             </button>
             <button
               type="button"
-              onClick={() => window.confirm('End this fight? HP and tokens stay.') && socket.emit('fight:end', { mode })}
+              onClick={() => setEnding(true)}
               title="End Combat"
               className="p-1 text-zinc-400 hover:text-red-400"
             >
@@ -263,6 +266,7 @@ export function InitiativeRail({ mode, fight, fighters, role, left = 12, onEditS
         </div>
       )}
     </div>
+    </>
   );
 }
 
@@ -287,6 +291,40 @@ export function StancePrompt({ mode, fight, fighters, role, controls = () => fal
             {s.name}
           </button>
         ))}
+      </div>
+    </DialogShell>
+  );
+}
+
+// **End Combat (GM, decided):** who won — Victory XP (+2) for the winning
+// side, Defeat XP (+1) for the losing one, on hero builds — or Skip, when the
+// fight ended mechanically but the story goes on. HP and tokens stay.
+function EndFightDialog({ mode, fight, byCombatant, onClose }) {
+  const names = (ids) => [...new Set((ids ?? []).map((id) => byCombatant.get(id)?.name).filter(Boolean))].join(', ') || '—';
+  const end = (outcome) => {
+    socket.emit('fight:end', { mode, outcome });
+    onClose();
+  };
+  const btn = 'min-h-11 w-full panel-cut-sm border px-3 text-left text-sm';
+  return (
+    <DialogShell title="End Combat" onClose={onClose} maxWidth="max-w-sm" portal>
+      <p className="mb-3 text-xs text-zinc-500">HP and tokens stay. Who won? The winners get Victory XP (+2), the losers Defeat XP (+1) — heroes only.</p>
+      <div className="flex flex-col gap-2">
+        <button type="button" onClick={() => end('allies')} className={`${btn} border-emerald-600 bg-emerald-950/30 text-emerald-100 hover:bg-emerald-900/40`}>
+          <span className="block font-display font-bold uppercase tracking-wide">Allies won</span>
+          <span className="block text-[11px] text-zinc-400">{names(fight.allies)}</span>
+        </button>
+        <button type="button" onClick={() => end('enemies')} className={`${btn} border-red-600 bg-red-950/30 text-red-100 hover:bg-red-900/40`}>
+          <span className="block font-display font-bold uppercase tracking-wide">Enemies won</span>
+          <span className="block text-[11px] text-zinc-400">{names(fight.enemies)}</span>
+        </button>
+        <button type="button" onClick={() => end('skip')} className={`${btn} border-zinc-700 bg-zinc-900 text-zinc-200 hover:border-zinc-500`}>
+          <span className="block font-display font-bold uppercase tracking-wide">Skip — no XP</span>
+          <span className="block text-[11px] text-zinc-500">The fight ended mechanically, but the story goes on.</span>
+        </button>
+        <button type="button" onClick={onClose} className="mt-1 text-xs text-zinc-500 hover:text-zinc-300">
+          Cancel — keep fighting
+        </button>
       </div>
     </DialogShell>
   );
@@ -396,7 +434,8 @@ function TriggerPromptDialog({ prompt }) {
       {multi && (
         <div className="space-y-2">
           <p className="text-[11px] text-zinc-500">
-            Choose {prompt.minimum === prompt.maximum ? prompt.maximum : `${prompt.minimum}–${prompt.maximum}`}.
+            Choose {prompt.minimum === prompt.maximum ? prompt.maximum : `${prompt.minimum}–${prompt.maximum}`} ·{' '}
+            <span className={picked.length ? 'font-semibold text-brand-300' : ''}>{picked.length} selected</span>
           </p>
           <div className="flex flex-col gap-1.5">
             {options.map((o) => {
@@ -409,8 +448,18 @@ function TriggerPromptDialog({ prompt }) {
                   onClick={() =>
                     setPicked((list) => (on ? list.filter((v) => v !== o.id) : list.length < prompt.maximum ? [...list, o.id] : list))
                   }
-                  className={`${button} ${on ? 'border-brand-500 bg-brand-950/50' : ''}`}
+                  // Separate classes per state: mixing them with the base ones let the
+                  // base border win, so a pick didn't show.
+                  className={`flex min-h-11 items-center gap-2 panel-cut-sm border px-3 text-left font-display text-sm font-semibold uppercase tracking-wide ${
+                    on ? 'border-brand-400 bg-brand-600/30 text-white' : 'border-zinc-700 bg-zinc-900 text-zinc-300 hover:border-zinc-500'
+                  }`}
                 >
+                  <span
+                    aria-hidden
+                    className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-sm border text-[11px] leading-none ${on ? 'border-brand-300 bg-brand-500 text-white' : 'border-zinc-600'}`}
+                  >
+                    {on ? '✓' : ''}
+                  </span>
                   {o.label}
                 </button>
               );

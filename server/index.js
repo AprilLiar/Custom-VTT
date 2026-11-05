@@ -1498,7 +1498,7 @@ io.on('connection', (socket) => {
   // The Combat map (Panic at the Dojo, Phase 3) — see server/combatMap.js.
   registerCombatMapHandlers({ on, socket, mayWrite: mayWriteScenePicture, emitStageUpdated, stampImageHash });
   // A fighter's HP, tokens, Challenge and Stance (Phase 4) — see server/combatState.js.
-  registerCombatStateHandlers({ on, socket, mayWrite: mayWriteScenePicture, emitStageUpdated, postCard });
+  registerCombatStateHandlers({ on, socket, mayWrite: mayWriteScenePicture, emitStageUpdated, postCard, triggers: triggerEngine() });
   registerMapTileHandlers({ on, socket, emitStageUpdated });
   registerBuildHandlers({ on, socket, io, mayWrite: mayWriteScenePicture, emitStageUpdated });
   registerHomebrewHandlers({ on, socket, io, emitStageUpdated });

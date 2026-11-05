@@ -54,8 +54,9 @@ export const SPECIAL_TOKENS = [
   },
   // **Shield (decided, new)** — p.24. A value, not stacked sources: you hold
   // one Shield, and gaining another either replaces it or raises it by 1.
-  // Capped at 8 (the book's Shield Cap). Tracked by hand (decided): HP "−"
-  // never spends it. It is also drawn as a blue extension of the HP bar.
+  // Capped at 8 (the book's Shield Cap). It absorbs damage from Actions and
+  // Abilities (absorbWithShield, below); HP "−" never spends it. It is also
+  // drawn as a blue extension of the HP bar.
   {
     key: 'shield',
     name: 'Shield',
@@ -91,6 +92,17 @@ export const innateArmor = (sources, activeStanceId) =>
   normalizeArmorSources(sources).filter((s) => s === ARMOR_ALWAYS || (activeStanceId != null && s === activeStanceId)).length;
 
 // A token's own cap: TOKEN_CAP unless the token has a lower one (Shield: 8).
+// **A Shield absorbs damage (decided, revised).** Damage from an Action or an
+// Ability that targets you hits the Shield first, up to its value; what's left
+// of the Shield stays, a Shield used up breaks, and the rest hits HP. (Traps
+// and HP costs never touch it.) → { absorbed, shield, broke, rest }.
+export function absorbWithShield(shield, amount) {
+  const s = Math.max(0, Math.trunc(Number(shield) || 0));
+  const n = Math.max(0, Math.trunc(Number(amount) || 0));
+  const absorbed = Math.min(s, n);
+  return { absorbed, shield: s - absorbed, broke: s > 0 && absorbed === s && n >= s, rest: n - absorbed };
+}
+
 export const capOf = (key) => TOKEN_BY_KEY[key]?.cap ?? TOKEN_CAP;
 export const UNIQUE_KEYS = new Set(UNIQUE_TOKENS.map((t) => t.key));
 export const TOKEN_BY_KEY = Object.fromEntries(ALL_TOKENS.map((t) => [t.key, t]));

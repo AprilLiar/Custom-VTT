@@ -266,6 +266,36 @@ function FullPanelHp({ hp, canEdit, fighterRef, width, weight = null, shield = 0
           </label>
         </div>
       )}
+      {canEdit && <TakeDamage hp={hp} shield={shield} emit={emit} />}
+    </div>
+  );
+}
+
+// **Take damage (decided, revised):** one hit from an Action. The Shield
+// absorbs it first (Thorns Form and the like react); − / + above are raw HP
+// changes for costs and fixes. Armor still isn't subtracted for you.
+function TakeDamage({ hp, shield, emit }) {
+  const [n, setN] = useState(1);
+  return (
+    <div className="flex items-center gap-1.5">
+      <input
+        type="number"
+        min={1}
+        max={99}
+        value={n}
+        onChange={(e) => setN(Math.max(1, Math.min(99, Math.trunc(Number(e.target.value) || 1))))}
+        className="h-7 w-12 rounded-sm border border-zinc-700 bg-zinc-900 px-1 text-center text-xs tabular-nums text-zinc-100 outline-none focus:border-red-500"
+        aria-label="Damage amount"
+      />
+      <button
+        type="button"
+        onClick={() => emit('fighter:damage', { amount: n })}
+        disabled={hp.max == null}
+        title={shield > 0 ? `Take ${n} damage from an Action: the Shield (${shield}) absorbs first. Armor isn't subtracted for you.` : `Take ${n} damage from an Action. Armor isn't subtracted for you.`}
+        className="h-7 rounded-full border border-red-500 bg-red-500/15 px-2 font-display text-[11px] font-bold uppercase text-red-300 hover:bg-red-500/30 disabled:opacity-40"
+      >
+        Take damage{shield > 0 ? ' (Shield first)' : ''}
+      </button>
     </div>
   );
 }

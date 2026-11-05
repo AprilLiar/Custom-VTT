@@ -8,6 +8,7 @@ import {
   deriveStance,
   levelInfo,
   shortStyleName,
+  withXp,
 } from '../../lib/patd/build.js';
 import { DiceRow, RulesEntry, cardClass, rangeText, selectClass } from './BuildParts.jsx';
 
@@ -392,7 +393,7 @@ function LevelStep({ draft, set, idx }) {
               <button
                 key={label}
                 type="button"
-                onClick={() => set({ xp: draft.xp + n })}
+                onClick={() => set(withXp(draft, n, label))}
                 className="min-h-9 panel-cut-sm border border-zinc-700 bg-zinc-900 px-2 text-xs text-zinc-200 hover:border-brand-500"
               >
                 {label} +{n}

@@ -21,6 +21,8 @@ import { packLane, clampLanes } from '../client/src/lib/simpleLane.js';
 import { assembles, derivedFor, franticPickOf, rollDerived, stanceByKey, stancesOf } from './fighterStances.js';
 import { franticOptions, franticPickAllowed } from '../client/src/lib/patd/build.js';
 import { patdContent } from './patdContent.js';
+import { addXp } from './builds.js';
+import { XP_AWARDS } from '../client/src/lib/patd/build.js';
 import { resolveRef, serialized, shapeFightState } from './combatState.js';
 import { controlsCharacter } from './control.js';
 
@@ -433,10 +435,41 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
   });
 
   // **End Combat (GM).** Clears the order; positions, HP and tokens stay.
-  on('fight:end', async ({ mode }) => {
+  // `outcome` (decided): 'allies' or 'enemies' won — every character on the
+  // winning side gets Victory XP (+2), every one on the losing side Defeat XP
+  // (+1), on hero builds only, once per character — or anything else to skip
+  // (the fight ended mechanically but the story goes on).
+  on('fight:end', async ({ mode, outcome = null }) => {
     if (!isGm()) return;
     const fight = await fightFor(mode);
     if (!fight) return;
+    if (outcome === 'allies' || outcome === 'enemies') {
+      const scene = await one('SELECT name FROM scenes WHERE id = ?', [fight.scene_id]);
+      const charactersOf = async (ids) => {
+        const out = new Map();
+        for (const id of ids) {
+          const r = await one('SELECT cb.character_id, c.name FROM combatants cb JOIN characters c ON c.id = cb.character_id WHERE cb.id = ?', [id]);
+          if (r && !out.has(r.character_id)) out.set(r.character_id, r.name);
+        }
+        return out;
+      };
+      const winners = await charactersOf(parseIds(outcome === 'allies' ? fight.allies : fight.enemies));
+      const losers = await charactersOf(parseIds(outcome === 'allies' ? fight.enemies : fight.allies));
+      const lines = [];
+      for (const [group, amount, label] of [
+        [winners, XP_AWARDS.victory, 'Victory'],
+        [losers, XP_AWARDS.defeat, 'Defeat'],
+      ]) {
+        for (const [characterId, name] of group) {
+          if (label === 'Defeat' && winners.has(characterId)) continue;
+          const r = await addXp(characterId, amount, `${label}${scene?.name ? ` — ${scene.name}` : ''}`);
+          if (!r) continue;
+          emitAll?.('build:updated', { characterId, build: r.build });
+          lines.push(`${name} +${amount} (${label}, ${r.build.xp} XP${r.canLevelUp ? ' — can level up!' : ''})`);
+        }
+      }
+      await postSystemMessage(`— ${outcome === 'allies' ? 'The allies' : 'The enemies'} win — XP: ${lines.length ? lines.join(', ') : 'nobody on an XP track'}`);
+    }
     await run('DELETE FROM fights WHERE id = ?', [fight.id]);
     triggers?.endFight(fight.scene_id, fight.mode);
     await run('UPDATE combatants SET dizzy = 0 WHERE scene_id = ? AND mode = ?', [fight.scene_id, fight.mode]);

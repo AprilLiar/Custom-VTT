@@ -6,7 +6,7 @@
 // Who may save: whoever controls the character (their player, an assigned
 // player, the GM) — the same rule as every other character write.
 import { one, run } from './db.js';
-import { normalizeBuild } from '../client/src/lib/patd/build.js';
+import { levelInfo, normalizeBuild, withXp } from '../client/src/lib/patd/build.js';
 import { patdContent } from './patdContent.js';
 
 export async function loadBuild(characterId) {
@@ -17,6 +17,18 @@ export async function loadBuild(characterId) {
   } catch {
     return null;
   }
+}
+
+// Adds XP to a character's build, logged with a reason. Only builds on an XP
+// track (the hero types; Warriors level by the GM) get it.
+// → { build, canLevelUp } or null.
+export async function addXp(characterId, amount, reason) {
+  const build = await loadBuild(characterId);
+  if (!build || levelInfo(build, patdContent()).xpLevel == null) return null;
+  const next = withXp(build, amount, reason);
+  if (next === build) return null;
+  await run('UPDATE character_builds SET data = ?, updated_at = CURRENT_TIMESTAMP WHERE character_id = ?', [JSON.stringify(next), Number(characterId)]);
+  return { build: next, canLevelUp: levelInfo(next, patdContent()).canLevelUp };
 }
 
 export async function deleteBuild(characterId) {

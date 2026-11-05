@@ -216,3 +216,16 @@ test('Trickster: pick a non-Unique token in range, then steal it and/or convert 
   await runRule(rule, { world: w2, self: lonely, state: {}, usage: {}, log: () => {}, ask: async (q) => (asked2.push(q), null) });
   assert.equal(asked2.length, 0);
 });
+
+test('Thorns Form: after the Shield absorbs from an enemy Action, 1 damage back — 2 if it broke', async () => {
+  const me = fighter(1, 'a');
+  const foe = fighter(2, 'b');
+  const { w } = makeWorld([me, foe]);
+  const rule = rulesOf('ability.form-thorns.thorns-form', 'self.shield_absorbed_from_enemy_action')[0];
+  assert.ok(ruleSupport(rule).ok, ruleSupport(rule).reason);
+  const ctx = (shieldBroke) => ({ world: w, self: me, state: {}, usage: {}, log: () => {}, ask: async () => null, event: { attacker: foe, amount: 2, shieldBroke } });
+  await runRule(rule, ctx(false));
+  assert.equal(foe.hp, 9);
+  await runRule(rule, ctx(true));
+  assert.equal(foe.hp, 7);
+});

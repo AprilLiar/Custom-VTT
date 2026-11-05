@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { socket } from '../../socket.js';
 import { getBuild } from '../../lib/api.js';
 import { useContent } from '../../lib/patd/useContent.js';
-import { deriveBuild, emptyBuild, normalizeBuild } from '../../lib/patd/build.js';
+import { LEVEL_MAX, XP_AWARDS, deriveBuild, emptyBuild, normalizeBuild, withXp } from '../../lib/patd/build.js';
 import { STEPS, StepBody, grantText } from './BuildSteps.jsx';
 import { DiceRow, RulesEntry, rangeText } from './BuildParts.jsx';
 
@@ -210,6 +210,7 @@ function Overview({ saved, idx, canEdit, editing, setEditing, save, characterId 
           {d.level.grants.length > 0 && <p className="text-zinc-500">{d.level.grants.map((g) => `L${g.level}: ${grantText(g, idx)}`).join(' · ')}</p>}
         </div>
       )}
+      {d.level.xpLevel != null && <XpTracker build={normalizeBuild(saved, idx)} level={d.level} canEdit={canEdit} save={save} />}
       <RulesReference d={d} idx={idx} />
       {canEdit && (
         <button
@@ -221,6 +222,68 @@ function Overview({ saved, idx, canEdit, editing, setEditing, save, characterId 
         </button>
       )}
     </div>
+  );
+}
+
+// **XP on the sheet (decided).** The total, how far to the next level, quick
+// awards (each logged with its reason), the level-up when the XP allows it,
+// and the recent history — fight ends add Victory / Defeat here on their own.
+function XpTracker({ build, level, canEdit, save }) {
+  const add = (n, reason) => save(withXp(build, n, reason));
+  const pct = level.nextXp ? Math.min(100, Math.round((build.xp / level.nextXp) * 100)) : 100;
+  const btn = 'min-h-9 panel-cut-sm border border-zinc-700 bg-zinc-900 px-2 text-xs text-zinc-200 hover:border-brand-500';
+  const log = [...(build.xpLog ?? [])].reverse().slice(0, 6);
+  return (
+    <section className="space-y-2 panel-cut-sm border border-zinc-800 bg-zinc-900/70 p-2.5">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <h3 className="font-display text-xs font-bold uppercase tracking-wide text-zinc-300">Experience</h3>
+        <span className="font-mono text-sm text-zinc-100">
+          {build.xp} XP{level.nextXp != null ? <span className="text-zinc-500"> / {level.nextXp} for level {build.level + 1}</span> : ''}
+        </span>
+      </div>
+      <div className="h-1.5 overflow-hidden rounded-full bg-zinc-800" role="progressbar" aria-valuenow={build.xp} aria-valuemax={level.nextXp ?? build.xp}>
+        <div className={`h-full ${level.canLevelUp ? 'bg-amber-400' : 'bg-brand-500'}`} style={{ width: `${pct}%` }} />
+      </div>
+      {canEdit && (
+        <div className="flex flex-wrap items-center gap-1.5">
+          <button type="button" onClick={() => add(-1, 'Correction')} className={btn} aria-label="Remove 1 XP">
+            −1
+          </button>
+          <button type="button" onClick={() => add(1, 'Manual')} className={btn} aria-label="Add 1 XP">
+            +1
+          </button>
+          <button type="button" onClick={() => add(XP_AWARDS.victory, 'Victory')} className={btn}>
+            Victory +{XP_AWARDS.victory}
+          </button>
+          <button type="button" onClick={() => add(XP_AWARDS.defeat, 'Defeat')} className={btn}>
+            Defeat +{XP_AWARDS.defeat}
+          </button>
+          {level.canLevelUp && (
+            <button
+              type="button"
+              onClick={() => save({ ...build, level: Math.min(LEVEL_MAX, build.level + 1) })}
+              className="min-h-9 panel-cut-sm bg-amber-500 px-3 text-xs font-bold uppercase text-zinc-950 hover:bg-amber-400"
+            >
+              Level up → {build.level + 1}
+            </button>
+          )}
+        </div>
+      )}
+      {log.length > 0 && (
+        <ul className="space-y-0.5 text-[11px] text-zinc-400">
+          {log.map((e, i) => (
+            <li key={i} className="flex gap-2">
+              <span className={`w-8 shrink-0 text-right font-mono ${e.amount < 0 ? 'text-red-400' : 'text-emerald-400'}`}>
+                {e.amount > 0 ? '+' : ''}
+                {e.amount}
+              </span>
+              <span className="flex-1 truncate">{e.reason || 'XP'}</span>
+              {e.at && <span className="text-zinc-600">{new Date(e.at).toLocaleDateString()}</span>}
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
   );
 }
 

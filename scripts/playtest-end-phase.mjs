@@ -49,9 +49,9 @@ gm.emit('scene:set_mode', { mode: 'combat' });
 await sleep(300);
 const mk = (n) => jpost('/api/characters', { name: `EP${n}${stamp}`, characterType: 'npc' });
 const [a, b, c] = [await mk('Shadow'), await mk('Plain'), await mk('Armored')];
-// a: Shadow Form (keeps Speed, gains 2 at start and end); b: Power Form + Heroic; c: Iron + Halcyon, with an Armor token.
+// a: Shadow Form (keeps Speed, gains 2 at start and end); b: Power Form + Halcyon; c: Iron + Halcyon, with an Armor token.
 gm.emit('build:save', { characterId: a.id, build: { type: 'character-type.warrior', stances: [{ formId: 'form.shadow', styleId: 'style.heroic' }] } });
-gm.emit('build:save', { characterId: b.id, build: { type: 'character-type.warrior', stances: [{ formId: 'form.power', styleId: 'style.heroic' }] } });
+gm.emit('build:save', { characterId: b.id, build: { type: 'character-type.warrior', stances: [{ formId: 'form.power', styleId: 'style.halcyon' }] } });
 gm.emit('build:save', { characterId: c.id, build: { type: 'character-type.warrior', stances: [{ formId: 'form.iron', styleId: 'style.heroic' }] } });
 await sleep(500);
 gm.emit('combat_token:place', { ownerType: 'character', ownerId: a.id, col: 1, row: 1 });

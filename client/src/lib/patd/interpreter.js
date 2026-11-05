@@ -69,6 +69,8 @@ export const SUPPORTED_EVENTS = new Set([
   'self.damage_taken',
   'warrior_path.trigger',
   'self.tokens_discarded_by_action_or_ability',
+  'self.shield_absorbed',
+  'self.shield_absorbed_from_enemy_action',
 ]);
 const SELECTOR_KINDS = new Set(['enemy', 'ally', 'unit', 'self_and_allies', 'self_or_ally']);
 // Copies aren't tracked on the board, so "you or your Copies" is your own range.
@@ -83,7 +85,7 @@ const REF_OK = [
   /^bindings\.[A-Za-z]+$/,
   /^variables\.[A-Za-z]+$/,
   /^state\.[A-Za-z]+$/,
-  /^event\.(target|activeCharacter|attacker|amount|isCostPayment)$/,
+  /^event\.(target|activeCharacter|attacker|amount|isCostPayment|shieldBroke)$/,
 ];
 const OPERATORS = {
   add: (a) => a.reduce((x, y) => x + y, 0),
@@ -499,7 +501,8 @@ async function run(node, scope, ctx) {
       const n = val(node.amount);
       for (const f of await targetsOf(node.target, scope, ctx, 'an enemy')) {
         const r = await world.damage(f, n, scope.self);
-        ctx.log(`${scope.self.name} deals ${n} damage to ${f.name}`);
+        ctx.log(`${scope.self.name} deals ${n} damage to ${f.name}${r?.absorbed ? ` (Shield absorbs ${r.absorbed}${r.broke ? ' and breaks' : ''})` : ''}`);
+        if (r?.absorbed) await ctx.emit?.('self.shield_absorbed', f, { attacker: scope.self, amount: r.absorbed, shieldBroke: Boolean(r.broke) });
         await ctx.emit?.('self.damage_taken', f, { attacker: scope.self, amount: n });
         if (r?.bled) await ctx.emit?.('self.bleed', f, {});
       }
