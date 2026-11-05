@@ -147,3 +147,13 @@ test('range and sight: diagonal counts 1, Walls block a centre line, Fog limits 
   assert.equal(targetable({ ...base, to: { col: 5, row: 0 }, range: { mode: 'stance' }, enemy: false }), true, 'an ally in Fog is fine');
   assert.equal(targetable({ ...base, to: { col: 1, row: 1 }, range: { mode: 'adjacent' } }), true);
 });
+
+test("Greater Warrior: the turn start triggers the Warrior's Path (Path of the Tiger: 2 Power)", async () => {
+  const me = fighter(1, 'a');
+  const { w } = makeWorld([me]);
+  const emit = async (ev, f) => {
+    for (const r of rulesOf('ability.warrior-path-tiger.path-of-the-tiger', ev)) await runRule(r, { world: w, self: f, state: {}, usage: {}, log: () => {}, ask: async () => null });
+  };
+  await fire('ability.feature-greater-warrior.greater-warrior', 'own_turn.start', me, w, [], { emit });
+  assert.equal(me.tokens.power, 2);
+});

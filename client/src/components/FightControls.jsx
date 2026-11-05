@@ -259,6 +259,7 @@ export function StancePrompt({ mode, fight, fighters, role, controls = () => fal
   const mine = role === 'gm' || (pending.character_id != null && controls(pending.character_id));
   if (!mine) return null;
   const fighter = fighters.find((f) => f.combatantId === pending.combatant_id);
+  if (pending.assemble) return <FranticPick key={pending.combatant_id} mode={mode} name={fighter?.name ?? 'Fighter'} options={pending.assemble} />;
   return (
     <DialogShell title={`${fighter?.name ?? 'Fighter'}: choose a stance`} onClose={() => {}} maxWidth="max-w-sm" portal>
       <p className="mb-2 text-xs text-zinc-500">Only the chosen stance’s dice roll.</p>
@@ -273,6 +274,57 @@ export function StancePrompt({ mode, fight, fighters, role, controls = () => fal
             {s.name}
           </button>
         ))}
+      </div>
+    </DialogShell>
+  );
+}
+
+// **Frantic Versatility (builder phase 4).** A Frantic Hero assembles this
+// turn's Stance: one Form, one Style and one Frantic Ability, none of which
+// they used last turn (those are shown struck through and can't be picked).
+function FranticPick({ mode, name, options }) {
+  const first = (list) => list.find((o) => !o.used)?.id ?? null;
+  const [formId, setForm] = useState(() => first(options.forms));
+  const [styleId, setStyle] = useState(() => first(options.styles));
+  const [abilityId, setAbility] = useState(() => first(options.abilities));
+  const part = (title, list, value, set) => (
+    <fieldset className="space-y-1">
+      <legend className="mb-1 font-display text-[11px] font-bold uppercase tracking-wide text-zinc-400">{title}</legend>
+      <div className="flex flex-wrap gap-1.5">
+        {list.map((o) => (
+          <button
+            key={o.id}
+            type="button"
+            disabled={o.used}
+            aria-pressed={value === o.id}
+            onClick={() => set(o.id)}
+            title={o.used ? 'Used last turn' : undefined}
+            className={`min-h-10 panel-cut-sm border px-2.5 text-xs font-semibold ${
+              value === o.id ? 'border-brand-500 bg-brand-950/50 text-white' : 'border-zinc-700 bg-zinc-900 text-zinc-200 hover:border-zinc-500'
+            } disabled:cursor-not-allowed disabled:line-through disabled:opacity-40`}
+          >
+            {o.name}
+          </button>
+        ))}
+      </div>
+    </fieldset>
+  );
+  const ready = formId && styleId && (options.abilities.length === 0 || abilityId);
+  return (
+    <DialogShell title={`${name}: assemble this turn’s stance`} onClose={() => {}} maxWidth="max-w-md" portal>
+      <div className="space-y-3">
+        {part('Form', options.forms, formId, setForm)}
+        {part('Style', options.styles, styleId, setStyle)}
+        {options.abilities.length > 0 && part('Frantic Ability', options.abilities, abilityId, setAbility)}
+        <p className="text-[11px] text-zinc-500">Last turn’s picks can’t be used again this turn.</p>
+        <button
+          type="button"
+          disabled={!ready}
+          onClick={() => socket.emit('fight:choose_stance', { mode, stanceId: `${formId}+${styleId}`, abilityId: options.abilities.length ? abilityId : null })}
+          className="min-h-11 w-full panel-cut-sm bg-brand-600 px-3 text-sm font-semibold text-white hover:bg-brand-500 disabled:opacity-40"
+        >
+          Roll this stance
+        </button>
       </div>
     </DialogShell>
   );

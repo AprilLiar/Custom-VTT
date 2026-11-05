@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { patdContent } from '../patdContent.js';
-import { buildTypes, constructChoices, deriveBuild, normalizeBuild, stanceDice } from '../../client/src/lib/patd/build.js';
+import { buildTypes, constructChoices, deriveBuild, franticOptions, franticPickAllowed, normalizeBuild, stanceDice, stanceOfBuild } from '../../client/src/lib/patd/build.js';
 
 const idx = patdContent();
 const dieStr = (dice) => dice.map((d) => (d.kind === 'fixed' ? `#${d.value}` : `${d.bonus ? 'b' : d.color?.[0] ?? '?'}${d.sides}`)).join(' ');
@@ -131,4 +131,35 @@ test('Armor from the build: unconditional Armor passives, always or per Stance',
   const key = d.stances[0].key;
   assert.deepEqual(armorSourcesOf(d, idx).sort(), ['always', key].sort(), 'The Tank always; Iron Form in its Stance; Hidden (in Fog only) not counted');
   assert.equal(hpTableOf(d), 'warrior');
+});
+
+test("Frantic: the Frantic abilities are picked per turn, not always on; last turn's picks are excluded", () => {
+  const d = deriveBuild(
+    {
+      type: 'hero-type.frantic',
+      archetypes: [
+        { id: 'archetype.angel', variant: 'frantic' },
+        { id: 'archetype.demon', variant: 'frantic' },
+        { id: 'archetype.phantom', variant: 'frantic' },
+      ],
+      forms: ['form.wild', 'form.iron', 'form.song'],
+      styles: ['style.halcyon', 'style.heroic', 'style.aura'],
+      level: 1,
+    },
+    idx
+  );
+  assert.deepEqual(d.franticAbilityIds, ['ability.archetype-angel.frantic-angel', 'ability.archetype-demon.frantic-demon', 'ability.archetype-phantom.frantic-phantom']);
+  for (const id of d.franticAbilityIds) assert.ok(!d.constantAbilityIds.includes(id));
+  // Any known Form with any known Style is a Stance; an unknown one is not.
+  assert.equal(stanceOfBuild(d, 'form.iron+style.aura', idx)?.formId, 'form.iron');
+  assert.equal(stanceOfBuild(d, 'form.blaster+style.aura', idx), null);
+  const last = { formId: 'form.wild', styleId: 'style.halcyon', abilityId: 'ability.archetype-angel.frantic-angel' };
+  const opts = franticOptions(d, last, idx);
+  assert.deepEqual(opts.forms.filter((o) => o.used).map((o) => o.id), ['form.wild']);
+  assert.ok(!franticPickAllowed(opts, { formId: 'form.wild', styleId: 'style.aura', abilityId: 'ability.archetype-demon.frantic-demon' }));
+  assert.ok(!franticPickAllowed(opts, { formId: 'form.iron', styleId: 'style.aura', abilityId: 'ability.archetype-angel.frantic-angel' }));
+  assert.ok(franticPickAllowed(opts, { formId: 'form.iron', styleId: 'style.aura', abilityId: 'ability.archetype-demon.frantic-demon' }));
+  // With only one Form known, last turn's Form is offered again rather than stalling the turn.
+  const one = franticOptions({ ...d, formIds: ['form.wild'] }, last, idx);
+  assert.equal(one.forms[0].used, false);
 });

@@ -18,7 +18,9 @@ import { buildRound, nextFirstSide } from '../client/src/lib/initiative.js';
 import { turnsPerRound } from '../client/src/lib/hpBars.js';
 import { automaticReminders, fightersOnTraps } from '../client/src/lib/fightFlow.js';
 import { packLane, clampLanes } from '../client/src/lib/simpleLane.js';
-import { rollDerived, stancesOf } from './fighterStances.js';
+import { assembles, derivedFor, franticPickOf, rollDerived, stanceByKey, stancesOf } from './fighterStances.js';
+import { franticOptions, franticPickAllowed } from '../client/src/lib/patd/build.js';
+import { patdContent } from './patdContent.js';
 import { resolveRef, serialized, shapeFightState } from './combatState.js';
 import { controlsCharacter } from './control.js';
 
@@ -90,13 +92,16 @@ export async function loadFightState(sceneId, mode) {
   }
   let pending = null;
   if (row.pending_stance_combatant != null) {
-    const c = await one('SELECT character_id FROM combatants WHERE id = ?', [row.pending_stance_combatant]);
+    const c = await one('SELECT character_id, frantic_pick FROM combatants WHERE id = ?', [row.pending_stance_combatant]);
     if (c) {
       const stances = await stancesOf(c.character_id);
+      const d = await derivedFor(c.character_id);
       pending = {
         combatant_id: row.pending_stance_combatant,
         character_id: c.character_id,
         stances: stances.map((s) => ({ id: s.id, name: s.name })),
+        // A Frantic Hero assembles the turn's Stance instead (builder phase 4).
+        assemble: assembles(d) ? franticOptions(d, franticPickOf(c), patdContent()) : null,
       };
     }
   }
@@ -173,9 +178,13 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
   // ---- the order
   const newRound = async (fight, firstSide, openerId = null) => {
     const fighters = await loadFighters(fight.scene_id, fight.mode);
+    const leaders = await stoogeLeaders(fight, fighters);
     const turnsOf = (id) => {
       const f = fighters.find((x) => x.combatantId === id);
-      return f ? turnsPerRound(f.hp) : 0;
+      if (!f) return 0;
+      // Stooges share one turn: only their leading body takes it.
+      if (leaders.has(f.characterId)) return leaders.get(f.characterId) === id ? 1 : 0;
+      return turnsPerRound(f.hp);
     };
     const side = (ids) => ids.map((id) => ({ id, turns: turnsOf(id) })).filter((x) => x.turns > 0);
     return buildRound({
@@ -184,6 +193,20 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
       firstSide,
       openerId,
     });
+  };
+
+  // **Stooges (builder phase 4):** every body of one Stooges character in this
+  // fight is one unit with one turn and one Stance. Map(characterId → the
+  // leading body: the lowest combatant id still in the fight).
+  const stoogeLeaders = async (fight, fighters) => {
+    const out = new Map();
+    const inFight = fighters.filter((f) => sideOf(fight, f.combatantId)).sort((a, b) => a.combatantId - b.combatantId);
+    for (const f of inFight) {
+      if (out.has(f.characterId)) continue;
+      const d = await derivedFor(f.characterId);
+      if (d?.type.id === 'character-type.stooges') out.set(f.characterId, f.combatantId);
+    }
+    return out;
   };
 
   const save = (fight) =>
@@ -212,9 +235,15 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
     if (!fighter) return;
     // The Stances come from the character's build (builder phase 2); their
     // dice already hold the level's bonus die, from the build's level.
-    const stance = (await stancesOf(fighter.characterId)).find((s) => s.id === stanceId);
+    const stance = await stanceByKey(fighter.characterId, stanceId);
     if (!stance) return;
     await run('UPDATE combatants SET active_stance_key = ? WHERE id = ?', [stance.id, combatantId]);
+    // Stooges share their Stance: every body of the unit in this fight takes it.
+    const d = await derivedFor(fighter.characterId);
+    if (d?.type.id === 'character-type.stooges') {
+      const bodies = (await loadFighters(fight.scene_id, fight.mode)).filter((f) => f.characterId === fighter.characterId && sideOf(fight, f.combatantId));
+      for (const b of bodies) await run('UPDATE combatants SET active_stance_key = ? WHERE id = ?', [stance.id, b.combatantId]);
+    }
     const results = rollDerived(stance.dice);
     // `combatant_id` lets the Scene keep this card up until that fighter's
     // turn ends (fight:turn_ended).
@@ -232,7 +261,8 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
     if (!entry) return;
     const row = await one('SELECT character_id FROM combatants WHERE id = ?', [entry.id]);
     const stances = row ? await stancesOf(row.character_id) : [];
-    if (stances.length > 1) {
+    // A Frantic Hero assembles a Stance every turn; several fixed Stances ask which.
+    if (stances.length > 1 || (row && assembles(await derivedFor(row.character_id)))) {
       fight.pending_stance_combatant = entry.id;
       await save(fight);
       return; // fight:choose_stance continues the turn.
@@ -302,6 +332,10 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
     fight.turn_index = 0;
     await save(fight);
     await postSystemMessage('— Combat begins: Round 1 —');
+    // Last fight's Frantic picks don't bind this one.
+    await run('UPDATE combatants SET frantic_pick = NULL WHERE scene_id = ? AND mode = ?', [sceneId, mode]);
+    // "At the start of combat" abilities (Improved Warrior's Path), before the first turn.
+    triggers?.startFight({ ...fight });
     await fire(fight, 'round_start');
     await beginTurn(fight);
     await emitStageUpdated();
@@ -328,7 +362,7 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
   // **The turn-start Stance pick.** The fighter's player — or the GM, who can
   // always answer — chooses; only then do its dice roll and the turn's Start
   // reminders fire.
-  on('fight:choose_stance', async ({ mode, stanceId }) => {
+  on('fight:choose_stance', async ({ mode, stanceId, abilityId = null }) => {
     const fight = await fightFor(mode);
     if (!fight?.pending_stance_combatant) return;
     const c = await one('SELECT * FROM combatants WHERE id = ?', [fight.pending_stance_combatant]);
@@ -336,7 +370,15 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
     const viewer = socket.data.identity;
     const allowed = viewer?.role === 'gm' || (c.character_id != null && controlsCharacter(viewer, c.character_id));
     if (!allowed) return;
-    const stance = (await stancesOf(c.character_id)).find((s) => s.id === String(stanceId));
+    const d = await derivedFor(c.character_id);
+    if (assembles(d)) {
+      // Frantic Versatility: one Form, one Style, one Frantic Ability, none of last turn's.
+      const [formId, styleId] = String(stanceId).split('+');
+      const pick = { formId, styleId, abilityId: abilityId == null ? null : String(abilityId) };
+      if (!franticPickAllowed(franticOptions(d, franticPickOf(c), patdContent()), pick)) return;
+      await run('UPDATE combatants SET frantic_pick = ? WHERE id = ?', [JSON.stringify(pick), c.id]);
+    } else if (!(await stancesOf(c.character_id)).some((s) => s.id === String(stanceId))) return;
+    const stance = await stanceByKey(c.character_id, String(stanceId));
     if (!stance) return;
     fight.pending_stance_combatant = null;
     await save(fight);

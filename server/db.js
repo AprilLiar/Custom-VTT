@@ -1407,6 +1407,8 @@ export async function initDb() {
   await ensureColumn('combatants', 'level', 'INTEGER NOT NULL DEFAULT 1');
   await ensureColumn('combatants', 'fighter_kind', 'TEXT');
   await ensureColumn('combatants', 'bled_round', 'INTEGER');
+  // A Frantic Hero's pick this turn { formId, styleId, abilityId } (builder phase 4).
+  await ensureColumn('combatants', 'frantic_pick', 'TEXT');
   // A Simple Combat fighter is created on its first change, keyed by its
   // summon: at most one row per summon, so INSERT OR IGNORE is race-free.
   ddl('CREATE UNIQUE INDEX IF NOT EXISTS idx_combatants_summon_unique ON combatants(summon_id) WHERE summon_id IS NOT NULL');

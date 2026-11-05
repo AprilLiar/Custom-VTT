@@ -280,8 +280,14 @@ export function deriveBuild(rawBuild, idx) {
   const features = lv.featureIds.map((id) => idx.get(id)).filter(Boolean);
   const buildRow = build.buildId ? idx.get(build.buildId) : null;
   const path = build.warriorPathId ? idx.get(build.warriorPathId) : null;
+  // A Frantic Hero's Frantic-variant Archetype abilities are not always on:
+  // one of them is picked each turn with the Stance (builder phase 4). Fused
+  // ones granted later by advancement stay constant.
+  const franticAbilityIds = type.assemble
+    ? uniq(archetypes.filter((a) => a.variant === 'frantic').flatMap((a) => idx.get(a.id)?.abilityVariants?.frantic ?? []))
+    : [];
   const constantAbilityIds = uniq([
-    ...archetypes.flatMap((a) => a.abilityIds),
+    ...archetypes.flatMap((a) => a.abilityIds).filter((id) => !franticAbilityIds.includes(id)),
     ...(buildRow?.abilityIds ?? []),
     ...(type.abilityIds ?? []),
     ...features.flatMap((f) => f.abilityIds ?? []),
@@ -314,6 +320,7 @@ export function deriveBuild(rawBuild, idx) {
     formIds,
     styleIds,
     constantAbilityIds,
+    franticAbilityIds,
     constantActionIds,
     superMoveIds: build.superMoveIds,
     tokens,
@@ -403,4 +410,38 @@ export function armorSourcesOf(derived, idx) {
 
 // Which level-bonus HP table a type uses (cinematicWeight.js): heroes the
 // Hero table, NPC types the Warrior one.
+// ------------------------------------------------------------------ Frantic: a Stance each turn
+
+// The Stance a key names for this build: one of its own, or — for a Frantic
+// Hero — any known Form with any known Style or Freestyle.
+export function stanceOfBuild(derived, key, idx) {
+  if (!derived || !key) return null;
+  if (!derived.type.assemble) return derived.stances.find((s) => s.key === key && s.formId && s.styleId) ?? null;
+  const [formId, styleId] = String(key).split('+');
+  if (!derived.formIds.includes(formId) || !derived.styleIds.includes(styleId)) return null;
+  return deriveStance({ formId, styleId }, idx, derived.level.bonusDie);
+}
+
+// What a Frantic Hero may pick this turn (Frantic Versatility): one Form, one
+// Style and one Frantic Ability, none used on their previous turn. `last` is
+// that turn's pick { formId, styleId, abilityId } or null. A part with nothing
+// but last turn's left is offered anyway (marked used), so a turn can't stall.
+export function franticOptions(derived, last, idx) {
+  const part = (ids, lastId) => {
+    const list = ids.map((id) => ({ id, name: idx.get(id)?.name ?? id, used: id === lastId }));
+    return list.some((o) => !o.used) ? list : list.map((o) => ({ ...o, used: false }));
+  };
+  return {
+    forms: part(derived.formIds, last?.formId),
+    styles: part(derived.styleIds, last?.styleId),
+    abilities: part(derived.franticAbilityIds, last?.abilityId),
+  };
+}
+
+// Whether a pick is allowed by franticOptions.
+export function franticPickAllowed(options, pick) {
+  const ok = (list, id) => list.some((o) => o.id === id && !o.used);
+  return ok(options.forms, pick.formId) && ok(options.styles, pick.styleId) && (options.abilities.length === 0 ? !pick.abilityId : ok(options.abilities, pick.abilityId));
+}
+
 export const hpTableOf = (derived) => (derived.type.kind === 'hero' ? 'hero' : 'warrior');

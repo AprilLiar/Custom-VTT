@@ -12,7 +12,7 @@
 // the GM edits anyone, a Player their own character's copies.
 import { all, one, run } from './db.js';
 import { TOKEN_BY_KEY, capOf } from '../client/src/lib/panicTokens.js';
-import { stancesOf } from './fighterStances.js';
+import { stanceByKey } from './fighterStances.js';
 import { addBar, applyHpDelta, normalizeHp, removeBar, setHp } from '../client/src/lib/hpBars.js';
 import { FIGHTER_KINDS, WEIGHT_BY_KEY, barHp, clampLevel, crossesBleed } from '../client/src/lib/cinematicWeight.js';
 import { imageUrl } from './images.js';
@@ -274,7 +274,7 @@ export function registerCombatStateHandlers({ on: onRaw, socket, mayWrite, emitS
     // One of the character's derived Stances (their build), or null.
     let id = null;
     if (stanceId != null) {
-      const stance = (await stancesOf(row.character_id)).find((s) => s.id === String(stanceId));
+      const stance = await stanceByKey(row.character_id, String(stanceId));
       if (!stance) return;
       id = stance.id;
     }

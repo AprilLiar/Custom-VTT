@@ -50,6 +50,7 @@ export const SUPPORTED_OPS = new Set([
   'grant_armor',
   'distribute_distinct_basic_tokens',
   'limited',
+  'trigger_warrior_path',
 ]);
 export const SUPPORTED_EVENTS = new Set([
   'own_turn.start',
@@ -63,6 +64,7 @@ export const SUPPORTED_EVENTS = new Set([
   'self.challenge_given_to_enemy',
   'self.bleed',
   'self.damage_taken',
+  'warrior_path.trigger',
 ]);
 const SELECTOR_KINDS = new Set(['enemy', 'ally', 'unit', 'self_and_allies', 'self_or_ally']);
 const RANGE_MODES = new Set(['stance', 'visible', 'adjacent', 'explicit', 'none', 'map']);
@@ -422,6 +424,10 @@ async function run(node, scope, ctx) {
       }
       return;
     }
+    // The character's Warrior's Path rules run as a follow-on event.
+    case 'trigger_warrior_path':
+      await ctx.emit?.('warrior_path.trigger', scope.self, {});
+      return;
     case 'add_pool_number': {
       const v = val(node.value);
       for (const f of await targetsOf(node.target, scope, ctx)) {

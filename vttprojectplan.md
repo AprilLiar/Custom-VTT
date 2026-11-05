@@ -3077,7 +3077,7 @@ Special squares from the book's **Obstacles** (p.70-72) and the Battle Parameter
   - **Pinned stance roll (decided):** a turn-start Stance roll ignores the countdown. It stays until that fighter's turn ends — the server broadcasts `fight:turn_ended { combatantId }` on Next turn, and `fight:ended` on End Combat — because the player needs those numbers for the whole turn. Stance roll cards carry `combatant_id` for this.
   - **Chat button:** a round button above the GM Tools wrench opens the full Chat as an overlay over the Scene (full screen on a phone, a 20rem column otherwise) and closes it on a second press. It is visible even with the interface hidden.
 
-## Character builder & turn automation (decided, planned)
+## Character builder & turn automation (decided, implemented)
 
 The Combat tab's hand-made setup (Stances as name + dice, Unique token picks, Reminders, Armor sources) is **replaced by a real character builder** driven by the user's exported rules content. Characters are created by choosing a hero type, Archetypes, Forms, Styles and so on. The app then derives the Stances and their dice, and runs the simple start- and end-of-turn triggers. **Players still roll their dice**; the dice are pre-configured. Playing Actions stays manual.
 
@@ -3109,7 +3109,7 @@ The Combat tab's hand-made setup (Stances as name + dice, Unique token picks, Re
   - **Lanes:** a small grid (each lane a row, each space a column), same rule.
   - **Sight:** Walls block a straight line from anywhere in your space to anywhere in the target's. Fog limits targeting enemies in or next to it to Range 1; allies in Fog are fine.
   - Stance range comes from the Style (plus modifiers such as Blaster's).
-- **Frantic Heroes** assemble a new Stance each turn (Form, Style and Archetype ability, excluding last turn's) **in phase 4**. Until then their Stances are fixed Form + Style pairs.
+- **Frantic Heroes** assemble a new Stance each turn (Form, Style and Archetype ability, excluding last turn's) — implemented in phase 4.
 
 ### Phases (each one commit to `main`, deploy, playtest)
 0. **Content and purge — implemented.** The content, schema and import guide are in `client/src/data/patd/`. The pure index is `client/src/lib/patd/content.js` (`indexContent`, `collectReferences`); the server reads it once via `server/patdContent.js`. `server/test/patdContent.test.js` validates the content with Ajv 2020 (a dev dependency) and checks unique ids, every reference and the counts. **One known source conflict is allowed and awaits the user's ruling:** Brawling Style's *Tough It Out* keeps `sourceCostText: "3+ or 11+"` (not in the schema) beside its structured cost "3+ or 9+". The Combat tab now holds only the token picture. `combat_stance:*` and `combat_reminder:*` are removed, and `combat_profile:update` takes only the picture. `purgeHandmadeCombatSetup` runs at every boot until phase 2: it deletes all hand-made Stances and Reminders, clears Unique picks, Armor sources and tokens' active Stances. With no Stances, a turn starts with no pick and no roll; the automatic reminders still fire. Plan as written:
@@ -3136,7 +3136,7 @@ The Combat tab's hand-made setup (Stances as name + dice, Unique token picks, Re
    - **Fighter setup:** `fighterSetup` per character now holds the build's option tokens (`unique_tokens`), Armor sources (`armorSourcesOf`: unconditional continuous `grant_armor` rules, 'always' or per Stance key), Stance names, level, HP table (hero types: Hero, NPC types: Warrior) and Health Bars.
    - **Combat Weight tool:** it takes level, table and Health Bars from that setup, and `fight:preset_weight` accepts `bars`.
    - **Removed:** the hand-made Reminder firing.
-   - Frantic Heroes have no fixed Stances (phase 4), so no automatic roll yet. Playtest: `scripts/playtest-build-fights.mjs`.
+   - Frantic Heroes have no fixed Stances; phase 4 gives them the per-turn pick. Playtest: `scripts/playtest-build-fights.mjs`.
    - Plan as written:
     Derived Stances drive the turn-start pick and roll (die colours shown in the roll card). Option tokens (Chaos, Control, Luck, Mentor, Poltergeist, Training, Rapid Strike) join the token row automatically. Continuous `grant_armor` rules feed Armor (always, or while the granting Stance is active). Level and bonus HP feed the Combat Weight tool. HP bars from the type (Boss 2-5) are a default.
 3. **Turn triggers — implemented.**
@@ -3157,17 +3157,37 @@ The Combat tab's hand-made setup (Stances as name + dice, Unique token picks, Re
    - Playtest: `scripts/playtest-turn-triggers.mjs`. It covers Wild Form, Aura Style, Fused Phantom and Fused Demon running on their own, the Fused Angel heal-and-Challenge prompts answered by its player, Heroic Style healing, and a reconnect and fight end with a prompt open.
    - Plan as written:
     A pure interpreter (`client/src/lib/patd/interpreter.js`) for `own_turn.start` / `own_turn.end_abilities` rules (plus `allied_turn` / `any_turn` starts where simple), with the operation subset above. Prompts for choices and targets go to the fighter's controller (like the Stance prompt). Board range and sight checks come from `combatGrid` / `simpleLane` geometry plus map tiles. Follow-on events (`self.challenge_given_to_enemy`, `self.bleed`, `self.damage_taken`, ...) run when an automated effect caused them. Reminder cards cover the rest. Heavily unit-tested against the content's own rules.
-4. **Frantic and NPC types.** Frantic per-turn Stance assembly with previous-turn exclusions. Warrior (Warrior's Path triggers), Boss (several Stances and bars) and Stooges (one shared Stance, turn and health bar across several bodies) behaviour in fights.
+4. **Frantic and NPC types — implemented.**
+   - **Frantic Heroes (Frantic Versatility):**
+     - `deriveBuild` splits the Frantic-variant Archetype abilities out of the always-on ones into `franticAbilityIds`. Only the one picked this turn is active. Fused abilities granted later stay constant. The sheet's rules reference lists them as "Frantic Abilities (one each turn)".
+     - At each of their turns the fight waits on a pick. `pending_stance.assemble` is `{ forms, styles, abilities }` (from `franticOptions`), each `[{ id, name, used }]`, where `used` marks last turn's part.
+     - The player (or GM) answers `fight:choose_stance { mode, stanceId: "form.x+style.y", abilityId }`. The server refuses a pick that repeats last turn's Form, Style or Ability (`franticPickAllowed`). A part with nothing else left is offered again, so a turn can't stall.
+     - The pick is stored in `combatants.frantic_pick` (JSON `{ formId, styleId, abilityId }`, cleared when a fight starts). The Stance is derived on the fly (`stanceOfBuild`: any known Form with any known Style, plus the level's bonus die), rolls as usual, and its parts' rules and the picked Frantic Ability run as turn triggers.
+     - The fighter setup lists every Form + Style pair's name (and `assembles: true`), so the token panel names whatever was picked.
+     - The dialog is `FranticPick` in `FightControls.jsx`: three rows of buttons, last turn's struck through.
+   - **Warriors:** a new op `trigger_warrior_path` runs the build's Warrior's Path rules as the follow-on event `warrior_path.trigger`.
+     - Improved Warrior (level 3): its rule is text only in the content, so the engine matches it by id. At **Start Combat** (`triggers.startFight`, before the first turn) it gives the Path's benefit.
+     - Greater Warrior (level 7) also triggers the Path at each turn start, through its own rule.
+     - Paths that move (Badger) become by-hand cards like any movement.
+   - **Bosses:** several Stances (the turn-start pick), Health Bars from the build, and a turn per Health Bar. All of this was already in place from phase 2 and `turnsPerRound`; the playtest pins it.
+   - **Stooges (decided default; the user may revise):** a Stooges character's bodies are its token copies.
+     - In a fight, all its bodies form **one unit with one turn per round**: only the leading body (the lowest combatant id in the fight) is in the order.
+     - They share **one Stance**: the roll sets it on every body.
+     - Only the leading body's abilities run as triggers.
+     - HP stays per body. A shared Health Bar is not tracked, matching the Cinematic Weight decision not to track "Stooges sharing a bar".
+   - Playtest: `scripts/playtest-frantic-npcs.mjs`.
+   - Plan as written:
+    Frantic per-turn Stance assembly with previous-turn exclusions. Warrior (Warrior's Path triggers), Boss (several Stances and bars) and Stooges (one shared Stance, turn and health bar across several bodies) behaviour in fights.
 
 ### Open questions to settle in their phase
-- How Stooges (several bodies, one unit) appear on the lane and the map.
+- Stooges: whether the unit should also share one Health Bar across its bodies (today each body has its own HP; see phase 4).
 - Which `modify_rule` passives get visible badges (e.g. "Unblockable by Shields") versus staying in the rules text.
 - Super Move round limits, once Actions exist only on the sheet.
 
 ## Implementation Phases (iterative — each ends with a deploy + playtest checkpoint)
 The old system's phases (1-9 and the playtest batches after them) are complete history in git. The current state:
 - **Pivot — done.** Old system archived and removed (this document's **The pivot**).
-- **Character builder & turn automation — planned**, in phases 0-4 (see its section above). Phases 0-3 are implemented; phase 4 is next.
+- **Character builder & turn automation — implemented**, in phases 0-4 (see its section above). Further changes are follow-ups from play.
 - **Panic at the Dojo combat assistant**, in the five phases listed in its section above. Phases 1, 2, 2b (Stances) and 3 are implemented; so are multi-lane Simple Combat (2c), Phase 4 and Phase 5 — the whole scoped assistant — plus the Cinematic Weight GM tool. Further changes are follow-ups from play.
 
 ## Implementation Risks & Recommendations

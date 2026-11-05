@@ -241,6 +241,7 @@ function RulesReference({ d, idx }) {
   const [open, setOpen] = useState(null);
   const groups = [
     { key: 'always', title: 'Always in effect', abilities: d.constantAbilityIds, actions: d.constantActionIds },
+    ...(d.franticAbilityIds?.length ? [{ key: 'frantic', title: 'Frantic Abilities (one each turn)', abilities: d.franticAbilityIds }] : []),
     ...d.stances.map((s) => ({ key: s.key, title: s.name, abilities: s.abilityIds, actions: s.actionIds })),
     ...(d.type.assemble
       ? [

@@ -3,7 +3,7 @@
 // derived Stances (client/src/lib/patd/build.js), keyed "form.x+style.y".
 // Everything a fight needs from a build is read here.
 import { all } from './db.js';
-import { armorSourcesOf, deriveBuild, hpTableOf, normalizeBuild } from '../client/src/lib/patd/build.js';
+import { armorSourcesOf, deriveBuild, deriveStance, hpTableOf, normalizeBuild, stanceOfBuild } from '../client/src/lib/patd/build.js';
 import { rollStance } from '../client/src/lib/stanceDice.js';
 import { patdContent } from './patdContent.js';
 
@@ -40,6 +40,26 @@ export async function stancesOf(characterId) {
   return (d?.stances ?? []).filter((s) => s.formId && s.styleId).map((s) => ({ id: s.key, name: s.name, dice: s.dice }));
 }
 
+// The Stance a key names for this character's build ({ id, name, dice }), or
+// null. Frantic Heroes may name any known Form + Style pair.
+export async function stanceByKey(characterId, key) {
+  const s = stanceOfBuild(await derivedFor(characterId), key, patdContent());
+  return s ? { id: s.key, name: s.name, dice: s.dice } : null;
+}
+
+// A combatant's Frantic pick this turn, or null.
+export function franticPickOf(row) {
+  try {
+    const v = JSON.parse(row?.frantic_pick || 'null');
+    return v && typeof v === 'object' ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+// Whether this build assembles its Stance each turn (and can: it knows a Form and a Style).
+export const assembles = (d) => Boolean(d?.type.assemble && d.formIds.length && d.styleIds.length);
+
 // Rolls a derived Stance's dice. Each result keeps its colour, and the level's
 // bonus die is marked `bonus` (its tile says so in the chat card).
 export function rollDerived(dice) {
@@ -53,7 +73,11 @@ export function setupFromDerived(d) {
   return {
     unique_tokens: d.tokens,
     armor_sources: armorSourcesOf(d, idx),
-    stances: d.stances.filter((s) => s.formId && s.styleId).map((s) => ({ id: s.key, name: s.name })),
+    // A Frantic Hero's every Form + Style pair, so whichever was picked has a name.
+    stances: d.type.assemble
+      ? d.formIds.flatMap((formId) => d.styleIds.map((styleId) => deriveStance({ formId, styleId }, idx, d.level.bonusDie))).map((s) => ({ id: s.key, name: s.name }))
+      : d.stances.filter((s) => s.formId && s.styleId).map((s) => ({ id: s.key, name: s.name })),
+    assembles: Boolean(d.type.assemble),
     level: d.level.level,
     kind: hpTableOf(d),
     health_bars: d.healthBars,

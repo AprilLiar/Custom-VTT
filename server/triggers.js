@@ -18,12 +18,14 @@ import { packLane, clampLanes } from '../client/src/lib/simpleLane.js';
 import { chebyshev, ruleSupport, runRule, targetable } from '../client/src/lib/patd/interpreter.js';
 import { controlsCharacter } from './control.js';
 import { hpOf, saveHp, serialized, shapeFightState } from './combatState.js';
-import { derivedFor } from './fighterStances.js';
+import { assembles, derivedFor, franticPickOf } from './fighterStances.js';
+import { stanceOfBuild } from '../client/src/lib/patd/build.js';
 import { patdContent } from './patdContent.js';
 
 const MIDDLEWEIGHT = WEIGHT_BY_KEY.middle;
 const PROMPT_TIMEOUT_MS = 10 * 60 * 1000;
 const FOLLOW_ON_DEPTH = 3;
+const IMPROVED_WARRIOR = 'ability.feature-improved-warrior.improved-warrior';
 
 // Which events a fighter listens to at a moment, by their relation to the
 // active fighter. ("allied_turn" includes the owner's own turn.)
@@ -101,10 +103,18 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     const fogged = (sq) => fogSquares.some((f) => chebyshev(f, sq) <= 1);
 
     const fighters = [];
-    for (const r of rows) {
+    const idx = patdContent();
+    const stoogeSeen = new Set();
+    for (const r of [...rows].sort((a, b) => a.id - b.id)) {
       const d = await derivedFor(r.character_id);
       const state = shapeFightState(r);
-      const stance = d?.stances.find((s) => s.key === state.active_stance_id) ?? d?.stances.find((s) => s.formId && s.styleId) ?? null;
+      const stance = stanceOfBuild(d, state.active_stance_id, idx) ?? d?.stances.find((s) => s.formId && s.styleId) ?? null;
+      // A Frantic Hero's one Frantic Ability for this turn comes with their pick.
+      const frantic = assembles(d) ? franticPickOf(r)?.abilityId : null;
+      // Stooges are one unit: only the leading body's abilities run.
+      const isStooges = d?.type.id === 'character-type.stooges';
+      const follower = isStooges && stoogeSeen.has(r.character_id);
+      if (isStooges) stoogeSeen.add(r.character_id);
       fighters.push({
         id: r.id,
         characterId: r.character_id,
@@ -116,7 +126,7 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
         square: squareOf(r),
         stance,
         derived: d,
-        abilityIds: d ? [...d.constantAbilityIds, ...(stance?.abilityIds ?? [])] : [],
+        abilityIds: d && !follower ? [...d.constantAbilityIds, ...(frantic ? [frantic] : []), ...(stance?.abilityIds ?? [])] : [],
       });
     }
     const byId = (id) => fighters.find((f) => f.id === id);
@@ -241,16 +251,11 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     }
   }
 
-  // Start or end of the active fighter's turn: everyone's matching rules.
-  async function runTurn(fightRow, activeId, moment) {
+  const envFor = async (fightRow) => {
     const key = `${fightRow.scene_id}:${fightRow.mode}`;
     if (!fightState.has(key)) fightState.set(key, { states: new Map(), usage: {} });
     const fs = fightState.get(key);
-    // Usage limits per turn reset at each turn start; per round at round start.
-    if (moment === 'start') for (const k of Object.keys(fs.usage)) if (k.endsWith(':turn')) delete fs.usage[k];
     const { world, fighters, byId } = await buildWorld(fightRow);
-    const active = byId(activeId);
-    if (!active) return;
     const env = {
       key,
       world,
@@ -260,6 +265,25 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
         return fs.states.get(id);
       },
     };
+    return { fs, env, world, fighters, byId };
+  };
+
+  // Start of combat: Improved Warrior gives the Warrior's Path's benefit (its
+  // rule is text only in the content, so it is matched by id here).
+  async function runFightStart(fightRow) {
+    const { env, fighters } = await envFor(fightRow);
+    for (const f of fighters) {
+      if (f.abilityIds.includes(IMPROVED_WARRIOR)) await runFor(f, ['warrior_path.trigger'], env, {});
+    }
+  }
+
+  // Start or end of the active fighter's turn: everyone's matching rules.
+  async function runTurn(fightRow, activeId, moment) {
+    const { fs, env, world, fighters, byId } = await envFor(fightRow);
+    // Usage limits per turn reset at each turn start.
+    if (moment === 'start') for (const k of Object.keys(fs.usage)) if (k.endsWith(':turn')) delete fs.usage[k];
+    const active = byId(activeId);
+    if (!active) return;
     world.context.activeCharacter = active;
     const order = [active, ...fighters.filter((f) => f.id !== active.id)];
     for (const f of order) {
@@ -268,14 +292,23 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     }
   }
 
+  const onChain = (fightRow, job) => {
+    const key = `${fightRow.scene_id}:${fightRow.mode}`;
+    const prev = chains.get(key) ?? Promise.resolve();
+    const next = prev.then(job).catch((err) => console.error('turn triggers', err));
+    chains.set(key, next);
+    return next;
+  };
+
   return {
+    // A fight began: forget any old fight state, then "start of combat" rules.
+    startFight(fightRow) {
+      fightState.delete(`${fightRow.scene_id}:${fightRow.mode}`);
+      return onChain(fightRow, () => runFightStart(fightRow));
+    },
     // Queues the triggers of a turn moment on the fight's own chain (never awaited by the caller).
     schedule(fightRow, activeId, moment) {
-      const key = `${fightRow.scene_id}:${fightRow.mode}`;
-      const prev = chains.get(key) ?? Promise.resolve();
-      const next = prev.then(() => runTurn(fightRow, activeId, moment)).catch((err) => console.error('turn triggers', err));
-      chains.set(key, next);
-      return next;
+      return onChain(fightRow, () => runTurn(fightRow, activeId, moment));
     },
     // A fight ended: forget its choices and cancel its open prompts.
     endFight(sceneId, mode) {
