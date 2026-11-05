@@ -3184,10 +3184,51 @@ The Combat tab's hand-made setup (Stances as name + dice, Unique token picks, Re
 - Which `modify_rule` passives get visible badges (e.g. "Unblockable by Shields") versus staying in the rules text.
 - Super Move round limits, once Actions exist only on the sheet.
 
+## Homebrew builder (decided, implemented)
+
+A GM-only page (`/homebrew`, the flask icon in the header and the mobile menu) for the GM's own **Forms, Styles and Archetypes**. They join the book's content everywhere: the character builder, derived Stances and dice, the fights and the turn triggers.
+
+### Decisions (the user's answers)
+- **Abilities: a simple rule editor.** Each Ability has rules text and rules. A rule has a moment (start or end of your turn, an ally's turn, an enemy's turn, every turn, when you Bleed, when you take damage, after you Challenge) and an optional "you may".
+  - Its effects: gain tokens, a Shield, heal (a number or the Heal Value), deal damage, pay HP, Challenge, discard tokens (any or Status), temporary Armor, add a number to the Action Pool, or "choose one of" up to 4 of these.
+  - Each effect is aimed at you, a chosen ally or enemy in Stance range, you and every ally in range, or every enemy in range.
+  - These compile to the content's own op trees and **run automatically** like the book's. A "Text only" rule becomes a "by hand" card.
+  - An Ability left without rules text gets its rules' summary.
+- **Actions: yes**, with a name, a cost text and rules text. They are reference only, on the sheet, like the book's.
+- **Visibility: the GM publishes.** New items are drafts, listed only in the GM's builder. "Published" offers them in every player's builder. Unpublishing never breaks a character already using one: drafts still resolve, they are just not listed.
+- **Copy from book: yes.** Any book Form, Style or Archetype can start a new item ("{name} (copy)"); the book's entry is untouched.
+  - Rules the editor can express become editable steps.
+  - Any other rule (conditions, limits, other events) is kept exactly as is and runs as the book's would.
+
+### As built
+- **Pure module:** `client/src/lib/patd/homebrew.js` (tested in `server/test/homebrew.test.js`).
+  - `cleanHomebrew` validates an item against the book. Form dice are d4-d12 or a fixed 1-12, purple or green, at most 6. A Style's range is 0-12 with the maximum never below the minimum. Counts are capped, and unknown steps and moments are dropped.
+  - `compileRule` and `specFromRule` turn editor rules into content rules and back.
+  - `itemToContent` gives the catalog entries. Ids are `form.hb-<name>-<4 chars>` (likewise `style.` and `archetype.`); Abilities are `ability.<tail>.a<n>` with rules `….rule-<n>`, Actions `action.<tail>.x<n>`.
+  - `mergeHomebrew` adds the items to the book: lists, Abilities, Actions, and a homebrew Style joining its Archetype's `styleIds`.
+  - `copyFromBook` and `describeSpec` (the editor's one-line preview).
+- **Item fields:** `{ kind, name, descriptionText, published, abilities: [{ name, rulesText, variant?, rules }], actions: [{ name, cost, rulesText }] }`, plus by kind:
+  - **Form:** `aliases`, `actionDice`, `skillId`.
+  - **Style:** `range`, `archetypeId`.
+  - **Archetype:** `archetypeKind`. Its Abilities each say which heroes get them: Focused, Fused or Frantic, or always.
+- **Storage:** table `homebrew (id, kind, data JSON, published, created_at, updated_at)`; `server/homebrew.js`.
+  - Events (GM only): `homebrew:save { item }` creates or updates, and answers `homebrew:saved { id, clientKey }`. `homebrew:publish { id, published }` and `homebrew:delete { id }` complete the set. Each broadcasts `homebrew:updated { items }` and a stage update.
+  - `GET /api/homebrew` returns every item.
+  - Deleting an item drops it from builds using it (unknown ids are cleaned away).
+- **Merging:** the server merges every item into `patdContent()` at boot and after each change (`setHomebrewItems`). `bookContent()` stays the pure book, used for cleaning, copying and the schema test. A content version invalidates the derived-build cache.
+  - On the client, `useContent()` merges too (drafts only for the GM) and stays live over `homebrew:updated`; `useBookContent()` and `useHomebrewItems()` are the parts.
+  - The builder marks homebrew with ✦ (and "draft"). Homebrew Styles with no listed Archetype are grouped under "Homebrew".
+- **UI:** `components/HomebrewPage.jsx`.
+  - On the left: new Form / Style / Archetype, Copy from book, and the items with Draft / Published.
+  - On the right, the editor: name, the kind's fields, the dice editor with a live dice row, description, Abilities with their rules and effects, and Actions. Create / Save, Delete (with a confirm) and Close.
+- **Not in homebrew (yet):** Freestyles, Super Moves, Builds, Features, and movement or placing effects (write those as text).
+- Playtest: `scripts/playtest-homebrew.mjs`.
+
 ## Implementation Phases (iterative — each ends with a deploy + playtest checkpoint)
 The old system's phases (1-9 and the playtest batches after them) are complete history in git. The current state:
 - **Pivot — done.** Old system archived and removed (this document's **The pivot**).
 - **Character builder & turn automation — implemented**, in phases 0-4 (see its section above). Further changes are follow-ups from play.
+- **Homebrew builder — implemented** (see its section above).
 - **Panic at the Dojo combat assistant**, in the five phases listed in its section above. Phases 1, 2, 2b (Stances) and 3 are implemented; so are multi-lane Simple Combat (2c), Phase 4 and Phase 5 — the whole scoped assistant — plus the Cinematic Weight GM tool. Further changes are follow-ups from play.
 
 ## Implementation Risks & Recommendations

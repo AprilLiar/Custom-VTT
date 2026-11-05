@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
-import { Cog, Menu, Users, MessageSquare, Clapperboard } from 'lucide-react';
+import { Cog, FlaskConical, Menu, Users, MessageSquare, Clapperboard } from 'lucide-react';
 import { RoleProvider, useRole } from './roleContext.jsx';
 import { socket } from './socket.js';
 import { useIsDesktop } from './lib/useMediaQuery.js';
@@ -10,6 +10,7 @@ import CharacterSheet from './components/CharacterSheet.jsx';
 import ChatPanel from './components/ChatPanel.jsx';
 import SearchBar from './components/SearchBar.jsx';
 import SettingsPage from './components/SettingsPage.jsx';
+import HomebrewPage from './components/HomebrewPage.jsx';
 import ConnectionBanner from './components/ConnectionBanner.jsx';
 import GmToolsWidget from './components/GmToolsWidget.jsx';
 import ScenePage from './components/ScenePage.jsx';
@@ -167,6 +168,7 @@ function Shell() {
       <Route path="/character/:id" element={<CharacterSheet />} />
       <Route path="/scene" element={<ScenePage />} />
       <Route path="/settings" element={<SettingsPage />} />
+      <Route path="/homebrew" element={<HomebrewPage />} />
       <Route path="*" element={<Navigate to={homePath} replace />} />
     </Routes>
   );
@@ -267,6 +269,15 @@ function Shell() {
         >
           <Menu size={18} />
         </button>
+        {role === 'gm' && (
+          <Link
+            to="/homebrew"
+            title="Homebrew"
+            className="hidden shrink-0 panel-cut-sm border border-zinc-700 p-1.5 text-zinc-400 hover:border-brand-500 hover:text-brand-300 md:block"
+          >
+            <FlaskConical size={18} />
+          </Link>
+        )}
         <Link
           to="/settings"
           title="Settings"
@@ -305,6 +316,19 @@ function Shell() {
             <Clapperboard size={16} />
             Scene
           </Link>
+          {role === 'gm' && (
+            <Link
+              to="/homebrew"
+              onClick={() => {
+                setMobileMenuOpen(false);
+                setChatOpen(false);
+              }}
+              className="flex min-h-11 items-center gap-2 panel-cut-sm border border-zinc-700 px-3 text-sm font-semibold text-zinc-300 hover:bg-zinc-800"
+            >
+              <FlaskConical size={16} />
+              Homebrew
+            </Link>
+          )}
           <Link
             to="/settings"
             onClick={() => {

@@ -82,6 +82,8 @@ export const compendiumArchiveUrl = (id, identity) =>
 // ownerType is 'character' | 'temp_npc'.
 // A character's build (builder phase 1): { build } (null until saved).
 export const getBuild = (characterId) => fetch(`/api/characters/${characterId}/build`).then(json);
+// Every homebrew item (the GM's Forms, Styles, Archetypes): { items }.
+export const getHomebrew = () => fetch('/api/homebrew').then(json);
 export const getCombatSetup = (ownerType, ownerId) =>
   fetch(`/api/combat-setup?${new URLSearchParams({ ownerType, ownerId })}`).then(json);
 // Every fighter's combat profile, keyed `character:<id>` / `temp_npc:<id>`.

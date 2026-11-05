@@ -65,6 +65,9 @@ function TypeStep({ draft, set, idx }) {
   );
 }
 
+// A name with its homebrew mark (✦; drafts are only listed for the GM).
+export const hbName = (e) => (e?.homebrew ? `${e.name} ✦${e.published ? '' : ' draft'}` : e?.name ?? '');
+
 function ArchetypeStep({ draft, set, idx }) {
   const type = buildTypes(idx).find((t) => t.id === draft.type);
   const all = idx.content.archetypes;
@@ -84,7 +87,7 @@ function ArchetypeStep({ draft, set, idx }) {
             return (
               <li key={a.id} className="panel-cut-sm border border-brand-700 bg-brand-950/30 p-2">
                 <div className="flex flex-wrap items-center gap-2">
-                  <span className="font-display text-sm font-bold uppercase text-zinc-100">{arch?.name}</span>
+                  <span className="font-display text-sm font-bold uppercase text-zinc-100">{hbName(arch)}</span>
                   {arch?.kind === 'villain' && <span className="text-[10px] uppercase text-red-300">villain</span>}
                   {arch?.abilityVariants && Object.keys(arch.abilityVariants).length > 0 && (
                     <select value={a.variant} onChange={(e) => setVariant(a.id, e.target.value)} className={selectClass} aria-label={`${arch.name} ability`}>
@@ -117,7 +120,7 @@ function ArchetypeStep({ draft, set, idx }) {
               .filter((a) => a.kind === kind)
               .map((a) => (
                 <button key={a.id} type="button" onClick={() => toggle(a.id)} className={cardClass(has(a.id))} title={a.descriptionText}>
-                  <span className="block text-xs font-semibold text-zinc-100">{a.name}</span>
+                  <span className="block text-xs font-semibold text-zinc-100">{hbName(a)}</span>
                   <span className="block text-[10px] text-zinc-500">
                     {(a.keywords ?? []).join(' · ')}
                     {a.complexity ? ` · complexity ${a.complexity}` : ''}
@@ -144,6 +147,9 @@ function useStyleGroups(idx, draft) {
     const archs = idx.content.archetypes.filter((a) => byArch.has(a.id));
     archs.sort((a, b) => Number(mine.has(b.id)) - Number(mine.has(a.id)));
     for (const a of archs) groups.push({ label: a.name + (mine.has(a.id) ? ' ★' : ''), styles: byArch.get(a.id) });
+    // Homebrew Styles tied to no listed Archetype.
+    const loose = idx.content.styles.filter((s) => !archs.some((a) => a.id === s.archetypeId));
+    if (loose.length) groups.push({ label: 'Homebrew', styles: loose });
     groups.push({ label: 'Freestyles', styles: idx.content.freestyles });
     return groups;
   }, [idx, draft.archetypes]);
@@ -157,7 +163,7 @@ function StyleSelect({ value, onChange, groups, label }) {
         <optgroup key={g.label} label={g.label}>
           {g.styles.map((s) => (
             <option key={s.id} value={s.id}>
-              {s.name}
+              {hbName(s)}
             </option>
           ))}
         </optgroup>
@@ -182,7 +188,7 @@ function StanceStep({ draft, set, idx }) {
         <div className="grid gap-1.5 sm:grid-cols-4">
           {idx.content.forms.map((f) => (
             <button key={f.id} type="button" onClick={() => toggleIn('forms', f.id)} className={cardClass(draft.forms.includes(f.id))}>
-              <span className="block text-xs font-semibold text-zinc-100">{f.name}</span>
+              <span className="block text-xs font-semibold text-zinc-100">{hbName(f)}</span>
               <DiceRow dice={f.actionDice} />
             </button>
           ))}
@@ -194,7 +200,7 @@ function StanceStep({ draft, set, idx }) {
             <div className="mt-0.5 flex flex-wrap gap-1">
               {g.styles.map((s) => (
                 <button key={s.id} type="button" onClick={() => toggleIn('styles', s.id)} className={cardClass(draft.styles.includes(s.id))}>
-                  <span className="text-xs text-zinc-100">{shortStyleName(s.name)}</span>
+                  <span className="text-xs text-zinc-100">{s.homebrew ? hbName(s) : shortStyleName(s.name)}</span>
                   <span className="ml-1 text-[10px] text-zinc-500">{rangeText(s.range)}</span>
                 </button>
               ))}
@@ -230,11 +236,11 @@ function StanceStep({ draft, set, idx }) {
                 <option value="">— Form —</option>
                 {idx.content.forms.map((f) => (
                   <option key={f.id} value={f.id}>
-                    {f.name}
+                    {hbName(f)}
                   </option>
                 ))}
               </select>
-              {form && (
+              {form?.aliases?.length > 0 && (
                 <select value={s.alias ?? ''} onChange={(e) => update(i, { alias: e.target.value })} className={selectClass} aria-label={`Stance ${i + 1} name`}>
                   {form.aliases.map((a) => (
                     <option key={a} value={a}>
@@ -317,7 +323,7 @@ function SkillStep({ draft, set, idx }) {
           <option value="">— none —</option>
           {formSkills.map((s) => (
             <option key={s.id} value={s.id}>
-              {s.name}
+              {hbName(s)}
             </option>
           ))}
         </select>
@@ -326,7 +332,7 @@ function SkillStep({ draft, set, idx }) {
           <option value="">— none —</option>
           {idx.content.skills.map((s) => (
             <option key={s.id} value={s.id}>
-              {s.name}
+              {hbName(s)}
             </option>
           ))}
         </select>

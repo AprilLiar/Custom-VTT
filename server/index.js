@@ -28,6 +28,7 @@ import { loadFightState, registerFightHandlers } from './fights.js';
 import { createTriggerEngine } from './triggers.js';
 import { loadMapTiles, registerMapTileHandlers } from './mapTiles.js';
 import { deleteBuild, loadBuild, registerBuildHandlers } from './builds.js';
+import { listHomebrew, loadHomebrew, registerHomebrewHandlers } from './homebrew.js';
 import { loadAllDerived, setupFromDerived } from './fighterStances.js';
 import { controlsCharacter, dropAssignmentsTo, loadAssignments, setAssignment } from './control.js';
 
@@ -931,6 +932,11 @@ app.get('/api/characters/:id/build', wrap(async (req, res) => {
   res.json({ build: await loadBuild(req.params.id) });
 }));
 
+// Every homebrew item (drafts too: a player's builder just doesn't offer them).
+app.get('/api/homebrew', wrap(async (req, res) => {
+  res.json({ items: await listHomebrew() });
+}));
+
 app.get('/api/combat-setup', wrap(async (req, res) => {
   const owner = parseOwner(req.query.ownerType, req.query.ownerId);
   if (!owner) return res.status(400).json({ error: 'bad owner' });
@@ -1495,6 +1501,7 @@ io.on('connection', (socket) => {
   registerCombatStateHandlers({ on, socket, mayWrite: mayWriteScenePicture, emitStageUpdated, postCard });
   registerMapTileHandlers({ on, socket, emitStageUpdated });
   registerBuildHandlers({ on, socket, io, mayWrite: mayWriteScenePicture, emitStageUpdated });
+  registerHomebrewHandlers({ on, socket, io, emitStageUpdated });
   // Rounds, turns, Stance rolls and Reminders (Phase 5) — see server/fights.js.
   registerFightHandlers({ on, socket, emitStageUpdated, postCard, postSystemMessage, emitAll: (event, payload) => io.emit(event, payload), triggers: triggerEngine() });
   // Turn triggers' choices and targets (builder phase 3) — see server/triggers.js.
@@ -3463,6 +3470,7 @@ await initDb();
 await loadAssignments(all);
 await purgeTempNpcCombat();
 await purgeHandmadeCombatSetup();
+await loadHomebrew();
 // Chat is intentionally ephemeral — see chat:clear below — and clearing it
 // on every boot doubles as clearing it between sessions on Render's free
 // tier, which spins the server down after inactivity.

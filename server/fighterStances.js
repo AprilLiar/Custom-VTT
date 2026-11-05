@@ -5,11 +5,12 @@
 import { all } from './db.js';
 import { armorSourcesOf, deriveBuild, deriveStance, hpTableOf, normalizeBuild, stanceOfBuild } from '../client/src/lib/patd/build.js';
 import { rollStance } from '../client/src/lib/stanceDice.js';
-import { patdContent } from './patdContent.js';
+import { contentVersion, patdContent } from './patdContent.js';
 
-const cache = new Map(); // raw JSON → derived
+const cache = new Map(); // content version + raw JSON → derived
 function derive(rawJson) {
-  if (cache.has(rawJson)) return cache.get(rawJson);
+  const key = `${contentVersion()}|${rawJson}`;
+  if (cache.has(key)) return cache.get(key);
   let d = null;
   try {
     d = deriveBuild(normalizeBuild(JSON.parse(rawJson), patdContent()), patdContent());
@@ -17,7 +18,7 @@ function derive(rawJson) {
     d = null;
   }
   if (cache.size > 500) cache.clear();
-  cache.set(rawJson, d);
+  cache.set(key, d);
   return d;
 }
 

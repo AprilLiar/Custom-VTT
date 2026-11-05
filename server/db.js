@@ -1423,6 +1423,19 @@ export async function initDb() {
     )
   `);
 
+  // Homebrew content (server/homebrew.js, client/src/lib/patd/homebrew.js):
+  // the GM's own Forms, Styles and Archetypes, one cleaned item per row.
+  ddl(`
+    CREATE TABLE IF NOT EXISTS homebrew (
+      id TEXT PRIMARY KEY,
+      kind TEXT NOT NULL,
+      data TEXT NOT NULL,
+      published INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
   // Map tiles (server/mapTiles.js, client/src/lib/mapTiles.js): one row per
   // tile kind on a square of a Scene's Combat map (grid cell) or Simple Combat
   // lane (col = lane space, row = 0).
