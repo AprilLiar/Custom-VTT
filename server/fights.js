@@ -255,7 +255,7 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
     // turn ends (fight:turn_ended). `roll_id`, `character_id` and
     // `stance_key` open the turn's dice board from it (server/diceMarks.js).
     const rollId = `${combatantId}-${Date.now().toString(36)}${Math.floor(Math.random() * 1296).toString(36)}`;
-    await startRoll({ rollId, combatantId, characterId: fighter.characterId, dice: results.length }, emitAll);
+    await startRoll({ rollId, combatantId, characterId: fighter.characterId, dice: results.length, stanceKey: stance.id }, emitAll);
     await postCard('stance_roll', {
       fighter: card(fighter),
       stance: stance.name,

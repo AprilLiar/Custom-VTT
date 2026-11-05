@@ -29,7 +29,7 @@ import { createTriggerEngine } from './triggers.js';
 import { loadMapTiles, registerMapTileHandlers } from './mapTiles.js';
 import { deleteBuild, loadBuild, registerBuildHandlers } from './builds.js';
 import { listHomebrew, loadHomebrew, registerHomebrewHandlers } from './homebrew.js';
-import { listMarks, registerDiceMarkHandlers } from './diceMarks.js';
+import { fighterState, listMarks, registerDiceMarkHandlers } from './diceMarks.js';
 import { loadAllDerived, setupFromDerived } from './fighterStances.js';
 import { controlsCharacter, dropAssignmentsTo, loadAssignments, setAssignment } from './control.js';
 
@@ -938,6 +938,14 @@ app.get('/api/dice-marks', wrap(async (req, res) => {
   res.json({ marks: await listMarks() });
 }));
 
+// A fighter's payable state for the dice board: tokens, HP, Shield, Challenge holders.
+app.get('/api/fighter-state/:id', wrap(async (req, res) => {
+  const st = await fighterState(req.params.id);
+  if (!st) return res.status(404).json({ error: 'not found' });
+  const { row: _row, ...rest } = st;
+  res.json(rest);
+}));
+
 // Every homebrew item (drafts too: a player's builder just doesn't offer them).
 app.get('/api/homebrew', wrap(async (req, res) => {
   res.json({ items: await listHomebrew() });
@@ -1508,7 +1516,7 @@ io.on('connection', (socket) => {
   registerMapTileHandlers({ on, socket, emitStageUpdated });
   registerBuildHandlers({ on, socket, io, mayWrite: mayWriteScenePicture, emitStageUpdated });
   registerHomebrewHandlers({ on, socket, io, emitStageUpdated });
-  registerDiceMarkHandlers({ on, socket, io });
+  registerDiceMarkHandlers({ on, socket, io, emitStageUpdated, postCard });
   // Rounds, turns, Stance rolls and Reminders (Phase 5) — see server/fights.js.
   registerFightHandlers({ on, socket, emitStageUpdated, postCard, postSystemMessage, emitAll: (event, payload) => io.emit(event, payload), triggers: triggerEngine() });
   // Turn triggers' choices and targets (builder phase 3) — see server/triggers.js.

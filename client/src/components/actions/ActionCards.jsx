@@ -8,16 +8,22 @@ import { splitGates } from '../../lib/patd/gates.js';
 // "α Super" / "Δ Super" mark.
 //
 // On the dice board a card can be lit (`lit`: thresholds reached by the dice
-// laid on it, `null` for none) — a mild green glow on the card and on each
-// reached Gate's line — and shows those dice (`dice`: their numbers).
+// laid on it or the cost paid, `null` for none) — a mild green glow on the
+// card and on **every Gate up to the highest one reached** (by the rules you
+// get each Gate up to it, decided) — and shows those dice (`dice`: their
+// numbers) or what was paid (`paid`: text).
 
 const HEADER_CLIP = { clipPath: 'polygon(0 0, 100% 0, calc(100% - 22px) 100%, 0 100%)' };
 
-export function ActionCard({ action, lit = null, dice = [], compact = false, dropTarget = false }) {
+// `paidAmount`: how many tokens / HP a paid cost took — it lights the cost
+// Gates ("5 Iron: …") up to it.
+export function ActionCard({ action, lit = null, dice = [], paid = null, paidAmount = null, compact = false, dropTarget = false }) {
   if (!action) return null;
   const { base, gates } = splitGates(action.rulesText);
-  const lowest = [...(action.gates?.headerThresholds ?? [])].sort((a, b) => a - b)[0] ?? null;
-  const reached = (t) => lit != null && lit.includes(t);
+  // The base effect's threshold: the lowest cost (an "X" cost: 0).
+  const lowest = [...(action.gates?.headerThresholds ?? [])].sort((a, b) => a - b)[0] ?? 0;
+  const top = lit != null && lit.length ? Math.max(...lit) : null;
+  const reached = (t) => top != null && t != null && t <= top;
   const cost = action.cost?.text ?? (typeof action.cost === 'string' ? action.cost : '');
   const size = compact ? 'text-[11px]' : 'text-xs';
   return (
@@ -34,6 +40,11 @@ export function ActionCard({ action, lit = null, dice = [], compact = false, dro
           {cost ? `${cost}: ` : ''}
           {action.name}
         </h4>
+        {paid && (
+          <span className="shrink-0 truncate px-1.5 text-[10px] font-bold uppercase text-emerald-950" title={`Paid: ${paid}`}>
+            ✓ {paid}
+          </span>
+        )}
         {dice.length > 0 && (
           <span className="flex shrink-0 gap-1 px-1.5">
             {dice.map((v, i) => (
@@ -51,7 +62,12 @@ export function ActionCard({ action, lit = null, dice = [], compact = false, dro
       >
         {base && <p className={`whitespace-pre-line rounded-sm px-1 ${reached(lowest) ? 'bg-lime-200 ring-1 ring-lime-500' : ''}`}>{base}</p>}
         {gates.map((g, i) => (
-          <p key={i} className={`whitespace-pre-line rounded-sm px-1 pl-3 ${reached(parseInt(g.threshold, 10)) ? 'bg-lime-200 ring-1 ring-lime-500' : ''}`}>
+          <p
+            key={i}
+            className={`whitespace-pre-line rounded-sm px-1 pl-3 ${
+              (g.kind === 'cost' ? paidAmount != null && g.n <= paidAmount : reached(g.n)) ? 'bg-lime-200 ring-1 ring-lime-500' : ''
+            }`}
+          >
             <b>{g.threshold}:</b> {g.text}
           </p>
         ))}

@@ -3201,8 +3201,19 @@ Small, named patches to the book's content, applied when it is indexed on both s
 - **The sheet:** Actions are a section of their own, apart from the Abilities, which are now headed "Active effects".
   - **Basic Actions** (the 10, collapsed by default) and **Personal Actions** (always available, then each Stance's, or each Form and Style for Frantic, then Super Moves) sit side by side with a divider on wide screens and stacked on phones.
 - **The turn's dice board** (`components/actions/DiceBoard.jsx`). While a fighter's turn lasts, whoever controls them (or the GM) taps the dice on that turn's Stance roll card, in the chat or the Scene's pinned card, to open it.
-  - **Layout:** a full-screen overlay that closes with ✕ or Escape. A scrollable list of the Actions this turn can use runs in two columns with a vertical line between them: **Basic** on the left, **Personal** on the right (only the rolled Stance's, plus the always-available ones and Super Moves; decided). The roll's dice sit enlarged along the bottom.
-  - **Dragging a die onto an Action** (pointer events, so touch, pen and mouse) crosses the die out and lights the Action and the Gate its number reaches in mild green (`gateFor`: the highest header threshold at or below the number). The card's header shows the die.
+  - **Layout (decided, revised):** a full-screen overlay with **no header**. The footer holds the dice (30% smaller than at first), the ✕ (Escape also closes it), and a one-line hint or message. A scrollable list of the Actions this turn can use runs in two columns with a vertical line between them: **Basic** on the left, **Personal** on the right (only the rolled Stance's, plus the always-available ones and Super Moves; decided). The roll's dice sit enlarged along the bottom.
+  - **Dragging a die onto an Action** (pointer events, so touch, pen and mouse) crosses the die out and lights the Action in mild green, with **every Gate up to the one its number reaches** (decided, revised: by the rules you get each Gate up to it).
+    - `gateFor` gives the top Gate: the highest cost or effect threshold at or below the number. An "X" cost buys its base effect with any number and reaches its effect Gates (Grapple, a 7: base, 4+ and 7+).
+    - The card's header shows the die.
+  - **Token costs (decided):** tapping an Action with a non-dice cost (no die selected) pays it for real (`client/src/lib/patd/tokenCost.js`).
+    - **Checked first:** against the fighter's live tokens, HP, Shield and the enemies holding their Challenge (`GET /api/fighter-state/:combatantId`).
+    - **Not enough:** the footer says what it needs.
+    - **Exactly one way and nothing to decide:** paid at once.
+    - **Otherwise:** a full-screen dialog shows only the affordable options and, for the one picked, only its own questions: which Basic tokens (steppers for the kinds held), how much HP for an X cost, or whose Challenge. It is never a fixed matrix.
+    - **Paid:** the card lights with every Gate up to what the payment counts as (its rating), including the cost Gates ("5 Iron: …", "4 Basic Tokens: …"), and its header shows "✓ 1 Iron + 1 Speed". A notice reports it in the chat.
+    - **Tapping a paid Action again undoes the payment in full:** tokens and Shield come back, and HP is restored exactly (a bar the cost broke comes back too) if nothing changed it since, otherwise the HP is given back. A Challenge returns to its holder.
+    - A Free Action just lights up. Laying a die on a token-only Action is refused with a note.
+  - **Server checks:** `dice:pay { rollId, actionId, option, answers }` / `dice:unpay { rollId, actionId }` are for the fighter's controllers or the GM, while the roll is active. The Action must be one this turn can use: Basic, the rolled Stance's (its key is kept with the marks), or always available. A refused payment answers `dice:pay_failed`. Marks now also carry `pay: { actionId: { option, rating, text, amount } }`.
   - **Tapping (decided, revised):** tapping a die crosses it out and selects it (a ring). Tapping an Action then lays the die on it, the same as dragging. Tapping the selected die again brings it back. Tapping a die that's on an Action takes it off and selects it, to lay elsewhere. Tapping the empty board deselects.
   - **Purely visual:** nothing is paid, spent or resolved.
 - **Shared and kept for the turn** (`server/diceMarks.js`, table `dice_marks (roll_id, combatant_id, character_id, dice, data, active, created_at)`, the last 300 rolls).
@@ -3211,7 +3222,7 @@ Small, named patches to the book's content, applied when it is indexed on both s
   - Crossed dice show crossed on the chat card for everyone. Closing and reopening the board shows the same state.
 
 ### The sheet's rules reference
-- Rules text keeps its line breaks. An Action's or Super Move's **Gates** ("3+: …") are split from the base effect (`client/src/lib/patd/gates.js`, `splitGates`) and listed one per line with the threshold in amber.
+- Rules text keeps its line breaks. An Action's or Super Move's **Gates** ("3+: …", and the cost Gates "5 Iron: …") are split from the base effect (`client/src/lib/patd/gates.js`, `splitGates`) and listed one per line with the threshold in amber.
 
 ### Open questions to settle in their phase
 - Stooges: whether the unit should also share one Health Bar across its bodies (today each body has its own HP; see phase 4).

@@ -10,14 +10,22 @@
 
 export const MAX_DICE = 12;
 
-// The Gate a die's number reaches on an Action: the highest header threshold
-// at or below it (Damage, a 6: "5+"). null when the Action has no thresholds
-// (an "X" or token cost) or the number is below its lowest one.
+// The Gate a die's number (or a paid cost's rating) reaches on an Action.
+// By the rules you get every Gate up to it (decided), so this is the top one:
+// the highest cost threshold at or below the number (Damage, a 6: 5). An
+// "X" cost has no cost thresholds — any number buys its base effect (0) and
+// reaches its effect Gates (Grapple, a 7: 7). null when the number is below
+// the Action's lowest cost (Guard, a 3).
 export function gateFor(action, value) {
-  const ts = [...(action?.gates?.headerThresholds ?? [])].filter((t) => typeof t === 'number').sort((a, b) => a - b);
-  let out = null;
-  for (const t of ts) if (Number(value) >= t) out = t;
-  return out;
+  const nums = (list) => [...(list ?? [])].filter((t) => typeof t === 'number').sort((a, b) => a - b);
+  const header = nums(action?.gates?.headerThresholds);
+  const effect = nums(action?.gates?.effectThresholds);
+  const v = Number(value);
+  if (header.length) {
+    if (!(v >= header[0])) return null;
+    return [...header, ...effect].filter((t) => t <= v).reduce((a, b) => Math.max(a, b), header[0]);
+  }
+  return effect.filter((t) => t <= v).reduce((a, b) => Math.max(a, b), 0);
 }
 
 // The Actions a turn can use: the Basic ones, and the Personal ones — always

@@ -53,7 +53,7 @@ const p = await connect({ role: 'player', characterId: mira.id });
 const q = await connect({ role: 'player', characterId: other.id });
 const seen = [];
 q.on('dice:marks', (m) => seen.push(m));
-gm.emit('build:save', { characterId: mira.id, build: { type: 'hero-type.focused', stances: [{ formId: 'form.blaster', styleId: 'style.halcyon' }] } });
+gm.emit('build:save', { characterId: mira.id, build: { type: 'hero-type.focused', stances: [{ formId: 'form.blaster', styleId: 'style.swift' }] } });
 gm.emit('build:save', { characterId: thug.id, build: { type: 'character-type.warrior', stances: [{ formId: 'form.power', styleId: 'style.halcyon' }] } });
 await sleep(400);
 gm.emit('combat_token:place', { ownerType: 'character', ownerId: mira.id, col: 2, row: 2 });
@@ -66,7 +66,7 @@ gm.emit('fight:start', { mode: 'combat', allies: [{ combatantId: tm.id }], enemi
 await sleep(1200);
 const roll = cards.find((c) => c.kind === 'stance_roll');
 const rollId = roll?.payload.roll_id;
-check('the Stance roll card carries what the board needs', rollId && roll.payload.character_id === mira.id && roll.payload.stance_key === 'form.blaster+style.halcyon', JSON.stringify(roll?.payload));
+check('the Stance roll card carries what the board needs', rollId && roll.payload.character_id === mira.id && roll.payload.stance_key === 'form.blaster+style.swift', JSON.stringify(roll?.payload));
 let marks = (await jf('/api/dice-marks')).marks;
 check('its marks start empty and active', marks[rollId]?.active === true && marks[rollId].used.length === 0);
 
@@ -79,6 +79,47 @@ await sleep(300);
 marks = (await jf('/api/dice-marks')).marks;
 check("the fighter's player marks: a crossed die and one laid on Damage (also crossed)", JSON.stringify(marks[rollId].used) === '[0,1]' && marks[rollId].assign[0].actionId === 'action.system-basic-actions.damage', JSON.stringify(marks[rollId]));
 check('everyone hears it (dice:marks)', seen.some((m) => m.rollId === rollId && m.used.length === 2));
+
+console.log('\n--- paying a token cost ---');
+const fs = () => jf(`/api/fighter-state/${tm.id}`);
+gm.emit('fighter:token', { ref: { combatantId: tm.id }, key: 'iron', delta: 3 });
+gm.emit('fighter:token', { ref: { combatantId: tm.id }, key: 'power', delta: 1 });
+await sleep(400);
+check('the fighter state is readable', (await fs()).tokens.iron === 3);
+// Swift Strike: 2 Basic tokens, split as 1 Iron + 1 Power.
+p.emit('dice:pay', { rollId, actionId: 'action.style-swift.swift-strike', option: 0, answers: { split: { iron: 1, power: 1 } } });
+await sleep(500);
+let s1 = await fs();
+marks = (await jf('/api/dice-marks')).marks;
+check('paying spends exactly the chosen tokens', s1.tokens.iron === 2 && !s1.tokens.power && marks[rollId].pay['action.style-swift.swift-strike']?.text === '1 Iron + 1 Power', JSON.stringify([s1.tokens, marks[rollId].pay]));
+p.emit('dice:pay', { rollId, actionId: 'action.style-unbreakable.stay-out-of-this', option: 0, answers: {} });
+await sleep(400);
+check("can't pay what you don't have (4 Iron with 2)", (await fs()).tokens.iron === 2 && !(await jf('/api/dice-marks')).marks[rollId].pay['action.style-unbreakable.stay-out-of-this']);
+p.emit('dice:unpay', { rollId, actionId: 'action.style-swift.swift-strike' });
+await sleep(500);
+s1 = await fs();
+check('tapping again undoes it in full', s1.tokens.iron === 3 && s1.tokens.power === 1 && !(await jf('/api/dice-marks')).marks[rollId].pay['action.style-swift.swift-strike'], JSON.stringify(s1.tokens));
+// HP cost that breaks a bar, then undone exactly.
+gm.emit('fight:preset_weight', { mode: 'combat', weight: 'middle', fighters: [{ ref: { combatantId: tm.id }, level: 1, bars: 2 }] });
+await sleep(400);
+gm.emit('fighter:set_hp', { ref: { combatantId: tm.id }, current: 2 });
+await sleep(400);
+const hpBefore = (await jf('/api/stage?role=gm')).combatTokens.find((t) => t.id === tm.id).fight.hp;
+p.emit('dice:pay', { rollId, actionId: 'action.form-blaster.amplify', option: 0, answers: {} });
+await sleep(500);
+const hpPaid = (await jf('/api/stage?role=gm')).combatTokens.find((t) => t.id === tm.id).fight.hp;
+p.emit('dice:unpay', { rollId, actionId: 'action.form-blaster.amplify' });
+await sleep(500);
+const hpBack = (await jf('/api/stage?role=gm')).combatTokens.find((t) => t.id === tm.id).fight.hp;
+check('an HP cost (2 HP at 2, breaking a bar) is paid, and undone exactly', hpPaid.broken === hpBefore.broken + 1 && JSON.stringify(hpBack) === JSON.stringify(hpBefore), JSON.stringify([hpBefore, hpPaid, hpBack]));
+q.emit('dice:pay', { rollId, actionId: 'action.form-dance.dance-together', option: 0, answers: {} });
+await sleep(300);
+check("someone else can't pay for the fighter", !(await jf('/api/dice-marks')).marks[rollId].pay['action.form-dance.dance-together']);
+gm.emit('fighter:token', { ref: { combatantId: tm.id }, key: 'speed', delta: 3 });
+await sleep(300);
+p.emit('dice:pay', { rollId, actionId: 'action.form-dance.dance-together', option: 0, answers: {} });
+await sleep(300);
+check("…and nobody pays for an Action outside this turn's Stance", !(await jf('/api/dice-marks')).marks[rollId].pay['action.form-dance.dance-together']);
 
 console.log('\n--- the turn ends ---');
 gm.emit('fight:next', { mode: 'combat' });
