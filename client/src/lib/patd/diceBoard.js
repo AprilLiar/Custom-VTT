@@ -69,10 +69,43 @@ export const EMPTY_MARKS = Object.freeze({ used: [], assign: {} });
 //     power: false, paused: false, committing: false }
 // The pool is the roll's results followed by the extra numbers (pool index).
 
-export const poolOf = (data) => [
-  ...(data.results ?? []).map((r, i) => ({ index: i, value: r.result, die: r.die, color: r.color, bonus: r.bonus, fixed: r.die === undefined })),
-  ...(data.extra ?? []).map((x, j) => ({ index: (data.results ?? []).length + j, value: x.value, source: x.source, added: true })),
-];
+// Numbers an Ability took out (`removed`: combined, split, Judgment's lowest
+// die) keep their index but leave the pool (phase H).
+export const poolOf = (data) =>
+  [
+    ...(data.results ?? []).map((r, i) => ({ index: i, value: r.result, die: r.die, color: r.color, bonus: r.bonus, fixed: r.die === undefined, removed: Boolean(r.removed), changed: Boolean(r.changed) })),
+    ...(data.extra ?? []).map((x, j) => ({ index: (data.results ?? []).length + j, value: x.value, source: x.source, added: true, removed: Boolean(x.removed), changed: Boolean(x.changed) })),
+  ].filter((p) => !p.removed);
+
+// **The numbers still in the Action Pool (phase H):** not taken out, not spent
+// by a committed Action.
+export const livePool = (data) => {
+  const spent = new Set((data?.placements ?? []).filter((p) => p.committed && p.kind === 'die').map((p) => p.die));
+  return poolOf(data ?? {}).filter((p) => !spent.has(p.index));
+};
+
+// Changes to a board's pool, by pool index (pure; `data` is changed in place).
+export const poolEntry = (data, index) => {
+  const n = (data.results ?? []).length;
+  return index < n ? { list: data.results, i: index, key: 'result' } : { list: data.extra ?? [], i: index - n, key: 'value' };
+};
+export function setPoolValue(data, index, value) {
+  const e = poolEntry(data, index);
+  if (!e.list[e.i]) return false;
+  e.list[e.i][e.key] = Math.max(0, Math.round(Number(value) || 0));
+  e.list[e.i].changed = true;
+  return true;
+}
+export function removePoolNumber(data, index) {
+  const e = poolEntry(data, index);
+  if (!e.list[e.i]) return false;
+  e.list[e.i].removed = true;
+  return true;
+}
+export function addPoolValue(data, value, source = 'ability') {
+  data.extra = [...(data.extra ?? []), { value: Math.max(0, Math.round(Number(value) || 0)), source }];
+  return (data.results ?? []).length + data.extra.length - 1;
+}
 
 // What everyone sees of a board (no server-only payment snapshots).
 export function publicBoard(rollId, data, active) {

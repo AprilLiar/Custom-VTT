@@ -71,10 +71,13 @@ export function createActionRunner(kit) {
   }
 
   // One placed Action, resolved. → { ok, lines, manual, error }
-  async function perform(fightRow, row, data, placement) {
+  // `envIn`: run inside a job's own env (an Action performed by a rule —
+  // phase H); that job saves the runtime, not this.
+  async function perform(fightRow, row, data, placement, envIn = null) {
     const idx = patdContent();
     const action = idx.get(placement.actionId);
-    const { env, byId } = await envFor(fightRow);
+    const { env, byId } = envIn ? { env: envIn, byId: (id) => envIn.world.fighters().find((f) => f.id === id) } : await envFor(fightRow);
+    const save = () => (envIn ? null : env.save());
     const actor = byId(actingOn(row).combatantId);
     if (!action || !actor) return { ok: false, error: 'the fighter or the Action is gone' };
     let payment;
@@ -130,7 +133,7 @@ export function createActionRunner(kit) {
       const r = await env.world.damage(actor, 2, p, { source: 'ability' });
       lines.push(`${p.name} deals ${r.taken} damage to ${actor.name}`);
       await env.world.move(p, { distance: 2, upTo: true });
-      await env.save();
+      await save();
       return { ok: true, lines, manual, gateRating, action, actor };
     }
     const ctx = {
@@ -190,14 +193,21 @@ export function createActionRunner(kit) {
     await emitEvent(env, 'any_action.fully_resolved', actor, { action, history });
     expireTemps(env.rt, 'action', { actorId: actor.id });
     if (damaging) expireTemps(env.rt, 'damage_action', { actorId: actor.id });
-    await env.save();
     // Copied (Control): the copier performs the same Action now, as a
-    // Reactive Action, with a 4 for its X and Gates.
+    // Reactive Action, with a 4 for its X and Gates — in this same env.
     for (const c of control.copiers) {
-      const copy = await perform(fightRow, { combatant_id: c.id, character_id: c.characterId, data: '{}' }, { results: [{ result: 4 }], extra: [] }, { kind: 'die', die: 0, actionId: action.id, stop: null, copied: true });
+      const copy = await perform(fightRow, { combatant_id: c.id, character_id: c.characterId, data: '{}' }, { results: [{ result: 4 }], extra: [] }, { kind: 'die', die: 0, actionId: action.id, stop: null, copied: true }, env);
       if (copy.ok) lines.push(`${c.name} Copies it${copy.lines.length ? `: ${copy.lines.join('; ')}` : ''}`);
     }
+    await save();
     return { ok: true, lines, manual, gateRating, action, actor };
+  }
+
+  // **An Action performed by a rule (phase H: `perform_action`)** — Gunkata's
+  // Gunslinger Action, the Elder's, the Teacher's: without paying its cost,
+  // with `rating` for its Gates and X, in the rule's own env.
+  async function performFree(env, fightRow, actor, actionId, rating) {
+    return perform(fightRow, { combatant_id: actor.id, character_id: actor.characterId, data: '{}' }, { results: [{ result: rating }], extra: [] }, { kind: 'die', die: 0, actionId, stop: null, free: true }, env);
   }
 
   // Each enemy in range holding Control is asked once per turn: Copy (1),
@@ -263,7 +273,7 @@ export function createActionRunner(kit) {
       // Snapshot first, with the board's pool as it was (added numbers come back too).
       const snap = await takeSnapshot(fight.id);
       const ins = await queued(() =>
-        run('INSERT INTO fight_snapshots (fight_id, roll_id, placement_key, data) VALUES (?, ?, ?, ?)', [fight.id, rollId, next.key, JSON.stringify({ ...snap, board: { extra: data.extra ?? [] } })])
+        run('INSERT INTO fight_snapshots (fight_id, roll_id, placement_key, data) VALUES (?, ?, ?, ?)', [fight.id, rollId, next.key, JSON.stringify({ ...snap, board: { extra: data.extra ?? [], results: data.results ?? [] } })])
       );
       const result = await perform(fight, row, data, next);
       const after = readData(await one('SELECT * FROM dice_marks WHERE roll_id = ?', [rollId]));
@@ -328,6 +338,8 @@ export function createActionRunner(kit) {
       x.summary = null;
     }
     data.extra = snap.board?.extra ?? data.extra ?? [];
+    // Rerolled, changed or taken-out numbers come back too (phase H).
+    if (snap.board?.results) data.results = snap.board.results;
     data.paused = false;
     data.committing = false;
     await queued(() => run('DELETE FROM fight_snapshots WHERE fight_id = ? AND id >= ?', [fight.id, p.snapshot]));
@@ -351,6 +363,21 @@ export function createActionRunner(kit) {
     return true;
   }
 
-  return { commitBoard, retrieve, addPoolNumber, fightOfBoard };
+  // **The Action Pool changed by an Ability (phase H):** `change(data)` on the
+  // fighter's active board, read and saved in one queued step. → the new data.
+  async function changePool(combatantId, change) {
+    let out = null;
+    await queued(async () => {
+      const r = await one('SELECT * FROM dice_marks WHERE combatant_id = ? AND active = 1 ORDER BY created_at DESC, rowid DESC LIMIT 1', [combatantId]);
+      if (!r) return;
+      const data = readData(r);
+      change(data);
+      await saveBoard(r.roll_id, data, emit);
+      out = data;
+    });
+    return out;
+  }
+
+  return { commitBoard, retrieve, addPoolNumber, changePool, performFree, fightOfBoard };
 }
 

@@ -77,6 +77,8 @@ gm.on('trigger:prompt', (p) => {
   let answer = p.kind === 'confirm' ? true : p.kind === 'targets' ? [p.options[0].id] : p.options?.[0]?.id;
   if (p.kind === 'square' && /Volcanic/.test(p.title)) answer = p.options.some((o) => o.id === '4,3') ? '4,3' : [];
   if (p.kind === 'square' && /Necromancer/.test(p.title)) answer = '3,4';
+  // The end of her turn: "each of your Copies may Move 1" — no, it stays on the Trap.
+  if (p.kind === 'confirm' && /Necromancer/.test(p.title)) answer = false;
   setTimeout(() => gm.emit('trigger:answer', { id: p.id, answer }), 120);
 });
 gm.emit('scene:create', { name: `OB ${stamp}` });
@@ -123,6 +125,7 @@ check('a hand-placed Trap on the Copy’s space leaves the Copy there', tilesAt(
 gm.emit('fight:next', { mode: 'combat' });
 await sleep(3000);
 st = await jf('/api/stage?role=gm');
+check('the Necromancer’s end of turn: each Copy may Move 1 (asked; declined)', prompts.some((p) => p.kind === 'confirm' && /Necromancer/.test(p.title)), JSON.stringify(prompts.map((p) => [p.kind, p.title])));
 check('the End Phase: the Trap destroys the Copy standing on it', !tilesAt(3, 4).some((t) => t.kind === 'copy') && tilesAt(3, 4).some((t) => t.kind === 'trap'), JSON.stringify(tilesAt(3, 4)));
 check('…said in the End Phase notice', cards.some((c) => c.payload?.automatic === 'end_phase' && /Copy: Trap, destroyed/.test(c.payload.text)), JSON.stringify(cards.filter((c) => c.payload?.automatic === 'end_phase').map((c) => c.payload.text)));
 check("Bo's turn: Hidden Style puts Fog on his own space", tilesAt(6, 3).some((t) => t.kind === 'fog') || st.combatTokens.find((t) => t.id === tb.id).col !== 6, JSON.stringify(tilesAt(6, 3)));

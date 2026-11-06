@@ -146,6 +146,19 @@ export function createMoves({ ask, emitEvent, postCard }) {
     return pick.square;
   }
 
+  // **Teleport to a picked space (phase H: `teleport_to`):** the rule already
+  // picked it; a Trap there triggers, Rubble doesn't (teleports never do).
+  async function teleportTo(env, m, f, sq) {
+    if (!f?.square || !sq) return null;
+    const b = m.board();
+    if (has(b, sq, 'trap')) await trap(env, f, sq);
+    await m.setSquare(f, sq);
+    note(`${f.name} teleports to ${squareName(m.mode, sq)}`);
+    await fire(env, 'self.movement.finished', f, { square: sq, teleport: true });
+    await flush('Teleport', f);
+    return sq;
+  }
+
   // **Swap Spaces:** both teleport into each other's space.
   async function swap(env, m, a, b) {
     if (!a?.square || !b?.square || a.id === b.id) return false;
@@ -323,7 +336,7 @@ export function createMoves({ ask, emitEvent, postCard }) {
     return { ok: true };
   }
 
-  return { actionMove, teleport, swap, forced, freeReach, swapsFor, freeMove, freeSwap };
+  return { actionMove, teleport, teleportTo, swap, forced, freeReach, swapsFor, freeMove, freeSwap };
 }
 
 // Whose Free Movement it is now (book p.57): the active fighter before each

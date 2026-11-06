@@ -34,7 +34,8 @@ import { createActionRunner } from './engine/actions.js';
 import { createHits } from './engine/hits.js';
 import { createMoves } from './engine/moves.js';
 import { atZero, comebackSquares, reactionClusters, turnContext } from '../client/src/lib/patd/engine/turn.js';
-import { turnActions } from '../client/src/lib/patd/diceBoard.js';
+import { hasDiceCost } from '../client/src/lib/patd/tokenCost.js';
+import { addPoolValue, livePool, turnActions } from '../client/src/lib/patd/diceBoard.js';
 import { closeReactionBoards, fighterState, readData as readBoardData, saveBoard } from './diceMarks.js';
 
 // The combat map's image size, by image hash (its playable bounds — phase D).
@@ -214,6 +215,17 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     for (const f of fighters) Object.defineProperty(f, 'space', { get: () => f.square, enumerable: false });
     // Standing in a Wall's space (Parkour Style may; phase G).
     for (const f of fighters) Object.defineProperty(f, 'standingOnWall', { get: () => f.square != null && walls.has(`${f.square.col},${f.square.row}`), enumerable: false });
+    // Each fighter's active turn board, for their Action Pool (phase H).
+    const boards = new Map();
+    if (fighters.length) {
+      const marks = await all(`SELECT * FROM dice_marks WHERE active = 1 AND combatant_id IN (${fighters.map(() => '?').join(',')}) ORDER BY created_at, rowid`, fighters.map((f) => f.id));
+      for (const m of marks) boards.set(m.combatant_id, readBoardData(m));
+    }
+    for (const f of fighters) Object.defineProperty(f, 'actionPool', { get: () => livePool(boards.get(f.id)), enumerable: false });
+    // Status tokens held (book p.75: Burning, Challenge, Fatigue, Weakness) — Apply Pressure.
+    for (const f of fighters) {
+      Object.defineProperty(f, 'statusTokenCount', { get: () => ['burning', 'fatigue', 'weakness'].reduce((n, k) => n + (f.tokens[k] ?? 0), 0) + (f.challengeId != null ? 1 : 0), enumerable: false });
+    }
 
     // **Copies (phase E, book p.71):** replicas of their Original — map tiles of
     // kind 'copy' with the Original's combatant id. A Copy fills its space like
@@ -465,7 +477,15 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
         // What it really healed (a limit of "3 HP per turn" counts this).
         return r.before ? healed : n;
       },
-      payHp: (f, n) => (f.isCopy ? null : changeHp(f, -Math.max(0, Number(n) || 0))),
+      payHp: (f, n) => {
+        if (f.isCopy) return null;
+        // "HP you have lost this turn" counts HP paid too (Karma — phase H).
+        if (world.env) {
+          const flags = fighterRt(world.env.rt, f.id).flags;
+          flags.hpLost = (flags.hpLost ?? 0) + Math.max(0, Number(n) || 0);
+        }
+        return changeHp(f, -Math.max(0, Number(n) || 0));
+      },
       // **Damage (phase C):** the whole Damage Resolution — Weakness, Power,
       // Iron, Shield, Armor — with its prompts and events (engine/hits.js).
       // opts: { source: 'action' | 'ability' | 'super' | 'trap' | 'fall' |
@@ -544,10 +564,41 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
       },
       challenge: (target, challenger) => queued(() => run('UPDATE combatants SET challenge_id = ? WHERE id = ?', [challenger.id, target.id])),
       // Onto the fighter's active turn board (phase B); held numbers outside a turn come in phase F.
-      addPoolNumber: (f, v) => runner.addPoolNumber(f.id, v, 'ability'),
+      addPoolNumber: (f, v) => world.changePool(f, (d) => addPoolValue(d, v, 'ability')),
+      // **The Action Pool (phase H):** the live numbers of a fighter's active
+      // board, and changes to it (engine/actions.js changePool).
+      // **Actions performed by rules (phase H: `perform_action`):** the Actions
+      // a fighter's current Stance gives (`gunslinger`, `unique`, `dice` only),
+      // and performing one without its cost, with `rating` for Gates and X.
+      actionsFor: (f, { gunslinger = false, unique = false, dice = false } = {}) => {
+        const owner = f?.isCopy ? byId(f.ownerId) : f;
+        if (!owner?.derived) return [];
+        const t = turnActions(owner.derived, owner.stance, idx);
+        const personal = t.personal.flatMap((g) => g.ids);
+        const ids = unique ? personal : [...t.basic, ...personal];
+        return [...new Set(ids)].map((id) => idx.get(id)).filter((a) => a && (!gunslinger || (a.tags ?? []).includes('gunslinger')) && (!dice || hasDiceCost(a)));
+      },
+      performAction: async (actor, actionId, { rating = 4 } = {}) => {
+        const env = world.env;
+        if (!env || (env.performDepth ?? 0) >= 3) return { ok: false, lines: [], manual: ['too many Actions inside Actions'] };
+        env.performDepth = (env.performDepth ?? 0) + 1;
+        try {
+          return await runner.performFree(env, fight, actor.isCopy ? byId(actor.ownerId) : actor, actionId, rating);
+        } finally {
+          env.performDepth -= 1;
+        }
+      },
+      pool: (f) => (f?.isCopy ? [] : livePool(boards.get(f.id))),
+      changePool: async (f, change) => {
+        if (!f || f.isCopy) return null;
+        const d = await runner.changePool(f.id, change);
+        if (d) boards.set(f.id, d);
+        return d;
+      },
       // **Movement (phase D):** engine/moves.js, with the squares picked by people.
       move: (f, opts) => moves.actionMove(world.env, movers, f, opts),
       teleport: (f, opts) => moves.teleport(world.env, movers, f, opts),
+      teleportTo: (f, sq) => moves.teleportTo(world.env, movers, f, sq),
       forced: (f, opts) => moves.forced(world.env, movers, f, opts),
       swap: (a, b) => moves.swap(world.env, movers, a, b),
     };
@@ -605,6 +656,8 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
       ability,
       event: eventPayload,
       captured,
+      // "Per Action" limits count within the current Action (phase H).
+      actionSeq: env.rt.actionSeq ?? 0,
       log: (l) => lines.push(l),
       ask: ask(fighter, env.key, env.gen, env.tg, env.when),
       // A Text notification: an orange reminder, like any rule left to people.
@@ -799,6 +852,7 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
         performedActionThisTurn: { get: () => (flag(f, 'actions') ?? 0) > 0, enumerable: false, configurable: true },
         tookDamageThisTurn: { get: () => Boolean(flag(f, 'tookDamage')), enumerable: false, configurable: true },
         obstaclesDestroyedThisTurn: { get: () => flag(f, 'obstaclesDestroyed') ?? 0, enumerable: false, configurable: true },
+        hpLostThisTurn: { get: () => flag(f, 'hpLost') ?? 0, enumerable: false, configurable: true },
       });
     }
     return { env, world, fighters, byId, onTrap, movers };

@@ -32,6 +32,7 @@
 // ask(request) → Promise(answer). request: { kind: 'confirm' | 'choose' | 'targets', fighter, title, text, options?, minimum?, maximum? }
 
 import { ENFORCED_RULES } from './engine/modifiers.js';
+import { addPoolValue, removePoolNumber, setPoolValue } from './diceBoard.js';
 
 export const SUPPORTED_OPS = new Set([
   'sequence',
@@ -81,6 +82,22 @@ export const SUPPORTED_OPS = new Set([
   'register_trigger',
   'schedule',
   'replace_token_gain',
+  // full automation, phase H: the Action Pool
+  'increase_pool_number',
+  'set_pool_number',
+  'replace_pool_number',
+  'duplicate_pool_number',
+  'increase_distinct_pool_numbers',
+  'reroll_die',
+  'reroll_dice',
+  'combine_pool_numbers',
+  'split_pool_number',
+  'remove_lowest_action_die',
+  'modify_pool_numbers',
+  'roll_die',
+  'perform_action',
+  'repeat',
+  'teleport_to',
 ]);
 // When a `schedule` runs (engine/runtime.js runs them at those moments).
 const SCHEDULE_AT = new Set(['current_turn.end', 'next_turn.start']);
@@ -171,10 +188,15 @@ export const SUPPORTED_EVENTS = new Set([
   'enemy.destroyed_own_copy',
   'self.reactive_action.before',
   'stance.construct', // applied when the Stance is derived (build.js stanceRange)
+  // phase H
+  'self.training_token_spent',
 ]);
+const ACTOR_OPS = new Set(['perform_action', 'swap_spaces', 'damage']);
+// A selector's range measured from a target or binding (phase H).
+const ORIGIN_REF = /^(targets|bindings)\.[A-Za-z]+$/;
 // A rule's `limit` metrics: how often it ran, or how much it healed or gave
 // this period (phase G: "a maximum of 3 HP per turn").
-const LIMIT_METRICS = new Set(['activations', 'hp_healed', 'tokens_gained']);
+const LIMIT_METRICS = new Set(['activations', 'uses', 'hp_healed', 'tokens_gained']);
 const SELECTOR_KINDS = new Set([
   'enemy',
   'ally',
@@ -188,10 +210,14 @@ const SELECTOR_KINDS = new Set([
   'enemy_or_obstacle',
   'unit_or_obstacle',
   'ally_or_obstacle',
+  // phase H: numbers and dice in your own Action Pool (the pool ops pick them)
+  'own_pool_number',
+  'rolled_die',
+  'action', // an Action to perform (perform_action)
 ]);
 const OBSTACLE_OPS_KINDS = new Set(['trap', 'fog', 'pit', 'rubble', 'wall', 'copy']);
 // Copies aren't tracked on the board, so "you or your Copies" is your own range.
-const RANGE_MODES = new Set(['stance', 'visible', 'adjacent', 'explicit', 'none', 'map', 'self_or_copies_range', 'adjacent_to_any_own_copy']);
+const RANGE_MODES = new Set(['stance', 'visible', 'adjacent', 'explicit', 'none', 'map', 'self_or_copies_range', 'adjacent_to_any_own_copy', 'adjacent_to_binding', 'on_or_adjacent_to_binding']);
 const REF_OK = [
   /^self$/,
   /^self\.bleeding$/,
@@ -201,6 +227,16 @@ const REF_OK = [
   /^self\.currentBar\.damage$/,
   // This turn so far, and where you stand (phase G: server/triggers.js envFor).
   /^self\.(performedActionThisTurn|tookDamageThisTurn|obstaclesDestroyedThisTurn|standingOnWall)$/,
+  // The numbers still in your Action Pool (phase H).
+  /^self\.actionPool\.length$/,
+  // What this resolution did, what paid for it, what they hold (phase H).
+  /^history\.(tokensDiscarded|damageDealtToTargetByThisAction|damageTakenByEach|enemiesDamagedByThisAction|challengedByThisAction)$/,
+  /^payment\.(hp|tokens\.[a-z_]+)$/,
+  /^(targets|bindings)\.[A-Za-z]+\.(tokens\.[a-z_]+|statusTokenCount)$/,
+  /^self\.hpLostThisTurn$/,
+  // The Actions a perform_action offers (performCandidates).
+  /^(self|activeCharacter|context\.activeCharacter)\.currentStance\.(gunslingerActions|uniqueActions)$/,
+  /^self\.availableActions$/,
   // "Holds your Challenge": relative to whoever the rule belongs to.
   /^(targets|bindings)\.[A-Za-z]+\.holdsOwnChallenge$/,
   /^event\.(attacker|activeCharacter)\.holdsOwnChallenge$/,
@@ -237,6 +273,7 @@ const OPERATORS = {
   not_in: ([a, list]) => !(Array.isArray(list) ? list : [list]).includes(a),
   is_obstacle: ([a]) => Boolean(a?.isObstacle || a?.isCopy),
   is_enemy: () => false, // relative to the rule's owner: evalValue answers it
+  is_ally: () => false, // likewise
   tier_value: ([rating, tiers]) => {
     let out = 0;
     for (const [t, v] of tiers ?? []) if (rating >= t) out = v;
@@ -265,11 +302,13 @@ export function ruleSupport(rule) {
     if (typeof n.ref === 'string' && !REF_OK.some((re) => re.test(n.ref))) problems.push(`ref ${n.ref}`);
     if (typeof n.kind === 'string' && n.range && !SELECTOR_KINDS.has(n.kind)) problems.push(`selector ${n.kind}`);
     if (n.range && typeof n.range === 'object' && n.range.mode && !RANGE_MODES.has(n.range.mode)) problems.push(`range ${n.range.mode}`);
-    // "Your Original" is you (a Copy's maker).
-    if (n.range?.origin && n.range.origin !== 'self' && n.range.origin !== 'original') problems.push(`origin ${n.range.origin}`);
-    if (n.inFog || n.originBinding || n.obstacleBinding) problems.push('selector detail');
+    // "Your Original" is you (a Copy's maker); a target or binding names another origin (phase H).
+    if (n.range?.origin && n.range.origin !== 'self' && n.range.origin !== 'original' && !ORIGIN_REF.test(n.range.origin)) problems.push(`origin ${n.range.origin}`);
+    // `originBinding` is understood by the binding ranges (phase H) only.
+    if (n.inFog || n.obstacleBinding || (n.originBinding && !BINDING_RANGES.has(n.range?.mode))) problems.push('selector detail');
     if (n.op === 'place_obstacle' && !OBSTACLE_OPS_KINDS.has(n.obstacle)) problems.push(`obstacle ${n.obstacle}`);
-    if (n.actor) problems.push('actor');
+    // Someone else doing the step: understood for performing an Action, a swap and damage (phase H).
+    if (n.actor && !ACTOR_OPS.has(n.op)) problems.push('actor');
     for (const [k, v] of Object.entries(n)) if (k !== 'range') walk(v);
   };
   walk(rule.effect);
@@ -306,9 +345,10 @@ export function evalValue(v, scope) {
       const [c, a, b] = v.args;
       return evalValue(c, scope) ? evalValue(a, scope) : evalValue(b, scope);
     }
-    if (v.operator === 'is_enemy') {
+    if (v.operator === 'is_enemy' || v.operator === 'is_ally') {
       const a = evalValue(v.args?.[0], scope);
-      return Boolean(a && scope.self && a.side != null && a.side !== scope.self.side);
+      if (!a || !scope.self || a.side == null) return false;
+      return v.operator === 'is_enemy' ? a.side !== scope.self.side : a.side === scope.self.side;
     }
     const fn = OPERATORS[v.operator];
     if (!fn) throw new Unsupported(`operator ${v.operator}`);
@@ -403,11 +443,12 @@ export async function runRule(rule, ctx) {
   if (ctx.captured) Object.assign(scope.targets, ctx.captured.targets ?? {}), Object.assign(scope.bindings, ctx.captured.bindings ?? {}), Object.assign(scope.variables, ctx.captured.variables ?? {});
   if (rule.condition && !evalValue(rule.condition, scope)) return { ran: false };
   if (rule.limit) {
-    const key = `${rule.id}:${ctx.self.id}:${rule.limit.period}`;
+    // "Per Action" counts within that one Action (`ctx.actionSeq`).
+    const key = `${rule.id}:${ctx.self.id}:${rule.limit.period}${rule.limit.period === 'action' ? `#${ctx.actionSeq ?? 0}` : ''}`;
     const max = Number(evalValue(rule.limit.maximum, scope)) || 0;
     if ((ctx.usage[key] ?? 0) >= max) return { ran: false };
     // HP healed / tokens gained: the heal or gain itself is cut to what's left.
-    if ((rule.limit.metric ?? 'activations') === 'activations') ctx.usage[key] = (ctx.usage[key] ?? 0) + 1;
+    if (['activations', 'uses'].includes(rule.limit.metric ?? 'activations')) ctx.usage[key] = (ctx.usage[key] ?? 0) + 1;
     else scope.cap = { metric: rule.limit.metric, key, max };
   }
   // **A "you may" rule (`optional` on the rule).** When it opens by picking
@@ -466,10 +507,88 @@ function capped(scope, ctx, metric, amount, later = false) {
   return n;
 }
 
+// ---- the Action Pool (phase H)
+// "You may …" on the rule: the pick itself offers the skip (taken once).
+const takeDecline = (scope) => {
+  const d = Boolean(scope.mayDecline);
+  scope.mayDecline = false;
+  return d;
+};
+const poolLabel = (p) => (p.die ? `${p.value} (d${p.die}${p.bonus ? ', bonus' : ''})` : p.added ? `${p.value} (added)` : `${p.value}`);
+// One number of `owner`'s live pool, picked by the rule's owner (one choice needs no asking).
+async function pickPool(scope, ctx, owner, { filter = () => true, text, decline = false }) {
+  const pool = (ctx.world.pool?.(owner) ?? []).filter(filter);
+  if (!pool.length) return null;
+  if (pool.length === 1 && !decline) return pool[0];
+  const options = pool.map((p) => ({ id: String(p.index), label: poolLabel(p) }));
+  if (decline) options.push({ id: SKIP, label: 'Skip' });
+  const ans = await ctx.ask({ kind: 'choose', fighter: scope.self, title: ctx.ability?.name ?? 'Action Pool', text, options, minimum: 1, maximum: 1 });
+  const id = String(asList(ans)[0] ?? '');
+  if (id === SKIP) return null;
+  return pool.find((p) => String(p.index) === id) ?? (decline ? null : pool[0]);
+}
+async function chooseInteger(scope, ctx, spec, text) {
+  const lo = Number(spec?.minimum) || 1;
+  const hi = Number(spec?.maximum) || 9;
+  const options = Array.from({ length: hi - lo + 1 }, (_, i) => ({ id: String(lo + i), label: String(lo + i) }));
+  const ans = await ctx.ask({ kind: 'choose', fighter: scope.self, title: ctx.ability?.name ?? 'Choose a number', text, options, minimum: 1, maximum: 1 });
+  const v = Number(asList(ans)[0]);
+  return Number.isFinite(v) && v >= lo && v <= hi ? v : hi;
+}
+const rollDie = (ctx, sides) => 1 + Math.floor((ctx.random ?? Math.random)() * sides);
+
+// The Actions a `perform_action` offers (phase H), or null when its selector is unknown.
+//   ref …currentStance.gunslingerActions — Gunkata
+//   ref …currentStance.uniqueActions — the Teacher's (the active character's)
+//   ref …availableActions — any of the actor's
+//   { kind: 'action', diceAction, unique, availableInCurrentStanceOfAnyUnit,
+//     excludeSelfAction, notSelectedByThisActionThisTurn } — the Elder's, A Warrior's Death
+function performCandidates(sel, scope, ctx, actor) {
+  const world = ctx.world;
+  if (typeof sel?.ref === 'string') {
+    const owner = /^(context\.)?activeCharacter\./.test(sel.ref) ? scope.context.activeCharacter : actor;
+    if (!owner) return [];
+    if (/currentStance\.gunslingerActions$/.test(sel.ref)) return world.actionsFor(owner, { gunslinger: true });
+    if (/currentStance\.uniqueActions$/.test(sel.ref)) return world.actionsFor(owner, { unique: true });
+    if (/availableActions$/.test(sel.ref)) return world.actionsFor(owner, {});
+    return null;
+  }
+  if (sel?.kind !== 'action') return null;
+  const owners = sel.availableInCurrentStanceOfAnyUnit ? world.fighters() : [actor];
+  const seen = new Map();
+  for (const o of owners) for (const a of world.actionsFor(o, { unique: Boolean(sel.unique), dice: Boolean(sel.diceAction) })) seen.set(a.id, a);
+  let list = [...seen.values()];
+  if (sel.excludeSelfAction) list = list.filter((a) => a.id !== ctx.ability?.id);
+  if (sel.notSelectedByThisActionThisTurn) {
+    const picked = ctx.usage[`picked:${ctx.ability?.id}:${scope.self.id}:turn`] ?? [];
+    list = list.filter((a) => !picked.includes(a.id));
+  }
+  return list;
+}
+
 const DECLINED = Symbol('declined');
 // A "you may" opening with a pick offers its own skip (phase D: a square too).
-const PICK_OPS = new Set(['discard_tokens', 'select_token', 'move', 'teleport', 'place_obstacle']);
+const PICK_OPS = new Set([
+  'discard_tokens',
+  'select_token',
+  'move',
+  'teleport',
+  'place_obstacle',
+  // phase H: a number or die of the Action Pool
+  'increase_pool_number',
+  'set_pool_number',
+  'replace_pool_number',
+  'duplicate_pool_number',
+  'reroll_die',
+  'reroll_dice',
+  'combine_pool_numbers',
+  'split_pool_number',
+  'teleport_to',
+]);
 const opensWithPick = (e) => PICK_OPS.has(e?.op) || (e?.op === 'sequence' && PICK_OPS.has(e.steps?.[0]?.op));
+const firstOp = (e) => (e?.op === 'sequence' ? e.steps?.[0]?.op : e?.op);
+// An `optional` step opening with one of these asks no yes/no first (phase H).
+const POOL_PICKS = new Set(['increase_pool_number', 'set_pool_number', 'replace_pool_number', 'duplicate_pool_number', 'reroll_die', 'reroll_dice', 'combine_pool_numbers', 'split_pool_number']);
 
 async function targetsOf(v, scope, ctx, label) {
   if (isSelector(v)) return select(v, scope, ctx, label);
@@ -481,7 +600,10 @@ async function targetsOf(v, scope, ctx, label) {
 async function selectSpaces(sel, scope, ctx, from, { optional = false } = {}) {
   const { world } = ctx;
   if (!world.spaces) throw new Unsupported('spaces');
-  let pool = world.spaces(from, sel.range, { empty: Boolean(sel.empty) });
+  // "A space adjacent to the target" (phase H): measured from the bound one.
+  let pool = BINDING_RANGES.has(sel.range?.mode)
+    ? world.spaces(from, { mode: 'map' }, { empty: Boolean(sel.empty) }).filter((sq) => nearAnchor(sel, anchorOf(sel, scope), sq))
+    : world.spaces(from, sel.range, { empty: Boolean(sel.empty) });
   const count = sel.count;
   if (count === 'all') return pool;
   const maximum = typeof count === 'number' ? count : typeof count === 'object' && count?.maximum != null ? evalValue(count.maximum, scope) : 1;
@@ -512,6 +634,23 @@ async function selectSpaces(sel, scope, ctx, from, { optional = false } = {}) {
   return picked;
 }
 
+// **Ranges measured from a bound thing (phase H):** "a space adjacent to the
+// target", "enemies on or adjacent to the Trap" — `originBinding` names it
+// (a target, a binding, or a ref such as `event.target`).
+const BINDING_RANGES = new Set(['adjacent_to_binding', 'on_or_adjacent_to_binding']);
+function anchorOf(sel, scope) {
+  const b = sel.originBinding;
+  if (typeof b !== 'string') return null;
+  if (b.includes('.')) return asList(evalValue({ ref: b }, scope))[0] ?? null;
+  return asList(scope.targets[b] ?? scope.bindings[b])[0] ?? null;
+}
+function nearAnchor(sel, anchor, sq) {
+  const at = anchor?.square ?? (Number.isInteger(anchor?.col) ? anchor : null);
+  if (!at || !sq) return false;
+  const d = chebyshev(at, sq);
+  return sel.range.mode === 'adjacent_to_binding' ? d === 1 : d <= 1;
+}
+
 // The candidates a selector allows, and the pick when one is needed.
 async function select(sel, scope, ctx, label = 'a target') {
   const { world } = ctx;
@@ -519,22 +658,35 @@ async function select(sel, scope, ctx, label = 'a target') {
   // Acting from one of your Copies (phase E): ranges count from its square;
   // "this Action's maximum range +X" (phase G) rides along.
   const bonus = (scope.mods ?? []).filter((m) => m.targetId === self.id && m.rule === 'current_action.maximum_range_bonus').reduce((n, m) => n + (Number(m.value) || 0), 0);
-  const from = ctx.originSquare || bonus ? { ...self, square: ctx.originSquare ?? self.square, rangeBonus: bonus } : self;
+  let from = ctx.originSquare || bonus ? { ...self, square: ctx.originSquare ?? self.square, rangeBonus: bonus } : self;
+  // "Within range of that ally / of the Copy / of the obstacle" (phase H): a
+  // fighter or Copy measures with its own range, an obstacle with yours.
+  if (ORIGIN_REF.test(sel.range?.origin ?? '')) {
+    const o = asList(evalValue({ ref: sel.range.origin }, scope))[0];
+    if (!o?.square) return [];
+    from = o.side != null ? o : { ...self, square: o.square };
+  }
   if (sel.kind === 'space') return selectSpaces(sel, scope, ctx, from);
   const copies = world.copies?.() ?? [];
+  // "Adjacent to the target" (phase H): from the bound one, not from you.
+  const bound = BINDING_RANGES.has(sel.range?.mode);
+  const obstacleRange = bound ? { mode: 'map' } : sel.range;
   let pool;
   if (sel.kind === 'enemy') pool = [...world.enemiesOf(self), ...copies.filter((c) => c.side !== self.side)];
   else if (sel.kind === 'ally' || sel.kind === 'self_and_allies' || sel.kind === 'self_or_ally') pool = world.alliesOf(self);
   else if (sel.kind === 'own_copy') pool = copies.filter((c) => c.ownerId === self.id);
-  else if (sel.kind === 'obstacle') pool = world.obstacles?.(from, sel.range, { types: sel.types ?? null }) ?? [];
+  else if (sel.kind === 'obstacle') pool = world.obstacles?.(from, obstacleRange, { types: sel.types ?? null }) ?? [];
   else if (sel.kind.endsWith('_or_obstacle')) {
     const units = sel.kind === 'enemy_or_obstacle' ? world.enemiesOf(self) : sel.kind === 'ally_or_obstacle' ? world.alliesOf(self) : world.fighters();
-    pool = [...units, ...(world.obstacles?.(from, sel.range, {}) ?? [])];
+    pool = [...units, ...(world.obstacles?.(from, obstacleRange, {}) ?? [])];
   } else pool = [...world.fighters(), ...copies];
   if (sel.excludeSelf) pool = pool.filter((f) => f.id !== self.id);
   // Dodged with Control (phase F): immune to this Action.
   if (ctx.immuneIds?.length) pool = pool.filter((f) => !ctx.immuneIds.includes(f.id));
-  pool = pool.filter((f) => f.isObstacle || (f.isCopy && sel.range?.mode === 'none') || world.inRange(from, f, sel.range));
+  if (bound) {
+    const anchor = anchorOf(sel, scope);
+    pool = pool.filter((f) => f !== anchor && nearAnchor(sel, anchor, f.square));
+  } else pool = pool.filter((f) => f.isObstacle || (f.isCopy && sel.range?.mode === 'none') || world.inRange(from, f, sel.range));
   const count = sel.count;
   if (count === 'all' || sel.kind === 'self_and_allies') return pool;
   if (!pool.length) return [];
@@ -584,6 +736,13 @@ async function run(node, scope, ctx) {
     }
     case 'optional': {
       if (!affordable(node.effect, scope, ctx)) return;
+      // "You may combine two of your numbers": the pick offers the skip (phase H).
+      if (opensWithPick(node.effect) && POOL_PICKS.has(firstOp(node.effect))) {
+        scope.mayDecline = true;
+        const out = await run(node.effect, scope, ctx);
+        scope.mayDecline = false;
+        return out === DECLINED ? undefined : out;
+      }
       const yes = await ctx.ask({
         kind: 'confirm',
         fighter: scope.self,
@@ -623,6 +782,8 @@ async function run(node, scope, ctx) {
       const list = await targetsOf(node.selector, scope, ctx);
       for (const f of list) {
         scope.bindings[node.binding] = f;
+        // "Any target that takes 0 damage from it" (Grape Shot — phase H).
+        scope.history.damageTakenByEach = scope.history.damageByTarget?.[f.id] ?? 0;
         await run(node.effect, scope, ctx);
       }
       return;
@@ -702,6 +863,8 @@ async function run(node, scope, ctx) {
           if (keys.includes(first)) keys = [first, ...keys.filter((k) => k !== first)];
         }
         const n = await world.discardTokens(f, keys, amount);
+        // "For each token they discarded" (Hunger — phase H).
+        scope.history.tokensDiscarded = (scope.history.tokensDiscarded ?? 0) + (Number(n) || 0);
         if (n) {
           ctx.log(`${f.name} discards ${n} token${n === 1 ? '' : 's'}`);
           await ctx.emit?.('self.tokens_discarded_by_action_or_ability', f, { amount: n, isCostPayment: false });
@@ -796,7 +959,9 @@ async function run(node, scope, ctx) {
           }
           continue;
         }
-        const r = await world.damage(f, n, scope.self, {
+        // Dealt by someone else when the step says so (Slugfest's target hits back — phase H).
+        const attacker = node.actor ? (asList(val(node.actor))[0] ?? scope.self) : scope.self;
+        const r = await world.damage(f, n, attacker, {
           source: ctx.source ?? 'ability',
           ignore: node.ignoreDefenses ?? null,
           allowIron: Boolean(node.allowIronTokens),
@@ -807,12 +972,18 @@ async function run(node, scope, ctx) {
         });
         const taken = r?.taken ?? r?.toHp ?? n;
         const steps = r?.steps?.length ? r.steps : r?.absorbed ? [`Shield absorbs ${r.absorbed}${r.broke ? ' and breaks' : ''}`] : [];
-        ctx.log(`${scope.self.name} deals ${taken} damage to ${f.name}${steps.length ? ` (${steps.join(', ')})` : ''}`);
+        ctx.log(`${attacker.name} deals ${taken} damage to ${f.name}${steps.length ? ` (${steps.join(', ')})` : ''}`);
         // What this resolution did (history.*): damage actually dealt, who was hit
         // (an attempt counts for the Challenge, even when it was all blocked).
         scope.history.damageDealt = (scope.history.damageDealt ?? 0) + taken;
         (scope.history.damagedIds ??= []).push(f.id);
         if (taken > 0 && f.side !== scope.self.side) (scope.history.enemyDamagedIds ??= []).push(f.id);
+        // Per target, and the enemies it damaged as fighters (phase H: Burning
+        // Fist, Grape Shot, Icicle Fall).
+        const byTarget = (scope.history.damageByTarget ??= {});
+        byTarget[f.id] = (byTarget[f.id] ?? 0) + taken;
+        scope.history.damageDealtToTargetByThisAction = byTarget[scope.targets.target?.id] ?? 0;
+        if (taken > 0 && f.side !== scope.self.side && !(scope.history.enemiesDamagedByThisAction ??= []).includes(f)) scope.history.enemiesDamagedByThisAction.push(f);
         // A push after this hit carries its Power (+1 each) and Iron (−1 each) — phase D.
         (scope.history.hits ??= {})[f.id] = { pushBonus: r?.pushBonus ?? 0, pushResist: r?.pushResist ?? 0 };
       }
@@ -866,6 +1037,8 @@ async function run(node, scope, ctx) {
         if ((world.heldTokens(f)[key] ?? 0) < amount) return DECLINED;
         await world.discardTokens(f, [key], amount);
         ctx.log(`${f.name} spends ${amount} ${tokenName(key)}`);
+        // "After you spend a Training Token" (Training Style — phase H).
+        if (key === 'training' && amount > 0) await ctx.emit?.('self.training_token_spent', f, { amount });
       }
       return;
     }
@@ -882,8 +1055,14 @@ async function run(node, scope, ctx) {
         const sel = { ...node.target, empty: node.target.empty || kind === 'copy' || kind === 'wall' };
         const from = ctx.originSquare ? { ...scope.self, square: ctx.originSquare } : scope.self;
         // Only spaces it can legally go on.
-        const legal = world.spaces(from, sel.range, { empty: sel.empty }).filter((sq) => world.canPlace(kind, sq));
-        squares = await selectSpaces({ ...sel, count: sel.count ?? node.count ?? 1 }, scope, { ...ctx, world: { ...world, spaces: () => legal } }, from, { optional: decline });
+        // "Adjacent to the target": every space, then selectSpaces keeps those near it.
+        const legal = world.spaces(from, BINDING_RANGES.has(sel.range?.mode) ? { mode: 'map' } : sel.range, { empty: sel.empty }).filter((sq) => world.canPlace(kind, sq));
+        // How many to place is the node's count (3 Traps, "up to 3", X); the
+        // target's own count is one space per pick.
+        const raw = node.count ?? sel.count ?? 1;
+        const count = raw && typeof raw === 'object' && 'ref' in raw ? Math.max(0, Number(val(raw)) || 0) : raw;
+        if (count === 0) return;
+        squares = await selectSpaces({ ...sel, count }, scope, { ...ctx, world: { ...world, spaces: () => legal } }, from, { optional: decline });
         if (decline && !squares.length) return DECLINED;
       } else {
         squares = asList(val(node.target)).map((x) => x?.square ?? x).filter((x) => x && Number.isInteger(x.col) && world.canPlace(kind, x));
@@ -951,8 +1130,30 @@ async function run(node, scope, ctx) {
       const actor = node.actor ? asList(val(node.actor))[0] : scope.self;
       for (const f of await targetsOf(node.target, scope, ctx)) {
         if (!actor) continue;
+        // Swapping with a Wall (Walled In) moves a tile: by hand.
+        if (f.isObstacle && !f.isCopy) {
+          unsupported(node, scope, ctx);
+          continue;
+        }
         await world.swap(actor, f);
         if (actor.id === scope.self.id || f.id === scope.self.id) scope.history.selfMoved = true;
+      }
+      return;
+    }
+    // **Teleport to a picked space (phase H):** "teleport to a space adjacent
+    // to the target", "anywhere you can see", "anywhere on the map".
+    case 'teleport_to': {
+      const dest = node.destination;
+      if (!world.teleportTo || !isSelector(dest) || dest.kind !== 'space') return unsupported(node, scope, ctx);
+      const decline = takeDecline(scope);
+      for (const f of node.target ? await targetsOf(node.target, scope, ctx) : [scope.self]) {
+        const squares = await selectSpaces({ ...dest, empty: dest.empty !== false, count: 1 }, scope, ctx, scope.self, { optional: decline });
+        if (!squares.length) {
+          if (decline) return DECLINED;
+          continue;
+        }
+        await world.teleportTo(f, squares[0]);
+        if (f.id === scope.self.id) scope.history.selfMoved = true;
       }
       return;
     }
@@ -994,6 +1195,7 @@ async function run(node, scope, ctx) {
       for (const f of await targetsOf(node.target, scope, ctx, 'an enemy')) {
         await world.challenge(f, challenger);
         (scope.history.challengedIds ??= []).push(f.id);
+        (scope.history.challengedByThisAction ??= []).push(f);
         ctx.log(`${challenger.name} Challenges ${f.name}`);
         await ctx.emit?.('self.challenge_given_to_enemy', challenger, { target: f });
       }
@@ -1014,6 +1216,182 @@ async function run(node, scope, ctx) {
         await world.addPoolNumber(f, v);
         ctx.log(`${f.name} adds a ${v} to their Action Pool`);
       }
+      return;
+    }
+    // **The Action Pool (phase H):** numbers on the owner's turn board, picked
+    // by the owner and changed in place (server/engine/actions.js changePool).
+    case 'increase_pool_number':
+    case 'set_pool_number':
+    case 'replace_pool_number':
+    case 'duplicate_pool_number': {
+      if (!world.changePool) return unsupported(node, scope, ctx);
+      const decline = takeDecline(scope);
+      const maxValue = node.target?.maximumValue;
+      const verb = { increase_pool_number: `increase by ${val(node.amount)}`, set_pool_number: 'change', replace_pool_number: 'replace', duplicate_pool_number: 'copy' }[node.op];
+      const pick = await pickPool(scope, ctx, scope.self, { filter: (p) => maxValue == null || p.value <= maxValue, text: `Which number to ${verb}?`, decline });
+      if (!pick) return decline ? DECLINED : undefined;
+      if (node.op === 'duplicate_pool_number') {
+        await world.changePool(scope.self, (d) => addPoolValue(d, pick.value, 'ability'));
+        ctx.log(`${scope.self.name} copies a ${pick.value} into their Action Pool`);
+        return;
+      }
+      let value;
+      if (node.op === 'increase_pool_number') value = Math.min(Number(val(node.maximum)) || Infinity, pick.value + (Number(val(node.amount)) || 0));
+      else if (node.value?.chooseInteger) value = await chooseInteger(scope, ctx, node.value.chooseInteger, `Change the ${pick.value} to…`);
+      else value = Number(val(node.value)) || 0;
+      await world.changePool(scope.self, (d) => setPoolValue(d, pick.index, value));
+      ctx.log(`${scope.self.name}: a ${pick.value} in their Action Pool becomes a ${value}`);
+      return;
+    }
+    // Wardancer: +3, +2 and +1 to three different numbers (to a maximum).
+    case 'increase_distinct_pool_numbers': {
+      if (!world.changePool) return unsupported(node, scope, ctx);
+      const max = Number(val(node.maximum)) || Infinity;
+      const used = new Set();
+      for (const amount of asList(val(node.amounts))) {
+        const pick = await pickPool(scope, ctx, scope.self, { filter: (p) => !used.has(p.index) && p.value < max, text: `Which number gets +${amount}?` });
+        if (!pick) break;
+        used.add(pick.index);
+        const value = Math.min(max, pick.value + amount);
+        await world.changePool(scope.self, (d) => setPoolValue(d, pick.index, value));
+        ctx.log(`${scope.self.name}: ${pick.value} → ${value}`);
+      }
+      return;
+    }
+    // Rerolls keep the new result (`mustKeepNew` is the only kind in the book).
+    case 'reroll_die':
+    case 'reroll_dice': {
+      if (!world.changePool || (node.target && !isSelector(node.target))) return unsupported(node, scope, ctx);
+      const decline = takeDecline(scope);
+      const dice = (world.pool(scope.self) ?? []).filter((p) => p.die > 0 && !p.added);
+      if (!dice.length) return decline ? DECLINED : undefined;
+      const max = node.op === 'reroll_die' ? 1 : Number(val(node.maximum)) || 1;
+      const ans = await ctx.ask({
+        kind: 'targets',
+        fighter: scope.self,
+        title: ctx.ability?.name ?? 'Re-roll',
+        text: max === 1 ? 'Re-roll which die? You keep the new result.' : `Re-roll up to ${max} dice? You keep the new results.`,
+        options: dice.map((p) => ({ id: String(p.index), label: poolLabel(p) })),
+        minimum: decline || max > 1 ? 0 : 1,
+        maximum: max,
+      });
+      const picks = asList(ans).map(String).map((id) => dice.find((p) => String(p.index) === id)).filter(Boolean).slice(0, max);
+      if (!picks.length) return decline ? DECLINED : undefined;
+      const rolled = picks.map((p) => ({ p, value: rollDie(ctx, p.die) }));
+      await world.changePool(scope.self, (d) => rolled.forEach(({ p, value }) => setPoolValue(d, p.index, value)));
+      ctx.log(`${scope.self.name} re-rolls ${rolled.map(({ p, value }) => `d${p.die} ${p.value} → ${value}`).join(', ')}`);
+      return;
+    }
+    // Flashy Style: two numbers into one (their sum); one number into its halves.
+    case 'combine_pool_numbers': {
+      if (!world.changePool) return unsupported(node, scope, ctx);
+      const decline = takeDecline(scope);
+      const count = Number(val(node.count)) || 2;
+      if ((world.pool(scope.self) ?? []).length < count) return decline ? DECLINED : undefined;
+      const picks = [];
+      for (let i = 0; i < count; i++) {
+        const pick = await pickPool(scope, ctx, scope.self, { filter: (p) => !picks.some((x) => x.index === p.index), text: i ? 'Combine it with which number?' : 'Combine which number?', decline: decline && i === 0 });
+        if (!pick) return decline ? DECLINED : undefined;
+        picks.push(pick);
+      }
+      const sum = picks.reduce((n, p) => n + p.value, 0);
+      await world.changePool(scope.self, (d) => {
+        for (const p of picks) removePoolNumber(d, p.index);
+        addPoolValue(d, sum, 'ability');
+      });
+      ctx.log(`${scope.self.name} combines ${picks.map((p) => p.value).join(' and ')} into a ${sum}`);
+      return;
+    }
+    case 'split_pool_number': {
+      if (!world.changePool) return unsupported(node, scope, ctx);
+      const decline = takeDecline(scope);
+      const min = Number(val(node.minimumOriginal)) || 2;
+      const pick = await pickPool(scope, ctx, scope.self, { filter: (p) => p.value >= min, text: 'Split which number in half?', decline });
+      if (!pick) return decline ? DECLINED : undefined;
+      const halves = [Math.ceil(pick.value / 2), Math.floor(pick.value / 2)];
+      await world.changePool(scope.self, (d) => {
+        removePoolNumber(d, pick.index);
+        for (const h of halves) addPoolValue(d, h, 'ability');
+      });
+      ctx.log(`${scope.self.name} splits a ${pick.value} into ${halves.join(' and ')}`);
+      return;
+    }
+    // Judgment Style: an enemy with your Challenge loses their lowest Action Die
+    // (else their bonus die, else their smallest number).
+    case 'remove_lowest_action_die': {
+      if (!world.changePool) return unsupported(node, scope, ctx);
+      for (const f of await targetsOf(node.target, scope, ctx)) {
+        const pool = world.pool(f) ?? [];
+        const bySize = (a, b) => a.die - b.die || a.value - b.value;
+        const gone = pool.filter((p) => p.die > 0 && !p.added && !p.bonus).sort(bySize)[0] ?? pool.find((p) => p.bonus) ?? pool.filter((p) => p.fixed || p.added).sort((a, b) => a.value - b.value)[0];
+        if (!gone) continue;
+        await world.changePool(f, (d) => removePoolNumber(d, gone.index));
+        ctx.log(`${f.name} loses their ${gone.die ? `d${gone.die} (${gone.value})` : gone.value}`);
+      }
+      return;
+    }
+    // Every number of theirs changes (to a minimum).
+    case 'modify_pool_numbers': {
+      if (!world.changePool) return unsupported(node, scope, ctx);
+      const amount = Number(val(node.amount)) || 0;
+      const min = Number(val(node.minimum)) || 0;
+      for (const f of await targetsOf(node.target, scope, ctx)) {
+        const pool = world.pool(f) ?? [];
+        if (!pool.length) continue;
+        await world.changePool(f, (d) => pool.forEach((p) => setPoolValue(d, p.index, Math.max(min, p.value + amount))));
+        ctx.log(`${f.name}'s numbers ${amount >= 0 ? '+' : '−'}${Math.abs(amount)}`);
+      }
+      return;
+    }
+    // **An Action performed by a rule (phase H):** picked from those on offer,
+    // performed without paying its cost, with `rating` for its Gates and X.
+    case 'perform_action': {
+      if (!world.performAction || !world.actionsFor) return unsupported(node, scope, ctx);
+      const actor = node.actor ? asList(val(node.actor))[0] : scope.self;
+      if (!actor) return;
+      const list = performCandidates(node.selector, scope, ctx, actor);
+      if (list == null) return unsupported(node, scope, ctx);
+      if (!list.length) {
+        ctx.log(`${actor.name}: no Action to perform`);
+        return;
+      }
+      let action = list[0];
+      if (list.length > 1) {
+        const ans = await ctx.ask({ kind: 'choose', fighter: scope.self, title: ctx.ability?.name ?? 'Perform an Action', text: `${actor.name} performs which Action?`, options: list.map((a) => ({ id: a.id, label: a.name })), minimum: 1, maximum: 1 });
+        action = list.find((a) => a.id === String(asList(ans)[0])) ?? list[0];
+      }
+      if (node.selector?.notSelectedByThisActionThisTurn) (ctx.usage[`picked:${ctx.ability?.id}:${scope.self.id}:turn`] ??= []).push(action.id);
+      const rating = Number(val(node.rating)) || 4;
+      // "Spend that 10" (A Warrior's Death): the number added for it leaves the pool.
+      if (node.payCost && world.changePool) {
+        const added = (world.pool(actor) ?? []).filter((p) => p.added && p.value === rating).at(-1);
+        if (added) await world.changePool(actor, (d) => removePoolNumber(d, added.index));
+      }
+      const r = await world.performAction(actor, action.id, { rating });
+      ctx.log(`${actor.name} performs ${action.name}${r?.lines?.length ? `: ${r.lines.join('; ')}` : ''}`);
+      for (const m of r?.manual ?? []) ctx.onUnsupported?.({ op: m });
+      return;
+    }
+    // "Repeat N times" (Mentor: once per Mentor token).
+    case 'repeat': {
+      const lo = Number(val(node.minimum)) || 0;
+      const hi = node.maximum == null ? null : Number(val(node.maximum)) || 0;
+      if (hi == null || node.continueChooser || node.stopWhen) return unsupported(node, scope, ctx);
+      for (let i = 0; i < Math.min(hi, 20); i++) {
+        if (i >= lo) {
+          const more = await ctx.ask({ kind: 'confirm', fighter: scope.self, title: ctx.ability?.name ?? 'Again?', text: `Again? (${i} so far)` });
+          if (!more) break;
+        }
+        if ((await run(node.effect, scope, ctx)) === DECLINED) break;
+      }
+      return;
+    }
+    // Frenzy Mastery's mythical d12.
+    case 'roll_die': {
+      const sides = Number(val(node.sides)) || 6;
+      const value = rollDie(ctx, sides);
+      if (node.binding) scope.bindings[node.binding] = value;
+      ctx.log(`${scope.self.name} rolls a d${sides}: ${value}`);
       return;
     }
     case 'grant_armor': {

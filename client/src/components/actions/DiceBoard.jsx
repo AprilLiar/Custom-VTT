@@ -62,7 +62,13 @@ export function DieFace({ r, crossed = false, selected = false, big = false, sta
         } ${selected ? 'ring-2 ring-lime-300 ring-offset-2 ring-offset-zinc-950' : ''}`}
       >
         <span className={`font-mono text-zinc-400 ${big ? 'text-[8px] leading-tight' : 'text-[10px]'}`}>{label}</span>
-        <span className={`font-mono font-black leading-none text-white ${big ? 'text-xl' : 'text-xl'} ${isCrossed ? 'line-through' : ''}`}>{value}</span>
+        <span
+          className={`font-mono font-black leading-none ${r.changed ? 'text-lime-200' : 'text-white'} ${big ? 'text-xl' : 'text-xl'} ${isCrossed ? 'line-through' : ''}`}
+          title={r.changed ? 'Changed by an Ability' : undefined}
+        >
+          {value}
+          {r.changed && <sup className="ml-0.5 text-[9px] text-lime-300">✦</sup>}
+        </span>
         {isCrossed && (
           <span aria-hidden className="pointer-events-none absolute inset-0 flex items-center justify-center">
             <span className="h-0.5 w-[120%] rotate-[-35deg] bg-red-400" />

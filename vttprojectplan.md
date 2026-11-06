@@ -3555,7 +3555,41 @@ A GM-only page (`/homebrew`, the flask icon in the header and the mobile menu) f
     - an enemy destroying the Copy and taking Zombie's 1 damage;
     - Quickdraw's extra d6.
   - All 19 automation playtests pass.
-- **H. Pool manipulation and special operations:** rerolls, increase, duplicate, split, combine, set, replace and retain; `perform_action`; append and prepend; declared-Action copy, dodge and negate; delegation; and the rest of the operation reference.
+- **H. Pool manipulation and special operations — implemented.**
+  - **The Action Pool changed by rules.** The numbers live on the owner's active turn board (`dice_marks.data`). An Ability changes them in place through `changePool(combatantId, change)` (`engine/actions.js`), which reads and saves the board in one queued step. `commitBoard` re-reads the board after each Action, so changes made by the Action's own events survive.
+    - **Pure helpers** (`diceBoard.js`): `setPoolValue` marks a number `changed`; `removePoolNumber` marks it `removed`, and it keeps its index but leaves `poolOf`; `addPoolValue` adds a number; `livePool` is what's left (not removed, not spent by a committed Action; placed-but-uncommitted numbers still count).
+    - **The world:** `pool(f)` and `changePool(f, fn)`, from the boards preloaded per job, and the getter `self.actionPool` (Training's "if you still have numbers").
+    - **Ops:**
+      - `increase_pool_number` (Mentor, Training, Improved Fusion).
+      - `increase_distinct_pool_numbers`: the Wardancer's +3/+2/+1 to different numbers, to a maximum.
+      - `set_pool_number` (Focused Mastery: any 1–9).
+      - `replace_pool_number` with `roll_die` (Frenzy Mastery's d12).
+      - `duplicate_pool_number` (Fusion Mastery: one of 6 or less).
+      - `reroll_die` / `reroll_dice` (Mythical Freestyle, Improved Focus: up to 3, keeping the new results).
+      - `combine_pool_numbers` / `split_pool_number` (Flashy Style).
+      - `remove_lowest_action_die` (Judgment Style): the smallest die, else the bonus die, else the smallest number.
+      - `modify_pool_numbers` (every number ± n, to a minimum).
+    - **Picks:** the owner picks numbers in a `choose` prompt ("5 (d10)"); rerolls use a multi-pick `targets` prompt. A "you may …" (rule-level `optional`, or an `optional` step opening with a pool op) offers **Skip** in the pick itself, with no yes/no first. One choice needs no asking.
+    - **On the board:** a number changed by an Ability is drawn lime with a ✦ ("Changed by an Ability"); taken-out numbers disappear. Snapshots keep the rolled `results` as well, so Retrieve brings rerolls and changes back.
+  - **Actions performed by rules (`perform_action`):**
+    - **Which Actions:** Gunkata's Gunslinger Actions (`tags: ['gunslinger']`), the Teacher's "a Unique Action available to the active character's Stance", any of the actor's (`availableActions`), and the Elder's "a Unique Dice Action available to anyone's Stance, not this one, not one already picked this turn" (`world.actionsFor(f, { gunslinger, unique, dice })`).
+    - **How:** the owner picks one if several; it is then performed without its cost, with `rating` (4; A Warrior's Death 10, whose added 10 leaves the pool) for its Gates and X, by `runner.performFree`. That is `perform()` run **inside the rule's own env** (`envIn`: no second runtime save), with nesting capped at 3. Control's Copy now uses the same env too.
+  - **Movement and targeting:**
+    - **`teleport_to` a picked space:** "adjacent to the target" (Denial, Suddenly, Nothing Personal, Rocket Style), "anywhere you can see" (Effortless), "anywhere on the map" (Lightning Drop). A Trap there triggers; Rubble never does.
+    - **Ranges measured from a bound thing** (`adjacent_to_binding`, `on_or_adjacent_to_binding` with `originBinding`: a target, a binding, or a ref like `event.target`), for spaces, units and obstacles: Open the Path, Hunger, Raise the Dead, Siren Song, Bombardment, Scatter Shot.
+    - **A selector origin of another target** (`origin: targets.ally / targets.copy / bindings.each`): "within range of that ally" measures with the ally's own range; an obstacle measures with yours.
+    - **The step's actor** (`actor`): `damage` dealt by someone else (Slugfest's target hits back, Follow My Lead's ally, the Necromancer's Copies) and `swap_spaces` (a swap with a Wall stays by hand).
+  - **Smaller pieces:**
+    - `repeat` N times (Mentor: once per Mentor token).
+    - "Per Action" limits count within that one Action (`ctx.actionSeq`); limit metric `uses`.
+    - `self.training_token_spent` is emitted when a Training token is spent.
+    - `is_ally`.
+    - New refs: `history.tokensDiscarded` (Hunger), `history.damageDealtToTargetByThisAction` (Burning Fist), `history.damageTakenByEach` (Grape Shot), `history.enemiesDamagedByThisAction` (Icicle Fall), `history.challengedByThisAction`, `payment.hp`, `payment.tokens.<kind>` (XYZ-Burst, Bad Luck), `targets.x.tokens.<kind>` (Blazing), `targets.x.statusTokenCount` (Apply Pressure: Burning, Fatigue and Weakness, plus a held Challenge, as the book counts Status), and `self.hpLostThisTurn` (Karma; damage and HP paid).
+  - **Fixed:** a placement made only one obstacle when its `count` was larger (Pyroclasm's 3 Traps, Raise the Dead's 2 Copies, Crawl into View's 4). The node's count is now how many are placed, one space per pick.
+  - **Coverage:** 211 of the 238 triggered Ability rules (191 after G), and 180 of the 217 Actions and Super Moves (143 before), are automatic.
+  - **Not yet:** the Mythical d12's own reroll event, Improved Frenzy's change of Stance part, Luck's `substitute_cost`, Poltergeist's optional tokens, `choose_integer` (Ka-Boom), `selector_by_gate`, `joint_choice` (Song Form), `ensure_target` (Protect), `gain_tokens_until`, `move_obstacles`, `return_to_play` (Rescue), `replay_start_effects` (Mood Shift), Dancing Mad's open-ended repeat, and the Fog-only selectors (`inFog`, `within_placed_obstacles`). These stay by hand.
+  - **Tests:** `server/test/poolOps.test.js` covers the pool helpers, the Wardancer, Improved Focus (with a skip), Flashy's combine and split, Focused / Fusion / Frenzy Mastery, Judgment's lowest die, Training once per Action, Gunkata performing a Gunslinger Action with a 4, teleporting next to the target, Pyroclasm's 3 Traps, and a range from an ally.
+  - **Playtest** `scripts/playtest-pool.mjs`: Judgment taking the d4 of the enemy holding its Challenge, the Wardancer's +3/+2 at the start of the Action Phase (never past 9, marked as changed), and Gunkata performing Take Aim at the start of the turn. The obstacles playtest now declines the Necromancer's end-of-turn "each Copy may Move 1", which is automatic now, so the Copy stays on its Trap. All 21 automation playtests pass.
 - **I. Super Moves and NPC types:** Supers on the board with all limits, Super tokens, Stooges, Bosses and Warriors in the full engine.
 - **J. Coverage sweep:** a census test proves every rule, Action and Super is automated or explicitly by hand (only `requires_ruling` entries: The Untouchable, Twins). Then the playtest suite and the plan.
 

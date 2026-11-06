@@ -158,6 +158,7 @@ export function createHits({ ask, emitEvent }) {
     if (r.amount > 0) {
       // "At the end of each turn you took damage" (phase G).
       frt.flags.tookDamage = true;
+      frt.flags.hpLost = (frt.flags.hpLost ?? 0) + r.amount;
       const { before, landed, row } = await internals.changeHp(target, -r.amount);
       if (before) {
         bled = await internals.bleedCheck(target, before, landed, row);
