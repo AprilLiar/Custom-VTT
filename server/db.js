@@ -1487,6 +1487,8 @@ export async function initDb() {
   `);
   // The previous round's order, so "Previous turn" can step back into it.
   await ensureColumn('fights', 'prev_turn_order', 'TEXT');
+  // The engine's runtime for this fight (client/src/lib/patd/engine/runtime.js): JSON.
+  await ensureColumn('fights', 'runtime', 'TEXT');
 
   // **Table-wide settings the GM sets for everyone** (Settings page). A
   // singleton, like scene_state. `simple_lanes`: how many lanes Simple

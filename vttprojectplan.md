@@ -3317,7 +3317,14 @@ A GM-only page (`/homebrew`, the flask icon in the header and the mobile menu) f
 - **Unsupported pieces** never silently vanish: an operation the engine cannot run yet posts a "by hand" card naming the step, as today.
 
 ### Phases (each one commit to `main`; easy for the agent to test with unit tests and socket playtests)
-- **A. Engine core:** fight runtime, event bus, modifier registry, usage limits (turn / round / fight), snapshots and restore.
+- **A. Engine core — implemented.**
+  - **Runtime:** `client/src/lib/patd/engine/runtime.js`, kept in `fights.runtime` via `server/engine/runtimeStore.js`. It holds the round, a turn sequence, the active fighter, and per fighter `state` (persistent choices), `pool`, `placed`, `flags` (per turn) and `fight` (per fight), plus usage counters, temporaries, scheduled effects and the sides' Super counts.
+  - **Boundaries:** `startTurn` resets ':turn' and ':action' counters and the flags, and an owner's ':own_turn' counters at their turn. A new round resets ':round' counters and Super counts. `addTemp` / `expireTemps` handle every content duration: end of turn, start of next own turn, after the target's next turn, end of (next) round, next Action, next damaging Action, current hit, end of fight.
+  - **Writers:** only the fight's engine chain writes the runtime. It is loaded per job and saved with `env.save()`, and a stale job (ended fight) never saves.
+  - **Event bus:** `engine/bus.js` (`listenersFor`) routes `self.` / `ally.` / `ally_in_range.` / `enemy.` / `enemy_in_range.` / `visible_enemy.` / `shield_in_range.` / `any_` events. The trigger engine's follow-ons go through it (`emitEvent`). `turnEvents` gives the turn-boundary events by relation.
+  - **Modifiers:** `engine/modifiers.js` (`modifiersOn`) collects `modify_rule` and lasting `grant_armor` from continuous rules of active sources, including auras whose selector reaches other fighters, plus runtime temporaries. Queries: `valueOf`, `sumMod`, `listMod`, `hasMod`. The End Phase Speed rules now read it.
+  - **Snapshots:** `server/engine/snapshots.js` saves and restores the fight's combatant rows, its map tiles, lane slots and the runtime.
+  - Tests: `server/test/engineCore.test.js`; playtest `scripts/playtest-engine-runtime.mjs`.
 - **B. The Action Pool and Commit:**
   - The pool as server state (roll numbers plus added ones, max 10).
   - Placing with order numbers, gate stop, Commit, crossed and locked dice, GM Retrieve (undo).

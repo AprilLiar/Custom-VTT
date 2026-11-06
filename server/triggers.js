@@ -21,25 +21,19 @@ import { hpOf, saveHp, serialized, shapeFightState } from './combatState.js';
 import { assembles, derivedFor, franticPickOf } from './fighterStances.js';
 import { armorSourcesOf, stanceOfBuild } from '../client/src/lib/patd/build.js';
 import { patdContent } from './patdContent.js';
+import { listenersFor, relationTo, turnEvents } from '../client/src/lib/patd/engine/bus.js';
+import { modifiersOn, valueOf } from '../client/src/lib/patd/engine/modifiers.js';
+import { expireTemps, fighterRt, startTurn } from '../client/src/lib/patd/engine/runtime.js';
+import { loadRuntime, saveRuntime } from './engine/runtimeStore.js';
 
 const MIDDLEWEIGHT = WEIGHT_BY_KEY.middle;
 const PROMPT_TIMEOUT_MS = 10 * 60 * 1000;
 const FOLLOW_ON_DEPTH = 3;
 const IMPROVED_WARRIOR = 'ability.feature-improved-warrior.improved-warrior';
 
-// Which events a fighter listens to at a moment, by their relation to the
-// active fighter. ("allied_turn" includes the owner's own turn.)
-function eventsFor(moment, relation) {
-  const end = moment === 'end';
-  if (relation === 'self') return end ? ['own_turn.end_abilities', 'allied_turn.end_abilities', 'any_turn.end_abilities'] : ['own_turn.start', 'allied_turn.start', 'any_turn.start'];
-  if (relation === 'ally') return end ? ['allied_turn.end_abilities', 'any_turn.end_abilities'] : ['allied_turn.start', 'any_turn.start'];
-  return end ? ['any_turn.end_abilities'] : ['enemy_turn.start', 'enemy.turn.start', 'any_turn.start'];
-}
-
 export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
   const pending = new Map(); // prompt id → { resolve, characterId, request }
   const chains = new Map(); // "sceneId:mode" → Promise
-  const fightState = new Map(); // "sceneId:mode" → { states: Map(combatantId → {}), usage: {} }
   let nextId = 1;
   const queued = (fn) => serialized(fn)();
 
@@ -275,7 +269,8 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
           ask: ask(fighter, env.key, env.gen, env.tg, env.when),
           // A Text notification: an orange reminder, like any rule left to people.
           notify: (text) => postCard('reminder', { title: ability.name, text, fighters: [{ name: fighter.name }], automatic: 'ability_text' }),
-          emit: depth < FOLLOW_ON_DEPTH ? (ev, f, payload) => runFor(f, [ev], env, payload, depth + 1) : null,
+          // Follow-on events go through the bus to whoever listens (engine/bus.js).
+          emit: depth < FOLLOW_ON_DEPTH ? (ev, f, payload) => emitEvent(env, ev, f, payload, depth + 1) : null,
         };
         try {
           await runRule(rule, ctx);
@@ -291,21 +286,18 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     }
   }
 
-  // Whether any of a fighter's abilities sets an End Phase rule
-  // (`modify_rule end_phase.<rule>`), and to what: Shadow Form and Silent
-  // Freestyle discard no Speed, Scrambling Style keeps at least 2.
-  const endPhaseRule = (f, rule) => {
-    const idx = patdContent();
-    for (const id of f.abilityIds) {
-      for (const r of idx.get(id)?.rules ?? []) {
-        if (!r.events.includes('continuous')) continue;
-        const nodes = r.effect?.op === 'sequence' ? r.effect.steps : [r.effect];
-        const hit = nodes.find((n) => n?.op === 'modify_rule' && n.rule === rule);
-        if (hit) return hit.value;
-      }
+  // **The event bus** (engine/bus.js): one event, every listener's rules.
+  async function emitEvent(env, eventName, subject, payload = {}, depth = 0) {
+    for (const f of listenersFor(eventName, subject, env.world)) {
+      if (stale(env)) return;
+      await runFor(f, [eventName], env, payload, depth);
     }
-    return null;
-  };
+  }
+
+  // The modifiers in effect on a fighter now (engine/modifiers.js): continuous
+  // rules of active sources, auras from others, and the runtime's temporaries.
+  // Shadow Form / Silent Freestyle keep their Speed, Scrambling Style keeps 2.
+  const endPhaseRule = (env, f, rule) => valueOf(modifiersOn(f, env.world, patdContent(), env.rt.temps), rule, null);
 
   // **The End Phase, automated (decided).** After the turn's end abilities:
   // everyone on a Trap (or Pit Trap) takes 1 damage — unless they have Armor
@@ -328,15 +320,15 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
       }
       const { bled } = await env.world.damage(f, 1, null, { bypassShield: true });
       await postCard('reminder', { title: 'Trap', text: `${f.name} takes 1 damage from a Trap.`, fighters: [{ name: f.name }], automatic: 'trap', notice: true });
-      await runFor(f, ['self.damage_taken'], env, { amount: 1 });
-      if (bled) await runFor(f, ['self.bleed'], env, {});
+      await emitEvent(env, 'self.damage_taken', f, { amount: 1 });
+      if (bled) await emitEvent(env, 'self.bleed', f, {});
     }
     const lost = [];
     for (const f of fighters) {
       const held = f.tokens.speed ?? 0;
       if (!held) continue;
-      if (endPhaseRule(f, 'end_phase.speed_discard') === 0) continue;
-      const floor = Number(endPhaseRule(f, 'end_phase.speed_discard_floor')) || 0;
+      if (endPhaseRule(env, f, 'end_phase.speed_discard') === 0) continue;
+      const floor = Number(endPhaseRule(env, f, 'end_phase.speed_discard_floor')) || 0;
       const n = Math.min(3, Math.max(0, held - floor));
       if (!n) continue;
       await env.world.discardTokens(f, ['speed'], n);
@@ -376,16 +368,19 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     await emitStageUpdated();
     if (r.absorbed) {
       const payload = { attacker, amount: r.absorbed, shieldBroke: r.broke };
-      await runFor(target, ['self.shield_absorbed'], env, payload);
-      if (attacker) await runFor(target, ['self.shield_absorbed_from_enemy_action'], env, payload);
+      await emitEvent(env, 'self.shield_absorbed', target, payload);
+      if (attacker) await emitEvent(env, 'self.shield_absorbed_from_enemy_action', target, payload);
     }
+    await env.save();
     return true;
   }
 
+  // A job's environment: the fight's world and its persisted runtime
+  // (engine/runtime.js) — loaded fresh, changed in memory by this job, and
+  // saved with env.save() (only the fight's chain writes it).
   const envFor = async (fightRow, tg = null) => {
     const key = `${fightRow.scene_id}:${fightRow.mode}`;
-    if (!fightState.has(key)) fightState.set(key, { states: new Map(), usage: {} });
-    const fs = fightState.get(key);
+    const rt = await loadRuntime(fightRow.id);
     const { world, fighters, byId, onTrap } = await buildWorld(fightRow);
     const env = {
       key,
@@ -393,13 +388,12 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
       tg: tg ?? turnGen(key),
       when: null,
       world,
-      usage: fs.usage,
-      stateOf: (id) => {
-        if (!fs.states.has(id)) fs.states.set(id, {});
-        return fs.states.get(id);
-      },
+      rt,
+      usage: rt.usage,
+      stateOf: (id) => fighterRt(rt, id).state,
+      save: () => (gen(key) === env.gen ? saveRuntime(fightRow.id, rt) : null),
     };
-    return { fs, env, world, fighters, byId, onTrap };
+    return { env, world, fighters, byId, onTrap };
   };
 
   // Start of combat: Improved Warrior gives the Warrior's Path's benefit (its
@@ -409,23 +403,32 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     for (const f of fighters) {
       if (f.abilityIds.includes(IMPROVED_WARRIOR)) await runFor(f, ['warrior_path.trigger'], env, {});
     }
+    await env.save();
   }
 
   // Start or end of the active fighter's turn: everyone's matching rules.
   async function runTurn(fightRow, activeId, moment, tg) {
-    const { fs, env, world, fighters, byId, onTrap } = await envFor(fightRow, tg);
-    // Usage limits per turn reset at each turn start.
-    if (moment === 'start') for (const k of Object.keys(fs.usage)) if (k.endsWith(':turn')) delete fs.usage[k];
+    const { env, world, fighters, byId, onTrap } = await envFor(fightRow, tg);
+    const rt = env.rt;
+    // Turn boundaries (engine/runtime.js): a new round expires its temporaries
+    // and resets per-round counters; a turn start resets per-turn counters and
+    // flags and expires "until your next turn" temporaries.
+    if (moment === 'start') {
+      if (fightRow.round !== rt.round) expireTemps(rt, 'end_of_round');
+      startTurn(rt, activeId, fightRow.round);
+      expireTemps(rt, 'start_of_turn', { activeId });
+    }
     const active = byId(activeId);
-    if (!active) return;
+    if (!active) return env.save();
     env.when = `${moment === 'start' ? 'Start' : 'End'} of ${active.name}'s turn`;
     world.context.activeCharacter = active;
     const order = [active, ...fighters.filter((f) => f.id !== active.id)];
-    for (const f of order) {
-      const relation = f.id === active.id ? 'self' : f.side === active.side ? 'ally' : 'enemy';
-      await runFor(f, eventsFor(moment, relation), env, { activeCharacter: active });
+    for (const f of order) await runFor(f, turnEvents(moment, relationTo(f, active)), env, { activeCharacter: active });
+    if (moment === 'end') {
+      await runEndPhase(env, fighters, onTrap);
+      expireTemps(rt, 'end_of_turn', { activeId });
     }
-    if (moment === 'end') await runEndPhase(env, fighters, onTrap);
+    await env.save();
   }
 
   const onChain = (fightRow, job) => {
@@ -440,7 +443,6 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
   const reset = (key) => {
     gens.set(key, gen(key) + 1);
     chains.set(key, Promise.resolve());
-    fightState.delete(key);
     for (const [id, p] of pending) if (p.fightKey === key) finish(id, null);
   };
 
