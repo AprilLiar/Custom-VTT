@@ -59,3 +59,68 @@ export function cleanMarks(raw, diceCount) {
 }
 
 export const EMPTY_MARKS = Object.freeze({ used: [], assign: {} });
+
+// ------------------------------------------------------------------ the turn board (full automation, phase B)
+//
+// A Stance roll's board (dice_marks.data):
+//   { stanceKey, results: [roll results], extra: [{ value, source }],
+//     placements: [{ key, kind: 'die' | 'token', die?, actionId, threshold, stop,
+//                    option?, answers?, text?, committed, snapshot?, summary? }],  // in placement order
+//     power: false, paused: false, committing: false }
+// The pool is the roll's results followed by the extra numbers (pool index).
+
+export const poolOf = (data) => [
+  ...(data.results ?? []).map((r, i) => ({ index: i, value: r.result, die: r.die, color: r.color, bonus: r.bonus, fixed: r.die === undefined })),
+  ...(data.extra ?? []).map((x, j) => ({ index: (data.results ?? []).length + j, value: x.value, source: x.source, added: true })),
+];
+
+// What everyone sees of a board (no server-only payment snapshots).
+export function publicBoard(rollId, data, active) {
+  return {
+    rollId,
+    active: Boolean(active),
+    results: data.results ?? [],
+    extra: data.extra ?? [],
+    placements: (data.placements ?? []).map(({ key, kind, die, actionId, threshold, stop, text, committed, summary, option }) => ({
+      key,
+      kind,
+      die,
+      actionId,
+      threshold: threshold ?? null,
+      stop: stop ?? null,
+      text: text ?? null,
+      committed: Boolean(committed),
+      summary: summary ?? null,
+      option: option ?? null,
+    })),
+    power: Boolean(data.power),
+    paused: Boolean(data.paused),
+    committing: Boolean(data.committing),
+  };
+}
+
+// The tokens / HP / Shield already promised to token placements not yet
+// committed — subtracted from the live state before checking another one.
+export function reservedBy(placements, plans) {
+  const out = { tokens: {}, hp: 0, shield: 0 };
+  for (const p of placements) {
+    if (p.committed || p.kind !== 'token') continue;
+    const plan = plans(p);
+    if (!plan || plan.error) continue;
+    for (const [k, n] of Object.entries(plan.tokens ?? {})) out.tokens[k] = (out.tokens[k] ?? 0) + n;
+    out.hp += plan.hp ?? 0;
+    out.shield += plan.shield ?? 0;
+  }
+  return out;
+}
+export function minusReserved(state, reserved) {
+  const tokens = { ...state.tokens };
+  for (const [k, n] of Object.entries(reserved.tokens)) tokens[k] = Math.max(0, (tokens[k] ?? 0) - n);
+  return { ...state, tokens, hp: Math.max(0, (state.hp ?? 0) - reserved.hp), shield: Math.max(0, (state.shield ?? 0) - reserved.shield) };
+}
+
+// The Gates a stop may pick: thresholds at or below the reached one.
+export function stopChoices(action, reached) {
+  const all = [...(action?.gates?.headerThresholds ?? []), ...(action?.gates?.effectThresholds ?? [])].filter((t) => typeof t === 'number');
+  return [...new Set(all)].filter((t) => reached != null && t <= reached).sort((a, b) => a - b);
+}

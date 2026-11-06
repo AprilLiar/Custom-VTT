@@ -66,6 +66,9 @@ export default function DialogShell({
   children,
   footer,
   panelClassName = '',
+  // Above other full-screen layers (the dice board sits at 3000): a prompt
+  // that must be answered while the board is open passes a higher one.
+  zIndex = null,
 }) {
   const panelRef = useRef(null);
   const titleId = useRef(`dialog-title-${Math.random().toString(36).slice(2)}`).current;
@@ -120,6 +123,7 @@ export default function DialogShell({
 
   const shell = (
     <div
+      style={zIndex != null ? { zIndex } : undefined}
       className={`fixed inset-0 z-50 flex ${centered ? 'items-center' : 'items-end md:items-center'} justify-center bg-black/60 ${
         variant === 'theater' ? 'md:p-2' : 'md:p-4'
       }`}

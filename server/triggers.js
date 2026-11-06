@@ -25,6 +25,7 @@ import { listenersFor, relationTo, turnEvents } from '../client/src/lib/patd/eng
 import { modifiersOn, valueOf } from '../client/src/lib/patd/engine/modifiers.js';
 import { expireTemps, fighterRt, startTurn } from '../client/src/lib/patd/engine/runtime.js';
 import { loadRuntime, saveRuntime } from './engine/runtimeStore.js';
+import { createActionRunner } from './engine/actions.js';
 
 const MIDDLEWEIGHT = WEIGHT_BY_KEY.middle;
 const PROMPT_TIMEOUT_MS = 10 * 60 * 1000;
@@ -74,6 +75,7 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
         options: request.options ?? null,
         minimum: request.minimum ?? 0,
         maximum: request.maximum ?? 1,
+        required: request.required ?? [],
         when: when ?? null,
       };
       const timer = setTimeout(() => finish(id, null), PROMPT_TIMEOUT_MS);
@@ -134,6 +136,8 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
         name: r.name,
         side: sideOf(r.id),
         tokens: { ...state.tokens },
+        // Whose Challenge this fighter holds (their Challenger's combatant id).
+        challengeId: state.challenge_id ?? null,
         bleeding: state.hp.max != null && state.hp.current <= weight.bleed,
         currentBar: { damage: state.hp.max != null ? state.hp.max - state.hp.current : 0 },
         square: squareOf(r),
@@ -230,10 +234,11 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
             automatic: 'bleed',
           });
         }
-        return { dealt: n, bled, absorbed, broke };
+        return { dealt: n, bled, absorbed, broke, toHp: amount };
       },
       challenge: (target, challenger) => queued(() => run('UPDATE combatants SET challenge_id = ? WHERE id = ?', [challenger.id, target.id])),
-      addPoolNumber: () => null, // posted in the ability's card
+      // Onto the fighter's active turn board (phase B); held numbers outside a turn come in phase F.
+      addPoolNumber: (f, v) => runner.addPoolNumber(f.id, v, 'ability'),
     };
     const onTrap = (f) => f.square != null && traps.has(`${f.square.col},${f.square.row}`);
     return { world, fighters, byId, onTrap, weight };
@@ -446,7 +451,32 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     for (const [id, p] of pending) if (p.fightKey === key) finish(id, null);
   };
 
+  // **Performing Actions** (engine/actions.js): Commit and Retrieve on the board.
+  const runner = createActionRunner({
+    envFor,
+    ask,
+    emitEvent,
+    postCard,
+    emitStageUpdated,
+    emit: (ev, payload) => io.emit(ev, payload),
+    queued,
+    // Phase F (reactions) decides whether anyone could react between Actions.
+    reactionsAvailable: async () => false,
+  });
+  const onBoardChain = async (rollId, job) => {
+    const { fight } = await runner.fightOfBoard(rollId);
+    if (fight) onChain(fight, job);
+  };
+
   return {
+    // Commit the placed Actions of a turn board, in order (phase B).
+    commitBoard(rollId) {
+      return onBoardChain(rollId, () => runner.commitBoard(rollId));
+    },
+    // GM: undo a committed Action and every later one.
+    retrieve(rollId, key) {
+      return onBoardChain(rollId, () => runner.retrieve(rollId, key));
+    },
     // A fight began: forget any old fight state, then "start of combat" rules.
     startFight(fightRow) {
       reset(`${fightRow.scene_id}:${fightRow.mode}`);

@@ -87,6 +87,9 @@ const REF_OK = [
   /^variables\.[A-Za-z]+$/,
   /^state\.[A-Za-z]+$/,
   /^event\.(target|activeCharacter|attacker|amount|isCostPayment|shieldBroke)$/,
+  /^resolution\.gateRating$/,
+  /^payment\.(rating|destroyedShieldValue|challengeHolder)$/,
+  /^variables\.[A-Za-z]+$/,
 ];
 const OPERATORS = {
   add: (a) => a.reduce((x, y) => x + y, 0),
@@ -220,15 +223,24 @@ export function describe(node) {
 //   usage — counters for `limited` / rule limits
 //   log(line) — what happened, for the chat card
 //   emit(event, fighter, payload) — follow-on events the engine runs (Bleed, ...)
+// Actions add (full automation, phase B):
+//   resolution — { gateRating } (the Gate the Action resolves to)
+//   payment    — { rating, poolNumbers, tokens, hp, destroyedShieldValue, challengeHolder }
+//   history    — what this resolution did (damage dealt, Challenged enemies …)
+//   mustTarget — the Challenger a damaging Action must include (decided: enforced)
+//   onUnsupported(node) — a step the engine can't run yet
 export async function runRule(rule, ctx) {
   const scope = {
     self: ctx.self,
     context: ctx.world.context,
     targets: {},
     bindings: {},
-    variables: {},
+    variables: { ...(ctx.variables ?? {}) },
     state: ctx.state,
     event: ctx.event ?? {},
+    resolution: ctx.resolution ?? {},
+    payment: ctx.payment ?? {},
+    history: ctx.history ?? {},
   };
   if (rule.condition && !evalValue(rule.condition, scope)) return { ran: false };
   if (rule.limit) {
@@ -275,16 +287,26 @@ async function select(sel, scope, ctx, label = 'a target') {
   if (!pool.length) return [];
   const maximum = typeof count === 'number' ? count : typeof count === 'object' && count?.maximum != null ? evalValue(count.maximum, scope) : 1;
   const minimum = typeof count === 'object' && count?.maximum != null ? 0 : Math.min(1, pool.length);
+  // **Challenge (decided: enforced).** A damaging Action must include the
+  // Challenger whenever they are a legal target: the only choice for a single
+  // target, and a required pick among several.
+  const must = ctx.mustTarget != null && (sel.kind === 'enemy' || sel.kind === 'unit') ? pool.find((f) => f.id === ctx.mustTarget) : null;
+  if (must && maximum === 1) {
+    ctx.log?.(`${must.name} must be the target (Challenge)`);
+    return [must];
+  }
   const answer = await ctx.ask({
     kind: 'targets',
     fighter: self,
     title: ctx.ability?.name ?? 'Choose',
-    text: `Choose ${maximum === 1 ? label : `up to ${maximum}`}.`,
+    text: `Choose ${maximum === 1 ? label : `up to ${maximum}`}${must ? ` — ${must.name} must be one (Challenge)` : ''}.`,
     options: pool.map((f) => ({ id: String(f.id), label: f.name })),
-    minimum,
+    minimum: Math.max(minimum, must ? 1 : 0),
     maximum,
+    required: must ? [String(must.id)] : [],
   });
   const ids = new Set(asList(answer).map(String));
+  if (must) ids.add(String(must.id));
   const picked = pool.filter((f) => ids.has(String(f.id))).slice(0, maximum);
   return picked.length || minimum === 0 ? picked : pool.slice(0, 1);
 }
@@ -506,6 +528,9 @@ async function run(node, scope, ctx) {
         const r = await world.damage(f, n, scope.self);
         ctx.log(`${scope.self.name} deals ${n} damage to ${f.name}${r?.absorbed ? ` (Shield absorbs ${r.absorbed}${r.broke ? ' and breaks' : ''})` : ''}`);
         if (r?.absorbed) await ctx.emit?.('self.shield_absorbed', f, { attacker: scope.self, amount: r.absorbed, shieldBroke: Boolean(r.broke) });
+        // What this resolution did (history.*): damage actually dealt, who was hit.
+        scope.history.damageDealt = (scope.history.damageDealt ?? 0) + (r?.toHp ?? n);
+        (scope.history.damagedIds ??= []).push(f.id);
         await ctx.emit?.('self.damage_taken', f, { attacker: scope.self, amount: n });
         if (r?.bled) await ctx.emit?.('self.bleed', f, {});
       }
@@ -515,6 +540,7 @@ async function run(node, scope, ctx) {
       const challenger = asList(val(node.challenger))[0] ?? scope.self;
       for (const f of await targetsOf(node.target, scope, ctx, 'an enemy')) {
         await world.challenge(f, challenger);
+        (scope.history.challengedIds ??= []).push(f.id);
         ctx.log(`${challenger.name} Challenges ${f.name}`);
         await ctx.emit?.('self.challenge_given_to_enemy', challenger, { target: f });
       }
@@ -545,6 +571,10 @@ async function run(node, scope, ctx) {
       return;
     }
     default:
+      // An Action runs what it can (full automation, phase B): a step the
+      // engine can't do yet is handed to people (a "by hand" note) and the
+      // rest goes on. Ability rules are pre-checked by ruleSupport instead.
+      if (ctx.onUnsupported) return ctx.onUnsupported(node, scope);
       throw new Unsupported(`op ${node.op}`);
   }
 }

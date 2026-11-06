@@ -17,7 +17,9 @@ const HEADER_CLIP = { clipPath: 'polygon(0 0, 100% 0, calc(100% - 22px) 100%, 0 
 
 // `paidAmount`: how many tokens / HP a paid cost took — it lights the cost
 // Gates ("5 Iron: …") up to it.
-export function ActionCard({ action, lit = null, dice = [], paid = null, paidAmount = null, compact = false, dropTarget = false }) {
+// `onGateTap(threshold)`: Gate lines become tappable (stop at an earlier Gate,
+// phase B); `committed`: the Action was performed (a quieter glow).
+export function ActionCard({ action, lit = null, dice = [], paid = null, paidAmount = null, compact = false, dropTarget = false, onGateTap = null, committed = false }) {
   if (!action) return null;
   const { base, gates } = splitGates(action.rulesText);
   // The base effect's threshold: the lowest cost (an "X" cost: 0).
@@ -29,7 +31,9 @@ export function ActionCard({ action, lit = null, dice = [], paid = null, paidAmo
   return (
     <article
       data-action-id={dropTarget ? action.id : undefined}
-      className={`relative overflow-hidden rounded-[2px] transition-shadow ${lit != null ? 'shadow-[0_0_0_3px_#bef264,0_0_18px_2px_rgba(190,242,100,0.55)]' : ''}`}
+      className={`relative overflow-hidden rounded-[2px] transition-shadow ${
+        lit != null ? (committed ? 'opacity-75 shadow-[0_0_0_2px_#65a30d]' : 'shadow-[0_0_0_3px_#bef264,0_0_18px_2px_rgba(190,242,100,0.55)]') : ''
+      }`}
     >
       <header className="relative flex items-center bg-[linear-gradient(90deg,#3ef09d,#7af5c0)]">
         <h4
@@ -42,7 +46,7 @@ export function ActionCard({ action, lit = null, dice = [], paid = null, paidAmo
         </h4>
         {paid && (
           <span className="shrink-0 truncate px-1.5 text-[10px] font-bold uppercase text-emerald-950" title={`Paid: ${paid}`}>
-            ✓ {paid}
+            {paid}
           </span>
         )}
         {dice.length > 0 && (
@@ -60,13 +64,22 @@ export function ActionCard({ action, lit = null, dice = [], paid = null, paidAmo
           lit != null ? 'bg-[linear-gradient(90deg,#b9f8cf,#dcfce7)]' : 'bg-[linear-gradient(90deg,#3ef09d,#7af5c0)]'
         }`}
       >
-        {base && <p className={`whitespace-pre-line rounded-sm px-1 ${reached(lowest) ? 'bg-lime-200 ring-1 ring-lime-500' : ''}`}>{base}</p>}
+        {base && (
+          <p
+            onClick={onGateTap && reached(lowest) ? (e) => (e.stopPropagation(), onGateTap(lowest)) : undefined}
+            className={`whitespace-pre-line rounded-sm px-1 ${reached(lowest) ? 'bg-lime-200 ring-1 ring-lime-500' : ''} ${onGateTap && reached(lowest) ? 'cursor-pointer' : ''}`}
+          >
+            {base}
+          </p>
+        )}
         {gates.map((g, i) => (
           <p
             key={i}
+            onClick={onGateTap && g.kind === 'dice' && reached(g.n) ? (e) => (e.stopPropagation(), onGateTap(g.n)) : undefined}
+            title={onGateTap && g.kind === 'dice' && reached(g.n) ? 'Tap to stop at this Gate' : undefined}
             className={`whitespace-pre-line rounded-sm px-1 pl-3 ${
               (g.kind === 'cost' ? paidAmount != null && g.n <= paidAmount : reached(g.n)) ? 'bg-lime-200 ring-1 ring-lime-500' : ''
-            }`}
+            } ${onGateTap && g.kind === 'dice' && reached(g.n) ? 'cursor-pointer' : ''}`}
           >
             <b>{g.threshold}:</b> {g.text}
           </p>

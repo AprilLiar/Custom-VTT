@@ -45,12 +45,25 @@ function FighterChip({ fighter }) {
 // the board show crossed here for everyone. While that fighter's turn lasts,
 // whoever controls them (or the GM) taps the dice to open the board.
 function StanceDice({ payload }) {
-  const marks = useDiceMarks(payload.roll_id);
+  const board = useDiceMarks(payload.roll_id);
   const { controls } = useControl();
   const [open, setOpen] = useState(false);
-  const used = new Set(marks.used);
-  const canOpen = Boolean(payload.roll_id) && marks.active && controls(payload.character_id);
-  const dice = (payload.results ?? []).map((r, i) => <DieFace key={i} r={r} crossed={used.has(i)} />);
+  const placements = board.placements ?? [];
+  const canOpen = Boolean(payload.roll_id) && board.active && controls(payload.character_id);
+  // Committed dice cross out for everyone; placed ones go grey with their order.
+  const stateOf = (i) => {
+    const p = placements.find((x) => x.kind === 'die' && x.die === i);
+    return p ? (p.committed ? 'committed' : 'placed') : 'free';
+  };
+  const orderOf = (i) => {
+    const k = placements.findIndex((x) => x.kind === 'die' && x.die === i);
+    return k >= 0 ? k + 1 : null;
+  };
+  const extra = (board.extra ?? []).map((x, j) => ({ added: true, value: x.value, index: (payload.results ?? []).length + j }));
+  const dice = [
+    ...(payload.results ?? []).map((r, i) => <DieFace key={i} r={r} state={stateOf(i)} order={orderOf(i)} />),
+    ...extra.map((x) => <DieFace key={`x${x.index}`} r={x} state={stateOf(x.index)} order={orderOf(x.index)} />),
+  ];
   return (
     <>
       {canOpen ? (
@@ -65,7 +78,7 @@ function StanceDice({ payload }) {
       ) : (
         <div className="flex flex-wrap gap-1.5">{dice}</div>
       )}
-      {canOpen && <p className="mt-1 text-[10px] text-lime-300/80">Tap the dice to lay them on your Actions</p>}
+      {canOpen && <p className="mt-1 text-[10px] text-lime-300/80">Tap the dice to place them on your Actions</p>}
       {open && <DiceBoard payload={payload} canEdit={canOpen} onClose={() => setOpen(false)} />}
     </>
   );

@@ -1,59 +1,75 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { X } from 'lucide-react';
+import { Check, Play, X, Zap } from 'lucide-react';
 import { socket } from '../../socket.js';
 import { getBuild } from '../../lib/api.js';
+import { useRole } from '../../roleContext.jsx';
 import { useContent } from '../../lib/patd/useContent.js';
 import { deriveBuild, stanceOfBuild } from '../../lib/patd/build.js';
-import { gateFor, turnActions } from '../../lib/patd/diceBoard.js';
+import { minusReserved, poolOf, reservedBy, stopChoices, turnActions } from '../../lib/patd/diceBoard.js';
 import { affordableOptions, hasDiceCost, optionLabel, paymentText, planPayment, tokenOptions } from '../../lib/patd/tokenCost.js';
-import { setLocalMarks, useDiceMarks } from '../../lib/diceMarks.js';
+import { useDiceMarks } from '../../lib/diceMarks.js';
 import { ActionCard, SuperMoveCard } from './ActionCards.jsx';
 
-// **The turn's dice board (decided — vttprojectplan.md, "Action cards and the
-// dice board").** Opened by tapping the dice of your turn's Stance roll. A
-// full-screen, scrollable list of the Actions this turn can use — Basic on the
-// left, Personal on the right — and this roll's dice along the bottom.
+// **The turn's dice board (full automation, phase B — vttprojectplan.md, "Full
+// automation").** Opened by tapping the dice of your turn's Stance roll: the
+// Actions this turn can use — Basic on the left, Personal on the right — and
+// the Action Pool along the bottom.
 //
-//   - **Drag a die onto an Action**, or **tap a die, then tap an Action**: the
-//     die is crossed out, and the Action and the Gate its number reaches light
-//     up in mild green.
-//   - **Tap a die** with no Action to follow: it is just crossed out (greyed,
-//     still visible). Tap it again to bring it back. Tapping a die laid on an
-//     Action takes it off (and selects it, to lay elsewhere).
-//
-//   - **Tap an Action with a token cost** (no die selected): your tokens, HP,
-//     Shield or Challenge are checked; if there is enough it is paid for real
-//     and the Action lights up (with the Gates the payment reaches). One way to
-//     pay → paid at once; several → a dialog with only the ways you can afford.
-//     Tap it again to undo the payment in full. A Free Action just lights up.
-//
-// Laying dice is purely visual — nothing is resolved. The marks are shared and
-// kept for the turn (server/diceMarks.js): reopening shows the same, and the
-// chat card shows the crossed dice to everyone. No header (decided): the
-// footer holds the dice and the close button, to leave the screen to the cards.
+//   - **Place** a die on an Action: drag it there, or tap the die, then the
+//     Action. The die turns grey and gets its **order number** (top-right).
+//     Tap a placed die to take it back. A lower lit Gate on the card can be
+//     tapped to stop there (decided); the default is the highest.
+//   - **Tap a token-cost Action** (no die selected) to place its payment —
+//     checked against your tokens now, paid at Commit. Tap it again to take
+//     it back. A dialog asks only what that cost needs (which Basic tokens …).
+//   - **Commit** performs every placed Action in placement order (the engine:
+//     server/engine/actions.js). Committed dice are crossed out and locked;
+//     only the GM can retrieve one (undoing it and every later Action).
+//   - **Power** (left): the balance, and a toggle to Enhance the hits of the
+//     placed Actions (phase C applies it).
+//   - **End turn** ends your turn (decided: the active player ends it).
+// No header (decided): the footer holds the pool and the buttons.
 
 const DRAG_START_PX = 6;
 
-export function DieFace({ r, crossed = false, selected = false, big = false }) {
+// One pool number: a rolled die, a fixed number, or a number added by an
+// Ability. `state`: 'free' | 'placed' (grey, with its order) | 'committed'
+// (grey, crossed out, locked).
+export function DieFace({ r, crossed = false, selected = false, big = false, state = null, order = null }) {
+  const placed = state === 'placed' || state === 'committed';
+  const isCrossed = crossed || state === 'committed';
   const tone = r.bonus
     ? 'border-amber-500/80 bg-amber-950/60'
     : r.color === 'purple'
       ? 'border-purple-500/80 bg-purple-950/60'
       : r.color === 'green'
         ? 'border-emerald-500/80 bg-emerald-950/60'
-        : 'border-zinc-500 bg-zinc-900';
+        : r.added
+          ? 'border-sky-500/80 bg-sky-950/60'
+          : 'border-zinc-500 bg-zinc-900';
+  const value = r.result ?? r.value;
+  const label = r.added ? '+pool' : r.bonus ? (big ? `+d${r.die}` : `bonus d${r.die}`) : r.die !== undefined ? `d${r.die}` : 'fixed';
+  // The face (greyed when placed) and the order badge beside it: the badge sits
+  // outside the face so the cut corner doesn't clip it and it stays bright.
   return (
-    <span
-      className={`relative flex flex-col items-center justify-center panel-cut-sm border ${big ? 'h-11 w-10' : 'min-w-11 px-1.5 py-1'} ${tone} ${
-        crossed ? 'opacity-40 grayscale' : ''
-      } ${selected ? 'ring-2 ring-lime-300 ring-offset-2 ring-offset-zinc-950' : ''}`}
-    >
-      <span className={`font-mono text-zinc-400 ${big ? 'text-[8px] leading-tight' : 'text-[10px]'}`}>{r.bonus ? (big ? `+d${r.die}` : `bonus d${r.die}`) : r.die !== undefined ? `d${r.die}` : 'fixed'}</span>
-      <span className={`font-mono font-black leading-none text-white ${big ? 'text-xl' : 'text-xl'} ${crossed ? 'line-through' : ''}`}>{r.result}</span>
-      {crossed && (
-        <span aria-hidden className="pointer-events-none absolute inset-0 flex items-center justify-center">
-          <span className="h-0.5 w-[120%] rotate-[-35deg] bg-red-400" />
+    <span className="relative inline-flex">
+      <span
+        className={`relative flex flex-col items-center justify-center panel-cut-sm border ${big ? 'h-11 w-10' : 'min-w-11 px-1.5 py-1'} ${tone} ${
+          placed || crossed ? 'opacity-45 grayscale' : ''
+        } ${selected ? 'ring-2 ring-lime-300 ring-offset-2 ring-offset-zinc-950' : ''}`}
+      >
+        <span className={`font-mono text-zinc-400 ${big ? 'text-[8px] leading-tight' : 'text-[10px]'}`}>{label}</span>
+        <span className={`font-mono font-black leading-none text-white ${big ? 'text-xl' : 'text-xl'} ${isCrossed ? 'line-through' : ''}`}>{value}</span>
+        {isCrossed && (
+          <span aria-hidden className="pointer-events-none absolute inset-0 flex items-center justify-center">
+            <span className="h-0.5 w-[120%] rotate-[-35deg] bg-red-400" />
+          </span>
+        )}
+      </span>
+      {order != null && (
+        <span className="absolute -right-2 -top-2 z-10 flex h-4 min-w-4 items-center justify-center rounded-full bg-lime-300 px-0.5 font-mono text-[9px] font-black text-zinc-950 shadow">
+          {order}
         </span>
       )}
     </span>
@@ -62,13 +78,14 @@ export function DieFace({ r, crossed = false, selected = false, big = false }) {
 
 export default function DiceBoard({ payload, onClose, canEdit }) {
   const idx = useContent();
+  const { role } = useRole();
+  const isGm = role === 'gm';
   const [build, setBuild] = useState(undefined);
-  const marks = useDiceMarks(payload.roll_id);
-  const editable = canEdit && marks.active;
+  const board = useDiceMarks(payload.roll_id);
+  const editable = canEdit && board.active;
   const [selected, setSelected] = useState(null);
   const [drag, setDrag] = useState(null); // { i, x, y }
   const pointer = useRef(null);
-  const results = payload.results ?? [];
   const [fighter, setFighter] = useState(null); // payable state (tokens, HP, Shield, Challenge holders)
   const [paying, setPaying] = useState(null); // { action, options } — the payment dialog
   const [toast, setToast] = useState(null);
@@ -76,6 +93,7 @@ export default function DiceBoard({ payload, onClose, canEdit }) {
     setToast(text);
     setTimeout(() => setToast((t) => (t === text ? null : t)), 2600);
   };
+  const emit = (ev, extra = {}) => socket.emit(ev, { rollId: payload.roll_id, ...extra });
 
   // The fighter's live state, for token costs; refreshed whenever the table changes.
   useEffect(() => {
@@ -88,7 +106,7 @@ export default function DiceBoard({ payload, onClose, canEdit }) {
     load();
     socket.on('stage:updated', load);
     socket.on('dice:marks', load);
-    const onFailed = ({ rollId, error }) => rollId === payload.roll_id && say(`Couldn't pay: ${error}.`);
+    const onFailed = ({ rollId, error }) => rollId === payload.roll_id && say(`Can't: ${error}.`);
     socket.on('dice:pay_failed', onFailed);
     return () => {
       alive = false;
@@ -125,59 +143,68 @@ export default function DiceBoard({ payload, onClose, canEdit }) {
     return turnActions(d, stanceOfBuild(d, payload.stance_key, idx), idx);
   }, [idx, build, payload.stance_key]);
 
-  const commit = (next) => {
-    setLocalMarks(payload.roll_id, { ...next, active: true });
-    socket.emit('dice:mark', { rollId: payload.roll_id, ...next });
+  // The pool: the roll's results (from the board, or the card for an old roll) and added numbers.
+  const pool = useMemo(() => poolOf({ results: board.results?.length ? board.results : payload.results ?? [], extra: board.extra ?? [] }), [board.results, board.extra, payload.results]);
+  const placements = board.placements ?? [];
+  const orderOf = (key) => placements.findIndex((p) => p.key === key) + 1 || null;
+  const dieState = (i) => {
+    const p = placements.find((x) => x.kind === 'die' && x.die === i);
+    return p ? { state: p.committed ? 'committed' : 'placed', order: orderOf(p.key), placement: p } : { state: 'free', order: null, placement: null };
   };
-  const used = new Set(marks.used);
-  const assign = marks.assign ?? {};
+  const busy = board.committing;
+  const pending = placements.filter((p) => !p.committed);
 
-  const layOn = (i, actionId) => {
+  // Tokens still free after what uncommitted token placements promise.
+  const free = useMemo(() => {
+    if (!fighter || !idx) return fighter;
+    return minusReserved(fighter, reservedBy(placements, (p) => planPayment(idx.get(p.actionId), p.option, p.answers ?? {}, fighter)));
+  }, [fighter, idx, placements]);
+
+  const place = (i, actionId) => {
     const action = idx?.get(actionId);
     if (!action) return;
-    const nextAssign = { ...assign, [i]: { actionId, threshold: gateFor(action, results[i]?.result) } };
-    commit({ used: [...new Set([...marks.used, i])], assign: nextAssign });
+    if (!hasDiceCost(action)) return say(`${action.name} is paid with ${optionLabel(tokenOptions(action)[0]?.option ?? { components: [] })}, not dice.`);
+    emit('board:place', { die: i, actionId });
     setSelected(null);
   };
   const tapDie = (i) => {
-    if (!editable) return;
-    if (assign[i]) {
-      // Off its Action, still crossed and selected: tap an Action to lay it elsewhere.
-      const { [i]: _drop, ...rest } = assign;
-      commit({ used: marks.used, assign: rest });
-      setSelected(i);
-    } else if (used.has(i)) {
-      if (selected === i) {
-        commit({ used: marks.used.filter((x) => x !== i), assign });
-        setSelected(null);
-      } else setSelected(i);
-    } else {
-      commit({ used: [...marks.used, i], assign });
-      setSelected(i);
+    const st = dieState(i);
+    if (st.state === 'committed') {
+      // Only the GM can retrieve (decided): undoes that Action and every later one.
+      if (isGm && !busy && window.confirm(`Retrieve this die? Its Action and every Action committed after it are undone.`)) emit('board:retrieve', { key: st.placement.key });
+      return;
     }
+    if (!editable || busy) return;
+    if (st.state === 'placed') {
+      emit('board:unplace', { key: st.placement.key });
+      setSelected(i);
+      return;
+    }
+    setSelected((s) => (s === i ? null : i));
   };
-  const pay = marks.pay ?? {};
   const tapAction = (actionId) => {
-    if (!editable) return;
+    if (!editable || busy) return;
     const action = idx?.get(actionId);
     if (!action) return;
-    if (selected != null) {
-      if (hasDiceCost(action)) return layOn(selected, actionId);
-      return say(`${action.name} is paid with ${optionLabel(tokenOptions(action)[0]?.option ?? { components: [] })}, not dice.`);
-    }
-    if (pay[actionId]) return socket.emit('dice:unpay', { rollId: payload.roll_id, actionId });
+    if (selected != null) return place(selected, actionId);
+    const mine = placements.filter((p) => p.kind === 'token' && p.actionId === actionId && !p.committed);
+    if (mine.length) return emit('board:unplace', { key: mine[mine.length - 1].key });
     if (!tokenOptions(action).length) return;
-    if (!fighter) return say('Reading your tokens…');
-    const options = affordableOptions(action, fighter);
+    if (!free) return say('Reading your tokens…');
+    const options = affordableOptions(action, free);
     if (!options.length) return say(`Not enough for ${action.name}: needs ${tokenOptions(action).map((o) => optionLabel(o.option)).join(' or ')}.`);
-    // One way to pay, nothing to decide: paid at once.
-    if (options.length === 1 && !options[0].choices.length) return socket.emit('dice:pay', { rollId: payload.roll_id, actionId, option: options[0].index, answers: {} });
+    if (options.length === 1 && !options[0].choices.length) return emit('board:place', { actionId, option: options[0].index, answers: {} });
     setPaying({ action, options });
+  };
+  const tapGate = (actionId, threshold) => {
+    if (!editable || busy) return;
+    const p = placements.find((x) => x.actionId === actionId && !x.committed && stopChoices(idx.get(actionId), x.threshold).includes(threshold));
+    if (p) emit('board:stop', { key: p.key, stop: threshold === (p.stop ?? p.threshold) ? null : threshold });
   };
 
   // Pointer drag (works with touch, a pen and a mouse alike).
   const onDown = (i) => (e) => {
-    if (!editable) return;
+    if (dieState(i).state !== 'free' || !editable || busy) return;
     pointer.current = { i, x: e.clientX, y: e.clientY, moved: false };
     e.currentTarget.setPointerCapture?.(e.pointerId);
   };
@@ -188,37 +215,42 @@ export default function DiceBoard({ payload, onClose, canEdit }) {
     p.moved = true;
     setDrag({ i: p.i, x: e.clientX, y: e.clientY });
   };
-  const onUp = (e) => {
+  const onUp = (i) => (e) => {
     const p = pointer.current;
     pointer.current = null;
     setDrag(null);
-    if (!p) return;
-    if (!p.moved) return tapDie(p.i);
+    if (!p || !p.moved) return tapDie(i);
     const target = document.elementFromPoint(e.clientX, e.clientY)?.closest?.('[data-action-id]');
-    if (target) layOn(p.i, target.getAttribute('data-action-id'));
+    if (target) place(p.i, target.getAttribute('data-action-id'));
   };
 
-  const diceOn = (actionId) =>
-    Object.entries(assign)
-      .filter(([, a]) => a.actionId === actionId)
-      .map(([i, a]) => ({ value: results[i]?.result, threshold: a.threshold }));
   const card = (id) => {
-    const on = diceOn(id);
     const action = idx.get(id);
-    const p = pay[id];
-    const paidGate = p ? gateFor(action, p.rating) : null;
-    const lit = on.length || p ? [...on.map((x) => x.threshold), ...(p ? [paidGate] : [])].filter((t) => t != null) : null;
-    const tappable = editable && (selected != null || tokenOptions(action).length > 0);
+    const on = placements.filter((p) => p.actionId === id);
+    const lit = on.length ? on.map((p) => p.stop ?? p.threshold ?? 0) : null;
+    const dice = on.filter((p) => p.kind === 'die').map((p) => pool.find((n) => n.index === p.die)?.value);
+    const paid = on.filter((p) => p.kind === 'token').map((p) => `#${orderOf(p.key)} ${p.text ?? ''}${p.committed ? ' ✓' : ''}`);
+    const tappable = editable && !busy && (selected != null || tokenOptions(action).length > 0);
     return (
       <div key={id} onClick={() => tapAction(id)} className={tappable ? 'cursor-pointer' : ''}>
-        <ActionCard action={action} compact dropTarget lit={lit} dice={on.map((x) => x.value)} paid={p?.text ?? null} paidAmount={p ? p.amount : null} />
+        <ActionCard
+          action={action}
+          compact
+          dropTarget
+          lit={lit}
+          dice={dice}
+          paid={paid.length ? paid.join(' · ') : null}
+          onGateTap={on.some((p) => !p.committed) ? (t) => tapGate(id, t) : null}
+          committed={on.length > 0 && on.every((p) => p.committed)}
+        />
       </div>
     );
   };
 
+  const power = fighter?.tokens?.power ?? 0;
+  const btn = 'flex h-9 shrink-0 items-center gap-1 rounded-full border px-3 font-display text-[11px] font-bold uppercase tracking-wide disabled:opacity-40';
   return createPortal(
     <div className="fixed inset-0 flex flex-col bg-zinc-950/[0.97]" style={{ zIndex: 3000 }} role="dialog" aria-modal="true" aria-label="This turn's Actions">
-
       <main className="min-h-0 flex-1 overflow-y-auto" onClick={(e) => e.target === e.currentTarget && setSelected(null)}>
         {!lists ? (
           <p className="p-4 text-sm text-zinc-500">{build === null ? 'No build for this character.' : 'Loading the Actions…'}</p>
@@ -252,49 +284,81 @@ export default function DiceBoard({ payload, onClose, canEdit }) {
 
       <footer className="shrink-0 border-t border-zinc-800 bg-zinc-900/95 px-2 pt-1.5" style={{ paddingBottom: 'max(0.4rem, var(--safe-bottom))' }}>
         <div className="flex items-center gap-2">
+          {/* Power (decided): the balance, and Enhance for the placed Actions' hits. */}
+          <button
+            type="button"
+            onClick={() => editable && emit('board:power', { on: !board.power })}
+            disabled={!editable}
+            aria-pressed={board.power}
+            title={board.power ? 'Power on: placed Actions Enhance their hits while Power lasts' : 'Power off'}
+            className={`${btn} ${board.power ? 'border-red-400 bg-red-500/25 text-red-100' : 'border-zinc-700 text-zinc-300'}`}
+          >
+            <Zap size={13} aria-hidden /> {power}
+          </button>
           <div className="flex min-w-0 flex-1 flex-wrap justify-center gap-1.5">
-            {results.map((r, i) => (
-              <button
-                key={i}
-                type="button"
-                onPointerDown={onDown(i)}
-                onPointerMove={onMove}
-                onPointerUp={onUp}
-                onPointerCancel={() => {
-                  pointer.current = null;
-                  setDrag(null);
-                }}
-                disabled={!editable}
-                aria-pressed={used.has(i)}
-                aria-label={`Die ${i + 1}: ${r.result}${used.has(i) ? ', crossed out' : ''}${assign[i] ? `, on ${idx?.get(assign[i].actionId)?.name ?? 'an Action'}` : ''}`}
-                className="touch-none select-none disabled:cursor-default"
-              >
-                <DieFace r={r} big crossed={used.has(i)} selected={selected === i} />
-              </button>
-            ))}
+            {pool.map((n) => {
+              const st = dieState(n.index);
+              return (
+                <button
+                  key={n.index}
+                  type="button"
+                  onPointerDown={onDown(n.index)}
+                  onPointerMove={onMove}
+                  onPointerUp={onUp(n.index)}
+                  onPointerCancel={() => {
+                    pointer.current = null;
+                    setDrag(null);
+                  }}
+                  aria-pressed={st.state !== 'free'}
+                  aria-label={`Pool number ${n.value}${st.state === 'placed' ? `, placed #${st.order}` : st.state === 'committed' ? ', committed' : ''}`}
+                  className="touch-none select-none"
+                >
+                  <DieFace r={n} big state={st.state} order={st.order} selected={selected === n.index} />
+                </button>
+              );
+            })}
           </div>
+          {board.paused ? (
+            <button type="button" onClick={() => emit('board:commit')} disabled={!editable} className={`${btn} border-sky-400 bg-sky-500/25 text-sky-100`}>
+              <Play size={13} aria-hidden /> Continue
+            </button>
+          ) : (
+            <button type="button" onClick={() => emit('board:commit')} disabled={!editable || busy || !pending.length} className={`${btn} border-lime-400 bg-lime-500/20 text-lime-100`}>
+              <Check size={13} aria-hidden /> {busy ? 'Performing…' : `Commit${pending.length ? ` ${pending.length}` : ''}`}
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => (!pending.length || window.confirm('End your turn? Placed Actions that are not committed are dropped.')) && emit('board:end_turn')}
+            disabled={!editable || busy}
+            className={`${btn} border-zinc-600 text-zinc-200`}
+          >
+            End turn
+          </button>
           <button type="button" onClick={onClose} aria-label="Close" className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-zinc-700 text-zinc-200 hover:border-zinc-400">
             <X size={16} aria-hidden />
           </button>
         </div>
         <p className="mt-1 truncate text-center text-[9px] text-zinc-500">
           {toast ??
-            (!editable
-              ? marks.active
+            (!board.active
+              ? `${payload.stance} · this turn is over — view only`
+              : !editable
                 ? `${payload.stance} · view only`
-                : `${payload.stance} · this turn is over — view only`
-              : selected != null
-                ? 'Now tap an Action to lay this die on it — or tap the die again to bring it back.'
-                : `${payload.stance} · drag or tap a die onto an Action · tap a token-cost Action to pay it`)}
+                : board.paused
+                  ? 'Paused for reactions — Continue when everyone had their chance.'
+                  : selected != null
+                    ? 'Now tap an Action to place this die on it — or tap the die again.'
+                    : `${payload.stance} · place dice or token costs on Actions, then Commit`)}
         </p>
       </footer>
 
       {paying && (
         <PayDialog
           {...paying}
-          fighter={fighter}
+          fighter={free}
           onPay={(option, answers) => {
-            socket.emit('dice:pay', { rollId: payload.roll_id, actionId: paying.action.id, option, answers });
+            emit('board:place', { actionId: paying.action.id, option, answers });
             setPaying(null);
           }}
           onClose={() => setPaying(null)}
@@ -302,7 +366,7 @@ export default function DiceBoard({ payload, onClose, canEdit }) {
       )}
       {drag && (
         <div className="pointer-events-none fixed" style={{ left: drag.x - 28, top: drag.y - 32, zIndex: 3001 }}>
-          <DieFace r={results[drag.i]} big />
+          <DieFace r={pool.find((n) => n.index === drag.i)} big />
         </div>
       )}
     </div>,

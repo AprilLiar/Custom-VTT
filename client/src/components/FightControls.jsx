@@ -402,7 +402,8 @@ export function TriggerPrompts() {
 }
 
 function TriggerPromptDialog({ prompt }) {
-  const [picked, setPicked] = useState([]);
+  // Required picks (the Challenger a damaging Action must include) start picked and stay.
+  const [picked, setPicked] = useState(() => [...(prompt.required ?? [])]);
   const answer = (value) => socket.emit('trigger:answer', { id: prompt.id, answer: value });
   const button =
     'min-h-11 panel-cut-sm border border-zinc-700 bg-zinc-900 px-3 font-display text-sm font-semibold uppercase tracking-wide text-zinc-100 hover:border-brand-500 hover:bg-brand-950/40';
@@ -410,7 +411,7 @@ function TriggerPromptDialog({ prompt }) {
   // A pick of several (targets, or "choose one or both").
   const multi = prompt.kind === 'targets' || (prompt.kind === 'choose' && prompt.maximum > 1);
   return (
-    <DialogShell title={`${prompt.fighterName}: ${prompt.title}`} onClose={() => {}} maxWidth="max-w-sm" portal>
+    <DialogShell title={`${prompt.fighterName}: ${prompt.title}`} onClose={() => {}} maxWidth="max-w-sm" portal zIndex={3100}>
       {/* Whose turn this belongs to: it closes when that turn ends. */}
       {prompt.when && <p className="mb-1 font-display text-[10px] font-bold uppercase tracking-wide text-amber-300">{prompt.when}</p>}
       {prompt.text && <p className="mb-3 whitespace-pre-line text-xs text-zinc-400">{prompt.text}</p>}
@@ -448,6 +449,7 @@ function TriggerPromptDialog({ prompt }) {
                   type="button"
                   aria-pressed={on}
                   onClick={() =>
+                    (prompt.required ?? []).includes(o.id) ||
                     setPicked((list) => (on ? list.filter((v) => v !== o.id) : list.length < prompt.maximum ? [...list, o.id] : list))
                   }
                   // Separate classes per state: mixing them with the base ones let the

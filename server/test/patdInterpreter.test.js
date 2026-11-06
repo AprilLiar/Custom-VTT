@@ -229,3 +229,20 @@ test('Thorns Form: after the Shield absorbs from an enemy Action, 1 damage back 
   await runRule(rule, ctx(true));
   assert.equal(foe.hp, 7);
 });
+
+test('Challenge enforced (decided): a damaging Action must include the Challenger', async () => {
+  const me = fighter(1, 'a');
+  const foe = fighter(2, 'b');
+  const challenger = fighter(3, 'b');
+  const { w } = makeWorld([me, foe, challenger]);
+  const damage = idx.get('action.system-basic-actions.damage');
+  const asked = [];
+  // One target: the Challenger is the only choice, nothing asked.
+  await runRule({ id: damage.id, effect: damage.effect }, { world: w, self: me, state: {}, usage: {}, log: () => {}, ask: async (q) => (asked.push(q), ['2']), resolution: { gateRating: 1 }, mustTarget: 3 });
+  assert.equal(asked.length, 0);
+  assert.equal(challenger.hp, 9);
+  assert.equal(foe.hp, 10);
+  // Gate rating drives the damage: 5+ deals 3.
+  await runRule({ id: damage.id, effect: damage.effect }, { world: w, self: me, state: {}, usage: {}, log: () => {}, ask: async () => ['2'], resolution: { gateRating: 6 }, onUnsupported: () => {} });
+  assert.equal(foe.hp, 7, 'Damage at a 6: 3 damage (the 5+ Gate); its Push is left to people for now');
+});

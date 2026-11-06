@@ -1516,7 +1516,7 @@ io.on('connection', (socket) => {
   registerMapTileHandlers({ on, socket, emitStageUpdated });
   registerBuildHandlers({ on, socket, io, mayWrite: mayWriteScenePicture, emitStageUpdated });
   registerHomebrewHandlers({ on, socket, io, emitStageUpdated });
-  registerDiceMarkHandlers({ on, socket, io, emitStageUpdated, postCard });
+  registerDiceMarkHandlers({ on, socket, io, triggers: triggerEngine() });
   // Rounds, turns, Stance rolls and Reminders (Phase 5) — see server/fights.js.
   registerFightHandlers({ on, socket, emitStageUpdated, postCard, postSystemMessage, emitAll: (event, payload) => io.emit(event, payload), triggers: triggerEngine() });
   // Turn triggers' choices and targets (builder phase 3) — see server/triggers.js.

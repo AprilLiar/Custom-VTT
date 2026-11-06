@@ -255,7 +255,7 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
     // turn ends (fight:turn_ended). `roll_id`, `character_id` and
     // `stance_key` open the turn's dice board from it (server/diceMarks.js).
     const rollId = `${combatantId}-${Date.now().toString(36)}${Math.floor(Math.random() * 1296).toString(36)}`;
-    await startRoll({ rollId, combatantId, characterId: fighter.characterId, dice: results.length, stanceKey: stance.id }, emitAll);
+    await startRoll({ rollId, combatantId, characterId: fighter.characterId, results, stanceKey: stance.id }, emitAll);
     await postCard('stance_roll', {
       fighter: card(fighter),
       stance: stance.name,
@@ -356,10 +356,9 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
   });
 
   // **Next turn (GM).** Ends the current turn and starts the next.
-  on('fight:next', async ({ mode }) => {
-    if (!isGm()) return;
-    const fight = await fightFor(mode);
-    if (!fight) return;
+  // The current turn ends and the next starts (GM's Next turn, or the active
+  // player's End turn on the dice board — decided).
+  const nextTurn = async (fight) => {
     const current = orderOf(fight)[fight.turn_index];
     // The ending turn's unanswered questions close first (decided), so its
     // End triggers and the next turn's never wait behind them.
@@ -375,6 +374,34 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
     await run('UPDATE combatants SET dizzy = 0 WHERE scene_id = ? AND mode = ?', [fight.scene_id, fight.mode]);
     await advance(fight);
     await emitStageUpdated();
+  };
+
+  on('fight:next', async ({ mode }) => {
+    if (!isGm()) return;
+    const fight = await fightFor(mode);
+    if (!fight) return;
+    await nextTurn(fight);
+  });
+
+  // **End turn (decided: the active player ends it).** From the dice board:
+  // whoever controls the fighter whose turn it is (or the GM). Not while that
+  // board is still performing Actions.
+  on('board:end_turn', async ({ rollId }) => {
+    const board = await one('SELECT * FROM dice_marks WHERE roll_id = ?', [String(rollId ?? '')]);
+    if (!board?.active) return;
+    const viewer = socket.data.identity;
+    if (viewer?.role !== 'gm' && !controlsCharacter(viewer, board.character_id)) return;
+    let data = {};
+    try {
+      data = JSON.parse(board.data || '{}');
+    } catch {
+      data = {};
+    }
+    if (data.committing) return;
+    const c = await one('SELECT scene_id, mode FROM combatants WHERE id = ?', [board.combatant_id]);
+    const fight = c ? await one('SELECT * FROM fights WHERE scene_id = ? AND mode = ?', [c.scene_id, c.mode]) : null;
+    if (!fight || orderOf(fight)[fight.turn_index]?.id !== board.combatant_id) return;
+    await nextTurn(fight);
   });
 
   // **Previous turn (GM).** Steps the marker back one turn — into the last

@@ -1437,6 +1437,19 @@ export async function initDb() {
     )
   `);
 
+  // Snapshots before each committed Action (server/engine/snapshots.js), so
+  // the GM can retrieve its die and undo it (full automation, phase B).
+  ddl(`
+    CREATE TABLE IF NOT EXISTS fight_snapshots (
+      id INTEGER PRIMARY KEY,
+      fight_id INTEGER NOT NULL,
+      roll_id TEXT,
+      placement_key TEXT,
+      data TEXT NOT NULL,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
   // Homebrew content (server/homebrew.js, client/src/lib/patd/homebrew.js):
   // the GM's own Forms, Styles and Archetypes, one cleaned item per row.
   ddl(`

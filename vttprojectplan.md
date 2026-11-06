@@ -3325,12 +3325,28 @@ A GM-only page (`/homebrew`, the flask icon in the header and the mobile menu) f
   - **Modifiers:** `engine/modifiers.js` (`modifiersOn`) collects `modify_rule` and lasting `grant_armor` from continuous rules of active sources, including auras whose selector reaches other fighters, plus runtime temporaries. Queries: `valueOf`, `sumMod`, `listMod`, `hasMod`. The End Phase Speed rules now read it.
   - **Snapshots:** `server/engine/snapshots.js` saves and restores the fight's combatant rows, its map tiles, lane slots and the runtime.
   - Tests: `server/test/engineCore.test.js`; playtest `scripts/playtest-engine-runtime.mjs`.
-- **B. The Action Pool and Commit:**
-  - The pool as server state (roll numbers plus added ones, max 10).
-  - Placing with order numbers, gate stop, Commit, crossed and locked dice, GM Retrieve (undo).
-  - Token and Free Actions placed and paid at Commit.
-  - Actions resolve through the interpreter (`payment.rating`, `resolution.gateRating`, X) with prompts, Challenge enforced.
-  - End turn for the active player, the Power toggle, and the batch pause with Continue.
+- **B. The Action Pool and Commit — implemented.**
+  - **Turn board** (`server/diceMarks.js`, one `dice_marks` row per Stance roll). Its data is `{ stanceKey, results, extra (numbers added to the pool), placements, power, paused, committing }` (`client/src/lib/patd/diceBoard.js`: `poolOf`, `publicBoard`, `reservedBy` / `minusReserved`, `stopChoices`).
+  - **Placing:** `board:place { rollId, die | option+answers, actionId }` places a die (only on an Action with a dice cost) or a token payment. A payment is checked against the fighter's tokens minus what earlier placements already promise; nothing is paid yet.
+  - **Other edits:** `board:unplace`, `board:stop { key, stop }` (stop at a lower lit Gate), and `board:power`. A placement's `threshold` is the top Gate it reaches.
+  - **Commit:** `board:commit` runs `server/engine/actions.js` on the fight's chain. For each uncommitted placement, in order:
+    1. A snapshot (`fight_snapshots`, including the pool's added numbers).
+    2. The cost is paid (tokens, HP, Shield, the Challenge back from its holder).
+    3. The effect resolves through the interpreter with `payment.rating`, `resolution.gateRating` (or the stop) and `history`. A damaging Action must include the Challenger (`mustTarget`). Steps the engine can't run yet go into a "By hand:" line (`onUnsupported`).
+    4. The bus emits `self.action.before / cost_paid / resolved`, `self.dice_action.resolved`, `self.damage_dealing_action.resolved`, `self.first_action_on_own_turn.resolved`, `ally.action.resolved`, `any_action.fully_resolved`, `self.token_action.pay_cost` and `self.hp_paid`. Temporaries expire ("or next Action", "next damaging Action").
+    5. A card reports what happened: a notice, or orange when part was by hand.
+    - Between Actions the batch **pauses until Continue** whenever someone could react (`reactionsAvailable`, filled in by phase F). A cost that can't be paid stops the batch, and that Action stays placed.
+  - **Retrieve (GM):** `board:retrieve { rollId, key }` restores that placement's snapshot (HP, tokens, positions, tiles, runtime, the pool's extras). That placement and every later one go back to placed. Players can't.
+  - **End turn:** `board:end_turn { rollId }` is for whoever controls the active fighter (or the GM), not while performing. It shares `nextTurn` with the GM's Next turn.
+  - **The board UI** (`DiceBoard.jsx`):
+    - Dice show an order badge (top-right, outside the greyed face). Placed is grey; committed is grey and crossed, and only the GM can tap it to retrieve.
+    - Tapping a placed die takes it back. Tapping a token-cost Action places or unplaces its payment (with `PayDialog` for choices). Tapping a lit Gate line sets the stop.
+    - The footer holds Power (balance and toggle), the pool (rolled dice, fixed numbers, added numbers in blue), Commit N or Continue, End turn and ✕.
+    - The chat's roll card shows placed (grey, numbered) and committed (crossed) dice to everyone, plus added numbers.
+    - Prompts (`TriggerPrompts`) now open above the board (`DialogShell zIndex`). A required Challenger starts picked and can't be unpicked.
+  - `add_pool_number` lands on the fighter's active board.
+  - **Not yet:** an Action's own `conditions` and `limits` (e.g. Swift Strike "only during enemy turns", "once per turn"). They come with reactions (phase F), where they matter.
+  - Tests: interpreter Challenge and Gate tests; playtest `scripts/playtest-dice-marks.mjs` (place, unplace, stop, Commit with real damage and the cost paid, GM Retrieve undo, recommit, End turn).
 - **C. Damage pipeline (WEPIA):**
   - Weakness, redirect and split, Power, Iron (reduce or resist), Shield (damage or Status tokens), Armor (3, 2, 1, once per check; temporary), Pit reduction at range 3+, Unblockable and immunity modifiers.
   - Dizzy and Taken Out; on-hit versus on-damage; Fall, Trap, Burning and Super sources.

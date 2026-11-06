@@ -1,6 +1,7 @@
-// Playtest: the turn's dice board marks — a Stance roll opens editable marks
-// for that fighter's controllers, everyone hears them, they freeze when the
-// turn ends, come back with Previous turn, and freeze at End Combat.
+// Playtest: the turn board (full automation, phase B) — placing dice and token
+// payments on Actions in order, taking them back, stopping at an earlier Gate,
+// Commit performing the Actions for real (damage, the token cost paid), GM-only
+// Retrieve undoing them fully, committing again, and End turn by the player.
 //
 //   npm run dev   (or node server/index.js)
 //   node scripts/playtest-dice-marks.mjs
@@ -39,106 +40,108 @@ const stamp = Date.now();
 const gm = await connect({ role: 'gm' });
 const cards = [];
 gm.on('chat:card', (c) => cards.push(c));
-gm.emit('scene:create', { name: `DM ${stamp}` });
+gm.emit('scene:create', { name: `CM ${stamp}` });
 await sleep(300);
-const scene = (await jf('/api/scenes?role=gm')).find((s) => s.name === `DM ${stamp}`);
+const scene = (await jf('/api/scenes?role=gm')).find((s) => s.name === `CM ${stamp}`);
 gm.emit('scene:activate', { sceneId: scene.id });
 await sleep(300);
 gm.emit('scene:set_mode', { mode: 'combat' });
 await sleep(300);
-const mira = await jpost('/api/characters', { name: `DMMira${stamp}`, characterType: 'pc' });
-const other = await jpost('/api/characters', { name: `DMOther${stamp}`, characterType: 'pc' });
-const thug = await jpost('/api/characters', { name: `DMThug${stamp}`, characterType: 'npc' });
+const mira = await jpost('/api/characters', { name: `CMMira${stamp}`, characterType: 'pc' });
+const other = await jpost('/api/characters', { name: `CMOther${stamp}`, characterType: 'pc' });
+const thug = await jpost('/api/characters', { name: `CMThug${stamp}`, characterType: 'npc' });
 const p = await connect({ role: 'player', characterId: mira.id });
 const q = await connect({ role: 'player', characterId: other.id });
-const seen = [];
-q.on('dice:marks', (m) => seen.push(m));
+// Blaster Form + Swift Style: Damage is Basic; Swift Strike costs 2 Basic tokens.
 gm.emit('build:save', { characterId: mira.id, build: { type: 'hero-type.focused', stances: [{ formId: 'form.blaster', styleId: 'style.swift' }] } });
 gm.emit('build:save', { characterId: thug.id, build: { type: 'character-type.warrior', stances: [{ formId: 'form.power', styleId: 'style.halcyon' }] } });
 await sleep(400);
 gm.emit('combat_token:place', { ownerType: 'character', ownerId: mira.id, col: 2, row: 2 });
-gm.emit('combat_token:place', { ownerType: 'character', ownerId: thug.id, col: 5, row: 2 });
+gm.emit('combat_token:place', { ownerType: 'character', ownerId: thug.id, col: 3, row: 2 });
 await sleep(600);
 let st = await jf('/api/stage?role=gm');
 const tm = st.combatTokens.find((t) => t.character_id === mira.id);
 const tt = st.combatTokens.find((t) => t.character_id === thug.id);
+gm.emit('fight:preset_weight', { mode: 'combat', weight: 'middle', fighters: [{ ref: { combatantId: tm.id }, level: 1 }, { ref: { combatantId: tt.id }, level: 1, kind: 'warrior' }] });
+gm.emit('fighter:token', { ref: { combatantId: tm.id }, key: 'iron', delta: 3 });
+await sleep(500);
+// The player answers target prompts with the first option.
+p.on('trigger:prompt', (x) => p.emit('trigger:answer', { id: x.id, answer: x.kind === 'targets' ? [x.options[0].id] : x.kind === 'confirm' ? true : x.options[0].id }));
 gm.emit('fight:start', { mode: 'combat', allies: [{ combatantId: tm.id }], enemies: [{ combatantId: tt.id }], firstSide: 'allies', opener: { combatantId: tm.id } });
-await sleep(1200);
+await sleep(1500);
 const roll = cards.find((c) => c.kind === 'stance_roll');
 const rollId = roll?.payload.roll_id;
-check('the Stance roll card carries what the board needs', rollId && roll.payload.character_id === mira.id && roll.payload.stance_key === 'form.blaster+style.swift', JSON.stringify(roll?.payload));
-let marks = (await jf('/api/dice-marks')).marks;
-check('its marks start empty and active', marks[rollId]?.active === true && marks[rollId].used.length === 0);
+const board = async () => (await jf('/api/dice-marks')).marks[rollId];
+let b = await board();
+check('the board holds the roll: results, no placements, active', b?.active && b.results.length === roll.payload.results.length && b.placements.length === 0, JSON.stringify(b));
+const hp = async (id) => (await jf('/api/stage?role=gm')).combatTokens.find((t) => t.id === id).fight.hp.current;
+const toks = async (id) => (await jf('/api/stage?role=gm')).combatTokens.find((t) => t.id === id).fight.tokens;
 
-console.log('\n--- marking ---');
-q.emit('dice:mark', { rollId, used: [0], assign: {} });
+console.log('\n--- placing ---');
+const DAMAGE = 'action.system-basic-actions.damage';
+const SWIFT = 'action.style-swift.swift-strike';
+// The largest die, so Damage reaches a high Gate.
+const order = [...roll.payload.results.map((r, i) => ({ v: r.result, i }))].sort((a, c) => c.v - a.v);
+const big = order[0];
+q.emit('board:place', { rollId, die: big.i, actionId: DAMAGE });
 await sleep(300);
-check("someone who doesn't control the fighter can't mark", (await jf('/api/dice-marks')).marks[rollId].used.length === 0);
-p.emit('dice:mark', { rollId, used: [1], assign: { 0: { actionId: 'action.system-basic-actions.damage', threshold: 5 } } });
+check("someone who doesn't control the fighter can't place", (await board()).placements.length === 0);
+p.emit('board:place', { rollId, die: big.i, actionId: DAMAGE });
 await sleep(300);
-marks = (await jf('/api/dice-marks')).marks;
-check("the fighter's player marks: a crossed die and one laid on Damage (also crossed)", JSON.stringify(marks[rollId].used) === '[0,1]' && marks[rollId].assign[0].actionId === 'action.system-basic-actions.damage', JSON.stringify(marks[rollId]));
-check('everyone hears it (dice:marks)', seen.some((m) => m.rollId === rollId && m.used.length === 2));
+p.emit('board:place', { rollId, actionId: SWIFT, option: 0, answers: { split: { iron: 2 } } });
+await sleep(300);
+p.emit('board:place', { rollId, die: order[1].i, actionId: SWIFT });
+await sleep(300);
+b = await board();
+check('a die and a token payment are placed, in order; a die on a token-only Action is refused', b.placements.length === 2 && b.placements[0].kind === 'die' && b.placements[1].kind === 'token' && b.placements[1].text === '2 Iron', JSON.stringify(b.placements));
+check('nothing is paid yet', (await toks(tm.id)).iron === 3);
+p.emit('board:unplace', { rollId, key: b.placements[1].key });
+await sleep(300);
+check('a placement can be taken back before Commit', (await board()).placements.length === 1);
+p.emit('board:place', { rollId, actionId: SWIFT, option: 0, answers: { split: { iron: 2 } } });
+await sleep(300);
+const reached = (await board()).placements[0].threshold;
+if (reached >= 3) {
+  p.emit('board:stop', { rollId, key: `d${big.i}`, stop: 1 });
+  await sleep(300);
+  check('stop at an earlier Gate', (await board()).placements[0].stop === 1, JSON.stringify((await board()).placements[0]));
+}
 
-console.log('\n--- paying a token cost ---');
-const fs = () => jf(`/api/fighter-state/${tm.id}`);
-gm.emit('fighter:token', { ref: { combatantId: tm.id }, key: 'iron', delta: 3 });
-gm.emit('fighter:token', { ref: { combatantId: tm.id }, key: 'power', delta: 1 });
-await sleep(400);
-check('the fighter state is readable', (await fs()).tokens.iron === 3);
-// Swift Strike: 2 Basic tokens, split as 1 Iron + 1 Power.
-p.emit('dice:pay', { rollId, actionId: 'action.style-swift.swift-strike', option: 0, answers: { split: { iron: 1, power: 1 } } });
-await sleep(500);
-let s1 = await fs();
-marks = (await jf('/api/dice-marks')).marks;
-check('paying spends exactly the chosen tokens', s1.tokens.iron === 2 && !s1.tokens.power && marks[rollId].pay['action.style-swift.swift-strike']?.text === '1 Iron + 1 Power', JSON.stringify([s1.tokens, marks[rollId].pay]));
-p.emit('dice:pay', { rollId, actionId: 'action.style-unbreakable.stay-out-of-this', option: 0, answers: {} });
-await sleep(400);
-check("can't pay what you don't have (4 Iron with 2)", (await fs()).tokens.iron === 2 && !(await jf('/api/dice-marks')).marks[rollId].pay['action.style-unbreakable.stay-out-of-this']);
-p.emit('dice:unpay', { rollId, actionId: 'action.style-swift.swift-strike' });
-await sleep(500);
-s1 = await fs();
-check('tapping again undoes it in full', s1.tokens.iron === 3 && s1.tokens.power === 1 && !(await jf('/api/dice-marks')).marks[rollId].pay['action.style-swift.swift-strike'], JSON.stringify(s1.tokens));
-// HP cost that breaks a bar, then undone exactly.
-gm.emit('fight:preset_weight', { mode: 'combat', weight: 'middle', fighters: [{ ref: { combatantId: tm.id }, level: 1, bars: 2 }] });
-await sleep(400);
-gm.emit('fighter:set_hp', { ref: { combatantId: tm.id }, current: 2 });
-await sleep(400);
-const hpBefore = (await jf('/api/stage?role=gm')).combatTokens.find((t) => t.id === tm.id).fight.hp;
-p.emit('dice:pay', { rollId, actionId: 'action.form-blaster.amplify', option: 0, answers: {} });
-await sleep(500);
-const hpPaid = (await jf('/api/stage?role=gm')).combatTokens.find((t) => t.id === tm.id).fight.hp;
-p.emit('dice:unpay', { rollId, actionId: 'action.form-blaster.amplify' });
-await sleep(500);
-const hpBack = (await jf('/api/stage?role=gm')).combatTokens.find((t) => t.id === tm.id).fight.hp;
-check('an HP cost (2 HP at 2, breaking a bar) is paid, and undone exactly', hpPaid.broken === hpBefore.broken + 1 && JSON.stringify(hpBack) === JSON.stringify(hpBefore), JSON.stringify([hpBefore, hpPaid, hpBack]));
-q.emit('dice:pay', { rollId, actionId: 'action.form-dance.dance-together', option: 0, answers: {} });
-await sleep(300);
-check("someone else can't pay for the fighter", !(await jf('/api/dice-marks')).marks[rollId].pay['action.form-dance.dance-together']);
-gm.emit('fighter:token', { ref: { combatantId: tm.id }, key: 'speed', delta: 3 });
-await sleep(300);
-p.emit('dice:pay', { rollId, actionId: 'action.form-dance.dance-together', option: 0, answers: {} });
-await sleep(300);
-check("…and nobody pays for an Action outside this turn's Stance", !(await jf('/api/dice-marks')).marks[rollId].pay['action.form-dance.dance-together']);
+console.log('\n--- Commit ---');
+const thugHp = await hp(tt.id);
+p.emit('board:commit', { rollId });
+await sleep(2500);
+b = await board();
+check('Commit performs every placed Action in order: both committed', b.placements.every((x) => x.committed) && !b.committing, JSON.stringify(b.placements));
+const dealt = thugHp - (await hp(tt.id));
+const expected = reached >= 3 ? 1 /* stopped at 1+: Deal 1 */ + 1 /* Swift Strike: 1 */ : 1 + 1;
+check(`the Actions really resolve: ${expected} damage to the Thug (Damage, stopped at 1+, and Swift Strike)`, dealt === expected, `${thugHp} → ${await hp(tt.id)}`);
+check('the token cost is paid at Commit', (await toks(tm.id)).iron === 1, JSON.stringify(await toks(tm.id)));
+check('each Action posts its card', cards.filter((c) => c.payload?.automatic === 'action' || c.payload?.automatic === 'action_manual').length >= 2);
 
-console.log('\n--- the turn ends ---');
-gm.emit('fight:next', { mode: 'combat' });
-await sleep(1000);
-marks = (await jf('/api/dice-marks')).marks;
-check('the marks freeze, kept as they were', marks[rollId].active === false && marks[rollId].used.length === 2);
-p.emit('dice:mark', { rollId, used: [], assign: {} });
-await sleep(300);
-check('a frozen roll can no longer be marked', (await jf('/api/dice-marks')).marks[rollId].used.length === 2);
-const thugRoll = cards.filter((c) => c.kind === 'stance_roll').at(-1).payload.roll_id;
-check("the next fighter's roll is the active one", (await jf('/api/dice-marks')).marks[thugRoll]?.active === true);
-gm.emit('fight:previous', { mode: 'combat' });
+console.log('\n--- Retrieve (GM) ---');
+p.emit('board:retrieve', { rollId, key: b.placements[0].key });
+await sleep(800);
+check('a player cannot retrieve', (await board()).placements.every((x) => x.committed));
+gm.emit('board:retrieve', { rollId, key: b.placements[0].key });
+await sleep(1500);
+b = await board();
+check('the GM retrieves the first die: it and every later Action are un-committed', b.placements.length === 2 && b.placements.every((x) => !x.committed), JSON.stringify(b.placements));
+check('…and everything they did is undone (HP and tokens back)', (await hp(tt.id)) === thugHp && (await toks(tm.id)).iron === 3, JSON.stringify([await hp(tt.id), await toks(tm.id)]));
+p.emit('board:commit', { rollId });
+await sleep(2500);
+check('commit again, in steps: works the same', (await board()).placements.every((x) => x.committed) && thugHp - (await hp(tt.id)) === expected);
+
+console.log('\n--- End turn ---');
+q.emit('board:end_turn', { rollId });
 await sleep(600);
-marks = (await jf('/api/dice-marks')).marks;
-check("Previous turn: the fighter's roll is live again, with its marks", marks[rollId].active === true && marks[rollId].used.length === 2 && marks[thugRoll].active === false);
-gm.emit('fight:end', { mode: 'combat', outcome: 'skip' });
-await sleep(500);
-check('End Combat freezes every roll', (await jf('/api/dice-marks')).marks[rollId].active === false);
+check("someone else can't end the turn", (await jf('/api/stage?role=gm')).fights.combat.turn_index === 0);
+p.emit('board:end_turn', { rollId });
+await sleep(1200);
+st = await jf('/api/stage?role=gm');
+check('the active player ends their own turn (decided)', st.fights.combat.turn_index === 1 && !(await board()).active, JSON.stringify(st.fights.combat.turn_index));
 
+gm.emit('fight:end', { mode: 'combat', outcome: 'skip' });
 gm.emit('scene:delete', { sceneId: scene.id });
 await sleep(300);
 for (const c of [mira, other, thug]) await fetch(`${BASE}/api/characters/${c.id}`, { method: 'DELETE' });
