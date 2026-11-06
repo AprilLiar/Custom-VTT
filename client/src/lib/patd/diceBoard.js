@@ -80,7 +80,7 @@ export const poolOf = (data) =>
 // **The numbers still in the Action Pool (phase H):** not taken out, not spent
 // by a committed Action.
 export const livePool = (data) => {
-  const spent = new Set((data?.placements ?? []).filter((p) => p.committed && p.kind === 'die').map((p) => p.die));
+  const spent = new Set((data?.placements ?? []).filter((p) => p.committed).flatMap((p) => (p.kind === 'die' ? [p.die] : p.kind === 'super' ? (p.dice ?? []) : [])));
   return poolOf(data ?? {}).filter((p) => !spent.has(p.index));
 };
 
@@ -114,10 +114,12 @@ export function publicBoard(rollId, data, active) {
     active: Boolean(active),
     results: data.results ?? [],
     extra: data.extra ?? [],
-    placements: (data.placements ?? []).map(({ key, kind, die, actionId, threshold, stop, text, committed, summary, option }) => ({
+    placements: (data.placements ?? []).map(({ key, kind, die, dice, actionId, threshold, stop, text, committed, summary, option }) => ({
       key,
       kind,
       die,
+      // A Super Move's pair of matching numbers (phase I).
+      dice: dice ?? null,
       actionId,
       threshold: threshold ?? null,
       stop: stop ?? null,

@@ -16,7 +16,7 @@ import { hpOf, saveHp, shapeFightState } from '../combatState.js';
 import { patdContent } from '../patdContent.js';
 import { actingOn, readData, saveBoard, fighterState } from '../diceMarks.js';
 import { restoreSnapshot, takeSnapshot } from './snapshots.js';
-import { recordUse } from '../../client/src/lib/patd/engine/turn.js';
+import { recordUse, superKey } from '../../client/src/lib/patd/engine/turn.js';
 
 const hasDamage = (node) => {
   let found = false;
@@ -81,7 +81,12 @@ export function createActionRunner(kit) {
     const actor = byId(actingOn(row).combatantId);
     if (!action || !actor) return { ok: false, error: 'the fighter or the Action is gone' };
     let payment;
-    if (placement.kind === 'die') {
+    if (placement.kind === 'super') {
+      // **A Super Move (phase I):** paid with its pair of matching numbers.
+      const pool = poolOf(data);
+      const nums = (placement.dice ?? []).map((i) => pool.find((p) => p.index === i)?.value ?? 0);
+      payment = { rating: nums[0] ?? 0, poolNumbers: nums, isDice: true, isSuper: true };
+    } else if (placement.kind === 'die') {
       const n = poolOf(data).find((p) => p.index === placement.die);
       payment = { rating: n?.value ?? 0, poolNumbers: [n?.value ?? 0], isDice: true };
       // A Chaos token spent "as if you had spent a 4" (once per turn — phase F).
@@ -116,15 +121,21 @@ export function createActionRunner(kit) {
     const firstAction = !(frt.flags.actions > 0);
     // "Until your next Action" temporaries made before this one end after it.
     env.rt.actionSeq = (env.rt.actionSeq ?? 0) + 1;
+    // A Super Move triggers no "before / after an Action" Abilities
+    // (`triggersAbilities: false` — phase I); its hits still do.
+    const isSuper = placement.kind === 'super';
+    const fires = !(isSuper && action.triggersAbilities === false);
+    const actionEvent = (ev, payload) => (fires ? emitEvent(env, ev, actor, payload) : null);
     // A Reactive Action (a reaction board — phase F): "before each Reactive Action" (Swift Style).
-    if (data.reaction) await emitEvent(env, 'self.reactive_action.before', actor, { action });
-    await emitEvent(env, 'self.action.before', actor, { action });
-    await emitEvent(env, 'enemy_in_range.action.cost_paid_before_resolution', actor, { action, actor });
+    if (data.reaction) await actionEvent('self.reactive_action.before', { action });
+    await actionEvent('self.action.before', { action });
+    await actionEvent('enemy_in_range.action.cost_paid_before_resolution', { action, actor });
     const damaging = hasDamage(action.effect);
     // **Control tokens (phase F, book p.117):** after the cost is paid and
     // before the Action is performed, each enemy whose range it is in may spend
     // Control (once per turn): 1 to Copy it, 2 to Dodge it, 3 to Parry it.
-    const control = await controlChances(env, actor, action);
+    // A Super Move isn't an Action (`isAction: false`): no Control against it (phase I).
+    const control = isSuper ? { parry: null, dodged: [], copiers: [] } : await controlChances(env, actor, action);
     if (control.parry) {
       const p = control.parry;
       lines.push(`${p.name} Parries it: the Action is negated`);
@@ -150,9 +161,11 @@ export function createActionRunner(kit) {
       resolution: { gateRating },
       payment,
       history,
-      // Its hits are an Action's; the board's Power toggle stands in for "Ask"
+      // Its hits are an Action's (a Super Move's); the board's Power toggle stands in for "Ask"
       // on your own Actions (decided): on = Enhance each hit as far as allowed.
-      source: 'action',
+      source: placement.kind === 'super' ? 'super' : 'action',
+      // "No token responses" to a Super Move (`allowsTokenResponses: false`): no Iron against its hits.
+      unblockable: placement.kind === 'super' && action.allowsTokenResponses === false ? ['iron_tokens'] : [],
       power: data.power ? 'max' : 'none',
       originSquare,
       // Dodged (Control): they're immune to this Action.
@@ -170,6 +183,12 @@ export function createActionRunner(kit) {
     frt.flags.actions = (frt.flags.actions ?? 0) + 1;
     // Its limits count it (once per turn …).
     recordUse(env.rt.usage, action, actor.id);
+    // A Super Move: once per fight for them, and one of their side's this Round.
+    if (placement.kind === 'super') {
+      env.rt.usage[superKey(actor.id)] = (env.rt.usage[superKey(actor.id)] ?? 0) + 1;
+      const side = (env.rt.sides ??= {})[actor.side] ??= { supersThisRound: 0 };
+      side.supersThisRound = (side.supersThisRound ?? 0) + 1;
+    }
     if (actor.challengeId != null && history.damagedIds.includes(actor.challengeId)) frt.flags.damagedChallenger = true;
     // The Action events (engine/bus.js), with what it did (phase G): the
     // enemies it damaged, who it moved by force, whether it moved you.
@@ -183,14 +202,14 @@ export function createActionRunner(kit) {
       alliesForcedMoved: forced.filter((f) => f.side === actor.side && f.id !== actor.id),
       movedSwappedOrTeleportedSelf: Boolean(history.selfMoved),
     };
-    await emitEvent(env, 'self.action.resolved', actor, did);
-    if (placement.kind === 'die') await emitEvent(env, 'self.dice_action.resolved', actor, did);
-    if (history.damageDealt > 0 || damaging) await emitEvent(env, 'self.damage_dealing_action.resolved', actor, did);
+    await actionEvent('self.action.resolved', did);
+    if (placement.kind === 'die') await actionEvent('self.dice_action.resolved', did);
+    if (history.damageDealt > 0 || damaging) await actionEvent('self.damage_dealing_action.resolved', did);
     const enemyCount = new Set(history.enemyDamagedIds ?? []).size;
-    if (enemyCount) await emitEvent(env, 'self.action.damage_dealt_to_enemy', actor, { action, history, enemyCount });
-    if (firstAction && fightRow.turn_order && env.rt.turn?.activeId === actor.id) await emitEvent(env, 'self.first_action_on_own_turn.resolved', actor, { action });
-    await emitEvent(env, 'ally.action.resolved', actor, { action, history });
-    await emitEvent(env, 'any_action.fully_resolved', actor, { action, history });
+    if (enemyCount) await actionEvent('self.action.damage_dealt_to_enemy', { action, history, enemyCount });
+    if (firstAction && fightRow.turn_order && env.rt.turn?.activeId === actor.id) await actionEvent('self.first_action_on_own_turn.resolved', { action });
+    await actionEvent('ally.action.resolved', { action, history });
+    await actionEvent('any_action.fully_resolved', { action, history });
     expireTemps(env.rt, 'action', { actorId: actor.id });
     if (damaging) expireTemps(env.rt, 'damage_action', { actorId: actor.id });
     // Copied (Control): the copier performs the same Action now, as a

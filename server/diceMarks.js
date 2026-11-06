@@ -18,7 +18,8 @@ import { serialized, shapeFightState } from './combatState.js';
 import { patdContent } from './patdContent.js';
 import { derivedFor } from './fighterStances.js';
 import { stanceOfBuild } from '../client/src/lib/patd/build.js';
-import { actionUsable, atZero, turnContext } from '../client/src/lib/patd/engine/turn.js';
+import { actionUsable, atZero, isSuperMove, superKey, superPair, superUsable, turnContext } from '../client/src/lib/patd/engine/turn.js';
+import { WEIGHT_BY_KEY } from '../client/src/lib/cinematicWeight.js';
 import { loadRuntime } from './engine/runtimeStore.js';
 import { spendPrefs } from '../client/src/lib/patd/engine/damage.js';
 
@@ -159,7 +160,10 @@ export async function turnStateOf(row) {
   const sideOf = (id) => (allies.includes(id) ? 'allies' : 'enemies');
   const rt = await loadRuntime(fight.id);
   const ctx = turnContext({ actorId: me.id, actorSide: sideOf(me.id), activeId, activeSide: activeId != null ? sideOf(activeId) : null, tokens: shapeFightState(me).tokens });
-  return { fight, ctx, usage: rt.usage ?? {}, me, activeId };
+  // The side's Super Move limit per Round, from the Scene's Cinematic Weight (phase I).
+  const scene = await one('SELECT combat_weight, simple_weight FROM scenes WHERE id = ?', [fight.scene_id]);
+  const weight = WEIGHT_BY_KEY[fight.mode === 'simple' ? scene?.simple_weight : scene?.combat_weight] ?? WEIGHT_BY_KEY.middle;
+  return { fight, ctx, usage: rt.usage ?? {}, me, activeId, rt, side: sideOf(me.id), superLimit: weight.supers ?? 1 };
 }
 
 // The Actions this roll's turn can use (Basic, the rolled Stance's, always available).
@@ -169,7 +173,8 @@ export async function turnActionIds(row, data) {
   const idx = patdContent();
   const d = await derivedFor(actingOn(row).characterId);
   const t = turnActions(d, stanceOfBuild(d, data.stanceKey, idx), idx);
-  return new Set([...t.basic, ...t.personal.flatMap((g) => g.ids)]);
+  // Super Moves too (phase I), paid with a pair of matching numbers.
+  return new Set([...t.basic, ...t.personal.flatMap((g) => g.ids), ...(t.supers ?? [])]);
 }
 
 // { rollId → public board } for the recent rolls.
@@ -211,11 +216,33 @@ export function registerDiceMarkHandlers({ on: onRaw, socket, io, triggers = nul
       const ok = actionUsable(action, ts.ctx, ts.usage, actingOn(row).combatantId, pending);
       if (!ok.ok) return refuse(row.roll_id, `${action.name}: ${ok.reason}`);
     }
+    // Pool indexes already placed (a Super Move takes two).
+    const taken = data.placements.flatMap((p) => (p.kind === 'die' ? [p.die] : p.kind === 'super' ? (p.dice ?? []) : []));
+    // **A Super Move (phase I, decided: all limits enforced):** the picked
+    // number and a free one matching it, both 3+.
+    if (isSuperMove(action)) {
+      if (data.reaction) return refuse(row.roll_id, 'a Super Move is not a Reactive Action');
+      if (ts) {
+        const ok = superUsable({
+          move: action,
+          round: ts.fight.round,
+          usedByMe: ts.usage[superKey(actingOn(row).combatantId)] ?? 0,
+          sideUsed: ts.rt?.sides?.[ts.side]?.supersThisRound ?? 0,
+          sideLimit: ts.superLimit,
+          pending: data.placements.filter((p) => p.kind === 'super' && !p.committed).length,
+        });
+        if (!ok.ok) return refuse(row.roll_id, `${action.name}: ${ok.reason}`);
+      }
+      const pair = die != null ? superPair(poolOf(data), Number(die), taken) : null;
+      if (!pair) return refuse(row.roll_id, `${action.name} needs two matching numbers, each 3 or higher`);
+      data.placements.push({ key: `s${pair[0]}`, kind: 'super', die: pair[0], dice: pair, actionId: action.id, threshold: null, stop: null, committed: false });
+      return saveBoard(row.roll_id, data, emit);
+    }
     if (die != null) {
       const pool = poolOf(data);
       const n = pool.find((p) => p.index === Number(die));
       if (!n) return;
-      if (data.placements.some((p) => p.kind === 'die' && p.die === n.index)) return;
+      if (taken.includes(n.index)) return;
       if (!hasDiceCost(action)) return refuse(row.roll_id, `${action.name} is not paid with dice`);
       // A Chaos token's "4" pays only for the reactions it was offered for.
       if (n.source === 'chaos' && !(data.reaction?.clusters ?? []).some((c) => c.resource === 'chaos' && c.ids.includes(action.id))) return refuse(row.roll_id, 'a Chaos token pays for a Reactive Action only');

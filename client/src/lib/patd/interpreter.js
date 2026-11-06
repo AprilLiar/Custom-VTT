@@ -98,6 +98,9 @@ export const SUPPORTED_OPS = new Set([
   'perform_action',
   'repeat',
   'teleport_to',
+  // phase I
+  'gain_tokens_until',
+  'destroy_shield',
 ]);
 // When a `schedule` runs (engine/runtime.js runs them at those moments).
 const SCHEDULE_AT = new Set(['current_turn.end', 'next_turn.start']);
@@ -214,10 +217,11 @@ const SELECTOR_KINDS = new Set([
   'own_pool_number',
   'rolled_die',
   'action', // an Action to perform (perform_action)
+  'self_and_visible_allies', // phase I
 ]);
 const OBSTACLE_OPS_KINDS = new Set(['trap', 'fog', 'pit', 'rubble', 'wall', 'copy']);
 // Copies aren't tracked on the board, so "you or your Copies" is your own range.
-const RANGE_MODES = new Set(['stance', 'visible', 'adjacent', 'explicit', 'none', 'map', 'self_or_copies_range', 'adjacent_to_any_own_copy', 'adjacent_to_binding', 'on_or_adjacent_to_binding']);
+const RANGE_MODES = new Set(['stance', 'visible', 'adjacent', 'explicit', 'none', 'map', 'self_or_copies_range', 'adjacent_to_any_own_copy', 'adjacent_to_binding', 'on_or_adjacent_to_binding', 'target_and_adjacent']);
 const REF_OK = [
   /^self$/,
   /^self\.bleeding$/,
@@ -240,7 +244,7 @@ const REF_OK = [
   // "Holds your Challenge": relative to whoever the rule belongs to.
   /^(targets|bindings)\.[A-Za-z]+\.holdsOwnChallenge$/,
   /^event\.(attacker|activeCharacter)\.holdsOwnChallenge$/,
-  /^context\.(healValue|bleedValue|round|activeCharacter|isOwnTurn)$/,
+  /^context\.(healValue|bleedValue|round|activeCharacter|isOwnTurn|isEnemyTurn|isAlliedTurn)$/,
   /^targets\.[A-Za-z]+$/,
   /^bindings\.[A-Za-z]+$/,
   /^variables\.[A-Za-z]+$/,
@@ -360,6 +364,7 @@ export function evalValue(v, scope) {
 const STATUS = ['burning', 'fatigue', 'weakness'];
 const NOT_DISCARDABLE = new Set(['shield', 'armor', 'temp_armor', 'challenge']);
 const NON_UNIQUE = new Set(['power', 'iron', 'speed', 'burning', 'fatigue', 'weakness']);
+const BASIC = ['power', 'iron', 'speed'];
 const SKIP = '__skip';
 const asList = (v) => (v == null ? [] : Array.isArray(v) ? v : [v]);
 const isSelector = (v) => v && typeof v === 'object' && typeof v.kind === 'string' && v.range;
@@ -427,7 +432,12 @@ export async function runRule(rule, ctx) {
   const scope = {
     self: ctx.self,
     // The fight's context, and whether it is the rule's owner's own turn.
-    context: { ...ctx.world.context, isOwnTurn: ctx.world.context?.activeCharacter != null && ctx.world.context.activeCharacter.id === ctx.self?.id },
+    context: {
+      ...ctx.world.context,
+      isOwnTurn: ctx.world.context?.activeCharacter != null && ctx.world.context.activeCharacter.id === ctx.self?.id,
+      isEnemyTurn: ctx.world.context?.activeCharacter != null && ctx.world.context.activeCharacter.side !== ctx.self?.side,
+      isAlliedTurn: ctx.world.context?.activeCharacter != null && ctx.world.context.activeCharacter.side === ctx.self?.side && ctx.world.context.activeCharacter.id !== ctx.self?.id,
+    },
     targets: {},
     bindings: {},
     variables: { ...(ctx.variables ?? {}) },
@@ -637,7 +647,8 @@ async function selectSpaces(sel, scope, ctx, from, { optional = false } = {}) {
 // **Ranges measured from a bound thing (phase H):** "a space adjacent to the
 // target", "enemies on or adjacent to the Trap" — `originBinding` names it
 // (a target, a binding, or a ref such as `event.target`).
-const BINDING_RANGES = new Set(['adjacent_to_binding', 'on_or_adjacent_to_binding']);
+// `target_and_adjacent` (Lead Rain): the target itself and everyone next to it.
+const BINDING_RANGES = new Set(['adjacent_to_binding', 'on_or_adjacent_to_binding', 'target_and_adjacent']);
 function anchorOf(sel, scope) {
   const b = sel.originBinding;
   if (typeof b !== 'string') return null;
@@ -674,6 +685,8 @@ async function select(sel, scope, ctx, label = 'a target') {
   let pool;
   if (sel.kind === 'enemy') pool = [...world.enemiesOf(self), ...copies.filter((c) => c.side !== self.side)];
   else if (sel.kind === 'ally' || sel.kind === 'self_and_allies' || sel.kind === 'self_or_ally') pool = world.alliesOf(self);
+  // "Yourself and each ally you can see" (Inspire Perfection — phase I).
+  else if (sel.kind === 'self_and_visible_allies') pool = world.alliesOf(self).filter((f) => f.id === self.id || world.inRange(from, f, { mode: 'visible', origin: 'self' }));
   else if (sel.kind === 'own_copy') pool = copies.filter((c) => c.ownerId === self.id);
   else if (sel.kind === 'obstacle') pool = world.obstacles?.(from, obstacleRange, { types: sel.types ?? null }) ?? [];
   else if (sel.kind.endsWith('_or_obstacle')) {
@@ -685,10 +698,10 @@ async function select(sel, scope, ctx, label = 'a target') {
   if (ctx.immuneIds?.length) pool = pool.filter((f) => !ctx.immuneIds.includes(f.id));
   if (bound) {
     const anchor = anchorOf(sel, scope);
-    pool = pool.filter((f) => f !== anchor && nearAnchor(sel, anchor, f.square));
+    pool = pool.filter((f) => (f !== anchor || sel.range.mode === 'target_and_adjacent') && nearAnchor(sel, anchor, f.square));
   } else pool = pool.filter((f) => f.isObstacle || (f.isCopy && sel.range?.mode === 'none') || world.inRange(from, f, sel.range));
   const count = sel.count;
-  if (count === 'all' || sel.kind === 'self_and_allies') return pool;
+  if (count === 'all' || sel.kind === 'self_and_allies' || sel.kind === 'self_and_visible_allies') return pool;
   if (!pool.length) return [];
   const maximum = typeof count === 'number' ? count : typeof count === 'object' && count?.maximum != null ? evalValue(count.maximum, scope) : 1;
   const minimum = typeof count === 'object' && count?.maximum != null ? 0 : Math.min(1, pool.length);
@@ -808,6 +821,29 @@ async function run(node, scope, ctx) {
       }
       return;
     }
+    // "Discards all Shields they hold" (Lucky Hit — phase I).
+    case 'destroy_shield': {
+      for (const f of await targetsOf(node.target, scope, ctx)) {
+        const s = world.heldTokens(f).shield ?? 0;
+        if (!s) continue;
+        await world.discardTokens(f, ['shield'], s);
+        ctx.log(`${f.name}'s Shield is destroyed`);
+      }
+      return;
+    }
+    // "Give them Burning tokens until they hold 6" (Super Moves — phase I).
+    case 'gain_tokens_until': {
+      const key = val(node.token);
+      const total = Number(val(node.total)) || 0;
+      if (typeof key !== 'string') return;
+      for (const f of await targetsOf(node.target, scope, ctx)) {
+        const n = Math.max(0, total - (world.heldTokens(f)[key] ?? 0));
+        if (!n) continue;
+        await world.gainTokens(f, key, n, scope.self);
+        ctx.log(`${f.name} gains ${n} ${tokenName(key)} (now ${total})`);
+      }
+      return;
+    }
     case 'distribute_distinct_basic_tokens': {
       let types = [...val(node.types)];
       for (const amount of val(node.amounts)) {
@@ -838,14 +874,23 @@ async function run(node, scope, ctx) {
         const held = world.heldTokens(f);
         const filter = val(node.tokenFilter);
         // Shield, Armor and Challenge are never "tokens you hold" to discard here.
-        let keys = Object.keys(held).filter(
-          (k) => held[k] > 0 && !NOT_DISCARDABLE.has(k) && (filter === 'status' ? STATUS.includes(k) : filter === 'any' || filter == null || k === filter)
-        );
+        // Kinds (phase I): Status, Basic (Power, Iron, Speed), Unique, non-Unique, one key, any.
+        const kindOk = (k) =>
+          filter === 'status' ? STATUS.includes(k) : filter === 'basic' ? BASIC.includes(k) : filter === 'unique' ? !NON_UNIQUE.has(k) : filter === 'non_unique' ? NON_UNIQUE.has(k) : filter === 'any' || filter == null || k === filter;
+        let keys = Object.keys(held).filter((k) => held[k] > 0 && !NOT_DISCARDABLE.has(k) && kindOk(k));
         if (!keys.length) {
           if (decline) return DECLINED;
           continue;
         }
         const total = keys.reduce((n, k) => n + held[k], 0);
+        // "Discards all Basic tokens they hold" (Lucky Hit).
+        if (amount === 'all') {
+          await world.discardTokens(f, keys, total);
+          scope.history.tokensDiscarded = (scope.history.tokensDiscarded ?? 0) + total;
+          ctx.log(`${f.name} discards ${total} token${total === 1 ? '' : 's'}`);
+          await ctx.emit?.('self.tokens_discarded_by_action_or_ability', f, { amount: total, isCostPayment: false });
+          continue;
+        }
         if (decline || (keys.length > 1 && amount < total)) {
           const options = keys.map((k) => ({ id: k, label: `${tokenName(k)} (${held[k]})` }));
           if (decline) options.push({ id: SKIP, label: "Don't discard" });

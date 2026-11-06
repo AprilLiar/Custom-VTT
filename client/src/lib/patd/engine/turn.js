@@ -82,6 +82,36 @@ export function recordUse(usage, action, fighterId) {
   }
 }
 
+// ------------------------------------------------------------------ Super Moves (phase I)
+
+export const isSuperMove = (a) => typeof a?.id === 'string' && a.id.startsWith('super-move.');
+// Paid with two matching numbers of 3+ (all but Transcendant Spirit, which is
+// used while giving your Heroic Spirit — by hand).
+export const superOnBoard = (a) => isSuperMove(a) && (a.timing ?? 'when_an_action_can_be_performed') === 'when_an_action_can_be_performed' && (a.cost?.options ?? []).some((o) => (o.components ?? []).some((c) => c.kind === 'pool_number' && c.matching));
+export const SUPER_MINIMUM = 3;
+export const superKey = (fighterId) => `super:${fighterId}:fight`;
+
+// **May this fighter use a Super Move now? (decided: all limits enforced)**
+// Not in Round 1; once per fight per character; the side's per-round limit
+// from the Cinematic Weight (Feather 0, Light/Middle/Heavy 1, World 2).
+// → { ok, reason }
+export function superUsable({ move, round, usedByMe = 0, sideUsed = 0, sideLimit = 1, pending = 0 }) {
+  if (!superOnBoard(move)) return { ok: false, reason: 'used while giving your Heroic Spirit, by hand' };
+  if (!(round > 1)) return { ok: false, reason: 'not in Round 1' };
+  if (usedByMe + pending >= 1) return { ok: false, reason: 'once per fight' };
+  if (sideUsed >= sideLimit) return { ok: false, reason: sideLimit ? `your side has used its Super Move${sideLimit === 1 ? '' : 's'} this Round` : 'no Super Moves at this Cinematic Weight' };
+  return { ok: true };
+}
+
+// The pair a Super Move is paid with: the picked number and a free one
+// matching it, both 3+. `taken`: pool indexes already placed. → [i, j] or null
+export function superPair(pool, index, taken = []) {
+  const n = pool.find((p) => p.index === index);
+  if (!n || !(n.value >= SUPER_MINIMUM) || taken.includes(index)) return null;
+  const mate = pool.find((p) => p.index !== index && p.value === n.value && !taken.includes(p.index));
+  return mate ? [index, mate.index] : null;
+}
+
 // ------------------------------------------------------------------ reactions
 
 // The reactions a fighter can take now, by the resource that pays for them

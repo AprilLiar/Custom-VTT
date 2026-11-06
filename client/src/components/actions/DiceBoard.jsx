@@ -12,6 +12,7 @@ import { useDiceMarks } from '../../lib/diceMarks.js';
 import { useSquarePick } from '../../lib/squarePick.js';
 import { startFreeMove } from '../../lib/freeMove.js';
 import { ActionCard, SuperMoveCard } from './ActionCards.jsx';
+import { isSuperMove } from '../../lib/patd/engine/turn.js';
 
 // **The turn's dice board (full automation, phase B — vttprojectplan.md, "Full
 // automation").** Opened by tapping the dice of your turn's Stance roll: the
@@ -164,7 +165,8 @@ export default function DiceBoard({ payload, onClose, canEdit }) {
   const placements = board.placements ?? [];
   const orderOf = (key) => placements.findIndex((p) => p.key === key) + 1 || null;
   const dieState = (i) => {
-    const p = placements.find((x) => x.kind === 'die' && x.die === i);
+    // A Super Move holds two dice (phase I).
+    const p = placements.find((x) => (x.kind === 'die' && x.die === i) || (x.kind === 'super' && (x.dice ?? []).includes(i)));
     return p ? { state: p.committed ? 'committed' : 'placed', order: orderOf(p.key), placement: p } : { state: 'free', order: null, placement: null };
   };
   const busy = board.committing;
@@ -179,7 +181,8 @@ export default function DiceBoard({ payload, onClose, canEdit }) {
   const place = (i, actionId) => {
     const action = idx?.get(actionId);
     if (!action) return;
-    if (!hasDiceCost(action)) return say(`${action.name} is paid with ${optionLabel(tokenOptions(action)[0]?.option ?? { components: [] })}, not dice.`);
+    // A Super Move: this number and a free one matching it (the server pairs them).
+    if (!isSuperMove(action) && !hasDiceCost(action)) return say(`${action.name} is paid with ${optionLabel(tokenOptions(action)[0]?.option ?? { components: [] })}, not dice.`);
     emit('board:place', { die: i, actionId });
     setSelected(null);
   };
@@ -263,6 +266,32 @@ export default function DiceBoard({ payload, onClose, canEdit }) {
     );
   };
 
+  // **A Super Move on the board (phase I):** drop or tap one of two matching
+  // numbers (3+) on it; its pair shows under the card.
+  const superCard = (id) => {
+    const move = idx.get(id);
+    const on = placements.filter((p) => p.actionId === id);
+    const open = on.find((p) => !p.committed);
+    const nums = on.flatMap((p) => (p.dice ?? []).map((i) => pool.find((n) => n.index === i)?.value));
+    const tap = () => {
+      if (!editable || busy) return;
+      if (selected != null) return place(selected, id);
+      if (open) return emit('board:unplace', { key: open.key });
+      say(`${move.name}: pick one of two matching numbers (3 or higher) first.`);
+    };
+    return (
+      <div key={id} data-action-id={id} onClick={tap} className={editable && !busy ? 'cursor-pointer' : ''}>
+        <SuperMoveCard move={move} compact />
+        {on.length > 0 && (
+          <p className="mt-0.5 font-mono text-[10px] text-fuchsia-200">
+            {on.every((p) => p.committed) ? '✓ ' : `#${orderOf(on[0].key)} `}
+            {nums.join(' + ')}
+          </p>
+        )}
+      </div>
+    );
+  };
+
   const power = fighter?.tokens?.power ?? 0;
   const btn = 'flex h-9 shrink-0 items-center gap-1 rounded-full border px-3 font-display text-[11px] font-bold uppercase tracking-wide disabled:opacity-40';
   if (picking) return null;
@@ -303,9 +332,7 @@ export default function DiceBoard({ payload, onClose, canEdit }) {
               {lists.supers.length > 0 && (
                 <div className="space-y-1.5">
                   <p className="text-[10px] font-bold uppercase tracking-wide text-zinc-500">Super Moves</p>
-                  {lists.supers.map((id) => (
-                    <SuperMoveCard key={id} move={idx.get(id)} compact />
-                  ))}
+                  {lists.supers.map(superCard)}
                 </div>
               )}
               {lists.personal.length === 0 && lists.supers.length === 0 && <p className="text-xs italic text-zinc-600">No Personal Actions.</p>}

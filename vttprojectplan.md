@@ -3590,7 +3590,37 @@ A GM-only page (`/homebrew`, the flask icon in the header and the mobile menu) f
   - **Not yet:** the Mythical d12's own reroll event, Improved Frenzy's change of Stance part, Luck's `substitute_cost`, Poltergeist's optional tokens, `choose_integer` (Ka-Boom), `selector_by_gate`, `joint_choice` (Song Form), `ensure_target` (Protect), `gain_tokens_until`, `move_obstacles`, `return_to_play` (Rescue), `replay_start_effects` (Mood Shift), Dancing Mad's open-ended repeat, and the Fog-only selectors (`inFog`, `within_placed_obstacles`). These stay by hand.
   - **Tests:** `server/test/poolOps.test.js` covers the pool helpers, the Wardancer, Improved Focus (with a skip), Flashy's combine and split, Focused / Fusion / Frenzy Mastery, Judgment's lowest die, Training once per Action, Gunkata performing a Gunslinger Action with a 4, teleporting next to the target, Pyroclasm's 3 Traps, and a range from an ally.
   - **Playtest** `scripts/playtest-pool.mjs`: Judgment taking the d4 of the enemy holding its Challenge, the Wardancer's +3/+2 at the start of the Action Phase (never past 9, marked as changed), and Gunkata performing Take Aim at the start of the turn. The obstacles playtest now declines the Necromancer's end-of-turn "each Copy may Move 1", which is automatic now, so the Copy stays on its Trap. All 21 automation playtests pass.
-- **I. Super Moves and NPC types:** Supers on the board with all limits, Super tokens, Stooges, Bosses and Warriors in the full engine.
+- **I. Super Moves and NPC types — implemented.**
+  - **Super Moves on the board (decided: all limits enforced).**
+    - **The rules, pure** (`engine/turn.js`):
+      - `superOnBoard`: every Super Move paid with two matching numbers, i.e. all but Transcendant Spirit, which is used while giving your Heroic Spirit (by hand).
+      - `superUsable`: not in Round 1; once per fight per character (the runtime's `super:<fighter>:fight`, a placed one counting); the side's per-Round limit from the Scene's Cinematic Weight (`weight.supers`: Feather 0, Light / Middle / Heavy 1, World 2; counted in `rt.sides[side].supersThisRound`, reset each Round).
+      - `superPair`: the picked number and a free one matching it, both 3+.
+    - **On the board:** the Super Move cards under Personal are drop targets. Drop (or tap) one number of a matching pair on one, and the server pairs it with its mate (`board:place` → a `super` placement holding `dice: [i, j]`). Both dice show as placed, and the pair shows under the card ("#1 5 + 5", "✓" once done). It can't be placed on a reaction board. Refusals say why: "not in Round 1", "once per fight", "your side has used its Super Move this Round", "no Super Moves at this Cinematic Weight", "needs two matching numbers, each 3 or higher".
+    - **Commit performs it like an Action, paid with its pair.** Differences:
+      - its hits are the Super Move's (`source: 'super'`);
+      - "no token responses" (`allowsTokenResponses: false`) makes them unblockable by Iron;
+      - it is no Action (`isAction: false`): no Control against it;
+      - it triggers no "before / after an Action" Abilities (`triggersAbilities: false`), though its hits' own events still run;
+      - it counts once for the fighter and once for their side this Round.
+  - **Super Moves' own operations:**
+    - `gain_tokens_until` ("until they hold 6": Erupting Burning Fist, You Are Nothing).
+    - `destroy_shield` (Lucky Hit).
+    - `discard_tokens` with `tokenFilter` `basic` / `unique` / `non_unique` and `amount: 'all'`. A fix: Basic and Unique discards found nothing before.
+    - Range `target_and_adjacent` (Lead Rain).
+    - Selector `self_and_visible_allies` (Inspire Perfection).
+    - `context.isEnemyTurn` / `isAlliedTurn` relative to the rule's owner (Hyper Install).
+  - **NPC types:** Warriors (Warrior's Path), Bosses (several Stances, a turn per Health Bar) and Stooges (one shared Stance and unit, only the leading body's Abilities, no Comeback) were already in the engine from builder phase 4 and the earlier phases. Nothing new was needed.
+  - **Coverage:** 25 of the 34 Super Moves resolve automatically, and 186 of the 217 Actions and Super Moves together.
+  - **Not yet (by hand):** Dancing Mad's open-ended repeat, Poltergeist Panic (`move_obstacles`), Arcana Install (`poltergeist.total_per_action`), My Final Technique (`remove_from_play`), Transcendant Spirit, Funny Little Box of Pain (`deadly_trap`), and Immortal Army (`choose_integer`).
+  - **Tests:** `server/test/superMoves.test.js` covers which Supers go on the board, every limit, the pair and its spent dice, Erupting Burning Fist, Lucky Hit, Lead Rain and Inspire Perfection.
+  - **Playtest** `scripts/playtest-supers.mjs`:
+    - refused in Round 1;
+    - a later turn with a pair of 3+ (Thorns Form's fixed 5 and d6s);
+    - a lone number refused;
+    - placed with its pair, and Commit dealing Heaven's Piledriver's 6;
+    - refused on the next turn (once per fight).
+  - All 22 automation playtests pass.
 - **J. Coverage sweep:** a census test proves every rule, Action and Super is automated or explicitly by hand (only `requires_ruling` entries: The Untouchable, Twins). Then the playtest suite and the plan.
 
 ## Implementation Phases (iterative — each ends with a deploy + playtest checkpoint)
