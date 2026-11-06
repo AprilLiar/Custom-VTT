@@ -136,7 +136,9 @@ let expected = 0;
 }
 check('the Wardancer: at the start of her Action Phase, her numbers go up by +3 and +2 (the +1 has no number left), never past 9', raised.reduce((a, b) => a + b, 0) === expected && left.every((x) => x.v <= Math.max(9, rolled[x.i].result)), JSON.stringify({ rolled: rolled.map((r) => r.result), now: left.map((x) => x.v), expected }));
 check('…changed numbers are marked on the board', left.filter((x) => x.v !== rolled[x.i].result).every((x) => x.changed), JSON.stringify(m.results));
-check('…a notice says it', cards.some((c) => c.payload?.automatic === 'ability' && /Wardancer/.test(c.payload.title)), JSON.stringify(cards.filter((c) => c.payload?.automatic === 'ability').map((c) => c.payload.title)));
+// (Both numbers 9 or more: nothing to raise, so nothing to say.)
+if (expected > 0) check('…a notice says it', cards.some((c) => c.payload?.automatic === 'ability' && /Wardancer/.test(c.payload.title)), JSON.stringify(cards.filter((c) => c.payload?.automatic === 'ability').map((c) => c.payload.title)));
+else console.log('(every number was 9 or more: the Wardancer had nothing to raise)');
 
 console.log('\n--- Cy’s turn: Gunkata ---');
 for (let i = 0; i < 3 && !rollOf(tc); i++) {

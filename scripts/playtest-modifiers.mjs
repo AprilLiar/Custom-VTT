@@ -139,6 +139,7 @@ console.log('\n--- Ana’s turn (Zombie Style) ---');
 gm.emit('fight:start', { mode: 'combat', allies: [{ combatantId: ta.id }], enemies: [tb, tc, te, tf].map((t) => ({ combatantId: t.id })), firstSide: 'allies', opener: { combatantId: ta.id } });
 await sleep(3500);
 await skipPhase();
+check('the start of the fight: a lasting rule the engine leaves to people is said once (Caged Style, for Bo)', cards.some((c) => c.payload?.automatic === 'ability_manual' && /by hand all fight/.test(c.payload.title) && /Caged/.test(c.payload.text) && c.payload.title.includes(`MDBo${stamp}`)), JSON.stringify(cards.filter((c) => c.payload?.automatic === 'ability_manual').map((c) => [c.payload.title, c.payload.text])));
 check('Zombie Style: a Copy placed at the start of her turn, where picked', copies().some((c) => c.col === 4 && c.row === 3 && c.owner_id === ta.id), JSON.stringify(copies()));
 
 // Bo (Caged Style) steps next to her — and next to her Copy.

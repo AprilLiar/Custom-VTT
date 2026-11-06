@@ -32,10 +32,15 @@ export function targetsFighter(target, owner, fighter, world) {
   return world ? world.inRange(owner, fighter, target.range ?? { mode: 'stance', origin: 'self' }) : true;
 }
 
+// "Their Abilities are disabled" (Synchro Breaker — phase J): a temporary
+// `abilities.disabled` on them turns off their rules, continuous ones included.
+export const abilitiesOff = (fighterId, temps = []) => temps.some((t) => t.rule === 'abilities.disabled' && t.targetId === fighterId && t.value !== false);
+
 // Every modifier now in effect on `fighter`.
 export function modifiersOn(fighter, world, idx, temps = []) {
   const out = [];
   for (const owner of world.fighters()) {
+    if (abilitiesOff(owner.id, temps)) continue;
     for (const abilityId of owner.abilityIds ?? []) {
       const ability = idx.get(abilityId);
       for (const rule of ability?.rules ?? []) {
@@ -87,6 +92,8 @@ export const ENFORCED_RULES = new Set([
   'free_movement.disabled',
   'speed_tokens.cannot_gain_or_spend',
   'action_dice.additional',
+  // phase J
+  'abilities.disabled',
 ]);
 
 // **A fighter's range now (phase G):** their Stance's range changed by

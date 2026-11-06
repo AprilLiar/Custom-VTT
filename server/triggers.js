@@ -26,7 +26,7 @@ import { assembles, derivedFor, franticPickOf } from './fighterStances.js';
 import { armorSourcesOf, stanceOfBuild } from '../client/src/lib/patd/build.js';
 import { patdContent } from './patdContent.js';
 import { listenersFor, relationTo, turnEvents } from '../client/src/lib/patd/engine/bus.js';
-import { effectiveRange, listMod, modifiersOn, valueOf } from '../client/src/lib/patd/engine/modifiers.js';
+import { abilitiesOff, effectiveRange, listMod, modifiersOn, valueOf } from '../client/src/lib/patd/engine/modifiers.js';
 import { addTemp, expireTemps, fighterRt, startTurn } from '../client/src/lib/patd/engine/runtime.js';
 import { spendPrefs } from '../client/src/lib/patd/engine/damage.js';
 import { loadRuntime, saveRuntime } from './engine/runtimeStore.js';
@@ -35,6 +35,7 @@ import { createHits } from './engine/hits.js';
 import { createMoves } from './engine/moves.js';
 import { atZero, comebackSquares, reactionClusters, turnContext } from '../client/src/lib/patd/engine/turn.js';
 import { hasDiceCost } from '../client/src/lib/patd/tokenCost.js';
+import { ENGINE_NATIVE, continuousSupport } from '../client/src/lib/patd/coverage.js';
 import { addPoolValue, livePool, turnActions } from '../client/src/lib/patd/diceBoard.js';
 import { closeReactionBoards, fighterState, readData as readBoardData, saveBoard } from './diceMarks.js';
 
@@ -62,12 +63,9 @@ const PROMPT_TIMEOUT_MS = 10 * 60 * 1000;
 const FOLLOW_ON_DEPTH = 3;
 const IMPROVED_WARRIOR = 'ability.feature-improved-warrior.improved-warrior';
 // Done by the engine itself, not by their rules: Control and Chaos (phase F),
-// and the Frantic Hero's Stance assembly (fights.js: fight:choose_stance).
-export const ENGINE_NATIVE = new Set([
-  'ability.resource-mechanic-control.control-mechanics',
-  'ability.resource-mechanic-chaos.chaos-mechanics',
-  'ability.hero-type-frantic.frantic-versatility',
-]);
+// and the Frantic Hero's Stance assembly (fights.js: fight:choose_stance) —
+// one list, shared with the automation census (lib/patd/coverage.js).
+export { ENGINE_NATIVE };
 const BASIC_TOKENS = new Set(['power', 'iron', 'speed']);
 
 export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
@@ -613,6 +611,8 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
   // ---- running one fighter's rules for some events
   async function runFor(fighter, events, env, eventPayload = null, depth = 0) {
     const idx = patdContent();
+    // Their Abilities are disabled for now (Synchro Breaker — phase J).
+    if (abilitiesOff(fighter.id, env.rt.temps)) return;
     // Triggers registered for a while (phase G: `register_trigger`), as rules of their source.
     for (const t of env.rt.temps.filter((x) => x.trigger && x.ownerId === fighter.id && x.trigger.events.some((e) => events.includes(e)))) {
       if (stale(env)) return;
@@ -864,6 +864,20 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     const { env, fighters } = await envFor(fightRow);
     for (const f of fighters) {
       if (f.abilityIds.includes(IMPROVED_WARRIOR)) await runFor(f, ['warrior_path.trigger'], env, {});
+    }
+    // **Lasting rules left to people (phase J):** each fighter's continuous
+    // rules the engine doesn't enforce, said once at the start of the fight,
+    // so nothing is dropped silently (lib/patd/coverage.js).
+    const idx = patdContent();
+    for (const f of fighters) {
+      const names = [...new Set(f.abilityIds.filter((id) => !ENGINE_NATIVE.has(id) && (idx.get(id)?.rules ?? []).some((r) => r.events?.includes('continuous') && !continuousSupport(r).ok)).map((id) => idx.get(id).name))];
+      if (!names.length) continue;
+      await postCard('reminder', {
+        title: `${f.name} — by hand all fight`,
+        text: `Part of ${names.join(', ')} is not automated: keep it in mind.`,
+        fighters: [{ name: f.name }],
+        automatic: 'ability_manual',
+      });
     }
     await env.save();
   }

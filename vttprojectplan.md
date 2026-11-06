@@ -3275,7 +3275,7 @@ A GM-only page (`/homebrew`, the flask icon in the header and the mobile menu) f
 - **Not in homebrew (yet):** Freestyles, Super Moves, Builds, Features, and movement or placing effects (write those as text).
 - Playtest: `scripts/playtest-homebrew.mjs`.
 
-## Full automation (decided, in progress)
+## Full automation (decided; phases A–J implemented)
 
 **Goal (the user's):** everything in a fight is automated. The only input from people is laying dice and tokens on Actions (the dice board) and answering the choices that pop up. Grounded in the book's combat chapter (PDF pp.56-77: the 8-phase turn, Damage Resolution "WEPIA", Action Resolution, the six movement types, Obstacles, Tokens) and the content's operation reference (`import-guide.md`).
 
@@ -3621,7 +3621,39 @@ A GM-only page (`/homebrew`, the flask icon in the header and the mobile menu) f
     - placed with its pair, and Commit dealing Heaven's Piledriver's 6;
     - refused on the next turn (once per fight).
   - All 22 automation playtests pass.
-- **J. Coverage sweep:** a census test proves every rule, Action and Super is automated or explicitly by hand (only `requires_ruling` entries: The Untouchable, Twins). Then the playtest suite and the plan.
+- **J. Coverage sweep — implemented.**
+  - **The census** (`client/src/lib/patd/coverage.js`, `census(content)`) puts every Ability rule, Action and Super Move in one of two groups: automatic, or by hand with its reason.
+    - A triggered rule is automatic when `ruleSupport` passes or its Ability is engine-native (`ENGINE_NATIVE`, now this module's single list, shared with `server/triggers.js`).
+    - A continuous rule is automatic when it only installs enforced modifiers or lasting Armor (`continuousSupport`).
+    - An Action or Super Move is automatic when its whole effect is supported.
+  - **Nothing is dropped silently:**
+    - a triggered rule the engine can't run posts its "by hand" reminder when it fires;
+    - an Action's or Super Move's unsupported step is listed under "By hand:" on its card;
+    - **new:** at the start of a fight, each fighter whose lasting (continuous) rules aren't all enforced gets one orange reminder, "‹name› — by hand all fight: part of ‹Abilities› is not automated" (e.g. Caged Style's Action Movement).
+  - **New enforcement:** `abilities.disabled` (Synchro Breaker). While a fighter has it, none of their rules run (triggered or registered) and their continuous modifiers are off (`abilitiesOff`).
+  - **Where it ends:**
+
+    | Kind | Automatic | Was |
+    |---|---|---|
+    | Triggered Ability rules | **214 of 238** (90%) | 91 of 306 Ability rules in all, before phase A |
+    | Continuous Ability rules | **37 of 68** | |
+    | Actions | **160 of 183** | none resolved |
+    | Super Moves | **27 of 34** | |
+
+    The rest are by hand with their reasons. Run `node scripts/coverage.mjs` for the totals and reasons, or `--list` for every entry. The content's one `requires_ruling` entry, The Untouchable, keeps its ruling part by hand.
+  - **The biggest by-hand groups left:**
+    - "If an enemy discards your Challenge token using an enemy Action or Ability": 7 Styles, waiting on the open question in phase G.
+    - Build-time grants (`grant_archetype_variant`, Greater Focus and Frenzy).
+    - The Angel's `challenge.unblockable`.
+    - Several one-off rule keys: Walls treated as empty, movement restrictions, cost changes, delegation, Copy HP.
+    - The by-hand ops named in phases H and I.
+  - **Tests:**
+    - `server/test/coverage.test.js` covers that everything is counted, every by-hand entry has a reason, and the automatic counts never drop below the floor this phase reached (raise `FLOOR` as more becomes automatic). It also checks the `requires_ruling` entry stays by hand.
+    - `abilities.disabled` is in `modifiersDurations.test.js`.
+  - **Playtests:**
+    - The modifiers playtest also checks the fight-start "by hand all fight" reminder.
+    - The pool playtest no longer expects a Wardancer notice when every number is already 9+.
+    - All 22 automation playtests pass: supers, pool, modifiers, end-phase, trap-armor, shield-xp, turn-triggers, fights, homebrew, dice-marks, damage, movement, lane-movement, obstacles, reactions, engine-runtime, trickster, frantic-npcs, build-fights, counter-gates, combat-weight, fighter-state.
 
 ## Implementation Phases (iterative — each ends with a deploy + playtest checkpoint)
 The old system's phases (1-9 and the playtest batches after them) are complete history in git. The current state:
@@ -3645,7 +3677,8 @@ The old system's phases (1-9 and the playtest batches after them) are complete h
   - **End Combat** (GM): clears that mode's initiative; placements, HP and tokens stay until the GM clears them.
   - **Shield — implemented (decided, new):** a special token after Armor (`shield`, cap 8, the book's Shield Cap; per-token caps via `capOf`). It **absorbs damage (decided, revised; was tracked by hand)**: damage from an Action or Ability hits the Shield first, up to its value. A Shield used up breaks and the rest hits HP (`absorbWithShield` in `panicTokens.js`). Ability damage from the trigger engine absorbs this way and emits `self.shield_absorbed`. For an Action's hit, the token panel has **Take damage** (a number and a button), which sends `fighter:damage { ref, amount }`. Outside a fight it is applied directly. In a fight the trigger engine applies it on the fight's chain: the attacker is the active fighter when they're on the other side, and `self.shield_absorbed` plus `self.shield_absorbed_from_enemy_action { attacker, amount, shieldBroke }` run, so **Thorns Form** deals 1 back, or 2 if the Shield broke. A notice reports it. HP "−" / "+" stay raw HP changes (costs, fixes) and never touch the Shield. Traps and HP costs go past it. It is also drawn on the HP bar as a **blue extension** after the bar, as long relative to the bar as the Shield is to the current bar's Max HP. The two share the bar's width (flex 1 : ratio), so the proportion holds and the panel keeps its size. The full panel prints the value in it. Only a damage Shield is modelled, not the book's Status-token or "Nothing" kinds. **Since full automation phase C** the Shield is one step of Damage Resolution: a player is asked before it blocks (Ask by default; Auto and Never on the sheet), and Burning hits it too.
   - **Armor — implemented (decided, new):** a special token, `armor` in `panicTokens.js`'s `SPECIAL_TOKENS`, shown for every fighter in the token row just **after the Challenge slot**. It is a count like any token (how many sources of Armor the fighter has), with the same +/−, quick spend and cap. The book's rule (p.24) is in its description: each turn the first hit is reduced by 3, a second source by 2, the rest by 1. It works on any damage, including Fall, Burning and Traps, but not on HP costs. **Since full automation phase C it is applied automatically** in Damage Resolution, and temporary Armor is its own binary token (`temp_armor`).
-  - **Cinematic Weight extras** not tracked yet: Super Move limits per round, the Bleed Ability at turn start, Complications (Guest Heroes, Uneven Fights, Stooges).
+  - **Cinematic Weight extras** not tracked yet: the Bleed Ability at turn start, Complications (Guest Heroes, Uneven Fights, Stooges). (Super Move limits per round are enforced since full automation phase I.)
+- **Challenge as a Status token (open, for the user):** the book lists Challenge among the Status tokens, but the Halcyon ruling limits Status discards to Burning, Fatigue and Weakness. So nothing in the engine discards a held Challenge, and the 7 Styles' "if an enemy discards your Challenge token using an enemy Action or Ability" (Judgment, Shining, Armored, Quickdraw, Taunting, Crying, Decoy) stay by hand. If "discard a Status / any token" may take a held Challenge, the engine can emit `enemy.removed_own_challenge_by_enemy_action_or_ability` with `event.formerHolder`, and those rules become automatic. (Apply Pressure's Status *count* already includes a held Challenge, as the book counts it.)
 - **Pre-pivot standalone Counters** still in the database (the Arena's): delete them, or give them a home in the new system.
 - **`combatants.notes`, `combat_stances.note_left/note_right`** are unused leftovers of the removed token notes; harmless, removable whenever those tables next change shape.
 - **`chat_log.move_id`** is an unused leftover column; harmless, removable whenever `chat_log` next changes shape.

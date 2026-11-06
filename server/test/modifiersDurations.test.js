@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { patdContent } from '../patdContent.js';
 import { ruleSupport, runRule } from '../../client/src/lib/patd/interpreter.js';
-import { effectiveRange } from '../../client/src/lib/patd/engine/modifiers.js';
+import { abilitiesOff, effectiveRange, modifiersOn } from '../../client/src/lib/patd/engine/modifiers.js';
 import { freeMoveReach, makeBoard, pathCost } from '../../client/src/lib/patd/engine/board.js';
 import { deriveStance, extraDice } from '../../client/src/lib/patd/build.js';
 
@@ -223,4 +223,16 @@ test('a fighter’s range under its modifiers: set, minimum, maximum (infinite) 
   assert.deepEqual(effectiveRange(base, [{ rule: 'range.minimum_set', value: 0 }]), { minimum: 0, maximum: 3 });
   assert.equal(effectiveRange(base, [{ rule: 'range.maximum_set', value: 'infinite' }]).maximum, Infinity);
   assert.deepEqual(effectiveRange(base, [], 2), { minimum: 1, maximum: 5 });
+});
+
+test('"their Abilities are disabled" (Synchro Breaker): a temporary abilities.disabled turns off their lasting rules too', () => {
+  const caged = { id: 1, side: 'a', abilityIds: ['ability.style-caged.caged-style'] };
+  const foe = { id: 2, side: 'b', abilityIds: [] };
+  const world = { fighters: () => [caged, foe], inRange: () => true };
+  const on = modifiersOn(foe, world, idx, []);
+  assert.ok(on.some((m) => m.rule === 'speed_tokens.cannot_gain_or_spend'), 'Caged works on the adjacent enemy');
+  const temps = [{ rule: 'abilities.disabled', value: true, targetId: 1 }];
+  assert.ok(abilitiesOff(1, temps));
+  assert.ok(!abilitiesOff(2, temps));
+  assert.ok(!modifiersOn(foe, world, idx, temps).some((m) => m.rule === 'speed_tokens.cannot_gain_or_spend'), 'not while disabled');
 });
