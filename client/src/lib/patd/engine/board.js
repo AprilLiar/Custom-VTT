@@ -62,8 +62,10 @@ export const isEmpty = (b, sq, ignore = []) => inBounds(b, sq) && !isFull(b, sq,
 // 1 orthogonally, 2 diagonally, +1 for each step out of a Pit. Never Outside,
 // never through a full space. → Map("c,r" → { square, cost, path })
 // (`path` excludes the start). Rubble on the way gives Fatigue and Traps deal
-// damage — the server applies them along the chosen path.
-export function freeMoveReach(b, from, speed, selfId = null) {
+// damage — the server applies them along the chosen path. `costPerSpace`
+// (Weightless Style: every space costs 1, diagonals and Pits too).
+const stepCost = (b, at, n, costPerSpace) => (costPerSpace != null ? costPerSpace : (isDiagonal(at, n) ? 2 : 1) + (has(b, at, 'pit') ? 1 : 0));
+export function freeMoveReach(b, from, speed, selfId = null, { costPerSpace = null } = {}) {
   const best = new Map([[key(from), { square: from, cost: 0, path: [] }]]);
   const queue = [{ square: from, cost: 0, path: [] }];
   while (queue.length) {
@@ -72,7 +74,7 @@ export function freeMoveReach(b, from, speed, selfId = null) {
     if (best.get(key(cur.square))?.cost < cur.cost) continue;
     for (const n of neighbors(cur.square)) {
       if (!isEmpty(b, n, [selfId])) continue;
-      const cost = cur.cost + (isDiagonal(cur.square, n) ? 2 : 1) + (has(b, cur.square, 'pit') ? 1 : 0);
+      const cost = cur.cost + stepCost(b, cur.square, n, costPerSpace);
       if (cost > speed) continue;
       const k = key(n);
       if (best.has(k) && best.get(k).cost <= cost) continue;
@@ -86,11 +88,11 @@ export function freeMoveReach(b, from, speed, selfId = null) {
 }
 
 // The Speed a path costs (for a path chosen elsewhere).
-export function pathCost(b, from, path) {
+export function pathCost(b, from, path, { costPerSpace = null } = {}) {
   let cost = 0;
   let at = from;
   for (const sq of path) {
-    cost += (isDiagonal(at, sq) ? 2 : 1) + (has(b, at, 'pit') ? 1 : 0);
+    cost += stepCost(b, at, sq, costPerSpace);
     at = sq;
   }
   return cost;

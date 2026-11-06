@@ -156,6 +156,8 @@ export function createHits({ ask, emitEvent }) {
     let bled = false;
     let fell = false;
     if (r.amount > 0) {
+      // "At the end of each turn you took damage" (phase G).
+      frt.flags.tookDamage = true;
       const { before, landed, row } = await internals.changeHp(target, -r.amount);
       if (before) {
         bled = await internals.bleedCheck(target, before, landed, row);
@@ -192,13 +194,14 @@ export function createHits({ ask, emitEvent }) {
       if (r.armor.blocked > 0) await T('self.damage_reduced_by_armor', target, { attacker, amount: r.armor.blocked });
     }
     if (r.amount > 0) {
-      await T('self.damage_taken', target, { attacker, amount: r.amount });
+      // `sourceType`: what dealt it (Misfortunes Style: "other than an Action or an Ability"; a Super Move is an Action).
+      await T('self.damage_taken', target, { attacker, amount: r.amount, sourceType: source.kind === 'super' ? 'action' : source.kind });
       if (source.kind === 'action' && attacker) await T('self.took_damage_from_action', target, { attacker, amount: r.amount, enemyDamageDealers: enemy ? [attacker] : [] });
       if (source.kind === 'action' && enemy) await T('self.took_damage_from_enemy_action', target, { attacker, amount: r.amount });
       if (source.kind === 'burning') await T('self.burning_token_damage_taken', target, { amount: r.amount });
       if (source.kind === 'trap') await fire('enemy_in_range.trap_damage_taken', target, { target, amount: r.amount });
       if (attacker) {
-        await fire('self.damage_dealt', attacker, { target, amount: r.amount });
+        await fire('self.damage_dealt', attacker, { target, amount: r.amount, damage: r.amount });
         if (enemy) await fire('self.damage_dealt_to_enemy', attacker, { target, amount: r.amount });
         if (attack) await fire('self.action_or_ability.damage_dealt', attacker, { target, amount: r.amount });
       }

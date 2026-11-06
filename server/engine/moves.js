@@ -20,8 +20,20 @@ import {
   teleportDestinations,
 } from '../../client/src/lib/patd/engine/board.js';
 import { ironAllowance, unblockableSet } from '../../client/src/lib/patd/engine/damage.js';
-import { modifiersOn } from '../../client/src/lib/patd/engine/modifiers.js';
+import { hasMod, modifiersOn, valueOf } from '../../client/src/lib/patd/engine/modifiers.js';
 import { patdContent } from '../patdContent.js';
+
+// **Movement modifiers (phase G).** Free Movement off (`free_movement.disabled`,
+// or Caged Style's "cannot gain or spend Speed" — whose Action Movement is
+// also reduced to zero), its cost per space (Weightless Style), and Rubble
+// without Fatigue (Winged, Weightless).
+const modsOn = (env, f) => (env?.world && f ? modifiersOn(f, env.world, patdContent(), env.rt?.temps ?? []) : []);
+export const noSpeed = (mods) => hasMod(mods, 'speed_tokens.cannot_gain_or_spend', (v) => v !== false);
+export const noFreeMove = (mods) => noSpeed(mods) || hasMod(mods, 'free_movement.disabled', (v) => v !== false);
+const costOpts = (mods) => {
+  const v = valueOf(mods, 'free_movement.cost_per_space', null);
+  return { costPerSpace: v == null ? null : Math.max(0, Number(v) || 0) };
+};
 
 // A square's name for people: map cells by column and row, lane spaces by lane.
 export const squareName = (mode, sq) => (sq == null ? 'the Outside' : mode === 'simple' ? `lane ${sq.row + 1}, space ${sq.col + 1}` : `column ${sq.col}, row ${sq.row}`);
@@ -66,6 +78,7 @@ export function createMoves({ ask, emitEvent, postCard }) {
     note(`${f.name} triggers a Trap: ${r.immune ? 'immune' : `${r.taken} damage`}`);
   }
   async function rubble(env, f) {
+    if (hasMod(modsOn(env, f), 'rubble.no_fatigue', (v) => v !== false)) return;
     await env.world.gainTokens(f, 'fatigue', 1);
     note(`${f.name} lands on Rubble: +1 Fatigue`);
   }
@@ -100,6 +113,12 @@ export function createMoves({ ask, emitEvent, postCard }) {
   // **Action Movement** ("move X" / "up to X"): the mover picks the square.
   async function actionMove(env, m, f, { distance, upTo = false, allowNone = false }) {
     if (!f.square) return null;
+    // Caged Style: an adjacent enemy's Action Movement is reduced to zero.
+    if (noSpeed(modsOn(env, f))) {
+      note(`${f.name} is Caged: no movement`);
+      await flush('Movement', f);
+      return null;
+    }
     const d = await fatigue(env, f, Math.max(0, Number(distance) || 0));
     const b = m.board();
     const dests = actionMoveDestinations(b, f.square, d, upTo, f.id);
@@ -244,7 +263,7 @@ export function createMoves({ ask, emitEvent, postCard }) {
         note(`${target.name} falls into a Pit: ${r.immune ? 'immune' : `${r.taken} damage${r.steps.length ? ` (${r.steps.join(', ')})` : ''}`}`);
       }
     }
-    if (!pull) await fire(env, 'self.pushed', target, { pusher: chooser, square: target.square });
+    if (!pull) await fire(env, 'self.pushed', target, { pusher: chooser, source: chooser, square: target.square });
     if (chooser && chooser.id !== target.id) await fire(env, 'self.push_finished', chooser, { target });
     await flush(verb, target);
     return target.square;
@@ -253,14 +272,16 @@ export function createMoves({ ask, emitEvent, postCard }) {
   // ---------------------------------------------------------------- Free Movement
 
   // Where a fighter can go with their Speed now: [{ id, col, row, cost, note }].
-  function freeReach(m, f) {
+  function freeReach(m, f, env = null) {
     if (!f?.square) return [];
+    const mods = modsOn(env, f);
+    if (noFreeMove(mods)) return [];
     const b = m.board();
-    return [...freeMoveReach(b, f.square, f.tokens.speed ?? 0, f.id).values()].map((r) => ({ id: key(r.square), col: r.square.col, row: r.square.row, cost: r.cost, note: noteOf(b, r.square) }));
+    return [...freeMoveReach(b, f.square, f.tokens.speed ?? 0, f.id, costOpts(mods)).values()].map((r) => ({ id: key(r.square), col: r.square.col, row: r.square.row, cost: r.cost, note: noteOf(b, r.square) }));
   }
   // Adjacent allies they could swap with (2 Speed).
-  const swapsFor = (fighters, f) =>
-    (f?.square && (f.tokens.speed ?? 0) >= 2
+  const swapsFor = (fighters, f, env = null) =>
+    (f?.square && (f.tokens.speed ?? 0) >= 2 && !noFreeMove(modsOn(env, f))
       ? fighters.filter((a) => a.id !== f.id && a.side === f.side && a.square && neighbors(f.square).some((n) => n.col === a.square.col && n.row === a.square.row))
       : []
     ).map((a) => ({ id: a.id, name: a.name }));
@@ -270,8 +291,11 @@ export function createMoves({ ask, emitEvent, postCard }) {
   // less (decided: the last 2 of the path), and only the spaces moved are paid.
   async function freeMove(env, m, f, to) {
     if (!f?.square) return { error: 'not on the board' };
+    const mods = modsOn(env, f);
+    if (noFreeMove(mods)) return { error: 'cannot use Free Movement now' };
     const b = m.board();
-    const r = freeMoveReach(b, f.square, f.tokens.speed ?? 0, f.id).get(key(to));
+    const opts = costOpts(mods);
+    const r = freeMoveReach(b, f.square, f.tokens.speed ?? 0, f.id, opts).get(key(to));
     if (!r) return { error: 'out of reach' };
     let path = r.path;
     if ((f.tokens.fatigue ?? 0) > 0) {
@@ -279,7 +303,7 @@ export function createMoves({ ask, emitEvent, postCard }) {
       path = path.slice(0, Math.max(0, path.length - 2));
       note(`${f.name} is Fatigued: discards 1, moves 2 less`);
     }
-    const cost = pathCost(b, f.square, path);
+    const cost = pathCost(b, f.square, path, opts);
     if (cost) await env.world.discardTokens(f, ['speed'], cost);
     await walk(env, m, f, path, { kind: 'free' });
     if (path.length) note(`${f.name} moves to ${squareName(m.mode, path.at(-1))} (${cost} Speed)`);
@@ -293,6 +317,7 @@ export function createMoves({ ask, emitEvent, postCard }) {
     if (!f?.square || !ally?.square || f.side !== ally.side || f.id === ally.id) return { error: 'not an ally' };
     if (!neighbors(f.square).some((n) => n.col === ally.square.col && n.row === ally.square.row)) return { error: 'not adjacent' };
     if ((f.tokens.speed ?? 0) < 2) return { error: 'needs 2 Speed' };
+    if (noFreeMove(modsOn(env, f))) return { error: 'cannot use Free Movement now' };
     await env.world.discardTokens(f, ['speed'], 2);
     await swap(env, m, f, ally);
     return { ok: true };

@@ -77,7 +77,13 @@ export const SUPPORTED_OPS = new Set([
   'place_obstacle',
   'destroy_obstacle',
   'replace_obstacle',
+  // full automation, phase G
+  'register_trigger',
+  'schedule',
+  'replace_token_gain',
 ]);
+// When a `schedule` runs (engine/runtime.js runs them at those moments).
+const SCHEDULE_AT = new Set(['current_turn.end', 'next_turn.start']);
 // Durations a `temporary` can have (engine/runtime.js expires them).
 const TEMP_DURATIONS = new Set([
   'end_of_current_turn',
@@ -152,7 +158,23 @@ export const SUPPORTED_EVENTS = new Set([
   'self.movement.finished',
   'self.free_movement.one_space_finished',
   'any_movement_phase.start',
+  // Modifiers, durations and the turn's phases (phase G: server/triggers.js)
+  'self.gain_speed_tokens',
+  'end_phase.speed_discard', // read by the End Phase as a modifier (Scrambling Style)
+  'self.action_dice.rolled',
+  'own_action_phase.start',
+  'self.giving_heroic_spirit',
+  'self.tokens_given_to_enemy',
+  'self.weakness_given_to_enemy',
+  'visible_enemy.gain_basic_tokens',
+  'self.copy_destroyed',
+  'enemy.destroyed_own_copy',
+  'self.reactive_action.before',
+  'stance.construct', // applied when the Stance is derived (build.js stanceRange)
 ]);
+// A rule's `limit` metrics: how often it ran, or how much it healed or gave
+// this period (phase G: "a maximum of 3 HP per turn").
+const LIMIT_METRICS = new Set(['activations', 'hp_healed', 'tokens_gained']);
 const SELECTOR_KINDS = new Set([
   'enemy',
   'ally',
@@ -169,7 +191,7 @@ const SELECTOR_KINDS = new Set([
 ]);
 const OBSTACLE_OPS_KINDS = new Set(['trap', 'fog', 'pit', 'rubble', 'wall', 'copy']);
 // Copies aren't tracked on the board, so "you or your Copies" is your own range.
-const RANGE_MODES = new Set(['stance', 'visible', 'adjacent', 'explicit', 'none', 'map', 'self_or_copies_range']);
+const RANGE_MODES = new Set(['stance', 'visible', 'adjacent', 'explicit', 'none', 'map', 'self_or_copies_range', 'adjacent_to_any_own_copy']);
 const REF_OK = [
   /^self$/,
   /^self\.bleeding$/,
@@ -177,12 +199,20 @@ const REF_OK = [
   /^(targets|bindings)\.[A-Za-z]+\.space$/,
   /^self\.tokens\.[a-z_]+$/,
   /^self\.currentBar\.damage$/,
-  /^context\.(healValue|bleedValue|round|activeCharacter)$/,
+  // This turn so far, and where you stand (phase G: server/triggers.js envFor).
+  /^self\.(performedActionThisTurn|tookDamageThisTurn|obstaclesDestroyedThisTurn|standingOnWall)$/,
+  // "Holds your Challenge": relative to whoever the rule belongs to.
+  /^(targets|bindings)\.[A-Za-z]+\.holdsOwnChallenge$/,
+  /^event\.(attacker|activeCharacter)\.holdsOwnChallenge$/,
+  /^context\.(healValue|bleedValue|round|activeCharacter|isOwnTurn)$/,
   /^targets\.[A-Za-z]+$/,
   /^bindings\.[A-Za-z]+$/,
   /^variables\.[A-Za-z]+$/,
   /^state\.[A-Za-z]+$/,
   /^event\.(target|activeCharacter|attacker|amount|isCostPayment|shieldBroke|damage|enemy|enemyCount|enemyDamageDealers)$/,
+  // What an Action did (phase G: server/engine/actions.js), who pushed you, what hit you.
+  /^event\.(enemiesDamaged|enemiesForcedMoved|alliesForcedMoved|movedSwappedOrTeleportedSelf|source|sourceType)$/,
+  /^event\.(enemiesDamaged|enemiesForcedMoved|alliesForcedMoved)\.length$/,
   /^resolution\.gateRating$/,
   /^payment\.(rating|destroyedShieldValue|challengeHolder)$/,
   /^variables\.[A-Za-z]+$/,
@@ -203,6 +233,10 @@ const OPERATORS = {
   lte: ([a, b]) => a <= b,
   and: (a) => a.every(Boolean),
   not: ([a]) => !a,
+  // phase G
+  not_in: ([a, list]) => !(Array.isArray(list) ? list : [list]).includes(a),
+  is_obstacle: ([a]) => Boolean(a?.isObstacle || a?.isCopy),
+  is_enemy: () => false, // relative to the rule's owner: evalValue answers it
   tier_value: ([rating, tiers]) => {
     let out = 0;
     for (const [t, v] of tiers ?? []) if (rating >= t) out = v;
@@ -217,7 +251,7 @@ export class Unsupported extends Error {}
 // Whether a rule can be run automatically: { ok, reason }.
 export function ruleSupport(rule) {
   if (!rule?.events?.some((e) => SUPPORTED_EVENTS.has(e))) return { ok: false, reason: 'event' };
-  if (rule.limit && rule.limit.metric !== 'activations') return { ok: false, reason: `limit ${rule.limit.metric}` };
+  if (rule.limit && !LIMIT_METRICS.has(rule.limit.metric)) return { ok: false, reason: `limit ${rule.limit.metric}` };
   const problems = [];
   const walk = (n) => {
     if (!n || typeof n !== 'object') return;
@@ -226,11 +260,13 @@ export function ruleSupport(rule) {
     if (n.op === 'grant_armor' && !n.temporary) problems.push('lasting armor');
     if (n.op === 'modify_rule' && !ENFORCED_RULES.has(n.rule)) problems.push(`rule ${n.rule}`);
     if (n.op === 'temporary' && (!TEMP_DURATIONS.has(n.duration) || !tempItems(n.effect))) problems.push(`temporary ${n.duration}`);
+    if (n.op === 'schedule' && !SCHEDULE_AT.has(n.at)) problems.push(`schedule ${n.at}`);
     if (typeof n.operator === 'string' && !(n.operator in OPERATORS) && n.operator !== 'if') problems.push(`operator ${n.operator}`);
     if (typeof n.ref === 'string' && !REF_OK.some((re) => re.test(n.ref))) problems.push(`ref ${n.ref}`);
     if (typeof n.kind === 'string' && n.range && !SELECTOR_KINDS.has(n.kind)) problems.push(`selector ${n.kind}`);
     if (n.range && typeof n.range === 'object' && n.range.mode && !RANGE_MODES.has(n.range.mode)) problems.push(`range ${n.range.mode}`);
-    if (n.range?.origin && n.range.origin !== 'self') problems.push(`origin ${n.range.origin}`);
+    // "Your Original" is you (a Copy's maker).
+    if (n.range?.origin && n.range.origin !== 'self' && n.range.origin !== 'original') problems.push(`origin ${n.range.origin}`);
     if (n.inFog || n.originBinding || n.obstacleBinding) problems.push('selector detail');
     if (n.op === 'place_obstacle' && !OBSTACLE_OPS_KINDS.has(n.obstacle)) problems.push(`obstacle ${n.obstacle}`);
     if (n.actor) problems.push('actor');
@@ -258,12 +294,21 @@ export function evalValue(v, scope) {
   if (typeof v.ref === 'string') {
     const [head, ...rest] = v.ref.split('.');
     if (!Object.prototype.hasOwnProperty.call(scope, head)) throw new Unsupported(`ref ${v.ref}`);
+    // "…holds your Challenge" (phase G): their Challenger is the rule's owner.
+    if (rest[rest.length - 1] === 'holdsOwnChallenge') {
+      const who = readPath(scope[head], rest.slice(0, -1));
+      return Boolean(who && scope.self && who.challengeId != null && String(who.challengeId) === String(scope.self.id));
+    }
     return readPath(scope[head], rest);
   }
   if (typeof v.operator === 'string') {
     if (v.operator === 'if') {
       const [c, a, b] = v.args;
       return evalValue(c, scope) ? evalValue(a, scope) : evalValue(b, scope);
+    }
+    if (v.operator === 'is_enemy') {
+      const a = evalValue(v.args?.[0], scope);
+      return Boolean(a && scope.self && a.side != null && a.side !== scope.self.side);
     }
     const fn = OPERATORS[v.operator];
     if (!fn) throw new Unsupported(`operator ${v.operator}`);
@@ -341,7 +386,8 @@ export function describe(node) {
 export async function runRule(rule, ctx) {
   const scope = {
     self: ctx.self,
-    context: ctx.world.context,
+    // The fight's context, and whether it is the rule's owner's own turn.
+    context: { ...ctx.world.context, isOwnTurn: ctx.world.context?.activeCharacter != null && ctx.world.context.activeCharacter.id === ctx.self?.id },
     targets: {},
     bindings: {},
     variables: { ...(ctx.variables ?? {}) },
@@ -353,12 +399,16 @@ export async function runRule(rule, ctx) {
     // Rules changed for this resolution only (`modify_rule` run as an effect).
     mods: [...(ctx.mods ?? [])],
   };
+  // A scheduled effect runs with what it captured (phase G).
+  if (ctx.captured) Object.assign(scope.targets, ctx.captured.targets ?? {}), Object.assign(scope.bindings, ctx.captured.bindings ?? {}), Object.assign(scope.variables, ctx.captured.variables ?? {});
   if (rule.condition && !evalValue(rule.condition, scope)) return { ran: false };
   if (rule.limit) {
     const key = `${rule.id}:${ctx.self.id}:${rule.limit.period}`;
-    const max = evalValue(rule.limit.maximum, scope);
+    const max = Number(evalValue(rule.limit.maximum, scope)) || 0;
     if ((ctx.usage[key] ?? 0) >= max) return { ran: false };
-    ctx.usage[key] = (ctx.usage[key] ?? 0) + 1;
+    // HP healed / tokens gained: the heal or gain itself is cut to what's left.
+    if ((rule.limit.metric ?? 'activations') === 'activations') ctx.usage[key] = (ctx.usage[key] ?? 0) + 1;
+    else scope.cap = { metric: rule.limit.metric, key, max };
   }
   // **A "you may" rule (`optional` on the rule).** When it opens by picking
   // something (a token to discard or take), the pick itself offers "skip" and
@@ -383,7 +433,7 @@ export function tempItems(effect) {
     if (!n || typeof n !== 'object') return false;
     if (n.op === 'sequence') return (n.steps ?? []).every(walk);
     if (n.op === 'modify_rule' && ENFORCED_RULES.has(n.rule)) return out.push(n) > 0;
-    if (n.op === 'grant_armor') return out.push(n) > 0;
+    if (n.op === 'grant_armor' || n.op === 'register_trigger') return out.push(n) > 0;
     return false;
   };
   return walk(effect) ? out : null;
@@ -396,6 +446,24 @@ function affordable(effect, scope, ctx) {
   if (first?.op !== 'spend_tokens') return true;
   const who = first.target?.ref === 'self' || !first.target ? [scope.self] : asList(evalValue(first.target, scope));
   return who.every((f) => f && (ctx.world.heldTokens(f)[evalValue(first.token, scope)] ?? 0) >= (Number(evalValue(first.amount, scope)) || 0));
+}
+
+// What a delayed effect keeps of its scope: fighters by id, squares as they are.
+function capture(scope) {
+  // Fighters and Copies by id (they are live objects); squares and obstacles as data.
+  const keep = (v) => (Array.isArray(v) ? v.map(keep) : v && typeof v === 'object' && v.id != null && (v.side != null || v.isCopy) ? { ref: v.id } : v);
+  const each = (o) => Object.fromEntries(Object.entries(o ?? {}).map(([k, v]) => [k, keep(v)]));
+  return { targets: each(scope.targets), bindings: each(scope.bindings), variables: each(scope.variables) };
+}
+
+// An amount cut to what a rule's HP-healed / tokens-gained limit still allows,
+// counted against it (a heal counts what it really healed: `later`).
+function capped(scope, ctx, metric, amount, later = false) {
+  const cap = scope.cap;
+  if (cap?.metric !== metric) return amount;
+  const n = Math.max(0, Math.min(Number(amount) || 0, cap.max - (ctx.usage[cap.key] ?? 0)));
+  if (!later) ctx.usage[cap.key] = (ctx.usage[cap.key] ?? 0) + n;
+  return n;
 }
 
 const DECLINED = Symbol('declined');
@@ -448,8 +516,10 @@ async function selectSpaces(sel, scope, ctx, from, { optional = false } = {}) {
 async function select(sel, scope, ctx, label = 'a target') {
   const { world } = ctx;
   const self = scope.self;
-  // Acting from one of your Copies (phase E): ranges count from its square.
-  const from = ctx.originSquare ? { ...self, square: ctx.originSquare } : self;
+  // Acting from one of your Copies (phase E): ranges count from its square;
+  // "this Action's maximum range +X" (phase G) rides along.
+  const bonus = (scope.mods ?? []).filter((m) => m.targetId === self.id && m.rule === 'current_action.maximum_range_bonus').reduce((n, m) => n + (Number(m.value) || 0), 0);
+  const from = ctx.originSquare || bonus ? { ...self, square: ctx.originSquare ?? self.square, rangeBonus: bonus } : self;
   if (sel.kind === 'space') return selectSpaces(sel, scope, ctx, from);
   const copies = world.copies?.() ?? [];
   let pool;
@@ -549,7 +619,8 @@ async function run(node, scope, ctx) {
       if (Array.isArray(scope.targets[node.binding]) && node.selector.count === 1) scope.targets[node.binding] = scope.targets[node.binding][0] ?? null;
       return;
     case 'for_each': {
-      const list = await select(node.selector, scope, ctx);
+      // A selector to pick from, or a ref to a list (Knockdown's damagers, Dance's pushed enemies).
+      const list = await targetsOf(node.selector, scope, ctx);
       for (const f of list) {
         scope.bindings[node.binding] = f;
         await run(node.effect, scope, ctx);
@@ -568,8 +639,11 @@ async function run(node, scope, ctx) {
       const amount = val(node.amount);
       if (typeof key !== 'string' || !(amount > 0)) return;
       for (const f of await targetsOf(node.target, scope, ctx)) {
-        await world.gainTokens(f, key, amount);
-        ctx.log(`${f.name} gains ${amount} ${tokenName(key)}`);
+        const n = capped(scope, ctx, 'tokens_gained', amount);
+        if (!(n > 0)) continue;
+        // Who gave them (phase G: "after you give tokens to an enemy").
+        await world.gainTokens(f, key, n, scope.self);
+        ctx.log(`${f.name} gains ${n} ${tokenName(key)}`);
       }
       return;
     }
@@ -691,9 +765,11 @@ async function run(node, scope, ctx) {
       return;
     }
     case 'heal': {
-      const n = val(node.amount);
       for (const f of await targetsOf(node.target, scope, ctx)) {
+        const n = capped(scope, ctx, 'hp_healed', val(node.amount), true);
+        if (!(n > 0)) continue;
         const healed = await world.heal(f, n);
+        if (scope.cap?.metric === 'hp_healed') ctx.usage[scope.cap.key] = (ctx.usage[scope.cap.key] ?? 0) + (Number(healed ?? n) || 0);
         ctx.log(`${f.name} heals ${healed ?? n}`);
       }
       return;
@@ -715,7 +791,7 @@ async function run(node, scope, ctx) {
         // A Wall or Rubble hit for 2+ in one hit is destroyed (book p.11; phase E).
         if (f.isObstacle && !f.isCopy) {
           if (n >= 2 && (f.kind === 'wall' || f.kind === 'rubble')) {
-            await world.destroyObstacle(f);
+            await world.destroyObstacle(f, scope.self);
             ctx.log(`${scope.self.name} destroys the ${f.name}${f.kind === 'wall' ? ' (Rubble now)' : ''}`);
           }
           continue;
@@ -748,6 +824,13 @@ async function run(node, scope, ctx) {
     case 'modify_rule': {
       if (!ENFORCED_RULES.has(node.rule)) return unsupported(node, scope, ctx);
       const value = val(node.value);
+      // "Your next Action …" lasts until that Action (or the turn's end).
+      if (/^next_(damage_)?action\./.test(node.rule) && world.addTemp) {
+        for (const f of node.target ? await targetsOf(node.target, scope, ctx) : [scope.self]) {
+          await world.addTemp({ rule: node.rule, value, targetId: f.id, ownerId: scope.self.id, source: ctx.ability?.id ?? null, duration: node.rule.startsWith('next_damage') ? 'until_next_damage_dealing_action' : 'end_of_current_turn_or_next_action' });
+        }
+        return;
+      }
       for (const f of node.target ? await targetsOf(node.target, scope, ctx) : [scope.self]) {
         (scope.mods ??= []).push({ rule: node.rule, value, targetId: f.id, ownerId: scope.self.id, source: ctx.ability?.id ?? null });
       }
@@ -759,6 +842,11 @@ async function run(node, scope, ctx) {
       const items = TEMP_DURATIONS.has(node.duration) ? tempItems(node.effect) : null;
       if (!items || !world.addTemp) return unsupported(node, scope, ctx);
       for (const item of items) {
+        if (item.op === 'register_trigger') {
+          await world.addTemp({ trigger: { events: item.events ?? [], effect: item.effect }, targetId: scope.self.id, ownerId: scope.self.id, source: ctx.ability?.id ?? null, duration: node.duration });
+          ctx.log(`${scope.self.name}: a new trigger until ${node.duration.replace(/_/g, ' ')}`);
+          continue;
+        }
         for (const f of item.target ? await targetsOf(item.target, scope, ctx) : [scope.self]) {
           if (item.op === 'grant_armor') {
             await world.tempArmor(f);
@@ -812,8 +900,8 @@ async function run(node, scope, ctx) {
       const to = node.op === 'replace_obstacle' ? val(node.replacement) : null;
       for (const o of await targetsOf(node.target, scope, ctx, 'an obstacle')) {
         if (!o.isObstacle && !o.isCopy) continue;
-        if (to) await world.replaceObstacle(o, to);
-        else await world.destroyObstacle(o);
+        if (to) await world.replaceObstacle(o, to, scope.self);
+        else await world.destroyObstacle(o, scope.self);
         ctx.log(`${to ? 'replaces' : 'destroys'} the ${o.name}${to ? ` with ${to}` : ''}`);
       }
       return;
@@ -830,6 +918,8 @@ async function run(node, scope, ctx) {
       for (const f of node.target ? await targetsOf(node.target, scope, ctx) : [scope.self]) {
         const to = await fn(f, { distance, upTo: Boolean(node.upTo), ...(decline ? { allowNone: true } : {}) });
         if (decline && to == null) return DECLINED;
+        // "If it moved, swapped or teleported you" (Dance Form — phase G).
+        if (to != null && f.id === scope.self.id) scope.history.selfMoved = true;
       }
       return;
     }
@@ -839,6 +929,7 @@ async function run(node, scope, ctx) {
       const distance = val(node.distance);
       const from = node.origin ? asList(val(node.origin))[0] : scope.self;
       for (const f of await targetsOf(node.target, scope, ctx, 'an enemy')) {
+        const before = f.square ? `${f.square.col},${f.square.row}` : null;
         await world.forced(f, {
           distance,
           origin: from?.square ?? scope.self.square ?? null,
@@ -848,18 +939,42 @@ async function run(node, scope, ctx) {
           hit: scope.history.hits?.[f.id] ?? null,
           unblockable: ctx.unblockable ?? [],
         });
+        // Who this resolution moved by force (phase G: Ogre's, Dance Form).
+        const after = f.square ? `${f.square.col},${f.square.row}` : null;
+        if (before !== after && !f.isObstacle) (scope.history.forcedIds ??= []).push(f.id);
+        if (before !== after && f.id === scope.self.id) scope.history.selfMoved = true;
       }
       return;
     }
     case 'swap_spaces': {
       if (!world.swap) return unsupported(node, scope, ctx);
       const actor = node.actor ? asList(val(node.actor))[0] : scope.self;
-      for (const f of await targetsOf(node.target, scope, ctx)) if (actor) await world.swap(actor, f);
+      for (const f of await targetsOf(node.target, scope, ctx)) {
+        if (!actor) continue;
+        await world.swap(actor, f);
+        if (actor.id === scope.self.id || f.id === scope.self.id) scope.history.selfMoved = true;
+      }
       return;
     }
     // "You move one less space" when pushed or pulled (`self.would_be_pushed_or_pulled`).
     case 'reduce_forced_movement':
       scope.event.reduction = (scope.event.reduction ?? 0) + (Number(val(node.amount)) || 0);
+      return;
+    // A trigger for a while (outside a `temporary`: for the rest of the fight).
+    case 'register_trigger':
+      if (!world.addTemp) return unsupported(node, scope, ctx);
+      await world.addTemp({ trigger: { events: node.events ?? [], effect: node.effect }, targetId: scope.self.id, ownerId: scope.self.id, source: ctx.ability?.id ?? null, duration: 'end_of_fight' });
+      return;
+    // **Later (phase G):** an effect at the end of this turn or the start of
+    // your next, with this resolution's targets, bindings and variables
+    // captured now (import guide).
+    case 'schedule':
+      if (!world.schedule || !SCHEDULE_AT.has(node.at)) return unsupported(node, scope, ctx);
+      await world.schedule({ at: node.at, effect: node.effect, ownerId: scope.self.id, source: ctx.ability?.id ?? null, captured: capture(scope) });
+      return;
+    // Power Form / Iron Form: "when you gain Speed, replace half with Power".
+    case 'replace_token_gain':
+      scope.event.replace = { from: val(node.fromToken), to: val(node.toToken), amount: Math.max(0, Number(val(node.amount)) || 0) };
       return;
     // "Take 1 less damage" while a hit is being resolved (`self.would_take_damage`).
     case 'reduce_damage':

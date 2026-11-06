@@ -266,6 +266,27 @@ export function constructChoices(form, idx) {
   return [];
 }
 
+// "Add d6 to your Action Dice" (Quickdraw, Lucky Style — phase G): the
+// continuous `action_dice.additional` of the Stance's own Abilities, before
+// the level's bonus die.
+export function extraDice(abilityIds, idx) {
+  const out = [];
+  const walk = (n) => {
+    if (!n || typeof n !== 'object') return;
+    if (n.op === 'sequence') return (n.steps ?? []).forEach(walk);
+    if (n.op === 'modify_rule' && n.rule === 'action_dice.additional' && (!n.target || n.target.ref === 'self')) {
+      for (const d of Array.isArray(n.value) ? n.value : [n.value]) if (d?.kind === 'die' && d.sides > 0) out.push({ kind: 'die', sides: d.sides, extra: true });
+    }
+  };
+  for (const id of abilityIds) for (const r of idx.get(id)?.rules ?? []) if (r.events.includes('continuous')) walk(r.effect);
+  return out;
+}
+const withExtra = (dice, extra) => {
+  if (!extra.length) return dice;
+  const i = dice.findIndex((d) => d.bonus);
+  return i < 0 ? [...dice, ...extra] : [...dice.slice(0, i), ...extra, ...dice.slice(i)];
+};
+
 export const stanceKey = (formId, styleId) => `${formId ?? 'none'}+${styleId ?? 'none'}`;
 
 export function deriveStance(pair, idx, bonusDie = null) {
@@ -273,6 +294,7 @@ export function deriveStance(pair, idx, bonusDie = null) {
   const style = pair.styleId ? idx.get(pair.styleId) : null;
   const alias = pair.alias ?? form?.aliases?.[0] ?? '';
   const name = [shortStyleName(style?.name ?? '—'), alias || form?.name?.replace(/\s+Form$/, '') || '—', 'Stance'].join(' ');
+  const abilityIds = [...(form?.abilityIds ?? []), ...(style?.abilityIds ?? [])];
   return {
     key: stanceKey(pair.formId, pair.styleId),
     name,
@@ -281,9 +303,9 @@ export function deriveStance(pair, idx, bonusDie = null) {
     isFreestyle: Boolean(style?.id?.startsWith('freestyle.')),
     alias,
     constructChoice: pair.constructChoice ?? null,
-    dice: stanceDice(form, style, bonusDie),
+    dice: withExtra(stanceDice(form, style, bonusDie), extraDice(abilityIds, idx)),
     range: stanceRange(style, form, idx, pair.constructChoice),
-    abilityIds: [...(form?.abilityIds ?? []), ...(style?.abilityIds ?? [])],
+    abilityIds,
     actionIds: [...(form?.actionIds ?? []), ...(style?.actionIds ?? [])],
   };
 }

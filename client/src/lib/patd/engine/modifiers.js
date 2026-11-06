@@ -74,7 +74,38 @@ export const ENFORCED_RULES = new Set([
   'armor.not_spent_when_one_damage_hit_fully_blocked',
   'armor.disabled',
   'shield.disabled',
+  // phase G — range, sight, movement, dice, Speed
+  'range.maximum_bonus',
+  'range.set',
+  'range.minimum_set',
+  'range.maximum_set',
+  'next_action.maximum_range_bonus',
+  'current_action.maximum_range_bonus',
+  'sight.ignore',
+  'rubble.no_fatigue',
+  'free_movement.cost_per_space',
+  'free_movement.disabled',
+  'speed_tokens.cannot_gain_or_spend',
+  'action_dice.additional',
 ]);
+
+// **A fighter's range now (phase G):** their Stance's range changed by
+// `range.set`, `range.minimum_set`, `range.maximum_set` ('infinite'), and the
+// summed bonuses (`range.maximum_bonus`; "your next Action" and "this Action"
+// bonuses too). The Stance's own construct rules are already in its range.
+export function effectiveRange(base, mods, extraBonus = 0) {
+  let { minimum = 1, maximum = 1 } = base ?? {};
+  for (const m of modsFor(mods, 'range.set')) {
+    if (m.value && typeof m.value === 'object') {
+      minimum = m.value.minimum ?? minimum;
+      maximum = m.value.maximum ?? maximum;
+    }
+  }
+  for (const m of modsFor(mods, 'range.minimum_set')) minimum = Number(m.value) || 0;
+  for (const m of modsFor(mods, 'range.maximum_set')) maximum = m.value === 'infinite' ? Infinity : Number(m.value) || maximum;
+  maximum += sumMod(mods, 'range.maximum_bonus') + sumMod(mods, 'next_action.maximum_range_bonus') + sumMod(mods, 'current_action.maximum_range_bonus') + extraBonus;
+  return { minimum, maximum };
+}
 
 // Queries over a modifier list.
 export const modsFor = (mods, rule) => mods.filter((m) => m.rule === rule);

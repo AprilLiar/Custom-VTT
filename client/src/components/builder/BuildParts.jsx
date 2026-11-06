@@ -26,7 +26,7 @@ export function DiceRow({ dice }) {
             {d.value}
           </span>
         ) : (
-          <span key={i} title={d.bonus ? `Bonus d${d.sides} (level)` : `${d.color ?? ''} d${d.sides}`}>
+          <span key={i} title={d.bonus ? `Bonus d${d.sides} (level)` : d.extra ? `Extra d${d.sides} (an Ability)` : `${d.color ?? ''} d${d.sides}`}>
             <DiceIcon
               size={d.sides}
               className={`h-6 w-6 ${d.bonus ? 'text-amber-300' : d.color === 'green' ? 'text-emerald-300' : 'text-purple-300'}`}

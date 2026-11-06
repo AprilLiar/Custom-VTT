@@ -113,6 +113,8 @@ export function createActionRunner(kit) {
     const firstAction = !(frt.flags.actions > 0);
     // "Until your next Action" temporaries made before this one end after it.
     env.rt.actionSeq = (env.rt.actionSeq ?? 0) + 1;
+    // A Reactive Action (a reaction board — phase F): "before each Reactive Action" (Swift Style).
+    if (data.reaction) await emitEvent(env, 'self.reactive_action.before', actor, { action });
     await emitEvent(env, 'self.action.before', actor, { action });
     await emitEvent(env, 'enemy_in_range.action.cost_paid_before_resolution', actor, { action, actor });
     const damaging = hasDamage(action.effect);
@@ -166,10 +168,21 @@ export function createActionRunner(kit) {
     // Its limits count it (once per turn …).
     recordUse(env.rt.usage, action, actor.id);
     if (actor.challengeId != null && history.damagedIds.includes(actor.challengeId)) frt.flags.damagedChallenger = true;
-    // The Action events (engine/bus.js).
-    await emitEvent(env, 'self.action.resolved', actor, { action, history });
-    if (placement.kind === 'die') await emitEvent(env, 'self.dice_action.resolved', actor, { action, history });
-    if (history.damageDealt > 0 || damaging) await emitEvent(env, 'self.damage_dealing_action.resolved', actor, { action, history });
+    // The Action events (engine/bus.js), with what it did (phase G): the
+    // enemies it damaged, who it moved by force, whether it moved you.
+    const fightersOf = (ids) => [...new Set(ids ?? [])].map((id) => byId(id)).filter(Boolean);
+    const forced = fightersOf(history.forcedIds);
+    const did = {
+      action,
+      history,
+      enemiesDamaged: fightersOf(history.enemyDamagedIds),
+      enemiesForcedMoved: forced.filter((f) => f.side !== actor.side),
+      alliesForcedMoved: forced.filter((f) => f.side === actor.side && f.id !== actor.id),
+      movedSwappedOrTeleportedSelf: Boolean(history.selfMoved),
+    };
+    await emitEvent(env, 'self.action.resolved', actor, did);
+    if (placement.kind === 'die') await emitEvent(env, 'self.dice_action.resolved', actor, did);
+    if (history.damageDealt > 0 || damaging) await emitEvent(env, 'self.damage_dealing_action.resolved', actor, did);
     const enemyCount = new Set(history.enemyDamagedIds ?? []).size;
     if (enemyCount) await emitEvent(env, 'self.action.damage_dealt_to_enemy', actor, { action, history, enemyCount });
     if (firstAction && fightRow.turn_order && env.rt.turn?.activeId === actor.id) await emitEvent(env, 'self.first_action_on_own_turn.resolved', actor, { action });

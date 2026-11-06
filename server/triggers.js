@@ -26,7 +26,7 @@ import { assembles, derivedFor, franticPickOf } from './fighterStances.js';
 import { armorSourcesOf, stanceOfBuild } from '../client/src/lib/patd/build.js';
 import { patdContent } from './patdContent.js';
 import { listenersFor, relationTo, turnEvents } from '../client/src/lib/patd/engine/bus.js';
-import { modifiersOn, valueOf } from '../client/src/lib/patd/engine/modifiers.js';
+import { effectiveRange, listMod, modifiersOn, valueOf } from '../client/src/lib/patd/engine/modifiers.js';
 import { addTemp, expireTemps, fighterRt, startTurn } from '../client/src/lib/patd/engine/runtime.js';
 import { spendPrefs } from '../client/src/lib/patd/engine/damage.js';
 import { loadRuntime, saveRuntime } from './engine/runtimeStore.js';
@@ -60,7 +60,14 @@ const MIDDLEWEIGHT = WEIGHT_BY_KEY.middle;
 const PROMPT_TIMEOUT_MS = 10 * 60 * 1000;
 const FOLLOW_ON_DEPTH = 3;
 const IMPROVED_WARRIOR = 'ability.feature-improved-warrior.improved-warrior';
-const ENGINE_NATIVE = new Set(['ability.resource-mechanic-control.control-mechanics', 'ability.resource-mechanic-chaos.chaos-mechanics']);
+// Done by the engine itself, not by their rules: Control and Chaos (phase F),
+// and the Frantic Hero's Stance assembly (fights.js: fight:choose_stance).
+export const ENGINE_NATIVE = new Set([
+  'ability.resource-mechanic-control.control-mechanics',
+  'ability.resource-mechanic-chaos.chaos-mechanics',
+  'ability.hero-type-frantic.frantic-versatility',
+]);
+const BASIC_TOKENS = new Set(['power', 'iron', 'speed']);
 
 export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
   const pending = new Map(); // prompt id → { resolve, characterId, request }
@@ -205,6 +212,8 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     const byId = (id) => fighters.find((f) => f.id === id);
     // A fighter's square is also their "space" (`self.space`, `targets.x.space`).
     for (const f of fighters) Object.defineProperty(f, 'space', { get: () => f.square, enumerable: false });
+    // Standing in a Wall's space (Parkour Style may; phase G).
+    for (const f of fighters) Object.defineProperty(f, 'standingOnWall', { get: () => f.square != null && walls.has(`${f.square.col},${f.square.row}`), enumerable: false });
 
     // **Copies (phase E, book p.71):** replicas of their Original — map tiles of
     // kind 'copy' with the Original's combatant id. A Copy fills its space like
@@ -336,11 +345,25 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
       }
       fogSquares.splice(0, fogSquares.length, ...tileList.filter((t) => t.kind === 'fog').map((t) => ({ col: t.col, row: t.row })));
     };
-    const destroyCopy = async (c) => {
+    // `by`: who destroyed it, if anyone did (phase G: Zombie and Crystal Style).
+    const destroyCopy = async (c, by = null) => {
+      if (!c.square && !copies.includes(c)) return;
       await queued(() => run('DELETE FROM map_tiles WHERE id = ?', [c.rowId]));
       const i = copies.indexOf(c);
       if (i >= 0) copies.splice(i, 1);
       c.square = null;
+      countDestroyed(by);
+      const env = world.env;
+      const owner = byId(c.ownerId);
+      if (!env || !owner) return;
+      await emitEvent(env, 'self.copy_destroyed', owner, { copy: c, attacker: by });
+      if (by && !by.isCopy && by.side !== owner.side) await emitEvent(env, 'enemy.destroyed_own_copy', by, { copy: c, attacker: by }, 0, (l) => l.id === owner.id);
+    };
+    // "Obstacles you destroyed this turn" (Collateral Style).
+    const countDestroyed = (by) => {
+      if (!by || by.isCopy || !world.env) return;
+      const flags = fighterRt(world.env.rt, by.id).flags;
+      flags.obstaclesDestroyed = (flags.obstaclesDestroyed ?? 0) + 1;
     };
     // Squares within a range of `from` (for space selectors): the board's own,
     // or — with no known edge — those the range can reach.
@@ -360,23 +383,64 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
       return out;
     };
 
+    // **Range and sight now (phase G):** the Stance's range with the range
+    // modifiers in effect (and "this Action's +X" carried as `rangeBonus`);
+    // Walls and Fog ignored for sight where a modifier says so.
+    const modsOf = (f) => (f && !f.isCopy && world.env ? modifiersOn(byId(f.id) ?? f, world, patdContent(), world.env.rt.temps) : []);
+    const rangeOf = (f) => (f?.isCopy ? f.stance?.range : effectiveRange(f?.stance?.range, modsOf(f), f?.rangeBonus ?? 0));
+    const sightOf = (f) => {
+      const ignore = listMod(modsOf(f), 'sight.ignore');
+      return { walls: ignore.includes('walls') ? new Set() : walls, fogged: ignore.includes('fog') ? () => false : fogged };
+    };
+
     const world = {
       context: { healValue: weight.heal, bleedValue: weight.bleed, round: fight.round },
       fighters: () => fighters,
       enemiesOf: (f) => fighters.filter((x) => x.side !== f.side),
       alliesOf: (f) => fighters.filter((x) => x.side === f.side),
       inRange: (from, to, range) => {
+        const r = rangeOf(from);
+        const sight = sightOf(from);
         // "Within range of you or your Copies" (phase E): from any of them.
         if (range?.mode === 'self_or_copies_range') {
           const origins = [from, ...copies.filter((c) => c.ownerId === from.id)];
-          return origins.some((o) => targetable({ from: o.square, to: to.square, range: { mode: 'stance' }, stanceRange: from.stance?.range, walls, fogged, enemy: from.side !== to.side }));
+          return origins.some((o) => targetable({ from: o.square, to: to.square, range: { mode: 'stance' }, stanceRange: r, ...sight, enemy: from.side !== to.side }));
         }
-        return targetable({ from: from.square, to: to.square, range, stanceRange: from.stance?.range, walls, fogged, enemy: from.side !== to.side });
+        // "Each enemy adjacent to any of your Copies" (Zombie Style — phase G).
+        if (range?.mode === 'adjacent_to_any_own_copy') {
+          return Boolean(to.square) && copies.some((c) => c.ownerId === from.id && c.square && chebyshev(c.square, to.square) === 1);
+        }
+        return targetable({ from: from.square, to: to.square, range, stanceRange: r, ...sight, enemy: from.side !== to.side });
       },
       heldTokens: (f) => ({ ...f.tokens }),
       // Copies hold no tokens, Shields or HP (book p.71): those do nothing to them.
-      gainTokens: (f, key, n) =>
-        !f.isCopy && TOKEN_BY_KEY[key] && key !== 'challenge' ? writeTokens(f, (t) => (t[key] = Math.min(capOf(key), (t[key] ?? 0) + n))) : null,
+      // `giver`: whoever's rule gave them (phase G events).
+      gainTokens: async (f, key, n, giver = null) => {
+        if (f.isCopy || !TOKEN_BY_KEY[key] || key === 'challenge') return null;
+        let amount = Math.max(0, Number(n) || 0);
+        if (key === 'speed') {
+          // Caged Style's neighbours can't gain Speed (phase G).
+          if (modsOf(f).some((m) => m.rule === 'speed_tokens.cannot_gain_or_spend')) return null;
+          // "When you gain Speed, replace half with Power / Iron" (Power, Iron Form).
+          const ev = { amount, replace: null };
+          if (world.env) await emitEvent(world.env, 'self.gain_speed_tokens', f, ev);
+          if (ev.replace?.to && ev.replace.amount > 0) {
+            const r = Math.min(amount, ev.replace.amount);
+            amount -= r;
+            await writeTokens(f, (t) => (t[ev.replace.to] = Math.min(capOf(ev.replace.to), (t[ev.replace.to] ?? 0) + r)));
+          }
+        }
+        if (!amount) return null;
+        const out = await writeTokens(f, (t) => (t[key] = Math.min(capOf(key), (t[key] ?? 0) + amount)));
+        if (world.env) {
+          const toEnemy = giver && !giver.isCopy && giver.side !== f.side;
+          if (toEnemy) await emitEvent(world.env, 'self.tokens_given_to_enemy', giver, { target: f, token: key, amount });
+          if (toEnemy && key === 'weakness') await emitEvent(world.env, 'self.weakness_given_to_enemy', giver, { target: f, amount });
+          // "When an enemy you can see gains Basic tokens" (Ego Freestyle).
+          if (BASIC_TOKENS.has(key)) await emitEvent(world.env, 'visible_enemy.gain_basic_tokens', f, { target: f, token: key, amount });
+        }
+        return out;
+      },
       discardTokens: async (f, keys, n) => {
         if (f.isCopy) return 0;
         let taken = 0;
@@ -395,8 +459,11 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
       tempArmor: (f) => (f.isCopy ? null : writeTokens(f, (t) => (t.temp_armor = 1))),
       heal: async (f, n) => {
         if (f.isCopy) return 0;
-        await changeHp(f, Math.max(0, Number(n) || 0));
-        return n;
+        const r = await changeHp(f, Math.max(0, Number(n) || 0));
+        const healed = r.before ? Math.max(0, (f.hp?.current ?? 0) - r.before.current) : 0;
+        if (healed > 0 && world.env) await emitEvent(world.env, 'self.healed', f, { amount: healed });
+        // What it really healed (a limit of "3 HP per turn" counts this).
+        return r.before ? healed : n;
       },
       payHp: (f, n) => (f.isCopy ? null : changeHp(f, -Math.max(0, Number(n) || 0))),
       // **Damage (phase C):** the whole Damage Resolution — Weakness, Power,
@@ -407,7 +474,7 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
         // A Copy has 1 HP: any damage destroys it.
         if (f.isCopy) {
           if (!(Number(n) > 0)) return { taken: 0, steps: [], immune: false };
-          await destroyCopy(f);
+          await destroyCopy(f, attacker);
           return { taken: 1, toHp: 1, dealt: 1, steps: ['the Copy is destroyed'], destroyed: true };
         }
         return hits.resolveHit(world.env, { writeTokens, changeHp, bleedCheck, inPit }, f, n, attacker, opts);
@@ -418,7 +485,7 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
       spaces: (from, range, { empty = false } = {}) => {
         const b = board();
         return squaresNear(from, range).filter(
-          (sq) => (!empty || isEmptyAt(b, sq)) && targetable({ from: from.square, to: sq, range, stanceRange: from.stance?.range, walls, fogged, enemy: false })
+          (sq) => (!empty || isEmptyAt(b, sq)) && targetable({ from: from.square, to: sq, range, stanceRange: rangeOf(from), ...sightOf(from), enemy: false })
         );
       },
       obstacles: (from, range, { types = null } = {}) => {
@@ -427,7 +494,7 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
           ...copies.map((c) => Object.assign(c, { kind: 'copy' })),
         ];
         return list.filter(
-          (o) => o.square && (!types || types.includes(o.kind)) && targetable({ from: from.square, to: o.square, range, stanceRange: from.stance?.range, walls, fogged, enemy: false })
+          (o) => o.square && (!types || types.includes(o.kind)) && targetable({ from: from.square, to: o.square, range, stanceRange: rangeOf(from), ...sightOf(from), enemy: false })
         );
       },
       copies: () => copies,
@@ -456,18 +523,25 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
         return { isObstacle: true, kind, square: { col: sq.col, row: sq.row }, name: kind };
       },
       // Destroyed: a Wall becomes Rubble, anything else is gone (a Copy too).
-      destroyObstacle: async (o) => {
-        if (o.isCopy) return destroyCopy(o);
+      // `by`: who did it (counted for "obstacles you destroyed this turn").
+      destroyObstacle: async (o, by = null) => {
+        if (o.isCopy) return destroyCopy(o, by);
         const kinds = kindsAtSq(o.square);
         await writeKinds(o.square, o.kind === 'wall' ? placeTile(removeTile(kinds, 'wall'), 'rubble') : removeTile(kinds, o.kind));
+        countDestroyed(by);
       },
-      replaceObstacle: async (o, to) => {
+      replaceObstacle: async (o, to, by = null) => {
         const sq = { col: o.square.col, row: o.square.row };
-        if (o.isCopy) await destroyCopy(o);
+        if (o.isCopy) await destroyCopy(o, by);
         await writeKinds(sq, placeTile(o.isCopy ? kindsAtSq(sq) : removeTile(kindsAtSq(sq), o.kind), to));
       },
       // A modifier until its duration ends (engine/runtime.js), e.g. Take Aim.
       addTemp: (temp) => addTemp(world.env.rt, temp),
+      // A delayed effect (phase G): run at that moment by runTurn.
+      schedule: (item) => {
+        const rt = world.env.rt;
+        (rt.scheduled ??= []).push({ ...item, seq: rt.turnSeq ?? 0, round: rt.round });
+      },
       challenge: (target, challenger) => queued(() => run('UPDATE combatants SET challenge_id = ? WHERE id = ?', [challenger.id, target.id])),
       // Onto the fighter's active turn board (phase B); held numbers outside a turn come in phase F.
       addPoolNumber: (f, v) => runner.addPoolNumber(f.id, v, 'ability'),
@@ -488,6 +562,12 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
   // ---- running one fighter's rules for some events
   async function runFor(fighter, events, env, eventPayload = null, depth = 0) {
     const idx = patdContent();
+    // Triggers registered for a while (phase G: `register_trigger`), as rules of their source.
+    for (const t of env.rt.temps.filter((x) => x.trigger && x.ownerId === fighter.id && x.trigger.events.some((e) => events.includes(e)))) {
+      if (stale(env)) return;
+      const ability = idx.get(t.source) ?? { id: t.source, name: 'Trigger', rulesText: '' };
+      await runOne(fighter, ability, { id: `${t.source}:registered`, events: t.trigger.events, effect: t.trigger.effect }, env, eventPayload, depth);
+    }
     for (const abilityId of fighter.abilityIds) {
       if (stale(env)) return;
       // Built into the engine itself (phase F): Control's Copy / Dodge / Parry
@@ -496,47 +576,84 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
       const ability = idx.get(abilityId);
       for (const rule of ability?.rules ?? []) {
         if (!rule.events.some((e) => events.includes(e))) continue;
-        const support = ruleSupport(rule);
-        if (!support.ok) {
-          await postCard('reminder', {
-            title: `${ability.name} — by hand`,
-            text: ability.rulesText,
-            fighters: [{ name: fighter.name }],
-            automatic: 'ability_manual',
-          });
-          continue;
-        }
-        const lines = [];
-        const ctx = {
-          world: env.world,
-          self: fighter,
-          state: env.stateOf(fighter.id),
-          usage: env.usage,
-          ability,
-          event: eventPayload,
-          log: (l) => lines.push(l),
-          ask: ask(fighter, env.key, env.gen, env.tg, env.when),
-          // A Text notification: an orange reminder, like any rule left to people.
-          notify: (text) => postCard('reminder', { title: ability.name, text, fighters: [{ name: fighter.name }], automatic: 'ability_text' }),
-          // Follow-on events go through the bus to whoever listens (engine/bus.js).
-          emit: depth < FOLLOW_ON_DEPTH ? (ev, f, payload, filter) => emitEvent(env, ev, f, payload, depth + 1, filter) : null,
-          // Its damage is an Ability's; a Build Ability is Unblockable (book p.26).
-          source: 'ability',
-          unblockable: buildUnblockable(idx).has(ability.id) ? ['all'] : [],
-        };
-        try {
-          await runRule(rule, ctx);
-        } catch (err) {
-          lines.push(`stopped: ${err.message}`);
-        }
-        if (lines.length) {
-          // Done for you: a notice (grey, fades fast — decided).
-          await postCard('reminder', { title: ability.name, text: `${lines.join('; ')}.`, fighters: [{ name: fighter.name }], automatic: 'ability', notice: true });
-          await emitStageUpdated();
-        }
+        await runOne(fighter, ability, rule, env, eventPayload, depth);
       }
     }
   }
+
+  // One rule of one fighter's Ability: by hand if the engine can't do it, else
+  // run — with what it did as a grey notice. `captured`: values a delayed
+  // effect took when it was scheduled (phase G).
+  async function runOne(fighter, ability, rule, env, eventPayload, depth, captured = null) {
+    const idx = patdContent();
+    const support = ruleSupport(rule);
+    if (!support.ok) {
+      await postCard('reminder', {
+        title: `${ability.name} — by hand`,
+        text: ability.rulesText,
+        fighters: [{ name: fighter.name }],
+        automatic: 'ability_manual',
+      });
+      return;
+    }
+    const lines = [];
+    const ctx = {
+      world: env.world,
+      self: fighter,
+      state: env.stateOf(fighter.id),
+      usage: env.usage,
+      ability,
+      event: eventPayload,
+      captured,
+      log: (l) => lines.push(l),
+      ask: ask(fighter, env.key, env.gen, env.tg, env.when),
+      // A Text notification: an orange reminder, like any rule left to people.
+      notify: (text) => postCard('reminder', { title: ability.name, text, fighters: [{ name: fighter.name }], automatic: 'ability_text' }),
+      // Follow-on events go through the bus to whoever listens (engine/bus.js).
+      emit: depth < FOLLOW_ON_DEPTH ? (ev, f, payload, filter) => emitEvent(env, ev, f, payload, depth + 1, filter) : null,
+      // Its damage is an Ability's; a Build Ability is Unblockable (book p.26).
+      source: 'ability',
+      unblockable: buildUnblockable(idx).has(ability.id) ? ['all'] : [],
+    };
+    try {
+      await runRule(rule, ctx);
+    } catch (err) {
+      lines.push(`stopped: ${err.message}`);
+    }
+    if (lines.length) {
+      // Done for you: a notice (grey, fades fast — decided).
+      await postCard('reminder', { title: ability.name, text: `${lines.join('; ')}.`, fighters: [{ name: fighter.name }], automatic: 'ability', notice: true });
+      await emitStageUpdated();
+    }
+  }
+
+  // **Delayed effects (phase G: `schedule`).** "At the end of this turn …",
+  // "at the start of your next turn …": run at that moment by their owner,
+  // with the values they captured when scheduled (a fighter or Copy by id).
+  async function runScheduled(env, at, pick) {
+    const rt = env.rt;
+    const due = (rt.scheduled ?? []).filter((s) => s.at === at && pick(s));
+    if (!due.length) return;
+    rt.scheduled = rt.scheduled.filter((s) => !due.includes(s));
+    const idx = patdContent();
+    for (const s of due) {
+      if (stale(env)) return;
+      const owner = env.world.fighters().find((f) => f.id === s.ownerId);
+      if (!owner) continue;
+      const ability = idx.get(s.source) ?? { id: s.source, name: 'Delayed effect', rulesText: '' };
+      const captured = rehydrate(env.world, s.captured);
+      await runOne(owner, ability, { id: `${s.source}:scheduled`, events: [at], effect: s.effect }, env, s.event ?? null, 0, captured);
+    }
+  }
+  // A captured value back as the live object: `{ ref: id }` → that fighter or Copy.
+  const rehydrate = (world, v) => {
+    if (Array.isArray(v)) return v.map((x) => rehydrate(world, x));
+    if (v && typeof v === 'object') {
+      if ('ref' in v && Object.keys(v).length === 1) return world.fighters().find((f) => String(f.id) === String(v.ref)) ?? (world.copies?.() ?? []).find((c) => String(c.id) === String(v.ref)) ?? null;
+      return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, rehydrate(world, x)]));
+    }
+    return v;
+  };
 
   // **The event bus** (engine/bus.js): one event, every listener's rules.
   // `filter(listener)`: only some of them (whose Shield was hit: their own, or an ally's).
@@ -551,7 +668,15 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
   // The modifiers in effect on a fighter now (engine/modifiers.js): continuous
   // rules of active sources, auras from others, and the runtime's temporaries.
   // Shadow Form / Silent Freestyle keep their Speed, Scrambling Style keeps 2.
-  const endPhaseRule = (env, f, rule) => valueOf(modifiersOn(f, env.world, patdContent(), env.rt.temps), rule, null);
+  // Scrambling Style says its floor as a rule on `end_phase.speed_discard`: read as a modifier of the owner.
+  const endPhaseRule = (env, f, rule) => {
+    const idx = patdContent();
+    const own = f.abilityIds.flatMap((id) => (idx.get(id)?.rules ?? []).filter((r) => r.events.includes('end_phase.speed_discard')).flatMap((r) => modifyNodes(r.effect)));
+    const hit = own.filter((n) => n.rule === rule && (!n.target || n.target.ref === 'self'));
+    const v = valueOf(modifiersOn(f, env.world, idx, env.rt.temps), rule, null);
+    return hit.length ? hit[hit.length - 1].value : v;
+  };
+  const modifyNodes = (e) => (!e || typeof e !== 'object' ? [] : e.op === 'modify_rule' ? [e] : e.op === 'sequence' ? (e.steps ?? []).flatMap(modifyNodes) : []);
 
   // **The End Phase, automated (decided; book p.68).** After the turn's end
   // abilities, in the book's order:
@@ -667,6 +792,15 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
       save: () => (gen(key) === env.gen ? saveRuntime(fightRow.id, rt) : null),
     };
     world.env = env;
+    // This turn so far (phase G), from the runtime's per-turn flags.
+    const flag = (f, k) => fighterRt(rt, f.id).flags[k];
+    for (const f of fighters) {
+      Object.defineProperties(f, {
+        performedActionThisTurn: { get: () => (flag(f, 'actions') ?? 0) > 0, enumerable: false, configurable: true },
+        tookDamageThisTurn: { get: () => Boolean(flag(f, 'tookDamage')), enumerable: false, configurable: true },
+        obstaclesDestroyedThisTurn: { get: () => flag(f, 'obstaclesDestroyed') ?? 0, enumerable: false, configurable: true },
+      });
+    }
     return { env, world, fighters, byId, onTrap, movers };
   };
 
@@ -764,14 +898,33 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     if (moment === 'start') fighterRt(rt, active.id).flags.startSquare = active.square ?? null;
     env.when = `${moment === 'start' ? 'Start' : 'End'} of ${active.name}'s turn`;
     world.context.activeCharacter = active;
+    // "At the start of your next turn …" effects scheduled earlier (phase G).
+    if (moment === 'start') await runScheduled(env, 'next_turn.start', (s) => s.ownerId === active.id && s.seq < rt.turnSeq);
     const order = [active, ...fighters.filter((f) => f.id !== active.id)];
     for (const f of order) await runFor(f, turnEvents(moment, relationTo(f, active)), env, { activeCharacter: active });
     // Phase 3 of the turn: still Taken Out? Heroic Spirit.
     if (moment === 'start' && !stale(env)) await heroicSpirit(env, active);
+    // "After you roll your Action Dice" (phase G): the turn's dice are on its board.
+    if (moment === 'start' && !stale(env) && active.square && !atZero(active.hp)) await runFor(active, ['self.action_dice.rolled'], env, { activeCharacter: active });
     if (moment === 'end') {
+      // "At the end of this turn …" effects scheduled during it, before the End Phase.
+      await runScheduled(env, 'current_turn.end', () => true);
       await runEndPhase(env, fighters, onTrap, active);
       expireTemps(rt, 'end_of_turn', { activeId });
     }
+    await env.save();
+  }
+
+  // **The Action Phase begins (phase G):** after Early Movement, or right after
+  // the turn's start when nobody moves. "At the start of the Action Phase of
+  // your turn" (Wardancer).
+  async function runActionPhase(fightRow, activeId) {
+    const { env, world, byId } = await envFor(fightRow);
+    const active = byId(activeId);
+    if (!active || stale(env)) return;
+    env.when = `${active.name}'s Action Phase`;
+    world.context.activeCharacter = active;
+    await runFor(active, ['own_action_phase.start'], env, { activeCharacter: active });
     await env.save();
   }
 
@@ -878,14 +1031,14 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     },
     // **Free Movement (phase D):** where a fighter can go, and going there.
     async freeReach(fightRow, combatantId) {
-      const { byId, movers, fighters } = await envFor(fightRow);
+      const { env, byId, movers, fighters } = await envFor(fightRow);
       const f = byId(combatantId);
       return {
         mode: fightRow.mode,
         speed: f?.tokens.speed ?? 0,
         fatigued: (f?.tokens.fatigue ?? 0) > 0,
-        options: f ? moves.freeReach(movers, f) : [],
-        swaps: moves.swapsFor(fighters, f),
+        options: f ? moves.freeReach(movers, f, env) : [],
+        swaps: moves.swapsFor(fighters, f, env),
       };
     },
     freeMove(fightRow, combatantId, to) {
@@ -915,6 +1068,10 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
         if (active) await emitEvent(env, 'any_movement_phase.start', active, { phase: kind });
         await env.save();
       });
+    },
+    // The active fighter's Action Phase began (after Early Movement): its rules.
+    actionPhase(fightRow, activeId) {
+      return onChain(fightRow, () => runActionPhase(fightRow, activeId));
     },
     // A fight began: forget any old fight state, then "start of combat" rules.
     startFight(fightRow) {

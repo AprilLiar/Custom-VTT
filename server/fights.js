@@ -416,7 +416,12 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
     const fight = await one('SELECT * FROM fights WHERE id = ?', [fightId]);
     if (!fight || fight.turn_index !== turnIndex || fight.round !== round || orderOf(fight)[turnIndex]?.id !== activeId) return;
     const waiting = await speedHolders(fight, activeId);
-    if (!waiting.length) return;
+    // Nobody to move: the Action Phase begins now (phase G). Never awaited:
+    // this job holds the server-wide queue, and the fight's chain writes through it.
+    if (!waiting.length) {
+      triggers?.actionPhase?.({ ...fight }, activeId);
+      return;
+    }
     await setPhase(fight, { kind: 'early', activeId, waiting });
     triggers?.movementPhase?.({ ...fight }, 'early', activeId);
     await emitStageUpdated();
@@ -425,6 +430,8 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
     const phase = phaseOf(fight);
     await setPhase(fight, null);
     if (phase?.kind === 'late') return nextTurn(fight);
+    // Early Movement over: the Action Phase begins (phase G).
+    if (phase?.kind === 'early' && phase.activeId != null) triggers?.actionPhase?.({ ...fight }, phase.activeId);
     await emitStageUpdated();
   };
 

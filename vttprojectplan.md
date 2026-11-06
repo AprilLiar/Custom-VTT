@@ -3466,7 +3466,7 @@ A GM-only page (`/homebrew`, the flask icon in the header and the mobile menu) f
     - **Movement:** pushed, it moves its tile; pushed Outside, it's gone. "Within range of you or your Copies" (`self_or_copies_range`) counts from each of them.
     - **Acting from a Copy:** an Original with Copies picks where each committed Action is performed from (a square pick: "Here" or a Copy). The Action's ranges then count from there (`ctx.originSquare`).
     - **Look:** drawn on the map and lanes as the Original's picture, faded, in a dashed violet ring labelled "Copy" (`CopyLayer`).
-    - Not yet: moving your Copies with Free Movement, an Action's own movement moving the Copy instead, Copy-specific events (`self.copy_destroyed`) and `copies.maximum_hp`.
+    - Not yet: moving your Copies with Free Movement, an Action's own movement moving the Copy instead, and `copies.maximum_hp`. (Copy events — `self.copy_destroyed`, `enemy.destroyed_own_copy` — came in phase G.)
   - **Tests:** interpreter tests (a Trap on a picked space, only legal spaces for a Wall, a Wall destroyed by 2 damage, a Copy placed and picked as your own; `deadly_trap` stays by hand).
   - **Playtest** `scripts/playtest-obstacles.mjs`:
     - Volcanic's "you may place a Trap" as one pick;
@@ -3507,7 +3507,54 @@ A GM-only page (`/homebrew`, the flask icon in the header and the mobile menu) f
     - a Taken Out fighter taking no damage;
     - Heroic Spirit giving Cy's dice to Ana.
   - The dice-marks playtest now uses Armored Style's You Stay, since Swift Strike can't be used on your own turn. A browser run (phone landscape) covered the React bar and the clustered reaction board; it caught a render crash before the rules loaded, which is now fixed.
-- **G. Modifiers and durations:** the `modify_rule` catalog at its enforcement points, `temporary`, `register_trigger` and `schedule`, and the remaining event emissions.
+- **G. Modifiers and durations — implemented.**
+  - **Range and sight under modifiers:**
+    - A fighter's range is now their Stance's changed by `range.set`, `range.minimum_set`, `range.maximum_set` (`'infinite'`) and the summed bonuses: `range.maximum_bonus`, "your next Action" (`next_action.maximum_range_bonus`, a temporary until that Action) and "this Action" (`current_action.maximum_range_bonus`). This is `effectiveRange` in `engine/modifiers.js`.
+    - `sight.ignore` (Dark, Fullmetal, Parkour, Avalanche Style) sees through Fog and/or Walls.
+    - Every range check uses both: targets, spaces and obstacles.
+  - **Movement modifiers:**
+    - `rubble.no_fatigue` (Winged, Weightless).
+    - `free_movement.cost_per_space` (Weightless: every space costs 1, diagonals and Pits too).
+    - `free_movement.disabled`.
+    - **Caged Style's `speed_tokens.cannot_gain_or_spend`:** an adjacent enemy gains no Speed from rules, has no Free Movement or swap (the reach is empty), and its Action Movement is reduced to zero, as the Style's text says. Hand edits on the token panel still work.
+  - **Speed gains:**
+    - "When you gain Speed, replace half with Power / Iron" (Power and Iron Form, Mountainous Freestyle) is `self.gain_speed_tokens` with `replace_token_gain`.
+    - The End Phase reads Scrambling Style's floor of 2 from its `end_phase.speed_discard` rule, as a modifier of its owner.
+  - **Extra Action Dice:** a Stance's own continuous `action_dice.additional` (Quickdraw +d6, Lucky +d4) is part of its derived dice (`build.js extraDice`), before the level's bonus die. The sheet's dice row titles it "Extra d6 (an Ability)".
+  - **Durations:**
+    - `temporary` installs modifiers, temporary Armor and `register_trigger` items. A trigger registered for a while runs as a rule of its source, for its owner, until it expires; outside a `temporary` it lasts the fight.
+    - **`schedule` (delayed effects):** "at the end of this turn" (`current_turn.end`, run before the End Phase) and "at the start of your next turn" (`next_turn.start`, the owner's next turn). They are stored in the runtime's `scheduled` with what they captured: targets, bindings and variables, fighters and Copies by id. `runScheduled` rehydrates the ids and runs them by their owner. Other moments (Showdown's "the target side's next selected turn") stay by hand.
+  - **Rule limits counted in HP healed and tokens gained** (`limit.metric` `hp_healed` / `tokens_gained`): the heal or gain is cut to what the period still allows. A heal counts what it really healed (`world.heal` returns it). Examples: Armored Style's 3 HP a turn, Vampire's Bleed Value and 4 Power a turn, Heartless.
+  - **"This turn" state** (getters on each fighter, from the runtime's per-turn flags): `self.performedActionThisTurn` (One-Two Form, Chaotic Freestyle), `self.tookDamageThisTurn` (Brawling Style, Bumbling Build; set when HP is lost), `self.obstaclesDestroyedThisTurn` (Collateral Style; counted by whoever destroyed it), and `self.standingOnWall` (Parkour).
+  - **Refs relative to the rule's owner:**
+    - `….holdsOwnChallenge` (Knockdown, Taunting, Judgment).
+    - `context.isOwnTurn` (Mastermind).
+    - Operators `is_enemy` (Crosshair), `is_obstacle` and `not_in` (Misfortunes).
+    - A selector origin of `original` is the Copy's maker, i.e. you (Crystal).
+  - **Events now emitted:**
+    - `self.action_dice.rolled`: after Heroic Spirit at the start of the turn.
+    - `own_action_phase.start`: after Early Movement, or right away when nobody moves (`triggers.actionPhase`, from `fights.js`). It is **never awaited inside the server-wide queue**, which would deadlock: the playtest caught this.
+    - Token gains: `self.tokens_given_to_enemy` and `self.weakness_given_to_enemy` (whose rule gave them), and `visible_enemy.gain_basic_tokens` (Ego; Basic = Power, Iron, Speed).
+    - Copies: `self.copy_destroyed` (Crystal) and `enemy.destroyed_own_copy` (Zombie, with the destroyer as `event.attacker`).
+    - `self.reactive_action.before` (Swift Style, on reaction boards).
+    - What an Action did, on `self.action.resolved`, `self.dice_action.resolved` and `self.damage_dealing_action.resolved`: `enemiesDamaged` (Fullmetal, Mad), `enemiesForcedMoved`, `alliesForcedMoved` and `movedSwappedOrTeleportedSelf` (Ogre's, Dance Form, Circular Freestyle).
+    - Other payloads: `self.pushed` carries `source` (Slasher pulls toward it), `self.damage_taken` carries `sourceType` (a Super Move counts as an Action), and `self.damage_dealt` carries `damage`.
+  - **New range mode:** `adjacent_to_any_own_copy` (Zombie Style's end of turn).
+  - **Derived, not run:** `stance.construct` (Blaster, Control Form) is applied when the Stance is derived (`stanceRange`). The Frantic Hero's assembly is the engine's own (`ENGINE_NATIVE`).
+  - **Fixed:** `for_each` over a ref (Knockdown's damagers) crashed in `select`; it now takes a selector or a list.
+  - **Coverage:** 191 of the 238 triggered Ability rules are now automatic (155 after phase F).
+  - **Not yet:**
+    - **"If an enemy discards your Challenge token using an enemy Action or Ability"** (Judgment, Shining, Armored, Quickdraw, Taunting and 2 more) stays by hand. The book lists Challenge among the Status tokens, but the Halcyon ruling limits Status discards to Burning, Fatigue and Weakness, so nothing in the engine discards a held Challenge yet. **Open question for the user:** may "discard a Status / any token" take a held Challenge?
+    - Also by hand: Greater Frenzy's two Frantic Abilities, Showdown's delayed effect, Giant's `self.move_over_wall`, Puppets moving obstacles, and Weightless's "share a space".
+  - **Tests:** `server/test/modifiersDurations.test.js` covers HP and token limits, the "this turn" state, holdsOwnChallenge both ways, isOwnTurn, is_enemy, not_in, an Action's damaged enemies, a scheduled effect capturing a target by id and running later, the cost per space, Quickdraw's die, and `effectiveRange`.
+  - **Playtest** `scripts/playtest-modifiers.mjs`:
+    - Zombie's Copy placed at the start of the turn and dealing 1 to the adjacent enemy at its end;
+    - Caged emptying the adjacent enemy's Free Movement;
+    - Brawling's Shield 2 after a turn it was hit;
+    - Scrambling keeping 2 Speed;
+    - an enemy destroying the Copy and taking Zombie's 1 damage;
+    - Quickdraw's extra d6.
+  - All 19 automation playtests pass.
 - **H. Pool manipulation and special operations:** rerolls, increase, duplicate, split, combine, set, replace and retain; `perform_action`; append and prepend; declared-Action copy, dodge and negate; delegation; and the rest of the operation reference.
 - **I. Super Moves and NPC types:** Supers on the board with all limits, Super tokens, Stooges, Bosses and Warriors in the full engine.
 - **J. Coverage sweep:** a census test proves every rule, Action and Super is automated or explicitly by hand (only `requires_ruling` entries: The Untouchable, Twins). Then the playtest suite and the plan.
