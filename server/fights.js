@@ -22,11 +22,21 @@ import { assembles, derivedFor, franticPickOf, rollDerived, stanceByKey, stances
 import { franticOptions, franticPickAllowed } from '../client/src/lib/patd/build.js';
 import { patdContent } from './patdContent.js';
 import { addXp } from './builds.js';
-import { endTurnDice, resumeRoll, startRoll } from './diceMarks.js';
+import { closeReactionBoards, endTurnDice, reactionRollId, resumeRoll, startReaction, startRoll } from './diceMarks.js';
 import { XP_AWARDS } from '../client/src/lib/patd/build.js';
 import { resolveRef, serialized, shapeFightState } from './combatState.js';
 import { controlsCharacter } from './control.js';
 import { mayFreeMove } from './engine/moves.js';
+
+// The fight's reaction window (phase F): { seq, activeId, offers: { [id]: { clusters, … } }, done } | null.
+export const windowOf = (row) => {
+  try {
+    const w = JSON.parse(row?.reaction_window || 'null');
+    return w && w.offers ? w : null;
+  } catch {
+    return null;
+  }
+};
 
 // The fight's movement phase (phase D): { kind: 'early' | 'late', activeId, waiting: [combatantId] } | null.
 export const phaseOf = (row) => {
@@ -129,6 +139,13 @@ export async function loadFightState(sceneId, mode) {
     pending_stance: pending,
     // Early / Late Movement (phase D): who still gets to move, or null.
     movement_phase: phaseOf(row),
+    // Who may still react to the last Action (phase F), or null.
+    reaction_window: (() => {
+      const w = windowOf(row);
+      if (!w) return null;
+      const waiting = Object.keys(w.offers).map(Number).filter((id) => !(w.done ?? []).includes(id));
+      return waiting.length ? { activeId: w.activeId, waiting } : null;
+    })(),
   };
 }
 
@@ -412,8 +429,14 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
   };
 
   const nextTurn = async (fight) => {
-    // Any movement phase is over (the GM's Next turn skips Late Movement).
+    // Any movement phase is over (the GM's Next turn skips Late Movement),
+    // and so is any reaction window.
     if (fight.movement_phase) await setPhase(fight, null);
+    if (fight.reaction_window) {
+      await run('UPDATE fights SET reaction_window = NULL WHERE id = ?', [fight.id]);
+      fight.reaction_window = null;
+      await closeReactionBoards(fight.id, emitAll);
+    }
     const current = orderOf(fight)[fight.turn_index];
     // The ending turn's unanswered questions close first (decided), so its
     // End triggers and the next turn's never wait behind them.
@@ -448,13 +471,14 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
     const board = await one('SELECT * FROM dice_marks WHERE roll_id = ?', [String(rollId ?? '')]);
     if (!board?.active) return;
     const viewer = socket.data.identity;
-    if (viewer?.role !== 'gm' && !controlsCharacter(viewer, board.character_id)) return;
     let data = {};
     try {
       data = JSON.parse(board.data || '{}');
     } catch {
       data = {};
     }
+    // The ally given the turn by Heroic Spirit (phase F) may end it too.
+    if (viewer?.role !== 'gm' && !controlsCharacter(viewer, board.character_id) && !controlsCharacter(viewer, data.heroic?.characterId)) return;
     if (data.committing) return;
     const c = await one('SELECT scene_id, mode FROM combatants WHERE id = ?', [board.combatant_id]);
     const fight = c ? await one('SELECT * FROM fights WHERE scene_id = ? AND mode = ?', [c.scene_id, c.mode]) : null;
@@ -516,6 +540,33 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
     if (!c || !mayControl(c) || !triggers || !(await freeMoveOk(fight, c))) return;
     triggers.freeSwap({ ...fight }, c.id, Number(allyId)).then((r) => socket.emit('move:result', { combatantId: c.id, ...r }));
   });
+  // **React (phase F):** open this fighter's reaction board — the reactions on
+  // offer in this window, by resource. ack({ payload, clusters }) or ({ error }).
+  socket.on('react:open', async (payload, ack) => {
+    if (typeof ack !== 'function') return;
+    try {
+      const { c, fight } = await fightOfCombatant(payload?.combatantId);
+      const w = windowOf(fight);
+      const offer = w?.offers?.[c?.id];
+      if (!c || !mayControl(c) || !offer || (w.done ?? []).includes(c.id)) return ack({ error: 'no reaction now' });
+      const rollId = await serialized(() => startReaction({ fightId: fight.id, seq: w.seq, combatantId: c.id, characterId: c.character_id, stanceKey: offer.stanceKey, clusters: offer.clusters, fighterName: offer.name }, emitAll))();
+      ack({ payload: { roll_id: rollId, combatant_id: c.id, character_id: c.character_id, stance_key: offer.stanceKey, stance: 'Reaction', fighter: { name: offer.name } }, clusters: offer.clusters });
+    } catch (err) {
+      console.error('error handling react:open:', err);
+      ack({ error: 'failed' });
+    }
+  });
+  // Pass: no reaction this time.
+  on('react:pass', async ({ combatantId } = {}) => {
+    const { c, fight } = await fightOfCombatant(combatantId);
+    const w = windowOf(fight);
+    if (!c || !w?.offers?.[c.id] || !mayControl(c)) return;
+    w.done = [...new Set([...(w.done ?? []), c.id])];
+    await run('UPDATE fights SET reaction_window = ? WHERE id = ?', [JSON.stringify(w), fight.id]);
+    await run('UPDATE dice_marks SET active = 0 WHERE roll_id = ?', [reactionRollId(fight.id, w.seq, c.id)]);
+    await emitStageUpdated();
+  });
+
   // Done moving in this movement phase.
   on('move:done', async ({ combatantId } = {}) => {
     const { c, fight } = await fightOfCombatant(combatantId);

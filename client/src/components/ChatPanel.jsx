@@ -49,7 +49,10 @@ function StanceDice({ payload }) {
   const { controls } = useControl();
   const [open, setOpen] = useState(false);
   const placements = board.placements ?? [];
-  const canOpen = Boolean(payload.roll_id) && board.active && controls(payload.character_id);
+  // After Heroic Spirit (phase F) the ally who was given the dice acts on them.
+  const heroic = board.heroic ?? null;
+  const canOpen = Boolean(payload.roll_id) && board.active && controls(heroic?.characterId ?? payload.character_id);
+  const boardPayload = heroic ? { ...payload, combatant_id: heroic.combatantId, character_id: heroic.characterId, stance_key: heroic.stanceKey, stance: heroic.stanceName ?? payload.stance, fighter: { name: heroic.name } } : payload;
   // Committed dice cross out for everyone; placed ones go grey with their order.
   const stateOf = (i) => {
     const p = placements.find((x) => x.kind === 'die' && x.die === i);
@@ -79,7 +82,7 @@ function StanceDice({ payload }) {
         <div className="flex flex-wrap gap-1.5">{dice}</div>
       )}
       {canOpen && <p className="mt-1 text-[10px] text-lime-300/80">Tap the dice to place them on your Actions</p>}
-      {open && <DiceBoard payload={payload} canEdit={canOpen} onClose={() => setOpen(false)} />}
+      {open && <DiceBoard payload={boardPayload} canEdit={canOpen} onClose={() => setOpen(false)} />}
     </>
   );
 }

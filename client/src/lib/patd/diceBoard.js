@@ -96,6 +96,10 @@ export function publicBoard(rollId, data, active) {
     power: Boolean(data.power),
     paused: Boolean(data.paused),
     committing: Boolean(data.committing),
+    // A reaction board (phase F): the reactions on offer, by resource.
+    reaction: data.reaction ? { clusters: data.reaction.clusters ?? [], fighterName: data.reaction.fighterName ?? null } : null,
+    // Heroic Spirit (phase F): the ally who takes this turn with these dice.
+    heroic: data.heroic ?? null,
   };
 }
 

@@ -14,8 +14,9 @@ import { planPayment } from '../../client/src/lib/patd/tokenCost.js';
 import { expireTemps, fighterRt } from '../../client/src/lib/patd/engine/runtime.js';
 import { hpOf, saveHp, shapeFightState } from '../combatState.js';
 import { patdContent } from '../patdContent.js';
-import { readData, saveBoard, fighterState } from '../diceMarks.js';
+import { actingOn, readData, saveBoard, fighterState } from '../diceMarks.js';
 import { restoreSnapshot, takeSnapshot } from './snapshots.js';
+import { recordUse } from '../../client/src/lib/patd/engine/turn.js';
 
 const hasDamage = (node) => {
   let found = false;
@@ -44,19 +45,20 @@ export function createActionRunner(kit) {
 
   // Pays a token placement for real; → the payment scope or { error }.
   async function payTokens(row, action, placement) {
-    const state = await fighterState(row.combatant_id);
+    const actorId = actingOn(row).combatantId;
+    const state = await fighterState(actorId);
     if (!state) return { error: 'no fighter' };
     const plan = planPayment(action, placement.option, placement.answers, state);
     if (plan.error) return plan;
     await queued(async () => {
-      const cur = await one('SELECT * FROM combatants WHERE id = ?', [row.combatant_id]);
+      const cur = await one('SELECT * FROM combatants WHERE id = ?', [actorId]);
       const tokens = { ...shapeFightState(cur).tokens };
       for (const [k, n] of Object.entries(plan.tokens)) tokens[k] = (tokens[k] ?? 0) - n;
       if (plan.shield) tokens.shield = (tokens.shield ?? 0) - plan.shield;
       for (const k of Object.keys(tokens)) if (!(tokens[k] > 0)) delete tokens[k];
-      await run('UPDATE combatants SET tokens = ? WHERE id = ?', [JSON.stringify(tokens), row.combatant_id]);
-      if (plan.hp) await saveHp(row.combatant_id, applyHpDelta(hpOf(cur), -plan.hp).state);
-      if (plan.holderId != null) await run('UPDATE combatants SET challenge_id = NULL WHERE id = ? AND challenge_id = ?', [plan.holderId, row.combatant_id]);
+      await run('UPDATE combatants SET tokens = ? WHERE id = ?', [JSON.stringify(tokens), actorId]);
+      if (plan.hp) await saveHp(actorId, applyHpDelta(hpOf(cur), -plan.hp).state);
+      if (plan.holderId != null) await run('UPDATE combatants SET challenge_id = NULL WHERE id = ? AND challenge_id = ?', [plan.holderId, actorId]);
     });
     return {
       rating: plan.rating,
@@ -73,12 +75,18 @@ export function createActionRunner(kit) {
     const idx = patdContent();
     const action = idx.get(placement.actionId);
     const { env, byId } = await envFor(fightRow);
-    const actor = byId(row.combatant_id);
+    const actor = byId(actingOn(row).combatantId);
     if (!action || !actor) return { ok: false, error: 'the fighter or the Action is gone' };
     let payment;
     if (placement.kind === 'die') {
       const n = poolOf(data).find((p) => p.index === placement.die);
       payment = { rating: n?.value ?? 0, poolNumbers: [n?.value ?? 0], isDice: true };
+      // A Chaos token spent "as if you had spent a 4" (once per turn — phase F).
+      if (n?.source === 'chaos') {
+        if (fighterRt(env.rt, actor.id).flags.chaosUsed || !((actor.tokens.chaos ?? 0) > 0)) return { ok: false, error: 'no Chaos token to spend (once per turn)', action };
+        await env.world.discardTokens(actor, ['chaos'], 1);
+        fighterRt(env.rt, actor.id).flags.chaosUsed = true;
+      }
     } else {
       payment = await payTokens(row, action, placement);
       if (payment.error) return { ok: false, error: payment.error };
@@ -106,7 +114,23 @@ export function createActionRunner(kit) {
     // "Until your next Action" temporaries made before this one end after it.
     env.rt.actionSeq = (env.rt.actionSeq ?? 0) + 1;
     await emitEvent(env, 'self.action.before', actor, { action });
+    await emitEvent(env, 'enemy_in_range.action.cost_paid_before_resolution', actor, { action, actor });
     const damaging = hasDamage(action.effect);
+    // **Control tokens (phase F, book p.117):** after the cost is paid and
+    // before the Action is performed, each enemy whose range it is in may spend
+    // Control (once per turn): 1 to Copy it, 2 to Dodge it, 3 to Parry it.
+    const control = await controlChances(env, actor, action);
+    if (control.parry) {
+      const p = control.parry;
+      lines.push(`${p.name} Parries it: the Action is negated`);
+      frt.flags.actions = (frt.flags.actions ?? 0) + 1;
+      recordUse(env.rt.usage, action, actor.id);
+      const r = await env.world.damage(actor, 2, p, { source: 'ability' });
+      lines.push(`${p.name} deals ${r.taken} damage to ${actor.name}`);
+      await env.world.move(p, { distance: 2, upTo: true });
+      await env.save();
+      return { ok: true, lines, manual, gateRating, action, actor };
+    }
     const ctx = {
       world: env.world,
       self: actor,
@@ -126,6 +150,8 @@ export function createActionRunner(kit) {
       source: 'action',
       power: data.power ? 'max' : 'none',
       originSquare,
+      // Dodged (Control): they're immune to this Action.
+      immuneIds: control.dodged,
       mustTarget: damaging && actor.challengeId != null ? actor.challengeId : null,
       onUnsupported: (node) => {
         manual.push(describe(node) || node.op);
@@ -137,6 +163,8 @@ export function createActionRunner(kit) {
       manual.push(`the rest (${err.message})`);
     }
     frt.flags.actions = (frt.flags.actions ?? 0) + 1;
+    // Its limits count it (once per turn …).
+    recordUse(env.rt.usage, action, actor.id);
     if (actor.challengeId != null && history.damagedIds.includes(actor.challengeId)) frt.flags.damagedChallenger = true;
     // The Action events (engine/bus.js).
     await emitEvent(env, 'self.action.resolved', actor, { action, history });
@@ -150,12 +178,60 @@ export function createActionRunner(kit) {
     expireTemps(env.rt, 'action', { actorId: actor.id });
     if (damaging) expireTemps(env.rt, 'damage_action', { actorId: actor.id });
     await env.save();
+    // Copied (Control): the copier performs the same Action now, as a
+    // Reactive Action, with a 4 for its X and Gates.
+    for (const c of control.copiers) {
+      const copy = await perform(fightRow, { combatant_id: c.id, character_id: c.characterId, data: '{}' }, { results: [{ result: 4 }], extra: [] }, { kind: 'die', die: 0, actionId: action.id, stop: null, copied: true });
+      if (copy.ok) lines.push(`${c.name} Copies it${copy.lines.length ? `: ${copy.lines.join('; ')}` : ''}`);
+    }
     return { ok: true, lines, manual, gateRating, action, actor };
+  }
+
+  // Each enemy in range holding Control is asked once per turn: Copy (1),
+  // Dodge (2) — themselves or an ally in their range — or Parry (3).
+  // → { parry: fighter | null, dodged: [id], copiers: [fighter] }
+  async function controlChances(env, actor, action) {
+    const out = { parry: null, dodged: [], copiers: [] };
+    const onceAction = (action.limits ?? []).some((l) => l.period === 'turn' && l.maximum === 1);
+    for (const e of env.world.enemiesOf(actor)) {
+      const held = e.tokens.control ?? 0;
+      const frt = fighterRt(env.rt, e.id);
+      if (!held || frt.flags.controlUsed || !e.square || !actor.square || !env.world.inRange(e, actor, { mode: 'stance' })) continue;
+      const options = [{ id: 'none', label: 'Let it happen' }];
+      if (held >= 1 && !onceAction) options.push({ id: 'copy', label: 'Copy it (1 Control)' });
+      if (held >= 2) options.push({ id: 'dodge', label: 'Dodge it (2 Control)' });
+      if (held >= 3) options.push({ id: 'parry', label: 'Parry it (3 Control)' });
+      if (options.length === 1) continue;
+      const ans = await ask(e, env.key, env.gen, env.tg, `${actor.name}: ${action.name}`)({ kind: 'choose', title: 'Control', text: `${actor.name} is about to perform ${action.name}.`, options, minimum: 1, maximum: 1 });
+      const pick = Array.isArray(ans) ? ans[0] : ans;
+      if (!pick || pick === 'none') continue;
+      const cost = { copy: 1, dodge: 2, parry: 3 }[pick];
+      await env.world.discardTokens(e, ['control'], cost);
+      frt.flags.controlUsed = true;
+      await emitEvent(env, 'self.control_tokens_spent', e, { amount: cost, action });
+      if (pick === 'parry') {
+        out.parry = e;
+        return out;
+      }
+      if (pick === 'copy') out.copiers.push(e);
+      if (pick === 'dodge') {
+        const who = env.world.alliesOf(e).filter((a) => a.id === e.id || (a.square && env.world.inRange(e, a, { mode: 'stance' })));
+        const a2 = who.length > 1 ? await ask(e, env.key, env.gen, env.tg, `${action.name}`)({ kind: 'targets', title: 'Dodge', text: 'Who becomes immune to it?', options: who.map((a) => ({ id: String(a.id), label: a.name })), minimum: 1, maximum: 1 }) : [String(e.id)];
+        const id = Number(Array.isArray(a2) ? a2[0] : a2) || e.id;
+        out.dodged.push(id);
+      }
+    }
+    return out;
   }
 
   // **Commit:** every uncommitted placement, in order; pauses for reactions
   // between Actions (decided) when someone could react.
   async function commitBoard(rollId) {
+    // The active fighter acting again (or Continue) closes the last reaction window.
+    {
+      const { row, fight } = await fightOfBoard(rollId);
+      if (row && fight && !readData(row).reaction) await kit.closeReactions?.(fight);
+    }
     for (let guard = 0; guard < 40; guard++) {
       const { row, fight } = await fightOfBoard(rollId);
       if (!row?.active || !fight) return;
@@ -164,7 +240,10 @@ export function createActionRunner(kit) {
       const next = (data.placements ?? []).find((p) => !p.committed);
       if (!next) {
         data.committing = false;
-        return saveQ(rollId, data);
+        await saveQ(rollId, data);
+        // A reaction board is done after its one Reactive Action.
+        if (data.reaction && (data.placements ?? []).some((p) => p.committed)) await kit.reactionDone?.(fight, row);
+        return;
       }
       data.committing = true;
       await saveQ(rollId, data);
@@ -200,8 +279,11 @@ export function createActionRunner(kit) {
         automatic: result.manual.length ? 'action_manual' : 'action',
         notice: !result.manual.length,
       });
-      // A pause for reactions between Actions (decided: until Continue).
-      if (remaining && (await kit.reactionsAvailable(fight, row.combatant_id))) {
+      // After each of the active fighter's Actions, everyone else may react
+      // (book p.67); between Actions the batch pauses until Continue (decided),
+      // but only when someone actually can.
+      const canReact = !after.reaction && (await kit.openReactions?.(fight, actingOn(row).combatantId));
+      if (remaining && canReact) {
         after.paused = true;
         after.committing = false;
         await saveQ(rollId, after);

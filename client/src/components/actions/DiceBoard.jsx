@@ -86,7 +86,13 @@ export default function DiceBoard({ payload, onClose, canEdit }) {
   const board = useDiceMarks(payload.roll_id);
   // A square being picked on the map or lane (phase D): the board steps aside.
   const picking = useSquarePick();
+  // A reaction board (phase F): only the reactions on offer, then Pass.
+  const reaction = board.reaction ?? null;
   const editable = canEdit && board.active;
+  // A reaction board closes itself once its window is over.
+  useEffect(() => {
+    if (reaction && board.rollId && !board.active) onClose();
+  }, [reaction, board.active, board.rollId, onClose]);
   const [selected, setSelected] = useState(null);
   const [drag, setDrag] = useState(null); // { i, x, y }
   const pointer = useRef(null);
@@ -257,7 +263,22 @@ export default function DiceBoard({ payload, onClose, canEdit }) {
   return createPortal(
     <div className="fixed inset-0 flex flex-col bg-zinc-950/[0.97]" style={{ zIndex: 3000 }} role="dialog" aria-modal="true" aria-label="This turn's Actions">
       <main className="min-h-0 flex-1 overflow-y-auto" onClick={(e) => e.target === e.currentTarget && setSelected(null)}>
-        {!lists ? (
+        {reaction && !idx ? (
+          <p className="p-4 text-sm text-zinc-500">Loading the Actions…</p>
+        ) : reaction ? (
+          // **React (decided, phase F):** only the reactions actually on offer,
+          // one cluster per resource that pays for them, packed into two
+          // columns with no gaps; the whole view scrolls.
+          <div className="columns-2 gap-0 p-1">
+            {reaction.clusters.map((c) => (
+              <section key={c.resource} className="mb-2 break-inside-avoid space-y-1.5 rounded-sm border border-zinc-700 p-2">
+                <h3 className={`font-display text-[11px] font-bold uppercase tracking-wide ${c.resource === 'chaos' ? 'text-fuchsia-300' : 'text-emerald-300'}`}>{c.label}</h3>
+                {c.ids.map(card)}
+              </section>
+            ))}
+            {!reaction.clusters.length && <p className="p-3 text-xs italic text-zinc-500">No reactions on offer.</p>}
+          </div>
+        ) : !lists ? (
           <p className="p-4 text-sm text-zinc-500">{build === null ? 'No build for this character.' : 'Loading the Actions…'}</p>
         ) : (
           <div className="grid grid-cols-2 divide-x divide-zinc-700">
@@ -332,6 +353,12 @@ export default function DiceBoard({ payload, onClose, canEdit }) {
               <Check size={13} aria-hidden /> {busy ? 'Performing…' : `Commit${pending.length ? ` ${pending.length}` : ''}`}
             </button>
           )}
+          {reaction ? (
+            <button type="button" onClick={() => socket.emit('react:pass', { combatantId: payload.combatant_id })} disabled={!editable || busy} className={`${btn} border-zinc-600 text-zinc-200`}>
+              Pass
+            </button>
+          ) : (
+          <>
           {/* Free Movement before an Action (phase D): the board steps aside. */}
           <button
             type="button"
@@ -349,6 +376,8 @@ export default function DiceBoard({ payload, onClose, canEdit }) {
           >
             End turn
           </button>
+          </>
+          )}
           <button type="button" onClick={onClose} aria-label="Close" className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-zinc-700 text-zinc-200 hover:border-zinc-400">
             <X size={16} aria-hidden />
           </button>

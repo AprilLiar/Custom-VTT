@@ -111,6 +111,11 @@ export function createHits({ ask, emitEvent }) {
       },
     };
 
+    // Taken Out at zero HP (book p.62): they can't take damage (only healing
+    // and forced movement still reach them).
+    if (target.hp && target.hp.max != null && target.hp.bars - target.hp.broken <= 1 && target.hp.current === 0) {
+      return { taken: 0, dealt: 0, toHp: 0, steps: ['Taken Out: no damage'], bled: false, fell: false, absorbed: 0, broke: false, immune: false, dizzy: false, pushBonus: 0, pushResist: 0 };
+    }
     const r = await resolveDamage(
       {
         amount,

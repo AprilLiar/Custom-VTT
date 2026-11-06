@@ -6,6 +6,7 @@ import CroppedImage from './CroppedImage.jsx';
 import DialogShell from './DialogShell.jsx';
 import { clearSquarePick, setSquarePick, useSquarePick } from '../lib/squarePick.js';
 import { startFreeMove, stopFreeMove } from '../lib/freeMove.js';
+import DiceBoard from './actions/DiceBoard.jsx';
 
 // A fight's controls (Panic at the Dojo, Phase 5), for whichever fight the
 // Scene's mode shows — Simple Combat and Combat are separate fights.
@@ -479,6 +480,45 @@ export function MoveBar() {
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+// **Reactions (decided, phase F):** after each of the active fighter's
+// Actions, whoever can react gets **React** (their reaction board: only the
+// reactions on offer, by resource) or **Pass**.
+export function ReactBar({ fight, fighters, role, controls = () => false }) {
+  const pick = useSquarePick();
+  const [board, setBoard] = useState(null);
+  const [error, setError] = useState(null);
+  const w = fight?.reaction_window;
+  if (board) return <DiceBoard payload={board} canEdit onClose={() => setBoard(null)} />;
+  if (!w || pick) return null;
+  const byId = new Map(fighters.map((f) => [f.combatantId, f]));
+  const mine = w.waiting.map((id) => byId.get(id)).filter((f) => f && (role === 'gm' || (f.characterId != null && controls(f.characterId))));
+  if (!mine.length) return null;
+  const react = (f) =>
+    socket.emit('react:open', { combatantId: f.combatantId }, (r) => {
+      if (r?.payload) setBoard(r.payload);
+      else setError(r?.error ?? 'Could not react');
+    });
+  return (
+    <div className={`${barShell} border-fuchsia-700`} style={{ zIndex: 2990 }} role="status" aria-label="Reactions">
+      <p className="font-display text-sm font-bold uppercase tracking-wide text-fuchsia-200">Reaction</p>
+      <p className="text-[11px] text-zinc-400">{byId.get(w.activeId)?.name ?? 'The active fighter'} acted — you may take one Reactive Action.{error ? ` ${error}.` : ''}</p>
+      <ul className="mt-1 space-y-1">
+        {mine.map((f) => (
+          <li key={f.combatantId} className="flex items-center gap-1.5">
+            <span className="min-w-0 flex-1 truncate text-xs text-zinc-200">{f.name}</span>
+            <button type="button" onClick={() => react(f)} className="min-h-9 panel-cut-sm border border-fuchsia-400 bg-fuchsia-500/20 px-3 font-display text-xs font-bold uppercase text-fuchsia-100">
+              React
+            </button>
+            <button type="button" onClick={() => socket.emit('react:pass', { combatantId: f.combatantId })} className="min-h-9 panel-cut-sm border border-zinc-600 px-3 font-display text-xs font-bold uppercase text-zinc-200">
+              Pass
+            </button>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }

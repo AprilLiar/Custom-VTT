@@ -18,6 +18,8 @@ import { serialized, shapeFightState } from './combatState.js';
 import { patdContent } from './patdContent.js';
 import { derivedFor } from './fighterStances.js';
 import { stanceOfBuild } from '../client/src/lib/patd/build.js';
+import { actionUsable, atZero, turnContext } from '../client/src/lib/patd/engine/turn.js';
+import { loadRuntime } from './engine/runtimeStore.js';
 import { spendPrefs } from '../client/src/lib/patd/engine/damage.js';
 
 const KEEP = 300;
@@ -30,6 +32,12 @@ export const readData = (r) => {
   }
 };
 const shape = (r) => publicBoard(r.roll_id, readData(r), r.active);
+// Who acts on a board: its fighter — or, after Heroic Spirit (phase F), the
+// ally they gave their turn to (`data.heroic`).
+export const actingOn = (row) => {
+  const d = readData(row);
+  return { combatantId: d.heroic?.combatantId ?? row.combatant_id, characterId: d.heroic?.characterId ?? row.character_id };
+};
 
 // Saves a board and tells everyone.
 export async function saveBoard(rollId, data, emit) {
@@ -56,6 +64,28 @@ export async function startRoll({ rollId, combatantId, characterId, results = []
   ]);
   await run(`DELETE FROM dice_marks WHERE roll_id NOT IN (SELECT roll_id FROM dice_marks ORDER BY created_at DESC, rowid DESC LIMIT ${KEEP})`);
   emit?.('dice:marks', publicBoard(rollId, data, true));
+}
+
+// **A reaction board (phase F):** one Reactive Action for a fighter outside
+// their turn — only the reactions on offer (by resource), a Chaos token's 4
+// in the pool when that is one of them.
+export const reactionRollId = (fightId, seq, combatantId) => `react-${fightId}-${seq}-${combatantId}`;
+export async function startReaction({ fightId, seq, combatantId, characterId, stanceKey, clusters, fighterName }, emit) {
+  const rollId = reactionRollId(fightId, seq, combatantId);
+  const existing = await one('SELECT * FROM dice_marks WHERE roll_id = ?', [rollId]);
+  if (existing) return rollId;
+  const chaos = clusters.some((c) => c.resource === 'chaos');
+  const data = { stanceKey, results: [], extra: chaos ? [{ value: 4, source: 'chaos' }] : [], placements: [], power: false, paused: false, committing: false, reaction: { clusters, fighterName } };
+  await run('INSERT INTO dice_marks (roll_id, combatant_id, character_id, dice, data, active) VALUES (?, ?, ?, 0, ?, 1)', [rollId, combatantId, characterId, JSON.stringify(data)]);
+  emit?.('dice:marks', publicBoard(rollId, data, true));
+  return rollId;
+}
+// The window closed: every reaction board of the fight freezes.
+export async function closeReactionBoards(fightId, emit) {
+  const rows = await all("SELECT * FROM dice_marks WHERE roll_id LIKE ? AND active = 1", [`react-${fightId}-%`]);
+  if (!rows.length) return;
+  await run("UPDATE dice_marks SET active = 0 WHERE roll_id LIKE ? AND active = 1", [`react-${fightId}-%`]);
+  for (const r of rows) emit?.('dice:marks', { ...shape(r), active: false });
 }
 
 // Those fighters' turns ended: their boards freeze.
@@ -104,17 +134,40 @@ export async function fighterState(combatantId) {
 
 // The fighter's state minus what uncommitted token placements already promise.
 export async function availableState(row, data) {
-  const state = await fighterState(row.combatant_id);
+  const state = await fighterState(actingOn(row).combatantId);
   if (!state) return null;
   const idx = patdContent();
   const reserved = reservedBy(data.placements ?? [], (p) => planPayment(idx.get(p.actionId), p.option, p.answers, state));
   return minusReserved(state, reserved);
 }
 
+// **The turn as an Action sees it (phase F):** whose turn it is, from this
+// board's fighter's side — for an Action's conditions — and the fight's usage
+// counters, for its limits. → { fight, ctx, usage, me } | null
+export async function turnStateOf(row) {
+  const me = await one('SELECT * FROM combatants WHERE id = ?', [actingOn(row).combatantId]);
+  const fight = me ? await one('SELECT * FROM fights WHERE scene_id = ? AND mode = ?', [me.scene_id, me.mode]) : null;
+  if (!fight) return null;
+  let order = [];
+  try {
+    order = JSON.parse(fight.turn_order || '[]');
+  } catch {
+    order = [];
+  }
+  const activeId = order[fight.turn_index]?.id ?? null;
+  const allies = JSON.parse(fight.allies || '[]');
+  const sideOf = (id) => (allies.includes(id) ? 'allies' : 'enemies');
+  const rt = await loadRuntime(fight.id);
+  const ctx = turnContext({ actorId: me.id, actorSide: sideOf(me.id), activeId, activeSide: activeId != null ? sideOf(activeId) : null, tokens: shapeFightState(me).tokens });
+  return { fight, ctx, usage: rt.usage ?? {}, me, activeId };
+}
+
 // The Actions this roll's turn can use (Basic, the rolled Stance's, always available).
 export async function turnActionIds(row, data) {
+  // A reaction board offers only the reactions it was opened with.
+  if (data.reaction) return new Set((data.reaction.clusters ?? []).flatMap((c) => c.ids));
   const idx = patdContent();
-  const d = await derivedFor(row.character_id);
+  const d = await derivedFor(actingOn(row).characterId);
   const t = turnActions(d, stanceOfBuild(d, data.stanceKey, idx), idx);
   return new Set([...t.basic, ...t.personal.flatMap((g) => g.ids)]);
 }
@@ -134,7 +187,7 @@ export function registerDiceMarkHandlers({ on: onRaw, socket, io, triggers = nul
     const row = await one('SELECT * FROM dice_marks WHERE roll_id = ?', [String(rollId ?? '')]);
     if (!row?.active) return null;
     const v = socket.data.identity;
-    return v?.role === 'gm' || controlsCharacter(v, row.character_id) ? row : null;
+    return v?.role === 'gm' || controlsCharacter(v, actingOn(row).characterId) ? row : null;
   };
   const refuse = (rollId, error) => socket.emit('dice:pay_failed', { rollId, error });
 
@@ -149,12 +202,23 @@ export function registerDiceMarkHandlers({ on: onRaw, socket, io, triggers = nul
     const action = idx.get(String(actionId));
     if (!action || !(await turnActionIds(row, data)).has(action.id)) return refuse(row.roll_id, 'not an Action this turn can use');
     data.placements ??= [];
+    // Its own conditions and limits (phase F), and nobody Taken Out acts.
+    const ts = await turnStateOf(row);
+    if (ts) {
+      if (atZero(shapeFightState(ts.me).hp)) return refuse(row.roll_id, 'Taken Out: no Actions');
+      if (ts.fight.movement_phase && !data.reaction) return refuse(row.roll_id, 'wait until everyone has finished moving');
+      const pending = data.placements.filter((p) => p.actionId === action.id && !p.committed).length;
+      const ok = actionUsable(action, ts.ctx, ts.usage, actingOn(row).combatantId, pending);
+      if (!ok.ok) return refuse(row.roll_id, `${action.name}: ${ok.reason}`);
+    }
     if (die != null) {
       const pool = poolOf(data);
       const n = pool.find((p) => p.index === Number(die));
       if (!n) return;
       if (data.placements.some((p) => p.kind === 'die' && p.die === n.index)) return;
       if (!hasDiceCost(action)) return refuse(row.roll_id, `${action.name} is not paid with dice`);
+      // A Chaos token's "4" pays only for the reactions it was offered for.
+      if (n.source === 'chaos' && !(data.reaction?.clusters ?? []).some((c) => c.resource === 'chaos' && c.ids.includes(action.id))) return refuse(row.roll_id, 'a Chaos token pays for a Reactive Action only');
       data.placements.push({ key: `d${n.index}`, kind: 'die', die: n.index, actionId: action.id, threshold: gateFor(action, n.value), stop: null, committed: false });
     } else {
       const opt = Number(option);

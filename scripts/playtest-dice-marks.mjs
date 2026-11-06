@@ -52,8 +52,9 @@ const other = await jpost('/api/characters', { name: `CMOther${stamp}`, characte
 const thug = await jpost('/api/characters', { name: `CMThug${stamp}`, characterType: 'npc' });
 const p = await connect({ role: 'player', characterId: mira.id });
 const q = await connect({ role: 'player', characterId: other.id });
-// Blaster Form + Swift Style: Damage is Basic; Swift Strike costs 2 Basic tokens.
-gm.emit('build:save', { characterId: mira.id, build: { type: 'hero-type.focused', stances: [{ formId: 'form.blaster', styleId: 'style.swift' }] } });
+// Armored Style's You Stay: 2 Iron, usable on your own turn (Swift Strike is
+// enemy turns only — phase F enforces that).
+gm.emit('build:save', { characterId: mira.id, build: { type: 'hero-type.focused', stances: [{ formId: 'form.blaster', styleId: 'style.armored' }] } });
 gm.emit('build:save', { characterId: thug.id, build: { type: 'character-type.warrior', stances: [{ formId: 'form.power', styleId: 'style.halcyon' }] } });
 await sleep(400);
 gm.emit('combat_token:place', { ownerType: 'character', ownerId: mira.id, col: 2, row: 2 });
@@ -79,7 +80,7 @@ const toks = async (id) => (await jf('/api/stage?role=gm')).combatTokens.find((t
 
 console.log('\n--- placing ---');
 const DAMAGE = 'action.system-basic-actions.damage';
-const SWIFT = 'action.style-swift.swift-strike';
+const SWIFT = 'action.style-armored.you-stay';
 // The largest die, so Damage reaches a high Gate.
 const order = [...roll.payload.results.map((r, i) => ({ v: r.result, i }))].sort((a, c) => c.v - a.v);
 const big = order[0];
@@ -114,8 +115,8 @@ await sleep(2500);
 b = await board();
 check('Commit performs every placed Action in order: both committed', b.placements.every((x) => x.committed) && !b.committing, JSON.stringify(b.placements));
 const dealt = thugHp - (await hp(tt.id));
-const expected = reached >= 3 ? 1 /* stopped at 1+: Deal 1 */ + 1 /* Swift Strike: 1 */ : 1 + 1;
-check(`the Actions really resolve: ${expected} damage to the Thug (Damage, stopped at 1+, and Swift Strike)`, dealt === expected, `${thugHp} → ${await hp(tt.id)}`);
+const expected = 1; // Damage stopped at 1+ (or reaching only 1+): 1. You Stay deals none.
+check(`the Actions really resolve: ${expected} damage to the Thug (Damage at 1+), and You Stay gives 2 Fatigue`, dealt === expected && (await toks(tt.id)).fatigue === 2, `${thugHp} → ${await hp(tt.id)}; ${JSON.stringify(await toks(tt.id))}`);
 check('the token cost is paid at Commit', (await toks(tm.id)).iron === 1, JSON.stringify(await toks(tm.id)));
 check('each Action posts its card', cards.filter((c) => c.payload?.automatic === 'action' || c.payload?.automatic === 'action_manual').length >= 2);
 
@@ -138,10 +139,9 @@ await sleep(600);
 check("someone else can't end the turn", (await jf('/api/stage?role=gm')).fights.combat.turn_index === 0);
 p.emit('board:end_turn', { rollId });
 await sleep(1200);
-// Swift Style gave Speed after each Action: Late Movement first (phase D) — everyone passes.
+// Late Movement first if anyone holds Speed (phase D) — everyone passes.
 st = await jf('/api/stage?role=gm');
 const late = st.fights.combat.movement_phase;
-check('End turn opens Late Movement for whoever holds Speed', late?.kind === 'late' && st.fights.combat.turn_index === 0, JSON.stringify(late));
 for (const id of late?.waiting ?? []) gm.emit('move:done', { combatantId: id });
 await sleep(1500);
 st = await jf('/api/stage?role=gm');

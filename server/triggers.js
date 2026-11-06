@@ -33,6 +33,9 @@ import { loadRuntime, saveRuntime } from './engine/runtimeStore.js';
 import { createActionRunner } from './engine/actions.js';
 import { createHits } from './engine/hits.js';
 import { createMoves } from './engine/moves.js';
+import { atZero, comebackSquares, reactionClusters, turnContext } from '../client/src/lib/patd/engine/turn.js';
+import { turnActions } from '../client/src/lib/patd/diceBoard.js';
+import { closeReactionBoards, fighterState, readData as readBoardData, saveBoard } from './diceMarks.js';
 
 // The combat map's image size, by image hash (its playable bounds — phase D).
 const imageSizes = new Map();
@@ -57,6 +60,7 @@ const MIDDLEWEIGHT = WEIGHT_BY_KEY.middle;
 const PROMPT_TIMEOUT_MS = 10 * 60 * 1000;
 const FOLLOW_ON_DEPTH = 3;
 const IMPROVED_WARRIOR = 'ability.feature-improved-warrior.improved-warrior';
+const ENGINE_NATIVE = new Set(['ability.resource-mechanic-control.control-mechanics', 'ability.resource-mechanic-chaos.chaos-mechanics']);
 
 export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
   const pending = new Map(); // prompt id → { resolve, characterId, request }
@@ -186,6 +190,7 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
         challengeId: state.challenge_id ?? null,
         bleeding: state.hp.max != null && state.hp.current <= weight.bleed,
         dizzy: Boolean(state.hp.dizzy),
+        hp: state.hp,
         // Ask / Auto / Never for Power, Iron and Shield (decided: players Ask, NPCs Auto).
         prefs: spendPrefs(d?.build?.prefs, r.character_type === 'npc'),
         currentBar: { damage: state.hp.max != null ? state.hp.max - state.hp.current : 0 },
@@ -252,6 +257,7 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
         result = { before, landed: before.current + delta, row };
         f.bleeding = next.current <= weight.bleed;
         f.dizzy = Boolean(next.dizzy);
+        f.hp = next;
         f.currentBar = { damage: next.max - next.current };
       });
       return result;
@@ -484,6 +490,9 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     const idx = patdContent();
     for (const abilityId of fighter.abilityIds) {
       if (stale(env)) return;
+      // Built into the engine itself (phase F): Control's Copy / Dodge / Parry
+      // (engine/actions.js) and Chaos's "as if you spent a 4" (reaction boards).
+      if (ENGINE_NATIVE.has(abilityId)) continue;
       const ability = idx.get(abilityId);
       for (const rule of ability?.rules ?? []) {
         if (!rule.events.some((e) => events.includes(e))) continue;
@@ -673,26 +682,92 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
 
   // Start or end of the active fighter's turn: everyone's matching rules.
   // opts.dizzyIds: who was Dizzy when the turn ended (fights.js clears it right after).
+  // **The Comeback rule (phase F, book p.63).** Someone removed from play may
+  // re-enter on any empty space within 3 of the arena's edge: free at the
+  // start of a Round, for 3 HP at the start of their own turn. A square pick
+  // with a Skip; Stooges never come back.
+  async function comeback(env, movers, f, { free }) {
+    if (f.square || f.derived?.type?.id === 'character-type.stooges') return false;
+    if (!free && !((f.hp?.current ?? 0) >= 3)) return false;
+    const b = movers.board();
+    const squares = comebackSquares(b.bounds, (sq) => isEmptyAt(b, sq), { colsOnly: movers.mode === 'simple' });
+    if (!squares.length) return false;
+    const ans = await ask(f, env.key, env.gen, env.tg, env.when)({
+      kind: 'square',
+      mode: movers.mode,
+      title: 'Comeback',
+      text: free ? `${f.name}: a new Round — come back into play near the edge?` : `${f.name}: pay 3 HP to come back into play near the edge? (Otherwise, Heroic Spirit.)`,
+      options: squares.map((sq) => ({ id: `${sq.col},${sq.row}`, label: `${sq.col},${sq.row}`, col: sq.col, row: sq.row })),
+      minimum: 0,
+      maximum: 1,
+    });
+    const id = Array.isArray(ans) ? ans[0] : ans;
+    const sq = squares.find((x) => `${x.col},${x.row}` === id);
+    if (!sq) return false;
+    if (!free) await env.world.payHp(f, 3);
+    await movers.setSquare(f, sq);
+    await postCard('reminder', { title: 'Comeback', text: `${f.name} comes back into play${free ? '' : ' for 3 HP'}.`, fighters: [{ name: f.name }], automatic: 'movement', notice: true });
+    return true;
+  }
+
+  // **Heroic Spirit (phase F, book p.63):** a Taken Out active fighter gives
+  // their turn — the dice they rolled — to an ally in play, who takes it in
+  // their current Stance (the board's `heroic`).
+  async function heroicSpirit(env, active) {
+    if (active.square && !atZero(active.hp)) return;
+    const allies = env.world.alliesOf(active).filter((a) => a.id !== active.id && a.square && !atZero(a.hp));
+    if (!allies.length) return;
+    const ans = await ask(active, env.key, env.gen, env.tg, env.when)({
+      kind: 'targets',
+      title: 'Heroic Spirit',
+      text: `${active.name} is Taken Out: give your turn — your dice — to an ally.`,
+      options: allies.map((a) => ({ id: String(a.id), label: a.name })),
+      minimum: 1,
+      maximum: 1,
+    });
+    const ally = allies.find((a) => String(a.id) === String(Array.isArray(ans) ? ans[0] : ans)) ?? allies[0];
+    const board = await one('SELECT * FROM dice_marks WHERE combatant_id = ? AND active = 1 ORDER BY created_at DESC, rowid DESC LIMIT 1', [active.id]);
+    if (!board) return;
+    const data = readBoardData(board);
+    data.heroic = { combatantId: ally.id, characterId: ally.characterId, stanceKey: ally.stance?.key ?? null, stanceName: ally.stance?.name ?? null, name: ally.name, fromId: active.id };
+    if (ally.stance?.key) data.stanceKey = ally.stance.key;
+    await queued(() => saveBoard(board.roll_id, data, (ev, p) => io.emit(ev, p)));
+    // "When you give your Heroic Spirit" (the Teacher's Mentor tokens …).
+    await emitEvent(env, 'self.giving_heroic_spirit', active, { ally });
+    await postCard('reminder', { title: 'Heroic Spirit', text: `${active.name} gives their turn to ${ally.name}.`, fighters: [{ name: active.name }, { name: ally.name }], automatic: 'ability', notice: true });
+  }
+
   async function runTurn(fightRow, activeId, moment, tg, opts = {}) {
-    const { env, world, fighters, byId, onTrap } = await envFor(fightRow, tg);
+    const { env, world, fighters, byId, onTrap, movers } = await envFor(fightRow, tg);
     for (const f of fighters) if (opts.dizzyIds?.includes(f.id)) f.dizzy = true;
     const rt = env.rt;
     // Turn boundaries (engine/runtime.js): a new round expires its temporaries
     // and resets per-round counters; a turn start resets per-turn counters and
     // flags and expires "until your next turn" temporaries.
+    let newRound = false;
     if (moment === 'start') {
-      if (fightRow.round !== rt.round) expireTemps(rt, 'end_of_round');
+      newRound = fightRow.round !== rt.round;
+      if (newRound) expireTemps(rt, 'end_of_round');
       startTurn(rt, activeId, fightRow.round);
       expireTemps(rt, 'start_of_turn', { activeId });
     }
     const active = byId(activeId);
     if (!active) return env.save();
+    if (moment === 'start') {
+      env.when = `Start of ${active.name}'s turn`;
+      // A new Round: everyone out of play may come back for free; then the
+      // active fighter, if still out, for 3 HP.
+      if (newRound) for (const f of fighters) await comeback(env, movers, f, { free: true });
+      await comeback(env, movers, active, { free: false });
+    }
     // Where the turn began (the End Phase's Fatigue: "did not move").
     if (moment === 'start') fighterRt(rt, active.id).flags.startSquare = active.square ?? null;
     env.when = `${moment === 'start' ? 'Start' : 'End'} of ${active.name}'s turn`;
     world.context.activeCharacter = active;
     const order = [active, ...fighters.filter((f) => f.id !== active.id)];
     for (const f of order) await runFor(f, turnEvents(moment, relationTo(f, active)), env, { activeCharacter: active });
+    // Phase 3 of the turn: still Taken Out? Heroic Spirit.
+    if (moment === 'start' && !stale(env)) await heroicSpirit(env, active);
     if (moment === 'end') {
       await runEndPhase(env, fighters, onTrap, active);
       expireTemps(rt, 'end_of_turn', { activeId });
@@ -724,9 +799,69 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     emitStageUpdated,
     emit: (ev, payload) => io.emit(ev, payload),
     queued,
-    // Phase F (reactions) decides whether anyone could react between Actions.
-    reactionsAvailable: async () => false,
+    // **Reactions (phase F):** after each of the active fighter's Actions.
+    openReactions: (fight, activeId) => openReactions(fight, activeId),
+    closeReactions: (fight) => closeReactions(fight),
+    reactionDone: (fight, row) => reactionDone(fight, row.combatant_id),
   });
+
+  // Everyone but the active fighter who can take a Reactive Action now, with
+  // the reactions on offer by resource (engine/turn.js). Not the Taken Out,
+  // not those out of play, not who already reacted in this window.
+  async function reactionOffers(fightRow, activeId, except = []) {
+    const { env, fighters, byId } = await envFor(fightRow);
+    const idx = patdContent();
+    const active = byId(activeId);
+    const offers = {};
+    for (const f of fighters) {
+      if (f.id === activeId || except.includes(f.id) || !f.square || atZero(f.hp) || !f.derived) continue;
+      const t = turnActions(f.derived, f.stance, idx);
+      const ids = [...t.basic, ...t.personal.flatMap((g) => g.ids)];
+      const state = await fighterState(f.id);
+      const clusters = reactionClusters({
+        ids,
+        idx,
+        ctx: turnContext({ actorId: f.id, actorSide: f.side, activeId, activeSide: active?.side ?? null, tokens: f.tokens }),
+        usage: env.rt.usage,
+        fighterId: f.id,
+        state,
+        chaos: f.tokens.chaos ?? 0,
+        chaosUsed: Boolean(fighterRt(env.rt, f.id).flags.chaosUsed),
+      });
+      if (clusters.length) offers[f.id] = { clusters, stanceKey: f.stance?.key ?? null, name: f.name, characterId: f.characterId };
+    }
+    return offers;
+  }
+  const writeWindow = (fightRow, w) => queued(() => run('UPDATE fights SET reaction_window = ? WHERE id = ?', [w ? JSON.stringify(w) : null, fightRow.id]));
+  async function openReactions(fightRow, activeId) {
+    const offers = await reactionOffers(fightRow, activeId);
+    if (!Object.keys(offers).length) {
+      await writeWindow(fightRow, null);
+      return false;
+    }
+    await writeWindow(fightRow, { seq: Date.now(), activeId, offers, done: [] });
+    await emitStageUpdated();
+    return true;
+  }
+  async function closeReactions(fightRow) {
+    await queued(() => closeReactionBoards(fightRow.id, (ev, p) => io.emit(ev, p)));
+    await writeWindow(fightRow, null);
+    await emitStageUpdated();
+  }
+  async function reactionDone(fightRow, combatantId) {
+    const row = await one('SELECT reaction_window FROM fights WHERE id = ?', [fightRow.id]);
+    let w = null;
+    try {
+      w = JSON.parse(row?.reaction_window || 'null');
+    } catch {
+      w = null;
+    }
+    if (!w) return;
+    w.done = [...new Set([...(w.done ?? []), combatantId])];
+    await writeWindow(fightRow, w);
+    await queued(() => run("UPDATE dice_marks SET active = 0 WHERE roll_id LIKE ? AND combatant_id = ?", [`react-${fightRow.id}-%`, combatantId]));
+    await emitStageUpdated();
+  }
   const onBoardChain = async (rollId, job) => {
     const { fight } = await runner.fightOfBoard(rollId);
     if (fight) onChain(fight, job);

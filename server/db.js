@@ -1506,6 +1506,8 @@ export async function initDb() {
   await ensureColumn('fights', 'movement_phase', 'TEXT');
   // A Copy's Original (full automation phase E): map_tiles of kind 'copy'.
   await ensureColumn('map_tiles', 'owner_id', 'INTEGER');
+  // An open reaction window (full automation phase F): JSON or NULL.
+  await ensureColumn('fights', 'reaction_window', 'TEXT');
 
   // **Table-wide settings the GM sets for everyone** (Settings page). A
   // singleton, like scene_state. `simple_lanes`: how many lanes Simple

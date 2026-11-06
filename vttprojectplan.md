@@ -3475,7 +3475,38 @@ A GM-only page (`/homebrew`, the flask icon in the header and the mobile menu) f
     - the End Phase Trap destroying it;
     - Hidden Style's Fog.
   - A browser run showed the Copy drawn on the map, with no console errors.
-- **F. Turn structure and reactions:** the 8-phase machine (Comeback rule, Heroic Spirit, extra Action Dice), the React interface, Control tokens (Copy / Dodge / Parry), Luck, Training, Chaos.
+- **F. Turn structure and reactions — implemented.**
+  - **The rules, pure** (`client/src/lib/patd/engine/turn.js`):
+    - `turnContext` says whose turn it is from an Action's point of view (own, allied, enemy).
+    - `evalCondition` covers the content's conditions: `context.isOwnTurn / isEnemyTurn / isAlliedTurn / performedByAnotherAction`, `self.tokens.*`, `eq / not / and / or`. Anything unknown is left to people.
+    - `actionUsable` checks conditions and limits: uses per turn, enemy turn, round or fight, counted in the runtime's `usage` under `action:<id>:<fighter>:<period>`, so `startTurn` clears them. `recordUse` counts a use.
+    - `reactionClusters` gives the reactions on offer, by resource. `atZero` is Taken Out at zero HP, and `comebackSquares` gives the empty spaces within 3 of the edge (on lanes, of the ends).
+  - **An Action's conditions and limits are enforced** when it is placed ("Swift Strike: only during an enemy's turn", "only once per turn", counting what's already placed) and counted when performed. Nobody at zero HP places Actions, and nothing is placed during a movement phase.
+  - **Reactions (decided: a React interface, clusters by resource, a pause until Continue):**
+    - **The window:** after each of the active fighter's committed Actions, everyone else in play who can actually react gets one. That means a token Action they can pay for whose conditions allow it now, or a dice Action a **Chaos token** reaches "as if you had spent a 4" (once per turn). The window lives in `fights.reaction_window`: `{ seq, activeId, offers, done }`, shown as `{ activeId, waiting }`.
+    - **The pause:** with Actions still placed, the batch **pauses until Continue**, but only when someone can react.
+    - **React and Pass:** the **React bar** (`ReactBar`) gives each waiting fighter's controller **React** or **Pass** (`react:pass`).
+    - **The reaction board:** React (`react:open`, an ack) opens that fighter's own board (`react-<fight>-<seq>-<id>`, `data.reaction`). It lists only the reactions on offer, **one rectangular cluster per resource** ("Paid with tokens", "Chaos token (as a 4)") packed into two columns; the view scrolls. A Chaos 4 sits in the pool, and the footer has Commit and Pass.
+    - **One reaction each:** committing performs it, and that fighter is done for the window.
+    - **Closing:** the window closes on Continue, the active fighter's next Commit, or the end of the turn, and freezes its reaction boards.
+  - **The Comeback rule (book p.63):** someone removed from play may come back on an empty space within 3 of the edge, picked as a square with a Skip. It is free at the start of a Round, or costs 3 HP at the start of their own turn (if they have it). Stooges never come back.
+  - **Heroic Spirit (book p.63):** an active fighter still Taken Out after the Start Phase picks an ally in play. The turn's board then belongs to that ally (`data.heroic`, and `actingOn(row)` everywhere a board's fighter is read): the ally places, commits and ends the turn with the donor's dice in their own current Stance. It emits `self.giving_heroic_spirit`.
+  - **Control tokens (book p.117):** after an Action's cost is paid and before it resolves, each enemy whose range the actor is in, holding Control (once per turn), is asked:
+    - **Copy (1):** they then perform the same Action as a reaction with a 4. Not possible for once-per-turn Actions.
+    - **Dodge (2):** they, or an ally in their range, become immune to it (left out of its targets).
+    - **Parry (3):** the Action is negated, they deal 2 damage to the actor, and may Move up to 2.
+    - The engine does this itself, so the content's Control and Chaos mechanic rules are skipped (`ENGINE_NATIVE`).
+  - **Taken Out** (zero HP on the last bar) takes no damage (book p.62).
+  - **Already automatic now:** Luck's "after any Action, spend 1 to Teleport 3 and Heal 1", whose steps (spend, teleport, heal) now run.
+  - **Not yet:** numbers held outside your turn (Reversal Form, Patience Style; phase H) and Training's pool boost (phase H); Luck paying for costs (`substitute_cost`); Mentor's Heroic Spirit bonus (by hand); Poltergeist (phase H); "times targeted" limits; the book's ally-before-enemy reaction order (everyone may react at once).
+  - **Tests:** `server/test/turn.test.js` (turn context, Swift Strike's condition, limits with pending placements, reactions by resource with and without Chaos, Taken Out, Comeback squares on map and lanes).
+  - **Playtest** `scripts/playtest-reactions.mjs`:
+    - a reaction window with its pause, React, a reaction board refusing what isn't on offer, Swift Strike paid with Iron, and Continue;
+    - the enemy-turn condition refused on Ana's own turn;
+    - a Parry;
+    - a Taken Out fighter taking no damage;
+    - Heroic Spirit giving Cy's dice to Ana.
+  - The dice-marks playtest now uses Armored Style's You Stay, since Swift Strike can't be used on your own turn. A browser run (phone landscape) covered the React bar and the clustered reaction board; it caught a render crash before the rules loaded, which is now fixed.
 - **G. Modifiers and durations:** the `modify_rule` catalog at its enforcement points, `temporary`, `register_trigger` and `schedule`, and the remaining event emissions.
 - **H. Pool manipulation and special operations:** rerolls, increase, duplicate, split, combine, set, replace and retain; `perform_action`; append and prepend; declared-Action copy, dodge and negate; delegation; and the rest of the operation reference.
 - **I. Super Moves and NPC types:** Supers on the board with all limits, Super tokens, Stooges, Bosses and Warriors in the full engine.

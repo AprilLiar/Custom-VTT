@@ -145,6 +145,8 @@ export const SUPPORTED_EVENTS = new Set([
   'shield_in_range.broken',
   // Movement (phase D: server/engine/moves.js)
   'self.would_be_pushed_or_pulled',
+  'enemy_in_range.action.cost_paid_before_resolution',
+  'self.control_tokens_spent',
   'self.pushed',
   'self.push_finished',
   'self.movement.finished',
@@ -460,7 +462,9 @@ async function select(sel, scope, ctx, label = 'a target') {
     pool = [...units, ...(world.obstacles?.(from, sel.range, {}) ?? [])];
   } else pool = [...world.fighters(), ...copies];
   if (sel.excludeSelf) pool = pool.filter((f) => f.id !== self.id);
-  pool = pool.filter((f) => f.isObstacle || f.isCopy && sel.range?.mode === 'none' || world.inRange(from, f, sel.range));
+  // Dodged with Control (phase F): immune to this Action.
+  if (ctx.immuneIds?.length) pool = pool.filter((f) => !ctx.immuneIds.includes(f.id));
+  pool = pool.filter((f) => f.isObstacle || (f.isCopy && sel.range?.mode === 'none') || world.inRange(from, f, sel.range));
   const count = sel.count;
   if (count === 'all' || sel.kind === 'self_and_allies') return pool;
   if (!pool.length) return [];
