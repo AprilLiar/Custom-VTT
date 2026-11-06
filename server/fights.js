@@ -26,6 +26,17 @@ import { endTurnDice, resumeRoll, startRoll } from './diceMarks.js';
 import { XP_AWARDS } from '../client/src/lib/patd/build.js';
 import { resolveRef, serialized, shapeFightState } from './combatState.js';
 import { controlsCharacter } from './control.js';
+import { mayFreeMove } from './engine/moves.js';
+
+// The fight's movement phase (phase D): { kind: 'early' | 'late', activeId, waiting: [combatantId] } | null.
+export const phaseOf = (row) => {
+  try {
+    const p = JSON.parse(row?.movement_phase || 'null');
+    return p && Array.isArray(p.waiting) ? p : null;
+  } catch {
+    return null;
+  }
+};
 
 const MODES = new Set(['simple', 'combat']);
 const parseIds = (text) => {
@@ -116,6 +127,8 @@ export async function loadFightState(sceneId, mode) {
     allies: parseIds(row.allies),
     enemies: parseIds(row.enemies),
     pending_stance: pending,
+    // Early / Late Movement (phase D): who still gets to move, or null.
+    movement_phase: phaseOf(row),
   };
 }
 
@@ -284,7 +297,11 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
     if (stances.length === 1) await rollStanceIntoChat(fight, entry.id, stances[0].id);
     await fire(fight, 'turn_start', entry.id);
     // Abilities' "start of turn" rules — run after this handler, never awaited.
-    triggers?.schedule({ ...fight }, entry.id, 'start');
+    // Then Early Movement (phase D).
+    const at = { id: fight.id, index: fight.turn_index, round: fight.round };
+    Promise.resolve(triggers?.schedule({ ...fight }, entry.id, 'start'))
+      .then(() => openEarly({ fightId: at.id, activeId: entry.id, turnIndex: at.index, round: at.round }))
+      .catch((err) => console.error('early movement', err));
   };
 
   // Move on to the next valid turn, starting a new round when this one is done.
@@ -360,7 +377,43 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
   // **Next turn (GM).** Ends the current turn and starts the next.
   // The current turn ends and the next starts (GM's Next turn, or the active
   // player's End turn on the dice board — decided).
+  // **Movement phases (decided, phase D).** Early Movement, once the turn's
+  // start is done: everyone but the active fighter who holds Speed. Late
+  // Movement, on End turn: everyone who holds Speed. Each moves or taps Done;
+  // the GM can skip; nobody holding Speed means no phase.
+  const setPhase = (fight, phase) => {
+    fight.movement_phase = phase ? JSON.stringify(phase) : null;
+    return run('UPDATE fights SET movement_phase = ? WHERE id = ?', [fight.movement_phase, fight.id]);
+  };
+  const speedHolders = async (fight, exceptId = null) => {
+    const ids = [...parseIds(fight.allies), ...parseIds(fight.enemies)].filter((id) => id !== exceptId);
+    if (!ids.length) return [];
+    const rows = await all(`SELECT * FROM combatants WHERE id IN (${ids.map(() => '?').join(',')})`, ids);
+    return rows
+      .filter((r) => (shapeFightState(r).tokens.speed ?? 0) > 0 && (fight.mode === 'simple' ? r.summon_id != null : r.grid_col != null))
+      .map((r) => r.id);
+  };
+  // Early Movement opens after the turn's start triggers, if that turn is still on.
+  // (One argument: `serialized` passes only the first.)
+  const openEarly = serialized(async ({ fightId, activeId, turnIndex, round }) => {
+    const fight = await one('SELECT * FROM fights WHERE id = ?', [fightId]);
+    if (!fight || fight.turn_index !== turnIndex || fight.round !== round || orderOf(fight)[turnIndex]?.id !== activeId) return;
+    const waiting = await speedHolders(fight, activeId);
+    if (!waiting.length) return;
+    await setPhase(fight, { kind: 'early', activeId, waiting });
+    triggers?.movementPhase?.({ ...fight }, 'early', activeId);
+    await emitStageUpdated();
+  });
+  const finishPhase = async (fight) => {
+    const phase = phaseOf(fight);
+    await setPhase(fight, null);
+    if (phase?.kind === 'late') return nextTurn(fight);
+    await emitStageUpdated();
+  };
+
   const nextTurn = async (fight) => {
+    // Any movement phase is over (the GM's Next turn skips Late Movement).
+    if (fight.movement_phase) await setPhase(fight, null);
     const current = orderOf(fight)[fight.turn_index];
     // The ending turn's unanswered questions close first (decided), so its
     // End triggers and the next turn's never wait behind them.
@@ -406,7 +459,81 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
     const c = await one('SELECT scene_id, mode FROM combatants WHERE id = ?', [board.combatant_id]);
     const fight = c ? await one('SELECT * FROM fights WHERE scene_id = ? AND mode = ?', [c.scene_id, c.mode]) : null;
     if (!fight || orderOf(fight)[fight.turn_index]?.id !== board.combatant_id) return;
+    if (phaseOf(fight)?.kind === 'late') return;
+    // Late Movement first, if anyone holds Speed (phase D); the turn ends when it's done.
+    const waiting = await speedHolders(fight);
+    if (waiting.length) {
+      await setPhase(fight, { kind: 'late', activeId: board.combatant_id, waiting });
+      triggers?.movementPhase?.({ ...fight }, 'late', board.combatant_id);
+      await emitStageUpdated();
+      return;
+    }
     await nextTurn(fight);
+  });
+
+  // ---- Free Movement and the movement phases (phase D)
+  const fightOfCombatant = async (combatantId) => {
+    const c = await one('SELECT * FROM combatants WHERE id = ?', [Number(combatantId)]);
+    const fight = c ? await one('SELECT * FROM fights WHERE scene_id = ? AND mode = ?', [c.scene_id, c.mode]) : null;
+    if (!fight || !sideOf(fight, c.id)) return {};
+    return { c, fight };
+  };
+  const mayControl = (c) => isGm() || controlsCharacter(socket.data.identity, c.character_id);
+  const activeCommitting = async (fight) => {
+    const id = orderOf(fight)[fight.turn_index]?.id;
+    const board = id != null ? await one('SELECT data FROM dice_marks WHERE combatant_id = ? AND active = 1 ORDER BY created_at DESC LIMIT 1', [id]) : null;
+    try {
+      return Boolean(JSON.parse(board?.data || '{}').committing);
+    } catch {
+      return false;
+    }
+  };
+  // May this fighter use Free Movement right now (book p.57)?
+  const freeMoveOk = async (fight, c) =>
+    mayFreeMove({ phase: phaseOf(fight), activeId: orderOf(fight)[fight.turn_index]?.id, combatantId: c.id, committing: await activeCommitting(fight) });
+
+  // Where they can go with their Speed: ack({ mode, speed, options }).
+  // (Straight on the socket: the shared `on` wrapper drops acknowledgements.)
+  socket.on('move:reach', async (payload, ack) => {
+    if (typeof ack !== 'function') return;
+    try {
+      const { c, fight } = await fightOfCombatant(payload?.combatantId);
+      if (!c || !mayControl(c) || !triggers || !(await freeMoveOk(fight, c))) return ack({ error: 'not now' });
+      ack(await triggers.freeReach({ ...fight }, c.id));
+    } catch (err) {
+      console.error('error handling move:reach:', err);
+      ack({ error: 'failed' });
+    }
+  });
+  on('move:free', async ({ combatantId, to } = {}) => {
+    const { c, fight } = await fightOfCombatant(combatantId);
+    if (!c || !mayControl(c) || !triggers || !(await freeMoveOk(fight, c))) return;
+    if (!Number.isInteger(to?.col) || !Number.isInteger(to?.row)) return;
+    triggers.freeMove({ ...fight }, c.id, { col: to.col, row: to.row }).then((r) => socket.emit('move:result', { combatantId: c.id, ...r }));
+  });
+  on('move:swap', async ({ combatantId, allyId } = {}) => {
+    const { c, fight } = await fightOfCombatant(combatantId);
+    if (!c || !mayControl(c) || !triggers || !(await freeMoveOk(fight, c))) return;
+    triggers.freeSwap({ ...fight }, c.id, Number(allyId)).then((r) => socket.emit('move:result', { combatantId: c.id, ...r }));
+  });
+  // Done moving in this movement phase.
+  on('move:done', async ({ combatantId } = {}) => {
+    const { c, fight } = await fightOfCombatant(combatantId);
+    const phase = phaseOf(fight);
+    if (!c || !phase || !phase.waiting.includes(c.id) || !mayControl(c)) return;
+    const waiting = phase.waiting.filter((id) => id !== c.id);
+    if (waiting.length) {
+      await setPhase(fight, { ...phase, waiting });
+      return emitStageUpdated();
+    }
+    await finishPhase(fight);
+  });
+  // The GM skips the rest of a movement phase.
+  on('move:skip', async ({ mode } = {}) => {
+    if (!isGm()) return;
+    const fight = await fightFor(mode);
+    if (!fight || !phaseOf(fight)) return;
+    await finishPhase(fight);
   });
 
   // **Previous turn (GM).** Steps the marker back one turn — into the last
@@ -418,6 +545,7 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
     const fight = await fightFor(mode);
     if (!fight) return;
     triggers?.turnOver({ ...fight });
+    if (fight.movement_phase) await setPhase(fight, null);
     const current = orderOf(fight)[fight.turn_index];
     let index = fight.turn_index - 1;
     while (index >= 0 && !(await valid(fight, orderOf(fight)[index].id))) index--;

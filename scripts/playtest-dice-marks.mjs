@@ -138,6 +138,12 @@ await sleep(600);
 check("someone else can't end the turn", (await jf('/api/stage?role=gm')).fights.combat.turn_index === 0);
 p.emit('board:end_turn', { rollId });
 await sleep(1200);
+// Swift Style gave Speed after each Action: Late Movement first (phase D) — everyone passes.
+st = await jf('/api/stage?role=gm');
+const late = st.fights.combat.movement_phase;
+check('End turn opens Late Movement for whoever holds Speed', late?.kind === 'late' && st.fights.combat.turn_index === 0, JSON.stringify(late));
+for (const id of late?.waiting ?? []) gm.emit('move:done', { combatantId: id });
+await sleep(1500);
 st = await jf('/api/stage?role=gm');
 check('the active player ends their own turn (decided)', st.fights.combat.turn_index === 1 && !(await board()).active, JSON.stringify(st.fights.combat.turn_index));
 

@@ -206,6 +206,10 @@ export function registerDiceMarkHandlers({ on: onRaw, socket, io, triggers = nul
   on('board:commit', async ({ rollId }) => {
     const row = await editableRoll(rollId);
     if (!row || !triggers) return;
+    // Not during Early or Late Movement (phase D): everyone moves first.
+    const c = await one('SELECT scene_id, mode FROM combatants WHERE id = ?', [row.combatant_id]);
+    const fight = c ? await one('SELECT movement_phase FROM fights WHERE scene_id = ? AND mode = ?', [c.scene_id, c.mode]) : null;
+    if (fight?.movement_phase) return refuse(row.roll_id, 'wait until everyone has finished moving');
     triggers.commitBoard(row.roll_id);
   });
 

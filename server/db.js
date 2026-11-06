@@ -1502,6 +1502,8 @@ export async function initDb() {
   await ensureColumn('fights', 'prev_turn_order', 'TEXT');
   // The engine's runtime for this fight (client/src/lib/patd/engine/runtime.js): JSON.
   await ensureColumn('fights', 'runtime', 'TEXT');
+  // Early / Late Movement in progress (full automation phase D): JSON or NULL.
+  await ensureColumn('fights', 'movement_phase', 'TEXT');
 
   // **Table-wide settings the GM sets for everyone** (Settings page). A
   // singleton, like scene_state. `simple_lanes`: how many lanes Simple

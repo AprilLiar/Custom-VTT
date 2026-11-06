@@ -66,6 +66,13 @@ export const SUPPORTED_OPS = new Set([
   'spend_tokens',
   'reduce_damage',
   'split_incoming_damage',
+  // full automation, phase D
+  'move',
+  'teleport',
+  'push',
+  'pull',
+  'swap_spaces',
+  'reduce_forced_movement',
 ]);
 // Durations a `temporary` can have (engine/runtime.js expires them).
 const TEMP_DURATIONS = new Set([
@@ -132,6 +139,13 @@ export const SUPPORTED_EVENTS = new Set([
   'enemy_in_range.own_shield_damaged',
   'enemy_in_range.own_shield_broken',
   'shield_in_range.broken',
+  // Movement (phase D: server/engine/moves.js)
+  'self.would_be_pushed_or_pulled',
+  'self.pushed',
+  'self.push_finished',
+  'self.movement.finished',
+  'self.free_movement.one_space_finished',
+  'any_movement_phase.start',
 ]);
 const SELECTOR_KINDS = new Set(['enemy', 'ally', 'unit', 'self_and_allies', 'self_or_ally']);
 // Copies aren't tracked on the board, so "you or your Copies" is your own range.
@@ -273,6 +287,15 @@ export function describe(node) {
       return 'pick a token';
     case 'notify':
       return 'a note in the chat';
+    case 'move':
+      return `move ${node.upTo ? 'up to ' : ''}${n(node.distance)}`.replace('  ', ' ');
+    case 'teleport':
+      return `teleport ${n(node.distance)}`.trim();
+    case 'push':
+    case 'pull':
+      return `${node.op} ${node.upTo ? 'up to ' : ''}${n(node.distance)}`.replace('  ', ' ').trim();
+    case 'swap_spaces':
+      return 'swap spaces';
     default:
       return node.op?.replace(/_/g, ' ') ?? '';
   }
@@ -352,7 +375,8 @@ function affordable(effect, scope, ctx) {
 }
 
 const DECLINED = Symbol('declined');
-const PICK_OPS = new Set(['discard_tokens', 'select_token']);
+// A "you may" opening with a pick offers its own skip (phase D: a square too).
+const PICK_OPS = new Set(['discard_tokens', 'select_token', 'move', 'teleport']);
 const opensWithPick = (e) => PICK_OPS.has(e?.op) || (e?.op === 'sequence' && PICK_OPS.has(e.steps?.[0]?.op));
 
 async function targetsOf(v, scope, ctx, label) {
@@ -634,6 +658,8 @@ async function run(node, scope, ctx) {
         scope.history.damageDealt = (scope.history.damageDealt ?? 0) + taken;
         (scope.history.damagedIds ??= []).push(f.id);
         if (taken > 0 && f.side !== scope.self.side) (scope.history.enemyDamagedIds ??= []).push(f.id);
+        // A push after this hit carries its Power (+1 each) and Iron (−1 each) — phase D.
+        (scope.history.hits ??= {})[f.id] = { pushBonus: r?.pushBonus ?? 0, pushResist: r?.pushResist ?? 0 };
       }
       return;
     }
@@ -676,6 +702,49 @@ async function run(node, scope, ctx) {
       }
       return;
     }
+    // **Movement (phase D):** the world plans it, asks for the square and
+    // applies it (server/engine/moves.js); it posts its own notice.
+    case 'move':
+    case 'teleport': {
+      const fn = node.op === 'move' ? world.move : world.teleport;
+      if (!fn) return unsupported(node, scope, ctx);
+      const distance = val(node.distance);
+      const decline = scope.mayDecline;
+      scope.mayDecline = false;
+      for (const f of node.target ? await targetsOf(node.target, scope, ctx) : [scope.self]) {
+        const to = await fn(f, { distance, upTo: Boolean(node.upTo), ...(decline ? { allowNone: true } : {}) });
+        if (decline && to == null) return DECLINED;
+      }
+      return;
+    }
+    case 'push':
+    case 'pull': {
+      if (!world.forced) return unsupported(node, scope, ctx);
+      const distance = val(node.distance);
+      const from = node.origin ? asList(val(node.origin))[0] : scope.self;
+      for (const f of await targetsOf(node.target, scope, ctx, 'an enemy')) {
+        await world.forced(f, {
+          distance,
+          origin: from?.square ?? scope.self.square ?? null,
+          pull: node.op === 'pull',
+          upTo: Boolean(node.upTo),
+          chooser: scope.self,
+          hit: scope.history.hits?.[f.id] ?? null,
+          unblockable: ctx.unblockable ?? [],
+        });
+      }
+      return;
+    }
+    case 'swap_spaces': {
+      if (!world.swap) return unsupported(node, scope, ctx);
+      const actor = node.actor ? asList(val(node.actor))[0] : scope.self;
+      for (const f of await targetsOf(node.target, scope, ctx)) if (actor) await world.swap(actor, f);
+      return;
+    }
+    // "You move one less space" when pushed or pulled (`self.would_be_pushed_or_pulled`).
+    case 'reduce_forced_movement':
+      scope.event.reduction = (scope.event.reduction ?? 0) + (Number(val(node.amount)) || 0);
+      return;
     // "Take 1 less damage" while a hit is being resolved (`self.would_take_damage`).
     case 'reduce_damage':
       scope.event.reduction = (scope.event.reduction ?? 0) + (Number(val(node.amount)) || 0);

@@ -93,6 +93,9 @@ pHero.on('trigger:prompt', (p) => {
     return setTimeout(() => pHero.emit('trigger:answer', { id: p.id, answer: true }), 100);
   }
   prompts.hero.push(p);
+  // The hero's own reactions (Aura Style when their Shield is hit — phase D
+  // automates its push): answered with the first choice.
+  if (p.characterId === hero.id) setTimeout(() => pHero.emit('trigger:answer', { id: p.id, answer: p.kind === 'confirm' ? true : p.kind === 'targets' ? [p.options[0].id] : p.options?.[0]?.id }), 100);
 });
 gm.on('trigger:prompt', (p) => prompts.gm.push(p));
 // The Angel's player answers: yes, heal; target the first enemy offered.
@@ -122,7 +125,7 @@ const fa = st.combatTokens.find((t) => t.id === ta.id).fight;
 check('turn end: Fused Demon gives 1 Chaos', fh.tokens.chaos === 1, JSON.stringify(fh.tokens));
 check("the Angel's player was asked (and the GM too): heal, then the target", prompts.angel.some((p) => p.kind === 'confirm') && prompts.angel.some((p) => p.kind === 'targets') && prompts.gm.length >= prompts.angel.length,
   JSON.stringify(prompts.angel.map((p) => p.kind)));
-check('only the Angel\'s controllers got the prompts, not the hero\'s player', prompts.hero.length === 0, JSON.stringify(prompts.hero.map((p) => [p.title, p.text])));
+check('only the Angel\'s controllers got the Angel\'s prompts, not the hero\'s player', !prompts.hero.some((p) => p.characterId === angel.id), JSON.stringify(prompts.hero.map((p) => [p.title, p.text])));
 check('the target offered was the enemy in range', prompts.angel.find((p) => p.kind === 'targets')?.options.map((o) => Number(o.id)).join() === String(th.id),
   JSON.stringify(prompts.angel.find((p) => p.kind === 'targets')));
 check('the Angel healed 2 (Fused Angel) + 1 (Heroic Style)', fa.hp.current === hpA0 + 3, `${hpA0} → ${fa.hp.current}`);

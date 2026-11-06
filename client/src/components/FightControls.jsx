@@ -4,6 +4,8 @@ import { socket } from '../socket.js';
 import { cropOf } from '../lib/imageCrop.js';
 import CroppedImage from './CroppedImage.jsx';
 import DialogShell from './DialogShell.jsx';
+import { clearSquarePick, setSquarePick, useSquarePick } from '../lib/squarePick.js';
+import { startFreeMove, stopFreeMove } from '../lib/freeMove.js';
 
 // A fight's controls (Panic at the Dojo, Phase 5), for whichever fight the
 // Scene's mode shows — Simple Combat and Combat are separate fights.
@@ -190,11 +192,14 @@ export function InitiativeRail({ mode, fight, fighters, role, left = 12, onEditS
   }, [fight.turn_index, fight.round]);
   const pending = fight.pending_stance;
   const [ending, setEnding] = useState(false);
+  // While a square is being picked (phase D) the rail fades and lets taps
+  // through to the map under it.
+  const picking = useSquarePick();
   return (
     <>
     {ending && <EndFightDialog mode={mode} fight={fight} byCombatant={byCombatant} onClose={() => setEnding(false)} />}
     <div
-      className="absolute top-16 flex w-48 flex-col panel-cut-sm border border-zinc-700 bg-zinc-950/85 shadow-xl backdrop-blur"
+      className={`absolute top-16 flex w-48 flex-col panel-cut-sm border border-zinc-700 bg-zinc-950/85 shadow-xl backdrop-blur transition-opacity ${picking ? 'pointer-events-none opacity-20' : ''}`}
       // Stops above the bottom-left dock, so on a short screen the two never overlap.
       style={{ left, zIndex: 900, maxHeight: 'calc(100% - 140px)', minHeight: 120, marginTop: 'var(--safe-top)', marginLeft: 'var(--safe-left)' }}
     >
@@ -398,7 +403,121 @@ export function TriggerPrompts() {
   }, []);
   const p = prompts[0];
   if (!p) return null;
+  if (p.kind === 'square') return <SquarePromptBar key={p.id} prompt={p} />;
   return <TriggerPromptDialog key={p.id} prompt={p} />;
+}
+
+// **A square pick (phase D, decided):** the legal squares glow on the map or
+// lane (SquarePickLayer) and this compact bar lists them — docked at the
+// bottom, not over the board, so the squares stay visible to tap.
+const barShell = 'pointer-events-auto fixed inset-x-2 bottom-2 mx-auto max-w-md panel-cut-sm border bg-zinc-950/95 p-2 shadow-2xl';
+const barButton = 'min-h-8 panel-cut-sm border border-zinc-700 bg-zinc-900 px-2 py-0.5 text-left text-xs text-zinc-100 hover:border-lime-400';
+function SquarePromptBar({ prompt }) {
+  const answer = (value) => socket.emit('trigger:answer', { id: prompt.id, answer: value });
+  useEffect(() => {
+    setSquarePick({ key: prompt.id, tone: 'pick', mode: prompt.mode, title: prompt.title, options: prompt.options ?? [], onPick: (id) => answer(id) });
+    return () => clearSquarePick(prompt.id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prompt.id]);
+  return (
+    <div className={`${barShell} border-lime-600`} style={{ zIndex: 3100 }} role="dialog" aria-label={`${prompt.fighterName}: ${prompt.title}`}>
+      {prompt.when && <p className="font-display text-[10px] font-bold uppercase tracking-wide text-amber-300">{prompt.when}</p>}
+      <p className="font-display text-sm font-bold uppercase tracking-wide text-lime-200">
+        {prompt.fighterName}: {prompt.title}
+      </p>
+      {prompt.text && (
+        <p className="text-xs text-zinc-400">
+          {prompt.text} <span className="text-[10px] text-lime-300/80">Tap a glowing square — or pick it here.</span>
+        </p>
+      )}
+      {/* Short on a phone, so the squares above stay in view. */}
+      <div className="mt-1 grid max-h-[22vh] grid-cols-2 gap-1 overflow-y-auto">
+        {(prompt.options ?? []).map((o) => (
+          <button key={o.id} type="button" onClick={() => answer(o.id)} className={barButton}>
+            <span className="block truncate">
+              <span className="font-semibold">{o.label}</span>
+              {o.note && <span className="text-[10px] text-zinc-500"> · {o.note}</span>}
+            </span>
+          </button>
+        ))}
+      </div>
+      {prompt.minimum === 0 && (
+        <button type="button" onClick={() => answer([])} className="mt-1 min-h-9 w-full panel-cut-sm border border-zinc-700 px-3 text-xs text-zinc-300">
+          Skip
+        </button>
+      )}
+    </div>
+  );
+}
+
+// **Free Movement in progress (phase D):** the reachable squares glow with
+// their Speed cost; this bar says how much Speed is left and ends it.
+export function MoveBar() {
+  const pick = useSquarePick();
+  if (pick?.tone !== 'move') return null;
+  return (
+    <div className={`${barShell} border-sky-500`} style={{ zIndex: 3050 }} role="dialog" aria-label={pick.title}>
+      <div className="flex items-center gap-2">
+        <div className="min-w-0 flex-1">
+          <p className="truncate font-display text-sm font-bold uppercase tracking-wide text-sky-200">{pick.title}</p>
+          <p className="text-[11px] text-zinc-400">
+            {pick.speed} Speed · 1 a space, 2 diagonally, +1 out of a Pit
+            {pick.fatigued ? ' · Fatigued: the next move goes 2 spaces less' : ''}
+            {!pick.options.length ? ' · nowhere to go' : ''}
+          </p>
+        </div>
+        <button type="button" onClick={() => stopFreeMove(true)} className="min-h-9 panel-cut-sm border border-sky-400 bg-sky-500/20 px-3 font-display text-xs font-bold uppercase text-sky-100">
+          Done
+        </button>
+      </div>
+      {pick.swaps.length > 0 && (
+        <div className="mt-1 flex flex-wrap gap-1">
+          {pick.swaps.map((a) => (
+            <button key={a.id} type="button" onClick={() => socket.emit('move:swap', { combatantId: pick.combatantId, allyId: a.id })} className={barButton}>
+              Swap with {a.name} (2 Speed)
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// **Early / Late Movement (decided, phase D):** the phase waits for everyone
+// holding Speed — each moves (Move) or passes (Done); the GM can Skip.
+export function MovementPhaseBar({ mode, fight, fighters, role, controls = () => false }) {
+  const pick = useSquarePick();
+  const phase = fight?.movement_phase;
+  if (!phase || pick) return null;
+  const byId = new Map(fighters.map((f) => [f.combatantId, f]));
+  const waiting = phase.waiting.map((id) => byId.get(id)).filter(Boolean);
+  const mine = waiting.filter((f) => role === 'gm' || (f.characterId != null && controls(f.characterId)));
+  return (
+    <div className={`${barShell} border-sky-700`} style={{ zIndex: 3000 }} role="status" aria-label={`${phase.kind === 'early' ? 'Early' : 'Late'} Movement`}>
+      <p className="font-display text-sm font-bold uppercase tracking-wide text-sky-200">{phase.kind === 'early' ? 'Early' : 'Late'} Movement</p>
+      <p className="text-[11px] text-zinc-400">Waiting for {waiting.map((f) => f.name).join(', ') || '…'} — Free Movement with Speed, then Done.</p>
+      {mine.length > 0 && (
+        <ul className="mt-1 space-y-1">
+          {mine.map((f) => (
+            <li key={f.combatantId} className="flex items-center gap-1.5">
+              <span className="min-w-0 flex-1 truncate text-xs text-zinc-200">{f.name}</span>
+              <button type="button" onClick={() => startFreeMove({ combatantId: f.combatantId, name: f.name, inPhase: true })} className="min-h-9 panel-cut-sm border border-sky-400 bg-sky-500/20 px-3 font-display text-xs font-bold uppercase text-sky-100">
+                Move
+              </button>
+              <button type="button" onClick={() => socket.emit('move:done', { combatantId: f.combatantId })} className="min-h-9 panel-cut-sm border border-zinc-600 px-3 font-display text-xs font-bold uppercase text-zinc-200">
+                Done
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {role === 'gm' && (
+        <button type="button" onClick={() => socket.emit('move:skip', { mode })} className="mt-1 min-h-9 w-full panel-cut-sm border border-zinc-700 px-3 text-xs text-zinc-300">
+          Skip this phase
+        </button>
+      )}
+    </div>
+  );
 }
 
 function TriggerPromptDialog({ prompt }) {

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import SquarePickLayer from './SquarePickLayer.jsx';
 import { Maximize2, Minus, Plus, X } from 'lucide-react';
 import { socket } from '../socket.js';
 import {
@@ -357,6 +358,8 @@ export default function CombatMap({
           zIndex={5}
         />
       )}
+      {/* Squares to pick (phase D): above the tiles, below the tokens. */}
+      {ready && <SquarePickLayer mode="combat" quadOf={tileQuadOf} width={stageWidth} height={stageHeight} zIndex={8} />}
 
       {ready && (
         <div

@@ -39,7 +39,7 @@ import SimpleCombatLane from './SimpleCombatLane.jsx';
 import { MapTilePalette } from './MapTiles.jsx';
 import CombatMap from './CombatMap.jsx';
 import { CombatFightersDrawer, CombatMapDrawer, PlayerTokenDock } from './CombatDrawers.jsx';
-import { FightSetupDialog, InitiativeRail, StancePrompt, StartCombatButton, TriggerPrompts } from './FightControls.jsx';
+import { FightSetupDialog, InitiativeRail, MoveBar, MovementPhaseBar, StancePrompt, StartCombatButton, TriggerPrompts } from './FightControls.jsx';
 import { turnsPerRound } from '../lib/hpBars.js';
 import { WEIGHT_BY_KEY } from '../lib/cinematicWeight.js';
 import { useDominantColor } from '../lib/dominantColor.js';
@@ -252,6 +252,7 @@ export default function ScenePage() {
           key: `c${t.id}`,
           ref: { combatantId: t.id },
           combatantId: t.id,
+          characterId: t.character_id,
           name: t.name,
           image_url: t.image_url,
           crop: t.crop,
@@ -261,6 +262,7 @@ export default function ScenePage() {
           key: `s${s.id}`,
           ref: { summonId: s.id },
           combatantId: s.fight?.combatant_id ?? null,
+          characterId: s.character_id,
           name: s.name,
           image_url: s.image_url,
           top: true,
@@ -468,6 +470,8 @@ export default function ScenePage() {
         />
       )}
       {fight && <StancePrompt mode={fightMode} fight={fight} fighters={fightFighters} role={role} controls={controls} />}
+      {fight && <MovementPhaseBar mode={fightMode} fight={fight} fighters={fightFighters} role={role} controls={controls} />}
+      <MoveBar />
       <TriggerPrompts />
       {fightSetupOpen && fightMode && (
         <FightSetupDialog mode={fightMode} fighters={fightFighters} existing={fight} onClose={() => setFightSetupOpen(false)} />

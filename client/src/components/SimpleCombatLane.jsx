@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import SquarePickLayer from './SquarePickLayer.jsx';
 import { socket } from '../socket.js';
 import { laneGeometry, laneLinesPath, moveOnLane, pointsAttr, slotAt } from '../lib/simpleLane.js';
 import FighterOverlay, { ChallengeLock } from './FighterOverlay.jsx';
@@ -188,6 +189,8 @@ export default function SimpleCombatLane({
         />
       </svg>
 
+      {/* Spaces to pick (phase D): space = lane × 10 + column. */}
+      <SquarePickLayer mode="simple" quadOf={(col, row) => geometry.segments[row * 10 + col]?.points ?? null} width={stageWidth} height={stageHeight} zIndex={2} />
       {/* Above the lane lines, below every miniature. */}
       <MapTileLayer
         mode="simple"

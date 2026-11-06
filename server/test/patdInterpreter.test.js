@@ -128,9 +128,9 @@ test('Vigilance Form: discard up to 2 Status tokens, then heal only if Bleeding'
   assert.equal(me.hp, 5);
 });
 
-test('rules with movement or placing are not automated at all', () => {
+test('movement is automated (phase D); placing obstacles is not yet', () => {
   const jumping = idx.get('ability.style-jumping.jumping-style').rules.find((r) => r.events.includes('own_turn.start'));
-  assert.equal(ruleSupport(jumping).ok, false);
+  assert.equal(ruleSupport(jumping).ok, true, 'Teleport 3');
   const volcanic = idx.get('ability.style-volcanic.volcanic-style').rules.find((r) => r.events.includes('own_turn.start'));
   assert.equal(ruleSupport(volcanic).ok, false);
 });
@@ -294,4 +294,14 @@ test('temporary: Take Aim installs "next damaging Action is Unblockable" in the 
   assert.deepEqual(temps.map((t) => [t.rule, t.duration, t.targetId]), [['next_damage_action.unblockable', 'until_next_damage_dealing_action', 1]]);
   assert.equal(ruleSupport({ events: ['own_turn.start'], effect: { op: 'modify_rule', rule: 'walls.treat_as', value: 'x' } }).ok, false);
   assert.equal(ruleSupport({ events: ['own_turn.start'], effect: { op: 'temporary', duration: 'end_of_current_turn', effect: { op: 'modify_rule', rule: 'unblockable', value: ['armor'] } } }).ok, true);
+});
+
+test('"you may Teleport 3": one square pick with a skip, no separate yes/no', async () => {
+  const me = fighter(1, 'a', { square: { col: 0, row: 0 } });
+  const { w } = makeWorld([me]);
+  const calls = [];
+  w.teleport = async (f, opts) => (calls.push(opts), null);
+  const { asked } = await fire('ability.style-jumping.jumping-style', 'own_turn.start', me, w);
+  assert.equal(asked.length, 0, 'no confirm first');
+  assert.deepEqual(calls, [{ distance: 3, upTo: false, allowNone: true }]);
 });

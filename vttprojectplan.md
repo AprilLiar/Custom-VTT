@@ -3397,10 +3397,60 @@ A GM-only page (`/homebrew`, the flask icon in the header and the mobile menu) f
     - Burning, Challenge removal and Fatigue in the End Phase;
     - the sheet setting.
     - The end-phase, trap-armor, shield-xp and turn-triggers playtests were updated: Armor now blocks Traps, and players are asked before their Shield blocks.
-- **D. Board and movement:**
-  - One board model for map and lanes (bounds, occupancy, obstacles).
-  - Free Movement costs (diagonal 2, leaving a Pit +1, Rubble Fatigue, Traps), Action Movement (exact or up to, no repeats, stopping on Rubble or a Pit), Teleport, Swap, Push and Pull (landing-square pick, Wall sliding, Cardboard, Iron resist), Pits, Rubble, Traps, Outside, Save Yourself.
-  - The square picker on map and lane; the Move button; the Early and Late Movement phases.
+- **D. Board and movement — implemented.**
+  - **One board model, pure** (`client/src/lib/patd/engine/board.js`, book pp.53-60), for the map and the lanes.
+    - **Squares:** `{ col, row }`. On a lane a square is (space, lane): stored as lane slot `lane × 10 + space`, and lane tiles as space index (row 0).
+    - **Full spaces:** Walls and units. Rubble, Pits, Traps and Fog leave a space empty, and movement only enters empty spaces.
+    - **Bounds:** the map's are the cells whose centre lies inside the image's 10% padding (`server/imageSize.js` reads the image's size from its bytes, PNG / JPEG / WebP / GIF, cached by hash). A lane's are 10 spaces × the lane count.
+    - **Where the Outside is:** on the map, all four edges. On lanes, **only a lane's ends** (decided: "the ends are the arena edge"), so nobody goes off a lane's front or back.
+  - **Free Movement** (`freeMoveReach`, cheapest Speed): 1 a space, 2 diagonally, +1 for each step out of a Pit, never through full spaces, never Outside. Traps on the path deal 1 and Rubble gives 1 Fatigue. Speed is paid after, only for the spaces moved.
+    - **Fatigued** (decided): the move discards 1 Fatigue and goes 2 spaces less (the path's last 2).
+    - **Swap:** 2 Speed swaps with an adjacent ally.
+  - **Action Movement** (`actionMoveDestinations`): "move X" goes exactly X when it can, and otherwise as far as it can; "up to X" may stop early. No repeated spaces, and Rubble or a Pit ends it at once. The mover picks the square.
+  - **Teleport X:** any empty space within Range 1-X. It is safe: no Trap, Pit or Rubble effects.
+  - **Swap Spaces:** both fighters trade places.
+  - **Fatigue** shortens Action Movement and Teleports by 2 too (discard 1).
+  - **Push and Pull** (`forcedMoves`, `landingsOf`):
+    - Each space is strictly farther from (push) or closer to (pull) the origin. A pull of an adjacent target spins them through spaces adjacent to both. Units block.
+    - **World of Cardboard (always on):** a push into a Wall smashes it into Rubble; they enter it and the movement ends.
+    - Rubble and Pits end it. Traps on the way trigger.
+    - **The Outside:** only off an edge they started on; otherwise they stop at the edge.
+    - The distance is the Action's, plus the same hit's Power (+1 each) and minus its Iron (−1 each). It is −1 if they stand in a Pit, and less by "you move one less space" (The Tank, via `self.would_be_pushed_or_pulled` → `reduce_forced_movement`).
+    - A push without a hit may be **resisted with Iron** (up to 2): Ask prompts, Auto resists only a risky push, Never doesn't.
+    - **The pusher taps the landing square.** A route is asked only when the routes cross different Traps (decided).
+    - **Landing:**
+      - a Pit deals 2 fall damage (source `fall` / `pits`, through the damage pipeline);
+      - Rubble gives 1 Fatigue; a Trap deals 1;
+      - the Outside means **removed from play and Dizzy** (off the map; on lanes, the tray). The Comeback comes in phase F.
+    - **Save Yourself:** 1 Speed, or 2 out of a Pit, moves one space instead. It is offered as a square pick with a Skip, only when the landing is dangerous (decided default).
+    - **Traps** deal damage once per turn (runtime `trapsHit`).
+  - **Applied on the server** (`server/engine/moves.js`, behind `world.move / teleport / forced / swap`). The world (`server/triggers.js`) gives it `board()`, `setSquare` (a map cell, or the lane slot through `moveOnLane`), `smashWall` and `setDizzy`. It posts one grey **movement notice** per move.
+  - **Interpreter:**
+    - New ops: `move`, `teleport`, `push`, `pull`, `swap_spaces`, `reduce_forced_movement`. Each hit records its push bonus and resist in `history.hits`.
+    - A "you may move / teleport" rule is one square pick with a Skip, not a yes/no first.
+    - New events: `self.would_be_pushed_or_pulled`, `self.pushed`, `self.push_finished`, `self.movement.finished`, `self.free_movement.one_space_finished`, `any_movement_phase.start`.
+  - **Picking squares (decided: on the map or lane, with a compact list):**
+    - A `square` prompt (`{ kind: 'square', mode, options: [{ id: 'c,r', col, row, label, note }] }`) opens `lib/squarePick.js`.
+    - The legal squares glow green on the map or lane (`SquarePickLayer`; Free Movement squares glow blue with their Speed cost). Tap one, or pick it from the short bar docked at the bottom.
+    - While a pick is open the dice board steps aside and the initiative rail fades and lets taps through.
+  - **The Move button** on the dice board's footer, for the active fighter before each Action (not mid-Commit), starts Free Movement: `move:reach` (an ack with `{ mode, speed, fatigued, options, swaps }`), then `move:free { combatantId, to }` and `move:swap { combatantId, allyId }`. **Done** ends it.
+  - **Early and Late Movement (decided)** live in `fights.movement_phase`: `{ kind, activeId, waiting }`.
+    - **Early** opens after the turn's start triggers, for every other fighter on the board holding Speed. **Late** opens on End turn, for everyone holding Speed, and the turn ends once it's done.
+    - `MovementPhaseBar` gives each waiting fighter's controller **Move** and **Done** (`move:done`); the GM can **Skip** (`move:skip`).
+    - Commit is refused during either phase. The GM's Next turn skips Late Movement, and Previous turn clears the phase.
+    - Late Movement lets everyone move at once (decided: not the book's active-allies-enemies order).
+    - Each phase emits `any_movement_phase.start`.
+  - **Not yet:**
+    - `move_obstacles`, `teleport_to` and `pull_until` (phase E / H);
+    - obstacles as targets or origins (`bindings.rubble`; phase E);
+    - pushing Copies (phase E);
+    - the Comeback rule for those removed from play (phase F).
+  - **Tests:** `server/test/board.test.js` (spaces, Free Movement costs, Action Movement, Teleport, push with Pits, Traps, Cardboard, the Outside, lanes' ends, pull and spin, Save Yourself, map bounds and image sizes) and the interpreter's "you may Teleport" test.
+  - **Playtests:**
+    - `scripts/playtest-movement.mjs`: Early Movement and its Commit lock, reach and cost, a Relentless push picked as a square, Cardboard with Save Yourself declined, the Outside, Late Movement, the GM's Skip.
+    - `scripts/playtest-lane-movement.mjs`: lanes as a grid, the slot saved, off a lane's end.
+    - The damage, dice-marks and turn-triggers playtests were updated: Swift Style's Speed now opens Late Movement, and Aura Style's push now runs.
+    - A phone-landscape browser run covered the phase bar, Move with the costs, the push square bar and a tapped landing, with no console errors.
 - **E. Obstacles and Copies:** placing, destroying, replacing and moving obstacles; Rubble and Walls destroyed by 2+ damage; Copies as 1-HP units an Original can act from.
 - **F. Turn structure and reactions:** the 8-phase machine (Comeback rule, Heroic Spirit, extra Action Dice), the React interface, Control tokens (Copy / Dodge / Parry), Luck, Training, Chaos.
 - **G. Modifiers and durations:** the `modify_rule` catalog at its enforcement points, `temporary`, `register_trigger` and `schedule`, and the remaining event emissions.

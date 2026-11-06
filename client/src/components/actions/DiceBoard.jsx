@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Check, Play, X, Zap } from 'lucide-react';
+import { Check, Footprints, Play, X, Zap } from 'lucide-react';
 import { socket } from '../../socket.js';
 import { getBuild } from '../../lib/api.js';
 import { useRole } from '../../roleContext.jsx';
@@ -9,6 +9,8 @@ import { deriveBuild, stanceOfBuild } from '../../lib/patd/build.js';
 import { minusReserved, poolOf, reservedBy, stopChoices, turnActions } from '../../lib/patd/diceBoard.js';
 import { affordableOptions, hasDiceCost, optionLabel, paymentText, planPayment, tokenOptions } from '../../lib/patd/tokenCost.js';
 import { useDiceMarks } from '../../lib/diceMarks.js';
+import { useSquarePick } from '../../lib/squarePick.js';
+import { startFreeMove } from '../../lib/freeMove.js';
 import { ActionCard, SuperMoveCard } from './ActionCards.jsx';
 
 // **The turn's dice board (full automation, phase B — vttprojectplan.md, "Full
@@ -82,6 +84,8 @@ export default function DiceBoard({ payload, onClose, canEdit }) {
   const isGm = role === 'gm';
   const [build, setBuild] = useState(undefined);
   const board = useDiceMarks(payload.roll_id);
+  // A square being picked on the map or lane (phase D): the board steps aside.
+  const picking = useSquarePick();
   const editable = canEdit && board.active;
   const [selected, setSelected] = useState(null);
   const [drag, setDrag] = useState(null); // { i, x, y }
@@ -249,6 +253,7 @@ export default function DiceBoard({ payload, onClose, canEdit }) {
 
   const power = fighter?.tokens?.power ?? 0;
   const btn = 'flex h-9 shrink-0 items-center gap-1 rounded-full border px-3 font-display text-[11px] font-bold uppercase tracking-wide disabled:opacity-40';
+  if (picking) return null;
   return createPortal(
     <div className="fixed inset-0 flex flex-col bg-zinc-950/[0.97]" style={{ zIndex: 3000 }} role="dialog" aria-modal="true" aria-label="This turn's Actions">
       <main className="min-h-0 flex-1 overflow-y-auto" onClick={(e) => e.target === e.currentTarget && setSelected(null)}>
@@ -327,6 +332,15 @@ export default function DiceBoard({ payload, onClose, canEdit }) {
               <Check size={13} aria-hidden /> {busy ? 'Performing…' : `Commit${pending.length ? ` ${pending.length}` : ''}`}
             </button>
           )}
+          {/* Free Movement before an Action (phase D): the board steps aside. */}
+          <button
+            type="button"
+            onClick={() => startFreeMove({ combatantId: payload.combatant_id, name: payload.fighter?.name ?? 'Free Movement', onError: say })}
+            disabled={!editable || busy}
+            className={`${btn} border-sky-500 text-sky-100`}
+          >
+            <Footprints size={13} aria-hidden /> Move
+          </button>
           <button
             type="button"
             onClick={() => (!pending.length || window.confirm('End your turn? Placed Actions that are not committed are dropped.')) && emit('board:end_turn')}

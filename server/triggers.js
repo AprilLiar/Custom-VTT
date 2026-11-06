@@ -14,7 +14,10 @@ import { all, one, run } from './db.js';
 import { applyHpDelta } from '../client/src/lib/hpBars.js';
 import { WEIGHT_BY_KEY, crossesBleed } from '../client/src/lib/cinematicWeight.js';
 import { TOKEN_BY_KEY, capOf, innateArmor } from '../client/src/lib/panicTokens.js';
-import { packLane, clampLanes } from '../client/src/lib/simpleLane.js';
+import { TRAY, clampLanes, moveOnLane, packLane } from '../client/src/lib/simpleLane.js';
+import { makeBoard } from '../client/src/lib/patd/engine/board.js';
+import { cellBounds, imageSize } from './imageSize.js';
+import { sceneGrid } from './combatMap.js';
 import { chebyshev, ruleSupport, runRule, targetable } from '../client/src/lib/patd/interpreter.js';
 import { controlsCharacter } from './control.js';
 import { hpOf, saveHp, serialized, shapeFightState } from './combatState.js';
@@ -28,6 +31,26 @@ import { spendPrefs } from '../client/src/lib/patd/engine/damage.js';
 import { loadRuntime, saveRuntime } from './engine/runtimeStore.js';
 import { createActionRunner } from './engine/actions.js';
 import { createHits } from './engine/hits.js';
+import { createMoves } from './engine/moves.js';
+
+// The combat map's image size, by image hash (its playable bounds — phase D).
+const imageSizes = new Map();
+async function mapBounds(sceneId) {
+  const scene = await one('SELECT combat_image_hash, grid_size, grid_offset_x, grid_offset_y, grid_opacity FROM scenes WHERE id = ?', [sceneId]);
+  if (!scene?.combat_image_hash) return null;
+  if (!imageSizes.has(scene.combat_image_hash)) {
+    const row = await one('SELECT combat_image_data FROM scenes WHERE id = ?', [sceneId]);
+    let size = null;
+    try {
+      size = row?.combat_image_data ? imageSize(Buffer.from(row.combat_image_data, 'base64')) : null;
+    } catch {
+      size = null;
+    }
+    imageSizes.set(scene.combat_image_hash, size);
+  }
+  const size = imageSizes.get(scene.combat_image_hash);
+  return size ? cellBounds(size.width, size.height, sceneGrid(scene)) : null;
+}
 
 const MIDDLEWEIGHT = WEIGHT_BY_KEY.middle;
 const PROMPT_TIMEOUT_MS = 10 * 60 * 1000;
@@ -79,6 +102,8 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
         maximum: request.maximum ?? 1,
         required: request.required ?? [],
         when: when ?? null,
+        // A square pick (phase D): which board the options are squares of.
+        mode: request.mode ?? null,
       };
       const timer = setTimeout(() => finish(id, null), PROMPT_TIMEOUT_MS);
       pending.set(id, { resolve, prompt, timer, fightKey, tg });
@@ -94,6 +119,8 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
   };
   // Damage Resolution for every hit of this engine's fights (engine/hits.js).
   const hits = createHits({ ask, emitEvent: (env, ev, f, p, filter) => emitEvent(env, ev, f, p, 0, filter) });
+  // Movement on the map and lanes (engine/moves.js).
+  const moves = createMoves({ ask, emitEvent: (env, ev, f, p, filter) => emitEvent(env, ev, f, p, 0, filter), postCard });
 
   // ---- the world of one fight
   async function buildWorld(fight) {
@@ -107,18 +134,30 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     let squareOf = (r) => (r.grid_col != null ? { col: r.grid_col, row: r.grid_row } : null);
     const tiles = await all('SELECT col, row, kind FROM map_tiles WHERE scene_id = ? AND mode = ?', [sceneId, mode]);
     let tileSquare = (t) => ({ col: t.col, row: t.row });
+    // Where a square is stored (lanes keep tiles as space index, row 0).
+    let storedOf = (sq) => ({ col: sq.col, row: sq.row });
+    let lanes = 1;
+    // The arena's edge (phase D): the lanes' ends, or the map image's padding.
+    let bounds = null;
     if (mode === 'simple') {
-      const lanes = clampLanes((await one('SELECT simple_lanes FROM table_settings WHERE id = 1'))?.simple_lanes);
+      lanes = clampLanes((await one('SELECT simple_lanes FROM table_settings WHERE id = 1'))?.simple_lanes);
       const packed = packLane(await all('SELECT id, lane_slot FROM scene_summons WHERE scene_id = ? AND character_id IS NOT NULL ORDER BY id', [sceneId]), lanes);
       squareOf = (r) => {
         const slot = r.summon_id != null ? packed.get(r.summon_id) : null;
         return slot == null ? null : { col: slot % 10, row: Math.floor(slot / 10) };
       };
       tileSquare = (t) => ({ col: t.col % 10, row: Math.floor(t.col / 10) });
+      storedOf = (sq) => ({ col: sq.row * 10 + sq.col, row: 0 });
+      bounds = { colMin: 0, colMax: 9, rowMin: 0, rowMax: lanes - 1 };
+    } else {
+      bounds = await mapBounds(sceneId);
     }
-    const traps = new Set(tiles.filter((t) => t.kind === 'trap').map((t) => { const q = tileSquare(t); return `${q.col},${q.row}`; }));
-    const walls = new Set(tiles.filter((t) => t.kind === 'wall').map((t) => { const q = tileSquare(t); return `${q.col},${q.row}`; }));
-    const pits = new Set(tiles.filter((t) => t.kind === 'pit').map((t) => { const q = tileSquare(t); return `${q.col},${q.row}`; }));
+    // The tiles in board squares — changed in place when a Wall is smashed.
+    const tileList = tiles.map((t) => ({ ...tileSquare(t), kind: t.kind }));
+    const setOf = (kind) => new Set(tileList.filter((t) => t.kind === kind).map((t) => `${t.col},${t.row}`));
+    const traps = setOf('trap');
+    const walls = setOf('wall');
+    const pits = setOf('pit');
     const fogSquares = tiles.filter((t) => t.kind === 'fog').map(tileSquare);
     const fogged = (sq) => fogSquares.some((f) => chebyshev(f, sq) <= 1);
 
@@ -138,6 +177,7 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
       fighters.push({
         id: r.id,
         characterId: r.character_id,
+        summonId: r.summon_id ?? null,
         name: r.name,
         side: sideOf(r.id),
         tokens: { ...state.tokens },
@@ -199,6 +239,36 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
       return true;
     };
     const inPit = (f) => f.square != null && pits.has(`${f.square.col},${f.square.row}`);
+    // **The board (phase D):** bounds, obstacles and who stands where, now.
+    const board = () =>
+      makeBoard({ bounds, tiles: tileList, units: fighters.filter((f) => f.square).map((f) => ({ id: f.id, square: f.square })), exits: mode === 'simple' ? 'cols' : 'all' });
+    // A fighter's new square (null: out of play — the Outside).
+    const setSquare = async (f, sq) => {
+      await queued(async () => {
+        if (mode === 'simple') {
+          const rows = await all('SELECT id, lane_slot FROM scene_summons WHERE scene_id = ? AND character_id IS NOT NULL ORDER BY id', [sceneId]);
+          if (f.summonId == null) return;
+          const next = moveOnLane(packLane(rows, lanes), f.summonId, sq ? sq.row * 10 + sq.col : null);
+          for (const [id, slot] of next) await run('UPDATE scene_summons SET lane_slot = ? WHERE id = ?', [slot ?? TRAY, id]);
+        } else {
+          await run('UPDATE combatants SET grid_col = ?, grid_row = ? WHERE id = ?', [sq?.col ?? null, sq?.row ?? null, f.id]);
+        }
+      });
+      f.square = sq ? { col: sq.col, row: sq.row } : null;
+    };
+    // World of Cardboard: a Wall smashed into Rubble.
+    const smashWall = async (sq) => {
+      const at = storedOf(sq);
+      await queued(async () => {
+        await run("DELETE FROM map_tiles WHERE scene_id = ? AND mode = ? AND col = ? AND row = ? AND kind = 'wall'", [sceneId, mode, at.col, at.row]);
+        const has = await one("SELECT id FROM map_tiles WHERE scene_id = ? AND mode = ? AND col = ? AND row = ? AND kind = 'rubble'", [sceneId, mode, at.col, at.row]);
+        if (!has) await run("INSERT INTO map_tiles (scene_id, mode, col, row, kind) VALUES (?, ?, ?, ?, 'rubble')", [sceneId, mode, at.col, at.row]);
+      });
+      for (let i = tileList.length - 1; i >= 0; i--) if (tileList[i].kind === 'wall' && tileList[i].col === sq.col && tileList[i].row === sq.row) tileList.splice(i, 1);
+      if (!tileList.some((t) => t.kind === 'rubble' && t.col === sq.col && t.row === sq.row)) tileList.push({ col: sq.col, row: sq.row, kind: 'rubble' });
+      walls.delete(`${sq.col},${sq.row}`);
+    };
+    const setDizzy = (f) => queued(() => run('UPDATE combatants SET dizzy = 1 WHERE id = ?', [f.id])).then(() => (f.dizzy = true));
 
     const world = {
       context: { healValue: weight.heal, bleedValue: weight.bleed, round: fight.round },
@@ -241,9 +311,15 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
       challenge: (target, challenger) => queued(() => run('UPDATE combatants SET challenge_id = ? WHERE id = ?', [challenger.id, target.id])),
       // Onto the fighter's active turn board (phase B); held numbers outside a turn come in phase F.
       addPoolNumber: (f, v) => runner.addPoolNumber(f.id, v, 'ability'),
+      // **Movement (phase D):** engine/moves.js, with the squares picked by people.
+      move: (f, opts) => moves.actionMove(world.env, movers, f, opts),
+      teleport: (f, opts) => moves.teleport(world.env, movers, f, opts),
+      forced: (f, opts) => moves.forced(world.env, movers, f, opts),
+      swap: (a, b) => moves.swap(world.env, movers, a, b),
     };
+    const movers = { mode, board, setSquare, smashWall, setDizzy, inPit, writeTokens };
     const onTrap = (f) => f.square != null && traps.has(`${f.square.col},${f.square.row}`);
-    return { world, fighters, byId, onTrap, weight };
+    return { world, fighters, byId, onTrap, weight, movers };
   }
 
   // Build Abilities are Unblockable (book p.26): the builds marked so in the content.
@@ -410,7 +486,7 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
   const envFor = async (fightRow, tg = null) => {
     const key = `${fightRow.scene_id}:${fightRow.mode}`;
     const rt = await loadRuntime(fightRow.id);
-    const { world, fighters, byId, onTrap } = await buildWorld(fightRow);
+    const { world, fighters, byId, onTrap, movers } = await buildWorld(fightRow);
     const env = {
       key,
       gen: gen(key),
@@ -423,7 +499,7 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
       save: () => (gen(key) === env.gen ? saveRuntime(fightRow.id, rt) : null),
     };
     world.env = env;
-    return { env, world, fighters, byId, onTrap };
+    return { env, world, fighters, byId, onTrap, movers };
   };
 
   // Start of combat: Improved Warrior gives the Warrior's Path's benefit (its
@@ -505,6 +581,46 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     // GM: undo a committed Action and every later one.
     retrieve(rollId, key) {
       return onBoardChain(rollId, () => runner.retrieve(rollId, key));
+    },
+    // **Free Movement (phase D):** where a fighter can go, and going there.
+    async freeReach(fightRow, combatantId) {
+      const { byId, movers, fighters } = await envFor(fightRow);
+      const f = byId(combatantId);
+      return {
+        mode: fightRow.mode,
+        speed: f?.tokens.speed ?? 0,
+        fatigued: (f?.tokens.fatigue ?? 0) > 0,
+        options: f ? moves.freeReach(movers, f) : [],
+        swaps: moves.swapsFor(fighters, f),
+      };
+    },
+    freeMove(fightRow, combatantId, to) {
+      return onChain(fightRow, async () => {
+        const { env, byId, movers } = await envFor(fightRow);
+        env.when = 'Free Movement';
+        const r = await moves.freeMove(env, movers, byId(combatantId), to);
+        await env.save();
+        await emitStageUpdated();
+        return r;
+      });
+    },
+    freeSwap(fightRow, combatantId, allyId) {
+      return onChain(fightRow, async () => {
+        const { env, byId, movers } = await envFor(fightRow);
+        const r = await moves.freeSwap(env, movers, byId(combatantId), byId(allyId));
+        await env.save();
+        await emitStageUpdated();
+        return r;
+      });
+    },
+    // Early / Late Movement began: "at the start of any movement phase" rules.
+    movementPhase(fightRow, kind, activeId) {
+      return onChain(fightRow, async () => {
+        const { env, byId } = await envFor(fightRow);
+        const active = byId(activeId);
+        if (active) await emitEvent(env, 'any_movement_phase.start', active, { phase: kind });
+        await env.save();
+      });
     },
     // A fight began: forget any old fight state, then "start of combat" rules.
     startFight(fightRow) {

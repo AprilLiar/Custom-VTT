@@ -146,6 +146,9 @@ check('…and the Power is spent', !fm.tokens.power, JSON.stringify(fm.tokens));
 const hpBeforeEnd = fm.hp.current;
 const asked = prompts.length;
 p.emit('board:end_turn', { rollId });
+await sleep(1200);
+// Late Movement first if anyone holds Speed (phase D; Swift Style gives some): everyone passes.
+for (const id of (await jf('/api/stage?role=gm')).fights.combat?.movement_phase?.waiting ?? []) gm.emit('move:done', { combatantId: id });
 await sleep(2500);
 fm = await fight(tm.id);
 // Burning 5: no Iron, no Shield; Armor (a new turn) −3 → 2; discard 3.
