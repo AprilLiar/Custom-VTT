@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import CopyLayer from './CopyLayer.jsx';
 import SquarePickLayer from './SquarePickLayer.jsx';
 import { Maximize2, Minus, Plus, X } from 'lucide-react';
 import { socket } from '../socket.js';
@@ -349,13 +350,22 @@ export default function CombatMap({
         <MapTileLayer
           active={active}
           mode="combat"
-          tiles={tiles}
+          tiles={tiles.filter((t) => t.kind !== 'copy')}
           squareAt={cellUnder}
           quadOf={tileQuadOf}
           width={stageWidth}
           height={stageHeight}
           rootRef={rootRef}
           zIndex={5}
+        />
+      )}
+      {/* Copies (phase E): the Original's picture, faded. */}
+      {ready && (
+        <CopyLayer
+          copies={tiles.filter((t) => t.kind === 'copy')}
+          quadOf={tileQuadOf}
+          ownerOf={(id) => tokens.find((t) => t.id === id) ?? null}
+          zIndex={7}
         />
       )}
       {/* Squares to pick (phase D): above the tiles, below the tokens. */}

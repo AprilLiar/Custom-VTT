@@ -73,6 +73,10 @@ export const SUPPORTED_OPS = new Set([
   'pull',
   'swap_spaces',
   'reduce_forced_movement',
+  // full automation, phase E
+  'place_obstacle',
+  'destroy_obstacle',
+  'replace_obstacle',
 ]);
 // Durations a `temporary` can have (engine/runtime.js expires them).
 const TEMP_DURATIONS = new Set([
@@ -147,12 +151,28 @@ export const SUPPORTED_EVENTS = new Set([
   'self.free_movement.one_space_finished',
   'any_movement_phase.start',
 ]);
-const SELECTOR_KINDS = new Set(['enemy', 'ally', 'unit', 'self_and_allies', 'self_or_ally']);
+const SELECTOR_KINDS = new Set([
+  'enemy',
+  'ally',
+  'unit',
+  'self_and_allies',
+  'self_or_ally',
+  // phase E: board spaces, obstacles (Copies among them) and your own Copies
+  'space',
+  'obstacle',
+  'own_copy',
+  'enemy_or_obstacle',
+  'unit_or_obstacle',
+  'ally_or_obstacle',
+]);
+const OBSTACLE_OPS_KINDS = new Set(['trap', 'fog', 'pit', 'rubble', 'wall', 'copy']);
 // Copies aren't tracked on the board, so "you or your Copies" is your own range.
 const RANGE_MODES = new Set(['stance', 'visible', 'adjacent', 'explicit', 'none', 'map', 'self_or_copies_range']);
 const REF_OK = [
   /^self$/,
   /^self\.bleeding$/,
+  /^self\.space$/,
+  /^(targets|bindings)\.[A-Za-z]+\.space$/,
   /^self\.tokens\.[a-z_]+$/,
   /^self\.currentBar\.damage$/,
   /^context\.(healValue|bleedValue|round|activeCharacter)$/,
@@ -209,6 +229,8 @@ export function ruleSupport(rule) {
     if (typeof n.kind === 'string' && n.range && !SELECTOR_KINDS.has(n.kind)) problems.push(`selector ${n.kind}`);
     if (n.range && typeof n.range === 'object' && n.range.mode && !RANGE_MODES.has(n.range.mode)) problems.push(`range ${n.range.mode}`);
     if (n.range?.origin && n.range.origin !== 'self') problems.push(`origin ${n.range.origin}`);
+    if (n.inFog || n.originBinding || n.obstacleBinding) problems.push('selector detail');
+    if (n.op === 'place_obstacle' && !OBSTACLE_OPS_KINDS.has(n.obstacle)) problems.push(`obstacle ${n.obstacle}`);
     if (n.actor) problems.push('actor');
     for (const [k, v] of Object.entries(n)) if (k !== 'range') walk(v);
   };
@@ -376,7 +398,7 @@ function affordable(effect, scope, ctx) {
 
 const DECLINED = Symbol('declined');
 // A "you may" opening with a pick offers its own skip (phase D: a square too).
-const PICK_OPS = new Set(['discard_tokens', 'select_token', 'move', 'teleport']);
+const PICK_OPS = new Set(['discard_tokens', 'select_token', 'move', 'teleport', 'place_obstacle']);
 const opensWithPick = (e) => PICK_OPS.has(e?.op) || (e?.op === 'sequence' && PICK_OPS.has(e.steps?.[0]?.op));
 
 async function targetsOf(v, scope, ctx, label) {
@@ -384,16 +406,61 @@ async function targetsOf(v, scope, ctx, label) {
   return asList(evalValue(v, scope)).filter((x) => x && typeof x === 'object' && x.id != null);
 }
 
+// **Spaces (phase E):** squares in range — `empty` ones only when asked —
+// picked one at a time on the map or lane (`square` prompts).
+async function selectSpaces(sel, scope, ctx, from, { optional = false } = {}) {
+  const { world } = ctx;
+  if (!world.spaces) throw new Unsupported('spaces');
+  let pool = world.spaces(from, sel.range, { empty: Boolean(sel.empty) });
+  const count = sel.count;
+  if (count === 'all') return pool;
+  const maximum = typeof count === 'number' ? count : typeof count === 'object' && count?.maximum != null ? evalValue(count.maximum, scope) : 1;
+  const upTo = optional || (typeof count === 'object' && count?.maximum != null);
+  const picked = [];
+  for (let i = 0; i < maximum && pool.length; i++) {
+    // One legal space and no choice to skip: no need to ask.
+    if (pool.length === 1 && !upTo && maximum === 1) {
+      picked.push(pool[0]);
+      break;
+    }
+    const ans = await ctx.ask({
+      kind: 'square',
+      mode: world.mode,
+      fighter: scope.self,
+      title: ctx.ability?.name ?? 'Pick a space',
+      text: maximum > 1 ? `Pick a space (${i + 1} of ${upTo ? 'up to ' : ''}${maximum}).` : 'Pick a space.',
+      options: pool.map((sq) => ({ id: `${sq.col},${sq.row}`, label: `${sq.col},${sq.row}`, col: sq.col, row: sq.row })),
+      minimum: upTo ? 0 : 1,
+      maximum: 1,
+    });
+    const id = asList(ans)[0];
+    const sq = pool.find((x) => `${x.col},${x.row}` === id) ?? (upTo ? null : pool[0]);
+    if (!sq) break;
+    picked.push(sq);
+    pool = pool.filter((x) => x !== sq);
+  }
+  return picked;
+}
+
 // The candidates a selector allows, and the pick when one is needed.
 async function select(sel, scope, ctx, label = 'a target') {
   const { world } = ctx;
   const self = scope.self;
+  // Acting from one of your Copies (phase E): ranges count from its square.
+  const from = ctx.originSquare ? { ...self, square: ctx.originSquare } : self;
+  if (sel.kind === 'space') return selectSpaces(sel, scope, ctx, from);
+  const copies = world.copies?.() ?? [];
   let pool;
-  if (sel.kind === 'enemy') pool = world.enemiesOf(self);
+  if (sel.kind === 'enemy') pool = [...world.enemiesOf(self), ...copies.filter((c) => c.side !== self.side)];
   else if (sel.kind === 'ally' || sel.kind === 'self_and_allies' || sel.kind === 'self_or_ally') pool = world.alliesOf(self);
-  else pool = world.fighters();
+  else if (sel.kind === 'own_copy') pool = copies.filter((c) => c.ownerId === self.id);
+  else if (sel.kind === 'obstacle') pool = world.obstacles?.(from, sel.range, { types: sel.types ?? null }) ?? [];
+  else if (sel.kind.endsWith('_or_obstacle')) {
+    const units = sel.kind === 'enemy_or_obstacle' ? world.enemiesOf(self) : sel.kind === 'ally_or_obstacle' ? world.alliesOf(self) : world.fighters();
+    pool = [...units, ...(world.obstacles?.(from, sel.range, {}) ?? [])];
+  } else pool = [...world.fighters(), ...copies];
   if (sel.excludeSelf) pool = pool.filter((f) => f.id !== self.id);
-  pool = pool.filter((f) => world.inRange(self, f, sel.range));
+  pool = pool.filter((f) => f.isObstacle || f.isCopy && sel.range?.mode === 'none' || world.inRange(from, f, sel.range));
   const count = sel.count;
   if (count === 'all' || sel.kind === 'self_and_allies') return pool;
   if (!pool.length) return [];
@@ -412,7 +479,7 @@ async function select(sel, scope, ctx, label = 'a target') {
     fighter: self,
     title: ctx.ability?.name ?? 'Choose',
     text: `Choose ${maximum === 1 ? label : `up to ${maximum}`}${must ? ` — ${must.name} must be one (Challenge)` : ''}.`,
-    options: pool.map((f) => ({ id: String(f.id), label: f.name })),
+    options: pool.map((f) => ({ id: String(f.id), label: f.isObstacle || f.isCopy ? `${f.name} (${f.square.col},${f.square.row})` : f.name })),
     minimum: Math.max(minimum, must ? 1 : 0),
     maximum,
     required: must ? [String(must.id)] : [],
@@ -641,6 +708,14 @@ async function run(node, scope, ctx) {
     case 'damage': {
       const n = val(node.amount);
       for (const f of await targetsOf(node.target, scope, ctx, 'an enemy')) {
+        // A Wall or Rubble hit for 2+ in one hit is destroyed (book p.11; phase E).
+        if (f.isObstacle && !f.isCopy) {
+          if (n >= 2 && (f.kind === 'wall' || f.kind === 'rubble')) {
+            await world.destroyObstacle(f);
+            ctx.log(`${scope.self.name} destroys the ${f.name}${f.kind === 'wall' ? ' (Rubble now)' : ''}`);
+          }
+          continue;
+        }
         const r = await world.damage(f, n, scope.self, {
           source: ctx.source ?? 'ability',
           ignore: node.ignoreDefenses ?? null,
@@ -699,6 +774,43 @@ async function run(node, scope, ctx) {
         if ((world.heldTokens(f)[key] ?? 0) < amount) return DECLINED;
         await world.discardTokens(f, [key], amount);
         ctx.log(`${f.name} spends ${amount} ${tokenName(key)}`);
+      }
+      return;
+    }
+    // **Obstacles (phase E):** placed on picked spaces by the book's stacking
+    // (mapTiles.js); a Copy is placed for whoever makes it (`self`).
+    case 'place_obstacle': {
+      const kind = val(node.obstacle);
+      if (!world.placeObstacle || !OBSTACLE_OPS_KINDS.has(kind)) return unsupported(node, scope, ctx);
+      // "You may place …": the space pick itself offers the skip.
+      const decline = scope.mayDecline;
+      scope.mayDecline = false;
+      let squares;
+      if (isSelector(node.target)) {
+        const sel = { ...node.target, empty: node.target.empty || kind === 'copy' || kind === 'wall' };
+        const from = ctx.originSquare ? { ...scope.self, square: ctx.originSquare } : scope.self;
+        // Only spaces it can legally go on.
+        const legal = world.spaces(from, sel.range, { empty: sel.empty }).filter((sq) => world.canPlace(kind, sq));
+        squares = await selectSpaces({ ...sel, count: sel.count ?? node.count ?? 1 }, scope, { ...ctx, world: { ...world, spaces: () => legal } }, from, { optional: decline });
+        if (decline && !squares.length) return DECLINED;
+      } else {
+        squares = asList(val(node.target)).map((x) => x?.square ?? x).filter((x) => x && Number.isInteger(x.col) && world.canPlace(kind, x));
+      }
+      const placed = [];
+      for (const sq of squares) placed.push(await world.placeObstacle(kind, sq, scope.self));
+      if (placed.length) ctx.log(`${scope.self.name} places ${placed.length === 1 ? `a ${kind === 'copy' ? 'Copy' : kind}` : `${placed.length} ${kind === 'copy' ? 'Copies' : kind}`}`);
+      if (node.binding) scope.bindings[node.binding] = placed.length === 1 ? placed[0] : placed;
+      return;
+    }
+    case 'destroy_obstacle':
+    case 'replace_obstacle': {
+      if (!world.destroyObstacle) return unsupported(node, scope, ctx);
+      const to = node.op === 'replace_obstacle' ? val(node.replacement) : null;
+      for (const o of await targetsOf(node.target, scope, ctx, 'an obstacle')) {
+        if (!o.isObstacle && !o.isCopy) continue;
+        if (to) await world.replaceObstacle(o, to);
+        else await world.destroyObstacle(o);
+        ctx.log(`${to ? 'replaces' : 'destroys'} the ${o.name}${to ? ` with ${to}` : ''}`);
       }
       return;
     }

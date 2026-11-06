@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import CopyLayer from './CopyLayer.jsx';
 import SquarePickLayer from './SquarePickLayer.jsx';
 import { socket } from '../socket.js';
 import { laneGeometry, laneLinesPath, moveOnLane, pointsAttr, slotAt } from '../lib/simpleLane.js';
@@ -189,12 +190,14 @@ export default function SimpleCombatLane({
         />
       </svg>
 
+      {/* Copies (phase E), on their lane spaces. */}
+      <CopyLayer copies={tiles.filter((t) => t.kind === 'copy')} quadOf={tileQuadOf} ownerOf={(id) => summons.find((s) => s.fight?.combatant_id === id) ?? null} zIndex={2} />
       {/* Spaces to pick (phase D): space = lane × 10 + column. */}
       <SquarePickLayer mode="simple" quadOf={(col, row) => geometry.segments[row * 10 + col]?.points ?? null} width={stageWidth} height={stageHeight} zIndex={2} />
       {/* Above the lane lines, below every miniature. */}
       <MapTileLayer
         mode="simple"
-        tiles={tiles}
+        tiles={tiles.filter((t) => t.kind !== 'copy')}
         squareAt={tileSquareAt}
         quadOf={tileQuadOf}
         width={stageWidth}

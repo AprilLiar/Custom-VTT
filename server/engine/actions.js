@@ -87,6 +87,17 @@ export function createActionRunner(kit) {
     if (payment.hp) await emitEvent(env, 'self.hp_paid', actor, { amount: payment.hp });
     await emitEvent(env, 'self.action.cost_paid', actor, { action, rating: payment.rating });
     const gateRating = placement.stop ?? payment.rating;
+    // **Acting from a Copy (phase E, book p.71):** with Copies on the board the
+    // Original picks where the Action is performed from; its ranges count from there.
+    let originSquare = null;
+    const own = (env.world.copies?.() ?? []).filter((c) => c.ownerId === actor.id && c.square);
+    if (own.length && actor.square) {
+      const options = [actor, ...own].map((o) => ({ id: `${o.square.col},${o.square.row}`, label: o === actor ? `Here (${actor.name})` : o.name, col: o.square.col, row: o.square.row }));
+      const ans = await ask(actor, env.key, env.gen, env.tg, `${action.name}`)({ kind: 'square', mode: env.world.mode, title: `${action.name}: act from`, text: 'Perform it from where you stand, or from one of your Copies.', options, minimum: 1, maximum: 1 });
+      const id = Array.isArray(ans) ? ans[0] : ans;
+      const pick = options.find((o) => o.id === id);
+      if (pick && pick.id !== options[0].id) originSquare = { col: pick.col, row: pick.row };
+    }
     const lines = [];
     const manual = [];
     const history = { damageDealt: 0, damagedIds: [], challengedIds: [] };
@@ -114,6 +125,7 @@ export function createActionRunner(kit) {
       // on your own Actions (decided): on = Enhance each hit as far as allowed.
       source: 'action',
       power: data.power ? 'max' : 'none',
+      originSquare,
       mustTarget: damaging && actor.challengeId != null ? actor.challengeId : null,
       onUnsupported: (node) => {
         manual.push(describe(node) || node.op);

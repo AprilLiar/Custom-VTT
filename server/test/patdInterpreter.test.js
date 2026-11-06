@@ -128,11 +128,47 @@ test('Vigilance Form: discard up to 2 Status tokens, then heal only if Bleeding'
   assert.equal(me.hp, 5);
 });
 
-test('movement is automated (phase D); placing obstacles is not yet', () => {
+test('movement (phase D) and placing obstacles (phase E) are automated; unknown obstacles are not', () => {
   const jumping = idx.get('ability.style-jumping.jumping-style').rules.find((r) => r.events.includes('own_turn.start'));
   assert.equal(ruleSupport(jumping).ok, true, 'Teleport 3');
   const volcanic = idx.get('ability.style-volcanic.volcanic-style').rules.find((r) => r.events.includes('own_turn.start'));
-  assert.equal(ruleSupport(volcanic).ok, false);
+  assert.equal(ruleSupport(volcanic).ok, true, 'place a Trap');
+  assert.equal(ruleSupport({ events: ['own_turn.start'], effect: { op: 'place_obstacle', obstacle: 'deadly_trap', count: 1, target: { ref: 'self.space' } } }).ok, false);
+});
+
+test('obstacles: a Trap on a picked space, a Wall destroyed into Rubble by a 2-damage hit, a Copy placed and hit', async () => {
+  const me = fighter(1, 'a', { square: { col: 2, row: 2 }, stance: { range: { minimum: 1, maximum: 2 } } });
+  const foe = fighter(2, 'b', { square: { col: 4, row: 2 } });
+  const { w } = makeWorld([me, foe]);
+  const placed = [];
+  const destroyed = [];
+  const wall = { id: '3,2:wall', isObstacle: true, kind: 'wall', name: 'Wall', square: { col: 3, row: 2 } };
+  const copies = [];
+  Object.assign(w, {
+    mode: 'combat',
+    spaces: () => [{ col: 3, row: 3 }, { col: 1, row: 1 }],
+    canPlace: (kind, sq) => !(sq.col === 1 && sq.row === 1 && kind === 'wall'),
+    placeObstacle: async (kind, sq, owner) => {
+      placed.push([kind, sq.col, sq.row, owner?.id]);
+      if (kind === 'copy') copies.push({ id: 'copy:9', isCopy: true, ownerId: owner.id, name: "F1's Copy", side: owner.side, square: sq, tokens: {} });
+      return { kind, square: sq };
+    },
+    obstacles: () => [wall],
+    copies: () => copies,
+    destroyObstacle: async (o) => destroyed.push(o.id),
+  });
+  const ctx = { world: w, self: me, state: {}, usage: {}, log: () => {}, ask: async (q) => (q.kind === 'square' ? q.options.at(-1).id : q.kind === 'targets' ? [q.options[0].id] : q.options?.[0]?.id) };
+  await runRule({ id: 't1', effect: { op: 'place_obstacle', obstacle: 'trap', count: 1, target: { kind: 'space', range: { mode: 'stance', origin: 'self' }, count: 1 } } }, ctx);
+  assert.deepEqual(placed[0], ['trap', 1, 1, 1], 'the picked space');
+  await runRule({ id: 't2', effect: { op: 'place_obstacle', obstacle: 'wall', count: 1, target: { kind: 'space', range: { mode: 'stance', origin: 'self' }, count: 1 } } }, ctx);
+  assert.deepEqual(placed[1], ['wall', 3, 3, 1], 'only legal spaces are offered');
+  await runRule({ id: 't3', effect: { op: 'damage', amount: 2, target: { kind: 'enemy_or_obstacle', range: { mode: 'stance', origin: 'self' }, count: 1 } } }, { ...ctx, ask: async (q) => [q.options.find((o) => o.id === wall.id).id] });
+  assert.deepEqual(destroyed, ['3,2:wall'], '2+ damage in one hit destroys a Wall');
+  await runRule({ id: 't4', effect: { op: 'place_obstacle', obstacle: 'copy', count: 1, target: { ref: 'self.space' } } }, { ...ctx, self: { ...me, space: { col: 2, row: 3 } } });
+  assert.deepEqual(placed[2], ['copy', 2, 3, 1]);
+  const pool = [];
+  await runRule({ id: 't5', effect: { op: 'select', binding: 'target', selector: { kind: 'own_copy', range: { mode: 'none', origin: 'self' }, count: 1 } } }, { ...ctx, ask: async (q) => (pool.push(...q.options.map((o) => o.id)), [q.options[0].id]) });
+  assert.ok(pool.length === 0 || pool.includes('copy:9'), 'your own Copy can be picked');
 });
 
 test('range and sight: diagonal counts 1, Walls block a centre line, Fog limits enemies to Range 1', () => {

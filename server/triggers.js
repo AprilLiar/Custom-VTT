@@ -15,7 +15,8 @@ import { applyHpDelta } from '../client/src/lib/hpBars.js';
 import { WEIGHT_BY_KEY, crossesBleed } from '../client/src/lib/cinematicWeight.js';
 import { TOKEN_BY_KEY, capOf, innateArmor } from '../client/src/lib/panicTokens.js';
 import { TRAY, clampLanes, moveOnLane, packLane } from '../client/src/lib/simpleLane.js';
-import { makeBoard } from '../client/src/lib/patd/engine/board.js';
+import { inBounds as inBoundsAt, isEmpty as isEmptyAt, makeBoard, occupant as occupantAt } from '../client/src/lib/patd/engine/board.js';
+import { OBSTACLES as OBSTACLE_KINDS, placeTile, removeTile } from '../client/src/lib/mapTiles.js';
 import { cellBounds, imageSize } from './imageSize.js';
 import { sceneGrid } from './combatMap.js';
 import { chebyshev, ruleSupport, runRule, targetable } from '../client/src/lib/patd/interpreter.js';
@@ -132,7 +133,7 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     const weight = WEIGHT_BY_KEY[mode === 'simple' ? scene?.simple_weight : scene?.combat_weight] ?? MIDDLEWEIGHT;
     // Squares: a map cell, or a lane space as (column, lane).
     let squareOf = (r) => (r.grid_col != null ? { col: r.grid_col, row: r.grid_row } : null);
-    const tiles = await all('SELECT col, row, kind FROM map_tiles WHERE scene_id = ? AND mode = ?', [sceneId, mode]);
+    const tiles = await all('SELECT id, col, row, kind, owner_id FROM map_tiles WHERE scene_id = ? AND mode = ?', [sceneId, mode]);
     let tileSquare = (t) => ({ col: t.col, row: t.row });
     // Where a square is stored (lanes keep tiles as space index, row 0).
     let storedOf = (sq) => ({ col: sq.col, row: sq.row });
@@ -153,7 +154,7 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
       bounds = await mapBounds(sceneId);
     }
     // The tiles in board squares — changed in place when a Wall is smashed.
-    const tileList = tiles.map((t) => ({ ...tileSquare(t), kind: t.kind }));
+    const tileList = tiles.filter((t) => t.kind !== 'copy').map((t) => ({ ...tileSquare(t), kind: t.kind }));
     const setOf = (kind) => new Set(tileList.filter((t) => t.kind === kind).map((t) => `${t.col},${t.row}`));
     const traps = setOf('trap');
     const walls = setOf('wall');
@@ -197,6 +198,35 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
       });
     }
     const byId = (id) => fighters.find((f) => f.id === id);
+    // A fighter's square is also their "space" (`self.space`, `targets.x.space`).
+    for (const f of fighters) Object.defineProperty(f, 'space', { get: () => f.square, enumerable: false });
+
+    // **Copies (phase E, book p.71):** replicas of their Original — map tiles of
+    // kind 'copy' with the Original's combatant id. A Copy fills its space like
+    // a unit, can be targeted as an enemy or an obstacle (never an ally), holds
+    // no tokens, and has 1 HP: any damage, a Trap included, destroys it.
+    const copyOf = (t) => {
+      const owner = byId(t.owner_id);
+      if (!owner) return null;
+      return {
+        id: `copy:${t.id}`,
+        rowId: t.id,
+        isCopy: true,
+        ownerId: owner.id,
+        characterId: owner.characterId,
+        name: `${owner.name}'s Copy`,
+        side: owner.side,
+        square: tileSquare(t),
+        get space() {
+          return this.square;
+        },
+        tokens: {},
+        abilityIds: [],
+        stance: owner.stance,
+        prefs: owner.prefs,
+      };
+    };
+    const copies = tiles.filter((t) => t.kind === 'copy').map(copyOf).filter(Boolean);
 
     const readRow = (id) => one('SELECT * FROM combatants WHERE id = ?', [id]);
     const writeTokens = async (f, change) => {
@@ -241,9 +271,22 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     const inPit = (f) => f.square != null && pits.has(`${f.square.col},${f.square.row}`);
     // **The board (phase D):** bounds, obstacles and who stands where, now.
     const board = () =>
-      makeBoard({ bounds, tiles: tileList, units: fighters.filter((f) => f.square).map((f) => ({ id: f.id, square: f.square })), exits: mode === 'simple' ? 'cols' : 'all' });
+      makeBoard({
+        bounds,
+        tiles: tileList,
+        units: [...fighters, ...copies].filter((f) => f.square).map((f) => ({ id: f.id, square: f.square })),
+        exits: mode === 'simple' ? 'cols' : 'all',
+      });
     // A fighter's new square (null: out of play — the Outside).
     const setSquare = async (f, sq) => {
+      if (f.isCopy) {
+        // A Copy moves as its tile; one that goes Outside is gone.
+        if (!sq) return destroyCopy(f);
+        const at = storedOf(sq);
+        await queued(() => run('UPDATE map_tiles SET col = ?, row = ? WHERE id = ?', [at.col, at.row, f.rowId]));
+        f.square = { col: sq.col, row: sq.row };
+        return;
+      }
       await queued(async () => {
         if (mode === 'simple') {
           const rows = await all('SELECT id, lane_slot FROM scene_summons WHERE scene_id = ? AND character_id IS NOT NULL ORDER BY id', [sceneId]);
@@ -268,19 +311,68 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
       if (!tileList.some((t) => t.kind === 'rubble' && t.col === sq.col && t.row === sq.row)) tileList.push({ col: sq.col, row: sq.row, kind: 'rubble' });
       walls.delete(`${sq.col},${sq.row}`);
     };
-    const setDizzy = (f) => queued(() => run('UPDATE combatants SET dizzy = 1 WHERE id = ?', [f.id])).then(() => (f.dizzy = true));
+    const setDizzy = (f) => (f.isCopy ? null : queued(() => run('UPDATE combatants SET dizzy = 1 WHERE id = ?', [f.id])).then(() => (f.dizzy = true)));
+
+    // ---- obstacles (phase E): placing, destroying, replacing (mapTiles.js stacking rules)
+    const kindsAtSq = (sq) => tileList.filter((t) => t.col === sq.col && t.row === sq.row).map((t) => t.kind);
+    const writeKinds = async (sq, kinds) => {
+      const at = storedOf(sq);
+      await queued(async () => {
+        await run("DELETE FROM map_tiles WHERE scene_id = ? AND mode = ? AND col = ? AND row = ? AND kind != 'copy'", [sceneId, mode, at.col, at.row]);
+        for (const kind of kinds) await run('INSERT INTO map_tiles (scene_id, mode, col, row, kind) VALUES (?, ?, ?, ?, ?)', [sceneId, mode, at.col, at.row, kind]);
+      });
+      for (let i = tileList.length - 1; i >= 0; i--) if (tileList[i].col === sq.col && tileList[i].row === sq.row) tileList.splice(i, 1);
+      for (const kind of kinds) tileList.push({ col: sq.col, row: sq.row, kind });
+      for (const [kind, set] of [['trap', traps], ['wall', walls], ['pit', pits]]) {
+        const k = `${sq.col},${sq.row}`;
+        if (kinds.includes(kind)) set.add(k);
+        else set.delete(k);
+      }
+      fogSquares.splice(0, fogSquares.length, ...tileList.filter((t) => t.kind === 'fog').map((t) => ({ col: t.col, row: t.row })));
+    };
+    const destroyCopy = async (c) => {
+      await queued(() => run('DELETE FROM map_tiles WHERE id = ?', [c.rowId]));
+      const i = copies.indexOf(c);
+      if (i >= 0) copies.splice(i, 1);
+      c.square = null;
+    };
+    // Squares within a range of `from` (for space selectors): the board's own,
+    // or — with no known edge — those the range can reach.
+    const radiusOf = (from, range) =>
+      range?.mode === 'adjacent' ? 1 : range?.mode === 'explicit' ? Number(range.maximum) || 1 : Math.max(1, from.stance?.range?.maximum ?? 2) + 6;
+    const squaresNear = (from, range) => {
+      if (!from?.square) return [];
+      const r = radiusOf(from, range);
+      const out = [];
+      for (let dc = -r; dc <= r; dc++) {
+        for (let dr = -r; dr <= r; dr++) {
+          const sq = { col: from.square.col + dc, row: from.square.row + dr };
+          if (bounds && !(sq.col >= bounds.colMin && sq.col <= bounds.colMax && sq.row >= bounds.rowMin && sq.row <= bounds.rowMax)) continue;
+          out.push(sq);
+        }
+      }
+      return out;
+    };
 
     const world = {
       context: { healValue: weight.heal, bleedValue: weight.bleed, round: fight.round },
       fighters: () => fighters,
       enemiesOf: (f) => fighters.filter((x) => x.side !== f.side),
       alliesOf: (f) => fighters.filter((x) => x.side === f.side),
-      inRange: (from, to, range) =>
-        targetable({ from: from.square, to: to.square, range, stanceRange: from.stance?.range, walls, fogged, enemy: from.side !== to.side }),
+      inRange: (from, to, range) => {
+        // "Within range of you or your Copies" (phase E): from any of them.
+        if (range?.mode === 'self_or_copies_range') {
+          const origins = [from, ...copies.filter((c) => c.ownerId === from.id)];
+          return origins.some((o) => targetable({ from: o.square, to: to.square, range: { mode: 'stance' }, stanceRange: from.stance?.range, walls, fogged, enemy: from.side !== to.side }));
+        }
+        return targetable({ from: from.square, to: to.square, range, stanceRange: from.stance?.range, walls, fogged, enemy: from.side !== to.side });
+      },
       heldTokens: (f) => ({ ...f.tokens }),
+      // Copies hold no tokens, Shields or HP (book p.71): those do nothing to them.
       gainTokens: (f, key, n) =>
-        TOKEN_BY_KEY[key] && key !== 'challenge' ? writeTokens(f, (t) => (t[key] = Math.min(capOf(key), (t[key] ?? 0) + n))) : null,
+        !f.isCopy && TOKEN_BY_KEY[key] && key !== 'challenge' ? writeTokens(f, (t) => (t[key] = Math.min(capOf(key), (t[key] ?? 0) + n))) : null,
       discardTokens: async (f, keys, n) => {
+        if (f.isCopy) return 0;
         let taken = 0;
         await writeTokens(f, (t) => {
           for (const k of keys) {
@@ -292,20 +384,82 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
         return taken;
       },
       // A new Shield replaces the old or raises it by 1 — whichever is more.
-      gainShield: (f, v) => writeTokens(f, (t) => (t.shield = Math.min(capOf('shield'), Math.max(Number(v) || 0, (t.shield ?? 0) + 1)))),
+      gainShield: (f, v) => (f.isCopy ? null : writeTokens(f, (t) => (t.shield = Math.min(capOf('shield'), Math.max(Number(v) || 0, (t.shield ?? 0) + 1))))),
       // Temporary Armor is binary (book p.24): you have it or you don't.
-      tempArmor: (f) => writeTokens(f, (t) => (t.temp_armor = 1)),
+      tempArmor: (f) => (f.isCopy ? null : writeTokens(f, (t) => (t.temp_armor = 1))),
       heal: async (f, n) => {
+        if (f.isCopy) return 0;
         await changeHp(f, Math.max(0, Number(n) || 0));
         return n;
       },
-      payHp: (f, n) => changeHp(f, -Math.max(0, Number(n) || 0)),
+      payHp: (f, n) => (f.isCopy ? null : changeHp(f, -Math.max(0, Number(n) || 0))),
       // **Damage (phase C):** the whole Damage Resolution — Weakness, Power,
       // Iron, Shield, Armor — with its prompts and events (engine/hits.js).
       // opts: { source: 'action' | 'ability' | 'super' | 'trap' | 'fall' |
       // 'burning', ignore, allowIron, mods, unblockable, power, emit }.
-      damage: (f, n, attacker = null, opts = {}) =>
-        hits.resolveHit(world.env, { writeTokens, changeHp, bleedCheck, inPit }, f, n, attacker, opts),
+      damage: async (f, n, attacker = null, opts = {}) => {
+        // A Copy has 1 HP: any damage destroys it.
+        if (f.isCopy) {
+          if (!(Number(n) > 0)) return { taken: 0, steps: [], immune: false };
+          await destroyCopy(f);
+          return { taken: 1, toHp: 1, dealt: 1, steps: ['the Copy is destroyed'], destroyed: true };
+        }
+        return hits.resolveHit(world.env, { writeTokens, changeHp, bleedCheck, inPit }, f, n, attacker, opts);
+      },
+      // **Obstacles (phase E).** The legal squares for a placement, the obstacles
+      // in range, and the changes — all by the book's stacking (mapTiles.js).
+      mode,
+      spaces: (from, range, { empty = false } = {}) => {
+        const b = board();
+        return squaresNear(from, range).filter(
+          (sq) => (!empty || isEmptyAt(b, sq)) && targetable({ from: from.square, to: sq, range, stanceRange: from.stance?.range, walls, fogged, enemy: false })
+        );
+      },
+      obstacles: (from, range, { types = null } = {}) => {
+        const list = [
+          ...tileList.filter((t) => OBSTACLE_KINDS.has(t.kind)).map((t) => ({ id: `${t.col},${t.row}:${t.kind}`, isObstacle: true, kind: t.kind, name: t.kind[0].toUpperCase() + t.kind.slice(1), square: { col: t.col, row: t.row } })),
+          ...copies.map((c) => Object.assign(c, { kind: 'copy' })),
+        ];
+        return list.filter(
+          (o) => o.square && (!types || types.includes(o.kind)) && targetable({ from: from.square, to: o.square, range, stanceRange: from.stance?.range, walls, fogged, enemy: false })
+        );
+      },
+      copies: () => copies,
+      canPlace: (kind, sq) => {
+        const b = board();
+        if (!inBoundsAt(b, sq)) return false;
+        // Rubble and Walls fill a space: not onto a fighter or a Copy.
+        if ((kind === 'wall' || kind === 'copy') && occupantAt(b, sq) != null) return false;
+        if (kind === 'copy') return isEmptyAt(b, sq);
+        return placeTile(kindsAtSq(sq), kind).includes(kind);
+      },
+      placeObstacle: async (kind, sq, owner = null) => {
+        if (kind === 'copy') {
+          if (!owner) return null;
+          const at = storedOf(sq);
+          let id = null;
+          await queued(async () => {
+            const r = await run("INSERT INTO map_tiles (scene_id, mode, col, row, kind, owner_id) VALUES (?, ?, ?, ?, 'copy', ?)", [sceneId, mode, at.col, at.row, owner.id]);
+            id = Number(r?.lastInsertRowid);
+          });
+          const c = copyOf({ id, col: at.col, row: at.row, owner_id: owner.id, kind: 'copy' });
+          if (c) copies.push(c);
+          return c;
+        }
+        await writeKinds(sq, placeTile(kindsAtSq(sq), kind));
+        return { isObstacle: true, kind, square: { col: sq.col, row: sq.row }, name: kind };
+      },
+      // Destroyed: a Wall becomes Rubble, anything else is gone (a Copy too).
+      destroyObstacle: async (o) => {
+        if (o.isCopy) return destroyCopy(o);
+        const kinds = kindsAtSq(o.square);
+        await writeKinds(o.square, o.kind === 'wall' ? placeTile(removeTile(kinds, 'wall'), 'rubble') : removeTile(kinds, o.kind));
+      },
+      replaceObstacle: async (o, to) => {
+        const sq = { col: o.square.col, row: o.square.row };
+        if (o.isCopy) await destroyCopy(o);
+        await writeKinds(sq, placeTile(o.isCopy ? kindsAtSq(sq) : removeTile(kindsAtSq(sq), o.kind), to));
+      },
       // A modifier until its duration ends (engine/runtime.js), e.g. Take Aim.
       addTemp: (temp) => addTemp(world.env.rt, temp),
       challenge: (target, challenger) => queued(() => run('UPDATE combatants SET challenge_id = ? WHERE id = ?', [challenger.id, target.id])),
@@ -317,7 +471,7 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
       forced: (f, opts) => moves.forced(world.env, movers, f, opts),
       swap: (a, b) => moves.swap(world.env, movers, a, b),
     };
-    const movers = { mode, board, setSquare, smashWall, setDizzy, inPit, writeTokens };
+    const movers = { mode, board, setSquare, smashWall, setDizzy, inPit, writeTokens, copies };
     const onTrap = (f) => f.square != null && traps.has(`${f.square.col},${f.square.row}`);
     return { world, fighters, byId, onTrap, weight, movers };
   }
@@ -402,6 +556,11 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
   //      discard up to 3 (decided: done for them — nobody would decline).
   async function runEndPhase(env, fighters, onTrap, active) {
     const notices = [];
+    // Copies on a Trap are destroyed by its damage (book p.71; phase E).
+    for (const c of [...(env.world.copies?.() ?? [])].filter(onTrap)) {
+      await env.world.damage(c, 1, null, { source: 'trap' });
+      notices.push(`${c.name}: Trap, destroyed`);
+    }
     for (const f of fighters.filter(onTrap)) {
       if (stale(env)) return;
       const r = await env.world.damage(f, 1, null, { source: 'trap' });

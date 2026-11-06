@@ -3451,7 +3451,30 @@ A GM-only page (`/homebrew`, the flask icon in the header and the mobile menu) f
     - `scripts/playtest-lane-movement.mjs`: lanes as a grid, the slot saved, off a lane's end.
     - The damage, dice-marks and turn-triggers playtests were updated: Swift Style's Speed now opens Late Movement, and Aura Style's push now runs.
     - A phone-landscape browser run covered the phase bar, Move with the costs, the push square bar and a tapped landing, with no console errors.
-- **E. Obstacles and Copies:** placing, destroying, replacing and moving obstacles; Rubble and Walls destroyed by 2+ damage; Copies as 1-HP units an Original can act from.
+- **E. Obstacles and Copies — implemented.**
+  - **Obstacles from the rules:**
+    - `place_obstacle` (Trap, Fog, Pit, Rubble, Wall, Copy) goes on picked spaces. The squares glow on the map or lane, and only legal ones are offered: the book's stacking (`mapTiles.js placeTile`), never a Wall or Copy onto a fighter, `empty` when asked. A "you may place …" is one space pick with a Skip.
+    - `destroy_obstacle`: a Wall becomes Rubble, and anything else is gone. `replace_obstacle` swaps one obstacle for another.
+    - **A Wall or Rubble hit for 2+ in one hit is destroyed** (a damage target of kind `…_or_obstacle`).
+    - New selectors: `space` (squares in range, picked one at a time; `count: { maximum }` may stop early), `obstacle` (with `types`), `own_copy`, and `enemy_ / unit_ / ally_or_obstacle`. Refs `self.space` and `targets.x.space` work.
+    - Not yet: `deadly_trap`, `move_obstacles`, and the selectors' `adjacent_to_binding`, `originBinding`, `inFog` and `obstacleBinding` (these stay by hand).
+    - World functions: `world.spaces / obstacles / canPlace / placeObstacle / destroyObstacle / replaceObstacle`.
+  - **Copies (book p.71):**
+    - **Storage:** a Copy is a `map_tiles` row of kind `copy` with `owner_id`, its Original's combatant id (`ensureColumn`). Snapshots keep it, and **hand tile edits leave Copies alone**.
+    - **On the board:** a Copy fills its space like a unit. It can be targeted as an enemy (added to enemy picks) or as an obstacle, never as an ally.
+    - **No tokens, Shields or HP:** gaining or discarding tokens, healing and HP costs do nothing to it. **Any damage destroys it**, a Trap's included, and the End Phase destroys a Copy standing on a Trap.
+    - **Movement:** pushed, it moves its tile; pushed Outside, it's gone. "Within range of you or your Copies" (`self_or_copies_range`) counts from each of them.
+    - **Acting from a Copy:** an Original with Copies picks where each committed Action is performed from (a square pick: "Here" or a Copy). The Action's ranges then count from there (`ctx.originSquare`).
+    - **Look:** drawn on the map and lanes as the Original's picture, faded, in a dashed violet ring labelled "Copy" (`CopyLayer`).
+    - Not yet: moving your Copies with Free Movement, an Action's own movement moving the Copy instead, Copy-specific events (`self.copy_destroyed`) and `copies.maximum_hp`.
+  - **Tests:** interpreter tests (a Trap on a picked space, only legal spaces for a Wall, a Wall destroyed by 2 damage, a Copy placed and picked as your own; `deadly_trap` stays by hand).
+  - **Playtest** `scripts/playtest-obstacles.mjs`:
+    - Volcanic's "you may place a Trap" as one pick;
+    - the Necromancer's Copy on an empty space, owned by its Original;
+    - a hand-placed Trap leaving the Copy;
+    - the End Phase Trap destroying it;
+    - Hidden Style's Fog.
+  - A browser run showed the Copy drawn on the map, with no console errors.
 - **F. Turn structure and reactions:** the 8-phase machine (Comeback rule, Heroic Spirit, extra Action Dice), the React interface, Control tokens (Copy / Dodge / Parry), Luck, Training, Chaos.
 - **G. Modifiers and durations:** the `modify_rule` catalog at its enforcement points, `temporary`, `register_trigger` and `schedule`, and the remaining event emissions.
 - **H. Pool manipulation and special operations:** rerolls, increase, duplicate, split, combine, set, replace and retain; `perform_action`; append and prepend; declared-Action copy, dodge and negate; delegation; and the rest of the operation reference.

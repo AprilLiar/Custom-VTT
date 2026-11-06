@@ -30,18 +30,20 @@ const validSquare = (mode, col, row) => {
 export async function loadMapTiles(sceneId) {
   const out = { simple: [], combat: [] };
   if (sceneId == null) return out;
-  const rows = await all('SELECT mode, col, row, kind FROM map_tiles WHERE scene_id = ? ORDER BY id', [sceneId]);
-  for (const r of rows) out[r.mode]?.push({ col: r.col, row: r.row, kind: r.kind });
+  const rows = await all('SELECT mode, col, row, kind, owner_id FROM map_tiles WHERE scene_id = ? ORDER BY id', [sceneId]);
+  // A Copy (phase E) carries its Original's combatant id.
+  for (const r of rows) out[r.mode]?.push(r.kind === 'copy' ? { col: r.col, row: r.row, kind: r.kind, owner_id: r.owner_id } : { col: r.col, row: r.row, kind: r.kind });
   return out;
 }
 
+// (Copies are fighters' replicas, not palette tiles: hand edits leave them be.)
 const kindsAt = async (sceneId, mode, col, row) =>
-  (await all('SELECT kind FROM map_tiles WHERE scene_id = ? AND mode = ? AND col = ? AND row = ?', [sceneId, mode, col, row])).map(
+  (await all("SELECT kind FROM map_tiles WHERE scene_id = ? AND mode = ? AND col = ? AND row = ? AND kind != 'copy'", [sceneId, mode, col, row])).map(
     (r) => r.kind
   );
 
 async function writeSquare(sceneId, mode, col, row, kinds) {
-  await run('DELETE FROM map_tiles WHERE scene_id = ? AND mode = ? AND col = ? AND row = ?', [sceneId, mode, col, row]);
+  await run("DELETE FROM map_tiles WHERE scene_id = ? AND mode = ? AND col = ? AND row = ? AND kind != 'copy'", [sceneId, mode, col, row]);
   for (const kind of kinds) {
     await run('INSERT INTO map_tiles (scene_id, mode, col, row, kind) VALUES (?, ?, ?, ?, ?)', [sceneId, mode, col, row, kind]);
   }
