@@ -3275,11 +3275,76 @@ A GM-only page (`/homebrew`, the flask icon in the header and the mobile menu) f
 - **Not in homebrew (yet):** Freestyles, Super Moves, Builds, Features, and movement or placing effects (write those as text).
 - Playtest: `scripts/playtest-homebrew.mjs`.
 
+## Full automation (decided, in progress)
+
+**Goal (the user's):** everything in a fight is automated. The only input from people is laying dice and tokens on Actions (the dice board) and answering the choices that pop up. Grounded in the book's combat chapter (PDF pp.56-77: the 8-phase turn, Damage Resolution "WEPIA", Action Resolution, the six movement types, Obstacles, Tokens) and the content's operation reference (`import-guide.md`).
+
+**Where it starts:** 91 of 306 Ability rules run automatically, and no Action or Super Move resolves.
+- **Missing operations:** movement (`move` ×51, `push` ×40, `pull` ×32, `teleport` ×22), obstacles (`place_obstacle` ×42), passive modifiers (`modify_rule` ×65 across ~60 keys), durations (`temporary`, `schedule`, `register_trigger`), Action Pool manipulation (rerolls, splits, …), and ~80 event names.
+
+### Decisions (the user's answers)
+- **Turns:** whoever controls the active character (the GM for NPCs) ends the turn with **End turn** on the dice board. The engine then runs Late Movement and the End Phase. The GM can still end or step back any turn.
+- **Committing dice:** laying a die on an Action (drag or tap) only *places* it.
+  - Each placed die shows its **order number** (top-right), and is grey until committed.
+  - A **Commit** button in the footer performs every placed Action in the order the dice were placed. Committed dice are crossed out and locked.
+  - Committing can be repeated: commit 2 of 4, close, commit the rest later.
+  - Only the **GM can retrieve** a committed die (for a player or an NPC). Retrieving **undoes it fully**: each committed Action is snapshotted, and retrieving restores the state from before it. Actions committed after it return to placed (grey) as well.
+  - Token-cost and Free Actions are placed the same way (they get an order number) and are paid at Commit.
+- **Gates:** a placed die lights every Gate it reaches. **Tapping a lower lit Gate makes the Action stop there**; the default is the highest.
+- **Power toggle:** on the footer's left, a toggle shows the Power balance. When on, the placed Actions' hits are Enhanced, up to what the character's Forms and Styles allow per hit (`enhance_hit.additional_uses`, `power_tokens.additional_per_hit`), while Power lasts.
+- **Hit spends:** each character has **Ask / Auto / Never** for Power, Iron and Shield (on the sheet's Combat tab). Players default to Ask, NPCs to Auto. The board's Power toggle stands in for "Ask" on your own committed Actions.
+- **Free Movement:** a **Move** button lets the active character move before each Action (reachable squares glow with their Speed cost). In the Early and Late Movement phases, everyone else holding Speed gets **Move or Done**. The phase waits for them, the GM can skip, and a phase with no Speed holders passes at once.
+- **Reactions:** a **React** button (no prompts) opens the Action interface with only the reactions actually available.
+  - The footer shows the resources they can be paid with: held numbers, Chaos, Luck, Speed as Shadow Form allows on others' turns, and so on.
+  - Cards are grouped **by resource**, one rectangular cluster per resource, packed into **two columns** without wasted space, clusters sized to their cards; the whole view scrolls.
+  - **During a multi-Action Commit**, after each Action the batch **pauses until the active player taps Continue**, but only when someone else has a reaction available.
+- **Challenge:** enforced. Damaging Actions must target the Challenger whenever legal; the End Phase removes the Challenge when its holder tried to damage them.
+- **Picking:** targets, squares and placements are picked **on the map or lane** (legal ones glow; the dice board steps aside), with a compact list alongside.
+- **Pushes and pulls:** the pusher **taps the landing square**. The engine finds a legal path (each space farther from or closer to the origin, sliding along Walls), and asks which path only when paths cross different Traps or Pits.
+- **World of Cardboard: always on.** A push or pull into a Wall smashes it into Rubble; the target enters that space and the movement ends there.
+- **Super Moves:** all limits enforced: not in Round 1, once per fight per character, two matching numbers of 3+, and the side's per-round limit from the Cinematic Weight (Feather 0, Light/Middle/Heavy 1, World 2).
+- **Simple Combat too:** lanes are a small grid (each lane a row of 10 spaces; the ends are the arena edge) with the same rules.
+- **Rulings:** Tough It Out costs **3+ or 9+** (the structured data). Fused Trickster stays **allied turns** as written. Stooges keep HP per body (phase 4).
+
+### Architecture
+- **Server-authoritative engine.** The engine grows out of `server/triggers.js` into `server/engine/`. Pure, unit-tested rules live in `client/src/lib/patd/` beside the interpreter: damage, movement, pool, modifiers. The server applies them through the write queue.
+- **Fight runtime** (`fights.runtime` JSON), persisted so a restart loses nothing:
+  - per fighter: Action Pool, placed and committed dice, turn flags (moved, damaged, start square, Armor triggers used, damage attempted on the Challenger, actions performed), usage counters, temporary modifiers and scheduled effects;
+  - per fight: Super Moves used per side and round, and the current phase.
+- **Event bus:** one `emit(event, subject, payload)` routes every content event name to the listening rules, by relation (`self.*`, `ally*`, `enemy*`, `*_in_range.*`, `visible_enemy.*`, `any_*`). It replaces today's ad-hoc follow-ons.
+- **Modifiers:** a registry answers "which `modify_rule` values apply to this fighter now". Sources: continuous rules of the active Stance and the constant Abilities, installed temporaries with their durations, and the current Action's scope.
+- **Snapshots:** before each committed Action, the fight's combatant rows, its map tiles and the runtime are saved, so Retrieve can restore them.
+- **Unsupported pieces** never silently vanish: an operation the engine cannot run yet posts a "by hand" card naming the step, as today.
+
+### Phases (each one commit to `main`; easy for the agent to test with unit tests and socket playtests)
+- **A. Engine core:** fight runtime, event bus, modifier registry, usage limits (turn / round / fight), snapshots and restore.
+- **B. The Action Pool and Commit:**
+  - The pool as server state (roll numbers plus added ones, max 10).
+  - Placing with order numbers, gate stop, Commit, crossed and locked dice, GM Retrieve (undo).
+  - Token and Free Actions placed and paid at Commit.
+  - Actions resolve through the interpreter (`payment.rating`, `resolution.gateRating`, X) with prompts, Challenge enforced.
+  - End turn for the active player, the Power toggle, and the batch pause with Continue.
+- **C. Damage pipeline (WEPIA):**
+  - Weakness, redirect and split, Power, Iron (reduce or resist), Shield (damage or Status tokens), Armor (3, 2, 1, once per check; temporary), Pit reduction at range 3+, Unblockable and immunity modifiers.
+  - Dizzy and Taken Out; on-hit versus on-damage; Fall, Trap, Burning and Super sources.
+  - Ask / Auto / Never settings; automated Burning, Challenge removal and the Fatigue discard in the End Phase.
+- **D. Board and movement:**
+  - One board model for map and lanes (bounds, occupancy, obstacles).
+  - Free Movement costs (diagonal 2, leaving a Pit +1, Rubble Fatigue, Traps), Action Movement (exact or up to, no repeats, stopping on Rubble or a Pit), Teleport, Swap, Push and Pull (landing-square pick, Wall sliding, Cardboard, Iron resist), Pits, Rubble, Traps, Outside, Save Yourself.
+  - The square picker on map and lane; the Move button; the Early and Late Movement phases.
+- **E. Obstacles and Copies:** placing, destroying, replacing and moving obstacles; Rubble and Walls destroyed by 2+ damage; Copies as 1-HP units an Original can act from.
+- **F. Turn structure and reactions:** the 8-phase machine (Comeback rule, Heroic Spirit, extra Action Dice), the React interface, Control tokens (Copy / Dodge / Parry), Luck, Training, Chaos.
+- **G. Modifiers and durations:** the `modify_rule` catalog at its enforcement points, `temporary`, `register_trigger` and `schedule`, and the remaining event emissions.
+- **H. Pool manipulation and special operations:** rerolls, increase, duplicate, split, combine, set, replace and retain; `perform_action`; append and prepend; declared-Action copy, dodge and negate; delegation; and the rest of the operation reference.
+- **I. Super Moves and NPC types:** Supers on the board with all limits, Super tokens, Stooges, Bosses and Warriors in the full engine.
+- **J. Coverage sweep:** a census test proves every rule, Action and Super is automated or explicitly by hand (only `requires_ruling` entries: The Untouchable, Twins). Then the playtest suite and the plan.
+
 ## Implementation Phases (iterative — each ends with a deploy + playtest checkpoint)
 The old system's phases (1-9 and the playtest batches after them) are complete history in git. The current state:
 - **Pivot — done.** Old system archived and removed (this document's **The pivot**).
 - **Character builder & turn automation — implemented**, in phases 0-4 (see its section above). Further changes are follow-ups from play.
 - **Homebrew builder — implemented** (see its section above).
+- **Full automation — in progress**, phases A-J (see its section above).
 - **Panic at the Dojo combat assistant**, in the five phases listed in its section above. Phases 1, 2, 2b (Stances) and 3 are implemented; so are multi-lane Simple Combat (2c), Phase 4 and Phase 5 — the whole scoped assistant — plus the Cinematic Weight GM tool. Further changes are follow-ups from play.
 
 ## Implementation Risks & Recommendations
