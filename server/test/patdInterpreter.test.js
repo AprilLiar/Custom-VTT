@@ -246,3 +246,52 @@ test('Challenge enforced (decided): a damaging Action must include the Challenge
   await runRule({ id: damage.id, effect: damage.effect }, { world: w, self: me, state: {}, usage: {}, log: () => {}, ask: async () => ['2'], resolution: { gateRating: 6 }, onUnsupported: () => {} });
   assert.equal(foe.hp, 7, 'Damage at a 6: 3 damage (the 5+ Gate); its Push is left to people for now');
 });
+
+// ---- full automation phase C: rules changed for a resolution, temporaries, damage steps
+
+test('Iron Form: "you may spend 1 Iron to take 1 less" — offered only with Iron, and it reduces the hit', async () => {
+  const me = fighter(1, 'a');
+  const { w } = makeWorld([me]);
+  const event = { damage: 3, reduction: 0 };
+  let r = await fire('ability.form-iron.iron-form', 'self.would_take_damage', me, w, [], { event });
+  assert.equal(r.asked.length, 0, 'no Iron: not asked');
+  me.tokens.iron = 1;
+  r = await fire('ability.form-iron.iron-form', 'self.would_take_damage', me, w, [true], { event });
+  assert.equal(r.asked.length, 1);
+  assert.equal(me.tokens.iron, 0);
+  assert.equal(event.reduction, 1);
+});
+
+test('Heroic Style: an ally in range splits the damage (half rounded down kept)', async () => {
+  const me = fighter(1, 'a');
+  const ally = fighter(2, 'a');
+  const { w } = makeWorld([me, ally]);
+  const event = { damage: 5, target: ally, split: null };
+  await fire('ability.style-heroic.heroic-style', 'ally_in_range.would_take_damage', me, w, [], { event });
+  assert.deepEqual([event.split.keep, event.split.give[0].amount, event.split.give[0].to.id], [2, 3, 1]);
+});
+
+test('an Action’s modify_rule applies to its own resolution: Shockwave is Unblockable by Armor and Shields', async () => {
+  const me = fighter(1, 'a');
+  const foe = fighter(2, 'b');
+  const seen = [];
+  const { w } = makeWorld([me, foe]);
+  w.damage = async (f, n, attacker, opts) => (seen.push(opts), { taken: n, steps: [] });
+  const action = idx.get('action.form-blaster.shockwave');
+  await runRule({ id: action.id, effect: action.effect }, { world: w, self: me, state: {}, usage: {}, ability: action, log: () => {}, ask: async (q) => q.options?.map((o) => o.id) ?? true, resolution: { gateRating: 3 }, onUnsupported: () => {} });
+  assert.ok(seen.length >= 1);
+  assert.ok(seen[0].mods.some((m) => m.rule === 'unblockable' && m.value.includes('armor') && m.value.includes('shields') && m.targetId === 1), JSON.stringify(seen[0].mods));
+  assert.equal(seen[0].source, 'ability', 'outside the runner the source defaults to an Ability');
+});
+
+test('temporary: Take Aim installs "next damaging Action is Unblockable" in the runtime; unknown rule keys stay by hand', async () => {
+  const me = fighter(1, 'a');
+  const temps = [];
+  const { w } = makeWorld([me]);
+  w.addTemp = async (t) => temps.push(t);
+  const action = idx.get('action.style-crosshair.take-aim');
+  await runRule({ id: action.id, effect: action.effect }, { world: w, self: me, state: {}, usage: {}, ability: action, log: () => {}, ask: async () => null });
+  assert.deepEqual(temps.map((t) => [t.rule, t.duration, t.targetId]), [['next_damage_action.unblockable', 'until_next_damage_dealing_action', 1]]);
+  assert.equal(ruleSupport({ events: ['own_turn.start'], effect: { op: 'modify_rule', rule: 'walls.treat_as', value: 'x' } }).ok, false);
+  assert.equal(ruleSupport({ events: ['own_turn.start'], effect: { op: 'temporary', duration: 'end_of_current_turn', effect: { op: 'modify_rule', rule: 'unblockable', value: ['armor'] } } }).ok, true);
+});

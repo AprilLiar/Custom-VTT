@@ -16,7 +16,9 @@
 //     styles:     [styleId]   — Frantic only: known Styles
 //     buildId, skills: { replaceFromId, replaceToId, custom },
 //     level, xp, superMoveIds: [], warriorPathId, healthBars,
+//     prefs:      { power?, iron?, shield?: 'ask' | 'auto' | 'never' }
 //   }
+import { normalizePrefs } from './engine/damage.js';
 
 export const VARIANTS = ['focused', 'fused', 'frantic'];
 export const LEVEL_MIN = 1;
@@ -94,6 +96,9 @@ export function emptyBuild(typeId = 'hero-type.focused') {
     superMoveIds: [],
     warriorPathId: null,
     healthBars: null,
+    // Ask / Auto / Never for Power, Iron and Shield (full automation, phase C);
+    // a key left out takes the default: players Ask, NPCs Auto.
+    prefs: {},
   };
 }
 
@@ -145,6 +150,7 @@ export function normalizeBuild(raw, idx) {
   out.superMoveIds = uniq((Array.isArray(b.superMoveIds) ? b.superMoveIds : []).filter((id) => isKind(idx, id, 'super-move.'))).slice(0, 10);
   out.warriorPathId = isKind(idx, b.warriorPathId, 'warrior-path.') ? b.warriorPathId : null;
   out.healthBars = b.healthBars == null ? null : clampInt(b.healthBars, 1, 9, null);
+  out.prefs = normalizePrefs(b.prefs);
   return out;
 }
 

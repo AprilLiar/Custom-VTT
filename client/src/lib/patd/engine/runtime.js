@@ -71,7 +71,8 @@ export function startTurn(rt, activeId, round) {
 // Install a temporary (modifier or effect) with its duration, stamped with the
 // turn and round it was installed in.
 export function addTemp(rt, temp) {
-  rt.temps.push({ ...temp, seq: rt.turnSeq ?? 0, round: rt.round });
+  // `action`: the Action it was made during — "your next Action" is a later one.
+  rt.temps.push({ ...temp, seq: rt.turnSeq ?? 0, round: rt.round, action: rt.actionSeq ?? 0 });
   return rt;
 }
 
@@ -80,6 +81,7 @@ export function addTemp(rt, temp) {
 //   ctx: { activeId, actorId }
 export function expireTemps(rt, boundary, { activeId = null, actorId = null } = {}) {
   const seq = rt.turnSeq ?? 0;
+  const earlier = (t) => (t.action ?? -1) < (rt.actionSeq ?? 0);
   const ends = (t) => {
     const d = t.duration;
     switch (boundary) {
@@ -95,9 +97,9 @@ export function expireTemps(rt, boundary, { activeId = null, actorId = null } = 
       case 'end_of_round':
         return d === 'end_of_current_round' || (d === 'end_of_next_round' && rt.round > t.round);
       case 'action':
-        return d === 'end_of_current_turn_or_next_action' && t.ownerId === actorId;
+        return d === 'end_of_current_turn_or_next_action' && t.ownerId === actorId && earlier(t);
       case 'damage_action':
-        return d === 'until_next_damage_dealing_action' && t.ownerId === actorId;
+        return d === 'until_next_damage_dealing_action' && t.ownerId === actorId && earlier(t);
       case 'hit':
         return d === 'current_hit';
       default:

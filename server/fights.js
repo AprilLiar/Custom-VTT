@@ -169,8 +169,10 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
     }[moment];
     if (moment === 'turn_end' && active) {
       const onTraps = fightersOnTraps(await withSquares(fight, await loadFighters(fight.scene_id, fight.mode)), await trapSquares(fight));
-      // Traps and Speed are done by the turn-trigger engine's End Phase (decided).
-      const automated = triggers ? new Set(['trap', 'speed']) : new Set();
+      // The turn-trigger engine's End Phase does all of these (decided; Burning,
+      // Fatigue and the Challenge since full automation phase C). The reminders
+      // stay only as the fallback when the engine isn't running.
+      const automated = triggers ? new Set(['trap', 'speed', 'burning', 'fatigue', 'challenge']) : new Set();
       for (const auto of automaticReminders({ active, fighters, onTraps }).filter((x) => !automated.has(x.rule))) {
         await postCard('reminder', { title: when, text: auto.text, fighters: auto.fighters.map(card), automatic: auto.rule });
       }
@@ -365,7 +367,10 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
     triggers?.turnOver({ ...fight });
     if (current && (await valid(fight, current.id))) {
       await fire(fight, 'turn_end', current.id);
-      triggers?.schedule({ ...fight }, current.id, 'end');
+      // Dizzy lasts through the End Phase (no damage from Traps or Burning),
+      // which runs after this handler: tell it who was Dizzy.
+      const dizzyIds = (await all('SELECT id FROM combatants WHERE scene_id = ? AND mode = ? AND dizzy = 1', [fight.scene_id, fight.mode])).map((r) => r.id);
+      triggers?.schedule({ ...fight }, current.id, 'end', { dizzyIds });
     }
     // The Scene's floating chat keeps a fighter's turn-start roll up until now.
     if (current) emitAll?.('fight:turn_ended', { combatantId: current.id });

@@ -110,9 +110,11 @@ check('only the GM advances turns', (await jf('/api/stage?role=gm')).fights.comb
 gm.emit('fight:next', { mode: 'combat' });
 await sleep(900);
 const endCards = cards.slice(before);
-check("Mira's turn ended with the automatic Burning reminder (3 damage, discard 2)",
-  endCards.some((c) => c.payload.automatic === 'burning' && /take 3 damage.*discard 2/.test(c.payload.text)), JSON.stringify(endCards.map((c) => c.payload.text)));
-check('...and Speed is discarded automatically (a notice naming whoever lost some)', endCards.some((c) => c.payload.automatic === 'speed' && c.payload.notice && c.payload.text.includes(`Bo${stamp}`)), JSON.stringify(endCards.map((c) => c.payload.text)));
+// Full automation phase C: the End Phase does Burning itself, in one notice.
+const endPhase = endCards.find((c) => c.payload.automatic === 'end_phase' && c.payload.notice);
+check("Mira's turn ended with Burning done for her: Dizzy, so no damage, but she discards 2 (half of 3, rounded up)",
+  new RegExp(`Mira${stamp}: Burning, 0 damage \\(Dizzy: no damage\\), discards 2`).test(endPhase?.payload.text ?? '') && !endCards.some((c) => c.payload.automatic === 'burning'), JSON.stringify(endCards.map((c) => c.payload.text)));
+check('...and Speed is discarded automatically (in the notice, naming whoever lost some)', endPhase?.payload.text.includes('Speed discarded') && endPhase.payload.text.includes(`Bo${stamp}`), JSON.stringify(endCards.map((c) => c.payload.text)));
 st = await jf('/api/stage?role=gm');
 fight = st.fights.combat;
 check('Dizzy ended with the turn', st.combatTokens.find((t) => t.id === tMira.id).fight.hp.dizzy === false);

@@ -92,6 +92,8 @@ export function createActionRunner(kit) {
     const history = { damageDealt: 0, damagedIds: [], challengedIds: [] };
     const frt = fighterRt(env.rt, actor.id);
     const firstAction = !(frt.flags.actions > 0);
+    // "Until your next Action" temporaries made before this one end after it.
+    env.rt.actionSeq = (env.rt.actionSeq ?? 0) + 1;
     await emitEvent(env, 'self.action.before', actor, { action });
     const damaging = hasDamage(action.effect);
     const ctx = {
@@ -104,10 +106,14 @@ export function createActionRunner(kit) {
       log: (l) => lines.push(l),
       ask: ask(actor, env.key, env.gen, env.tg, `${action.name}${gateRating ? ` (${gateRating})` : ''}`),
       notify: (text) => postCard('reminder', { title: action.name, text, fighters: [{ name: actor.name }], automatic: 'ability_text' }),
-      emit: (ev, f, payload) => emitEvent(env, ev, f, payload, 1),
+      emit: (ev, f, payload, filter) => emitEvent(env, ev, f, payload, 1, filter),
       resolution: { gateRating },
       payment,
       history,
+      // Its hits are an Action's; the board's Power toggle stands in for "Ask"
+      // on your own Actions (decided): on = Enhance each hit as far as allowed.
+      source: 'action',
+      power: data.power ? 'max' : 'none',
       mustTarget: damaging && actor.challengeId != null ? actor.challengeId : null,
       onUnsupported: (node) => {
         manual.push(describe(node) || node.op);
@@ -124,6 +130,8 @@ export function createActionRunner(kit) {
     await emitEvent(env, 'self.action.resolved', actor, { action, history });
     if (placement.kind === 'die') await emitEvent(env, 'self.dice_action.resolved', actor, { action, history });
     if (history.damageDealt > 0 || damaging) await emitEvent(env, 'self.damage_dealing_action.resolved', actor, { action, history });
+    const enemyCount = new Set(history.enemyDamagedIds ?? []).size;
+    if (enemyCount) await emitEvent(env, 'self.action.damage_dealt_to_enemy', actor, { action, history, enemyCount });
     if (firstAction && fightRow.turn_order && env.rt.turn?.activeId === actor.id) await emitEvent(env, 'self.first_action_on_own_turn.resolved', actor, { action });
     await emitEvent(env, 'ally.action.resolved', actor, { action, history });
     await emitEvent(env, 'any_action.fully_resolved', actor, { action, history });

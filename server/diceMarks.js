@@ -18,6 +18,7 @@ import { serialized, shapeFightState } from './combatState.js';
 import { patdContent } from './patdContent.js';
 import { derivedFor } from './fighterStances.js';
 import { stanceOfBuild } from '../client/src/lib/patd/build.js';
+import { spendPrefs } from '../client/src/lib/patd/engine/damage.js';
 
 const KEEP = 300;
 export const readData = (r) => {
@@ -38,9 +39,14 @@ export async function saveBoard(rollId, data, emit) {
 }
 
 // A new Stance roll: its (empty) board, the only active one for that fighter.
+// The Power toggle starts on when the character's Power setting is Auto
+// (decided: NPCs by default), off for Ask and Never.
 export async function startRoll({ rollId, combatantId, characterId, results = [], stanceKey = null }, emit) {
   await endTurnDice([combatantId], emit);
-  const data = { stanceKey, results, extra: [], placements: [], power: false, paused: false, committing: false };
+  const ch = characterId != null ? await one('SELECT character_type FROM characters WHERE id = ?', [characterId]) : null;
+  const d = characterId != null ? await derivedFor(characterId) : null;
+  const power = spendPrefs(d?.build?.prefs, ch?.character_type === 'npc').power === 'auto';
+  const data = { stanceKey, results, extra: [], placements: [], power, paused: false, committing: false };
   await run('INSERT INTO dice_marks (roll_id, combatant_id, character_id, dice, data, active) VALUES (?, ?, ?, ?, ?, 1)', [
     rollId,
     combatantId,

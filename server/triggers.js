@@ -13,7 +13,7 @@
 import { all, one, run } from './db.js';
 import { applyHpDelta } from '../client/src/lib/hpBars.js';
 import { WEIGHT_BY_KEY, crossesBleed } from '../client/src/lib/cinematicWeight.js';
-import { TOKEN_BY_KEY, absorbWithShield, capOf, innateArmor } from '../client/src/lib/panicTokens.js';
+import { TOKEN_BY_KEY, capOf, innateArmor } from '../client/src/lib/panicTokens.js';
 import { packLane, clampLanes } from '../client/src/lib/simpleLane.js';
 import { chebyshev, ruleSupport, runRule, targetable } from '../client/src/lib/patd/interpreter.js';
 import { controlsCharacter } from './control.js';
@@ -23,9 +23,11 @@ import { armorSourcesOf, stanceOfBuild } from '../client/src/lib/patd/build.js';
 import { patdContent } from './patdContent.js';
 import { listenersFor, relationTo, turnEvents } from '../client/src/lib/patd/engine/bus.js';
 import { modifiersOn, valueOf } from '../client/src/lib/patd/engine/modifiers.js';
-import { expireTemps, fighterRt, startTurn } from '../client/src/lib/patd/engine/runtime.js';
+import { addTemp, expireTemps, fighterRt, startTurn } from '../client/src/lib/patd/engine/runtime.js';
+import { spendPrefs } from '../client/src/lib/patd/engine/damage.js';
 import { loadRuntime, saveRuntime } from './engine/runtimeStore.js';
 import { createActionRunner } from './engine/actions.js';
+import { createHits } from './engine/hits.js';
 
 const MIDDLEWEIGHT = WEIGHT_BY_KEY.middle;
 const PROMPT_TIMEOUT_MS = 10 * 60 * 1000;
@@ -90,13 +92,15 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     io.emit('trigger:resolved', { id });
     p.resolve(answer);
   };
+  // Damage Resolution for every hit of this engine's fights (engine/hits.js).
+  const hits = createHits({ ask, emitEvent: (env, ev, f, p, filter) => emitEvent(env, ev, f, p, 0, filter) });
 
   // ---- the world of one fight
   async function buildWorld(fight) {
     const { scene_id: sceneId, mode } = fight;
     const ids = new Set([...JSON.parse(fight.allies || '[]'), ...JSON.parse(fight.enemies || '[]')]);
     const sideOf = (id) => (JSON.parse(fight.allies || '[]').includes(id) ? 'allies' : 'enemies');
-    const rows = (await all('SELECT cb.*, c.name FROM combatants cb JOIN characters c ON c.id = cb.character_id WHERE cb.scene_id = ? AND cb.mode = ?', [sceneId, mode])).filter((r) => ids.has(r.id));
+    const rows = (await all('SELECT cb.*, c.name, c.character_type FROM combatants cb JOIN characters c ON c.id = cb.character_id WHERE cb.scene_id = ? AND cb.mode = ?', [sceneId, mode])).filter((r) => ids.has(r.id));
     const scene = await one('SELECT simple_weight, combat_weight FROM scenes WHERE id = ?', [sceneId]);
     const weight = WEIGHT_BY_KEY[mode === 'simple' ? scene?.simple_weight : scene?.combat_weight] ?? MIDDLEWEIGHT;
     // Squares: a map cell, or a lane space as (column, lane).
@@ -114,6 +118,7 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     }
     const traps = new Set(tiles.filter((t) => t.kind === 'trap').map((t) => { const q = tileSquare(t); return `${q.col},${q.row}`; }));
     const walls = new Set(tiles.filter((t) => t.kind === 'wall').map((t) => { const q = tileSquare(t); return `${q.col},${q.row}`; }));
+    const pits = new Set(tiles.filter((t) => t.kind === 'pit').map((t) => { const q = tileSquare(t); return `${q.col},${q.row}`; }));
     const fogSquares = tiles.filter((t) => t.kind === 'fog').map(tileSquare);
     const fogged = (sq) => fogSquares.some((f) => chebyshev(f, sq) <= 1);
 
@@ -139,6 +144,9 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
         // Whose Challenge this fighter holds (their Challenger's combatant id).
         challengeId: state.challenge_id ?? null,
         bleeding: state.hp.max != null && state.hp.current <= weight.bleed,
+        dizzy: Boolean(state.hp.dizzy),
+        // Ask / Auto / Never for Power, Iron and Shield (decided: players Ask, NPCs Auto).
+        prefs: spendPrefs(d?.build?.prefs, r.character_type === 'npc'),
         currentBar: { damage: state.hp.max != null ? state.hp.max - state.hp.current : 0 },
         square: squareOf(r),
         stance,
@@ -173,10 +181,24 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
         await saveHp(f.id, next);
         result = { before, landed: before.current + delta, row };
         f.bleeding = next.current <= weight.bleed;
+        f.dizzy = Boolean(next.dizzy);
         f.currentBar = { damage: next.max - next.current };
       });
       return result;
     };
+    // You Bleed once per Round, when damage takes you to the Bleed Value or below.
+    const bleedCheck = async (f, before, landed, row) => {
+      if (!crossesBleed(before.current, landed, weight.bleed) || row.bled_round === fight.round) return false;
+      await queued(() => run('UPDATE combatants SET bled_round = ? WHERE id = ?', [fight.round, f.id]));
+      await postCard('reminder', {
+        title: `Round ${fight.round}`,
+        text: `${f.name} Bleeds (HP ${Math.max(0, landed)} ≤ ${weight.bleed}) — "When you Bleed" abilities trigger.`,
+        fighters: [{ name: f.name }],
+        automatic: 'bleed',
+      });
+      return true;
+    };
+    const inPit = (f) => f.square != null && pits.has(`${f.square.col},${f.square.row}`);
 
     const world = {
       context: { healValue: weight.heal, bleedValue: weight.bleed, round: fight.round },
@@ -201,41 +223,21 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
       },
       // A new Shield replaces the old or raises it by 1 — whichever is more.
       gainShield: (f, v) => writeTokens(f, (t) => (t.shield = Math.min(capOf('shield'), Math.max(Number(v) || 0, (t.shield ?? 0) + 1)))),
-      tempArmor: (f) => writeTokens(f, (t) => (t.armor = Math.min(capOf('armor'), (t.armor ?? 0) + 1))),
+      // Temporary Armor is binary (book p.24): you have it or you don't.
+      tempArmor: (f) => writeTokens(f, (t) => (t.temp_armor = 1)),
       heal: async (f, n) => {
         await changeHp(f, Math.max(0, Number(n) || 0));
         return n;
       },
       payHp: (f, n) => changeHp(f, -Math.max(0, Number(n) || 0)),
-      // Damage: the Shield absorbs first (unless `bypassShield` — Traps), the
-      // rest hits HP. → { dealt, bled, absorbed, broke }.
-      damage: async (f, n, _attacker = null, { bypassShield = false } = {}) => {
-        let amount = Math.max(0, Number(n) || 0);
-        let absorbed = 0;
-        let broke = false;
-        if (!bypassShield && (f.tokens.shield ?? 0) > 0) {
-          await writeTokens(f, (t) => {
-            const r = absorbWithShield(t.shield ?? 0, amount);
-            absorbed = r.absorbed;
-            broke = r.broke;
-            amount = r.rest;
-            t.shield = r.shield;
-          });
-        }
-        const { before, landed, row } = await changeHp(f, -amount);
-        let bled = false;
-        if (before && crossesBleed(before.current, landed, weight.bleed) && row.bled_round !== fight.round) {
-          bled = true;
-          await queued(() => run('UPDATE combatants SET bled_round = ? WHERE id = ?', [fight.round, f.id]));
-          await postCard('reminder', {
-            title: `Round ${fight.round}`,
-            text: `${f.name} Bleeds (HP ${Math.max(0, landed)} ≤ ${weight.bleed}) — "When you Bleed" abilities trigger.`,
-            fighters: [{ name: f.name }],
-            automatic: 'bleed',
-          });
-        }
-        return { dealt: n, bled, absorbed, broke, toHp: amount };
-      },
+      // **Damage (phase C):** the whole Damage Resolution — Weakness, Power,
+      // Iron, Shield, Armor — with its prompts and events (engine/hits.js).
+      // opts: { source: 'action' | 'ability' | 'super' | 'trap' | 'fall' |
+      // 'burning', ignore, allowIron, mods, unblockable, power, emit }.
+      damage: (f, n, attacker = null, opts = {}) =>
+        hits.resolveHit(world.env, { writeTokens, changeHp, bleedCheck, inPit }, f, n, attacker, opts),
+      // A modifier until its duration ends (engine/runtime.js), e.g. Take Aim.
+      addTemp: (temp) => addTemp(world.env.rt, temp),
       challenge: (target, challenger) => queued(() => run('UPDATE combatants SET challenge_id = ? WHERE id = ?', [challenger.id, target.id])),
       // Onto the fighter's active turn board (phase B); held numbers outside a turn come in phase F.
       addPoolNumber: (f, v) => runner.addPoolNumber(f.id, v, 'ability'),
@@ -243,6 +245,9 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     const onTrap = (f) => f.square != null && traps.has(`${f.square.col},${f.square.row}`);
     return { world, fighters, byId, onTrap, weight };
   }
+
+  // Build Abilities are Unblockable (book p.26): the builds marked so in the content.
+  const buildUnblockable = (idx) => new Set((idx.content.builds ?? []).filter((b) => b.unblockable).flatMap((b) => b.abilityIds ?? []));
 
   // ---- running one fighter's rules for some events
   async function runFor(fighter, events, env, eventPayload = null, depth = 0) {
@@ -275,7 +280,10 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
           // A Text notification: an orange reminder, like any rule left to people.
           notify: (text) => postCard('reminder', { title: ability.name, text, fighters: [{ name: fighter.name }], automatic: 'ability_text' }),
           // Follow-on events go through the bus to whoever listens (engine/bus.js).
-          emit: depth < FOLLOW_ON_DEPTH ? (ev, f, payload) => emitEvent(env, ev, f, payload, depth + 1) : null,
+          emit: depth < FOLLOW_ON_DEPTH ? (ev, f, payload, filter) => emitEvent(env, ev, f, payload, depth + 1, filter) : null,
+          // Its damage is an Ability's; a Build Ability is Unblockable (book p.26).
+          source: 'ability',
+          unblockable: buildUnblockable(idx).has(ability.id) ? ['all'] : [],
         };
         try {
           await runRule(rule, ctx);
@@ -292,8 +300,10 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
   }
 
   // **The event bus** (engine/bus.js): one event, every listener's rules.
-  async function emitEvent(env, eventName, subject, payload = {}, depth = 0) {
+  // `filter(listener)`: only some of them (whose Shield was hit: their own, or an ally's).
+  async function emitEvent(env, eventName, subject, payload = {}, depth = 0, filter = null) {
     for (const f of listenersFor(eventName, subject, env.world)) {
+      if (filter && !filter(f)) continue;
       if (stale(env)) return;
       await runFor(f, [eventName], env, payload, depth);
     }
@@ -304,51 +314,69 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
   // Shadow Form / Silent Freestyle keep their Speed, Scrambling Style keeps 2.
   const endPhaseRule = (env, f, rule) => valueOf(modifiersOn(f, env.world, patdContent(), env.rt.temps), rule, null);
 
-  // **The End Phase, automated (decided).** After the turn's end abilities:
-  // everyone on a Trap (or Pit Trap) takes 1 damage — unless they have Armor
-  // or a Shield, which the app doesn't subtract: a reminder instead. Then
-  // everyone discards 3 Speed (all if fewer; not Shadow Form / Silent
-  // Freestyle; Scrambling Style keeps 2).
-  async function runEndPhase(env, fighters, onTrap) {
+  // **The End Phase, automated (decided; book p.68).** After the turn's end
+  // abilities, in the book's order:
+  //   1. Traps: 1 damage to everyone standing on one (Armor applies; no Iron or Shield).
+  //   2. Burning: the active fighter takes damage equal to their Burning (no
+  //      Iron; the Shield and Armor apply), then discards half, rounded up.
+  //   3. Challenge: removed from whoever tried to damage their Challenger this turn.
+  //   4. Speed: everyone discards 3 (Shadow Form / Silent Freestyle none,
+  //      Scrambling Style keeps 2, Drive Install only 1).
+  //   5. Fatigue: if the active fighter never left their starting space, they
+  //      discard up to 3 (decided: done for them — nobody would decline).
+  async function runEndPhase(env, fighters, onTrap, active) {
+    const notices = [];
     for (const f of fighters.filter(onTrap)) {
-      // Shields only block Actions and Abilities that target you, so a Trap
-      // goes past them; Armor isn't subtracted automatically: a reminder.
-      const armored = (f.tokens.armor ?? 0) > 0 || f.innateArmor > 0;
-      if (armored) {
-        await postCard('reminder', {
-          title: 'Trap',
-          text: `${f.name} stands on a Trap: 1 damage — they have Armor, so resolve it by hand.`,
-          fighters: [{ name: f.name }],
-          automatic: 'trap',
-        });
-        continue;
-      }
-      const { bled } = await env.world.damage(f, 1, null, { bypassShield: true });
-      await postCard('reminder', { title: 'Trap', text: `${f.name} takes 1 damage from a Trap.`, fighters: [{ name: f.name }], automatic: 'trap', notice: true });
-      await emitEvent(env, 'self.damage_taken', f, { amount: 1 });
-      if (bled) await emitEvent(env, 'self.bleed', f, {});
+      if (stale(env)) return;
+      const r = await env.world.damage(f, 1, null, { source: 'trap' });
+      notices.push(`${f.name}: Trap, ${r.immune ? 'immune' : `${r.taken} damage${r.steps.length ? ` (${r.steps.join(', ')})` : ''}`}`);
+    }
+    if (active && (active.tokens.burning ?? 0) > 0) {
+      const held = active.tokens.burning;
+      const r = await env.world.damage(active, held, null, { source: 'burning' });
+      const discard = Math.ceil(held / 2);
+      await env.world.discardTokens(active, ['burning'], discard);
+      notices.push(`${active.name}: Burning, ${r.immune ? 'immune' : `${r.taken} damage${r.steps.length ? ` (${r.steps.join(', ')})` : ''}`}, discards ${discard}`);
+    }
+    for (const f of fighters) {
+      if (f.challengeId == null || !fighterRt(env.rt, f.id).flags.damagedChallenger) continue;
+      const challenger = fighters.find((x) => x.id === f.challengeId);
+      await queued(() => run('UPDATE combatants SET challenge_id = NULL WHERE id = ? AND challenge_id = ?', [f.id, f.challengeId]));
+      f.challengeId = null;
+      notices.push(`${f.name} attacked ${challenger?.name ?? 'their Challenger'}: the Challenge is removed`);
     }
     const lost = [];
     for (const f of fighters) {
       const held = f.tokens.speed ?? 0;
       if (!held) continue;
-      if (endPhaseRule(env, f, 'end_phase.speed_discard') === 0) continue;
+      const per = Number(endPhaseRule(env, f, 'end_phase.speed_discard') ?? 3);
+      if (!(per > 0)) continue;
       const floor = Number(endPhaseRule(env, f, 'end_phase.speed_discard_floor')) || 0;
-      const n = Math.min(3, Math.max(0, held - floor));
+      const n = Math.min(per, Math.max(0, held - floor));
       if (!n) continue;
       await env.world.discardTokens(f, ['speed'], n);
       lost.push(`${f.name} ${n}`);
     }
-    if (lost.length) {
-      await postCard('reminder', { title: 'Speed', text: `End Phase: Speed discarded — ${lost.join(', ')}.`, fighters: [], automatic: 'speed', notice: true });
+    if (lost.length) notices.push(`Speed discarded — ${lost.join(', ')}`);
+    if (active && (active.tokens.fatigue ?? 0) > 0) {
+      const start = fighterRt(env.rt, active.id).flags.startSquare;
+      const still = start === undefined || (start == null && active.square == null) || (start && active.square && start.col === active.square.col && start.row === active.square.row);
+      if (still) {
+        const n = await env.world.discardTokens(active, ['fatigue'], 3);
+        if (n) notices.push(`${active.name} didn't move: discards ${n} Fatigue`);
+      }
+    }
+    if (notices.length) {
+      await postCard('reminder', { title: 'End Phase', text: `${notices.join('. ')}.`, fighters: [], automatic: 'end_phase', notice: true });
     }
     await emitStageUpdated();
   }
 
-  // **Damage from an Action, entered on the token panel** (`fighter:damage`).
-  // The Shield absorbs first; the attacker is the active fighter when they are
-  // on the other side, so "after your Shield absorbs from an enemy Action"
-  // (Thorns Form) runs against them. `row`: the target's combatant row.
+  // **Damage from an Action, entered on the token panel** (`fighter:damage`):
+  // the whole Damage Resolution, with the active fighter as the attacker when
+  // they are on the other side — so their Weakness, Power and Unblockable
+  // apply, and "after your Shield absorbs from an enemy Action" (Thorns Form)
+  // runs against them. `row`: the target's combatant row.
   async function runActionDamage(fightRow, row, amount) {
     const { env, byId, world } = await envFor(fightRow);
     const target = byId(row.id);
@@ -362,20 +390,16 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     const active = byId(order[fightRow.turn_index]?.id);
     const attacker = active && active.side !== target.side ? active : null;
     world.context.activeCharacter = active ?? null;
-    const r = await world.damage(target, amount, attacker);
+    env.when = `${attacker ? `${attacker.name}'s` : 'An'} Action`;
+    const r = await world.damage(target, amount, attacker, { source: 'action' });
     await postCard('reminder', {
       title: 'Damage',
-      text: `${target.name} takes ${amount} damage${attacker ? ` from ${attacker.name}` : ''}${r.absorbed ? ` — the Shield absorbs ${r.absorbed}${r.broke ? ' and breaks' : ''}, ${amount - r.absorbed} to HP` : ''}.`,
+      text: `${target.name} takes ${r.taken} damage${attacker ? ` from ${attacker.name}` : ''}${r.immune ? ' — immune' : r.steps.length ? ` (${amount}: ${r.steps.join(', ')})` : ''}.`,
       fighters: [{ name: target.name }],
       automatic: 'damage',
       notice: true,
     });
     await emitStageUpdated();
-    if (r.absorbed) {
-      const payload = { attacker, amount: r.absorbed, shieldBroke: r.broke };
-      await emitEvent(env, 'self.shield_absorbed', target, payload);
-      if (attacker) await emitEvent(env, 'self.shield_absorbed_from_enemy_action', target, payload);
-    }
     await env.save();
     return true;
   }
@@ -398,6 +422,7 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
       stateOf: (id) => fighterRt(rt, id).state,
       save: () => (gen(key) === env.gen ? saveRuntime(fightRow.id, rt) : null),
     };
+    world.env = env;
     return { env, world, fighters, byId, onTrap };
   };
 
@@ -412,8 +437,10 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
   }
 
   // Start or end of the active fighter's turn: everyone's matching rules.
-  async function runTurn(fightRow, activeId, moment, tg) {
+  // opts.dizzyIds: who was Dizzy when the turn ended (fights.js clears it right after).
+  async function runTurn(fightRow, activeId, moment, tg, opts = {}) {
     const { env, world, fighters, byId, onTrap } = await envFor(fightRow, tg);
+    for (const f of fighters) if (opts.dizzyIds?.includes(f.id)) f.dizzy = true;
     const rt = env.rt;
     // Turn boundaries (engine/runtime.js): a new round expires its temporaries
     // and resets per-round counters; a turn start resets per-turn counters and
@@ -425,12 +452,14 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     }
     const active = byId(activeId);
     if (!active) return env.save();
+    // Where the turn began (the End Phase's Fatigue: "did not move").
+    if (moment === 'start') fighterRt(rt, active.id).flags.startSquare = active.square ?? null;
     env.when = `${moment === 'start' ? 'Start' : 'End'} of ${active.name}'s turn`;
     world.context.activeCharacter = active;
     const order = [active, ...fighters.filter((f) => f.id !== active.id)];
     for (const f of order) await runFor(f, turnEvents(moment, relationTo(f, active)), env, { activeCharacter: active });
     if (moment === 'end') {
-      await runEndPhase(env, fighters, onTrap);
+      await runEndPhase(env, fighters, onTrap, active);
       expireTemps(rt, 'end_of_turn', { activeId });
     }
     await env.save();
@@ -487,9 +516,9 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
       return onChain(fightRow, () => runActionDamage(fightRow, row, amount));
     },
     // Queues the triggers of a turn moment on the fight's own chain (never awaited by the caller).
-    schedule(fightRow, activeId, moment) {
+    schedule(fightRow, activeId, moment, opts = {}) {
       const tg = turnGen(`${fightRow.scene_id}:${fightRow.mode}`);
-      return onChain(fightRow, () => runTurn(fightRow, activeId, moment, tg));
+      return onChain(fightRow, () => runTurn(fightRow, activeId, moment, tg, opts));
     },
     // The turn is over (Next / Previous turn): its open questions close as
     // declined, with a note, and its still-running triggers ask nothing more.

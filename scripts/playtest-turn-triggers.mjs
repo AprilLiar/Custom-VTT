@@ -84,8 +84,16 @@ gm.emit('fighter:hp', { ref: { combatantId: ta.id }, delta: -6 });
 await sleep(300);
 const hpA0 = (await jf('/api/stage?role=gm')).combatTokens.find((t) => t.id === ta.id).fight.hp.current;
 
-const prompts = { hero: [], angel: [], gm: [] };
-pHero.on('trigger:prompt', (p) => prompts.hero.push(p));
+const prompts = { hero: [], angel: [], gm: [], heroShield: [] };
+// Phase C: hit spends are asked of a player (Ask by default) — the hero blocks
+// with their Shield. Those are not ability prompts.
+pHero.on('trigger:prompt', (p) => {
+  if (p.title === 'Shield') {
+    prompts.heroShield.push(p);
+    return setTimeout(() => pHero.emit('trigger:answer', { id: p.id, answer: true }), 100);
+  }
+  prompts.hero.push(p);
+});
 gm.on('trigger:prompt', (p) => prompts.gm.push(p));
 // The Angel's player answers: yes, heal; target the first enemy offered.
 pAngel.on('trigger:prompt', (p) => {
@@ -114,11 +122,12 @@ const fa = st.combatTokens.find((t) => t.id === ta.id).fight;
 check('turn end: Fused Demon gives 1 Chaos', fh.tokens.chaos === 1, JSON.stringify(fh.tokens));
 check("the Angel's player was asked (and the GM too): heal, then the target", prompts.angel.some((p) => p.kind === 'confirm') && prompts.angel.some((p) => p.kind === 'targets') && prompts.gm.length >= prompts.angel.length,
   JSON.stringify(prompts.angel.map((p) => p.kind)));
-check('only the Angel\'s controllers got the prompts, not the hero\'s player', prompts.hero.length === 0);
+check('only the Angel\'s controllers got the prompts, not the hero\'s player', prompts.hero.length === 0, JSON.stringify(prompts.hero.map((p) => [p.title, p.text])));
 check('the target offered was the enemy in range', prompts.angel.find((p) => p.kind === 'targets')?.options.map((o) => Number(o.id)).join() === String(th.id),
   JSON.stringify(prompts.angel.find((p) => p.kind === 'targets')));
 check('the Angel healed 2 (Fused Angel) + 1 (Heroic Style)', fa.hp.current === hpA0 + 3, `${hpA0} → ${fa.hp.current}`);
 check('the hero is Challenged by the Angel', fh.challenge_id === ta.id, JSON.stringify(fh));
+check("Fused Angel's 1 damage: the hero's player is asked about their Shield, which absorbs it", prompts.heroShield.length === 1 && fh.tokens.shield === 2, JSON.stringify([prompts.heroShield.length, fh.tokens]));
 check('Wild Form ran for the Angel too', fa.tokens.power === 2, JSON.stringify(fa.tokens));
 
 console.log('\n--- an open prompt survives a reconnect and ends with the fight ---');

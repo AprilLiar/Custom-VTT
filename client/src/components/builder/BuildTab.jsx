@@ -6,6 +6,7 @@ import { LEVEL_MAX, XP_AWARDS, deriveBuild, emptyBuild, normalizeBuild, withXp }
 import { STEPS, StepBody, grantText } from './BuildSteps.jsx';
 import { DiceRow, RulesEntry, rangeText } from './BuildParts.jsx';
 import { ActionCard, SuperMoveCard } from '../actions/ActionCards.jsx';
+import { SPEND_KEYS, SPEND_MODES, spendPrefs } from '../../lib/patd/engine/damage.js';
 
 // **The character builder (builder phase 1 — decided).** On the Combat tab.
 // The first run walks through the steps (Type → Archetypes → Stances → Build →
@@ -14,7 +15,7 @@ import { ActionCard, SuperMoveCard } from '../actions/ActionCards.jsx';
 // the read-only rules reference — every Ability, Action and Super Move this
 // character has (decided: on the sheet only, not in combat).
 
-export default function BuildTab({ characterId, canEdit }) {
+export default function BuildTab({ characterId, canEdit, isNpc = false }) {
   const idx = useContent();
   const [saved, setSaved] = useState(undefined); // undefined: loading; null: none yet
   const [draft, setDraft] = useState(null); // the wizard's working copy
@@ -101,10 +102,10 @@ export default function BuildTab({ characterId, canEdit }) {
     );
   }
 
-  return <Overview saved={saved} idx={idx} canEdit={canEdit} editing={editing} setEditing={setEditing} save={save} characterId={characterId} />;
+  return <Overview saved={saved} idx={idx} canEdit={canEdit} editing={editing} setEditing={setEditing} save={save} characterId={characterId} isNpc={isNpc} />;
 }
 
-function Overview({ saved, idx, canEdit, editing, setEditing, save, characterId }) {
+function Overview({ saved, idx, canEdit, editing, setEditing, save, characterId, isNpc }) {
   const d = useMemo(() => deriveBuild(saved, idx), [saved, idx]);
   const [edit, setEdit] = useState(null);
   const startEdit = (key) => {
@@ -212,6 +213,7 @@ function Overview({ saved, idx, canEdit, editing, setEditing, save, characterId 
         </div>
       )}
       {d.level.xpLevel != null && <XpTracker build={normalizeBuild(saved, idx)} level={d.level} canEdit={canEdit} save={save} />}
+      <HitSpends build={normalizeBuild(saved, idx)} isNpc={isNpc} canEdit={canEdit} save={save} />
       <ActionsReference d={d} idx={idx} />
       <RulesReference d={d} idx={idx} />
       {canEdit && (
@@ -224,6 +226,52 @@ function Overview({ saved, idx, canEdit, editing, setEditing, save, characterId 
         </button>
       )}
     </div>
+  );
+}
+
+// **Hit spends (decided, full automation phase C).** When this character is
+// hit or hits, whether the engine asks before spending Power (enhance your
+// hit), Iron (reduce theirs) and the Shield (block it), spends them by itself,
+// or never does. Players default to Ask, NPCs to Auto. On your own committed
+// Actions the dice board's Power toggle decides instead (it starts on for Auto).
+const SPEND_LABEL = { power: 'Power', iron: 'Iron', shield: 'Shield' };
+const SPEND_HINT = {
+  power: 'enhance your hits: +1 damage and Push 1 each',
+  iron: 'reduce hits on you: −1 damage and −1 push/pull each (Auto saves it when Armor would block anyway)',
+  shield: 'block hits on you with your Shield',
+};
+function HitSpends({ build, isNpc, canEdit, save }) {
+  const prefs = spendPrefs(build.prefs, isNpc);
+  const set = (key, mode) => save({ ...build, prefs: { ...build.prefs, [key]: mode } });
+  return (
+    <section className="space-y-2 panel-cut-sm border border-zinc-800 bg-zinc-900/70 p-2.5">
+      <h3 className="font-display text-xs font-bold uppercase tracking-wide text-zinc-300">Hit spends</h3>
+      <ul className="space-y-1.5">
+        {SPEND_KEYS.map((key) => (
+          <li key={key} className="flex flex-wrap items-center gap-2">
+            <span className="w-14 font-display text-sm font-semibold uppercase tracking-wide text-zinc-100">{SPEND_LABEL[key]}</span>
+            <span className="inline-flex overflow-hidden rounded-sm border border-zinc-700" role="radiogroup" aria-label={SPEND_LABEL[key]}>
+              {SPEND_MODES.map((mode) => (
+                <button
+                  key={mode}
+                  type="button"
+                  role="radio"
+                  aria-checked={prefs[key] === mode}
+                  disabled={!canEdit}
+                  onClick={() => set(key, mode)}
+                  className={`min-h-8 px-2.5 text-xs font-semibold capitalize ${
+                    prefs[key] === mode ? 'bg-brand-600 text-white' : 'bg-zinc-900 text-zinc-400 enabled:hover:text-zinc-100'
+                  }`}
+                >
+                  {mode}
+                </button>
+              ))}
+            </span>
+            <span className="min-w-0 flex-1 text-[11px] leading-tight text-zinc-500">{SPEND_HINT[key]}</span>
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }
 

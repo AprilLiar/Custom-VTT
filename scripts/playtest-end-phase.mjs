@@ -1,5 +1,5 @@
 // Playtest: the automated End Phase and Previous turn — Trap / Pit Trap damage
-// (a reminder instead when the fighter has Armor), the Speed discard (Shadow
+// (Armor blocks it — full automation phase C), the Speed discard (Shadow
 // Form keeps its Speed), automation cards marked as notices, and stepping the
 // initiative back, also into the last round.
 //
@@ -81,10 +81,11 @@ gm.emit('fight:next', { mode: 'combat' });
 await sleep(1800);
 st = await jf('/api/stage?role=gm');
 check('a fighter on a Pit Trap takes 1 damage', hp(tb) === hpB - 1, `${hpB} → ${hp(tb)}`);
-check('a fighter with Armor on a Trap takes none: a reminder instead', hp(tc) === hpC && cards.some((x) => x.payload?.automatic === 'trap' && !x.payload.notice && /Armor/.test(x.payload.text)), JSON.stringify(cards.filter((x) => x.payload?.automatic === 'trap').map((x) => x.payload.text)));
+const endCards = cards.filter((x) => x.payload?.automatic === 'end_phase');
+check('a fighter with Armor on a Trap takes none: Armor blocks it (phase C)', hp(tc) === hpC && endCards.some((x) => x.payload.notice && /Armored\d+: Trap, 0 damage \(Armor −1\)/.test(x.payload.text)), JSON.stringify(endCards.map((x) => x.payload.text)));
 check('everyone discards 3 Speed (5 → 2)', tok(tb).speed === 2, JSON.stringify(tok(tb)));
 check('Shadow Form keeps its Speed (2 at start + 2 at end = 4)', tok(ta).speed === 4, JSON.stringify(tok(ta)));
-check('no Speed or Trap reminder cards anymore, only notices', !cards.some((x) => x.payload?.automatic === 'speed' && !x.payload.notice) && cards.some((x) => x.payload?.automatic === 'speed' && x.payload.notice));
+check('no Speed or Trap reminder cards anymore, only the End Phase notice', !cards.some((x) => ['speed', 'trap'].includes(x.payload?.automatic) && !x.payload.notice) && endCards.some((x) => x.payload.notice && /Speed discarded/.test(x.payload.text)), JSON.stringify(endCards.map((x) => x.payload.text)));
 check('automated ability cards are notices', cards.filter((x) => x.payload?.automatic === 'ability').every((x) => x.payload.notice) && cards.some((x) => x.payload?.automatic === 'ability'));
 
 console.log('\n--- Previous turn ---');

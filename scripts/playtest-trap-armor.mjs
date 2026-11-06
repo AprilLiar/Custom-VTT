@@ -1,4 +1,4 @@
-// Playtest: the Trap end-of-turn reminder, hand-set Armor sources being
+// Playtest: the Trap's End Phase damage, hand-set Armor sources being
 // refused, and Temp NPCs being kept out of combat.
 //
 //   npm run dev   (or node server/index.js)
@@ -92,14 +92,16 @@ gm.emit('fight:start', { mode: 'combat', allies: [{ combatantId: m.id }], enemie
 await sleep(800);
 gm.emit('fight:next', { mode: 'combat' });
 await sleep(800);
-let traps = cards.filter((c) => c.payload.automatic === 'trap');
-check('at the end of a turn, a global reminder names whoever stands on a Trap or Pit Trap',
-  traps.length === 1 && traps[0].payload.fighters.map((f) => f.name).join() === `TAThug${stamp}`, JSON.stringify(traps.map((c) => c.payload)));
+// Full automation phase C: the Trap's damage is dealt in the End Phase notice.
+const trapNotices = () => cards.filter((c) => c.payload.automatic === 'end_phase' && /Trap/.test(c.payload.text));
+let traps = trapNotices();
+check('at the end of a turn, the End Phase deals Trap damage to whoever stands on a Trap or Pit Trap',
+  traps.length === 1 && new RegExp(`TAThug${stamp}: Trap, 1 damage`).test(traps[0].payload.text) && !/TAMira/.test(traps[0].payload.text), JSON.stringify(traps.map((c) => c.payload)));
 gm.emit('combat_token:move', { combatantId: g.id, col: 5, row: 5 });
 await sleep(300);
 gm.emit('fight:next', { mode: 'combat' });
 await sleep(800);
-traps = cards.filter((c) => c.payload.automatic === 'trap');
+traps = trapNotices();
 check('...and none when nobody stands on one', traps.length === 1, String(traps.length));
 
 gm.emit('fight:end', { mode: 'combat' });

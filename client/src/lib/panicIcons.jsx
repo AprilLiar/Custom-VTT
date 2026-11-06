@@ -6,6 +6,7 @@
 // requires.
 import {
   GiCheckedShield,
+  GiShoulderArmor,
   GiFist,
   GiSprint,
   GiFlame,
@@ -42,6 +43,7 @@ export const TOKEN_ICONS = {
   rapid_strike: GiLightningSlashes,
   armor: GiBreastplate,
   shield: GiShield,
+  temp_armor: GiShoulderArmor,
 };
 
 // Each kind keeps the book's colour coding where it has one (Unique tokens

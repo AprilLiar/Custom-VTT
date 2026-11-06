@@ -51,6 +51,31 @@ export function modifiersOn(fighter, world, idx, temps = []) {
   return out;
 }
 
+// **The rule keys the engine enforces** (grows phase by phase). A `modify_rule`
+// with any other key is never silently dropped: in a triggered rule or an
+// Action it makes that step "by hand" (interpreter.js).
+export const ENFORCED_RULES = new Set([
+  // phase A — the End Phase
+  'end_phase.speed_discard',
+  'end_phase.speed_discard_floor',
+  // phase C — damage (engine/damage.js)
+  'unblockable',
+  'next_damage_action.unblockable',
+  'enhance_hit.additional_uses',
+  'power_tokens.additional_per_hit',
+  'iron_tokens.additional_per_hit',
+  'opponents.iron_token_limit_per_hit',
+  'spend_target_weakness_as_own_power',
+  'weakness.damage_reduction',
+  'damage.immunity',
+  'action_damage.adjustment',
+  'armor.first_trigger_reduction',
+  'armor.triggers_per_turn',
+  'armor.not_spent_when_one_damage_hit_fully_blocked',
+  'armor.disabled',
+  'shield.disabled',
+]);
+
 // Queries over a modifier list.
 export const modsFor = (mods, rule) => mods.filter((m) => m.rule === rule);
 export const hasMod = (mods, rule, pred = () => true) => mods.some((m) => m.rule === rule && pred(m.value));

@@ -76,7 +76,8 @@ check('the Form is a draft, the others published', items.find((i) => i.id === fo
 
 console.log('\n--- a build on homebrew, then a fight ---');
 p.emit('build:save', { characterId: hero.id, build: { type: 'hero-type.focused', archetypes: [{ id: archId, variant: 'focused' }], stances: [{ formId, styleId, alias: 'Ember' }], level: 1 } });
-gm.emit('build:save', { characterId: foe.id, build: { type: 'character-type.warrior', stances: [{ formId: 'form.iron', styleId: 'style.heroic' }] } });
+// Power Form: no Armor of its own (Iron Form's would block the hit — phase C).
+gm.emit('build:save', { characterId: foe.id, build: { type: 'character-type.warrior', stances: [{ formId: 'form.power', styleId: 'style.heroic' }] } });
 await sleep(500);
 const build = (await jf(`/api/characters/${hero.id}/build`)).build;
 check('the build keeps the homebrew ids', build.stances[0]?.formId === formId && build.archetypes[0]?.id === archId, JSON.stringify(build));

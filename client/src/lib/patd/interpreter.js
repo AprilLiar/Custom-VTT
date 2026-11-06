@@ -21,12 +21,17 @@
 //   gainTokens(f, key, n), discardTokens(f, keys, n) → number discarded
 //   heldTokens(f)                    → { key: n }
 //   gainShield(f, v), heal(f, n), payHp(f, n), tempArmor(f)
-//   damage(f, n, attacker)           → { dealt, bled }
+//   damage(f, n, attacker, opts)     → { taken, steps, bled, absorbed, broke }
+//     opts: { source, ignore, allowIron, mods, unblockable, power, emit } — the
+//     whole Damage Resolution (engine/damage.js) runs in the world
+//   addTemp({ rule, value, targetId, ownerId, source, duration })  (phase C)
 //   challenge(target, challenger)
 //   addPoolNumber(f, value)
 //   context                          → { healValue, bleedValue, round, activeCharacter }
 // }
 // ask(request) → Promise(answer). request: { kind: 'confirm' | 'choose' | 'targets', fighter, title, text, options?, minimum?, maximum? }
+
+import { ENFORCED_RULES } from './engine/modifiers.js';
 
 export const SUPPORTED_OPS = new Set([
   'sequence',
@@ -55,6 +60,25 @@ export const SUPPORTED_OPS = new Set([
   'steal_tokens',
   'convert_tokens',
   'notify',
+  // full automation, phase C
+  'modify_rule',
+  'temporary',
+  'spend_tokens',
+  'reduce_damage',
+  'split_incoming_damage',
+]);
+// Durations a `temporary` can have (engine/runtime.js expires them).
+const TEMP_DURATIONS = new Set([
+  'end_of_current_turn',
+  'end_of_current_turn_or_next_action',
+  'end_of_that_turn',
+  'after_end_of_target_next_turn',
+  'start_of_next_own_turn',
+  'end_of_current_round',
+  'end_of_next_round',
+  'until_next_damage_dealing_action',
+  'current_hit',
+  'end_of_fight',
 ]);
 export const SUPPORTED_EVENTS = new Set([
   'own_turn.start',
@@ -72,6 +96,42 @@ export const SUPPORTED_EVENTS = new Set([
   'self.tokens_discarded_by_action_or_ability',
   'self.shield_absorbed',
   'self.shield_absorbed_from_enemy_action',
+  // Actions (phase B: server/engine/actions.js)
+  'self.action.before',
+  'self.action.cost_paid',
+  'self.action.resolved',
+  'self.dice_action.resolved',
+  'self.damage_dealing_action.resolved',
+  'self.first_action_on_own_turn.resolved',
+  'self.action.damage_dealt_to_enemy',
+  'ally.action.resolved',
+  'any_action.fully_resolved',
+  'self.token_action.pay_cost',
+  'self.hp_paid',
+  // Damage Resolution (phase C: engine/damage.js via server/triggers.js)
+  'self.would_take_damage',
+  'ally_in_range.would_take_damage',
+  'self.hit_enhanced_with_power',
+  'self.power_tokens_spent',
+  'self.iron_tokens_spent',
+  'self.hit_reduced',
+  'self.hit_reduced_from_enemy',
+  'self.damage_reduced_by_iron',
+  'self.damage_reduced_by_armor',
+  'self.armor_triggered',
+  'self.damage_dealt',
+  'self.damage_dealt_to_enemy',
+  'self.action_or_ability.damage_dealt',
+  'self.took_damage_from_action',
+  'self.took_damage_from_enemy_action',
+  'self.burning_token_damage_taken',
+  'self.fell_to_zero_hp',
+  'enemy_in_range.trap_damage_taken',
+  'enemy_in_range.damaged_allied_shield',
+  'enemy_in_range.broke_allied_shield',
+  'enemy_in_range.own_shield_damaged',
+  'enemy_in_range.own_shield_broken',
+  'shield_in_range.broken',
 ]);
 const SELECTOR_KINDS = new Set(['enemy', 'ally', 'unit', 'self_and_allies', 'self_or_ally']);
 // Copies aren't tracked on the board, so "you or your Copies" is your own range.
@@ -86,7 +146,7 @@ const REF_OK = [
   /^bindings\.[A-Za-z]+$/,
   /^variables\.[A-Za-z]+$/,
   /^state\.[A-Za-z]+$/,
-  /^event\.(target|activeCharacter|attacker|amount|isCostPayment|shieldBroke)$/,
+  /^event\.(target|activeCharacter|attacker|amount|isCostPayment|shieldBroke|damage|enemy|enemyCount|enemyDamageDealers)$/,
   /^resolution\.gateRating$/,
   /^payment\.(rating|destroyedShieldValue|challengeHolder)$/,
   /^variables\.[A-Za-z]+$/,
@@ -128,6 +188,8 @@ export function ruleSupport(rule) {
     if (Array.isArray(n)) return n.forEach(walk);
     if (typeof n.op === 'string' && !SUPPORTED_OPS.has(n.op)) problems.push(`op ${n.op}`);
     if (n.op === 'grant_armor' && !n.temporary) problems.push('lasting armor');
+    if (n.op === 'modify_rule' && !ENFORCED_RULES.has(n.rule)) problems.push(`rule ${n.rule}`);
+    if (n.op === 'temporary' && (!TEMP_DURATIONS.has(n.duration) || !tempItems(n.effect))) problems.push(`temporary ${n.duration}`);
     if (typeof n.operator === 'string' && !(n.operator in OPERATORS) && n.operator !== 'if') problems.push(`operator ${n.operator}`);
     if (typeof n.ref === 'string' && !REF_OK.some((re) => re.test(n.ref))) problems.push(`ref ${n.ref}`);
     if (typeof n.kind === 'string' && n.range && !SELECTOR_KINDS.has(n.kind)) problems.push(`selector ${n.kind}`);
@@ -173,7 +235,7 @@ export function evalValue(v, scope) {
 }
 
 const STATUS = ['burning', 'fatigue', 'weakness'];
-const NOT_DISCARDABLE = new Set(['shield', 'armor', 'challenge']);
+const NOT_DISCARDABLE = new Set(['shield', 'armor', 'temp_armor', 'challenge']);
 const NON_UNIQUE = new Set(['power', 'iron', 'speed', 'burning', 'fatigue', 'weakness']);
 const SKIP = '__skip';
 const asList = (v) => (v == null ? [] : Array.isArray(v) ? v : [v]);
@@ -241,6 +303,8 @@ export async function runRule(rule, ctx) {
     resolution: ctx.resolution ?? {},
     payment: ctx.payment ?? {},
     history: ctx.history ?? {},
+    // Rules changed for this resolution only (`modify_rule` run as an effect).
+    mods: [...(ctx.mods ?? [])],
   };
   if (rule.condition && !evalValue(rule.condition, scope)) return { ran: false };
   if (rule.limit) {
@@ -253,6 +317,7 @@ export async function runRule(rule, ctx) {
   // something (a token to discard or take), the pick itself offers "skip" and
   // a rule with nothing to pick is skipped without asking. Otherwise it asks.
   if (rule.optional && rule.effect?.op !== 'optional') {
+    if (!affordable(rule.effect, scope, ctx)) return { ran: false };
     if (opensWithPick(rule.effect)) scope.mayDecline = true;
     else {
       const yes = await ctx.ask({ kind: 'confirm', fighter: ctx.self, title: ctx.ability?.name ?? 'Optional', text: `You may ${describe(rule.effect) || 'use this'}.` });
@@ -261,6 +326,29 @@ export async function runRule(rule, ctx) {
   }
   const out = await run(rule.effect, scope, ctx);
   return { ran: out !== DECLINED };
+}
+
+// A `temporary`'s effect as the modifiers it installs (`modify_rule` with an
+// enforced key, temporary `grant_armor`), or null when it holds anything else.
+export function tempItems(effect) {
+  const out = [];
+  const walk = (n) => {
+    if (!n || typeof n !== 'object') return false;
+    if (n.op === 'sequence') return (n.steps ?? []).every(walk);
+    if (n.op === 'modify_rule' && ENFORCED_RULES.has(n.rule)) return out.push(n) > 0;
+    if (n.op === 'grant_armor') return out.push(n) > 0;
+    return false;
+  };
+  return walk(effect) ? out : null;
+}
+
+// A "you may" whose effect opens by spending tokens is only offered when they
+// can be spent (Iron Form: "you may spend 1 Iron to take 1 less damage").
+function affordable(effect, scope, ctx) {
+  const first = effect?.op === 'sequence' ? effect.steps?.[0] : effect;
+  if (first?.op !== 'spend_tokens') return true;
+  const who = first.target?.ref === 'self' || !first.target ? [scope.self] : asList(evalValue(first.target, scope));
+  return who.every((f) => f && (ctx.world.heldTokens(f)[evalValue(first.token, scope)] ?? 0) >= (Number(evalValue(first.amount, scope)) || 0));
 }
 
 const DECLINED = Symbol('declined');
@@ -330,6 +418,7 @@ async function run(node, scope, ctx) {
       return;
     }
     case 'optional': {
+      if (!affordable(node.effect, scope, ctx)) return;
       const yes = await ctx.ask({
         kind: 'confirm',
         fighter: scope.self,
@@ -522,18 +611,82 @@ async function run(node, scope, ctx) {
       }
       return;
     }
+    // **Damage (phase C):** the world runs the whole Damage Resolution
+    // (engine/damage.js — Weakness, Power, Iron, Shield, Armor) and emits its
+    // events; this step only says who hits whom, from what, and how.
     case 'damage': {
       const n = val(node.amount);
       for (const f of await targetsOf(node.target, scope, ctx, 'an enemy')) {
-        const r = await world.damage(f, n, scope.self);
-        ctx.log(`${scope.self.name} deals ${n} damage to ${f.name}${r?.absorbed ? ` (Shield absorbs ${r.absorbed}${r.broke ? ' and breaks' : ''})` : ''}`);
-        if (r?.absorbed) await ctx.emit?.('self.shield_absorbed', f, { attacker: scope.self, amount: r.absorbed, shieldBroke: Boolean(r.broke) });
-        // What this resolution did (history.*): damage actually dealt, who was hit.
-        scope.history.damageDealt = (scope.history.damageDealt ?? 0) + (r?.toHp ?? n);
+        const r = await world.damage(f, n, scope.self, {
+          source: ctx.source ?? 'ability',
+          ignore: node.ignoreDefenses ?? null,
+          allowIron: Boolean(node.allowIronTokens),
+          mods: scope.mods ?? [],
+          unblockable: ctx.unblockable ?? [],
+          power: ctx.power ?? null,
+          emit: ctx.emit ?? null,
+        });
+        const taken = r?.taken ?? r?.toHp ?? n;
+        const steps = r?.steps?.length ? r.steps : r?.absorbed ? [`Shield absorbs ${r.absorbed}${r.broke ? ' and breaks' : ''}`] : [];
+        ctx.log(`${scope.self.name} deals ${taken} damage to ${f.name}${steps.length ? ` (${steps.join(', ')})` : ''}`);
+        // What this resolution did (history.*): damage actually dealt, who was hit
+        // (an attempt counts for the Challenge, even when it was all blocked).
+        scope.history.damageDealt = (scope.history.damageDealt ?? 0) + taken;
         (scope.history.damagedIds ??= []).push(f.id);
-        await ctx.emit?.('self.damage_taken', f, { attacker: scope.self, amount: n });
-        if (r?.bled) await ctx.emit?.('self.bleed', f, {});
+        if (taken > 0 && f.side !== scope.self.side) (scope.history.enemyDamagedIds ??= []).push(f.id);
       }
+      return;
+    }
+    // **A rule changed for this resolution only** (import guide: an Action's
+    // or triggered Ability's `modify_rule`) — Shockwave's "Unblockable by
+    // Armor and Shields". Lasting ones are `continuous` (engine/modifiers.js).
+    case 'modify_rule': {
+      if (!ENFORCED_RULES.has(node.rule)) return unsupported(node, scope, ctx);
+      const value = val(node.value);
+      for (const f of node.target ? await targetsOf(node.target, scope, ctx) : [scope.self]) {
+        (scope.mods ??= []).push({ rule: node.rule, value, targetId: f.id, ownerId: scope.self.id, source: ctx.ability?.id ?? null });
+      }
+      return;
+    }
+    // **Until a duration ends** (engine/runtime.js expires it): modifiers and
+    // temporary Armor installed in the fight's runtime.
+    case 'temporary': {
+      const items = TEMP_DURATIONS.has(node.duration) ? tempItems(node.effect) : null;
+      if (!items || !world.addTemp) return unsupported(node, scope, ctx);
+      for (const item of items) {
+        for (const f of item.target ? await targetsOf(item.target, scope, ctx) : [scope.self]) {
+          if (item.op === 'grant_armor') {
+            await world.tempArmor(f);
+            ctx.log(`${f.name} gains temporary Armor`);
+            continue;
+          }
+          await world.addTemp({ rule: item.rule, value: val(item.value), targetId: f.id, ownerId: scope.self.id, source: ctx.ability?.id ?? null, duration: node.duration });
+        }
+      }
+      return;
+    }
+    // Spending tokens as part of an effect (not a cost): all or nothing.
+    case 'spend_tokens': {
+      const key = val(node.token);
+      const amount = Number(val(node.amount)) || 0;
+      for (const f of node.target ? await targetsOf(node.target, scope, ctx) : [scope.self]) {
+        if ((world.heldTokens(f)[key] ?? 0) < amount) return DECLINED;
+        await world.discardTokens(f, [key], amount);
+        ctx.log(`${f.name} spends ${amount} ${tokenName(key)}`);
+      }
+      return;
+    }
+    // "Take 1 less damage" while a hit is being resolved (`self.would_take_damage`).
+    case 'reduce_damage':
+      scope.event.reduction = (scope.event.reduction ?? 0) + (Number(val(node.amount)) || 0);
+      return;
+    // Heroic Style: an ally's incoming damage is split with you (decided: the
+    // first redirector only).
+    case 'split_incoming_damage': {
+      if (scope.event.split) return;
+      const to = asList(val(node.recipient))[0] ?? scope.self;
+      scope.event.split = { keep: Number(val(node.originalShare)) || 0, give: [{ to, amount: Number(val(node.recipientShare)) || 0 }] };
+      ctx.log(`${to.name} takes half the damage`);
       return;
     }
     case 'challenge': {
@@ -571,12 +724,16 @@ async function run(node, scope, ctx) {
       return;
     }
     default:
-      // An Action runs what it can (full automation, phase B): a step the
-      // engine can't do yet is handed to people (a "by hand" note) and the
-      // rest goes on. Ability rules are pre-checked by ruleSupport instead.
-      if (ctx.onUnsupported) return ctx.onUnsupported(node, scope);
-      throw new Unsupported(`op ${node.op}`);
+      return unsupported(node, scope, ctx);
   }
+}
+
+// An Action runs what it can (full automation, phase B): a step the engine
+// can't do yet is handed to people (a "by hand" note) and the rest goes on.
+// Ability rules are pre-checked by ruleSupport instead.
+function unsupported(node, scope, ctx) {
+  if (ctx.onUnsupported) return ctx.onUnsupported(node, scope);
+  throw new Unsupported(`op ${node.op}${node.rule ? ` ${node.rule}` : ''}`);
 }
 
 // ------------------------------------------------------------------ board geometry (range and sight)

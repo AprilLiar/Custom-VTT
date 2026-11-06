@@ -16,7 +16,7 @@ import BuildTab from './builder/BuildTab.jsx';
 //
 // `canEdit` only decides whether controls render; the server checks for itself.
 
-export default function CombatTab({ ownerType, ownerId, canEdit = false, ownerName = '' }) {
+export default function CombatTab({ ownerType, ownerId, canEdit = false, ownerName = '', isNpc = false }) {
   const [profile, setProfile] = useState(null);
 
   useEffect(() => {
@@ -42,7 +42,7 @@ export default function CombatTab({ ownerType, ownerId, canEdit = false, ownerNa
   return (
     <div className="space-y-6">
       <TokenPicture ownerType={ownerType} ownerId={ownerId} profile={profile} canEdit={canEdit} name={ownerName} />
-      {ownerType === 'character' && <BuildTab characterId={ownerId} canEdit={canEdit} />}
+      {ownerType === 'character' && <BuildTab characterId={ownerId} canEdit={canEdit} isNpc={isNpc} />}
     </div>
   );
 }

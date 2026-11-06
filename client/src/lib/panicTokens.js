@@ -65,6 +65,15 @@ export const SPECIAL_TOKENS = [
     summary:
       'Blocks incoming damage from any Action or Ability that targets you, up to its value; when used up it breaks and the rest hits you. One Shield at a time: a new one replaces it, or raises it by 1. Cannot be healed. Cap 8.',
   },
+  // **Temporary Armor (full automation, phase C)** — p.24: Guard and the like.
+  // Binary (cap 1): used after all other Armor, triggers once, then it is lost.
+  {
+    key: 'temp_armor',
+    name: 'Temporary Armor',
+    kind: 'special',
+    cap: 1,
+    summary: 'Armor that triggers once, after all your other Armor (the first trigger of a turn blocks 3, the second 2, then 1), and is then lost. You either have it or you do not.',
+  },
 ];
 
 export const ALL_TOKENS = [...BASIC_TOKENS, ...STATUS_TOKENS, ...UNIQUE_TOKENS, ...SPECIAL_TOKENS];

@@ -41,6 +41,12 @@ const cards = [];
 const msgs = [];
 gm.on('chat:card', (c) => cards.push(c));
 gm.on('chat:message', (m) => msgs.push(m));
+// Phase C: a player's Shield is used on Ask (their default) — the GM answers yes.
+const prompts = [];
+gm.on('trigger:prompt', (p) => {
+  prompts.push(p);
+  if (p.title === 'Shield') gm.emit('trigger:answer', { id: p.id, answer: true });
+});
 gm.emit('scene:create', { name: `SX ${stamp}` });
 await sleep(300);
 const scene = (await jf('/api/scenes?role=gm')).find((s) => s.name === `SX ${stamp}`);
@@ -56,7 +62,7 @@ gm.emit('build:save', { characterId: pal.id, build: { type: 'hero-type.focused',
 gm.emit('build:save', { characterId: foe.id, build: { type: 'character-type.warrior', stances: [{ formId: 'form.power', styleId: 'style.heroic' }] } });
 await sleep(500);
 gm.emit('combat_token:place', { ownerType: 'character', ownerId: thorn.id, col: 2, row: 2 });
-gm.emit('combat_token:place', { ownerType: 'character', ownerId: pal.id, col: 2, row: 4 });
+gm.emit('combat_token:place', { ownerType: 'character', ownerId: pal.id, col: 9, row: 9 });
 gm.emit('combat_token:place', { ownerType: 'character', ownerId: foe.id, col: 3, row: 2 });
 await sleep(700);
 let st = await jf('/api/stage?role=gm');
@@ -89,6 +95,7 @@ const thornHp = f(tt.id).hp.current;
 gm.emit('fighter:damage', { ref: { combatantId: tt.id }, amount: 1 });
 await sleep(1000);
 st = await jf('/api/stage?role=gm');
+check('a player is asked before their Shield blocks (Ask by default)', prompts.some((p) => p.title === 'Shield' && p.kind === 'confirm' && p.characterId === thorn.id), JSON.stringify(prompts.map((p) => p.title)));
 check('the Shield absorbs the hit; HP untouched', f(tt.id).tokens.shield === 1 && f(tt.id).hp.current === thornHp, JSON.stringify(f(tt.id)));
 check('Thorns Form deals 1 to the attacker (the active enemy)', f(tf.id).hp.current === foeHp - 1, `${foeHp} → ${f(tf.id).hp.current}`);
 gm.emit('fighter:damage', { ref: { combatantId: tt.id }, amount: 3 });

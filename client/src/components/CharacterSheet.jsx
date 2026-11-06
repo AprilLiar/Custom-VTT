@@ -196,6 +196,7 @@ export default function CharacterSheet() {
               ownerId={data.character.id}
               ownerName={data.character.name}
               canEdit={canEdit}
+              isNpc={data.character.character_type === 'npc'}
             />
           )}
           {tab === 'roleplay' && <RoleplayTab data={data} />}

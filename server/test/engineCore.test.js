@@ -70,6 +70,8 @@ test('runtime: turn and round boundaries reset counters, flags and expire tempor
   addTemp(t, { ownerId: 1, targetId: 3, duration: 'after_end_of_target_next_turn', rule: 'y' });
   addTemp(t, { ownerId: 1, targetId: 1, duration: 'end_of_current_turn_or_next_action', rule: 'z' });
   addTemp(t, { ownerId: 1, targetId: 1, duration: 'end_of_next_round', rule: 'w' });
+  assert.deepEqual(expireTemps(t, 'action', { actorId: 1 }).map((x) => x.rule), [], 'not after the Action that made it');
+  t.actionSeq = 1; // the next Action (server/engine/actions.js counts them)
   assert.deepEqual(expireTemps(t, 'action', { actorId: 1 }).map((x) => x.rule), ['z'], '"or next action" ends after the next Action');
   assert.deepEqual(expireTemps(t, 'start_of_turn', { activeId: 1 }).map((x) => x.rule), [], 'not the same turn');
   startTurn(t, 3, 1); // F3's turn
