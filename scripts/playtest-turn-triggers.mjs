@@ -123,11 +123,10 @@ st = await jf('/api/stage?role=gm');
 fh = st.combatTokens.find((t) => t.id === th.id).fight;
 const fa = st.combatTokens.find((t) => t.id === ta.id).fight;
 check('turn end: Fused Demon gives 1 Chaos', fh.tokens.chaos === 1, JSON.stringify(fh.tokens));
-check("the Angel's player was asked (and the GM too): heal, then the target", prompts.angel.some((p) => p.kind === 'confirm') && prompts.angel.some((p) => p.kind === 'targets') && prompts.gm.length >= prompts.angel.length,
+// One enemy in range: the only legal target is the target — nobody is asked for it (batch 5).
+check("the Angel's player was asked (and the GM too) to heal; the one enemy in range is the target without asking", prompts.angel.some((p) => p.kind === 'confirm') && !prompts.angel.some((p) => p.kind === 'targets') && prompts.gm.length >= prompts.angel.length,
   JSON.stringify(prompts.angel.map((p) => p.kind)));
 check('only the Angel\'s controllers got the Angel\'s prompts, not the hero\'s player', !prompts.hero.some((p) => p.characterId === angel.id), JSON.stringify(prompts.hero.map((p) => [p.title, p.text])));
-check('the target offered was the enemy in range', prompts.angel.find((p) => p.kind === 'targets')?.options.map((o) => Number(o.id)).join() === String(th.id),
-  JSON.stringify(prompts.angel.find((p) => p.kind === 'targets')));
 check('the Angel healed 2 (Fused Angel) + 1 (Heroic Style)', fa.hp.current === hpA0 + 3, `${hpA0} → ${fa.hp.current}`);
 check('the hero is Challenged by the Angel', fh.challenge_id === ta.id, JSON.stringify(fh));
 check("Fused Angel's 1 damage: the hero's player is asked about their Shield, which absorbs it", prompts.heroShield.length === 1 && fh.tokens.shield === 2, JSON.stringify([prompts.heroShield.length, fh.tokens]));

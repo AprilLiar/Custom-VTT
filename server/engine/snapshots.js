@@ -10,7 +10,7 @@ export async function takeSnapshot(fightId) {
   const fight = await one('SELECT * FROM fights WHERE id = ?', [fightId]);
   if (!fight) return null;
   const combatants = await all(`SELECT id, ${COLS.join(', ')} FROM combatants WHERE scene_id = ? AND mode = ?`, [fight.scene_id, fight.mode]);
-  const tiles = await all('SELECT col, row, kind, owner_id FROM map_tiles WHERE scene_id = ? AND mode = ?', [fight.scene_id, fight.mode]);
+  const tiles = await all('SELECT col, row, kind, owner_id, placed_by FROM map_tiles WHERE scene_id = ? AND mode = ?', [fight.scene_id, fight.mode]);
   const lane = fight.mode === 'simple' ? await all('SELECT id, lane_slot FROM scene_summons WHERE scene_id = ?', [fight.scene_id]) : [];
   return { fightId, sceneId: fight.scene_id, mode: fight.mode, combatants, tiles, lane, runtime: fight.runtime };
 }
@@ -23,7 +23,7 @@ export async function restoreSnapshot(snap) {
   }
   await run('DELETE FROM map_tiles WHERE scene_id = ? AND mode = ?', [snap.sceneId, snap.mode]);
   // (owner_id: a Copy's Original — phase E.)
-  for (const t of snap.tiles) await run('INSERT INTO map_tiles (scene_id, mode, col, row, kind, owner_id) VALUES (?, ?, ?, ?, ?, ?)', [snap.sceneId, snap.mode, t.col, t.row, t.kind, t.owner_id ?? null]);
+  for (const t of snap.tiles) await run('INSERT INTO map_tiles (scene_id, mode, col, row, kind, owner_id, placed_by) VALUES (?, ?, ?, ?, ?, ?, ?)', [snap.sceneId, snap.mode, t.col, t.row, t.kind, t.owner_id ?? null, t.placed_by ?? null]);
   for (const l of snap.lane) await run('UPDATE scene_summons SET lane_slot = ? WHERE id = ?', [l.lane_slot, l.id]);
   await run('UPDATE fights SET runtime = ? WHERE id = ?', [snap.runtime, snap.fightId]);
 }

@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { Shapes, Trash2, X } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { Lock, LockOpen, Shapes, Trash2, X } from 'lucide-react';
+import { useControl } from '../lib/useControl.js';
 import { socket } from '../socket.js';
 import { DESTRUCTIBLE, TILES, TILE_BY_KEY, displayKinds, groupSquares, mergeInto, placeTile, squareKey } from '../lib/mapTiles.js';
 import { MAX_LAYERS, quadCenter, quadSize, tileShapes } from '../lib/tileArt.js';
@@ -10,8 +11,38 @@ import { beginTileDrag, subscribeTileDrag } from '../lib/combatDrag.js';
 //   squareAt(clientX, clientY) → { col, row } | null   (null: off the board)
 //   quadOf(col, row)           → [tl, tr, br, bl] in the view's own pixels | null
 // Tiles sit ABOVE the grid / lane lines and BELOW every token or miniature.
-// Everyone may place, move and remove them (decided, as in the book's Free
-// Placement); the stacking rules are client/src/lib/mapTiles.js's.
+// Everyone may place them (decided, as in the book's Free Placement); **moving
+// and removing: only your own** (batch 5 — a square whose every tile you, or a
+// character you control, placed), and the GM always. The stacking rules are
+// client/src/lib/mapTiles.js's.
+
+// **The obstacle lock (decided, batch 5): personal**, kept on this device.
+// While on, your own drags don't move placed obstacles (no fat fingers);
+// placing new ones from the palette still works.
+const LOCK_KEY = 'vtt.obstacleLock';
+const lockSubs = new Set();
+const readLock = () => {
+  try {
+    return window.localStorage.getItem(LOCK_KEY) === '1';
+  } catch {
+    return false;
+  }
+};
+let locked = typeof window === 'undefined' ? false : readLock();
+const setLocked = (v) => {
+  locked = Boolean(v);
+  try {
+    window.localStorage.setItem(LOCK_KEY, locked ? '1' : '0');
+  } catch {
+    // Private mode: the lock lasts until the page reloads.
+  }
+  for (const fn of lockSubs) fn();
+};
+const useObstacleLock = () =>
+  useSyncExternalStore(
+    (fn) => (lockSubs.add(fn), () => lockSubs.delete(fn)),
+    () => locked
+  );
 
 const DRAG_THRESHOLD = 5;
 const HIGHLIGHT = 'rgba(250, 204, 21, 0.35)';
@@ -86,6 +117,10 @@ export function MapTileLayer({ active = true, mode, tiles, squareAt, quadOf, wid
   // A move shows where it landed straight away; the next stage update clears it.
   const [pending, setPending] = useState(null);
   useEffect(() => setPending(null), [tiles]);
+  const { controls } = useControl();
+  const isLocked = useObstacleLock();
+  // Movable: every tile of the square is yours (the GM: always), lock off.
+  const movable = (sq) => !isLocked && (sq.by ?? []).every((b) => (b == null ? controls(null) : controls(b)));
 
   const latest = useRef({});
   latest.current = { squareAt, mode, active };
@@ -128,10 +163,12 @@ export function MapTileLayer({ active = true, mode, tiles, squareAt, quadOf, wid
     if (e.button !== 0) return;
     e.stopPropagation();
     e.currentTarget.setPointerCapture(e.pointerId);
-    setDrag({ from: { col: sq.col, row: sq.row }, kinds: sq.kinds, pointerId: e.pointerId, startX: e.clientX, startY: e.clientY, x: e.clientX, y: e.clientY, moved: false });
+    setDrag({ from: { col: sq.col, row: sq.row }, kinds: sq.kinds, fixed: !movable(sq), pointerId: e.pointerId, startX: e.clientX, startY: e.clientY, x: e.clientX, y: e.clientY, moved: false });
   };
   const onMove = (e) => {
     if (!drag || e.pointerId !== drag.pointerId) return;
+    // Someone else's, or locked: it stays (a tap still opens its card).
+    if (drag.fixed) return;
     const moved = drag.moved || Math.hypot(e.clientX - drag.startX, e.clientY - drag.startY) > DRAG_THRESHOLD;
     setDrag({ ...drag, x: e.clientX, y: e.clientY, moved });
   };
@@ -207,6 +244,11 @@ export function MapTileLayer({ active = true, mode, tiles, squareAt, quadOf, wid
           square={popupSquare}
           anchor={{ x: quadCenter(popupQuad)[0], top: Math.min(...popupQuad.map((p) => p[1])), bottom: Math.max(...popupQuad.map((p) => p[1])) }}
           bounds={{ width, height }}
+          mine={(kind) => {
+            const ks = kind === 'pit_trap' ? ['pit', 'trap'] : [kind];
+            const src = tiles.filter((t) => t.col === popupSquare.col && t.row === popupSquare.row && ks.includes(t.kind));
+            return src.every((t) => (t.by == null ? controls(null) : controls(t.by)));
+          }}
           onClose={() => setPopup(null)}
         />
       )}
@@ -216,7 +258,7 @@ export function MapTileLayer({ active = true, mode, tiles, squareAt, quadOf, wid
 
 // A placed square's tiles: each one's description, with Remove (and Destroy
 // for a Wall or Rubble). Opens above the square, or below if there is no room.
-function TileInfoPopup({ mode, square, anchor, bounds, onClose }) {
+function TileInfoPopup({ mode, square, anchor, bounds, mine, onClose }) {
   const ref = useRef(null);
   useOutsideClose(ref, onClose);
   const kinds = displayKinds(square.kinds);
@@ -239,13 +281,17 @@ function TileInfoPopup({ mode, square, anchor, bounds, onClose }) {
           <div key={k} className="pr-5">
             <TileInfo kind={k} />
             <div className="mt-1 flex gap-1">
-              <button
-                type="button"
-                onClick={() => emit('map_tile:remove', k)}
-                className="min-h-8 panel-cut-sm border border-zinc-700 px-2 text-[11px] text-zinc-300 hover:border-red-500 hover:text-red-400"
-              >
-                Remove
-              </button>
+              {mine(k) ? (
+                <button
+                  type="button"
+                  onClick={() => emit('map_tile:remove', k)}
+                  className="min-h-8 panel-cut-sm border border-zinc-700 px-2 text-[11px] text-zinc-300 hover:border-red-500 hover:text-red-400"
+                >
+                  Remove
+                </button>
+              ) : (
+                <span className="self-center text-[10px] italic text-zinc-500">Placed by someone else</span>
+              )}
               {DESTRUCTIBLE.has(k) && (
                 <button
                   type="button"
@@ -304,6 +350,7 @@ export function MapTilePalette({ mode, left = 0, role }) {
   const [open, setOpen] = useState(false);
   const [info, setInfo] = useState(null); // tile key
   const boxRef = useRef(null);
+  const isLocked = useObstacleLock();
   useEffect(() => {
     if (!open) setInfo(null);
   }, [open]);
@@ -326,6 +373,20 @@ export function MapTilePalette({ mode, left = 0, role }) {
         }`}
       >
         <Shapes size={18} aria-hidden />
+      </button>
+      {/* The personal lock, under the button (it never moves the button). */}
+      <button
+        type="button"
+        onClick={() => setLocked(!isLocked)}
+        title={isLocked ? 'Obstacles locked: your drags don’t move them. Tap to unlock.' : 'Lock obstacles, so a stray drag can’t move them'}
+        aria-label={isLocked ? 'Unlock obstacles' : 'Lock obstacles'}
+        aria-pressed={isLocked}
+        data-obstacle-lock={isLocked ? 'on' : 'off'}
+        className={`absolute left-1/2 top-full mt-1 flex h-7 w-7 -translate-x-1/2 items-center justify-center panel-cut-sm border ${
+          isLocked ? 'border-amber-500 bg-amber-900/60 text-amber-200' : 'border-zinc-700 bg-zinc-900/85 text-zinc-400 hover:border-zinc-500 hover:text-zinc-200'
+        }`}
+      >
+        {isLocked ? <Lock size={13} aria-hidden /> : <LockOpen size={13} aria-hidden />}
       </button>
       {open && (
       <div className="absolute left-full top-1/2 ml-1.5 flex -translate-y-1/2 items-center gap-1.5">

@@ -8,7 +8,8 @@
 // placement and every later one.
 import { one, run } from '../db.js';
 import { applyHpDelta } from '../../client/src/lib/hpBars.js';
-import { describe, runRule } from '../../client/src/lib/patd/interpreter.js';
+import { describe, hasNoTargets, runRule } from '../../client/src/lib/patd/interpreter.js';
+import { abilitiesOff } from '../../client/src/lib/patd/engine/modifiers.js';
 import { poolOf } from '../../client/src/lib/patd/diceBoard.js';
 import { planPayment } from '../../client/src/lib/patd/tokenCost.js';
 import { expireTemps, fighterRt } from '../../client/src/lib/patd/engine/runtime.js';
@@ -16,7 +17,7 @@ import { hpOf, saveHp, shapeFightState } from '../combatState.js';
 import { patdContent } from '../patdContent.js';
 import { actingOn, readData, saveBoard, fighterState } from '../diceMarks.js';
 import { restoreSnapshot, takeSnapshot } from './snapshots.js';
-import { recordUse, superKey } from '../../client/src/lib/patd/engine/turn.js';
+import { atZero, recordUse, superKey } from '../../client/src/lib/patd/engine/turn.js';
 
 const hasDamage = (node) => {
   let found = false;
@@ -78,8 +79,59 @@ export function createActionRunner(kit) {
     const action = idx.get(placement.actionId);
     const { env, byId } = envIn ? { env: envIn, byId: (id) => envIn.world.fighters().find((f) => f.id === id) } : await envFor(fightRow);
     const save = () => (envIn ? null : env.save());
-    const actor = byId(actingOn(row).combatantId);
-    if (!action || !actor) return { ok: false, error: 'the fighter or the Action is gone' };
+    // Whose turn it is, for rules that ask ("during your own turn" — Mastermind's Move 1).
+    if (!envIn && env.world.context && env.world.context.activeCharacter == null) {
+      let order = [];
+      try {
+        order = JSON.parse(fightRow.turn_order || '[]');
+      } catch {
+        order = [];
+      }
+      env.world.context.activeCharacter = byId(order[fightRow.turn_index]?.id) ?? null;
+    }
+    // Who pays for it — and, but for a Mastermind, who performs it.
+    const payer = byId(actingOn(row).combatantId);
+    if (!action || !payer) return { ok: false, error: 'the fighter or the Action is gone' };
+    const askPayer = (when) => ask(payer, env.key, env.gen, env.tg, when);
+    // **Mastermind Style (batch 5): "You cannot perform Actions. Instead, you
+    // pay their costs, but make your allies perform them for you"** — from the
+    // ally's location, with their range and Stance bonuses. The Mastermind
+    // picks the ally (one in sight: no asking) and answers every choice.
+    let actor = payer;
+    if (placement.kind !== 'super' && !placement.copied && delegates(env, payer)) {
+      const allies = env.world.alliesOf(payer).filter((a) => a.id !== payer.id && a.square && !atZero(a.hp) && env.world.inRange(payer, a, { mode: 'visible', origin: 'self' }));
+      if (!allies.length) return { ok: false, error: `${payer.name} can see no ally to perform it (Mastermind Style)`, action };
+      let pick = allies[0];
+      if (allies.length > 1) {
+        const ans = await askPayer(action.name)({
+          kind: 'targets',
+          title: `${action.name} (Mastermind)`,
+          text: 'Which ally performs it?',
+          mode: env.world.mode ?? null,
+          options: allies.map((a) => ({ id: String(a.id), label: a.name, col: a.square.col, row: a.square.row })),
+          minimum: 1,
+          maximum: 1,
+        });
+        pick = allies.find((a) => String(a.id) === String(Array.isArray(ans) ? ans[0] : ans)) ?? null;
+        if (!pick) return { ok: false, cancelled: true, action };
+      }
+      actor = pick;
+    }
+    // **No valid targets (decided, batch 5):** asked before anything is paid.
+    // Yes performs it anyway (whatever needs no target still happens); No
+    // takes the Action off the board, its dice back in the pool.
+    if (!placement.copied && !placement.free) {
+      let none = false;
+      try {
+        none = hasNoTargets(action.effect, { world: env.world, self: actor, state: fighterRt(env.rt, actor.id).state, usage: env.usage, resolution: { gateRating: placement.stop ?? 0 }, history: {}, payment: {} });
+      } catch {
+        none = false;
+      }
+      if (none) {
+        const yes = await askPayer(action.name)({ kind: 'confirm', title: `${action.name}: no valid targets`, text: `${actor.name} has nobody to target with ${action.name} right now. Perform it anyway?` });
+        if (!yes) return { ok: false, cancelled: true, action };
+      }
+    }
     let payment;
     if (placement.kind === 'super') {
       // **A Super Move (phase I):** paid with its pair of matching numbers.
@@ -91,17 +143,18 @@ export function createActionRunner(kit) {
       payment = { rating: n?.value ?? 0, poolNumbers: [n?.value ?? 0], isDice: true };
       // A Chaos token spent "as if you had spent a 4" (once per turn — phase F).
       if (n?.source === 'chaos') {
-        if (fighterRt(env.rt, actor.id).flags.chaosUsed || !((actor.tokens.chaos ?? 0) > 0)) return { ok: false, error: 'no Chaos token to spend (once per turn)', action };
-        await env.world.discardTokens(actor, ['chaos'], 1);
-        fighterRt(env.rt, actor.id).flags.chaosUsed = true;
+        if (fighterRt(env.rt, payer.id).flags.chaosUsed || !((payer.tokens.chaos ?? 0) > 0)) return { ok: false, error: 'no Chaos token to spend (once per turn)', action };
+        await env.world.discardTokens(payer, ['chaos'], 1);
+        fighterRt(env.rt, payer.id).flags.chaosUsed = true;
       }
     } else {
       payment = await payTokens(row, action, placement);
       if (payment.error) return { ok: false, error: payment.error };
-      await emitEvent(env, 'self.token_action.pay_cost', actor, { action });
+      await emitEvent(env, 'self.token_action.pay_cost', payer, { action });
     }
-    if (payment.hp) await emitEvent(env, 'self.hp_paid', actor, { amount: payment.hp });
-    await emitEvent(env, 'self.action.cost_paid', actor, { action, rating: payment.rating });
+    if (payment.hp) await emitEvent(env, 'self.hp_paid', payer, { amount: payment.hp });
+    await emitEvent(env, 'self.action.cost_paid', payer, { action, rating: payment.rating });
+    if (actor !== payer) await postCard('reminder', { title: 'Mastermind Style', text: `${actor.name} performs ${action.name} for ${payer.name}.`, fighters: [{ name: payer.name }], automatic: 'ability', notice: true });
     const gateRating = placement.stop ?? payment.rating;
     // **Acting from a Copy (phase E, book p.71):** with Copies on the board the
     // Original picks where the Action is performed from; its ranges count from there.
@@ -109,7 +162,7 @@ export function createActionRunner(kit) {
     const own = (env.world.copies?.() ?? []).filter((c) => c.ownerId === actor.id && c.square);
     if (own.length && actor.square) {
       const options = [actor, ...own].map((o) => ({ id: `${o.square.col},${o.square.row}`, label: o === actor ? `Here (${actor.name})` : o.name, col: o.square.col, row: o.square.row }));
-      const ans = await ask(actor, env.key, env.gen, env.tg, `${action.name}`)({ kind: 'square', mode: env.world.mode, title: `${action.name} (act from)`, text: 'Perform it from where you stand, or from one of your Copies.', options, minimum: 1, maximum: 1 });
+      const ans = await askPayer(`${action.name}`)({ kind: 'square', mode: env.world.mode, title: `${action.name} (act from)`, text: 'Perform it from where you stand, or from one of your Copies.', options, minimum: 1, maximum: 1 });
       const id = Array.isArray(ans) ? ans[0] : ans;
       const pick = options.find((o) => o.id === id);
       if (pick && pick.id !== options[0].id) originSquare = { col: pick.col, row: pick.row };
@@ -155,7 +208,8 @@ export function createActionRunner(kit) {
       ability: action,
       event: {},
       log: (l) => lines.push(l),
-      ask: ask(actor, env.key, env.gen, env.tg, `${action.name}${gateRating ? ` (${gateRating})` : ''}`),
+      // (A Mastermind answers for the ally performing it.)
+      ask: askPayer(`${action.name}${gateRating ? ` (${gateRating})` : ''}`),
       notify: (text) => postCard('reminder', { title: action.name, text, fighters: [{ name: actor.name }], automatic: 'ability_text' }),
       emit: (ev, f, payload, filter) => emitEvent(env, ev, f, payload, 1, filter),
       resolution: { gateRating },
@@ -186,8 +240,12 @@ export function createActionRunner(kit) {
       env.source = prevSource;
     }
     frt.flags.actions = (frt.flags.actions ?? 0) + 1;
-    // Its limits count it (once per turn …).
-    recordUse(env.rt.usage, action, actor.id);
+    // Its limits count it (once per turn …) — for whoever paid, whose list it is on.
+    recordUse(env.rt.usage, action, payer.id);
+    if (actor !== payer) {
+      const prt = fighterRt(env.rt, payer.id);
+      prt.flags.actions = (prt.flags.actions ?? 0) + 1;
+    }
     // A Super Move: once per fight for them, and one of their side's this Round.
     if (placement.kind === 'super') {
       env.rt.usage[superKey(actor.id)] = (env.rt.usage[superKey(actor.id)] ?? 0) + 1;
@@ -225,6 +283,13 @@ export function createActionRunner(kit) {
     }
     await save();
     return { ok: true, lines, manual, gateRating, action, actor };
+  }
+
+  // Mastermind Style's `delegate_actions`, while its Stance is on and it works.
+  function delegates(env, f) {
+    if (abilitiesOff(f.id, env.rt.temps) || atZero(f.hp)) return false;
+    const idx = patdContent();
+    return (f.abilityIds ?? []).some((id) => (idx.get(id)?.rules ?? []).some((r) => r.effect?.op === 'delegate_actions'));
   }
 
   // **An Action performed by a rule (phase H: `perform_action`)** — Gunkata's
@@ -275,12 +340,29 @@ export function createActionRunner(kit) {
   // (decided, revised: no reaction windows — whoever can interrupt has an
   // Interrupt button instead; server/fights.js `interrupt:offers`).
   async function commitBoard(rollId) {
+    // The resolve stack (batch 5): every placed Action is a step, queued up front.
+    const stepOf = new Map(); // placement key → step id
+    let stackKey = null;
+    const finish = () => {
+      for (const id of stepOf.values()) kit.steps?.remove(stackKey, id, { silent: true });
+    };
     for (let guard = 0; guard < 40; guard++) {
       const { row, fight } = await fightOfBoard(rollId);
-      if (!row?.active || !fight) return;
+      if (!row?.active || !fight) return finish();
       const data = readData(row);
       data.paused = false;
+      stackKey = `${fight.scene_id}:${fight.mode}`;
+      for (const p of (data.placements ?? []).filter((x) => !x.committed)) {
+        if (!stepOf.has(p.key)) stepOf.set(p.key, kit.steps?.add(stackKey, patdContent().get(p.actionId)?.name ?? 'Action', 'queued', { silent: true }));
+      }
       const next = (data.placements ?? []).find((p) => !p.committed);
+      if (next) kit.steps?.set(stackKey, stepOf.get(next.key), 'now');
+      const stepDone = (state) => {
+        const id = stepOf.get(next.key);
+        stepOf.delete(next.key);
+        if (state) kit.steps?.set(stackKey, id, state);
+        else kit.steps?.remove(stackKey, id);
+      };
       if (!next) {
         data.committing = false;
         await saveQ(rollId, data);
@@ -298,13 +380,22 @@ export function createActionRunner(kit) {
       const result = await perform(fight, row, data, next);
       const after = readData(await one('SELECT * FROM dice_marks WHERE roll_id = ?', [rollId]));
       const p = (after.placements ?? []).find((x) => x.key === next.key);
+      if (!result.ok && result.cancelled) {
+        // Declined at "no valid targets": off the board, its dice free again; the rest go on.
+        await queued(() => run('DELETE FROM fight_snapshots WHERE id = ?', [Number(ins?.lastInsertRowid)]));
+        after.placements = (after.placements ?? []).filter((x) => x.key !== next.key);
+        after.committing = after.placements.some((x) => !x.committed);
+        await saveQ(rollId, after);
+        stepDone(null);
+        continue;
+      }
       if (!result.ok) {
         // Not performed (could not pay): stays placed; the batch stops.
         await queued(() => run('DELETE FROM fight_snapshots WHERE id = ?', [Number(ins?.lastInsertRowid)]));
         after.committing = false;
         await saveQ(rollId, after);
         await postCard('reminder', { title: result.action?.name ?? 'Action', text: `Not performed: ${result.error}.`, fighters: [], automatic: 'action' });
-        return;
+        return finish();
       }
       if (p) {
         p.committed = true;
@@ -324,7 +415,9 @@ export function createActionRunner(kit) {
       });
       await saveQ(rollId, after);
       await emitStageUpdated();
+      stepDone('done');
     }
+    finish();
   }
 
   // **Retrieve (GM):** back to just before that placement's Action.

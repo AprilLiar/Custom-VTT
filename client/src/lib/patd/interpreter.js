@@ -32,6 +32,7 @@
 // ask(request) → Promise(answer). request: { kind: 'confirm' | 'choose' | 'targets', fighter, title, text, options?, minimum?, maximum? }
 
 import { ENFORCED_RULES } from './engine/modifiers.js';
+import { atZero } from './engine/turn.js';
 import { addPoolValue, removePoolNumber, setPoolValue } from './diceBoard.js';
 
 export const SUPPORTED_OPS = new Set([
@@ -477,7 +478,11 @@ export function describe(node) {
 //   mustTarget — the Challenger a damaging Action must include (decided: enforced)
 //   onUnsupported(node) — a step the engine can't run yet
 export async function runRule(rule, ctx) {
-  const scope = {
+  const scope = scopeFor(rule, ctx);
+  return runScoped(rule, scope, ctx);
+}
+function scopeFor(rule, ctx) {
+  return {
     self: ctx.self,
     // The fight's context, and whether it is the rule's owner's own turn.
     context: {
@@ -496,7 +501,11 @@ export async function runRule(rule, ctx) {
     history: ctx.history ?? {},
     // Rules changed for this resolution only (`modify_rule` run as an effect).
     mods: [...(ctx.mods ?? [])],
+    // The whole effect being run (which picks its damage will hit).
+    rootEffect: rule.effect,
   };
+}
+async function runScoped(rule, scope, ctx) {
   // A scheduled effect runs with what it captured (phase G).
   if (ctx.captured) Object.assign(scope.targets, ctx.captured.targets ?? {}), Object.assign(scope.bindings, ctx.captured.bindings ?? {}), Object.assign(scope.variables, ctx.captured.variables ?? {});
   if (rule.condition && !evalValue(rule.condition, scope)) return { ran: false };
@@ -648,10 +657,61 @@ const firstOp = (e) => (e?.op === 'sequence' ? e.steps?.[0]?.op : e?.op);
 // An `optional` step opening with one of these asks no yes/no first (phase H).
 const POOL_PICKS = new Set(['increase_pool_number', 'set_pool_number', 'replace_pool_number', 'duplicate_pool_number', 'reroll_die', 'reroll_dice', 'combine_pool_numbers', 'split_pool_number']);
 
-async function targetsOf(v, scope, ctx, label) {
-  if (isSelector(v)) return select(v, scope, ctx, label);
-  return asList(evalValue(v, scope)).filter((x) => x && typeof x === 'object' && x.id != null);
+// `obstacles`: the step knows what to do with a Wall or Rubble (damage breaks
+// it; destroy, replace, swap). Every other step leaves plain obstacles out —
+// a Wall picked as an Attack's target gains no tokens and is never pushed.
+// `hit`: the step deals damage, so its pick offers Walls and Rubble too.
+async function targetsOf(v, scope, ctx, label, { obstacles = false, hit = false } = {}) {
+  const list = isSelector(v) ? await select(hit ? { ...v, breakables: true } : v, scope, ctx, label) : asList(evalValue(v, scope)).filter((x) => x && typeof x === 'object' && x.id != null);
+  return obstacles ? list : list.filter((x) => !x.isObstacle || x.isCopy);
 }
+
+// **Walls and Rubble are targeted as enemies (book p.11; decided, batch 5):**
+// does anything in this rule deal damage to what `binding` holds?
+function damagesBinding(effect, binding) {
+  let found = false;
+  const walk = (n) => {
+    if (found || !n || typeof n !== 'object') return;
+    if (Array.isArray(n)) return n.forEach(walk);
+    if (n.op === 'damage' && (n.target?.ref === `targets.${binding}` || n.target?.ref === `bindings.${binding}`)) found = true;
+    else for (const k in n) walk(n[k]);
+  };
+  walk(effect);
+  return found;
+}
+
+// **Would this Action have anyone to target? (decided, batch 5.)** Looks at
+// every unit or obstacle pick in the effect that can be judged before it runs
+// (not the ones measured from an earlier pick). → true when there is at least
+// one such pick and none of them has a legal target now — the board then asks
+// "No valid targets — perform anyway?" before the cost is paid.
+const TARGET_KINDS = new Set(['enemy', 'ally', 'unit', 'obstacle', 'own_copy', 'enemy_or_obstacle', 'unit_or_obstacle', 'ally_or_obstacle']);
+export function hasNoTargets(effect, ctx) {
+  const scope = scopeFor({ effect }, ctx);
+  let judged = 0;
+  let open = 0;
+  const walk = (n) => {
+    if (!n || typeof n !== 'object') return;
+    if (Array.isArray(n)) return n.forEach(walk);
+    if (isSelector(n) && TARGET_KINDS.has(n.kind)) {
+      if (ORIGIN_REF.test(n.range?.origin ?? '') || BINDING_RANGES.has(n.range?.mode) || n.range?.mode === 'nearest_to_event_former_holder') return;
+      // "Yourself or an ally", "all allies and you": always someone.
+      if ((n.kind === 'ally' || n.kind === 'unit') && !n.excludeSelf) return;
+      judged++;
+      try {
+        const breakable = n.kind === 'enemy' && hasDamageOp(effect);
+        if (candidatesOf(breakable ? { ...n, breakables: true } : n, scope, ctx)?.pool?.length) open++;
+      } catch {
+        open++;
+      }
+      return;
+    }
+    for (const k in n) walk(n[k]);
+  };
+  walk(effect);
+  return judged > 0 && open === 0;
+}
+const hasDamageOp = (effect) => JSON.stringify(effect ?? null).includes('"op":"damage"');
 
 // **Spaces (phase E):** squares in range — `empty` ones only when asked —
 // picked one at a time on the map or lane (`square` prompts).
@@ -726,6 +786,15 @@ function resolveRange(range, scope) {
 
 // The candidates a selector allows, and the pick when one is needed.
 async function select(rawSel, scope, ctx, label = 'a target') {
+  const c = candidatesOf(rawSel, scope, ctx);
+  if (!c) return [];
+  if (c.spaces) return selectSpaces(c.sel, scope, ctx, c.from);
+  return pickFrom(c, scope, ctx, label);
+}
+
+// Who (or what) a selector allows right now: { sel, from, pool }, `spaces`
+// for a space selector, or null when its origin isn't on the board.
+function candidatesOf(rawSel, scope, ctx) {
   const sel = { ...rawSel, range: resolveRange(rawSel.range, scope) };
   const { world } = ctx;
   const self = scope.self;
@@ -737,16 +806,20 @@ async function select(rawSel, scope, ctx, label = 'a target') {
   // fighter or Copy measures with its own range, an obstacle with yours.
   if (ORIGIN_REF.test(sel.range?.origin ?? '')) {
     const o = asList(evalValue({ ref: sel.range.origin }, scope))[0];
-    if (!o?.square) return [];
+    if (!o?.square) return null;
     from = o.side != null ? o : { ...self, square: o.square };
   }
-  if (sel.kind === 'space') return selectSpaces(sel, scope, ctx, from);
+  if (sel.kind === 'space') return { sel, from, spaces: true };
   const copies = world.copies?.() ?? [];
   // "Adjacent to the target" (phase H): from the bound one, not from you.
   const bound = BINDING_RANGES.has(sel.range?.mode);
   const obstacleRange = bound ? { mode: 'map' } : sel.range;
   let pool;
-  if (sel.kind === 'enemy') pool = [...world.enemiesOf(self), ...copies.filter((c) => c.side !== self.side)];
+  if (sel.kind === 'enemy') {
+    pool = [...world.enemiesOf(self), ...copies.filter((c) => c.side !== self.side)];
+    // A damaging pick may take a Wall or Rubble instead (2+ in one hit breaks it).
+    if (sel.breakables && sel.count !== 'all') pool.push(...(world.obstacles?.(from, obstacleRange, { types: ['wall', 'rubble'] }) ?? []));
+  }
   else if (sel.kind === 'ally' || sel.kind === 'self_and_allies' || sel.kind === 'self_or_ally') pool = world.alliesOf(self);
   // "Yourself and each ally you can see" (Inspire Perfection — phase I).
   else if (sel.kind === 'self_and_visible_allies') pool = world.alliesOf(self).filter((f) => f.id === self.id || world.inRange(from, f, { mode: 'visible', origin: 'self' }));
@@ -757,6 +830,10 @@ async function select(rawSel, scope, ctx, label = 'a target') {
     pool = [...units, ...(world.obstacles?.(from, obstacleRange, {}) ?? [])];
   } else pool = [...world.fighters(), ...copies];
   if (sel.excludeSelf) pool = pool.filter((f) => f.id !== self.id);
+  // **Taken Out (book p.62; decided, batch 5):** someone at zero HP can't be
+  // attacked or targeted by their enemies until healing revives them; their
+  // own side still can (that is how they are healed).
+  pool = pool.filter((f) => !(f.side != null && self.side != null && f.side !== self.side && atZero(f.hp)));
   // **"A different / another target" (decided, batch 4):** never one already
   // picked by the bindings named (Left, Right!'s second hit, Stand Strong's
   // second ally, Taunting's second and third Challenge, Leap Out, Frostbite).
@@ -783,6 +860,14 @@ async function select(rawSel, scope, ctx, label = 'a target') {
     const anchor = anchorOf(sel, scope);
     pool = pool.filter((f) => (f !== anchor || sel.range.mode === 'target_and_adjacent') && nearAnchor(sel, anchor, f.square));
   } else pool = pool.filter((f) => f.isObstacle || (f.isCopy && sel.range?.mode === 'none') || world.inRange(from, f, sel.range));
+  return { sel, from, pool };
+}
+
+async function pickFrom(c, scope, ctx, label) {
+  const { sel, from } = c;
+  let { pool } = c;
+  const { world } = ctx;
+  const self = scope.self;
   const count = sel.count;
   if (count === 'all' || sel.kind === 'self_and_allies' || sel.kind === 'self_and_visible_allies') return pool;
   if (!pool.length) return [];
@@ -798,6 +883,10 @@ async function select(rawSel, scope, ctx, label = 'a target') {
     ctx.log?.(`${must.name} must be the target (Challenge)`);
     pool = [must];
   }
+  // **The only legal target is the target (decided, batch 5):** a pick that
+  // must be made, of one, with one candidate, asks nobody. A "you may" and an
+  // "up to" still ask (they can be skipped).
+  if (pool.length === 1 && maximum === 1 && minimum >= 1 && !scope.mayDecline && !ctx.askAlways) return pool;
   // **Picked on the board (decided, batch 3):** each option carries its square,
   // and `area` is the Range it's picked in — the client shades the Range red,
   // the legal targets brighter, and a tap picks (the list stays a fallback).
@@ -887,12 +976,17 @@ async function run(node, scope, ctx) {
       scope.variables[val(node.name)] = val(node.value);
       return;
     case 'select':
-      scope.targets[node.binding] = await select(node.selector, scope, ctx, node.selector.kind === 'ally' ? 'an ally' : 'an enemy');
+      scope.targets[node.binding] = await select(
+        scope.rootEffect && node.selector.kind === 'enemy' && damagesBinding(scope.rootEffect, node.binding) ? { ...node.selector, breakables: true } : node.selector,
+        scope,
+        ctx,
+        node.selector.kind === 'ally' ? 'an ally' : 'an enemy'
+      );
       if (Array.isArray(scope.targets[node.binding]) && node.selector.count === 1) scope.targets[node.binding] = scope.targets[node.binding][0] ?? null;
       return;
     case 'for_each': {
       // A selector to pick from, or a ref to a list (Knockdown's damagers, Dance's pushed enemies).
-      const list = await targetsOf(node.selector, scope, ctx);
+      const list = await targetsOf(node.selector, scope, ctx, undefined, { obstacles: true });
       for (const f of list) {
         scope.bindings[node.binding] = f;
         // "Any target that takes 0 damage from it" (Grape Shot — phase H).
@@ -1100,13 +1194,13 @@ async function run(node, scope, ctx) {
     // events; this step only says who hits whom, from what, and how.
     case 'damage': {
       const n = val(node.amount);
-      for (const f of await targetsOf(node.target, scope, ctx, 'an enemy')) {
+      for (const f of await targetsOf(node.target, scope, ctx, 'an enemy', { obstacles: true, hit: true })) {
         // A Wall or Rubble hit for 2+ in one hit is destroyed (book p.11; phase E).
         if (f.isObstacle && !f.isCopy) {
           if (n >= 2 && (f.kind === 'wall' || f.kind === 'rubble')) {
             await world.destroyObstacle(f, scope.self);
             ctx.log(`${scope.self.name} destroys the ${f.name}${f.kind === 'wall' ? ' (Rubble now)' : ''}`);
-          }
+          } else ctx.log(`${scope.self.name} hits the ${f.name} for ${n}: it takes 2 in one hit to break it`);
           continue;
         }
         // Dealt by someone else when the step says so (Slugfest's target hits back — phase H).
@@ -1230,7 +1324,7 @@ async function run(node, scope, ctx) {
     case 'replace_obstacle': {
       if (!world.destroyObstacle) return unsupported(node, scope, ctx);
       const to = node.op === 'replace_obstacle' ? val(node.replacement) : null;
-      for (const o of await targetsOf(node.target, scope, ctx, 'an obstacle')) {
+      for (const o of await targetsOf(node.target, scope, ctx, 'an obstacle', { obstacles: true })) {
         if (!o.isObstacle && !o.isCopy) continue;
         if (to) await world.replaceObstacle(o, to, scope.self);
         else await world.destroyObstacle(o, scope.self);
@@ -1248,7 +1342,9 @@ async function run(node, scope, ctx) {
       const decline = scope.mayDecline;
       scope.mayDecline = false;
       for (const f of node.target ? await targetsOf(node.target, scope, ctx) : [scope.self]) {
-        const to = await fn(f, { distance, upTo: Boolean(node.upTo), ...(decline ? { allowNone: true } : {}) });
+        // An enemy made to move: not their own movement, so Fatigue stays out of it.
+        const byEnemy = Boolean(f.side && scope.self.side && f.side !== scope.self.side);
+        const to = await fn(f, { distance, upTo: Boolean(node.upTo), ...(decline ? { allowNone: true } : {}), ...(byEnemy ? { byEnemy } : {}) });
         if (decline && to == null) return DECLINED;
         // "If it moved, swapped or teleported you" (Dance Form — phase G).
         if (to != null && f.id === scope.self.id) scope.history.selfMoved = true;
@@ -1281,7 +1377,7 @@ async function run(node, scope, ctx) {
     case 'swap_spaces': {
       if (!world.swap) return unsupported(node, scope, ctx);
       const actor = node.actor ? asList(val(node.actor))[0] : scope.self;
-      for (const f of await targetsOf(node.target, scope, ctx)) {
+      for (const f of await targetsOf(node.target, scope, ctx, undefined, { obstacles: true })) {
         if (!actor) continue;
         // Swapping with a Wall (Walled In) moves a tile: by hand.
         if (f.isObstacle && !f.isCopy) {

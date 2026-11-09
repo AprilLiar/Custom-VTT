@@ -121,14 +121,31 @@ check('Dizzy ended with the turn', st.combatTokens.find((t) => t.id === tMira.id
 check('the next turn is an enemy, with no pick', fight.turn_index === 1 && fight.order[1].side === 'enemies' && fight.pending_stance === null);
 
 console.log('\n--- through the round ---');
+const round1Order = st.fights.combat.order;
 for (let i = 0; i < 6 && st.fights.combat.round === 1; i++) {
   gm.emit('fight:next', { mode: 'combat' });
   await sleep(700);
   st = await jf('/api/stage?role=gm');
 }
 fight = st.fights.combat;
-check('a second round started, re-rolled — still five turns: Mira broke a bar but keeps a turn per bar (the book)', fight.round === 2 && fight.order.length === 5, JSON.stringify(fight));
-check('...opened by the side opposite the last turn of round 1 (allies ended it → enemies open)', fight.order[0].side === 'enemies', JSON.stringify(fight.order));
+check('a second round started — still five turns: Mira broke a bar but keeps a turn per bar (the book)', fight.round === 2 && fight.order.length === 5, JSON.stringify(fight));
+// The order is rolled once (batch 5): every round repeats the first.
+check('...in the same order as round 1 (never re-rolled)', JSON.stringify(fight.order) === JSON.stringify(round1Order), JSON.stringify([round1Order, fight.order]));
+// The GM drags an entry: the last to second place; the current turn stays the current turn.
+gm.emit('fight:reorder', { mode: 'combat', from: 4, to: 1 });
+await sleep(400);
+st = await jf('/api/stage?role=gm');
+const dragged = st.fights.combat.order;
+check('the GM drags the order, alternation or not', JSON.stringify(dragged) === JSON.stringify([round1Order[0], round1Order[4], round1Order[1], round1Order[2], round1Order[3]]) && st.fights.combat.turn_index === 0, JSON.stringify(dragged));
+p.emit('fight:reorder', { mode: 'combat', from: 1, to: 4 });
+gm.emit('fight:reorder', { mode: 'combat', from: 0, to: 3 });
+await sleep(400);
+st = await jf('/api/stage?role=gm');
+check('...a player can’t, and the current turn can’t be dragged', JSON.stringify(st.fights.combat.order) === JSON.stringify(dragged), JSON.stringify(st.fights.combat.order));
+gm.emit('fight:reorder', { mode: 'combat', from: 1, to: 4 });
+await sleep(400);
+st = await jf('/api/stage?role=gm');
+fight = st.fights.combat;
 check('...with a round line', lines.some((l) => /Round 2/.test(l)));
 
 console.log('\n--- sides, removal, the chat log, the end ---');

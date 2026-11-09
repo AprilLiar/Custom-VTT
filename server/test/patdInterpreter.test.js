@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { patdContent } from '../patdContent.js';
-import { describe, lineOfSight, ruleSupport, runRule, targetable } from '../../client/src/lib/patd/interpreter.js';
+import { describe, hasNoTargets, lineOfSight, ruleSupport, runRule, targetable } from '../../client/src/lib/patd/interpreter.js';
 
 const idx = patdContent();
 const rulesOf = (abilityId, event) => idx.get(abilityId).rules.filter((r) => r.events.includes(event));
@@ -275,15 +275,16 @@ test('Challenge enforced (decided): a damaging Action must include the Challenge
   const { w } = makeWorld([me, foe, challenger]);
   const damage = idx.get('action.system-basic-actions.damage');
   const asked = [];
-  // One target: the Challenger is the only choice offered (batch 4: still asked, so it can be skipped).
+  // One target, and the Challenger is the only one allowed: nobody is asked (batch 5).
   await runRule({ id: damage.id, effect: damage.effect }, { world: w, self: me, state: {}, usage: {}, log: () => {}, ask: async (q) => (asked.push(q), ['2']), resolution: { gateRating: 1 }, mustTarget: 3 });
-  assert.deepEqual(asked.map((q) => q.options.map((o) => o.id)), [['3']]);
-  assert.ok(asked[0].skippable);
+  assert.equal(asked.length, 0, 'the only legal target is the target');
   assert.equal(challenger.hp, 9);
   assert.equal(foe.hp, 10);
-  // Skip (batch 4): the attack is declined — nobody is hit.
-  await runRule({ id: damage.id, effect: damage.effect }, { world: w, self: me, state: {}, usage: {}, log: () => {}, ask: async () => ['__skip'], resolution: { gateRating: 1 }, mustTarget: 3 });
+  // Skip (batch 4): with a choice to make, the attack may be declined — nobody is hit.
+  await runRule({ id: damage.id, effect: damage.effect }, { world: w, self: me, state: {}, usage: {}, log: () => {}, ask: async (q) => (asked.push(q), ['__skip']), resolution: { gateRating: 1 } });
+  assert.ok(asked[0].skippable);
   assert.equal(challenger.hp, 9, 'skipped: no damage');
+  assert.equal(foe.hp, 10, 'skipped: no damage');
   // Gate rating drives the damage: 5+ deals 3.
   await runRule({ id: damage.id, effect: damage.effect }, { world: w, self: me, state: {}, usage: {}, log: () => {}, ask: async () => ['2'], resolution: { gateRating: 6 }, onUnsupported: () => {} });
   assert.equal(foe.hp, 7, 'Damage at a 6: 3 damage (the 5+ Gate); its Push is left to people for now');
@@ -444,7 +445,7 @@ test('"a different enemy" (excludeBindings): Left, Right! never hits the same en
   const effect = idx.get('action.form-one-two.left-right').effect;
   const asked = [];
   await runRule({ id: 'lr', events: ['own_turn.start'], effect }, { world: w, self: me, state: {}, usage: {}, log: () => {}, ask: async (q) => (asked.push(q.options.map((o) => o.id)), [q.options[0].id]) });
-  assert.deepEqual(asked, [['2', '3'], ['3']], 'the second pick leaves out the first target');
+  assert.deepEqual(asked, [['2', '3']], 'the second pick leaves out the first target — one left, so nobody is asked (batch 5)');
   assert.equal(foe.hp, 9);
   assert.equal(other.hp, 8);
   const solo = makeWorld([fighter(1, 'a'), fighter(2, 'b')]);
@@ -454,4 +455,71 @@ test('"a different enemy" (excludeBindings): Left, Right! never hits the same en
   // Every "different / another" target in the content carries the flag.
   const marked = ['action.form-one-two.left-right', 'action.form-vigilance.stand-strong', 'action.style-jumping.leap-out', 'action.style-taunting.is-that-all-you-got', 'action.archetype-winterblossom.frostbite'];
   for (const id of marked) assert.ok(JSON.stringify(idx.get(id)).includes('excludeBindings'), id);
+});
+
+// ---- batch 5: Walls as targets, Taken Out, the only legal target, "no valid targets"
+
+const DAMAGE = 'action.system-basic-actions.damage';
+const down = { max: 10, current: 0, bars: 1, broken: 0 };
+
+test('a damaging pick offers Walls and Rubble as targets; 2+ in one hit breaks one, less does not', async () => {
+  const me = fighter(1, 'a');
+  const foe = fighter(2, 'b');
+  const { w } = makeWorld([me, foe]);
+  const tiles = [
+    { id: '5,5:wall', isObstacle: true, kind: 'wall', name: 'Wall', square: { col: 5, row: 5 } },
+    { id: '6,5:trap', isObstacle: true, kind: 'trap', name: 'Trap', square: { col: 6, row: 5 } },
+  ];
+  w.obstacles = (_from, _range, { types = null } = {}) => tiles.filter((t) => !types || types.includes(t.kind));
+  const destroyed = [];
+  w.destroyObstacle = async (o) => destroyed.push(o.id);
+  const damage = idx.get(DAMAGE);
+  const asked = [];
+  const lines = [];
+  const run = (gateRating, answer) => runRule({ id: damage.id, effect: damage.effect }, { world: w, self: me, state: {}, usage: {}, log: (l) => lines.push(l), ask: async (q) => (asked.push(q), answer), resolution: { gateRating }, onUnsupported: () => {} });
+  await run(1, ['5,5:wall']);
+  assert.deepEqual(asked[0].options.map((o) => o.id), ['2', '5,5:wall'], 'the enemy and the Wall — never the Trap');
+  assert.deepEqual(destroyed, [], '1 damage: the Wall stands');
+  assert.ok(lines.some((l) => /takes 2 in one hit/.test(l)));
+  assert.equal(foe.hp, 10);
+  await run(3, ['5,5:wall']);
+  assert.deepEqual(destroyed, ['5,5:wall'], '2+ in one hit breaks it');
+  // A pick that deals no damage never offers obstacles.
+  const give = { id: 'g', effect: { op: 'sequence', steps: [{ op: 'select', binding: 'target', selector: { kind: 'enemy', range: { mode: 'stance', origin: 'self' }, count: 1 } }, { op: 'gain_tokens', token: 'weakness', amount: 1, target: { ref: 'targets.target' } }] } };
+  const before = asked.length;
+  await runRule(give, { world: w, self: me, state: {}, usage: {}, log: () => {}, ask: async (q) => (asked.push(q), ['2']) });
+  assert.equal(asked.length, before, 'one enemy, no obstacles: nobody is asked');
+  assert.equal(foe.tokens.weakness, 1);
+});
+
+test('Taken Out at zero HP: enemies cannot target them, their own side still can', async () => {
+  const me = fighter(1, 'a');
+  const out = fighter(2, 'b', { hp: down });
+  const friend = fighter(3, 'b');
+  const { w } = makeWorld([me, out, friend]);
+  const damage = idx.get(DAMAGE);
+  const asked = [];
+  await runRule({ id: damage.id, effect: damage.effect }, { world: w, self: me, state: {}, usage: {}, log: () => {}, ask: async (q) => (asked.push(q), [q.options[0].id]), resolution: { gateRating: 1 } });
+  assert.equal(asked.length, 0, 'only the one standing can be attacked: no pick');
+  assert.equal(friend.hp, 9);
+  // Their ally picks them (that is how they are healed).
+  const pick = { id: 'p', effect: { op: 'select', binding: 'ally', selector: { kind: 'ally', range: { mode: 'stance', origin: 'self' }, count: 1, excludeSelf: true } } };
+  const seen = [];
+  await runRule(pick, { world: w, self: friend, state: {}, usage: {}, log: () => {}, ask: async (q) => (seen.push(q), [q.options[0].id]) });
+  assert.equal(seen.length, 0, 'their one ally is picked without asking — and it is the one Taken Out');
+});
+
+test('"no valid targets": an Action with picks and nobody to pick; not one that needs no target', () => {
+  const me = fighter(1, 'a');
+  const foe = fighter(2, 'b');
+  const alone = makeWorld([me]).w;
+  const withFoe = makeWorld([me, foe]).w;
+  const ctx = (world) => ({ world, self: me, state: {}, usage: {}, resolution: { gateRating: 1 }, history: {}, payment: {} });
+  const damage = idx.get(DAMAGE).effect;
+  assert.equal(hasNoTargets(damage, ctx(alone)), true);
+  assert.equal(hasNoTargets(damage, ctx(withFoe)), false);
+  // Everyone the enemy side has is Taken Out: still nobody.
+  assert.equal(hasNoTargets(damage, ctx(makeWorld([me, fighter(2, 'b', { hp: down })]).w)), true);
+  // Gaining tokens yourself needs no target.
+  assert.equal(hasNoTargets({ op: 'gain_tokens', token: 'power', amount: 1, target: { ref: 'self' } }, ctx(alone)), false);
 });

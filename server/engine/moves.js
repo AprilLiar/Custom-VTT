@@ -49,12 +49,13 @@ export function createMoves({ ask, emitEvent, postCard }) {
 
   // Asks `chooser` to pick one of `dests` ([{ square, cost?, ... }]); one
   // choice needs no asking. `allowNone`: they may decline (→ null).
-  // **Skip (decided, batch 4):** every movement from an Action or Ability may
-  // be declined — the pick always asks (even with one landing) and Skip
-  // (`'__skip'`) moves nobody.
+  // **Skip (decided, batch 4):** a movement that offers a choice may be
+  // declined — Skip (`'__skip'`) moves nobody. **One legal square, and the
+  // movement must happen (decided, batch 5): nobody is asked** — an "up to"
+  // or a "you may" (`allowNone`) still asks.
   async function pickSquare(env, chooser, mode, b, dests, { title, text, allowNone = false, costs = null, skippable = true }) {
     if (!dests.length) return null;
-    if (dests.length === 1 && !allowNone && !skippable) return dests[0];
+    if (dests.length === 1 && !allowNone) return dests[0];
     const options = dests.map((d) => ({
       id: d.square ? key(d.square) : 'outside',
       label: squareName(mode, d.square),
@@ -89,12 +90,17 @@ export function createMoves({ ask, emitEvent, postCard }) {
     await env.world.gainTokens(f, 'fatigue', 1);
     note(`${f.name} lands on Rubble: +1 Fatigue`);
   }
-  // Fatigue (book p.10): moving or teleporting while Fatigued discards one and goes 2 less.
-  async function fatigue(env, f, distance) {
-    if (!((f.tokens.fatigue ?? 0) > 0)) return distance;
+  // Fatigue (book p.10): moving or teleporting while Fatigued discards one and
+  // goes 2 less. **Only the fighter's own movement (decided, batch 5):** never
+  // a Push or Pull they cause or suffer, nor a move an enemy makes them take
+  // (`forcedBy`). The token is spent when the movement happens, or when it
+  // left no movement at all — not when the mover skips it.
+  const fatigued = (f, opts) => !opts?.byEnemy && (f.tokens.fatigue ?? 0) > 0;
+  const lessFor = (f, distance, opts) => (fatigued(f, opts) ? Math.max(0, distance - 2) : distance);
+  async function spendFatigue(env, f, opts) {
+    if (!fatigued(f, opts)) return;
     await env.world.discardTokens(f, ['fatigue'], 1);
     note(`${f.name} is Fatigued: discards 1, moves 2 less`);
-    return Math.max(0, distance - 2);
   }
   const flush = async (title, f) => {
     if (!lines.length) return;
@@ -118,7 +124,7 @@ export function createMoves({ ask, emitEvent, postCard }) {
   }
 
   // **Action Movement** ("move X" / "up to X"): the mover picks the square.
-  async function actionMove(env, m, f, { distance, upTo = false, allowNone = false }) {
+  async function actionMove(env, m, f, { distance, upTo = false, allowNone = false, byEnemy = false }) {
     if (!f.square) return null;
     // Caged Style: an adjacent enemy's Action Movement is reduced to zero.
     if (noSpeed(modsOn(env, f))) {
@@ -126,12 +132,17 @@ export function createMoves({ ask, emitEvent, postCard }) {
       await flush('Movement', f);
       return null;
     }
-    const d = await fatigue(env, f, Math.max(0, Number(distance) || 0));
+    const d = lessFor(f, Math.max(0, Number(distance) || 0), { byEnemy });
     const b = m.board();
     const dests = actionMoveDestinations(b, f.square, d, upTo, f.id);
-    if (!dests.length) return null;
+    if (!dests.length) {
+      if (d === 0) await spendFatigue(env, f, { byEnemy });
+      await flush('Movement', f);
+      return null;
+    }
     const pick = await pickSquare(env, f, m.mode, b, dests, { title: named(env, `Move ${upTo ? 'up to ' : ''}${d}`), text: `${f.name}: pick where to move.`, allowNone: upTo || allowNone });
     if (!pick) return null;
+    await spendFatigue(env, f, { byEnemy });
     await walk(env, m, f, pick.path);
     note(`${f.name} moves to ${squareName(m.mode, pick.square)}`);
     await fire(env, 'self.movement.finished', f, { square: pick.square });
@@ -140,12 +151,19 @@ export function createMoves({ ask, emitEvent, postCard }) {
   }
 
   // **Teleport X:** any empty space within Range 1-X; safe — no Trap, Pit or Rubble.
-  async function teleport(env, m, f, { distance, allowNone = false }) {
+  async function teleport(env, m, f, { distance, allowNone = false, byEnemy = false }) {
     if (!f.square) return null;
-    const d = await fatigue(env, f, Math.max(0, Number(distance) || 0));
+    const d = lessFor(f, Math.max(0, Number(distance) || 0), { byEnemy });
     const b = m.board();
-    const pick = await pickSquare(env, f, m.mode, b, teleportDestinations(b, f.square, d, f.id), { title: named(env, `Teleport ${d}`), text: `${f.name}: pick where to teleport.`, allowNone });
+    const tdests = teleportDestinations(b, f.square, d, f.id);
+    if (!tdests.length) {
+      if (d === 0) await spendFatigue(env, f, { byEnemy });
+      await flush('Teleport', f);
+      return null;
+    }
+    const pick = await pickSquare(env, f, m.mode, b, tdests, { title: named(env, `Teleport ${d}`), text: `${f.name}: pick where to teleport.`, allowNone });
     if (!pick) return null;
+    await spendFatigue(env, f, { byEnemy });
     await m.setSquare(f, pick.square);
     note(`${f.name} teleports to ${squareName(m.mode, pick.square)}`);
     await fire(env, 'self.movement.finished', f, { square: pick.square, teleport: true });

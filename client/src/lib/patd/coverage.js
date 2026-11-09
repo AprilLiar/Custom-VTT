@@ -41,6 +41,8 @@ export function continuousSupport(rule) {
     if (Array.isArray(n)) return n.forEach(walk);
     if (n.op === 'sequence') return (n.steps ?? []).forEach(walk);
     if (n.op === 'grant_armor') return;
+    // Mastermind Style: the Action runner hands the Action to an ally (engine/actions.js).
+    if (n.op === 'delegate_actions') return;
     if (n.op === 'modify_rule') {
       if (!ENFORCED_RULES.has(n.rule)) problems.push(`rule ${n.rule}`);
       return;

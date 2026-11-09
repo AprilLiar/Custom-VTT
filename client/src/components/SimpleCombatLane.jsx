@@ -9,6 +9,7 @@ import { laneGeometry, laneLinesPath, moveOnLane, pointsAttr, slotAt } from '../
 import FighterOverlay, { ArmorRings, ChallengeLock } from './FighterOverlay.jsx';
 import { armorRings } from '../lib/panicTokens.js';
 import { MapTileLayer } from './MapTiles.jsx';
+import { isTakenOut } from '../lib/hpBars.js';
 import { useHandMove } from './HandMoveDialog.jsx';
 
 // Simple Combat's overlay (Panic at the Dojo, Phase 2): one to three lanes of
@@ -362,6 +363,7 @@ function Miniature({ summon, x, y, size, lifted = false, selected = false, dragg
   if (!summon) return null;
   const rx = size.plinthRx;
   const ry = rx * 0.32;
+  const out = Boolean(summon.fight?.hp && isTakenOut(summon.fight.hp));
   return (
     // **Grabbed by the base, not the picture (decided):** the figure box and its
     // image let the pointer through, so a figure standing behind another can be
@@ -375,8 +377,9 @@ function Miniature({ summon, x, y, size, lifted = false, selected = false, dragg
         height: size.maxHeight + ry,
         transition: lifted ? 'none' : 'left 180ms ease-out, top 180ms ease-out',
         zIndex: lifted ? 30 : layer,
-        opacity: summon.is_hidden ? 0.5 : 1,
-        filter: lifted ? 'drop-shadow(0 10px 14px rgba(0,0,0,0.65))' : 'drop-shadow(0 4px 6px rgba(0,0,0,0.5))',
+        // Taken Out at zero HP (batch 5): half transparent and grey, until healed.
+        opacity: summon.is_hidden || out ? 0.5 : 1,
+        filter: `${out ? 'grayscale(0.85) ' : ''}${lifted ? 'drop-shadow(0 10px 14px rgba(0,0,0,0.65))' : 'drop-shadow(0 4px 6px rgba(0,0,0,0.5))'}`,
         touchAction: 'none',
       }}
       title={summon.name}

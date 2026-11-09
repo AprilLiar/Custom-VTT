@@ -8,6 +8,8 @@
 //
 // modifiersOn(fighter, world, idx, temps) → [{ rule, value, source, ownerId, node }]
 
+import { atZero } from './turn.js';
+
 const nodesOf = (effect) => {
   const out = [];
   const walk = (n) => {
@@ -41,6 +43,8 @@ export function modifiersOn(fighter, world, idx, temps = []) {
   const out = [];
   for (const owner of world.fighters()) {
     if (abilitiesOff(owner.id, temps)) continue;
+    // Abilities do not work while Taken Out (book p.62 — batch 5).
+    if (atZero(owner.hp)) continue;
     for (const abilityId of owner.abilityIds ?? []) {
       const ability = idx.get(abilityId);
       for (const rule of ability?.rules ?? []) {

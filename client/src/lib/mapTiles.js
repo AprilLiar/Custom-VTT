@@ -203,8 +203,10 @@ export function groupSquares(tiles) {
   const out = new Map();
   for (const t of tiles ?? []) {
     const key = squareKey(t.col, t.row);
-    if (!out.has(key)) out.set(key, { col: t.col, row: t.row, kinds: [] });
+    if (!out.has(key)) out.set(key, { col: t.col, row: t.row, kinds: [], by: [] });
     out.get(key).kinds.push(t.kind);
+    // Who placed each (batch 5): a character id, or null for the GM.
+    out.get(key).by.push(t.by ?? null);
   }
   for (const sq of out.values()) sq.kinds = sorted(new Set(sq.kinds));
   return out;

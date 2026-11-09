@@ -14,8 +14,8 @@
 // then the Start reminders, so a stance-bound reminder sees the new stance.
 import { all, one, run } from './db.js';
 import { imageUrl } from './images.js';
-import { buildRound, nextFirstSide } from '../client/src/lib/initiative.js';
-import { turnsPerRound } from '../client/src/lib/hpBars.js';
+import { buildRound, moveEntry, repeatRound } from '../client/src/lib/initiative.js';
+import { isTakenOut, turnsPerRound } from '../client/src/lib/hpBars.js';
 import { automaticReminders, fightersOnTraps } from '../client/src/lib/fightFlow.js';
 import { packLane, clampLanes } from '../client/src/lib/simpleLane.js';
 import { assembles, derivedFor, franticPickOf, rollDerived, stanceByKey, stancesOf } from './fighterStances.js';
@@ -23,7 +23,7 @@ import { franticOptions, franticPickAllowed } from '../client/src/lib/patd/build
 import { patdContent } from './patdContent.js';
 import { addXp } from './builds.js';
 import { parseRuntime } from '../client/src/lib/patd/engine/runtime.js';
-import { closeInterruptBoards, closeReactionBoards, endTurnDice, resumeRoll, startReaction, startRoll } from './diceMarks.js';
+import { activeBoardOf, closeInterruptBoards, closeReactionBoards, endTurnDice, resumeRoll, startReaction, startRoll } from './diceMarks.js';
 import { XP_AWARDS } from '../client/src/lib/patd/build.js';
 import { resolveRef, serialized, shapeFightState } from './combatState.js';
 import { controlsCharacter } from './control.js';
@@ -265,7 +265,9 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
     parseIds(fight.allies).includes(id) ? 'allies' : parseIds(fight.enemies).includes(id) ? 'enemies' : null;
 
   // ---- the order
-  const newRound = async (fight, firstSide, openerId = null) => {
+  // `prev`: the last round's order, which this one repeats (decided, batch 5:
+  // the order is rolled once, at Start Combat).
+  const newRound = async (fight, firstSide, openerId = null, prev = null) => {
     const fighters = await loadFighters(fight.scene_id, fight.mode);
     const leaders = await stoogeLeaders(fight, fighters);
     const turnsOf = (id) => {
@@ -276,12 +278,8 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
       return turnsPerRound(f.hp);
     };
     const side = (ids) => ids.map((id) => ({ id, turns: turnsOf(id) })).filter((x) => x.turns > 0);
-    return buildRound({
-      allies: side(parseIds(fight.allies)),
-      enemies: side(parseIds(fight.enemies)),
-      firstSide,
-      openerId,
-    });
+    const sides = { allies: side(parseIds(fight.allies)), enemies: side(parseIds(fight.enemies)) };
+    return prev ? repeatRound({ prev, ...sides }) : buildRound({ ...sides, firstSide, openerId });
   };
 
   // **Stooges (builder phase 4):** every body of one Stooges character in this
@@ -380,8 +378,7 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
     while (index < order.length && !(await valid(fight, order[index].id))) index++;
     if (index >= order.length) {
       await fire(fight, 'round_end');
-      const firstSide = nextFirstSide(order, 'allies');
-      order = await newRound(fight, firstSide);
+      order = await newRound(fight, null, null, order);
       // Kept so "Previous turn" can step back into the last round.
       fight.prev_turn_order = fight.turn_order;
       fight.round += 1;
@@ -459,7 +456,8 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
     if (!ids.length) return [];
     const rows = await all(`SELECT * FROM combatants WHERE id IN (${ids.map(() => '?').join(',')})`, ids);
     return rows
-      .filter((r) => (shapeFightState(r).tokens.speed ?? 0) > 0 && (fight.mode === 'simple' ? r.summon_id != null : r.grid_col != null))
+      // (Taken Out at zero HP — batch 5 — takes no part in a movement phase.)
+      .filter((r) => (shapeFightState(r).tokens.speed ?? 0) > 0 && !isTakenOut(shapeFightState(r).hp) && (fight.mode === 'simple' ? r.summon_id != null : r.grid_col != null))
       .map((r) => r.id);
   };
   // Early Movement opens after the turn's start triggers, if that turn is still on.
@@ -620,6 +618,33 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
     const { c, fight } = await fightOfCombatant(combatantId);
     if (!c || !mayControl(c) || !triggers || !(await freeMoveOk(fight, c))) return;
     triggers.freeSwap({ ...fight }, c.id, Number(allyId)).then((r) => socket.emit('move:result', { combatantId: c.id, ...r }));
+  });
+  // **The Action button (decided, batch 5):** the turn board of whoever's turn
+  // it is — what the Stance roll's card used to open — for the button at the
+  // bottom of the screen. ack({ payload | null, characterId }): `characterId`
+  // is who must be controlled to use it (after Heroic Spirit, the ally).
+  socket.on('board:current', async (payload, ack) => {
+    if (typeof ack !== 'function') return;
+    try {
+      const fight = await fightFor(payload?.mode);
+      const entry = fight ? orderOf(fight)[fight.turn_index] : null;
+      const row = entry && !fight.pending_stance_combatant ? await activeBoardOf(entry.id) : null;
+      if (!row || String(row.roll_id).startsWith('react-')) return ack({ payload: null });
+      const data = JSON.parse(row.data || '{}');
+      const fighters = await loadFighters(fight.scene_id, fight.mode);
+      const heroic = data.heroic ?? null;
+      const f = fighters.find((x) => x.combatantId === (heroic?.combatantId ?? entry.id));
+      if (!f) return ack({ payload: null });
+      const stanceKey = heroic ? heroic.stanceKey : data.stanceKey;
+      const stance = stanceKey ? await stanceByKey(f.characterId, stanceKey) : null;
+      ack({
+        characterId: f.characterId,
+        payload: { fighter: card(f), stance: stance?.name ?? heroic?.stanceName ?? '', results: data.results ?? [], combatant_id: f.combatantId, roll_id: row.roll_id, character_id: f.characterId, stance_key: stanceKey ?? null },
+      });
+    } catch (err) {
+      console.error('error handling board:current:', err);
+      ack({ payload: null });
+    }
   });
   // The active fighter's attack range, shaded faint red on the board (batch 3).
   socket.on('fight:active_range', async (payload, ack) => {
@@ -826,6 +851,20 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
     await rollStanceIntoChat(fight, c.id, stance.id);
     await fire(fight, 'turn_start', c.id);
     triggers?.schedule({ ...fight }, c.id, 'start');
+    await emitStageUpdated();
+  });
+
+  // **The GM drags the order (decided, batch 5):** entry `from` to index `to`,
+  // alternation or not. It holds for every round after (rounds repeat).
+  on('fight:reorder', async ({ mode, from, to } = {}) => {
+    if (!isGm()) return;
+    const fight = await fightFor(mode);
+    if (!fight) return;
+    const moved = moveEntry(orderOf(fight), fight.turn_index, Number(from), Number(to));
+    if (!moved) return;
+    fight.turn_order = JSON.stringify(moved.order);
+    fight.turn_index = moved.index;
+    await save(fight);
     await emitStageUpdated();
   });
 

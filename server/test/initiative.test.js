@@ -4,7 +4,7 @@
 // turns where avoidable, and the opposite-side opener for the next round.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildRound, nextFirstSide, otherSide } from '../../client/src/lib/initiative.js';
+import { buildRound, moveEntry, nextFirstSide, otherSide, repeatRound } from '../../client/src/lib/initiative.js';
 
 // A seeded generator so a failure reproduces.
 function seeded(seed) {
@@ -158,4 +158,36 @@ test('a side with no turns cannot open; an empty fight is an empty round', () =>
     buildRound({ allies: [{ id: 'a', turns: 0 }], enemies: [{ id: 'x', turns: -2 }], firstSide: 'allies' }),
     []
   );
+});
+
+// ---- batch 5: the order is rolled once; the GM may drag it
+
+test('a new round repeats the last one: leavers drop out, new fighters and new turns go to the end', () => {
+  const prev = [
+    { side: 'allies', id: 'a' },
+    { side: 'enemies', id: 'x' },
+    { side: 'allies', id: 'b' },
+    { side: 'enemies', id: 'x' },
+  ];
+  const same = repeatRound({ prev, allies: [{ id: 'a', turns: 1 }, { id: 'b', turns: 1 }], enemies: [{ id: 'x', turns: 2 }] });
+  assert.deepEqual(same, prev);
+  // b left; x lost a bar's turn (its last one); c joined; a has a second bar now.
+  const next = repeatRound({ prev, allies: [{ id: 'a', turns: 2 }, { id: 'c', turns: 1 }], enemies: [{ id: 'x', turns: 1 }] });
+  assert.deepEqual(ids(next), ['a', 'x', 'a', 'c']);
+  assert.deepEqual(next.map((e) => e.side), ['allies', 'enemies', 'allies', 'allies']);
+  // Someone who changed sides takes their new side.
+  assert.equal(repeatRound({ prev, allies: [], enemies: [{ id: 'a', turns: 1 }] })[0].side, 'enemies');
+});
+
+test('the GM drags an entry anywhere; the current turn stays the current turn and cannot be dragged', () => {
+  const order = ['a', 'x', 'b', 'y'].map((id) => ({ id }));
+  let r = moveEntry(order, 1, 3, 0);
+  assert.deepEqual(ids(r.order), ['y', 'a', 'x', 'b']);
+  assert.equal(r.index, 2, 'x is still the current turn');
+  r = moveEntry(order, 1, 0, 3);
+  assert.deepEqual(ids(r.order), ['x', 'b', 'y', 'a']);
+  assert.equal(r.index, 0);
+  assert.equal(moveEntry(order, 1, 1, 2), null, 'the current turn is not dragged');
+  assert.equal(moveEntry(order, 1, 2, 2), null);
+  assert.equal(moveEntry(order, 1, 2, 9), null);
 });

@@ -23,6 +23,7 @@ import CroppedImage from './CroppedImage.jsx';
 import FighterOverlay, { ArmorRings, ChallengeLock } from './FighterOverlay.jsx';
 import { armorRings } from '../lib/panicTokens.js';
 import { MapTileLayer } from './MapTiles.jsx';
+import { isTakenOut } from '../lib/hpBars.js';
 import { useHandMove } from './HandMoveDialog.jsx';
 
 // The Combat view (Panic at the Dojo, Phase 3): the Scene's Combat Background,
@@ -38,6 +39,7 @@ import { useHandMove } from './HandMoveDialog.jsx';
 
 const DRAG_THRESHOLD = 5;
 const MAX_ZOOM = 5;
+const MIN_ZOOM = 0.5;
 const HIGHLIGHT = 'rgba(250, 204, 21, 0.45)';
 
 export default function CombatMap({
@@ -85,22 +87,22 @@ export default function CombatMap({
   );
 
   // **Zoom (decided, added with Phase 5)** — per viewer, never synced: the
-  // wheel zooms about the pointer (1× to 5×), dragging empty map pans, and
+  // wheel zooms about the pointer (0.5× to 5×), dragging empty map pans, and
   // the corner buttons do the same for touch. `view` is the offset of the
   // zoomed image's corner from where the fitted image would sit.
   const [view, setView] = useState({ zoom: 1, offX: 0, offY: 0 });
   useEffect(() => setView({ zoom: 1, offX: 0, offY: 0 }), [src]);
   const area = { left: insetLeft, right: stageWidth - insetRight, top: 0, bottom: stageHeight };
-  // Keep the zoomed map covering the view: it can be panned to its edges, not past them.
+  // **The camera may leave the arena (decided, batch 5):** the map can be
+  // dragged, at any zoom, until only a strip of it is left on screen — never
+  // lost entirely. Zoom runs from 0.5× to 5×.
   const clampView = (v) => {
-    const zoom = Math.min(MAX_ZOOM, Math.max(1, v.zoom));
-    if (zoom === 1) return { zoom: 1, offX: 0, offY: 0 };
+    const zoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, v.zoom));
     const w = baseFit.width * zoom;
     const h = baseFit.height * zoom;
     const clampAxis = (off, base, size, lo, hi) => {
-      const origin = base + off;
-      if (size <= hi - lo) return lo + (hi - lo - size) / 2 - base;
-      return Math.min(lo, Math.max(hi - size, origin)) - base;
+      const keep = Math.min(120, size / 4, (hi - lo) / 4);
+      return Math.min(hi - keep, Math.max(lo + keep - size, base + off)) - base;
     };
     return {
       zoom,
@@ -116,7 +118,7 @@ export default function CombatMap({
       const oy = baseFit.top + v.offY;
       const px = (sx - ox) / scale;
       const py = (sy - oy) / scale;
-      const zoom = Math.min(MAX_ZOOM, Math.max(1, v.zoom * factor));
+      const zoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, v.zoom * factor));
       const ns = baseFit.scale * zoom;
       return clampView({ zoom, offX: sx - px * ns - baseFit.left, offY: sy - py * ns - baseFit.top });
     });
@@ -143,21 +145,46 @@ export default function CombatMap({
     if (!rect) return;
     zoomAt(Math.exp(-e.deltaY / 400), e.clientX - rect.left, e.clientY - rect.top);
   };
+  // One finger (or the mouse) on empty map pans; **two fingers pinch (decided,
+  // batch 5)**: the zoom follows their spread, about their midpoint, and the
+  // map follows the midpoint.
+  const touches = useRef(new Map()); // pointerId → { x, y }
+  const pinchOf = () => {
+    const [a, b] = [...touches.current.values()];
+    return { d: Math.hypot(a.x - b.x, a.y - b.y), x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+  };
   const onPanDown = (e) => {
-    if (e.button !== 0 || view.zoom <= 1) return;
+    if (e.button !== 0) return;
     e.currentTarget.setPointerCapture(e.pointerId);
-    panRef.current = { id: e.pointerId, x: e.clientX, y: e.clientY };
+    touches.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    panRef.current = touches.current.size === 2 ? { pinch: pinchOf() } : { id: e.pointerId, x: e.clientX, y: e.clientY };
   };
   const onPanMove = (e) => {
     const p = panRef.current;
-    if (!p || p.id !== e.pointerId) return;
+    if (!p || !touches.current.has(e.pointerId)) return;
+    touches.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (p.pinch) {
+      if (touches.current.size < 2) return;
+      const now = pinchOf();
+      const rect = rootRef.current?.getBoundingClientRect();
+      if (rect && p.pinch.d > 0 && now.d > 0) zoomAt(now.d / p.pinch.d, now.x - rect.left, now.y - rect.top);
+      const dx = now.x - p.pinch.x;
+      const dy = now.y - p.pinch.y;
+      setView((v) => clampView({ ...v, offX: v.offX + dx, offY: v.offY + dy }));
+      panRef.current = { pinch: now };
+      return;
+    }
+    if (p.id !== e.pointerId) return;
     const dx = e.clientX - p.x;
     const dy = e.clientY - p.y;
     panRef.current = { ...p, x: e.clientX, y: e.clientY };
     setView((v) => clampView({ ...v, offX: v.offX + dx, offY: v.offY + dy }));
   };
-  const onPanUp = () => {
-    panRef.current = null;
+  const onPanUp = (e) => {
+    touches.current.delete(e.pointerId);
+    // One finger left after a pinch pans on.
+    const [id, at] = [...touches.current.entries()][0] ?? [];
+    panRef.current = id != null ? { id, x: at.x, y: at.y } : null;
   };
   const lines = useMemo(
     () => (natural.width ? gridLines(natural.width, natural.height, grid) : null),
@@ -311,7 +338,7 @@ export default function CombatMap({
       {/* The visible map area, between the drawers: clips the zoomed map, and
           catches the wheel (zoom) and drags on empty map (pan). */}
       <div
-        className={`absolute overflow-hidden ${src ? 'pointer-events-auto' : ''} ${view.zoom > 1 ? 'cursor-grab active:cursor-grabbing' : ''}`}
+        className={`absolute overflow-hidden ${src ? 'pointer-events-auto' : ''} cursor-grab active:cursor-grabbing`}
         style={{ left: area.left, top: 0, width: Math.max(0, area.right - area.left), height: stageHeight, touchAction: 'none' }}
         onPointerDown={onPanDown}
         onPointerMove={onPanMove}
@@ -419,7 +446,7 @@ export default function CombatMap({
               <Icon size={16} aria-hidden />
             </button>
           ))}
-          {view.zoom > 1.001 && (
+          {Math.abs(view.zoom - 1) > 0.001 && (
             <span className="text-center font-display text-[10px] tabular-nums text-zinc-400">{view.zoom.toFixed(1)}×</span>
           )}
         </div>
@@ -524,12 +551,15 @@ export function Token({ token, center, size, lifted = false, animate = true, sel
         width: size,
         height: size,
         zIndex: lifted ? 30 : selected ? 20 : 10,
-        opacity: ghost ? 0.45 : 1,
+        // Taken Out at zero HP (batch 5): half transparent and grey, until healed.
+        opacity: ghost ? 0.45 : token.fight?.hp && isTakenOut(token.fight.hp) ? 0.5 : 1,
+        filter: token.fight?.hp && isTakenOut(token.fight.hp) ? 'grayscale(0.85)' : undefined,
         transition: lifted || !animate ? 'none' : 'left 160ms ease-out, top 160ms ease-out',
         touchAction: 'none',
       }}
       title={token.name}
       data-combat-token={token.id}
+      data-taken-out={token.fight?.hp && isTakenOut(token.fight.hp) ? 'true' : undefined}
       onPointerDown={onPointerDown}
     >
       <div

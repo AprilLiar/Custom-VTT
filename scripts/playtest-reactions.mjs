@@ -112,7 +112,8 @@ gm.emit('build:save', { characterId: cy.id, build: { type: 'hero-type.focused', 
 gm.emit('build:save', { characterId: bo.id, build: { type: 'character-type.warrior', stances: [{ formId: 'form.power', styleId: 'style.halcyon' }] } });
 await sleep(400);
 gm.emit('combat_token:place', { ownerType: 'character', ownerId: ana.id, col: 3, row: 3 });
-gm.emit('combat_token:place', { ownerType: 'character', ownerId: cy.id, col: 3, row: 5 });
+// (Next to Bo as well: with two enemies in reach his attack asks for its target — batch 5.)
+gm.emit('combat_token:place', { ownerType: 'character', ownerId: cy.id, col: 4, row: 4 });
 gm.emit('combat_token:place', { ownerType: 'character', ownerId: bo.id, col: 4, row: 3 });
 await sleep(600);
 let st = await jf('/api/stage?role=gm');

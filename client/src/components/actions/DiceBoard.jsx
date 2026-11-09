@@ -402,7 +402,13 @@ export default function DiceBoard({ payload, onClose, canEdit }) {
   if (picking) return null;
   return createPortal(
     <div className="fixed inset-0 flex flex-col bg-zinc-950/[0.97]" style={{ zIndex: 3000 }} role="dialog" aria-modal="true" aria-label="This turn's Actions">
-      <main className="min-h-0 flex-1 overflow-y-auto" onClick={(e) => e.target === e.currentTarget && setSelected(null)}>
+      {/* Clear of a phone's notch and rounded corners (batch 5): the safe-area
+          insets are zero on a desktop, so this pads phones only. */}
+      <main
+        className="min-h-0 flex-1 overflow-y-auto"
+        style={{ paddingLeft: 'var(--safe-left, 0px)', paddingRight: 'var(--safe-right, 0px)', paddingTop: 'var(--safe-top, 0px)' }}
+        onClick={(e) => e.target === e.currentTarget && setSelected(null)}
+      >
         {reaction && !idx ? (
           <p className="p-4 text-sm text-zinc-500">Loading the Actions…</p>
         ) : reaction ? (
@@ -492,7 +498,10 @@ export default function DiceBoard({ payload, onClose, canEdit }) {
         )}
       </main>
 
-      <footer className="shrink-0 border-t border-zinc-800 bg-zinc-900/95 px-2 pt-1.5" style={{ paddingBottom: 'max(0.4rem, var(--safe-bottom))' }}>
+      <footer
+        className="shrink-0 border-t border-zinc-800 bg-zinc-900/95 pt-1.5"
+        style={{ paddingBottom: 'max(0.4rem, var(--safe-bottom))', paddingLeft: 'max(0.5rem, var(--safe-left, 0px))', paddingRight: 'max(0.5rem, var(--safe-right, 0px))' }}
+      >
         <div className="flex items-center gap-2">
           {/* Power (decided): the balance, and Enhance for the placed Actions' hits. */}
           <button
@@ -631,7 +640,7 @@ function PayDialog({ action, options, fighter, onPay, onClose }) {
   const step = 'flex h-9 w-9 items-center justify-center rounded-full border border-zinc-600 text-lg text-zinc-100 disabled:opacity-30';
   return (
     <div className="fixed inset-0 flex flex-col bg-zinc-950" style={{ zIndex: 3002 }} role="dialog" aria-modal="true" aria-label={`Pay for ${action.name}`}>
-      <div className="min-h-0 flex-1 overflow-y-auto p-4">
+      <div className="min-h-0 flex-1 overflow-y-auto p-4" style={{ paddingLeft: 'max(1rem, var(--safe-left, 0px))', paddingRight: 'max(1rem, var(--safe-right, 0px))' }}>
         <div className="mx-auto max-w-md space-y-4">
           <h2 className="font-display text-lg font-bold uppercase tracking-wide text-zinc-100">Pay for {action.name}</h2>
           {options.length > 1 && (

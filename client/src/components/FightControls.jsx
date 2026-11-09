@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, ArrowRight, ChevronLeft, ChevronRight, Swords, Users, X } from 'lucide-react';
+import { ArrowLeft, ArrowRight, ChevronLeft, ChevronRight, GripVertical, Swords, Users, X } from 'lucide-react';
 import { socket } from '../socket.js';
 import { cropOf } from '../lib/imageCrop.js';
 import CroppedImage from './CroppedImage.jsx';
@@ -193,6 +193,33 @@ export function InitiativeRail({ mode, fight, fighters, role, left = 12, onEditS
   }, [fight.turn_index, fight.round]);
   const pending = fight.pending_stance;
   const [ending, setEnding] = useState(false);
+  // **The GM drags the order (decided, batch 5):** by an entry's grip, to any
+  // place — the current turn stays put. `drag`: { from, to }.
+  const listRef = useRef(null);
+  const [drag, setDrag] = useState(null);
+  const indexAt = (y) => {
+    const items = [...(listRef.current?.children ?? [])];
+    let best = items.length - 1;
+    for (let i = 0; i < items.length; i++) {
+      const r = items[i].getBoundingClientRect();
+      if (y < r.bottom) {
+        best = i;
+        break;
+      }
+    }
+    return best;
+  };
+  const gripDown = (e, i) => {
+    e.preventDefault();
+    e.stopPropagation();
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+    setDrag({ from: i, to: i });
+  };
+  const gripMove = (e) => drag && setDrag((d) => (d ? { ...d, to: indexAt(e.clientY) } : d));
+  const gripUp = () => {
+    if (drag && drag.to !== drag.from) socket.emit('fight:reorder', { mode, from: drag.from, to: drag.to });
+    setDrag(null);
+  };
   // While a square is being picked (phase D) the rail fades and lets taps
   // through to the map under it.
   const picking = useSquarePick();
@@ -228,19 +255,38 @@ export function InitiativeRail({ mode, fight, fighters, role, left = 12, onEditS
           <span className="font-bold text-purple-300">{weight.name}</span> · Heal {weight.heal} · Bleed {weight.bleed}
         </div>
       )}
-      <ol className="flex-1 space-y-1 overflow-y-auto p-1.5">
+      <ol ref={listRef} className="flex-1 space-y-1 overflow-y-auto p-1.5">
         {fight.order.map((entry, i) => {
           const f = byCombatant.get(entry.id);
           const current = i === fight.turn_index;
           const done = i < fight.turn_index;
+          const dropHere = drag && drag.to === i && drag.from !== i;
           return (
             <li
               key={`${fight.round}-${i}`}
               ref={current ? currentRef : null}
+              data-rail-entry={i}
               className={`flex items-center gap-2 panel-cut-sm border p-1 ${
                 current ? 'border-yellow-400 bg-yellow-400/10' : 'border-zinc-800 bg-zinc-900/70'
-              } ${done ? 'opacity-40' : ''} ${f ? '' : 'opacity-30 line-through'}`}
+              } ${done ? 'opacity-40' : ''} ${f ? '' : 'opacity-30 line-through'} ${drag?.from === i ? 'opacity-50 ring-1 ring-brand-400' : ''} ${
+                dropHere ? (drag.to > drag.from ? 'border-b-2 border-b-brand-400' : 'border-t-2 border-t-brand-400') : ''
+              }`}
             >
+              {role === 'gm' && !current && (
+                <button
+                  type="button"
+                  title="Drag to reorder"
+                  aria-label="Drag to reorder"
+                  data-rail-grip={i}
+                  onPointerDown={(e) => gripDown(e, i)}
+                  onPointerMove={gripMove}
+                  onPointerUp={gripUp}
+                  onPointerCancel={() => setDrag(null)}
+                  className="-ml-0.5 shrink-0 cursor-grab touch-none text-zinc-600 hover:text-zinc-300"
+                >
+                  <GripVertical size={12} aria-hidden />
+                </button>
+              )}
               <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${entry.side === 'allies' ? 'bg-sky-400' : 'bg-red-500'}`} />
               <Portrait fighter={f} className="h-10 w-8 shrink-0 rounded-sm border border-zinc-700" />
               <span className="min-w-0 flex-1 truncate font-display text-xs font-semibold text-zinc-100">{f?.name ?? 'Gone'}</span>
@@ -559,6 +605,59 @@ export function MoveBar() {
         </div>
       )}
     </div>
+  );
+}
+
+// **The Action button (decided, batch 5).** At the bottom of the screen for
+// whoever controls the fighter whose turn it is (the GM: always): it opens
+// the turn's dice board — the Actions, the pool, Commit, Move, End turn. The
+// Stance roll's dice in the chat no longer open it. After Heroic Spirit it
+// belongs to the ally who was given the turn.
+export function ActionButton({ fight, mode, controls = () => false }) {
+  const pick = useSquarePick();
+  const [current, setCurrent] = useState(null); // { payload, characterId }
+  const [open, setOpen] = useState(false);
+  const turnKey = fight ? `${fight.id ?? ''}:${mode}:${fight.round}:${fight.turn_index}:${fight.pending_stance ? 'p' : ''}` : null;
+  useEffect(() => {
+    if (!turnKey) {
+      setCurrent(null);
+      return undefined;
+    }
+    let alive = true;
+    let timer = null;
+    const load = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => socket.emit('board:current', { mode }, (r) => alive && setCurrent(r?.payload ? r : null)), 200);
+    };
+    load();
+    // A new roll, Heroic Spirit, a turn ending: the board changes hands.
+    socket.on('dice:marks', load);
+    socket.on('fight:turn_ended', load);
+    return () => {
+      alive = false;
+      clearTimeout(timer);
+      socket.off('dice:marks', load);
+      socket.off('fight:turn_ended', load);
+    };
+  }, [turnKey, mode]);
+  const rollId = current?.payload?.roll_id ?? null;
+  // The turn moved on: an open board of the old turn closes.
+  useEffect(() => setOpen(false), [rollId]);
+  if (!current || !controls(current.characterId)) return null;
+  if (open) return <DiceBoard payload={current.payload} canEdit onClose={() => setOpen(false)} />;
+  if (pick || fight?.interrupt?.active) return null;
+  return (
+    <button
+      type="button"
+      onClick={() => setOpen(true)}
+      data-action-button
+      title={`${current.payload.fighter?.name ?? 'Your'} turn: open the Actions`}
+      className="pointer-events-auto fixed left-1/2 flex min-h-9 max-w-[70vw] -translate-x-1/2 items-center gap-1.5 panel-cut-sm border border-lime-400 bg-lime-500/25 px-4 font-display text-xs font-bold uppercase tracking-wide text-lime-100 shadow-lg backdrop-blur hover:bg-lime-500/40"
+      style={{ zIndex: 2990, bottom: 'max(0.5rem, var(--safe-bottom, 0px))' }}
+    >
+      <Swords size={14} className="shrink-0" aria-hidden />
+      <span className="truncate">Action · {current.payload.fighter?.name ?? ''}</span>
+    </button>
   );
 }
 

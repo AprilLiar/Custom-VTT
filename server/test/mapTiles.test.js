@@ -47,7 +47,7 @@ test('moving a square onto another stacks by the same rules', () => {
 
 test('stored rows group into squares', () => {
   const g = groupSquares([{ col: 1, row: 2, kind: 'trap' }, { col: 1, row: 2, kind: 'pit' }, { col: 0, row: 0, kind: 'fog' }]);
-  assert.deepEqual(g.get('1,2'), { col: 1, row: 2, kinds: ['pit', 'trap'] });
+  assert.deepEqual(g.get('1,2'), { col: 1, row: 2, kinds: ['pit', 'trap'], by: [null, null] });
   assert.equal(g.size, 2);
 });
 

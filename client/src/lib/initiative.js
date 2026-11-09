@@ -8,8 +8,9 @@
 //   - after the opener, ally and enemy turns alternate one for one for as long
 //     as both sides still have turns, then the bigger side's leftovers follow;
 //   - wherever there is a choice, nobody gets two turns in a row;
-//   - each new round is re-rolled, opened by the side opposite the one that
-//     took the previous round's last turn.
+//   - **the order is rolled once, when combat starts (decided, batch 5)**: every
+//     later round repeats it (`repeatRound`), and the GM may drag entries on
+//     the rail wherever they like (`moveEntry`), alternation or not.
 //
 // Pure and shared: no imports, so the server can run it too. `rng` is
 // injectable so tests are deterministic. Shuffling is not a dice roll and is
@@ -96,4 +97,43 @@ export function buildRound({ allies = [], enemies = [], firstSide = 'allies', op
 // last turn. An empty round leaves the choice where it was.
 export function nextFirstSide(order, fallback = 'allies') {
   return order.length ? otherSide(order[order.length - 1].side) : fallback;
+}
+
+// **The next round repeats the last one (decided, batch 5).** `prev` is the
+// last round's order; `allies` / `enemies` as for buildRound, with today's
+// turns. Whoever left is dropped, someone with fewer turns loses their last
+// ones, and new fighters or new turns (a new HP bar) go to the end.
+export function repeatRound({ prev = [], allies = [], enemies = [] }) {
+  const want = new Map();
+  const sideOf = new Map();
+  for (const [side, list] of [['allies', allies], ['enemies', enemies]]) {
+    for (const f of list) {
+      const turns = Math.max(0, Math.trunc(Number(f.turns) || 0));
+      if (!turns) continue;
+      want.set(f.id, (want.get(f.id) ?? 0) + turns);
+      sideOf.set(f.id, side);
+    }
+  }
+  const order = [];
+  for (const e of prev) {
+    const n = want.get(e.id) ?? 0;
+    if (n <= 0) continue;
+    want.set(e.id, n - 1);
+    order.push({ side: sideOf.get(e.id), id: e.id });
+  }
+  for (const [id, n] of want) for (let i = 0; i < n; i++) order.push({ side: sideOf.get(id), id });
+  return order;
+}
+
+// **The GM drags an entry (decided, batch 5):** entry `from` ends up at index
+// `to`. The current turn (`index`) can't be dragged, and stays the current
+// turn wherever the others land. → { order, index } or null when not allowed.
+export function moveEntry(order, index, from, to) {
+  const n = order.length;
+  if (![from, to].every((x) => Number.isInteger(x) && x >= 0 && x < n) || from === to || from === index) return null;
+  const current = order[index];
+  const next = order.slice();
+  const [entry] = next.splice(from, 1);
+  next.splice(to, 0, entry);
+  return { order: next, index: current ? next.indexOf(current) : index };
 }

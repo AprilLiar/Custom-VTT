@@ -86,13 +86,34 @@ p.emit('map_tile:destroy', { mode: 'combat', col: 4, row: 3, kind: 'rubble' });
 place(gm, 'combat', 1, 1, 'wall');
 await sleep(400);
 gm.emit('map_tile:destroy', { mode: 'combat', col: 1, row: 1, kind: 'wall' });
+// Only your own (batch 5): whoever placed the King Zone removes it — the GM always can.
+const kingBefore = JSON.stringify((await tiles('combat'))['6,3']);
 p.emit('map_tile:remove', { mode: 'combat', col: 6, row: 3, kind: 'king' });
+await sleep(300);
+const kingAfter = JSON.stringify((await tiles('combat'))['6,3']);
+gm.emit('map_tile:remove', { mode: 'combat', col: 6, row: 3, kind: 'king' });
 await sleep(400);
 t = await tiles('combat');
 check('Destroy: Rubble is gone (its Fog stays), a Wall becomes Rubble; Remove takes one tile', JSON.stringify(t['4,3']) === JSON.stringify(['fog']) && JSON.stringify(t['1,1']) === JSON.stringify(['rubble']) && JSON.stringify(t['6,3']) === JSON.stringify(['rubble']), JSON.stringify(t));
+// The GM's Rubble: a player can't drag it (batch 5); the GM can.
 p.emit('map_tile:move', { mode: 'combat', from: { col: 1, row: 1 }, to: null });
 await sleep(400);
+check('a player cannot move an obstacle someone else placed', Boolean((await tiles('combat'))['1,1']));
+gm.emit('map_tile:move', { mode: 'combat', from: { col: 1, row: 1 }, to: null });
+await sleep(400);
 check('dragging a square off the map removes it', !(await tiles('combat'))['1,1']);
+// …but their own they move and remove, and the stage says whose each tile is.
+place(p, 'combat', 12, 12, 'trap');
+await sleep(400);
+const mine = (await jf('/api/stage?role=gm')).tiles.combat.find((x) => x.col === 12 && x.row === 12);
+check('a tile carries who placed it (the player’s PC)', mine?.by === mira.id, JSON.stringify(mine));
+p.emit('map_tile:move', { mode: 'combat', from: { col: 12, row: 12 }, to: { col: 13, row: 12 } });
+await sleep(400);
+check('a player moves their own obstacle', Boolean((await tiles('combat'))['13,12']) && !(await tiles('combat'))['12,12']);
+p.emit('map_tile:remove', { mode: 'combat', col: 13, row: 12, kind: 'trap' });
+await sleep(400);
+check('…and removes it', !(await tiles('combat'))['13,12']);
+check('a player cannot remove an obstacle someone else placed (kept: ' + kingBefore + ')', kingBefore === kingAfter || kingBefore == null, kingAfter);
 
 console.log('\n--- the lane keeps its own ---');
 place(p, 'simple', 4, 0, 'danger');

@@ -14,7 +14,7 @@ import CounterAdjustDialog from './CounterAdjustDialog.jsx';
 import CroppedImage from './CroppedImage.jsx';
 import { cropOf } from '../lib/imageCrop.js';
 import { useDiceMarks } from '../lib/diceMarks.js';
-import DiceBoard, { DieFace } from './actions/DiceBoard.jsx';
+import { DieFace } from './actions/DiceBoard.jsx';
 
 // A fighter as a fight card names them: their round token (or portrait).
 function FighterChip({ fighter }) {
@@ -42,17 +42,11 @@ function FighterChip({ fighter }) {
 // everyone it applies to) and a turn-start Stance roll, each die shown on its
 // own so the player sees exactly what they are working with.
 // A Stance roll's dice (builder: the turn's dice board). Dice crossed out on
-// the board show crossed here for everyone. While that fighter's turn lasts,
-// whoever controls them (or the GM) taps the dice to open the board.
+// the board show crossed here for everyone. (The board itself opens from the
+// Action button — FightControls.jsx ActionButton.)
 function StanceDice({ payload }) {
   const board = useDiceMarks(payload.roll_id);
-  const { controls } = useControl();
-  const [open, setOpen] = useState(false);
   const placements = board.placements ?? [];
-  // After Heroic Spirit (phase F) the ally who was given the dice acts on them.
-  const heroic = board.heroic ?? null;
-  const canOpen = Boolean(payload.roll_id) && board.active && controls(heroic?.characterId ?? payload.character_id);
-  const boardPayload = heroic ? { ...payload, combatant_id: heroic.combatantId, character_id: heroic.characterId, stance_key: heroic.stanceKey, stance: heroic.stanceName ?? payload.stance, fighter: { name: heroic.name } } : payload;
   // Committed dice cross out for everyone; placed ones go grey with their order.
   const stateOf = (i) => {
     const p = placements.find((x) => x.kind === 'die' && x.die === i);
@@ -67,24 +61,9 @@ function StanceDice({ payload }) {
     ...(payload.results ?? []).map((r, i) => <DieFace key={i} r={r} state={stateOf(i)} order={orderOf(i)} />),
     ...extra.map((x) => <DieFace key={`x${x.index}`} r={x} state={stateOf(x.index)} order={orderOf(x.index)} />),
   ];
-  return (
-    <>
-      {canOpen ? (
-        <button
-          type="button"
-          onClick={() => setOpen(true)}
-          title="Open this turn's Actions"
-          className="pointer-events-auto flex flex-wrap gap-1.5 rounded-sm text-left outline-none ring-lime-300/60 hover:ring-2 focus-visible:ring-2"
-        >
-          {dice}
-        </button>
-      ) : (
-        <div className="flex flex-wrap gap-1.5">{dice}</div>
-      )}
-      {canOpen && <p className="mt-1 text-[10px] text-lime-300/80">Tap the dice to place them on your Actions</p>}
-      {open && <DiceBoard payload={boardPayload} canEdit={canOpen} onClose={() => setOpen(false)} />}
-    </>
-  );
+  // The board opens from the Action button at the bottom of the screen
+  // (decided, batch 5) — the dice here only show the roll.
+  return <div className="flex flex-wrap gap-1.5">{dice}</div>;
 }
 
 function FightCard({ entry }) {

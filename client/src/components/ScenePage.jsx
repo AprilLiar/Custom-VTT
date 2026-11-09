@@ -39,7 +39,7 @@ import SimpleCombatLane from './SimpleCombatLane.jsx';
 import { MapTilePalette } from './MapTiles.jsx';
 import CombatMap from './CombatMap.jsx';
 import { CombatFightersDrawer, CombatMapDrawer } from './CombatDrawers.jsx';
-import { FightSetupDialog, InitiativeRail, InterruptBar, InterruptLock, MoveBar, MovementPhaseBar, StancePrompt, StartCombatButton, TriggerPrompts } from './FightControls.jsx';
+import { ActionButton, FightSetupDialog, InitiativeRail, InterruptBar, InterruptLock, MoveBar, MovementPhaseBar, StancePrompt, StartCombatButton, TriggerPrompts } from './FightControls.jsx';
 import ResolvingPlaque from './ResolvingPlaque.jsx';
 import { turnsPerRound } from '../lib/hpBars.js';
 import { WEIGHT_BY_KEY } from '../lib/cinematicWeight.js';
@@ -482,6 +482,7 @@ export default function ScenePage() {
       {fight && <MovementPhaseBar mode={fightMode} fight={fight} fighters={fightFighters} role={role} controls={controls} />}
       {fight && <InterruptBar fight={fight} mode={fightMode} left={role === 'gm' && !uiHidden ? 268 : 8} />}
       {fight && <InterruptLock fight={fight} mode={fightMode} fighters={fightFighters} role={role} controls={controls} />}
+      {fight && <ActionButton fight={fight} mode={fightMode} controls={controls} />}
       {fight && <ResolvingPlaque mode={fightMode} sceneId={activeScene?.id ?? null} />}
       <MoveBar />
       <TriggerPrompts />
