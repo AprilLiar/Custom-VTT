@@ -275,11 +275,15 @@ test('Challenge enforced (decided): a damaging Action must include the Challenge
   const { w } = makeWorld([me, foe, challenger]);
   const damage = idx.get('action.system-basic-actions.damage');
   const asked = [];
-  // One target: the Challenger is the only choice, nothing asked.
+  // One target: the Challenger is the only choice offered (batch 4: still asked, so it can be skipped).
   await runRule({ id: damage.id, effect: damage.effect }, { world: w, self: me, state: {}, usage: {}, log: () => {}, ask: async (q) => (asked.push(q), ['2']), resolution: { gateRating: 1 }, mustTarget: 3 });
-  assert.equal(asked.length, 0);
+  assert.deepEqual(asked.map((q) => q.options.map((o) => o.id)), [['3']]);
+  assert.ok(asked[0].skippable);
   assert.equal(challenger.hp, 9);
   assert.equal(foe.hp, 10);
+  // Skip (batch 4): the attack is declined — nobody is hit.
+  await runRule({ id: damage.id, effect: damage.effect }, { world: w, self: me, state: {}, usage: {}, log: () => {}, ask: async () => ['__skip'], resolution: { gateRating: 1 }, mustTarget: 3 });
+  assert.equal(challenger.hp, 9, 'skipped: no damage');
   // Gate rating drives the damage: 5+ deals 3.
   await runRule({ id: damage.id, effect: damage.effect }, { world: w, self: me, state: {}, usage: {}, log: () => {}, ask: async () => ['2'], resolution: { gateRating: 6 }, onUnsupported: () => {} });
   assert.equal(foe.hp, 7, 'Damage at a 6: 3 damage (the 5+ Gate); its Push is left to people for now');
@@ -430,4 +434,24 @@ test('Brambles: "Range 1-X" with X the destroyed Shield is evaluated — it hits
   assert.equal(me.tokens.power, 1);
   const mysterious = rulesOf('ability.build-mysterious.mysterious-build', 'own_turn.start')[0];
   assert.deepEqual(mysterious.effect.options.map((o) => describe(o.effect)), ['place Copy', 'place Fog']);
+});
+
+test('"a different enemy" (excludeBindings): Left, Right! never hits the same enemy twice; alone, the second hit has no target', async () => {
+  const me = fighter(1, 'a');
+  const foe = fighter(2, 'b');
+  const other = fighter(3, 'b');
+  const { w } = makeWorld([me, foe, other]);
+  const effect = idx.get('action.form-one-two.left-right').effect;
+  const asked = [];
+  await runRule({ id: 'lr', events: ['own_turn.start'], effect }, { world: w, self: me, state: {}, usage: {}, log: () => {}, ask: async (q) => (asked.push(q.options.map((o) => o.id)), [q.options[0].id]) });
+  assert.deepEqual(asked, [['2', '3'], ['3']], 'the second pick leaves out the first target');
+  assert.equal(foe.hp, 9);
+  assert.equal(other.hp, 8);
+  const solo = makeWorld([fighter(1, 'a'), fighter(2, 'b')]);
+  const lone = solo.w.fighters()[1];
+  await runRule({ id: 'lr', events: ['own_turn.start'], effect }, { world: solo.w, self: solo.w.fighters()[0], state: {}, usage: {}, log: () => {}, ask: async (q) => [q.options[0].id] });
+  assert.equal(lone.hp, 9, 'only the 1 damage: nobody different for the 2');
+  // Every "different / another" target in the content carries the flag.
+  const marked = ['action.form-one-two.left-right', 'action.form-vigilance.stand-strong', 'action.style-jumping.leap-out', 'action.style-taunting.is-that-all-you-got', 'action.archetype-winterblossom.frostbite'];
+  for (const id of marked) assert.ok(JSON.stringify(idx.get(id)).includes('excludeBindings'), id);
 });

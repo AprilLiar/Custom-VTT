@@ -142,6 +142,21 @@ export async function fighterState(combatantId) {
   return { row, tokens: { ...st.tokens }, hp: st.hp.current ?? 0, shield: st.tokens.shield ?? 0, challengeHolders: holders.map((h) => ({ id: h.id, name: h.name })) };
 }
 
+// **Super Moves now (batch 4):** what the board needs to say whether this
+// fighter's Super Moves can be used — the Round, theirs used this fight, their
+// side's this Round and the side's limit (Cinematic Weight).
+export async function superStatus(combatantId) {
+  const me = await one('SELECT * FROM combatants WHERE id = ?', [Number(combatantId)]);
+  const fight = me ? await one('SELECT * FROM fights WHERE scene_id = ? AND mode = ?', [me.scene_id, me.mode]) : null;
+  if (!fight) return null;
+  const allies = JSON.parse(fight.allies || '[]');
+  const side = allies.includes(me.id) ? 'allies' : 'enemies';
+  const rt = await loadRuntime(fight.id);
+  const scene = await one('SELECT combat_weight, simple_weight FROM scenes WHERE id = ?', [fight.scene_id]);
+  const weight = WEIGHT_BY_KEY[fight.mode === 'simple' ? scene?.simple_weight : scene?.combat_weight] ?? WEIGHT_BY_KEY.middle;
+  return { round: fight.round, usedByMe: rt.usage?.[superKey(me.id)] ?? 0, sideUsed: rt.sides?.[side]?.supersThisRound ?? 0, sideLimit: weight.supers ?? 1 };
+}
+
 // The fighter's state minus what uncommitted token placements already promise.
 export async function availableState(row, data) {
   const state = await fighterState(actingOn(row).combatantId);

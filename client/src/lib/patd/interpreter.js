@@ -684,8 +684,11 @@ async function selectSpaces(rawSel, scope, ctx, from, { optional = false, purpos
       options: pool.map((sq) => ({ id: `${sq.col},${sq.row}`, label: `${sq.col},${sq.row}`, col: sq.col, row: sq.row })),
       minimum: upTo ? 0 : 1,
       maximum: 1,
+      // Skip (batch 4): any placement or space may be declined.
+      skippable: true,
     });
     const id = asList(ans)[0];
+    if (id === SKIP) break;
     const sq = pool.find((x) => `${x.col},${x.row}` === id) ?? (upTo ? null : pool[0]);
     if (!sq) break;
     picked.push(sq);
@@ -754,6 +757,20 @@ async function select(rawSel, scope, ctx, label = 'a target') {
     pool = [...units, ...(world.obstacles?.(from, obstacleRange, {}) ?? [])];
   } else pool = [...world.fighters(), ...copies];
   if (sel.excludeSelf) pool = pool.filter((f) => f.id !== self.id);
+  // **"A different / another target" (decided, batch 4):** never one already
+  // picked by the bindings named (Left, Right!'s second hit, Stand Strong's
+  // second ally, Taunting's second and third Challenge, Leap Out, Frostbite).
+  // Read before this pick overwrites a binding of the same name.
+  if (sel.excludeBindings?.length) {
+    const taken = new Set(
+      sel.excludeBindings
+        .flatMap((b) => asList(scope.targets[b] ?? scope.bindings?.[b]))
+        .map((x) => x?.id)
+        .filter((id) => id != null)
+        .map(String)
+    );
+    pool = pool.filter((f) => !taken.has(String(f.id)));
+  }
   // Dodged with Control (phase F): immune to this Action.
   if (ctx.immuneIds?.length) pool = pool.filter((f) => !ctx.immuneIds.includes(f.id));
   if (sel.range?.mode === 'nearest_to_event_former_holder') {
@@ -775,9 +792,11 @@ async function select(rawSel, scope, ctx, label = 'a target') {
   // Challenger whenever they are a legal target: the only choice for a single
   // target, and a required pick among several.
   const must = ctx.mustTarget != null && (sel.kind === 'enemy' || sel.kind === 'unit') ? pool.find((f) => f.id === ctx.mustTarget) : null;
+  // One target and a Challenger in reach: they're the only choice (still
+  // skippable — not attacking at all is allowed).
   if (must && maximum === 1) {
     ctx.log?.(`${must.name} must be the target (Challenge)`);
-    return [must];
+    pool = [must];
   }
   // **Picked on the board (decided, batch 3):** each option carries its square,
   // and `area` is the Range it's picked in — the client shades the Range red,
@@ -798,9 +817,13 @@ async function select(rawSel, scope, ctx, label = 'a target') {
     })),
     minimum: Math.max(minimum, must ? 1 : 0),
     maximum,
-    required: must ? [String(must.id)] : [],
+    required: must && maximum > 1 ? [String(must.id)] : [],
+    // **Skip (decided, batch 4):** an attack or any targeted effect may be
+    // declined — nobody is picked and that step does nothing.
+    skippable: true,
   });
   const ids = new Set(asList(answer).map(String));
+  if (ids.has(SKIP)) return [];
   if (must) ids.add(String(must.id));
   const picked = pool.filter((f) => ids.has(String(f.id))).slice(0, maximum);
   return picked.length || minimum === 0 ? picked : pool.slice(0, 1);

@@ -462,8 +462,9 @@ function TargetPromptBar({ prompt }) {
             Done
           </button>
         )}
-        {min === 0 && (
-          <button type="button" onClick={() => answer([])} className="min-h-7 shrink-0 panel-cut-sm border border-zinc-700 px-2 text-[11px] text-zinc-300 hover:border-red-400">
+        {/* Skip (decided, batch 4): an attack or any targeted effect may be declined. */}
+        {(min === 0 || prompt.skippable) && (
+          <button type="button" onClick={() => answer(prompt.skippable ? ['__skip'] : [])} className="min-h-7 shrink-0 panel-cut-sm border border-zinc-700 px-2 text-[11px] text-zinc-300 hover:border-red-400">
             Skip
           </button>
         )}
@@ -505,8 +506,9 @@ function SquarePromptBar({ prompt }) {
       aria-label={`${prompt.fighterName}: ${prompt.title}`}
     >
       <p className="min-w-0 flex-1 truncate font-display text-xs font-bold uppercase tracking-wide text-lime-200">{prompt.title}</p>
-      {prompt.minimum === 0 && (
-        <button type="button" onClick={() => answer([])} className="min-h-7 shrink-0 panel-cut-sm border border-zinc-700 px-2 text-[11px] text-zinc-300 hover:border-lime-400">
+      {/* Skip (decided, batch 4): every movement from an Action or Ability may be declined. */}
+      {(prompt.minimum === 0 || prompt.skippable) && (
+        <button type="button" onClick={() => answer(prompt.skippable ? ['__skip'] : [])} className="min-h-7 shrink-0 panel-cut-sm border border-zinc-700 px-2 text-[11px] text-zinc-300 hover:border-lime-400">
           Skip
         </button>
       )}
@@ -833,8 +835,8 @@ function TriggerPromptDialog({ prompt }) {
             >
               Confirm
             </button>
-            {prompt.minimum === 0 && (
-              <button type="button" onClick={() => answer([])} className="min-h-10 panel-cut-sm border border-zinc-700 px-3 text-sm text-zinc-300">
+            {(prompt.minimum === 0 || prompt.skippable) && (
+              <button type="button" onClick={() => answer(prompt.skippable ? ['__skip'] : [])} className="min-h-10 panel-cut-sm border border-zinc-700 px-3 text-sm text-zinc-300">
                 Skip
               </button>
             )}

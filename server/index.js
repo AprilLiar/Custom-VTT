@@ -30,7 +30,7 @@ import { loadMapTiles, registerMapTileHandlers } from './mapTiles.js';
 import { deleteBuild, loadBuild, registerBuildHandlers } from './builds.js';
 import { listHomebrew, loadHomebrew, registerHomebrewHandlers } from './homebrew.js';
 import { loadBoard, registerEventHandlers } from './events.js';
-import { fighterState, listMarks, registerDiceMarkHandlers } from './diceMarks.js';
+import { fighterState, listMarks, registerDiceMarkHandlers, superStatus } from './diceMarks.js';
 import { loadAllDerived, setupFromDerived } from './fighterStances.js';
 import { controlsCharacter, dropAssignmentsTo, loadAssignments, setAssignment } from './control.js';
 
@@ -949,7 +949,8 @@ app.get('/api/fighter-state/:id', wrap(async (req, res) => {
   const st = await fighterState(req.params.id);
   if (!st) return res.status(404).json({ error: 'not found' });
   const { row: _row, ...rest } = st;
-  res.json(rest);
+  // Super Moves' availability (batch 4), for the board's Super cards.
+  res.json({ ...rest, supers: await superStatus(req.params.id) });
 }));
 
 // The Events board as this viewer sees it (GM-only lanes only for the GM).
@@ -1569,6 +1570,8 @@ io.on('connection', (socket) => {
     for (const p of triggerEngine().openPromptsFor(socket)) socket.emit('trigger:prompt', p);
     // …and every open board pick, view-only, for everyone (a player monitor too).
     for (const v of triggerEngine().openPickViews()) socket.emit('pick:view', v);
+    // …and whether a fight is resolving right now (the plaque).
+    for (const r of triggerEngine().resolvingNow()) socket.emit('fight:resolving', r);
   });
 
   // **The Dice Tray** — one die of any size (d4-d12) plus the modifier typed

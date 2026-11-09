@@ -49,9 +49,12 @@ export function createMoves({ ask, emitEvent, postCard }) {
 
   // Asks `chooser` to pick one of `dests` ([{ square, cost?, ... }]); one
   // choice needs no asking. `allowNone`: they may decline (→ null).
-  async function pickSquare(env, chooser, mode, b, dests, { title, text, allowNone = false, costs = null }) {
+  // **Skip (decided, batch 4):** every movement from an Action or Ability may
+  // be declined — the pick always asks (even with one landing) and Skip
+  // (`'__skip'`) moves nobody.
+  async function pickSquare(env, chooser, mode, b, dests, { title, text, allowNone = false, costs = null, skippable = true }) {
     if (!dests.length) return null;
-    if (dests.length === 1 && !allowNone) return dests[0];
+    if (dests.length === 1 && !allowNone && !skippable) return dests[0];
     const options = dests.map((d) => ({
       id: d.square ? key(d.square) : 'outside',
       label: squareName(mode, d.square),
@@ -59,8 +62,9 @@ export function createMoves({ ask, emitEvent, postCard }) {
       row: d.square?.row ?? null,
       note: [d.square ? noteOf(b, d.square) : 'Outside', costs ? `${costs(d)} Speed` : ''].filter(Boolean).join(' · '),
     }));
-    const ans = await ask(chooser, env.key, env.gen, env.tg, env.when)({ kind: 'square', mode, title, text, options, minimum: allowNone ? 0 : 1, maximum: 1 });
+    const ans = await ask(chooser, env.key, env.gen, env.tg, env.when)({ kind: 'square', mode, title, text, options, minimum: allowNone ? 0 : 1, maximum: 1, skippable });
     const id = Array.isArray(ans) ? ans[0] : ans;
+    if (id === '__skip') return null;
     const hit = dests.find((d) => (d.square ? key(d.square) : 'outside') === id);
     return hit ?? (allowNone ? null : dests[0]);
   }
@@ -226,6 +230,12 @@ export function createMoves({ ask, emitEvent, postCard }) {
       text: `${chooser?.name ?? 'Pick'}: where does ${target.name} land?`,
       allowNone: false,
     });
+    // Skipped: no push or pull.
+    if (!picked) {
+      note(`${chooser?.name ?? 'They'} chose not to ${pull ? 'pull' : 'push'} ${target.name}`);
+      await flush(verb, target);
+      return target.square;
+    }
     let route = picked.routes[0];
     const differ = new Set(picked.routes.map((r) => r.traps.map(key).join(';'))).size > 1;
     if (differ) {
@@ -253,6 +263,7 @@ export function createMoves({ ask, emitEvent, postCard }) {
     if (dangerous && (target.tokens.speed ?? 0) >= cost) {
       const squares = saveYourselfSquares(after, landing, { from: route.from, selfId: target.id }).map((sq) => ({ square: sq }));
       saved = await pickSquare(env, target, m.mode, after, squares, {
+        skippable: false,
         title: 'Save yourself',
         text: `${target.name} lands ${landing ? `on ${noteOf(after, landing)}` : 'Outside'}. Spend ${cost} Speed to move 1 space instead?`,
         allowNone: true,

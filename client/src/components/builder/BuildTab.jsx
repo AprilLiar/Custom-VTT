@@ -4,6 +4,7 @@ import { getBuild } from '../../lib/api.js';
 import { useContent } from '../../lib/patd/useContent.js';
 import { LEVEL_MAX, XP_AWARDS, deriveBuild, emptyBuild, normalizeBuild, withXp } from '../../lib/patd/build.js';
 import { STEPS, StepBody, grantText } from './BuildSteps.jsx';
+import LevelUpDialog from './LevelUpDialog.jsx';
 import { DiceRow, RulesEntry, rangeText } from './BuildParts.jsx';
 import { ActionCard, SuperMoveCard } from '../actions/ActionCards.jsx';
 import { SPEND_KEYS, SPEND_MODES, spendPrefs } from '../../lib/patd/engine/damage.js';
@@ -212,7 +213,7 @@ function Overview({ saved, idx, canEdit, editing, setEditing, save, characterId,
           {d.level.grants.length > 0 && <p className="text-zinc-500">{d.level.grants.map((g) => `L${g.level}: ${grantText(g, idx)}`).join(' · ')}</p>}
         </div>
       )}
-      {d.level.xpLevel != null && <XpTracker build={normalizeBuild(saved, idx)} level={d.level} canEdit={canEdit} save={save} />}
+      {d.level.xpLevel != null && <XpTracker build={normalizeBuild(saved, idx)} level={d.level} canEdit={canEdit} save={save} idx={idx} />}
       <HitSpends build={normalizeBuild(saved, idx)} isNpc={isNpc} canEdit={canEdit} save={save} />
       <ActionsReference d={d} idx={idx} />
       <RulesReference d={d} idx={idx} />
@@ -278,8 +279,10 @@ function HitSpends({ build, isNpc, canEdit, save }) {
 // **XP on the sheet (decided).** The total, how far to the next level, quick
 // awards (each logged with its reason), the level-up when the XP allows it,
 // and the recent history — fight ends add Victory / Defeat here on their own.
-function XpTracker({ build, level, canEdit, save }) {
+function XpTracker({ build, level, canEdit, save, idx }) {
   const add = (n, reason) => save(withXp(build, n, reason));
+  // Level up opens the window of what the new level brings (batch 4).
+  const [leveling, setLeveling] = useState(false);
   const pct = level.nextXp ? Math.min(100, Math.round((build.xp / level.nextXp) * 100)) : 100;
   const btn = 'min-h-9 panel-cut-sm border border-zinc-700 bg-zinc-900 px-2 text-xs text-zinc-200 hover:border-brand-500';
   const log = [...(build.xpLog ?? [])].reverse().slice(0, 6);
@@ -311,13 +314,24 @@ function XpTracker({ build, level, canEdit, save }) {
           {level.canLevelUp && (
             <button
               type="button"
-              onClick={() => save({ ...build, level: Math.min(LEVEL_MAX, build.level + 1) })}
+              onClick={() => build.level < LEVEL_MAX && setLeveling(true)}
               className="min-h-9 panel-cut-sm bg-amber-500 px-3 text-xs font-bold uppercase text-zinc-950 hover:bg-amber-400"
             >
               Level up → {build.level + 1}
             </button>
           )}
         </div>
+      )}
+      {leveling && (
+        <LevelUpDialog
+          build={build}
+          idx={idx}
+          onClose={() => setLeveling(false)}
+          onConfirm={(next) => {
+            save(next);
+            setLeveling(false);
+          }}
+        />
       )}
       {log.length > 0 && (
         <ul className="space-y-0.5 text-[11px] text-zinc-400">

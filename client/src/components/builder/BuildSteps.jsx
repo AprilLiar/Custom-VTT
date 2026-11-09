@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import {
   CUSTOM_SKILL_MAX,
   LEVEL_MAX,
@@ -11,6 +11,7 @@ import {
   withXp,
 } from '../../lib/patd/build.js';
 import { DiceRow, RulesEntry, cardClass, rangeText, selectClass } from './BuildParts.jsx';
+import LevelUpDialog from './LevelUpDialog.jsx';
 
 // The builder's steps (decided: step by step on the first run, then each one
 // editable from the overview). Every step edits a draft build through
@@ -136,7 +137,7 @@ function ArchetypeStep({ draft, set, idx }) {
 }
 
 // Every Style and Freestyle, grouped: this character's Archetypes first.
-function useStyleGroups(idx, draft) {
+export function useStyleGroups(idx, draft) {
   return useMemo(() => {
     const mine = new Set(draft.archetypes.map((a) => a.id));
     const groups = [];
@@ -156,7 +157,7 @@ function useStyleGroups(idx, draft) {
   }, [idx, draft.archetypes]);
 }
 
-function StyleSelect({ value, onChange, groups, label }) {
+export function StyleSelect({ value, onChange, groups, label }) {
   return (
     <select value={value ?? ''} onChange={(e) => onChange(e.target.value || null)} className={selectClass} aria-label={label}>
       <option value="">— Style —</option>
@@ -355,6 +356,7 @@ function SkillStep({ draft, set, idx }) {
 function LevelStep({ draft, set, idx }) {
   const type = buildTypes(idx).find((t) => t.id === draft.type);
   const lv = levelInfo(draft, idx);
+  const [leveling, setLeveling] = useState(false);
   const owned = new Set(draft.archetypes.map((a) => a.id));
   const supers = idx.content.superMoves.filter((m) => owned.has(m.ownerId));
   const toggleSuper = (id) =>
@@ -404,11 +406,22 @@ function LevelStep({ draft, set, idx }) {
         {lv.canLevelUp && (
           <button
             type="button"
-            onClick={() => set({ level: Math.min(LEVEL_MAX, draft.level + 1) })}
+            onClick={() => draft.level < LEVEL_MAX && setLeveling(true)}
             className="min-h-9 panel-cut-sm bg-amber-500 px-3 text-xs font-bold uppercase text-zinc-950 hover:bg-amber-400"
           >
             Level up → {draft.level + 1}
           </button>
+        )}
+        {leveling && (
+          <LevelUpDialog
+            build={draft}
+            idx={idx}
+            onClose={() => setLeveling(false)}
+            onConfirm={(next) => {
+              set(next);
+              setLeveling(false);
+            }}
+          />
         )}
       </div>
       <p className="text-xs text-zinc-400">

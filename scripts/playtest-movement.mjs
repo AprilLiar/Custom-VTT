@@ -175,6 +175,17 @@ const kinds = st.tiles.combat.filter((t) => t.col === 7 && t.row === 2).map((t) 
 check('pushed into a Wall: it becomes Rubble and they stand in it', at(ta.id) === '7,2' && kinds.includes('rubble') && !kinds.includes('wall'), `${at(ta.id)} ${JSON.stringify(kinds)}`);
 check('…offered to Save themselves (they hold Speed), declined: +1 Fatigue', prompts.some((q) => q.title === 'Save yourself') && tok(ta.id).fight.tokens.fatigue === 1, JSON.stringify(tok(ta.id).fight.tokens));
 
+console.log('\n--- Skip (batch 4): the push is declined ---');
+await stage();
+const stayed = at(ta.id);
+prompts.length = 0;
+answerWith = (q) => (q.kind === 'square' && q.title === 'Save yourself' ? [] : q.kind === 'square' ? ['__skip'] : undefined);
+gm.emit('fighter:damage', { ref: { combatantId: ta.id }, amount: 1 });
+await sleep(2000);
+await stage();
+check('every movement pick offers Skip, and a skipped push moves nobody', prompts.some((q) => q.kind === 'square' && q.skippable) && at(ta.id) === stayed, JSON.stringify([stayed, at(ta.id), prompts.map((q) => [q.title, q.skippable])]));
+answerWith = null;
+
 console.log('\n--- the Outside ---');
 gm.emit('fighter:token', { ref: { combatantId: ta.id }, key: 'speed', clear: true });
 gm.emit('combat_token:move', { combatantId: ta.id, col: 8, row: 6 });

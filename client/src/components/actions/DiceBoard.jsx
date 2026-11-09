@@ -12,7 +12,7 @@ import { useDiceMarks } from '../../lib/diceMarks.js';
 import { useSquarePick } from '../../lib/squarePick.js';
 import { startFreeMove } from '../../lib/freeMove.js';
 import { ActionCard, SuperMoveCard } from './ActionCards.jsx';
-import { isSuperMove, superPair } from '../../lib/patd/engine/turn.js';
+import { isSuperMove, superPair, superUsable } from '../../lib/patd/engine/turn.js';
 
 // **The turn's dice board (full automation, phase B — vttprojectplan.md, "Full
 // automation").** Opened by tapping the dice of your turn's Stance roll: the
@@ -122,6 +122,7 @@ export default function DiceBoard({ payload, onClose, canEdit }) {
   // **A refused Action shakes (decided):** its card flashes red and shudders,
   // besides the note at the bottom.
   const [refused, setRefused] = useState(null); // { id, n }
+  const [superPick, setSuperPick] = useState(null); // { id, pairs } — which pair pays for a Super Move
   const lastTry = useRef(null);
   const refuse = (actionId, text) => {
     say(text);
@@ -281,7 +282,7 @@ export default function DiceBoard({ payload, onClose, canEdit }) {
     if (!action || !n) return undefined;
     if (isSuperMove(action)) {
       const taken = placements.flatMap((p) => (p.kind === 'die' ? [p.die] : p.kind === 'super' ? (p.dice ?? []) : []));
-      return superPair(pool, previewDie, taken) ? true : false;
+      return superPair(pool, previewDie, taken) && superState(action).ok ? true : false;
     }
     if (!hasDiceCost(action)) return false;
     const g = gateFor(action, n.value);
@@ -323,16 +324,37 @@ export default function DiceBoard({ payload, onClose, canEdit }) {
 
   // **A Super Move on the board (phase I):** drop or tap one of two matching
   // numbers (3+) on it; its pair shows under the card.
+  // **Super Moves by a tap (decided, batch 4):** tapping the card uses it
+  // with a pair of matching free numbers, 3 or higher — the only pair at once,
+  // or a choice of pair when there are several. Its availability (not in
+  // Round 1, once per fight, the side's limit this Round) is said on the card.
+  const freePairs = () => {
+    const taken = placements.flatMap((p) => (p.kind === 'die' ? [p.die] : p.kind === 'super' ? (p.dice ?? []) : []));
+    const byValue = new Map();
+    for (const n of pool) if (n.value >= 3 && !taken.includes(n.index)) byValue.set(n.value, [...(byValue.get(n.value) ?? []), n.index]);
+    return [...byValue.entries()].filter(([, ids]) => ids.length >= 2).map(([value, ids]) => ({ value, dice: ids.slice(0, 2) })).sort((a, b) => b.value - a.value);
+  };
+  const superState = (move) => {
+    const st = fighter?.supers;
+    if (!st) return { ok: true };
+    return superUsable({ move, round: st.round, usedByMe: st.usedByMe, sideUsed: st.sideUsed, sideLimit: st.sideLimit, pending: placements.filter((p) => p.kind === 'super' && !p.committed).length });
+  };
   const superCard = (id) => {
     const move = idx.get(id);
     const on = placements.filter((p) => p.actionId === id);
     const open = on.find((p) => !p.committed);
     const nums = on.flatMap((p) => (p.dice ?? []).map((i) => pool.find((n) => n.index === i)?.value));
+    const status = on.length ? { ok: true } : superState(move);
     const tap = () => {
       if (!editable || busy) return;
-      if (selected != null) return place(selected, id);
       if (open) return emit('board:unplace', { key: open.key });
-      refuse(id, `${move.name}: pick one of two matching numbers (3 or higher) first.`);
+      if (on.length) return;
+      if (!status.ok) return refuse(id, `${move.name}: ${status.reason}.`);
+      if (selected != null) return place(selected, id);
+      const pairs = freePairs();
+      if (!pairs.length) return refuse(id, `${move.name} needs two matching numbers, each 3 or higher.`);
+      if (pairs.length === 1) return place(pairs[0].dice[0], id);
+      setSuperPick({ id, pairs });
     };
     return (
       <div
@@ -343,6 +365,28 @@ export default function DiceBoard({ payload, onClose, canEdit }) {
         className={`${refused?.id === id ? 'action-refused' : ''} ${editable && !busy ? 'cursor-pointer' : ''} ${previewFor(id) === true ? 'outline outline-2 outline-offset-1 outline-sky-400' : previewFor(id) === false ? 'outline outline-2 outline-offset-1 outline-red-500' : ''}`}
       >
         <SuperMoveCard move={move} compact />
+        {!status.ok && <p className="mt-0.5 text-[10px] italic text-zinc-500">Not now: {status.reason}.</p>}
+        {superPick?.id === id && (
+          <div className="mt-1 flex flex-wrap items-center gap-1" onClick={(e) => e.stopPropagation()}>
+            <span className="text-[10px] font-bold uppercase tracking-wide text-fuchsia-200">Pay with</span>
+            {superPick.pairs.map((pr) => (
+              <button
+                key={pr.value}
+                type="button"
+                onClick={() => {
+                  setSuperPick(null);
+                  place(pr.dice[0], id);
+                }}
+                className="min-h-8 rounded-sm border border-fuchsia-400 bg-fuchsia-500/20 px-2 font-mono text-xs font-bold text-fuchsia-100 hover:bg-fuchsia-500/40"
+              >
+                {pr.value} + {pr.value}
+              </button>
+            ))}
+            <button type="button" onClick={() => setSuperPick(null)} className="min-h-8 px-1 text-[11px] text-zinc-400 hover:text-zinc-200">
+              Cancel
+            </button>
+          </div>
+        )}
         {on.length > 0 && (
           <p className="mt-0.5 font-mono text-[10px] text-fuchsia-200">
             {on.every((p) => p.committed) ? '✓ ' : `#${orderOf(on[0].key)} `}

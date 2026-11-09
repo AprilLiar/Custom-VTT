@@ -155,6 +155,8 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
         // `area` is the Range they're picked in (red on the board).
         mode: request.mode ?? null,
         area: request.area ?? null,
+        // Skip offered even when a pick is required (batch 4): answers '__skip'.
+        skippable: Boolean(request.skippable),
       };
       const timer = setTimeout(() => finish(id, null), PROMPT_TIMEOUT_MS);
       pending.set(id, { resolve, prompt, timer, fightKey, tg });
@@ -1154,6 +1156,9 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     const key = `${fightRow.scene_id}:${fightRow.mode}`;
     const g = gen(key);
     const prev = chains.get(key) ?? Promise.resolve();
+    // **The "Resolving" plaque (decided, batch 4):** everyone is told when a
+    // fight starts working through something and when it is all done.
+    if (!(busy.get(key) > 0)) io.emit('fight:resolving', { sceneId: fightRow.scene_id, mode: fightRow.mode, busy: true });
     busy.set(key, (busy.get(key) ?? 0) + 1);
     const next = prev
       .then(() => (gen(key) === g ? job() : null))
@@ -1162,6 +1167,7 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
         const left = (busy.get(key) ?? 1) - 1;
         if (left > 0) return busy.set(key, left);
         busy.delete(key);
+        io.emit('fight:resolving', { sceneId: fightRow.scene_id, mode: fightRow.mode, busy: false });
         // The stack finished: whoever waits to Interrupt goes now.
         for (const hook of idleHooks) Promise.resolve(hook({ scene_id: fightRow.scene_id, mode: fightRow.mode })).catch((err) => console.error('idle hook', err));
       });
@@ -1252,6 +1258,10 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     // Is an Action (or anything) resolving in this fight right now?
     isBusy(fightRow) {
       return (busy.get(`${fightRow.scene_id}:${fightRow.mode}`) ?? 0) > 0;
+    },
+    // The fights resolving now, for a (re)connecting viewer's plaque.
+    resolvingNow() {
+      return [...busy.entries()].filter(([, n]) => n > 0).map(([k]) => ({ sceneId: Number(k.split(':')[0]), mode: k.split(':')[1], busy: true }));
     },
     // Called with { scene_id, mode } whenever a fight's chain empties.
     onIdle(hook) {
