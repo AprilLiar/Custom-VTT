@@ -2827,6 +2827,7 @@ Every table the server creates (`server/db.js`, all `CREATE TABLE IF NOT EXISTS`
 - **table_settings** — `id = 1, simple_lanes` — see Multi-lane as built.
 - **fights** — see Phase 5 as built.
 - **chat_log.kind** also allows `reminder` and `stance_roll` (fight cards, JSON in `payload`).
+- **event_lanes** — `id, name, visibility ('all'|'gm'), position`; **event_notes** — `id, lane_id, text, color, position, author_role ('gm'|'player'), author_character_id, created_at` — see Events tab.
 - **compendium_archive** — `id, archived_at, counts (JSON), payload (the archive document)`; append-only
 
 ## Real-time events (Socket.io)
@@ -2849,17 +2850,32 @@ Clients emit; the server validates, writes, and broadcasts. The surviving contra
 - **Interrupts:** `interrupt:offers` (ack), `react:open` (ack: `{ payload, clusters }` or `{ queued: true }`), `react:pass`, `interrupt:cancel { mode }` (GM) → `stage:updated` (`fights[mode].interrupt = { active, queue } | null`); `interrupt:open { mode, combatantId, by, payload, clusters }` (io.emit) when a queued Interrupt's turn comes (play feedback batch 2).
 - **Combat tab:** `combat_profile:update` → `combat_profile:updated`; `combat_reminder:create|update|delete` → `combat_reminders:updated`; `combat_stance:create|update|delete` → `combat_stances:updated`.
 - **GM tools:** `image:reencode`.
+- **Events tab:** `event_lane:create|update|move|delete` (GM), `event_note:create|update|delete|move` → `events:updated` (each socket gets its own board: GM-only lanes go only to the GM).
 
-REST reads: `/api/health`, `/api/characters`, `/api/characters/:id` (→ `{ character, roleplay, counters }`), `/api/characters/:id/relationships`, `/api/character-folders`, `/api/counter-gates`, `/api/chat`, `/api/search`, `/api/temp-npcs`, `/api/temp-npc-folders`, `/api/scene-pictures`, `/api/scenes`, `/api/scene-folders`, `/api/stage`, `/api/scene-notes`, `/api/scene-timestamps`, `/api/master-note`, `/api/audio-library`, `/api/img/:kind/:id/:hash`, `/api/image-inventory`, `/api/profile`, `/api/compendium-archive[/:id]`, `/api/combat-setup`, `/api/combat-profiles`, `/api/table-settings`.
+REST reads: `/api/events` (the board for `?role=…&characterId=…`), `/api/health`, `/api/characters`, `/api/characters/:id` (→ `{ character, roleplay, counters }`), `/api/characters/:id/relationships`, `/api/character-folders`, `/api/counter-gates`, `/api/chat`, `/api/search`, `/api/temp-npcs`, `/api/temp-npc-folders`, `/api/scene-pictures`, `/api/scenes`, `/api/scene-folders`, `/api/stage`, `/api/scene-notes`, `/api/scene-timestamps`, `/api/master-note`, `/api/audio-library`, `/api/img/:kind/:id/:hash`, `/api/image-inventory`, `/api/profile`, `/api/compendium-archive[/:id]`, `/api/combat-setup`, `/api/combat-profiles`, `/api/table-settings`.
 
 ## Pages / views
-Header: the "Dogfight" logo (→ your home: the roster for a GM, your sheet for a Player), the **Characters**/**Character** link, **Scene**, Search, Chat toggle, and the Settings cog. Below `md:` a bottom nav (Characters, Chat) and a "More" menu (Search, Scene, Settings) replace it.
+Header: the "Dogfight" logo (→ your home: the roster for a GM, your sheet for a Player), the **Characters**/**Character** link, **Scene**, **Events**, Search, Chat toggle, and the Settings cog. Below `md:` a bottom nav (Characters, Chat) and a "More" menu (Search, Scene, Events, Settings) replace it.
 1. **Role-select modal** — every fresh load.
 2. **Character list** (`/`, GM) — see Characters.
 3. **Character sheet** (`/character/:id`) — header + Counters / Role-play / Relationships / Scene Pictures.
 4. **Scene** (`/scene`) — chromeless, landscape; see the Scene tab section.
 5. **Settings** (`/settings`).
+6. **Events** (`/events`, everyone) — sticky notes in lanes; see Events tab. Linked as **Events** in the header (desktop) and the "More" menu (mobile).
 Chat is a side panel on desktop (open by default) and a full-screen overlay on mobile (closed by default, with an unread badge on `roll:result`/`chat:message`).
+
+## Events tab (decided, new; implemented)
+A global page of sticky notes in lanes, for keeping track of what's going on in the story.
+- **Lanes (GM):** a name and a visibility toggle, **Everyone** or **GM only**. The GM adds them (name + visibility at the top), renames one (double-click its name), switches its visibility (the badge), moves it up or down, and deletes it.
+  - **Deleting a lane** moves its notes to the end of the first remaining lane of the same visibility; an Everyone lane's notes may also go to a GM-only lane (hiding them is safe), never the reverse. With nowhere to go, they're deleted with it. The confirm says which.
+- **Notes (anyone who sees the lane):** written straight into a lane (decided: there is no Unsorted row) with **+ Note** at the end of the row. Short text (up to 280 characters) and one of five colours: yellow (default), pink, blue, green, orange. Each shows its author (the GM or the character's name).
+  - **Only the author or the GM** edits a note's text or colour, or deletes it (decided). Clicking your own note opens its editor.
+- **Moving (anyone who sees the note):** drag a note along its lane to reorder it, or drop it into another lane you can see; a bright bar marks where it lands. A Player can't move notes into or out of a GM-only lane (they never see one).
+  - The mouse drags the whole note; touch drags by the grip (⋮⋮) at its corner, so a finger can still scroll the lane. Holding a dragged note near a lane's end scrolls that lane.
+  - **Each lane is a row that scrolls sideways on its own.**
+- **Privacy by absence:** the board is shaped per viewer (`shapeBoard`); a GM-only lane and its notes never reach a Player — not on `GET /api/events`, not in `events:updated`.
+- **Live:** every change re-sends each connected socket its own board; a moved note shows at once on the mover's screen.
+- **Code:** `server/events.js` (handlers, `shapeBoard`, `placeAt`), `client/src/components/EventsPage.jsx`. Tests: `server/test/events.test.js` (who sees what, who edits what, where a move lands) and `scripts/playtest-events.mjs` (lanes, notes, permissions, moves, a lane hidden and shown, a lane deleted). A browser run (desktop and phone) showed the board, a note dragged from one lane into another, and the editor.
 
 ## Game system — Panic at the Dojo combat assistant (decided, planned)
 The new system is **Panic at the Dojo: Patch'd Up** (Vel Mini / Liberi Gothica, 2024-2025 revision; the book is CC-BY-SA 4.0, so token names and short rules text may appear in the app with attribution). **The app is a visual assistant, not a rules engine:** it shows the fight — positions, HP bars, tokens, turn order — and posts reminders. It never rolls Action Dice, resolves Actions, applies damage, or spends tokens on anyone's behalf. Every number changes because a person pressed a button.

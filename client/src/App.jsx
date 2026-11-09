@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
-import { Cog, FlaskConical, Menu, Users, MessageSquare, Clapperboard } from 'lucide-react';
+import { Cog, FlaskConical, Menu, Users, MessageSquare, Clapperboard, StickyNote } from 'lucide-react';
 import { RoleProvider, useRole } from './roleContext.jsx';
 import { socket } from './socket.js';
 import { useIsDesktop } from './lib/useMediaQuery.js';
@@ -14,6 +14,7 @@ import HomebrewPage from './components/HomebrewPage.jsx';
 import ConnectionBanner from './components/ConnectionBanner.jsx';
 import GmToolsWidget from './components/GmToolsWidget.jsx';
 import ScenePage from './components/ScenePage.jsx';
+import EventsPage from './components/EventsPage.jsx';
 import { useControl } from './lib/useControl.js';
 
 // Mobile readiness (Change 002) §5.1/14.2: bottom navigation is the primary
@@ -169,6 +170,7 @@ function Shell() {
       <Route path="/scene" element={<ScenePage />} />
       <Route path="/settings" element={<SettingsPage />} />
       <Route path="/homebrew" element={<HomebrewPage />} />
+      <Route path="/events" element={<EventsPage />} />
       <Route path="*" element={<Navigate to={homePath} replace />} />
     </Routes>
   );
@@ -245,6 +247,13 @@ function Shell() {
         >
           Scene
         </Link>
+        {/* The Events tab (decided, new): sticky notes in lanes, for everyone. */}
+        <Link
+          to="/events"
+          className="panel-cut-sm font-display hidden px-2 py-1 text-sm font-semibold uppercase tracking-wide text-zinc-400 hover:text-brand-300 md:inline-block"
+        >
+          Events
+        </Link>
         <div className="flex-1" />
         <div className="hidden md:block">
           <SearchBar />
@@ -263,8 +272,8 @@ function Shell() {
         <button
           type="button"
           onClick={() => setMobileMenuOpen((v) => !v)}
-          title="Search / Scene / Settings"
-          aria-label="Search / Scene / Settings"
+          title="Search / Scene / Events / Settings"
+          aria-label="Search / Scene / Events / Settings"
           className="flex h-11 w-11 shrink-0 items-center justify-center panel-cut-sm border border-zinc-700 text-zinc-400 hover:border-brand-500 hover:text-brand-300 md:hidden"
         >
           <Menu size={18} />
@@ -315,6 +324,17 @@ function Shell() {
           >
             <Clapperboard size={16} />
             Scene
+          </Link>
+          <Link
+            to="/events"
+            onClick={() => {
+              setMobileMenuOpen(false);
+              setChatOpen(false);
+            }}
+            className="flex min-h-11 items-center gap-2 panel-cut-sm border border-zinc-700 px-3 text-sm font-semibold text-zinc-300 hover:bg-zinc-800"
+          >
+            <StickyNote size={16} />
+            Events
           </Link>
           {role === 'gm' && (
             <Link

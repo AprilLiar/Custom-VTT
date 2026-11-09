@@ -90,3 +90,7 @@ export const getCombatSetup = (ownerType, ownerId) =>
 export const getCombatProfiles = () => fetch('/api/combat-profiles').then(json);
 // Table-wide GM settings: { simpleLanes, laneY }.
 export const getTableSettings = () => fetch('/api/table-settings').then(json);
+
+// The Events board as this viewer sees it (GM-only lanes reach only the GM).
+export const getEvents = (identity) =>
+  fetch(`/api/events${identity ? `?${new URLSearchParams(identity)}` : ''}`).then(json);

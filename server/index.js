@@ -29,6 +29,7 @@ import { createTriggerEngine } from './triggers.js';
 import { loadMapTiles, registerMapTileHandlers } from './mapTiles.js';
 import { deleteBuild, loadBuild, registerBuildHandlers } from './builds.js';
 import { listHomebrew, loadHomebrew, registerHomebrewHandlers } from './homebrew.js';
+import { loadBoard, registerEventHandlers } from './events.js';
 import { fighterState, listMarks, registerDiceMarkHandlers } from './diceMarks.js';
 import { loadAllDerived, setupFromDerived } from './fighterStances.js';
 import { controlsCharacter, dropAssignmentsTo, loadAssignments, setAssignment } from './control.js';
@@ -951,6 +952,11 @@ app.get('/api/fighter-state/:id', wrap(async (req, res) => {
   res.json(rest);
 }));
 
+// The Events board as this viewer sees it (GM-only lanes only for the GM).
+app.get('/api/events', wrap(async (req, res) => {
+  res.json(await loadBoard(viewerFromQuery(req.query)));
+}));
+
 // Every homebrew item (drafts too: a player's builder just doesn't offer them).
 app.get('/api/homebrew', wrap(async (req, res) => {
   res.json({ items: await listHomebrew() });
@@ -1529,6 +1535,8 @@ io.on('connection', (socket) => {
   registerMapTileHandlers({ on, socket, emitStageUpdated });
   registerBuildHandlers({ on, socket, io, mayWrite: mayWriteScenePicture, emitStageUpdated });
   registerHomebrewHandlers({ on, socket, io, emitStageUpdated });
+  // The Events tab: sticky notes in lanes — see server/events.js.
+  registerEventHandlers({ on, socket, io });
   registerDiceMarkHandlers({ on, socket, io, triggers: triggerEngine(), emitStageUpdated });
   // Rounds, turns, Stance rolls and Reminders (Phase 5) — see server/fights.js.
   registerFightHandlers({ on, socket, emitStageUpdated, postCard, postSystemMessage, emitAll: (event, payload) => io.emit(event, payload), triggers: triggerEngine(), startNextInterrupt });

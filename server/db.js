@@ -1138,6 +1138,30 @@ export async function initDb() {
     )
   `);
   ddl(`INSERT OR IGNORE INTO master_note (id, body) VALUES (1, '')`);
+  // **Events board (decided, new):** a global tab of sticky notes in lanes.
+  // Lanes are the GM's (a name, Everyone / GM-only, an order); notes are
+  // anyone's (short text, a colour, their place in a lane). A GM-only lane and
+  // its notes never reach a Player (server/events.js shapes the board per viewer).
+  ddl(`
+    CREATE TABLE IF NOT EXISTS event_lanes (
+      id INTEGER PRIMARY KEY,
+      name TEXT NOT NULL DEFAULT '',
+      visibility TEXT NOT NULL DEFAULT 'all',
+      position INTEGER NOT NULL DEFAULT 0
+    )
+  `);
+  ddl(`
+    CREATE TABLE IF NOT EXISTS event_notes (
+      id INTEGER PRIMARY KEY,
+      lane_id INTEGER NOT NULL REFERENCES event_lanes(id) ON DELETE CASCADE,
+      text TEXT NOT NULL DEFAULT '',
+      color TEXT NOT NULL DEFAULT 'yellow',
+      position INTEGER NOT NULL DEFAULT 0,
+      author_role TEXT NOT NULL DEFAULT 'gm',
+      author_character_id INTEGER,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
   // ---------------------------------------------------------------------
 
   // **Scene drawings (decided, new).** A shared pen/eraser annotation layer
