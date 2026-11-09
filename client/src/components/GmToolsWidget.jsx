@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { Wrench, X, Music, ImageDown, Scale } from 'lucide-react';
+import { Wrench, X, Music, ImageDown, Scale, GitCommitHorizontal } from 'lucide-react';
 import { useRole } from '../roleContext.jsx';
 import AudioPlayerDialog from './AudioPlayerDialog.jsx';
 import ImageReencodeTool from './ImageReencodeTool.jsx';
 import CombatWeightTool from './CombatWeightTool.jsx';
+import CommitHomebrewTool from './CommitHomebrewTool.jsx';
 import { registerAudioPanelOpener } from '../lib/audioPanel.js';
 
 // GM Tools (decided, new) — a small circular widget the GM can reach from
@@ -14,9 +15,10 @@ import { registerAudioPanelOpener } from '../lib/audioPanel.js';
 // page underneath.
 //
 // The tool list is deliberately a list, not a single button, so the next tool
-// is one more entry. Two remain: the Audio Player and Re-encode Images. (The
-// Roll Requester and Fight Pauses went with the old system: one asked a player
-// to roll one of their eight Stat dice, the other re-summoned a paused fight.)
+// is one more entry: Combat Weight, the Audio Player, Re-encode Images and
+// Commit Homebrew. (The Roll Requester and Fight Pauses went with the old
+// system: one asked a player to roll one of their eight Stat dice, the other
+// re-summoned a paused fight.)
 //
 // GM-only, client-side — the same trust model as every other GM-only control
 // in this app; hiding the widget is a convenience, not the boundary.
@@ -51,6 +53,15 @@ const TOOLS = [
     blurb: 'Shrink every stored picture to WebP. Run once after a batch of uploads.',
     icon: ImageDown,
     render: (props) => <ImageReencodeTool {...props} />,
+  },
+  {
+    // The homebrew → core pipeline: see CommitHomebrewTool and the plan's
+    // "Commit Homebrew".
+    id: 'commit-homebrew',
+    name: 'Commit Homebrew',
+    blurb: 'Snapshot your published homebrew into the game\u2019s core on GitHub, for Claude to automate.',
+    icon: GitCommitHorizontal,
+    render: (props) => <CommitHomebrewTool {...props} />,
   },
 ];
 

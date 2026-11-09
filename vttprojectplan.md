@@ -845,7 +845,7 @@ A red/black metallic fighting-game look (Tekken/Mortal Kombat reference). A `--c
 - **Old System Archive** (GM-only) — lists the pivot's archive(s) with row counts and a **Download JSON** link, and shows the purge status, including any problem the boot recorded.
 
 ## Game mechanic — GM Tools
-A small circular widget overlaid on every page, GM-only (`GmToolsWidget.jsx`, mounted in `App.jsx`). Tapping it darkens and blurs the page and opens a list of tools. Three remain: **Preset Narrative Combat Weight** (see the Panic at the Dojo section, "Cinematic Weight as built"), the **Audio Player** (below) and **Re-encode Images** (see Hosting cost, Phase 2). The server checks the GM role itself; hiding the widget is a convenience, not the boundary.
+A small circular widget overlaid on every page, GM-only (`GmToolsWidget.jsx`, mounted in `App.jsx`). Tapping it darkens and blurs the page and opens a list of tools: **Preset Narrative Combat Weight** (see the Panic at the Dojo section, "Cinematic Weight as built"), the **Audio Player** (below), **Re-encode Images** (see Hosting cost, Phase 2) and **Commit Homebrew** (see "Commit Homebrew"). The server checks the GM role itself; hiding the widget is a convenience, not the boundary.
 - **The app has one error boundary** (`ErrorBoundary.jsx`, wrapping the router in `main.jsx`): anything that throws during render shows a reload prompt instead of an empty page.
 - **Audio Player (the third tool, decided, new; implemented).** A GM-run
   soundtrack that every connected client hears **at the same point in the same
@@ -2828,6 +2828,7 @@ Every table the server creates (`server/db.js`, all `CREATE TABLE IF NOT EXISTS`
 - **fights** — see Phase 5 as built.
 - **chat_log.kind** also allows `reminder` and `stance_roll` (fight cards, JSON in `payload`).
 - **event_lanes** — `id, name, visibility ('all'|'gm'), position`; **event_notes** — `id, lane_id, text, color, position, author_role ('gm'|'player'), author_character_id, created_at` — see Events tab.
+- **homebrew** — `id, kind, data JSON, published, created_at, updated_at` — see Homebrew builder. The committed core is not in the database: it is files in the repo (`homebrew/items/`, `homebrew/automation.json`) — see Commit Homebrew.
 - **compendium_archive** — `id, archived_at, counts (JSON), payload (the archive document)`; append-only
 
 ## Real-time events (Socket.io)
@@ -2853,8 +2854,9 @@ Clients emit; the server validates, writes, and broadcasts. The surviving contra
 - **Combat tab:** `combat_profile:update` → `combat_profile:updated`; `combat_reminder:create|update|delete` → `combat_reminders:updated`; `combat_stance:create|update|delete` → `combat_stances:updated`.
 - **GM tools:** `image:reencode`.
 - **Events tab:** `event_lane:create|update|move|delete` (GM), `event_note:create|update|delete|move` → `events:updated` (each socket gets its own board: GM-only lanes go only to the GM).
+- **Homebrew:** `homebrew:save|publish|delete` (GM) → `homebrew:updated { items, automation, coreIds }`; `homebrew:commit` (GM, ack) commits the published items to the repo — see Commit Homebrew.
 
-REST reads: `/api/events` (the board for `?role=…&characterId=…`), `/api/health`, `/api/characters`, `/api/characters/:id` (→ `{ character, roleplay, counters }`), `/api/characters/:id/relationships`, `/api/character-folders`, `/api/counter-gates`, `/api/chat`, `/api/search`, `/api/temp-npcs`, `/api/temp-npc-folders`, `/api/scene-pictures`, `/api/scenes`, `/api/scene-folders`, `/api/stage`, `/api/scene-notes`, `/api/scene-timestamps`, `/api/master-note`, `/api/audio-library`, `/api/img/:kind/:id/:hash`, `/api/image-inventory`, `/api/profile`, `/api/compendium-archive[/:id]`, `/api/combat-setup`, `/api/combat-profiles`, `/api/table-settings`.
+REST reads: `/api/events` (the board for `?role=…&characterId=…`), `/api/homebrew` (`{ items, automation, coreIds }`), `/api/health`, `/api/characters`, `/api/characters/:id` (→ `{ character, roleplay, counters }`), `/api/characters/:id/relationships`, `/api/character-folders`, `/api/counter-gates`, `/api/chat`, `/api/search`, `/api/temp-npcs`, `/api/temp-npc-folders`, `/api/scene-pictures`, `/api/scenes`, `/api/scene-folders`, `/api/stage`, `/api/scene-notes`, `/api/scene-timestamps`, `/api/master-note`, `/api/audio-library`, `/api/img/:kind/:id/:hash`, `/api/image-inventory`, `/api/profile`, `/api/compendium-archive[/:id]`, `/api/combat-setup`, `/api/combat-profiles`, `/api/table-settings`.
 
 ## Pages / views
 Header: the "Dogfight" logo (→ your home: the roster for a GM, your sheet for a Player), the **Characters**/**Character** link, **Scene**, **Events**, Search, Chat toggle, and the Settings cog. Below `md:` a bottom nav (Characters, Chat) and a "More" menu (Search, Scene, Events, Settings) replace it.
@@ -3263,7 +3265,7 @@ A GM-only page (`/homebrew`, the flask icon in the header and the mobile menu) f
   - Each effect is aimed at you, a chosen ally or enemy in Stance range, you and every ally in range, or every enemy in range.
   - These compile to the content's own op trees and **run automatically** like the book's. A "Text only" rule becomes a "by hand" card.
   - An Ability left without rules text gets its rules' summary.
-- **Actions: yes**, with a name, a cost text and rules text. They are reference only, on the sheet, like the book's.
+- **Actions: yes**, with a name, a cost text and rules text. They are reference only on the sheet until Claude automates them (see "Commit Homebrew").
 - **Visibility: the GM publishes.** New items are drafts, listed only in the GM's builder. "Published" offers them in every player's builder. Unpublishing never breaks a character already using one: drafts still resolve, they are just not listed.
 - **Copy from book: yes.** Any book Form, Style or Archetype can start a new item ("{name} (copy)"); the book's entry is untouched.
   - Rules the editor can express become editable steps.
@@ -3276,23 +3278,153 @@ A GM-only page (`/homebrew`, the flask icon in the header and the mobile menu) f
   - `itemToContent` gives the catalog entries. Ids are `form.hb-<name>-<4 chars>` (likewise `style.` and `archetype.`); Abilities are `ability.<tail>.a<n>` with rules `….rule-<n>`, Actions `action.<tail>.x<n>`.
   - `mergeHomebrew` adds the items to the book: lists, Abilities, Actions, and a homebrew Style joining its Archetype's `styleIds`.
   - `copyFromBook` and `describeSpec` (the editor's one-line preview).
-- **Item fields:** `{ kind, name, descriptionText, published, abilities: [{ name, rulesText, variant?, rules }], actions: [{ name, cost, rulesText }] }`, plus by kind:
+- **Item fields:** `{ kind, name, descriptionText, published, abilities: [{ uid, name, rulesText, variant?, rules }], actions: [{ uid, name, cost, rulesText }] }`, plus by kind. Each Ability's and Action's `uid` (8 base-36 characters) is its stable id inside the item: kept across renames, edits and reorders, so Claude's automation map is keyed by it (see "Commit Homebrew"):
   - **Form:** `aliases`, `actionDice`, `skillId`.
   - **Style:** `range`, `archetypeId`.
   - **Archetype:** `archetypeKind`. Its Abilities each say which heroes get them: Focused, Fused or Frantic, or always.
 - **Storage:** table `homebrew (id, kind, data JSON, published, created_at, updated_at)`; `server/homebrew.js`.
-  - Events (GM only): `homebrew:save { item }` creates or updates, and answers `homebrew:saved { id, clientKey }`. `homebrew:publish { id, published }` and `homebrew:delete { id }` complete the set. Each broadcasts `homebrew:updated { items }` and a stage update.
-  - `GET /api/homebrew` returns every item.
+  - Events (GM only): `homebrew:save { item }` creates or updates, and answers `homebrew:saved { id, clientKey }`. `homebrew:publish { id, published }` and `homebrew:delete { id }` complete the set. Each broadcasts `homebrew:updated { items, automation, coreIds }` and a stage update. `homebrew:commit` (ack) is the Commit Homebrew tool.
+  - `GET /api/homebrew` returns `{ items, automation, coreIds }`: every item, Claude's automation map and the ids in the committed core.
   - Deleting an item drops it from builds using it (unknown ids are cleaned away).
 - **Merging:** the server merges every item into `patdContent()` at boot and after each change (`setHomebrewItems`). `bookContent()` stays the pure book, used for cleaning, copying and the schema test. A content version invalidates the derived-build cache.
-  - On the client, `useContent()` merges too (drafts only for the GM) and stays live over `homebrew:updated`; `useBookContent()` and `useHomebrewItems()` are the parts.
+  - On the client, `useContent()` merges too (drafts only for the GM, with Claude's automation on top) and stays live over `homebrew:updated`; `useBookContent()`, `useHomebrewState()` and `useHomebrewItems()` are the parts.
   - The builder marks homebrew with ✦ (and "draft"). Homebrew Styles with no listed Archetype are grouped under "Homebrew".
 - **UI:** `components/HomebrewPage.jsx`.
-  - On the left: new Form / Style / Archetype, Copy from book, and the items with Draft / Published.
-  - On the right, the editor: name, the kind's fields, the dice editor with a live dice row, description, Abilities with their rules and effects, and Actions. Create / Save, Delete (with a confirm) and Close.
+  - On the left: new Form / Style / Archetype, Copy from book, and the items with Draft / Published and their wrench (with a legend).
+  - On the right, the editor: name, the kind's fields, the dice editor with a live dice row, description, Abilities with their rules and effects, and Actions. Create / Save, Delete (with a confirm) and Close. The header shows the item's wrench and, once Claude automated the item, each Ability and Action shows its own; both follow the working copy as the GM types.
 - **A Form's Skill: a book Skill or "Other" (decided).** "Other (write your own)…" asks for a name and what it lets you do. The item stores `customSkill { name, rulesText }`, which becomes a Skill entry `skill.<tail>.s1` in the merged content: listed among the Skills and used as the Form's Skill.
 - **Not in homebrew (yet):** Freestyles, Super Moves, Builds, Features, and movement or placing effects (write those as text).
 - Playtest: `scripts/playtest-homebrew.mjs`.
+
+## Commit Homebrew (decided, implemented)
+
+The user's request: a GM tool that snapshots all their homebrew into the game's core, so it is visible on GitHub. Then, whenever the user says **"automate homebrew content"**, Claude goes through it and automates it.
+- Claude re-automates only what changed; a small wording change gets a small adjustment.
+- Every item keeps a smart id, even across a rename or a copy.
+- No buffer lingers in the system.
+- A wrench by each item shows its state.
+
+### Decisions (the user's answers)
+- **Where the core lives: the repo, straight to `main`.** The app commits itself with a GitHub token. Every commit redeploys the app on Render.
+- **The pipeline: git history, no buffer** (the user picked this over a buffer file):
+  - Each item is its own file, rewritten by every Commit.
+  - Claude's automation map records, for each Ability and Action, the fingerprint of the wording it automated and the commit that wording came from.
+  - A pass diffs against that exact commit, so no buffer copy of the old text ever exists.
+- **What greys the wrench: rules wording only.**
+  - For an Ability: its rules text and its rule steps.
+  - For an Action: its cost and its rules text.
+  - Renames, descriptions, dice and range don't grey it.
+- **A changed item keeps its old automation running** (grey wrench) until Claude's next pass. It is never dropped back to "by hand".
+- **The baseline for a pass:** the last version Claude automated (that part's `basedOn`).
+- **Only published items are committed.** Drafts stay out. An item that is unpublished or deleted leaves the core at the next Commit, and its automation is removed at the next pass.
+- **The wrench:**
+  - **Blue, filled:** automated.
+  - **Grey, filled:** automated, but the wording changed or a part was added since.
+  - **Hollow outline:** committed, not automated yet.
+  - **No wrench:** never committed.
+- **Live edits win.** The `homebrew` table is what the app uses; the committed core is the record and a backup.
+- **Smart ids.**
+  - An item's id (`form.hb-…`) never changes, including on a rename.
+  - A copy is a new item with its own id.
+  - Each Ability and Action has a `uid` that survives renames, edits and reorders.
+  - A missing or repeated uid gets a new one.
+  - Items saved before uids existed get theirs once, at boot.
+
+### As built
+- **Pure module:** `client/src/lib/patd/homebrewSync.js`, shared by the server, the client and the script. It provides:
+  - **fingerprints:** `abilityFingerprint` and `actionFingerprint`, 16 hex digits of a double FNV-1a over the normalized wording. Whitespace runs don't count. For an Ability the hash also covers the stable JSON of its rule steps.
+  - `partsOf(item)` and `partState(part, autoItem)` → `new | stale | automated`.
+  - `wrenchState(item, { autoItem, inCore })` → `automated | stale | waiting | none`.
+  - `coreFileText` and `parseCoreFile`: a deterministic file, without `published`.
+  - `planCommit(items, existing, same)` → add / change / remove.
+  - `automationReport(items, automation)`: Claude's to-do list, with leftovers.
+- **In the repo (`homebrew/`, see its README):**
+  - `homebrew/items/<id>.json`: one file per published item.
+  - `homebrew/automation.json`: `{ version: 1, items: { <itemId>: { name, entries: { <uid>: { part, name, fingerprint, basedOn, …automation } } } } }`.
+  - The automation for an Ability is `rules`: content rules exactly like the book's, with ids rewritten to the Ability's own.
+  - The automation for an Action is any of:
+    - `effect`;
+    - a structured `cost` (the live cost text always wins);
+    - `gates`, `limits`, `conditions`, `timing`.
+  - An entry with no automation means "checked: its own rule steps, or nothing, are right".
+  - The app writes only `items/`; only Claude writes `automation.json`.
+- **Running it:** `itemToContent(item, autoItem)` applies each entry by uid to the live item. It works whatever the part's position or name, and even after the wording changed.
+  - An automated Ability, or an Action with an `effect`, is marked `automationState: 'automated'`; homebrew catalog entries also carry their `uid`.
+  - The server merges with `homebrewAutomation()`; clients get the same map in the homebrew payload.
+- **Server:**
+  - `server/homebrewCore.js` reads the core and the map from disk at boot. The `HOMEBREW_DIR` env var can point it elsewhere. After a commit, the core is updated in memory so the wrenches don't wait for the redeploy.
+  - `restoreAndMigrateHomebrew()` runs at boot:
+    - An **empty** `homebrew` table gets the core's items back (cleaned).
+    - Older items get their uids, saved to the table.
+  - `server/githubCommit.js` makes one commit with the Git Data API (no clone):
+    1. Read the ref, the commit and the `homebrew/items` tree.
+    2. Compare git blob shas computed locally, so unchanged files are seen without fetching them.
+    3. Create a tree on `base_tree`; removed files get `sha: null`.
+    4. Create the commit and fast-forward the ref.
+  - If `main` moved meanwhile, it rebuilds on the new head (up to 3 tries). A commit with nothing new is skipped.
+  - The commit message lists what was added, changed and removed.
+  - Config:
+    - `GITHUB_TOKEN`: a fine-grained token with Contents read/write on the repo, set in Render's Environment.
+    - `GITHUB_REPO`: default `AprilLiar/Custom-VTT`.
+    - `GITHUB_BRANCH`: default `main`.
+    - `GITHUB_API_URL`: for the playtest's fake GitHub.
+  - `homebrew:commit` (GM, ack) answers one of:
+    - `{ ok, sha, url, added, changed, removed, files }`;
+    - `{ ok, unchanged }`;
+    - `{ error: 'no-token' | 'busy' | 'github' | 'gm-only' }`.
+- **The GM tool** (`CommitHomebrewTool.jsx`, GM Tools → Commit Homebrew):
+  - Before committing, it lists:
+    - how many published items will be in the core;
+    - which are new to it;
+    - how many leave it;
+    - which are grey or waiting for Claude.
+  - It warns that committing redeploys the app.
+  - The result links to the commit on GitHub.
+  - Without a token it says how to add one, and offers **Download snapshot** (`homebrew-snapshot-<date>.json`), which Claude can import.
+- **The wrench:** `HomebrewWrench.jsx`, with `WrenchLegend`.
+- **Claude's script:** `scripts/homebrew-automation.mjs`.
+  - `status` (the default) lists every committed item with its wrench, and each part as new, stale or automated:
+    - a new part with its text;
+    - a stale part with a **word diff** between its wording at `basedOn` (`git show`) and now;
+    - leftovers to prune.
+  - `stamp <itemId> [uid… | --all]` records a part's current fingerprint and `basedOn`, the last commit of its file. It refuses a file with uncommitted changes.
+  - `prune` removes the automation of deleted items and parts.
+  - `import <snapshot.json>` writes a downloaded snapshot into `homebrew/items/`.
+- **Tests:**
+  - `server/test/homebrewPipeline.test.js` covers:
+    - uids;
+    - fingerprints;
+    - every wrench state;
+    - automation by uid after a rename, a reorder and a reword;
+    - core files and the commit plan;
+    - the commit against `server/test/fakeGithub.js`: skip-when-unchanged, removal and the race retry;
+    - the to-do list.
+  - The same test checks the **repo's own `homebrew/`**:
+    - no leftover automation;
+    - every entry is stamped with a real commit;
+    - every automated rule passes `ruleSupport`;
+    - the census counts every Claude-automated Ability rule and Action as automatic, not by hand.
+- **Playtest:** `scripts/playtest-commit-homebrew.mjs` boots its own server on a fresh database, its own core and a fake GitHub. It covers:
+  - the restore with automation;
+  - uids on save;
+  - a commit of the published items only;
+  - "unchanged";
+  - a player refused;
+  - unpublishing removes the file;
+  - the boot uid migration;
+  - "no token".
+
+### Runbook: "automate homebrew content" (Claude)
+1. `git pull` to fetch the app's Commit Homebrew commits, then run `node scripts/homebrew-automation.mjs` for the to-do list.
+2. **New parts:** write the automation into `homebrew/automation.json` under the item id and the part's uid.
+   - An Ability gets `rules`: book-shaped, using only what `ruleSupport` accepts.
+   - An Action gets `effect`, plus a structured `cost` and the rest as needed.
+   - If something genuinely needs engine code, add it to the engine like any book mechanic, and say so in the commit.
+   - A part that needs nothing still gets an entry, via `stamp --all`.
+3. **Stale parts:** read the word diff and adjust only what the change touches. A changed number is a changed number.
+4. `stamp <itemId> [uid…]` every part you wrote or checked, then `prune` the leftovers.
+5. Run `npm test`. `homebrewPipeline.test.js` refuses unstamped entries, leftovers and automation the engine would run by hand. Then lint, build, commit `homebrew/automation.json` (and any engine code) to `main`, and push.
+6. If the user sent a snapshot file instead (no token yet): `import` it, commit the items first (stamps name that commit), then automate.
 
 ## Full automation (decided; phases A–J implemented)
 
@@ -3678,7 +3810,7 @@ A GM-only page (`/homebrew`, the flask icon in the header and the mobile menu) f
 The old system's phases (1-9 and the playtest batches after them) are complete history in git. The current state:
 - **Pivot — done.** Old system archived and removed (this document's **The pivot**).
 - **Character builder & turn automation — implemented**, in phases 0-4 (see its section above). Further changes are follow-ups from play.
-- **Homebrew builder — implemented** (see its section above).
+- **Homebrew builder — implemented** (see its section above). **Commit Homebrew — implemented** (see its section): the GM commits published homebrew to the repo; Claude automates it on request.
 - **Full automation — in progress**, phases A-J (see its section above).
 - **Panic at the Dojo combat assistant**, in the five phases listed in its section above. Phases 1, 2, 2b (Stances) and 3 are implemented; so are multi-lane Simple Combat (2c), Phase 4 and Phase 5 — the whole scoped assistant — plus the Cinematic Weight GM tool. Further changes are follow-ups from play.
 

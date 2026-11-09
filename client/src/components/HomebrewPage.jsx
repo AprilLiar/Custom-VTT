@@ -2,7 +2,9 @@ import { useEffect, useMemo, useState } from 'react';
 import { Copy, Plus, Trash2 } from 'lucide-react';
 import { socket } from '../socket.js';
 import { useRole } from '../roleContext.jsx';
-import { useBookContent, useContent, useHomebrewItems } from '../lib/patd/useContent.js';
+import { useBookContent, useContent, useHomebrewState } from '../lib/patd/useContent.js';
+import { abilityFingerprint, actionFingerprint, partState, wrenchState } from '../lib/patd/homebrewSync.js';
+import HomebrewWrench, { WrenchLegend } from './HomebrewWrench.jsx';
 import {
   DIE_COLORS,
   DIE_SIDES,
@@ -14,6 +16,7 @@ import {
   WHO,
   copyFromBook,
   describeSpec,
+  newUid,
 } from '../lib/patd/homebrew.js';
 import { DiceRow, cardClass, rangeText, selectClass } from './builder/BuildParts.jsx';
 
@@ -21,7 +24,8 @@ import { DiceRow, cardClass, rangeText, selectClass } from './builder/BuildParts
 // The GM's own Forms, Styles and Archetypes, each with Abilities (written with
 // a simple rule editor, so they run as turn triggers) and Actions (reference
 // only). New items start as drafts; publishing offers them in every player's
-// builder. "Copy from book" starts from a book entry.
+// builder. "Copy from book" starts from a book entry. The wrench by each item
+// (HomebrewWrench) is its automation state — see "Commit Homebrew" in the plan.
 
 const KIND_LABEL = { form: 'Form', style: 'Style', archetype: 'Archetype' };
 const inputClass = 'min-h-9 w-full panel-cut-sm border border-zinc-700 bg-zinc-800 px-2 text-sm text-zinc-100 outline-none focus:border-brand-500';
@@ -52,7 +56,8 @@ const blank = (kind) => ({
 
 export default function HomebrewPage() {
   const { role } = useRole();
-  const items = useHomebrewItems();
+  const hb = useHomebrewState();
+  const items = hb?.items ?? null;
   const book = useBookContent();
   const idx = useContent();
   const [edit, setEdit] = useState(null); // the item being edited (a working copy)
@@ -69,6 +74,8 @@ export default function HomebrewPage() {
   if (!items || !book || !idx) return <p className="p-4 text-sm text-zinc-500">Loading…</p>;
 
   const start = (item) => setEdit({ ...structuredClone(item), clientKey: `k${Date.now()}` });
+  const coreIds = new Set(hb.coreIds);
+  const syncOf = (id) => ({ autoItem: (id && hb.automation?.items?.[id]) || null, inCore: Boolean(id) && coreIds.has(id) });
   const bookList = { form: book.content.forms, style: book.content.styles, archetype: book.content.archetypes };
 
   return (
@@ -129,7 +136,10 @@ export default function HomebrewPage() {
                   {list.map((i) => (
                     <li key={i.id}>
                       <button type="button" onClick={() => start(i)} className={`${cardClass(edit?.id === i.id)} w-full`}>
-                        <span className="block text-xs font-semibold text-zinc-100">{i.name}</span>
+                        <span className="flex items-center gap-1.5 text-xs font-semibold text-zinc-100">
+                          <span className="min-w-0 flex-1 truncate">{i.name}</span>
+                          <HomebrewWrench state={wrenchState(i, syncOf(i.id))} />
+                        </span>
                         <span className={`block text-[10px] uppercase ${i.published ? 'text-emerald-400' : 'text-zinc-500'}`}>{i.published ? 'Published' : 'Draft'}</span>
                       </button>
                     </li>
@@ -138,10 +148,11 @@ export default function HomebrewPage() {
               </div>
             );
           })}
+          <WrenchLegend />
         </aside>
         <main>
           {edit ? (
-            <ItemEditor key={edit.id ?? edit.clientKey} item={edit} setItem={setEdit} idx={idx} book={book} onClose={() => setEdit(null)} />
+            <ItemEditor key={edit.id ?? edit.clientKey} item={edit} setItem={setEdit} idx={idx} book={book} sync={syncOf(edit.id)} onClose={() => setEdit(null)} />
           ) : (
             <p className="text-sm text-zinc-500">Pick an item, make a new one, or copy one from the book.</p>
           )}
@@ -160,7 +171,7 @@ function Field({ label, children }) {
   );
 }
 
-function ItemEditor({ item, setItem, idx, book, onClose }) {
+function ItemEditor({ item, setItem, idx, book, sync, onClose }) {
   const set = (patch) => setItem((e) => ({ ...e, ...patch }));
   const save = () => {
     // An Ability without its own text gets its rules' summary.
@@ -172,6 +183,7 @@ function ItemEditor({ item, setItem, idx, book, onClose }) {
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-2">
         <span className="panel-cut-sm bg-zinc-800 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-zinc-300">{KIND_LABEL[item.kind]}</span>
+        <HomebrewWrench state={wrenchState(item, sync)} size={15} />
         <label className="flex items-center gap-1.5 text-xs text-zinc-300">
           <input type="checkbox" checked={item.published} onChange={(e) => set({ published: e.target.checked })} />
           Published (players can pick it)
@@ -310,8 +322,8 @@ function ItemEditor({ item, setItem, idx, book, onClose }) {
         <textarea value={item.descriptionText} rows={3} onChange={(e) => set({ descriptionText: e.target.value })} className={`${inputClass} py-1.5`} />
       </Field>
 
-      <AbilitiesEditor kind={item.kind} abilities={item.abilities} set={(abilities) => set({ abilities })} />
-      <ActionsEditor actions={item.actions} set={(actions) => set({ actions })} />
+      <AbilitiesEditor kind={item.kind} abilities={item.abilities} autoItem={sync.autoItem} set={(abilities) => set({ abilities })} />
+      <ActionsEditor actions={item.actions} autoItem={sync.autoItem} set={(actions) => set({ actions })} />
     </div>
   );
 }
@@ -366,7 +378,10 @@ function DiceEditor({ dice, set }) {
   );
 }
 
-function AbilitiesEditor({ kind, abilities, set }) {
+// A part's own wrench, once Claude automated its item.
+const partWrench = (autoItem, uid, fingerprint) => (autoItem ? <HomebrewWrench state={partState({ uid, fingerprint }, autoItem)} /> : null);
+
+function AbilitiesEditor({ kind, abilities, autoItem, set }) {
   const update = (i, patch) => set(abilities.map((a, j) => (j === i ? { ...a, ...patch } : a)));
   return (
     <section className="space-y-2">
@@ -374,6 +389,7 @@ function AbilitiesEditor({ kind, abilities, set }) {
       {abilities.map((a, i) => (
         <div key={i} className="space-y-2 panel-cut-sm border border-zinc-800 bg-zinc-900/60 p-2.5">
           <div className="flex flex-wrap items-center gap-1.5">
+            {partWrench(autoItem, a.uid, abilityFingerprint(a))}
             <input value={a.name} onChange={(e) => update(i, { name: e.target.value })} className={`${inputClass} max-w-xs`} aria-label="Ability name" />
             {kind === 'archetype' && (
               <select value={a.variant ?? ''} onChange={(e) => update(i, { variant: e.target.value || null })} className={selectClass} aria-label="Which heroes get it">
@@ -414,7 +430,7 @@ function AbilitiesEditor({ kind, abilities, set }) {
       {abilities.length < 8 && (
         <button
           type="button"
-          onClick={() => set([...abilities, { name: 'New Ability', rulesText: '', ...(kind === 'archetype' ? { variant: null } : {}), rules: [] }])}
+          onClick={() => set([...abilities, { uid: newUid(), name: 'New Ability', rulesText: '', ...(kind === 'archetype' ? { variant: null } : {}), rules: [] }])}
           className={`${smallBtn} inline-flex items-center gap-1`}
         >
           <Plus size={13} aria-hidden /> Ability
@@ -577,14 +593,15 @@ function StepEditor({ step, set, remove, nested = false }) {
   );
 }
 
-function ActionsEditor({ actions, set }) {
+function ActionsEditor({ actions, autoItem, set }) {
   const update = (i, patch) => set(actions.map((a, j) => (j === i ? { ...a, ...patch } : a)));
   return (
     <section className="space-y-2">
-      <h3 className="text-[11px] font-bold uppercase tracking-wide text-zinc-400">Actions (shown on the sheet as reference)</h3>
+      <h3 className="text-[11px] font-bold uppercase tracking-wide text-zinc-400">Actions (reference on the sheet until Claude automates them)</h3>
       {actions.map((a, i) => (
         <div key={i} className="space-y-1.5 panel-cut-sm border border-zinc-800 bg-zinc-900/60 p-2.5">
           <div className="flex flex-wrap items-center gap-1.5">
+            {partWrench(autoItem, a.uid, actionFingerprint(a))}
             <input value={a.name} onChange={(e) => update(i, { name: e.target.value })} placeholder="Name" className={`${inputClass} max-w-xs`} aria-label="Action name" />
             <input value={a.cost} onChange={(e) => update(i, { cost: e.target.value })} placeholder="Cost, e.g. 1+ or 3+ or 6+" className={`${inputClass} max-w-[14rem]`} aria-label="Action cost" />
             <button type="button" onClick={() => set(actions.filter((_, j) => j !== i))} className="ml-auto text-xs text-red-400 hover:text-red-300">
@@ -595,7 +612,7 @@ function ActionsEditor({ actions, set }) {
         </div>
       ))}
       {actions.length < 12 && (
-        <button type="button" onClick={() => set([...actions, { name: '', cost: '', rulesText: '' }])} className={`${smallBtn} inline-flex items-center gap-1`}>
+        <button type="button" onClick={() => set([...actions, { uid: newUid(), name: '', cost: '', rulesText: '' }])} className={`${smallBtn} inline-flex items-center gap-1`}>
           <Plus size={13} aria-hidden /> Action
         </button>
       )}

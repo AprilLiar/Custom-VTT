@@ -9,41 +9,50 @@ import { useRole } from '../../roleContext.jsx';
 // The rules content, loaded on first use (a separate ~1.2MB chunk, so pages
 // that never open a Combat tab never download it) and indexed once — plus the
 // GM's homebrew items (client/src/lib/patd/homebrew.js), kept live over
-// `homebrew:updated`. The GM's index lists drafts; a player's lists only
-// published items (drafts stay resolvable for characters already using them).
+// `homebrew:updated` with Claude's automation on top. The GM's index lists
+// drafts; a player's lists only published items (drafts stay resolvable for
+// characters already using them).
 let pending = null;
 export function loadContent() {
   if (!pending) pending = import('../../data/patd/content.json').then((m) => indexContent(applyRulings(m.default ?? m)));
   return pending;
 }
 
-let hbItems = null;
+// The homebrew state: { items, automation, coreIds } (automation: Claude's
+// map from homebrew/automation.json; coreIds: the items in the committed core).
+let hbState = null;
 let hbPending = null;
 const hbListeners = new Set();
-const setItems = (items) => {
-  hbItems = items;
-  for (const l of hbListeners) l(items);
+const shape = (p) => ({ items: p?.items ?? [], automation: p?.automation ?? null, coreIds: p?.coreIds ?? [] });
+const setState = (payload) => {
+  hbState = shape(payload);
+  for (const l of hbListeners) l(hbState);
 };
-socket.on('homebrew:updated', ({ items }) => setItems(items ?? []));
+socket.on('homebrew:updated', setState);
 socket.on('connect', () => {
-  if (hbItems) getHomebrew().then(({ items }) => setItems(items ?? [])).catch(() => {});
+  if (hbState) getHomebrew().then(setState).catch(() => {});
 });
-function loadHomebrewItems() {
-  if (!hbPending) hbPending = getHomebrew().then(({ items }) => (hbItems ??= items ?? []));
+function loadHomebrewState() {
+  if (!hbPending) hbPending = getHomebrew().then((p) => (hbState ??= shape(p)));
   return hbPending;
+}
+
+// The homebrew state as saved (null until loaded).
+export function useHomebrewState() {
+  const [state, setLocal] = useState(hbState);
+  useEffect(() => {
+    hbListeners.add(setLocal);
+    loadHomebrewState()
+      .then(() => setLocal(hbState))
+      .catch(console.error);
+    return () => hbListeners.delete(setLocal);
+  }, []);
+  return state;
 }
 
 // The homebrew items as saved (null until loaded).
 export function useHomebrewItems() {
-  const [items, setLocal] = useState(hbItems);
-  useEffect(() => {
-    hbListeners.add(setLocal);
-    loadHomebrewItems()
-      .then(() => setLocal(hbItems))
-      .catch(console.error);
-    return () => hbListeners.delete(setLocal);
-  }, []);
-  return items;
+  return useHomebrewState()?.items ?? null;
 }
 
 // The book's own index (no homebrew), `null` until loaded.
@@ -64,16 +73,16 @@ export function useBookContent() {
 // The merged index, `null` until both are loaded.
 export function useContent() {
   const book = useBookContent();
-  const items = useHomebrewItems();
+  const hb = useHomebrewState();
   const { role } = useRole();
   return useMemo(() => {
-    if (!book || !items) return null;
-    if (!items.length) return book;
+    if (!book || !hb) return null;
+    if (!hb.items.length) return book;
     try {
-      return indexContent(mergeHomebrew(book.content, items, { listDrafts: role === 'gm' }));
+      return indexContent(mergeHomebrew(book.content, hb.items, { listDrafts: role === 'gm', automation: hb.automation }));
     } catch (err) {
       console.error(err);
       return book;
     }
-  }, [book, items, role]);
+  }, [book, hb, role]);
 }

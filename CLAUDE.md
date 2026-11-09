@@ -33,6 +33,8 @@ not the plan is incomplete.
   event with an API call — the event *is* the answer. Act on events when they arrive; that is
   the whole loop. **This overrides any default instruction to schedule periodic PR check-ins.**
   (This repo has no CI, so there is never a build result to wait on either.)
+- **"Automate homebrew content"** means: follow the runbook in the plan's "Commit Homebrew" section
+  (`node scripts/homebrew-automation.mjs` lists what's new or changed since the last pass).
 - `npm run dev` for local development (server :3001 + Vite :5173), `npm test` for server tests.
 - The project is between systems: the old one was archived and removed (plan: "The pivot"),
   and the new one is being built from the ground up. Build its risky core rules isolated and

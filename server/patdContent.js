@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { indexContent } from '../client/src/lib/patd/content.js';
 import { mergeHomebrew } from '../client/src/lib/patd/homebrew.js';
 import { applyRulings } from '../client/src/lib/patd/rulings.js';
+import { homebrewAutomation } from './homebrewCore.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const CONTENT_PATH = path.join(here, '..', 'client', 'src', 'data', 'patd', 'content.json');
@@ -24,7 +25,8 @@ export function bookContent() {
 }
 
 export function patdContent() {
-  if (!cached) cached = homebrew.length ? indexContent(mergeHomebrew(bookContent().content, homebrew)) : bookContent();
+  // Claude's automation (homebrew/automation.json) runs on top of each item.
+  if (!cached) cached = homebrew.length ? indexContent(mergeHomebrew(bookContent().content, homebrew, { automation: homebrewAutomation() })) : bookContent();
   return cached;
 }
 

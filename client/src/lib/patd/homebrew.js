@@ -268,9 +268,19 @@ export function cleanHomebrew(raw, idx, tokenKeys) {
     item.archetypeId = typeof raw.archetypeId === 'string' && /^archetype\.[a-z0-9.-]+$/.test(raw.archetypeId) ? raw.archetypeId : null;
   }
   if (kind === 'archetype') item.archetypeKind = raw.archetypeKind === 'villain' ? 'villain' : 'player';
+  // **Stable ids inside an item (decided, homebrew pipeline):** every Ability
+  // and Action keeps its own `uid` across edits, renames and reorders — the
+  // automation map is keyed by it. A missing or repeated one gets a new one.
+  const seen = new Set();
+  const uidOf = (u) => {
+    const id = isUid(u) && !seen.has(u) ? u : newUid();
+    seen.add(id);
+    return id;
+  };
   item.abilities = (Array.isArray(raw.abilities) ? raw.abilities : [])
     .slice(0, MAX_ABILITIES)
     .map((a) => ({
+      uid: uidOf(a?.uid),
       name: text(a?.name, 60) || name,
       rulesText: text(a?.rulesText, 2000),
       ...(kind === 'archetype' ? { variant: VARIANT_KEYS.includes(a?.variant) ? a.variant : null } : {}),
@@ -281,10 +291,38 @@ export function cleanHomebrew(raw, idx, tokenKeys) {
     }));
   item.actions = (Array.isArray(raw.actions) ? raw.actions : [])
     .slice(0, MAX_ACTIONS)
-    .map((a) => ({ name: text(a?.name, 60), cost: text(a?.cost, 80), rulesText: text(a?.rulesText, 2000) }))
+    .map((a) => ({ uid: uidOf(a?.uid), name: text(a?.name, 60), cost: text(a?.cost, 80), rulesText: text(a?.rulesText, 2000) }))
     .filter((a) => a.name);
   return item;
 }
+
+// An item with every Ability and Action given a uid (a missing or repeated one
+// gets a new one): { item, changed }. Older saved items had none.
+export function ensureUids(item, rand = Math.random) {
+  const seen = new Set();
+  let changed = false;
+  const fix = (x) => {
+    if (isUid(x?.uid) && !seen.has(x.uid)) {
+      seen.add(x.uid);
+      return x;
+    }
+    changed = true;
+    let uid;
+    do uid = newUid(rand);
+    while (seen.has(uid));
+    seen.add(uid);
+    // eslint-disable-next-line no-unused-vars
+    const { uid: _old, ...rest } = x ?? {};
+    return { uid, ...rest };
+  };
+  const out = { ...item, abilities: (item.abilities ?? []).map(fix), actions: (item.actions ?? []).map(fix) };
+  return { item: changed ? out : item, changed };
+}
+
+// A fresh in-item id for an Ability or Action: 8 base-36 characters.
+export const newUid = (rand = Math.random) =>
+  Array.from({ length: 8 }, () => Math.floor(rand() * 36).toString(36)).join('');
+export const isUid = (u) => typeof u === 'string' && /^[a-z0-9]{6,16}$/.test(u);
 
 // A fresh id for a new item: "form.hb-<name>-<random>".
 export function newHomebrewId(kind, name, rand = Math.random) {
@@ -295,31 +333,49 @@ export function newHomebrewId(kind, name, rand = Math.random) {
 export const isHomebrewId = (id) => typeof id === 'string' && /^(form|style|archetype)\.hb-[a-z0-9-]+$/.test(id);
 
 // One item → its catalog entries: { entity, abilities, actions }.
-export function itemToContent(item) {
+// `auto`: this item's entries of the homebrew automation map
+// (homebrew/automation.json, written by Claude's passes) — by in-item uid, an
+// Ability's `rules` or an Action's `effect` (and structured `cost`). They run
+// even when the wording changed since (decided: a grey wrench, not "by hand").
+// What an Action's automation entry may set, besides a structured `cost`.
+const ACTION_AUTO_KEYS = ['effect', 'gates', 'limits', 'conditions', 'timing', 'tags', 'usableWhileTakenOut'];
+
+export function itemToContent(item, auto = null) {
   const tail = item.id.slice(item.id.indexOf('.') + 1);
+  const entryOf = (x) => (x?.uid ? auto?.entries?.[x.uid] : null) ?? null;
   const abilities = item.abilities.map((a, i) => {
     const id = `ability.${tail}.a${i + 1}`;
-    const rules = a.rules.map((r, j) => compileRule(r, `${id}.rule-${j + 1}`)).filter(Boolean);
+    const e = entryOf(a);
+    const rules = Array.isArray(e?.rules)
+      ? e.rules.map((r, j) => ({ ...r, id: `${id}.rule-${j + 1}` }))
+      : a.rules.map((r, j) => compileRule(r, `${id}.rule-${j + 1}`)).filter(Boolean);
     return {
       id,
       name: a.name,
       ownerId: item.id,
       rulesText: a.rulesText,
       rules,
-      automationState: 'structured',
+      automationState: Array.isArray(e?.rules) ? 'automated' : 'structured',
+      uid: a.uid,
       homebrew: true,
       ...(a.variant ? { variant: a.variant } : {}),
     };
   });
-  const actions = item.actions.map((a, i) => ({
-    id: `action.${tail}.x${i + 1}`,
-    name: a.name,
-    ownerId: item.id,
-    kind: 'unique',
-    cost: { text: a.cost },
-    rulesText: a.rulesText,
-    homebrew: true,
-  }));
+  const actions = item.actions.map((a, i) => {
+    const e = entryOf(a);
+    return {
+      id: `action.${tail}.x${i + 1}`,
+      name: a.name,
+      ownerId: item.id,
+      kind: 'unique',
+      cost: e?.cost ? { ...e.cost, text: a.cost } : { text: a.cost },
+      rulesText: a.rulesText,
+      ...Object.fromEntries(ACTION_AUTO_KEYS.filter((k) => e?.[k] !== undefined).map((k) => [k, e[k]])),
+      ...(e?.effect ? { automationState: 'automated' } : {}),
+      uid: a.uid,
+      homebrew: true,
+    };
+  });
   const base = {
     id: item.id,
     name: item.name,
@@ -351,13 +407,13 @@ export function itemToContent(item) {
 // The book's content with homebrew items added. Published items (or all, with
 // `listDrafts`) join the pickable lists; the rest are still indexed (under
 // `homebrewUnlisted`) so a character already using one keeps it.
-export function mergeHomebrew(content, items, { listDrafts = true } = {}) {
+export function mergeHomebrew(content, items, { listDrafts = true, automation = null } = {}) {
   if (!items?.length) return content;
   const out = { ...content };
   for (const key of ['forms', 'styles', 'archetypes', 'abilities', 'actions', 'skills']) out[key] = [...content[key]];
   out.homebrewUnlisted = [];
   const archetypes = new Map(out.archetypes.map((a, i) => [a.id, i]));
-  const contents = items.map(itemToContent);
+  const contents = items.map((it) => itemToContent(it, automation?.items?.[it.id] ?? null));
   // Archetypes first, so homebrew Styles can join them.
   for (const c of contents) {
     if (c.entity.id.startsWith('archetype.')) {
@@ -387,7 +443,7 @@ export function copyFromBook(entry, idx) {
   const abilityOf = (id, variant = null) => {
     const a = idx.get(id);
     if (!a) return null;
-    return { name: a.name, rulesText: a.rulesText ?? '', ...(kind === 'archetype' ? { variant } : {}), rules: (a.rules ?? []).map(specFromRule) };
+    return { uid: newUid(), name: a.name, rulesText: a.rulesText ?? '', ...(kind === 'archetype' ? { variant } : {}), rules: (a.rules ?? []).map(specFromRule) };
   };
   const abilities =
     kind === 'archetype'
@@ -399,7 +455,7 @@ export function copyFromBook(entry, idx) {
   const actions = (entry.actionIds ?? [])
     .map((id) => idx.get(id))
     .filter(Boolean)
-    .map((a) => ({ name: a.name, cost: a.cost?.text ?? (typeof a.cost === 'string' ? a.cost : ''), rulesText: a.rulesText ?? '' }));
+    .map((a) => ({ uid: newUid(), name: a.name, cost: a.cost?.text ?? (typeof a.cost === 'string' ? a.cost : ''), rulesText: a.rulesText ?? '' }));
   const item = {
     kind,
     name: `${entry.name} (copy)`,

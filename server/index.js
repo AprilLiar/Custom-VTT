@@ -28,7 +28,8 @@ import { loadFightState, registerFightHandlers, wireInterrupts } from './fights.
 import { createTriggerEngine } from './triggers.js';
 import { loadMapTiles, registerMapTileHandlers } from './mapTiles.js';
 import { deleteBuild, loadBuild, registerBuildHandlers } from './builds.js';
-import { listHomebrew, loadHomebrew, registerHomebrewHandlers } from './homebrew.js';
+import { homebrewPayload, loadHomebrew, registerHomebrewHandlers, restoreAndMigrateHomebrew } from './homebrew.js';
+import { loadCore } from './homebrewCore.js';
 import { loadBoard, registerEventHandlers } from './events.js';
 import { fighterState, listMarks, registerDiceMarkHandlers, superStatus } from './diceMarks.js';
 import { loadAllDerived, setupFromDerived } from './fighterStances.js';
@@ -958,9 +959,10 @@ app.get('/api/events', wrap(async (req, res) => {
   res.json(await loadBoard(viewerFromQuery(req.query)));
 }));
 
-// Every homebrew item (drafts too: a player's builder just doesn't offer them).
+// Every homebrew item (drafts too: a player's builder just doesn't offer them),
+// with Claude's automation map and the committed core's ids (the wrenches).
 app.get('/api/homebrew', wrap(async (req, res) => {
-  res.json({ items: await listHomebrew() });
+  res.json(await homebrewPayload());
 }));
 
 app.get('/api/combat-setup', wrap(async (req, res) => {
@@ -3511,6 +3513,9 @@ await initDb();
 await loadAssignments(all);
 await purgeTempNpcCombat();
 await purgeHandmadeCombatSetup();
+// The committed homebrew core and Claude's automation (homebrew/ in the repo).
+loadCore();
+await restoreAndMigrateHomebrew();
 await loadHomebrew();
 // Chat is intentionally ephemeral — see chat:clear below — and clearing it
 // on every boot doubles as clearing it between sessions on Render's free

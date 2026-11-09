@@ -11,3 +11,6 @@ services:
         sync: false
       - key: TURSO_AUTH_TOKEN
         sync: false
+      # Commit Homebrew (GM tool): a fine-grained token, Contents read/write on this repo.
+      - key: GITHUB_TOKEN
+        sync: false
