@@ -138,6 +138,16 @@ p.emit('move:free', { combatantId: ta.id, to: { col: 5, row: 2 } });
 await sleep(800);
 await stage();
 check('moving there costs its Speed (2), paid after', at(ta.id) === '5,2' && tok(ta.id).fight.tokens.speed === 1, `${at(ta.id)} ${JSON.stringify(tok(ta.id).fight.tokens)}`);
+// The back arrow (batch 3): take it back — the square and the Speed.
+const r2 = await reach(p, ta.id);
+check('the move can be taken back (the back arrow shows)', r2.canUndo === true, JSON.stringify(r2.canUndo));
+const undone = await new Promise((res) => p.emit('move:undo', { combatantId: ta.id }, res));
+await stage();
+check('…taken back: where she stood, the 2 Speed refunded', undone.ok && at(ta.id) === '3,2' && tok(ta.id).fight.tokens.speed === 3, `${JSON.stringify(undone)} ${at(ta.id)} ${JSON.stringify(tok(ta.id).fight.tokens)}`);
+check('…and nothing more to take back', (await reach(p, ta.id)).canUndo === false);
+p.emit('move:free', { combatantId: ta.id, to: { col: 5, row: 2 } });
+await sleep(800);
+await stage();
 p.emit('move:done', { combatantId: ta.id });
 await sleep(500);
 await stage();

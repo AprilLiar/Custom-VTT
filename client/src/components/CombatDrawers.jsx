@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Minus, Plus } from 'lucide-react';
 import { socket } from '../socket.js';
-import { getCombatProfiles } from '../lib/api.js';
+import { getCharacterFolders, getCombatProfiles } from '../lib/api.js';
 import { useRoster } from '../lib/useRoster.js';
+import { buildFolderTree } from '../lib/folders.js';
+import { FolderRosterNode } from './FolderRoster.jsx';
 import { beginFighterDrag } from '../lib/combatDrag.js';
 import { fileToSceneBackground } from '../lib/image.js';
 import { cropOf } from '../lib/imageCrop.js';
@@ -14,7 +16,7 @@ import CroppedImage from './CroppedImage.jsx';
 //   - CombatFightersDrawer (GM, left): every Character and Temp NPC, each
 //     dragged onto the map as many times as you like.
 //   - CombatMapDrawer (GM, right): the Combat Background and the grid.
-//   - PlayerTokenDock (Player): their own character and assigned NPCs, to drag onto the map.
+//   The GM places every token (decided, revised): there is no Player dock.
 
 // Every fighter's combat profile, kept live — the token picture to drag.
 function useCombatProfiles() {
@@ -70,13 +72,56 @@ function FighterChip({ fighter, label }) {
   );
 }
 
+// The character folders, kept live.
+function useCharacterFolders() {
+  const [folders, setFolders] = useState([]);
+  useEffect(() => {
+    let alive = true;
+    const refetch = () =>
+      getCharacterFolders()
+        .then((list) => alive && setFolders(list))
+        .catch(console.error);
+    refetch();
+    const events = ['character_folder:created', 'character_folder:updated', 'character_folder:deleted'];
+    for (const ev of events) socket.on(ev, refetch);
+    return () => {
+      alive = false;
+      for (const ev of events) socket.off(ev, refetch);
+    };
+  }, []);
+  return folders;
+}
+
 export function CombatFightersDrawer() {
   const characters = useRoster();
   const profiles = useCombatProfiles();
+  const folders = useCharacterFolders();
   const [query, setQuery] = useState('');
+  const [collapsed, setCollapsed] = useState(() => new Set());
+  const toggle = (id) =>
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
   const q = query.trim().toLowerCase();
   const match = (r) => !q || r.name.toLowerCase().includes(q);
   const chars = (characters ?? []).filter(match);
+  // **In their folders (decided):** the GM's character folders, as on the
+  // Scene's cast drawer; a search shows the matches in their folders too.
+  const tree = useMemo(() => buildFolderTree(folders), [folders]);
+  const byFolder = useMemo(() => {
+    const map = new Map();
+    for (const c of chars) {
+      const key = c.folder_id ?? null;
+      if (!map.has(key)) map.set(key, []);
+      map.get(key).push(c);
+    }
+    for (const list of map.values()) list.sort((a, b) => a.name.localeCompare(b.name));
+    return map;
+  }, [chars]);
+  const chip = (c) => <FighterChip key={`c${c.id}`} fighter={fighterOf('character', c, profiles)} label={c.character_type === 'npc' ? 'NPC' : ''} />;
   return (
     <div className="absolute left-0 top-0 z-10 flex h-full w-64 flex-col gap-3 overflow-y-auto border-r border-zinc-800 bg-zinc-950/90 p-3 pt-16">
       <div>
@@ -91,9 +136,10 @@ export function CombatFightersDrawer() {
       />
       <section className="space-y-1">
         <h3 className="text-[10px] font-bold uppercase tracking-wide text-zinc-500">Characters</h3>
-        {chars.map((c) => (
-          <FighterChip key={`c${c.id}`} fighter={fighterOf('character', c, profiles)} label={c.character_type === 'npc' ? 'NPC' : ''} />
+        {tree.map((node) => (
+          <FolderRosterNode key={node.id} node={node} charsByFolder={byFolder} collapsed={collapsed} onToggle={toggle} depth={0} rosterCard={chip} />
         ))}
+        {(byFolder.get(null) ?? []).map(chip)}
       </section>
     </div>
   );
@@ -245,27 +291,6 @@ export function CombatMapDrawer({ scene, tokenCount }) {
           Clear the map
         </button>
       </section>
-    </div>
-  );
-}
-
-export function PlayerTokenDock({ characters = [] }) {
-  // The Player's own character plus any NPC the GM assigned to them.
-  const profiles = useCombatProfiles();
-  if (!characters.length) return null;
-  return (
-    <div
-      className="absolute bottom-3 left-3 w-56 panel-cut-sm border border-zinc-700 bg-zinc-950/85 p-1.5"
-      style={{ zIndex: 1000, marginBottom: 'var(--safe-bottom)', marginLeft: 'var(--safe-left)' }}
-    >
-      <p className="mb-1 px-1 text-[10px] font-bold uppercase tracking-wide text-zinc-500">
-        {characters.length > 1 ? 'Drag your tokens onto the map' : 'Drag your token onto the map'}
-      </p>
-      <div className="max-h-48 space-y-1 overflow-y-auto">
-        {characters.map((c) => (
-          <FighterChip key={c.id} fighter={fighterOf('character', c, profiles)} label={c.character_type === 'npc' ? 'NPC' : ''} />
-        ))}
-      </div>
     </div>
   );
 }

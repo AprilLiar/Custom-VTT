@@ -583,7 +583,10 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
     try {
       const { c, fight } = await fightOfCombatant(payload?.combatantId);
       if (!c || !mayControl(c) || !triggers || !(await freeMoveOk(fight, c))) return ack({ error: 'not now' });
-      ack(await triggers.freeReach({ ...fight }, c.id));
+      const reach = await triggers.freeReach({ ...fight }, c.id);
+      // Shown to everyone too (batch 3: a shared player monitor), view-only.
+      emitAll?.('pick:view', { id: `move:${c.id}`, kind: 'move', mode: reach.mode, title: 'Free Movement', options: (reach.options ?? []).map((o) => ({ id: o.id, col: o.col, row: o.row })) });
+      ack(reach);
     } catch (err) {
       console.error('error handling move:reach:', err);
       ack({ error: 'failed' });
@@ -595,10 +598,40 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
     if (!Number.isInteger(to?.col) || !Number.isInteger(to?.row)) return;
     triggers.freeMove({ ...fight }, c.id, { col: to.col, row: to.row }).then((r) => socket.emit('move:result', { combatantId: c.id, ...r }));
   });
+  // Free Movement closed on the mover's screen: everyone else's view of it goes.
+  on('move:view_end', async ({ combatantId } = {}) => {
+    if (Number.isInteger(Number(combatantId))) emitAll?.('pick:clear', { id: `move:${Number(combatantId)}` });
+  });
+  // The back arrow: take back the last Free Movement (batch 3). ack({ ok } | { error }).
+  socket.on('move:undo', async (payload, ack) => {
+    const reply = typeof ack === 'function' ? ack : () => {};
+    try {
+      const { c, fight } = await fightOfCombatant(payload?.combatantId);
+      if (!c || !mayControl(c) || !triggers?.undoFreeMove) return reply({ error: 'not now' });
+      const r = await triggers.undoFreeMove({ ...fight }, c.id);
+      socket.emit('move:result', { combatantId: c.id, ...r });
+      reply(r);
+    } catch (err) {
+      console.error('error handling move:undo:', err);
+      reply({ error: 'failed' });
+    }
+  });
   on('move:swap', async ({ combatantId, allyId } = {}) => {
     const { c, fight } = await fightOfCombatant(combatantId);
     if (!c || !mayControl(c) || !triggers || !(await freeMoveOk(fight, c))) return;
     triggers.freeSwap({ ...fight }, c.id, Number(allyId)).then((r) => socket.emit('move:result', { combatantId: c.id, ...r }));
+  });
+  // The active fighter's attack range, shaded faint red on the board (batch 3).
+  socket.on('fight:active_range', async (payload, ack) => {
+    if (typeof ack !== 'function') return;
+    try {
+      const fight = await fightFor(payload?.mode);
+      if (!fight || !triggers?.activeRange) return ack({ combatantId: null, squares: [] });
+      ack({ mode: fight.mode, ...(await triggers.activeRange({ ...fight })) });
+    } catch (err) {
+      console.error('error handling fight:active_range:', err);
+      ack({ combatantId: null, squares: [] });
+    }
   });
   // **A hand move (decided):** dragging a fighter by hand asks "Do you need to
   // spend Speed tokens on this move?". The cost is the cheapest Free Movement
@@ -714,6 +747,10 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
   // Done moving in this movement phase.
   on('move:done', async ({ combatantId } = {}) => {
     const { c, fight } = await fightOfCombatant(combatantId);
+    if (c && fight && mayControl(c)) {
+      triggers?.endFreeMoves?.({ ...fight }, c.id);
+      emitAll?.('pick:clear', { id: `move:${c.id}` });
+    }
     const phase = phaseOf(fight);
     if (!c || !phase || !phase.waiting.includes(c.id) || !mayControl(c)) return;
     const waiting = phase.waiting.filter((id) => id !== c.id);

@@ -97,6 +97,10 @@ const ana = await jpost('/api/characters', { name: `RXAna${stamp}`, characterTyp
 const cy = await jpost('/api/characters', { name: `RXCy${stamp}`, characterType: 'pc' });
 const bo = await jpost('/api/characters', { name: `RXBo${stamp}`, characterType: 'npc' });
 const p = await connect({ role: 'player', characterId: ana.id });
+// Cy's player is never asked here — but sees every board pick (a shared monitor).
+const pc = await connect({ role: 'player', characterId: cy.id });
+const views = [];
+pc.on('pick:view', (v) => views.push(v));
 const interruptOpens = [];
 p.on('interrupt:open', (x) => interruptOpens.push(x));
 const refusals = [];
@@ -154,6 +158,11 @@ check('…the stack finished: the lock opens for Ana, and her board opens on her
 gm.emit('board:commit', { rollId: boRoll });
 await sleep(400);
 check('…while it is up nobody else can Commit', gmRefusals.some((x) => /is interrupting/.test(x.error)), JSON.stringify(gmRefusals));
+const tp = prompts.find((q) => q.kind === 'targets');
+check('a target pick is made on the board (batch 3): the map, each target’s square and the Range around', tp?.mode === 'combat' && tp.options.every((o) => Number.isInteger(o.col) && Number.isInteger(o.row)) && tp.area?.length > 0, JSON.stringify(tp && { mode: tp.mode, options: tp.options, area: tp.area?.length }));
+check('…and every screen sees it, view-only: a player who isn’t asked gets its targets and Range', views.some((v) => v.kind === 'targets' && v.mode === 'combat' && v.options.length > 0 && v.area.length > 0 && !('label' in v.options[0])), JSON.stringify(views.map((v) => [v.kind, v.options.length, v.area?.length])));
+const ar = await new Promise((r) => pc.emit('fight:active_range', { mode: 'combat' }, r));
+check("the active fighter's attack range (batch 3): Bo's, squares around him, not his own", ar.combatantId === tb.id && ar.squares.length > 0 && !ar.squares.some((q) => q.col === 4 && q.row === 3), JSON.stringify(ar));
 const b = (await marks())[boRoll];
 check('Commit performs every placed Action without pausing for reactions (decided, revised)', b.placements.every((x) => x.committed) && !b.paused && !st.fights.combat.reaction_window, JSON.stringify([b.placements.map((x) => x.committed), b.paused, st.fights.combat.reaction_window]));
 const offersOf = (s) => new Promise((r) => s.emit('interrupt:offers', { mode: 'combat' }, (x) => r(x?.offers ?? {})));
@@ -244,5 +253,6 @@ await sleep(300);
 for (const c of [ana, cy, bo]) await fetch(`${BASE}/api/characters/${c.id}`, { method: 'DELETE' });
 gm.close();
 p.close();
+pc.close();
 console.log(failures ? `\n${failures} FAILURE(S)` : '\nall probes passed');
 process.exit(failures ? 1 : 0);

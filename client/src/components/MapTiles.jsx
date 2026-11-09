@@ -308,9 +308,11 @@ export function MapTilePalette({ mode, left = 0, role }) {
     if (!open) setInfo(null);
   }, [open]);
   return (
+    // The button stays put (decided): only it sits in the centred box; the
+    // palette and its info hang beside it, centred on it.
     <div
       ref={boxRef}
-      className="absolute top-1/2 flex -translate-y-1/2 items-start gap-1.5"
+      className="absolute top-1/2 -translate-y-1/2"
       style={{ left: left + 12, zIndex: 1000, marginLeft: 'var(--safe-left)' }}
     >
       <button
@@ -326,6 +328,7 @@ export function MapTilePalette({ mode, left = 0, role }) {
         <Shapes size={18} aria-hidden />
       </button>
       {open && (
+      <div className="absolute left-full top-1/2 ml-1.5 flex -translate-y-1/2 items-center gap-1.5">
         <div className="flex max-h-[70vh] w-36 flex-col gap-0.5 overflow-y-auto panel-cut-sm border border-zinc-700 bg-zinc-950/90 p-1">
           {TILES.map((t) => (
             <button
@@ -356,15 +359,16 @@ export function MapTilePalette({ mode, left = 0, role }) {
             </button>
           )}
         </div>
-      )}
-      {open && info && (
-        <div className="relative w-56 panel-cut-sm border border-zinc-700 bg-zinc-950/95 p-2 pr-6 shadow-xl">
-          <button type="button" onClick={() => setInfo(null)} aria-label="Close" className="absolute right-1 top-1 p-1 text-zinc-500 hover:text-zinc-200">
-            <X size={14} aria-hidden />
-          </button>
-          <TileInfo kind={info} />
-          <p className="mt-1 text-[10px] italic text-zinc-500">Drag it onto a square to place it.</p>
-        </div>
+        {info && (
+          <div className="relative w-56 panel-cut-sm border border-zinc-700 bg-zinc-950/95 p-2 pr-6 shadow-xl">
+            <button type="button" onClick={() => setInfo(null)} aria-label="Close" className="absolute right-1 top-1 p-1 text-zinc-500 hover:text-zinc-200">
+              <X size={14} aria-hidden />
+            </button>
+            <TileInfo kind={info} />
+            <p className="mt-1 text-[10px] italic text-zinc-500">Drag it onto a square to place it.</p>
+          </div>
+        )}
+      </div>
       )}
     </div>
   );

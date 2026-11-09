@@ -421,6 +421,14 @@ export function describe(node) {
       return `gain ${n(node.amount)} ${typeof node.token === 'string' ? tokenName(node.token) : 'tokens'}`.replace('  ', ' ');
     case 'gain_shield':
       return `gain Shield ${n(node.value)}`;
+    // Named, so "place a Copy" and "place Fog" never read the same (decided).
+    case 'place_obstacle': {
+      const what = typeof node.obstacle === 'string' ? (node.obstacle === 'pit_trap' ? 'Pit Trap' : tokenName(node.obstacle)) : 'an obstacle';
+      const count = typeof node.count === 'number' && node.count > 1 ? `${node.count} ` : typeof node.count === 'object' && node.count?.maximum ? `up to ${node.count.maximum} ` : '';
+      return `place ${count}${what}${count && !/s$/.test(what) ? 's' : ''}`;
+    }
+    case 'destroy_obstacle':
+      return `destroy ${typeof node.obstacle === 'string' ? tokenName(node.obstacle) : 'an obstacle'}`;
     case 'heal':
       return `heal ${n(node.amount)}`.trim();
     case 'damage':
@@ -648,7 +656,8 @@ async function targetsOf(v, scope, ctx, label) {
 // **Spaces (phase E):** squares in range — `empty` ones only when asked —
 // picked one at a time on the map or lane (`square` prompts).
 // `purpose`: what the space is for, in the pick's title — "Volcanic Style (Place a Trap)".
-async function selectSpaces(sel, scope, ctx, from, { optional = false, purpose = null } = {}) {
+async function selectSpaces(rawSel, scope, ctx, from, { optional = false, purpose = null } = {}) {
+  const sel = { ...rawSel, range: resolveRange(rawSel.range, scope) };
   const { world } = ctx;
   if (!world.spaces) throw new Unsupported('spaces');
   // "A space adjacent to the target" (phase H): measured from the bound one.
@@ -703,8 +712,18 @@ function nearAnchor(sel, anchor, sq) {
   return sel.range.mode === 'adjacent_to_binding' ? d === 1 : d <= 1;
 }
 
+// A range whose bounds are refs ("Range 1-X", Brambles: X is the destroyed
+// Shield's value) — evaluated now, so the board compares numbers.
+function resolveRange(range, scope) {
+  if (!range || typeof range !== 'object') return range;
+  const num = (v) => (v != null && typeof v === 'object' ? Number(evalValue(v, scope)) : v);
+  if (typeof range.minimum !== 'object' && typeof range.maximum !== 'object') return range;
+  return { ...range, minimum: num(range.minimum), maximum: num(range.maximum) };
+}
+
 // The candidates a selector allows, and the pick when one is needed.
-async function select(sel, scope, ctx, label = 'a target') {
+async function select(rawSel, scope, ctx, label = 'a target') {
+  const sel = { ...rawSel, range: resolveRange(rawSel.range, scope) };
   const { world } = ctx;
   const self = scope.self;
   // Acting from one of your Copies (phase E): ranges count from its square;
@@ -760,12 +779,23 @@ async function select(sel, scope, ctx, label = 'a target') {
     ctx.log?.(`${must.name} must be the target (Challenge)`);
     return [must];
   }
+  // **Picked on the board (decided, batch 3):** each option carries its square,
+  // and `area` is the Range it's picked in — the client shades the Range red,
+  // the legal targets brighter, and a tap picks (the list stays a fallback).
+  const AREA_MODES = new Set(['stance', 'explicit', 'adjacent']);
+  const area = AREA_MODES.has(sel.range?.mode ?? 'stance') && world.spaces ? world.spaces(from, sel.range ?? { mode: 'stance' }, {}).map((sq) => ({ col: sq.col, row: sq.row })) : null;
   const answer = await ctx.ask({
     kind: 'targets',
     fighter: self,
     title: ctx.ability?.name ?? 'Choose',
     text: `Choose ${maximum === 1 ? label : `up to ${maximum}`}${must ? ` — ${must.name} must be one (Challenge)` : ''}.`,
-    options: pool.map((f) => ({ id: String(f.id), label: f.isObstacle || f.isCopy ? `${f.name} (${f.square.col},${f.square.row})` : f.name })),
+    mode: world.mode ?? null,
+    area,
+    options: pool.map((f) => ({
+      id: String(f.id),
+      label: f.isObstacle || f.isCopy ? `${f.name} (${f.square.col},${f.square.row})` : f.name,
+      ...(f.square ? { col: f.square.col, row: f.square.row } : {}),
+    })),
     minimum: Math.max(minimum, must ? 1 : 0),
     maximum,
     required: must ? [String(must.id)] : [],

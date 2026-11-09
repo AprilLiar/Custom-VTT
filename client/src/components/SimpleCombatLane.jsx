@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import CopyLayer from './CopyLayer.jsx';
 import SquarePickLayer from './SquarePickLayer.jsx';
+import ActiveRangeLayer from './ActiveRangeLayer.jsx';
+import PickViewLayer from './PickViewLayer.jsx';
+import { isChoosing, pickAt, useChoosing } from '../lib/squarePick.js';
 import { socket } from '../socket.js';
 import { laneGeometry, laneLinesPath, moveOnLane, pointsAttr, slotAt } from '../lib/simpleLane.js';
 import FighterOverlay, { ArmorRings, ChallengeLock } from './FighterOverlay.jsx';
@@ -47,7 +50,12 @@ export default function SimpleCombatLane({
 }) {
   // The miniature whose token panel is open (Phase 4). Click opens, drag closes.
   const [selectedSummonId, setSelectedSummonId] = useState(null);
-  const onSelect = (s) => setSelectedSummonId(s.id);
+  // No figure menu while any choice is open (decided, batch 3).
+  const choosing = useChoosing();
+  const onSelect = (s) => !isChoosing() && setSelectedSummonId(s.id);
+  useEffect(() => {
+    if (choosing) setSelectedSummonId(null);
+  }, [choosing]);
   // Each picture's height / width, once loaded — so a fighter's token row
   // sits just above their head rather than at the tallest a picture could be.
   const [aspects, setAspects] = useState({});
@@ -90,6 +98,9 @@ export default function SimpleCombatLane({
   const onPointerDown = (e, s) => {
     if (e.button !== 0) return;
     e.stopPropagation();
+    // A legal square of the open pick under this figure: the tap is the pick's.
+    const slot = placed.get(s.id);
+    if (slot != null && pickAt('simple', slot % 10, Math.floor(slot / 10))) return;
     if (!canDrag(s)) {
       onSelect?.(s);
       return;
@@ -208,6 +219,8 @@ export default function SimpleCombatLane({
       {/* Copies (phase E), on their lane spaces. */}
       <CopyLayer copies={tiles.filter((t) => t.kind === 'copy')} quadOf={tileQuadOf} ownerOf={(id) => summons.find((s) => s.fight?.combatant_id === id) ?? null} zIndex={2} />
       {/* Spaces to pick (phase D): space = lane × 10 + column. */}
+      <ActiveRangeLayer mode="simple" active={activeCombatantId != null} quadOf={(col, row) => geometry.segments[row * 10 + col]?.points ?? null} width={stageWidth} height={stageHeight} zIndex={2} />
+      <PickViewLayer mode="simple" quadOf={(col, row) => geometry.segments[row * 10 + col]?.points ?? null} width={stageWidth} height={stageHeight} zIndex={2} />
       <SquarePickLayer mode="simple" quadOf={(col, row) => geometry.segments[row * 10 + col]?.points ?? null} width={stageWidth} height={stageHeight} zIndex={2} />
       {/* Above the lane lines, below every miniature. */}
       <MapTileLayer
@@ -273,7 +286,7 @@ export default function SimpleCombatLane({
           const ownerKey = s.character_id != null ? `character:${s.character_id}` : `temp_npc:${s.temp_npc_id}`;
           return (
             <div key={`o${s.id}`}>
-              <ArmorRings center={box.base.center} rx={box.base.rx * 1.08} ry={box.base.ry * 1.25} gap={5} rings={armorRings(s.fight, setup[ownerKey], armorUsed[s.fight.combatant_id] ?? 0)} />
+              <ArmorRings center={box.base.center} rx={box.base.rx * 1.16} ry={box.base.ry * 1.4} gap={7} rings={armorRings(s.fight, setup[ownerKey], armorUsed[s.fight.combatant_id] ?? 0)} />
               {/* Only during the Challenge holder's own turn (decided). */}
               {target && activeCombatantId != null && s.fight.combatant_id === activeCombatantId && (
                 <ChallengeLock from={box.mid} to={target.mid} radius={target.icon * 1.4} />

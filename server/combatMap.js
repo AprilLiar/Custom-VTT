@@ -137,12 +137,13 @@ export function registerCombatMapHandlers({ on: onRaw, socket, mayWrite, emitSta
     await emitStageUpdated();
   });
 
-  // A new copy of a fighter on a free cell of the active Scene's map.
+  // A new copy of a fighter on a free cell of the active Scene's map. **The GM
+  // places every token (decided, revised):** Players move their own, never place.
   on('combat_token:place', async ({ ownerType, ownerId, col, row }) => {
     const id = Number(ownerId);
     // Characters only: Temp NPCs take no part in combat (decided).
     if (ownerType !== 'character' || !Number.isInteger(id)) return;
-    if (!mayWrite(viewer(), ownerType, id) || !validCell(col, row)) return;
+    if (viewer()?.role !== 'gm' || !validCell(col, row)) return;
     const sceneId = await activeSceneId();
     if (!sceneId) return;
     const table = ownerType === 'character' ? 'characters' : 'temp_npcs';

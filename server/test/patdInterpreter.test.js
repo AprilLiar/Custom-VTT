@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { patdContent } from '../patdContent.js';
-import { lineOfSight, ruleSupport, runRule, targetable } from '../../client/src/lib/patd/interpreter.js';
+import { describe, lineOfSight, ruleSupport, runRule, targetable } from '../../client/src/lib/patd/interpreter.js';
 
 const idx = patdContent();
 const rulesOf = (abilityId, event) => idx.get(abilityId).rules.filter((r) => r.events.includes(event));
@@ -413,4 +413,21 @@ test("a Challenge the Shield blocked: not given, no follow-on; Decoy heals the a
   for (const id of ['ability.style-armored.armored-style', 'ability.style-judgment.judgment-style', 'ability.style-shining.shining-style', 'ability.style-quickdraw.quickdraw-style', 'ability.style-crying.crying-style', 'ability.style-taunting.taunting-style']) {
     for (const r of rulesOf(id, 'enemy.removed_own_challenge_by_enemy_action_or_ability')) assert.ok(ruleSupport(r).ok, `${r.id}: ${ruleSupport(r).reason}`);
   }
+});
+
+test('Brambles: "Range 1-X" with X the destroyed Shield is evaluated — it hits; the choices name their obstacles', async () => {
+  const me = fighter(1, 'a', { square: { col: 0, row: 0 } });
+  const near = fighter(2, 'b', { square: { col: 1, row: 1 } });
+  const far = fighter(3, 'b', { square: { col: 4, row: 0 } });
+  const { w } = makeWorld([me, near, far]);
+  w.inRange = (from, to, range) => targetable({ from: from.square, to: to.square, range, stanceRange: { minimum: 1, maximum: 1 }, walls: new Set(), fogged: () => false, enemy: true });
+  const effect = idx.get('action.form-thorns.brambles').effect;
+  const asked = [];
+  await runRule({ id: 'b', events: ['own_turn.start'], effect }, { world: w, self: me, state: {}, usage: {}, log: () => {}, payment: { destroyedShieldValue: 2 }, ask: async (q) => (asked.push(q), q.options.map((o) => o.id)) });
+  assert.deepEqual(asked[0]?.options.map((o) => o.id), ['2'], 'within Range 1-2: the diagonal neighbour (2), not the one 4 away');
+  assert.equal(near.hp, 9);
+  assert.equal(far.hp, 10);
+  assert.equal(me.tokens.power, 1);
+  const mysterious = rulesOf('ability.build-mysterious.mysterious-build', 'own_turn.start')[0];
+  assert.deepEqual(mysterious.effect.options.map((o) => describe(o.effect)), ['place Copy', 'place Fog']);
 });

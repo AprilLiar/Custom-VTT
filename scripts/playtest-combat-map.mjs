@@ -91,10 +91,14 @@ console.log('\n--- placing ---');
 gm.emit('combat_token:place', { ownerType: 'character', ownerId: goon.id, col: 2, row: 2 });
 gm.emit('combat_token:place', { ownerType: 'character', ownerId: goon.id, col: 3, row: 2 });
 gm.emit('combat_token:place', { ownerType: 'temp_npc', ownerId: temp.id, col: 5, row: 2 });
-p.emit('combat_token:place', { ownerType: 'character', ownerId: mira.id, col: 4, row: 4 });
+// The GM places every token (decided, batch 3): a Player can't, not even their own.
+p.emit('combat_token:place', { ownerType: 'character', ownerId: mira.id, col: 4, row: 5 });
+await sleep(400);
+check("a Player can't place a token, not even their own", !(await stage()).combatTokens.some((t) => t.character_id === mira.id));
+gm.emit('combat_token:place', { ownerType: 'character', ownerId: mira.id, col: 4, row: 4 });
 await sleep(500);
 st = await stage();
-check('the GM places two copies of one NPC (a Temp NPC is refused: no Temp NPCs in combat); a Player places their own character',
+check('the GM places two copies of one NPC (a Temp NPC is refused: no Temp NPCs in combat) and the Player’s character',
   st.combatTokens.length === 3 && st.combatTokens.filter((t) => t.character_id === goon.id).length === 2 && !st.combatTokens.some((t) => t.temp_npc_id != null), JSON.stringify(st.combatTokens));
 p.emit('combat_token:place', { ownerType: 'character', ownerId: bo.id, col: 6, row: 6 });
 p.emit('combat_token:place', { ownerType: 'character', ownerId: goon.id, col: 6, row: 6 });

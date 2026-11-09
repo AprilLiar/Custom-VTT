@@ -28,3 +28,27 @@ const subscribe = (fn) => {
   return () => subs.delete(fn);
 };
 export const useSquarePick = () => useSyncExternalStore(subscribe, getSquarePick, getSquarePick);
+
+// A tap on a fighter's token (or base) standing on a legal square of the open
+// pick goes to the pick, never to the token (decided, batch 3): a target is
+// picked by tapping it, and "act from" a Copy's or your own square works even
+// though a token sits there. → true when the tap was the pick's.
+export function pickAt(mode, col, row) {
+  if (!current || current.mode !== mode || col == null || row == null) return false;
+  const o = current.options.find((x) => x.col === col && x.row === row);
+  if (!o) return false;
+  current.onPick(o.id);
+  return true;
+}
+
+// **While any choice is open, no token menu opens (decided, batch 3).** The
+// engine's prompts this client holds (TriggerPrompts reports them) plus an
+// open square pick.
+let promptsOpen = 0;
+export function setPromptsOpen(n) {
+  if (n === promptsOpen) return;
+  promptsOpen = n;
+  emit();
+}
+export const isChoosing = () => promptsOpen > 0 || current != null;
+export const useChoosing = () => useSyncExternalStore(subscribe, isChoosing, isChoosing);

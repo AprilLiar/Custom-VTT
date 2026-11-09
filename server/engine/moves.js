@@ -324,18 +324,22 @@ export function createMoves({ ask, emitEvent, postCard }) {
     const r = freeMoveReach(b, f.square, f.tokens.speed ?? 0, f.id, opts).get(key(to));
     if (!r) return { error: 'out of reach' };
     let path = r.path;
-    if ((f.tokens.fatigue ?? 0) > 0) {
+    const from = f.square;
+    const fatigued = (f.tokens.fatigue ?? 0) > 0;
+    if (fatigued) {
       await env.world.discardTokens(f, ['fatigue'], 1);
       path = path.slice(0, Math.max(0, path.length - 2));
       note(`${f.name} is Fatigued: discards 1, moves 2 less`);
     }
     const cost = pathCost(b, f.square, path, opts);
     if (cost) await env.world.discardTokens(f, ['speed'], cost);
+    // What an undo puts back (batch 3) — only a clean move: no Trap or Rubble crossed.
+    const clean = !path.some((sq) => has(b, sq, 'trap') || has(b, sq, 'rubble'));
     await walk(env, m, f, path, { kind: 'free' });
     if (path.length) note(`${f.name} moves to ${squareName(m.mode, path.at(-1))} (${cost} Speed)`);
     await fire(env, 'self.movement.finished', f, { square: f.square, free: true });
     await flush('Free Movement', f);
-    return { ok: true, square: f.square, cost };
+    return { ok: true, square: f.square, cost, undo: path.length ? { from, cost, fatigue: fatigued ? 1 : 0, clean } : null };
   }
 
   // 2 Speed: swap spaces with an adjacent ally (Free Movement and a swap).

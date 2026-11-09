@@ -8,10 +8,18 @@ export default function SquarePickLayer({ mode, quadOf, width, height, zIndex = 
   const pick = useSquarePick();
   if (!pick || pick.mode !== mode) return null;
   const move = pick.tone === 'move';
-  const fill = move ? 'rgba(56,189,248,0.32)' : 'rgba(190,242,100,0.34)';
-  const stroke = move ? '#38bdf8' : '#bef264';
+  const target = pick.tone === 'target';
+  const fill = move ? 'rgba(56,189,248,0.32)' : target ? 'rgba(239,68,68,0.5)' : 'rgba(190,242,100,0.34)';
+  const stroke = move ? '#38bdf8' : target ? '#fca5a5' : '#bef264';
+  const poly = (q) => q.map((p) => p.join(',')).join(' ');
   return (
     <svg className="pointer-events-none absolute inset-0" width={width} height={height} style={{ zIndex }} aria-label={pick.title ?? 'Pick a square'}>
+      {/* A target pick's Range (batch 3): faint red under the targets. */}
+      {target &&
+        (pick.area ?? []).map((sq) => {
+          const q = quadOf(sq.col, sq.row);
+          return q ? <polygon key={`a${sq.col},${sq.row}`} points={poly(q)} fill="rgba(239,68,68,0.16)" stroke="rgba(239,68,68,0.35)" strokeWidth="1" /> : null;
+        })}
       {pick.options.map((o) => {
         if (o.col == null) return null;
         const q = quadOf(o.col, o.row);
@@ -31,7 +39,7 @@ export default function SquarePickLayer({ mode, quadOf, width, height, zIndex = 
               pick.onPick(o.id);
             }}
           >
-            <polygon points={q.map((p) => p.join(',')).join(' ')} fill={fill} stroke={stroke} strokeWidth="2">
+            <polygon points={poly(q)} fill={o.selected ? 'rgba(220,38,38,0.72)' : fill} stroke={o.selected ? '#fff' : stroke} strokeWidth={o.selected ? 3 : 2}>
               <animate attributeName="opacity" values="0.75;1;0.75" dur="1.6s" repeatCount="indefinite" />
             </polygon>
             {o.cost != null && (

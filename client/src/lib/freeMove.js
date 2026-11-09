@@ -24,6 +24,8 @@ export function startFreeMove({ combatantId, name, inPhase = false, onError = nu
         inPhase,
         speed: r.speed,
         fatigued: r.fatigued,
+        // The back arrow (batch 3): the last move can be taken back.
+        canUndo: Boolean(r.canUndo),
         swaps: r.swaps ?? [],
         options: r.options.map((o) => ({ ...o, label: o.id, title: `${o.cost} Speed${o.note ? ` · ${o.note}` : ''}` })),
         onPick: (id) => {
@@ -46,9 +48,20 @@ socket.on('stage:updated', () => {
   if (pick?.tone === 'move') pick.refresh();
 });
 
+// Take back the last Free Movement: back where they stood, Speed refunded.
+export function undoFreeMove(onError = null) {
+  const pick = getSquarePick();
+  if (pick?.tone !== 'move') return;
+  socket.emit('move:undo', { combatantId: pick.combatantId }, (r) => {
+    if (r?.error) onError?.(r.error);
+    else pick.refresh();
+  });
+}
+
 export function stopFreeMove(done = false) {
   const pick = getSquarePick();
   if (pick?.tone !== 'move') return;
   if (done && pick.inPhase) socket.emit('move:done', { combatantId: pick.combatantId });
+  socket.emit('move:view_end', { combatantId: pick.combatantId });
   clearSquarePick(pick.key);
 }

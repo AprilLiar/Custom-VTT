@@ -114,7 +114,24 @@ export default function DiceBoard({ payload, onClose, canEdit }) {
     setToast(text);
     setTimeout(() => setToast((t) => (t === text ? null : t)), 2600);
   };
-  const emit = (ev, extra = {}) => socket.emit(ev, { rollId: payload.roll_id, ...extra });
+  const emit = (ev, extra = {}) => {
+    // The Action a place is for: a refusal from the server flashes its card.
+    if (ev === 'board:place' && extra.actionId) lastTry.current = { id: extra.actionId, at: Date.now() };
+    socket.emit(ev, { rollId: payload.roll_id, ...extra });
+  };
+  // **A refused Action shakes (decided):** its card flashes red and shudders,
+  // besides the note at the bottom.
+  const [refused, setRefused] = useState(null); // { id, n }
+  const lastTry = useRef(null);
+  const refuse = (actionId, text) => {
+    say(text);
+    if (actionId) setRefused((r) => ({ id: actionId, n: (r?.n ?? 0) + 1 }));
+  };
+  useEffect(() => {
+    if (!refused) return undefined;
+    const t = setTimeout(() => setRefused((r) => (r === refused ? null : r)), 700);
+    return () => clearTimeout(t);
+  }, [refused]);
 
   // The fighter's live state, for token costs; refreshed whenever the table changes.
   useEffect(() => {
@@ -127,7 +144,11 @@ export default function DiceBoard({ payload, onClose, canEdit }) {
     load();
     socket.on('stage:updated', load);
     socket.on('dice:marks', load);
-    const onFailed = ({ rollId, error }) => rollId === payload.roll_id && say(`Can't: ${error}.`);
+    const onFailed = ({ rollId, error }) => {
+      if (rollId !== payload.roll_id) return;
+      const recent = lastTry.current && Date.now() - lastTry.current.at < 4000 ? lastTry.current.id : null;
+      refuse(recent, `Can't: ${error}.`);
+    };
     socket.on('dice:pay_failed', onFailed);
     return () => {
       alive = false;
@@ -186,7 +207,7 @@ export default function DiceBoard({ payload, onClose, canEdit }) {
     const action = idx?.get(actionId);
     if (!action) return;
     // A Super Move: this number and a free one matching it (the server pairs them).
-    if (!isSuperMove(action) && !hasDiceCost(action)) return say(`${action.name} is paid with ${optionLabel(tokenOptions(action)[0]?.option ?? { components: [] })}, not dice.`);
+    if (!isSuperMove(action) && !hasDiceCost(action)) return refuse(actionId, `${action.name} is paid with ${optionLabel(tokenOptions(action)[0]?.option ?? { components: [] })}, not dice.`);
     emit('board:place', { die: i, actionId });
     setSelected(null);
   };
@@ -215,7 +236,7 @@ export default function DiceBoard({ payload, onClose, canEdit }) {
     if (!tokenOptions(action).length) return;
     if (!free) return say('Reading your tokens…');
     const options = affordableOptions(action, free);
-    if (!options.length) return say(`Not enough for ${action.name}: needs ${tokenOptions(action).map((o) => optionLabel(o.option)).join(' or ')}.`);
+    if (!options.length) return refuse(actionId, `Not enough for ${action.name}: needs ${tokenOptions(action).map((o) => optionLabel(o.option)).join(' or ')}.`);
     if (options.length === 1 && !options[0].choices.length) return emit('board:place', { actionId, option: options[0].index, answers: {} });
     setPaying({ action, options });
   };
@@ -279,7 +300,12 @@ export default function DiceBoard({ payload, onClose, canEdit }) {
     const paid = on.filter((p) => p.kind === 'token').map((p) => `#${orderOf(p.key)} ${p.text ?? ''}${p.committed ? ' ✓' : ''}`);
     const tappable = editable && !busy && (selected != null || tokenOptions(action).length > 0);
     return (
-      <div key={id} onClick={() => tapAction(id)} className={tappable ? 'cursor-pointer' : ''} {...hoverHandlers(id)}>
+      <div
+        key={refused?.id === id ? `${id}-r${refused.n}` : id}
+        onClick={() => tapAction(id)}
+        className={`${tappable ? 'cursor-pointer' : ''} ${refused?.id === id ? 'action-refused' : ''}`}
+        {...hoverHandlers(id)}
+      >
         <ActionCard
           preview={previewFor(id)}
           action={action}
@@ -306,7 +332,7 @@ export default function DiceBoard({ payload, onClose, canEdit }) {
       if (!editable || busy) return;
       if (selected != null) return place(selected, id);
       if (open) return emit('board:unplace', { key: open.key });
-      say(`${move.name}: pick one of two matching numbers (3 or higher) first.`);
+      refuse(id, `${move.name}: pick one of two matching numbers (3 or higher) first.`);
     };
     return (
       <div
@@ -314,7 +340,7 @@ export default function DiceBoard({ payload, onClose, canEdit }) {
         data-action-id={id}
         onClick={tap}
         {...hoverHandlers(id)}
-        className={`${editable && !busy ? 'cursor-pointer' : ''} ${previewFor(id) === true ? 'outline outline-2 outline-offset-1 outline-sky-400' : previewFor(id) === false ? 'outline outline-2 outline-offset-1 outline-red-500' : ''}`}
+        className={`${refused?.id === id ? 'action-refused' : ''} ${editable && !busy ? 'cursor-pointer' : ''} ${previewFor(id) === true ? 'outline outline-2 outline-offset-1 outline-sky-400' : previewFor(id) === false ? 'outline outline-2 outline-offset-1 outline-red-500' : ''}`}
       >
         <SuperMoveCard move={move} compact />
         {on.length > 0 && (

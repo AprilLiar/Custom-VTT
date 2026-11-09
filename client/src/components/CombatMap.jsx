@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import CopyLayer from './CopyLayer.jsx';
 import SquarePickLayer from './SquarePickLayer.jsx';
+import ActiveRangeLayer from './ActiveRangeLayer.jsx';
+import PickViewLayer from './PickViewLayer.jsx';
+import { isChoosing, pickAt, useChoosing } from '../lib/squarePick.js';
 import { Maximize2, Minus, Plus, X } from 'lucide-react';
 import { socket } from '../socket.js';
 import {
@@ -56,7 +59,13 @@ export default function CombatMap({
 }) {
   // The token whose panel is open (Phase 4). A click opens it; a drag closes it.
   const [selectedTokenId, setSelectedTokenId] = useState(null);
-  const onSelect = (t) => setSelectedTokenId(t.id);
+  // No token menu while any choice is open (decided, batch 3) — and one open
+  // when a choice starts closes.
+  const choosing = useChoosing();
+  const onSelect = (t) => !isChoosing() && setSelectedTokenId(t.id);
+  useEffect(() => {
+    if (choosing) setSelectedTokenId(null);
+  }, [choosing]);
   const rootRef = useRef(null);
   const [natural, setNatural] = useState({ width: 0, height: 0 });
   const src = scene?.combat_image_url ?? null;
@@ -199,6 +208,8 @@ export default function CombatMap({
   const onTokenDown = (e, t) => {
     if (e.button !== 0) return;
     e.stopPropagation();
+    // A legal square of the open pick under this token: the tap is the pick's.
+    if (pickAt('combat', t.col, t.row)) return;
     if (!canDrag(t)) {
       onSelect?.(t);
       return;
@@ -383,6 +394,8 @@ export default function CombatMap({
         />
       )}
       {/* Squares to pick (phase D): above the tiles, below the tokens. */}
+      {ready && <ActiveRangeLayer mode="combat" active={activeCombatantId != null && active} quadOf={tileQuadOf} width={stageWidth} height={stageHeight} zIndex={6} />}
+      {ready && <PickViewLayer mode="combat" quadOf={tileQuadOf} width={stageWidth} height={stageHeight} zIndex={7} />}
       {ready && <SquarePickLayer mode="combat" quadOf={tileQuadOf} width={stageWidth} height={stageHeight} zIndex={8} />}
 
       {ready && (
@@ -454,7 +467,7 @@ export default function CombatMap({
             const challenger = fight?.challenge_id != null ? byId.get(fight.challenge_id) : null;
             return (
               <div key={`o${t.id}`}>
-                {fight && <ArmorRings center={center} rx={tokenSize / 2 + 3} rings={armorRings(fight, setup[`${t.owner_type}:${t.owner_id}`], armorUsed[t.id] ?? 0)} />}
+                {fight && <ArmorRings center={center} rx={tokenSize / 2 + 6} gap={6} rings={armorRings(fight, setup[`${t.owner_type}:${t.owner_id}`], armorUsed[t.id] ?? 0)} />}
                 {/* Only during the Challenge holder's own turn (decided). */}
                 {challenger && activeCombatantId === t.id && (
                   <ChallengeLock from={center} to={centers.get(challenger.id)} radius={tokenSize / 2} />
@@ -536,7 +549,9 @@ export function Token({ token, center, size, lifted = false, animate = true, sel
           </span>
         )}
       </div>
-      {canEdit && !lifted && token.id != null && (
+      {/* Only once the token is tapped (decided): on a phone there's no hover,
+          and an always-visible ✕ was too easy to hit by accident. */}
+      {canEdit && !lifted && token.id != null && selected && (
         <button
           type="button"
           title={`Remove ${token.name} from the map`}
@@ -545,7 +560,7 @@ export function Token({ token, center, size, lifted = false, animate = true, sel
             e.stopPropagation();
             socket.emit('combat_token:remove', { combatantId: token.id });
           }}
-          className="hover-only-action absolute -right-1 -top-1 flex h-5 w-5 items-center justify-center rounded-full border border-zinc-600 bg-zinc-900/90 text-zinc-300 opacity-0 transition-opacity hover:text-red-400 group-hover:opacity-100"
+          className="absolute -right-1 -top-1 flex h-5 w-5 items-center justify-center rounded-full border border-zinc-600 bg-zinc-900/90 text-zinc-300 hover:text-red-400"
         >
           <X size={12} aria-hidden />
         </button>

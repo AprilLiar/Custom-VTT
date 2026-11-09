@@ -4,8 +4,8 @@ import { socket } from '../socket.js';
 import { cropOf } from '../lib/imageCrop.js';
 import CroppedImage from './CroppedImage.jsx';
 import DialogShell from './DialogShell.jsx';
-import { clearSquarePick, setSquarePick, useSquarePick } from '../lib/squarePick.js';
-import { startFreeMove, stopFreeMove } from '../lib/freeMove.js';
+import { clearSquarePick, setPromptsOpen, setSquarePick, useSquarePick } from '../lib/squarePick.js';
+import { startFreeMove, stopFreeMove, undoFreeMove } from '../lib/freeMove.js';
 import DiceBoard from './actions/DiceBoard.jsx';
 
 // A fight's controls (Panic at the Dojo, Phase 5), for whichever fight the
@@ -402,10 +402,83 @@ export function TriggerPrompts() {
       socket.off('trigger:resolved', onResolved);
     };
   }, []);
+  // While any is open, no token menu opens (batch 3).
+  useEffect(() => {
+    setPromptsOpen(prompts.length);
+  }, [prompts.length]);
+  useEffect(() => () => setPromptsOpen(0), []);
   const p = prompts[0];
   if (!p) return null;
   if (p.kind === 'square') return <SquarePromptBar key={p.id} prompt={p} />;
+  // **Targets on the board (decided, batch 3):** when the targets stand on
+  // the board, they're tapped there — no list.
+  if (p.kind === 'targets' && p.mode && (p.options ?? []).some((o) => o.col != null)) return <TargetPromptBar key={p.id} prompt={p} />;
   return <TriggerPromptDialog key={p.id} prompt={p} />;
+}
+
+// **Picking targets on the board (decided, batch 3).** The Range shows faint
+// red, each legal target brighter red; a tap picks it, as if from the list.
+// One target: the tap answers. Several: taps toggle, then Done. Targets not on
+// the board (none usually) are buttons in the bar. A required one (the
+// Challenger) starts picked and stays.
+function TargetPromptBar({ prompt }) {
+  const required = useMemo(() => (prompt.required ?? []).map(String), [prompt.required]);
+  const single = (prompt.maximum ?? 1) === 1 && !required.length;
+  const [chosen, setChosen] = useState(required);
+  const answer = (value) => socket.emit('trigger:answer', { id: prompt.id, answer: value });
+  const toggle = (id) => {
+    if (single) return answer([id]);
+    setChosen((list) => (list.includes(id) ? (required.includes(id) ? list : list.filter((x) => x !== id)) : list.length >= (prompt.maximum ?? 1) ? list : [...list, id]));
+  };
+  const onBoard = (prompt.options ?? []).filter((o) => o.col != null);
+  const offBoard = (prompt.options ?? []).filter((o) => o.col == null);
+  useEffect(() => {
+    setSquarePick({
+      key: prompt.id,
+      tone: 'target',
+      mode: prompt.mode,
+      title: prompt.title,
+      area: prompt.area ?? [],
+      options: onBoard.map((o) => ({ ...o, selected: chosen.includes(o.id) })),
+      onPick: toggle,
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prompt.id, chosen]);
+  useEffect(() => () => clearSquarePick(prompt.id), [prompt.id]);
+  const min = Math.max(prompt.minimum ?? 0, required.length);
+  return (
+    <div className={`${topBarShell} max-w-md border-red-500`} style={{ zIndex: 3100, ...topStyle }} role="dialog" aria-label={`${prompt.fighterName}: ${prompt.title}`}>
+      <div className="flex items-center gap-2">
+        <p className="min-w-0 flex-1 truncate font-display text-xs font-bold uppercase tracking-wide text-red-200" title={prompt.text}>
+          {prompt.title} · {single ? 'tap a target' : `${chosen.length}/${prompt.maximum} picked`}
+        </p>
+        {!single && (
+          <button
+            type="button"
+            disabled={chosen.length < min}
+            onClick={() => answer(chosen)}
+            className="min-h-7 shrink-0 panel-cut-sm border border-red-400 bg-red-500/20 px-2 font-display text-[11px] font-bold uppercase text-red-100 disabled:opacity-40"
+          >
+            Done
+          </button>
+        )}
+        {min === 0 && (
+          <button type="button" onClick={() => answer([])} className="min-h-7 shrink-0 panel-cut-sm border border-zinc-700 px-2 text-[11px] text-zinc-300 hover:border-red-400">
+            Skip
+          </button>
+        )}
+      </div>
+      {offBoard.length > 0 && (
+        <div className="mt-1 flex flex-wrap gap-1">
+          {offBoard.map((o) => (
+            <button key={o.id} type="button" onClick={() => toggle(o.id)} className={`${barButton} ${chosen.includes(o.id) ? 'border-red-400 bg-red-500/20' : ''}`}>
+              {o.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 // **A square pick (phase D; revised, decided):** the legal squares glow on the
@@ -445,11 +518,25 @@ function SquarePromptBar({ prompt }) {
 // their Speed cost; this bar says how much Speed is left and ends it.
 export function MoveBar() {
   const pick = useSquarePick();
+  const [error, setError] = useState(null);
+  useEffect(() => setError(null), [pick?.key, pick?.canUndo]);
   if (pick?.tone !== 'move') return null;
   return (
     <div className={`${topBarShell} border-sky-500`} style={{ zIndex: 3050, ...topStyle }} role="dialog" aria-label={pick.title}>
       {/* Slim, at the top (decided): the squares show their own Speed costs. */}
       <div className="flex items-center gap-2">
+        {/* The back arrow (decided, batch 3): take back the last move, Speed refunded, until an Action resolves. */}
+        {pick.canUndo && (
+          <button
+            type="button"
+            onClick={() => undoFreeMove(setError)}
+            title="Take back the last move (Speed refunded)"
+            aria-label="Take back the last move"
+            className="flex h-7 w-7 shrink-0 items-center justify-center panel-cut-sm border border-sky-400 bg-sky-500/10 text-sky-100 hover:bg-sky-500/30"
+          >
+            <ArrowLeft size={14} aria-hidden />
+          </button>
+        )}
         <p className="min-w-0 flex-1 truncate font-display text-xs font-bold uppercase tracking-wide text-sky-200">
           {pick.title} · {pick.speed} Speed
           {pick.fatigued ? ' · Fatigued (2 less)' : ''}
@@ -459,6 +546,7 @@ export function MoveBar() {
           Done
         </button>
       </div>
+      {error && <p className="mt-1 text-[11px] text-red-300">Can't take it back: {error}.</p>}
       {pick.swaps.length > 0 && (
         <div className="mt-1 flex flex-wrap gap-1">
           {pick.swaps.map((a) => (

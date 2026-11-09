@@ -38,7 +38,7 @@ import SceneChat from './SceneChat.jsx';
 import SimpleCombatLane from './SimpleCombatLane.jsx';
 import { MapTilePalette } from './MapTiles.jsx';
 import CombatMap from './CombatMap.jsx';
-import { CombatFightersDrawer, CombatMapDrawer, PlayerTokenDock } from './CombatDrawers.jsx';
+import { CombatFightersDrawer, CombatMapDrawer } from './CombatDrawers.jsx';
 import { FightSetupDialog, InitiativeRail, InterruptBar, InterruptLock, MoveBar, MovementPhaseBar, StancePrompt, StartCombatButton, TriggerPrompts } from './FightControls.jsx';
 import { turnsPerRound } from '../lib/hpBars.js';
 import { WEIGHT_BY_KEY } from '../lib/cinematicWeight.js';
@@ -428,7 +428,6 @@ export default function ScenePage() {
             <div style={{ display: isCombat ? 'contents' : 'none' }}>
               {role === 'gm' && <CombatFightersDrawer />}
               {role === 'gm' && <CombatMapDrawer scene={activeScene} tokenCount={combatTokens.length} />}
-              {role === 'player' && <PlayerTokenDock characters={controlled} />}
             </div>
           )}
           {(!isCombat || sceneSeen) && (

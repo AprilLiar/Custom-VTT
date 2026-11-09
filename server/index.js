@@ -1567,6 +1567,8 @@ io.on('connection', (socket) => {
     socket.emit('audio:state', await getAudioPayload());
     // Any turn-trigger prompt still waiting on this viewer.
     for (const p of triggerEngine().openPromptsFor(socket)) socket.emit('trigger:prompt', p);
+    // …and every open board pick, view-only, for everyone (a player monitor too).
+    for (const v of triggerEngine().openPickViews()) socket.emit('pick:view', v);
   });
 
   // **The Dice Tray** — one die of any size (d4-d12) plus the modifier typed

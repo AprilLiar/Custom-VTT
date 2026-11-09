@@ -80,11 +80,29 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
   let nextId = 1;
   const queued = (fn) => serialized(fn)();
 
+  // **Every board pick is shown to everyone (decided, batch 3 — the table
+  // shares a player monitor):** a square or target pick's squares and Range go
+  // to every socket as a view (`pick:view`); only whoever is asked can answer.
+  // `trigger:resolved` (io.emit) clears it.
+  const pickView = (prompt) =>
+    (prompt.kind === 'square' || prompt.kind === 'targets') && prompt.mode
+      ? {
+          id: prompt.id,
+          kind: prompt.kind,
+          mode: prompt.mode,
+          title: prompt.title,
+          fighterName: prompt.fighterName,
+          area: prompt.area ?? [],
+          options: (prompt.options ?? []).filter((o) => o.col != null).map((o) => ({ id: o.id, col: o.col, row: o.row })),
+        }
+      : null;
   const sendPrompt = (prompt) => {
     for (const s of io.sockets.sockets.values()) {
       const v = s.data?.identity;
       if (v?.role === 'gm' || controlsCharacter(v, prompt.characterId)) s.emit('trigger:prompt', prompt);
     }
+    const view = pickView(prompt);
+    if (view?.options.length) io.emit('pick:view', view);
   };
   // **Fight generations.** Ending or starting a fight on a Scene bumps its
   // generation: queued work from before is skipped, work already running stops
@@ -133,7 +151,10 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
         required: request.required ?? [],
         when: when ?? null,
         // A square pick (phase D): which board the options are squares of.
+        // A target pick (batch 3) too: its options carry their squares and
+        // `area` is the Range they're picked in (red on the board).
         mode: request.mode ?? null,
+        area: request.area ?? null,
       };
       const timer = setTimeout(() => finish(id, null), PROMPT_TIMEOUT_MS);
       pending.set(id, { resolve, prompt, timer, fightKey, tg });
@@ -1214,6 +1235,14 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     await queued(() => run("UPDATE dice_marks SET active = 0 WHERE roll_id LIKE ? AND combatant_id = ?", [`react-${fightRow.id}-%`, combatantId]));
     await emitStageUpdated();
   }
+  // Free Movement take-backs, per fighter (in memory; batch 3).
+  const freeUndo = new Map(); // `${fightId}:${combatantId}` → [{ from, cost, fatigue, clean, tg }]
+  const fightKeyOf = (fightRow) => `${fightRow.scene_id}:${fightRow.mode}`;
+  const undoKey = (fightRow, combatantId) => `${fightRow.id}:${combatantId}`;
+  const undoable = (fightRow, combatantId) => {
+    const last = (freeUndo.get(undoKey(fightRow, combatantId)) ?? []).at(-1);
+    return last && last.tg === turnGen(fightKeyOf(fightRow)) ? last : null;
+  };
   const onBoardChain = async (rollId, job) => {
     const { fight } = await runner.fightOfBoard(rollId);
     if (fight) onChain(fight, job);
@@ -1229,11 +1258,25 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
       idleHooks.push(hook);
     },
     // **Interrupts:** who can take a Reactive Action now, and with what.
+    // **The active fighter's attack range (decided, batch 3):** the squares
+    // their Stance reaches now (modifiers, Walls and Fog's sight included).
+    async activeRange(fightRow) {
+      const id = activeOf(fightRow);
+      if (id == null) return { combatantId: null, squares: [] };
+      const { world, byId } = await envFor(fightRow);
+      const f = byId(id);
+      if (!f?.square || !world.spaces) return { combatantId: id, squares: [] };
+      const squares = world.spaces(f, { mode: 'stance' }, {}).filter((sq) => sq.col !== f.square.col || sq.row !== f.square.row);
+      return { combatantId: id, squares: squares.map((sq) => ({ col: sq.col, row: sq.row })) };
+    },
     interruptOffers(fightRow) {
       return reactionOffers(fightRow, activeOf(fightRow));
     },
-    // Commit the placed Actions of a turn board, in order (phase B).
-    commitBoard(rollId) {
+    // Commit the placed Actions of a turn board, in order (phase B). An Action
+    // resolving ends every take-back of Free Movement in that fight.
+    async commitBoard(rollId) {
+      const { fight } = await runner.fightOfBoard(rollId);
+      if (fight) for (const k of [...freeUndo.keys()]) if (k.startsWith(`${fight.id}:`)) freeUndo.delete(k);
       return onBoardChain(rollId, () => runner.commitBoard(rollId));
     },
     // GM: undo a committed Action and every later one.
@@ -1244,7 +1287,10 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     async freeReach(fightRow, combatantId) {
       const { env, byId, movers, fighters } = await envFor(fightRow);
       const f = byId(combatantId);
+      const last = undoable(fightRow, combatantId);
       return {
+        // The back arrow (batch 3): their last Free Movement can be taken back.
+        canUndo: Boolean(last?.clean),
         mode: fightRow.mode,
         speed: f?.tokens.speed ?? 0,
         fatigued: (f?.tokens.fatigue ?? 0) > 0,
@@ -1264,10 +1310,42 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
         const { env, byId, movers } = await envFor(fightRow);
         env.when = 'Free Movement';
         const r = await moves.freeMove(env, movers, byId(combatantId), to);
+        if (r?.undo) {
+          const k = undoKey(fightRow, combatantId);
+          freeUndo.set(k, [...(freeUndo.get(k) ?? []), { ...r.undo, tg: turnGen(fightKeyOf(fightRow)) }]);
+        }
         await env.save();
         await emitStageUpdated();
         return r;
       });
+    },
+    // **The back arrow (decided, batch 3):** take back the last Free Movement —
+    // back to where they stood, the Speed (and Fatigue) refunded — until an
+    // Action is committed, they're Done, or the turn moves on. A move that
+    // crossed a Trap or Rubble can't be taken back (its harm is done).
+    undoFreeMove(fightRow, combatantId) {
+      return onChain(fightRow, async () => {
+        const k = undoKey(fightRow, combatantId);
+        const last = undoable(fightRow, combatantId);
+        if (!last) return { error: 'nothing to take back' };
+        if (!last.clean) return { error: 'that move crossed a Trap or Rubble' };
+        const { env, byId, movers } = await envFor(fightRow);
+        const f = byId(combatantId);
+        if (!f || !isEmptyAt(movers.board(), last.from, [f.id])) return { error: 'that space is taken now' };
+        await movers.setSquare(f, last.from);
+        await movers.writeTokens(f, (t) => {
+          t.speed = (t.speed ?? 0) + last.cost;
+          if (last.fatigue) t.fatigue = (t.fatigue ?? 0) + last.fatigue;
+        });
+        freeUndo.set(k, (freeUndo.get(k) ?? []).slice(0, -1));
+        await env.save();
+        await emitStageUpdated();
+        return { ok: true, square: last.from, refunded: last.cost };
+      });
+    },
+    // Done moving: nothing to take back any more.
+    endFreeMoves(fightRow, combatantId) {
+      freeUndo.delete(undoKey(fightRow, combatantId));
     },
     freeSwap(fightRow, combatantId, allyId) {
       return onChain(fightRow, async () => {
@@ -1337,6 +1415,10 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     openPromptsFor(socket) {
       const v = socket.data.identity;
       return [...pending.values()].map((p) => p.prompt).filter((p) => v?.role === 'gm' || controlsCharacter(v, p.characterId));
+    },
+    // The board picks open now, as everyone sees them (a reconnect catches up).
+    openPickViews() {
+      return [...pending.values()].map((p) => pickView(p.prompt)).filter((v) => v?.options.length);
     },
   };
 }
