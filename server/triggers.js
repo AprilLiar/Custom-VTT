@@ -35,9 +35,9 @@ import { createHits } from './engine/hits.js';
 import { createMoves } from './engine/moves.js';
 import { atZero, comebackSquares, reactionClusters, turnContext } from '../client/src/lib/patd/engine/turn.js';
 import { hasDiceCost } from '../client/src/lib/patd/tokenCost.js';
-import { ENGINE_NATIVE, continuousSupport } from '../client/src/lib/patd/coverage.js';
+import { ENGINE_NATIVE, continuousSupport, isIronAnySource } from '../client/src/lib/patd/coverage.js';
 import { addPoolValue, livePool, turnActions } from '../client/src/lib/patd/diceBoard.js';
-import { closeReactionBoards, fighterState, readData as readBoardData, saveBoard } from './diceMarks.js';
+import { fighterState, readData as readBoardData, saveBoard } from './diceMarks.js';
 
 // The combat map's image size, by image hash (its playable bounds — phase D).
 const imageSizes = new Map();
@@ -627,6 +627,8 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
       const ability = idx.get(abilityId);
       for (const rule of ability?.rules ?? []) {
         if (!rule.events.some((e) => events.includes(e))) continue;
+        // Iron Form's extra Iron is the damage step's own (engine/hits.js).
+        if (isIronAnySource(rule)) continue;
         await runOne(fighter, ability, rule, env, eventPayload, depth);
       }
     }
@@ -668,10 +670,15 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
       source: 'ability',
       unblockable: buildUnblockable(idx).has(ability.id) ? ['all'] : [],
     };
+    // What's moving people right now, for the square picks' titles ("One-Two Form (Move 2)").
+    const prevSource = env.source;
+    env.source = ability.name;
     try {
       await runRule(rule, ctx);
     } catch (err) {
       lines.push(`stopped: ${err.message}`);
+    } finally {
+      env.source = prevSource;
     }
     if (lines.length) {
       // Done for you: a notice (grey, fades fast — decided).
@@ -868,16 +875,19 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     // **Lasting rules left to people (phase J):** each fighter's continuous
     // rules the engine doesn't enforce, said once at the start of the fight,
     // so nothing is dropped silently (lib/patd/coverage.js).
+    // One card per Ability, with its rules text — the reminder itself (decided, fix).
     const idx = patdContent();
     for (const f of fighters) {
-      const names = [...new Set(f.abilityIds.filter((id) => !ENGINE_NATIVE.has(id) && (idx.get(id)?.rules ?? []).some((r) => r.events?.includes('continuous') && !continuousSupport(r).ok)).map((id) => idx.get(id).name))];
-      if (!names.length) continue;
-      await postCard('reminder', {
-        title: `${f.name} — by hand all fight`,
-        text: `Part of ${names.join(', ')} is not automated: keep it in mind.`,
-        fighters: [{ name: f.name }],
-        automatic: 'ability_manual',
-      });
+      const ids = [...new Set(f.abilityIds)].filter((id) => !ENGINE_NATIVE.has(id) && (idx.get(id)?.rules ?? []).some((r) => r.events?.includes('continuous') && !continuousSupport(r).ok));
+      for (const id of ids) {
+        const ability = idx.get(id);
+        await postCard('reminder', {
+          title: `${ability.name} — by hand all fight`,
+          text: ability.rulesText,
+          fighters: [{ name: f.name }],
+          automatic: 'ability_manual',
+        });
+      }
     }
     await env.save();
   }
@@ -1020,24 +1030,29 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     emitStageUpdated,
     emit: (ev, payload) => io.emit(ev, payload),
     queued,
-    // **Reactions (phase F):** after each of the active fighter's Actions.
-    openReactions: (fight, activeId) => openReactions(fight, activeId),
-    closeReactions: (fight) => closeReactions(fight),
+    // An Interrupt board is done after its one Reactive Action.
     reactionDone: (fight, row) => reactionDone(fight, row.combatant_id),
   });
 
-  // Everyone but the active fighter who can take a Reactive Action now, with
-  // the reactions on offer by resource (engine/turn.js). Not the Taken Out,
-  // not those out of play, not who already reacted in this window.
+  // **Interrupts (decided, revised — replaces the reaction windows):** every
+  // fighter but the active one who can take a Reactive Action right now, with
+  // what's on offer by resource (engine/turn.js reactionClusters): token
+  // Actions they can pay for and whose conditions and limits allow it now
+  // (Mentor's on allies' turns, "only during an enemy's turn" …), and dice
+  // Actions a Chaos token can pay "as if you had spent a 4" (once per turn).
+  // Taken Out or out of play: only Actions usable while Taken Out (the Mentor's).
   async function reactionOffers(fightRow, activeId, except = []) {
     const { env, fighters, byId } = await envFor(fightRow);
     const idx = patdContent();
     const active = byId(activeId);
     const offers = {};
+    if (activeId == null) return offers;
     for (const f of fighters) {
-      if (f.id === activeId || except.includes(f.id) || !f.square || atZero(f.hp) || !f.derived) continue;
+      if (f.id === activeId || except.includes(f.id) || !f.derived) continue;
+      const out = !f.square || atZero(f.hp);
       const t = turnActions(f.derived, f.stance, idx);
-      const ids = [...t.basic, ...t.personal.flatMap((g) => g.ids)];
+      const ids = [...t.basic, ...t.personal.flatMap((g) => g.ids)].filter((id) => !out || idx.get(id)?.usableWhileTakenOut);
+      if (!ids.length) continue;
       const state = await fighterState(f.id);
       const clusters = reactionClusters({
         ids,
@@ -1046,40 +1061,23 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
         usage: env.rt.usage,
         fighterId: f.id,
         state,
-        chaos: f.tokens.chaos ?? 0,
+        chaos: out ? 0 : (f.tokens.chaos ?? 0),
         chaosUsed: Boolean(fighterRt(env.rt, f.id).flags.chaosUsed),
       });
       if (clusters.length) offers[f.id] = { clusters, stanceKey: f.stance?.key ?? null, name: f.name, characterId: f.characterId };
     }
     return offers;
   }
-  const writeWindow = (fightRow, w) => queued(() => run('UPDATE fights SET reaction_window = ? WHERE id = ?', [w ? JSON.stringify(w) : null, fightRow.id]));
-  async function openReactions(fightRow, activeId) {
-    const offers = await reactionOffers(fightRow, activeId);
-    if (!Object.keys(offers).length) {
-      await writeWindow(fightRow, null);
-      return false;
-    }
-    await writeWindow(fightRow, { seq: Date.now(), activeId, offers, done: [] });
-    await emitStageUpdated();
-    return true;
-  }
-  async function closeReactions(fightRow) {
-    await queued(() => closeReactionBoards(fightRow.id, (ev, p) => io.emit(ev, p)));
-    await writeWindow(fightRow, null);
-    await emitStageUpdated();
-  }
-  async function reactionDone(fightRow, combatantId) {
-    const row = await one('SELECT reaction_window FROM fights WHERE id = ?', [fightRow.id]);
-    let w = null;
+  // The fight's active fighter (from its turn order).
+  const activeOf = (fightRow) => {
     try {
-      w = JSON.parse(row?.reaction_window || 'null');
+      return JSON.parse(fightRow.turn_order || '[]')[fightRow.turn_index]?.id ?? null;
     } catch {
-      w = null;
+      return null;
     }
-    if (!w) return;
-    w.done = [...new Set([...(w.done ?? []), combatantId])];
-    await writeWindow(fightRow, w);
+  };
+  // After its one Reactive Action, an Interrupt board freezes.
+  async function reactionDone(fightRow, combatantId) {
     await queued(() => run("UPDATE dice_marks SET active = 0 WHERE roll_id LIKE ? AND combatant_id = ?", [`react-${fightRow.id}-%`, combatantId]));
     await emitStageUpdated();
   }
@@ -1089,6 +1087,10 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
   };
 
   return {
+    // **Interrupts:** who can take a Reactive Action now, and with what.
+    interruptOffers(fightRow) {
+      return reactionOffers(fightRow, activeOf(fightRow));
+    },
     // Commit the placed Actions of a turn board, in order (phase B).
     commitBoard(rollId) {
       return onBoardChain(rollId, () => runner.commitBoard(rollId));

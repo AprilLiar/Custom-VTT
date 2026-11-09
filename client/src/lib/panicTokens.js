@@ -100,6 +100,15 @@ export function normalizeArmorSources(value) {
 export const innateArmor = (sources, activeStanceId) =>
   normalizeArmorSources(sources).filter((s) => s === ARMOR_ALWAYS || (activeStanceId != null && s === activeStanceId)).length;
 
+// **Armor in effect now (decided, new):** Armor tokens added by hand, the
+// build's Armor sources that hold in the current Stance, and temporary Armor.
+// While it's 1+, the token (Combat) or base (Simple Combat) is highlighted.
+export const armorHeld = (fight, setup) => {
+  if (!fight) return 0;
+  const stance = fight.active_stance_id ?? setup?.stances?.[0]?.id ?? null;
+  return (fight.tokens?.armor ?? 0) + innateArmor(setup?.armor_sources ?? [], stance) + ((fight.tokens?.temp_armor ?? 0) > 0 ? 1 : 0);
+};
+
 // A token's own cap: TOKEN_CAP unless the token has a lower one (Shield: 8).
 // **A Shield absorbs damage (decided, revised).** Damage from an Action or an
 // Ability that targets you hits the Shield first, up to its value; what's left

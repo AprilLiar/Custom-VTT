@@ -17,7 +17,8 @@ import {
 import { subscribeFighterDrag } from '../lib/combatDrag.js';
 import { cropOf } from '../lib/imageCrop.js';
 import CroppedImage from './CroppedImage.jsx';
-import FighterOverlay, { ChallengeLock } from './FighterOverlay.jsx';
+import FighterOverlay, { ArmorGlow, ChallengeLock } from './FighterOverlay.jsx';
+import { armorHeld } from '../lib/panicTokens.js';
 import { MapTileLayer } from './MapTiles.jsx';
 
 // The Combat view (Panic at the Dojo, Phase 3): the Scene's Combat Background,
@@ -440,6 +441,7 @@ export default function CombatMap({
             const challenger = fight?.challenge_id != null ? byId.get(fight.challenge_id) : null;
             return (
               <div key={`o${t.id}`}>
+                {fight && armorHeld(fight, setup[`${t.owner_type}:${t.owner_id}`]) > 0 && <ArmorGlow center={center} rx={tokenSize / 2 + 3} />}
                 {/* Only during the Challenge holder's own turn (decided). */}
                 {challenger && activeCombatantId === t.id && (
                   <ChallengeLock from={center} to={centers.get(challenger.id)} radius={tokenSize / 2} />

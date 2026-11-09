@@ -3,7 +3,8 @@ import CopyLayer from './CopyLayer.jsx';
 import SquarePickLayer from './SquarePickLayer.jsx';
 import { socket } from '../socket.js';
 import { laneGeometry, laneLinesPath, moveOnLane, pointsAttr, slotAt } from '../lib/simpleLane.js';
-import FighterOverlay, { ChallengeLock } from './FighterOverlay.jsx';
+import FighterOverlay, { ArmorGlow, ChallengeLock } from './FighterOverlay.jsx';
+import { armorHeld } from '../lib/panicTokens.js';
 import { MapTileLayer } from './MapTiles.jsx';
 
 // Simple Combat's overlay (Panic at the Dojo, Phase 2): one to three lanes of
@@ -240,6 +241,8 @@ export default function SimpleCombatLane({
           const ry = size.plinthRx * 0.32;
           const imgH = aspects[s.id] ? Math.min(size.maxHeight, size.width * aspects[s.id]) : size.maxHeight;
           boxes.set(s.id, {
+            // The base (plinth) — the Armor ring goes round it.
+            base: { center: seg.center, rx: size.plinthRx, ry },
             x: seg.center.x,
             top: seg.center.y - imgH - ry * 0.9,
             bottom: seg.center.y + size.plinthRx * 0.32,
@@ -256,6 +259,7 @@ export default function SimpleCombatLane({
           const ownerKey = s.character_id != null ? `character:${s.character_id}` : `temp_npc:${s.temp_npc_id}`;
           return (
             <div key={`o${s.id}`}>
+              {armorHeld(s.fight, setup[ownerKey]) > 0 && <ArmorGlow center={box.base.center} rx={box.base.rx * 1.08} ry={box.base.ry * 1.25} />}
               {/* Only during the Challenge holder's own turn (decided). */}
               {target && activeCombatantId != null && s.fight.combatant_id === activeCombatantId && (
                 <ChallengeLock from={box.mid} to={target.mid} radius={target.icon * 1.4} />
@@ -331,10 +335,11 @@ function Miniature({ summon, x, y, size, lifted = false, selected = false, dragg
   const rx = size.plinthRx;
   const ry = rx * 0.32;
   return (
+    // **Grabbed by the base, not the picture (decided):** the figure box and its
+    // image let the pointer through, so a figure standing behind another can be
+    // picked by its own plinth; only the base (a slightly larger ellipse) takes it.
     <div
-      className={`pointer-events-auto absolute flex flex-col items-center ${
-        draggable ? (lifted ? 'cursor-grabbing' : 'cursor-grab') : 'cursor-pointer'
-      }`}
+      className="pointer-events-none absolute flex flex-col items-center"
       style={{
         left: x - size.width / 2,
         top: y - size.maxHeight,
@@ -352,8 +357,8 @@ function Miniature({ summon, x, y, size, lifted = false, selected = false, dragg
     >
       {/* The plinth — a dark disc with a lit rim, seen at the lane's angle. */}
       <svg
-        className="absolute left-1/2 -translate-x-1/2"
-        style={{ bottom: 0 }}
+        className="absolute left-1/2 -translate-x-1/2 overflow-visible"
+        style={{ bottom: 0, pointerEvents: 'none' }}
         width={rx * 2 + 4}
         height={ry * 2 + 6}
         aria-hidden
@@ -374,6 +379,17 @@ function Miniature({ summon, x, y, size, lifted = false, selected = false, dragg
           stroke={selected ? '#facc15' : 'rgba(255,255,255,0.35)'}
           strokeWidth={selected ? 2 : 1}
         />
+        {/* The hit area: the base, a little larger than drawn. */}
+        <ellipse
+          cx={rx + 2}
+          cy={ry + 2}
+          rx={rx * 1.12}
+          ry={ry * 1.5}
+          fill="transparent"
+          style={{ pointerEvents: 'all', cursor: draggable ? (lifted ? 'grabbing' : 'grab') : 'pointer' }}
+        >
+          <title>{summon.name}</title>
+        </ellipse>
       </svg>
       <img
         src={summon.image_url}

@@ -39,7 +39,7 @@ import SimpleCombatLane from './SimpleCombatLane.jsx';
 import { MapTilePalette } from './MapTiles.jsx';
 import CombatMap from './CombatMap.jsx';
 import { CombatFightersDrawer, CombatMapDrawer, PlayerTokenDock } from './CombatDrawers.jsx';
-import { FightSetupDialog, InitiativeRail, MoveBar, MovementPhaseBar, ReactBar, StancePrompt, StartCombatButton, TriggerPrompts } from './FightControls.jsx';
+import { FightSetupDialog, InitiativeRail, InterruptBar, MoveBar, MovementPhaseBar, StancePrompt, StartCombatButton, TriggerPrompts } from './FightControls.jsx';
 import { turnsPerRound } from '../lib/hpBars.js';
 import { WEIGHT_BY_KEY } from '../lib/cinematicWeight.js';
 import { useDominantColor } from '../lib/dominantColor.js';
@@ -471,7 +471,7 @@ export default function ScenePage() {
       )}
       {fight && <StancePrompt mode={fightMode} fight={fight} fighters={fightFighters} role={role} controls={controls} />}
       {fight && <MovementPhaseBar mode={fightMode} fight={fight} fighters={fightFighters} role={role} controls={controls} />}
-      {fight && <ReactBar fight={fight} fighters={fightFighters} role={role} controls={controls} />}
+      {fight && <InterruptBar fight={fight} mode={fightMode} left={role === 'gm' && !uiHidden ? 268 : 8} />}
       <MoveBar />
       <TriggerPrompts />
       {fightSetupOpen && fightMode && (

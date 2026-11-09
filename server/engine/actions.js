@@ -109,7 +109,7 @@ export function createActionRunner(kit) {
     const own = (env.world.copies?.() ?? []).filter((c) => c.ownerId === actor.id && c.square);
     if (own.length && actor.square) {
       const options = [actor, ...own].map((o) => ({ id: `${o.square.col},${o.square.row}`, label: o === actor ? `Here (${actor.name})` : o.name, col: o.square.col, row: o.square.row }));
-      const ans = await ask(actor, env.key, env.gen, env.tg, `${action.name}`)({ kind: 'square', mode: env.world.mode, title: `${action.name}: act from`, text: 'Perform it from where you stand, or from one of your Copies.', options, minimum: 1, maximum: 1 });
+      const ans = await ask(actor, env.key, env.gen, env.tg, `${action.name}`)({ kind: 'square', mode: env.world.mode, title: `${action.name} (act from)`, text: 'Perform it from where you stand, or from one of your Copies.', options, minimum: 1, maximum: 1 });
       const id = Array.isArray(ans) ? ans[0] : ans;
       const pick = options.find((o) => o.id === id);
       if (pick && pick.id !== options[0].id) originSquare = { col: pick.col, row: pick.row };
@@ -175,10 +175,15 @@ export function createActionRunner(kit) {
         manual.push(describe(node) || node.op);
       },
     };
+    // What's moving people right now, for the square picks' titles ("Shove (Push 2)").
+    const prevSource = env.source;
+    env.source = action.name;
     try {
       await runRule({ id: action.id, effect: action.effect }, ctx);
     } catch (err) {
       manual.push(`the rest (${err.message})`);
+    } finally {
+      env.source = prevSource;
     }
     frt.flags.actions = (frt.flags.actions ?? 0) + 1;
     // Its limits count it (once per turn …).
@@ -266,14 +271,10 @@ export function createActionRunner(kit) {
     return out;
   }
 
-  // **Commit:** every uncommitted placement, in order; pauses for reactions
-  // between Actions (decided) when someone could react.
+  // **Commit:** every uncommitted placement, in order, without stopping
+  // (decided, revised: no reaction windows — whoever can interrupt has an
+  // Interrupt button instead; server/fights.js `interrupt:offers`).
   async function commitBoard(rollId) {
-    // The active fighter acting again (or Continue) closes the last reaction window.
-    {
-      const { row, fight } = await fightOfBoard(rollId);
-      if (row && fight && !readData(row).reaction) await kit.closeReactions?.(fight);
-    }
     for (let guard = 0; guard < 40; guard++) {
       const { row, fight } = await fightOfBoard(rollId);
       if (!row?.active || !fight) return;
@@ -321,17 +322,6 @@ export function createActionRunner(kit) {
         automatic: result.manual.length ? 'action_manual' : 'action',
         notice: !result.manual.length,
       });
-      // After each of the active fighter's Actions, everyone else may react
-      // (book p.67); between Actions the batch pauses until Continue (decided),
-      // but only when someone actually can.
-      const canReact = !after.reaction && (await kit.openReactions?.(fight, actingOn(row).combatantId));
-      if (remaining && canReact) {
-        after.paused = true;
-        after.committing = false;
-        await saveQ(rollId, after);
-        await emitStageUpdated();
-        return;
-      }
       await saveQ(rollId, after);
       await emitStageUpdated();
     }

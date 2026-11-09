@@ -6,13 +6,13 @@ import { getBuild } from '../../lib/api.js';
 import { useRole } from '../../roleContext.jsx';
 import { useContent } from '../../lib/patd/useContent.js';
 import { deriveBuild, stanceOfBuild } from '../../lib/patd/build.js';
-import { minusReserved, poolOf, reservedBy, stopChoices, turnActions } from '../../lib/patd/diceBoard.js';
+import { gateFor, minusReserved, poolOf, reservedBy, stopChoices, turnActions } from '../../lib/patd/diceBoard.js';
 import { affordableOptions, hasDiceCost, optionLabel, paymentText, planPayment, tokenOptions } from '../../lib/patd/tokenCost.js';
 import { useDiceMarks } from '../../lib/diceMarks.js';
 import { useSquarePick } from '../../lib/squarePick.js';
 import { startFreeMove } from '../../lib/freeMove.js';
 import { ActionCard, SuperMoveCard } from './ActionCards.jsx';
-import { isSuperMove } from '../../lib/patd/engine/turn.js';
+import { isSuperMove, superPair } from '../../lib/patd/engine/turn.js';
 
 // **The turn's dice board (full automation, phase B — vttprojectplan.md, "Full
 // automation").** Opened by tapping the dice of your turn's Stance roll: the
@@ -56,7 +56,9 @@ export function DieFace({ r, crossed = false, selected = false, big = false, sta
   // The face (greyed when placed) and the order badge beside it: the badge sits
   // outside the face so the cut corner doesn't clip it and it stays bright.
   return (
-    <span className="relative inline-flex">
+    // The tapped die glows from underneath (decided): on this wrapper, since
+    // the face's cut corners (a clip-path) would clip a shadow on the face itself.
+    <span className={`relative inline-flex ${selected ? 'die-selected' : ''}`}>
       <span
         className={`relative flex flex-col items-center justify-center panel-cut-sm border ${big ? 'h-11 w-10' : 'min-w-11 px-1.5 py-1'} ${tone} ${
           placed || crossed ? 'opacity-45 grayscale' : ''
@@ -93,15 +95,17 @@ export default function DiceBoard({ payload, onClose, canEdit }) {
   const board = useDiceMarks(payload.roll_id);
   // A square being picked on the map or lane (phase D): the board steps aside.
   const picking = useSquarePick();
-  // A reaction board (phase F): only the reactions on offer, then Pass.
+  // An Interrupt board (decided, revised): only what's on offer, then Not now.
   const reaction = board.reaction ?? null;
   const editable = canEdit && board.active;
-  // A reaction board closes itself once its window is over.
+  // An Interrupt board closes itself once used (or the turn ends).
   useEffect(() => {
     if (reaction && board.rollId && !board.active) onClose();
   }, [reaction, board.active, board.rollId, onClose]);
   const [selected, setSelected] = useState(null);
   const [drag, setDrag] = useState(null); // { i, x, y }
+  // The card a dragged (or selected) die is over: it previews where it lands.
+  const [hover, setHover] = useState(null);
   const pointer = useRef(null);
   const [fighter, setFighter] = useState(null); // payable state (tokens, HP, Shield, Challenge holders)
   const [paying, setPaying] = useState(null); // { action, options } — the payment dialog
@@ -233,15 +237,39 @@ export default function DiceBoard({ payload, onClose, canEdit }) {
     if (!p.moved && Math.hypot(e.clientX - p.x, e.clientY - p.y) < DRAG_START_PX) return;
     p.moved = true;
     setDrag({ i: p.i, x: e.clientX, y: e.clientY });
+    setHover(document.elementFromPoint(e.clientX, e.clientY)?.closest?.('[data-action-id]')?.getAttribute('data-action-id') ?? null);
   };
   const onUp = (i) => (e) => {
     const p = pointer.current;
     pointer.current = null;
     setDrag(null);
+    setHover(null);
     if (!p || !p.moved) return tapDie(i);
     const target = document.elementFromPoint(e.clientX, e.clientY)?.closest?.('[data-action-id]');
     if (target) place(p.i, target.getAttribute('data-action-id'));
   };
+
+  // **The landing preview (decided):** the die being dragged — or the one
+  // selected, with the pointer over a card — and the Gate it would reach there
+  // (the highest its number allows); `false` when it can't pay for it.
+  const previewDie = drag?.i ?? selected;
+  const previewFor = (id) => {
+    if (hover !== id || previewDie == null) return undefined;
+    const action = idx.get(id);
+    const n = pool.find((p) => p.index === previewDie);
+    if (!action || !n) return undefined;
+    if (isSuperMove(action)) {
+      const taken = placements.flatMap((p) => (p.kind === 'die' ? [p.die] : p.kind === 'super' ? (p.dice ?? []) : []));
+      return superPair(pool, previewDie, taken) ? true : false;
+    }
+    if (!hasDiceCost(action)) return false;
+    const g = gateFor(action, n.value);
+    return g == null ? false : g;
+  };
+  const hoverHandlers = (id) => ({
+    onPointerEnter: () => selected != null && !drag && setHover(id),
+    onPointerLeave: () => !drag && setHover((h) => (h === id ? null : h)),
+  });
 
   const card = (id) => {
     const action = idx.get(id);
@@ -251,8 +279,9 @@ export default function DiceBoard({ payload, onClose, canEdit }) {
     const paid = on.filter((p) => p.kind === 'token').map((p) => `#${orderOf(p.key)} ${p.text ?? ''}${p.committed ? ' ✓' : ''}`);
     const tappable = editable && !busy && (selected != null || tokenOptions(action).length > 0);
     return (
-      <div key={id} onClick={() => tapAction(id)} className={tappable ? 'cursor-pointer' : ''}>
+      <div key={id} onClick={() => tapAction(id)} className={tappable ? 'cursor-pointer' : ''} {...hoverHandlers(id)}>
         <ActionCard
+          preview={previewFor(id)}
           action={action}
           compact
           dropTarget
@@ -280,7 +309,13 @@ export default function DiceBoard({ payload, onClose, canEdit }) {
       say(`${move.name}: pick one of two matching numbers (3 or higher) first.`);
     };
     return (
-      <div key={id} data-action-id={id} onClick={tap} className={editable && !busy ? 'cursor-pointer' : ''}>
+      <div
+        key={id}
+        data-action-id={id}
+        onClick={tap}
+        {...hoverHandlers(id)}
+        className={`${editable && !busy ? 'cursor-pointer' : ''} ${previewFor(id) === true ? 'outline outline-2 outline-offset-1 outline-sky-400' : previewFor(id) === false ? 'outline outline-2 outline-offset-1 outline-red-500' : ''}`}
+      >
         <SuperMoveCard move={move} compact />
         {on.length > 0 && (
           <p className="mt-0.5 font-mono text-[10px] text-fuchsia-200">
@@ -301,18 +336,64 @@ export default function DiceBoard({ payload, onClose, canEdit }) {
         {reaction && !idx ? (
           <p className="p-4 text-sm text-zinc-500">Loading the Actions…</p>
         ) : reaction ? (
-          // **React (decided, phase F):** only the reactions actually on offer,
-          // one cluster per resource that pays for them, packed into two
-          // columns with no gaps; the whole view scrolls.
-          <div className="columns-2 gap-0 p-1">
-            {reaction.clusters.map((c) => (
-              <section key={c.resource} className="mb-2 break-inside-avoid space-y-1.5 rounded-sm border border-zinc-700 p-2">
-                <h3 className={`font-display text-[11px] font-bold uppercase tracking-wide ${c.resource === 'chaos' ? 'text-fuchsia-300' : 'text-emerald-300'}`}>{c.label}</h3>
-                {c.ids.map(card)}
-              </section>
-            ))}
-            {!reaction.clusters.length && <p className="p-3 text-xs italic text-zinc-500">No reactions on offer.</p>}
-          </div>
+          // **Interrupt (decided, revised):** only what's on offer, split like
+          // the turn board — General (Basic) on the left, Personal on the
+          // right — each card tinted by the resource that pays for it.
+          (() => {
+            const tokenIds = new Set(reaction.clusters.filter((c) => c.resource !== 'chaos').flatMap((c) => c.ids));
+            const chaosIds = new Set(reaction.clusters.filter((c) => c.resource === 'chaos').flatMap((c) => c.ids));
+            const offered = (id) => tokenIds.has(id) || chaosIds.has(id);
+            const tinted = (id) => (
+              <div
+                key={id}
+                className={`rounded-sm p-0.5 ${
+                  tokenIds.has(id) && chaosIds.has(id)
+                    ? 'bg-[linear-gradient(90deg,rgba(16,185,129,0.22),rgba(217,70,239,0.24))]'
+                    : chaosIds.has(id)
+                      ? 'bg-fuchsia-500/20 ring-1 ring-fuchsia-600/60'
+                      : 'bg-emerald-500/15 ring-1 ring-emerald-600/50'
+                }`}
+              >
+                {card(id)}
+              </div>
+            );
+            // Without the build yet: every offered Action under Personal.
+            const basic = lists ? lists.basic.filter(offered) : [];
+            const groups = lists
+              ? lists.personal.map((g) => ({ ...g, ids: g.ids.filter(offered) })).filter((g) => g.ids.length)
+              : [{ title: 'On offer', ids: [...new Set([...tokenIds, ...chaosIds])] }];
+            const listed = new Set([...basic, ...groups.flatMap((g) => g.ids)]);
+            const rest = [...new Set([...tokenIds, ...chaosIds])].filter((id) => !listed.has(id));
+            return (
+              <>
+                <div className="flex flex-wrap gap-2 px-2 pt-1.5 text-[10px] font-bold uppercase tracking-wide">
+                  {reaction.clusters.map((c) => (
+                    <span key={c.resource} className={`rounded-sm px-1.5 py-0.5 ${c.resource === 'chaos' ? 'bg-fuchsia-500/20 text-fuchsia-200' : 'bg-emerald-500/15 text-emerald-200'}`}>
+                      {c.label}
+                    </span>
+                  ))}
+                </div>
+                <div className="grid grid-cols-2 divide-x divide-zinc-700">
+                  <section className="space-y-1.5 p-2">
+                    <h3 className="font-display text-[11px] font-bold uppercase tracking-wide text-emerald-300">Basic</h3>
+                    {basic.map(tinted)}
+                    {!basic.length && <p className="text-xs italic text-zinc-600">None on offer.</p>}
+                  </section>
+                  <section className="space-y-1.5 p-2">
+                    <h3 className="font-display text-[11px] font-bold uppercase tracking-wide text-emerald-300">Personal</h3>
+                    {groups.map((g) => (
+                      <div key={g.title} className="space-y-1.5">
+                        <p className="text-[10px] font-bold uppercase tracking-wide text-zinc-500">{g.title}</p>
+                        {g.ids.map(tinted)}
+                      </div>
+                    ))}
+                    {rest.map(tinted)}
+                    {!groups.length && !rest.length && <p className="text-xs italic text-zinc-600">None on offer.</p>}
+                  </section>
+                </div>
+              </>
+            );
+          })()
         ) : !lists ? (
           <p className="p-4 text-sm text-zinc-500">{build === null ? 'No build for this character.' : 'Loading the Actions…'}</p>
         ) : (
@@ -388,7 +469,7 @@ export default function DiceBoard({ payload, onClose, canEdit }) {
           )}
           {reaction ? (
             <button type="button" onClick={() => socket.emit('react:pass', { combatantId: payload.combatant_id })} disabled={!editable || busy} className={`${btn} border-zinc-600 text-zinc-200`}>
-              Pass
+              Not now
             </button>
           ) : (
           <>

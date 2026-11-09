@@ -684,3 +684,17 @@ export function ChallengeLock({ from, to, radius = 24 }) {
     </svg>
   );
 }
+
+// **Armor highlight (decided, new):** a steel-blue ring while the fighter
+// has 1+ Armor — round around a map token, an ellipse around a lane base.
+// `center` in stage pixels; `rx`/`ry`: the ring's radii.
+export function ArmorGlow({ center, rx, ry = rx }) {
+  return (
+    <span
+      aria-hidden
+      className="armor-glow pointer-events-none absolute rounded-[50%]"
+      style={{ left: center.x - rx, top: center.y - ry, width: rx * 2, height: ry * 2 }}
+      title="Armor"
+    />
+  );
+}

@@ -232,12 +232,19 @@ export async function resolveDamage(hit, decide = {}) {
   // "Take 1 less damage from any source" (Iron Form, Mountainous Freestyle).
   // (Their rules ignore Unblockable — the content's `ignoresUnblockable`.)
   // Only offered when Armor won't take the whole hit anyway.
+  // `decide.wouldTake(n, { ironLeft, armorBlocks })` → a number, or
+  // { reduction, iron } when it spends Iron (Iron Form — native since the
+  // fix: the Iron already spent on this hit is counted, never spent twice).
   if (n > 0 && decide.wouldTake && n > armorBlocks(n)) {
-    const r = Math.max(0, Math.trunc(Number(await decide.wouldTake(n)) || 0));
+    const got = await decide.wouldTake(n, { ironLeft: Math.max(0, (tgt.tokens?.iron ?? 0) - out.spend.iron), armorBlocks: armorBlocks(n) });
+    const r = Math.max(0, Math.trunc(Number(typeof got === 'object' && got ? got.reduction : got) || 0));
+    const iron = Math.max(0, Math.trunc(Number(typeof got === 'object' && got ? got.iron : 0) || 0));
     if (r > 0) {
       out.reduced = Math.min(n, r);
       n -= out.reduced;
-      out.steps.push(`reduced −${out.reduced}`);
+      out.spend.iron += iron;
+      out.ironForm = iron;
+      out.steps.push(iron ? `Iron Form −${out.reduced}` : `reduced −${out.reduced}`);
     }
   }
   // 6. Shield.

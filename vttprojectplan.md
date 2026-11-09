@@ -3294,12 +3294,12 @@ A GM-only page (`/homebrew`, the flask icon in the header and the mobile menu) f
 - **Power toggle:** on the footer's left, a toggle shows the Power balance. When on, the placed Actions' hits are Enhanced, up to what the character's Forms and Styles allow per hit (`enhance_hit.additional_uses`, `power_tokens.additional_per_hit`), while Power lasts.
 - **Hit spends:** each character has **Ask / Auto / Never** for Power, Iron and Shield (on the sheet's Combat tab). Players default to Ask, NPCs to Auto. The board's Power toggle stands in for "Ask" on your own committed Actions.
 - **Free Movement:** a **Move** button lets the active character move before each Action (reachable squares glow with their Speed cost). In the Early and Late Movement phases, everyone else holding Speed gets **Move or Done**. The phase waits for them, the GM can skip, and a phase with no Speed holders passes at once.
-- **Reactions:** a **React** button (no prompts) opens the Action interface with only the reactions actually available.
+- **Reactions → Interrupts (decided, revised):** no reaction windows and no asking after every Action. Each character who can act outside their turn gets an **Interrupt** button. It appears whenever they have something usable right now: a token Action they can pay for whose conditions allow it (the Mentor's on an ally's turn, "only during an enemy's turn" …), or a dice Action a **Chaos token** can pay, i.e. one where a 4 is a valid input. The button opens the Action interface with only those, split like the turn board.
   - The footer shows the resources they can be paid with: held numbers, Chaos, Luck, Speed as Shadow Form allows on others' turns, and so on.
   - Cards are grouped **by resource**, one rectangular cluster per resource, packed into **two columns** without wasted space, clusters sized to their cards; the whole view scrolls.
   - **During a multi-Action Commit**, after each Action the batch **pauses until the active player taps Continue**, but only when someone else has a reaction available.
 - **Challenge:** enforced. Damaging Actions must target the Challenger whenever legal; the End Phase removes the Challenge when its holder tried to damage them.
-- **Picking:** targets, squares and placements are picked **on the map or lane** (legal ones glow; the dice board steps aside), with a compact list alongside.
+- **Picking (revised):** targets, squares and placements are picked **on the map or lane** (legal ones glow; the dice board steps aside). Squares get **no list**: a slim bar at the **top** of the screen names only what is doing it and how, e.g. "One-Two Form (Move 2)", with Skip when skipping is allowed.
 - **Pushes and pulls:** the pusher **taps the landing square**. The engine finds a legal path (each space farther from or closer to the origin, sliding along Walls), and asks which path only when paths cross different Traps or Pits.
 - **World of Cardboard: always on.** A push or pull into a Wall smashes it into Rubble; the target enters that space and the movement ends there.
 - **Super Moves:** all limits enforced: not in Round 1, once per fight per character, two matching numbers of 3+, and the side's per-round limit from the Cinematic Weight (Feather 0, Light/Middle/Heavy 1, World 2).
@@ -3482,7 +3482,7 @@ A GM-only page (`/homebrew`, the flask icon in the header and the mobile menu) f
     - `actionUsable` checks conditions and limits: uses per turn, enemy turn, round or fight, counted in the runtime's `usage` under `action:<id>:<fighter>:<period>`, so `startTurn` clears them. `recordUse` counts a use.
     - `reactionClusters` gives the reactions on offer, by resource. `atZero` is Taken Out at zero HP, and `comebackSquares` gives the empty spaces within 3 of the edge (on lanes, of the ends).
   - **An Action's conditions and limits are enforced** when it is placed ("Swift Strike: only during an enemy's turn", "only once per turn", counting what's already placed) and counted when performed. Nobody at zero HP places Actions, and nothing is placed during a movement phase.
-  - **Reactions (decided: a React interface, clusters by resource, a pause until Continue):**
+  - **Reactions (decided then; replaced since by Interrupts, see the feedback batch below):**
     - **The window:** after each of the active fighter's committed Actions, everyone else in play who can actually react gets one. That means a token Action they can pay for whose conditions allow it now, or a dice Action a **Chaos token** reaches "as if you had spent a 4" (once per turn). The window lives in `fights.reaction_window`: `{ seq, activeId, offers, done }`, shown as `{ activeId, waiting }`.
     - **The pause:** with Actions still placed, the batch **pauses until Continue**, but only when someone can react.
     - **React and Pass:** the **React bar** (`ReactBar`) gives each waiting fighter's controller **React** or **Pass** (`react:pass`).
@@ -3668,6 +3668,60 @@ The old system's phases (1-9 and the playtest batches after them) are complete h
 - **Build the new system's risky core in isolation, with unit tests, before wiring UI.** The old timing engine's lesson stands: pure, tested rules first.
 - **Render cold starts** can hit as a session starts; Socket.io reconnection and `useSocketRefresh` resync are what cover it.
 - **Identity is a client-side pick, not a login** — accepted. Anything the new system needs to keep secret must be protected by absence from the payload (as Counter Gates and the Relationships board do), never by a client-side flag.
+
+### Play feedback after phase J (decided, implemented)
+- **"By hand all fight" says the rule.** At the start of a fight, each Ability whose lasting rules aren't all automated gets one orange card titled "‹Ability› — by hand all fight", with the **Ability's rules text**. It no longer says "keep it in mind".
+- **Armor highlight:** while a fighter has 1+ Armor, a steel-blue ring glows around their token (Combat) or base (Simple Combat), via `ArmorGlow` and `.armor-glow`. Armor here is Armor tokens, plus the build's Armor sources that hold in the current Stance, plus temporary Armor (`panicTokens.js armorHeld`).
+- **Square picks: no list, a slim top bar.**
+  - The legal squares glow on the map or lane and are tapped there.
+  - `SquarePromptBar` is one line at the top of the screen: what is doing it, with the movement in brackets ("One-Two Form (Move 2)", "Relentless Style (Push 1)", "Volcanic Style (Place a Trap)", "Kneecapper (act from)"), plus **Skip** only when skipping is allowed.
+  - **How the name is known:** the engine keeps `env.source`, the Ability or Action resolving now, for the movers' titles. The interpreter's space picks name their purpose.
+  - Free Movement's bar is slim and at the top too: "‹name› · N Speed", plus Done. The squares show their own costs.
+- **Landing preview on the dice board:**
+  - **Dragging** a die over an Action card outlines that card **sky-blue** and lights every Gate up to the one that die reaches (the highest its number allows).
+  - The card goes **red** when the die can't pay for it.
+  - A **tapped (selected) die** does the same when the pointer is over a card.
+  - Super Moves show whether the die has a matching partner.
+- **The tapped die glows:** a lifted lime underglow that pulses (`.die-selected`, on the die's wrapper). The face's cut corners clip any shadow put on the face itself, which is why the old ring barely showed.
+- **Iron Form, fully automatic** (also Mountainous Freestyle):
+  - **Armor triggers:** +1 Iron (its rule).
+  - **Gaining Speed:** half of it, rounded down, becomes Iron (its rule).
+  - **"Spend 1 Iron to take 1 less damage from any source (even Reduced Hits)" is now the damage step's own (`engine/hits.js`):**
+    - It is offered after the Iron step, against any source: Actions, Abilities, Traps, Burning, falls, hits already Reduced with Iron.
+    - It follows the fighter's Iron preference: Ask, Auto, Never.
+    - It only uses Iron not already spent on that hit, so an Iron token can't be spent twice.
+    - It only applies when Armor won't take the whole hit anyway.
+  - Its content rule is skipped as a rule (`coverage.js isIronAnySource`).
+  - The notice reads "Iron Form −1", and the Iron counts for "after you spend Iron" (Armored, Scrambling Style).
+- **Simple Combat: figures are grabbed by their base.** The miniature's box and picture let the pointer through; only the plinth takes it, as a slightly larger invisible ellipse. A figure standing behind another can now be picked and dragged by its own base.
+- **Interrupts replace the reaction windows** (decided, revised):
+  - **No windows:** Commit performs every placed Action without pausing, and there is no Continue.
+  - **Who gets the button:** `interrupt:offers` (an ack) returns, for the fighters this person controls, who can take a Reactive Action **right now** and with what (`triggers.interruptOffers`, `reactionClusters`).
+    - **Token Actions** they can pay for, whose conditions and limits allow it now.
+    - **Dice Actions a Chaos token can pay "as if you had spent a 4"** (`gateFor(action, 4)` must not be null, so a 4 must be a valid input; once per turn).
+    - **Taken Out or out of play:** only Actions marked usable while Taken Out (the Mentor's Remember Your Training). Placement allows those too.
+  - **The button:** each such fighter gets an **⚡ Interrupt · ‹name›** button at the bottom left, clear of the GM's sidebar (`InterruptBar`, refreshed on every stage or board change).
+  - **Interrupt (`react:open`)** opens their Interrupt board (reopening an open one).
+    - **The layout is the turn board's:** **Basic** on the left, **Personal** (by group) on the right, only what's on offer. Each card is tinted by the resource that pays for it (emerald for tokens, fuchsia for Chaos, both when both), with a small legend.
+    - **Not now** (`react:pass`) closes it.
+    - After its one Reactive Action, the board closes. Open Interrupt boards close at the end of the turn.
+- **Tests and playtests:**
+  - `scripts/playtest-iron-form.mjs` covers:
+    - Speed from the Movement Action becoming half Iron;
+    - Iron Form after Iron Reduced the hit;
+    - +1 Iron when Armor triggers;
+    - the "Iron Form −1" notice;
+    - an End Phase Trap (no Iron step, Iron Form asked);
+    - no Iron spent twice.
+  - The reactions playtest now checks Interrupts: no pause; the offers; Interrupt opening only what's on offer and reopening the same board; Swift Strike performed; the board closing; Swift Strike leaving the offer.
+  - The modifiers playtest checks the rules text in the "by hand all fight" card.
+  - **A browser run (desktop) showed:**
+    - the Armor ring;
+    - the Interrupt button and its split board;
+    - the slim top bar "Relentless Style (Push 1)" with glowing squares;
+    - the tapped die's glow;
+    - the drag and hover previews (Damage lit to 9+ for a 10).
+  - The Simple Combat lane (base grabbing, base ring) wasn't covered by the browser run.
 
 ## Open items to decide later
 - **Panic at the Dojo assistant — details to settle in their phase**, with the default the build will use unless told otherwise:

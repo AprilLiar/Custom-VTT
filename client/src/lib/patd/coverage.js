@@ -16,6 +16,22 @@ export const ENGINE_NATIVE = new Set([
   'ability.hero-type-frantic.frantic-versatility',
 ]);
 
+// **Iron Form / Mountainous Freestyle's "spend 1 Iron to take 1 less damage
+// from any source (even Reduced Hits)"** is done by the damage step itself
+// (server/engine/hits.js), with the fighter's Iron preference (Ask / Auto /
+// Never) and the Iron already spent on the hit counted — so its rule is
+// never run as a rule.
+export const isIronAnySource = (rule) => {
+  const e = rule?.effect;
+  const steps = e?.op === 'optional' ? (e.effect?.op === 'sequence' ? e.effect.steps : [e.effect]) : [];
+  return (
+    (rule?.events ?? []).includes('self.would_take_damage') &&
+    steps.some((s) => s?.op === 'spend_tokens' && s.token === 'iron') &&
+    steps.some((s) => s?.op === 'reduce_damage' && s.allowsAlreadyReduced)
+  );
+};
+export const hasIronAnySource = (fighter, idx) => (fighter?.abilityIds ?? []).some((id) => (idx.get(id)?.rules ?? []).some(isIronAnySource));
+
 // A continuous rule is in effect when it only installs enforced modifiers
 // (and lasting Armor); anything else in it is by hand.
 export function continuousSupport(rule) {

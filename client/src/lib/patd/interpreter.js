@@ -607,7 +607,8 @@ async function targetsOf(v, scope, ctx, label) {
 
 // **Spaces (phase E):** squares in range — `empty` ones only when asked —
 // picked one at a time on the map or lane (`square` prompts).
-async function selectSpaces(sel, scope, ctx, from, { optional = false } = {}) {
+// `purpose`: what the space is for, in the pick's title — "Volcanic Style (Place a Trap)".
+async function selectSpaces(sel, scope, ctx, from, { optional = false, purpose = null } = {}) {
   const { world } = ctx;
   if (!world.spaces) throw new Unsupported('spaces');
   // "A space adjacent to the target" (phase H): measured from the bound one.
@@ -629,7 +630,7 @@ async function selectSpaces(sel, scope, ctx, from, { optional = false } = {}) {
       kind: 'square',
       mode: world.mode,
       fighter: scope.self,
-      title: ctx.ability?.name ?? 'Pick a space',
+      title: purpose ? `${ctx.ability?.name ?? 'Pick a space'} (${purpose}${maximum > 1 ? ` ${i + 1} of ${upTo ? 'up to ' : ''}${maximum}` : ''})` : ctx.ability?.name ?? 'Pick a space',
       text: maximum > 1 ? `Pick a space (${i + 1} of ${upTo ? 'up to ' : ''}${maximum}).` : 'Pick a space.',
       options: pool.map((sq) => ({ id: `${sq.col},${sq.row}`, label: `${sq.col},${sq.row}`, col: sq.col, row: sq.row })),
       minimum: upTo ? 0 : 1,
@@ -1107,7 +1108,7 @@ async function run(node, scope, ctx) {
         const raw = node.count ?? sel.count ?? 1;
         const count = raw && typeof raw === 'object' && 'ref' in raw ? Math.max(0, Number(val(raw)) || 0) : raw;
         if (count === 0) return;
-        squares = await selectSpaces({ ...sel, count }, scope, { ...ctx, world: { ...world, spaces: () => legal } }, from, { optional: decline });
+        squares = await selectSpaces({ ...sel, count }, scope, { ...ctx, world: { ...world, spaces: () => legal } }, from, { optional: decline, purpose: `Place a ${kind === 'copy' ? 'Copy' : tokenName(kind)}` });
         if (decline && !squares.length) return DECLINED;
       } else {
         squares = asList(val(node.target)).map((x) => x?.square ?? x).filter((x) => x && Number.isInteger(x.col) && world.canPlace(kind, x));
@@ -1192,7 +1193,7 @@ async function run(node, scope, ctx) {
       if (!world.teleportTo || !isSelector(dest) || dest.kind !== 'space') return unsupported(node, scope, ctx);
       const decline = takeDecline(scope);
       for (const f of node.target ? await targetsOf(node.target, scope, ctx) : [scope.self]) {
-        const squares = await selectSpaces({ ...dest, empty: dest.empty !== false, count: 1 }, scope, ctx, scope.self, { optional: decline });
+        const squares = await selectSpaces({ ...dest, empty: dest.empty !== false, count: 1 }, scope, ctx, scope.self, { optional: decline, purpose: f.id === scope.self.id ? 'Teleport' : `Teleport ${f.name}` });
         if (!squares.length) {
           if (decline) return DECLINED;
           continue;

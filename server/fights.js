@@ -22,7 +22,7 @@ import { assembles, derivedFor, franticPickOf, rollDerived, stanceByKey, stances
 import { franticOptions, franticPickAllowed } from '../client/src/lib/patd/build.js';
 import { patdContent } from './patdContent.js';
 import { addXp } from './builds.js';
-import { closeReactionBoards, endTurnDice, reactionRollId, resumeRoll, startReaction, startRoll } from './diceMarks.js';
+import { closeInterruptBoards, closeReactionBoards, endTurnDice, resumeRoll, startReaction, startRoll } from './diceMarks.js';
 import { XP_AWARDS } from '../client/src/lib/patd/build.js';
 import { resolveRef, serialized, shapeFightState } from './combatState.js';
 import { controlsCharacter } from './control.js';
@@ -547,30 +547,53 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
     if (!c || !mayControl(c) || !triggers || !(await freeMoveOk(fight, c))) return;
     triggers.freeSwap({ ...fight }, c.id, Number(allyId)).then((r) => socket.emit('move:result', { combatantId: c.id, ...r }));
   });
-  // **React (phase F):** open this fighter's reaction board — the reactions on
-  // offer in this window, by resource. ack({ payload, clusters }) or ({ error }).
+  // **Interrupts (decided, revised — replaces the reaction windows):** who of
+  // the fighters this person controls can take a Reactive Action right now,
+  // and with what. ack({ offers: { [combatantId]: { name, clusters, mode } } }).
+  socket.on('interrupt:offers', async (payload, ack) => {
+    if (typeof ack !== 'function') return;
+    try {
+      const sceneId = await activeSceneId();
+      const out = {};
+      for (const mode of MODES) {
+        const fight = sceneId ? await one('SELECT * FROM fights WHERE scene_id = ? AND mode = ?', [sceneId, mode]) : null;
+        if (!fight || !triggers?.interruptOffers || (payload?.mode && payload.mode !== mode)) continue;
+        const offers = await triggers.interruptOffers({ ...fight });
+        for (const [id, o] of Object.entries(offers)) {
+          const c = await one('SELECT * FROM combatants WHERE id = ?', [Number(id)]);
+          if (c && mayControl(c)) out[id] = { name: o.name, clusters: o.clusters, mode };
+        }
+      }
+      ack({ offers: out });
+    } catch (err) {
+      console.error('error handling interrupt:offers:', err);
+      ack({ offers: {} });
+    }
+  });
+  // **Interrupt:** open this fighter's Interrupt board — only what they can
+  // use now, by resource; one Reactive Action, then it closes (or Close).
+  // ack({ payload, clusters }) or ({ error }).
   socket.on('react:open', async (payload, ack) => {
     if (typeof ack !== 'function') return;
     try {
       const { c, fight } = await fightOfCombatant(payload?.combatantId);
-      const w = windowOf(fight);
-      const offer = w?.offers?.[c?.id];
-      if (!c || !mayControl(c) || !offer || (w.done ?? []).includes(c.id)) return ack({ error: 'no reaction now' });
-      const rollId = await serialized(() => startReaction({ fightId: fight.id, seq: w.seq, combatantId: c.id, characterId: c.character_id, stanceKey: offer.stanceKey, clusters: offer.clusters, fighterName: offer.name }, emitAll))();
-      ack({ payload: { roll_id: rollId, combatant_id: c.id, character_id: c.character_id, stance_key: offer.stanceKey, stance: 'Reaction', fighter: { name: offer.name } }, clusters: offer.clusters });
+      if (!c || !fight || !mayControl(c) || !triggers?.interruptOffers) return ack({ error: 'no Interrupt now' });
+      const offer = (await triggers.interruptOffers({ ...fight }))[c.id];
+      if (!offer) return ack({ error: 'nothing to interrupt with now' });
+      // One open Interrupt board per fighter: reopen it rather than start another.
+      const open = await one("SELECT roll_id FROM dice_marks WHERE roll_id LIKE ? AND combatant_id = ? AND active = 1 ORDER BY created_at DESC, rowid DESC LIMIT 1", [`react-${fight.id}-%`, c.id]);
+      const rollId = open?.roll_id ?? (await serialized(() => startReaction({ fightId: fight.id, seq: Date.now(), combatantId: c.id, characterId: c.character_id, stanceKey: offer.stanceKey, clusters: offer.clusters, fighterName: offer.name }, emitAll))());
+      ack({ payload: { roll_id: rollId, combatant_id: c.id, character_id: c.character_id, stance_key: offer.stanceKey, stance: 'Interrupt', fighter: { name: offer.name } }, clusters: offer.clusters });
     } catch (err) {
       console.error('error handling react:open:', err);
       ack({ error: 'failed' });
     }
   });
-  // Pass: no reaction this time.
+  // Close an Interrupt board without using it.
   on('react:pass', async ({ combatantId } = {}) => {
     const { c, fight } = await fightOfCombatant(combatantId);
-    const w = windowOf(fight);
-    if (!c || !w?.offers?.[c.id] || !mayControl(c)) return;
-    w.done = [...new Set([...(w.done ?? []), c.id])];
-    await run('UPDATE fights SET reaction_window = ? WHERE id = ?', [JSON.stringify(w), fight.id]);
-    await run('UPDATE dice_marks SET active = 0 WHERE roll_id = ?', [reactionRollId(fight.id, w.seq, c.id)]);
+    if (!c || !fight || !mayControl(c)) return;
+    await closeInterruptBoards(fight.id, c.id, emitAll);
     await emitStageUpdated();
   });
 

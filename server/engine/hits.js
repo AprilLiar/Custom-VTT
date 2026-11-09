@@ -10,6 +10,7 @@ import { autoIron, isAttack, resolveDamage, unblockableSet } from '../../client/
 import { hasMod, listMod, modifiersOn, valueOf } from '../../client/src/lib/patd/engine/modifiers.js';
 import { expireTemps, fighterRt } from '../../client/src/lib/patd/engine/runtime.js';
 import { patdContent } from '../patdContent.js';
+import { hasIronAnySource } from '../../client/src/lib/patd/coverage.js';
 
 const SOURCE_NAME = { trap: 'a Trap', fall: 'a fall', burning: 'Burning' };
 
@@ -96,12 +97,30 @@ export function createHits({ ask, emitEvent }) {
           'Iron'
         );
       },
-      // Iron Form / Mountainous Freestyle: "spend 1 Iron to take 1 less from any
-      // source" — their rules ignore Unblockable (`ignoresUnblockable`).
-      wouldTake: async (n) => {
-        const payload = { damage: n, target, attacker, reduction: 0 };
+      // **Iron Form / Mountainous Freestyle (native):** "spend 1 Iron to take 1
+      // less from any source, even Reduced Hits" — Traps, Burning, falls and
+      // hits already reduced with Iron included; Unblockable doesn't stop it.
+      // Ask / Auto / Never like Iron; only Iron not already spent on this hit.
+      wouldTake: async (n, { ironLeft = 0, armorBlocks = 0 } = {}) => {
+        let reduction = 0;
+        let iron = 0;
+        if (!abilitiesOff && !target.isCopy && ironLeft > 0 && hasIronAnySource(target, idx)) {
+          const mode = prefs(target).iron;
+          const yes =
+            mode === 'never'
+              ? false
+              : mode === 'auto'
+                ? true
+                : await askYes(env, target, 'Iron Form', `${target.name} takes ${n} damage${from}${armorBlocks ? ` (Armor would block ${armorBlocks})` : ''}. Spend 1 Iron to take 1 less? (${ironLeft} Iron left)`);
+          if (yes) {
+            reduction = 1;
+            iron = 1;
+          }
+        }
+        // Anyone else's "would take damage" rules.
+        const payload = { damage: n - reduction, target, attacker, reduction: 0 };
         await fire('self.would_take_damage', target, payload);
-        return payload.reduction;
+        return { reduction: reduction + payload.reduction, iron };
       },
       shield: async ({ value, amount: n, armorBlocks }) => {
         const mode = prefs(target).shield;
@@ -173,8 +192,10 @@ export function createHits({ ask, emitEvent }) {
       await fire('self.power_tokens_spent', attacker, { amount: r.spend.power, target });
       await fire('self.hit_enhanced_with_power', attacker, { target, amount: r.power });
     }
+    // Iron spent on this hit — Iron Form's included (Armored, Scrambling Style listen).
+    if (!(r.iron > 0) && r.ironForm > 0) await T('self.iron_tokens_spent', target, { amount: r.ironForm, attacker });
     if (r.iron > 0) {
-      await T('self.iron_tokens_spent', target, { amount: r.iron, attacker });
+      await T('self.iron_tokens_spent', target, { amount: r.iron + (r.ironForm ?? 0), attacker });
       await T('self.hit_reduced', target, { attacker });
       if (enemy) await T('self.hit_reduced_from_enemy', target, { attacker });
       await T('self.damage_reduced_by_iron', target, { attacker, amount: r.iron });

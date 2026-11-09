@@ -89,6 +89,14 @@ export async function closeReactionBoards(fightId, emit) {
   for (const r of rows) emit?.('dice:marks', { ...shape(r), active: false });
 }
 
+// One fighter's open Interrupt boards close (Close, without using them).
+export async function closeInterruptBoards(fightId, combatantId, emit) {
+  const rows = await all('SELECT * FROM dice_marks WHERE roll_id LIKE ? AND combatant_id = ? AND active = 1', [`react-${fightId}-%`, combatantId]);
+  if (!rows.length) return;
+  await run('UPDATE dice_marks SET active = 0 WHERE roll_id LIKE ? AND combatant_id = ? AND active = 1', [`react-${fightId}-%`, combatantId]);
+  for (const r of rows) emit?.('dice:marks', { ...shape(r), active: false });
+}
+
 // Those fighters' turns ended: their boards freeze.
 export async function endTurnDice(combatantIds, emit) {
   for (const id of combatantIds) {
@@ -210,7 +218,8 @@ export function registerDiceMarkHandlers({ on: onRaw, socket, io, triggers = nul
     // Its own conditions and limits (phase F), and nobody Taken Out acts.
     const ts = await turnStateOf(row);
     if (ts) {
-      if (atZero(shapeFightState(ts.me).hp)) return refuse(row.roll_id, 'Taken Out: no Actions');
+      // Taken Out: only Actions usable while Taken Out (the Mentor's).
+      if (atZero(shapeFightState(ts.me).hp) && !action.usableWhileTakenOut) return refuse(row.roll_id, 'Taken Out: no Actions');
       if (ts.fight.movement_phase && !data.reaction) return refuse(row.roll_id, 'wait until everyone has finished moving');
       const pending = data.placements.filter((p) => p.actionId === action.id && !p.committed).length;
       const ok = actionUsable(action, ts.ctx, ts.usage, actingOn(row).combatantId, pending);

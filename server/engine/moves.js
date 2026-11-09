@@ -35,6 +35,8 @@ const costOpts = (mods) => {
   return { costPerSpace: v == null ? null : Math.max(0, Number(v) || 0) };
 };
 
+// A square pick's title: what is doing it, and the movement — "One-Two Form (Move 2)".
+const named = (env, what) => (env?.source ? `${env.source} (${what})` : what);
 // A square's name for people: map cells by column and row, lane spaces by lane.
 export const squareName = (mode, sq) => (sq == null ? 'the Outside' : mode === 'simple' ? `lane ${sq.row + 1}, space ${sq.col + 1}` : `column ${sq.col}, row ${sq.row}`);
 const DANGER = ['pit', 'trap', 'rubble'];
@@ -123,7 +125,7 @@ export function createMoves({ ask, emitEvent, postCard }) {
     const b = m.board();
     const dests = actionMoveDestinations(b, f.square, d, upTo, f.id);
     if (!dests.length) return null;
-    const pick = await pickSquare(env, f, m.mode, b, dests, { title: `Move ${upTo ? 'up to ' : ''}${d}`, text: `${f.name}: pick where to move.`, allowNone: upTo || allowNone });
+    const pick = await pickSquare(env, f, m.mode, b, dests, { title: named(env, `Move ${upTo ? 'up to ' : ''}${d}`), text: `${f.name}: pick where to move.`, allowNone: upTo || allowNone });
     if (!pick) return null;
     await walk(env, m, f, pick.path);
     note(`${f.name} moves to ${squareName(m.mode, pick.square)}`);
@@ -137,7 +139,7 @@ export function createMoves({ ask, emitEvent, postCard }) {
     if (!f.square) return null;
     const d = await fatigue(env, f, Math.max(0, Number(distance) || 0));
     const b = m.board();
-    const pick = await pickSquare(env, f, m.mode, b, teleportDestinations(b, f.square, d, f.id), { title: `Teleport ${d}`, text: `${f.name}: pick where to teleport.`, allowNone });
+    const pick = await pickSquare(env, f, m.mode, b, teleportDestinations(b, f.square, d, f.id), { title: named(env, `Teleport ${d}`), text: `${f.name}: pick where to teleport.`, allowNone });
     if (!pick) return null;
     await m.setSquare(f, pick.square);
     note(`${f.name} teleports to ${squareName(m.mode, pick.square)}`);
@@ -219,7 +221,7 @@ export function createMoves({ ask, emitEvent, postCard }) {
       return target.square;
     }
     const picked = await pickSquare(env, chooser ?? target, m.mode, b, landings, {
-      title: `${verb} ${d}`,
+      title: named(env, `${verb} ${d}`),
       text: `${chooser?.name ?? 'Pick'}: where does ${target.name} land?`,
       allowNone: false,
     });

@@ -19,19 +19,25 @@ const HEADER_CLIP = { clipPath: 'polygon(0 0, 100% 0, calc(100% - 22px) 100%, 0 
 // Gates ("5 Iron: …") up to it.
 // `onGateTap(threshold)`: Gate lines become tappable (stop at an earlier Gate,
 // phase B); `committed`: the Action was performed (a quieter glow).
-export function ActionCard({ action, lit = null, dice = [], paid = null, paidAmount = null, compact = false, dropTarget = false, onGateTap = null, committed = false }) {
+// `preview` (a die dragged over the card — decided): the Gate that die would
+// reach (a number: every Gate up to it shows sky-blue), or `false` when it
+// can't pay for it (a red outline). `undefined`: no die over it.
+export function ActionCard({ action, lit = null, dice = [], paid = null, paidAmount = null, compact = false, dropTarget = false, onGateTap = null, committed = false, preview = undefined }) {
   if (!action) return null;
   const { base, gates } = splitGates(action.rulesText);
   // The base effect's threshold: the lowest cost (an "X" cost: 0).
   const lowest = [...(action.gates?.headerThresholds ?? [])].sort((a, b) => a - b)[0] ?? 0;
   const top = lit != null && lit.length ? Math.max(...lit) : null;
   const reached = (t) => top != null && t != null && t <= top;
+  const previewed = (t) => typeof preview === 'number' && t != null && t <= preview;
+  const previewRing = preview === false ? 'outline outline-2 outline-offset-1 outline-red-500' : typeof preview === 'number' ? 'outline outline-2 outline-offset-1 outline-sky-400' : '';
+  const gateTone = (on, pre) => (on ? 'bg-lime-200 ring-1 ring-lime-500' : pre ? 'bg-sky-200 ring-1 ring-sky-500' : '');
   const cost = action.cost?.text ?? (typeof action.cost === 'string' ? action.cost : '');
   const size = compact ? 'text-[11px]' : 'text-xs';
   return (
     <article
       data-action-id={dropTarget ? action.id : undefined}
-      className={`relative overflow-hidden rounded-[2px] transition-shadow ${
+      className={`relative overflow-hidden rounded-[2px] transition-shadow ${previewRing} ${
         lit != null ? (committed ? 'opacity-75 shadow-[0_0_0_2px_#65a30d]' : 'shadow-[0_0_0_3px_#bef264,0_0_18px_2px_rgba(190,242,100,0.55)]') : ''
       }`}
     >
@@ -67,7 +73,7 @@ export function ActionCard({ action, lit = null, dice = [], paid = null, paidAmo
         {base && (
           <p
             onClick={onGateTap && reached(lowest) ? (e) => (e.stopPropagation(), onGateTap(lowest)) : undefined}
-            className={`whitespace-pre-line rounded-sm px-1 ${reached(lowest) ? 'bg-lime-200 ring-1 ring-lime-500' : ''} ${onGateTap && reached(lowest) ? 'cursor-pointer' : ''}`}
+            className={`whitespace-pre-line rounded-sm px-1 ${gateTone(reached(lowest), previewed(lowest))} ${onGateTap && reached(lowest) ? 'cursor-pointer' : ''}`}
           >
             {base}
           </p>
@@ -78,7 +84,7 @@ export function ActionCard({ action, lit = null, dice = [], paid = null, paidAmo
             onClick={onGateTap && g.kind === 'dice' && reached(g.n) ? (e) => (e.stopPropagation(), onGateTap(g.n)) : undefined}
             title={onGateTap && g.kind === 'dice' && reached(g.n) ? 'Tap to stop at this Gate' : undefined}
             className={`whitespace-pre-line rounded-sm px-1 pl-3 ${
-              (g.kind === 'cost' ? paidAmount != null && g.n <= paidAmount : reached(g.n)) ? 'bg-lime-200 ring-1 ring-lime-500' : ''
+              g.kind === 'cost' ? gateTone(paidAmount != null && g.n <= paidAmount, false) : gateTone(reached(g.n), previewed(g.n))
             } ${onGateTap && g.kind === 'dice' && reached(g.n) ? 'cursor-pointer' : ''}`}
           >
             <b>{g.threshold}:</b> {g.text}

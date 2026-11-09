@@ -408,10 +408,14 @@ export function TriggerPrompts() {
   return <TriggerPromptDialog key={p.id} prompt={p} />;
 }
 
-// **A square pick (phase D, decided):** the legal squares glow on the map or
-// lane (SquarePickLayer) and this compact bar lists them — docked at the
-// bottom, not over the board, so the squares stay visible to tap.
+// **A square pick (phase D; revised, decided):** the legal squares glow on the
+// map or lane (SquarePickLayer) and are picked there — no list of squares.
+// A slim bar at the top of the screen says only what is doing it and how:
+// "One-Two Form (Move 2)", with Skip when skipping is allowed.
 const barShell = 'pointer-events-auto fixed inset-x-2 bottom-2 mx-auto max-w-md panel-cut-sm border bg-zinc-950/95 p-2 shadow-2xl';
+// Picking squares happens on the board: those bars sit at the top, out of the way.
+const topBarShell = 'pointer-events-auto fixed inset-x-2 mx-auto max-w-md panel-cut-sm border bg-zinc-950/90 px-2 py-1 shadow-xl';
+const topStyle = { top: 'max(0.5rem, var(--safe-top, 0px))' };
 const barButton = 'min-h-8 panel-cut-sm border border-zinc-700 bg-zinc-900 px-2 py-0.5 text-left text-xs text-zinc-100 hover:border-lime-400';
 function SquarePromptBar({ prompt }) {
   const answer = (value) => socket.emit('trigger:answer', { id: prompt.id, answer: value });
@@ -421,29 +425,15 @@ function SquarePromptBar({ prompt }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [prompt.id]);
   return (
-    <div className={`${barShell} border-lime-600`} style={{ zIndex: 3100 }} role="dialog" aria-label={`${prompt.fighterName}: ${prompt.title}`}>
-      {prompt.when && <p className="font-display text-[10px] font-bold uppercase tracking-wide text-amber-300">{prompt.when}</p>}
-      <p className="font-display text-sm font-bold uppercase tracking-wide text-lime-200">
-        {prompt.fighterName}: {prompt.title}
-      </p>
-      {prompt.text && (
-        <p className="text-xs text-zinc-400">
-          {prompt.text} <span className="text-[10px] text-lime-300/80">Tap a glowing square — or pick it here.</span>
-        </p>
-      )}
-      {/* Short on a phone, so the squares above stay in view. */}
-      <div className="mt-1 grid max-h-[22vh] grid-cols-2 gap-1 overflow-y-auto">
-        {(prompt.options ?? []).map((o) => (
-          <button key={o.id} type="button" onClick={() => answer(o.id)} className={barButton}>
-            <span className="block truncate">
-              <span className="font-semibold">{o.label}</span>
-              {o.note && <span className="text-[10px] text-zinc-500"> · {o.note}</span>}
-            </span>
-          </button>
-        ))}
-      </div>
+    <div
+      className={`${topBarShell} flex max-w-sm items-center gap-2 border-lime-600`}
+      style={{ zIndex: 3100, ...topStyle }}
+      role="dialog"
+      aria-label={`${prompt.fighterName}: ${prompt.title}`}
+    >
+      <p className="min-w-0 flex-1 truncate font-display text-xs font-bold uppercase tracking-wide text-lime-200">{prompt.title}</p>
       {prompt.minimum === 0 && (
-        <button type="button" onClick={() => answer([])} className="mt-1 min-h-9 w-full panel-cut-sm border border-zinc-700 px-3 text-xs text-zinc-300">
+        <button type="button" onClick={() => answer([])} className="min-h-7 shrink-0 panel-cut-sm border border-zinc-700 px-2 text-[11px] text-zinc-300 hover:border-lime-400">
           Skip
         </button>
       )}
@@ -457,17 +447,15 @@ export function MoveBar() {
   const pick = useSquarePick();
   if (pick?.tone !== 'move') return null;
   return (
-    <div className={`${barShell} border-sky-500`} style={{ zIndex: 3050 }} role="dialog" aria-label={pick.title}>
+    <div className={`${topBarShell} border-sky-500`} style={{ zIndex: 3050, ...topStyle }} role="dialog" aria-label={pick.title}>
+      {/* Slim, at the top (decided): the squares show their own Speed costs. */}
       <div className="flex items-center gap-2">
-        <div className="min-w-0 flex-1">
-          <p className="truncate font-display text-sm font-bold uppercase tracking-wide text-sky-200">{pick.title}</p>
-          <p className="text-[11px] text-zinc-400">
-            {pick.speed} Speed · 1 a space, 2 diagonally, +1 out of a Pit
-            {pick.fatigued ? ' · Fatigued: the next move goes 2 spaces less' : ''}
-            {!pick.options.length ? ' · nowhere to go' : ''}
-          </p>
-        </div>
-        <button type="button" onClick={() => stopFreeMove(true)} className="min-h-9 panel-cut-sm border border-sky-400 bg-sky-500/20 px-3 font-display text-xs font-bold uppercase text-sky-100">
+        <p className="min-w-0 flex-1 truncate font-display text-xs font-bold uppercase tracking-wide text-sky-200">
+          {pick.title} · {pick.speed} Speed
+          {pick.fatigued ? ' · Fatigued (2 less)' : ''}
+          {!pick.options.length ? ' · nowhere to go' : ''}
+        </p>
+        <button type="button" onClick={() => stopFreeMove(true)} className="min-h-7 shrink-0 panel-cut-sm border border-sky-400 bg-sky-500/20 px-2 font-display text-[11px] font-bold uppercase text-sky-100">
           Done
         </button>
       </div>
@@ -484,41 +472,67 @@ export function MoveBar() {
   );
 }
 
-// **Reactions (decided, phase F):** after each of the active fighter's
-// Actions, whoever can react gets **React** (their reaction board: only the
-// reactions on offer, by resource) or **Pass**.
-export function ReactBar({ fight, fighters, role, controls = () => false }) {
+// **Interrupts (decided, revised — replaces the reaction windows):** no
+// asking after every Action. Whoever this person controls that can take a
+// Reactive Action right now — a token Action they can pay for whose
+// conditions allow it now (the Mentor's on an ally's turn …), or a dice
+// Action a Chaos token can pay "as if you had spent a 4" — gets an
+// **Interrupt** button; it opens their Interrupt board with only those.
+// The offers come from the server (`interrupt:offers`), refreshed whenever
+// the stage or a board changes.
+// `left`: clear of the GM's sidebar (like the initiative rail).
+export function InterruptBar({ fight, mode, left = 8 }) {
   const pick = useSquarePick();
+  const [offers, setOffers] = useState({});
   const [board, setBoard] = useState(null);
   const [error, setError] = useState(null);
-  const w = fight?.reaction_window;
+  const fightKey = fight ? `${fight.id ?? ''}:${mode}` : null;
+  useEffect(() => {
+    if (!fightKey) {
+      setOffers({});
+      return undefined;
+    }
+    let alive = true;
+    let timer = null;
+    const load = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => socket.emit('interrupt:offers', { mode }, (r) => alive && setOffers(r?.offers ?? {})), 350);
+    };
+    load();
+    socket.on('stage:updated', load);
+    socket.on('dice:marks', load);
+    return () => {
+      alive = false;
+      clearTimeout(timer);
+      socket.off('stage:updated', load);
+      socket.off('dice:marks', load);
+    };
+  }, [fightKey, mode]);
   if (board) return <DiceBoard payload={board} canEdit onClose={() => setBoard(null)} />;
-  if (!w || pick) return null;
-  const byId = new Map(fighters.map((f) => [f.combatantId, f]));
-  const mine = w.waiting.map((id) => byId.get(id)).filter((f) => f && (role === 'gm' || (f.characterId != null && controls(f.characterId))));
-  if (!mine.length) return null;
-  const react = (f) =>
-    socket.emit('react:open', { combatantId: f.combatantId }, (r) => {
-      if (r?.payload) setBoard(r.payload);
-      else setError(r?.error ?? 'Could not react');
+  const list = Object.entries(offers).filter(([, o]) => o.mode === mode);
+  if (!list.length || pick) return null;
+  const open = (id) =>
+    socket.emit('react:open', { combatantId: Number(id) }, (r) => {
+      if (r?.payload) {
+        setError(null);
+        setBoard(r.payload);
+      } else setError(r?.error ?? 'Could not interrupt');
     });
   return (
-    <div className={`${barShell} border-fuchsia-700`} style={{ zIndex: 2990 }} role="status" aria-label="Reactions">
-      <p className="font-display text-sm font-bold uppercase tracking-wide text-fuchsia-200">Reaction</p>
-      <p className="text-[11px] text-zinc-400">{byId.get(w.activeId)?.name ?? 'The active fighter'} acted — you may take one Reactive Action.{error ? ` ${error}.` : ''}</p>
-      <ul className="mt-1 space-y-1">
-        {mine.map((f) => (
-          <li key={f.combatantId} className="flex items-center gap-1.5">
-            <span className="min-w-0 flex-1 truncate text-xs text-zinc-200">{f.name}</span>
-            <button type="button" onClick={() => react(f)} className="min-h-9 panel-cut-sm border border-fuchsia-400 bg-fuchsia-500/20 px-3 font-display text-xs font-bold uppercase text-fuchsia-100">
-              React
-            </button>
-            <button type="button" onClick={() => socket.emit('react:pass', { combatantId: f.combatantId })} className="min-h-9 panel-cut-sm border border-zinc-600 px-3 font-display text-xs font-bold uppercase text-zinc-200">
-              Pass
-            </button>
-          </li>
-        ))}
-      </ul>
+    <div className="pointer-events-auto fixed flex max-w-[60vw] flex-col items-start gap-1" style={{ zIndex: 2990, left, bottom: 'max(0.5rem, var(--safe-bottom, 0px))' }} role="group" aria-label="Interrupts">
+      {error && <p className="panel-cut-sm bg-zinc-950/90 px-2 py-0.5 text-[10px] text-red-300">{error}</p>}
+      {list.map(([id, o]) => (
+        <button
+          key={id}
+          type="button"
+          onClick={() => open(id)}
+          title={o.clusters.map((c) => `${c.label}: ${c.ids.length}`).join(' · ')}
+          className="flex min-h-8 max-w-full items-center gap-1 panel-cut-sm border border-fuchsia-400 bg-fuchsia-600/30 px-2 font-display text-[11px] font-bold uppercase tracking-wide text-fuchsia-100 shadow-lg hover:bg-fuchsia-600/50"
+        >
+          <span aria-hidden>⚡</span>
+          <span className="truncate">Interrupt · {o.name}</span>
+        </button>
+      ))}
     </div>
   );
 }
