@@ -132,7 +132,7 @@ check("…nor move: it isn't their opportunity", (await reach(gm, tb.id)).error 
 check("a player can't move someone they don't control", (await reach(p, tb.id)).error === 'not now');
 const r = await reach(p, ta.id);
 const cost = (id) => r.options?.find((o) => o.id === id)?.cost;
-check('Free Movement reach: 1 per space orthogonally, 2 diagonally, within the Speed held', cost('4,2') === 1 && cost('5,2') === 2 && cost('4,3') === 2 && cost('6,2') === 3 && cost('5,4') === undefined, JSON.stringify(r));
+check('Free Movement reach: 1 per lateral space, a diagonal is 2 (the diamond grid), within the Speed held', cost('4,2') === 1 && cost('5,2') === 2 && cost('4,3') === 2 && cost('6,2') === 3 && cost('5,4') === undefined, JSON.stringify(r));
 check('…never onto an occupied space or off the map', cost('2,2') === undefined && !(r.options ?? []).some((o) => o.col < 1 || o.row < 1));
 p.emit('move:free', { combatantId: ta.id, to: { col: 5, row: 2 } });
 await sleep(800);
@@ -145,24 +145,24 @@ check('Done: the phase is over', st.fights.combat.movement_phase == null);
 
 console.log('\n--- a push, picked as a square ---');
 prompts.length = 0;
-answerWith = (q) => (q.kind === 'square' && q.title === 'Save yourself' ? [] : q.kind === 'square' ? '6,3' : undefined);
+answerWith = (q) => (q.kind === 'square' && q.title === 'Save yourself' ? [] : q.kind === 'square' ? '6,2' : undefined);
 gm.emit('fighter:damage', { ref: { combatantId: ta.id }, amount: 1 });
 await sleep(2000);
 await stage();
 const pushPick = prompts.find((q) => q.kind === 'square' && q.title !== 'Save yourself');
-check('Relentless pushes after the damage: a square pick of the spaces 1 farther', pushPick && pushPick.mode === 'combat' && pushPick.options.map((o) => o.id).sort().join(' ') === '6,1 6,2 6,3', JSON.stringify(pushPick?.options?.map((o) => o.id)));
-check("…asked of the pusher's controller (the GM, for an NPC); the target lands where picked", pushPick?.characterId === bo.id && at(ta.id) === '6,3', at(ta.id));
+check('Relentless pushes after the damage: a square pick of the spaces 1 farther (the diamond: lateral steps)', pushPick && pushPick.mode === 'combat' && pushPick.options.map((o) => o.id).sort().join(' ') === '5,1 5,3 6,2', JSON.stringify(pushPick?.options?.map((o) => o.id)));
+check("…asked of the pusher's controller (the GM, for an NPC); the target lands where picked", pushPick?.characterId === bo.id && at(ta.id) === '6,2', at(ta.id));
 
 console.log('\n--- World of Cardboard ---');
 for (const row of [2, 3, 4]) gm.emit('map_tile:place', { mode: 'combat', col: 7, row, kind: 'wall' });
 await sleep(400);
 prompts.length = 0;
-answerWith = (q) => (q.kind === 'square' && q.title === 'Save yourself' ? [] : q.kind === 'square' ? '7,3' : undefined);
+answerWith = (q) => (q.kind === 'square' && q.title === 'Save yourself' ? [] : q.kind === 'square' ? '7,2' : undefined);
 gm.emit('fighter:damage', { ref: { combatantId: ta.id }, amount: 1 });
 await sleep(2000);
 await stage();
-const kinds = st.tiles.combat.filter((t) => t.col === 7 && t.row === 3).map((t) => t.kind);
-check('pushed into a Wall: it becomes Rubble and they stand in it', at(ta.id) === '7,3' && kinds.includes('rubble') && !kinds.includes('wall'), `${at(ta.id)} ${JSON.stringify(kinds)}`);
+const kinds = st.tiles.combat.filter((t) => t.col === 7 && t.row === 2).map((t) => t.kind);
+check('pushed into a Wall: it becomes Rubble and they stand in it', at(ta.id) === '7,2' && kinds.includes('rubble') && !kinds.includes('wall'), `${at(ta.id)} ${JSON.stringify(kinds)}`);
 check('…offered to Save themselves (they hold Speed), declined: +1 Fatigue', prompts.some((q) => q.title === 'Save yourself') && tok(ta.id).fight.tokens.fatigue === 1, JSON.stringify(tok(ta.id).fight.tokens));
 
 console.log('\n--- the Outside ---');
@@ -211,6 +211,28 @@ gm.emit('move:skip', { mode: 'combat' });
 await sleep(500);
 await stage();
 check('the GM can skip a movement phase', early?.waiting?.length > 0 && st.fights.combat.movement_phase == null, JSON.stringify(early));
+
+console.log('\n--- a hand move: spend Speed? ---');
+const ask = (s, ev, payload) => new Promise((r) => s.emit(ev, payload, r));
+gm.emit('combat_token:move', { combatantId: ta.id, col: 4, row: 4 });
+gm.emit('fighter:token', { ref: { combatantId: ta.id }, key: 'speed', clear: true });
+await sleep(300);
+gm.emit('fighter:token', { ref: { combatantId: ta.id }, key: 'speed', delta: 2 });
+await sleep(400);
+const lateral = await ask(p, 'move:hand_cost', { combatantId: ta.id, col: 6, row: 4 });
+const diagonal = await ask(p, 'move:hand_cost', { combatantId: ta.id, col: 5, row: 5 });
+const far = await ask(p, 'move:hand_cost', { combatantId: ta.id, col: 6, row: 5 });
+check('the cost is the cheapest Free Movement there: 2 lateral = 2, a diagonal = 2, both = 3; with the Speed held', lateral.cost === 2 && diagonal.cost === 2 && far.cost === 3 && lateral.speed === 2, JSON.stringify([lateral, diagonal, far]));
+const tooMuch = await ask(p, 'move:hand_pay', { combatantId: ta.id, col: 6, row: 5 });
+await stage();
+check('"Yes" is refused when the Speed held is not enough (nothing spent)', tooMuch.error && tok(ta.id).fight.tokens.speed === 2, JSON.stringify([tooMuch, tok(ta.id).fight.tokens]));
+const paid = await ask(p, 'move:hand_pay', { combatantId: ta.id, col: 5, row: 5 });
+p.emit('combat_token:move', { combatantId: ta.id, col: 5, row: 5 });
+await sleep(500);
+await stage();
+check('"Yes" spends it, and the move follows', paid.ok && paid.cost === 2 && !tok(ta.id).fight.tokens.speed && at(ta.id) === '5,5', JSON.stringify([paid, tok(ta.id).fight.tokens, at(ta.id)]));
+const nobody = await ask(p, 'move:hand_cost', { combatantId: tb.id, col: 1, row: 1 });
+check("…only for fighters you control", Boolean(nobody.error), JSON.stringify(nobody));
 
 gm.emit('fight:end', { mode: 'combat' });
 await sleep(300);

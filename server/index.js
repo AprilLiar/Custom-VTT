@@ -24,7 +24,7 @@ import {
 import { TRAY, clampLaneY, clampLanes, laneCapacity, moveOnLane, packLane } from '../client/src/lib/simpleLane.js';
 import { loadCombatTokens, registerCombatMapHandlers, sceneGrid } from './combatMap.js';
 import { EMPTY_FIGHT_STATE, loadSimpleStates, registerCombatStateHandlers, releaseChallengesOf } from './combatState.js';
-import { loadFightState, registerFightHandlers } from './fights.js';
+import { loadFightState, registerFightHandlers, wireInterrupts } from './fights.js';
 import { createTriggerEngine } from './triggers.js';
 import { loadMapTiles, registerMapTileHandlers } from './mapTiles.js';
 import { deleteBuild, loadBuild, registerBuildHandlers } from './builds.js';
@@ -569,11 +569,16 @@ async function buildStagePayload() {
         name: sceneRow.name,
         background_fit: sceneRow.background_fit,
         combat_mode: SCENE_MODES.has(sceneRow.combat_mode) ? sceneRow.combat_mode : 'scene',
-        // The Combat map (Phase 3): its own picture and grid.
-        combat_image_url: imageUrl('scene-combat', sceneRow.id, {
-          hash: sceneRow.combat_image_hash,
-          present: sceneRow.has_combat_image,
-        }),
+        // The Combat map (Phase 3): its own picture and grid. **Without an
+        // uploaded one it points at the Scene's own artwork (decided)** — the
+        // same URL, never a copy; `combat_image_own` says which it is.
+        combat_image_url: sceneRow.has_combat_image
+          ? imageUrl('scene-combat', sceneRow.id, { hash: sceneRow.combat_image_hash, present: true })
+          : imageUrl('scene', sceneRow.image_source_id ?? sceneRow.id, {
+              hash: sceneRow.image_hash,
+              present: sceneRow.has_image || sceneRow.image_source_id != null,
+            }),
+        combat_image_own: Boolean(sceneRow.has_combat_image),
         grid: sceneGrid(sceneRow),
         // Cinematic Weight per fight (keys of client/src/lib/cinematicWeight.js).
         weights: { simple: sceneRow.simple_weight ?? null, combat: sceneRow.combat_weight ?? null },
@@ -1492,7 +1497,15 @@ function armTrackEndTimer(payload) {
 // One turn-trigger engine for the whole server, made on first use (postCard
 // and emitStageUpdated are defined above as function declarations).
 let triggers = null;
-const triggerEngine = () => (triggers ??= createTriggerEngine({ io, postCard, emitStageUpdated }));
+let startNextInterrupt = null;
+const triggerEngine = () => {
+  if (!triggers) {
+    triggers = createTriggerEngine({ io, postCard, emitStageUpdated });
+    // The Interrupt lock's queue moves on whenever a fight's stack finishes.
+    startNextInterrupt = wireInterrupts({ triggers, emitStageUpdated, emitAll: (event, payload) => io.emit(event, payload) });
+  }
+  return triggers;
+};
 
 io.on('connection', (socket) => {
   const on = (event, handler) => {
@@ -1516,9 +1529,9 @@ io.on('connection', (socket) => {
   registerMapTileHandlers({ on, socket, emitStageUpdated });
   registerBuildHandlers({ on, socket, io, mayWrite: mayWriteScenePicture, emitStageUpdated });
   registerHomebrewHandlers({ on, socket, io, emitStageUpdated });
-  registerDiceMarkHandlers({ on, socket, io, triggers: triggerEngine() });
+  registerDiceMarkHandlers({ on, socket, io, triggers: triggerEngine(), emitStageUpdated });
   // Rounds, turns, Stance rolls and Reminders (Phase 5) — see server/fights.js.
-  registerFightHandlers({ on, socket, emitStageUpdated, postCard, postSystemMessage, emitAll: (event, payload) => io.emit(event, payload), triggers: triggerEngine() });
+  registerFightHandlers({ on, socket, emitStageUpdated, postCard, postSystemMessage, emitAll: (event, payload) => io.emit(event, payload), triggers: triggerEngine(), startNextInterrupt });
   // Turn triggers' choices and targets (builder phase 3) — see server/triggers.js.
   on('trigger:answer', (payload) => triggerEngine().answer(socket, payload));
 

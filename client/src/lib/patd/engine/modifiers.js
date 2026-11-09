@@ -94,6 +94,10 @@ export const ENFORCED_RULES = new Set([
   'action_dice.additional',
   // phase J
   'abilities.disabled',
+  // Challenge (decided: a Unique token) — server/triggers.js world.challenge / removeChallenge
+  'challenge.unblockable',
+  'challenge.cannot_discard',
+  'own_challenges.immune_to_enemy_action_or_ability_removal',
 ]);
 
 // **A fighter's range now (phase G):** their Stance's range changed by

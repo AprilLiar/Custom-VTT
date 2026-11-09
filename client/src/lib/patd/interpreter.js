@@ -127,6 +127,8 @@ export const SUPPORTED_EVENTS = new Set([
   'enemy_turn.start',
   'enemy.turn.start',
   'self.challenge_given_to_enemy',
+  // A held Challenge discarded by the Challenger's enemy (decided: Challenge is Unique).
+  'enemy.removed_own_challenge_by_enemy_action_or_ability',
   'self.bleed',
   'self.damage_taken',
   'warrior_path.trigger',
@@ -221,7 +223,21 @@ const SELECTOR_KINDS = new Set([
 ]);
 const OBSTACLE_OPS_KINDS = new Set(['trap', 'fog', 'pit', 'rubble', 'wall', 'copy']);
 // Copies aren't tracked on the board, so "you or your Copies" is your own range.
-const RANGE_MODES = new Set(['stance', 'visible', 'adjacent', 'explicit', 'none', 'map', 'self_or_copies_range', 'adjacent_to_any_own_copy', 'adjacent_to_binding', 'on_or_adjacent_to_binding', 'target_and_adjacent']);
+const RANGE_MODES = new Set([
+  'stance',
+  'visible',
+  'adjacent',
+  'explicit',
+  'none',
+  'map',
+  'self_or_copies_range',
+  'adjacent_to_any_own_copy',
+  'adjacent_to_binding',
+  'on_or_adjacent_to_binding',
+  'target_and_adjacent',
+  // "Your nearest ally to them" (Decoy Style): nearest to whoever held your Challenge.
+  'nearest_to_event_former_holder',
+]);
 const REF_OK = [
   /^self$/,
   /^self\.bleeding$/,
@@ -249,7 +265,7 @@ const REF_OK = [
   /^bindings\.[A-Za-z]+$/,
   /^variables\.[A-Za-z]+$/,
   /^state\.[A-Za-z]+$/,
-  /^event\.(target|activeCharacter|attacker|amount|isCostPayment|shieldBroke|damage|enemy|enemyCount|enemyDamageDealers)$/,
+  /^event\.(target|activeCharacter|attacker|amount|isCostPayment|shieldBroke|damage|enemy|enemyCount|enemyDamageDealers|formerHolder)$/,
   // What an Action did (phase G: server/engine/actions.js), who pushed you, what hit you.
   /^event\.(enemiesDamaged|enemiesForcedMoved|alliesForcedMoved|movedSwappedOrTeleportedSelf|source|sourceType)$/,
   /^event\.(enemiesDamaged|enemiesForcedMoved|alliesForcedMoved)\.length$/,
@@ -359,6 +375,30 @@ export function evalValue(v, scope) {
     return fn(v.args.map((a) => evalValue(a, scope)));
   }
   return v;
+}
+
+// Discards `amount` of `keys` in order; a held Challenge goes through
+// world.removeChallenge (`by`: whose Action or Ability discards it).
+async function discardHeld(world, f, keys, amount, by) {
+  let left = amount;
+  let n = 0;
+  for (let i = 0; i < keys.length && left > 0; ) {
+    if (keys[i] === 'challenge') {
+      if (await world.removeChallenge?.(f, by)) {
+        n++;
+        left--;
+      }
+      i++;
+      continue;
+    }
+    let j = i;
+    while (j < keys.length && keys[j] !== 'challenge') j++;
+    const d = Number(await world.discardTokens(f, keys.slice(i, j), left)) || 0;
+    n += d;
+    left -= d;
+    i = j;
+  }
+  return n;
 }
 
 const STATUS = ['burning', 'fatigue', 'weakness'];
@@ -659,7 +699,7 @@ function anchorOf(sel, scope) {
 function nearAnchor(sel, anchor, sq) {
   const at = anchor?.square ?? (Number.isInteger(anchor?.col) ? anchor : null);
   if (!at || !sq) return false;
-  const d = chebyshev(at, sq);
+  const d = gridDistance(at, sq);
   return sel.range.mode === 'adjacent_to_binding' ? d === 1 : d <= 1;
 }
 
@@ -697,7 +737,13 @@ async function select(sel, scope, ctx, label = 'a target') {
   if (sel.excludeSelf) pool = pool.filter((f) => f.id !== self.id);
   // Dodged with Control (phase F): immune to this Action.
   if (ctx.immuneIds?.length) pool = pool.filter((f) => !ctx.immuneIds.includes(f.id));
-  if (bound) {
+  if (sel.range?.mode === 'nearest_to_event_former_holder') {
+    // The nearest (the diamond grid) to whoever held your Challenge; ties are picked.
+    const at = scope.event?.formerHolder?.square;
+    const near = at ? pool.filter((f) => f.square) : [];
+    const best = Math.min(...near.map((f) => gridDistance(f.square, at)));
+    pool = near.filter((f) => gridDistance(f.square, at) === best);
+  } else if (bound) {
     const anchor = anchorOf(sel, scope);
     pool = pool.filter((f) => (f !== anchor || sel.range.mode === 'target_and_adjacent') && nearAnchor(sel, anchor, f.square));
   } else pool = pool.filter((f) => f.isObstacle || (f.isCopy && sel.range?.mode === 'none') || world.inRange(from, f, sel.range));
@@ -874,11 +920,16 @@ async function run(node, scope, ctx) {
       for (const f of await targetsOf(node.target, scope, ctx)) {
         const held = world.heldTokens(f);
         const filter = val(node.tokenFilter);
-        // Shield, Armor and Challenge are never "tokens you hold" to discard here.
+        // Shield and Armor are never "tokens you hold" to discard here.
         // Kinds (phase I): Status, Basic (Power, Iron, Speed), Unique, non-Unique, one key, any.
         const kindOk = (k) =>
           filter === 'status' ? STATUS.includes(k) : filter === 'basic' ? BASIC.includes(k) : filter === 'unique' ? !NON_UNIQUE.has(k) : filter === 'non_unique' ? NON_UNIQUE.has(k) : filter === 'any' || filter == null || k === filter;
-        let keys = Object.keys(held).filter((k) => held[k] > 0 && !NOT_DISCARDABLE.has(k) && kindOk(k));
+        // **A held Challenge (decided: a Unique token):** a Unique / any discard
+        // may take it — never a Status, Basic or non-Unique one — unless it is
+        // protected (world.challengeRemovable: Distracting, Showdown).
+        const challengeOk = f.challengeId != null && kindOk('challenge') && (world.challengeRemovable?.(f, scope.self) ?? false);
+        if (challengeOk) held.challenge = 1;
+        let keys = Object.keys(held).filter((k) => held[k] > 0 && (!NOT_DISCARDABLE.has(k) || (k === 'challenge' && challengeOk)) && kindOk(k));
         if (!keys.length) {
           if (decline) return DECLINED;
           continue;
@@ -886,7 +937,7 @@ async function run(node, scope, ctx) {
         const total = keys.reduce((n, k) => n + held[k], 0);
         // "Discards all Basic tokens they hold" (Lucky Hit).
         if (amount === 'all') {
-          await world.discardTokens(f, keys, total);
+          await discardHeld(world, f, keys, total, scope.self);
           scope.history.tokensDiscarded = (scope.history.tokensDiscarded ?? 0) + total;
           ctx.log(`${f.name} discards ${total} token${total === 1 ? '' : 's'}`);
           await ctx.emit?.('self.tokens_discarded_by_action_or_ability', f, { amount: total, isCostPayment: false });
@@ -908,7 +959,7 @@ async function run(node, scope, ctx) {
           if (decline && (first == null || first === SKIP)) return DECLINED;
           if (keys.includes(first)) keys = [first, ...keys.filter((k) => k !== first)];
         }
-        const n = await world.discardTokens(f, keys, amount);
+        const n = await discardHeld(world, f, keys, amount, scope.self);
         // "For each token they discarded" (Hunger — phase H).
         scope.history.tokensDiscarded = (scope.history.tokensDiscarded ?? 0) + (Number(n) || 0);
         if (n) {
@@ -1015,7 +1066,10 @@ async function run(node, scope, ctx) {
           unblockable: ctx.unblockable ?? [],
           power: ctx.power ?? null,
           emit: ctx.emit ?? null,
+          // Their Shield blocked this Action's Challenge: it doesn't take the damage too.
+          noShield: (scope.history.shieldBlockedChallenge ?? []).includes(f.id),
         });
+        if (r?.absorbed > 0) (scope.history.shieldUsedOn ??= []).push(f.id);
         const taken = r?.taken ?? r?.toHp ?? n;
         const steps = r?.steps?.length ? r.steps : r?.absorbed ? [`Shield absorbs ${r.absorbed}${r.broke ? ' and breaks' : ''}`] : [];
         ctx.log(`${attacker.name} deals ${taken} damage to ${f.name}${steps.length ? ` (${steps.join(', ')})` : ''}`);
@@ -1239,7 +1293,19 @@ async function run(node, scope, ctx) {
     case 'challenge': {
       const challenger = asList(val(node.challenger))[0] ?? scope.self;
       for (const f of await targetsOf(node.target, scope, ctx, 'an enemy')) {
-        await world.challenge(f, challenger);
+        // Shields may block it (unless Unblockable by Shields, or the Shield
+        // already took this Action's damage); someone holding it already, or
+        // who discarded it this turn, can't be Challenged again (world.challenge).
+        const r = (await world.challenge(f, challenger, { unblockable: ctx.unblockable ?? [], mods: scope.mods ?? [], shieldSpent: (scope.history.shieldUsedOn ?? []).includes(f.id) })) ?? { given: true };
+        if (r.blocked) {
+          ctx.log(`${f.name}'s Shield blocks ${challenger.name}'s Challenge`);
+          (scope.history.shieldBlockedChallenge ??= []).push(f.id);
+          continue;
+        }
+        if (r.given === false) {
+          ctx.log(r.why ?? `${f.name} can't be Challenged now`);
+          continue;
+        }
         (scope.history.challengedIds ??= []).push(f.id);
         (scope.history.challengedByThisAction ??= []).push(f);
         ctx.log(`${challenger.name} Challenges ${f.name}`);
@@ -1462,15 +1528,16 @@ function unsupported(node, scope, ctx) {
 
 // ------------------------------------------------------------------ board geometry (range and sight)
 
-// Squares: { col, row }. Distance with a diagonal counting 1 (decided).
-export const chebyshev = (a, b) => Math.max(Math.abs(a.col - b.col), Math.abs(a.row - b.row));
+// Squares: { col, row }. **The diamond grid (decided, revised):** a diagonal
+// is two lateral spaces, so Range is the Manhattan distance (board.js).
+export const gridDistance = (a, b) => Math.abs(a.col - b.col) + Math.abs(a.row - b.row);
 
 // Line of sight between two squares' centres (book p.35: a line that only
 // touches a Wall's corner or runs along its edge is fine). `walls`: Set of
 // "col,row". The two end squares never block.
 export function lineOfSight(a, b, walls) {
   if (!walls?.size) return true;
-  const steps = Math.max(8, chebyshev(a, b) * 16);
+  const steps = Math.max(8, gridDistance(a, b) * 16);
   const ax = a.col + 0.5;
   const ay = a.row + 0.5;
   const bx = b.col + 0.5;
@@ -1496,7 +1563,7 @@ export function lineOfSight(a, b, walls) {
 // targeting enemies.
 export function targetable({ from, to, range, stanceRange, walls, fogged, enemy }) {
   if (!from || !to) return range?.mode === 'none' || range?.mode === 'map';
-  const d = chebyshev(from, to);
+  const d = gridDistance(from, to);
   const sight = !enemy || lineOfSight(from, to, walls);
   const fogOk = !enemy || d <= 1 || !fogged(to);
   switch (range?.mode) {

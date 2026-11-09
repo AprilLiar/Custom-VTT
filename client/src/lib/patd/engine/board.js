@@ -3,8 +3,11 @@
 // a row of 10 spaces, the ends the arena's edge). Pure: the server builds it
 // from the fight's squares and tiles and applies what these planners return.
 //
-// Squares are { col, row }. Distance counts a diagonal as 1 (decided), but on
-// a square grid Free Movement pays 2 Speed for a diagonal step (book p.57).
+// Squares are { col, row }. **The diamond grid (decided, revised):** there is
+// no diagonal step — a diagonal is two lateral moves — so distance is the
+// Manhattan distance (a diagonal counts 2) for movement and ranges alike, and
+// "adjacent" means the four lateral neighbours. Weightless Style alone still
+// steps diagonally, for 1 Speed (its text ignores the diagonal surcharge).
 //
 // board: { bounds: { colMin, colMax, rowMin, rowMax } | null (no edge known),
 //          tiles: Map("c,r" → Set(kind)), unitAt: Map("c,r" → id) }
@@ -14,18 +17,25 @@
 
 export const key = (sq) => `${sq.col},${sq.row}`;
 export const sameSquare = (a, b) => Boolean(a && b && a.col === b.col && a.row === b.row);
-export const chebyshev = (a, b) => Math.max(Math.abs(a.col - b.col), Math.abs(a.row - b.row));
-const DIRS = [
+export const gridDistance = (a, b) => Math.abs(a.col - b.col) + Math.abs(a.row - b.row);
+const LATERAL = [
   [1, 0],
   [-1, 0],
   [0, 1],
   [0, -1],
+];
+const DIAGONAL = [
   [1, 1],
   [1, -1],
   [-1, 1],
   [-1, -1],
 ];
-export const neighbors = (sq) => DIRS.map(([dc, dr]) => ({ col: sq.col + dc, row: sq.row + dr }));
+const around = (dirs) => (sq) => dirs.map(([dc, dr]) => ({ col: sq.col + dc, row: sq.row + dr }));
+// The four lateral neighbours: every step of movement, and "adjacent".
+export const neighbors = around(LATERAL);
+// The corner-touching ones too (Weightless steps; a pull's spin).
+export const diagonals = around(DIAGONAL);
+export const allNeighbors = around([...LATERAL, ...DIAGONAL]);
 export const isDiagonal = (a, b) => a.col !== b.col && a.row !== b.row;
 
 // `exits`: where the Outside is — 'all' four edges (the map), or only the
@@ -59,11 +69,12 @@ export const isEmpty = (b, sq, ignore = []) => inBounds(b, sq) && !isFull(b, sq,
 // ------------------------------------------------------------------ Free Movement (Speed)
 
 // Every square a fighter can reach with Free Movement, at its cheapest Speed:
-// 1 orthogonally, 2 diagonally, +1 for each step out of a Pit. Never Outside,
-// never through a full space. → Map("c,r" → { square, cost, path })
-// (`path` excludes the start). Rubble on the way gives Fatigue and Traps deal
-// damage — the server applies them along the chosen path. `costPerSpace`
-// (Weightless Style: every space costs 1, diagonals and Pits too).
+// 1 per lateral step (a diagonal is two of them, through a space that must be
+// empty), +1 for each step out of a Pit. Never Outside, never through a full
+// space. → Map("c,r" → { square, cost, path }) (`path` excludes the start).
+// Rubble on the way gives Fatigue and Traps deal damage — the server applies
+// them along the chosen path. `costPerSpace` (Weightless Style: every space
+// costs 1, a diagonal step and Pits too).
 const stepCost = (b, at, n, costPerSpace) => (costPerSpace != null ? costPerSpace : (isDiagonal(at, n) ? 2 : 1) + (has(b, at, 'pit') ? 1 : 0));
 export function freeMoveReach(b, from, speed, selfId = null, { costPerSpace = null } = {}) {
   const best = new Map([[key(from), { square: from, cost: 0, path: [] }]]);
@@ -72,7 +83,7 @@ export function freeMoveReach(b, from, speed, selfId = null, { costPerSpace = nu
     queue.sort((x, y) => x.cost - y.cost);
     const cur = queue.shift();
     if (best.get(key(cur.square))?.cost < cur.cost) continue;
-    for (const n of neighbors(cur.square)) {
+    for (const n of (costPerSpace != null ? allNeighbors : neighbors)(cur.square)) {
       if (!isEmpty(b, n, [selfId])) continue;
       const cost = cur.cost + stepCost(b, cur.square, n, costPerSpace);
       if (cost > speed) continue;
@@ -136,13 +147,14 @@ export function actionMoveDestinations(b, from, distance, upTo = false, selfId =
 
 // ------------------------------------------------------------------ Teleport and Swap
 
-// "Teleport X": any empty space within Range 1-X, ignoring what's between.
+// "Teleport X": any empty space within Range 1-X (the diamond), ignoring
+// what's between.
 export function teleportDestinations(b, from, distance, selfId = null) {
   const out = [];
   if (!(distance > 0)) return out;
   for (let dc = -distance; dc <= distance; dc++) {
     for (let dr = -distance; dr <= distance; dr++) {
-      if (!dc && !dr) continue;
+      if ((!dc && !dr) || Math.abs(dc) + Math.abs(dr) > distance) continue;
       const sq = { col: from.col + dc, row: from.row + dr };
       if (isEmpty(b, sq, [selfId])) out.push({ square: sq, path: [sq] });
     }
@@ -154,9 +166,11 @@ export function teleportDestinations(b, from, distance, selfId = null) {
 
 // Every way a push (away from `origin`) or pull (toward it) of `distance` can
 // go (book p.59, with World of Cardboard always on — decided):
-//   - each space is strictly farther from (push) or closer to (pull) the
-//     origin than the last; a pull of someone adjacent spins them into any
-//     space adjacent to both;
+//   - each lateral step is strictly farther from (push) or closer to (pull)
+//     the origin than the last; a pull of someone adjacent spins them into any
+//     space adjacent to both — on the diamond grid no space is laterally
+//     adjacent to both, so (decided) it is the spaces adjacent to the puller
+//     that touch the target's corner: one diagonal hop around them;
 //   - only into empty spaces — except a Wall, which they smash into: it
 //     becomes Rubble, they enter its space, and the movement ends;
 //   - Rubble and Pits end it at once; Traps on the way are triggered;
@@ -170,7 +184,7 @@ export function forcedMoves(b, target, origin, distance, { pull = false, upTo = 
   const out = [];
   if (!(distance > 0) || !target || !origin) return out;
   const startedOnEdge = onEdge(b, target);
-  const d = (sq) => chebyshev(sq, origin);
+  const d = (sq) => gridDistance(sq, origin);
   const done = (path, ends, extra = {}) =>
     out.push({ square: path.at(-1) ?? null, path, ends, traps: path.filter((sq) => has(b, sq, 'trap')), smashed: null, ...extra });
   const walk = (at, path) => {
@@ -178,9 +192,8 @@ export function forcedMoves(b, target, origin, distance, { pull = false, upTo = 
     // A pull of someone adjacent spins them around the puller: any space
     // adjacent to both (book p.59); otherwise each step strictly farther
     // (push) or closer (pull).
-    const steps = neighbors(at).filter((n) =>
-      pull ? (d(at) === 1 ? d(n) === 1 : d(n) < d(at)) : d(n) > d(at)
-    );
+    const steps =
+      pull && d(at) === 1 ? diagonals(at).filter((n) => d(n) === 1) : neighbors(at).filter((n) => (pull ? d(n) < d(at) : d(n) > d(at)));
     let moved = false;
     for (const n of steps) {
       if (sameSquare(n, origin) || sameSquare(n, target) || path.some((p) => sameSquare(p, n))) continue;
@@ -234,7 +247,7 @@ export function landingsOf(moves) {
 // ------------------------------------------------------------------ Save Yourself
 
 // After the last space of Forced Movement: spend 1 Speed (2 out of a Pit) to
-// move one space in any direction; from the Outside, into a space adjacent to
+// move one space in any lateral direction; from the Outside, into a space adjacent to
 // the edge space they went off from. → [square]
 export function saveYourselfSquares(b, landing, { from = null, selfId = null } = {}) {
   const at = landing ?? from;

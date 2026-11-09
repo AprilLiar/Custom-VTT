@@ -472,6 +472,11 @@ export function MoveBar() {
   );
 }
 
+// An Interrupt board opened from elsewhere (the lock, or `interrupt:open`
+// when the stack it waited for finished) shows in InterruptBar.
+const interruptBoardListeners = new Set();
+const showInterruptBoard = (payload) => interruptBoardListeners.forEach((fn) => fn(payload));
+
 // **Interrupts (decided, revised — replaces the reaction windows):** no
 // asking after every Action. Whoever this person controls that can take a
 // Reactive Action right now — a token Action they can pay for whose
@@ -486,6 +491,10 @@ export function InterruptBar({ fight, mode, left = 8 }) {
   const [offers, setOffers] = useState({});
   const [board, setBoard] = useState(null);
   const [error, setError] = useState(null);
+  useEffect(() => {
+    interruptBoardListeners.add(setBoard);
+    return () => interruptBoardListeners.delete(setBoard);
+  }, []);
   const fightKey = fight ? `${fight.id ?? ''}:${mode}` : null;
   useEffect(() => {
     if (!fightKey) {
@@ -510,13 +519,17 @@ export function InterruptBar({ fight, mode, left = 8 }) {
   }, [fightKey, mode]);
   if (board) return <DiceBoard payload={board} canEdit onClose={() => setBoard(null)} />;
   const list = Object.entries(offers).filter(([, o]) => o.mode === mode);
-  if (!list.length || pick) return null;
+  // Under someone's Interrupt lock, nobody else can press it (decided).
+  if (!list.length || pick || fight?.interrupt?.active) return null;
+  const waiting = new Set((fight?.interrupt?.queue ?? []).map((q) => String(q.combatantId)));
+  // Pressed while an Action resolves: it waits (a ⚡ chip) — see InterruptLock.
   const open = (id) =>
     socket.emit('react:open', { combatantId: Number(id) }, (r) => {
       if (r?.payload) {
         setError(null);
         setBoard(r.payload);
-      } else setError(r?.error ?? 'Could not interrupt');
+      } else if (r?.queued) setError(null);
+      else setError(r?.error ?? 'Could not interrupt');
     });
   return (
     <div className="pointer-events-auto fixed flex max-w-[60vw] flex-col items-start gap-1" style={{ zIndex: 2990, left, bottom: 'max(0.5rem, var(--safe-bottom, 0px))' }} role="group" aria-label="Interrupts">
@@ -526,14 +539,86 @@ export function InterruptBar({ fight, mode, left = 8 }) {
           key={id}
           type="button"
           onClick={() => open(id)}
-          title={o.clusters.map((c) => `${c.label}: ${c.ids.length}`).join(' · ')}
-          className="flex min-h-8 max-w-full items-center gap-1 panel-cut-sm border border-fuchsia-400 bg-fuchsia-600/30 px-2 font-display text-[11px] font-bold uppercase tracking-wide text-fuchsia-100 shadow-lg hover:bg-fuchsia-600/50"
+          disabled={waiting.has(id)}
+          title={waiting.has(id) ? 'Waiting for the Action resolving now to finish' : o.clusters.map((c) => `${c.label}: ${c.ids.length}`).join(' · ')}
+          className="flex min-h-8 max-w-full items-center gap-1 panel-cut-sm border border-fuchsia-400 bg-fuchsia-600/30 px-2 font-display text-[11px] font-bold uppercase tracking-wide text-fuchsia-100 shadow-lg hover:bg-fuchsia-600/50 disabled:opacity-60"
         >
           <span aria-hidden>⚡</span>
-          <span className="truncate">Interrupt · {o.name}</span>
+          <span className="truncate">{waiting.has(id) ? 'Waiting' : 'Interrupt'} · {o.name}</span>
         </button>
       ))}
     </div>
+  );
+}
+
+// **The Interrupt lock (decided).** Someone pressed Interrupt: a full-screen
+// "<name> is interrupting the current turn" for everyone — nobody can act —
+// until they commit their Interrupt board (it then resolves) or give it up.
+// The interrupter's own board sits above it. Pressed while an Action is
+// resolving, it waits: a small ⚡ chip with the name at the bottom, and the
+// lock opens as soon as that stack finishes (`interrupt:open`). The GM can
+// lift a stuck lock.
+export function InterruptLock({ fight, mode, fighters = [], role, controls = () => false }) {
+  const [error, setError] = useState(null);
+  const lock = fight?.interrupt ?? null;
+  const active = lock?.active ?? null;
+  const queue = lock?.queue ?? [];
+  useEffect(() => {
+    const onOpen = (e) => {
+      if (e?.mode === mode && e.by === socket.id && e.payload) showInterruptBoard(e.payload);
+    };
+    socket.on('interrupt:open', onOpen);
+    return () => socket.off('interrupt:open', onOpen);
+  }, [mode]);
+  useEffect(() => setError(null), [active?.combatantId]);
+  if (!active && !queue.length) return null;
+  const fighter = active ? fighters.find((f) => f.combatantId === active.combatantId) : null;
+  const mine = Boolean(active) && (active.by === socket.id || (role === 'player' && fighter?.characterId != null && controls(fighter.characterId)));
+  const openBoard = () =>
+    socket.emit('react:open', { combatantId: active.combatantId }, (r) => (r?.payload ? showInterruptBoard(r.payload) : setError(r?.error ?? 'Could not open it')));
+  const lockButton = 'min-h-9 panel-cut-sm border px-3 font-display text-xs font-bold uppercase tracking-wide';
+  return (
+    <>
+      {queue.length > 0 && (
+        <div className="pointer-events-none fixed inset-x-0 flex flex-wrap justify-center gap-1 px-4" style={{ zIndex: 3600, bottom: 'max(0.5rem, var(--safe-bottom, 0px))' }} role="status" aria-label="Waiting to interrupt">
+          {queue.map((q) => (
+            <span key={q.combatantId} title="Waiting for the Action resolving now to finish" className="flex items-center gap-1 panel-cut-sm border border-fuchsia-400/70 bg-zinc-950/90 px-2 py-0.5 font-display text-[11px] font-bold uppercase tracking-wide text-fuchsia-100 shadow-lg">
+              <span aria-hidden>⚡</span>
+              {q.name}
+            </span>
+          ))}
+        </div>
+      )}
+      {active && (
+        <div className="fixed inset-0 flex items-center justify-center bg-black/60 p-4 backdrop-blur-[2px]" style={{ zIndex: mine ? 2995 : 3500 }} role="alertdialog" aria-modal="true" aria-label={`${active.name} is interrupting the current turn`}>
+          <div className="panel-cut w-full max-w-sm border border-fuchsia-400 bg-zinc-950/95 px-6 py-5 text-center shadow-2xl">
+            <p className="text-4xl leading-none text-fuchsia-300" aria-hidden>
+              ⚡
+            </p>
+            <p className="mt-2 font-display text-2xl font-bold uppercase tracking-wide text-fuchsia-100">{active.name}</p>
+            <p className="text-sm text-zinc-300">is interrupting the current turn</p>
+            <p className="mt-1 text-[11px] text-zinc-500">{mine ? 'Place and commit your Interrupt — everyone waits for you.' : 'Everyone waits until the Interrupt is committed.'}</p>
+            {error && <p className="mt-1 text-[11px] text-red-400">{error}</p>}
+            {(mine || role === 'gm') && (
+              <div className="mt-3 flex flex-wrap justify-center gap-2">
+                <button type="button" onClick={openBoard} className={`${lockButton} border-fuchsia-400 bg-fuchsia-600/30 text-fuchsia-100 hover:bg-fuchsia-600/50`}>
+                  Open the Interrupt
+                </button>
+                {mine ? (
+                  <button type="button" onClick={() => socket.emit('react:pass', { combatantId: active.combatantId })} className={`${lockButton} border-zinc-600 text-zinc-200`}>
+                    Give it up
+                  </button>
+                ) : (
+                  <button type="button" onClick={() => socket.emit('interrupt:cancel', { mode })} className={`${lockButton} border-zinc-600 text-zinc-300 hover:border-red-500 hover:text-red-300`}>
+                    Cancel it
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </>
   );
 }
 
@@ -623,7 +708,16 @@ function TriggerPromptDialog({ prompt }) {
                   aria-pressed={on}
                   onClick={() =>
                     (prompt.required ?? []).includes(o.id) ||
-                    setPicked((list) => (on ? list.filter((v) => v !== o.id) : list.length < prompt.maximum ? [...list, o.id] : list))
+                    setPicked((list) =>
+                      on
+                        ? list.filter((v) => v !== o.id)
+                        : list.length < prompt.maximum
+                          ? [...list, o.id]
+                          : // A one-target pick takes the latest tap (decided): it replaces the last choice.
+                            prompt.maximum === 1 && !(prompt.required ?? []).length
+                            ? [o.id]
+                            : list
+                    )
                   }
                   // Separate classes per state: mixing them with the base ones let the
                   // base border win, so a pick didn't show.

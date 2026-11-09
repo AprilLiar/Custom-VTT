@@ -68,9 +68,23 @@ export function rollDerived(dice) {
   return rollStance(slots).map((r, i) => ({ ...r, ...(dice[i].color ? { color: dice[i].color } : {}), ...(dice[i].bonus ? { bonus: true } : {}) }));
 }
 
+// A lasting `armor.first_trigger_reduction` of the build's constant Abilities, or null.
+function firstReduction(d, idx) {
+  for (const id of d.constantAbilityIds ?? []) {
+    for (const r of idx.get(id)?.rules ?? []) {
+      if (!r.events?.includes('continuous')) continue;
+      const nodes = r.effect?.op === 'sequence' ? r.effect.steps : [r.effect];
+      const n = nodes.find((x) => x?.op === 'modify_rule' && x.rule === 'armor.first_trigger_reduction');
+      if (n) return Number(n.value) || null;
+    }
+  }
+  return null;
+}
+
 // What the Scene's token rows need per fighter (`fighterSetup`).
 export function setupFromDerived(d) {
   const idx = patdContent();
+  const first = firstReduction(d, idx);
   return {
     unique_tokens: d.tokens,
     armor_sources: armorSourcesOf(d, idx),
@@ -82,5 +96,8 @@ export function setupFromDerived(d) {
     level: d.level.level,
     kind: hpTableOf(d),
     health_bars: d.healthBars,
+    // The Tank: their Armor blocks 10 the first time it triggers (its ring is
+    // black). Only when set: this rides on every stage payload, per character.
+    ...(first != null ? { armor_first_reduction: first } : {}),
   };
 }

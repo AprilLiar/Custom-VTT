@@ -2845,7 +2845,8 @@ Clients emit; the server validates, writes, and broadcasts. The surviving contra
 - **Map tiles:** `map_tile:place|remove|destroy|move|clear` → `stage:updated` (see Map tiles).
 - **NPC assignment:** `character:assign { characterId, playerCharacterId | null }` (GM) → `character:updated { id, assigned_to }`.
 - **Fighter state:** `fighter:token|challenge|hp|set_hp|add_bar|remove_bar|clear_dizzy|set_stance|heal` → `stage:updated`; `fight:preset_weight` (GM) → `stage:updated`; a Bleed posts a `chat:card` reminder.
-- **Combat map:** `scene:set_grid`, `scene:set_combat_image`, `combat_token:place|move|remove|clear` → `stage:updated`.
+- **Combat map:** `scene:set_grid`, `scene:set_combat_image`, `combat_token:place|move|remove|clear` → `stage:updated`. A hand move first asks `move:hand_cost` and, on "Yes", `move:hand_pay` (acks; play feedback batch 2).
+- **Interrupts:** `interrupt:offers` (ack), `react:open` (ack: `{ payload, clusters }` or `{ queued: true }`), `react:pass`, `interrupt:cancel { mode }` (GM) → `stage:updated` (`fights[mode].interrupt = { active, queue } | null`); `interrupt:open { mode, combatantId, by, payload, clusters }` (io.emit) when a queued Interrupt's turn comes (play feedback batch 2).
 - **Combat tab:** `combat_profile:update` → `combat_profile:updated`; `combat_reminder:create|update|delete` → `combat_reminders:updated`; `combat_stance:create|update|delete` → `combat_stances:updated`.
 - **GM tools:** `image:reencode`.
 
@@ -2864,7 +2865,7 @@ Chat is a side panel on desktop (open by default) and a full-screen overlay on m
 The new system is **Panic at the Dojo: Patch'd Up** (Vel Mini / Liberi Gothica, 2024-2025 revision; the book is CC-BY-SA 4.0, so token names and short rules text may appear in the app with attribution). **The app is a visual assistant, not a rules engine:** it shows the fight — positions, HP bars, tokens, turn order — and posts reminders. It never rolls Action Dice, resolves Actions, applies damage, or spends tokens on anyone's behalf. Every number changes because a person pressed a button.
 
 Rules facts the design leans on (book pages in brackets):
-- **Tokens [p.75-78].** Four kinds. **Basic**: Iron, Power, Speed. **Status**: Burning, Challenge, Fatigue, Weakness. **Unique**: tokens specific to an Archetype, Form or Style. **Super**: Unique tokens created by a Super Move. The book caps each type at 10 (Training at 4, Challenge at 1); **decided: the app caps every type at 9** (single-digit counter), Challenge at 1.
+- **Tokens [p.75-78].** Four kinds. **Basic**: Iron, Power, Speed. **Status**: Burning, Fatigue, Weakness. **Challenge is a Unique token (decided, the user's ruling — the book lists it among the Status tokens):** a "discard a Unique / any token" may take a held Challenge; a Status, Basic or non-Unique discard never does. **Unique**: tokens specific to an Archetype, Form or Style. **Super**: Unique tokens created by a Super Move. The book caps each type at 10 (Training at 4, Challenge at 1); **decided: the app caps every type at 9** (single-digit counter), Challenge at 1.
 - **The Unique token catalog** (hardcoded from the book, decided): **Control** (Control Form; also granted by the Counter bonus), **Chaos** (Demon; also given by Mastermind Style's Diabolical Plan), **Luck** (Underdog), **Mentor** (Teacher), **Inspired** (Teacher / Motivating Style), **Poltergeist** (Phantom), **Training** (Training Style), **Rapid Strike** (Super token, the Underdog's Blur Super Move). The book says "and others", so the catalog is one constant in one module and gains entries by a one-line change.
 - **End Phase [p.68]**, in order: End of Turn Abilities; Traps; then tokens: the active character takes damage equal to their Burning tokens and discards half of them (rounded up), Iron can't reduce it; a Challenge is removed if its holder tried to damage their Challenger this turn; **everyone** discards 3 Speed tokens (all of them if fewer); the active character may discard up to 3 Fatigue if they didn't leave their starting space.
 - **Health bars [p.62]:** damage never carries from one bar into the next. A broken bar makes you **Dizzy until the end of the current turn**. Breaking the last bar means **Taken Out** (0 HP, revived by any healing).
@@ -3108,7 +3109,7 @@ The Combat tab's hand-made setup (Stances as name + dice, Unique token picks, Re
 - **HP changes from triggers are applied** to the HP bars, with a chat card saying what happened; Bleed announcements follow. **A Shield absorbs damage first** (decided, revised; see the Shield entry). Armor and Iron are **not** subtracted automatically: the card reminds the defender.
 - **Follow-on triggers: for app-caused events.** When an automated effect Challenges, damages or makes someone Bleed, the matching "after / when" rules run too (Focused Angel's "after you Challenge an enemy, deal 1 and heal 1"). Events from manual play (HP edited by hand) only get reminder cards.
 - **Range is computed on the board:**
-  - **Map:** square-grid distance with **a diagonal counting 1** (Chebyshev, `max(|dx|, |dy|)`).
+  - **Map:** square-grid distance on **the diamond grid (decided, revised — was a diagonal counting 1): a diagonal counts 2** (Manhattan, `|dx| + |dy|`), for Ranges and movement alike. This is a house rule: the book's Range rule counts a diagonal as 1 ("diagonal or lateral, a space is a space"); the user chose the diamond, since there is no real diagonal step, only two lateral ones. "Adjacent" means the four lateral neighbours.
   - **Lanes:** a small grid (each lane a row, each space a column), same rule.
   - **Sight:** Walls block a straight line from anywhere in your space to anywhere in the target's. Fog limits targeting enemies in or next to it to Range 1; allies in Fog are fine.
   - Stance range comes from the Style (plus modifiers such as Blaster's).
@@ -3146,7 +3147,7 @@ The Combat tab's hand-made setup (Stances as name + dice, Unique token picks, Re
    - **The interpreter:** `client/src/lib/patd/interpreter.js` (pure; tested in `server/test/patdInterpreter.test.js`).
      - `ruleSupport(rule)` pre-scans a rule: every op, `{ref}` path, selector and limit must be in the supported subset, or the whole rule is left to a reminder card (never half-run). 83 of the content's 123 turn-start / turn-end rules are fully automatic.
      - `runRule(rule, ctx)` walks the op tree with an explicit dispatch table (no `eval`). It covers tokens (gain, discard, distribute, choose), Shield, heal, pay HP, damage, temporary Armor, Challenge, Action Pool numbers, `optional`, `choose_one`, `choose_mode`, conditions, `for_each`, per-fighter fight state and usage limits.
-     - Geometry: `chebyshev`, `lineOfSight(a, b, walls)` and `targetable`. Sight is a straight line between the two squares' centres; a Wall square it passes through blocks it, and grazing a Wall's corner does not. Fighters fill one square, so this is the plan's "from anywhere in your space" rule for one-square fighters. Fog around the target (in it or next to it) limits targeting an enemy to Range 1.
+     - Geometry: `gridDistance` (the diamond grid — see Range above), `lineOfSight(a, b, walls)` and `targetable`. Sight is a straight line between the two squares' centres; a Wall square it passes through blocks it, and grazing a Wall's corner does not. Fighters fill one square, so this is the plan's "from anywhere in your space" rule for one-square fighters. Fog around the target (in it or next to it) limits targeting an enemy to Range 1.
    - **The engine:** `server/triggers.js`, `createTriggerEngine({ io, postCard, emitStageUpdated })`, one per server.
      - `server/fights.js` calls `schedule(fight, activeId, 'start')` after the turn-start roll (and after `fight:choose_stance`), and `schedule(…, 'end')` on `fight:next` before the turn ends. It is never awaited, so a prompt waiting on a person never holds the write queue. Each write is queued on its own, and each fight's triggers run one after another on their own chain.
      - **Who listens:** the active fighter's `own_turn` / `allied_turn` / `any_turn` rules, allies' `allied_turn` / `any_turn` rules, enemies' `enemy_turn` / `any_turn` rules. Abilities are the build's always-on ones plus the active Stance's.
@@ -3403,15 +3404,17 @@ A GM-only page (`/homebrew`, the flask icon in the header and the mobile menu) f
     - **Full spaces:** Walls and units. Rubble, Pits, Traps and Fog leave a space empty, and movement only enters empty spaces.
     - **Bounds:** the map's are the cells whose centre lies inside the image's 10% padding (`server/imageSize.js` reads the image's size from its bytes, PNG / JPEG / WebP / GIF, cached by hash). A lane's are 10 spaces × the lane count.
     - **Where the Outside is:** on the map, all four edges. On lanes, **only a lane's ends** (decided: "the ends are the arena edge"), so nobody goes off a lane's front or back.
-  - **Free Movement** (`freeMoveReach`, cheapest Speed): 1 a space, 2 diagonally, +1 for each step out of a Pit, never through full spaces, never Outside. Traps on the path deal 1 and Rubble gives 1 Fatigue. Speed is paid after, only for the spaces moved.
+  - **The diamond grid (decided, revised):** every step of movement is lateral (the four neighbours); a diagonal is two steps through a space that must itself be empty, so nobody slips between two Walls. Distance is `gridDistance` (Manhattan).
+  - **Free Movement** (`freeMoveReach`, cheapest Speed): 1 per lateral step (so a diagonal costs 2), +1 for each step out of a Pit, never through full spaces, never Outside. Weightless Style alone still steps diagonally, for 1. Traps on the path deal 1 and Rubble gives 1 Fatigue. Speed is paid after, only for the spaces moved.
     - **Fatigued** (decided): the move discards 1 Fatigue and goes 2 spaces less (the path's last 2).
     - **Swap:** 2 Speed swaps with an adjacent ally.
   - **Action Movement** (`actionMoveDestinations`): "move X" goes exactly X when it can, and otherwise as far as it can; "up to X" may stop early. No repeated spaces, and Rubble or a Pit ends it at once. The mover picks the square.
-  - **Teleport X:** any empty space within Range 1-X. It is safe: no Trap, Pit or Rubble effects.
+  - **Teleport X:** any empty space within Range 1-X (the diamond). It is safe: no Trap, Pit or Rubble effects.
   - **Swap Spaces:** both fighters trade places.
   - **Fatigue** shortens Action Movement and Teleports by 2 too (discard 1).
   - **Push and Pull** (`forcedMoves`, `landingsOf`):
-    - Each space is strictly farther from (push) or closer to (pull) the origin. A pull of an adjacent target spins them through spaces adjacent to both. Units block.
+    - Each lateral step is strictly farther from (push) or closer to (pull) the origin. Units block.
+    - **A pull of an adjacent target spins them** (book: "into any other space adjacent to both of you"). On the diamond grid no space is laterally adjacent to both, so (decided) the spin goes to the spaces adjacent to the puller that touch the target's corner: one diagonal hop around them per space pulled.
     - **World of Cardboard (always on):** a push into a Wall smashes it into Rubble; they enter it and the movement ends.
     - Rubble and Pits end it. Traps on the way trigger.
     - **The Outside:** only off an edge they started on; otherwise they stop at the edge.
@@ -3544,7 +3547,7 @@ A GM-only page (`/homebrew`, the flask icon in the header and the mobile menu) f
   - **Fixed:** `for_each` over a ref (Knockdown's damagers) crashed in `select`; it now takes a selector or a list.
   - **Coverage:** 191 of the 238 triggered Ability rules are now automatic (155 after phase F).
   - **Not yet:**
-    - **"If an enemy discards your Challenge token using an enemy Action or Ability"** (Judgment, Shining, Armored, Quickdraw, Taunting and 2 more) stays by hand. The book lists Challenge among the Status tokens, but the Halcyon ruling limits Status discards to Burning, Fatigue and Weakness, so nothing in the engine discards a held Challenge yet. **Open question for the user:** may "discard a Status / any token" take a held Challenge?
+    - ~~"If an enemy discards your Challenge token using an enemy Action or Ability" stays by hand~~ — automated since play feedback batch 2 (Challenge is a Unique token, decided).
     - Also by hand: Greater Frenzy's two Frantic Abilities, Showdown's delayed effect, Giant's `self.move_over_wall`, Puppets moving obstacles, and Weightless's "share a space".
   - **Tests:** `server/test/modifiersDurations.test.js` covers HP and token limits, the "this turn" state, holdsOwnChallenge both ways, isOwnTurn, is_enemy, not_in, an Action's damaged enemies, a scheduled effect capturing a target by id and running later, the cost per space, Quickdraw's die, and `effectiveRange`.
   - **Playtest** `scripts/playtest-modifiers.mjs`:
@@ -3584,7 +3587,7 @@ A GM-only page (`/homebrew`, the flask icon in the header and the mobile menu) f
     - "Per Action" limits count within that one Action (`ctx.actionSeq`); limit metric `uses`.
     - `self.training_token_spent` is emitted when a Training token is spent.
     - `is_ally`.
-    - New refs: `history.tokensDiscarded` (Hunger), `history.damageDealtToTargetByThisAction` (Burning Fist), `history.damageTakenByEach` (Grape Shot), `history.enemiesDamagedByThisAction` (Icicle Fall), `history.challengedByThisAction`, `payment.hp`, `payment.tokens.<kind>` (XYZ-Burst, Bad Luck), `targets.x.tokens.<kind>` (Blazing), `targets.x.statusTokenCount` (Apply Pressure: Burning, Fatigue and Weakness, plus a held Challenge, as the book counts Status), and `self.hpLostThisTurn` (Karma; damage and HP paid).
+    - New refs: `history.tokensDiscarded` (Hunger), `history.damageDealtToTargetByThisAction` (Burning Fist), `history.damageTakenByEach` (Grape Shot), `history.enemiesDamagedByThisAction` (Icicle Fall), `history.challengedByThisAction`, `payment.hp`, `payment.tokens.<kind>` (XYZ-Burst, Bad Luck), `targets.x.tokens.<kind>` (Blazing), `targets.x.statusTokenCount` (Apply Pressure: Burning, Fatigue and Weakness — a held Challenge no longer counts since it was decided to be a Unique token, play feedback batch 2), and `self.hpLostThisTurn` (Karma; damage and HP paid).
   - **Fixed:** a placement made only one obstacle when its `count` was larger (Pyroclasm's 3 Traps, Raise the Dead's 2 Copies, Crawl into View's 4). The node's count is now how many are placed, one space per pick.
   - **Coverage:** 211 of the 238 triggered Ability rules (191 after G), and 180 of the 217 Actions and Super Moves (143 before), are automatic.
   - **Not yet:** the Mythical d12's own reroll event, Improved Frenzy's change of Stance part, Luck's `substitute_cost`, Poltergeist's optional tokens, `choose_integer` (Ka-Boom), `selector_by_gate`, `joint_choice` (Song Form), `ensure_target` (Protect), `gain_tokens_until`, `move_obstacles`, `return_to_play` (Rescue), `replay_start_effects` (Mood Shift), Dancing Mad's open-ended repeat, and the Fog-only selectors (`inFog`, `within_placed_obstacles`). These stay by hand.
@@ -3635,16 +3638,14 @@ A GM-only page (`/homebrew`, the flask icon in the header and the mobile menu) f
 
     | Kind | Automatic | Was |
     |---|---|---|
-    | Triggered Ability rules | **214 of 238** (90%) | 91 of 306 Ability rules in all, before phase A |
-    | Continuous Ability rules | **37 of 68** | |
+    | Triggered Ability rules | **221 of 238** (93%; 214 at phase J) | 91 of 306 Ability rules in all, before phase A |
+    | Continuous Ability rules | **41 of 68** (37 at phase J) | |
     | Actions | **160 of 183** | none resolved |
     | Super Moves | **27 of 34** | |
 
     The rest are by hand with their reasons. Run `node scripts/coverage.mjs` for the totals and reasons, or `--list` for every entry. The content's one `requires_ruling` entry, The Untouchable, keeps its ruling part by hand.
   - **The biggest by-hand groups left:**
-    - "If an enemy discards your Challenge token using an enemy Action or Ability": 7 Styles, waiting on the open question in phase G.
     - Build-time grants (`grant_archetype_variant`, Greater Focus and Frenzy).
-    - The Angel's `challenge.unblockable`.
     - Several one-off rule keys: Walls treated as empty, movement restrictions, cost changes, delegation, Copy HP.
     - The by-hand ops named in phases H and I.
   - **Tests:**
@@ -3671,7 +3672,7 @@ The old system's phases (1-9 and the playtest batches after them) are complete h
 
 ### Play feedback after phase J (decided, implemented)
 - **"By hand all fight" says the rule.** At the start of a fight, each Ability whose lasting rules aren't all automated gets one orange card titled "‹Ability› — by hand all fight", with the **Ability's rules text**. It no longer says "keep it in mind".
-- **Armor highlight:** while a fighter has 1+ Armor, a steel-blue ring glows around their token (Combat) or base (Simple Combat), via `ArmorGlow` and `.armor-glow`. Armor here is Armor tokens, plus the build's Armor sources that hold in the current Stance, plus temporary Armor (`panicTokens.js armorHeld`).
+- **Armor highlight** (replaced in batch 2 by one ring per Armor source — see below): while a fighter has 1+ Armor, a steel-blue ring glows around their token (Combat) or base (Simple Combat), via `ArmorGlow` and `.armor-glow`. Armor here is Armor tokens, plus the build's Armor sources that hold in the current Stance, plus temporary Armor (then `armorHeld`; now `armorRings` in `panicTokens.js`).
 - **Square picks: no list, a slim top bar.**
   - The legal squares glow on the map or lane and are tapped there.
   - `SquarePromptBar` is one line at the top of the screen: what is doing it, with the movement in brackets ("One-Two Form (Move 2)", "Relentless Style (Push 1)", "Volcanic Style (Place a Trap)", "Kneecapper (act from)"), plus **Skip** only when skipping is allowed.
@@ -3701,7 +3702,7 @@ The old system's phases (1-9 and the playtest batches after them) are complete h
     - **Dice Actions a Chaos token can pay "as if you had spent a 4"** (`gateFor(action, 4)` must not be null, so a 4 must be a valid input; once per turn).
     - **Taken Out or out of play:** only Actions marked usable while Taken Out (the Mentor's Remember Your Training). Placement allows those too.
   - **The button:** each such fighter gets an **⚡ Interrupt · ‹name›** button at the bottom left, clear of the GM's sidebar (`InterruptBar`, refreshed on every stage or board change).
-  - **Interrupt (`react:open`)** opens their Interrupt board (reopening an open one).
+  - **Interrupt (`react:open`)** opens their Interrupt board (reopening an open one) — since batch 2 under the Interrupt lock, or queued while an Action resolves (see batch 2).
     - **The layout is the turn board's:** **Basic** on the left, **Personal** (by group) on the right, only what's on offer. Each card is tinted by the resource that pays for it (emerald for tokens, fuchsia for Chaos, both when both), with a small legend.
     - **Not now** (`react:pass`) closes it.
     - After its one Reactive Action, the board closes. Open Interrupt boards close at the end of the turn.
@@ -3723,6 +3724,34 @@ The old system's phases (1-9 and the playtest batches after them) are complete h
     - the drag and hover previews (Damage lit to 9+ for a 10).
   - The Simple Combat lane (base grabbing, base ring) wasn't covered by the browser run.
 
+### Play feedback batch 2 (decided, implemented)
+- **Every step shows as it happens.** One-Two Form's "Move 1 before each Action" did move the fighter; the board just didn't show it until the whole Action was over. Now the stage is refreshed after each step: a move or a push shows at once (`setSquare` flushes), token and HP changes mark the stage dirty and **every prompt flushes it before it is sent** (`markDirty` / `flushStage` in `server/triggers.js`), and every saved job flushes too. So a Relentless push is on the board before the pushed Slasher is asked whether to pull. `scripts/playtest-live-steps.mjs` checks the One-Two pick is taken and every later question sees it, and that the push shows before Slasher asks.
+- **Armor rings, one per source.** Concentric rings around the token (Combat) or base (Simple Combat), one per Armor source: Armor tokens, the build's sources that hold in the current Stance, then temporary Armor (dashed) outermost. A ring is bright while that Armor is still to trigger this turn and **very faint once it has triggered** (the first N rings, N = the fight's `armor_used[combatantId]`, from the runtime's `armorTriggers`). **The Tank's** Armor (blocks 10 the first time) is the innermost ring, **pure black** (setup `armor_first_reduction`, from the build's lasting `armor.first_trigger_reduction`). `ArmorRings` in `FighterOverlay.jsx`, `armorRings()` in `panicTokens.js`, `.armor-ring*` in `index.css`.
+- **Commit closes the Action board**, so the board and the fighters are in view for the target picks that follow.
+- **One-target picks take the latest tap:** tapping another target replaces the pick. Multi-target picks still toggle.
+- **Hand moves ask about Speed.** Dragging a fighter who holds Speed (map or lane, in a fight) asks "Do you need to spend Speed tokens on this move?":
+  - **No** just moves them (fixing the board).
+  - **Yes · x/y**: x is the cheapest Free Movement there (the diamond grid; Weightless' cost per space; never through full spaces; searched up to 3 × the straight distance + 10, so a map without bounds stays quick), y the Speed held. Disabled when y < x or there's no way there; pressed, it spends x, then the move goes.
+  - **Cancel the move** puts the token back. Without Speed (or outside a fight) nothing is asked.
+  - Server: `move:hand_cost { combatantId, col, row | slot }` → `{ cost, speed }` and `move:hand_pay` (checks again, spends), both acks (`triggers.handCost`, `moves.handCost`). Client: `HandMoveDialog.jsx` (`useHandMove`). `scripts/playtest-movement.mjs` checks the costs (2 lateral = 2, a diagonal = 2, both = 3), a refused "Yes" and a paid one.
+- **The diamond grid (decided: diagonal = 2)** for movement and Ranges — see "Range is computed on the board" and phase D. Range areas are diamonds; "adjacent" is the four lateral neighbours (melee, Swap, "adjacent to the target", Fog's "next to it", Copies).
+- **Challenge discards (decided: Challenge is a Unique token):**
+  - "Discard a Unique token" and "discard a token" (any) may take a held Challenge; Status, Basic and non-Unique discards never do. It is offered in the "which token?" pick like any other.
+  - **Protected when:** the holder is under `challenge.cannot_discard` (Showdown: the target can't discard it before the end of their next turn), or the Challenger has `own_challenges.immune_to_enemy_action_or_ability_removal` (Distracting Style) and the discarder is the Challenger's enemy (`world.challengeRemovable`).
+  - **Discarded by the Challenger's enemy:** `enemy.removed_own_challenge_by_enemy_action_or_ability` runs for the Challenger with `event.formerHolder`, so Judgment, Shining, Armored, Quickdraw, Taunting, Crying and Decoy (heal the ally nearest the former holder — range `nearest_to_event_former_holder`) are automatic. The holder can't be Challenged by that Challenger again this turn (book p.9).
+  - **Giving a Challenge** (`world.challenge`): never to someone already holding yours; **a Shield may block it** — its holder is asked, 1 Shield is spent, and the Challenge isn't given (no "after you Challenge" rules) — unless it is **Unblockable by Shields** (the Angel's `challenge.unblockable`, Showdown) or that Shield already took this Action's damage; a Shield that blocked the Challenge then lets this Action's damage through (one choice per Action, book p.25). Someone already holding another Challenge chooses whose to keep.
+  - Apply Pressure's Status count no longer includes a held Challenge.
+  - The census marks `challenge.unblockable`, `challenge.cannot_discard` and `own_challenges.immune_to_enemy_action_or_ability_removal` enforced (`ENFORCED_RULES`): 221 of 238 triggered and 41 of 68 continuous Ability rules are automatic now.
+  - Tests: two interpreter tests (the discard kinds and protection; a blocked Challenge, Decoy's nearest ally, all 7 rules supported) and `scripts/playtest-challenge.mjs` (a Shield blocking Decoy's Challenge; Purify discarding a held Challenge and Armored giving the former holder 2 Weakness; Distracting's Challenge never offered).
+- **The Combat tab keeps its drawers.** Both sets of drawers (Scene: cast and Scene list; Combat: fighters and map) stay mounted once shown, hidden by `display`, so switching to and from Combat fetches nothing again (the Scene list, folders and cast don't reload).
+- **The Combat map defaults to the Scene's artwork.** With no Combat Background uploaded, `activeScene.combat_image_url` points at the Scene's own picture (the same URL, never a copy; `combat_image_own: false`), with the grid over it. The map's bounds come from that picture (`mapBounds`, from the bytes' owner for a copied Scene). Uploading a map replaces it there; Remove brings the artwork back.
+- **The Interrupt lock (decided):**
+  - **Pressing Interrupt** shows everyone a full-screen "⚡ ‹name› is interrupting the current turn"; nobody can act. The interrupter's own Interrupt board sits above it; the lock drops **as soon as they Commit** (the Reactive Action then resolves), or when they give it up (Not now / Give it up). The GM can **Cancel it** (a stuck lock).
+  - **It never cuts into a resolving Action.** Pressed while the fight's chain is busy (an Action resolving, a prompt waiting), it waits: a small **⚡ ‹name›** chip at the bottom of the screen, and the lock opens as soon as the stack finishes; their board opens on the connection that pressed it (`interrupt:open`). Someone who can no longer interrupt by then is skipped.
+  - **Enforced on the server:** while it is up, only the interrupter's Interrupt board can Commit (`board:commit` refuses others: "wait — ‹name› is interrupting"), and Free Movement waits.
+  - Server: `server/interrupts.js` (in memory per fight: `active`, `queue`), `fight.interrupt` in the stage, `triggers.isBusy` / `triggers.onIdle` (the chain counts its jobs), `wireInterrupts` in `fights.js`, `interrupt:cancel` (GM). Client: `InterruptLock` in `FightControls.jsx`. Tests: `server/test/interrupts.test.js`; the reactions playtest checks the queue while Bo's Action resolves, the lock and board opening for Ana when it finishes, a refused Commit under the lock, and the lock dropping on her Commit.
+- **A browser run (desktop) showed:** the Armor rings on the map and on the Simple Combat lane (two blue; the Tank's black inner ring; faint once triggered); the map on the Scene's artwork with the drawer's note; no refetch over five tab switches; the hand-move dialog ("Yes · 2/3" for a diagonal, spending 2); the lock over the GM's screen, lifted by Cancel it.
+
 ## Open items to decide later
 - **Panic at the Dojo assistant — details to settle in their phase**, with the default the build will use unless told otherwise:
   - **Turns per round once bars break:** settled (decided, revised): the book's rule, every bar keeps its turn. See Phase 5 as built.
@@ -3732,7 +3761,6 @@ The old system's phases (1-9 and the playtest batches after them) are complete h
   - **Shield — implemented (decided, new):** a special token after Armor (`shield`, cap 8, the book's Shield Cap; per-token caps via `capOf`). It **absorbs damage (decided, revised; was tracked by hand)**: damage from an Action or Ability hits the Shield first, up to its value. A Shield used up breaks and the rest hits HP (`absorbWithShield` in `panicTokens.js`). Ability damage from the trigger engine absorbs this way and emits `self.shield_absorbed`. For an Action's hit, the token panel has **Take damage** (a number and a button), which sends `fighter:damage { ref, amount }`. Outside a fight it is applied directly. In a fight the trigger engine applies it on the fight's chain: the attacker is the active fighter when they're on the other side, and `self.shield_absorbed` plus `self.shield_absorbed_from_enemy_action { attacker, amount, shieldBroke }` run, so **Thorns Form** deals 1 back, or 2 if the Shield broke. A notice reports it. HP "−" / "+" stay raw HP changes (costs, fixes) and never touch the Shield. Traps and HP costs go past it. It is also drawn on the HP bar as a **blue extension** after the bar, as long relative to the bar as the Shield is to the current bar's Max HP. The two share the bar's width (flex 1 : ratio), so the proportion holds and the panel keeps its size. The full panel prints the value in it. Only a damage Shield is modelled, not the book's Status-token or "Nothing" kinds. **Since full automation phase C** the Shield is one step of Damage Resolution: a player is asked before it blocks (Ask by default; Auto and Never on the sheet), and Burning hits it too.
   - **Armor — implemented (decided, new):** a special token, `armor` in `panicTokens.js`'s `SPECIAL_TOKENS`, shown for every fighter in the token row just **after the Challenge slot**. It is a count like any token (how many sources of Armor the fighter has), with the same +/−, quick spend and cap. The book's rule (p.24) is in its description: each turn the first hit is reduced by 3, a second source by 2, the rest by 1. It works on any damage, including Fall, Burning and Traps, but not on HP costs. **Since full automation phase C it is applied automatically** in Damage Resolution, and temporary Armor is its own binary token (`temp_armor`).
   - **Cinematic Weight extras** not tracked yet: the Bleed Ability at turn start, Complications (Guest Heroes, Uneven Fights, Stooges). (Super Move limits per round are enforced since full automation phase I.)
-- **Challenge as a Status token (open, for the user):** the book lists Challenge among the Status tokens, but the Halcyon ruling limits Status discards to Burning, Fatigue and Weakness. So nothing in the engine discards a held Challenge, and the 7 Styles' "if an enemy discards your Challenge token using an enemy Action or Ability" (Judgment, Shining, Armored, Quickdraw, Taunting, Crying, Decoy) stay by hand. If "discard a Status / any token" may take a held Challenge, the engine can emit `enemy.removed_own_challenge_by_enemy_action_or_ability` with `event.formerHolder`, and those rules become automatic. (Apply Pressure's Status *count* already includes a held Challenge, as the book counts it.)
 - **Pre-pivot standalone Counters** still in the database (the Arena's): delete them, or give them a home in the new system.
 - **`combatants.notes`, `combat_stances.note_left/note_right`** are unused leftovers of the removed token notes; harmless, removable whenever those tables next change shape.
 - **`chat_log.move_id`** is an unused leftover column; harmless, removable whenever `chat_log` next changes shape.

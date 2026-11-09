@@ -17,9 +17,10 @@ import {
 import { subscribeFighterDrag } from '../lib/combatDrag.js';
 import { cropOf } from '../lib/imageCrop.js';
 import CroppedImage from './CroppedImage.jsx';
-import FighterOverlay, { ArmorGlow, ChallengeLock } from './FighterOverlay.jsx';
-import { armorHeld } from '../lib/panicTokens.js';
+import FighterOverlay, { ArmorRings, ChallengeLock } from './FighterOverlay.jsx';
+import { armorRings } from '../lib/panicTokens.js';
 import { MapTileLayer } from './MapTiles.jsx';
+import { useHandMove } from './HandMoveDialog.jsx';
 
 // The Combat view (Panic at the Dojo, Phase 3): the Scene's Combat Background,
 // fitted whole into the stage, its square grid, and every placed token.
@@ -46,6 +47,8 @@ export default function CombatMap({
   role,
   controls = () => false,
   setup = {},
+  // Armor sources used this turn, by combatant id (the fight's `armor_used`).
+  armorUsed = {},
   weight = null,
   tiles = [],
   // The combatant whose turn it is (a fight in this mode), or null.
@@ -191,6 +194,8 @@ export default function CombatMap({
 
   // ---- moving a placed token
   const [drag, setDrag] = useState(null); // { id, pointerId, startX, startY, x, y, moved }
+  // A hand move of a fighter holding Speed asks whether to spend it (decided).
+  const [handMove, handMoveDialog] = useHandMove();
   const onTokenDown = (e, t) => {
     if (e.button !== 0) return;
     e.stopPropagation();
@@ -217,7 +222,15 @@ export default function CombatMap({
       const changes = cell ? moveToken(placed, drag.id, cell.col, cell.row) : null;
       if (changes?.length) {
         setPending(changes);
-        socket.emit('combat_token:move', { combatantId: drag.id, col: cell.col, row: cell.row });
+        const id = drag.id;
+        handMove({
+          combatantId: token?.fight ? id : null,
+          name: token?.name,
+          speed: token?.fight?.tokens?.speed ?? 0,
+          where: { col: cell.col, row: cell.row },
+          send: () => socket.emit('combat_token:move', { combatantId: id, col: cell.col, row: cell.row }),
+          revert: () => setPending(null),
+        });
       }
     }
     setDrag(null);
@@ -441,7 +454,7 @@ export default function CombatMap({
             const challenger = fight?.challenge_id != null ? byId.get(fight.challenge_id) : null;
             return (
               <div key={`o${t.id}`}>
-                {fight && armorHeld(fight, setup[`${t.owner_type}:${t.owner_id}`]) > 0 && <ArmorGlow center={center} rx={tokenSize / 2 + 3} />}
+                {fight && <ArmorRings center={center} rx={tokenSize / 2 + 3} rings={armorRings(fight, setup[`${t.owner_type}:${t.owner_id}`], armorUsed[t.id] ?? 0)} />}
                 {/* Only during the Challenge holder's own turn (decided). */}
                 {challenger && activeCombatantId === t.id && (
                   <ChallengeLock from={center} to={centers.get(challenger.id)} radius={tokenSize / 2} />
@@ -479,6 +492,7 @@ export default function CombatMap({
           ghost={!hoverOk}
         />
       )}
+      {handMoveDialog}
     </div>
   );
 }

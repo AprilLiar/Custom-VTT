@@ -3,9 +3,10 @@ import CopyLayer from './CopyLayer.jsx';
 import SquarePickLayer from './SquarePickLayer.jsx';
 import { socket } from '../socket.js';
 import { laneGeometry, laneLinesPath, moveOnLane, pointsAttr, slotAt } from '../lib/simpleLane.js';
-import FighterOverlay, { ArmorGlow, ChallengeLock } from './FighterOverlay.jsx';
-import { armorHeld } from '../lib/panicTokens.js';
+import FighterOverlay, { ArmorRings, ChallengeLock } from './FighterOverlay.jsx';
+import { armorRings } from '../lib/panicTokens.js';
 import { MapTileLayer } from './MapTiles.jsx';
+import { useHandMove } from './HandMoveDialog.jsx';
 
 // Simple Combat's overlay (Panic at the Dojo, Phase 2): one to three lanes of
 // ten spaces in perspective (the GM's table setting) at 5/7 of the stage's
@@ -37,6 +38,8 @@ export default function SimpleCombatLane({
   lanes = 1,
   laneY,
   setup = {},
+  // Armor sources used this turn, by combatant id (the fight's `armor_used`).
+  armorUsed = {},
   weight = null,
   tiles = [],
   // The combatant whose turn it is (a fight in this mode), or null.
@@ -82,6 +85,8 @@ export default function SimpleCombatLane({
     return { tray: false, slot: slotAt(geometry, point.x, point.y) };
   };
 
+  // A hand move of a fighter holding Speed asks whether to spend it (decided).
+  const [handMove, handMoveDialog] = useHandMove();
   const onPointerDown = (e, s) => {
     if (e.button !== 0) return;
     e.stopPropagation();
@@ -110,7 +115,16 @@ export default function SimpleCombatLane({
       const { slot } = dropTarget(toStage(e));
       if (placed.get(drag.id) !== slot) {
         setPending(moveOnLane(placed, drag.id, slot));
-        socket.emit('lane:move', { summonId: drag.id, slot });
+        const id = drag.id;
+        handMove({
+          // Only onto the lane, from the lane: the tray is no move.
+          combatantId: slot != null && placed.get(id) != null ? (summon?.fight?.combatant_id ?? null) : null,
+          name: summon?.name,
+          speed: summon?.fight?.tokens?.speed ?? 0,
+          where: { slot },
+          send: () => socket.emit('lane:move', { summonId: id, slot }),
+          revert: () => setPending(null),
+        });
       }
     }
     setDrag(null);
@@ -259,7 +273,7 @@ export default function SimpleCombatLane({
           const ownerKey = s.character_id != null ? `character:${s.character_id}` : `temp_npc:${s.temp_npc_id}`;
           return (
             <div key={`o${s.id}`}>
-              {armorHeld(s.fight, setup[ownerKey]) > 0 && <ArmorGlow center={box.base.center} rx={box.base.rx * 1.08} ry={box.base.ry * 1.25} />}
+              <ArmorRings center={box.base.center} rx={box.base.rx * 1.08} ry={box.base.ry * 1.25} gap={5} rings={armorRings(s.fight, setup[ownerKey], armorUsed[s.fight.combatant_id] ?? 0)} />
               {/* Only during the Challenge holder's own turn (decided). */}
               {target && activeCombatantId != null && s.fight.combatant_id === activeCombatantId && (
                 <ChallengeLock from={box.mid} to={target.mid} radius={target.icon * 1.4} />
@@ -322,6 +336,7 @@ export default function SimpleCombatLane({
           draggable
         />
       )}
+      {handMoveDialog}
     </div>
   );
 }

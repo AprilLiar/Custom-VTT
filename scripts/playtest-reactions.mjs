@@ -73,7 +73,13 @@ const cards = [];
 gm.on('chat:card', (c) => cards.push(c));
 const prompts = [];
 let answerWith = () => undefined;
+// Holding the GM's target picks keeps an Action resolving (the stack busy).
+let holdTargets = false;
+const held = [];
+const gmRefusals = [];
+gm.on('dice:pay_failed', (x) => gmRefusals.push(x));
 gm.on('trigger:prompt', (p) => {
+  if (holdTargets && p.kind === 'targets') return held.push(p);
   prompts.push(p);
   const pick = answerWith(p);
   const answer = pick !== undefined ? pick : p.kind === 'confirm' ? false : p.kind === 'targets' ? [p.options[0].id] : p.kind === 'square' && p.minimum === 0 ? [] : p.options?.[0]?.id;
@@ -91,6 +97,8 @@ const ana = await jpost('/api/characters', { name: `RXAna${stamp}`, characterTyp
 const cy = await jpost('/api/characters', { name: `RXCy${stamp}`, characterType: 'pc' });
 const bo = await jpost('/api/characters', { name: `RXBo${stamp}`, characterType: 'npc' });
 const p = await connect({ role: 'player', characterId: ana.id });
+const interruptOpens = [];
+p.on('interrupt:open', (x) => interruptOpens.push(x));
 const refusals = [];
 p.on('dice:pay_failed', (x) => refusals.push(x));
 p.on('trigger:prompt', (x) => setTimeout(() => p.emit('trigger:answer', { id: x.id, answer: x.kind === 'targets' ? [x.options[0].id] : x.kind === 'confirm' ? false : x.kind === 'square' && x.minimum === 0 ? [] : x.options?.[0]?.id }), 150));
@@ -127,9 +135,25 @@ await sleep(400);
 // Stop both at 1+ (Deal 1, no Push), so Ana stays in range whatever the dice.
 for (const x of (await marks())[boRoll].placements) if (x.threshold > 1) gm.emit('board:stop', { rollId: boRoll, key: x.key, stop: 1 });
 await sleep(300);
+holdTargets = true;
 gm.emit('board:commit', { rollId: boRoll });
-await sleep(3000);
+await sleep(1500);
+console.log('\n--- the Interrupt lock: never into a resolving Action ---');
+const early = await new Promise((r) => p.emit('react:open', { combatantId: ta.id }, r));
 await stage();
+check('Interrupt pressed while Bo’s Action resolves: it waits (queued, no board yet)', early.queued === true && !early.payload && st.fights.combat.interrupt?.queue?.some((q) => q.combatantId === ta.id) && !st.fights.combat.interrupt.active, JSON.stringify([early, st.fights.combat.interrupt]));
+holdTargets = false;
+for (const q of held.splice(0)) {
+  prompts.push(q);
+  gm.emit('trigger:answer', { id: q.id, answer: [String(ta.id)] });
+  await sleep(600);
+}
+await sleep(2500);
+await stage();
+check('…the stack finished: the lock opens for Ana, and her board opens on her own connection', st.fights.combat.interrupt?.active?.combatantId === ta.id && !st.fights.combat.interrupt.queue.length && interruptOpens.some((x) => x.combatantId === ta.id && x.by === p.id && x.payload?.roll_id), JSON.stringify([st.fights.combat.interrupt, interruptOpens.map((x) => [x.combatantId, x.by === p.id])]));
+gm.emit('board:commit', { rollId: boRoll });
+await sleep(400);
+check('…while it is up nobody else can Commit', gmRefusals.some((x) => /is interrupting/.test(x.error)), JSON.stringify(gmRefusals));
 const b = (await marks())[boRoll];
 check('Commit performs every placed Action without pausing for reactions (decided, revised)', b.placements.every((x) => x.committed) && !b.paused && !st.fights.combat.reaction_window, JSON.stringify([b.placements.map((x) => x.committed), b.paused, st.fights.combat.reaction_window]));
 const offersOf = (s) => new Promise((r) => s.emit('interrupt:offers', { mode: 'combat' }, (x) => r(x?.offers ?? {})));
@@ -148,6 +172,9 @@ const boHp = f(tb.id).hp.current;
 p.emit('board:place', { rollId: rx, actionId: SWIFT, option: 0, answers: { split: { iron: 2 } } });
 await sleep(300);
 p.emit('board:commit', { rollId: rx });
+await sleep(150);
+await stage();
+check('Committing the Interrupt drops the lock at once', !st.fights.combat.interrupt, JSON.stringify(st.fights.combat.interrupt));
 await sleep(2500);
 await stage();
 check('the Interrupt is performed: Swift Strike hits Bo, the Iron is paid', f(tb.id).hp.current < boHp && !f(ta.id).tokens.iron, `${boHp} → ${f(tb.id).hp.current}; ${JSON.stringify(f(ta.id).tokens)}`);

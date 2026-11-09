@@ -685,16 +685,24 @@ export function ChallengeLock({ from, to, radius = 24 }) {
   );
 }
 
-// **Armor highlight (decided, new):** a steel-blue ring while the fighter
-// has 1+ Armor — round around a map token, an ellipse around a lane base.
-// `center` in stage pixels; `rx`/`ry`: the ring's radii.
-export function ArmorGlow({ center, rx, ry = rx }) {
-  return (
-    <span
-      aria-hidden
-      className="armor-glow pointer-events-none absolute rounded-[50%]"
-      style={{ left: center.x - rx, top: center.y - ry, width: rx * 2, height: ry * 2 }}
-      title="Armor"
-    />
-  );
+// **Armor rings (decided, revised):** one concentric ring per Armor source
+// around a map token (round) or a lane base (an ellipse). A source already
+// used this turn is a very faint ring; one still ready is bright. The Tank's
+// source (blocks 10 the first time) is black; temporary Armor is the outer
+// ring. `rings`: panicTokens.js armorRings. `center` in stage pixels; `rx`/`ry`:
+// the innermost ring's radii; `gap`: between rings.
+export function ArmorRings({ center, rx, ry = rx, gap = 4, rings }) {
+  if (!rings?.length) return null;
+  return rings.map((r, i) => {
+    const kx = rx + i * gap;
+    const ky = ry + i * gap * (ry / rx);
+    return (
+      <span
+        key={i}
+        aria-hidden
+        className={`pointer-events-none absolute rounded-[50%] armor-ring ${r.tank ? 'armor-ring-tank' : r.temp ? 'armor-ring-temp' : ''} ${r.used ? 'armor-ring-used' : ''}`}
+        style={{ left: center.x - kx, top: center.y - ky, width: kx * 2, height: ky * 2 }}
+      />
+    );
+  });
 }

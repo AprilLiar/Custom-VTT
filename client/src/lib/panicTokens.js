@@ -100,14 +100,21 @@ export function normalizeArmorSources(value) {
 export const innateArmor = (sources, activeStanceId) =>
   normalizeArmorSources(sources).filter((s) => s === ARMOR_ALWAYS || (activeStanceId != null && s === activeStanceId)).length;
 
-// **Armor in effect now (decided, new):** Armor tokens added by hand, the
-// build's Armor sources that hold in the current Stance, and temporary Armor.
-// While it's 1+, the token (Combat) or base (Simple Combat) is highlighted.
-export const armorHeld = (fight, setup) => {
-  if (!fight) return 0;
+// **The Armor rings (decided, revised):** one concentric ring per Armor source
+// in effect now — Armor tokens added by hand, then the build's sources that
+// hold in the current Stance — innermost first in the order they trigger. Sources already used this turn
+// (`used`: the fight's `armor_used`) are faint; the rest bright. The Tank's own
+// source (Armor blocking 10 the first time) is the innermost and black.
+// Temporary Armor, if held, is the outermost ring. → [{ used, tank, temp }]
+export function armorRings(fight, setup, used = 0) {
+  if (!fight) return [];
   const stance = fight.active_stance_id ?? setup?.stances?.[0]?.id ?? null;
-  return (fight.tokens?.armor ?? 0) + innateArmor(setup?.armor_sources ?? [], stance) + ((fight.tokens?.temp_armor ?? 0) > 0 ? 1 : 0);
-};
+  const n = (fight.tokens?.armor ?? 0) + innateArmor(setup?.armor_sources ?? [], stance);
+  const tank = (setup?.armor_first_reduction ?? 0) >= 10;
+  const rings = Array.from({ length: n }, (_, i) => ({ used: i < used, tank: tank && i === 0, temp: false }));
+  if ((fight.tokens?.temp_armor ?? 0) > 0) rings.push({ used: false, tank: false, temp: true });
+  return rings;
+}
 
 // A token's own cap: TOKEN_CAP unless the token has a lower one (Shield: 8).
 // **A Shield absorbs damage (decided, revised).** Damage from an Action or an

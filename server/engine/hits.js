@@ -5,7 +5,7 @@
 // Auto / Never settings (the dice board's Power toggle stands in for the
 // attacker's own committed Actions), applies what was spent and lost, and
 // emits the damage events through the bus.
-import { chebyshev } from '../../client/src/lib/patd/interpreter.js';
+import { gridDistance } from '../../client/src/lib/patd/interpreter.js';
 import { autoIron, isAttack, resolveDamage, unblockableSet } from '../../client/src/lib/patd/engine/damage.js';
 import { hasMod, listMod, modifiersOn, valueOf } from '../../client/src/lib/patd/engine/modifiers.js';
 import { expireTemps, fighterRt } from '../../client/src/lib/patd/engine/runtime.js';
@@ -141,11 +141,11 @@ export function createHits({ ask, emitEvent }) {
         source,
         attacker: attacker ? { tokens: attacker.tokens, mods: atkMods, enemy } : null,
         target: { tokens: target.tokens, mods: tgtMods, dizzy: Boolean(target.dizzy), inPit: internals.inPit(target) },
-        distance: attacker?.square && target.square ? chebyshev(attacker.square, target.square) : null,
+        distance: attacker?.square && target.square ? gridDistance(attacker.square, target.square) : null,
         unblockable: ub,
         allowIron: Boolean(opts.allowIron),
         armor,
-        shieldDisabled: hasMod(tgtMods, 'shield.disabled'),
+        shieldDisabled: hasMod(tgtMods, 'shield.disabled') || Boolean(opts.noShield),
         exploitWeakness: attack && hasMod(atkMods, 'spend_target_weakness_as_own_power'),
       },
       decide

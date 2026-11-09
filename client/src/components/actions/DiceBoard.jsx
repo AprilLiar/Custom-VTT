@@ -463,7 +463,17 @@ export default function DiceBoard({ payload, onClose, canEdit }) {
               <Play size={13} aria-hidden /> Continue
             </button>
           ) : (
-            <button type="button" onClick={() => emit('board:commit')} disabled={!editable || busy || !pending.length} className={`${btn} border-lime-400 bg-lime-500/20 text-lime-100`}>
+            <button
+              type="button"
+              // Commit closes the board (decided): the map and the fighters stay
+              // in full view while the Actions resolve and targets are picked.
+              onClick={() => {
+                emit('board:commit');
+                onClose();
+              }}
+              disabled={!editable || busy || !pending.length}
+              className={`${btn} border-lime-400 bg-lime-500/20 text-lime-100`}
+            >
               <Check size={13} aria-hidden /> {busy ? 'Performing…' : `Commit${pending.length ? ` ${pending.length}` : ''}`}
             </button>
           )}

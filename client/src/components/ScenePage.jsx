@@ -39,7 +39,7 @@ import SimpleCombatLane from './SimpleCombatLane.jsx';
 import { MapTilePalette } from './MapTiles.jsx';
 import CombatMap from './CombatMap.jsx';
 import { CombatFightersDrawer, CombatMapDrawer, PlayerTokenDock } from './CombatDrawers.jsx';
-import { FightSetupDialog, InitiativeRail, InterruptBar, MoveBar, MovementPhaseBar, StancePrompt, StartCombatButton, TriggerPrompts } from './FightControls.jsx';
+import { FightSetupDialog, InitiativeRail, InterruptBar, InterruptLock, MoveBar, MovementPhaseBar, StancePrompt, StartCombatButton, TriggerPrompts } from './FightControls.jsx';
 import { turnsPerRound } from '../lib/hpBars.js';
 import { WEIGHT_BY_KEY } from '../lib/cinematicWeight.js';
 import { useDominantColor } from '../lib/dominantColor.js';
@@ -122,8 +122,12 @@ export default function ScenePage() {
   const sceneMode = activeScene?.combat_mode ?? 'scene';
   // The Combat map stays mounted once it has been shown (see the render below).
   const [combatSeen, setCombatSeen] = useState(false);
+  // The Scene's drawers likewise (decided): switching to and from Combat never
+  // remounts them, so the Scene list and the cast don't load again.
+  const [sceneSeen, setSceneSeen] = useState(false);
   useEffect(() => {
     if (sceneMode === 'combat') setCombatSeen(true);
+    else setSceneSeen(true);
   }, [sceneMode]);
   const laneGlow = useDominantColor(sceneMode === 'simple' ? backgroundSrc : null);
   useEffect(() => {
@@ -359,6 +363,7 @@ export default function ScenePage() {
           weight={weight}
           tiles={stage?.tiles?.simple ?? []}
           activeCombatantId={sceneMode === 'simple' ? (fight?.order?.[fight.turn_index]?.id ?? null) : null}
+          armorUsed={sceneMode === 'simple' ? (fight?.armor_used ?? {}) : {}}
         />
       )}
       {/* Likewise the Combat map stays mounted once seen, hidden outside
@@ -378,6 +383,7 @@ export default function ScenePage() {
           controls={controls}
           tiles={stage?.tiles?.combat ?? []}
           activeCombatantId={isCombat ? (fight?.order?.[fight.turn_index]?.id ?? null) : null}
+          armorUsed={isCombat ? (fight?.armor_used ?? {}) : {}}
         />
         </div>
       )}
@@ -416,18 +422,21 @@ export default function ScenePage() {
           {activeScene && !backgroundSrc && !isCombat && (
             <p className="relative z-[2] font-display text-sm uppercase tracking-wide">{activeScene.name}</p>
           )}
-          {isCombat ? (
-            <>
+          {/* Both sets stay mounted once shown, hidden by display (decided):
+              the tab switch shows them again without refetching anything. */}
+          {(isCombat || combatSeen) && (
+            <div style={{ display: isCombat ? 'contents' : 'none' }}>
               {role === 'gm' && <CombatFightersDrawer />}
               {role === 'gm' && <CombatMapDrawer scene={activeScene} tokenCount={combatTokens.length} />}
               {role === 'player' && <PlayerTokenDock characters={controlled} />}
-            </>
-          ) : (
-            <>
+            </div>
+          )}
+          {(!isCombat || sceneSeen) && (
+            <div style={{ display: isCombat ? 'none' : 'contents' }}>
               {role === 'gm' && <SceneCastDrawer />}
               {role === 'gm' && <SceneListDrawer activeSceneId={activeScene?.id ?? null} />}
               {role === 'player' && <PlayerSummonDock characters={controlled} summons={summons} />}
-            </>
+            </div>
           )}
           {/* Pen/Eraser are both roles; the Timestamp button inside is
               GM-only — see SceneDrawToolbar's own header comment for the
@@ -472,6 +481,7 @@ export default function ScenePage() {
       {fight && <StancePrompt mode={fightMode} fight={fight} fighters={fightFighters} role={role} controls={controls} />}
       {fight && <MovementPhaseBar mode={fightMode} fight={fight} fighters={fightFighters} role={role} controls={controls} />}
       {fight && <InterruptBar fight={fight} mode={fightMode} left={role === 'gm' && !uiHidden ? 268 : 8} />}
+      {fight && <InterruptLock fight={fight} mode={fightMode} fighters={fightFighters} role={role} controls={controls} />}
       <MoveBar />
       <TriggerPrompts />
       {fightSetupOpen && fightMode && (

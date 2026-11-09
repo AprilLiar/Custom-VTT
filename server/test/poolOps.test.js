@@ -205,11 +205,11 @@ test('teleport_to a space adjacent to the target; a placement makes as many obst
   const rule = { id: 't', events: ['own_turn.start'], effect: idx.get('action.style-relentless.nothing-personal').effect };
   const tp = { op: 'teleport_to', target: { ref: 'self' }, destination: { kind: 'space', range: { mode: 'adjacent_to_binding', origin: 'self' }, count: 1, empty: true, originBinding: 'target' } };
   assert.ok(ruleSupport({ id: 'x', events: ['own_turn.start'], effect: { op: 'sequence', steps: [{ op: 'select', binding: 'target', selector: { kind: 'enemy', range: { mode: 'stance', origin: 'self' }, count: 1 } }, tp] } }).ok);
-  const { ctx, asked } = ctxFor(w, me, { answers: ['4,4'] });
+  const { ctx, asked } = ctxFor(w, me, { answers: ['4,5'] });
   await runRule({ id: 'x', events: ['own_turn.start'], effect: { op: 'sequence', steps: [{ op: 'select', binding: 'target', selector: { kind: 'enemy', range: { mode: 'stance', origin: 'self' }, count: 1 } }, tp] } }, ctx);
   const offered = asked.find((q) => q.kind === 'square').options.map((o) => o.id).sort();
-  assert.deepEqual(offered, ['4,4', '4,5', '4,6', '5,4', '5,6', '6,4', '6,5', '6,6'], 'the 8 spaces around the target');
-  assert.deepEqual(teleports, [{ id: 1, col: 4, row: 4 }]);
+  assert.deepEqual(offered, ['4,5', '5,4', '5,6', '6,5'], 'the 4 spaces beside the target');
+  assert.deepEqual(teleports, [{ id: 1, col: 4, row: 5 }]);
   assert.ok(rule.effect);
   // Pyroclasm: 3 Traps, one space per pick.
   const py = idx.get('action.style-volcanic.pyroclasm');

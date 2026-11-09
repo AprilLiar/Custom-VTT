@@ -31,7 +31,7 @@ test('empty and full spaces: Walls and units are full; Rubble, Pits, Traps, Fog 
   assert.equal(isEmpty(b, sq(-1, 0)), false);
 });
 
-test('Free Movement: 1 orthogonal, 2 diagonal, +1 out of a Pit; never through full spaces', () => {
+test('Free Movement: 1 per lateral step (a diagonal is two), +1 out of a Pit; never through full spaces', () => {
   const b = makeBoard({ bounds, tiles: [{ col: 5, row: 5, kind: 'pit' }, { col: 6, row: 4, kind: 'wall' }, { col: 6, row: 5, kind: 'wall' }, { col: 6, row: 6, kind: 'wall' }] });
   const r = freeMoveReach(b, sq(5, 5), 3);
   assert.equal(r.get('5,4').cost, 2, 'out of the Pit: 1 + 1');
@@ -43,14 +43,22 @@ test('Free Movement: 1 orthogonal, 2 diagonal, +1 out of a Pit; never through fu
   assert.equal(open.get('2,0').cost, 2);
   assert.equal(open.has('-1,0'), false, 'never Outside');
   assert.equal(pathCost(b, sq(5, 5), [sq(4, 5), sq(3, 4)]), 2 + 2);
+  // The diamond grid: a diagonal needs an empty space beside it — no slipping between two Walls.
+  const pinch = makeBoard({ bounds, tiles: [{ col: 1, row: 0, kind: 'wall' }, { col: 0, row: 1, kind: 'wall' }] });
+  assert.equal(freeMoveReach(pinch, sq(0, 0), 4).has('1,1'), false, 'boxed in by two Walls');
+  assert.equal(open.get('1,1').path.length, 2, 'two lateral steps');
+  // Weightless: every space 1, a diagonal step too.
+  assert.equal(freeMoveReach(makeBoard({ bounds }), sq(0, 0), 1, null, { costPerSpace: 1 }).get('1,1').cost, 1);
 });
 
 test('Action Movement: exactly X, no repeats, stops on Rubble or a Pit; "up to" may stop early', () => {
   const b = makeBoard({ bounds, tiles: [{ col: 1, row: 0, kind: 'rubble' }] });
   const exact = actionMoveDestinations(b, sq(0, 0), 2);
   assert.ok(exact.some((d) => key(d.square) === '1,0' && d.path.length === 1), 'Rubble ends the move at once');
-  assert.ok(exact.some((d) => key(d.square) === '2,2'));
-  assert.ok(exact.some((d) => key(d.square) === '0,1' && d.path.length === 2), 'two spaces can wiggle back next to the start');
+  assert.ok(exact.some((d) => key(d.square) === '1,1'), 'a diagonal is two lateral spaces');
+  assert.ok(exact.some((d) => key(d.square) === '0,2'));
+  assert.ok(!exact.some((d) => key(d.square) === '2,2'), 'a diagonal of 2 is 4 spaces');
+  assert.ok(!exact.some((d) => key(d.square) === '0,1'), 'exactly 2 lateral spaces never end next to the start');
   assert.ok(!exact.some((d) => key(d.square) === '0,0'), 'never back onto the start (no repeats)');
   const up = actionMoveDestinations(b, sq(0, 0), 2, true);
   assert.ok(up.some((d) => key(d.square) === '0,1'));
@@ -62,8 +70,9 @@ test('Action Movement: exactly X, no repeats, stops on Rubble or a Pit; "up to" 
 test('Teleport X: any empty space within Range 1-X, through anything', () => {
   const b = makeBoard({ bounds, tiles: [{ col: 1, row: 0, kind: 'wall' }], units: [{ id: 2, square: sq(2, 0) }] });
   const t = keys(teleportDestinations(b, sq(0, 0), 2));
-  assert.ok(t.includes('2,1') && t.includes('0,2'));
+  assert.ok(t.includes('1,1') && t.includes('0,2'));
   assert.ok(!t.includes('1,0') && !t.includes('2,0') && !t.includes('0,0'));
+  assert.ok(!t.includes('2,1') && !t.includes('2,2'), 'the diamond: a diagonal counts 2');
 });
 
 test('Push: each space farther; Rubble and Pits stop it; Traps on the way trigger', () => {
@@ -72,23 +81,25 @@ test('Push: each space farther; Rubble and Pits stop it; Traps on the way trigge
   const intoPit = m.find((x) => key(x.square) === '5,5');
   assert.equal(intoPit.ends, 'pit');
   assert.deepEqual(intoPit.traps.map(key), ['4,5']);
-  assert.ok(m.every((x) => x.path.every((s, i, p) => Math.max(Math.abs(s.col - 2), Math.abs(s.row - 5)) === i + 2 || x.ends !== 'full' || p)), 'monotonic');
+  assert.ok(m.every((x) => x.path.every((s, i) => Math.abs(s.col - 2) + Math.abs(s.row - 5) === i + 2)), 'each lateral step one farther');
   assert.ok(m.some((x) => x.ends === 'full' && x.path.length === 3));
 });
 
 test('World of Cardboard: a push into a Wall smashes it into Rubble and ends there', () => {
-  const b = makeBoard({ bounds, tiles: [{ col: 4, row: 5, kind: 'wall' }, { col: 4, row: 4, kind: 'wall' }, { col: 4, row: 6, kind: 'wall' }] });
+  const b = makeBoard({ bounds, tiles: [{ col: 4, row: 5, kind: 'wall' }, { col: 3, row: 4, kind: 'wall' }, { col: 3, row: 6, kind: 'wall' }] });
   const m = forcedMoves(b, sq(3, 5), sq(2, 5), 3);
   assert.ok(m.length && m.every((x) => x.ends === 'wall' && x.path.length === 1), JSON.stringify(m));
-  assert.deepEqual(keys(m.map((x) => x.smashed)), ['4,4', '4,5', '4,6']);
+  assert.deepEqual(keys(m.map((x) => x.smashed)), ['3,4', '3,6', '4,5']);
 });
 
 test('the Outside: off the edge only from where they started; otherwise they stop at the edge', () => {
   const b = makeBoard({ bounds });
   const off = forcedMoves(b, sq(9, 5), sq(8, 5), 2);
   assert.ok(off.some((x) => x.ends === 'outside' && key(x.from) === '9,5'));
-  const stop = forcedMoves(makeBoard({ bounds: { colMin: 0, colMax: 4, rowMin: 0, rowMax: 9 } }), sq(3, 5), sq(2, 5), 3);
-  assert.ok(stop.length && stop.every((x) => x.square && x.square.col === 4 && x.ends === 'blocked'), JSON.stringify(stop));
+  const narrow = makeBoard({ bounds: { colMin: 0, colMax: 4, rowMin: 4, rowMax: 6 } });
+  const stop = forcedMoves(narrow, sq(3, 5), sq(2, 5), 5);
+  assert.ok(stop.length && stop.every((x) => x.square && x.ends !== 'outside'), JSON.stringify(stop));
+  assert.ok(stop.some((x) => x.ends === 'blocked' && x.square.col === 4), 'they stop at the edge');
 });
 
 test('lanes: only the ends lead Outside, never the front or back of a lane', () => {
@@ -107,8 +118,8 @@ test('Pull: each space closer; an adjacent target spins around the puller; units
   const m = forcedMoves(b, sq(8, 5), sq(5, 5), 2, { pull: true });
   assert.ok(m.some((x) => key(x.square) === '6,5'));
   const spin = forcedMoves(b, sq(6, 5), sq(5, 5), 1, { pull: true });
-  assert.deepEqual(keys(spin), ['5,4', '5,6', '6,4', '6,6'], 'a space adjacent to both');
-  const around = forcedMoves(b, sq(6, 5), sq(5, 5), 4, { pull: true });
+  assert.deepEqual(keys(spin), ['5,4', '5,6'], 'the diamond: the spaces next to the puller touching the target');
+  const around = forcedMoves(b, sq(6, 5), sq(5, 5), 2, { pull: true });
   assert.ok(around.some((x) => key(x.square) === '4,5'), 'spun all the way round');
   assert.ok(landingsOf(m).every((l) => l.routes.length >= 1));
 });
@@ -116,7 +127,7 @@ test('Pull: each space closer; an adjacent target spins around the puller; units
 test('Save Yourself: 1 Speed (2 out of a Pit) for one space; from the Outside next to the edge left', () => {
   const b = makeBoard({ bounds, tiles: [{ col: 5, row: 5, kind: 'pit' }] });
   assert.equal(saveYourselfCost(b, sq(5, 5)), 2);
-  assert.equal(saveYourselfSquares(b, sq(5, 5)).length, 8);
+  assert.equal(saveYourselfSquares(b, sq(5, 5)).length, 4, 'one lateral space');
   const fromOut = saveYourselfSquares(b, null, { from: sq(9, 5) });
   assert.ok(fromOut.some((s) => key(s) === '9,5') && fromOut.some((s) => key(s) === '8,5'));
 });

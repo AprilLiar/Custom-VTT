@@ -171,17 +171,19 @@ test('obstacles: a Trap on a picked space, a Wall destroyed into Rubble by a 2-d
   assert.ok(pool.length === 0 || pool.includes('copy:9'), 'your own Copy can be picked');
 });
 
-test('range and sight: diagonal counts 1, Walls block a centre line, Fog limits enemies to Range 1', () => {
+test('range and sight: the diamond (a diagonal counts 2), Walls block a centre line, Fog limits enemies to Range 1', () => {
   const walls = new Set(['2,0']);
   assert.equal(lineOfSight({ col: 0, row: 0 }, { col: 4, row: 0 }, walls), false);
   assert.equal(lineOfSight({ col: 0, row: 1 }, { col: 4, row: 1 }, walls), true);
   assert.equal(lineOfSight({ col: 1, row: 1 }, { col: 2, row: 0 }, new Set(['1,0', '2,1'])), true, 'a diagonal through the corner point only grazes the Walls beside it');
   const fogged = (sq) => sq.col === 5;
   const base = { from: { col: 0, row: 0 }, walls: new Set(), fogged, enemy: true, stanceRange: { minimum: 1, maximum: 6 } };
-  assert.equal(targetable({ ...base, to: { col: 3, row: 3 }, range: { mode: 'stance' } }), true, 'diagonal 3 is Range 3');
+  assert.equal(targetable({ ...base, to: { col: 3, row: 3 }, range: { mode: 'stance' } }), true, 'diagonal 3 is Range 6');
+  assert.equal(targetable({ ...base, to: { col: 4, row: 3 }, range: { mode: 'stance' } }), false, '4 + 3 is Range 7');
   assert.equal(targetable({ ...base, to: { col: 5, row: 0 }, range: { mode: 'stance' } }), false, 'in Fog, 5 away');
   assert.equal(targetable({ ...base, to: { col: 5, row: 0 }, range: { mode: 'stance' }, enemy: false }), true, 'an ally in Fog is fine');
-  assert.equal(targetable({ ...base, to: { col: 1, row: 1 }, range: { mode: 'adjacent' } }), true);
+  assert.equal(targetable({ ...base, to: { col: 1, row: 0 }, range: { mode: 'adjacent' } }), true);
+  assert.equal(targetable({ ...base, to: { col: 1, row: 1 }, range: { mode: 'adjacent' } }), false, 'a diagonal is not adjacent');
 });
 
 test("Greater Warrior: the turn start triggers the Warrior's Path (Path of the Tiger: 2 Power)", async () => {
@@ -340,4 +342,75 @@ test('"you may Teleport 3": one square pick with a skip, no separate yes/no', as
   const { asked } = await fire('ability.style-jumping.jumping-style', 'own_turn.start', me, w);
   assert.equal(asked.length, 0, 'no confirm first');
   assert.deepEqual(calls, [{ distance: 3, upTo: false, allowNone: true }]);
+});
+
+// **A held Challenge is a Unique token (decided):** Unique / any discards may
+// take it, Status and non-Unique ones never; protected Challenges stay.
+test('discarding a held Challenge: Unique and any discards take it, Status and non-Unique never; protection holds', async () => {
+  const me = fighter(1, 'a');
+  const foe = fighter(2, 'b', { tokens: { weakness: 1 }, challengeId: 1 });
+  const { w } = makeWorld([me, foe]);
+  const removed = [];
+  let protectedNow = false;
+  w.challengeRemovable = (holder) => holder.challengeId != null && !protectedNow;
+  w.removeChallenge = async (holder, by) => {
+    removed.push([holder.id, by.id]);
+    holder.challengeId = null;
+    return true;
+  };
+  const discard = (filter, amount = 1) => ({ id: 'd', events: ['own_turn.start'], effect: { op: 'discard_tokens', amount, tokenFilter: filter, target: { ref: 'targets.t' } } });
+  const run1 = async (filter, answers = [], amount = 1) => {
+    const asked = [];
+    const ctx = { world: w, self: me, state: {}, usage: {}, log: () => {}, ask: async (q) => (asked.push(q), q.kind === 'targets' ? [String(foe.id)] : answers.shift()) };
+    await runRule({ id: 'x', events: ['own_turn.start'], effect: { op: 'sequence', steps: [{ op: 'select', binding: 't', selector: { kind: 'enemy', range: { mode: 'map', origin: 'self' }, count: 1 } }, discard(filter, amount).effect] } }, ctx);
+    return asked;
+  };
+  await run1('status');
+  assert.equal(foe.challengeId, 1, 'a Status discard never takes it');
+  await run1('non_unique');
+  assert.equal(foe.challengeId, 1, 'nor a non-Unique one');
+  protectedNow = true;
+  const offeredWhenProtected = (await run1('any', ['weakness'], 1)).find((q) => q.kind === 'choose');
+  assert.ok(!offeredWhenProtected || !offeredWhenProtected.options.some((o) => o.id === 'challenge'), 'protected: never offered');
+  assert.equal(foe.challengeId, 1);
+  protectedNow = false;
+  foe.tokens.weakness = 1;
+  const asked = await run1('any', ['challenge']);
+  assert.deepEqual(asked.find((q) => q.kind === 'choose').options.map((o) => o.id), ['weakness', 'challenge'], 'an any discard offers it');
+  assert.equal(foe.challengeId, null);
+  assert.deepEqual(removed, [[2, 1]], 'removed through the world, by whoever discards');
+  foe.challengeId = 1;
+  delete foe.tokens.weakness;
+  await run1('unique');
+  assert.equal(foe.challengeId, null, 'a Unique discard takes it');
+});
+
+test("a Challenge the Shield blocked: not given, no follow-on; Decoy heals the ally nearest the former holder", async () => {
+  const me = fighter(1, 'a', { square: { col: 0, row: 0 } });
+  const near = fighter(3, 'a', { square: { col: 4, row: 1 } });
+  const far = fighter(4, 'a', { square: { col: 0, row: 5 } });
+  const foe = fighter(2, 'b', { square: { col: 5, row: 1 } });
+  const { w } = makeWorld([me, near, far, foe]);
+  w.challenge = async () => ({ given: false, blocked: true });
+  const emitted = [];
+  const lines = [];
+  await runRule({ id: 'c', events: ['own_turn.start'], effect: { op: 'challenge', target: { ref: 'targets.t' }, challenger: { ref: 'self' } } }, {
+    world: w, self: me, state: {}, usage: {}, log: (l) => lines.push(l), ask: async () => null, emit: async (ev) => emitted.push(ev),
+  }).catch(() => {});
+  // Through an Action-like select so the target is bound.
+  await runRule({ id: 'c2', events: ['own_turn.start'], effect: { op: 'sequence', steps: [{ op: 'select', binding: 't', selector: { kind: 'enemy', range: { mode: 'map', origin: 'self' }, count: 1 } }, { op: 'challenge', target: { ref: 'targets.t' }, challenger: { ref: 'self' } }] } }, {
+    world: w, self: me, state: {}, usage: {}, log: (l) => lines.push(l), ask: async (q) => [q.options[0].id], emit: async (ev) => emitted.push(ev),
+  });
+  assert.ok(!emitted.includes('self.challenge_given_to_enemy'), 'a blocked Challenge was never given');
+  assert.ok(lines.some((l) => /Shield blocks/.test(l)), lines.join(' | '));
+  const decoy = rulesOf('ability.style-decoy.decoy-style', 'enemy.removed_own_challenge_by_enemy_action_or_ability')[0];
+  assert.ok(ruleSupport(decoy).ok, ruleSupport(decoy).reason);
+  near.hp = 5;
+  far.hp = 5;
+  await runRule(decoy, { world: w, self: me, state: {}, usage: {}, log: () => {}, ask: async (q) => [q.options[0].id], event: { formerHolder: foe } });
+  assert.equal(near.hp, 7, 'the ally nearest the former holder heals (Heal Value 2)');
+  assert.equal(far.hp, 5);
+  for (const id of ['ability.style-armored.armored-style', 'ability.style-judgment.judgment-style', 'ability.style-shining.shining-style', 'ability.style-quickdraw.quickdraw-style', 'ability.style-crying.crying-style', 'ability.style-taunting.taunting-style']) {
+    for (const r of rulesOf(id, 'enemy.removed_own_challenge_by_enemy_action_or_ability')) assert.ok(ruleSupport(r).ok, `${r.id}: ${ruleSupport(r).reason}`);
+  }
 });

@@ -172,15 +172,17 @@ export function CombatMapDrawer({ scene, tokenCount }) {
         {scene?.combat_image_url && (
           <img src={scene.combat_image_url} alt="" className="w-full panel-cut-sm border border-zinc-800" />
         )}
+        {/* No upload: the map uses the Scene's own artwork (decided). */}
+        {scene?.combat_image_url && !scene.combat_image_own && <p className="text-[11px] text-zinc-500">The Scene’s artwork — upload a map to replace it here.</p>}
         <div className="flex gap-2">
           <button
             type="button"
             onClick={() => fileRef.current?.click()}
             className="min-h-9 flex-1 panel-cut-sm bg-brand-600 px-2 text-xs font-semibold hover:bg-brand-500"
           >
-            {busy ? '…' : scene?.combat_image_url ? 'Replace' : 'Upload map'}
+            {busy ? '…' : scene?.combat_image_own ? 'Replace' : 'Upload map'}
           </button>
-          {scene?.combat_image_url && (
+          {scene?.combat_image_own && (
             <button
               type="button"
               onClick={() =>

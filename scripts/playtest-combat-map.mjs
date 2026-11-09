@@ -61,13 +61,20 @@ p.emit('scene:set_grid', { size: 50 });
 await sleep(300);
 st = await stage();
 check('a Player can change neither', st.activeScene.combat_image_url === null && st.activeScene.grid.size === 70);
+// No Combat Background but a Scene artwork: the map points at the artwork (decided).
+gm.emit('scene:update', { sceneId: scene.id, name: scene.name, imageData: PNG, imageMimeType: 'image/png' });
+await sleep(500);
+st = await stage();
+check('no map uploaded: the Combat map points at the Scene artwork (same URL, not a copy)',
+  st.activeScene.combat_image_url && st.activeScene.combat_image_url === st.activeScene.image_url && st.activeScene.combat_image_own === false,
+  JSON.stringify([st.activeScene.combat_image_url, st.activeScene.image_url, st.activeScene.combat_image_own]));
 gm.emit('scene:set_combat_image', { imageData: PNG, imageMimeType: 'image/png' });
 gm.emit('scene:set_grid', { size: 71 });
 gm.emit('scene:set_grid', { offsetX: -3, opacity: 0.25 });
 gm.emit('scene:set_grid', { size: 1, offsetY: 99999 });
 await sleep(500);
 st = await stage();
-check('the GM sets the map picture; it is served by URL', Boolean(st.activeScene.combat_image_url));
+check('the GM sets the map picture; it is served by URL, and it replaces the artwork', Boolean(st.activeScene.combat_image_url) && st.activeScene.combat_image_own === true && st.activeScene.combat_image_url !== st.activeScene.image_url);
 const pic = await fetch(BASE + st.activeScene.combat_image_url);
 check('...and the URL serves it', pic.ok && pic.headers.get('content-type') === 'image/png', String(pic.status));
 check('grid changes merge, and out-of-range values are clamped',

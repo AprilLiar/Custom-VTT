@@ -142,8 +142,8 @@ await skipPhase();
 check('the start of the fight: a lasting rule the engine leaves to people is said once, with its rules text (Caged Style, for Bo)', cards.some((c) => c.payload?.automatic === 'ability_manual' && c.payload.title === 'Caged Style — by hand all fight' && /Action Movement they would take is reduced to zero/.test(c.payload.text) && c.payload.fighters?.[0]?.name === `MDBo${stamp}`), JSON.stringify(cards.filter((c) => c.payload?.automatic === 'ability_manual').map((c) => [c.payload.title, c.payload.text])));
 check('Zombie Style: a Copy placed at the start of her turn, where picked', copies().some((c) => c.col === 4 && c.row === 3 && c.owner_id === ta.id), JSON.stringify(copies()));
 
-// Bo (Caged Style) steps next to her — and next to her Copy.
-gm.emit('combat_token:move', { combatantId: tb.id, col: 4, row: 4 });
+// Bo (Caged Style) steps next to her (the diamond grid: laterally, below her).
+gm.emit('combat_token:move', { combatantId: tb.id, col: 3, row: 4 });
 gm.emit('fighter:token', { ref: { combatantId: ta.id }, key: 'speed', delta: 2 });
 await sleep(600);
 const r = await reach(ta.id);
@@ -157,6 +157,8 @@ await sleep(1500);
 await stage();
 check('…Eve takes the hit', fightOf(te.id).hp.current === eveHp - 1, `${eveHp} → ${fightOf(te.id).hp.current}`);
 for (const t of [tb, tc]) gm.emit('fighter:token', { ref: { combatantId: t.id }, key: 'speed', delta: 4 });
+// …then next to her Copy (4,3) for Zombie Style's end-of-turn damage.
+gm.emit('combat_token:move', { combatantId: tb.id, col: 4, row: 4 });
 await sleep(400);
 await stage();
 const boHp = fightOf(tb.id).hp.current;

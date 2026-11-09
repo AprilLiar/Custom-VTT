@@ -17,6 +17,7 @@ import { controlsCharacter } from './control.js';
 import { serialized, shapeFightState } from './combatState.js';
 import { patdContent } from './patdContent.js';
 import { derivedFor } from './fighterStances.js';
+import { activeInterrupt, releaseInterrupt } from './interrupts.js';
 import { stanceOfBuild } from '../client/src/lib/patd/build.js';
 import { actionUsable, atZero, isSuperMove, superKey, superPair, superUsable, turnContext } from '../client/src/lib/patd/engine/turn.js';
 import { WEIGHT_BY_KEY } from '../client/src/lib/cinematicWeight.js';
@@ -192,7 +193,7 @@ export async function listMarks() {
 }
 
 // deps: on, socket, io, triggers (the engine: commit / continue / retrieve)
-export function registerDiceMarkHandlers({ on: onRaw, socket, io, triggers = null }) {
+export function registerDiceMarkHandlers({ on: onRaw, socket, io, triggers = null, emitStageUpdated = null }) {
   const on = (event, handler) => onRaw(event, serialized(handler));
   const emit = (ev, payload) => io.emit(ev, payload);
   const isGm = () => socket.data.identity?.role === 'gm';
@@ -308,8 +309,13 @@ export function registerDiceMarkHandlers({ on: onRaw, socket, io, triggers = nul
     if (!row || !triggers) return;
     // Not during Early or Late Movement (phase D): everyone moves first.
     const c = await one('SELECT scene_id, mode FROM combatants WHERE id = ?', [row.combatant_id]);
-    const fight = c ? await one('SELECT movement_phase FROM fights WHERE scene_id = ? AND mode = ?', [c.scene_id, c.mode]) : null;
+    const fight = c ? await one('SELECT id, movement_phase FROM fights WHERE scene_id = ? AND mode = ?', [c.scene_id, c.mode]) : null;
     if (fight?.movement_phase) return refuse(row.roll_id, 'wait until everyone has finished moving');
+    // **The Interrupt lock (decided):** only the interrupter's own board
+    // commits while it is up — and committing it drops the lock at once.
+    const lock = fight ? activeInterrupt(fight.id) : null;
+    if (lock && !(row.roll_id.startsWith('react-') && row.combatant_id === lock.combatantId)) return refuse(row.roll_id, `wait — ${lock.name} is interrupting`);
+    if (lock && releaseInterrupt(fight.id, lock.combatantId)) await emitStageUpdated?.();
     triggers.commitBoard(row.roll_id);
   });
 

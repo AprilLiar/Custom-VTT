@@ -10,6 +10,7 @@ import {
   actionMoveDestinations,
   forcedMoves,
   freeMoveReach,
+  gridDistance,
   has,
   key,
   landingsOf,
@@ -294,6 +295,16 @@ export function createMoves({ ask, emitEvent, postCard }) {
     const b = m.board();
     return [...freeMoveReach(b, f.square, f.tokens.speed ?? 0, f.id, costOpts(mods)).values()].map((r) => ({ id: key(r.square), col: r.square.col, row: r.square.row, cost: r.cost, note: noteOf(b, r.square) }));
   }
+  // **A hand move (decided):** what the cheapest Free Movement from where they
+  // stand to `to` would cost, whatever Speed they hold — null when no path.
+  function handCost(m, f, to, env = null) {
+    if (!f?.square || !to) return null;
+    // Searched only so far (a map without bounds would be endless): detours
+    // and Pits up to three times the straight distance.
+    const limit = gridDistance(f.square, to) * 3 + 10;
+    const r = freeMoveReach(m.board(), f.square, limit, f.id, costOpts(modsOn(env, f))).get(key(to));
+    return r ? r.cost : null;
+  }
   // Adjacent allies they could swap with (2 Speed).
   const swapsFor = (fighters, f, env = null) =>
     (f?.square && (f.tokens.speed ?? 0) >= 2 && !noFreeMove(modsOn(env, f))
@@ -338,7 +349,7 @@ export function createMoves({ ask, emitEvent, postCard }) {
     return { ok: true };
   }
 
-  return { actionMove, teleport, teleportTo, swap, forced, freeReach, swapsFor, freeMove, freeSwap };
+  return { actionMove, teleport, teleportTo, swap, forced, freeReach, swapsFor, freeMove, freeSwap, handCost };
 }
 
 // Whose Free Movement it is now (book p.57): the active fighter before each

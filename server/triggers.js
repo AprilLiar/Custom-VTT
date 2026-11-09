@@ -19,16 +19,16 @@ import { inBounds as inBoundsAt, isEmpty as isEmptyAt, makeBoard, occupant as oc
 import { OBSTACLES as OBSTACLE_KINDS, placeTile, removeTile } from '../client/src/lib/mapTiles.js';
 import { cellBounds, imageSize } from './imageSize.js';
 import { sceneGrid } from './combatMap.js';
-import { chebyshev, ruleSupport, runRule, targetable } from '../client/src/lib/patd/interpreter.js';
+import { gridDistance, ruleSupport, runRule, targetable } from '../client/src/lib/patd/interpreter.js';
 import { controlsCharacter } from './control.js';
 import { hpOf, saveHp, serialized, shapeFightState } from './combatState.js';
 import { assembles, derivedFor, franticPickOf } from './fighterStances.js';
 import { armorSourcesOf, stanceOfBuild } from '../client/src/lib/patd/build.js';
 import { patdContent } from './patdContent.js';
 import { listenersFor, relationTo, turnEvents } from '../client/src/lib/patd/engine/bus.js';
-import { abilitiesOff, effectiveRange, listMod, modifiersOn, valueOf } from '../client/src/lib/patd/engine/modifiers.js';
+import { abilitiesOff, effectiveRange, hasMod, listMod, modifiersOn, valueOf } from '../client/src/lib/patd/engine/modifiers.js';
 import { addTemp, expireTemps, fighterRt, startTurn } from '../client/src/lib/patd/engine/runtime.js';
-import { spendPrefs } from '../client/src/lib/patd/engine/damage.js';
+import { spendPrefs, unblockableSet } from '../client/src/lib/patd/engine/damage.js';
 import { loadRuntime, saveRuntime } from './engine/runtimeStore.js';
 import { createActionRunner } from './engine/actions.js';
 import { createHits } from './engine/hits.js';
@@ -41,20 +41,26 @@ import { fighterState, readData as readBoardData, saveBoard } from './diceMarks.
 
 // The combat map's image size, by image hash (its playable bounds — phase D).
 const imageSizes = new Map();
+// The map's picture: the uploaded Combat Background, or else (decided) the
+// Scene's own artwork — from whichever Scene owns its bytes (a copy's source).
 async function mapBounds(sceneId) {
-  const scene = await one('SELECT combat_image_hash, grid_size, grid_offset_x, grid_offset_y, grid_opacity FROM scenes WHERE id = ?', [sceneId]);
-  if (!scene?.combat_image_hash) return null;
-  if (!imageSizes.has(scene.combat_image_hash)) {
-    const row = await one('SELECT combat_image_data FROM scenes WHERE id = ?', [sceneId]);
+  const scene = await one('SELECT combat_image_hash, image_hash, image_source_id, grid_size, grid_offset_x, grid_offset_y, grid_opacity FROM scenes WHERE id = ?', [sceneId]);
+  const own = Boolean(scene?.combat_image_hash);
+  const hash = own ? scene.combat_image_hash : scene?.image_hash;
+  if (!hash) return null;
+  if (!imageSizes.has(hash)) {
+    const row = own
+      ? await one('SELECT combat_image_data AS data FROM scenes WHERE id = ?', [sceneId])
+      : await one('SELECT image_data AS data FROM scenes WHERE id = ?', [scene.image_source_id ?? sceneId]);
     let size = null;
     try {
-      size = row?.combat_image_data ? imageSize(Buffer.from(row.combat_image_data, 'base64')) : null;
+      size = row?.data ? imageSize(Buffer.from(row.data, 'base64')) : null;
     } catch {
       size = null;
     }
-    imageSizes.set(scene.combat_image_hash, size);
+    imageSizes.set(hash, size);
   }
-  const size = imageSizes.get(scene.combat_image_hash);
+  const size = imageSizes.get(hash);
   return size ? cellBounds(size.width, size.height, sceneGrid(scene)) : null;
 }
 
@@ -96,8 +102,21 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
   // later turns (Trickster's steal "on a random turn").
   const turnGens = new Map();
   const turnGen = (key) => turnGens.get(key) ?? 0;
-  const ask = (fighter, fightKey, g, tg, when) => (request) =>
-    new Promise((resolve) => {
+  // **Every step shows before the next question (decided):** world changes
+  // (squares, tokens, HP, tiles) mark the stage dirty; a move redraws at once,
+  // and anything else is sent before the next prompt goes out.
+  let stageDirty = false;
+  const markDirty = () => {
+    stageDirty = true;
+  };
+  const flushStage = async () => {
+    if (!stageDirty) return;
+    stageDirty = false;
+    await emitStageUpdated();
+  };
+  const ask = (fighter, fightKey, g, tg, when) => async (request) => {
+    await flushStage();
+    return new Promise((resolve) => {
       if (gen(fightKey) !== g || turnGen(fightKey) !== tg) return resolve(null);
       const id = `t${nextId++}`;
       const prompt = {
@@ -120,6 +139,7 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
       pending.set(id, { resolve, prompt, timer, fightKey, tg });
       sendPrompt(prompt);
     });
+  };
   const finish = (id, answer) => {
     const p = pending.get(id);
     if (!p) return;
@@ -170,7 +190,7 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     const walls = setOf('wall');
     const pits = setOf('pit');
     const fogSquares = tiles.filter((t) => t.kind === 'fog').map(tileSquare);
-    const fogged = (sq) => fogSquares.some((f) => chebyshev(f, sq) <= 1);
+    const fogged = (sq) => fogSquares.some((f) => gridDistance(f, sq) <= 1);
 
     const fighters = [];
     const idx = patdContent();
@@ -220,9 +240,10 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
       for (const m of marks) boards.set(m.combatant_id, readBoardData(m));
     }
     for (const f of fighters) Object.defineProperty(f, 'actionPool', { get: () => livePool(boards.get(f.id)), enumerable: false });
-    // Status tokens held (book p.75: Burning, Challenge, Fatigue, Weakness) — Apply Pressure.
+    // Status tokens held — Apply Pressure. Burning, Fatigue and Weakness: a
+    // held Challenge is a Unique token (decided), so it doesn't count.
     for (const f of fighters) {
-      Object.defineProperty(f, 'statusTokenCount', { get: () => ['burning', 'fatigue', 'weakness'].reduce((n, k) => n + (f.tokens[k] ?? 0), 0) + (f.challengeId != null ? 1 : 0), enumerable: false });
+      Object.defineProperty(f, 'statusTokenCount', { get: () => ['burning', 'fatigue', 'weakness'].reduce((n, k) => n + (f.tokens[k] ?? 0), 0), enumerable: false });
     }
 
     // **Copies (phase E, book p.71):** replicas of their Original — map tiles of
@@ -263,6 +284,7 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
         await run('UPDATE combatants SET tokens = ? WHERE id = ?', [JSON.stringify(tokens), f.id]);
         f.tokens = { ...tokens };
       });
+      markDirty();
     };
     const changeHp = async (f, delta) => {
       let result = { landed: null, before: null };
@@ -279,6 +301,7 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
         f.hp = next;
         f.currentBar = { damage: next.max - next.current };
       });
+      markDirty();
       return result;
     };
     // You Bleed once per Round, when damage takes you to the Bleed Value or below.
@@ -310,6 +333,8 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
         const at = storedOf(sq);
         await queued(() => run('UPDATE map_tiles SET col = ?, row = ? WHERE id = ?', [at.col, at.row, f.rowId]));
         f.square = { col: sq.col, row: sq.row };
+        markDirty();
+        await flushStage();
         return;
       }
       await queued(async () => {
@@ -323,6 +348,9 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
         }
       });
       f.square = sq ? { col: sq.col, row: sq.row } : null;
+      // A move shows at once (decided): every step of an Action, one by one.
+      markDirty();
+      await flushStage();
     };
     // World of Cardboard: a Wall smashed into Rubble.
     const smashWall = async (sq) => {
@@ -335,6 +363,7 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
       for (let i = tileList.length - 1; i >= 0; i--) if (tileList[i].kind === 'wall' && tileList[i].col === sq.col && tileList[i].row === sq.row) tileList.splice(i, 1);
       if (!tileList.some((t) => t.kind === 'rubble' && t.col === sq.col && t.row === sq.row)) tileList.push({ col: sq.col, row: sq.row, kind: 'rubble' });
       walls.delete(`${sq.col},${sq.row}`);
+      markDirty();
     };
     const setDizzy = (f) => (f.isCopy ? null : queued(() => run('UPDATE combatants SET dizzy = 1 WHERE id = ?', [f.id])).then(() => (f.dizzy = true)));
 
@@ -354,6 +383,7 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
         else set.delete(k);
       }
       fogSquares.splice(0, fogSquares.length, ...tileList.filter((t) => t.kind === 'fog').map((t) => ({ col: t.col, row: t.row })));
+      markDirty();
     };
     // `by`: who destroyed it, if anyone did (phase G: Zombie and Crystal Style).
     const destroyCopy = async (c, by = null) => {
@@ -362,6 +392,7 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
       const i = copies.indexOf(c);
       if (i >= 0) copies.splice(i, 1);
       c.square = null;
+      markDirty();
       countDestroyed(by);
       const env = world.env;
       const owner = byId(c.ownerId);
@@ -418,7 +449,7 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
         }
         // "Each enemy adjacent to any of your Copies" (Zombie Style — phase G).
         if (range?.mode === 'adjacent_to_any_own_copy') {
-          return Boolean(to.square) && copies.some((c) => c.ownerId === from.id && c.square && chebyshev(c.square, to.square) === 1);
+          return Boolean(to.square) && copies.some((c) => c.ownerId === from.id && c.square && gridDistance(c.square, to.square) === 1);
         }
         return targetable({ from: from.square, to: to.square, range, stanceRange: r, ...sight, enemy: from.side !== to.side });
       },
@@ -535,6 +566,7 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
           });
           const c = copyOf({ id, col: at.col, row: at.row, owner_id: owner.id, kind: 'copy' });
           if (c) copies.push(c);
+          markDirty();
           return c;
         }
         await writeKinds(sq, placeTile(kindsAtSq(sq), kind));
@@ -560,7 +592,88 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
         const rt = world.env.rt;
         (rt.scheduled ??= []).push({ ...item, seq: rt.turnSeq ?? 0, round: rt.round });
       },
-      challenge: (target, challenger) => queued(() => run('UPDATE combatants SET challenge_id = ? WHERE id = ?', [challenger.id, target.id])),
+      // **Giving a Challenge (book pp.9, 25, 78).** Never to someone already
+      // holding yours, or who discarded yours this turn. Their Shield may block
+      // it (1 Shield), unless it is Unblockable by Shields (the Angel's,
+      // Showdown) or their Shield already took this Action's damage; someone
+      // holding another Challenge picks whose to keep. → { given, blocked, why }
+      challenge: async (target, challenger, opts = {}) => {
+        if (!target || !challenger || target.isCopy) return { given: false, why: 'not a fighter' };
+        if (target.challengeId === challenger.id) return { given: false, why: `${target.name} already holds ${challenger.name}'s Challenge` };
+        const env = world.env;
+        const askOf = (f, request) => (env ? ask(f, env.key, env.gen, env.tg, env.when)(request) : Promise.resolve(null));
+        if (env && (fighterRt(env.rt, target.id).flags.discardedChallengeOf ?? []).includes(challenger.id)) {
+          return { given: false, why: `${target.name} discarded ${challenger.name}'s Challenge this turn` };
+        }
+        const cm = [...modsOf(challenger), ...(opts.mods ?? []).filter((m) => m.targetId === challenger.id)];
+        const ub = unblockableSet(listMod(cm, 'unblockable'), listMod(cm, 'challenge.unblockable'), opts.unblockable ?? []);
+        const shield = target.tokens.shield ?? 0;
+        const shieldOk = shield > 0 && !ub.has('shields') && !opts.shieldSpent && !hasMod(modsOf(target), 'shield.disabled') && (target.prefs?.shield ?? 'auto') !== 'never';
+        if (env && shieldOk) {
+          const block = Boolean(
+            await askOf(target, {
+              kind: 'confirm',
+              title: 'Shield',
+              text: `${challenger.name} Challenges ${target.name}. Block the Challenge with your Shield (${shield} → ${shield - 1})? This Action's damage then gets past it.`,
+            })
+          );
+          if (block) {
+            await writeTokens(target, (t) => (t.shield = Math.max(0, (t.shield ?? 0) - 1)));
+            const payload = { attacker: challenger, amount: 1, shieldBroke: shield === 1, target, enemy: challenger };
+            await emitEvent(env, 'self.shield_absorbed', target, payload);
+            if (challenger.side !== target.side) await emitEvent(env, 'self.shield_absorbed_from_enemy_action', target, payload);
+            return { given: false, blocked: true };
+          }
+        }
+        // Holding another Challenge: they choose whose to keep (the new one was given either way).
+        const old = target.challengeId != null ? byId(target.challengeId) : null;
+        if (old && env) {
+          const keep = await askOf(target, {
+            kind: 'choose',
+            title: 'Challenge',
+            text: `${target.name} holds ${old.name}'s Challenge and is given ${challenger.name}'s. Keep whose?`,
+            options: [
+              { id: 'new', label: `${challenger.name}'s` },
+              { id: 'old', label: `${old.name}'s` },
+            ],
+            minimum: 1,
+            maximum: 1,
+          });
+          if ((Array.isArray(keep) ? keep[0] : keep) === 'old') return { given: true, kept: false };
+        }
+        await queued(() => run('UPDATE combatants SET challenge_id = ? WHERE id = ?', [challenger.id, target.id]));
+        target.challengeId = challenger.id;
+        markDirty();
+        return { given: true, kept: true };
+      },
+      // **Discarding a held Challenge (decided: a Unique token).** Never while
+      // the holder is under "challenge.cannot_discard" (Showdown), nor by the
+      // Challenger's enemies when the Challenger's are immune (Distracting Style).
+      challengeRemovable: (holder, by) => {
+        if (holder?.challengeId == null) return false;
+        if (hasMod(modsOf(holder), 'challenge.cannot_discard')) return false;
+        const challenger = byId(holder.challengeId);
+        if (challenger && by && by.side !== challenger.side && hasMod(modsOf(challenger), 'own_challenges.immune_to_enemy_action_or_ability_removal')) return false;
+        return true;
+      },
+      // Discards it; by the Challenger's enemy, the Challenger's "if an enemy
+      // discards your Challenge token" rules run (`event.formerHolder`).
+      removeChallenge: async (holder, by) => {
+        if (!world.challengeRemovable(holder, by)) return false;
+        const challengerId = holder.challengeId;
+        const challenger = byId(challengerId);
+        await queued(() => run('UPDATE combatants SET challenge_id = NULL WHERE id = ? AND challenge_id = ?', [holder.id, challengerId]));
+        holder.challengeId = null;
+        markDirty();
+        if (world.env) {
+          const flags = fighterRt(world.env.rt, holder.id).flags;
+          flags.discardedChallengeOf = [...(flags.discardedChallengeOf ?? []), challengerId];
+          if (challenger && by && by.side !== challenger.side) {
+            await emitEvent(world.env, 'enemy.removed_own_challenge_by_enemy_action_or_ability', by, { formerHolder: holder, remover: by, challenger }, 0, (l) => l.id === challenger.id);
+          }
+        }
+        return true;
+      },
       // Onto the fighter's active turn board (phase B); held numbers outside a turn come in phase F.
       addPoolNumber: (f, v) => world.changePool(f, (d) => addPoolValue(d, v, 'ability')),
       // **The Action Pool (phase H):** the live numbers of a fighter's active
@@ -849,7 +962,13 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
       rt,
       usage: rt.usage,
       stateOf: (id) => fighterRt(rt, id).state,
-      save: () => (gen(key) === env.gen ? saveRuntime(fightRow.id, rt) : null),
+      // Saved, the board shows what the runtime knows too (Armor used this turn …).
+      save: async () => {
+        if (gen(key) !== env.gen) return null;
+        await saveRuntime(fightRow.id, rt);
+        markDirty();
+        await flushStage();
+      },
     };
     world.env = env;
     // This turn so far (phase G), from the runtime's per-turn flags.
@@ -1006,11 +1125,25 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     await env.save();
   }
 
+  // How many jobs each fight's chain holds (queued or running): an Action
+  // resolving, a prompt waiting… The Interrupt lock waits for it to empty.
+  const busy = new Map();
+  const idleHooks = [];
   const onChain = (fightRow, job) => {
     const key = `${fightRow.scene_id}:${fightRow.mode}`;
     const g = gen(key);
     const prev = chains.get(key) ?? Promise.resolve();
-    const next = prev.then(() => (gen(key) === g ? job() : null)).catch((err) => console.error('turn triggers', err));
+    busy.set(key, (busy.get(key) ?? 0) + 1);
+    const next = prev
+      .then(() => (gen(key) === g ? job() : null))
+      .catch((err) => console.error('turn triggers', err))
+      .finally(() => {
+        const left = (busy.get(key) ?? 1) - 1;
+        if (left > 0) return busy.set(key, left);
+        busy.delete(key);
+        // The stack finished: whoever waits to Interrupt goes now.
+        for (const hook of idleHooks) Promise.resolve(hook({ scene_id: fightRow.scene_id, mode: fightRow.mode })).catch((err) => console.error('idle hook', err));
+      });
     chains.set(key, next);
     return next;
   };
@@ -1087,6 +1220,14 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
   };
 
   return {
+    // Is an Action (or anything) resolving in this fight right now?
+    isBusy(fightRow) {
+      return (busy.get(`${fightRow.scene_id}:${fightRow.mode}`) ?? 0) > 0;
+    },
+    // Called with { scene_id, mode } whenever a fight's chain empties.
+    onIdle(hook) {
+      idleHooks.push(hook);
+    },
     // **Interrupts:** who can take a Reactive Action now, and with what.
     interruptOffers(fightRow) {
       return reactionOffers(fightRow, activeOf(fightRow));
@@ -1110,6 +1251,13 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
         options: f ? moves.freeReach(movers, f, env) : [],
         swaps: moves.swapsFor(fighters, f, env),
       };
+    },
+    // **A hand move (decided):** the Speed the cheapest Free Movement there
+    // would cost (null: no way there), and the Speed they hold.
+    async handCost(fightRow, combatantId, to) {
+      const { env, byId, movers } = await envFor(fightRow);
+      const f = byId(combatantId);
+      return { cost: f ? moves.handCost(movers, f, to, env) : null, speed: f?.tokens.speed ?? 0 };
     },
     freeMove(fightRow, combatantId, to) {
       return onChain(fightRow, async () => {

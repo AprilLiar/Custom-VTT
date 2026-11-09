@@ -22,11 +22,13 @@ import { assembles, derivedFor, franticPickOf, rollDerived, stanceByKey, stances
 import { franticOptions, franticPickAllowed } from '../client/src/lib/patd/build.js';
 import { patdContent } from './patdContent.js';
 import { addXp } from './builds.js';
+import { parseRuntime } from '../client/src/lib/patd/engine/runtime.js';
 import { closeInterruptBoards, closeReactionBoards, endTurnDice, resumeRoll, startReaction, startRoll } from './diceMarks.js';
 import { XP_AWARDS } from '../client/src/lib/patd/build.js';
 import { resolveRef, serialized, shapeFightState } from './combatState.js';
 import { controlsCharacter } from './control.js';
 import { mayFreeMove } from './engine/moves.js';
+import { claimInterrupt, dropInterrupts, interruptOf, nextInterrupt, releaseInterrupt, unqueueInterrupt } from './interrupts.js';
 
 // The fight's reaction window (phase F): { seq, activeId, offers: { [id]: { clusters, … } }, done } | null.
 export const windowOf = (row) => {
@@ -139,6 +141,19 @@ export async function loadFightState(sceneId, mode) {
     pending_stance: pending,
     // Early / Late Movement (phase D): who still gets to move, or null.
     movement_phase: phaseOf(row),
+    // **Armor sources used this turn**, by combatant (the Armor rings — decided):
+    // from the runtime's per-turn flags.
+    armor_used: (() => {
+      const rt = parseRuntime(row.runtime);
+      return Object.fromEntries(
+        Object.entries(rt.fighters ?? {})
+          .map(([id, f]) => [id, f?.flags?.armorTriggers ?? 0])
+          .filter(([, n]) => n > 0)
+      );
+    })(),
+    // **The Interrupt lock (decided):** who is interrupting (everyone waits),
+    // and who waits for the resolving stack to finish. Null when none.
+    interrupt: interruptOf(row.id),
     // Who may still react to the last Action (phase F), or null.
     reaction_window: (() => {
       const w = windowOf(row);
@@ -149,10 +164,47 @@ export async function loadFightState(sceneId, mode) {
   };
 }
 
+// An Interrupt board for this fighter: the open one again, or a new one.
+// → the payload the client's DiceBoard opens with.
+async function interruptBoard(fight, c, offer, emitAll) {
+  const open = await one('SELECT roll_id FROM dice_marks WHERE roll_id LIKE ? AND combatant_id = ? AND active = 1 ORDER BY created_at DESC, rowid DESC LIMIT 1', [`react-${fight.id}-%`, c.id]);
+  const rollId =
+    open?.roll_id ??
+    (await serialized(() => startReaction({ fightId: fight.id, seq: Date.now(), combatantId: c.id, characterId: c.character_id, stanceKey: offer.stanceKey, clusters: offer.clusters, fighterName: offer.name }, emitAll))());
+  return { roll_id: rollId, combatant_id: c.id, character_id: c.character_id, stance_key: offer.stanceKey, stance: 'Interrupt', fighter: { name: offer.name } };
+}
+
+// **The Interrupt lock, once per server:** whenever a fight's stack finishes,
+// the next one waiting to Interrupt takes the lock and their board opens
+// (`interrupt:open` — their own clients show it). Someone who can no longer
+// Interrupt is skipped.
+export function wireInterrupts({ triggers, emitStageUpdated, emitAll }) {
+  const startNext = async ({ scene_id, mode }) => {
+    const fight = await one('SELECT * FROM fights WHERE scene_id = ? AND mode = ?', [scene_id, mode]);
+    if (!fight) return;
+    let changed = false;
+    for (let who = nextInterrupt(fight.id); who; who = nextInterrupt(fight.id)) {
+      changed = true;
+      const c = await one('SELECT * FROM combatants WHERE id = ?', [who.combatantId]);
+      const offer = c ? (await triggers.interruptOffers({ ...fight }))[c.id] : null;
+      if (!offer) {
+        releaseInterrupt(fight.id, who.combatantId);
+        continue;
+      }
+      // `by`: the connection that pressed Interrupt — its board opens there.
+      emitAll?.('interrupt:open', { mode, combatantId: c.id, by: who.by ?? null, payload: await interruptBoard(fight, c, offer, emitAll), clusters: offer.clusters });
+      break;
+    }
+    if (changed) await emitStageUpdated();
+  };
+  triggers.onIdle(startNext);
+  return startNext;
+}
+
 // deps: on, socket, emitStageUpdated, postCard(kind, payload), postSystemMessage(text)
 // `emitAll(event, payload)` broadcasts to every socket (io.emit).
 // `triggers` is the turn-trigger engine (server/triggers.js); optional.
-export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, postCard, postSystemMessage, emitAll, triggers = null }) {
+export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, postCard, postSystemMessage, emitAll, triggers = null, startNextInterrupt = null }) {
   const on = (event, handler) => onRaw(event, serialized(handler));
   const isGm = () => socket.data.identity?.role === 'gm';
   const activeSceneId = async () =>
@@ -520,8 +572,9 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
     }
   };
   // May this fighter use Free Movement right now (book p.57)?
+  // Never while someone is interrupting (the Interrupt lock).
   const freeMoveOk = async (fight, c) =>
-    mayFreeMove({ phase: phaseOf(fight), activeId: orderOf(fight)[fight.turn_index]?.id, combatantId: c.id, committing: await activeCommitting(fight) });
+    !interruptOf(fight.id)?.active && mayFreeMove({ phase: phaseOf(fight), activeId: orderOf(fight)[fight.turn_index]?.id, combatantId: c.id, committing: await activeCommitting(fight) });
 
   // Where they can go with their Speed: ack({ mode, speed, options }).
   // (Straight on the socket: the shared `on` wrapper drops acknowledgements.)
@@ -546,6 +599,46 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
     const { c, fight } = await fightOfCombatant(combatantId);
     if (!c || !mayControl(c) || !triggers || !(await freeMoveOk(fight, c))) return;
     triggers.freeSwap({ ...fight }, c.id, Number(allyId)).then((r) => socket.emit('move:result', { combatantId: c.id, ...r }));
+  });
+  // **A hand move (decided):** dragging a fighter by hand asks "Do you need to
+  // spend Speed tokens on this move?". The cost is the cheapest Free Movement
+  // from where they stand (a diagonal is 2 — the diamond grid). `to` is a map
+  // square, or a lane space (`slot`). ack({ cost | null, speed }) or ({ error }).
+  const handTarget = (payload) =>
+    Number.isInteger(payload?.slot) ? { col: payload.slot % 10, row: Math.floor(payload.slot / 10) } : Number.isInteger(payload?.col) && Number.isInteger(payload?.row) ? { col: payload.col, row: payload.row } : null;
+  socket.on('move:hand_cost', async (payload, ack) => {
+    if (typeof ack !== 'function') return;
+    try {
+      const { c, fight } = await fightOfCombatant(payload?.combatantId);
+      const to = handTarget(payload);
+      if (!c || !mayControl(c) || !triggers || !to) return ack({ error: 'not in a fight' });
+      ack(await triggers.handCost({ ...fight }, c.id, to));
+    } catch (err) {
+      console.error('error handling move:hand_cost:', err);
+      ack({ error: 'failed' });
+    }
+  });
+  // "Yes": spend that Speed — checked again here, before the move is sent.
+  socket.on('move:hand_pay', async (payload, ack) => {
+    const reply = typeof ack === 'function' ? ack : () => {};
+    try {
+      const { c, fight } = await fightOfCombatant(payload?.combatantId);
+      const to = handTarget(payload);
+      if (!c || !mayControl(c) || !triggers || !to) return reply({ error: 'not in a fight' });
+      const { cost } = await triggers.handCost({ ...fight }, c.id, to);
+      const tokens = shapeFightState(c).tokens;
+      if (cost == null) return reply({ error: 'no way there' });
+      if ((tokens.speed ?? 0) < cost) return reply({ error: `needs ${cost} Speed` });
+      if (cost > 0) {
+        if (tokens.speed - cost > 0) tokens.speed -= cost;
+        else delete tokens.speed;
+        await run('UPDATE combatants SET tokens = ? WHERE id = ?', [JSON.stringify(tokens), c.id]);
+      }
+      reply({ ok: true, cost });
+    } catch (err) {
+      console.error('error handling move:hand_pay:', err);
+      reply({ error: 'failed' });
+    }
   });
   // **Interrupts (decided, revised — replaces the reaction windows):** who of
   // the fighters this person controls can take a Reactive Action right now,
@@ -580,10 +673,16 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
       if (!c || !fight || !mayControl(c) || !triggers?.interruptOffers) return ack({ error: 'no Interrupt now' });
       const offer = (await triggers.interruptOffers({ ...fight }))[c.id];
       if (!offer) return ack({ error: 'nothing to interrupt with now' });
-      // One open Interrupt board per fighter: reopen it rather than start another.
-      const open = await one("SELECT roll_id FROM dice_marks WHERE roll_id LIKE ? AND combatant_id = ? AND active = 1 ORDER BY created_at DESC, rowid DESC LIMIT 1", [`react-${fight.id}-%`, c.id]);
-      const rollId = open?.roll_id ?? (await serialized(() => startReaction({ fightId: fight.id, seq: Date.now(), combatantId: c.id, characterId: c.character_id, stanceKey: offer.stanceKey, clusters: offer.clusters, fighterName: offer.name }, emitAll))());
-      ack({ payload: { roll_id: rollId, combatant_id: c.id, character_id: c.character_id, stance_key: offer.stanceKey, stance: 'Interrupt', fighter: { name: offer.name } }, clusters: offer.clusters });
+      // **The Interrupt lock (decided):** never into a resolving Action — then
+      // it waits for the stack to finish (wireInterrupts opens it).
+      const claim = claimInterrupt(fight.id, { combatantId: c.id, name: offer.name, by: socket.id }, triggers.isBusy?.(fight) ?? false);
+      if (claim === 'queued') {
+        await emitStageUpdated();
+        return ack({ queued: true });
+      }
+      const board = await interruptBoard(fight, c, offer, emitAll);
+      if (claim === 'active') await emitStageUpdated();
+      ack({ payload: board, clusters: offer.clusters });
     } catch (err) {
       console.error('error handling react:open:', err);
       ack({ error: 'failed' });
@@ -594,7 +693,22 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
     const { c, fight } = await fightOfCombatant(combatantId);
     if (!c || !fight || !mayControl(c)) return;
     await closeInterruptBoards(fight.id, c.id, emitAll);
+    // Giving it up drops the lock (or the place in the queue).
+    releaseInterrupt(fight.id, c.id);
+    unqueueInterrupt(fight.id, c.id);
     await emitStageUpdated();
+    if (triggers && !triggers.isBusy?.(fight)) await startNextInterrupt?.({ scene_id: fight.scene_id, mode: fight.mode });
+  });
+  // GM: lift a stuck Interrupt lock (the interrupter left, or changed their mind).
+  on('interrupt:cancel', async ({ mode } = {}) => {
+    if (!isGm()) return;
+    const fight = await fightFor(mode);
+    const lock = fight ? interruptOf(fight.id)?.active : null;
+    if (!lock) return;
+    await closeInterruptBoards(fight.id, lock.combatantId, emitAll);
+    releaseInterrupt(fight.id, lock.combatantId);
+    await emitStageUpdated();
+    if (triggers && !triggers.isBusy?.(fight)) await startNextInterrupt?.({ scene_id: fight.scene_id, mode: fight.mode });
   });
 
   // Done moving in this movement phase.
@@ -727,6 +841,7 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
       await postSystemMessage(`— ${outcome === 'allies' ? 'The allies' : 'The enemies'} win — XP: ${lines.length ? lines.join(', ') : 'nobody on an XP track'}`);
     }
     await run('DELETE FROM fights WHERE id = ?', [fight.id]);
+    dropInterrupts(fight.id);
     await endTurnDice([...parseIds(fight.allies), ...parseIds(fight.enemies)], emitAll);
     triggers?.endFight(fight.scene_id, fight.mode);
     await run('UPDATE combatants SET dizzy = 0 WHERE scene_id = ? AND mode = ?', [fight.scene_id, fight.mode]);
