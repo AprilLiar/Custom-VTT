@@ -16,6 +16,22 @@
 // leave it empty). Movement only ever enters empty spaces.
 
 export const key = (sq) => `${sq.col},${sq.row}`;
+// The squares a unit fills from its square: one, or a 2×2 block (the Giant).
+export const cellsOf = (sq, size = 1) =>
+  size === 2 ? [sq, { col: sq.col + 1, row: sq.row }, { col: sq.col, row: sq.row + 1 }, { col: sq.col + 1, row: sq.row + 1 }] : [sq];
+// The closest pair of squares between two units (Range from a 2×2 Giant counts from its nearest square).
+export function nearestCells(a, aSize, b, bSize) {
+  let best = [a, b];
+  let d = Infinity;
+  for (const x of cellsOf(a, aSize)) for (const y of cellsOf(b, bSize)) {
+    const n = Math.abs(x.col - y.col) + Math.abs(x.row - y.row);
+    if (n < d) {
+      d = n;
+      best = [x, y];
+    }
+  }
+  return best;
+}
 export const sameSquare = (a, b) => Boolean(a && b && a.col === b.col && a.row === b.row);
 export const gridDistance = (a, b) => Math.abs(a.col - b.col) + Math.abs(a.row - b.row);
 const LATERAL = [
@@ -43,13 +59,15 @@ export const isDiagonal = (a, b) => a.col !== b.col && a.row !== b.row;
 export function makeBoard({ bounds = null, tiles = [], units = [], exits = 'all' } = {}) {
   const t = new Map();
   for (const x of tiles) {
-    const kinds = x.kind === 'pit_trap' ? ['pit', 'trap'] : [x.kind];
+    // (A Deadly Trap is a Trap that deals 3: `deadly` says so.)
+    const kinds = x.kind === 'pit_trap' ? ['pit', 'trap'] : x.kind === 'deadly_trap' ? ['trap', 'deadly'] : [x.kind];
     const k = key(x);
     if (!t.has(k)) t.set(k, new Set());
     for (const kind of kinds) t.get(k).add(kind);
   }
   const unitAt = new Map();
-  for (const u of units) if (u.square) unitAt.set(key(u.square), u.id);
+  // The Giant fills a 2×2 block from its square (the QA pass).
+  for (const u of units) if (u.square) for (const c of cellsOf(u.square, u.size)) unitAt.set(key(c), u.id);
   return { bounds, tiles: t, unitAt, exits };
 }
 
@@ -63,8 +81,30 @@ const exitStep = (b, n) => b.exits !== 'cols' || (n.row >= b.bounds.rowMin && n.
 export const has = (b, sq, kind) => b.tiles.get(key(sq))?.has(kind) ?? false;
 export const occupant = (b, sq) => b.unitAt.get(key(sq)) ?? null;
 // Full: a Wall, or a unit other than those ignored (the mover itself).
-export const isFull = (b, sq, ignore = []) => has(b, sq, 'wall') || (occupant(b, sq) != null && !ignore.includes(occupant(b, sq)));
-export const isEmpty = (b, sq, ignore = []) => inBounds(b, sq) && !isFull(b, sq, ignore);
+// **A mover's own rules (the QA pass)** ride on the board it plans with
+// (server/engine/moves.js boardFor):
+//   b.blocked  Set("c,r") — spaces they may not enter (next to Shining Style)
+//   b.open     every space is Empty to them (Weightless Style)
+//   b.walls    'empty' (Parkour) | 'rubble' (Spirit Style) | 'smash' (the
+//              Giant: the Wall becomes Rubble) — Walls they may enter
+//   b.pitsLinked  standing on a Pit, every other Pit is adjacent (Vortex Style)
+export const isFull = (b, sq, ignore = []) => {
+  if (b.blocked?.has(key(sq))) return true;
+  if (b.open) return false;
+  if (has(b, sq, 'wall') && !b.walls) return true;
+  return occupant(b, sq) != null && !ignore.includes(occupant(b, sq));
+};
+// A mover of size 2 (the Giant, `b.size`) needs its whole 2×2 block empty.
+export const isEmpty = (b, sq, ignore = []) => cellsOf(sq, b.size).every((c) => inBounds(b, c) && !isFull(b, c, ignore));
+// A Wall they enter as if it were Rubble (or by smashing it): it ends Action Movement.
+const stopsAt = (b, sq) => has(b, sq, 'rubble') || has(b, sq, 'pit') || ((b.walls === 'rubble' || b.walls === 'smash') && has(b, sq, 'wall'));
+// The spaces one step away — and, from a Pit, every other Pit (Vortex Style).
+const pitsOf = (b) => [...b.tiles.entries()].filter(([, kinds]) => kinds.has('pit')).map(([k]) => ({ col: Number(k.split(',')[0]), row: Number(k.split(',')[1]) }));
+const stepsFrom = (b, sq, around8 = false) => {
+  const near = (around8 ? allNeighbors : neighbors)(sq);
+  if (!b.pitsLinked || !has(b, sq, 'pit')) return near;
+  return [...near, ...pitsOf(b).filter((p) => !sameSquare(p, sq) && !near.some((n) => sameSquare(n, p)))];
+};
 
 // ------------------------------------------------------------------ Free Movement (Speed)
 
@@ -75,7 +115,7 @@ export const isEmpty = (b, sq, ignore = []) => inBounds(b, sq) && !isFull(b, sq,
 // Rubble on the way gives Fatigue and Traps deal damage — the server applies
 // them along the chosen path. `costPerSpace` (Weightless Style: every space
 // costs 1, a diagonal step and Pits too).
-const stepCost = (b, at, n, costPerSpace) => (costPerSpace != null ? costPerSpace : (isDiagonal(at, n) ? 2 : 1) + (has(b, at, 'pit') ? 1 : 0));
+const stepCost = (b, at, n, costPerSpace) => (costPerSpace != null ? costPerSpace : (b.pitsLinked && has(b, at, 'pit') && has(b, n, 'pit') ? 1 : isDiagonal(at, n) ? 2 : 1) + (has(b, at, 'pit') ? 1 : 0));
 export function freeMoveReach(b, from, speed, selfId = null, { costPerSpace = null } = {}) {
   const best = new Map([[key(from), { square: from, cost: 0, path: [] }]]);
   const queue = [{ square: from, cost: 0, path: [] }];
@@ -83,7 +123,7 @@ export function freeMoveReach(b, from, speed, selfId = null, { costPerSpace = nu
     queue.sort((x, y) => x.cost - y.cost);
     const cur = queue.shift();
     if (best.get(key(cur.square))?.cost < cur.cost) continue;
-    for (const n of (costPerSpace != null ? allNeighbors : neighbors)(cur.square)) {
+    for (const n of stepsFrom(b, cur.square, costPerSpace != null)) {
       if (!isEmpty(b, n, [selfId])) continue;
       const cost = cur.cost + stepCost(b, cur.square, n, costPerSpace);
       if (cost > speed) continue;
@@ -123,11 +163,11 @@ export function actionMoveDestinations(b, from, distance, upTo = false, selfId =
     if (!ends.has(k) || ends.get(k).path.length > path.length) ends.set(k, { square: path.at(-1), path });
   };
   const walk = (at, path, seen) => {
-    if (path.length && (has(b, at, 'rubble') || has(b, at, 'pit'))) return add(path);
+    if (path.length && stopsAt(b, at)) return add(path);
     if (path.length >= distance) return add(path);
     if (upTo && path.length) add(path);
     let any = false;
-    for (const n of neighbors(at)) {
+    for (const n of stepsFrom(b, at)) {
       const k = key(n);
       if (seen.has(k) || !isEmpty(b, n, [selfId])) continue;
       any = true;

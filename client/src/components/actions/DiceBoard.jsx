@@ -6,7 +6,7 @@ import { getBuild } from '../../lib/api.js';
 import { useRole } from '../../roleContext.jsx';
 import { useContent } from '../../lib/patd/useContent.js';
 import { deriveBuild, stanceOfBuild } from '../../lib/patd/build.js';
-import { gateFor, minusReserved, poolOf, reservedBy, stopChoices, turnActions } from '../../lib/patd/diceBoard.js';
+import { costBonus, gateFor, minusReserved, poolOf, reservedBy, stopChoices, turnActions } from '../../lib/patd/diceBoard.js';
 import { affordableOptions, hasDiceCost, optionLabel, paymentText, planPayment, tokenOptions } from '../../lib/patd/tokenCost.js';
 import { useDiceMarks } from '../../lib/diceMarks.js';
 import { useSquarePick } from '../../lib/squarePick.js';
@@ -285,7 +285,7 @@ export default function DiceBoard({ payload, onClose, canEdit }) {
       return superPair(pool, previewDie, taken) && superState(action).ok ? true : false;
     }
     if (!hasDiceCost(action)) return false;
-    const g = gateFor(action, n.value);
+    const g = gateFor(action, n.value + costBonus(action, fighter));
     return g == null ? false : g;
   };
   const hoverHandlers = (id) => ({

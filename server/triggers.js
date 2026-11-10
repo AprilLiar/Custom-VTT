@@ -15,29 +15,29 @@ import { applyHpDelta } from '../client/src/lib/hpBars.js';
 import { WEIGHT_BY_KEY, crossesBleed } from '../client/src/lib/cinematicWeight.js';
 import { TOKEN_BY_KEY, capOf, innateArmor } from '../client/src/lib/panicTokens.js';
 import { TRAY, clampLanes, moveOnLane, packLane } from '../client/src/lib/simpleLane.js';
-import { inBounds as inBoundsAt, isEmpty as isEmptyAt, makeBoard, occupant as occupantAt } from '../client/src/lib/patd/engine/board.js';
+import { inBounds as inBoundsAt, isEmpty as isEmptyAt, makeBoard, nearestCells, occupant as occupantAt } from '../client/src/lib/patd/engine/board.js';
 import { OBSTACLES as OBSTACLE_KINDS, placeTile, removeTile } from '../client/src/lib/mapTiles.js';
 import { cellBounds, imageSize } from './imageSize.js';
 import { sceneGrid } from './combatMap.js';
-import { gridDistance, ruleSupport, runRule, targetable } from '../client/src/lib/patd/interpreter.js';
+import { evalValue, gridDistance, ruleSupport, runRule, targetable } from '../client/src/lib/patd/interpreter.js';
 import { controlsCharacter } from './control.js';
 import { hpOf, saveHp, serialized, shapeFightState } from './combatState.js';
 import { assembles, derivedFor, franticPickOf } from './fighterStances.js';
-import { armorSourcesOf, stanceOfBuild } from '../client/src/lib/patd/build.js';
+import { armorSourcesOf, franticOptions, hasRuleIn, stanceOfBuild } from '../client/src/lib/patd/build.js';
 import { patdContent } from './patdContent.js';
 import { listenersFor, relationTo, turnEvents } from '../client/src/lib/patd/engine/bus.js';
 import { abilitiesOff, effectiveRange, hasMod, listMod, modifiersOn, valueOf } from '../client/src/lib/patd/engine/modifiers.js';
 import { addTemp, expireTemps, fighterRt, startTurn } from '../client/src/lib/patd/engine/runtime.js';
-import { spendPrefs, unblockableSet } from '../client/src/lib/patd/engine/damage.js';
+import { ironAllowance, spendPrefs, unblockableSet } from '../client/src/lib/patd/engine/damage.js';
 import { loadRuntime, saveRuntime } from './engine/runtimeStore.js';
 import { createActionRunner } from './engine/actions.js';
 import { createHits } from './engine/hits.js';
 import { createMoves } from './engine/moves.js';
-import { atZero, comebackSquares, reactionClusters, turnContext } from '../client/src/lib/patd/engine/turn.js';
+import { atZero, comebackSquares, reactionClusters, superKey, turnContext } from '../client/src/lib/patd/engine/turn.js';
 import { hasDiceCost } from '../client/src/lib/patd/tokenCost.js';
-import { ENGINE_NATIVE, continuousSupport, isIronAnySource } from '../client/src/lib/patd/coverage.js';
-import { addPoolValue, livePool, turnActions } from '../client/src/lib/patd/diceBoard.js';
-import { fighterState, readData as readBoardData, saveBoard } from './diceMarks.js';
+import { ENGINE_NATIVE, continuousSupport, isIronAnySource, isNativeRule } from '../client/src/lib/patd/coverage.js';
+import { addPoolValue, livePool, setPoolValue, turnActions } from '../client/src/lib/patd/diceBoard.js';
+import { fighterState, readData as readBoardData, saveBoard, setPayableHook } from './diceMarks.js';
 
 // The combat map's image size, by image hash (its playable bounds — phase D).
 const imageSizes = new Map();
@@ -212,6 +212,9 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     const tileList = tiles.filter((t) => t.kind !== 'copy').map((t) => ({ ...tileSquare(t), kind: t.kind, placed_by: t.placed_by ?? null }));
     const setOf = (kind) => new Set(tileList.filter((t) => t.kind === kind).map((t) => `${t.col},${t.row}`));
     const traps = setOf('trap');
+    // A Deadly Trap (the Trickster's Super Move) is a Trap that deals 3.
+    const deadly = setOf('deadly_trap');
+    for (const k of deadly) traps.add(k);
     const walls = setOf('wall');
     const pits = setOf('pit');
     const fogSquares = tiles.filter((t) => t.kind === 'fog').map(tileSquare);
@@ -225,7 +228,10 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
       const state = shapeFightState(r);
       const stance = stanceOfBuild(d, state.active_stance_id, idx) ?? d?.stances.find((s) => s.formId && s.styleId) ?? null;
       // A Frantic Hero's one Frantic Ability for this turn comes with their pick.
-      const frantic = assembles(d) ? franticPickOf(r)?.abilityId : null;
+      // (Greater Frenzy: a second Frantic Ability this turn — `abilityId2`.)
+      const pick = assembles(d) ? franticPickOf(r) : null;
+      const frantic = pick?.abilityId ?? null;
+      const frantic2 = pick?.abilityId2 ?? null;
       // Stooges are one unit: only the leading body's abilities run.
       const isStooges = d?.type.id === 'character-type.stooges';
       const follower = isStooges && stoogeSeen.has(r.character_id);
@@ -248,7 +254,9 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
         square: squareOf(r),
         stance,
         derived: d,
-        abilityIds: d && !follower ? [...d.constantAbilityIds, ...(frantic ? [frantic] : []), ...(stance?.abilityIds ?? [])] : [],
+        abilityIds: d && !follower ? [...new Set([...d.constantAbilityIds, ...(frantic ? [frantic] : []), ...(frantic2 ? [frantic2] : []), ...(stance?.abilityIds ?? [])])] : [],
+        // The Giant fills a 2×2 block on the map (its `footprint` rule).
+        size: mode === 'combat' && d && hasRuleIn(d.constantAbilityIds, 'footprint', idx) ? 2 : 1,
         // Armor from the build (always, or while this Stance is active).
         innateArmor: d ? innateArmor(armorSourcesOf(d, idx), stance?.key ?? null) : 0,
       });
@@ -258,6 +266,15 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     for (const f of fighters) Object.defineProperty(f, 'space', { get: () => f.square, enumerable: false });
     // Standing in a Wall's space (Parkour Style may; phase G).
     for (const f of fighters) Object.defineProperty(f, 'standingOnWall', { get: () => f.square != null && walls.has(`${f.square.col},${f.square.row}`), enumerable: false });
+    // Standing on a Pit (Vortex Style), Taken Out (Transcendant Spirit), and
+    // gone for the rest of the fight (My Final Technique) — the QA pass.
+    for (const f of fighters) {
+      Object.defineProperty(f, 'standingOnPit', { get: () => f.square != null && pits.has(`${f.square.col},${f.square.row}`), enumerable: false });
+      Object.defineProperty(f, 'takenOut', { get: () => !f.square || atZero(f.hp), enumerable: false });
+      Object.defineProperty(f, 'removedForGood', { get: () => Boolean(world.env && fighterRt(world.env.rt, f.id).fight.removedForGood), enumerable: false });
+      // "While you are within Fog" (Hidden Style).
+      Object.defineProperty(f, 'inFog', { get: () => f.square != null && tileList.some((t) => t.kind === 'fog' && t.col === f.square.col && t.row === f.square.row), enumerable: false });
+    }
     // Each fighter's active turn board, for their Action Pool (phase H).
     const boards = new Map();
     if (fighters.length) {
@@ -347,7 +364,7 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
       makeBoard({
         bounds,
         tiles: tileList,
-        units: [...fighters, ...copies].filter((f) => f.square).map((f) => ({ id: f.id, square: f.square })),
+        units: [...fighters, ...copies].filter((f) => f.square).map((f) => ({ id: f.id, square: f.square, size: f.size ?? 1 })),
         exits: mode === 'simple' ? 'cols' : 'all',
       });
     // A fighter's new square (null: out of play — the Outside).
@@ -406,11 +423,12 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
       });
       for (let i = tileList.length - 1; i >= 0; i--) if (tileList[i].col === sq.col && tileList[i].row === sq.row) tileList.splice(i, 1);
       for (const kind of kinds) tileList.push({ col: sq.col, row: sq.row, kind, placed_by: byOf(kind) });
-      for (const [kind, set] of [['trap', traps], ['wall', walls], ['pit', pits]]) {
+      for (const [kind, set] of [['trap', traps], ['wall', walls], ['pit', pits], ['deadly_trap', deadly]]) {
         const k = `${sq.col},${sq.row}`;
         if (kinds.includes(kind)) set.add(k);
         else set.delete(k);
       }
+      if (kinds.includes('deadly_trap')) traps.add(`${sq.col},${sq.row}`);
       fogSquares.splice(0, fogSquares.length, ...tileList.filter((t) => t.kind === 'fog').map((t) => ({ col: t.col, row: t.row })));
       markDirty();
     };
@@ -463,14 +481,18 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
       return { walls: ignore.includes('walls') ? new Set() : walls, fogged: ignore.includes('fog') ? () => false : fogged };
     };
 
+    // An obstacle as the rules see it (a pick's option, a push's target).
+    const obstacleOf = (t) => ({ id: `${t.col},${t.row}:${t.kind}`, isObstacle: true, kind: t.kind, name: t.kind === 'deadly_trap' ? 'Deadly Trap' : t.kind[0].toUpperCase() + t.kind.slice(1), square: { col: t.col, row: t.row } });
     const world = {
-      context: { healValue: weight.heal, bleedValue: weight.bleed, round: fight.round },
+      context: { healValue: weight.heal, bleedValue: weight.bleed, round: fight.round, superLimit: weight.supers ?? 1 },
       fighters: () => fighters,
       enemiesOf: (f) => fighters.filter((x) => x.side !== f.side),
       alliesOf: (f) => fighters.filter((x) => x.side === f.side),
       inRange: (from, to, range) => {
         const r = rangeOf(from);
         const sight = sightOf(from);
+        // "Enemies holding your Challenge are within your range" (Relentless Style).
+        if ((range?.mode ?? 'stance') === 'stance' && to?.challengeId != null && to.challengeId === from?.id && to.square && hasMod(modsOf(from), 'own_challenged_enemies.always_in_range')) return true;
         // "Within range of you or your Copies" (phase E): from any of them.
         if (range?.mode === 'self_or_copies_range') {
           const origins = [from, ...copies.filter((c) => c.ownerId === from.id)];
@@ -480,9 +502,46 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
         if (range?.mode === 'adjacent_to_any_own_copy') {
           return Boolean(to.square) && copies.some((c) => c.ownerId === from.id && c.square && gridDistance(c.square, to.square) === 1);
         }
-        return targetable({ from: from.square, to: to.square, range, stanceRange: r, ...sight, enemy: from.side !== to.side });
+        // A Giant measures from (and is measured to) its nearest square.
+        const [a, b] = from?.square && to?.square && ((from.size ?? 1) > 1 || (to.size ?? 1) > 1) ? nearestCells(from.square, from.size ?? 1, to.square, to.size ?? 1) : [from?.square, to?.square];
+        return targetable({ from: a, to: b, range, stanceRange: r, ...sight, enemy: from.side !== to.side });
       },
       heldTokens: (f) => ({ ...f.tokens }),
+      // The modifiers on a fighter now, and whether a passive rule's condition
+      // holds for its owner (their Weapon, Ammo, where they stand).
+      mods: (f) => modsOf(f),
+      ruleHolds: (rule, owner) => {
+        try {
+          const state = world.env ? fighterRt(world.env.rt, owner.id).state : {};
+          return Boolean(evalValue(rule.condition, { self: owner, state, context: world.context, world, event: {}, targets: {}, bindings: {}, variables: {}, history: {}, payment: {}, resolution: {} }));
+        } catch {
+          return false;
+        }
+      },
+      // **What a fighter can spend (the QA pass).** Their own tokens; Iron
+      // "as if they were Power or Speed tokens" (Machine Style); and the tokens
+      // of an ally in whose range they stand who lets them ("Your allies
+      // within range may spend your tokens" — Unbreakable Style).
+      lendersOf: (f) => (f?.isCopy ? [] : modsOf(f).filter((m) => m.rule === 'allies_can_spend_own_tokens' && m.ownerId !== f.id).map((m) => byId(m.ownerId)).filter(Boolean)),
+      spendable: (f, key) => {
+        if (!f || f.isCopy) return 0;
+        const asOther = listMod(modsOf(f), 'iron_can_pay_as').includes(key) ? (f.tokens.iron ?? 0) : 0;
+        return (f.tokens[key] ?? 0) + asOther + world.lendersOf(f).reduce((n, l) => n + (l.tokens[key] ?? 0), 0);
+      },
+      // Spends `n` of `key`: their own first, then Iron in its place, then a lender's. → how many were spent.
+      spend: async (f, key, n) => {
+        let left = Math.max(0, Number(n) || 0);
+        if (!f || f.isCopy || !left) return 0;
+        const take = async (who, k) => {
+          const got = Math.min(left, who.tokens[k] ?? 0);
+          if (got > 0) await writeTokens(who, (t) => (t[k] = (t[k] ?? 0) - got));
+          left -= got;
+        };
+        await take(f, key);
+        if (left && key !== 'iron' && listMod(modsOf(f), 'iron_can_pay_as').includes(key)) await take(f, 'iron');
+        for (const l of world.lendersOf(f)) if (left) await take(l, key);
+        return Math.max(0, Number(n) || 0) - left;
+      },
       // Copies hold no tokens, Shields or HP (book p.71): those do nothing to them.
       // `giver`: whoever's rule gave them (phase G events).
       gainTokens: async (f, key, n, giver = null) => {
@@ -549,13 +608,43 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
       // opts: { source: 'action' | 'ability' | 'super' | 'trap' | 'fall' |
       // 'burning', ignore, allowIron, mods, unblockable, power, emit }.
       damage: async (f, n, attacker = null, opts = {}) => {
-        // A Copy has 1 HP: any damage destroys it.
+        // A Copy has 1 HP: any damage destroys it. **Mirrored Style (the QA
+        // pass):** its Copies have 2 HP each, and its Iron may Reduce Hits to them.
         if (f.isCopy) {
-          if (!(Number(n) > 0)) return { taken: 0, steps: [], immune: false };
+          let dmg = Math.max(0, Number(n) || 0);
+          if (!dmg) return { taken: 0, steps: [], immune: false };
+          const owner = byId(f.ownerId);
+          const omods = owner ? modsOf(owner) : [];
+          const steps = [];
+          if (owner && world.env && hasMod(omods, 'iron.can_reduce_hits_to_own_copies') && (owner.tokens.iron ?? 0) > 0 && (owner.prefs?.iron ?? 'auto') !== 'never') {
+            const max = Math.min(ironAllowance(omods), owner.tokens.iron, dmg);
+            let spend = max;
+            if (owner.prefs?.iron === 'ask') {
+              const env = world.env;
+              const options = [{ id: '0', label: 'None' }, ...Array.from({ length: max }, (_, i) => ({ id: String(i + 1), label: `${i + 1} Iron` }))];
+              const ans = await ask(owner, env.key, env.gen, env.tg, env.when)({ kind: 'choose', title: 'Reduce the hit to your Copy', text: `${f.name} takes ${dmg} damage. Spend Iron: −1 damage each.`, options, minimum: 1, maximum: 1 });
+              spend = Math.min(max, Number(Array.isArray(ans) ? ans[0] : ans) || 0);
+            }
+            if (spend > 0) {
+              await writeTokens(owner, (t) => (t.iron = (t.iron ?? 0) - spend));
+              dmg -= spend;
+              steps.push(`${owner.name} spends ${spend} Iron`);
+              await emitEvent(world.env, 'self.iron_tokens_spent', owner, { amount: spend, attacker });
+            }
+          }
+          if (!dmg) return { taken: 0, toHp: 0, dealt: 0, steps: [...steps, 'the Copy takes no damage'], immune: false };
+          const maxHp = Math.max(1, Number(valueOf(omods, 'copies.maximum_hp', 1)) || 1);
+          const hpOfCopies = world.env && owner ? (fighterRt(world.env.rt, owner.id).fight.copyHp ??= {}) : {};
+          const left = (hpOfCopies[f.rowId] ?? maxHp) - dmg;
+          if (left > 0) {
+            hpOfCopies[f.rowId] = left;
+            return { taken: dmg, toHp: dmg, dealt: dmg, steps: [...steps, `the Copy has ${left} HP left`] };
+          }
+          delete hpOfCopies[f.rowId];
           await destroyCopy(f, attacker);
-          return { taken: 1, toHp: 1, dealt: 1, steps: ['the Copy is destroyed'], destroyed: true };
+          return { taken: dmg, toHp: dmg, dealt: dmg, steps: [...steps, 'the Copy is destroyed'], destroyed: true };
         }
-        return hits.resolveHit(world.env, { writeTokens, changeHp, bleedCheck, inPit }, f, n, attacker, opts);
+        return hits.resolveHit(world.env, { writeTokens, changeHp, bleedCheck, inPit, spend: world.spend, spendable: world.spendable }, f, n, attacker, opts);
       },
       // **Obstacles (phase E).** The legal squares for a placement, the obstacles
       // in range, and the changes — all by the book's stacking (mapTiles.js).
@@ -568,7 +657,7 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
       },
       obstacles: (from, range, { types = null } = {}) => {
         const list = [
-          ...tileList.filter((t) => OBSTACLE_KINDS.has(t.kind)).map((t) => ({ id: `${t.col},${t.row}:${t.kind}`, isObstacle: true, kind: t.kind, name: t.kind[0].toUpperCase() + t.kind.slice(1), square: { col: t.col, row: t.row } })),
+          ...tileList.filter((t) => OBSTACLE_KINDS.has(t.kind)).map(obstacleOf),
           ...copies.map((c) => Object.assign(c, { kind: 'copy' })),
         ];
         return list.filter(
@@ -599,7 +688,113 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
           return c;
         }
         await writeKinds(sq, placeTile(kindsAtSq(sq), kind), owner?.characterId ?? null);
-        return { isObstacle: true, kind, square: { col: sq.col, row: sq.row }, name: kind };
+        return obstacleOf({ col: sq.col, row: sq.row, kind });
+      },
+      // ---- the QA pass: Fog and obstacles under someone, obstacles that move,
+      // coming back into play and leaving it for good.
+      deadlyAt: (sq) => Boolean(sq) && deadly.has(`${sq.col},${sq.row}`),
+      inFog: (sq) => Boolean(sq) && tileList.some((t) => t.kind === 'fog' && t.col === sq.col && t.row === sq.row),
+      obstacleAt: (sq) => Boolean(sq) && tileList.some((t) => OBSTACLE_KINDS.has(t.kind) && t.col === sq.col && t.row === sq.row),
+      // Where an obstacle may go, up to `distance` spaces away: a space on the
+      // board no other obstacle holds — and, for one that fills its space (a
+      // Wall, Rubble), nobody stands on.
+      obstacleDestinations: (o, distance) => {
+        const b = board();
+        const out = [];
+        const d = Math.max(0, Number(distance) || 0);
+        for (let dc = -d; dc <= d; dc++) {
+          for (let dr = -d; dr <= d; dr++) {
+            const n = Math.abs(dc) + Math.abs(dr);
+            if (!n || n > d) continue;
+            const sq = { col: o.square.col + dc, row: o.square.row + dr };
+            if (!inBoundsAt(b, sq) || world.obstacleAt(sq)) continue;
+            if (o.kind === 'wall' && occupantAt(b, sq) != null) continue;
+            out.push(sq);
+          }
+        }
+        return out;
+      },
+      moveObstacle: async (o, sq) => {
+        if (!o?.square || o.isCopy) return false;
+        const from = { col: o.square.col, row: o.square.row };
+        const by = tileList.find((t) => t.col === from.col && t.row === from.row && t.kind === o.kind)?.placed_by ?? null;
+        await writeKinds(from, removeTile(kindsAtSq(from), o.kind));
+        await writeKinds(sq, placeTile(kindsAtSq(sq), o.kind), by);
+        o.square = { col: sq.col, row: sq.row };
+        o.id = `${sq.col},${sq.row}:${o.kind}`;
+        await flushStage();
+        return true;
+      },
+      // An obstacle pushed away from `origin` or pulled toward it: each step
+      // strictly farther or closer, never onto another obstacle; the chooser
+      // picks where it stops when there is more than one way.
+      forcedObstacle: async (o, { distance, origin, pull = false, upTo = false, chooser = null }) => {
+        if (!o?.square || !origin) return null;
+        const d = Math.max(0, Number(distance) || 0);
+        const dist = (sq) => gridDistance(sq, origin);
+        const ends = new Map();
+        const b = board();
+        const walk = (at, n) => {
+          let moved = false;
+          if (n < d) {
+            for (const [dc, dr] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+              const sq = { col: at.col + dc, row: at.row + dr };
+              if (!(pull ? dist(sq) < dist(at) : dist(sq) > dist(at)) || (sq.col === origin.col && sq.row === origin.row)) continue;
+              if (!inBoundsAt(b, sq) || world.obstacleAt(sq) || (o.kind === 'wall' && occupantAt(b, sq) != null)) continue;
+              moved = true;
+              walk(sq, n + 1);
+            }
+          }
+          if (n > 0 && (n === d || !moved || upTo)) ends.set(`${at.col},${at.row}`, at);
+        };
+        walk(o.square, 0);
+        const dests = [...ends.values()];
+        if (!dests.length) return null;
+        let to = dests[0];
+        if (dests.length > 1 && world.env && chooser) {
+          const ans = await ask(chooser, world.env.key, world.env.gen, world.env.tg, world.env.when)({
+            kind: 'square',
+            mode,
+            title: `${world.env.source ?? 'Move'} (${pull ? 'Pull' : 'Push'} the ${o.name})`,
+            text: `Where does the ${o.name} end up?`,
+            options: dests.map((sq) => ({ id: `${sq.col},${sq.row}`, label: `${sq.col},${sq.row}`, col: sq.col, row: sq.row })),
+            minimum: 1,
+            maximum: 1,
+            skippable: true,
+          });
+          const id = Array.isArray(ans) ? ans[0] : ans;
+          if (id === '__skip') return null;
+          to = dests.find((sq) => `${sq.col},${sq.row}` === id) ?? to;
+        }
+        await world.moveObstacle(o, to);
+        return to;
+      },
+      // You and an obstacle trade spaces (Walled In, Bag of Tricks).
+      swapWithObstacle: async (actor, o) => {
+        if (!actor?.square || !o?.square || o.isCopy) return false;
+        const mine = { col: actor.square.col, row: actor.square.row };
+        const its = { col: o.square.col, row: o.square.row };
+        const by = tileList.find((t) => t.col === its.col && t.row === its.row && t.kind === o.kind)?.placed_by ?? null;
+        await writeKinds(its, removeTile(kindsAtSq(its), o.kind));
+        await setSquare(actor, its);
+        await writeKinds(mine, placeTile(kindsAtSq(mine), o.kind), by);
+        o.square = mine;
+        o.id = `${mine.col},${mine.row}:${o.kind}`;
+        await flushStage();
+        return true;
+      },
+      // Back into play on a picked space (Rescue).
+      returnToPlay: async (f, sq) => {
+        if (f.isCopy || f.square || f.removedForGood) return false;
+        await setSquare(f, sq);
+        return true;
+      },
+      // Out of play; `forGood`: no Comeback, no Rescue for the rest of the fight.
+      removeFromPlay: async (f, { forGood = false } = {}) => {
+        if (f.isCopy) return destroyCopy(f);
+        if (forGood && world.env) fighterRt(world.env.rt, f.id).fight.removedForGood = true;
+        await setSquare(f, null);
+        return true;
       },
       // Destroyed: a Wall becomes Rubble, anything else is gone (a Copy too).
       // `by`: who did it (counted for "obstacles you destroyed this turn").
@@ -819,6 +1014,8 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
       for (const rule of ability?.rules ?? []) {
         if (!rule.events.some((e) => events.includes(e))) continue;
         if (down && !rule.events.some((e) => WORKS_AT_ZERO.has(e))) continue;
+        // Run by the engine itself (coverage.js NATIVE_RULES).
+        if (isNativeRule(rule)) continue;
         // Iron Form's extra Iron is the damage step's own (engine/hits.js).
         if (isIronAnySource(rule)) continue;
         await runOne(fighter, ability, rule, env, eventPayload, depth);
@@ -854,6 +1051,8 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
       actionSeq: env.rt.actionSeq ?? 0,
       log: (l) => lines.push(l),
       ask: ask(fighter, env.key, env.gen, env.tg, env.when),
+      // Someone else's part of a shared choice (Song Form).
+      askAs: (f) => ask(f, env.key, env.gen, env.tg, env.when),
       // A Text notification: an orange reminder, like any rule left to people.
       notify: (text) => postCard('reminder', { title: ability.name, text, fighters: [{ name: fighter.name }], automatic: 'ability_text' }),
       // Follow-on events go through the bus to whoever listens (engine/bus.js).
@@ -948,14 +1147,15 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
   async function runEndPhase(env, fighters, onTrap, active) {
     const notices = [];
     // Copies on a Trap are destroyed by its damage (book p.71; phase E).
+    const trapDamage = (x) => (env.world.deadlyAt(x.square) ? 3 : 1);
     for (const c of [...(env.world.copies?.() ?? [])].filter(onTrap)) {
-      await env.world.damage(c, 1, null, { source: 'trap' });
-      notices.push(`${c.name}: Trap, destroyed`);
+      const r = await env.world.damage(c, trapDamage(c), null, { source: 'trap' });
+      notices.push(`${c.name}: Trap, ${r.destroyed ? 'destroyed' : (r.steps ?? []).join(', ')}`);
     }
     for (const f of fighters.filter(onTrap)) {
       if (stale(env)) return;
-      const r = await env.world.damage(f, 1, null, { source: 'trap' });
-      notices.push(`${f.name}: Trap, ${r.immune ? 'immune' : `${r.taken} damage${r.steps.length ? ` (${r.steps.join(', ')})` : ''}`}`);
+      const r = await env.world.damage(f, trapDamage(f), null, { source: 'trap' });
+      notices.push(`${f.name}: ${env.world.deadlyAt(f.square) ? 'Deadly Trap' : 'Trap'}, ${r.immune ? 'immune' : `${r.taken} damage${r.steps.length ? ` (${r.steps.join(', ')})` : ''}`}`);
     }
     if (active && (active.tokens.burning ?? 0) > 0) {
       const held = active.tokens.burning;
@@ -1081,7 +1281,7 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     // One card per Ability, with its rules text — the reminder itself (decided, fix).
     const idx = patdContent();
     for (const f of fighters) {
-      const ids = [...new Set(f.abilityIds)].filter((id) => !ENGINE_NATIVE.has(id) && (idx.get(id)?.rules ?? []).some((r) => r.events?.includes('continuous') && !continuousSupport(r).ok));
+      const ids = [...new Set(f.abilityIds)].filter((id) => !ENGINE_NATIVE.has(id) && (idx.get(id)?.rules ?? []).some((r) => r.events?.includes('continuous') && !isNativeRule(r) && !continuousSupport(r).ok));
       for (const id of ids) {
         const ability = idx.get(id);
         await postCard('reminder', {
@@ -1102,7 +1302,7 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
   // start of a Round, for 3 HP at the start of their own turn. A square pick
   // with a Skip; Stooges never come back.
   async function comeback(env, movers, f, { free }) {
-    if (f.square || f.derived?.type?.id === 'character-type.stooges') return false;
+    if (f.square || f.derived?.type?.id === 'character-type.stooges' || f.removedForGood) return false;
     if (!free && !((f.hp?.current ?? 0) >= 3)) return false;
     const b = movers.board();
     const squares = comebackSquares(b.bounds, (sq) => isEmptyAt(b, sq), { colsOnly: movers.mode === 'simple' });
@@ -1128,6 +1328,91 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
   // **Heroic Spirit (phase F, book p.63):** a Taken Out active fighter gives
   // their turn — the dice they rolled — to an ally in play, who takes it in
   // their current Stance (the board's `heroic`).
+  // **Transcendant Spirit (the Teacher's Super Move, the QA pass):** "When you
+  // pass on your Heroic Spirit, you may declare you are using this Super Move.
+  // If you do, instead of rolling your Action Dice this turn, give them the
+  // maximum number each of those dice could have generated. Then, add an 8 to
+  // their Action Pool, give them a 4-point Shield, and they heal." Counts as
+  // the Super Move of the fight and of the side's Round. Changes `data`.
+  const TRANSCENDANT = 'super-move.archetype-teacher.transcendant-spirit';
+  async function transcendantSpirit(env, active, ally, data) {
+    if (!(active.derived?.superMoveIds ?? []).includes(TRANSCENDANT)) return false;
+    const rt = env.rt;
+    const used = rt.usage[superKey(active.id)] ?? 0;
+    const side = (rt.sides ??= {})[active.side] ??= { supersThisRound: 0 };
+    const limit = env.world.context.superLimit ?? 1;
+    if (!(env.world.context.round > 1) || used >= 1 || (side.supersThisRound ?? 0) >= limit) return false;
+    const yes = await ask(active, env.key, env.gen, env.tg, env.when)({ kind: 'confirm', title: 'Transcendant Spirit', text: `Use your Super Move? ${ally.name}'s dice give their highest numbers, they add an 8, gain Shield 4 and heal.` });
+    if (!yes) return false;
+    data.results = (data.results ?? []).map((r) => (r.die ? { ...r, result: r.die, changed: true } : r));
+    data.extra = [...(data.extra ?? []), { value: 8, source: 'ability' }];
+    rt.usage[superKey(active.id)] = used + 1;
+    side.supersThisRound = (side.supersThisRound ?? 0) + 1;
+    return true;
+  }
+
+  // **Greater Frenzy (the QA pass):** "Once per fight, you may choose to use two
+  // Frantic Abilities on the same turn" — asked as the turn starts.
+  // **Improved Frenzy:** "Once per Round, after you see the results of your
+  // Action Dice, you may change your Style or your Archetype" (its Frantic
+  // Ability) — the dice stay; the Stance and its Abilities change.
+  async function frenzy(env, active, when) {
+    const d = active.derived;
+    if (!assembles(d) || atZero(active.hp)) return;
+    const row = await one('SELECT * FROM combatants WHERE id = ?', [active.id]);
+    const pick = franticPickOf(row);
+    if (!pick) return;
+    const idx = patdContent();
+    const save = async (next) => {
+      await queued(() => run('UPDATE combatants SET frantic_pick = ? WHERE id = ?', [JSON.stringify(next), active.id]));
+      const stance = stanceOfBuild(d, `${next.formId}+${next.styleId}`, idx);
+      if (stance) {
+        await queued(() => run('UPDATE combatants SET active_stance_key = ? WHERE id = ?', [stance.key, active.id]));
+        active.stance = stance;
+        await env.world.changePool(active, (data) => (data.stanceKey = stance.key));
+      }
+      active.abilityIds = [...new Set([...d.constantAbilityIds, ...[next.abilityId, next.abilityId2].filter(Boolean), ...(stance?.abilityIds ?? active.stance?.abilityIds ?? [])])];
+      markDirtyFor();
+    };
+    const askIt = (q) => ask(active, env.key, env.gen, env.tg, env.when)(q);
+    const one1 = (ans) => (Array.isArray(ans) ? ans[0] : ans);
+    if (when === 'start' && active.abilityIds.includes('ability.feature-greater-frenzy.greater-frenzy') && !fighterRt(env.rt, active.id).fight.greaterFrenzyUsed && !pick.abilityId2) {
+      const others = d.franticAbilityIds.filter((id) => id !== pick.abilityId);
+      if (others.length) {
+        const ans = one1(await askIt({ kind: 'choose', title: 'Greater Frenzy', text: 'Once per fight: use a second Frantic Ability this turn?', options: [{ id: 'none', label: 'Not this turn' }, ...others.map((id) => ({ id, label: idx.get(id)?.name ?? id }))], minimum: 1, maximum: 1 }));
+        if (others.includes(ans)) {
+          fighterRt(env.rt, active.id).fight.greaterFrenzyUsed = true;
+          await save({ ...pick, abilityId2: ans });
+          await postCard('reminder', { title: 'Greater Frenzy', text: `${active.name} also uses ${idx.get(ans)?.name} this turn.`, fighters: [{ name: active.name }], automatic: 'ability', notice: true });
+        }
+      }
+    }
+    if (when === 'rolled' && active.abilityIds.includes('ability.feature-improved-frenzy.improved-frenzy')) {
+      const key = `improved-frenzy:${active.id}:round`;
+      if (env.rt.usage[key]) return;
+      const opts = franticOptions(d, null, idx);
+      const styles = opts.styles.filter((o) => o.id !== pick.styleId);
+      const abilities = opts.abilities.filter((o) => o.id !== pick.abilityId && o.id !== pick.abilityId2);
+      if (!styles.length && !abilities.length) return;
+      const ans = one1(
+        await askIt({
+          kind: 'choose',
+          title: 'Improved Frenzy',
+          text: 'Once per Round: change your Style or your Archetype now?',
+          options: [{ id: 'none', label: 'Keep them' }, ...styles.map((o) => ({ id: `style:${o.id}`, label: `Style: ${o.name}` })), ...abilities.map((o) => ({ id: `ability:${o.id}`, label: `Archetype: ${o.name}` }))],
+          minimum: 1,
+          maximum: 1,
+        })
+      );
+      if (!ans || ans === 'none') return;
+      const [kind, id] = String(ans).split(':');
+      env.rt.usage[key] = 1;
+      await save(kind === 'style' ? { ...pick, styleId: id } : { ...pick, abilityId: id });
+      await postCard('reminder', { title: 'Improved Frenzy', text: `${active.name} changes their ${kind === 'style' ? 'Style' : 'Archetype'} to ${idx.get(id)?.name}.`, fighters: [{ name: active.name }], automatic: 'ability', notice: true });
+    }
+  }
+  const markDirtyFor = () => emitStageUpdated();
+
   async function heroicSpirit(env, active) {
     if (active.square && !atZero(active.hp)) return;
     const allies = env.world.alliesOf(active).filter((a) => a.id !== active.id && a.square && !atZero(a.hp));
@@ -1146,10 +1431,65 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     const data = readBoardData(board);
     data.heroic = { combatantId: ally.id, characterId: ally.characterId, stanceKey: ally.stance?.key ?? null, stanceName: ally.stance?.name ?? null, name: ally.name, fromId: active.id };
     if (ally.stance?.key) data.stanceKey = ally.stance.key;
+    const transcendant = await transcendantSpirit(env, active, ally, data);
     await queued(() => saveBoard(board.roll_id, data, (ev, p) => io.emit(ev, p)));
+    if (transcendant) {
+      await env.world.gainShield(ally, 4);
+      await env.world.heal(ally, env.world.context.healValue);
+      await postCard('reminder', { title: 'Transcendant Spirit', text: `${active.name}'s Super Move: ${ally.name}'s dice give their highest numbers, an 8 joins the Action Pool, Shield 4, and they heal.`, fighters: [{ name: active.name }, { name: ally.name }], automatic: 'ability', notice: true });
+    }
     // "When you give your Heroic Spirit" (the Teacher's Mentor tokens …).
     await emitEvent(env, 'self.giving_heroic_spirit', active, { ally });
     await postCard('reminder', { title: 'Heroic Spirit', text: `${active.name} gives their turn to ${ally.name}.`, fighters: [{ name: active.name }, { name: ally.name }], automatic: 'ability', notice: true });
+  }
+
+  // **The Action Pool at a turn's start and end (the QA pass, native):**
+  //   - Mythical Freestyle: "Whenever you roll a 3 or less on the mythical d12,
+  //     re-roll it" — every d12 of the roll, until it shows 4 or more;
+  //   - Persistant Freestyle: "When you discard numbers from your Action Pool
+  //     during the End Phase, you may keep up to two of them with a total
+  //     value of 5 or less" — picked at the turn's end, back in the pool when
+  //     their next turn starts.
+  const hasRule = (f, ruleId) => !atZero(f.hp) && f.abilityIds.includes(ruleId.split('.rule-')[0]);
+  async function turnStartPool(env, active) {
+    const world = env.world;
+    const kept = fighterRt(env.rt, active.id).fight.keptNumbers ?? [];
+    if (kept.length) {
+      for (const v of kept) await world.addPoolNumber(active, v);
+      fighterRt(env.rt, active.id).fight.keptNumbers = [];
+      await postCard('reminder', { title: 'Persistant Freestyle', text: `${active.name} kept ${kept.join(' and ')} from last turn.`, fighters: [{ name: active.name }], automatic: 'ability', notice: true });
+    }
+    if (hasRule(active, 'ability.freestyle-mythical.mythical-freestyle.rule-1')) {
+      const lines = [];
+      for (const p of (world.pool(active) ?? []).filter((x) => x.die === 12 && !x.added && x.value <= 3)) {
+        let value = p.value;
+        for (let i = 0; i < 50 && value <= 3; i++) value = 1 + Math.floor(Math.random() * 12);
+        await world.changePool(active, (d) => setPoolValue(d, p.index, value));
+        lines.push(`${p.value} → ${value}`);
+      }
+      if (lines.length) await postCard('reminder', { title: 'Mythical Freestyle', text: `${active.name} re-rolls the mythical d12: ${lines.join(', ')}.`, fighters: [{ name: active.name }], automatic: 'ability', notice: true });
+    }
+  }
+  async function keepPoolNumbers(env, active) {
+    if (!hasRule(active, 'ability.freestyle-persistant.persistant-freestyle.rule-2')) return;
+    const pool = (env.world.pool(active) ?? []).filter((p) => p.value <= 5);
+    if (!pool.length) return;
+    const ans = await ask(active, env.key, env.gen, env.tg, env.when)({
+      kind: 'targets',
+      title: 'Persistant Freestyle',
+      text: 'Keep up to two numbers for your next turn, with a total of 5 or less.',
+      options: pool.map((p) => ({ id: String(p.index), label: String(p.value) })),
+      minimum: 0,
+      maximum: 2,
+      skippable: true,
+    });
+    const ids = (Array.isArray(ans) ? ans : ans == null ? [] : [ans]).map(String);
+    let picks = pool.filter((p) => ids.includes(String(p.index))).slice(0, 2);
+    // More than 5 in all: the higher one is let go.
+    while (picks.reduce((n, p) => n + p.value, 0) > 5) picks = picks.sort((a, b) => a.value - b.value).slice(0, -1);
+    if (!picks.length) return;
+    fighterRt(env.rt, active.id).fight.keptNumbers = picks.map((p) => p.value);
+    await postCard('reminder', { title: 'Persistant Freestyle', text: `${active.name} keeps ${picks.map((p) => p.value).join(' and ')} for their next turn.`, fighters: [{ name: active.name }], automatic: 'ability', notice: true });
   }
 
   async function runTurn(fightRow, activeId, moment, tg, opts = {}) {
@@ -1181,13 +1521,25 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     world.context.activeCharacter = active;
     // "At the start of your next turn …" effects scheduled earlier (phase G).
     if (moment === 'start') await runScheduled(env, 'next_turn.start', (s) => s.ownerId === active.id && s.seq < rt.turnSeq);
+    // "If they take the next turn for their side …" (Showdown — the QA pass):
+    // settled when the next turn of the target's side begins, whoever takes it.
+    if (moment === 'start') {
+      const sideOfTarget = (s) => byId(s.captured?.targets?.target?.ref)?.side ?? null;
+      await runScheduled(env, 'target_side.next_turn.selected', (s) => s.seq < rt.turnSeq && sideOfTarget(s) === active.side);
+    }
+    if (moment === 'start' && !stale(env)) await turnStartPool(env, active);
+    if (moment === 'start' && !stale(env)) await frenzy(env, active, 'start');
     const order = [active, ...fighters.filter((f) => f.id !== active.id)];
     for (const f of order) await runFor(f, turnEvents(moment, relationTo(f, active)), env, { activeCharacter: active });
     // Phase 3 of the turn: still Taken Out? Heroic Spirit.
     if (moment === 'start' && !stale(env)) await heroicSpirit(env, active);
     // "After you roll your Action Dice" (phase G): the turn's dice are on its board.
-    if (moment === 'start' && !stale(env) && active.square && !atZero(active.hp)) await runFor(active, ['self.action_dice.rolled'], env, { activeCharacter: active });
+    if (moment === 'start' && !stale(env) && active.square && !atZero(active.hp)) {
+      await frenzy(env, active, 'rolled');
+      await runFor(active, ['self.action_dice.rolled'], env, { activeCharacter: active });
+    }
     if (moment === 'end') {
+      if (!stale(env)) await keepPoolNumbers(env, active);
       // "At the end of this turn …" effects scheduled during it, before the End Phase.
       await runScheduled(env, 'current_turn.end', () => true);
       await runEndPhase(env, fighters, onTrap, active);
@@ -1251,6 +1603,23 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     chains.set(key, Promise.resolve());
     for (const [id, p] of pending) if (p.fightKey === key) finish(id, null);
   };
+
+  // What a fighter can pay with beyond their own tokens (server/diceMarks.js
+  // fighterState): for the dice board's affordability and the payment itself.
+  setPayableHook(async (row) => {
+    const fight = await one('SELECT * FROM fights WHERE scene_id = ? AND mode = ?', [row.scene_id, row.mode]);
+    if (!fight) return null;
+    const { env, byId } = await envFor(fight);
+    const f = byId(row.id);
+    if (!f) return null;
+    const mods = env.world.mods(f);
+    return {
+      tokens: Object.fromEntries(['iron', 'power', 'speed'].map((k) => [k, env.world.spendable(f, k)])),
+      costReduction: valueOf(mods, 'action_cost.reduction', null),
+      // Luck pays for Token Actions only with the Underdog's mechanic.
+      luck: f.abilityIds.includes('ability.resource-mechanic-luck.luck-mechanics') ? (f.tokens.luck ?? 0) : 0,
+    };
+  });
 
   // **Performing Actions** (engine/actions.js): Commit and Retrieve on the board.
   const runner = createActionRunner({

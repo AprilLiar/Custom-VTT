@@ -130,6 +130,11 @@ export function createHits({ ask, emitEvent }) {
       },
     };
 
+    const purse = (f, keys) => {
+      const t = { ...f.tokens };
+      if (internals.spendable && !f.isCopy) for (const k of keys) t[k] = internals.spendable(f, k);
+      return t;
+    };
     // Taken Out at zero HP (book p.62): they can't take damage (only healing
     // and forced movement still reach them).
     if (target.hp && target.hp.max != null && target.hp.bars - target.hp.broken <= 1 && target.hp.current === 0) {
@@ -139,8 +144,10 @@ export function createHits({ ask, emitEvent }) {
       {
         amount,
         source,
-        attacker: attacker ? { tokens: attacker.tokens, mods: atkMods, enemy } : null,
-        target: { tokens: target.tokens, mods: tgtMods, dizzy: Boolean(target.dizzy), inPit: internals.inPit(target) },
+        // What each can spend: their own, Iron as Power (Machine Style), an
+        // Unbreakable ally's (the QA pass — world.spendable).
+        attacker: attacker ? { tokens: purse(attacker, ['power']), mods: atkMods, enemy } : null,
+        target: { tokens: purse(target, ['iron']), mods: tgtMods, dizzy: Boolean(target.dizzy), inPit: internals.inPit(target) },
         distance: attacker?.square && target.square ? gridDistance(attacker.square, target.square) : null,
         unblockable: ub,
         allowIron: Boolean(opts.allowIron),
@@ -155,18 +162,20 @@ export function createHits({ ask, emitEvent }) {
     if (attacker && (r.spend.weakness || r.spend.power)) {
       await internals.writeTokens(attacker, (t) => {
         t.weakness = (t.weakness ?? 0) - r.spend.weakness;
-        t.power = (t.power ?? 0) - r.spend.power;
+        if (!internals.spend) t.power = (t.power ?? 0) - r.spend.power;
       });
+      if (internals.spend && r.spend.power) await internals.spend(attacker, 'power', r.spend.power);
     }
     const usedTemp = r.armor?.triggered && r.armor.usedTemp && r.armor.spent;
     if (r.spend.targetWeakness || r.spend.iron || r.spend.shield || usedTemp) {
       await internals.writeTokens(target, (t) => {
         t.weakness = (t.weakness ?? 0) - r.spend.targetWeakness;
-        t.iron = (t.iron ?? 0) - r.spend.iron;
+        if (!internals.spend) t.iron = (t.iron ?? 0) - r.spend.iron;
         t.shield = (t.shield ?? 0) - r.spend.shield;
         if (usedTemp) t.temp_armor = 0;
       });
     }
+    if (internals.spend && r.spend.iron) await internals.spend(target, 'iron', r.spend.iron);
     if (r.armor?.triggered && r.armor.spent && !r.armor.usedTemp) frt.flags.armorTriggers = (frt.flags.armorTriggers ?? 0) + 1;
     // The Challenge: an attempt on your Challenger counts (End Phase removal).
     if (attacker && attacker.challengeId === target.id) fighterRt(rt, attacker.id).flags.damagedChallenger = true;

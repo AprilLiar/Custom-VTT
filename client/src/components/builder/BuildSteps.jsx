@@ -6,6 +6,7 @@ import {
   buildTypes,
   constructChoices,
   deriveStance,
+  isMachine,
   levelInfo,
   shortStyleName,
   withXp,
@@ -79,8 +80,52 @@ function ArchetypeStep({ draft, set, idx }) {
       archetypes: has(id) ? draft.archetypes.filter((a) => a.id !== id) : [...draft.archetypes, { id, variant: type?.variant ?? 'focused' }],
     });
   const setVariant = (id, variant) => set({ archetypes: draft.archetypes.map((a) => (a.id === id ? { ...a, variant } : a)) });
+  // **Level Features that ask for a choice (the QA pass).**
+  const lv = levelInfo(draft, idx);
+  const fusionPick = lv.featureIds.includes('feature.greater-fusion');
+  const frenzies = ['feature.improved-frenzy', 'feature.greater-frenzy'].filter((f) => lv.featureIds.includes(f)).length;
+  const frenzyChoices = all.filter((a) => a.abilityVariants?.frantic && !has(a.id));
+  const setFrenzy = (i, id) => {
+    const next = [...(draft.bonusFrantic ?? [])];
+    next[i] = id || null;
+    set({ bonusFrantic: next.filter(Boolean) });
+  };
   return (
     <div className="space-y-3">
+      {(fusionPick || frenzies > 0) && (
+        <div className="space-y-1.5 panel-cut-sm border border-amber-700/60 bg-amber-950/20 p-2 text-xs text-zinc-300">
+          {fusionPick && (
+            <label className="flex flex-wrap items-center gap-2">
+              <span className="font-semibold text-amber-200">Greater Fusion:</span> becomes Focused
+              <select value={draft.greaterFusionId ?? ''} onChange={(e) => set({ greaterFusionId: e.target.value || null })} className={selectClass} aria-label="Greater Fusion Archetype">
+                <option value="">— choose —</option>
+                {draft.archetypes
+                  .filter((a) => a.variant === 'fused' && idx.get(a.id)?.abilityVariants?.focused)
+                  .map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {idx.get(a.id)?.name}
+                    </option>
+                  ))}
+              </select>
+            </label>
+          )}
+          {Array.from({ length: frenzies }, (_, i) => (
+            <label key={i} className="flex flex-wrap items-center gap-2">
+              <span className="font-semibold text-amber-200">{i === 0 ? 'Improved' : 'Greater'} Frenzy:</span> a Frantic Ability from
+              <select value={draft.bonusFrantic?.[i] ?? ''} onChange={(e) => setFrenzy(i, e.target.value)} className={selectClass} aria-label={`Frenzy Archetype ${i + 1}`}>
+                <option value="">— choose —</option>
+                {frenzyChoices
+                  .filter((a) => a.id === draft.bonusFrantic?.[i] || !(draft.bonusFrantic ?? []).includes(a.id))
+                  .map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {a.name}
+                    </option>
+                  ))}
+              </select>
+            </label>
+          ))}
+        </div>
+      )}
       {draft.archetypes.length > 0 && (
         <ul className="space-y-1">
           {draft.archetypes.map((a) => {
@@ -214,6 +259,8 @@ function StanceStep({ draft, set, idx }) {
   }
   const want = (type?.stanceCount ?? 3) + lv.extra.stances;
   const update = (i, patch) => set({ stances: draft.stances.map((s, j) => (j === i ? { ...s, ...patch } : s)) });
+  // The Machine: "one Style attached to two Forms" (the QA pass).
+  const machine = isMachine(draft.archetypes, idx);
   return (
     <div className="space-y-2">
       <p className="text-xs text-zinc-500">
@@ -221,7 +268,7 @@ function StanceStep({ draft, set, idx }) {
       </p>
       {draft.stances.map((s, i) => {
         const form = s.formId ? idx.get(s.formId) : null;
-        const derived = deriveStance(s, idx, lv.bonusDie);
+        const derived = deriveStance(s, idx, lv.bonusDie, { machine });
         const choices = form ? constructChoices(form, idx) : [];
         return (
           <div key={i} className="space-y-1 panel-cut-sm border border-zinc-800 bg-zinc-900 p-2">
@@ -242,6 +289,18 @@ function StanceStep({ draft, set, idx }) {
                   </option>
                 ))}
               </select>
+              {machine && (
+                <select value={s.form2Id ?? ''} onChange={(e) => update(i, { form2Id: e.target.value || null })} className={selectClass} aria-label={`Stance ${i + 1} second Form`}>
+                  <option value="">— second Form —</option>
+                  {idx.content.forms
+                    .filter((f) => f.id !== s.formId)
+                    .map((f) => (
+                      <option key={f.id} value={f.id}>
+                        {hbName(f)}
+                      </option>
+                    ))}
+                </select>
+              )}
               {form?.aliases?.length > 0 && (
                 <select value={s.alias ?? ''} onChange={(e) => update(i, { alias: e.target.value })} className={selectClass} aria-label={`Stance ${i + 1} name`}>
                   {form.aliases.map((a) => (

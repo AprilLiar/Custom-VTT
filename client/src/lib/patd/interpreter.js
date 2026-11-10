@@ -102,9 +102,24 @@ export const SUPPORTED_OPS = new Set([
   // phase I
   'gain_tokens_until',
   'destroy_shield',
+  // the QA pass (everything automated): choices shared between two people,
+  // targets kept across options, tokens copied, Shields cut, coming back into
+  // or leaving play, pulls up to someone, Start Effects again, moving obstacles
+  'ensure_target',
+  'joint_choice',
+  'duplicate_token',
+  'reduce_shield',
+  'return_to_play',
+  'pull_until',
+  'replay_start_effects',
+  'become_taken_out',
+  'remove_from_play',
+  'move_obstacles',
+  // A target picked by the Gate reached (Rip Chord, Flamethrower): resolved where it is used.
+  'selector_by_gate',
 ]);
 // When a `schedule` runs (engine/runtime.js runs them at those moments).
-const SCHEDULE_AT = new Set(['current_turn.end', 'next_turn.start']);
+const SCHEDULE_AT = new Set(['current_turn.end', 'next_turn.start', 'target_side.next_turn.selected']);
 // Durations a `temporary` can have (engine/runtime.js expires them).
 const TEMP_DURATIONS = new Set([
   'end_of_current_turn',
@@ -196,6 +211,8 @@ export const SUPPORTED_EVENTS = new Set([
   'stance.construct', // applied when the Stance is derived (build.js stanceRange)
   // phase H
   'self.training_token_spent',
+  // the QA pass
+  'self.throw_or_grapple.resolved',
 ]);
 const ACTOR_OPS = new Set(['perform_action', 'swap_spaces', 'damage']);
 // A selector's range measured from a target or binding (phase H).
@@ -222,7 +239,7 @@ const SELECTOR_KINDS = new Set([
   'action', // an Action to perform (perform_action)
   'self_and_visible_allies', // phase I
 ]);
-const OBSTACLE_OPS_KINDS = new Set(['trap', 'fog', 'pit', 'rubble', 'wall', 'copy']);
+const OBSTACLE_OPS_KINDS = new Set(['trap', 'fog', 'pit', 'rubble', 'wall', 'copy', 'deadly_trap']);
 // Copies aren't tracked on the board, so "you or your Copies" is your own range.
 const RANGE_MODES = new Set([
   'stance',
@@ -238,6 +255,11 @@ const RANGE_MODES = new Set([
   'target_and_adjacent',
   // "Your nearest ally to them" (Decoy Style): nearest to whoever held your Challenge.
   'nearest_to_event_former_holder',
+  // the QA pass: measured from what this Action did (ANCHORS below)
+  'on_or_adjacent_to_destroyed_obstacles',
+  'adjacent_to_event_action_target',
+  'adjacent_to_destroyed_copy',
+  'within_placed_obstacles',
 ]);
 const REF_OK = [
   /^self$/,
@@ -273,6 +295,14 @@ const REF_OK = [
   /^resolution\.gateRating$/,
   /^payment\.(rating|destroyedShieldValue|challengeHolder)$/,
   /^variables\.[A-Za-z]+$/,
+  // the QA pass: what an Action did, extra costs paid, where you stand
+  /^event\.(controlledActor|enemyTargets|actionTargets|distinctTargetCount|obstaclesDestroyed|obstaclesDestroyed\.length)$/,
+  /^history\.(shieldBroke|movementEnd|enemySharingObstacleSpace|maximumHitsOnSameEnemyByThisSuper)$/,
+  /^payment\.(additionalBasicTokens|selectedOptionCount|totalPoltergeistSpentIncludingCost)$/,
+  /^self\.(hp|standingOnPit|takenOut)$/,
+  /^bindings\.[A-Za-z]+\.one$/,
+  /^state\.disabledWeapons$/,
+  /^context\.heroicSpiritRecipient$/,
 ];
 const OPERATORS = {
   add: (a) => a.reduce((x, y) => x + y, 0),
@@ -295,12 +325,27 @@ const OPERATORS = {
   is_obstacle: ([a]) => Boolean(a?.isObstacle || a?.isCopy),
   is_enemy: () => false, // relative to the rule's owner: evalValue answers it
   is_ally: () => false, // likewise
+  // the QA pass
+  lookup: ([k, map]) => (map && typeof map === 'object' ? map[k] : undefined),
+  adjacent: ([a, b]) => Boolean(a?.square && b?.square && gridDistance(a.square, b.square) === 1),
   tier_value: ([rating, tiers]) => {
     let out = 0;
     for (const [t, v] of tiers ?? []) if (rating >= t) out = v;
     return out;
   },
 };
+
+// Operators that ask the board (the rule's owner and the world are in the scope).
+const WORLD_OPS = {
+  // "If they are within Range of you or your Copies" (Rallying Style).
+  within_range_of_self_or_copies: ([f], s) => Boolean(f?.square && s.world?.inRange(s.self, f, { mode: 'self_or_copies_range', origin: 'self' })),
+  // "If they are now within your range" (Hypnotic Gaze).
+  within_stance_range: ([f], s) => Boolean(f?.square && s.world?.inRange(s.self, f, { mode: 'stance', origin: 'self' })),
+  // "If this movement ends with an enemy and an obstacle sharing a space" (Telekinesis).
+  enemy_shares_space_with_obstacle: (_a, s) => Boolean(s.history?.enemySharingObstacleSpace),
+};
+// "Push yourself 2 or 3" (Ka-Boom!, Immortal Army): asked where the number is used (numOf).
+const ASKED_OPS = new Set(['choose_integer']);
 
 // ------------------------------------------------------------------ support check
 
@@ -319,14 +364,14 @@ export function ruleSupport(rule) {
     if (n.op === 'modify_rule' && !ENFORCED_RULES.has(n.rule)) problems.push(`rule ${n.rule}`);
     if (n.op === 'temporary' && (!TEMP_DURATIONS.has(n.duration) || !tempItems(n.effect))) problems.push(`temporary ${n.duration}`);
     if (n.op === 'schedule' && !SCHEDULE_AT.has(n.at)) problems.push(`schedule ${n.at}`);
-    if (typeof n.operator === 'string' && !(n.operator in OPERATORS) && n.operator !== 'if') problems.push(`operator ${n.operator}`);
+    if (typeof n.operator === 'string' && !(n.operator in OPERATORS) && !(n.operator in WORLD_OPS) && !ASKED_OPS.has(n.operator) && n.operator !== 'if') problems.push(`operator ${n.operator}`);
     if (typeof n.ref === 'string' && !REF_OK.some((re) => re.test(n.ref))) problems.push(`ref ${n.ref}`);
     if (typeof n.kind === 'string' && n.range && !SELECTOR_KINDS.has(n.kind)) problems.push(`selector ${n.kind}`);
     if (n.range && typeof n.range === 'object' && n.range.mode && !RANGE_MODES.has(n.range.mode)) problems.push(`range ${n.range.mode}`);
     // "Your Original" is you (a Copy's maker); a target or binding names another origin (phase H).
-    if (n.range?.origin && n.range.origin !== 'self' && n.range.origin !== 'original' && !ORIGIN_REF.test(n.range.origin)) problems.push(`origin ${n.range.origin}`);
+    if (n.range?.origin && n.range.origin !== 'self' && n.range.origin !== 'original' && n.range.origin !== 'any_previous_target' && !ORIGIN_REF.test(n.range.origin)) problems.push(`origin ${n.range.origin}`);
     // `originBinding` is understood by the binding ranges (phase H) only.
-    if (n.inFog || n.obstacleBinding || (n.originBinding && !BINDING_RANGES.has(n.range?.mode))) problems.push('selector detail');
+    if (n.originBinding && !BINDING_RANGES.has(n.range?.mode)) problems.push('selector detail');
     if (n.op === 'place_obstacle' && !OBSTACLE_OPS_KINDS.has(n.obstacle)) problems.push(`obstacle ${n.obstacle}`);
     // Someone else doing the step: understood for performing an Action, a swap and damage (phase H).
     if (n.actor && !ACTOR_OPS.has(n.op)) problems.push('actor');
@@ -359,7 +404,10 @@ export function evalValue(v, scope) {
       const who = readPath(scope[head], rest.slice(0, -1));
       return Boolean(who && scope.self && who.challengeId != null && String(who.challengeId) === String(scope.self.id));
     }
-    return readPath(scope[head], rest);
+    const out = readPath(scope[head], rest);
+    // "If you are still at zero HP": a fighter's HP is its current bar's.
+    if (rest[rest.length - 1] === 'hp' && out && typeof out === 'object' && 'current' in out) return out.current;
+    return out;
   }
   if (typeof v.operator === 'string') {
     if (v.operator === 'if') {
@@ -371,6 +419,9 @@ export function evalValue(v, scope) {
       if (!a || !scope.self || a.side == null) return false;
       return v.operator === 'is_enemy' ? a.side !== scope.self.side : a.side === scope.self.side;
     }
+    if (WORLD_OPS[v.operator]) return WORLD_OPS[v.operator]((v.args ?? []).map((a) => evalValue(a, scope)), scope);
+    // Unasked (a label, a check before it runs): the lowest it could be.
+    if (ASKED_OPS.has(v.operator)) return evalValue(v.args?.[0], scope);
     const fn = OPERATORS[v.operator];
     if (!fn) throw new Unsupported(`operator ${v.operator}`);
     return fn(v.args.map((a) => evalValue(a, scope)));
@@ -484,6 +535,8 @@ export async function runRule(rule, ctx) {
 function scopeFor(rule, ctx) {
   return {
     self: ctx.self,
+    // For the operators that ask the board (WORLD_OPS).
+    world: ctx.world,
     // The fight's context, and whether it is the rule's owner's own turn.
     context: {
       ...ctx.world.context,
@@ -553,7 +606,8 @@ function affordable(effect, scope, ctx) {
   const first = effect?.op === 'sequence' ? effect.steps?.[0] : effect;
   if (first?.op !== 'spend_tokens') return true;
   const who = first.target?.ref === 'self' || !first.target ? [scope.self] : asList(evalValue(first.target, scope));
-  return who.every((f) => f && (ctx.world.heldTokens(f)[evalValue(first.token, scope)] ?? 0) >= (Number(evalValue(first.amount, scope)) || 0));
+  const have = (f, key) => (ctx.world.spendable ? ctx.world.spendable(f, key) : (ctx.world.heldTokens(f)[key] ?? 0));
+  return who.every((f) => f && have(f, evalValue(first.token, scope)) >= (Number(evalValue(first.amount, scope)) || 0));
 }
 
 // What a delayed effect keeps of its scope: fighters by id, squares as they are.
@@ -633,6 +687,9 @@ function performCandidates(sel, scope, ctx, actor) {
   return list;
 }
 
+const THROW_ID = 'action.system-basic-actions.throw';
+// Picks that an Action's extra target (Blaster Form, Amplify) may add to.
+const EXTRA_TARGET_KINDS = new Set(['enemy', 'ally', 'unit', 'enemy_or_obstacle', 'unit_or_obstacle', 'ally_or_obstacle']);
 const DECLINED = Symbol('declined');
 // A "you may" opening with a pick offers its own skip (phase D: a square too).
 const PICK_OPS = new Set([
@@ -661,10 +718,70 @@ const POOL_PICKS = new Set(['increase_pool_number', 'set_pool_number', 'replace_
 // it; destroy, replace, swap). Every other step leaves plain obstacles out —
 // a Wall picked as an Attack's target gains no tokens and is never pushed.
 // `hit`: the step deals damage, so its pick offers Walls and Rubble too.
-async function targetsOf(v, scope, ctx, label, { obstacles = false, hit = false } = {}) {
-  const list = isSelector(v) ? await select(hit ? { ...v, breakables: true } : v, scope, ctx, label) : asList(evalValue(v, scope)).filter((x) => x && typeof x === 'object' && x.id != null);
+async function targetsOf(v0, scope, ctx, label, { obstacles = false, hit = false } = {}) {
+  const v = gateSelector(v0, scope);
+  let list;
+  if (isSelector(v)) list = await select(hit ? { ...v, breakables: true } : v, scope, ctx, label);
+  else if (typeof v?.ref === 'string' && v.ref.endsWith('.one')) {
+    // "One Wall placed by Walled In": one of what the binding holds, picked.
+    const all = asList(evalValue({ ref: v.ref.slice(0, -4) }, scope)).filter((x) => x && typeof x === 'object' && x.id != null);
+    list = all.length <= 1 ? all : await pickOneOf(all, scope, ctx, label);
+  } else list = asList(evalValue(v, scope)).filter((x) => x && typeof x === 'object' && x.id != null);
   return obstacles ? list : list.filter((x) => !x.isObstacle || x.isCopy);
 }
+// "5+: each enemy within Range. 8+: each enemy you can see" — the selector of the highest Gate reached.
+function gateSelector(v, scope) {
+  if (v?.op !== 'selector_by_gate') return v;
+  const rating = Number(scope.resolution?.gateRating ?? scope.payment?.rating) || 0;
+  const cases = [...(v.cases ?? [])].sort((a, b) => (b.minimum ?? 0) - (a.minimum ?? 0));
+  return (cases.find((c) => rating >= (c.minimum ?? 0)) ?? cases.at(-1))?.selector ?? null;
+}
+async function pickOneOf(all, scope, ctx, label = 'one') {
+  const ans = await ctx.ask({
+    kind: 'targets',
+    fighter: scope.self,
+    title: ctx.ability?.name ?? 'Choose',
+    text: `Choose ${label}.`,
+    mode: ctx.world.mode ?? null,
+    options: all.map((x) => ({ id: String(x.id), label: x.square ? `${x.name} (${x.square.col},${x.square.row})` : x.name, ...(x.square ? { col: x.square.col, row: x.square.row } : {}) })),
+    minimum: 1,
+    maximum: 1,
+    skippable: true,
+  });
+  const id = String(asList(ans)[0] ?? '');
+  if (id === SKIP) return [];
+  return [all.find((x) => String(x.id) === id) ?? all[0]];
+}
+// A number that may be asked for ("2 or 3 spaces").
+async function numOf(v, scope, ctx, text) {
+  if (v?.operator !== 'choose_integer') return evalValue(v, scope);
+  const [lo, hi] = (v.args ?? []).map((a) => Number(evalValue(a, scope)) || 0);
+  return chooseInteger(scope, ctx, { minimum: lo, maximum: hi }, text);
+}
+
+// **Measured from what this Action did (the QA pass):** the squares a range
+// counts from, and how far — the obstacles it destroyed (Explosion Style), its
+// one target (Crystal Style), the Copy just destroyed (the Swarm), the Fog just
+// placed (Darkness Dawns), any earlier target (Open the Path).
+const sqOf = (x) => x?.square ?? (Number.isInteger(x?.col) ? x : null);
+function anchorsOf(sel, scope) {
+  const of = (list, min, max) => ({ squares: asList(list).map(sqOf).filter(Boolean), min, max });
+  switch (sel.range?.mode) {
+    case 'on_or_adjacent_to_destroyed_obstacles':
+      return of(scope.event?.obstaclesDestroyed, 0, 1);
+    case 'adjacent_to_event_action_target':
+      return of(scope.event?.actionTargets, 1, 1);
+    case 'adjacent_to_destroyed_copy':
+      return of(scope.history?.lastDestroyedSquare, 1, 1);
+    case 'within_placed_obstacles':
+      return of(scope.bindings?.[sel.obstacleBinding], 0, 0);
+    default:
+      break;
+  }
+  if (sel.range?.origin === 'any_previous_target') return of(scope.history?.targets, sel.range.minimum ?? 0, sel.range.maximum ?? Infinity);
+  return null;
+}
+const nearAnchors = (a, sq) => Boolean(sq) && a.squares.some((s) => gridDistance(s, sq) >= a.min && gridDistance(s, sq) <= a.max);
 
 // **Walls and Rubble are targeted as enemies (book p.11; decided, batch 5):**
 // does anything in this rule deal damage to what `binding` holds?
@@ -721,9 +838,14 @@ async function selectSpaces(rawSel, scope, ctx, from, { optional = false, purpos
   const { world } = ctx;
   if (!world.spaces) throw new Unsupported('spaces');
   // "A space adjacent to the target" (phase H): measured from the bound one.
-  let pool = BINDING_RANGES.has(sel.range?.mode)
-    ? world.spaces(from, { mode: 'map' }, { empty: Boolean(sel.empty) }).filter((sq) => nearAnchor(sel, anchorOf(sel, scope), sq))
-    : world.spaces(from, sel.range, { empty: Boolean(sel.empty) });
+  const anchors = anchorsOf(sel, scope);
+  let pool = anchors
+    ? world.spaces(from, { mode: 'map' }, { empty: Boolean(sel.empty) }).filter((sq) => nearAnchors(anchors, sq))
+    : BINDING_RANGES.has(sel.range?.mode)
+      ? world.spaces(from, { mode: 'map' }, { empty: Boolean(sel.empty) }).filter((sq) => nearAnchor(sel, anchorOf(sel, scope), sq))
+      : world.spaces(from, sel.range, { empty: Boolean(sel.empty) });
+  // "A space both within Fog and within range" (Ghost Walk).
+  if (sel.inFog) pool = pool.filter((sq) => Boolean(world.inFog?.(sq)));
   const count = sel.count;
   if (count === 'all') return pool;
   const maximum = typeof count === 'number' ? count : typeof count === 'object' && count?.maximum != null ? evalValue(count.maximum, scope) : 1;
@@ -789,7 +911,11 @@ async function select(rawSel, scope, ctx, label = 'a target') {
   const c = candidatesOf(rawSel, scope, ctx);
   if (!c) return [];
   if (c.spaces) return selectSpaces(c.sel, scope, ctx, c.from);
-  return pickFrom(c, scope, ctx, label);
+  const picked = await pickFrom(c, scope, ctx, label);
+  // Who this resolution targeted, each once ("an Action with exactly one target").
+  const seen = (scope.history.targets ??= []);
+  for (const f of picked) if (!seen.some((x) => String(x.id) === String(f.id))) seen.push(f);
+  return picked;
 }
 
 // Who (or what) a selector allows right now: { sel, from, pool }, `spaces`
@@ -798,6 +924,15 @@ function candidatesOf(rawSel, scope, ctx) {
   const sel = { ...rawSel, range: resolveRange(rawSel.range, scope) };
   const { world } = ctx;
   const self = scope.self;
+  // **Throw, changed by a Style (the QA pass):** "Your Throw Actions may target
+  // within range" (Whip Style), "Your Throws may target any number of enemies
+  // within range" (Ogre's Style).
+  if (ctx.ability?.id === THROW_ID && sel.kind === 'enemy' && world.mods) {
+    const mods = world.mods(self);
+    if (mods.some((m) => m.rule === 'throw.target_range')) sel.range = { mode: 'stance', origin: 'self' };
+    const any = mods.find((m) => m.rule === 'throw.target_selector')?.value;
+    if (any) Object.assign(sel, { range: any.range ?? { mode: 'stance', origin: 'self' }, count: { maximum: 99 } });
+  }
   // Acting from one of your Copies (phase E): ranges count from its square;
   // "this Action's maximum range +X" (phase G) rides along.
   const bonus = (scope.mods ?? []).filter((m) => m.targetId === self.id && m.rule === 'current_action.maximum_range_bonus').reduce((n, m) => n + (Number(m.value) || 0), 0);
@@ -813,7 +948,10 @@ function candidatesOf(rawSel, scope, ctx) {
   const copies = world.copies?.() ?? [];
   // "Adjacent to the target" (phase H): from the bound one, not from you.
   const bound = BINDING_RANGES.has(sel.range?.mode);
-  const obstacleRange = bound ? { mode: 'map' } : sel.range;
+  const anchors = anchorsOf(sel, scope);
+  const obstacleRange = bound || anchors ? { mode: 'map' } : sel.range;
+  // "An ally who is not in play" (Rescue): no range to measure.
+  if (sel.inPlay === false) return { sel, from, pool: world.alliesOf(self).filter((f) => !f.square && f.id !== self.id && f.removedForGood !== true) };
   let pool;
   if (sel.kind === 'enemy') {
     pool = [...world.enemiesOf(self), ...copies.filter((c) => c.side !== self.side)];
@@ -856,10 +994,15 @@ function candidatesOf(rawSel, scope, ctx) {
     const near = at ? pool.filter((f) => f.square) : [];
     const best = Math.min(...near.map((f) => gridDistance(f.square, at)));
     pool = near.filter((f) => gridDistance(f.square, at) === best);
+  } else if (anchors) {
+    pool = pool.filter((f) => nearAnchors(anchors, f.square));
   } else if (bound) {
     const anchor = anchorOf(sel, scope);
     pool = pool.filter((f) => (f !== anchor || sel.range.mode === 'target_and_adjacent') && nearAnchor(sel, anchor, f.square));
   } else pool = pool.filter((f) => f.isObstacle || (f.isCopy && sel.range?.mode === 'none') || world.inRange(from, f, sel.range));
+  // "Each enemy standing within Fog" (Twilight Sorrow), "standing on an obstacle" (Poltergeist Panic).
+  if (sel.inFog) pool = pool.filter((f) => f.square && Boolean(world.inFog?.(f.square)));
+  if (sel.standingOnAnyObstacle) pool = pool.filter((f) => f.square && Boolean(world.obstacleAt?.(f.square)));
   return { sel, from, pool };
 }
 
@@ -883,10 +1026,31 @@ async function pickFrom(c, scope, ctx, label) {
     ctx.log?.(`${must.name} must be the target (Challenge)`);
     pool = [must];
   }
+  // **One extra target within range (Blaster Form, Amplify — the QA pass).**
+  // An Action's pick of one or more may take one more, from anyone of the same
+  // kind within the Stance's range — once per Action (`ctx.extraTargets`).
+  const base = { pool, maximum };
+  let bonus = 0;
+  if ((ctx.extraTargets ?? 0) > 0 && EXTRA_TARGET_KINDS.has(sel.kind) && !must) {
+    const wide = candidatesOf({ ...sel, range: { mode: 'stance', origin: 'self' }, originBinding: undefined, breakables: false }, scope, { ...ctx, extraTargets: 0 })?.pool ?? [];
+    const merged = [...pool, ...wide.filter((f) => !pool.includes(f))];
+    if (merged.length > maximum) {
+      bonus = 1;
+      pool = merged;
+    }
+  }
   // **The only legal target is the target (decided, batch 5):** a pick that
   // must be made, of one, with one candidate, asks nobody. A "you may" and an
   // "up to" still ask (they can be skipped).
-  if (pool.length === 1 && maximum === 1 && minimum >= 1 && !scope.mayDecline && !ctx.askAlways) return pool;
+  // "…and each target adjacent to the initial target(s)" (Flamethrower at 4 Power).
+  const spread = (list) => {
+    if (!sel.includeAdjacentToTargets || !list.length) return list;
+    const near = [...world.enemiesOf(self), ...(world.copies?.() ?? []).filter((c) => c.side !== self.side)].filter(
+      (f) => f.square && !list.includes(f) && list.some((t) => t.square && gridDistance(t.square, f.square) === 1)
+    );
+    return [...list, ...near];
+  };
+  if (pool.length === 1 && maximum === 1 && minimum >= 1 && !scope.mayDecline && !ctx.askAlways) return spread(pool);
   // **Picked on the board (decided, batch 3):** each option carries its square,
   // and `area` is the Range it's picked in — the client shades the Range red,
   // the legal targets brighter, and a tap picks (the list stays a fallback).
@@ -896,7 +1060,7 @@ async function pickFrom(c, scope, ctx, label) {
     kind: 'targets',
     fighter: self,
     title: ctx.ability?.name ?? 'Choose',
-    text: `Choose ${maximum === 1 ? label : `up to ${maximum}`}${must ? ` — ${must.name} must be one (Challenge)` : ''}.`,
+    text: `Choose ${maximum === 1 ? label : `up to ${Math.min(maximum, base.pool.length)}`}${bonus ? ' — and you may add one extra target within range' : ''}${must ? ` — ${must.name} must be one (Challenge)` : ''}.`,
     mode: world.mode ?? null,
     area,
     options: pool.map((f) => ({
@@ -905,7 +1069,7 @@ async function pickFrom(c, scope, ctx, label) {
       ...(f.square ? { col: f.square.col, row: f.square.row } : {}),
     })),
     minimum: Math.max(minimum, must ? 1 : 0),
-    maximum,
+    maximum: maximum + bonus,
     required: must && maximum > 1 ? [String(must.id)] : [],
     // **Skip (decided, batch 4):** an attack or any targeted effect may be
     // declined — nobody is picked and that step does nothing.
@@ -914,8 +1078,16 @@ async function pickFrom(c, scope, ctx, label) {
   const ids = new Set(asList(answer).map(String));
   if (ids.has(SKIP)) return [];
   if (must) ids.add(String(must.id));
-  const picked = pool.filter((f) => ids.has(String(f.id))).slice(0, maximum);
-  return picked.length || minimum === 0 ? picked : pool.slice(0, 1);
+  let picked = pool.filter((f) => ids.has(String(f.id))).slice(0, maximum + bonus);
+  if (bonus) {
+    // At most the Action's own count from its own range, and one more from the wider one.
+    const own = picked.filter((f) => base.pool.includes(f));
+    const far = picked.filter((f) => !base.pool.includes(f));
+    const used = Math.max(far.length, picked.length - base.maximum, 0);
+    if (used > 1 || far.length > 1) picked = [...own.slice(0, base.maximum + (far.length ? 0 : 1)), ...far.slice(0, 1)];
+    if (used > 0) ctx.extraTargets = Math.max(0, (ctx.extraTargets ?? 0) - 1);
+  }
+  return spread(picked.length || minimum === 0 ? picked : pool.slice(0, 1));
 }
 
 async function run(node, scope, ctx) {
@@ -962,8 +1134,12 @@ async function run(node, scope, ctx) {
       return;
     }
     case 'choose_mode': {
-      const options = asList(val(node.options)).map((o) => ({ id: String(o), label: tokenName(o) }));
-      const ans = await ctx.ask({ kind: 'choose', fighter: scope.self, title: ctx.ability?.name ?? 'Choose', text: `Choose your ${tokenName(val(node.stateKey))}.`, options, minimum: 1, maximum: 1 });
+      // "Disable your current Weapon until your next turn and choose a new one"
+      // (Weapon Throw): the disabled ones are out (`weapon.disabled`, a temporary).
+      const out = new Set(node.exclude ? (world.mods?.(scope.self) ?? []).filter((m) => m.rule === `${val(node.stateKey)}.disabled`).map((m) => String(m.value)) : []);
+      const options = asList(val(node.options)).filter((o) => !out.has(String(o))).map((o) => ({ id: String(o), label: tokenName(o) }));
+      if (!options.length) return;
+      const ans = options.length === 1 ? [options[0].id] : await ctx.ask({ kind: 'choose', fighter: scope.self, title: ctx.ability?.name ?? 'Choose', text: `Choose your ${tokenName(val(node.stateKey))}.`, options, minimum: 1, maximum: 1 });
       const picked = asList(ans)[0] ?? options[0]?.id;
       scope.state[val(node.stateKey)] = picked;
       ctx.log(`chose ${tokenName(picked)}`);
@@ -975,15 +1151,59 @@ async function run(node, scope, ctx) {
     case 'set_variable':
       scope.variables[val(node.name)] = val(node.value);
       return;
-    case 'select':
+    // "Options from the Contain list must target an enemy within range": the
+    // first of them picks the enemy, the others keep it (Protect).
+    case 'ensure_target': {
+      const held = scope.targets[node.binding];
+      if (held != null && !(Array.isArray(held) && !held.length)) return;
+    }
+    // falls through
+    case 'select': {
+      const sel = gateSelector(node.selector, scope);
+      if (!sel) return;
+      // A ref, not a selector ("the enemy who held the Challenge you spent" —
+      // Nothing Personal): its value, fighters given by id too.
+      if (!isSelector(sel)) {
+        const byId = (x) => (x != null && typeof x !== 'object' ? world.fighters().find((f) => String(f.id) === String(x)) ?? null : x);
+        const got = asList(val(sel)).map(byId).filter(Boolean);
+        scope.targets[node.binding] = got.length <= 1 ? (got[0] ?? null) : got;
+        const seen = (scope.history.targets ??= []);
+        for (const f of got) if (f.id != null && !seen.some((x) => String(x.id) === String(f.id))) seen.push(f);
+        return;
+      }
       scope.targets[node.binding] = await select(
-        scope.rootEffect && node.selector.kind === 'enemy' && damagesBinding(scope.rootEffect, node.binding) ? { ...node.selector, breakables: true } : node.selector,
+        scope.rootEffect && sel.kind === 'enemy' && damagesBinding(scope.rootEffect, node.binding) ? { ...sel, breakables: true } : sel,
         scope,
         ctx,
-        node.selector.kind === 'ally' ? 'an ally' : 'an enemy'
+        sel.kind === 'ally' ? 'an ally' : 'an enemy'
       );
-      if (Array.isArray(scope.targets[node.binding]) && node.selector.count === 1) scope.targets[node.binding] = scope.targets[node.binding][0] ?? null;
+      if (Array.isArray(scope.targets[node.binding]) && sel.count === 1 && scope.targets[node.binding].length <= 1) scope.targets[node.binding] = scope.targets[node.binding][0] ?? null;
       return;
+    }
+    // **A choice two people share (Song Form):** each chooser in turn picks
+    // their count of options — never one already picked when `unique` — and
+    // the picked ones resolve in the order listed.
+    case 'joint_choice': {
+      const picks = [];
+      for (const g of node.groups ?? []) {
+        const chooser = asList(val(g.chooser))[0] ?? scope.self;
+        const count = Math.max(0, Number(val(g.count)) || 0);
+        for (let i = 0; i < count; i++) {
+          const open = node.options.filter((o) => !node.unique || !picks.includes(o.id));
+          if (!open.length) break;
+          let id = open[0].id;
+          if (open.length > 1) {
+            const ask = ctx.askAs ? ctx.askAs(chooser) : ctx.ask;
+            const ans = await ask({ kind: 'choose', fighter: chooser, title: ctx.ability?.name ?? 'Choose', text: `${chooser.name}: choose one.`, options: open.map((o, k) => ({ id: o.id, label: describe(o.effect) || `Option ${k + 1}` })), minimum: 1, maximum: 1 });
+            const got = String(asList(ans)[0] ?? '');
+            if (open.some((o) => o.id === got)) id = got;
+          }
+          picks.push(id);
+        }
+      }
+      for (const o of node.options) for (const id of picks) if (id === o.id) await run(o.effect, scope, ctx);
+      return;
+    }
     case 'for_each': {
       // A selector to pick from, or a ref to a list (Knockdown's damagers, Dance's pushed enemies).
       const list = await targetsOf(node.selector, scope, ctx, undefined, { obstacles: true });
@@ -1122,21 +1342,22 @@ async function run(node, scope, ctx) {
     case 'select_token': {
       const decline = scope.mayDecline;
       scope.mayDecline = false;
-      const pool = world.fighters().filter((f) => f.id !== scope.self.id && world.inRange(scope.self, f, node.holder?.range));
+      // "One token you hold" (Syphon Style), or one held by someone in range.
+      const pool = node.holder?.ref === 'self' ? [scope.self] : world.fighters().filter((f) => f.id !== scope.self.id && world.inRange(scope.self, f, node.holder?.range));
       const options = [];
       for (const f of pool) {
         const held = world.heldTokens(f);
         for (const k of Object.keys(held)) {
           if (!(held[k] > 0) || NOT_DISCARDABLE.has(k)) continue;
           if (val(node.tokenFilter) === 'non_unique' && !NON_UNIQUE.has(k)) continue;
-          options.push({ id: `${f.id}:${k}`, label: `${f.name}: ${tokenName(k)} (${held[k]})`, holder: f, key: k });
+          options.push({ id: `${f.id}:${k}`, label: pool.length === 1 && f.id === scope.self.id ? `${tokenName(k)} (${held[k]})` : `${f.name}: ${tokenName(k)} (${held[k]})`, holder: f, key: k });
         }
       }
       if (!options.length) return decline ? DECLINED : undefined;
       const choices = options.map(({ id, label }) => ({ id, label }));
       if (decline) choices.push({ id: SKIP, label: 'Skip' });
       const ans = asList(
-        await ctx.ask({ kind: 'choose', fighter: scope.self, title: ctx.ability?.name ?? 'Pick a token', text: `${decline ? 'You may pick' : 'Pick'} a token held by someone in range.`, options: choices, minimum: 1, maximum: 1 })
+        await ctx.ask({ kind: 'choose', fighter: scope.self, title: ctx.ability?.name ?? 'Pick a token', text: node.holder?.ref === 'self' ? `${decline ? 'You may pick' : 'Pick'} one of your tokens.` : `${decline ? 'You may pick' : 'Pick'} a token held by someone in range.`, options: choices, minimum: 1, maximum: 1 })
       )[0];
       const pick = options.find((o) => o.id === ans);
       if (!pick) return decline ? DECLINED : undefined;
@@ -1161,6 +1382,27 @@ async function run(node, scope, ctx) {
       await world.gainTokens(t.holder, into, 1);
       ctx.log(`${t.holder.name}'s ${tokenName(t.key)} becomes ${tokenName(into)}`);
       t.key = into;
+      return;
+    }
+    // "Gain another copy of it" (Syphon Style).
+    case 'duplicate_token': {
+      const t = val(node.target);
+      if (!t?.holder || !t.key) return;
+      await world.gainTokens(t.holder, t.key, 1);
+      ctx.log(`${t.holder.name} gains another ${tokenName(t.key)}`);
+      return;
+    }
+    // "Remove up to 4 points of Shield" (Aura Surge): `history.shieldBroke` when none is left.
+    case 'reduce_shield': {
+      const amount = Math.max(0, Number(val(node.amount)) || 0);
+      for (const f of await targetsOf(node.target, scope, ctx)) {
+        const held = world.heldTokens(f).shield ?? 0;
+        const n = Math.min(held, amount);
+        if (!n) continue;
+        await world.discardTokens(f, ['shield'], n);
+        if (held - n === 0) scope.history.shieldBroke = true;
+        ctx.log(`${f.name}'s Shield loses ${n}${held - n === 0 ? ' and breaks' : ''}`);
+      }
       return;
     }
     case 'gain_shield': {
@@ -1199,6 +1441,7 @@ async function run(node, scope, ctx) {
         if (f.isObstacle && !f.isCopy) {
           if (n >= 2 && (f.kind === 'wall' || f.kind === 'rubble')) {
             await world.destroyObstacle(f, scope.self);
+            (scope.history.obstaclesDestroyed ??= []).push({ col: f.square.col, row: f.square.row, kind: f.kind });
             ctx.log(`${scope.self.name} destroys the ${f.name}${f.kind === 'wall' ? ' (Rubble now)' : ''}`);
           } else ctx.log(`${scope.self.name} hits the ${f.name} for ${n}: it takes 2 in one hit to break it`);
           continue;
@@ -1281,8 +1524,10 @@ async function run(node, scope, ctx) {
       const key = val(node.token);
       const amount = Number(val(node.amount)) || 0;
       for (const f of node.target ? await targetsOf(node.target, scope, ctx) : [scope.self]) {
-        if ((world.heldTokens(f)[key] ?? 0) < amount) return DECLINED;
-        await world.discardTokens(f, [key], amount);
+        // (What they can spend: Iron in its place, an Unbreakable ally's — world.spendable.)
+        if ((world.spendable ? world.spendable(f, key) : (world.heldTokens(f)[key] ?? 0)) < amount) return DECLINED;
+        if (world.spend) await world.spend(f, key, amount);
+        else await world.discardTokens(f, [key], amount);
         ctx.log(`${f.name} spends ${amount} ${tokenName(key)}`);
         // "After you spend a Training Token" (Training Style — phase H).
         if (key === 'training' && amount > 0) await ctx.emit?.('self.training_token_spent', f, { amount });
@@ -1326,8 +1571,14 @@ async function run(node, scope, ctx) {
       const to = node.op === 'replace_obstacle' ? val(node.replacement) : null;
       for (const o of await targetsOf(node.target, scope, ctx, 'an obstacle', { obstacles: true })) {
         if (!o.isObstacle && !o.isCopy) continue;
+        const at = o.square ? { col: o.square.col, row: o.square.row } : null;
         if (to) await world.replaceObstacle(o, to, scope.self);
         else await world.destroyObstacle(o, scope.self);
+        // Where it stood: "enemies adjacent to it" (the Swarm), "on or adjacent to those obstacles" (Explosion Style).
+        if (at) {
+          scope.history.lastDestroyedSquare = at;
+          if (!to) (scope.history.obstaclesDestroyed ??= []).push({ ...at, kind: o.isCopy ? 'copy' : o.kind });
+        }
         ctx.log(`${to ? 'replaces' : 'destroys'} the ${o.name}${to ? ` with ${to}` : ''}`);
       }
       return;
@@ -1338,7 +1589,7 @@ async function run(node, scope, ctx) {
     case 'teleport': {
       const fn = node.op === 'move' ? world.move : world.teleport;
       if (!fn) return unsupported(node, scope, ctx);
-      const distance = val(node.distance);
+      const distance = await numOf(node.distance, scope, ctx, `${node.op === 'move' ? 'Move' : 'Teleport'} how many spaces?`);
       const decline = scope.mayDecline;
       scope.mayDecline = false;
       for (const f of node.target ? await targetsOf(node.target, scope, ctx) : [scope.self]) {
@@ -1354,23 +1605,117 @@ async function run(node, scope, ctx) {
     case 'push':
     case 'pull': {
       if (!world.forced) return unsupported(node, scope, ctx);
-      const distance = val(node.distance);
+      const distance = await numOf(node.distance, scope, ctx, `${node.op === 'pull' ? 'Pull' : 'Push'} how many spaces?`);
       const from = node.origin ? asList(val(node.origin))[0] : scope.self;
-      for (const f of await targetsOf(node.target, scope, ctx, 'an enemy')) {
+      const origin = sqOf(from) ?? scope.self.square ?? null;
+      for (const f of await targetsOf(node.target, scope, ctx, 'an enemy', { obstacles: true })) {
         const before = f.square ? `${f.square.col},${f.square.row}` : null;
-        await world.forced(f, {
-          distance,
-          origin: from?.square ?? scope.self.square ?? null,
-          pull: node.op === 'pull',
-          upTo: Boolean(node.upTo),
-          chooser: scope.self,
-          hit: scope.history.hits?.[f.id] ?? null,
-          unblockable: ctx.unblockable ?? [],
-        });
+        if (f.isObstacle && !f.isCopy) {
+          // An obstacle pushed or pulled (Telekinesis, Shining Style): its tile moves.
+          if (!world.forcedObstacle) continue;
+          await world.forcedObstacle(f, { distance, origin, pull: node.op === 'pull', upTo: Boolean(node.upTo), chooser: scope.self });
+        } else {
+          await world.forced(f, {
+            distance,
+            origin,
+            pull: node.op === 'pull',
+            upTo: Boolean(node.upTo),
+            chooser: scope.self,
+            hit: scope.history.hits?.[f.id] ?? null,
+            unblockable: ctx.unblockable ?? [],
+            // Moving yourself (Ka-Boom!, First Aid): nothing to resist.
+            willing: f.id === scope.self.id,
+          });
+        }
         // Who this resolution moved by force (phase G: Ogre's, Dance Form).
         const after = f.square ? `${f.square.col},${f.square.row}` : null;
         if (before !== after && !f.isObstacle) (scope.history.forcedIds ??= []).push(f.id);
         if (before !== after && f.id === scope.self.id) scope.history.selfMoved = true;
+        // "…ends with an enemy and an obstacle sharing a space" (Telekinesis).
+        if (f.square && world.obstacleAt) {
+          const same = (x) => x.square && x.square.col === f.square.col && x.square.row === f.square.row;
+          const enemy = f.isObstacle && !f.isCopy ? world.enemiesOf(scope.self).find(same) : f.side != null && f.side !== scope.self.side && world.obstacleAt(f.square) ? f : null;
+          if (enemy) scope.history.enemySharingObstacleSpace = enemy;
+        }
+      }
+      return;
+    }
+    // "Pull yourself towards them, 1 space at a time, until you are adjacent" (First Aid).
+    case 'pull_until': {
+      if (!world.forced) return unsupported(node, scope, ctx);
+      const to = asList(val(node.origin))[0];
+      for (const f of node.target ? await targetsOf(node.target, scope, ctx) : [scope.self]) {
+        if (!f.square || !to?.square) continue;
+        const d = gridDistance(f.square, to.square) - 1;
+        if (d <= 0) continue;
+        await world.forced(f, { distance: d, origin: to.square, pull: true, chooser: scope.self, willing: f.id === scope.self.id });
+        if (f.id === scope.self.id) scope.history.selfMoved = true;
+      }
+      return;
+    }
+    // "Heal an ally who is not in play, then return them to play into an empty space within range" (Rescue).
+    case 'return_to_play': {
+      if (!world.returnToPlay) return unsupported(node, scope, ctx);
+      for (const f of await targetsOf(node.target, scope, ctx)) {
+        if (f.square) continue;
+        const squares = await selectSpaces({ ...node.destination, empty: true, count: 1 }, scope, ctx, scope.self, { purpose: `${f.name} returns` });
+        if (!squares.length) continue;
+        await world.returnToPlay(f, squares[0]);
+        ctx.log(`${f.name} returns to play`);
+      }
+      return;
+    }
+    // "Remove yourself from play for the rest of combat. You cannot come back" (My Final Technique).
+    case 'remove_from_play': {
+      if (!world.removeFromPlay) return unsupported(node, scope, ctx);
+      for (const f of node.target ? await targetsOf(node.target, scope, ctx) : [scope.self]) {
+        await world.removeFromPlay(f, { forGood: node.allowComeback === false });
+        ctx.log(`${f.name} leaves play${node.allowComeback === false ? ' for the rest of the fight' : ''}`);
+      }
+      return;
+    }
+    // "Apply all of your Start Effects as this Action's effects" (Mood Shift).
+    case 'replay_start_effects':
+      if (!ctx.emit) return unsupported(node, scope, ctx);
+      await ctx.emit('own_turn.start', scope.self, { activeCharacter: scope.self, replayed: true });
+      return;
+    // "You become Taken Out as normal" — zero HP already is (A Warrior's Death).
+    case 'become_taken_out':
+      return;
+    // **Moving obstacles (Poltergeist Panic):** each one may go up to
+    // `distance` spaces, into a space no other obstacle holds, one at a time.
+    case 'move_obstacles': {
+      if (!world.moveObstacle || !world.obstacleDestinations) return unsupported(node, scope, ctx);
+      const distance = Number(val(node.distance)) || 0;
+      const taken = new Set();
+      for (const o of await targetsOf(node.selector, scope, ctx, 'an obstacle', { obstacles: true })) {
+        if (o.isCopy || !o.square) continue;
+        const dests = world.obstacleDestinations(o, distance).filter((sq) => !taken.has(`${sq.col},${sq.row}`));
+        const stays = () => taken.add(`${o.square.col},${o.square.row}`);
+        if (!dests.length) {
+          stays();
+          continue;
+        }
+        const ans = await ctx.ask({
+          kind: 'square',
+          mode: world.mode,
+          fighter: scope.self,
+          title: `${ctx.ability?.name ?? 'Move'} (the ${o.name} at ${o.square.col},${o.square.row})`,
+          text: `Move this ${o.name} up to ${distance} spaces, or skip it.`,
+          options: dests.map((sq) => ({ id: `${sq.col},${sq.row}`, label: `${sq.col},${sq.row}`, col: sq.col, row: sq.row })),
+          minimum: 0,
+          maximum: 1,
+          skippable: true,
+        });
+        const id = asList(ans)[0];
+        const sq = dests.find((x) => `${x.col},${x.row}` === id);
+        if (!sq) {
+          stays();
+          continue;
+        }
+        await world.moveObstacle(o, sq);
+        taken.add(`${sq.col},${sq.row}`);
+        ctx.log(`the ${o.name} moves to ${sq.col},${sq.row}`);
       }
       return;
     }
@@ -1379,9 +1724,13 @@ async function run(node, scope, ctx) {
       const actor = node.actor ? asList(val(node.actor))[0] : scope.self;
       for (const f of await targetsOf(node.target, scope, ctx, undefined, { obstacles: true })) {
         if (!actor) continue;
-        // Swapping with a Wall (Walled In) moves a tile: by hand.
+        // Swapping with a Wall (Walled In, Bag of Tricks): its tile takes your space.
         if (f.isObstacle && !f.isCopy) {
-          unsupported(node, scope, ctx);
+          if (!world.swapWithObstacle) unsupported(node, scope, ctx);
+          else {
+            await world.swapWithObstacle(actor, f);
+            if (actor.id === scope.self.id) scope.history.selfMoved = true;
+          }
           continue;
         }
         await world.swap(actor, f);
@@ -1637,7 +1986,26 @@ async function run(node, scope, ctx) {
     case 'repeat': {
       const lo = Number(val(node.minimum)) || 0;
       const hi = node.maximum == null ? null : Number(val(node.maximum)) || 0;
-      if (hi == null || node.continueChooser || node.stopWhen) return unsupported(node, scope, ctx);
+      // **As many times as you like, until something happens (Dancing Mad):**
+      // again is asked after each; `stopWhen` ends it and runs `onStop`.
+      if (hi == null || node.continueChooser || node.stopWhen) {
+        for (let i = 0; i < Math.min(hi ?? 20, 20); i++) {
+          if (i >= Math.max(1, lo)) {
+            const more = await ctx.ask({ kind: 'confirm', fighter: scope.self, title: ctx.ability?.name ?? 'Again?', text: `Again? (${i} so far)` });
+            if (!more) break;
+          }
+          if ((await run(node.effect, scope, ctx)) === DECLINED) break;
+          // "After you damage the same enemy twice".
+          const counts = {};
+          for (const id of scope.history.damagedIds ?? []) counts[id] = (counts[id] ?? 0) + 1;
+          scope.history.maximumHitsOnSameEnemyByThisSuper = Math.max(0, ...Object.values(counts));
+          if (node.stopWhen && val(node.stopWhen)) {
+            if (node.onStop) await run(node.onStop, scope, ctx);
+            break;
+          }
+        }
+        return;
+      }
       for (let i = 0; i < Math.min(hi, 20); i++) {
         if (i >= lo) {
           const more = await ctx.ask({ kind: 'confirm', fighter: scope.self, title: ctx.ability?.name ?? 'Again?', text: `Again? (${i} so far)` });

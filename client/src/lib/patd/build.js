@@ -95,6 +95,8 @@ export function emptyBuild(typeId = 'hero-type.focused') {
     xpLog: [],
     superMoveIds: [],
     warriorPathId: null,
+    greaterFusionId: null,
+    bonusFrantic: [],
     healthBars: null,
     // Ask / Auto / Never for Power, Iron and Shield (full automation, phase C);
     // a key left out takes the default: players Ask, NPCs Auto.
@@ -123,6 +125,8 @@ export function normalizeBuild(raw, idx) {
     const form = formId ? idx.get(formId) : null;
     out.stances.push({
       formId,
+      // The Machine: "one Style attached to two Forms" (the QA pass).
+      form2Id: isKind(idx, s?.form2Id, 'form.') && s.form2Id !== formId ? s.form2Id : null,
       styleId,
       alias: form?.aliases?.includes(s?.alias) ? s.alias : form?.aliases?.[0] ?? null,
       constructChoice: typeof s?.constructChoice === 'string' ? s.constructChoice.slice(0, 40) : null,
@@ -149,6 +153,11 @@ export function normalizeBuild(raw, idx) {
     .slice(-XP_LOG_MAX);
   out.superMoveIds = uniq((Array.isArray(b.superMoveIds) ? b.superMoveIds : []).filter((id) => isKind(idx, id, 'super-move.'))).slice(0, 10);
   out.warriorPathId = isKind(idx, b.warriorPathId, 'warrior-path.') ? b.warriorPathId : null;
+  // Level Features that ask for a choice (the QA pass): Greater Fusion's Fused
+  // Archetype that becomes Focused, and the Archetypes whose Frantic Ability
+  // Improved / Greater Frenzy add ("one you do not yet have").
+  out.greaterFusionId = isKind(idx, b.greaterFusionId, 'archetype.') ? b.greaterFusionId : null;
+  out.bonusFrantic = uniq((Array.isArray(b.bonusFrantic) ? b.bonusFrantic : []).filter((id) => isKind(idx, id, 'archetype.'))).slice(0, 2);
   out.healthBars = b.healthBars == null ? null : clampInt(b.healthBars, 1, 9, null);
   out.prefs = normalizePrefs(b.prefs);
   return out;
@@ -288,13 +297,33 @@ const withExtra = (dice, extra) => {
 };
 
 export const stanceKey = (formId, styleId) => `${formId ?? 'none'}+${styleId ?? 'none'}`;
+// The Machine's dice: both Forms' (the bonus die stays last), never a green one.
+function machineDice(dice, form2, machine) {
+  if (!machine) return dice;
+  const bonus = dice.filter((d) => d.bonus);
+  const rest = [...dice.filter((d) => !d.bonus), ...(form2?.actionDice ?? []).map((d) => ({ ...d }))];
+  return [...rest.filter((d) => d.color !== 'green'), ...bonus];
+}
+// Does any of these Abilities carry a continuous `rule`?
+export const hasRuleIn = (abilityIds, rule, idx) =>
+  abilityIds.some((id) => (idx.get(id)?.rules ?? []).some((r) => r.events?.includes('continuous') && JSON.stringify(r.effect ?? {}).includes(`"rule":"${rule}"`)));
+// The Machine (stance.composition) — from the build's Archetypes.
+export const isMachine = (archetypes, idx) => hasRuleIn(archetypes.flatMap((a) => idx.get(a.id)?.abilityIds ?? []), 'stance.composition', idx);
 
-export function deriveStance(pair, idx, bonusDie = null) {
+// `opts.machine` (The Machine): a second Form on the Stance (its dice and
+// Abilities too), and no Green Action Dice.
+export function deriveStance(pair, idx, bonusDie = null, opts = {}) {
   const form = pair.formId ? idx.get(pair.formId) : null;
   const style = pair.styleId ? idx.get(pair.styleId) : null;
+  const form2 = opts.machine && pair.form2Id ? idx.get(pair.form2Id) : null;
   const alias = pair.alias ?? form?.aliases?.[0] ?? '';
   const name = [shortStyleName(style?.name ?? '—'), alias || form?.name?.replace(/\s+Form$/, '') || '—', 'Stance'].join(' ');
-  const abilityIds = [...(form?.abilityIds ?? []), ...(style?.abilityIds ?? [])];
+  // With the token mechanics its Form and Style bring (Training Tokens, Control
+  // Tokens): their Abilities and Actions belong to the Stance (fixed in the QA
+  // pass — they were never attached, so they never ran).
+  const mechanics = (idx.content.resourceMechanics ?? []).filter((r) => r.ownerId && (r.ownerId === pair.formId || r.ownerId === pair.styleId));
+  const abilityIds = uniq([...(form?.abilityIds ?? []), ...(form2?.abilityIds ?? []), ...(style?.abilityIds ?? []), ...mechanics.flatMap((r) => r.abilityIds ?? [])]);
+  const mechanicActionIds = mechanics.flatMap((r) => r.actionIds ?? []);
   return {
     key: stanceKey(pair.formId, pair.styleId),
     name,
@@ -303,10 +332,11 @@ export function deriveStance(pair, idx, bonusDie = null) {
     isFreestyle: Boolean(style?.id?.startsWith('freestyle.')),
     alias,
     constructChoice: pair.constructChoice ?? null,
-    dice: withExtra(stanceDice(form, style, bonusDie), extraDice(abilityIds, idx)),
+    dice: withExtra(machineDice(stanceDice(form, style, bonusDie), form2, opts.machine), extraDice(abilityIds, idx)),
+    form2Id: form2 ? form2.id : null,
     range: stanceRange(style, form, idx, pair.constructChoice),
     abilityIds,
-    actionIds: [...(form?.actionIds ?? []), ...(style?.actionIds ?? [])],
+    actionIds: uniq([...(form?.actionIds ?? []), ...(form2?.actionIds ?? []), ...(style?.actionIds ?? []), ...mechanicActionIds]),
   };
 }
 
@@ -316,27 +346,46 @@ export function deriveBuild(rawBuild, idx) {
   const build = normalizeBuild(rawBuild, idx);
   const type = typeOf(idx, build.type);
   const lv = levelInfo(build, idx);
-  const stances = type.assemble ? [] : build.stances.map((s) => deriveStance(s, idx, lv.bonusDie));
-  const formIds = uniq(type.assemble ? build.forms : build.stances.map((s) => s.formId).filter(Boolean));
+  const machine = isMachine(build.archetypes, idx);
+  const stances = type.assemble ? [] : build.stances.map((s) => deriveStance(s, idx, lv.bonusDie, { machine }));
+  const formIds = uniq(type.assemble ? build.forms : build.stances.flatMap((s) => [s.formId, machine ? s.form2Id : null]).filter(Boolean));
   const styleIds = uniq(type.assemble ? build.styles : build.stances.map((s) => s.styleId).filter(Boolean));
 
   // Abilities always in effect: each Archetype's chosen variant, the Build,
   // the hero type's, granted Features and the Warrior's Path.
-  const archetypes = build.archetypes.map((a) => {
-    const arch = idx.get(a.id);
-    return { ...a, name: arch?.name, kind: arch?.kind, abilityIds: [...(arch?.abilityVariants?.[a.variant] ?? []), ...(arch?.abilityIds ?? [])] };
-  });
   const features = lv.featureIds.map((id) => idx.get(id)).filter(Boolean);
+  const hasFeature = (id) => lv.featureIds.includes(id);
+  // **Level Features (the QA pass):**
+  //   Greater Focus — "Gain the Fused Ability of your original Archetype": both.
+  //   Greater Fusion — "Choose one of your Fused Abilities and replace it with
+  //     the Focused version" (build.greaterFusionId).
+  const archetypes = build.archetypes.map((a, i) => {
+    const arch = idx.get(a.id);
+    const variant = hasFeature('feature.greater-fusion') && a.id === build.greaterFusionId && a.variant === 'fused' && arch?.abilityVariants?.focused ? 'focused' : a.variant;
+    const extra = hasFeature('feature.greater-focus') && i === 0 && a.variant === 'focused' ? (arch?.abilityVariants?.fused ?? []) : [];
+    return { ...a, variant, name: arch?.name, kind: arch?.kind, abilityIds: uniq([...(arch?.abilityVariants?.[variant] ?? []), ...extra, ...(arch?.abilityIds ?? [])]) };
+  });
   const buildRow = build.buildId ? idx.get(build.buildId) : null;
   const path = build.warriorPathId ? idx.get(build.warriorPathId) : null;
   // A Frantic Hero's Frantic-variant Archetype abilities are not always on:
   // one of them is picked each turn with the Stance (builder phase 4). Fused
   // ones granted later by advancement stay constant.
+  // Improved / Greater Frenzy: "Choose one new Frantic Ability from an
+  // Archetype you do not yet have" each (build.bonusFrantic).
+  const frenzies = ['feature.improved-frenzy', 'feature.greater-frenzy'].filter(hasFeature).length;
+  const bonusFrantic = build.bonusFrantic.filter((id) => !build.archetypes.some((a) => a.id === id)).slice(0, frenzies);
   const franticAbilityIds = type.assemble
-    ? uniq(archetypes.filter((a) => a.variant === 'frantic').flatMap((a) => idx.get(a.id)?.abilityVariants?.frantic ?? []))
+    ? uniq([
+        ...archetypes.filter((a) => a.variant === 'frantic').flatMap((a) => idx.get(a.id)?.abilityVariants?.frantic ?? []),
+        ...bonusFrantic.flatMap((id) => idx.get(id)?.abilityVariants?.frantic ?? []),
+      ])
     : [];
+  // An Archetype's token mechanic (Luck, Poltergeist, Mentor, Chaos, Rapid
+  // Strike) comes with the Archetype, whichever variant is taken.
+  const archMechanics = (idx.content.resourceMechanics ?? []).filter((r) => build.archetypes.some((a) => a.id === r.ownerId));
   const constantAbilityIds = uniq([
     ...archetypes.flatMap((a) => a.abilityIds).filter((id) => !franticAbilityIds.includes(id)),
+    ...archMechanics.flatMap((r) => r.abilityIds ?? []),
     ...(buildRow?.abilityIds ?? []),
     ...(type.abilityIds ?? []),
     ...features.flatMap((f) => f.abilityIds ?? []),
@@ -345,6 +394,7 @@ export function deriveBuild(rawBuild, idx) {
   const constantActionIds = uniq([
     ...idx.content.basicActionIds,
     ...archetypes.flatMap((a) => idx.get(a.id)?.actionIds ?? []),
+    ...archMechanics.flatMap((r) => r.actionIds ?? []),
     ...(buildRow?.actionIds ?? []),
     ...features.flatMap((f) => f.actionIds ?? []),
     ...(path?.actionIds ?? []),
@@ -376,6 +426,8 @@ export function deriveBuild(rawBuild, idx) {
     skillIds: uniq(skillIds),
     customSkill: build.skills.custom,
     healthBars: build.healthBars ?? type.healthBars,
+    machine,
+    bonusFrantic,
   };
   out.warnings = buildWarnings(out, idx);
   return out;
@@ -426,6 +478,13 @@ export function buildWarnings(d, idx) {
   if (d.superMoveIds.length !== level.extra.superMoves)
     w.push(`Expected ${level.extra.superMoves} Super Move${level.extra.superMoves === 1 ? '' : 's'} at level ${build.level}, has ${d.superMoveIds.length}.`);
   if (level.featureIds.includes('feature.improved-warrior') && !build.warriorPathId) w.push("Level 3 Warrior: choose a Warrior's Path.");
+  if (level.featureIds.includes('feature.greater-fusion') && !build.greaterFusionId) w.push('Greater Fusion: choose the Fused Archetype whose Ability becomes Focused.');
+  const frenzies = ['feature.improved-frenzy', 'feature.greater-frenzy'].filter((f) => level.featureIds.includes(f)).length;
+  if (frenzies > d.bonusFrantic.length) w.push(`Frenzy: choose ${frenzies - d.bonusFrantic.length} more Archetype${frenzies - d.bonusFrantic.length === 1 ? '' : 's'} for a new Frantic Ability.`);
+  if (d.machine) {
+    if (build.stances.some((s) => s.formId && !s.form2Id)) w.push('The Machine: each Stance has a second Form.');
+    if (d.styleIds.some((id) => id.startsWith('freestyle.'))) w.push('The Machine cannot use Freestyles.');
+  }
   if (build.skills.custom && build.skills.custom.split(/\s+/).filter(Boolean).length !== 2) w.push('The free Skill should be two words.');
   if (type.healthBarRange && (d.healthBars < type.healthBarRange.minimum || d.healthBars > type.healthBarRange.maximum))
     w.push(`${type.name}: ${type.healthBarRange.minimum}-${type.healthBarRange.maximum} Health Bars.`);
@@ -468,7 +527,7 @@ export function stanceOfBuild(derived, key, idx) {
   if (!derived.type.assemble) return derived.stances.find((s) => s.key === key && s.formId && s.styleId) ?? null;
   const [formId, styleId] = String(key).split('+');
   if (!derived.formIds.includes(formId) || !derived.styleIds.includes(styleId)) return null;
-  return deriveStance({ formId, styleId }, idx, derived.level.bonusDie);
+  return deriveStance({ formId, styleId }, idx, derived.level.bonusDie, { machine: derived.machine });
 }
 
 // What a Frantic Hero may pick this turn (Frantic Versatility): one Form, one

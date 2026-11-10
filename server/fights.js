@@ -216,7 +216,7 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
   // a Pit and a Trap).
   const trapSquares = async (fight) =>
     new Set(
-      (await all("SELECT col, row FROM map_tiles WHERE scene_id = ? AND mode = ? AND kind = 'trap'", [fight.scene_id, fight.mode])).map(
+      (await all("SELECT col, row FROM map_tiles WHERE scene_id = ? AND mode = ? AND kind IN ('trap', 'deadly_trap')", [fight.scene_id, fight.mode])).map(
         (r) => `${r.col},${r.row}`
       )
     );

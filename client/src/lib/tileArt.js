@@ -89,6 +89,8 @@ const MOTIFS = {
   ],
 };
 MOTIFS.pit_trap = [...MOTIFS.pit, ...MOTIFS.trap.map((s) => ({ ...s, fill: '#ef4444' }))];
+// A Deadly Trap: a Trap's teeth, twice over.
+MOTIFS.deadly_trap = [...MOTIFS.trap, ...MOTIFS.trap.map((s) => ({ ...s, points: s.points.map(([x, y]) => [x + 0.045, y + 0.045]), opacity: 0.7 }))];
 
 const MARKERS = new Set(['danger', 'king', 'control', 'important']);
 

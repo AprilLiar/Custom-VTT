@@ -86,7 +86,7 @@ export function recordUse(usage, action, fighterId) {
 
 export const isSuperMove = (a) => typeof a?.id === 'string' && a.id.startsWith('super-move.');
 // Paid with two matching numbers of 3+ (all but Transcendant Spirit, which is
-// used while giving your Heroic Spirit — by hand).
+// offered while giving your Heroic Spirit — server/triggers.js transcendantSpirit).
 export const superOnBoard = (a) => isSuperMove(a) && (a.timing ?? 'when_an_action_can_be_performed') === 'when_an_action_can_be_performed' && (a.cost?.options ?? []).some((o) => (o.components ?? []).some((c) => c.kind === 'pool_number' && c.matching));
 export const SUPER_MINIMUM = 3;
 export const superKey = (fighterId) => `super:${fighterId}:fight`;
@@ -96,7 +96,7 @@ export const superKey = (fighterId) => `super:${fighterId}:fight`;
 // from the Cinematic Weight (Feather 0, Light/Middle/Heavy 1, World 2).
 // → { ok, reason }
 export function superUsable({ move, round, usedByMe = 0, sideUsed = 0, sideLimit = 1, pending = 0 }) {
-  if (!superOnBoard(move)) return { ok: false, reason: 'used while giving your Heroic Spirit, by hand' };
+  if (!superOnBoard(move)) return { ok: false, reason: 'used while giving your Heroic Spirit (you are asked then)' };
   if (!(round > 1)) return { ok: false, reason: 'not in Round 1' };
   if (usedByMe + pending >= 1) return { ok: false, reason: 'once per fight' };
   if (sideUsed >= sideLimit) return { ok: false, reason: sideLimit ? `your side has used its Super Move${sideLimit === 1 ? '' : 's'} this Round` : 'no Super Moves at this Cinematic Weight' };

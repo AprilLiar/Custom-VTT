@@ -112,7 +112,7 @@ test('a saved build is cleaned: unknown ids dropped, numbers clamped', () => {
   );
   assert.equal(n.type, 'hero-type.focused');
   assert.deepEqual(n.archetypes, [{ id: 'archetype.angel', variant: 'focused' }]);
-  assert.deepEqual(n.stances, [{ formId: 'form.iron', styleId: null, alias: 'Armor', constructChoice: null }]);
+  assert.deepEqual(n.stances, [{ formId: 'form.iron', form2Id: null, styleId: null, alias: 'Armor', constructChoice: null }]);
   assert.equal(n.level, 10);
   assert.equal(n.xp, 0);
   assert.equal(n.buildId, null);

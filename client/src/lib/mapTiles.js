@@ -49,6 +49,14 @@ export const TILES = [
       'Entering a Trap deals 1 damage to everyone in its space. At the end of every turn, everyone standing on it takes 1 damage. Each Trap deals damage at most once per turn.',
   },
   {
+    key: 'deadly_trap',
+    name: 'Deadly Trap',
+    group: 'obstacle',
+    color: '#b91c1c',
+    blurb:
+      'A Trap that deals 3 damage instead of 1 (the Trickster’s Funny Little Box of Pain). Otherwise a Trap: on entering, and at the end of every turn, at most once per turn.',
+  },
+  {
     key: 'wall',
     name: 'Wall',
     group: 'obstacle',
@@ -93,11 +101,11 @@ export const TILE_BY_KEY = Object.fromEntries(TILES.map((t) => [t.key, t]));
 
 // The kinds actually stored. Pit Trap is shorthand for a Pit and a Trap in one
 // square, so it is stored as both and only exists as a palette entry and a label.
-export const STORED_KINDS = ['fog', 'pit', 'rubble', 'trap', 'wall', 'danger', 'king', 'control', 'important'];
-export const OBSTACLES = new Set(['fog', 'pit', 'rubble', 'trap', 'wall']);
+export const STORED_KINDS = ['fog', 'pit', 'rubble', 'trap', 'deadly_trap', 'wall', 'danger', 'king', 'control', 'important'];
+export const OBSTACLES = new Set(['fog', 'pit', 'rubble', 'trap', 'deadly_trap', 'wall']);
 export const isPaletteKind = (k) => k in TILE_BY_KEY;
 
-const ORDER = new Map(['fog', 'pit', 'pit_trap', 'rubble', 'trap', 'wall', 'danger', 'king', 'control', 'important'].map((k, i) => [k, i]));
+const ORDER = new Map(['fog', 'pit', 'pit_trap', 'rubble', 'trap', 'deadly_trap', 'wall', 'danger', 'king', 'control', 'important'].map((k, i) => [k, i]));
 const sorted = (set) => [...set].sort((a, b) => ORDER.get(a) - ORDER.get(b));
 const markersOf = (kinds) => kinds.filter((k) => !OBSTACLES.has(k));
 
@@ -166,7 +174,7 @@ export function mergeInto(targetKinds, movingKinds) {
   let out = [...targetKinds];
   // Destructive obstacles first and Fog last, so a moved Fog + Rubble (or
   // Fog + Wall) arrives as it was rather than the Rubble clearing the Fog.
-  const rank = { wall: 0, rubble: 1, pit_trap: 2, pit: 3, trap: 4, fog: 5 };
+  const rank = { wall: 0, rubble: 1, pit_trap: 2, pit: 3, trap: 4, deadly_trap: 4, fog: 5 };
   const ordered = [...displayKinds(movingKinds)].sort((a, b) => (rank[a] ?? 9) - (rank[b] ?? 9));
   for (const k of ordered) out = placeTile(out, k);
   return out;

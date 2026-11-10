@@ -312,6 +312,13 @@ export default function CombatMap({
   const highlight = hoverCell && hoverOk ? cellRect(natural.width, natural.height, grid, hoverCell.col, hoverCell.row) : null;
 
   const tokenSize = grid.size * fit.scale * 0.88;
+  // A token's middle: its square's, or — the Giant's 2×2 — between its four.
+  const tokenCenter = (t) => {
+    const a = cellCenter(grid, t.col, t.row);
+    if (!(t.size > 1)) return toStagePx(a.x, a.y);
+    const b = cellCenter(grid, t.col + 1, t.row + 1);
+    return toStagePx((a.x + b.x) / 2, (a.y + b.y) / 2);
+  };
   const rootRect = rootRef.current?.getBoundingClientRect();
 
   return (
@@ -457,16 +464,13 @@ export default function CombatMap({
           const isDragged = dragging?.id === t.id;
           let center;
           if (isDragged && rootRect) center = { x: dragging.x - rootRect.left, y: dragging.y - rootRect.top };
-          else {
-            const c = cellCenter(grid, t.col, t.row);
-            center = toStagePx(c.x, c.y);
-          }
+          else center = tokenCenter(t);
           return (
             <Token
               key={t.id}
               token={t}
               center={center}
-              size={tokenSize}
+              size={tokenSize * (t.size ?? 1) + (t.size > 1 ? grid.size * fit.scale * 0.12 : 0)}
               lifted={isDragged}
               animate={!viewMoved}
               selected={selectedTokenId === t.id}
@@ -479,12 +483,7 @@ export default function CombatMap({
       {ready &&
         (() => {
           // Where every token stands, for the overlays and the Challenge sparks.
-          const centers = new Map(
-            placed.map((t) => {
-              const c = cellCenter(grid, t.col, t.row);
-              return [t.id, toStagePx(c.x, c.y)];
-            })
-          );
+          const centers = new Map(placed.map((t) => [t.id, tokenCenter(t)]));
           const iconSize = Math.max(14, Math.min(26, tokenSize * 0.42));
           const byId = new Map(placed.map((t) => [t.id, t]));
           return placed.map((t) => {

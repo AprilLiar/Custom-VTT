@@ -9,9 +9,9 @@
 import { one, run } from '../db.js';
 import { applyHpDelta } from '../../client/src/lib/hpBars.js';
 import { describe, hasNoTargets, runRule } from '../../client/src/lib/patd/interpreter.js';
-import { abilitiesOff } from '../../client/src/lib/patd/engine/modifiers.js';
-import { poolOf } from '../../client/src/lib/patd/diceBoard.js';
-import { planPayment } from '../../client/src/lib/patd/tokenCost.js';
+import { abilitiesOff, sumMod, valueOf } from '../../client/src/lib/patd/engine/modifiers.js';
+import { costBonus, poolOf, removePoolNumber } from '../../client/src/lib/patd/diceBoard.js';
+import { BASIC_KEYS, luckRoom, planPayment } from '../../client/src/lib/patd/tokenCost.js';
 import { expireTemps, fighterRt } from '../../client/src/lib/patd/engine/runtime.js';
 import { hpOf, saveHp, shapeFightState } from '../combatState.js';
 import { patdContent } from '../patdContent.js';
@@ -19,6 +19,24 @@ import { actingOn, readData, saveBoard, fighterState } from '../diceMarks.js';
 import { restoreSnapshot, takeSnapshot } from './snapshots.js';
 import { atZero, recordUse, superKey } from '../../client/src/lib/patd/engine/turn.js';
 
+const THROWS = new Set(['action.system-basic-actions.throw', 'action.system-basic-actions.grapple']);
+const POLTERGEIST = 'ability.resource-mechanic-poltergeist.poltergeist-mechanics';
+// The numbers an Action lists that Poltergeist may raise by 1: plain numbers
+// of movement, tokens, healing, Shields and obstacles — never damage or how
+// many choices. → [{ path, key, label }]
+function numberSpots(effect) {
+  const out = [];
+  const LABEL = { move: 'Move', teleport: 'Teleport', push: 'Push', pull: 'Pull', gain_tokens: 'tokens', heal: 'heal', gain_shield: 'Shield', place_obstacle: 'obstacles' };
+  const walk = (n, path) => {
+    if (!n || typeof n !== 'object') return;
+    if (Array.isArray(n)) return n.forEach((x, i) => walk(x, [...path, i]));
+    const key = ['move', 'teleport', 'push', 'pull'].includes(n.op) ? 'distance' : n.op === 'gain_tokens' || n.op === 'heal' ? 'amount' : n.op === 'gain_shield' ? 'value' : n.op === 'place_obstacle' ? 'count' : null;
+    if (key && typeof n[key] === 'number') out.push({ path, key, label: `${LABEL[n.op]} ${n[key]}${n.op === 'gain_tokens' && typeof n.token === 'string' ? ` ${n.token}` : ''} → ${n[key] + 1}` });
+    for (const [k, v] of Object.entries(n)) if (k !== 'target' && k !== 'selector' && typeof v === 'object') walk(v, [...path, k]);
+  };
+  walk(effect, []);
+  return out;
+}
 const hasDamage = (node) => {
   let found = false;
   const walk = (n) => {
@@ -45,22 +63,42 @@ export function createActionRunner(kit) {
   };
 
   // Pays a token placement for real; → the payment scope or { error }.
-  async function payTokens(row, action, placement) {
+  // Through the world (the QA pass): tokens may come from Iron in their place
+  // (Machine Style) or an Unbreakable ally; HP paid counts as HP lost this
+  // turn; Elder Style and Luck change what is owed (tokenCost.js).
+  async function payTokens(env, payer, row, action, placement, askPayer) {
     const actorId = actingOn(row).combatantId;
     const state = await fighterState(actorId);
     if (!state) return { error: 'no fighter' };
-    const plan = planPayment(action, placement.option, placement.answers, state);
+    const world = env.world;
+    let answers = placement.answers;
+    // "1 Luck Token may also be used to pay for (part of) any Token Action":
+    // how many, when more could go in than the cost needs.
+    const option = action.cost?.options?.[placement.option];
+    const room = option ? luckRoom(option, state) : 0;
+    if (room > 0) {
+      const need = planPayment(action, placement.option, { ...answers, luck: 0 }, state);
+      const least = need.error ? 0 : need.tokens.luck ?? 0;
+      if (room > least) {
+        const options = Array.from({ length: room - least + 1 }, (_, i) => ({ id: String(least + i), label: least + i ? `${least + i} Luck` : 'No Luck' }));
+        const ans = await askPayer(action.name)({ kind: 'choose', title: `${action.name}: Luck`, text: 'Each Luck token pays in place of up to 3 Basic tokens, 3 HP or 3 Shield.', options, minimum: 1, maximum: 1 });
+        answers = { ...answers, luck: Number(Array.isArray(ans) ? ans[0] : ans) || least };
+      }
+    }
+    const plan = planPayment(action, placement.option, answers, state);
     if (plan.error) return plan;
-    await queued(async () => {
-      const cur = await one('SELECT * FROM combatants WHERE id = ?', [actorId]);
-      const tokens = { ...shapeFightState(cur).tokens };
-      for (const [k, n] of Object.entries(plan.tokens)) tokens[k] = (tokens[k] ?? 0) - n;
-      if (plan.shield) tokens.shield = (tokens.shield ?? 0) - plan.shield;
-      for (const k of Object.keys(tokens)) if (!(tokens[k] > 0)) delete tokens[k];
-      await run('UPDATE combatants SET tokens = ? WHERE id = ?', [JSON.stringify(tokens), actorId]);
-      if (plan.hp) await saveHp(actorId, applyHpDelta(hpOf(cur), -plan.hp).state);
-      if (plan.holderId != null) await run('UPDATE combatants SET challenge_id = NULL WHERE id = ? AND challenge_id = ?', [plan.holderId, actorId]);
-    });
+    for (const [k, n] of Object.entries(plan.tokens)) {
+      const spent = await world.spend(payer, k, n);
+      if (spent < n) return { error: `not enough ${k}` };
+    }
+    if (plan.shield) await world.discardTokens(payer, ['shield'], plan.shield);
+    if (plan.hp) await world.payHp(payer, plan.hp);
+    if (plan.holderId != null) {
+      await queued(() => run('UPDATE combatants SET challenge_id = NULL WHERE id = ? AND challenge_id = ?', [plan.holderId, actorId]));
+      const holder = world.fighters().find((f) => f.id === plan.holderId);
+      if (holder) holder.challengeId = null;
+    }
+    if (plan.tokens.luck) await postCard('reminder', { title: 'Luck', text: `${payer.name} pays with ${plan.tokens.luck} Luck.`, fighters: [{ name: payer.name }], automatic: 'ability', notice: true });
     return {
       rating: plan.rating,
       tokens: plan.tokens,
@@ -69,6 +107,167 @@ export function createActionRunner(kit) {
       challengeHolder: plan.holderId,
       isToken: true,
     };
+  }
+
+  // **Poltergeist Tokens (the Phantom — the QA pass, native).** "When you pay
+  // the cost of an Action, you may spend Poltergeist Tokens to modify that
+  // Action. You can spend up to 2 additional … (3 under Arcana Install). X is
+  // equal to the number of Poltergeist Tokens spent on this Action" — its cost
+  // included. Choose X different ones:
+  //   numbers: +1 to up to X different numbers listed in it (never damage or
+  //            choices) — distances, tokens, healing, Shields, obstacles;
+  //   range:   its maximum Range +X;
+  //   start:   teleport X; or place Rubble into X spaces within range;
+  //   end:     1 damage to X enemies within range; or Push 1 / Pull 1 to X of
+  //            its previous targets.
+  // → { effect, rangeBonus, before: [effect], after: [effect], pushPrevious } | null
+  async function poltergeist(env, payer, actor, action, payment, askPayer) {
+    if (!(payer.abilityIds ?? []).includes(POLTERGEIST) || atZero(payer.hp)) return null;
+    const world = env.world;
+    const one = (ans) => (Array.isArray(ans) ? ans[0] : ans);
+    const limit = Math.max(0, Number(valueOf(world.mods?.(payer) ?? [], 'poltergeist.total_per_action', 2)) || 2);
+    const held = payer.tokens.poltergeist ?? 0;
+    let extra = 0;
+    if (held > 0 && limit > 0) {
+      const max = Math.min(held, limit);
+      const ans = one(await askPayer(action.name)({ kind: 'choose', title: `${action.name}: Poltergeist`, text: `Spend Poltergeist tokens to change ${action.name}? (${held} held)`, options: Array.from({ length: max + 1 }, (_, i) => ({ id: String(i), label: i ? `${i} Poltergeist` : 'None' })), minimum: 1, maximum: 1 }));
+      extra = Math.min(max, Math.max(0, Number(ans) || 0));
+      if (extra) await world.discardTokens(payer, ['poltergeist'], extra);
+    }
+    const X = extra + (Number(payment.tokens?.poltergeist) || 0);
+    payment.totalPoltergeistSpentIncludingCost = X;
+    if (!X) return null;
+    const numbers = numberSpots(action.effect);
+    const options = [
+      ...(numbers.length ? [{ id: 'numbers', label: `+1 to up to ${X} number${X === 1 ? '' : 's'} in it` }] : []),
+      { id: 'range', label: `Maximum Range +${X}` },
+      { id: 'teleport', label: `Start: teleport ${X}` },
+      { id: 'rubble', label: `Start: Rubble into ${X} space${X === 1 ? '' : 's'} within range` },
+      { id: 'damage', label: `End: 1 damage to ${X} enem${X === 1 ? 'y' : 'ies'} within range` },
+      { id: 'push', label: `End: Push 1 or Pull 1 to ${X} previous target${X === 1 ? '' : 's'}` },
+    ];
+    const n = Math.min(X, options.length);
+    const ans = await askPayer(action.name)({ kind: 'choose', title: `${action.name}: Poltergeist (${X})`, text: `Choose ${n}, each different.`, options, minimum: n, maximum: n });
+    const picks = new Set((Array.isArray(ans) ? ans : [ans]).map(String).filter((id) => options.some((o) => o.id === id)));
+    for (const o of options) if (picks.size < n && !picks.has(o.id)) picks.add(o.id);
+    const out = { effect: null, rangeBonus: 0, before: [], after: [], pushPrevious: 0 };
+    if (picks.has('numbers')) {
+      const ids = new Set(
+        ((await askPayer(action.name)({ kind: 'choose', title: `${action.name}: Poltergeist`, text: `+1 to which number${X === 1 ? '' : 's'}? (up to ${X})`, options: numbers.map((x, i) => ({ id: String(i), label: x.label })), minimum: 1, maximum: Math.min(X, numbers.length) })) ?? []).toString().split(',')
+      );
+      const effect = JSON.parse(JSON.stringify(action.effect));
+      numbers.forEach((x, i) => {
+        if (!ids.has(String(i))) return;
+        const node = x.path.reduce((o, k) => o[k], effect);
+        node[x.key] = Number(node[x.key]) + 1;
+      });
+      out.effect = effect;
+    }
+    if (picks.has('range')) out.rangeBonus = X;
+    if (picks.has('teleport')) out.before.push({ op: 'teleport', distance: X, target: { ref: 'self' } });
+    if (picks.has('rubble')) out.before.push({ op: 'place_obstacle', obstacle: 'rubble', count: X, target: { kind: 'space', range: { mode: 'stance', origin: 'self' }, count: 1 } });
+    if (picks.has('damage')) out.after.push({ op: 'damage', amount: 1, target: { kind: 'enemy', range: { mode: 'stance', origin: 'self' }, count: { maximum: X } } });
+    if (picks.has('push')) out.pushPrevious = X;
+    await postCard('reminder', { title: 'Poltergeist', text: `${payer.name} spends ${X} Poltergeist on ${action.name}: ${options.filter((o) => picks.has(o.id)).map((o) => o.label).join('; ')}.`, fighters: [{ name: payer.name }], automatic: 'ability', notice: true });
+    return out;
+  }
+  // "Push 1 or Pull 1 to X previous targets of this Action."
+  async function pushPrevious(env, actor, history, X, askPayer, action) {
+    const targets = (history.targets ?? []).filter((t) => t.square && !t.isObstacle && t.id !== actor.id).slice(0, X);
+    for (const t of targets) {
+      const ans = await askPayer(action.name)({ kind: 'choose', title: `${action.name}: Poltergeist`, text: `${t.name}: Push 1 or Pull 1?`, options: [{ id: 'push', label: 'Push 1' }, { id: 'pull', label: 'Pull 1' }, { id: 'none', label: 'Neither' }], minimum: 1, maximum: 1 });
+      const how = Array.isArray(ans) ? ans[0] : ans;
+      if (how !== 'push' && how !== 'pull') continue;
+      await env.world.forced(t, { distance: 1, origin: actor.square, pull: how === 'pull', chooser: actor });
+    }
+  }
+
+  // **Costs paid on top of the placed one (the QA pass).**
+  //   - "As an additional cost, you may pay 2 or 4 Basic Tokens" (Roughhousing:
+  //     `cost.additionalOptions`, bound into the payment by name);
+  //   - "choose one or more" costs (Bag of Tricks: `one_or_more_distinct`): the
+  //     placed die or tokens are the first, the others are offered now, and
+  //     X is how many were paid.
+  // An Action performed for free (Copied, the Teacher's) pays none.
+  async function extraCosts(env, payer, action, placement, payment, data, askPayer) {
+    const cost = action.cost ?? {};
+    const world = env.world;
+    const free = Boolean(placement.free || placement.copied);
+    const one = (ans) => (Array.isArray(ans) ? ans[0] : ans);
+    const name = (k) => k.charAt(0).toUpperCase() + k.slice(1);
+    const basicHeld = () => BASIC_KEYS.reduce((n, k) => n + (payer.tokens[k] ?? 0), 0);
+    const payBasic = async (amount) => {
+      const held = BASIC_KEYS.filter((k) => (payer.tokens[k] ?? 0) > 0);
+      let order = held;
+      if (held.length > 1 && basicHeld() > amount) {
+        const first = one(await askPayer(action.name)({ kind: 'choose', title: `${action.name}: ${amount} Basic tokens`, text: 'Spend which first?', options: held.map((k) => ({ id: k, label: `${name(k)} (${payer.tokens[k]})` })), minimum: 1, maximum: 1 }));
+        if (held.includes(first)) order = [first, ...held.filter((k) => k !== first)];
+      }
+      await world.discardTokens(payer, order, amount);
+    };
+    const adds = (cost.additionalOptions ?? []).filter((o) => o.bind);
+    for (const bind of new Set(adds.map((o) => o.bind))) {
+      const amounts = [...new Set(adds.filter((o) => o.bind === bind).map((o) => o.components.reduce((n, c) => n + (c.kind === 'token' && c.token === 'basic' ? Number(c.amount) || 0 : 0), 0)))].filter((a) => a <= basicHeld()).sort((a, b) => a - b);
+      let amount = 0;
+      if (!free && amounts.some((a) => a > 0)) {
+        const pick = one(await askPayer(action.name)({ kind: 'choose', title: `${action.name}: an additional cost`, text: 'You may pay more for more.', options: [0, ...amounts.filter((a) => a > 0)].map((a) => ({ id: String(a), label: a ? `Pay ${a} Basic tokens` : 'Nothing more' })), minimum: 1, maximum: 1 }));
+        amount = amounts.includes(Number(pick)) ? Number(pick) : 0;
+        if (amount) await payBasic(amount);
+      }
+      payment[bind] = amount;
+    }
+    if (cost.selection !== 'one_or_more_distinct') return;
+    if (free) {
+      payment.selectedOptionCount = payment.rating || 1;
+      return;
+    }
+    const opts = (cost.options ?? []).map((o, i) => ({ o, i }));
+    const poolMin = (o) => o.components.find((c) => c.kind === 'pool_number')?.minimum ?? null;
+    const others = (o) => o.components.filter((c) => c.kind !== 'pool_number');
+    const hpNow = () => payer.hp?.current ?? 0;
+    const payRest = async (o) => {
+      for (const c of others(o)) {
+        if (c.kind === 'token') await (c.token === 'basic' ? payBasic(c.amount) : world.discardTokens(payer, [c.token], c.amount));
+        else if (c.kind === 'hp') await world.payHp(payer, c.amount);
+      }
+    };
+    // Which option the placed die or tokens were: the die's cheapest fit.
+    let used = opts.find((x) => x.i === placement.option) ?? null;
+    if (placement.kind === 'die') {
+      used = opts.filter((x) => x.o.category === 'dice' && (poolMin(x.o) ?? 0) <= payment.rating).sort((a, b) => others(a.o).length - others(b.o).length)[0] ?? opts.find((x) => x.o.category === 'dice') ?? null;
+      if (used) await payRest(used.o);
+    }
+    const reserved = new Set((data.placements ?? []).flatMap((p) => (p.kind === 'die' ? [p.die] : p.kind === 'super' ? (p.dice ?? []) : [])));
+    const freeNumbers = (min) => (world.pool(payer) ?? []).filter((n) => !reserved.has(n.index) && n.value >= min);
+    const can = (o) => {
+      const min = poolMin(o);
+      if (min != null && !freeNumbers(min).length) return false;
+      return others(o).every((c) => (c.kind === 'token' ? (c.token === 'basic' ? basicHeld() : (payer.tokens[c.token] ?? 0)) >= c.amount : c.kind === 'hp' ? hpNow() >= c.amount : false));
+    };
+    const label = (o) => [poolMin(o) != null ? `a ${poolMin(o)}+` : null, ...others(o).map((c) => (c.kind === 'hp' ? `${c.amount} HP` : `${c.amount} ${name(c.token)}`))].filter(Boolean).join(' and ');
+    const open = opts.filter((x) => x.i !== used?.i && can(x.o));
+    let count = 1;
+    if (open.length) {
+      const ans = await askPayer(action.name)({ kind: 'choose', title: `${action.name}: more costs`, text: 'Each cost you pay is one more choice. Pay any others?', options: open.map((x) => ({ id: String(x.i), label: `Spend ${label(x.o)}` })), minimum: 0, maximum: open.length });
+      const ids = new Set((Array.isArray(ans) ? ans : ans == null ? [] : [ans]).map(String));
+      for (const x of open) {
+        if (!ids.has(String(x.i)) || !can(x.o)) continue;
+        const min = poolMin(x.o);
+        if (min != null) {
+          const nums = freeNumbers(min);
+          let n = nums[0];
+          if (nums.length > 1) {
+            const pick = one(await askPayer(action.name)({ kind: 'choose', title: `${action.name}: spend a ${min}+`, text: 'Which number?', options: nums.map((q) => ({ id: String(q.index), label: String(q.value) })), minimum: 1, maximum: 1 }));
+            n = nums.find((q) => String(q.index) === String(pick)) ?? n;
+          }
+          reserved.add(n.index);
+          await world.changePool(payer, (d) => removePoolNumber(d, n.index));
+        }
+        await payRest(x.o);
+        count++;
+      }
+    }
+    payment.selectedOptionCount = count;
   }
 
   // One placed Action, resolved. → { ok, lines, manual, error }
@@ -148,14 +347,17 @@ export function createActionRunner(kit) {
         fighterRt(env.rt, payer.id).flags.chaosUsed = true;
       }
     } else {
-      payment = await payTokens(row, action, placement);
+      payment = await payTokens(env, payer, row, action, placement, askPayer);
       if (payment.error) return { ok: false, error: payment.error };
       await emitEvent(env, 'self.token_action.pay_cost', payer, { action });
     }
+    await extraCosts(env, payer, action, placement, payment, data, askPayer);
     if (payment.hp) await emitEvent(env, 'self.hp_paid', payer, { amount: payment.hp });
     await emitEvent(env, 'self.action.cost_paid', payer, { action, rating: payment.rating });
     if (actor !== payer) await postCard('reminder', { title: 'Mastermind Style', text: `${actor.name} performs ${action.name} for ${payer.name}.`, fighters: [{ name: payer.name }], automatic: 'ability', notice: true });
-    const gateRating = placement.stop ?? payment.rating;
+    // Elder Style: a number counts one higher against the Action's costs and Gates.
+    const elder = payment.isDice && !payment.isSuper ? costBonus(action, { costReduction: valueOf(env.world.mods?.(payer) ?? [], 'action_cost.reduction', null) }) : 0;
+    const gateRating = placement.stop ?? payment.rating + elder;
     // **Acting from a Copy (phase E, book p.71):** with Copies on the board the
     // Original picks where the Action is performed from; its ranges count from there.
     let originSquare = null;
@@ -210,6 +412,8 @@ export function createActionRunner(kit) {
       log: (l) => lines.push(l),
       // (A Mastermind answers for the ally performing it.)
       ask: askPayer(`${action.name}${gateRating ? ` (${gateRating})` : ''}`),
+      // Someone else's part of a shared choice (Song Form's "they also choose one").
+      askAs: (f) => ask(f, env.key, env.gen, env.tg, `${action.name}${gateRating ? ` (${gateRating})` : ''}`),
       notify: (text) => postCard('reminder', { title: action.name, text, fighters: [{ name: actor.name }], automatic: 'ability_text' }),
       emit: (ev, f, payload, filter) => emitEvent(env, ev, f, payload, 1, filter),
       resolution: { gateRating },
@@ -224,6 +428,9 @@ export function createActionRunner(kit) {
       originSquare,
       // Dodged (Control): they're immune to this Action.
       immuneIds: control.dodged,
+      // "Your Actions may apply to one extra target within range" (Blaster
+      // Form), "your next Action … may apply to one additional target" (Amplify).
+      extraTargets: isSuper ? 0 : sumMod(env.world.mods?.(actor) ?? [], 'actions.additional_targets_in_stance_range') + sumMod(env.world.mods?.(actor) ?? [], 'next_action.additional_legal_targets'),
       mustTarget: damaging && actor.challengeId != null ? actor.challengeId : null,
       onUnsupported: (node) => {
         manual.push(describe(node) || node.op);
@@ -232,8 +439,14 @@ export function createActionRunner(kit) {
     // What's moving people right now, for the square picks' titles ("Shove (Push 2)").
     const prevSource = env.source;
     env.source = action.name;
+    // Poltergeist tokens spent on it (the Phantom): before, around and after it.
+    const polt = isSuper || placement.free || placement.copied ? null : await poltergeist(env, payer, actor, action, payment, askPayer);
+    if (polt?.rangeBonus) (ctx.mods ??= []).push({ rule: 'current_action.maximum_range_bonus', value: polt.rangeBonus, targetId: actor.id, ownerId: payer.id, source: POLTERGEIST });
     try {
-      await runRule({ id: action.id, effect: action.effect }, ctx);
+      for (const pre of polt?.before ?? []) await runRule({ id: `${action.id}:poltergeist`, effect: pre }, ctx);
+      await runRule({ id: action.id, effect: polt?.effect ?? action.effect }, ctx);
+      for (const post of polt?.after ?? []) await runRule({ id: `${action.id}:poltergeist`, effect: post }, ctx);
+      if (polt?.pushPrevious) await pushPrevious(env, actor, history, polt.pushPrevious, askPayer, action);
     } catch (err) {
       manual.push(`the rest (${err.message})`);
     } finally {
@@ -264,8 +477,16 @@ export function createActionRunner(kit) {
       enemiesForcedMoved: forced.filter((f) => f.side !== actor.side),
       alliesForcedMoved: forced.filter((f) => f.side === actor.side && f.id !== actor.id),
       movedSwappedOrTeleportedSelf: Boolean(history.selfMoved),
+      // Who and what it targeted, and the obstacles it destroyed (the QA pass:
+      // Crystal, Whip and Explosion Style).
+      actionTargets: history.targets ?? [],
+      distinctTargetCount: (history.targets ?? []).length,
+      enemyTargets: (history.targets ?? []).filter((t) => !t.isObstacle && !t.isCopy && t.side !== actor.side),
+      obstaclesDestroyed: history.obstaclesDestroyed ?? [],
     };
     await actionEvent('self.action.resolved', did);
+    // "After you Throw or Grapple an enemy" (Whip Style).
+    if (THROWS.has(action.id) && did.enemyTargets.length) await actionEvent('self.throw_or_grapple.resolved', did);
     if (placement.kind === 'die') await actionEvent('self.dice_action.resolved', did);
     if (history.damageDealt > 0 || damaging) await actionEvent('self.damage_dealing_action.resolved', did);
     const enemyCount = new Set(history.enemyDamagedIds ?? []).size;
@@ -310,17 +531,20 @@ export function createActionRunner(kit) {
       const frt = fighterRt(env.rt, e.id);
       if (!held || frt.flags.controlUsed || !e.square || !actor.square || !env.world.inRange(e, actor, { mode: 'stance' })) continue;
       const options = [{ id: 'none', label: 'Let it happen' }];
+      // "It only costs you 1 Control Token to Dodge an Action" (The Untouchable).
+      const dodge = Math.max(1, Number(valueOf(env.world.mods?.(e) ?? [], 'control.dodge_cost', 2)) || 2);
       if (held >= 1 && !onceAction) options.push({ id: 'copy', label: 'Copy it (1 Control)' });
-      if (held >= 2) options.push({ id: 'dodge', label: 'Dodge it (2 Control)' });
+      if (held >= dodge) options.push({ id: 'dodge', label: `Dodge it (${dodge} Control)` });
       if (held >= 3) options.push({ id: 'parry', label: 'Parry it (3 Control)' });
       if (options.length === 1) continue;
       const ans = await ask(e, env.key, env.gen, env.tg, `${actor.name}: ${action.name}`)({ kind: 'choose', title: 'Control', text: `${actor.name} is about to perform ${action.name}.`, options, minimum: 1, maximum: 1 });
       const pick = Array.isArray(ans) ? ans[0] : ans;
       if (!pick || pick === 'none') continue;
-      const cost = { copy: 1, dodge: 2, parry: 3 }[pick];
+      const cost = { copy: 1, dodge, parry: 3 }[pick];
       await env.world.discardTokens(e, ['control'], cost);
       frt.flags.controlUsed = true;
-      await emitEvent(env, 'self.control_tokens_spent', e, { amount: cost, action });
+      // `controlledActor`: "the enemy whose Action you Controlled" (Control Form, Grave Freestyle).
+      await emitEvent(env, 'self.control_tokens_spent', e, { amount: cost, action, controlledActor: actor });
       if (pick === 'parry') {
         out.parry = e;
         return out;

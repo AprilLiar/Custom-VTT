@@ -26,6 +26,8 @@ const nodesOf = (effect) => {
 export function targetsFighter(target, owner, fighter, world) {
   if (!target || target.ref === 'self') return owner.id === fighter.id;
   if (typeof target.kind !== 'string') return false;
+  // "You and your Copies" (Spirit Style): a Copy moves by its Original's rules.
+  if (target.kind === 'self_and_own_copies') return owner.id === fighter.id;
   const sameSide = owner.side === fighter.side;
   const kindOk =
     target.kind === 'enemy' ? !sameSide : target.kind === 'ally' ? sameSide && (owner.id !== fighter.id || !target.excludeSelf) : target.kind === 'self_and_allies' ? sameSide : target.kind === 'unit';
@@ -49,6 +51,10 @@ export function modifiersOn(fighter, world, idx, temps = []) {
       const ability = idx.get(abilityId);
       for (const rule of ability?.rules ?? []) {
         if (!rule.events.includes('continuous')) continue;
+        // **Only while its condition holds (fixed in the QA pass):** Mad Style's
+        // Knife and Pistol, Fullmetal's Tracer ammo, Hidden Style in Fog, Vortex
+        // Style on a Pit. The world answers (it knows the fighter's choices).
+        if (rule.condition && world.ruleHolds && !world.ruleHolds(rule, owner)) continue;
         for (const node of nodesOf(rule.effect)) {
           if (!targetsFighter(node.target, owner, fighter, world)) continue;
           out.push({ rule: node.op === 'grant_armor' ? 'armor.source' : node.rule, value: node.op === 'grant_armor' ? node : node.value, source: ability.id, ownerId: owner.id, node });
@@ -98,6 +104,29 @@ export const ENFORCED_RULES = new Set([
   'action_dice.additional',
   // phase J
   'abilities.disabled',
+  // the QA pass — targeting (interpreter.js, server/triggers.js world.inRange)
+  'actions.additional_targets_in_stance_range',
+  'next_action.additional_legal_targets',
+  'throw.target_range',
+  'throw.target_selector',
+  'own_challenged_enemies.always_in_range',
+  // movement (engine/board.js flags set per mover by server/engine/moves.js)
+  'action_movement.set',
+  'movement.cannot_enter_adjacent_to_self',
+  'walls.treat_as',
+  'walls.may_move_over',
+  'movement.all_spaces_empty',
+  'movement.all_pits_adjacent',
+  // tokens and costs (world.spend / spendable; tokenCost.js; engine/actions.js)
+  'iron_can_pay_as',
+  'allies_can_spend_own_tokens',
+  'action_cost.reduction',
+  'control.dodge_cost',
+  'poltergeist.total_per_action',
+  'weapon.disabled',
+  // Copies (server/triggers.js world.damage)
+  'copies.maximum_hp',
+  'iron.can_reduce_hits_to_own_copies',
   // Challenge (decided: a Unique token) — server/triggers.js world.challenge / removeChallenge
   'challenge.unblockable',
   'challenge.cannot_discard',

@@ -36,6 +36,33 @@ const costOpts = (mods) => {
   return { costPerSpace: v == null ? null : Math.max(0, Number(v) || 0) };
 };
 
+// **The board as one mover sees it (the QA pass):** their own rules ride on
+// the board the planners use (engine/board.js): spaces next to Shining Style
+// they may not enter, Walls they may (Parkour, Spirit Style, the Giant), every
+// space Empty (Weightless Style), Pits linked from a Pit (Vortex Style). A
+// Copy moves by its Original's rules.
+function boardFor(env, m, f) {
+  const b = m.board();
+  if (f?.size === 2) b.size = 2;
+  const owner = f?.isCopy ? env?.world?.fighters().find((x) => x.id === f.ownerId) : f;
+  const mods = modsOn(env, owner);
+  if (!mods.length) return b;
+  const wallsAs = valueOf(mods, 'walls.treat_as', null);
+  if (wallsAs === 'empty' || wallsAs === 'rubble') b.walls = wallsAs;
+  else if (hasMod(mods, 'walls.may_move_over', (v) => v !== false)) b.walls = 'smash';
+  if (hasMod(mods, 'movement.all_spaces_empty', (v) => v !== false)) b.open = true;
+  if (hasMod(mods, 'movement.all_pits_adjacent', (v) => v !== false)) b.pitsLinked = true;
+  const shining = mods.filter((x) => x.rule === 'movement.cannot_enter_adjacent_to_self' && x.value !== false).map((x) => env.world.fighters().find((o) => o.id === x.ownerId));
+  if (shining.length) {
+    b.blocked = new Set();
+    for (const o of shining) if (o?.square) for (const n of neighbors(o.square)) if (!f.square || key(n) !== key(f.square)) b.blocked.add(key(n));
+  }
+  return b;
+}
+// The Speed a fighter can spend: their own, Iron in its place (Machine Style), an Unbreakable ally's.
+const speedOf = (env, f) => (env?.world?.spendable ? env.world.spendable(f, 'speed') : (f?.tokens?.speed ?? 0));
+const spendSpeed = (env, f, n) => (env?.world?.spend ? env.world.spend(f, 'speed', n) : env.world.discardTokens(f, ['speed'], n));
+
 // A square pick's title: what is doing it, and the movement — "One-Two Form (Move 2)".
 const named = (env, what) => (env?.source ? `${env.source} (${what})` : what);
 // A square's name for people: map cells by column and row, lane spaces by lane.
@@ -82,8 +109,9 @@ export function createMoves({ ask, emitEvent, postCard }) {
   const note = (l) => lines.push(l);
   async function trap(env, f, sq) {
     if (!trapReady(env, sq)) return;
-    const r = await env.world.damage(f, 1, null, { source: 'trap' });
-    note(`${f.name} triggers a Trap: ${r.immune ? 'immune' : `${r.taken} damage`}`);
+    const deadly = Boolean(env.world.deadlyAt?.(sq));
+    const r = await env.world.damage(f, deadly ? 3 : 1, null, { source: 'trap' });
+    note(`${f.name} triggers a ${deadly ? 'Deadly Trap' : 'Trap'}: ${r.immune ? 'immune' : `${r.taken} damage`}`);
   }
   async function rubble(env, f) {
     if (hasMod(modsOn(env, f), 'rubble.no_fatigue', (v) => v !== false)) return;
@@ -118,6 +146,16 @@ export function createMoves({ ask, emitEvent, postCard }) {
       const b = m.board();
       if (has(b, sq, 'trap')) await trap(env, f, sq);
       if (has(b, sq, 'rubble') && kind !== 'teleport') await rubble(env, f);
+      // A Wall entered: as Rubble (Spirit Style), or smashed into it (the Giant: 1 Fatigue).
+      if (has(b, sq, 'wall') && kind !== 'teleport') {
+        const how = boardFor(env, m, f).walls;
+        if (how === 'rubble') await rubble(env, f);
+        else if (how === 'smash') {
+          await m.smashWall(sq);
+          await env.world.gainTokens(f, 'fatigue', 1);
+          note(`${f.name} moves over a Wall: it becomes Rubble, +1 Fatigue`);
+        }
+      }
       if (kind === 'free') await fire(env, 'self.free_movement.one_space_finished', f, { square: sq });
     }
     if (path.length) await m.setSquare(f, path.at(-1));
@@ -133,7 +171,7 @@ export function createMoves({ ask, emitEvent, postCard }) {
       return null;
     }
     const d = lessFor(f, Math.max(0, Number(distance) || 0), { byEnemy });
-    const b = m.board();
+    const b = boardFor(env, m, f);
     const dests = actionMoveDestinations(b, f.square, d, upTo, f.id);
     if (!dests.length) {
       if (d === 0) await spendFatigue(env, f, { byEnemy });
@@ -154,7 +192,7 @@ export function createMoves({ ask, emitEvent, postCard }) {
   async function teleport(env, m, f, { distance, allowNone = false, byEnemy = false }) {
     if (!f.square) return null;
     const d = lessFor(f, Math.max(0, Number(distance) || 0), { byEnemy });
-    const b = m.board();
+    const b = boardFor(env, m, f);
     const tdests = teleportDestinations(b, f.square, d, f.id);
     if (!tdests.length) {
       if (d === 0) await spendFatigue(env, f, { byEnemy });
@@ -201,7 +239,8 @@ export function createMoves({ ask, emitEvent, postCard }) {
   // when routes cross different Traps). `hit`: the same Action's hit on them
   // ({ pushBonus: Power, pushResist: Iron }); without one they may resist
   // with Iron here. `unblockable`: the hit's Unblockable list.
-  async function forced(env, m, target, { distance, origin, pull = false, upTo = false, chooser, hit = null, unblockable = [] }) {
+  // `willing`: they move themselves (Ka-Boom!, First Aid) — no Iron against it.
+  async function forced(env, m, target, { distance, origin, pull = false, upTo = false, chooser, hit = null, unblockable = [], willing = false }) {
     if (!target?.square || !origin) return null;
     const verb = pull ? 'Pull' : 'Push';
     let d = Math.max(0, Number(distance) || 0) + (hit?.pushBonus ?? 0) - (hit?.pushResist ?? 0);
@@ -213,7 +252,7 @@ export function createMoves({ ask, emitEvent, postCard }) {
     if (m.inPit(target)) d -= 1;
     // Iron resists a push that came without a hit (with one, its Iron already did).
     const ub = unblockableSet(unblockable);
-    if (!hit && d > 0 && !ub.has('iron_tokens') && (target.tokens.iron ?? 0) > 0) {
+    if (!hit && !willing && d > 0 && !ub.has('iron_tokens') && (target.tokens.iron ?? 0) > 0) {
       const max = Math.min(ironAllowance(modifiersOn(target, env.world, patdContent(), env.rt.temps)), target.tokens.iron, d);
       const mode = target.prefs?.iron ?? 'auto';
       let spend = 0;
@@ -238,6 +277,7 @@ export function createMoves({ ask, emitEvent, postCard }) {
       return target.square;
     }
     const b = m.board();
+    if (target.size === 2) b.size = 2;
     const landings = landingsOf(forcedMoves(b, target.square, origin, d, { pull, upTo, targetId: target.id }));
     if (!landings.length) {
       await flush(verb, target);
@@ -278,7 +318,7 @@ export function createMoves({ ask, emitEvent, postCard }) {
     const dangerous = !landing || DANGER.some((k) => has(after, landing, k));
     const cost = saveYourselfCost(after, landing);
     let saved = null;
-    if (dangerous && (target.tokens.speed ?? 0) >= cost) {
+    if (dangerous && speedOf(env, target) >= cost) {
       const squares = saveYourselfSquares(after, landing, { from: route.from, selfId: target.id }).map((sq) => ({ square: sq }));
       saved = await pickSquare(env, target, m.mode, after, squares, {
         skippable: false,
@@ -288,7 +328,7 @@ export function createMoves({ ask, emitEvent, postCard }) {
       });
     }
     if (saved) {
-      await env.world.discardTokens(target, ['speed'], cost);
+      await spendSpeed(env, target, cost);
       await m.setSquare(target, saved.square);
       note(`${target.name} saves themselves: ${cost} Speed, to ${squareName(m.mode, saved.square)}`);
       const nb = m.board();
@@ -321,8 +361,8 @@ export function createMoves({ ask, emitEvent, postCard }) {
     if (!f?.square) return [];
     const mods = modsOn(env, f);
     if (noFreeMove(mods)) return [];
-    const b = m.board();
-    return [...freeMoveReach(b, f.square, f.tokens.speed ?? 0, f.id, costOpts(mods)).values()].map((r) => ({ id: key(r.square), col: r.square.col, row: r.square.row, cost: r.cost, note: noteOf(b, r.square) }));
+    const b = boardFor(env, m, f);
+    return [...freeMoveReach(b, f.square, speedOf(env, f), f.id, costOpts(mods)).values()].map((r) => ({ id: key(r.square), col: r.square.col, row: r.square.row, cost: r.cost, note: noteOf(b, r.square) }));
   }
   // **A hand move (decided):** what the cheapest Free Movement from where they
   // stand to `to` would cost, whatever Speed they hold — null when no path.
@@ -331,12 +371,12 @@ export function createMoves({ ask, emitEvent, postCard }) {
     // Searched only so far (a map without bounds would be endless): detours
     // and Pits up to three times the straight distance.
     const limit = gridDistance(f.square, to) * 3 + 10;
-    const r = freeMoveReach(m.board(), f.square, limit, f.id, costOpts(modsOn(env, f))).get(key(to));
+    const r = freeMoveReach(boardFor(env, m, f), f.square, limit, f.id, costOpts(modsOn(env, f))).get(key(to));
     return r ? r.cost : null;
   }
   // Adjacent allies they could swap with (2 Speed).
   const swapsFor = (fighters, f, env = null) =>
-    (f?.square && (f.tokens.speed ?? 0) >= 2 && !noFreeMove(modsOn(env, f))
+    (f?.square && speedOf(env, f) >= 2 && !noFreeMove(modsOn(env, f))
       ? fighters.filter((a) => a.id !== f.id && a.side === f.side && a.square && neighbors(f.square).some((n) => n.col === a.square.col && n.row === a.square.row))
       : []
     ).map((a) => ({ id: a.id, name: a.name }));
@@ -348,9 +388,9 @@ export function createMoves({ ask, emitEvent, postCard }) {
     if (!f?.square) return { error: 'not on the board' };
     const mods = modsOn(env, f);
     if (noFreeMove(mods)) return { error: 'cannot use Free Movement now' };
-    const b = m.board();
+    const b = boardFor(env, m, f);
     const opts = costOpts(mods);
-    const r = freeMoveReach(b, f.square, f.tokens.speed ?? 0, f.id, opts).get(key(to));
+    const r = freeMoveReach(b, f.square, speedOf(env, f), f.id, opts).get(key(to));
     if (!r) return { error: 'out of reach' };
     let path = r.path;
     const from = f.square;
@@ -361,7 +401,7 @@ export function createMoves({ ask, emitEvent, postCard }) {
       note(`${f.name} is Fatigued: discards 1, moves 2 less`);
     }
     const cost = pathCost(b, f.square, path, opts);
-    if (cost) await env.world.discardTokens(f, ['speed'], cost);
+    if (cost) await spendSpeed(env, f, cost);
     // What an undo puts back (batch 3) — only a clean move: no Trap or Rubble crossed.
     const clean = !path.some((sq) => has(b, sq, 'trap') || has(b, sq, 'rubble'));
     await walk(env, m, f, path, { kind: 'free' });
@@ -375,9 +415,9 @@ export function createMoves({ ask, emitEvent, postCard }) {
   async function freeSwap(env, m, f, ally) {
     if (!f?.square || !ally?.square || f.side !== ally.side || f.id === ally.id) return { error: 'not an ally' };
     if (!neighbors(f.square).some((n) => n.col === ally.square.col && n.row === ally.square.row)) return { error: 'not adjacent' };
-    if ((f.tokens.speed ?? 0) < 2) return { error: 'needs 2 Speed' };
+    if (speedOf(env, f) < 2) return { error: 'needs 2 Speed' };
     if (noFreeMove(modsOn(env, f))) return { error: 'cannot use Free Movement now' };
-    await env.world.discardTokens(f, ['speed'], 2);
+    await spendSpeed(env, f, 2);
     await swap(env, m, f, ally);
     return { ok: true };
   }

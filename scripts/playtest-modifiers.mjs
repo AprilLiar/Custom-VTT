@@ -139,7 +139,8 @@ console.log('\n--- Ana’s turn (Zombie Style) ---');
 gm.emit('fight:start', { mode: 'combat', allies: [{ combatantId: ta.id }], enemies: [tb, tc, te, tf].map((t) => ({ combatantId: t.id })), firstSide: 'allies', opener: { combatantId: ta.id } });
 await sleep(3500);
 await skipPhase();
-check('the start of the fight: a lasting rule the engine leaves to people is said once, with its rules text (Caged Style, for Bo)', cards.some((c) => c.payload?.automatic === 'ability_manual' && c.payload.title === 'Caged Style — by hand all fight' && /Action Movement they would take is reduced to zero/.test(c.payload.text) && c.payload.fighters?.[0]?.name === `MDBo${stamp}`), JSON.stringify(cards.filter((c) => c.payload?.automatic === 'ability_manual').map((c) => [c.payload.title, c.payload.text])));
+// The QA pass: every lasting rule is automated — nothing is left to people at the start of the fight.
+check('the start of the fight: no lasting rule is left to people (Caged Style is automated now)', !cards.some((c) => c.payload?.automatic === 'ability_manual'), JSON.stringify(cards.filter((c) => c.payload?.automatic === 'ability_manual').map((c) => c.payload.title)));
 check('Zombie Style: a Copy placed at the start of her turn, where picked', copies().some((c) => c.col === 4 && c.row === 3 && c.owner_id === ta.id), JSON.stringify(copies()));
 
 // Bo (Caged Style) steps next to her (the diamond grid: laterally, below her).

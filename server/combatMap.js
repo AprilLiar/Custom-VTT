@@ -15,6 +15,9 @@ import { all, one, run, writeMany } from './db.js';
 import { imageUrl, sanitizeImageMime } from './images.js';
 import { moveToken, normalizeGrid } from '../client/src/lib/combatGrid.js';
 import { releaseChallengesOf, serialized, shapeFightState } from './combatState.js';
+import { derivedFor } from './fighterStances.js';
+import { hasRuleIn } from '../client/src/lib/patd/build.js';
+import { patdContent } from './patdContent.js';
 
 // Cells are integers in image-pixel grid space. The client never offers a
 // cell outside the map's padding; this only bounds what a hand-sent event
@@ -56,6 +59,12 @@ export async function loadCombatTokens(sceneId) {
      ORDER BY cb.id`,
     [sceneId]
   );
+  // The Giant fills 2×2 squares (its `footprint` rule — the QA pass).
+  const sizes = new Map();
+  for (const id of new Set(rows.map((r) => r.character_id).filter((x) => x != null))) {
+    const d = await derivedFor(id);
+    sizes.set(id, d && hasRuleIn(d.constantAbilityIds, 'footprint', patdContent()) ? 2 : 1);
+  }
   return rows.map((r) => {
     const ownerType = r.character_id != null ? 'character' : 'temp_npc';
     const ownerId = r.character_id ?? r.temp_npc_id;
@@ -72,6 +81,7 @@ export async function loadCombatTokens(sceneId) {
       name: r.name,
       col: r.grid_col,
       row: r.grid_row,
+      size: sizes.get(r.character_id) ?? 1,
       image_url: tokenUrl ?? portraitUrl,
       crop: tokenUrl
         ? { x: r.token_crop_x, y: r.token_crop_y, w: r.token_crop_w, h: r.token_crop_h }

@@ -24,15 +24,88 @@ export function tokenOptions(action) {
 export const hasDiceCost = (action) => (action?.cost?.options ?? []).some((o) => o.category === 'dice');
 export const isFree = (action) => (action?.cost?.options ?? []).some((o) => o.category === 'free');
 
+// **Costs changed by the fighter's own rules (the QA pass)** — both ride on
+// the state:
+//   state.costReduction { amount, minimumOther } — Elder Style: "the cost of
+//     all Actions you perform are reduced by 1 (to a minimum of … 2
+//     tokens/HP/Shield)": the option's first cost that can go down does.
+//   state.luck n — Luck tokens held with the Underdog's mechanic: each "may be
+//     used to pay for (part of) any Token Action, in place of up to 3 Basic
+//     Tokens, 3 HP, or 3 Shield". Used for what is missing; more only when
+//     `answers.luck` asks for it (the engine asks at Commit).
+const REDUCIBLE = new Set(['token', 'hp', 'shield']);
+const isBasicCost = (c) => c.kind === 'token' && (c.token === 'basic' || BASIC_KEYS.includes(c.token));
+const luckable = (c) => typeof c.amount === 'number' && (isBasicCost(c) || c.kind === 'hp' || c.kind === 'shield');
+export function costOf(option, state) {
+  const r = state?.costReduction;
+  let left = r ? Number(r.amount) || 0 : 0;
+  const min = r?.minimumOther ?? 2;
+  return option.components.map((c) => {
+    if (!left || typeof c.amount !== 'number' || !REDUCIBLE.has(c.kind)) return c;
+    const next = Math.min(c.amount, Math.max(min, c.amount - left));
+    left -= c.amount - next;
+    return next === c.amount ? c : { ...c, amount: next };
+  });
+}
+const heldFor = (c, state) => {
+  const tokens = state.tokens ?? {};
+  if (c.kind === 'hp') return state.hp ?? 0;
+  if (c.kind === 'shield') return state.shield ?? 0;
+  return c.token === 'basic' ? BASIC_KEYS.reduce((n, k) => n + (tokens[k] ?? 0), 0) : (tokens[c.token] ?? 0);
+};
+// Luck spent on each component: [n per component], or null when even Luck can't cover it.
+// `want`: how many Luck tokens to use in all (at least what is missing).
+export function luckPlan(components, state, want = 0) {
+  const held = Number(state?.luck) || 0;
+  const use = components.map(() => 0);
+  const left = components.map((c) => (luckable(c) ? c.amount : 0));
+  let spent = 0;
+  components.forEach((c, i) => {
+    if (!luckable(c)) return;
+    while (left[i] - Math.min(3, left[i]) >= 0 && heldFor(c, state) < left[i] && spent < held) {
+      left[i] -= Math.min(3, left[i]);
+      use[i]++;
+      spent++;
+    }
+  });
+  if (components.some((c, i) => luckable(c) && heldFor(c, state) < left[i])) return null;
+  // More, by choice: off the biggest cost left each time.
+  while (spent < Math.min(held, Number(want) || 0)) {
+    let best = -1;
+    left.forEach((n, i) => {
+      if (n > 0 && (best < 0 || n > left[best])) best = i;
+    });
+    if (best < 0) break;
+    left[best] -= Math.min(3, left[best]);
+    use[best]++;
+    spent++;
+  }
+  return { use, left, spent };
+}
+// How many Luck tokens could usefully go into an option (for the engine's question).
+export function luckRoom(option, state) {
+  const comps = costOf(option, state);
+  const held = Number(state?.luck) || 0;
+  return Math.min(held, comps.reduce((n, c) => n + (luckable(c) ? Math.ceil(c.amount / 3) : 0), 0));
+}
+// The option as it must be paid now: reduced (Elder), with Luck in place of what it covers.
+function payable(option, state, answers) {
+  const comps = costOf(option, state);
+  if (!(Number(state?.luck) > 0)) return { comps, luck: 0 };
+  const plan = luckPlan(comps, state, answers?.luck);
+  if (!plan) return { comps, luck: 0 };
+  return { comps: comps.map((c, i) => (plan.use[i] ? { ...c, amount: plan.left[i] } : c)).filter((c) => !(luckable(c) && c.amount === 0)), luck: plan.spent };
+}
+
 // One option's needs against the state. → null when unaffordable, else
 // { choices: [...] } — what the person still has to decide:
 //   { kind: 'split', amount, keys: [held basic keys] }   which Basic tokens
 //   { kind: 'hp', minimum, maximum }                      how much HP (X)
 //   { kind: 'holder', holders }                           whose Challenge
-export function needsOf(option, state) {
+export function needsOf(option, state, answers = null) {
   const choices = [];
   const tokens = state.tokens ?? {};
-  for (const c of option.components) {
+  for (const c of payable(option, state, answers).comps) {
     if (c.kind === 'token') {
       if (c.token === 'basic') {
         const held = BASIC_KEYS.filter((k) => (tokens[k] ?? 0) > 0);
@@ -87,14 +160,19 @@ export function optionLabel(option) {
 export function planPayment(action, optionIndex, answers, state) {
   const option = action?.cost?.options?.[optionIndex];
   if (!option || !tokenOptions(action).some((o) => o.index === optionIndex)) return { error: 'no such cost' };
-  if (!needsOf(option, state)) return { error: 'not enough' };
+  if (!needsOf(option, state, answers)) return { error: 'not enough' };
   const out = { tokens: {}, hp: 0, shield: 0, holderId: null, rating: 0 };
   const tokens = state.tokens ?? {};
-  for (const c of option.components) {
+  const pay = payable(option, state, answers);
+  if (pay.luck) out.tokens.luck = pay.luck;
+  // A split answered for the printed cost no longer fits a cost Luck or Elder Style cut down.
+  const changed = pay.comps.length !== option.components.length || pay.comps.some((c, i) => c !== option.components[i]);
+  for (const c of pay.comps) {
     if (c.kind === 'token') {
       if (c.token === 'basic') {
         const held = BASIC_KEYS.filter((k) => (tokens[k] ?? 0) > 0);
         let split = answers?.split;
+        if (split && changed && Object.values(split).reduce((n, v) => n + (Math.trunc(Number(v)) || 0), 0) !== c.amount) split = null;
         if (!split) {
           // No choice was needed: take them in order.
           split = {};

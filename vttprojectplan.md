@@ -3054,6 +3054,7 @@ Special squares from the book's **Obstacles** (p.70-72) and the Battle Parameter
   - **Obstacles:** Fog, Pit, Pit Trap (a Pit and a Trap in one space), Rubble, Trap, Wall.
   - **Markers:** Danger Zone (Traffic), King Zone (King of the Hill), Control Zone and the Important Thing (Secure the McGuffin).
   - **Not included (the user's choice):** Copies, Stairs and Conveyor Belts.
+  - **Deadly Trap (QA pass):** a Trap that deals 3 instead of 1 — placed by the Trickster's Funny Little Box of Pain, also on the palette. Stored as `deadly_trap`.
 - **The palette:** a round overlay button at the left of the screen, shown only in Simple Combat and Combat (right of the GM's drawer). It **stays up with the interface hidden (decided)**, so tiles can be placed in cinematic mode. It opens a small vertical list of every tile, each with its look and name.
   - **Drag** one onto a square to place it.
   - **Tap** one for a small window with a brief mechanical description.
@@ -3148,6 +3149,7 @@ The Combat tab's hand-made setup (Stances as name + dice, Unique token picks, Re
      - `deriveBuild`: always-on Abilities (the Archetypes' chosen variant, Build, hero type, granted Features, Warrior's Path), always-on Actions (Basic, Archetype, Build, Features), each Stance's Abilities and Actions, option tokens owned, Skills (one per Form, one replacement, the free two-word Skill) and Health Bars.
      - `levelInfo`: bonus die, bonus HP per bar, next XP threshold, whether the XP allows a level-up, and the grants so far.
      - `buildWarnings`: the construction rules as warnings only.
+   - **Build fields added in the QA pass:** a Stance's `form2Id` (the Machine's second Form), `greaterFusionId` (Greater Fusion's Archetype that becomes Focused) and `bonusFrantic` (Improved / Greater Frenzy's Archetypes, one each). See "QA pass: everything automated".
    - **Storage:** table `character_builds (character_id, data JSON, updated_at)`; `server/builds.js`. Events `build:save { characterId, build }` (cleaned on the server) and `build:clear`, both for whoever controls the character, broadcast as `build:updated`. `GET /api/characters/:id/build`. Deleted with the character.
    - **UI:** `components/builder/` (`BuildTab`, `BuildSteps`, `BuildParts`) under the token picture on the Combat tab.
      - The first run steps through Type → Archetypes (player and villain, with each one's ability variant and text) → Stances (Form, alias, Style or Freestyle, construct choice, live name, dice and range; Frantic picks Forms and Styles instead) → Build → Skills → Level.
@@ -3963,6 +3965,96 @@ Thirteen points from play, each pinned down with the user before work began.
 
 - **Tests and checks:** unit tests for `repeatRound`, `moveEntry`, Walls as targets, Taken Out targeting and `hasNoTargets` (455 pass). `scripts/playtest-batch5.mjs` covers the Action button's board, the stack, Mastermind, "no valid targets", Taken Out and the repeated order; the fights, map-tiles, reactions and turn-triggers playtests were updated. A browser run at desktop and phone size showed the button, the lock, the rail drag, the panned map and the padded board.
 - **Known:** `scripts/playtest-npc-assign.mjs` has failed since batch 3 made placing a token GM-only; it needs updating.
+
+### QA pass: everything automated (decided, implemented)
+
+The user's standing rule: **nothing is left "by hand"** — the core rules are fixed, so custom code is worth writing for any of them. Every Stance part (Form, Style, Freestyle), Archetype, Feature, Super Move and token mechanic was checked against its printed text, and every rule the census left to people was given an automation. **The census is 100%: 238 of 238 triggered Ability rules, 68 of 68 lasting ones, 183 of 183 Actions, 34 of 34 Super Moves.** This supersedes every "Not yet" / "by hand" list in the phases above.
+
+- **How it is proved:**
+  - `server/test/allRules.test.js` runs every Ability rule, Action and Super Move through the interpreter against a full fake world, every question answered, at a low and a high Gate. Nothing may throw, and nothing may come back by hand.
+  - `server/test/coverage.test.js` holds the census at 100% (the floor), and `server/test/qaPass.test.js` pins each new rule.
+  - A text-vs-data audit (each number printed in a rule found in its data) flagged nothing real.
+  - All 32 fight playtests pass.
+- **Bugs found and fixed:**
+  - Nothing Personal crashed on its target (a `select` of a ref, the Challenge holder's id).
+  - The token mechanics were never attached to their owners. Training Style's Training tokens, Control Form's Control, the Underdog's Luck, the Phantom's Poltergeist, the Teacher's Mentor and the Blur's Rapid Strike Action never ran or showed. They now come with their Form, Style or Archetype (`build.js`).
+  - Lasting rules ignored their own conditions: Mad Style's Knife and Pistol, Fullmetal's Tracer ammo, Hidden Style in Fog and Vortex Style on a Pit applied all the time. `modifiersOn` now checks the condition (`world.ruleHolds`).
+- **Interpreter (`interpreter.js`)** — new operators, selectors and steps:
+  - Operators: `lookup` (Singing Style's Mood token); `within_range_of_self_or_copies` (Rallying); `within_stance_range` (Hypnotic Gaze); `enemy_shares_space_with_obstacle` (Telekinesis); `choose_integer` (Ka-Boom!, Immortal Army: asked where the number is used); `adjacent`.
+  - What an Action did: `history.targets` (each target once), `history.obstaclesDestroyed`, `history.shieldBroke`, `history.lastDestroyedSquare`. The Action events carry `actionTargets`, `distinctTargetCount`, `enemyTargets` and `obstaclesDestroyed` (Crystal, Whip and Explosion Style). `self.throw_or_grapple.resolved` (Whip) and `event.controlledActor` (Control Form, Grave Freestyle) are new.
+  - Ranges measured from what happened:
+    - `on_or_adjacent_to_destroyed_obstacles` (Explosion Style);
+    - `adjacent_to_event_action_target` (Crystal Style);
+    - `adjacent_to_destroyed_copy` (the Swarm);
+    - `within_placed_obstacles` (Darkness Dawns);
+    - `origin: any_previous_target` (Open the Path).
+  - Selectors and picks:
+    - `inFog` (Twilight Sorrow, Ghost Walk) and `standingOnAnyObstacle` (Poltergeist Panic);
+    - `inPlay: false` (Rescue);
+    - `includeAdjacentToTargets` (Flamethrower at 4 Power);
+    - `selector_by_gate` (Rip Chord, Flamethrower: the selector of the highest Gate reached);
+    - `bindings.x.one` (Walled In: one of the Walls placed, picked);
+    - a `select` given a ref resolves ids to fighters.
+  - Steps:
+    - `ensure_target`: Protect's Contain options share one enemy.
+    - `joint_choice`: Sing Along and Diss Track. At the higher Gate the target picks their own option on their own screen (`ctx.askAs`).
+    - `duplicate_token`: Syphon; its pick is of your own tokens.
+    - `reduce_shield`: Aura Surge.
+    - `return_to_play`: Rescue.
+    - `remove_from_play`: My Final Technique. Out for good: no Comeback, no Rescue.
+    - `pull_until`: First Aid.
+    - `replay_start_effects`: Mood Shift runs your `own_turn.start` rules again.
+    - `move_obstacles`: Poltergeist Panic, each Rubble or Trap moved where picked, never stacked.
+    - `become_taken_out`: zero HP already is.
+    - The open-ended `repeat`: Dancing Mad, "again?" after each, ending after the same enemy is hit twice.
+  - Push and pull now move obstacles too (`world.forcedObstacle`: Telekinesis, Shining Style). Pushing yourself is never resisted with Iron (`willing`). A swap with an obstacle trades spaces (`world.swapWithObstacle`).
+- **Lasting rules now enforced** (`modifiers.js ENFORCED_RULES`):
+  - **Targeting:**
+    - Blaster Form and Amplify: one extra target within the Stance's range, once per Action (`ctx.extraTargets`).
+    - Whip Style: Throw within range. Ogre's Style: Throw any number of enemies within range.
+    - Relentless Style: enemies holding your Challenge are always within your range.
+  - **Movement** (`engine/board.js`, set per mover by `moves.js boardFor`):
+    - Shining Style: enemies can't enter a space next to it.
+    - Parkour: Walls are empty to you.
+    - Spirit Style: Walls are Rubble to you (Fatigue, and the move stops there).
+    - The Giant: moves over Walls, which become Rubble, +1 Fatigue.
+    - Weightless: every space is empty.
+    - Vortex Style: from a Pit, every Pit is one step away.
+    - Caged Style: Action Movement is zero.
+  - **Tokens and costs:**
+    - Machine Style: Iron spent as Power or Speed.
+    - Unbreakable Style: allies in range spend your tokens.
+    - Both go through `world.spendable` and `world.spend`, everywhere tokens are spent: hits, Free Movement, Save Yourself and payments.
+    - Elder Style: token costs −1 (never below 2), and a number counts one higher against a dice Action's costs and Gates (`diceBoard.costBonus`).
+    - The Untouchable: Dodge costs 1 (the content's one "requires a ruling", read plainly).
+  - **Copies:** Mirrored Style's Copies have 2 HP, and its Iron reduces hits to them.
+  - **Weapon Throw:** the disabled Weapon can't be chosen again until your next turn.
+- **Costs** (`tokenCost.js`, `engine/actions.js`):
+  - Luck pays in place of up to 3 Basic tokens, HP or Shield each. It covers what is missing; you are asked whether to use more.
+  - Roughhousing's optional extra 2 or 4 Basic tokens are asked at Commit (`payment.additionalBasicTokens`).
+  - Bag of Tricks's "one or more" costs: the placed die or tokens are the first, the rest are offered at Commit, and X is how many were paid.
+  - Token costs are paid through the world, so HP paid counts as HP lost.
+- **Native in the engine** (`coverage.js NATIVE_RULES`; their data rule is never run):
+  - Mythical Freestyle: a d12 of 3 or less is re-rolled at the turn's start.
+  - Persistant Freestyle: up to two numbers totalling 5 or less are kept at the turn's end and come back next turn.
+  - Poltergeist tokens (`actions.js poltergeist`): up to 2 more per Action (3 under Arcana Install). X counts the cost's own. The X choices are:
+    - +1 to up to X listed numbers (never damage or choices);
+    - Range +X;
+    - teleport X first, or Rubble into X spaces first;
+    - 1 damage to X enemies after, or Push 1 / Pull 1 to X previous targets.
+  - Improved Frenzy: once per Round after the dice, change Style or Archetype. The dice stay; the Stance and its Abilities change.
+  - Greater Frenzy: once per fight, a second Frantic Ability for the turn (`frantic_pick.abilityId2`).
+  - Showdown: settled when the next turn of the target's side starts (`schedule at: target_side.next_turn.selected`).
+  - Transcendant Spirit: offered when giving Heroic Spirit. The ally's dice give their maximums, an 8 is added, then Shield 4 and a heal; it counts as the Super Move of the fight and of the side's Round.
+  - Deadly Trap: 3 damage.
+- **Built by the builder** (`coverage.js BUILD_RULES`, `build.js`):
+  - The Machine: each Stance has a second Form (`form2Id`; both Forms' dice and Abilities, never a green die). Freestyles give a warning.
+  - Greater Focus: the original Archetype's Fused Ability is added to the Focused.
+  - Greater Fusion: the chosen Fused Archetype (`greaterFusionId`) becomes Focused.
+  - Improved and Greater Frenzy: one new Frantic Ability each, from an Archetype not yet had (`bonusFrantic`).
+  - Improved Warrior: the Warrior's Path choice, applied at the start of combat.
+  - The Archetype step shows these choices as soon as the level grants them; missing ones are warned.
+- **The Giant's 2×2** (`board.js cellsOf`, `nearestCells`): it fills four squares, needs all four empty to move, and Range counts from its nearest square. The stage sends `size` and the map draws it 2×2. On Simple Combat lanes it is one space.
 
 ## Open items to decide later
 - **Panic at the Dojo assistant — details to settle in their phase**, with the default the build will use unless told otherwise:

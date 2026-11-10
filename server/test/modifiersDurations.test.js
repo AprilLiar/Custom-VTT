@@ -193,7 +193,7 @@ test('schedule: a delayed effect keeps its targets by id and runs with them late
   await runRule({ id: 'test.later:scheduled', effect: scheduled[0].effect }, { world: w, self: me, state: {}, usage: {}, captured, log: () => {}, ask: async () => null });
   assert.equal(foe.hp, 8);
   // "At the start of your next turn" is supported too; anything else stays by hand.
-  assert.ok(!ruleSupport({ id: 'x', events: ['own_turn.start'], effect: { op: 'schedule', at: 'target_side.next_turn.selected', effect: { op: 'sequence', steps: [] } } }).ok);
+  assert.ok(!ruleSupport({ id: 'x', events: ['own_turn.start'], effect: { op: 'schedule', at: 'no.such.moment', effect: { op: 'sequence', steps: [] } } }).ok);
 });
 
 test('Free Movement cost per space (Weightless Style): diagonals and Pits cost 1 too', () => {

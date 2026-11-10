@@ -11,7 +11,7 @@
 // A roll's board is editable only while it is `active`: from the roll until
 // that fighter's turn ends (Next / Previous turn, End Combat).
 import { all, one, run } from './db.js';
-import { gateFor, minusReserved, poolOf, publicBoard, reservedBy, stopChoices, turnActions } from '../client/src/lib/patd/diceBoard.js';
+import { gateFor, minusReserved, poolOf, publicBoard, reservedBy, stopChoices, turnActions, costBonus } from '../client/src/lib/patd/diceBoard.js';
 import { hasDiceCost, paymentText, planPayment, tokenOptions } from '../client/src/lib/patd/tokenCost.js';
 import { controlsCharacter } from './control.js';
 import { serialized, shapeFightState } from './combatState.js';
@@ -119,6 +119,13 @@ export async function resumeRoll(combatantId, emit) {
 // The fighter's active board, if any (numbers added to the pool land there).
 export const activeBoardOf = (combatantId) => one('SELECT * FROM dice_marks WHERE combatant_id = ? AND active = 1 ORDER BY created_at DESC, rowid DESC LIMIT 1', [combatantId]);
 
+// What the fight's engine adds to a fighter's payable state (the QA pass):
+// tokens they may spend that aren't theirs (Machine Style's Iron as Power or
+// Speed, an Unbreakable ally's), Elder Style's cost reduction and Luck.
+// Set by server/triggers.js; (combatant row) → { tokens, costReduction, luck } | null.
+let payableHook = null;
+export const setPayableHook = (fn) => (payableHook = fn);
+
 // **A fighter's payable state** (tokenCost.js): tokens, current HP, Shield,
 // and the enemies in their fight holding their Challenge.
 export async function fighterState(combatantId) {
@@ -139,7 +146,23 @@ export async function fighterState(combatantId) {
         [row.id, ...foes]
       )
     : [];
-  return { row, tokens: { ...st.tokens }, hp: st.hp.current ?? 0, shield: st.tokens.shield ?? 0, challengeHolders: holders.map((h) => ({ id: h.id, name: h.name })) };
+  const tokens = { ...st.tokens };
+  let extra = null;
+  try {
+    extra = payableHook ? await payableHook(row) : null;
+  } catch (err) {
+    console.error('payable state', err);
+  }
+  for (const [k, n] of Object.entries(extra?.tokens ?? {})) if (n > (tokens[k] ?? 0)) tokens[k] = n;
+  return {
+    row,
+    tokens,
+    hp: st.hp.current ?? 0,
+    shield: st.tokens.shield ?? 0,
+    challengeHolders: holders.map((h) => ({ id: h.id, name: h.name })),
+    costReduction: extra?.costReduction ?? null,
+    luck: extra?.luck ?? 0,
+  };
 }
 
 // **Super Moves now (batch 4):** what the board needs to say whether this
@@ -271,7 +294,9 @@ export function registerDiceMarkHandlers({ on: onRaw, socket, io, triggers = nul
       if (!hasDiceCost(action)) return refuse(row.roll_id, `${action.name} is not paid with dice`);
       // A Chaos token's "4" pays only for the reactions it was offered for.
       if (n.source === 'chaos' && !(data.reaction?.clusters ?? []).some((c) => c.resource === 'chaos' && c.ids.includes(action.id))) return refuse(row.roll_id, 'a Chaos token pays for a Reactive Action only');
-      data.placements.push({ key: `d${n.index}`, kind: 'die', die: n.index, actionId: action.id, threshold: gateFor(action, n.value), stop: null, committed: false });
+      // (Elder Style: the number counts one higher against the Action's costs.)
+      const elder = costBonus(action, await fighterState(actingOn(row).combatantId));
+      data.placements.push({ key: `d${n.index}`, kind: 'die', die: n.index, actionId: action.id, threshold: gateFor(action, n.value + elder), stop: null, committed: false });
     } else {
       const opt = Number(option);
       if (!tokenOptions(action).some((o) => o.index === opt)) return refuse(row.roll_id, 'no such cost');

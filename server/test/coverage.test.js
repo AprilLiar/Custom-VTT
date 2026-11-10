@@ -10,7 +10,8 @@ const idx = patdContent();
 const report = census(idx.content);
 
 // The floor: what phase J reached. Raise it when more becomes automatic.
-const FLOOR = { triggered: 214, continuous: 37, actions: 160, supers: 27 };
+// (The QA pass: everything — 238, 68, 183 and 34 of the content's.)
+const FLOOR = { triggered: 238, continuous: 68, actions: 183, supers: 34 };
 
 test('everything is counted: every Ability rule, Action and Super Move in the content', () => {
   const rules = (idx.content.abilities ?? []).reduce((n, a) => n + (a.rules ?? []).length, 0);
@@ -33,10 +34,12 @@ test('the automatic counts never go back down', () => {
   assert.ok(report.supers.automatic >= FLOOR.supers, `Super Moves: ${report.supers.automatic} < ${FLOOR.supers}`);
 });
 
-test('the content’s own "requires a ruling" entry (The Untouchable) is never claimed automatic', () => {
+// The QA pass (decided: nothing is left by hand): The Untouchable's "It only
+// costs you 1 Control Token to Dodge an Action" is read plainly — Dodge costs
+// them 1 instead of 2 (server/engine/actions.js controlChances).
+test('the content’s own "requires a ruling" entry (The Untouchable) is automated by its plain reading', () => {
   const ruling = (idx.content.abilities ?? []).filter((a) => a.automationState === 'requires_ruling').map((a) => a.id);
-  assert.ok(ruling.includes('ability.archetype-the-untouchable.the-untouchable'));
+  assert.deepEqual(ruling, ['ability.archetype-the-untouchable.the-untouchable']);
   const byHand = new Set([...report.abilities.triggered.byHand, ...report.abilities.continuous.byHand].map((b) => b.id));
-  // The part that needs a ruling stays with people (its plain token gain may run).
-  for (const id of ruling) assert.ok(byHand.has(id), `${id}: the part needing a ruling should be by hand`);
+  assert.ok(!byHand.has(ruling[0]));
 });

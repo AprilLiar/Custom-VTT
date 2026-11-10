@@ -28,6 +28,12 @@ export function gateFor(action, value) {
   return effect.filter((t) => t <= v).reduce((a, b) => Math.max(a, b), 0);
 }
 
+// **Elder Style (the QA pass):** "the cost of all Actions you perform are
+// reduced by 1 (to a minimum of 1+ …)" — a number counts as one higher against
+// an Action's printed costs and Gates. An "X" cost has none to reduce.
+export const costBonus = (action, state) =>
+  (action?.gates?.headerThresholds ?? []).some((t) => typeof t === 'number') ? Math.max(0, Number(state?.costReduction?.amount) || 0) : 0;
+
 // The Actions a turn can use: the Basic ones, and the Personal ones — always
 // available (Archetypes, Build, Features) plus the rolled Stance's (its Form
 // and Style) — then Super Moves. `derived` from deriveBuild, `stance` from

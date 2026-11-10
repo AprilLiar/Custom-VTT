@@ -133,7 +133,7 @@ test('movement (phase D) and placing obstacles (phase E) are automated; unknown 
   assert.equal(ruleSupport(jumping).ok, true, 'Teleport 3');
   const volcanic = idx.get('ability.style-volcanic.volcanic-style').rules.find((r) => r.events.includes('own_turn.start'));
   assert.equal(ruleSupport(volcanic).ok, true, 'place a Trap');
-  assert.equal(ruleSupport({ events: ['own_turn.start'], effect: { op: 'place_obstacle', obstacle: 'deadly_trap', count: 1, target: { ref: 'self.space' } } }).ok, false);
+  assert.equal(ruleSupport({ events: ['own_turn.start'], effect: { op: 'place_obstacle', obstacle: 'lava', count: 1, target: { ref: 'self.space' } } }).ok, false);
 });
 
 test('obstacles: a Trap on a picked space, a Wall destroyed into Rubble by a 2-damage hit, a Copy placed and hit', async () => {
@@ -335,7 +335,7 @@ test('temporary: Take Aim installs "next damaging Action is Unblockable" in the 
   const action = idx.get('action.style-crosshair.take-aim');
   await runRule({ id: action.id, effect: action.effect }, { world: w, self: me, state: {}, usage: {}, ability: action, log: () => {}, ask: async () => null });
   assert.deepEqual(temps.map((t) => [t.rule, t.duration, t.targetId]), [['next_damage_action.unblockable', 'until_next_damage_dealing_action', 1]]);
-  assert.equal(ruleSupport({ events: ['own_turn.start'], effect: { op: 'modify_rule', rule: 'walls.treat_as', value: 'x' } }).ok, false);
+  assert.equal(ruleSupport({ events: ['own_turn.start'], effect: { op: 'modify_rule', rule: 'no.such.rule', value: 'x' } }).ok, false);
   assert.equal(ruleSupport({ events: ['own_turn.start'], effect: { op: 'temporary', duration: 'end_of_current_turn', effect: { op: 'modify_rule', rule: 'unblockable', value: ['armor'] } } }).ok, true);
 });
 
