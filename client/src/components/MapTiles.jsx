@@ -16,9 +16,10 @@ import { beginTileDrag, subscribeTileDrag } from '../lib/combatDrag.js';
 // character you control, placed), and the GM always. The stacking rules are
 // client/src/lib/mapTiles.js's.
 
-// **The obstacle lock (decided, batch 5): personal**, kept on this device.
-// While on, your own drags don't move placed obstacles (no fat fingers);
-// placing new ones from the palette still works.
+// **The obstacle lock (decided, batch 5; revised): personal**, kept on this
+// device. While on, placed obstacles are a picture on the background: they
+// can't be tapped or dragged, and a drag over one pans the camera. Placing new
+// ones from the palette still works.
 const LOCK_KEY = 'vtt.obstacleLock';
 const lockSubs = new Set();
 const readLock = () => {
@@ -202,6 +203,12 @@ export function MapTileLayer({ active = true, mode, tiles, squareAt, quadOf, wid
   useEffect(() => {
     if (popup && !popupSquare) setPopup(null);
   }, [popup, popupSquare]);
+  // Locking closes an open card and drops a drag in progress.
+  useEffect(() => {
+    if (!isLocked) return;
+    setPopup(null);
+    setDrag(null);
+  }, [isLocked]);
 
   return (
     <>
@@ -219,7 +226,10 @@ export function MapTileLayer({ active = true, mode, tiles, squareAt, quadOf, wid
               <polygon
                 points={pointsAttr(quad)}
                 fill="transparent"
-                style={{ pointerEvents: 'all', cursor: lifted ? 'grabbing' : 'pointer', touchAction: 'none' }}
+                // **Locked (decided, revised): the obstacles are only a picture** —
+                // the pointer goes through them, so a drag that starts on one
+                // pans the camera and a tap reaches what is underneath.
+                style={{ pointerEvents: isLocked ? 'none' : 'all', cursor: lifted ? 'grabbing' : 'pointer', touchAction: isLocked ? 'auto' : 'none' }}
                 onPointerDown={(e) => onDown(e, sq)}
                 onPointerMove={onMove}
                 onPointerUp={onUp}
@@ -378,7 +388,7 @@ export function MapTilePalette({ mode, left = 0, role }) {
       <button
         type="button"
         onClick={() => setLocked(!isLocked)}
-        title={isLocked ? 'Obstacles locked: your drags don’t move them. Tap to unlock.' : 'Lock obstacles, so a stray drag can’t move them'}
+        title={isLocked ? 'Obstacles locked: they can’t be touched, and dragging over them moves the camera. Tap to unlock.' : 'Lock obstacles, so a stray drag can’t touch them'}
         aria-label={isLocked ? 'Unlock obstacles' : 'Lock obstacles'}
         aria-pressed={isLocked}
         data-obstacle-lock={isLocked ? 'on' : 'off'}

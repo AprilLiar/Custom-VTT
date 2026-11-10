@@ -3971,7 +3971,7 @@ Thirteen points from play, each pinned down with the user before work began.
 The user's standing rule: **nothing is left "by hand"** — the core rules are fixed, so custom code is worth writing for any of them. Every Stance part (Form, Style, Freestyle), Archetype, Feature, Super Move and token mechanic was checked against its printed text, and every rule the census left to people was given an automation. **The census is 100%: 238 of 238 triggered Ability rules, 68 of 68 lasting ones, 183 of 183 Actions, 34 of 34 Super Moves.** This supersedes every "Not yet" / "by hand" list in the phases above.
 
 - **How it is proved:**
-  - `server/test/allRules.test.js` runs every Ability rule, Action and Super Move through the interpreter against a full fake world, every question answered, at a low and a high Gate. Nothing may throw, and nothing may come back by hand.
+  - `server/test/allRules.test.js` runs every Ability rule, Action and Super Move through the interpreter against a full fake world, every question answered, at a low and a high Gate. Nothing may throw, and nothing may come back by hand. Since play feedback 6, every Action must also do something at its highest Gate.
   - `server/test/coverage.test.js` holds the census at 100% (the floor), and `server/test/qaPass.test.js` pins each new rule.
   - A text-vs-data audit (each number printed in a rule found in its data) flagged nothing real.
   - All 32 fight playtests pass.
@@ -4055,6 +4055,19 @@ The user's standing rule: **nothing is left "by hand"** — the core rules are f
   - Improved Warrior: the Warrior's Path choice, applied at the start of combat.
   - The Archetype step shows these choices as soon as the level grants them; missing ones are warned.
 - **The Giant's 2×2** (`board.js cellsOf`, `nearestCells`): it fills four squares, needs all four empty to move, and Range counts from its nearest square. The stage sends `size` and the map draws it 2×2. On Simple Combat lanes it is one space.
+
+### Play feedback 6 (decided, implemented)
+
+1. **The resolve stack names everything, and stays put.**
+   - **Was:** each piece of a turn (its start, the Action Phase) was its own job, so the stack was wiped and the plaque faded between them, often showing only a counter. A turn's start showed as "Start of turn".
+   - **Named steps:** a turn moment lists the Abilities it will run up front, by name and owner ("Wild Form (Bo)"). Each is marked when it runs and dropped when its condition doesn't hold. Actions show who performs them ("Crush (Ana)"). Each part of the End Phase is its own step ("End Phase: Bo: Trap, 1 damage"). Comeback, Heroic Spirit, Mythical, Persistant, Frenzy and Transcendant Spirit are steps too. No generic step ("Start of turn", "Action Phase", "Start of combat") exists any more.
+   - **No flicker:** the stack carries over between back-to-back jobs. Once everything is done it stays up for 1.6 s, ticked ("Done · 4 steps"), then fades. A fight with nothing to show just goes.
+   - The Interrupt lock still opens the moment the work is done (the linger is display only).
+2. **Crush and Bow Down did nothing.** Their Gates are a `switch` whose cases carry conditions ("9+: … ; 6+: …"), and the interpreter only matched cases by value. Fixed: the first case whose condition holds runs (or all, for `match: 'all'`).
+   - Found by the same check: "choose N" with N depending on the Gate (High Efficiency, Firing Wild, Beyond Human, Roughhousing, Bag of Tricks) passed the formula to the prompt unevaluated. Now it is evaluated, and "choose all" asks nothing.
+   - Not Good Enough lost its target (a fighter given by id). Ids now resolve to fighters wherever a target is read.
+   - `server/test/allRules.test.js` now also fails any Action that does nothing at its highest Gate, so a silent Action can't slip through again.
+3. **Locked obstacles are only a picture.** While the personal lock is on, obstacles take no pointer at all: a drag that starts on one pans the camera, and a tap reaches what is underneath. Placing new ones still works. (Revises batch 5's lock, which only stopped moving them.)
 
 ## Open items to decide later
 - **Panic at the Dojo assistant — details to settle in their phase**, with the default the build will use unless told otherwise:

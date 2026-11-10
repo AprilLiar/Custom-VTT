@@ -953,18 +953,32 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
   // front; a turn's start or end, a triggered Ability and a follow-on join as
   // they arise (right after what is running, before what still waits).
   // Everyone hears it with the plaque: `fight:resolving { busy, steps }`.
-  const stacks = new Map(); // fight key → [{ id, label, state }]
+  //
+  // **Revised (play feedback):** every step is named for what it is — the
+  // Ability and whose it is ("Wild Form (Bo)"), the Action ("Crush (Ana)"),
+  // the End Phase's parts — never "Start of turn". A turn moment lists the
+  // Abilities it will run up front (queued), each marked when it runs and
+  // dropped when its condition doesn't hold. The stack carries over between
+  // back-to-back jobs (a turn's end, the next start, its Action Phase) and
+  // stays up for a moment once everything is done (LINGER_MS), instead of
+  // vanishing between them.
+  const stacks = new Map(); // fight key → [{ id, label, state, tag }]
+  const lingering = new Map(); // fight key → timer: done, still shown
+  const LINGER_MS = 1600;
   let stepSeq = 0;
   const steps = {
     emit(key) {
       const [sceneId, mode] = key.split(':');
-      io.emit('fight:resolving', { sceneId: Number(sceneId), mode, busy: (busy.get(key) ?? 0) > 0, steps: (stacks.get(key) ?? []).map(({ label, state }) => ({ label, state })) });
+      // Shown while working, and while it lingers after.
+      const shown = (busy.get(key) ?? 0) > 0 || lingering.has(key);
+      io.emit('fight:resolving', { sceneId: Number(sceneId), mode, busy: shown, steps: (stacks.get(key) ?? []).map(({ label, state }) => ({ label, state })) });
     },
     // `arising`: it came up while something runs — placed before the queued ones.
-    add(key, label, state = 'queued', { silent = false, arising = false } = {}) {
+    // `tag`: who and what, so a queued step can be claimed when it runs.
+    add(key, label, state = 'queued', { silent = false, arising = false, tag = null } = {}) {
       const list = stacks.get(key) ?? [];
       stacks.set(key, list);
-      const step = { id: ++stepSeq, label, state };
+      const step = { id: ++stepSeq, label, state, tag };
       const at = arising ? list.findIndex((x) => x.state === 'queued') : -1;
       if (at >= 0) list.splice(at, 0, step);
       else list.push(step);
@@ -985,6 +999,50 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
       if (!silent) steps.emit(key);
     },
     clear: (key) => stacks.delete(key),
+    // The queued step with this tag, if any (→ its id).
+    claim(key, tag) {
+      return (stacks.get(key) ?? []).find((x) => x.tag === tag && x.state === 'queued')?.id ?? null;
+    },
+  };
+  // Runs `fn` as a named step of its own; kept when it did something (truthy), dropped otherwise.
+  const tracked = async (env, label, fn) => {
+    const sid = steps.add(env.key, label, 'now', { arising: true });
+    let out;
+    try {
+      out = await fn();
+    } finally {
+      if (out) steps.set(env.key, sid, 'done');
+      else steps.remove(env.key, sid);
+    }
+    return out;
+  };
+  // A turn moment's Abilities, listed up front by name (queued). → their ids.
+  const planSteps = (env, list) => {
+    const idx = patdContent();
+    const ids = [];
+    for (const { f, events } of list) {
+      if (abilitiesOff(f.id, env.rt.temps)) continue;
+      const down = atZero(f.hp);
+      for (const abilityId of f.abilityIds) {
+        if (ENGINE_NATIVE.has(abilityId)) continue;
+        const ability = idx.get(abilityId);
+        for (const rule of ability?.rules ?? []) {
+          if (!rule.events.some((e) => events.includes(e)) || isNativeRule(rule)) continue;
+          if (down && !rule.events.some((e) => WORKS_AT_ZERO.has(e))) continue;
+          ids.push(steps.add(env.key, `${ability.name} (${f.name})`, 'queued', { silent: true, tag: `${rule.id}@${f.id}` }));
+        }
+      }
+    }
+    if (ids.length) steps.emit(env.key);
+    return ids;
+  };
+  // Whatever of a moment's plan never ran (stale, or skipped before running) leaves the stack.
+  const unplan = (env, ids) => {
+    for (const id of ids) {
+      const step = (stacks.get(env.key) ?? []).find((x) => x.id === id);
+      if (step?.state === 'queued') steps.remove(env.key, id, { silent: true });
+    }
+    steps.emit(env.key);
   };
 
   // ---- running one fighter's rules for some events
@@ -1064,8 +1122,10 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     // What's moving people right now, for the square picks' titles ("One-Two Form (Move 2)").
     const prevSource = env.source;
     env.source = ability.name;
-    // Its line in the resolve stack — shown once it asks or does something.
-    const sid = steps.add(env.key, `${ability.name} (${fighter.name})`, 'now', { silent: true, arising: true });
+    // Its line in the resolve stack: the one queued for it (a turn's plan), or a new one.
+    const claimed = steps.claim(env.key, `${rule.id}@${fighter.id}`);
+    const sid = claimed ?? steps.add(env.key, `${ability.name} (${fighter.name})`, 'now', { silent: true, arising: true, tag: `${rule.id}@${fighter.id}` });
+    if (claimed) steps.set(env.key, sid, 'now');
     let ran = false;
     try {
       ran = Boolean((await runRule(rule, ctx))?.ran);
@@ -1075,7 +1135,7 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
       env.source = prevSource;
     }
     if (ran || lines.length) steps.set(env.key, sid, 'done');
-    else steps.remove(env.key, sid, { silent: true });
+    else steps.remove(env.key, sid);
     if (lines.length) {
       // Done for you: a notice (grey, fades fast — decided).
       await postCard('reminder', { title: ability.name, text: `${lines.join('; ')}.`, fighters: [{ name: fighter.name }], automatic: 'ability', notice: true });
@@ -1146,30 +1206,35 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
   //      discard up to 3 (decided: done for them — nobody would decline).
   async function runEndPhase(env, fighters, onTrap, active) {
     const notices = [];
+    // Each part a named step of the resolve stack as it happens ("End Phase: Bo: Trap, 1 damage").
+    const endNote = (text) => {
+      notices.push(text);
+      steps.add(env.key, `End Phase: ${text}`, 'done', { arising: true });
+    };
     // Copies on a Trap are destroyed by its damage (book p.71; phase E).
     const trapDamage = (x) => (env.world.deadlyAt(x.square) ? 3 : 1);
     for (const c of [...(env.world.copies?.() ?? [])].filter(onTrap)) {
       const r = await env.world.damage(c, trapDamage(c), null, { source: 'trap' });
-      notices.push(`${c.name}: Trap, ${r.destroyed ? 'destroyed' : (r.steps ?? []).join(', ')}`);
+      endNote(`${c.name}: Trap, ${r.destroyed ? 'destroyed' : (r.steps ?? []).join(', ')}`);
     }
     for (const f of fighters.filter(onTrap)) {
       if (stale(env)) return;
       const r = await env.world.damage(f, trapDamage(f), null, { source: 'trap' });
-      notices.push(`${f.name}: ${env.world.deadlyAt(f.square) ? 'Deadly Trap' : 'Trap'}, ${r.immune ? 'immune' : `${r.taken} damage${r.steps.length ? ` (${r.steps.join(', ')})` : ''}`}`);
+      endNote(`${f.name}: ${env.world.deadlyAt(f.square) ? 'Deadly Trap' : 'Trap'}, ${r.immune ? 'immune' : `${r.taken} damage${r.steps.length ? ` (${r.steps.join(', ')})` : ''}`}`);
     }
     if (active && (active.tokens.burning ?? 0) > 0) {
       const held = active.tokens.burning;
       const r = await env.world.damage(active, held, null, { source: 'burning' });
       const discard = Math.ceil(held / 2);
       await env.world.discardTokens(active, ['burning'], discard);
-      notices.push(`${active.name}: Burning, ${r.immune ? 'immune' : `${r.taken} damage${r.steps.length ? ` (${r.steps.join(', ')})` : ''}`}, discards ${discard}`);
+      endNote(`${active.name}: Burning, ${r.immune ? 'immune' : `${r.taken} damage${r.steps.length ? ` (${r.steps.join(', ')})` : ''}`}, discards ${discard}`);
     }
     for (const f of fighters) {
       if (f.challengeId == null || !fighterRt(env.rt, f.id).flags.damagedChallenger) continue;
       const challenger = fighters.find((x) => x.id === f.challengeId);
       await queued(() => run('UPDATE combatants SET challenge_id = NULL WHERE id = ? AND challenge_id = ?', [f.id, f.challengeId]));
       f.challengeId = null;
-      notices.push(`${f.name} attacked ${challenger?.name ?? 'their Challenger'}: the Challenge is removed`);
+      endNote(`${f.name} attacked ${challenger?.name ?? 'their Challenger'}: the Challenge is removed`);
     }
     const lost = [];
     for (const f of fighters) {
@@ -1183,13 +1248,13 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
       await env.world.discardTokens(f, ['speed'], n);
       lost.push(`${f.name} ${n}`);
     }
-    if (lost.length) notices.push(`Speed discarded — ${lost.join(', ')}`);
+    if (lost.length) endNote(`Speed discarded — ${lost.join(', ')}`);
     if (active && (active.tokens.fatigue ?? 0) > 0) {
       const start = fighterRt(env.rt, active.id).flags.startSquare;
       const still = start === undefined || (start == null && active.square == null) || (start && active.square && start.col === active.square.col && start.row === active.square.row);
       if (still) {
         const n = await env.world.discardTokens(active, ['fatigue'], 3);
-        if (n) notices.push(`${active.name} didn't move: discards ${n} Fatigue`);
+        if (n) endNote(`${active.name} didn't move: discards ${n} Fatigue`);
       }
     }
     if (notices.length) {
@@ -1383,6 +1448,7 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
         if (others.includes(ans)) {
           fighterRt(env.rt, active.id).fight.greaterFrenzyUsed = true;
           await save({ ...pick, abilityId2: ans });
+          nativeStep(env, `Greater Frenzy (${active.name})`);
           await postCard('reminder', { title: 'Greater Frenzy', text: `${active.name} also uses ${idx.get(ans)?.name} this turn.`, fighters: [{ name: active.name }], automatic: 'ability', notice: true });
         }
       }
@@ -1408,6 +1474,7 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
       const [kind, id] = String(ans).split(':');
       env.rt.usage[key] = 1;
       await save(kind === 'style' ? { ...pick, styleId: id } : { ...pick, abilityId: id });
+      nativeStep(env, `Improved Frenzy (${active.name})`);
       await postCard('reminder', { title: 'Improved Frenzy', text: `${active.name} changes their ${kind === 'style' ? 'Style' : 'Archetype'} to ${idx.get(id)?.name}.`, fighters: [{ name: active.name }], automatic: 'ability', notice: true });
     }
   }
@@ -1436,6 +1503,7 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     if (transcendant) {
       await env.world.gainShield(ally, 4);
       await env.world.heal(ally, env.world.context.healValue);
+      nativeStep(env, `Transcendant Spirit (${active.name})`);
       await postCard('reminder', { title: 'Transcendant Spirit', text: `${active.name}'s Super Move: ${ally.name}'s dice give their highest numbers, an 8 joins the Action Pool, Shield 4, and they heal.`, fighters: [{ name: active.name }, { name: ally.name }], automatic: 'ability', notice: true });
     }
     // "When you give your Heroic Spirit" (the Teacher's Mentor tokens …).
@@ -1450,6 +1518,8 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
   //     during the End Phase, you may keep up to two of them with a total
   //     value of 5 or less" — picked at the turn's end, back in the pool when
   //     their next turn starts.
+  // A rule the engine ran itself, shown in the resolve stack by name.
+  const nativeStep = (env, label) => steps.add(env.key, label, 'done', { arising: true });
   const hasRule = (f, ruleId) => !atZero(f.hp) && f.abilityIds.includes(ruleId.split('.rule-')[0]);
   async function turnStartPool(env, active) {
     const world = env.world;
@@ -1457,6 +1527,7 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     if (kept.length) {
       for (const v of kept) await world.addPoolNumber(active, v);
       fighterRt(env.rt, active.id).fight.keptNumbers = [];
+      nativeStep(env, `Persistant Freestyle (${active.name})`);
       await postCard('reminder', { title: 'Persistant Freestyle', text: `${active.name} kept ${kept.join(' and ')} from last turn.`, fighters: [{ name: active.name }], automatic: 'ability', notice: true });
     }
     if (hasRule(active, 'ability.freestyle-mythical.mythical-freestyle.rule-1')) {
@@ -1467,6 +1538,7 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
         await world.changePool(active, (d) => setPoolValue(d, p.index, value));
         lines.push(`${p.value} → ${value}`);
       }
+      if (lines.length) nativeStep(env, `Mythical Freestyle (${active.name})`);
       if (lines.length) await postCard('reminder', { title: 'Mythical Freestyle', text: `${active.name} re-rolls the mythical d12: ${lines.join(', ')}.`, fighters: [{ name: active.name }], automatic: 'ability', notice: true });
     }
   }
@@ -1489,6 +1561,7 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     while (picks.reduce((n, p) => n + p.value, 0) > 5) picks = picks.sort((a, b) => a.value - b.value).slice(0, -1);
     if (!picks.length) return;
     fighterRt(env.rt, active.id).fight.keptNumbers = picks.map((p) => p.value);
+    nativeStep(env, `Persistant Freestyle (${active.name})`);
     await postCard('reminder', { title: 'Persistant Freestyle', text: `${active.name} keeps ${picks.map((p) => p.value).join(' and ')} for their next turn.`, fighters: [{ name: active.name }], automatic: 'ability', notice: true });
   }
 
@@ -1512,8 +1585,8 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
       env.when = `Start of ${active.name}'s turn`;
       // A new Round: everyone out of play may come back for free; then the
       // active fighter, if still out, for 3 HP.
-      if (newRound) for (const f of fighters) await comeback(env, movers, f, { free: true });
-      await comeback(env, movers, active, { free: false });
+      if (newRound) for (const f of fighters.filter((x) => !x.square)) await tracked(env, `Comeback (${f.name})`, () => comeback(env, movers, f, { free: true }));
+      if (!active.square) await tracked(env, `Comeback (${active.name})`, () => comeback(env, movers, active, { free: false }));
     }
     // Where the turn began (the End Phase's Fatigue: "did not move").
     if (moment === 'start') fighterRt(rt, active.id).flags.startSquare = active.square ?? null;
@@ -1530,9 +1603,12 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     if (moment === 'start' && !stale(env)) await turnStartPool(env, active);
     if (moment === 'start' && !stale(env)) await frenzy(env, active, 'start');
     const order = [active, ...fighters.filter((f) => f.id !== active.id)];
+    // The Abilities this moment runs, by name, in the order they will run.
+    const planned = planSteps(env, order.map((f) => ({ f, events: turnEvents(moment, relationTo(f, active)) })));
     for (const f of order) await runFor(f, turnEvents(moment, relationTo(f, active)), env, { activeCharacter: active });
+    unplan(env, planned);
     // Phase 3 of the turn: still Taken Out? Heroic Spirit.
-    if (moment === 'start' && !stale(env)) await heroicSpirit(env, active);
+    if (moment === 'start' && !stale(env) && (!active.square || atZero(active.hp))) await tracked(env, `Heroic Spirit (${active.name})`, () => heroicSpirit(env, active).then(() => true));
     // "After you roll your Action Dice" (phase G): the turn's dice are on its board.
     if (moment === 'start' && !stale(env) && active.square && !atZero(active.hp)) {
       await frenzy(env, active, 'rolled');
@@ -1557,7 +1633,9 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     if (!active || stale(env)) return;
     env.when = `${active.name}'s Action Phase`;
     world.context.activeCharacter = active;
+    const planned = planSteps(env, [{ f: active, events: ['own_action_phase.start'] }]);
     await runFor(active, ['own_action_phase.start'], env, { activeCharacter: active });
+    unplan(env, planned);
     await env.save();
   }
 
@@ -1569,6 +1647,11 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     const prev = chains.get(key) ?? Promise.resolve();
     // **The "Resolving" plaque (decided, batch 4):** everyone is told when a
     // fight starts working through something and when it is all done.
+    // Still lingering from the last job: this one carries the same stack on.
+    if (lingering.has(key)) {
+      clearTimeout(lingering.get(key));
+      lingering.delete(key);
+    }
     const first = !(busy.get(key) > 0);
     busy.set(key, (busy.get(key) ?? 0) + 1);
     const sid = label ? steps.add(key, label, 'queued', { silent: true }) : null;
@@ -1589,8 +1672,23 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
           return;
         }
         busy.delete(key);
-        steps.clear(key);
-        io.emit('fight:resolving', { sceneId: fightRow.scene_id, mode: fightRow.mode, busy: false, steps: [] });
+        // Done: the stack stays up for a moment (all ticked), then goes —
+        // unless more work starts meanwhile and carries it on.
+        if ((stacks.get(key) ?? []).length) {
+          steps.emit(key);
+          lingering.set(
+            key,
+            setTimeout(() => {
+              lingering.delete(key);
+              if ((busy.get(key) ?? 0) > 0) return;
+              steps.clear(key);
+              io.emit('fight:resolving', { sceneId: fightRow.scene_id, mode: fightRow.mode, busy: false, steps: [] });
+            }, LINGER_MS)
+          );
+        } else {
+          steps.clear(key);
+          io.emit('fight:resolving', { sceneId: fightRow.scene_id, mode: fightRow.mode, busy: false, steps: [] });
+        }
         // The stack finished: whoever waits to Interrupt goes now.
         for (const hook of idleHooks) Promise.resolve(hook({ scene_id: fightRow.scene_id, mode: fightRow.mode })).catch((err) => console.error('idle hook', err));
       });
@@ -1702,7 +1800,7 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     },
     // The fights resolving now, for a (re)connecting viewer's plaque.
     resolvingNow() {
-      return [...busy.entries()].filter(([, n]) => n > 0).map(([k]) => ({ sceneId: Number(k.split(':')[0]), mode: k.split(':')[1], busy: true, steps: (stacks.get(k) ?? []).map(({ label, state }) => ({ label, state })) }));
+      return [...new Set([...[...busy.entries()].filter(([, n]) => n > 0).map(([k]) => k), ...lingering.keys()])].map((k) => [k]).map(([k]) => ({ sceneId: Number(k.split(':')[0]), mode: k.split(':')[1], busy: true, steps: (stacks.get(k) ?? []).map(({ label, state }) => ({ label, state })) }));
     },
     // Called with { scene_id, mode } whenever a fight's chain empties.
     onIdle(hook) {
@@ -1818,12 +1916,12 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     },
     // The active fighter's Action Phase began (after Early Movement): its rules.
     actionPhase(fightRow, activeId) {
-      return onChain(fightRow, () => runActionPhase(fightRow, activeId), 'Action Phase');
+      return onChain(fightRow, () => runActionPhase(fightRow, activeId));
     },
     // A fight began: forget any old fight state, then "start of combat" rules.
     startFight(fightRow) {
       reset(`${fightRow.scene_id}:${fightRow.mode}`);
-      return onChain(fightRow, () => runFightStart(fightRow), 'Start of combat');
+      return onChain(fightRow, () => runFightStart(fightRow));
     },
     // Damage from an Action to a fighter of this fight, on its chain.
     actionDamage(fightRow, row, amount) {
@@ -1832,7 +1930,7 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     // Queues the triggers of a turn moment on the fight's own chain (never awaited by the caller).
     schedule(fightRow, activeId, moment, opts = {}) {
       const tg = turnGen(`${fightRow.scene_id}:${fightRow.mode}`);
-      return onChain(fightRow, () => runTurn(fightRow, activeId, moment, tg, opts), moment === 'start' ? 'Start of turn' : 'End Phase');
+      return onChain(fightRow, () => runTurn(fightRow, activeId, moment, tg, opts));
     },
     // The turn is over (Next / Previous turn): its open questions close as
     // declined, with a note, and its still-running triggers ask nothing more.

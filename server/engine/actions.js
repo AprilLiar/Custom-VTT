@@ -566,6 +566,7 @@ export function createActionRunner(kit) {
   async function commitBoard(rollId) {
     // The resolve stack (batch 5): every placed Action is a step, queued up front.
     const stepOf = new Map(); // placement key → step id
+    let who = null; // whoever performs them, for the step names
     let stackKey = null;
     const finish = () => {
       for (const id of stepOf.values()) kit.steps?.remove(stackKey, id, { silent: true });
@@ -576,8 +577,10 @@ export function createActionRunner(kit) {
       const data = readData(row);
       data.paused = false;
       stackKey = `${fight.scene_id}:${fight.mode}`;
+      // Each Action named with whoever performs it ("Crush (Ana)").
+      who ??= (await one('SELECT c.name FROM combatants cb JOIN characters c ON c.id = cb.character_id WHERE cb.id = ?', [actingOn(row).combatantId]))?.name ?? '';
       for (const p of (data.placements ?? []).filter((x) => !x.committed)) {
-        if (!stepOf.has(p.key)) stepOf.set(p.key, kit.steps?.add(stackKey, patdContent().get(p.actionId)?.name ?? 'Action', 'queued', { silent: true }));
+        if (!stepOf.has(p.key)) stepOf.set(p.key, kit.steps?.add(stackKey, `${patdContent().get(p.actionId)?.name ?? 'Action'}${who ? ` (${who})` : ''}`, 'queued', { silent: true }));
       }
       const next = (data.placements ?? []).find((p) => !p.committed);
       if (next) kit.steps?.set(stackKey, stepOf.get(next.key), 'now');

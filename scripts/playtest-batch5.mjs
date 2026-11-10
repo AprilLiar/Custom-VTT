@@ -119,8 +119,10 @@ await sleep(2500);
 const cur = await current(gm);
 const anaRoll = cards.filter((c) => c.kind === 'stance_roll').at(-1).payload.roll_id;
 check('board:current gives the active fighter’s turn board', cur?.payload?.roll_id === anaRoll && cur.characterId === ana.id && cur.payload.combatant_id === ta.id && cur.payload.results.length > 0, JSON.stringify(cur));
-check('the turn’s start showed in the resolve stack', resolving.some((e) => e.busy && e.steps?.some((s) => s.label === 'Start of turn')), JSON.stringify(resolving.slice(0, 4)));
-check('…and the plaque is told when it is all done', resolving.at(-1)?.busy === false);
+// Revised: steps are named for what they are, never "Start of turn" (play feedback).
+const labels = resolving.flatMap((e) => (e.steps ?? []).map((x) => x.label));
+check('the resolve stack never shows a generic step ("Start of turn", "End Phase" alone, "Action Phase")', !labels.some((l) => /^(Start of turn|End Phase|Action Phase|Start of combat)$/.test(l)), JSON.stringify([...new Set(labels)]));
+check('…and with nothing to run, it simply goes', resolving.at(-1)?.busy === false);
 
 console.log('\n--- Mastermind Style: an ally performs it ---');
 await stage();
@@ -138,8 +140,10 @@ check('Ana (far away) pays; Cy, next to Bo, performs it: Bo is hit', f(tb.id).hp
 check('…said in a notice', cards.some((c) => c.kind === 'reminder' && c.payload.title === 'Mastermind Style' && /performs Damage for/.test(c.payload.text)), JSON.stringify(cards.slice(-4).map((c) => c.payload.title)));
 check('one ally, one enemy: nobody was asked who (only "you may Move 1" after)', !prompts.some((q) => q.kind === 'targets'), JSON.stringify(prompts.map((q) => [q.kind, q.title])));
 check('after the ally’s Action the Mastermind may Move 1', prompts.some((q) => q.kind === 'square' && /Mastermind Style \(Move 1\)/.test(q.title)), JSON.stringify(prompts.map((q) => [q.kind, q.title])));
-const withAction = resolving.find((e) => e.steps?.some((s) => s.label === 'Damage'));
-check('the Action is a step of the stack, then done', Boolean(withAction) && resolving.some((e) => e.steps?.some((s) => s.label === 'Damage' && s.state === 'done')), JSON.stringify(resolving.map((e) => e.steps)));
+const isDamage = (s) => s.label === `Damage (${ana.name})`;
+const withAction = resolving.find((e) => e.steps?.some(isDamage));
+check('the Action is a step of the stack, named with who performs it, then done', Boolean(withAction) && resolving.some((e) => e.steps?.some((s) => isDamage(s) && s.state === 'done')), JSON.stringify(resolving.map((e) => e.steps)));
+check('…the stack lingers, all ticked, before it goes; then the plaque is told it is all done', resolving.some((e) => e.busy && e.steps?.length && e.steps.every((x) => x.state === 'done')) && resolving.at(-1)?.busy === false, JSON.stringify(resolving.slice(-3)));
 check('a trigger that arises joins the stack (the total grows)', resolving.some((e) => (e.steps?.length ?? 0) >= 2 && e.steps.some((s) => /Mastermind Style/.test(s.label))), JSON.stringify(resolving.map((e) => e.steps?.map((s) => s.label))));
 
 console.log('\n--- Taken Out: no enemy can target them; "no valid targets" ---');

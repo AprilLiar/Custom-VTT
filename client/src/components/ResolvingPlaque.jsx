@@ -12,7 +12,9 @@ import { socket } from '../socket.js';
 // **The resolve stack (decided, batch 5):** the plaque names what is resolving
 // and where it is in the stack — "Step 2 of 5 · Jab" — and a tap opens the
 // whole list: done steps ticked, the current one lit, the queued ones below.
-// The total grows as new things arise (a trigger, a follow-on).
+// The total grows as new things arise (a trigger, a follow-on). Every step is
+// named for what it is ("Wild Form (Bo)", "Crush (Ana)"); once everything is
+// done the list stays a moment, ticked ("Done · 4 steps"), then fades.
 export default function ResolvingPlaque({ mode, sceneId }) {
   const [busy, setBusy] = useState(false);
   const [steps, setSteps] = useState([]);
@@ -48,6 +50,8 @@ export default function ResolvingPlaque({ mode, sceneId }) {
   });
   if (at < 0) at = steps.filter((s) => s.state === 'done').length - 1;
   const current = at >= 0 ? steps[at] : null;
+  // Everything resolved: the stack lingers a moment, ticked (the server says when it goes).
+  const finished = steps.length > 0 && steps.every((s) => s.state === 'done');
   return (
     <div
       role="status"
@@ -79,8 +83,16 @@ export default function ResolvingPlaque({ mode, sceneId }) {
         title={steps.length ? 'Show the whole stack' : undefined}
         className="flex items-center gap-1.5 px-3 py-1 text-left"
       >
-        <Loader2 size={13} className="shrink-0 animate-spin" aria-hidden />
-        {current ? (
+        {finished ? <Check size={13} className="shrink-0" aria-hidden /> : <Loader2 size={13} className="shrink-0 animate-spin" aria-hidden />}
+        {finished ? (
+          <>
+            <span className="shrink-0">Done</span>
+            <span className="min-w-0 truncate font-semibold normal-case tracking-normal text-emerald-100">
+              · {steps.length} step{steps.length === 1 ? '' : 's'}
+            </span>
+            {open ? <ChevronDown size={12} className="shrink-0" aria-hidden /> : <ChevronUp size={12} className="shrink-0" aria-hidden />}
+          </>
+        ) : current ? (
           <>
             <span className="shrink-0 tabular-nums">
               Step {at + 1} of {steps.length}

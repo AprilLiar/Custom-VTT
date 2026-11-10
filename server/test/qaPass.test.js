@@ -202,3 +202,34 @@ test('Sing Along at 4+: the target chooses a second option themselves (joint_cho
   assert.equal(pal.hp, 10, 'healed 2 (the singer’s pick)');
   assert.equal(pal.tokens.power, 2, 'and 2 tokens of the song (theirs)');
 });
+
+// ---- fixed after play: Crush did nothing; "choose N" Actions broke
+
+test('Crush: 6+ deals 3, 9+ deals 5 (its Gates are conditions of a switch)', async () => {
+  for (const [gate, left] of [[6, 5], [9, 3]]) {
+    const me = fighter(1, 'a', 0);
+    const foe = fighter(2, 'b', 1);
+    const crush = idx.get('action.form-power.crush');
+    await runRule({ id: crush.id, effect: crush.effect }, { world: world([me, foe]), self: me, state: {}, usage: {}, log: () => {}, ask: async (q) => [q.options[0].id], resolution: { gateRating: gate }, onUnsupported: (n) => assert.fail(`by hand: ${n.op}`) });
+    assert.equal(foe.hp, left, `at ${gate}`);
+  }
+});
+
+test('High Efficiency at 4+: all five, nothing asked; at 2: two, asked for two', async () => {
+  const run = async (gate) => {
+    const me = fighter(1, 'a', 0);
+    const foe = fighter(2, 'b', 1);
+    const asked = [];
+    const he = idx.get('action.form-machine.high-efficiency') ?? idx.content.actions.find((a) => a.name === 'High Efficiency');
+    await runRule({ id: he.id, effect: he.effect }, { world: world([me, foe]), self: me, state: {}, usage: {}, log: () => {}, ask: async (q) => (asked.push(q), q.kind === 'choose' ? q.options.slice(0, q.minimum).map((o) => o.id) : [q.options[0].id]), resolution: { gateRating: gate }, onUnsupported: () => {} });
+    return { me, foe, asked };
+  };
+  const all = await run(4);
+  assert.ok(!all.asked.some((q) => q.kind === 'choose'));
+  assert.equal(all.me.tokens.iron, 1);
+  assert.equal(all.foe.hp, 7);
+  const two = await run(2);
+  const q = two.asked.find((x) => x.kind === 'choose');
+  assert.equal(q.minimum, 2);
+  assert.equal(q.maximum, 2);
+});

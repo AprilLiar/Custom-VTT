@@ -726,7 +726,11 @@ async function targetsOf(v0, scope, ctx, label, { obstacles = false, hit = false
     // "One Wall placed by Walled In": one of what the binding holds, picked.
     const all = asList(evalValue({ ref: v.ref.slice(0, -4) }, scope)).filter((x) => x && typeof x === 'object' && x.id != null);
     list = all.length <= 1 ? all : await pickOneOf(all, scope, ctx, label);
-  } else list = asList(evalValue(v, scope)).filter((x) => x && typeof x === 'object' && x.id != null);
+  } else {
+    // A fighter given by id ("the enemy who held the Challenge you spent" — Not Good Enough).
+    const byId = (x) => (x != null && typeof x !== 'object' ? ctx.world.fighters().find((f) => String(f.id) === String(x)) ?? null : x);
+    list = asList(evalValue(v, scope)).map(byId).filter((x) => x && typeof x === 'object' && x.id != null);
+  }
   return obstacles ? list : list.filter((x) => !x.isObstacle || x.isCopy);
 }
 // "5+: each enemy within Range. 8+: each enemy you can see" — the selector of the highest Gate reached.
@@ -1103,8 +1107,17 @@ async function run(node, scope, ctx) {
       else if (node.else) await run(node.else, scope, ctx);
       return;
     case 'switch': {
+      const cases = node.cases ?? [];
+      // **Cases by condition** ("9+: … ; 6+: …" — Crush, Bow Down): the first
+      // whose condition holds (`match: 'first'`), or every one (`'all'`).
+      // Fixed: these never matched, so Crush and Bow Down did nothing.
+      if (cases.some((x) => x.condition)) {
+        const hits = cases.filter((x) => (x.condition ? Boolean(val(x.condition)) : Boolean(x.default)));
+        for (const c of node.match === 'all' ? hits : hits.slice(0, 1)) await run(c.effect, scope, ctx);
+        return;
+      }
       const m = val(node.match);
-      const c = (node.cases ?? []).find((x) => x.value === m || x.when === m) ?? (node.cases ?? []).find((x) => x.default);
+      const c = cases.find((x) => x.value === m || x.when === m) ?? cases.find((x) => x.default);
       if (c) await run(c.effect, scope, ctx);
       return;
     }
@@ -1127,9 +1140,21 @@ async function run(node, scope, ctx) {
       return;
     }
     case 'choose': {
+      // How many are chosen may depend on the Gate ("4+: Choose all five
+      // instead" — High Efficiency, Firing Wild, Beyond Human): evaluated now.
+      // Fixed: the formula used to reach the prompt as it was, and the pick broke.
       const options = node.options.map((o, i) => ({ id: o.id, label: describe(o.effect) || `Option ${i + 1}` }));
-      const ans = await ctx.ask({ kind: 'choose', fighter: scope.self, title: ctx.ability?.name ?? 'Choose', text: (node.maximum ?? 1) > 1 ? `Choose ${node.minimum ?? 1}–${node.maximum}.` : 'Choose one.', options, minimum: node.minimum ?? 1, maximum: node.maximum ?? 1 });
-      const ids = asList(ans).map(String);
+      const max = Math.max(0, Math.min(options.length, Math.round(Number(val(node.maximum ?? 1)) || 0)));
+      const min = Math.max(0, Math.min(max, Math.round(Number(val(node.minimum ?? 1)) || 0)));
+      if (!max) return;
+      // All of them: nothing to ask.
+      const ans =
+        min === options.length
+          ? options.map((o) => o.id)
+          : await ctx.ask({ kind: 'choose', fighter: scope.self, title: ctx.ability?.name ?? 'Choose', text: max > 1 ? (min === max ? `Choose ${max}.` : `Choose ${min}–${max}.`) : 'Choose one.', options, minimum: min, maximum: max });
+      const ids = asList(ans).map(String).slice(0, max);
+      // Too few picked: the first ones not picked make up the number.
+      for (const o of options) if (ids.length < min && !ids.includes(o.id)) ids.push(o.id);
       for (const o of node.options) if (ids.includes(o.id)) await run(o.effect, scope, ctx);
       return;
     }

@@ -179,7 +179,7 @@ const answer = async (q) => {
   return opts.slice(0, n).map((o) => o.id);
 };
 
-async function runIt(label, rule, { gate, self = 'me', event = {} } = {}) {
+async function runIt(label, rule, { gate, self = 'me', event = {}, lines = [] } = {}) {
   const w = makeWorld();
   const by = [];
   const ctx = {
@@ -188,14 +188,14 @@ async function runIt(label, rule, { gate, self = 'me', event = {} } = {}) {
     state: { mood: 'rage', moodToken: 'burning', song: 'power', weapon: 'club', ammo: 'tracer' },
     usage: {},
     ability: { id: rule.id, name: label },
-    log: () => {},
+    log: (l) => lines.push(l),
     ask: answer,
     askAs: () => answer,
     emit: async () => null,
     notify: async () => null,
     event: { activeCharacter: w.me, target: w.foe, attacker: w.foe, amount: 2, damage: 2, enemy: w.foe, enemiesDamaged: [w.foe], enemiesForcedMoved: [w.foe], alliesForcedMoved: [], actionTargets: [w.foe], enemyTargets: [w.foe], distinctTargetCount: 1, obstaclesDestroyed: [sq(5, 5)], controlledActor: w.foe, formerHolder: w.foe, die: { result: 2 }, ...event },
     resolution: { gateRating: gate },
-    payment: { rating: gate, poolNumbers: [gate], tokens: {}, hp: 1, additionalBasicTokens: 2, selectedOptionCount: 2, totalPoltergeistSpentIncludingCost: 1 },
+    payment: { rating: gate, poolNumbers: [gate], tokens: {}, hp: 1, challengeHolder: 3, additionalBasicTokens: 2, selectedOptionCount: 2, totalPoltergeistSpentIncludingCost: 1 },
     history: {},
     mustTarget: null,
     onUnsupported: (node) => by.push(node.op ?? 'step'),
@@ -234,6 +234,26 @@ test('every Action runs to the end at its lowest and highest Gate, with nothing 
     }
   }
   assert.deepEqual([...new Set(failures)], []);
+});
+
+// **Something happens (fixed after Crush did nothing):** at its highest Gate,
+// every Action that targets or changes something does at least one thing.
+// Exempt: those that only change the rules for a while or act through the
+// world's own calls (movement, placing), which this fake world doesn't log.
+test('every Action does something at its highest Gate — none resolves silently', async () => {
+  const quiet = [];
+  for (const x of C.actions ?? []) {
+    const lines = [];
+    const calls = [];
+    try {
+      await runIt(x.name, { id: x.id, effect: x.effect }, { gate: 10, lines });
+    } catch {
+      continue;
+    }
+    if (!lines.length && !calls.length && !/"op":"(move|teleport|teleport_to|push|pull|pull_until|swap_spaces|temporary|modify_rule|perform_action|place_obstacle|destroy_obstacle|replace_obstacle|move_obstacles|reduce_damage|split_incoming_damage|notify|schedule|register_trigger|return_to_play|remove_from_play|replay_start_effects|reroll_die|reroll_dice|combine_pool_numbers|split_pool_number|set_pool_number|increase_pool_number|duplicate_pool_number|modify_pool_numbers|forcedObstacle)"/.test(JSON.stringify(x.effect)))
+      quiet.push(x.name);
+  }
+  assert.deepEqual(quiet, []);
 });
 
 test('every Super Move runs to the end, with nothing by hand (Transcendant Spirit: the engine’s own)', async () => {
