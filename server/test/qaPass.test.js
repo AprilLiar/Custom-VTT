@@ -233,3 +233,31 @@ test('High Efficiency at 4+: all five, nothing asked; at 2: two, asked for two',
   assert.equal(q.minimum, 2);
   assert.equal(q.maximum, 2);
 });
+
+// ---- the branch audit's finds
+
+test('XYZ-BURST paid with Iron only: heal X, no Teleport, 0 damage — never a missing number', async () => {
+  const me = fighter(1, 'a', 0);
+  const foe = fighter(2, 'b', 1);
+  const w = world([me, foe]);
+  w.teleport = async () => assert.fail('no Speed was paid: no teleport');
+  const xyz = idx.content.actions.find((a) => a.name === 'XYZ-BURST');
+  await runRule({ id: xyz.id, effect: xyz.effect }, { world: w, self: me, state: {}, usage: {}, log: () => {}, ask: async (q) => [q.options[0].id], payment: { tokens: { iron: 3 } }, resolution: { gateRating: 3 }, onUnsupported: () => {} });
+  assert.equal(me.hp, 11, 'healed 3');
+  assert.equal(foe.hp, 8, 'Z = 0: no damage, and HP is still a number');
+});
+
+test('First Aid can only target an ally once per turn', async () => {
+  const me = fighter(1, 'a', 0);
+  const pal = fighter(2, 'a', 2);
+  const w = world([me, pal]);
+  w.forced = async () => null;
+  const aid = idx.content.actions.find((a) => a.name === 'First Aid');
+  const usage = {};
+  // (Range 1-5: never yourself — this test world doesn't measure it, so the ally is picked by name.)
+  const go = () => runRule({ id: aid.id, effect: aid.effect }, { world: w, self: me, ability: aid, state: {}, usage, log: () => {}, ask: async (q) => [q.options.find((o) => o.id === '2')?.id ?? q.options[0].id], resolution: { gateRating: 4 }, onUnsupported: () => {} });
+  await go();
+  assert.equal(pal.hp, 10, 'healed once');
+  await go();
+  assert.equal(pal.hp, 10, 'not a second time this turn');
+});

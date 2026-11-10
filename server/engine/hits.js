@@ -206,7 +206,8 @@ export function createHits({ ask, emitEvent }) {
     if (r.iron > 0) {
       await T('self.iron_tokens_spent', target, { amount: r.iron + (r.ironForm ?? 0), attacker });
       await T('self.hit_reduced', target, { attacker });
-      if (enemy) await T('self.hit_reduced_from_enemy', target, { attacker });
+      // (`enemy`: who it came from — Artistic Style reads it; it never fired without.)
+      if (enemy) await T('self.hit_reduced_from_enemy', target, { attacker, enemy: attacker });
       await T('self.damage_reduced_by_iron', target, { attacker, amount: r.iron });
     }
     if (r.absorbed > 0) {
@@ -233,7 +234,7 @@ export function createHits({ ask, emitEvent }) {
       if (source.kind === 'trap') await fire('enemy_in_range.trap_damage_taken', target, { target, amount: r.amount });
       if (attacker) {
         await fire('self.damage_dealt', attacker, { target, amount: r.amount, damage: r.amount });
-        if (enemy) await fire('self.damage_dealt_to_enemy', attacker, { target, amount: r.amount });
+        if (enemy) await fire('self.damage_dealt_to_enemy', attacker, { target, enemy: target, amount: r.amount });
         if (attack) await fire('self.action_or_ability.damage_dealt', attacker, { target, amount: r.amount });
       }
       if (bled) await T('self.bleed', target, {});

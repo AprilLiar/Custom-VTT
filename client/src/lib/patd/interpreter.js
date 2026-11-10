@@ -305,14 +305,14 @@ const REF_OK = [
   /^context\.heroicSpiritRecipient$/,
 ];
 const OPERATORS = {
-  add: (a) => a.reduce((x, y) => x + y, 0),
-  subtract: ([a, b]) => a - b,
-  multiply: (a) => a.reduce((x, y) => x * y, 1),
-  divide: ([a, b]) => (b ? a / b : 0),
-  floor: ([a]) => Math.floor(a),
-  ceil: ([a]) => Math.ceil(a),
-  min: (a) => Math.min(...a),
-  max: (a) => Math.max(...a),
+  add: (a) => a.reduce((x, y) => num(x) + num(y), 0),
+  subtract: ([a, b]) => num(a) - num(b),
+  multiply: (a) => a.reduce((x, y) => num(x) * num(y), 1),
+  divide: ([a, b]) => (num(b) ? num(a) / num(b) : 0),
+  floor: ([a]) => Math.floor(num(a)),
+  ceil: ([a]) => Math.ceil(num(a)),
+  min: (a) => Math.min(...a.map(num)),
+  max: (a) => Math.max(...a.map(num)),
   eq: ([a, b]) => a === b,
   gt: ([a, b]) => a > b,
   gte: ([a, b]) => a >= b,
@@ -334,6 +334,10 @@ const OPERATORS = {
     return out;
   },
 };
+
+const ZERO_IF_MISSING = /^(payment\.tokens\.[a-z_]+|payment\.(hp|destroyedShieldValue|additionalBasicTokens|selectedOptionCount|totalPoltergeistSpentIncludingCost)|history\.(tokensDiscarded|damageDealt|damageDealtToTargetByThisAction|damageTakenByEach)|(self|targets\.[A-Za-z]+|bindings\.[A-Za-z]+)\.(tokens\.[a-z_]+|statusTokenCount|obstaclesDestroyedThisTurn|hpLostThisTurn))$/;
+// Numbers for arithmetic: anything missing counts as 0, never NaN.
+const num = (x) => (Number.isFinite(Number(x)) ? Number(x) : 0);
 
 // Operators that ask the board (the rule's owner and the world are in the scope).
 const WORLD_OPS = {
@@ -405,6 +409,13 @@ export function evalValue(v, scope) {
       return Boolean(who && scope.self && who.challengeId != null && String(who.challengeId) === String(scope.self.id));
     }
     const out = readPath(scope[head], rest);
+    // **A count nobody set is 0 (fixed after the branch audit):** a token kind
+    // not paid ("X is the number of Iron tokens spent" — XYZ-BURST paid without
+    // Iron), nothing discarded or dealt yet. It used to read as missing and turn
+    // "deal Z damage" into no number at all.
+    if (out === undefined && ZERO_IF_MISSING.test(v.ref)) return 0;
+    // An audit hook (server/test/branches.test.js): a value read that isn't there.
+    if (out === undefined && scope.trace) scope.trace('undefined', v.ref);
     // "If you are still at zero HP": a fighter's HP is its current bar's.
     if (rest[rest.length - 1] === 'hp' && out && typeof out === 'object' && 'current' in out) return out.current;
     return out;
@@ -534,6 +545,8 @@ export async function runRule(rule, ctx) {
 }
 function scopeFor(rule, ctx) {
   return {
+    // The audit hook (tests only): trace(kind, what, detail).
+    trace: ctx.trace ?? null,
     self: ctx.self,
     // For the operators that ask the board (WORLD_OPS).
     world: ctx.world,
@@ -680,6 +693,9 @@ function performCandidates(sel, scope, ctx, actor) {
   for (const o of owners) for (const a of world.actionsFor(o, { unique: Boolean(sel.unique), dice: Boolean(sel.diceAction) })) seen.set(a.id, a);
   let list = [...seen.values()];
   if (sel.excludeSelfAction) list = list.filter((a) => a.id !== ctx.ability?.id);
+  // "Other Actions cannot be used to perform Take Your Time": an Action's own
+  // conditions, judged as performed by another Action (fixed: never checked).
+  list = list.filter((a) => !(a.conditions ?? []).some((c) => JSON.stringify(c).includes('performedByAnotherAction')));
   if (sel.notSelectedByThisActionThisTurn) {
     const picked = ctx.usage[`picked:${ctx.ability?.id}:${scope.self.id}:turn`] ?? [];
     list = list.filter((a) => !picked.includes(a.id));
@@ -916,11 +932,15 @@ async function select(rawSel, scope, ctx, label = 'a target') {
   if (!c) return [];
   if (c.spaces) return selectSpaces(c.sel, scope, ctx, c.from);
   const picked = await pickFrom(c, scope, ctx, label);
+  const perTarget = (ctx.ability?.limits ?? []).find((l) => l.metric === 'times_targeted' && l.scope === 'per_target');
+  if (perTarget && ctx.usage) for (const f of picked) ctx.usage[targetedKey(ctx, f, perTarget)] = (ctx.usage[targetedKey(ctx, f, perTarget)] ?? 0) + 1;
   // Who this resolution targeted, each once ("an Action with exactly one target").
   const seen = (scope.history.targets ??= []);
   for (const f of picked) if (!seen.some((x) => String(x.id) === String(f.id))) seen.push(f);
   return picked;
 }
+
+const targetedKey = (ctx, f, l) => `targeted:${ctx.ability?.id}:${l.sharedAcrossUsers ? 'all' : ctx.self?.id}:${f.id}:${l.period === 'turn' ? 'turn' : l.period}`;
 
 // Who (or what) a selector allows right now: { sel, from, pool }, `spaces`
 // for a space selector, or null when its origin isn't on the board.
@@ -992,6 +1012,10 @@ function candidatesOf(rawSel, scope, ctx) {
   }
   // Dodged with Control (phase F): immune to this Action.
   if (ctx.immuneIds?.length) pool = pool.filter((f) => !ctx.immuneIds.includes(f.id));
+  // "First Aid can only target an ally once per turn" (a per-target limit —
+  // fixed: never enforced). Counted in the fight's usage, reset each turn.
+  const perTarget = (ctx.ability?.limits ?? []).find((l) => l.metric === 'times_targeted' && l.scope === 'per_target');
+  if (perTarget && ctx.usage) pool = pool.filter((f) => (ctx.usage[targetedKey(ctx, f, perTarget)] ?? 0) < (Number(perTarget.maximum) || 1));
   if (sel.range?.mode === 'nearest_to_event_former_holder') {
     // The nearest (the diamond grid) to whoever held your Challenge; ties are picked.
     const at = scope.event?.formerHolder?.square;
@@ -1102,10 +1126,13 @@ async function run(node, scope, ctx) {
     case 'sequence':
       for (const s of node.steps) if ((await run(s, scope, ctx)) === DECLINED) return DECLINED;
       return;
-    case 'if':
-      if (val(node.condition)) await run(node.then, scope, ctx);
+    case 'if': {
+      const yes = Boolean(val(node.condition));
+      scope.trace?.('if', node, yes);
+      if (yes) await run(node.then, scope, ctx);
       else if (node.else) await run(node.else, scope, ctx);
       return;
+    }
     case 'switch': {
       const cases = node.cases ?? [];
       // **Cases by condition** ("9+: … ; 6+: …" — Crush, Bow Down): the first
@@ -1113,6 +1140,7 @@ async function run(node, scope, ctx) {
       // Fixed: these never matched, so Crush and Bow Down did nothing.
       if (cases.some((x) => x.condition)) {
         const hits = cases.filter((x) => (x.condition ? Boolean(val(x.condition)) : Boolean(x.default)));
+        for (const x of cases) scope.trace?.('case', x, hits.includes(x));
         for (const c of node.match === 'all' ? hits : hits.slice(0, 1)) await run(c.effect, scope, ctx);
         return;
       }
@@ -1460,7 +1488,7 @@ async function run(node, scope, ctx) {
     // (engine/damage.js — Weakness, Power, Iron, Shield, Armor) and emits its
     // events; this step only says who hits whom, from what, and how.
     case 'damage': {
-      const n = val(node.amount);
+      const n = Math.max(0, num(val(node.amount)));
       for (const f of await targetsOf(node.target, scope, ctx, 'an enemy', { obstacles: true, hit: true })) {
         // A Wall or Rubble hit for 2+ in one hit is destroyed (book p.11; phase E).
         if (f.isObstacle && !f.isCopy) {
@@ -1615,6 +1643,8 @@ async function run(node, scope, ctx) {
       const fn = node.op === 'move' ? world.move : world.teleport;
       if (!fn) return unsupported(node, scope, ctx);
       const distance = await numOf(node.distance, scope, ctx, `${node.op === 'move' ? 'Move' : 'Teleport'} how many spaces?`);
+      // Zero spaces (XYZ-BURST paid without Speed): no movement — and no Fatigue spent on it.
+      if (!(num(distance) > 0)) return;
       const decline = scope.mayDecline;
       scope.mayDecline = false;
       for (const f of node.target ? await targetsOf(node.target, scope, ctx) : [scope.self]) {
@@ -1631,6 +1661,7 @@ async function run(node, scope, ctx) {
     case 'pull': {
       if (!world.forced) return unsupported(node, scope, ctx);
       const distance = await numOf(node.distance, scope, ctx, `${node.op === 'pull' ? 'Pull' : 'Push'} how many spaces?`);
+      if (!(num(distance) > 0)) return;
       const from = node.origin ? asList(val(node.origin))[0] : scope.self;
       const origin = sqOf(from) ?? scope.self.square ?? null;
       for (const f of await targetsOf(node.target, scope, ctx, 'an enemy', { obstacles: true })) {

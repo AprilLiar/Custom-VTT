@@ -4069,6 +4069,15 @@ The user's standing rule: **nothing is left "by hand"** — the core rules are f
    - `server/test/allRules.test.js` now also fails any Action that does nothing at its highest Gate, so a silent Action can't slip through again.
 3. **Locked obstacles are only a picture.** While the personal lock is on, obstacles take no pointer at all: a drag that starts on one pans the camera, and a tap reaches what is underneath. Placing new ones still works. (Revises batch 5's lock, which only stopped moving them.)
 
+4. **The silent-failure audit (after Crush).** Every Action, Super Move and Ability rule was run at every Gate 1–12, with different picks and in different situations (an enemy's or an ally's turn, Bleeding, an empty Action Pool, at zero HP). Each condition the interpreter met and each value it read that came back missing was traced, and every `event.*` value a rule reads was checked against what the engine really sends with that event.
+   - **Found and fixed:**
+     - **Artistic Style never triggered:** it reads "the enemy" from `self.damage_dealt_to_enemy` and `self.hit_reduced_from_enemy`, which never carried an `enemy` value. Both do now.
+     - **A count nobody set read as missing, not 0.** XYZ-BURST paid without Power, Speed or Iron fed "no number" into its damage, Teleport or heal. Missing token counts, HP paid, discards and damage so far now read as 0, and arithmetic never makes NaN.
+     - **A Move, Teleport, Push or Pull of 0 still ran its movement,** and could spend a Fatigue token for nothing. It now does nothing.
+     - **"Other Actions cannot be used to perform Take Your Time" was never checked.** Actions performed by other Actions (Remember Your Training, the Elder's, Gunkata) now leave it out.
+     - **"First Aid can only target an ally once per turn" was never enforced.** It is now, per ally, reset each turn.
+   - **Now permanent tests:** `server/test/branches.test.js` fails when any condition can never come out true, any conditional case can never run, or a rule reads a value that is never there. It also holds the engine's event contract (`ENGINE_EVENT_FIELDS`): a rule reading an `event.*` value its event doesn't carry fails the tests. The fake world is shared in `server/test/fakeWorld.js`; the interpreter has a test-only `trace` hook.
+
 ## Open items to decide later
 - **Panic at the Dojo assistant — details to settle in their phase**, with the default the build will use unless told otherwise:
   - **Turns per round once bars break:** settled (decided, revised): the book's rule, every bar keeps its turn. See Phase 5 as built.
