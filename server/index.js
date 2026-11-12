@@ -34,6 +34,7 @@ import { loadBoard, registerEventHandlers } from './events.js';
 import { fighterState, listMarks, registerDiceMarkHandlers, superStatus } from './diceMarks.js';
 import { loadAllDerived, setupFromDerived } from './fighterStances.js';
 import { controlsCharacter, dropAssignmentsTo, loadAssignments, setAssignment } from './control.js';
+import { drainFx } from './fx.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3001;
@@ -709,9 +710,19 @@ function stagePayloadFor(built, viewer) {
 // cross the wire to a non-GM socket even transiently, so this can't be a
 // single io.emit the way stage:updated used to be before Hidden existed.
 async function emitStageUpdated() {
+  // **Board animations (fx.js):** what the engine did since the last update,
+  // sent just before the stage it leads to — each viewer only the fighters
+  // they can see (a Hidden summon's never cross the wire).
+  const beats = drainFx();
   const built = await buildStagePayload();
   for (const viewerSocket of io.sockets.sockets.values()) {
-    viewerSocket.emit('stage:updated', stagePayloadFor(built, viewerSocket.data?.identity));
+    const payload = stagePayloadFor(built, viewerSocket.data?.identity);
+    if (beats.length) {
+      const seen = new Set([...payload.combatTokens.map((t) => t.id), ...payload.summons.map((x) => x.fight?.combatant_id).filter((id) => id != null)]);
+      const mine = beats.map((b) => ({ ...b, effects: b.effects.filter((e) => seen.has(e.combatantId)) })).filter((b) => b.effects.length);
+      if (mine.length) viewerSocket.emit('fight:effects', { beats: mine });
+    }
+    viewerSocket.emit('stage:updated', payload);
   }
 }
 

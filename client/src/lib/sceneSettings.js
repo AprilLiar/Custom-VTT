@@ -142,6 +142,40 @@ export function saveSceneShowNameplates(shown) {
   return next;
 }
 
+// --- Board animations speed, per device (decided) ---
+// 'normal', 'fast' (half the time) or 'off'. With no choice saved, a device
+// that asks for reduced motion starts at 'fast'.
+const FX_SPEED_KEY = 'vtt-board-fx-speed';
+export const FX_SPEEDS = ['normal', 'fast', 'off'];
+export function loadFxSpeed() {
+  try {
+    const v = localStorage.getItem(FX_SPEED_KEY);
+    if (FX_SPEEDS.includes(v)) return v;
+  } catch {
+    // Storage unavailable: the default below.
+  }
+  try {
+    if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return 'fast';
+  } catch {
+    // No matchMedia.
+  }
+  return 'normal';
+}
+export function saveFxSpeed(v) {
+  const next = FX_SPEEDS.includes(v) ? v : 'normal';
+  try {
+    localStorage.setItem(FX_SPEED_KEY, next);
+  } catch {
+    // Storage unavailable; the choice still holds for this session.
+  }
+  try {
+    window.dispatchEvent(new CustomEvent('vtt-fx-speed', { detail: next }));
+  } catch {
+    // No window (tests).
+  }
+  return next;
+}
+
 // --- Audio Player volume, per device ---
 //
 // **Per-device on purpose, and the one part of the Audio Player that is not

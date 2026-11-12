@@ -21,6 +21,7 @@ import { subscribeFighterDrag } from '../lib/combatDrag.js';
 import { cropOf } from '../lib/imageCrop.js';
 import CroppedImage from './CroppedImage.jsx';
 import FighterOverlay, { ArmorRings, ChallengeLock } from './FighterOverlay.jsx';
+import FighterFx from './fx/FighterFx.jsx';
 import { armorRings } from '../lib/panicTokens.js';
 import { MapTileLayer } from './MapTiles.jsx';
 import { isTakenOut } from '../lib/hpBars.js';
@@ -58,6 +59,8 @@ export default function CombatMap({
   tiles = [],
   // The combatant whose turn it is (a fight in this mode), or null.
   activeCombatantId = null,
+  // Board animations: the beat playing now (useBoardFx), or null.
+  fxBeat = null,
 }) {
   // The token whose panel is open (Phase 4). A click opens it; a drag closes it.
   const [selectedTokenId, setSelectedTokenId] = useState(null);
@@ -520,6 +523,22 @@ export default function CombatMap({
               </div>
             );
           });
+        })()}
+
+      {ready &&
+        fxBeat &&
+        (() => {
+          const centers = new Map(placed.map((t) => [t.id, tokenCenter(t)]));
+          return placed.map((t) => (
+            <FighterFx
+              key={`fx${t.id}`}
+              beat={fxBeat}
+              combatantId={t.id}
+              center={centers.get(t.id)}
+              diameter={tokenSize * (t.size ?? 1)}
+              centerOf={(id) => centers.get(id)}
+            />
+          ));
         })()}
 
       {paletteDrag && rootRect && (

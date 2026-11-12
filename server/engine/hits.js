@@ -166,6 +166,8 @@ export function createHits({ ask, emitEvent }) {
       });
       if (internals.spend && r.spend.power) await internals.spend(attacker, 'power', r.spend.power);
     }
+    // Board animations: the target's Shield, Iron and HP below are one beat.
+    const shown = internals.hitFx ? await internals.hitFx.begin(target) : null;
     const usedTemp = r.armor?.triggered && r.armor.usedTemp && r.armor.spent;
     if (r.spend.targetWeakness || r.spend.iron || r.spend.shield || usedTemp) {
       await internals.writeTokens(target, (t) => {
@@ -192,6 +194,17 @@ export function createHits({ ask, emitEvent }) {
         bled = await internals.bleedCheck(target, before, landed, row);
         fell = before.current > 0 && landed <= 0;
       }
+    }
+    if (internals.hitFx) {
+      await internals.hitFx.end(target, shown, {
+        amount: r.amount,
+        absorbed: r.absorbed ?? 0,
+        reduced: (r.iron ?? 0) + (r.ironForm ?? 0),
+        blocked: r.armor?.triggered ? (r.armor.blocked ?? 0) : 0,
+        broke: Boolean(r.broke),
+        immune: Boolean(r.immune),
+        attackerId: attacker && !attacker.isCopy ? attacker.id : null,
+      });
     }
 
     // ---- events (the attacker's own always; the target's unless the hit

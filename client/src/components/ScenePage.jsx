@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ArrowLeft, Eye, EyeOff, StickyNote } from 'lucide-react';
 import { useIsDesktop, useIsLandscape } from '../lib/useMediaQuery.js';
@@ -8,6 +8,7 @@ import NowPlaying from './NowPlaying.jsx';
 import { useAudioStatus } from '../lib/useAudioStatus.js';
 import { openAudioPanel } from '../lib/audioPanel.js';
 import { useStage } from '../lib/useStage.js';
+import { useBoardFx } from '../lib/useBoardFx.js';
 import {
   loadSceneHeightScale,
   loadSceneGapScale,
@@ -68,6 +69,10 @@ export default function ScenePage() {
   const { controls, controlled } = useControl();
   const identity = role === 'gm' ? { role: 'gm' } : role === 'player' ? { role: 'player', characterId } : undefined;
   const stage = useStage(identity);
+  // Board animations (decided): the beat playing, and the board held to it.
+  const fx = useBoardFx(stage != null);
+  const heldSummons = useMemo(() => (stage?.summons ?? []).map((x) => (x.fight ? { ...x, fight: fx.hold(x.fight) } : x)), [stage?.summons, fx.hold]);
+  const heldTokens = useMemo(() => (stage?.combatTokens ?? []).map((t) => (t.fight ? { ...t, fight: fx.hold(t.fight) } : t)), [stage?.combatTokens, fx.hold]);
 
   // A callback ref, not useRef: the orientation gate below swaps in a
   // completely different tree, so the stage element itself can go from
@@ -234,12 +239,12 @@ export default function ScenePage() {
     );
   }
 
-  const summons = stage?.summons ?? [];
+  const summons = heldSummons;
   // **Temp NPCs take no part in combat (decided):** they stay on the Scene as
   // figures, but never stand on a Simple Combat lane or join a fight.
   const laneSummons = summons.filter((s) => s.character_id != null);
   const drawings = stage?.drawings ?? [];
-  const combatTokens = stage?.combatTokens ?? [];
+  const combatTokens = heldTokens;
   // Combat mode is map only (decided): the backdrop, figures, drawings and
   // lane give way to the Combat Background, its grid and the tokens.
   const isCombat = sceneMode === 'combat';
@@ -365,6 +370,7 @@ export default function ScenePage() {
           tiles={stage?.tiles?.simple ?? []}
           activeCombatantId={sceneMode === 'simple' ? (fight?.order?.[fight.turn_index]?.id ?? null) : null}
           armorUsed={sceneMode === 'simple' ? (fight?.armor_used ?? {}) : {}}
+          fxBeat={fx.playing?.mode === 'simple' ? fx.playing : null}
         />
       )}
       {/* Likewise the Combat map stays mounted once seen, hidden outside
@@ -385,6 +391,7 @@ export default function ScenePage() {
           tiles={stage?.tiles?.combat ?? []}
           activeCombatantId={isCombat ? (fight?.order?.[fight.turn_index]?.id ?? null) : null}
           armorUsed={isCombat ? (fight?.armor_used ?? {}) : {}}
+          fxBeat={isCombat && fx.playing?.mode === 'combat' ? fx.playing : null}
         />
         </div>
       )}

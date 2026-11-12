@@ -2852,6 +2852,7 @@ Clients emit; the server validates, writes, and broadcasts. The surviving contra
 - **Batch 5:** `fight:resolving` gains `steps [{ label, state: 'done' | 'now' | 'queued' }]`; `fight:reorder { mode, from, to }` (GM); `board:current { mode }` → ack `{ payload | null, characterId }`; map tiles in the stage payload gain `by` (who placed it), and `map_tile:move` / `map_tile:remove` only act on your own (the GM: any). Column `map_tiles.placed_by`.
 - **Batch 3:** `move:undo` (ack), `fight:active_range { mode }` (ack → `{ combatantId, squares }`); `move:reach` gains `canUndo`; target prompts gain `mode`, `area` and squares on their options; `pick:view` / `pick:clear` (io.emit) and `move:view_end` show every board pick to everyone.
 - **Interrupts:** `interrupt:offers` (ack), `react:open` (ack: `{ payload, clusters }` or `{ queued: true }`), `react:pass`, `interrupt:cancel { mode }` (GM) → `stage:updated` (`fights[mode].interrupt = { active, queue } | null`); `interrupt:open { mode, combatantId, by, payload, clusters }` (io.emit) when a queued Interrupt's turn comes (play feedback batch 2).
+- **Board animations:** `fight:effects { beats: [{ id, sceneId, mode, effects: [{ id, kind, combatantId, before, after, data }] }] }` (per socket, only fighters that viewer can see), sent by `emitStageUpdated` just before the `stage:updated` it leads to. See Board animations.
 - **Combat tab:** `combat_profile:update` → `combat_profile:updated`; `combat_reminder:create|update|delete` → `combat_reminders:updated`; `combat_stance:create|update|delete` → `combat_stances:updated`.
 - **GM tools:** `image:reencode`.
 - **Events tab:** `event_lane:create|update|move|delete` (GM), `event_note:create|update|delete|move` → `events:updated` (each socket gets its own board: GM-only lanes go only to the GM).
@@ -4077,6 +4078,40 @@ The user's standing rule: **nothing is left "by hand"** — the core rules are f
      - **"Other Actions cannot be used to perform Take Your Time" was never checked.** Actions performed by other Actions (Remember Your Training, the Elder's, Gunkata) now leave it out.
      - **"First Aid can only target an ally once per turn" was never enforced.** It is now, per ally, reset each turn.
    - **Now permanent tests:** `server/test/branches.test.js` fails when any condition can never come out true, any conditional case can never run, or a rule reads a value that is never there. It also holds the engine's event contract (`ENGINE_EVENT_FIELDS`): a rule reading an `event.*` value its event doesn't carry fails the tests. The fake world is shared in `server/test/fakeWorld.js`; the interpreter has a test-only `trace` hook.
+
+## Board animations (decided; phase 1 implemented)
+
+Every change the engine makes in a fight is shown as a short animation, so a chain of effects can be followed one by one on both the Simple Combat lanes and the Combat map.
+
+### Decisions (the user's answers)
+- **Signals:** the server sends an explicit effects log (`fight:effects`); the client never guesses from snapshots.
+- **Order:** one queue for the whole board, strict order. Effects of the same kind on different fighters, one right after another (an area hit, "every enemy gains Dizzy"), are one beat and play together. A fighter's token changes one right after another are one effect: several kinds rise side by side.
+- **The display is held:** while a fighter still has a beat waiting, the board shows them as before it (HP, held tokens, Shield, Challenge); each change appears exactly as its beat plays. Rules, buttons and prompts always use the real state.
+- **Pacing:** the client queues; the server never waits. With more than 4 beats waiting the queue plays at double speed; more than 30 waiting and the oldest are dropped.
+- **Audience:** everyone sees them. Per device, Settings → "Fight animations": Normal, Fast (half the time) or Off; a device asking for reduced motion starts at Fast (`vtt-board-fx-speed`). A viewer who joins or reconnects never replays old beats.
+- **Engine only:** manual edits (the token panel's +/−, HP buttons, dragging) stay instant. "Take damage" in a fight is resolved by the engine, so it animates.
+- **Sizing:** everything scales with the figure: a map token (zoom and the Giant's size included) or a lane miniature.
+- **No sound** for now.
+
+### The catalogue (Normal speed)
+| Event | Animation | ms | Phase |
+|---|---|---|---|
+| Tokens gained / lost | The token's picture with "+"/"−" (1) or "++"/"−−" (2+) beside it, about the figure's diameter, from its center, rising half a diameter while fading. Several kinds side by side. A Challenge discarded shows as "−" crossed swords. | 1000 | 1 ✓ |
+| Damage | Impact (flash and ring), then the red amount rises and fades; the HP bar drops with it. | 800 | 1 ✓ |
+| Shield absorbs | The shell flashes; the absorbed amount in blue beside the red rest. All absorbed: no impact. A hit that does nothing: "BLOCKED". | 800 | 1 ✓ |
+| Gain Shield | An energy shell closes over the whole figure from below, pulses once, fades quickly. | 1200 | 1 ✓ |
+| Challenge given | The target lock (Challenge holder → Challenger) plays, then fades fast. | 600 | 1 ✓ |
+| Heal / HP paid | Green "+N" rises (paid HP is a plain damage beat). | 800 | 1 ✓ |
+| Shield broken, Armor ring triggers, bar break (scaled shatter), Dizzy burst, Taken Out slam, returned to play | | 500–900 | 2 |
+| Own move, push/pull with streaks and wall impact, teleport flash, swap, obstacles placed/moved/destroyed, Copies created/destroyed | positions held too | 160–500 | 3 |
+| Turn start ring + name, Action lunge + trails, Super Move banner across the board | | 450–1500 | 4 |
+
+### As built (phase 1)
+- **Server — `server/fx.js`:** `recordFx` collects effects `{ id, sceneId, mode, kind, combatantId, before, after, data }`; `before`/`after` are the fighter's shown state (`{ tokens, hp, challenge_id }`). `drainFx` groups them into beats (`groupBeats`). `muteFx`/`unmuteFx` let a meaning-level effect collect a fighter's lower-level changes.
+- **Where they are recorded (`server/triggers.js` world):** `writeTokens` (kind `tokens`, or `shield` from `gainShield`), `changeHp` (`heal`, or `damage` for HP paid), `challenge` (`challenge`), `removeChallenge` (a `tokens` loss of `challenge`). A hit (`engine/hits.js resolveHit`) wraps the target's Shield, Iron and HP in one `damage` effect via `internals.hitFx` (`data`: `amount, absorbed, reduced, blocked, broke, immune, attackerId`); the attacker's spent Power and Weakness are a separate token beat.
+- **Sent:** `emitStageUpdated` (server/index.js) drains, filters per viewer and emits `fight:effects` just before `stage:updated`.
+- **Client:** `client/src/lib/boardFx.js` (pure: durations, `playMs`, `enqueue`, `heldFight`), `client/src/lib/useBoardFx.js` (the queue; ScenePage holds `combatTokens` and `summons` through `fx.hold`), `client/src/components/fx/FighterFx.jsx` (TokenFloat, DamagePop, ShieldShell, NumberRise, ChallengeFlash), drawn per fighter by `CombatMap.jsx` and `SimpleCombatLane.jsx` (`fxBeat`).
+- **Tests:** `server/test/boardFx.test.js`; `scripts/playtest-damage.mjs` checks the damage beat (2 to HP, 2 absorbed), the attacker's token beat, that a hit's Shield and Iron aren't separate beats, that manual edits play nothing, and that effects come before their stage update.
 
 ## Open items to decide later
 - **Panic at the Dojo assistant — details to settle in their phase**, with the default the build will use unless told otherwise:

@@ -7,6 +7,7 @@ import { isChoosing, pickAt, useChoosing } from '../lib/squarePick.js';
 import { socket } from '../socket.js';
 import { laneGeometry, laneLinesPath, moveOnLane, pointsAttr, slotAt } from '../lib/simpleLane.js';
 import FighterOverlay, { ArmorRings, ChallengeLock } from './FighterOverlay.jsx';
+import FighterFx from './fx/FighterFx.jsx';
 import { armorRings } from '../lib/panicTokens.js';
 import { MapTileLayer } from './MapTiles.jsx';
 import { isTakenOut } from '../lib/hpBars.js';
@@ -48,6 +49,8 @@ export default function SimpleCombatLane({
   tiles = [],
   // The combatant whose turn it is (a fight in this mode), or null.
   activeCombatantId = null,
+  // Board animations: the beat playing now (useBoardFx), or null.
+  fxBeat = null,
 }) {
   // The miniature whose token panel is open (Phase 4). Click opens, drag closes.
   const [selectedSummonId, setSelectedSummonId] = useState(null);
@@ -276,6 +279,8 @@ export default function SimpleCombatLane({
             bottom: seg.center.y + size.plinthRx * 0.32,
             mid: { x: seg.center.x, y: seg.center.y - imgH * 0.5 },
             icon: Math.max(14, Math.min(24, size.width * 0.3)),
+            // The figure's own size, for its animations.
+            d: Math.min(size.width, imgH),
           });
         }
         const byCombatant = new Map(summons.filter((s) => s.fight?.combatant_id != null).map((s) => [s.fight.combatant_id, s]));
@@ -291,6 +296,18 @@ export default function SimpleCombatLane({
               {/* Only during the Challenge holder's own turn (decided). */}
               {target && activeCombatantId != null && s.fight.combatant_id === activeCombatantId && (
                 <ChallengeLock from={box.mid} to={target.mid} radius={target.icon * 1.4} />
+              )}
+              {fxBeat && (
+                <FighterFx
+                  beat={fxBeat}
+                  combatantId={s.fight.combatant_id}
+                  center={box.mid}
+                  diameter={box.d}
+                  centerOf={(id) => {
+                    const o = byCombatant.get(id);
+                    return o ? boxes.get(o.id)?.mid : null;
+                  }}
+                />
               )}
               <FighterOverlay
                 name={s.name}

@@ -29,6 +29,9 @@ import {
   loadSceneSizeScale,
   saveSceneSizeScale,
   loadSceneShowNameplates,
+  loadFxSpeed,
+  saveFxSpeed,
+  FX_SPEEDS,
   saveSceneShowNameplates,
   TIMESTAMP_DURATION_MIN,
   TIMESTAMP_DURATION_MAX,
@@ -225,6 +228,7 @@ export default function SettingsPage() {
   const [sceneGapScale, setSceneGapScale] = useState(loadSceneGapScale);
   const [sceneSizeScale, setSceneSizeScale] = useState(loadSceneSizeScale);
   const [sceneShowNameplates, setSceneShowNameplates] = useState(loadSceneShowNameplates);
+  const [fxSpeed, setFxSpeed] = useState(loadFxSpeed);
   const [timestampDuration, setTimestampDuration] = useState(loadTimestampDuration);
   const [audioVolume, setAudioVolume] = useState(loadAudioVolume);
 
@@ -415,6 +419,22 @@ export default function SettingsPage() {
             className="h-4 w-4"
           />
           Show name plates over characters
+        </label>
+
+        {/* Board animations (decided): per device — Normal, Fast (half the time) or Off. */}
+        <label className="flex items-center gap-2 text-sm text-zinc-300">
+          Fight animations
+          <select
+            value={fxSpeed}
+            onChange={(e) => setFxSpeed(saveFxSpeed(e.target.value))}
+            className="border border-zinc-700 bg-zinc-900 px-2 py-1 text-sm text-zinc-200"
+          >
+            {FX_SPEEDS.map((v) => (
+              <option key={v} value={v}>
+                {v === 'normal' ? 'Normal' : v === 'fast' ? 'Fast' : 'Off'}
+              </option>
+            ))}
+          </select>
         </label>
       </div>
 

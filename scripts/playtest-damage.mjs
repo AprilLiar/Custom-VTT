@@ -39,6 +39,18 @@ const stamp = Date.now();
 const gm = await connect({ role: 'gm' });
 const cards = [];
 gm.on('chat:card', (c) => cards.push(c));
+// Board animations: what the engine did (fight:effects, before each stage:updated).
+const beats = [];
+let effectsBeforeStage = 0;
+let pendingEffects = false;
+gm.on('fight:effects', (m) => {
+  beats.push(...m.beats);
+  pendingEffects = true;
+});
+gm.on('stage:updated', () => {
+  if (pendingEffects) effectsBeforeStage++;
+  pendingEffects = false;
+});
 gm.emit('scene:create', { name: `DM ${stamp}` });
 await sleep(300);
 const scene = (await jf('/api/scenes?role=gm')).find((s) => s.name === `DM ${stamp}`);
@@ -106,6 +118,15 @@ check('8 damage: Weakness −2, Power +2, Iron −1, Shield 2, Armor −3 → 2 
 check('the attacker spent their Weakness and Power (NPC: Auto)', !ft.tokens.weakness && !ft.tokens.power, JSON.stringify(ft.tokens));
 check('the target spent 1 Iron and the Shield broke; the Armor token stays', fm.tokens.iron === 1 && !fm.tokens.shield && fm.tokens.armor === 1, JSON.stringify(fm.tokens));
 check('the player was asked about Iron (0–2) and the Shield', prompts.some((x) => x.title === 'Reduce the hit' && x.options.length === 3) && prompts.some((x) => x.title === 'Shield'), JSON.stringify(prompts.map((x) => x.title)));
+{
+  const hit = beats.flatMap((b) => b.effects).filter((e) => e.kind === 'damage' && e.combatantId === tm.id).pop();
+  check('animations: one damage beat — 2 to HP, 2 absorbed by the Shield, before/after HP held', hit && hit.data.amount === 2 && hit.data.absorbed === 2 && hit.data.broke && hit.before.hp.current === hp0 && hit.after.hp.current === hp0 - 2 && hit.before.tokens.shield === 2 && !hit.after.tokens.shield, JSON.stringify(hit));
+  const atk = beats.flatMap((b) => b.effects).find((e) => e.kind === 'tokens' && e.combatantId === tt.id && e.data.changes.some((c) => c.key === 'power' && c.delta === -2));
+  check("animations: the attacker's Weakness and Power spent show as token losses", atk && atk.data.changes.some((c) => c.key === 'weakness' && c.delta === -1), JSON.stringify(atk));
+  check('animations: each batch of effects is followed by its stage update', effectsBeforeStage > 0 && !pendingEffects, `${effectsBeforeStage}`);
+  check('animations: manual token edits play nothing (engine only)', !beats.flatMap((b) => b.effects).some((e) => e.kind === 'tokens' && e.data.changes.some((c) => c.key === 'armor' && c.delta > 0)), '');
+  check("animations: the target's Shield and Iron are inside the damage beat, not separate token beats", !beats.flatMap((b) => b.effects).some((e) => e.kind === 'tokens' && e.combatantId === tm.id && e.data.changes.some((c) => c.key === 'shield' || c.key === 'iron')), JSON.stringify(beats.map((b) => b.effects.map((e) => [e.kind, e.combatantId]))));
+}
 check('the card tells the whole story', cards.some((c) => c.payload?.automatic === 'damage' && /Weakness −2, Power \+2, Iron −1, Shield absorbs 2 and breaks, Armor −3/.test(c.payload.text)), JSON.stringify(cards.filter((c) => c.payload?.automatic === 'damage').map((c) => c.payload.text)));
 
 token(tm.id, 'temp_armor', 1);

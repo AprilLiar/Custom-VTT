@@ -38,6 +38,7 @@ import { hasDiceCost } from '../client/src/lib/patd/tokenCost.js';
 import { ENGINE_NATIVE, continuousSupport, isIronAnySource, isNativeRule } from '../client/src/lib/patd/coverage.js';
 import { addPoolValue, livePool, setPoolValue, turnActions } from '../client/src/lib/patd/diceBoard.js';
 import { fighterState, readData as readBoardData, saveBoard, setPayableHook } from './diceMarks.js';
+import { muteFx, recordFx, slice, unmuteFx } from './fx.js';
 
 // The combat map's image size, by image hash (its playable bounds — phase D).
 const imageSizes = new Map();
@@ -316,17 +317,38 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     const copies = tiles.filter((t) => t.kind === 'copy').map(copyOf).filter(Boolean);
 
     const readRow = (id) => one('SELECT * FROM combatants WHERE id = ?', [id]);
-    const writeTokens = async (f, change) => {
+    // `kind`: the effect it shows as (board animations — fx.js): 'tokens', or 'shield' for a Shield gained.
+    const writeTokens = async (f, change, kind = 'tokens') => {
       await queued(async () => {
         const row = await readRow(f.id);
         if (!row) return;
-        const tokens = shapeFightState(row).tokens;
+        const was = shapeFightState(row);
+        const tokens = { ...was.tokens };
         change(tokens);
         for (const k of Object.keys(tokens)) if (!(tokens[k] > 0)) delete tokens[k];
         await run('UPDATE combatants SET tokens = ? WHERE id = ?', [JSON.stringify(tokens), f.id]);
         f.tokens = { ...tokens };
+        const after = { ...slice(was), tokens: { ...tokens } };
+        if (kind === 'shield' && !((tokens.shield ?? 0) > (was.tokens.shield ?? 0))) kind = 'tokens';
+        recordFx({ sceneId, mode, kind, combatantId: f.id, before: slice(was), after, data: kind === 'shield' ? { shield: tokens.shield ?? 0 } : {} });
       });
       markDirty();
+    };
+    // A fighter's shown state now (board animations: a hit's before/after).
+    const shownState = async (f) => slice(shapeFightState(await readRow(f.id)));
+    // A hit's Shield, Iron and HP show as one "damage" beat (engine/hits.js calls these round them).
+    const hitFx = {
+      begin: async (f) => {
+        if (f.isCopy) return null;
+        const before = await shownState(f);
+        muteFx(f.id);
+        return before;
+      },
+      end: async (f, before, data) => {
+        if (!before) return;
+        unmuteFx(f.id);
+        recordFx({ sceneId, mode, kind: 'damage', combatantId: f.id, before, after: await shownState(f), data });
+      },
     };
     const changeHp = async (f, delta) => {
       let result = { landed: null, before: null };
@@ -337,6 +359,10 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
         if (before.max == null) return;
         const next = applyHpDelta(before, delta).state;
         await saveHp(f.id, next);
+        // Board animations: HP paid or healed (a hit records its own "damage").
+        const was = shapeFightState(row);
+        const shown = shapeFightState({ ...row, hp_max: next.max, hp_current: next.current, hp_bars: next.bars, hp_broken: next.broken, dizzy: next.dizzy ? 1 : 0 });
+        if (delta) recordFx({ sceneId, mode, kind: delta > 0 ? 'heal' : 'damage', combatantId: f.id, before: slice(was), after: slice(shown), data: { amount: Math.abs(delta) } });
         result = { before, landed: before.current + delta, row };
         f.bleeding = next.current <= weight.bleed;
         f.dizzy = Boolean(next.dizzy);
@@ -583,7 +609,7 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
         return taken;
       },
       // A new Shield replaces the old or raises it by 1 — whichever is more.
-      gainShield: (f, v) => (f.isCopy ? null : writeTokens(f, (t) => (t.shield = Math.min(capOf('shield'), Math.max(Number(v) || 0, (t.shield ?? 0) + 1))))),
+      gainShield: (f, v) => (f.isCopy ? null : writeTokens(f, (t) => (t.shield = Math.min(capOf('shield'), Math.max(Number(v) || 0, (t.shield ?? 0) + 1))), 'shield')),
       // Temporary Armor is binary (book p.24): you have it or you don't.
       tempArmor: (f) => (f.isCopy ? null : writeTokens(f, (t) => (t.temp_armor = 1))),
       heal: async (f, n) => {
@@ -644,7 +670,7 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
           await destroyCopy(f, attacker);
           return { taken: dmg, toHp: dmg, dealt: dmg, steps: [...steps, 'the Copy is destroyed'], destroyed: true };
         }
-        return hits.resolveHit(world.env, { writeTokens, changeHp, bleedCheck, inPit, spend: world.spend, spendable: world.spendable }, f, n, attacker, opts);
+        return hits.resolveHit(world.env, { writeTokens, changeHp, bleedCheck, inPit, spend: world.spend, spendable: world.spendable, hitFx }, f, n, attacker, opts);
       },
       // **Obstacles (phase E).** The legal squares for a placement, the obstacles
       // in range, and the changes — all by the book's stacking (mapTiles.js).
@@ -865,7 +891,11 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
           });
           if ((Array.isArray(keep) ? keep[0] : keep) === 'old') return { given: true, kept: false };
         }
-        await queued(() => run('UPDATE combatants SET challenge_id = ? WHERE id = ?', [challenger.id, target.id]));
+        await queued(async () => {
+          const was = shapeFightState(await readRow(target.id));
+          await run('UPDATE combatants SET challenge_id = ? WHERE id = ?', [challenger.id, target.id]);
+          recordFx({ sceneId, mode, kind: 'challenge', combatantId: target.id, before: slice(was), after: { ...slice(was), challenge_id: challenger.id }, data: { challengerId: challenger.id } });
+        });
         target.challengeId = challenger.id;
         markDirty();
         return { given: true, kept: true };
@@ -886,7 +916,11 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
         if (!world.challengeRemovable(holder, by)) return false;
         const challengerId = holder.challengeId;
         const challenger = byId(challengerId);
-        await queued(() => run('UPDATE combatants SET challenge_id = NULL WHERE id = ? AND challenge_id = ?', [holder.id, challengerId]));
+        await queued(async () => {
+          const was = shapeFightState(await readRow(holder.id));
+          await run('UPDATE combatants SET challenge_id = NULL WHERE id = ? AND challenge_id = ?', [holder.id, challengerId]);
+          recordFx({ sceneId, mode, kind: 'tokens', combatantId: holder.id, before: slice(was), after: { ...slice(was), challenge_id: null }, data: { changes: [{ key: 'challenge', delta: -1 }] } });
+        });
         holder.challengeId = null;
         markDirty();
         if (world.env) {
