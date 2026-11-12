@@ -227,11 +227,17 @@ export function createMoves({ ask, emitEvent, postCard }) {
     if (!a?.square || !b?.square || a.id === b.id) return false;
     const [sa, sb] = [a.square, b.square];
     // One "swap" beat for both (board animations), not out / in / move.
-    await m.setSquare(a, null, null);
-    await m.setSquare(b, sa, null);
-    await m.setSquare(a, sb, null);
+    // Quiet (play feedback 7): nobody sees one parked off the board mid-swap.
+    // The one parked is never a Copy (a Copy sent off the board is destroyed);
+    // two Copies are only tiles and need no parking.
+    const [p, q] = a.isCopy ? [b, a] : [a, b];
+    const [sp, sq] = p === a ? [sa, sb] : [sb, sa];
+    if (!p.isCopy) await m.setSquare(p, null, null, { quiet: true });
+    await m.setSquare(q, sp, null, { quiet: true });
     m.recordMove?.(a, sa, sb, 'swap');
     m.recordMove?.(b, sb, sa, 'swap');
+    // The last step shows the board (with both swap beats before it).
+    await m.setSquare(p, sq, null);
     note(`${a.name} and ${b.name} swap spaces`);
     await flush('Swap', a);
     return true;

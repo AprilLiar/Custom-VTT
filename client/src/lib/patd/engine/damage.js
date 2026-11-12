@@ -131,7 +131,7 @@ export const armorWouldBlock = (amount, a) => (a && !a.off ? armorStep(amount, a
 //     exploitWeakness (spend the target's Weakness as Power) }
 // `decide` (async, may be partial):
 //   split(amount) → { keep, give: [{ to, amount }] } | null   (Heroic Style)
-//   power({ max, amount }) → n
+//   power({ max, amount, free }) → n   (free: the target's Weakness, Exploit Weakness)
 //   iron({ max, amount, armorBlocks }) → n
 //   wouldTake(amount) → extra reduction (Iron Form's "1 less from any source")
 //   shield({ value, amount, armorBlocks }) → boolean
@@ -201,7 +201,10 @@ export async function resolveDamage(hit, decide = {}) {
     const theirs = hit.exploitWeakness ? tgt.tokens?.weakness ?? 0 : 0;
     const max = Math.min(powerAllowance(atk.mods ?? []), own + theirs);
     if (max > 0 && decide.power) {
-      const want = Math.max(0, Math.min(max, Math.trunc(Number(await decide.power({ max, amount: n })) || 0)));
+      // `free`: the target's Weakness (Exploit Weakness) costs nothing — spent
+      // even when the attacker spends no Power of their own (play feedback 7).
+      const free = Math.min(theirs, max);
+      const want = Math.max(0, Math.min(max, Math.trunc(Number(await decide.power({ max, amount: n, free })) || 0)));
       if (want > 0) {
         // Exploit Weakness: the target's Weakness first (it costs you nothing).
         out.spend.targetWeakness = Math.min(theirs, want);

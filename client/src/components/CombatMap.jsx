@@ -23,7 +23,7 @@ import CroppedImage from './CroppedImage.jsx';
 import FighterOverlay, { ArmorRings, ChallengeLock } from './FighterOverlay.jsx';
 import FighterFx from './fx/FighterFx.jsx';
 import TileFx from './fx/TileFx.jsx';
-import { lungeOf, moveHow, slideTransition } from '../lib/boardFx.js';
+import { lungeOf, moveHow, slideTransition, swapStepOf } from '../lib/boardFx.js';
 import { useLunge } from './fx/useLunge.js';
 import { armorRings } from '../lib/panicTokens.js';
 import { MapTileLayer } from './MapTiles.jsx';
@@ -476,7 +476,8 @@ export default function CombatMap({
           // Phase 4: an Action's attacker lunges at its first target.
           const act = fxBeat?.effects.find((e) => e.kind === 'action' && e.combatantId === t.id && e.data.targets?.length);
           const lungeTo = act ? placed.find((o) => o.id === act.data.targets[0]) : null;
-          const lunge = lungeTo && lungeTo.col != null ? lungeOf(center, tokenCenter(lungeTo), grid.size * fit.scale) : null;
+          const step = mv ? swapStepOf(mv, tokenCenter({ ...mv.data.from, size: t.size }), tokenCenter({ ...mv.data.to, size: t.size }), grid.size * fit.scale) : null;
+          const lunge = step ?? (lungeTo && lungeTo.col != null ? lungeOf(center, tokenCenter(lungeTo), grid.size * fit.scale) : null);
           return (
             <Token
               key={t.id}
@@ -486,7 +487,7 @@ export default function CombatMap({
               lifted={isDragged}
               animate={!viewMoved}
               slide={mv ? { how: moveHow(mv), ms: fxBeat.ms } : null}
-              lunge={lunge ? { ...lunge, ms: fxBeat.ms, key: `${fxBeat.id}:${act.id}` } : null}
+              lunge={lunge ? { ...lunge, ms: fxBeat.ms * (step ? 0.9 : 1), key: `${fxBeat.id}:${(step ? mv : act).id}` } : null}
               selected={selectedTokenId === t.id}
               canEdit={canDrag(t)}
               onPointerDown={(e) => onTokenDown(e, t)}

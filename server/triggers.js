@@ -160,6 +160,10 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
         area: request.area ?? null,
         // Skip offered even when a pick is required (batch 4): answers '__skip'.
         skippable: Boolean(request.skippable),
+        // 'actions': the options are Action ids, shown as their cards (play feedback 7).
+        display: request.display ?? null,
+        // With 'actions': the number they're performed at (their Gates reached light up).
+        rating: Number.isFinite(request.rating) ? request.rating : null,
       };
       const timer = setTimeout(() => finish(id, null), PROMPT_TIMEOUT_MS);
       pending.set(id, { resolve, prompt, timer, fightKey, tg });
@@ -408,7 +412,8 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     const recordTile = (change, kind, at, extra = {}) => recordFx({ sceneId, mode, kind: 'tile', combatantId: null, data: { change, tile: kind, at, ...extra } });
     // A fighter's new square (null: out of play — the Outside). `how` (board
     // animations): 'move', 'push', 'pull', 'teleport' or 'swap'; null shows nothing.
-    const setSquare = async (f, sq, how = 'move') => {
+    // `quiet`: no stage update yet (a swap's steps — the board shows only its end).
+    const setSquare = async (f, sq, how = 'move', { quiet = false } = {}) => {
       if (f.isCopy) {
         // A Copy moves as its tile; one that goes Outside is gone.
         if (!sq) return destroyCopy(f);
@@ -418,7 +423,7 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
         if (was && how) recordTile('moved', 'copy', at, { from: was, owner_id: f.ownerId, how });
         f.square = { col: sq.col, row: sq.row };
         markDirty();
-        await flushStage();
+        if (!quiet) await flushStage();
         return;
       }
       await queued(async () => {
@@ -436,7 +441,7 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
       f.square = sq ? { col: sq.col, row: sq.row } : null;
       // A move shows at once (decided): every step of an Action, one by one.
       markDirty();
-      await flushStage();
+      if (!quiet) await flushStage();
     };
     // World of Cardboard: a Wall smashed into Rubble.
     const smashWall = async (sq) => {
@@ -1918,7 +1923,7 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     async handCost(fightRow, combatantId, to) {
       const { env, byId, movers } = await envFor(fightRow);
       const f = byId(combatantId);
-      return { cost: f ? moves.handCost(movers, f, to, env) : null, speed: f?.tokens.speed ?? 0 };
+      return { cost: f ? moves.handCost(movers, f, to, env) : null, speed: f?.tokens.speed ?? 0, fatigue: f?.tokens.fatigue ?? 0 };
     },
     freeMove(fightRow, combatantId, to) {
       return onChain(fightRow, async () => {

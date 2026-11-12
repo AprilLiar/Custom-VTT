@@ -2022,12 +2022,15 @@ async function run(node, scope, ctx) {
         return;
       }
       let action = list[0];
+      // The number it is performed at (Remember Your Training: 4).
+      const rating = Number(val(node.rating)) || 4;
       if (list.length > 1) {
-        const ans = await ctx.ask({ kind: 'choose', fighter: scope.self, title: ctx.ability?.name ?? 'Perform an Action', text: `${actor.name} performs which Action?`, options: list.map((a) => ({ id: a.id, label: a.name })), minimum: 1, maximum: 1 });
+        // Shown as the Actions' cards (play feedback 7), so their text can be
+        // read, each with the Gates that number reaches lit.
+        const ans = await ctx.ask({ kind: 'choose', display: 'actions', rating, fighter: scope.self, title: ctx.ability?.name ?? 'Perform an Action', text: `${actor.name} performs which Action?`, options: list.map((a) => ({ id: a.id, label: a.name })), minimum: 1, maximum: 1 });
         action = list.find((a) => a.id === String(asList(ans)[0])) ?? list[0];
       }
       if (node.selector?.notSelectedByThisActionThisTurn) (ctx.usage[`picked:${ctx.ability?.id}:${scope.self.id}:turn`] ??= []).push(action.id);
-      const rating = Number(val(node.rating)) || 4;
       // "Spend that 10" (A Warrior's Death): the number added for it leaves the pool.
       if (node.payCost && world.changePool) {
         const added = (world.pool(actor) ?? []).filter((p) => p.added && p.value === rating).at(-1);

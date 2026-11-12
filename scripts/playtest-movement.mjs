@@ -256,10 +256,20 @@ const tooMuch = await ask(p, 'move:hand_pay', { combatantId: ta.id, col: 6, row:
 await stage();
 check('"Yes" is refused when the Speed held is not enough (nothing spent)', tooMuch.error && tok(ta.id).fight.tokens.speed === 2, JSON.stringify([tooMuch, tok(ta.id).fight.tokens]));
 const paid = await ask(p, 'move:hand_pay', { combatantId: ta.id, col: 5, row: 5 });
-p.emit('combat_token:move', { combatantId: ta.id, col: 5, row: 5 });
 await sleep(500);
 await stage();
-check('"Yes" spends it, and the move follows', paid.ok && paid.cost === 2 && !tok(ta.id).fight.tokens.speed && at(ta.id) === '5,5', JSON.stringify([paid, tok(ta.id).fight.tokens, at(ta.id)]));
+check('"Yes" is Free Movement: the server spends it and moves her (play feedback 7)', paid.ok && paid.moved && paid.cost === 2 && !tok(ta.id).fight.tokens.speed && at(ta.id) === '5,5', JSON.stringify([paid, tok(ta.id).fight.tokens, at(ta.id)]));
+
+console.log('\n--- a hand move with Speed while Fatigued (play feedback 7) ---');
+gm.emit('fighter:token', { ref: { combatantId: ta.id }, key: 'speed', delta: 4 });
+gm.emit('fighter:token', { ref: { combatantId: ta.id }, key: 'fatigue', delta: 1 });
+await sleep(400);
+const tired = await ask(p, 'move:hand_cost', { combatantId: ta.id, col: 5, row: 8 });
+check('the cost dialog knows she is Fatigued', tired.fatigue === 1 && tired.cost === 3, JSON.stringify(tired));
+const short = await ask(p, 'move:hand_pay', { combatantId: ta.id, col: 5, row: 8 });
+await sleep(600);
+await stage();
+check('Fatigue: she stops 2 spaces short on the same path (5,6), discards it, and pays only the 1 space moved', short.ok && at(ta.id) === '5,6' && !tok(ta.id).fight.tokens.fatigue && tok(ta.id).fight.tokens.speed === 3, JSON.stringify([short, at(ta.id), tok(ta.id).fight.tokens]));
 const nobody = await ask(p, 'move:hand_cost', { combatantId: tb.id, col: 1, row: 1 });
 check("…only for fighters you control", Boolean(nobody.error), JSON.stringify(nobody));
 

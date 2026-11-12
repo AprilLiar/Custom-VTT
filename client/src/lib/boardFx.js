@@ -178,3 +178,18 @@ export function lungeOf(from, to, unit) {
   const k = Math.min(len / 3, unit / 3) / len;
   return { dx: dx * k, dy: dy * k };
 }
+
+// **A swap (play feedback 7):** the two figures pass side by side, not
+// through each other — each steps aside (a quarter of a square, `unit` px),
+// opposite ways, at mid-way. → { dx, dy, times, ease } or null.
+export function swapStepOf(e, from, to, unit) {
+  if (!from || !to || e?.data?.how !== 'swap') return null;
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  const len = Math.hypot(dx, dy);
+  if (!len) return null;
+  // Perpendicular, the same side for both relative to the line a→b — so,
+  // moving opposite ways, they step apart.
+  const k = (unit * 0.25) / len;
+  return { dx: -dy * k, dy: dx * k, times: [0, 0.5, 1], ease: 'easeInOut' };
+}

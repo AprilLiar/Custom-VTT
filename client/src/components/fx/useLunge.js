@@ -1,7 +1,8 @@
 import { useEffect } from 'react';
 import { useAnimate } from 'framer-motion';
 
-// **An Action's lunge (board animations, phase 4):** `lunge` { dx, dy, ms, key }
+// **An Action's lunge (board animations, phase 4):** `lunge` { dx, dy, ms, key, times?, ease? }
+// (a swap's sidestep uses it too: out to the side at mid-way and back)
 // moves the element out toward the target and back, once per key. → the ref
 // to put on the element (its transform is the lunge's).
 export function useLunge(lunge) {
@@ -9,7 +10,7 @@ export function useLunge(lunge) {
   const key = lunge?.key ?? null;
   useEffect(() => {
     if (!key || !scope.current) return;
-    const controls = animate(scope.current, { x: [0, lunge.dx, 0], y: [0, lunge.dy, 0] }, { duration: lunge.ms / 1000, times: [0, 0.35, 1], ease: 'easeOut' });
+    const controls = animate(scope.current, { x: [0, lunge.dx, 0], y: [0, lunge.dy, 0] }, { duration: lunge.ms / 1000, times: lunge.times ?? [0, 0.35, 1], ease: lunge.ease ?? 'easeOut' });
     return () => controls.stop();
     // Only a new lunge (its key) starts it.
     // eslint-disable-next-line react-hooks/exhaustive-deps

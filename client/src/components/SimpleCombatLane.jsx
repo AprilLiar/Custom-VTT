@@ -9,7 +9,7 @@ import { laneGeometry, laneLinesPath, moveOnLane, pointsAttr, slotAt } from '../
 import FighterOverlay, { ArmorRings, ChallengeLock } from './FighterOverlay.jsx';
 import FighterFx from './fx/FighterFx.jsx';
 import TileFx from './fx/TileFx.jsx';
-import { lungeOf, moveHow, slideTransition } from '../lib/boardFx.js';
+import { lungeOf, moveHow, slideTransition, swapStepOf } from '../lib/boardFx.js';
 import { useLunge } from './fx/useLunge.js';
 import { armorRings } from '../lib/panicTokens.js';
 import { MapTileLayer } from './MapTiles.jsx';
@@ -255,6 +255,11 @@ export default function SimpleCombatLane({
               return mv ? { how: moveHow(mv), ms: fxBeat.ms } : null;
             })()}
             lunge={(() => {
+              // A swap: they pass side by side (play feedback 7).
+              const mv = fxBeat?.effects.find((e) => e.kind === 'move' && e.combatantId === s.fight?.combatant_id);
+              const at = (sq) => (sq ? geometry.segments[sq.slot ?? sq.row * 10 + sq.col]?.center : null);
+              const step = mv ? swapStepOf(mv, at(mv.data.from), at(mv.data.to), size.width * 1.4) : null;
+              if (step) return { ...step, ms: fxBeat.ms * 0.9, key: `${fxBeat.id}:${mv.id}` };
               // Phase 4: an Action's attacker lunges at its first target.
               const act = fxBeat?.effects.find((e) => e.kind === 'action' && e.combatantId === s.fight?.combatant_id && e.data.targets?.length);
               const target = act ? onLane.find((o) => o.fight?.combatant_id === act.data.targets[0]) : null;

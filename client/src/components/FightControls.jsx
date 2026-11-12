@@ -7,6 +7,8 @@ import DialogShell from './DialogShell.jsx';
 import { clearSquarePick, setPromptsOpen, setSquarePick, useSquarePick } from '../lib/squarePick.js';
 import { startFreeMove, stopFreeMove, undoFreeMove } from '../lib/freeMove.js';
 import DiceBoard from './actions/DiceBoard.jsx';
+import { ActionCard } from './actions/ActionCards.jsx';
+import { useContent } from '../lib/patd/useContent.js';
 
 // A fight's controls (Panic at the Dojo, Phase 5), for whichever fight the
 // Scene's mode shows — Simple Combat and Combat are separate fights.
@@ -459,7 +461,54 @@ export function TriggerPrompts() {
   // **Targets on the board (decided, batch 3):** when the targets stand on
   // the board, they're tapped there — no list.
   if (p.kind === 'targets' && p.mode && (p.options ?? []).some((o) => o.col != null)) return <TargetPromptBar key={p.id} prompt={p} />;
+  // "Perform an Action" (Remember Your Training …): the Actions as cards (play feedback 7).
+  if (p.kind === 'choose' && p.display === 'actions' && !(p.maximum > 1)) return <ActionPickDialog key={p.id} prompt={p} />;
   return <TriggerPromptDialog key={p.id} prompt={p} />;
+}
+
+// **Picking an Action to perform (play feedback 7):** every Action on offer
+// as its card, like the Interrupt board, so what each does can be read, with
+// the Gates the number it's performed at reaches lit (Remember Your Training:
+// 4); a tap on a card performs it.
+function ActionPickDialog({ prompt }) {
+  const idx = useContent();
+  const answer = (value) => socket.emit('trigger:answer', { id: prompt.id, answer: value });
+  const options = prompt.options ?? [];
+  return (
+    <DialogShell title={`${prompt.fighterName}: ${prompt.title}`} onClose={() => {}} maxWidth="max-w-3xl" portal zIndex={3100}>
+      {prompt.when && <p className="mb-1 font-display text-[10px] font-bold uppercase tracking-wide text-amber-300">{prompt.when}</p>}
+      {prompt.text && (
+        <p className="mb-3 whitespace-pre-line text-xs text-zinc-400">
+          {prompt.text} {prompt.rating != null ? `Performed at ${prompt.rating}: the Gates it reaches are lit. ` : ''}Tap a card to perform it.
+        </p>
+      )}
+      <div className="grid max-h-[65vh] grid-cols-1 gap-3 overflow-y-auto p-1.5 sm:grid-cols-2">
+        {options.map((o) => {
+          const action = idx?.get?.(o.id);
+          return (
+            <button
+              key={o.id}
+              type="button"
+              onClick={() => answer(o.id)}
+              className="block w-full text-left transition hover:brightness-110 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-400"
+              title={`Perform ${o.label}`}
+            >
+              {action ? (
+                <ActionCard action={action} compact lit={prompt.rating != null ? [prompt.rating] : null} />
+              ) : (
+                <span className="flex min-h-11 items-center panel-cut-sm border border-zinc-700 bg-zinc-900 px-3 font-display text-sm font-semibold uppercase text-zinc-100">{o.label}</span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+      {prompt.skippable && (
+        <button type="button" onClick={() => answer('__skip')} className="mt-3 min-h-11 w-full panel-cut-sm border border-zinc-700 bg-zinc-900 font-display text-sm font-semibold uppercase text-zinc-300 hover:border-brand-500">
+          Skip
+        </button>
+      )}
+    </DialogShell>
+  );
 }
 
 // **Picking targets on the board (decided, batch 3).** The Range shows faint

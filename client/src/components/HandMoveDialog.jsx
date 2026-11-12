@@ -6,7 +6,9 @@ import { socket } from '../socket.js';
 // need to spend Speed tokens on this move?". "No" just moves them (the GM or
 // player is fixing the board); "Yes x/y" spends x — the cheapest Free
 // Movement there, a diagonal counting 2 — of the y they hold, and is only
-// pressable when y covers x. The server checks it again before paying.
+// pressable when y covers x. The server checks it again, then makes it as
+// Free Movement itself (play feedback 7: Fatigue stops it 2 spaces short on
+// the same path), and the stage update moves the token.
 //
 // useHandMove() → [start, dialog]: call start({ combatantId, name, speed,
 // where, send, revert }) on a drop — `where` is { col, row } (map) or
@@ -18,7 +20,7 @@ export function useHandMove() {
     if (combatantId == null || !(speed > 0)) return send();
     socket.emit('move:hand_cost', { combatantId, ...where }, (r) => {
       if (!r || r.error) return send();
-      setAsk({ combatantId, name, where, cost: r.cost, speed: r.speed, send, revert });
+      setAsk({ combatantId, name, where, cost: r.cost, speed: r.speed, fatigue: r.fatigue ?? 0, send, revert });
     });
   };
   const dialog = ask ? <HandMoveDialog ask={ask} close={() => setAsk(null)} /> : null;
@@ -40,7 +42,8 @@ function HandMoveDialog({ ask, close }) {
     socket.emit('move:hand_pay', { combatantId: ask.combatantId, ...ask.where }, (r) => {
       setBusy(false);
       if (r?.ok) {
-        ask.send();
+        // The server made it as Free Movement (Fatigue may stop it short): its stage update moves the token.
+        if (!r.moved) ask.send();
         close();
       } else setError(r?.error ?? 'could not pay');
     });
@@ -68,6 +71,9 @@ function HandMoveDialog({ ask, close }) {
             Yes · {cost == null ? '—' : cost}/{speed}
           </button>
         </div>
+        {ask.fatigue > 0 && (
+          <p className="mt-2 text-xs text-orange-300">Fatigued: spending Speed discards 1 Fatigue and stops 2 spaces short on the way (only the spaces moved are paid).</p>
+        )}
         {error && <p className="mt-2 text-xs text-red-400">{error}</p>}
         <button type="button" onClick={cancel} className="mt-3 w-full text-center text-xs text-zinc-400 hover:text-zinc-200">
           Cancel the move

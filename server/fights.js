@@ -679,7 +679,10 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
       ack({ error: 'failed' });
     }
   });
-  // "Yes": spend that Speed — checked again here, before the move is sent.
+  // "Yes": it IS Free Movement (play feedback 7) — the engine's own: the
+  // cheapest path, Speed paid for the spaces moved, Traps and Rubble on the
+  // way, and Fatigue (discard 1, stop 2 spaces short on that same path). The
+  // server moves the token (`moved`); the client doesn't send the drop.
   socket.on('move:hand_pay', async (payload, ack) => {
     const reply = typeof ack === 'function' ? ack : () => {};
     try {
@@ -690,12 +693,9 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
       const tokens = shapeFightState(c).tokens;
       if (cost == null) return reply({ error: 'no way there' });
       if ((tokens.speed ?? 0) < cost) return reply({ error: `needs ${cost} Speed` });
-      if (cost > 0) {
-        if (tokens.speed - cost > 0) tokens.speed -= cost;
-        else delete tokens.speed;
-        await run('UPDATE combatants SET tokens = ? WHERE id = ?', [JSON.stringify(tokens), c.id]);
-      }
-      reply({ ok: true, cost });
+      const r = await triggers.freeMove({ ...fight }, c.id, to);
+      if (!r || r.error) return reply({ error: r?.error ?? 'could not move' });
+      reply({ ok: true, moved: true, cost: r.cost, square: r.square });
     } catch (err) {
       console.error('error handling move:hand_pay:', err);
       reply({ error: 'failed' });
