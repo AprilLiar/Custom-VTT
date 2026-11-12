@@ -42,11 +42,33 @@ export function tokenChanges(before = {}, after = {}) {
 
 const sameSq = (a, b) => Boolean(a && b && a.col === b.col && a.row === b.row);
 
+// **Actions (phase 4):** an Action performed opens a frame; the fighters its
+// effects land on while it runs become its targets (the attacker lunges at
+// the first). Nested (an Action performing another): the innermost collects.
+const actions = [];
+export function openAction({ sceneId, mode, actorId, name, isSuper = false }) {
+  if (actorId == null) return null;
+  if (isSuper) recordFx({ sceneId, mode, kind: 'super', combatantId: actorId, before: null, after: null, data: { name } });
+  const e = recordFx({ sceneId, mode, kind: 'action', combatantId: actorId, before: null, after: null, data: { name, targets: [], isSuper } });
+  if (e) actions.push(e);
+  return e;
+}
+export function closeAction(e) {
+  const i = actions.lastIndexOf(e);
+  if (i >= 0) actions.splice(i, 1);
+}
+const noteTarget = (e) => {
+  const a = actions[actions.length - 1];
+  if (!a || e.combatantId == null || e.combatantId === a.combatantId || e.sceneId !== a.sceneId || e.mode !== a.mode) return;
+  if (!a.data.targets.includes(e.combatantId)) a.data.targets = [...a.data.targets, e.combatantId];
+};
+
 export function recordFx(effect, { force = false } = {}) {
   if (!effect) return null;
   // A tile (an obstacle or a Copy — phase 3) belongs to no fighter.
   if (effect.kind !== 'tile' && (!effect.combatantId || (!force && isMuted(effect.combatantId)))) return null;
   const e = { id: nextId++, data: {}, ...effect };
+  if (!['action', 'super', 'turn'].includes(e.kind)) noteTarget(e);
   const prev = pending[pending.length - 1];
   // An obstacle taken off one square and put on another, back to back, moved.
   if (e.kind === 'tile' && e.data.change === 'placed' && prev?.kind === 'tile' && prev.data.change === 'destroyed' && prev.data.tile === e.data.tile && prev.sceneId === e.sceneId && prev.mode === e.mode && !sameSq(prev.data.at, e.data.at) && e.data.tile !== 'rubble') {
@@ -104,8 +126,16 @@ export function groupBeats(effects) {
 
 // Everything recorded since the last call, as beats.
 export function drainFx() {
+  // An Action still running with nothing done yet (its target question is
+  // out) waits for what it does, so it can lunge at its target.
+  let keep = [];
+  const last = pending[pending.length - 1];
+  if (last?.kind === 'action' && actions.includes(last) && !last.data.targets.length) {
+    keep = [pending.pop()];
+    if (pending[pending.length - 1]?.kind === 'super') keep.unshift(pending.pop());
+  }
   const out = pending;
-  pending = [];
+  pending = keep;
   return groupBeats(out);
 }
 
@@ -113,4 +143,5 @@ export function drainFx() {
 export function resetFx() {
   pending = [];
   mutes.clear();
+  actions.length = 0;
 }

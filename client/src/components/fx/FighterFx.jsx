@@ -9,7 +9,7 @@ import { ChallengeLock } from '../FighterOverlay.jsx';
 // `diameter` (the figure's own size) place and scale everything, so one
 // component serves both views. `centerOf(combatantId)`: another fighter's
 // center (the Challenge points at its Challenger).
-export default function FighterFx({ beat, combatantId, center, diameter, centerOf, squareCenter }) {
+export default function FighterFx({ beat, combatantId, center, diameter, centerOf, squareCenter, name }) {
   const effects = effectsFor(beat, combatantId);
   // (A fighter leaving play has no center now: its move draws from where it was.)
   if (!effects.length || (!center && !effects.some((e) => e.kind === 'move'))) return null;
@@ -31,6 +31,9 @@ export default function FighterFx({ beat, combatantId, center, diameter, centerO
           );
         if (e.kind === 'dizzy') return <StarBurst key={key} center={center} d={d} s={s} />;
         if (e.kind === 'move') return <MoveFx key={key} effect={e} d={d} s={s} squareCenter={squareCenter} />;
+        if (e.kind === 'turn') return <TurnRing key={key} center={center} d={d} s={s} name={name} />;
+        if (e.kind === 'action') return <ActionTrails key={key} from={center} to={(e.data.targets ?? []).map((id) => centerOf?.(id)).filter(Boolean)} d={d} s={s} />;
+        if (e.kind === 'super') return <SuperGlow key={key} center={center} d={d} s={s} />;
         if (e.kind === 'shield') return <ShieldShell key={key} center={center} d={d} s={s} />;
         if (e.kind === 'challenge') {
           const to = centerOf?.(e.data.challengerId);
@@ -437,6 +440,85 @@ function Smoke({ at, d, s }) {
       initial={{ opacity: 0, scale: 0.6 }}
       animate={{ opacity: [0, 1, 0], scale: [0.6, 1.4, 1.8], y: -d * 0.3 }}
       transition={{ duration: 0.5 * s, ease: 'easeOut' }}
+    />
+  );
+}
+
+// **A turn starts (phase 4):** a bright ring expands from the fighter twice,
+// with their name over the figure. The camera doesn't move.
+function TurnRing({ center, d, s, name }) {
+  return (
+    <>
+      {[0, 0.3].map((delay) => (
+        <motion.div
+          key={delay}
+          className="absolute rounded-full"
+          style={{ left: center.x - d / 2, top: center.y - d / 2, width: d, height: d, border: `${Math.max(2, d * 0.05)}px solid #facc15`, boxShadow: '0 0 14px rgba(250,204,21,0.8)' }}
+          initial={{ opacity: 0, scale: 0.9 }}
+          animate={{ opacity: [0, 1, 0], scale: [0.9, 1.3, 1.9] }}
+          transition={{ duration: 0.6 * s, delay: delay * s, ease: 'easeOut' }}
+        />
+      ))}
+      {name && (
+        <motion.div
+          className="absolute whitespace-nowrap text-center font-display font-black uppercase leading-none text-yellow-300"
+          style={{ left: center.x - d * 2, top: center.y - d * 0.95, width: d * 4, fontSize: Math.max(12, d * 0.24), WebkitTextStroke: '1px black', textShadow: '0 2px 6px black' }}
+          initial={{ opacity: 0, y: d * 0.15 }}
+          animate={{ opacity: [0, 1, 1, 0], y: [d * 0.15, 0, 0, -d * 0.1] }}
+          transition={{ duration: 0.9 * s, times: [0, 0.2, 0.75, 1] }}
+        >
+          {name}
+        </motion.div>
+      )}
+    </>
+  );
+}
+
+// **An Action (phase 4):** the attacker lunges (the figure itself — CombatMap
+// / the lane) and a thin streak runs to each target; with none, a glow pulse.
+function ActionTrails({ from, to, d, s }) {
+  if (!from) return null;
+  if (!to.length) {
+    return (
+      <motion.div
+        className="absolute rounded-full"
+        style={{ left: from.x - d / 2, top: from.y - d / 2, width: d, height: d, boxShadow: '0 0 0 3px rgba(250,204,21,0.9), 0 0 22px 6px rgba(250,204,21,0.6)' }}
+        initial={{ opacity: 0, scale: 1 }}
+        animate={{ opacity: [0, 1, 0], scale: [1, 1.12, 1.2] }}
+        transition={{ duration: 0.45 * s, ease: 'easeOut' }}
+      />
+    );
+  }
+  return (
+    <>
+      {to.map((t, i) => {
+        const len = Math.hypot(t.x - from.x, t.y - from.y);
+        const angle = (Math.atan2(t.y - from.y, t.x - from.x) * 180) / Math.PI;
+        return (
+          <motion.div
+            key={i}
+            className="absolute"
+            style={{ left: from.x, top: from.y - 1.5, width: len, height: 3, transformOrigin: '0 50%', rotate: angle, background: 'linear-gradient(to right, rgba(250,204,21,0), rgba(254,240,138,1))', borderRadius: 3, boxShadow: '0 0 6px rgba(250,204,21,0.9)' }}
+            initial={{ scaleX: 0, opacity: 1 }}
+            animate={{ scaleX: [0, 1, 1], opacity: [1, 1, 0] }}
+            transition={{ duration: 0.45 * s, times: [0, 0.45, 1], ease: 'easeOut' }}
+          />
+        );
+      })}
+    </>
+  );
+}
+
+// A Super Move's user glows while the banner sweeps (phase 4).
+function SuperGlow({ center, d, s }) {
+  if (!center) return null;
+  return (
+    <motion.div
+      className="absolute rounded-full"
+      style={{ left: center.x - d / 2, top: center.y - d / 2, width: d, height: d, boxShadow: '0 0 0 3px rgba(251,191,36,0.95), 0 0 30px 10px rgba(251,146,60,0.75)' }}
+      initial={{ opacity: 0 }}
+      animate={{ opacity: [0, 1, 1, 0], scale: [1, 1.08, 1.04, 1.1] }}
+      transition={{ duration: 1.5 * s, times: [0, 0.15, 0.8, 1] }}
     />
   );
 }

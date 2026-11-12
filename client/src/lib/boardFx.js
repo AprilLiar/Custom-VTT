@@ -19,6 +19,10 @@ export const FX_MS = {
   challenge: 600,
   dizzy: 700,
   tile: 500,
+  // Phase 4.
+  turn: 900,
+  action: 450,
+  super: 1500,
 };
 // Movement (phase 3), by how.
 export const MOVE_MS = { push: 450, pull: 450, teleport: 500, swap: 450, out: 500, in: 500 };
@@ -161,3 +165,16 @@ export const slideTransition = (slide, fallback) => {
   const ease = SLIDE_EASE[slide.how] ?? 'ease-in-out';
   return `left ${ms}ms ${ease}, top ${ms}ms ${ease}`;
 };
+
+// **An Action's lunge (phase 4):** the attacker's offset toward its first
+// target, a third of the way to it, capped at a third of a square (`unit`
+// px). → { dx, dy } or null.
+export function lungeOf(from, to, unit) {
+  if (!from || !to) return null;
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  const len = Math.hypot(dx, dy);
+  if (!len) return null;
+  const k = Math.min(len / 3, unit / 3) / len;
+  return { dx: dx * k, dy: dy * k };
+}

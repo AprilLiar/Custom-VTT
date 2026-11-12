@@ -28,6 +28,7 @@ import { XP_AWARDS } from '../client/src/lib/patd/build.js';
 import { resolveRef, serialized, shapeFightState } from './combatState.js';
 import { controlsCharacter } from './control.js';
 import { mayFreeMove } from './engine/moves.js';
+import { recordFx } from './fx.js';
 import { claimInterrupt, dropInterrupts, interruptOf, nextInterrupt, releaseInterrupt, unqueueInterrupt } from './interrupts.js';
 
 // The fight's reaction window (phase F): { seq, activeId, offers: { [id]: { clusters, … } }, done } | null.
@@ -353,6 +354,8 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
   const beginTurn = async (fight) => {
     const entry = orderOf(fight)[fight.turn_index];
     if (!entry) return;
+    // Board animations (phase 4): the turn starts — a ring round them and their name.
+    recordFx({ sceneId: fight.scene_id, mode: fight.mode, kind: 'turn', combatantId: entry.id, before: null, after: null, data: {} });
     const row = await one('SELECT character_id FROM combatants WHERE id = ?', [entry.id]);
     const stances = row ? await stancesOf(row.character_id) : [];
     // A Frantic Hero assembles a Stance every turn; several fixed Stances ask which.

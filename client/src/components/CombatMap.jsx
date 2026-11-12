@@ -23,7 +23,8 @@ import CroppedImage from './CroppedImage.jsx';
 import FighterOverlay, { ArmorRings, ChallengeLock } from './FighterOverlay.jsx';
 import FighterFx from './fx/FighterFx.jsx';
 import TileFx from './fx/TileFx.jsx';
-import { moveHow, slideTransition } from '../lib/boardFx.js';
+import { lungeOf, moveHow, slideTransition } from '../lib/boardFx.js';
+import { useLunge } from './fx/useLunge.js';
 import { armorRings } from '../lib/panicTokens.js';
 import { MapTileLayer } from './MapTiles.jsx';
 import { isTakenOut } from '../lib/hpBars.js';
@@ -472,6 +473,10 @@ export default function CombatMap({
           else center = tokenCenter(t);
           // Board animations (phase 3): a move playing slides over its beat.
           const mv = fxBeat?.effects.find((e) => e.kind === 'move' && e.combatantId === t.id);
+          // Phase 4: an Action's attacker lunges at its first target.
+          const act = fxBeat?.effects.find((e) => e.kind === 'action' && e.combatantId === t.id && e.data.targets?.length);
+          const lungeTo = act ? placed.find((o) => o.id === act.data.targets[0]) : null;
+          const lunge = lungeTo && lungeTo.col != null ? lungeOf(center, tokenCenter(lungeTo), grid.size * fit.scale) : null;
           return (
             <Token
               key={t.id}
@@ -481,6 +486,7 @@ export default function CombatMap({
               lifted={isDragged}
               animate={!viewMoved}
               slide={mv ? { how: moveHow(mv), ms: fxBeat.ms } : null}
+              lunge={lunge ? { ...lunge, ms: fxBeat.ms, key: `${fxBeat.id}:${act.id}` } : null}
               selected={selectedTokenId === t.id}
               canEdit={canDrag(t)}
               onPointerDown={(e) => onTokenDown(e, t)}
@@ -547,6 +553,7 @@ export default function CombatMap({
                   diameter={tokenSize * (t.size ?? 1)}
                   centerOf={(id) => centers.get(id)}
                   squareCenter={(sq) => (sq ? tokenCenter({ col: sq.col, row: sq.row, size: sizeOf.get(t.id) }) : null)}
+                  name={t.name}
                 />
               ))}
             </>
@@ -572,7 +579,8 @@ const cropFrom = (c) => (c ? cropOf({ crop_x: c.x, crop_y: c.y, crop_w: c.w, cro
 // A round combat token: the fighter's combat-token picture (or portrait), a
 // light ring and a drop shadow. Lifted while dragged.
 // `slide` (board animations): a move playing now (boardFx.slideTransition).
-export function Token({ token, center, size, lifted = false, animate = true, slide = null, selected = false, ghost = false, canEdit = false, onPointerDown }) {
+export function Token({ token, center, size, lifted = false, animate = true, slide = null, lunge = null, selected = false, ghost = false, canEdit = false, onPointerDown }) {
+  const lungeRef = useLunge(lunge);
   return (
     <div
       className={`group absolute ${onPointerDown ? `pointer-events-auto ${canEdit ? (lifted ? 'cursor-grabbing' : 'cursor-grab') : 'cursor-pointer'}` : 'pointer-events-none'}`}
@@ -594,6 +602,8 @@ export function Token({ token, center, size, lifted = false, animate = true, sli
       onPointerDown={onPointerDown}
     >
       <div
+        // An Action's lunge (board animations): out toward the target and back.
+        ref={lungeRef}
         className={`h-full w-full overflow-hidden rounded-full border-2 bg-zinc-800 ${
           selected ? 'border-yellow-400' : 'border-zinc-100/80'
         }`}

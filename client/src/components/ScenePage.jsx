@@ -9,6 +9,7 @@ import { useAudioStatus } from '../lib/useAudioStatus.js';
 import { openAudioPanel } from '../lib/audioPanel.js';
 import { useStage } from '../lib/useStage.js';
 import { useBoardFx } from '../lib/useBoardFx.js';
+import SuperBanner from './fx/SuperBanner.jsx';
 import {
   loadSceneHeightScale,
   loadSceneGapScale,
@@ -420,6 +421,13 @@ export default function ScenePage() {
           need `stageWidth > 0`, since it renders nothing until a
           `stage:timestamp_played` event actually arrives. */}
       <TimestampCutscene duration={timestampDuration} />
+      {/* Board animations (phase 4): a Super Move's banner across the board. */}
+      {fightMode && fx.playing?.mode === fightMode && (
+        <SuperBanner
+          beat={fx.playing}
+          fighterOf={(id) => (fightMode === 'combat' ? combatTokens.find((t) => t.id === id) : laneSummons.find((x) => x.fight?.combatant_id === id)) ?? null}
+        />
+      )}
       {/* The one way off this route (the back-arrow) plus the hide-interface
           toggle — rendered unconditionally now, outside the `!uiHidden` gate
           below, so the toggle itself stays reachable while hidden (see

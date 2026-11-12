@@ -162,6 +162,14 @@ p.emit('board:commit', { rollId });
 await sleep(2500);
 ft = await fight(tt.id);
 fm = await fight(tm.id);
+{
+  const all = beats.flatMap((b) => b.effects);
+  const act = all.filter((e) => e.kind === 'action' && e.combatantId === tm.id).pop();
+  check('animations: the committed Action is an "action" beat that lunges at the thug', act && act.data.targets?.[0] === tt.id && act.data.name, JSON.stringify(act));
+  check("animations: Mira's turn start is a \"turn\" beat", all.some((e) => e.kind === 'turn' && e.combatantId === tm.id), JSON.stringify(all.filter((e) => e.kind === 'turn')));
+  const i = all.indexOf(act);
+  check('…played before the damage it led to', i >= 0 && all.slice(i).some((e) => e.kind === 'damage' && e.combatantId === tt.id), '');
+}
 check('Damage at 1+ with the Power toggle on: 1 +1 Power = 2', thugHp - ft.hp.current === 2, `${thugHp} → ${ft.hp.current}`);
 check('…and the Power is spent', !fm.tokens.power, JSON.stringify(fm.tokens));
 const hpBeforeEnd = fm.hp.current;

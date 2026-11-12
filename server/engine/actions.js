@@ -14,6 +14,7 @@ import { costBonus, poolOf, removePoolNumber } from '../../client/src/lib/patd/d
 import { BASIC_KEYS, luckRoom, planPayment } from '../../client/src/lib/patd/tokenCost.js';
 import { expireTemps, fighterRt } from '../../client/src/lib/patd/engine/runtime.js';
 import { hpOf, saveHp, shapeFightState } from '../combatState.js';
+import { closeAction, openAction } from '../fx.js';
 import { patdContent } from '../patdContent.js';
 import { actingOn, readData, saveBoard, fighterState } from '../diceMarks.js';
 import { restoreSnapshot, takeSnapshot } from './snapshots.js';
@@ -439,6 +440,8 @@ export function createActionRunner(kit) {
     // What's moving people right now, for the square picks' titles ("Shove (Push 2)").
     const prevSource = env.source;
     env.source = action.name;
+    // Board animations (phase 4): the Action (a Super Move's banner first) — its targets are who it lands on.
+    const fxAction = openAction({ sceneId: fightRow?.scene_id, mode: fightRow?.mode, actorId: actor.id, name: action.name, isSuper });
     // Poltergeist tokens spent on it (the Phantom): before, around and after it.
     const polt = isSuper || placement.free || placement.copied ? null : await poltergeist(env, payer, actor, action, payment, askPayer);
     if (polt?.rangeBonus) (ctx.mods ??= []).push({ rule: 'current_action.maximum_range_bonus', value: polt.rangeBonus, targetId: actor.id, ownerId: payer.id, source: POLTERGEIST });
@@ -451,6 +454,7 @@ export function createActionRunner(kit) {
       manual.push(`the rest (${err.message})`);
     } finally {
       env.source = prevSource;
+      closeAction(fxAction);
     }
     frt.flags.actions = (frt.flags.actions ?? 0) + 1;
     // Its limits count it (once per turn …) — for whoever paid, whose list it is on.

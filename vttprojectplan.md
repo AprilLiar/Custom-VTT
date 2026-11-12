@@ -4079,7 +4079,7 @@ The user's standing rule: **nothing is left "by hand"** — the core rules are f
      - **"First Aid can only target an ally once per turn" was never enforced.** It is now, per ally, reset each turn.
    - **Now permanent tests:** `server/test/branches.test.js` fails when any condition can never come out true, any conditional case can never run, or a rule reads a value that is never there. It also holds the engine's event contract (`ENGINE_EVENT_FIELDS`): a rule reading an `event.*` value its event doesn't carry fails the tests. The fake world is shared in `server/test/fakeWorld.js`; the interpreter has a test-only `trace` hook.
 
-## Board animations (decided; phases 1–3 implemented)
+## Board animations (decided, implemented)
 
 Every change the engine makes in a fight is shown as a short animation, so a chain of effects can be followed one by one on both the Simple Combat lanes and the Combat map.
 
@@ -4115,7 +4115,9 @@ Every change the engine makes in a fight is shown as a short animation, so a cha
 | Out of play / back into play | Smoke where it was / a golden flash where it comes back. | 500 | 3 ✓ |
 | Obstacle placed / destroyed / moved | Drops in with a dust ring / breaks into debris / a trail from its old square. A Wall smashed into Rubble is destroyed, then placed. | 500 | 3 ✓ |
 | Copy created / destroyed / moved | A violet trail from its Original, then the drop-in / debris / a trail. | 500 | 3 ✓ |
-| Turn start ring + name, Action lunge + trails, Super Move banner across the board | | 450–1500 | 4 |
+| Turn start | A gold ring expands twice from the fighter, their name over the figure. No camera move. | 900 | 4 ✓ |
+| Action | The attacker lunges a third of the way to its first target (at most a third of a square) and back; a gold streak to each target. No target: a glow pulse. | 450 | 4 ✓ |
+| Super Move | A banner sweeps across the whole screen (above the drawers) with the Super's name and the fighter's portrait; the fighter glows. | 1500 | 4 ✓ |
 
 ### As built (phase 1)
 - **Server — `server/fx.js`:** `recordFx` collects effects `{ id, sceneId, mode, kind, combatantId, before, after, data }`; `before`/`after` are the fighter's shown state (`{ tokens, hp, challenge_id }`). `drainFx` groups them into beats (`groupBeats`). `muteFx`/`unmuteFx` let a meaning-level effect collect a fighter's lower-level changes.
@@ -4124,6 +4126,7 @@ Every change the engine makes in a fight is shown as a short animation, so a cha
 - **Client:** `client/src/lib/boardFx.js` (pure: durations, `playMs`, `enqueue`, `heldFight`), `client/src/lib/useBoardFx.js` (the queue; ScenePage holds `combatTokens` and `summons` through `fx.hold`), `client/src/components/fx/FighterFx.jsx` (TokenFloat, DamagePop, ShieldShell, NumberRise, ChallengeFlash), drawn per fighter by `CombatMap.jsx` and `SimpleCombatLane.jsx` (`fxBeat`).
 - **Phase 2:** no new effect kinds except `dizzy` (`setDizzy` outside a hit). The client reads each damage/heal effect's outcomes off its before/after (`boardFx.outcomesOf`: Shield broken, Armor blocked, bar broken, Dizzy, Taken Out, revived) and gives the bigger ones a little longer (`effectMs`).
 - **Phase 3:** `setSquare(f, sq, how)` records a `move` effect (`data: { from, to, how }`, squares as the stage stores them — a lane square also carries its `slot`; `before`/`after` null: a move carries no state). Callers name `how`: Action and Free Movement `move`, `push`/`pull` (engine/moves.js `forced`), `teleport`, `swap` (one effect per fighter instead of out/in/move). An empty `from`/`to` reads as back into / out of play. Tiles record `tile` effects (`data: { change: 'placed' | 'destroyed' | 'moved', tile, at, from?, owner_id? }`, combatantId null — public) from `writeKinds`, `smashWall`, Copy placement, `destroyCopy` and Copy moves; a tile taken off one square and put on another back to back merges into `moved`. The client holds positions (`boardFx.heldSquare`: map `col/row`, lane `lane_slot`) and tiles (`heldTiles`: waiting beats undone, latest first); a move playing gives the figure its slide (`slideTransition`), `components/fx/TileFx.jsx` draws tiles. `scripts/playtest-movement.mjs` checks the push and the smashed Wall.
+- **Phase 4:** `turn` effects from `fights.js beginTurn`; `engine/actions.js perform` opens an Action frame (`fx.openAction` / `closeAction`; a Super Move records a `super` effect first). Every fighter effect recorded while it runs, other than the actor's own, adds that fighter to `data.targets`. An Action with nothing done yet (its target question is out) is held back from the drain so it can still lunge at its target. Client: `FighterFx` TurnRing / ActionTrails / SuperGlow, `components/fx/useLunge.js` (the figure's lunge, `boardFx.lungeOf`), `components/fx/SuperBanner.jsx` in ScenePage. `scripts/playtest-damage.mjs` checks the committed Action lunges at its target before its damage, and the turn beat.
 - **Tests:** `server/test/boardFx.test.js`; `scripts/playtest-damage.mjs` checks the damage beat (2 to HP, 2 absorbed), the attacker's token beat, that a hit's Shield and Iron aren't separate beats, that manual edits play nothing, and that effects come before their stage update.
 
 ## Open items to decide later

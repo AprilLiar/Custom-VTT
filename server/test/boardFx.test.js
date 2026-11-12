@@ -2,8 +2,8 @@
 // and held display (boardFx.js).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { drainFx, groupBeats, muteFx, recordFx, resetFx, tokenChanges, unmuteFx } from '../fx.js';
-import { CATCH_UP_AFTER, MAX_WAITING, effectMs, enqueue, heldFight, heldSquare, heldTiles, moveHow, outcomesOf, playMs, signOf, slideTransition } from '../../client/src/lib/boardFx.js';
+import { closeAction, drainFx, groupBeats, muteFx, openAction, recordFx, resetFx, tokenChanges, unmuteFx } from '../fx.js';
+import { CATCH_UP_AFTER, MAX_WAITING, effectMs, enqueue, heldFight, heldSquare, heldTiles, moveHow, outcomesOf, playMs, lungeOf, signOf, slideTransition } from '../../client/src/lib/boardFx.js';
 
 const st = (tokens = {}, current = 10, challenge_id = null) => ({ tokens, hp: { max: 10, current, bars: 1, broken: 0, dizzy: false }, challenge_id });
 const fx = (combatantId, kind, before, after, data = {}) => ({ sceneId: 1, mode: 'combat', combatantId, kind, before, after, data });
@@ -164,4 +164,31 @@ test('phase 3: an obstacle taken off one square and put on another is one "moved
     [['moved:trap'], ['destroyed:wall'], ['placed:rubble'], ['placed:fog', 'placed:fog']]
   );
   assert.deepEqual(beats[0].effects[0].data.from, { col: 1, row: 1 });
+});
+
+test('phase 4: an Action collects whom it lands on; with nothing done yet it waits for its target', () => {
+  resetFx();
+  const a = openAction({ sceneId: 1, mode: 'combat', actorId: 5, name: 'Crush', isSuper: true });
+  // Its target question goes out: nothing done yet — the stage update sends nothing of it.
+  assert.deepEqual(drainFx(), []);
+  recordFx(fx(5, 'tokens', st({ power: 1 }), st({})));
+  recordFx(fx(8, 'damage', st({}, 10), st({}, 7), { amount: 3 }));
+  recordFx(fx(9, 'damage', st({}, 10), st({}, 7), { amount: 3 }));
+  closeAction(a);
+  recordFx(fx(6, 'tokens', st({}), st({ iron: 1 })));
+  const beats = drainFx();
+  assert.deepEqual(
+    beats.map((b) => b.effects.map((e) => e.kind)),
+    [['super'], ['action'], ['tokens'], ['damage', 'damage'], ['tokens']]
+  );
+  // Its own costs aren't targets; anything after it closed isn't either.
+  assert.deepEqual(beats[1].effects[0].data.targets, [8, 9]);
+  assert.equal(beats[0].effects[0].data.name, 'Crush');
+});
+
+test('phase 4: the lunge goes a third of the way, at most a third of a square', () => {
+  assert.deepEqual(lungeOf({ x: 0, y: 0 }, { x: 30, y: 0 }, 90), { dx: 10, dy: 0 });
+  assert.deepEqual(lungeOf({ x: 0, y: 0 }, { x: 300, y: 0 }, 90), { dx: 30, dy: 0 });
+  assert.equal(lungeOf({ x: 0, y: 0 }, { x: 0, y: 0 }, 90), null);
+  assert.equal(lungeOf(null, { x: 1, y: 0 }, 90), null);
 });

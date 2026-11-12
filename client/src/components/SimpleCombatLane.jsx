@@ -9,7 +9,8 @@ import { laneGeometry, laneLinesPath, moveOnLane, pointsAttr, slotAt } from '../
 import FighterOverlay, { ArmorRings, ChallengeLock } from './FighterOverlay.jsx';
 import FighterFx from './fx/FighterFx.jsx';
 import TileFx from './fx/TileFx.jsx';
-import { moveHow, slideTransition } from '../lib/boardFx.js';
+import { lungeOf, moveHow, slideTransition } from '../lib/boardFx.js';
+import { useLunge } from './fx/useLunge.js';
 import { armorRings } from '../lib/panicTokens.js';
 import { MapTileLayer } from './MapTiles.jsx';
 import { isTakenOut } from '../lib/hpBars.js';
@@ -253,6 +254,14 @@ export default function SimpleCombatLane({
               const mv = fxBeat?.effects.find((e) => e.kind === 'move' && e.combatantId === s.fight?.combatant_id);
               return mv ? { how: moveHow(mv), ms: fxBeat.ms } : null;
             })()}
+            lunge={(() => {
+              // Phase 4: an Action's attacker lunges at its first target.
+              const act = fxBeat?.effects.find((e) => e.kind === 'action' && e.combatantId === s.fight?.combatant_id && e.data.targets?.length);
+              const target = act ? onLane.find((o) => o.fight?.combatant_id === act.data.targets[0]) : null;
+              const tseg = target ? geometry.segments[placed.get(target.id)] : null;
+              const l = tseg ? lungeOf(seg.center, tseg.center, size.width * 1.4) : null;
+              return l ? { ...l, ms: fxBeat.ms, key: `${fxBeat.id}:${act.id}` } : null;
+            })()}
             x={isDragged ? dragging.x : seg.center.x}
             y={isDragged ? dragging.y + size.plinthRx * 0.3 : seg.center.y}
             size={size}
@@ -303,6 +312,7 @@ export default function SimpleCombatLane({
                 <FighterFx
                   key={`fx${s.id}`}
                   beat={fxBeat}
+                  name={s.name}
                   combatantId={s.fight.combatant_id}
                   center={boxes.get(s.id)?.mid ?? null}
                   diameter={boxes.get(s.id)?.d ?? anyBox?.d ?? 60}
@@ -398,7 +408,8 @@ export default function SimpleCombatLane({
 // than a lane space, fading out at the bottom so the feet disperse rather than
 // end on a hard edge, standing on a small round plinth. (x, y) is where the
 // plinth's centre sits.
-function Miniature({ summon, x, y, size, lifted = false, slide = null, selected = false, draggable, onPointerDown, layer = 1, onAspect }) {
+function Miniature({ summon, x, y, size, lifted = false, slide = null, lunge = null, selected = false, draggable, onPointerDown, layer = 1, onAspect }) {
+  const lungeRef = useLunge(lunge);
   if (!summon) return null;
   const rx = size.plinthRx;
   const ry = rx * 0.32;
@@ -408,6 +419,7 @@ function Miniature({ summon, x, y, size, lifted = false, slide = null, selected 
     // image let the pointer through, so a figure standing behind another can be
     // picked by its own plinth; only the base (a slightly larger ellipse) takes it.
     <div
+      ref={lungeRef}
       className="pointer-events-none absolute flex flex-col items-center"
       style={{
         left: x - size.width / 2,
