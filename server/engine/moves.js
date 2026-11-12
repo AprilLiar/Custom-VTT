@@ -138,7 +138,7 @@ export function createMoves({ ask, emitEvent, postCard }) {
 
   // Walks a path: Traps on it trigger and Rubble gives Fatigue (the landing's
   // effects are the caller's), then the fighter stands on its last square.
-  async function walk(env, m, f, path, { landing = true, kind = 'action' } = {}) {
+  async function walk(env, m, f, path, { landing = true, kind = 'action', how = null } = {}) {
     for (let i = 0; i < path.length; i++) {
       const sq = path[i];
       const last = i === path.length - 1;
@@ -158,7 +158,7 @@ export function createMoves({ ask, emitEvent, postCard }) {
       }
       if (kind === 'free') await fire(env, 'self.free_movement.one_space_finished', f, { square: sq });
     }
-    if (path.length) await m.setSquare(f, path.at(-1));
+    if (path.length) await m.setSquare(f, path.at(-1), how ?? (kind === 'teleport' ? 'teleport' : 'move'));
   }
 
   // **Action Movement** ("move X" / "up to X"): the mover picks the square.
@@ -202,7 +202,7 @@ export function createMoves({ ask, emitEvent, postCard }) {
     const pick = await pickSquare(env, f, m.mode, b, tdests, { title: named(env, `Teleport ${d}`), text: `${f.name}: pick where to teleport.`, allowNone });
     if (!pick) return null;
     await spendFatigue(env, f, { byEnemy });
-    await m.setSquare(f, pick.square);
+    await m.setSquare(f, pick.square, 'teleport');
     note(`${f.name} teleports to ${squareName(m.mode, pick.square)}`);
     await fire(env, 'self.movement.finished', f, { square: pick.square, teleport: true });
     await flush('Teleport', f);
@@ -215,7 +215,7 @@ export function createMoves({ ask, emitEvent, postCard }) {
     if (!f?.square || !sq) return null;
     const b = m.board();
     if (has(b, sq, 'trap')) await trap(env, f, sq);
-    await m.setSquare(f, sq);
+    await m.setSquare(f, sq, 'teleport');
     note(`${f.name} teleports to ${squareName(m.mode, sq)}`);
     await fire(env, 'self.movement.finished', f, { square: sq, teleport: true });
     await flush('Teleport', f);
@@ -226,9 +226,12 @@ export function createMoves({ ask, emitEvent, postCard }) {
   async function swap(env, m, a, b) {
     if (!a?.square || !b?.square || a.id === b.id) return false;
     const [sa, sb] = [a.square, b.square];
-    await m.setSquare(a, null);
-    await m.setSquare(b, sa);
-    await m.setSquare(a, sb);
+    // One "swap" beat for both (board animations), not out / in / move.
+    await m.setSquare(a, null, null);
+    await m.setSquare(b, sa, null);
+    await m.setSquare(a, sb, null);
+    m.recordMove?.(a, sa, sb, 'swap');
+    m.recordMove?.(b, sb, sa, 'swap');
     note(`${a.name} and ${b.name} swap spaces`);
     await flush('Swap', a);
     return true;
@@ -303,12 +306,12 @@ export function createMoves({ ask, emitEvent, postCard }) {
     }
     // Through the Traps on the way (not the landing: Save Yourself may avoid that).
     if (route.square) {
-      await walk(env, m, target, route.path, { landing: false });
+      await walk(env, m, target, route.path, { landing: false, how: pull ? 'pull' : 'push' });
       if (route.smashed) {
         await m.smashWall(route.smashed);
         note(`${target.name} smashes through a Wall: it becomes Rubble`);
       }
-      await m.setSquare(target, route.square);
+      await m.setSquare(target, route.square, pull ? 'pull' : 'push');
     }
     note(`${target.name} is ${pull ? 'pulled' : 'pushed'} to ${squareName(m.mode, route.square)}`);
     // **Save Yourself** (book p.60): 1 Speed (2 out of a Pit) for one space —
@@ -336,7 +339,7 @@ export function createMoves({ ask, emitEvent, postCard }) {
       if (has(nb, saved.square, 'rubble')) await rubble(env, target);
     } else if (!landing) {
       // The Outside: removed from play, Dizzy (Comeback: phase F).
-      await m.setSquare(target, null);
+      await m.setSquare(target, null, pull ? 'pull' : 'push');
       await m.setDizzy(target);
       note(`${target.name} goes Outside: Dizzy and removed from play`);
     } else {

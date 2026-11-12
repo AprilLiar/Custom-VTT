@@ -71,8 +71,27 @@ export default function ScenePage() {
   const stage = useStage(identity);
   // Board animations (decided): the beat playing, and the board held to it.
   const fx = useBoardFx(stage != null);
-  const heldSummons = useMemo(() => (stage?.summons ?? []).map((x) => (x.fight ? { ...x, fight: fx.hold(x.fight) } : x)), [stage?.summons, fx.hold]);
-  const heldTokens = useMemo(() => (stage?.combatTokens ?? []).map((t) => (t.fight ? { ...t, fight: fx.hold(t.fight) } : t)), [stage?.combatTokens, fx.hold]);
+  // Nothing to hold: the stage's own lists, so nothing downstream sees new ones.
+  const heldSummons = useMemo(() => {
+    if (!fx.active) return stage?.summons ?? [];
+    return (stage?.summons ?? []).map((x) => {
+      if (!x.fight) return x;
+      const real = x.lane_slot != null ? { col: x.lane_slot % 10, row: Math.floor(x.lane_slot / 10) } : null;
+      const sq = x.fight.combatant_id != null ? fx.square(x.fight.combatant_id, real) : real;
+      return { ...x, fight: fx.hold(x.fight), lane_slot: sq ? (sq.slot ?? sq.row * 10 + sq.col) : null };
+    });
+  }, [stage?.summons, fx]);
+  const heldTokens = useMemo(() => {
+    if (!fx.active) return stage?.combatTokens ?? [];
+    return (stage?.combatTokens ?? []).map((t) => {
+      const sq = fx.square(t.id, t.col != null ? { col: t.col, row: t.row } : null);
+      return { ...t, fight: t.fight ? fx.hold(t.fight) : t.fight, col: sq?.col ?? null, row: sq?.row ?? null };
+    });
+  }, [stage?.combatTokens, fx]);
+  const heldTileLists = useMemo(
+    () => (fx.active ? { simple: fx.tiles(stage?.tiles?.simple ?? []), combat: fx.tiles(stage?.tiles?.combat ?? []) } : (stage?.tiles ?? { simple: [], combat: [] })),
+    [stage?.tiles, fx]
+  );
 
   // A callback ref, not useRef: the orientation gate below swaps in a
   // completely different tree, so the stage element itself can go from
@@ -367,7 +386,7 @@ export default function ScenePage() {
           laneY={stage?.laneY}
           setup={stage?.fighterSetup ?? {}}
           weight={weight}
-          tiles={stage?.tiles?.simple ?? []}
+          tiles={heldTileLists.simple ?? []}
           activeCombatantId={sceneMode === 'simple' ? (fight?.order?.[fight.turn_index]?.id ?? null) : null}
           armorUsed={sceneMode === 'simple' ? (fight?.armor_used ?? {}) : {}}
           fxBeat={fx.playing?.mode === 'simple' ? fx.playing : null}
@@ -388,7 +407,7 @@ export default function ScenePage() {
           inset={drawerInset}
           role={role}
           controls={controls}
-          tiles={stage?.tiles?.combat ?? []}
+          tiles={heldTileLists.combat ?? []}
           activeCombatantId={isCombat ? (fight?.order?.[fight.turn_index]?.id ?? null) : null}
           armorUsed={isCombat ? (fight?.armor_used ?? {}) : {}}
           fxBeat={isCombat && fx.playing?.mode === 'combat' ? fx.playing : null}

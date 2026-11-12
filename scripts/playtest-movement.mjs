@@ -69,6 +69,9 @@ const stamp = Date.now();
 const gm = await connect({ role: 'gm' });
 const cards = [];
 gm.on('chat:card', (c) => cards.push(c));
+// Board animations (phase 3): moves and tiles as the engine reports them.
+const fx = [];
+gm.on('fight:effects', (m) => fx.push(...m.beats.flatMap((b) => b.effects)));
 const prompts = [];
 // The GM answers prompts as the test says (`answerWith`), else the first option.
 let answerWith = null;
@@ -162,6 +165,10 @@ await stage();
 const pushPick = prompts.find((q) => q.kind === 'square' && q.title !== 'Save yourself');
 check('Relentless pushes after the damage: a square pick of the spaces 1 farther (the diamond: lateral steps)', pushPick && pushPick.mode === 'combat' && pushPick.options.map((o) => o.id).sort().join(' ') === '5,1 5,3 6,2', JSON.stringify(pushPick?.options?.map((o) => o.id)));
 check("…asked of the pusher's controller (the GM, for an NPC); the target lands where picked", pushPick?.characterId === bo.id && at(ta.id) === '6,2', at(ta.id));
+{
+  const push = fx.filter((e) => e.kind === 'move' && e.combatantId === ta.id).pop();
+  check('animations: the push is a "push" move from her square to 6,2', push && push.data.how === 'push' && push.data.from && `${push.data.to.col},${push.data.to.row}` === '6,2', JSON.stringify(push));
+}
 
 console.log('\n--- World of Cardboard ---');
 for (const row of [2, 3, 4]) gm.emit('map_tile:place', { mode: 'combat', col: 7, row, kind: 'wall' });
@@ -172,6 +179,7 @@ gm.emit('fighter:damage', { ref: { combatantId: ta.id }, amount: 1 });
 await sleep(2000);
 await stage();
 const kinds = st.tiles.combat.filter((t) => t.col === 7 && t.row === 2).map((t) => t.kind);
+check('animations: the smashed Wall shows as destroyed, the Rubble as placed (the hand-placed Walls play nothing)', fx.some((e) => e.kind === 'tile' && e.data.change === 'destroyed' && e.data.tile === 'wall' && e.data.at.col === 7 && e.data.at.row === 2) && fx.some((e) => e.kind === 'tile' && e.data.change === 'placed' && e.data.tile === 'rubble') && !fx.some((e) => e.kind === 'tile' && e.data.change === 'placed' && e.data.tile === 'wall'), JSON.stringify(fx.filter((e) => e.kind === 'tile').map((e) => e.data)));
 check('pushed into a Wall: it becomes Rubble and they stand in it', at(ta.id) === '7,2' && kinds.includes('rubble') && !kinds.includes('wall'), `${at(ta.id)} ${JSON.stringify(kinds)}`);
 check('…offered to Save themselves (they hold Speed), declined: +1 Fatigue', prompts.some((q) => q.title === 'Save yourself') && tok(ta.id).fight.tokens.fatigue === 1, JSON.stringify(tok(ta.id).fight.tokens));
 

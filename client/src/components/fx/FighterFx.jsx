@@ -1,7 +1,7 @@
 import { motion } from 'framer-motion';
 import { TOKEN_BY_KEY } from '../../lib/panicTokens.js';
 import { KIND_CLASS, TokenIcon } from '../../lib/panicIcons.jsx';
-import { beatMs, effectsFor, outcomesOf, signOf } from '../../lib/boardFx.js';
+import { beatMs, effectsFor, moveHow, outcomesOf, signOf } from '../../lib/boardFx.js';
 import { ChallengeLock } from '../FighterOverlay.jsx';
 
 // **Board animations (decided):** what the beat playing does to one fighter,
@@ -9,12 +9,13 @@ import { ChallengeLock } from '../FighterOverlay.jsx';
 // `diameter` (the figure's own size) place and scale everything, so one
 // component serves both views. `centerOf(combatantId)`: another fighter's
 // center (the Challenge points at its Challenger).
-export default function FighterFx({ beat, combatantId, center, diameter, centerOf }) {
+export default function FighterFx({ beat, combatantId, center, diameter, centerOf, squareCenter }) {
   const effects = effectsFor(beat, combatantId);
-  if (!effects.length || !center) return null;
+  // (A fighter leaving play has no center now: its move draws from where it was.)
+  if (!effects.length || (!center && !effects.some((e) => e.kind === 'move'))) return null;
   const d = Math.max(28, diameter);
   // The speed factor (Fast, catching up): every duration below is at Normal speed × s.
-  const s = beat.ms != null && beatMs(beat) ? beat.ms / beatMs(beat) : 1;
+  const s = beat.speed ?? (beat.ms != null && beatMs(beat) ? beat.ms / beatMs(beat) : 1);
   return (
     <div className="pointer-events-none absolute left-0 top-0" style={{ zIndex: 40 }} aria-hidden>
       {effects.map((e) => {
@@ -29,6 +30,7 @@ export default function FighterFx({ beat, combatantId, center, diameter, centerO
             </span>
           );
         if (e.kind === 'dizzy') return <StarBurst key={key} center={center} d={d} s={s} />;
+        if (e.kind === 'move') return <MoveFx key={key} effect={e} d={d} s={s} squareCenter={squareCenter} />;
         if (e.kind === 'shield') return <ShieldShell key={key} center={center} d={d} s={s} />;
         if (e.kind === 'challenge') {
           const to = centerOf?.(e.data.challengerId);
@@ -359,6 +361,82 @@ function LightColumn({ center, d, s }) {
       initial={{ opacity: 0, scaleY: 0 }}
       animate={{ opacity: [0, 1, 0], scaleY: [0, 1, 1] }}
       transition={{ duration: 1 * s, ease: 'easeOut' }}
+    />
+  );
+}
+
+// **Movement (phase 3).** The figure itself slides (CombatMap / the lane give
+// it the beat's time); this adds: streaks behind a push or pull and a puff
+// where it lands, a flash out and in for a teleport, smoke where a figure
+// leaves play, light where it comes back.
+function MoveFx({ effect, d, s, squareCenter }) {
+  const how = moveHow(effect);
+  const from = squareCenter?.(effect.data.from);
+  const to = squareCenter?.(effect.data.to);
+  if (how === 'push' || how === 'pull') {
+    if (!from || !to) return from ? <Smoke at={from} d={d} s={s} /> : null;
+    const len = Math.hypot(to.x - from.x, to.y - from.y);
+    const angle = (Math.atan2(to.y - from.y, to.x - from.x) * 180) / Math.PI;
+    return (
+      <>
+        {[-0.22, 0, 0.22].map((k) => (
+          <motion.div
+            key={k}
+            className="absolute"
+            style={{ left: from.x, top: from.y + k * d, width: len, height: Math.max(2, d * 0.06), transformOrigin: '0 50%', rotate: angle, background: 'linear-gradient(to right, rgba(255,255,255,0), rgba(255,255,255,0.85))', borderRadius: 4 }}
+            initial={{ scaleX: 0, opacity: 0.9 }}
+            animate={{ scaleX: [0, 1, 1], opacity: [0.9, 0.9, 0] }}
+            transition={{ duration: 0.45 * s, times: [0, 0.6, 1], ease: 'easeOut' }}
+          />
+        ))}
+        <Puff at={to} d={d} s={s} delay={0.3} />
+      </>
+    );
+  }
+  if (how === 'teleport') {
+    return (
+      <>
+        {from && <Flash at={from} d={d} s={s} />}
+        {to && <Flash at={to} d={d} s={s} delay={0.15} />}
+      </>
+    );
+  }
+  if (how === 'out') return from ? <Smoke at={from} d={d} s={s} /> : null;
+  if (how === 'in') return to ? <Flash at={to} d={d} s={s} color="rgba(253,224,71,0.9)" /> : null;
+  return null;
+}
+
+function Flash({ at, d, s, delay = 0, color = 'rgba(167,139,250,0.95)' }) {
+  return (
+    <motion.div
+      className="absolute rounded-full"
+      style={{ left: at.x - d / 2, top: at.y - d / 2, width: d, height: d, background: `radial-gradient(circle, rgba(255,255,255,0.95) 0%, ${color} 40%, rgba(0,0,0,0) 70%)` }}
+      initial={{ opacity: 0, scale: 0.3 }}
+      animate={{ opacity: [0, 1, 0], scale: [0.3, 1.3, 1.6] }}
+      transition={{ duration: 0.35 * s, delay: delay * s, ease: 'easeOut' }}
+    />
+  );
+}
+function Puff({ at, d, s, delay = 0 }) {
+  if (!at) return null;
+  return (
+    <motion.div
+      className="absolute rounded-full"
+      style={{ left: at.x - d / 2, top: at.y + d * 0.1, width: d, height: d * 0.4, border: `${Math.max(2, d * 0.06)}px solid rgba(212,212,216,0.7)`, filter: 'blur(1px)' }}
+      initial={{ opacity: 0, scale: 0.5 }}
+      animate={{ opacity: [0, 0.9, 0], scale: [0.5, 1.3, 1.6] }}
+      transition={{ duration: 0.35 * s, delay: delay * s, ease: 'easeOut' }}
+    />
+  );
+}
+function Smoke({ at, d, s }) {
+  return (
+    <motion.div
+      className="absolute rounded-full"
+      style={{ left: at.x - d / 2, top: at.y - d / 2, width: d, height: d, background: 'radial-gradient(circle, rgba(113,113,122,0.9) 20%, rgba(63,63,70,0.5) 50%, rgba(0,0,0,0) 72%)', filter: 'blur(2px)' }}
+      initial={{ opacity: 0, scale: 0.6 }}
+      animate={{ opacity: [0, 1, 0], scale: [0.6, 1.4, 1.8], y: -d * 0.3 }}
+      transition={{ duration: 0.5 * s, ease: 'easeOut' }}
     />
   );
 }

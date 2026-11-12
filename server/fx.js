@@ -40,9 +40,19 @@ export function tokenChanges(before = {}, after = {}) {
   return out;
 }
 
+const sameSq = (a, b) => Boolean(a && b && a.col === b.col && a.row === b.row);
+
 export function recordFx(effect, { force = false } = {}) {
-  if (!effect?.combatantId || (!force && isMuted(effect.combatantId))) return null;
+  if (!effect) return null;
+  // A tile (an obstacle or a Copy — phase 3) belongs to no fighter.
+  if (effect.kind !== 'tile' && (!effect.combatantId || (!force && isMuted(effect.combatantId)))) return null;
   const e = { id: nextId++, data: {}, ...effect };
+  const prev = pending[pending.length - 1];
+  // An obstacle taken off one square and put on another, back to back, moved.
+  if (e.kind === 'tile' && e.data.change === 'placed' && prev?.kind === 'tile' && prev.data.change === 'destroyed' && prev.data.tile === e.data.tile && prev.sceneId === e.sceneId && prev.mode === e.mode && !sameSq(prev.data.at, e.data.at) && e.data.tile !== 'rubble') {
+    prev.data = { ...prev.data, change: 'moved', from: prev.data.at, at: e.data.at };
+    return prev;
+  }
   // The last change to the same fighter's tokens, right before, joins it
   // (several kinds at once show side by side — decided).
   const last = pending[pending.length - 1];
@@ -70,6 +80,8 @@ export function recordFx(effect, { force = false } = {}) {
 const sortOf = (e) => {
   if (e.kind === 'tokens') return e.data.changes.map((c) => `${c.key}${Math.sign(c.delta)}`).sort().join(',');
   if (e.kind === 'challenge') return String(e.data.challengerId ?? '');
+  if (e.kind === 'move') return e.data.how ?? '';
+  if (e.kind === 'tile') return `${e.data.change}:${e.data.tile}`;
   return '';
 };
 export function groupBeats(effects) {
@@ -82,7 +94,8 @@ export function groupBeats(effects) {
       beat.mode === e.mode &&
       beat.effects[0].kind === e.kind &&
       sortOf(beat.effects[0]) === sortOf(e) &&
-      !beat.effects.some((x) => x.combatantId === e.combatantId);
+      (e.combatantId == null || !beat.effects.some((x) => x.combatantId === e.combatantId)) &&
+      (e.kind !== 'tile' || !beat.effects.some((x) => sameSq(x.data.at, e.data.at)));
     if (joins) beat.effects.push(e);
     else beats.push({ id: e.id, sceneId: e.sceneId, mode: e.mode, effects: [e] });
   }

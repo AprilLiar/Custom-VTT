@@ -22,6 +22,8 @@ import { cropOf } from '../lib/imageCrop.js';
 import CroppedImage from './CroppedImage.jsx';
 import FighterOverlay, { ArmorRings, ChallengeLock } from './FighterOverlay.jsx';
 import FighterFx from './fx/FighterFx.jsx';
+import TileFx from './fx/TileFx.jsx';
+import { moveHow, slideTransition } from '../lib/boardFx.js';
 import { armorRings } from '../lib/panicTokens.js';
 import { MapTileLayer } from './MapTiles.jsx';
 import { isTakenOut } from '../lib/hpBars.js';
@@ -468,6 +470,8 @@ export default function CombatMap({
           let center;
           if (isDragged && rootRect) center = { x: dragging.x - rootRect.left, y: dragging.y - rootRect.top };
           else center = tokenCenter(t);
+          // Board animations (phase 3): a move playing slides over its beat.
+          const mv = fxBeat?.effects.find((e) => e.kind === 'move' && e.combatantId === t.id);
           return (
             <Token
               key={t.id}
@@ -476,6 +480,7 @@ export default function CombatMap({
               size={tokenSize * (t.size ?? 1) + (t.size > 1 ? grid.size * fit.scale * 0.12 : 0)}
               lifted={isDragged}
               animate={!viewMoved}
+              slide={mv ? { how: moveHow(mv), ms: fxBeat.ms } : null}
               selected={selectedTokenId === t.id}
               canEdit={canDrag(t)}
               onPointerDown={(e) => onTokenDown(e, t)}
@@ -529,16 +534,23 @@ export default function CombatMap({
         fxBeat &&
         (() => {
           const centers = new Map(placed.map((t) => [t.id, tokenCenter(t)]));
-          return placed.map((t) => (
-            <FighterFx
-              key={`fx${t.id}`}
-              beat={fxBeat}
-              combatantId={t.id}
-              center={centers.get(t.id)}
-              diameter={tokenSize * (t.size ?? 1)}
-              centerOf={(id) => centers.get(id)}
-            />
-          ));
+          const sizeOf = new Map(placed.map((t) => [t.id, t.size ?? 1]));
+          return (
+            <>
+              <TileFx beat={fxBeat} quadOf={tileQuadOf} d={tokenSize} />
+              {placed.map((t) => (
+                <FighterFx
+                  key={`fx${t.id}`}
+                  beat={fxBeat}
+                  combatantId={t.id}
+                  center={t.col != null ? centers.get(t.id) : null}
+                  diameter={tokenSize * (t.size ?? 1)}
+                  centerOf={(id) => centers.get(id)}
+                  squareCenter={(sq) => (sq ? tokenCenter({ col: sq.col, row: sq.row, size: sizeOf.get(t.id) }) : null)}
+                />
+              ))}
+            </>
+          );
         })()}
 
       {paletteDrag && rootRect && (
@@ -559,7 +571,8 @@ const cropFrom = (c) => (c ? cropOf({ crop_x: c.x, crop_y: c.y, crop_w: c.w, cro
 
 // A round combat token: the fighter's combat-token picture (or portrait), a
 // light ring and a drop shadow. Lifted while dragged.
-export function Token({ token, center, size, lifted = false, animate = true, selected = false, ghost = false, canEdit = false, onPointerDown }) {
+// `slide` (board animations): a move playing now (boardFx.slideTransition).
+export function Token({ token, center, size, lifted = false, animate = true, slide = null, selected = false, ghost = false, canEdit = false, onPointerDown }) {
   return (
     <div
       className={`group absolute ${onPointerDown ? `pointer-events-auto ${canEdit ? (lifted ? 'cursor-grabbing' : 'cursor-grab') : 'cursor-pointer'}` : 'pointer-events-none'}`}
@@ -572,7 +585,7 @@ export function Token({ token, center, size, lifted = false, animate = true, sel
         // Taken Out at zero HP (batch 5): half transparent and grey, until healed.
         opacity: ghost ? 0.45 : token.fight?.hp && isTakenOut(token.fight.hp) ? 0.5 : 1,
         filter: token.fight?.hp && isTakenOut(token.fight.hp) ? 'grayscale(0.85)' : undefined,
-        transition: lifted || !animate ? 'none' : 'left 160ms ease-out, top 160ms ease-out',
+        transition: lifted || !animate ? 'none' : slideTransition(slide, 'left 160ms ease-out, top 160ms ease-out'),
         touchAction: 'none',
       }}
       title={token.name}

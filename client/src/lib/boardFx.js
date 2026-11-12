@@ -18,7 +18,17 @@ export const FX_MS = {
   shield: 1200,
   challenge: 600,
   dizzy: 700,
+  tile: 500,
 };
+// Movement (phase 3), by how.
+export const MOVE_MS = { push: 450, pull: 450, teleport: 500, swap: 450, out: 500, in: 500 };
+const stepsOf = (a, b) => (a && b ? Math.abs(a.col - b.col) + Math.abs(a.row - b.row) : 1);
+export const moveHow = (e) => (!e.data?.to ? 'out' : !e.data?.from ? 'in' : (e.data.how ?? 'move'));
+export function moveMs(e) {
+  const how = moveHow(e);
+  if (MOVE_MS[how]) return MOVE_MS[how];
+  return Math.min(700, Math.max(300, 150 * stepsOf(e.data.from, e.data.to)));
+}
 const DEFAULT_MS = 600;
 
 // What a damage / heal / Dizzy effect led to, read off its before and after
@@ -39,6 +49,7 @@ export function outcomesOf(e) {
 }
 // One effect's time: the bigger outcomes take a little longer.
 export function effectMs(e) {
+  if (e?.kind === 'move') return moveMs(e);
   const base = FX_MS[e?.kind] ?? DEFAULT_MS;
   const o = outcomesOf(e);
   if (o.takenOut) return Math.max(base, 1100);
@@ -67,13 +78,15 @@ export function enqueue(waiting, beats) {
   return next.length > MAX_WAITING ? next.slice(next.length - MAX_WAITING) : next;
 }
 
-const lastFor = (beat, id) => {
+// Effects that change what a fighter shows (moves and tiles carry no state).
+const shows = (e) => e.after != null && e.before != null;
+const lastFor = (beat, id, ok = shows) => {
   if (!beat || id == null) return null;
   let found = null;
-  for (const e of beat.effects) if (e.combatantId === id) found = e;
+  for (const e of beat.effects) if (e.combatantId === id && ok(e)) found = e;
   return found;
 };
-const firstFor = (beat, id) => (beat && id != null ? (beat.effects.find((e) => e.combatantId === id) ?? null) : null);
+const firstFor = (beat, id, ok = shows) => (beat && id != null ? (beat.effects.find((e) => e.combatantId === id && ok(e)) ?? null) : null);
 
 const withShown = (fight, shown) =>
   shown ? { ...fight, tokens: shown.tokens ?? fight.tokens, hp: shown.hp ?? fight.hp, challenge_id: shown.challenge_id ?? null } : fight;
@@ -97,3 +110,54 @@ export const effectsFor = (beat, id) => (beat && id != null ? beat.effects.filte
 
 // "+" / "++" / "-" / "--" (decided: two or more doubles the sign).
 export const signOf = (delta) => (delta > 0 ? (delta > 1 ? '++' : '+') : delta < -1 ? '--' : '-');
+
+// **Held positions (phase 3):** where a fighter stands as the board shows it:
+// where its move playing now takes it, else where it was before its next
+// waiting move, else its real square. `real`: { col, row } or null (out of
+// play). → { square, move } (`move`: the effect playing, if any).
+const isMove = (e) => e.kind === 'move';
+export function heldSquare(id, real, playing, waiting) {
+  const now = lastFor(playing, id, isMove);
+  if (now) return { square: now.data.to ?? null, move: now };
+  for (const beat of waiting ?? []) {
+    const next = firstFor(beat, id, isMove);
+    if (next) return { square: next.data.from ?? null, move: null };
+  }
+  return { square: real, move: null };
+}
+
+// **Held tiles (phase 3):** the stage's tiles with every waiting beat's tile
+// changes undone, latest first (the beat playing shows as it ends).
+const sameAt = (t, at) => at && t.col === at.col && t.row === at.row;
+export function heldTiles(tiles, waiting) {
+  const effects = (waiting ?? []).flatMap((b) => b.effects.filter((e) => e.kind === 'tile'));
+  if (!effects.length) return tiles;
+  let out = [...(tiles ?? [])];
+  const take = (kind, at, ownerId) => {
+    const i = out.findIndex((t) => t.kind === kind && sameAt(t, at) && (ownerId == null || t.owner_id === ownerId));
+    if (i < 0) return null;
+    const [t] = out.splice(i, 1);
+    return t;
+  };
+  for (const e of [...effects].reverse()) {
+    const { change, tile, at, from, owner_id } = e.data;
+    if (change === 'placed') take(tile, at, owner_id);
+    else if (change === 'destroyed') out = [...out, { col: at.col, row: at.row, kind: tile, ...(owner_id != null ? { owner_id } : {}) }];
+    else if (change === 'moved' && from) {
+      const t = take(tile, at, owner_id);
+      out = [...out, { ...(t ?? { kind: tile, ...(owner_id != null ? { owner_id } : {}) }), col: from.col, row: from.row }];
+    }
+  }
+  return out;
+}
+
+// A figure's CSS transition while its move plays (`slide`: { how, ms }): it
+// slides over the beat (a push snaps out fast and settles), a teleport jumps.
+const SLIDE_EASE = { push: 'cubic-bezier(0.15, 0.9, 0.3, 1)', pull: 'cubic-bezier(0.15, 0.9, 0.3, 1)' };
+export const slideTransition = (slide, fallback) => {
+  if (!slide) return fallback;
+  if (['teleport', 'in', 'out'].includes(slide.how)) return 'none';
+  const ms = Math.round(slide.ms * (slide.how === 'push' || slide.how === 'pull' ? 0.7 : 0.9));
+  const ease = SLIDE_EASE[slide.how] ?? 'ease-in-out';
+  return `left ${ms}ms ${ease}, top ${ms}ms ${ease}`;
+};

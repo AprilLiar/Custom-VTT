@@ -719,7 +719,8 @@ async function emitStageUpdated() {
     const payload = stagePayloadFor(built, viewerSocket.data?.identity);
     if (beats.length) {
       const seen = new Set([...payload.combatTokens.map((t) => t.id), ...payload.summons.map((x) => x.fight?.combatant_id).filter((id) => id != null)]);
-      const mine = beats.map((b) => ({ ...b, effects: b.effects.filter((e) => seen.has(e.combatantId)) })).filter((b) => b.effects.length);
+      // Tiles are public (combatantId null); a fighter's only for who can see them.
+      const mine = beats.map((b) => ({ ...b, effects: b.effects.filter((e) => e.combatantId == null || seen.has(e.combatantId)) })).filter((b) => b.effects.length);
       if (mine.length) viewerSocket.emit('fight:effects', { beats: mine });
     }
     viewerSocket.emit('stage:updated', payload);

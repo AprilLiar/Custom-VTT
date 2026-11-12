@@ -393,13 +393,29 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
         units: [...fighters, ...copies].filter((f) => f.square).map((f) => ({ id: f.id, square: f.square, size: f.size ?? 1 })),
         exits: mode === 'simple' ? 'cols' : 'all',
       });
-    // A fighter's new square (null: out of play — the Outside).
-    const setSquare = async (f, sq) => {
+    // Board animations (phase 3): a square as the stage stores it — a map
+    // cell, or a lane's slot (lane × 10 + space).
+    const fxSquare = (sq) => (sq ? (mode === 'simple' ? { col: sq.col, row: sq.row, slot: sq.row * 10 + sq.col } : { col: sq.col, row: sq.row }) : null);
+    const recordMove = (f, from, to, how) => {
+      if (!how || (!from && !to)) return;
+      if (f.isCopy) {
+        if (from && to) recordTile('moved', 'copy', storedOf(to), { from: storedOf(from), owner_id: f.ownerId, how });
+        return;
+      }
+      recordFx({ sceneId, mode, kind: 'move', combatantId: f.id, before: null, after: null, data: { from: fxSquare(from), to: fxSquare(to), how } });
+    };
+    // A tile placed, destroyed or moved (an obstacle, or a Copy: `owner_id`).
+    const recordTile = (change, kind, at, extra = {}) => recordFx({ sceneId, mode, kind: 'tile', combatantId: null, data: { change, tile: kind, at, ...extra } });
+    // A fighter's new square (null: out of play — the Outside). `how` (board
+    // animations): 'move', 'push', 'pull', 'teleport' or 'swap'; null shows nothing.
+    const setSquare = async (f, sq, how = 'move') => {
       if (f.isCopy) {
         // A Copy moves as its tile; one that goes Outside is gone.
         if (!sq) return destroyCopy(f);
         const at = storedOf(sq);
+        const was = f.square ? storedOf(f.square) : null;
         await queued(() => run('UPDATE map_tiles SET col = ?, row = ? WHERE id = ?', [at.col, at.row, f.rowId]));
+        if (was && how) recordTile('moved', 'copy', at, { from: was, owner_id: f.ownerId, how });
         f.square = { col: sq.col, row: sq.row };
         markDirty();
         await flushStage();
@@ -415,6 +431,8 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
           await run('UPDATE combatants SET grid_col = ?, grid_row = ? WHERE id = ?', [sq?.col ?? null, sq?.row ?? null, f.id]);
         }
       });
+      const from = f.square;
+      if (!(from && sq && from.col === sq.col && from.row === sq.row)) recordMove(f, from, sq, how);
       f.square = sq ? { col: sq.col, row: sq.row } : null;
       // A move shows at once (decided): every step of an Action, one by one.
       markDirty();
@@ -431,6 +449,8 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
       for (let i = tileList.length - 1; i >= 0; i--) if (tileList[i].kind === 'wall' && tileList[i].col === sq.col && tileList[i].row === sq.row) tileList.splice(i, 1);
       if (!tileList.some((t) => t.kind === 'rubble' && t.col === sq.col && t.row === sq.row)) tileList.push({ col: sq.col, row: sq.row, kind: 'rubble' });
       walls.delete(`${sq.col},${sq.row}`);
+      recordTile('destroyed', 'wall', at);
+      recordTile('placed', 'rubble', at);
       markDirty();
     };
     const setDizzy = (f) =>
@@ -455,6 +475,8 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
         await run("DELETE FROM map_tiles WHERE scene_id = ? AND mode = ? AND col = ? AND row = ? AND kind != 'copy'", [sceneId, mode, at.col, at.row]);
         for (const kind of kinds) await run('INSERT INTO map_tiles (scene_id, mode, col, row, kind, placed_by) VALUES (?, ?, ?, ?, ?, ?)', [sceneId, mode, at.col, at.row, kind, byOf(kind)]);
       });
+      for (const kind of was.keys()) if (!kinds.includes(kind)) recordTile('destroyed', kind, at);
+      for (const kind of kinds) if (!was.has(kind)) recordTile('placed', kind, at);
       for (let i = tileList.length - 1; i >= 0; i--) if (tileList[i].col === sq.col && tileList[i].row === sq.row) tileList.splice(i, 1);
       for (const kind of kinds) tileList.push({ col: sq.col, row: sq.row, kind, placed_by: byOf(kind) });
       for (const [kind, set] of [['trap', traps], ['wall', walls], ['pit', pits], ['deadly_trap', deadly]]) {
@@ -470,6 +492,7 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     const destroyCopy = async (c, by = null) => {
       if (!c.square && !copies.includes(c)) return;
       await queued(() => run('DELETE FROM map_tiles WHERE id = ?', [c.rowId]));
+      if (c.square) recordTile('destroyed', 'copy', storedOf(c.square), { owner_id: c.ownerId });
       const i = copies.indexOf(c);
       if (i >= 0) copies.splice(i, 1);
       c.square = null;
@@ -718,6 +741,7 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
           });
           const c = copyOf({ id, col: at.col, row: at.row, owner_id: owner.id, kind: 'copy' });
           if (c) copies.push(c);
+          recordTile('placed', 'copy', at, { owner_id: owner.id, from: owner.square ? storedOf(owner.square) : null });
           markDirty();
           return c;
         }
@@ -810,7 +834,7 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
         const its = { col: o.square.col, row: o.square.row };
         const by = tileList.find((t) => t.col === its.col && t.row === its.row && t.kind === o.kind)?.placed_by ?? null;
         await writeKinds(its, removeTile(kindsAtSq(its), o.kind));
-        await setSquare(actor, its);
+        await setSquare(actor, its, 'swap');
         await writeKinds(mine, placeTile(kindsAtSq(mine), o.kind), by);
         o.square = mine;
         o.id = `${mine.col},${mine.row}:${o.kind}`;
@@ -979,7 +1003,7 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
       forced: (f, opts) => moves.forced(world.env, movers, f, opts),
       swap: (a, b) => moves.swap(world.env, movers, a, b),
     };
-    const movers = { mode, board, setSquare, smashWall, setDizzy, inPit, writeTokens, copies };
+    const movers = { mode, board, setSquare, recordMove, smashWall, setDizzy, inPit, writeTokens, copies };
     const onTrap = (f) => f.square != null && traps.has(`${f.square.col},${f.square.row}`);
     return { world, fighters, byId, onTrap, weight, movers };
   }

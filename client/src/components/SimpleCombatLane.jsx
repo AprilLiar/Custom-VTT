@@ -8,6 +8,8 @@ import { socket } from '../socket.js';
 import { laneGeometry, laneLinesPath, moveOnLane, pointsAttr, slotAt } from '../lib/simpleLane.js';
 import FighterOverlay, { ArmorRings, ChallengeLock } from './FighterOverlay.jsx';
 import FighterFx from './fx/FighterFx.jsx';
+import TileFx from './fx/TileFx.jsx';
+import { moveHow, slideTransition } from '../lib/boardFx.js';
 import { armorRings } from '../lib/panicTokens.js';
 import { MapTileLayer } from './MapTiles.jsx';
 import { isTakenOut } from '../lib/hpBars.js';
@@ -247,6 +249,10 @@ export default function SimpleCombatLane({
           <Miniature
             key={s.id}
             summon={s}
+            slide={(() => {
+              const mv = fxBeat?.effects.find((e) => e.kind === 'move' && e.combatantId === s.fight?.combatant_id);
+              return mv ? { how: moveHow(mv), ms: fxBeat.ms } : null;
+            })()}
             x={isDragged ? dragging.x : seg.center.x}
             y={isDragged ? dragging.y + size.plinthRx * 0.3 : seg.center.y}
             size={size}
@@ -284,7 +290,35 @@ export default function SimpleCombatLane({
           });
         }
         const byCombatant = new Map(summons.filter((s) => s.fight?.combatant_id != null).map((s) => [s.fight.combatant_id, s]));
-        return onLane.map((s) => {
+        // Board animations: drawn for every fighter (one leaving the lane
+        // still shows its move), at the figure's middle and size.
+        const anyBox = boxes.values().next().value;
+        const lift = anyBox ? anyBox.mid.y - anyBox.base.center.y : 0;
+        const fxLayer = fxBeat && (
+          <div key="fx">
+            <TileFx beat={fxBeat} quadOf={tileQuadOf} d={anyBox?.d ?? 60} />
+            {summons
+              .filter((s) => s.fight?.combatant_id != null)
+              .map((s) => (
+                <FighterFx
+                  key={`fx${s.id}`}
+                  beat={fxBeat}
+                  combatantId={s.fight.combatant_id}
+                  center={boxes.get(s.id)?.mid ?? null}
+                  diameter={boxes.get(s.id)?.d ?? anyBox?.d ?? 60}
+                  centerOf={(id) => {
+                    const o = byCombatant.get(id);
+                    return o ? boxes.get(o.id)?.mid : null;
+                  }}
+                  squareCenter={(sq) => {
+                    const seg = sq ? geometry.segments[sq.slot ?? sq.row * 10 + sq.col] : null;
+                    return seg ? { x: seg.center.x, y: seg.center.y + lift } : null;
+                  }}
+                />
+              ))}
+          </div>
+        );
+        return [fxLayer, ...onLane.map((s) => {
           const box = boxes.get(s.id);
           if (!box || dragging?.id === s.id || !s.fight) return null;
           const challenger = s.fight.challenge_id != null ? byCombatant.get(s.fight.challenge_id) : null;
@@ -296,18 +330,6 @@ export default function SimpleCombatLane({
               {/* Only during the Challenge holder's own turn (decided). */}
               {target && activeCombatantId != null && s.fight.combatant_id === activeCombatantId && (
                 <ChallengeLock from={box.mid} to={target.mid} radius={target.icon * 1.4} />
-              )}
-              {fxBeat && (
-                <FighterFx
-                  beat={fxBeat}
-                  combatantId={s.fight.combatant_id}
-                  center={box.mid}
-                  diameter={box.d}
-                  centerOf={(id) => {
-                    const o = byCombatant.get(id);
-                    return o ? boxes.get(o.id)?.mid : null;
-                  }}
-                />
               )}
               <FighterOverlay
                 name={s.name}
@@ -328,7 +350,7 @@ export default function SimpleCombatLane({
               />
             </div>
           );
-        });
+        })];
       })()}
 
       {/* Fighters who don't fit on the lane, or whom the GM set aside. */}
@@ -376,7 +398,7 @@ export default function SimpleCombatLane({
 // than a lane space, fading out at the bottom so the feet disperse rather than
 // end on a hard edge, standing on a small round plinth. (x, y) is where the
 // plinth's centre sits.
-function Miniature({ summon, x, y, size, lifted = false, selected = false, draggable, onPointerDown, layer = 1, onAspect }) {
+function Miniature({ summon, x, y, size, lifted = false, slide = null, selected = false, draggable, onPointerDown, layer = 1, onAspect }) {
   if (!summon) return null;
   const rx = size.plinthRx;
   const ry = rx * 0.32;
@@ -392,7 +414,7 @@ function Miniature({ summon, x, y, size, lifted = false, selected = false, dragg
         top: y - size.maxHeight,
         width: size.width,
         height: size.maxHeight + ry,
-        transition: lifted ? 'none' : 'left 180ms ease-out, top 180ms ease-out',
+        transition: lifted ? 'none' : slideTransition(slide, 'left 180ms ease-out, top 180ms ease-out'),
         zIndex: lifted ? 30 : layer,
         // Taken Out at zero HP (batch 5): half transparent and grey, until healed.
         opacity: summon.is_hidden || out ? 0.5 : 1,
