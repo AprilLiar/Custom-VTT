@@ -32,3 +32,9 @@ export const useIsCoarsePointer = () => useMediaQuery('(pointer: coarse)');
 // would wrongly gate a desktop browser window that just happens to be taller
 // than it is wide. Callers combine this with `!useIsDesktop()`.
 export const useIsLandscape = () => useMediaQuery('(orientation: landscape)');
+
+// **A phone (play feedback 8), in either orientation:** narrower than the
+// desktop breakpoint, or a touch screen whose short side is a phone's (a
+// phone in landscape is wider than 768px, so `useIsDesktop` calls it a
+// desktop). A tablet is not a phone. The Scene's fight UI is pared down here.
+export const useIsPhone = () => useMediaQuery('(max-width: 767px), (pointer: coarse) and (max-height: 600px)');

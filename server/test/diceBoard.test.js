@@ -60,3 +60,21 @@ test('homebrew: a Form with an "Other" Skill gets its own Skill entry', () => {
   // Saved again (skillId null, customSkill kept) it stays custom.
   assert.ok(cleanHomebrew({ ...item, skillId: null }, book, HOMEBREW_TOKEN_KEYS).customSkill);
 });
+
+// Play feedback 8: a 2 was placed on 4+ Actions (with no Gate).
+test('a number below an Action’s lowest cost can’t pay for it', async () => {
+  const { dieFits } = await import('../../client/src/lib/patd/diceBoard.js');
+  const { patdContent } = await import('../patdContent.js');
+  const idx = patdContent();
+  const byName = (n) => idx.content.actions.find((a) => a.name === n);
+  const four = idx.content.actions.find((a) => (a.gates?.headerThresholds ?? [])[0] === 4);
+  assert.equal(dieFits(four, 2), false);
+  assert.equal(dieFits(four, 3), false);
+  assert.equal(dieFits(four, 4), true);
+  // Elder Style's +1 counts (the caller adds it): a 3 on a 4+.
+  assert.equal(dieFits(four, 3 + 1), true);
+  assert.equal(dieFits(byName('Bag Of Tricks'), 1), false);
+  assert.equal(dieFits(byName('Bag Of Tricks'), 2), true);
+  // An "X" cost takes any number.
+  assert.equal(dieFits(byName('Grapple'), 1), true);
+});

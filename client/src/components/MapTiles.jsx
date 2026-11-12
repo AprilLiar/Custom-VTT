@@ -356,7 +356,7 @@ const SWATCH = [[2, 2], [34, 2], [34, 34], [2, 34]];
 // the screen, shown only in Simple Combat and Combat. It opens a small
 // vertical list of every tile: its look and name. Drag one onto a square to
 // place it; tap it for a brief description of what it does.
-export function MapTilePalette({ mode, left = 0, role }) {
+export function MapTilePalette({ mode, left = 0, role, lockOnly = false }) {
   const [open, setOpen] = useState(false);
   const [info, setInfo] = useState(null); // tile key
   const boxRef = useRef(null);
@@ -364,6 +364,27 @@ export function MapTilePalette({ mode, left = 0, role }) {
   useEffect(() => {
     if (!open) setInfo(null);
   }, [open]);
+  // **A phone (play feedback 8): only the lock**, full size — tiles are placed
+  // by Actions, or by the GM at a computer.
+  if (lockOnly) {
+    return (
+      <div className="absolute top-1/2 -translate-y-1/2" style={{ left: left + 12, zIndex: 1000, marginLeft: 'var(--safe-left)' }}>
+        <button
+          type="button"
+          onClick={() => setLocked(!isLocked)}
+          title={isLocked ? 'Obstacles locked: they can’t be touched, and dragging over them moves the camera. Tap to unlock.' : 'Lock obstacles, so a stray drag can’t touch them'}
+          aria-label={isLocked ? 'Unlock obstacles' : 'Lock obstacles'}
+          aria-pressed={isLocked}
+          data-obstacle-lock={isLocked ? 'on' : 'off'}
+          className={`flex h-11 w-11 items-center justify-center panel-cut-sm border ${
+            isLocked ? 'border-amber-500 bg-amber-900/60 text-amber-200' : 'border-zinc-700 bg-zinc-900/85 text-zinc-400'
+          }`}
+        >
+          {isLocked ? <Lock size={18} aria-hidden /> : <LockOpen size={18} aria-hidden />}
+        </button>
+      </div>
+    );
+  }
   return (
     // The button stays put (decided): only it sits in the centred box; the
     // palette and its info hang beside it, centred on it.

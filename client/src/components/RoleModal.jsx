@@ -21,15 +21,15 @@ export default function RoleModal() {
   const pcs = (characters ?? []).filter((c) => c.character_type === 'pc');
 
   return (
-    <div className="bg-arena flex h-screen flex-col items-center justify-center gap-8 text-zinc-100">
-      <h1 className="font-display text-4xl font-bold uppercase tracking-wide">Dogfight: Martial Arts TTRPG</h1>
+    <div className="bg-arena flex h-[100dvh] flex-col items-center justify-center gap-6 overflow-y-auto px-4 py-6 text-zinc-100 sm:gap-8">
+      <h1 className="text-center font-display text-2xl font-bold uppercase tracking-wide sm:text-4xl">Dogfight: Martial Arts TTRPG</h1>
       <p className="text-zinc-400">Who are you this session?</p>
-      <div className="flex w-full max-w-3xl items-stretch gap-6 px-6">
+      <div className="flex w-full max-w-3xl items-stretch gap-3 px-2 sm:gap-6 sm:px-6">
         <div className="panel-cut flex min-w-0 flex-1 flex-col gap-2 border border-zinc-800 bg-zinc-900 p-4">
           <span className="font-display text-xs font-bold uppercase tracking-wide text-zinc-500">
             Play as…
           </span>
-          <div className="flex max-h-80 flex-col gap-1.5 overflow-y-auto pr-1">
+          <div className="flex max-h-[min(20rem,55dvh)] flex-col gap-1.5 overflow-y-auto pr-1">
             {characters == null ? (
               <p className="text-sm text-zinc-600">Loading…</p>
             ) : pcs.length === 0 ? (

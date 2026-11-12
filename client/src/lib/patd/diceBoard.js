@@ -28,6 +28,20 @@ export function gateFor(action, value) {
   return effect.filter((t) => t <= v).reduce((a, b) => Math.max(a, b), 0);
 }
 
+// **Can this number pay for the Action at all? (play feedback 8)** — at least
+// its lowest cost: the first header Gate ("4+"), else the lowest
+// `pool_number` minimum (Bag of Tricks: 2+; an "X" cost: 1). `value`
+// already counts Elder Style's +1. A number below it was once placed anyway
+// (a 2 on 4+ Actions), with no Gate.
+export function dieFits(action, value) {
+  const v = Number(value);
+  if (!Number.isFinite(v)) return false;
+  const header = [...(action?.gates?.headerThresholds ?? [])].filter((t) => typeof t === 'number').sort((a, b) => a - b);
+  const mins = (action?.cost?.options ?? []).flatMap((o) => o.components ?? []).filter((c) => c.kind === 'pool_number').map((c) => Number(c.minimum) || 1);
+  const lowest = header.length ? header[0] : mins.length ? Math.min(...mins) : 1;
+  return v >= lowest;
+}
+
 // **Elder Style (the QA pass):** "the cost of all Actions you perform are
 // reduced by 1 (to a minimum of 1+ …)" — a number counts as one higher against
 // an Action's printed costs and Gates. An "X" cost has none to reduce.

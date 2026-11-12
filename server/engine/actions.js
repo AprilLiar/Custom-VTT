@@ -10,7 +10,7 @@ import { one, run } from '../db.js';
 import { applyHpDelta } from '../../client/src/lib/hpBars.js';
 import { describe, hasNoTargets, runRule } from '../../client/src/lib/patd/interpreter.js';
 import { abilitiesOff, sumMod, valueOf } from '../../client/src/lib/patd/engine/modifiers.js';
-import { costBonus, poolOf, removePoolNumber } from '../../client/src/lib/patd/diceBoard.js';
+import { costBonus, dieFits, poolOf, removePoolNumber } from '../../client/src/lib/patd/diceBoard.js';
 import { BASIC_KEYS, luckRoom, planPayment } from '../../client/src/lib/patd/tokenCost.js';
 import { expireTemps, fighterRt } from '../../client/src/lib/patd/engine/runtime.js';
 import { hpOf, saveHp, shapeFightState } from '../combatState.js';
@@ -341,6 +341,10 @@ export function createActionRunner(kit) {
     } else if (placement.kind === 'die') {
       const n = poolOf(data).find((p) => p.index === placement.die);
       payment = { rating: n?.value ?? 0, poolNumbers: [n?.value ?? 0], isDice: true };
+      // Too low to pay for it (play feedback 8) — a board placed before the check.
+      if (!placement.free && !placement.copied && n && !dieFits(action, n.value + costBonus(action, { costReduction: valueOf(env.world.mods?.(payer) ?? [], 'action_cost.reduction', null) }))) {
+        return { ok: false, cancelled: true, action, error: `a ${n.value} can't pay for ${action.name}` };
+      }
       // A Chaos token spent "as if you had spent a 4" (once per turn — phase F).
       if (n?.source === 'chaos') {
         if (fighterRt(env.rt, payer.id).flags.chaosUsed || !((payer.tokens.chaos ?? 0) > 0)) return { ok: false, error: 'no Chaos token to spend (once per turn)', action };

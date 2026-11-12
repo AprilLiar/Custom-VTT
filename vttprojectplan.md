@@ -4086,6 +4086,17 @@ The user's standing rule: **nothing is left "by hand"** — the core rules are f
 3. **Exploit Weakness, tested (`scripts/playtest-exploit-weakness.mjs`).** The target's Weakness is spent as Power, first (it costs nothing), and adds to the hit together with the attacker's own Power within the usual per-hit Power limit (1, more with Power Form and the like): her 1 Power + their 2 Weakness at the limit of 1 gives +1, spending one of their Weakness and keeping her Power. **Fixed:** with the board's Power toggle off (or the sheet's Power "Never"), nothing was spent, not even their free Weakness. Now the target's Weakness is always used (`decide.power` gets `free`).
 4. **Fatigue on a hand move with Speed.** "Yes" in the hand-move dialog is now the engine's own Free Movement (`move:hand_pay` → `triggers.freeMove`): the cheapest path, Speed paid only for the spaces moved, Traps and Rubble on the way, the undo arrow, the animation, and Fatigue: discard 1 and stop 2 spaces short on that same path. The server moves the token (`moved: true`); the client no longer sends the drop. The dialog warns when the fighter is Fatigued (`move:hand_cost` gains `fatigue`). "No" (fixing the board by hand) still just moves them.
 
+### Play feedback 8 (decided, implemented)
+
+1. **Phones (`useIsPhone`: under 768px wide, or a touch screen whose short side is under 600px — a phone in either orientation, not a tablet).** On the Scene's fight views:
+   - no Map Tiles button, only the obstacle lock at full touch size (tiles come from Actions, or the GM at a computer);
+   - no turn order (initiative rail);
+   - no zoom +, − and fit buttons (pinch and drag instead);
+   - no pen and eraser during Simple Combat.
+   **End Turn** sits beside **Action** on every device: the same shape, red, only on your own turn, and it asks first ("End Ana's turn? Placed Actions that aren't committed are dropped." End turn / Keep going), then sends `board:end_turn`. Both buttons are 44px tall. The role screen fits a phone in portrait.
+2. **A number too low for an Action can't pay for it.** A 2 could be placed on 4+ Actions (with no Gate). `diceBoard.dieFits(action, value)`: at least the first header Gate, else the lowest `pool_number` minimum (Bag of Tricks 2+), else 1 (an X cost). Elder Style's +1 counts. `board:place` refuses it with a message, the dice board's hover preview shows red, and `perform` refuses a too-low die already on a saved board.
+3. **The Power button says what it is:** "Power N · On/Off" in the Action menu's footer (it was a bare bolt).
+
 ## Board animations (decided, implemented)
 
 Every change the engine makes in a fight is shown as a short animation, so a chain of effects can be followed one by one on both the Simple Combat lanes and the Combat map.

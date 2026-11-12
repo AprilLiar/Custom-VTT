@@ -64,6 +64,8 @@ export default function CombatMap({
   activeCombatantId = null,
   // Board animations: the beat playing now (useBoardFx), or null.
   fxBeat = null,
+  // The +, − and fit buttons — none on a phone (play feedback 8: pinch and drag instead).
+  zoomButtons = true,
 }) {
   // The token whose panel is open (Phase 4). A click opens it; a drag closes it.
   const [selectedTokenId, setSelectedTokenId] = useState(null);
@@ -438,7 +440,7 @@ export default function CombatMap({
       {ready && <PickViewLayer mode="combat" quadOf={tileQuadOf} width={stageWidth} height={stageHeight} zIndex={7} />}
       {ready && <SquarePickLayer mode="combat" quadOf={tileQuadOf} width={stageWidth} height={stageHeight} zIndex={8} />}
 
-      {ready && (
+      {ready && zoomButtons && (
         <div
           className="pointer-events-auto absolute bottom-3 flex flex-col gap-1"
           style={{ right: insetRight + 12, zIndex: 30, marginBottom: 'var(--safe-bottom)' }}

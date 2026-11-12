@@ -6,7 +6,7 @@ import { getBuild } from '../../lib/api.js';
 import { useRole } from '../../roleContext.jsx';
 import { useContent } from '../../lib/patd/useContent.js';
 import { deriveBuild, stanceOfBuild } from '../../lib/patd/build.js';
-import { costBonus, gateFor, minusReserved, poolOf, reservedBy, stopChoices, turnActions } from '../../lib/patd/diceBoard.js';
+import { costBonus, dieFits, gateFor, minusReserved, poolOf, reservedBy, stopChoices, turnActions } from '../../lib/patd/diceBoard.js';
 import { affordableOptions, hasDiceCost, optionLabel, paymentText, planPayment, tokenOptions } from '../../lib/patd/tokenCost.js';
 import { useDiceMarks } from '../../lib/diceMarks.js';
 import { useSquarePick } from '../../lib/squarePick.js';
@@ -285,8 +285,10 @@ export default function DiceBoard({ payload, onClose, canEdit }) {
       return superPair(pool, previewDie, taken) && superState(action).ok ? true : false;
     }
     if (!hasDiceCost(action)) return false;
-    const g = gateFor(action, n.value + costBonus(action, fighter));
-    return g == null ? false : g;
+    const v = n.value + costBonus(action, fighter);
+    if (!dieFits(action, v)) return false;
+    const g = gateFor(action, v);
+    return g ?? 0;
   };
   const hoverHandlers = (id) => ({
     onPointerEnter: () => selected != null && !drag && setHover(id),
@@ -512,7 +514,8 @@ export default function DiceBoard({ payload, onClose, canEdit }) {
             title={board.power ? 'Power on: placed Actions Enhance their hits while Power lasts' : 'Power off'}
             className={`${btn} ${board.power ? 'border-red-400 bg-red-500/25 text-red-100' : 'border-zinc-700 text-zinc-300'}`}
           >
-            <Zap size={13} aria-hidden /> {power}
+            {/* Named (play feedback 8): the bolt alone was easy to forget. */}
+            <Zap size={13} aria-hidden /> Power {power} · {board.power ? 'On' : 'Off'}
           </button>
           <div className="flex min-w-0 flex-1 flex-wrap justify-center gap-1.5">
             {pool.map((n) => {

@@ -11,7 +11,7 @@
 // A roll's board is editable only while it is `active`: from the roll until
 // that fighter's turn ends (Next / Previous turn, End Combat).
 import { all, one, run } from './db.js';
-import { gateFor, minusReserved, poolOf, publicBoard, reservedBy, stopChoices, turnActions, costBonus } from '../client/src/lib/patd/diceBoard.js';
+import { dieFits, gateFor, minusReserved, poolOf, publicBoard, reservedBy, stopChoices, turnActions, costBonus } from '../client/src/lib/patd/diceBoard.js';
 import { hasDiceCost, paymentText, planPayment, tokenOptions } from '../client/src/lib/patd/tokenCost.js';
 import { controlsCharacter } from './control.js';
 import { serialized, shapeFightState } from './combatState.js';
@@ -296,6 +296,8 @@ export function registerDiceMarkHandlers({ on: onRaw, socket, io, triggers = nul
       if (n.source === 'chaos' && !(data.reaction?.clusters ?? []).some((c) => c.resource === 'chaos' && c.ids.includes(action.id))) return refuse(row.roll_id, 'a Chaos token pays for a Reactive Action only');
       // (Elder Style: the number counts one higher against the Action's costs.)
       const elder = costBonus(action, await fighterState(actingOn(row).combatantId));
+      // Too low to pay for it (play feedback 8: a 2 went on 4+ Actions).
+      if (!dieFits(action, n.value + elder)) return refuse(row.roll_id, `${action.name} costs ${action.cost?.text ?? 'more'} — a ${n.value} can't pay for it`);
       data.placements.push({ key: `d${n.index}`, kind: 'die', die: n.index, actionId: action.id, threshold: gateFor(action, n.value + elder), stop: null, committed: false });
     } else {
       const opt = Number(option);

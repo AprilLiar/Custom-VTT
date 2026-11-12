@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ArrowLeft, Eye, EyeOff, StickyNote } from 'lucide-react';
-import { useIsDesktop, useIsLandscape } from '../lib/useMediaQuery.js';
+import { useIsDesktop, useIsLandscape, useIsPhone } from '../lib/useMediaQuery.js';
 import { useRole } from '../roleContext.jsx';
 import { useControl } from '../lib/useControl.js';
 import NowPlaying from './NowPlaying.jsx';
@@ -70,6 +70,8 @@ export default function ScenePage() {
   const { controls, controlled } = useControl();
   const identity = role === 'gm' ? { role: 'gm' } : role === 'player' ? { role: 'player', characterId } : undefined;
   const stage = useStage(identity);
+  // A phone (play feedback 8): the fight UI is pared down for it.
+  const isPhone = useIsPhone();
   // Board animations (decided): the beat playing, and the board held to it.
   const fx = useBoardFx(stage != null);
   // Nothing to hold: the stage's own lists, so nothing downstream sees new ones.
@@ -412,6 +414,7 @@ export default function ScenePage() {
           activeCombatantId={isCombat ? (fight?.order?.[fight.turn_index]?.id ?? null) : null}
           armorUsed={isCombat ? (fight?.armor_used ?? {}) : {}}
           fxBeat={isCombat && fx.playing?.mode === 'combat' ? fx.playing : null}
+          zoomButtons={!isPhone}
         />
         </div>
       )}
@@ -475,7 +478,8 @@ export default function ScenePage() {
           {/* Pen/Eraser are both roles; the Timestamp button inside is
               GM-only — see SceneDrawToolbar's own header comment for the
               corner, z-index, and role reasoning. */}
-          {!isCombat && (
+          {/* Not on a phone during Simple Combat (play feedback 8): the lane is for fighting. */}
+          {!isCombat && !(isPhone && fight) && (
           <SceneDrawToolbar
             tool={tool}
             onSelectTool={setTool}
@@ -497,11 +501,13 @@ export default function ScenePage() {
           since a turn cannot go on without it. */}
       {/* Map tiles (decided, new): the palette, at the left, in either fight mode. */}
       {/* Stays up with the interface hidden (decided), so tiles can be placed in cinematic mode. */}
-      {fightMode && <MapTilePalette mode={fightMode} role={role} left={role === 'gm' && !uiHidden ? 256 : 0} />}
+      {/* On a phone only the lock (play feedback 8): Actions place tiles, or the GM at a computer. */}
+      {fightMode && <MapTilePalette mode={fightMode} role={role} left={role === 'gm' && !uiHidden ? 256 : 0} lockOnly={isPhone} />}
       {!uiHidden && role === 'gm' && fightMode && !fight && <StartCombatButton onClick={() => setFightSetupOpen(true)} />}
       {/* The rail stays up in cinematic mode too (decided, mobile fix): the
           turn order and Next turn are needed mid-fight whatever the GM hides. */}
-      {fight && (
+      {/* No turn order on a phone (play feedback 8): the Action / End Turn buttons say when it's yours. */}
+      {fight && !isPhone && (
         <InitiativeRail
           mode={fightMode}
           fight={fight}

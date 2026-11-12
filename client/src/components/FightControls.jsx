@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, ArrowRight, ChevronLeft, ChevronRight, GripVertical, Swords, Users, X } from 'lucide-react';
+import { ArrowLeft, ArrowRight, ChevronLeft, ChevronRight, Flag, GripVertical, Swords, Users, X } from 'lucide-react';
 import { socket } from '../socket.js';
 import { cropOf } from '../lib/imageCrop.js';
 import CroppedImage from './CroppedImage.jsx';
@@ -690,23 +690,67 @@ export function ActionButton({ fight, mode, controls = () => false }) {
     };
   }, [turnKey, mode]);
   const rollId = current?.payload?.roll_id ?? null;
+  const [confirming, setConfirming] = useState(false);
   // The turn moved on: an open board of the old turn closes.
-  useEffect(() => setOpen(false), [rollId]);
+  useEffect(() => {
+    setOpen(false);
+    setConfirming(false);
+  }, [rollId]);
   if (!current || !controls(current.characterId)) return null;
   if (open) return <DiceBoard payload={current.payload} canEdit onClose={() => setOpen(false)} />;
   if (pick || fight?.interrupt?.active) return null;
+  const name = current.payload.fighter?.name ?? '';
+  const shape = 'pointer-events-auto flex min-h-11 items-center gap-1.5 panel-cut-sm border px-4 font-display text-xs font-bold uppercase tracking-wide shadow-lg backdrop-blur';
   return (
-    <button
-      type="button"
-      onClick={() => setOpen(true)}
-      data-action-button
-      title={`${current.payload.fighter?.name ?? 'Your'} turn: open the Actions`}
-      className="pointer-events-auto fixed left-1/2 flex min-h-9 max-w-[70vw] -translate-x-1/2 items-center gap-1.5 panel-cut-sm border border-lime-400 bg-lime-500/25 px-4 font-display text-xs font-bold uppercase tracking-wide text-lime-100 shadow-lg backdrop-blur hover:bg-lime-500/40"
+    <div
+      className="pointer-events-none fixed left-1/2 flex max-w-[calc(100vw-1rem)] -translate-x-1/2 items-end gap-2"
       style={{ zIndex: 2990, bottom: 'max(0.5rem, var(--safe-bottom, 0px))' }}
     >
-      <Swords size={14} className="shrink-0" aria-hidden />
-      <span className="truncate">Action · {current.payload.fighter?.name ?? ''}</span>
-    </button>
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        data-action-button
+        title={`${name || 'Your'} turn: open the Actions`}
+        className={`${shape} min-w-0 border-lime-400 bg-lime-500/25 text-lime-100 hover:bg-lime-500/40`}
+      >
+        <Swords size={14} className="shrink-0" aria-hidden />
+        <span className="truncate">Action · {name}</span>
+      </button>
+      {/* **End Turn (play feedback 8):** beside Action, only on your own turn, asked first. */}
+      <div className="relative shrink-0">
+        {confirming && (
+          <div className="pointer-events-auto absolute bottom-full right-0 mb-2 w-56 panel-cut-sm border border-red-500/70 bg-zinc-950/95 p-2 shadow-2xl" role="dialog" aria-label="End your turn?">
+            <p className="mb-2 text-xs text-zinc-200">End {name ? `${name}’s` : 'your'} turn? Placed Actions that aren’t committed are dropped.</p>
+            <div className="flex gap-1.5">
+              <button
+                type="button"
+                onClick={() => {
+                  setConfirming(false);
+                  socket.emit('board:end_turn', { rollId });
+                }}
+                className="min-h-11 flex-1 panel-cut-sm border border-red-400 bg-red-600/40 font-display text-xs font-bold uppercase text-red-50 hover:bg-red-600/60"
+              >
+                End turn
+              </button>
+              <button type="button" onClick={() => setConfirming(false)} className="min-h-11 flex-1 panel-cut-sm border border-zinc-600 bg-zinc-900 font-display text-xs font-bold uppercase text-zinc-200">
+                Keep going
+              </button>
+            </div>
+          </div>
+        )}
+        <button
+          type="button"
+          onClick={() => setConfirming((v) => !v)}
+          data-end-turn-button
+          aria-expanded={confirming}
+          title="End your turn"
+          className={`${shape} border-red-400 bg-red-500/25 text-red-100 hover:bg-red-500/40`}
+        >
+          <Flag size={14} className="shrink-0" aria-hidden />
+          <span>End Turn</span>
+        </button>
+      </div>
+    </div>
   );
 }
 
