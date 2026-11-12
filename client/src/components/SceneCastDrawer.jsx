@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { socket } from '../socket.js';
-import { getTempNpcs, getTempNpcFolders, getCharacterFolders } from '../lib/api.js';
+import { useCharacterFolders, useTempNpcFolders, useTempNpcList } from '../lib/sceneLists.js';
 import { useRoster } from '../lib/useRoster.js';
 import { useStage } from '../lib/useStage.js';
 import { buildFolderTree } from '../lib/folders.js';
@@ -52,58 +52,15 @@ const TEMP_NPC_DRAG_MIME = 'text/temp-npc-id';
 export default function SceneCastDrawer() {
   const characters = useRoster();
   const stage = useStage();
-  const [characterFolders, setCharacterFolders] = useState(null);
-  const [tempNpcs, setTempNpcs] = useState(null);
-  const [tempNpcFolders, setTempNpcFolders] = useState(null);
+  // Kept for the session (play feedback 8): no reload when the drawer reopens.
+  const characterFolders = useCharacterFolders();
+  const tempNpcs = useTempNpcList();
+  const tempNpcFolders = useTempNpcFolders();
   const [currentTempFolder, setCurrentTempFolder] = useState(null);
   const [collapsedFolders, setCollapsedFolders] = useState(new Set());
   const [newTempNpcName, setNewTempNpcName] = useState('');
   const [editingTempNpc, setEditingTempNpc] = useState(null);
   const [summoning, setSummoning] = useState(null); // { ownerType, ownerId, ownerName, currentScenePictureId }
-
-  useEffect(() => {
-    let alive = true;
-    const refetch = () =>
-      getCharacterFolders()
-        .then((list) => {
-          if (alive) setCharacterFolders(list);
-        })
-        .catch(console.error);
-    refetch();
-    const events = ['character_folder:created', 'character_folder:updated', 'character_folder:deleted'];
-    for (const ev of events) socket.on(ev, refetch);
-    return () => {
-      alive = false;
-      for (const ev of events) socket.off(ev, refetch);
-    };
-  }, []);
-
-  useEffect(() => {
-    let alive = true;
-    const refetchTempNpcs = () =>
-      getTempNpcs()
-        .then((list) => {
-          if (alive) setTempNpcs(list);
-        })
-        .catch(console.error);
-    const refetchTempNpcFolders = () =>
-      getTempNpcFolders()
-        .then((list) => {
-          if (alive) setTempNpcFolders(list);
-        })
-        .catch(console.error);
-    refetchTempNpcs();
-    refetchTempNpcFolders();
-    const npcEvents = ['temp_npc:created', 'temp_npc:updated', 'temp_npc:deleted'];
-    const folderEvents = ['temp_npc_folder:created', 'temp_npc_folder:updated', 'temp_npc_folder:deleted'];
-    for (const ev of npcEvents) socket.on(ev, refetchTempNpcs);
-    for (const ev of folderEvents) socket.on(ev, refetchTempNpcFolders);
-    return () => {
-      alive = false;
-      for (const ev of npcEvents) socket.off(ev, refetchTempNpcs);
-      for (const ev of folderEvents) socket.off(ev, refetchTempNpcFolders);
-    };
-  }, []);
 
   // Keeps a Temp NPC being edited in sync with live updates (e.g. its own
   // rename), and closes the dialog automatically if it gets deleted out

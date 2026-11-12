@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Minus, Plus } from 'lucide-react';
 import { socket } from '../socket.js';
-import { getCharacterFolders, getCombatProfiles } from '../lib/api.js';
+import { getCombatProfiles } from '../lib/api.js';
 import { useRoster } from '../lib/useRoster.js';
+import { useCharacterFolders as useSharedCharacterFolders } from '../lib/sceneLists.js';
 import { buildFolderTree } from '../lib/folders.js';
 import { FolderRosterNode } from './FolderRoster.jsx';
 import { beginFighterDrag } from '../lib/combatDrag.js';
@@ -72,24 +73,9 @@ function FighterChip({ fighter, label }) {
   );
 }
 
-// The character folders, kept live.
+// The character folders, kept live — the session's shared copy (play feedback 8).
 function useCharacterFolders() {
-  const [folders, setFolders] = useState([]);
-  useEffect(() => {
-    let alive = true;
-    const refetch = () =>
-      getCharacterFolders()
-        .then((list) => alive && setFolders(list))
-        .catch(console.error);
-    refetch();
-    const events = ['character_folder:created', 'character_folder:updated', 'character_folder:deleted'];
-    for (const ev of events) socket.on(ev, refetch);
-    return () => {
-      alive = false;
-      for (const ev of events) socket.off(ev, refetch);
-    };
-  }, []);
-  return folders;
+  return useSharedCharacterFolders() ?? [];
 }
 
 export function CombatFightersDrawer() {

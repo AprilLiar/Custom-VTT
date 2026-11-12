@@ -23,9 +23,22 @@ function derive(rawJson) {
 }
 
 // Map(characterId → derived build) for every character with a build.
+// **Read once until a build changes (play feedback 8):** every stage update
+// needs it, and reading every build each time was the costliest part of one.
+// server/builds.js bumps the version on each write; homebrew bumps the content's.
+let buildsVersion = 0;
+let allCache = null; // { key, map }
+export const buildsChanged = () => {
+  buildsVersion++;
+};
 export async function loadAllDerived() {
+  const key = `${contentVersion()}|${buildsVersion}`;
+  if (allCache?.key === key) return allCache.map;
   const rows = await all('SELECT character_id, data FROM character_builds');
-  return new Map(rows.map((r) => [r.character_id, derive(r.data)]).filter(([, d]) => d));
+  const map = new Map(rows.map((r) => [r.character_id, derive(r.data)]).filter(([, d]) => d));
+  // Only if nothing changed while it was read.
+  if (key === `${contentVersion()}|${buildsVersion}`) allCache = { key, map };
+  return map;
 }
 
 export async function derivedFor(characterId) {

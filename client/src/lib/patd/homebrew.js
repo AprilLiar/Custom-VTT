@@ -59,7 +59,6 @@ export const WHO = [
   { id: 'all_allies', label: 'you and every ally in range' },
   { id: 'all_enemies', label: 'every enemy in range' },
 ];
-const WHO_IDS = new Set(WHO.map((w) => w.id));
 
 // The effects the editor offers. `who` lists the targets each allows.
 export const STEP_KINDS = [

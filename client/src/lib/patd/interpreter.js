@@ -1460,6 +1460,9 @@ async function run(node, scope, ctx) {
     }
     case 'gain_shield': {
       const v = val(node.value);
+      // A Shield of 0 is no Shield (golden tests: Yell at X=1 — "half of X,
+      // rounded down" — gave a free one, as a new Shield raises the old by 1).
+      if (v != null && !(Number(v) > 0)) return;
       for (const f of await targetsOf(node.target, scope, ctx)) {
         await world.gainShield(f, v);
         ctx.log(`${f.name} gains Shield ${v}`);

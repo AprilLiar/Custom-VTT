@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { socket } from '../socket.js';
-import { getScenes, getSceneFolders } from '../lib/api.js';
+import { useSceneFolders, useSceneList } from '../lib/sceneLists.js';
 import Thumb from './Thumb.jsx';
 import FolderTreeNav from './FolderTreeNav.jsx';
 import SceneEditor from './SceneEditor.jsx';
@@ -25,41 +25,13 @@ const SCENE_DRAG_MIME = 'text/scene-id';
 // The active Scene's row is highlighted so the GM can see at a glance what
 // every connected Player is currently looking at.
 export default function SceneListDrawer({ activeSceneId }) {
-  const [scenes, setScenes] = useState(null);
-  const [folders, setFolders] = useState(null);
+  // Kept for the session (play feedback 8): no reload when the drawer reopens.
+  const scenes = useSceneList();
+  const folders = useSceneFolders();
   const [currentFolder, setCurrentFolder] = useState(null);
   const [newSceneName, setNewSceneName] = useState('');
   const [editingScene, setEditingScene] = useState(null);
 
-  useEffect(() => {
-    let alive = true;
-    // `{ role: 'gm' }` is what makes each Scene's `timestamp_id` come back —
-    // this drawer is GM-only furniture, and SceneEditor's Timestamp picker
-    // needs the current cue to show it pre-selected.
-    const refetchScenes = () =>
-      getScenes({ role: 'gm' })
-        .then((list) => {
-          if (alive) setScenes(list);
-        })
-        .catch(console.error);
-    const refetchFolders = () =>
-      getSceneFolders()
-        .then((list) => {
-          if (alive) setFolders(list);
-        })
-        .catch(console.error);
-    refetchScenes();
-    refetchFolders();
-    const sceneEvents = ['scene:created', 'scene:updated', 'scene:deleted'];
-    const folderEvents = ['scene_folder:created', 'scene_folder:updated', 'scene_folder:deleted'];
-    for (const ev of sceneEvents) socket.on(ev, refetchScenes);
-    for (const ev of folderEvents) socket.on(ev, refetchFolders);
-    return () => {
-      alive = false;
-      for (const ev of sceneEvents) socket.off(ev, refetchScenes);
-      for (const ev of folderEvents) socket.off(ev, refetchFolders);
-    };
-  }, []);
 
   // Keeps the open editor in sync with its own live updates (e.g. its own
   // rename or a background finishing upload), and closes it if the Scene

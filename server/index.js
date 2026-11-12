@@ -35,6 +35,7 @@ import { fighterState, listMarks, registerDiceMarkHandlers, superStatus } from '
 import { loadAllDerived, setupFromDerived } from './fighterStances.js';
 import { controlsCharacter, dropAssignmentsTo, loadAssignments, setAssignment } from './control.js';
 import { drainFx } from './fx.js';
+import { lightAll } from './lightSelect.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3001;
@@ -419,7 +420,7 @@ app.get('/api/health', async (_req, res) => {
 // that, and nothing else on this endpoint changes: `stances` is additive, so
 // callers that only want the flat roster are untouched.
 app.get('/api/characters', wrap(async (_req, res) => {
-  const characters = await all('SELECT * FROM characters ORDER BY id');
+  const characters = await lightAll('characters', 'ORDER BY id');
   res.json(characters.map(shapeCharacter));
 }));
 
@@ -549,7 +550,9 @@ function mayWriteScenePicture(viewer, ownerType, ownerId) {
 // only outbound WRITE payloads (stage:summon's own emit target) use
 // camelCase in this app's convention. character_id/temp_npc_id decide
 // ownership client-side the same way scene_pictures' own rows do.
-async function buildStagePayload() {
+// `skipDrawingsFor`: a Scene id whose drawings the clients already hold — left
+// out (play feedback 8: strokes have their own events; only a Scene change needs them all).
+async function buildStagePayload({ skipDrawingsFor = null } = {}) {
   const state = await one('SELECT active_scene_id FROM scene_state WHERE id = 1');
   // **Hash and a presence flag, never the bytes (bandwidth).** The backdrop is
   // the biggest single row in this payload, and this payload is emitted PER
@@ -641,7 +644,10 @@ async function buildStagePayload() {
   // bearing here (see db.js's own comment on scene_drawings — an eraser
   // stroke only erases what was drawn before it, in this exact order, on
   // every viewer's own canvas).
-  const drawings = activeScene
+  const skipDrawings = activeScene != null && activeScene.id === skipDrawingsFor;
+  const drawings = skipDrawings
+    ? undefined
+    : activeScene
     ? await all(
         'SELECT id, points, color, width, is_eraser FROM scene_drawings WHERE scene_id = ? ORDER BY id ASC',
         [activeScene.id]
@@ -653,7 +659,9 @@ async function buildStagePayload() {
   // Per fighter (`character:<id>` / `temp_npc:<id>`): which Unique tokens
   // their token row shows and the names of their Stances — what the token
   // panel needs, for both fights at once.
-  const fighterSetup = activeScene ? await loadFighterSetup() : {};
+  const fighterSetup = activeScene
+    ? await loadFighterSetup(new Set([...summons.map((x) => x.character_id), ...combatTokens.map((t) => t.character_id)].filter((id) => id != null)))
+    : {};
   // Phase 5: each mode's fight (rounds, order, a pending Stance pick), or null.
   const fights = activeScene
     ? { simple: await loadFightState(activeScene.id, 'simple'), combat: await loadFightState(activeScene.id, 'combat') }
@@ -666,9 +674,15 @@ async function buildStagePayload() {
 
 // Per fighter (`character:<id>`), from their build (builder phase 2): option
 // tokens, Armor sources, Stance names, level, HP table and Health Bars.
-async function loadFighterSetup() {
+// Only the characters on the active Scene (play feedback 8: every character's
+// went out with every stage update). `ids`: their character ids.
+async function loadFighterSetup(ids) {
   const out = {};
-  for (const [characterId, d] of await loadAllDerived()) out[`character:${characterId}`] = setupFromDerived(d);
+  const derived = await loadAllDerived();
+  for (const characterId of ids) {
+    const d = derived.get(characterId);
+    if (d) out[`character:${characterId}`] = setupFromDerived(d);
+  }
   return out;
 }
 
@@ -709,12 +723,15 @@ function stagePayloadFor(built, viewer) {
 // emitCombatUpdated, and for the same reason: a Hidden summon must never
 // cross the wire to a non-GM socket even transiently, so this can't be a
 // single io.emit the way stage:updated used to be before Hidden existed.
+let lastDrawingsSceneId = null;
 async function emitStageUpdated() {
   // **Board animations (fx.js):** what the engine did since the last update,
   // sent just before the stage it leads to — each viewer only the fighters
   // they can see (a Hidden summon's never cross the wire).
   const beats = drainFx();
-  const built = await buildStagePayload();
+  // The active Scene's drawings only when the Scene changed (the client keeps its own).
+  const built = await buildStagePayload({ skipDrawingsFor: lastDrawingsSceneId });
+  lastDrawingsSceneId = built.activeScene?.id ?? null;
   for (const viewerSocket of io.sockets.sockets.values()) {
     const payload = stagePayloadFor(built, viewerSocket.data?.identity);
     if (beats.length) {
@@ -790,10 +807,15 @@ const shapeScene = (row) => {
   if (!row) return row;
   // The Combat Background (Panic at the Dojo) is a second picture on the same
   // row: it goes out as a URL like the backdrop, never as bytes.
-  const { combat_image_data, combat_image_mime_type, combat_image_hash, ...rest } = row;
+  const { combat_image_data, combat_image_mime_type, combat_image_hash, has_combat_image_data, ...rest } = row;
   row = {
     ...rest,
-    combat_image_url: imageUrl('scene-combat', row.id, { data: combat_image_data, hash: combat_image_hash }),
+    combat_image_url: imageUrl('scene-combat', row.id, {
+      data: combat_image_data,
+      hash: combat_image_hash,
+      // A light list row (lightSelect.js): only whether it exists.
+      present: has_combat_image_data != null ? Boolean(has_combat_image_data) : undefined,
+    }),
   };
   const shaped = withImageUrl('scene')(row);
   if (row.image_source_id == null) return shaped;
@@ -932,7 +954,7 @@ app.get('/api/character-folders', wrap(async (_req, res) => {
 // Scene tab: the Temp NPC roster's own library — open read, same reasoning
 // as character-folders above (GM-*managed*, not GM-*secret*).
 app.get('/api/temp-npcs', wrap(async (_req, res) => {
-  res.json((await all('SELECT * FROM temp_npcs ORDER BY name')).map(withImageUrl('temp-npc')));
+  res.json((await lightAll('temp_npcs', 'ORDER BY name')).map(withImageUrl('temp-npc')));
 }));
 
 app.get('/api/temp-npc-folders', wrap(async (_req, res) => {
@@ -1001,7 +1023,7 @@ app.get('/api/scene-pictures', wrap(async (req, res) => {
     return res.json([]);
   }
   const column = ownerType === 'character' ? 'character_id' : 'temp_npc_id';
-  res.json((await all(`SELECT * FROM scene_pictures WHERE ${column} = ? ORDER BY id`, [id])).map(withImageUrl('scene-picture')));
+  res.json((await lightAll('scene_pictures', `WHERE ${column} = ? ORDER BY id`, [id])).map(withImageUrl('scene-picture')));
 }));
 
 // Scene tab: the GM's Scenes library (Phase 4) — open read, same reasoning
@@ -1011,7 +1033,8 @@ app.get('/api/scenes', wrap(async (req, res) => {
   // design (GM-managed, not GM-secret). Only the `timestamp_id` field is
   // withheld; see publicScene.
   const viewer = viewerFromQuery(req.query);
-  const rows = (await all('SELECT * FROM scenes ORDER BY name')).map(shapeScene);
+  // Light (play feedback 8): no picture bytes — the list was the slowest read in a session.
+  const rows = (await lightAll('scenes', 'ORDER BY name')).map(shapeScene);
   res.json(viewer?.role === 'gm' ? rows : rows.map(publicScene));
 }));
 

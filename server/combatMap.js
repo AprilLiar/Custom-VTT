@@ -15,7 +15,7 @@ import { all, one, run, writeMany } from './db.js';
 import { imageUrl, sanitizeImageMime } from './images.js';
 import { moveToken, normalizeGrid } from '../client/src/lib/combatGrid.js';
 import { releaseChallengesOf, serialized, shapeFightState } from './combatState.js';
-import { derivedFor } from './fighterStances.js';
+import { loadAllDerived } from './fighterStances.js';
 import { hasRuleIn } from '../client/src/lib/patd/build.js';
 import { patdContent } from './patdContent.js';
 
@@ -61,8 +61,10 @@ export async function loadCombatTokens(sceneId) {
   );
   // The Giant fills 2×2 squares (its `footprint` rule — the QA pass).
   const sizes = new Map();
+  // (The cached builds — play feedback 8: one read per character per stage update before.)
+  const derived = await loadAllDerived();
   for (const id of new Set(rows.map((r) => r.character_id).filter((x) => x != null))) {
-    const d = await derivedFor(id);
+    const d = derived.get(id);
     sizes.set(id, d && hasRuleIn(d.constantAbilityIds, 'footprint', patdContent()) ? 2 : 1);
   }
   return rows.map((r) => {

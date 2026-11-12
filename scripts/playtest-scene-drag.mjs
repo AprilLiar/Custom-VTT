@@ -54,6 +54,13 @@ const gm = await connect({ role: 'gm' });
 const aliceSock = await connect({ role: 'player', characterId: alice.id });
 const bobSock = await connect({ role: 'player', characterId: bob.id });
 
+// Summons belong to the active Scene (scene-scoped summons): this test brings its own.
+gm.emit('scene:create', { name: `Drag ${stamp}` });
+await sleep(300);
+const scene = (await jf('/api/scenes?role=gm')).find((x) => x.name === `Drag ${stamp}`);
+gm.emit('scene:activate', { sceneId: scene.id });
+await sleep(300);
+
 gm.emit('temp_npc:create', { name: `Grunt${stamp}` });
 await sleep(300);
 const grunt = (await jf('/api/temp-npcs')).find((n) => n.name === `Grunt${stamp}`);
@@ -169,6 +176,8 @@ check(
   JSON.stringify(belowArtwork)
 );
 
+gm.emit('scene:delete', { sceneId: scene.id });
+await sleep(300);
 console.log(failures ? `\n${failures} FAILED` : '\nALL PASSED');
 gm.close();
 aliceSock.close();

@@ -8,6 +8,7 @@
 import { one, run } from './db.js';
 import { levelInfo, normalizeBuild, withXp } from '../client/src/lib/patd/build.js';
 import { patdContent } from './patdContent.js';
+import { buildsChanged } from './fighterStances.js';
 
 export async function loadBuild(characterId) {
   const row = await one('SELECT data FROM character_builds WHERE character_id = ?', [Number(characterId)]);
@@ -28,11 +29,13 @@ export async function addXp(characterId, amount, reason) {
   const next = withXp(build, amount, reason);
   if (next === build) return null;
   await run('UPDATE character_builds SET data = ?, updated_at = CURRENT_TIMESTAMP WHERE character_id = ?', [JSON.stringify(next), Number(characterId)]);
+  buildsChanged();
   return { build: next, canLevelUp: levelInfo(next, patdContent()).canLevelUp };
 }
 
 export async function deleteBuild(characterId) {
   await run('DELETE FROM character_builds WHERE character_id = ?', [Number(characterId)]);
+  buildsChanged();
 }
 
 // deps: on, socket, io, mayWrite(viewer, ownerType, ownerId), emitStageUpdated
@@ -47,6 +50,7 @@ export function registerBuildHandlers({ on, socket, io, mayWrite, emitStageUpdat
        ON CONFLICT(character_id) DO UPDATE SET data = excluded.data, updated_at = CURRENT_TIMESTAMP`,
       [id, JSON.stringify(clean)]
     );
+    buildsChanged();
     io.emit('build:updated', { characterId: id, build: clean });
     await emitStageUpdated();
   });

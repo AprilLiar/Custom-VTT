@@ -58,7 +58,9 @@ export function useStage(identity) {
         if (alive) setStage(s);
       })
       .catch(console.error);
-    const onUpdated = (s) => setStage(s);
+    // No `drawings` (play feedback 8): the same Scene's — keep the ones held
+    // (strokes arrive on their own events below).
+    const onUpdated = (s) => setStage((prev) => (s && s.drawings === undefined ? { ...s, drawings: prev?.drawings ?? [] } : s));
     // **Strokes arrive one at a time, not as a fresh stage (bandwidth).**
     // scene_draw:add used to broadcast the whole stage — backdrop, every
     // summoned figure's picture, and every stroke already on the canvas — to

@@ -7,13 +7,11 @@
 // go through the bus. Retrieve (GM) restores the snapshot and un-commits that
 // placement and every later one.
 import { one, run } from '../db.js';
-import { applyHpDelta } from '../../client/src/lib/hpBars.js';
 import { describe, hasNoTargets, runRule } from '../../client/src/lib/patd/interpreter.js';
 import { abilitiesOff, sumMod, valueOf } from '../../client/src/lib/patd/engine/modifiers.js';
 import { costBonus, dieFits, poolOf, removePoolNumber } from '../../client/src/lib/patd/diceBoard.js';
 import { BASIC_KEYS, luckRoom, planPayment } from '../../client/src/lib/patd/tokenCost.js';
 import { expireTemps, fighterRt } from '../../client/src/lib/patd/engine/runtime.js';
-import { hpOf, saveHp, shapeFightState } from '../combatState.js';
 import { closeAction, openAction } from '../fx.js';
 import { patdContent } from '../patdContent.js';
 import { actingOn, readData, saveBoard, fighterState } from '../diceMarks.js';

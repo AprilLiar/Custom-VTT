@@ -8,6 +8,7 @@ import { clearSquarePick, setPromptsOpen, setSquarePick, useSquarePick } from '.
 import { startFreeMove, stopFreeMove, undoFreeMove } from '../lib/freeMove.js';
 import DiceBoard from './actions/DiceBoard.jsx';
 import { ActionCard } from './actions/ActionCards.jsx';
+import { livePool } from '../lib/patd/diceBoard.js';
 import { useContent } from '../lib/patd/useContent.js';
 
 // A fight's controls (Panic at the Dojo, Phase 5), for whichever fight the
@@ -696,6 +697,25 @@ export function ActionButton({ fight, mode, controls = () => false }) {
     setOpen(false);
     setConfirming(false);
   }, [rollId]);
+  // **Offered the end of the turn (play feedback 8):** as soon as a Commit
+  // finishes resolving with nothing left in the Action Pool and nothing
+  // placed, the End Turn question opens by itself (End turn / Keep going).
+  const mine = current && controls(current.characterId);
+  useEffect(() => {
+    if (!rollId || !mine) return undefined;
+    let wasCommitting = false;
+    const onMarks = (b) => {
+      if (String(b?.rollId) !== String(rollId)) return;
+      const done = wasCommitting && !b.committing && !b.paused && b.active !== false;
+      wasCommitting = Boolean(b.committing);
+      if (!done) return;
+      const left = livePool(b).filter((n) => !(b.placements ?? []).some((p) => !p.committed && (p.die === n.index || (p.dice ?? []).includes(n.index))));
+      const pending = (b.placements ?? []).some((p) => !p.committed);
+      if (!left.length && !pending) setConfirming(true);
+    };
+    socket.on('dice:marks', onMarks);
+    return () => socket.off('dice:marks', onMarks);
+  }, [rollId, mine]);
   if (!current || !controls(current.characterId)) return null;
   if (open) return <DiceBoard payload={current.payload} canEdit onClose={() => setOpen(false)} />;
   if (pick || fight?.interrupt?.active) return null;

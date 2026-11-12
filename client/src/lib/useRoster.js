@@ -1,58 +1,10 @@
-import { useEffect, useState } from 'react';
-import { socket } from '../socket.js';
-import { getCharacters } from './api.js';
+import { useCharacterList } from './sceneLists.js';
 
-// The world's character roster, kept live — and kept **cheap**.
-//
-// Four separate components used to hold their own copy of this and all four
-// wrote the same subtly wrong rule: refetch `/api/characters` on
-// `character:created`, `character:updated` *and* `character:deleted`. The
-// middle one is the problem. `character:updated` is not a rare administrative
-// event — `adjustStamina` emits it every time a fighter's Stamina moves, which
-// during a round is constantly, and ChatPanel is mounted on every page. So a
-// single Stamina tick had every connected browser re-fetching the whole roster,
-// and in the Compendium's case a great deal more besides.
-//
-// The payload already carries the whole updated character, so an update needs
-// no request at all — it is merged into the row we are already holding.
-// (Stances rode on these rows and were refetched on their own events until the
-// pivot removed them.)
-//
-// **Returns `null` until the first fetch lands**, so a caller can tell "not
-// loaded yet" from "loaded, and the world has no characters" — several of them
-// render a different thing for each.
+// The world's character roster, kept live: one copy shared by every component,
+// loaded once per session (lib/sceneLists.js — play feedback 8). An update's
+// payload is merged in place; only a new or deleted folder or character reloads.
+// **Returns `null` until the first load lands**, so a caller can tell "not
+// loaded yet" from "no characters".
 export function useRoster() {
-  const [characters, setCharacters] = useState(null);
-
-  useEffect(() => {
-    let alive = true;
-    const refetch = () =>
-      getCharacters()
-        .then((list) => {
-          if (alive) setCharacters(list);
-        })
-        .catch(console.error);
-
-    refetch();
-
-    const onUpdated = (character) =>
-      setCharacters((prev) =>
-        prev ? prev.map((c) => (c.id === character.id ? { ...c, ...character } : c)) : prev
-      );
-    const onDeleted = ({ id }) =>
-      setCharacters((prev) => (prev ? prev.filter((c) => c.id !== id) : prev));
-
-    const refetchOn = ['character:created'];
-    for (const ev of refetchOn) socket.on(ev, refetch);
-    socket.on('character:updated', onUpdated);
-    socket.on('character:deleted', onDeleted);
-    return () => {
-      alive = false;
-      for (const ev of refetchOn) socket.off(ev, refetch);
-      socket.off('character:updated', onUpdated);
-      socket.off('character:deleted', onDeleted);
-    };
-  }, []);
-
-  return characters;
+  return useCharacterList();
 }

@@ -137,12 +137,18 @@ export default function DiceBoard({ payload, onClose, canEdit }) {
   // The fighter's live state, for token costs; refreshed whenever the table changes.
   useEffect(() => {
     let alive = true;
-    const load = () =>
+    let timer = null;
+    // Debounced (play feedback 8): a fight's every step updates the stage.
+    const fetchNow = () =>
       fetch(`/api/fighter-state/${payload.combatant_id}`)
         .then((r) => (r.ok ? r.json() : null))
         .then((st) => alive && setFighter(st))
         .catch(() => {});
-    load();
+    const load = () => {
+      clearTimeout(timer);
+      timer = setTimeout(fetchNow, 200);
+    };
+    fetchNow();
     socket.on('stage:updated', load);
     socket.on('dice:marks', load);
     const onFailed = ({ rollId, error }) => {
@@ -153,6 +159,7 @@ export default function DiceBoard({ payload, onClose, canEdit }) {
     socket.on('dice:pay_failed', onFailed);
     return () => {
       alive = false;
+      clearTimeout(timer);
       socket.off('stage:updated', load);
       socket.off('dice:marks', load);
       socket.off('dice:pay_failed', onFailed);

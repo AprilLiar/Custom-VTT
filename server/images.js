@@ -102,8 +102,9 @@ export const sanitizeImageMime = (mime, fallback = 'image/jpeg') =>
 // behind only invites somebody to reassemble a `data:` URI from half a row.
 export const withImageUrl = (kind) => (row) => {
   if (!row) return row;
-  const { image_data, image_mime_type, image_hash, ...rest } = row;
-  const url = imageUrl(kind, row.id, { data: image_data, hash: image_hash });
+  // `has_image_data`: a light list row (lightSelect.js) says the picture exists without carrying it.
+  const { image_data, image_mime_type, image_hash, has_image_data, ...rest } = row;
+  const url = imageUrl(kind, row.id, { data: image_data, hash: image_hash, present: has_image_data != null ? Boolean(has_image_data) : undefined });
   return url ? { ...rest, image_url: url } : rest;
 };
 
