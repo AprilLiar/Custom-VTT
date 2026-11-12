@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { drainFx, groupBeats, muteFx, recordFx, resetFx, tokenChanges, unmuteFx } from '../fx.js';
-import { CATCH_UP_AFTER, MAX_WAITING, enqueue, heldFight, playMs, signOf } from '../../client/src/lib/boardFx.js';
+import { CATCH_UP_AFTER, MAX_WAITING, effectMs, enqueue, heldFight, outcomesOf, playMs, signOf } from '../../client/src/lib/boardFx.js';
 
 const st = (tokens = {}, current = 10, challenge_id = null) => ({ tokens, hp: { max: 10, current, bars: 1, broken: 0, dizzy: false }, challenge_id });
 const fx = (combatantId, kind, before, after, data = {}) => ({ sceneId: 1, mode: 'combat', combatantId, kind, before, after, data });
@@ -89,4 +89,17 @@ test('pacing: speed setting, catching up, never too many waiting', () => {
 
 test('signs: one is "+"/"-", two or more doubles it', () => {
   assert.deepEqual([1, 2, 5, -1, -2].map(signOf), ['+', '++', '++', '-', '--']);
+});
+
+test('phase 2: what a hit or a heal led to is read off its before and after', () => {
+  const hp = (current, broken = 0, dizzy = false, bars = 2) => ({ tokens: {}, hp: { max: 10, current, bars, broken, dizzy }, challenge_id: null });
+  const dmg = (before, after, data = {}) => ({ kind: 'damage', before, after, data });
+  assert.deepEqual(outcomesOf(dmg(hp(10), hp(7), { broke: true, blocked: 2 })), { shieldBroke: true, armor: 2, barBroke: false, dizzied: false, takenOut: false, revived: false });
+  const broke = outcomesOf(dmg(hp(2), hp(10, 1, true)));
+  assert.ok(broke.barBroke && broke.dizzied && !broke.takenOut);
+  assert.ok(outcomesOf(dmg(hp(3, 1, true), hp(0, 1, true))).takenOut);
+  assert.ok(outcomesOf({ kind: 'heal', before: hp(0, 1), after: hp(2, 1), data: { amount: 2 } }).revived);
+  assert.equal(effectMs(dmg(hp(3, 1, true), hp(0, 1, true))), 1100);
+  assert.equal(effectMs(dmg(hp(2), hp(10, 1, true))), 1000);
+  assert.equal(effectMs(dmg(hp(10), hp(7))), 800);
 });

@@ -1,7 +1,7 @@
 import { motion } from 'framer-motion';
 import { TOKEN_BY_KEY } from '../../lib/panicTokens.js';
 import { KIND_CLASS, TokenIcon } from '../../lib/panicIcons.jsx';
-import { effectsFor, signOf } from '../../lib/boardFx.js';
+import { beatMs, effectsFor, outcomesOf, signOf } from '../../lib/boardFx.js';
 import { ChallengeLock } from '../FighterOverlay.jsx';
 
 // **Board animations (decided):** what the beat playing does to one fighter,
@@ -13,14 +13,22 @@ export default function FighterFx({ beat, combatantId, center, diameter, centerO
   const effects = effectsFor(beat, combatantId);
   if (!effects.length || !center) return null;
   const d = Math.max(28, diameter);
-  const s = (beat.ms ?? 1000) / 1000;
+  // The speed factor (Fast, catching up): every duration below is at Normal speed × s.
+  const s = beat.ms != null && beatMs(beat) ? beat.ms / beatMs(beat) : 1;
   return (
     <div className="pointer-events-none absolute left-0 top-0" style={{ zIndex: 40 }} aria-hidden>
       {effects.map((e) => {
         const key = `${beat.id}:${e.id}`;
         if (e.kind === 'tokens') return <TokenFloat key={key} effect={e} center={center} d={d} s={s} />;
         if (e.kind === 'damage') return <DamagePop key={key} effect={e} center={center} d={d} s={s} />;
-        if (e.kind === 'heal') return <NumberRise key={key} center={center} d={d} s={s} text={`+${e.data.amount}`} color="#4ade80" />;
+        if (e.kind === 'heal')
+          return (
+            <span key={key}>
+              {outcomesOf(e).revived && <LightColumn center={center} d={d} s={s} />}
+              <NumberRise center={center} d={d} s={s} text={`+${e.data.amount}`} color="#4ade80" />
+            </span>
+          );
+        if (e.kind === 'dizzy') return <StarBurst key={key} center={center} d={d} s={s} />;
         if (e.kind === 'shield') return <ShieldShell key={key} center={center} d={d} s={s} />;
         if (e.kind === 'challenge') {
           const to = centerOf?.(e.data.challengerId);
@@ -110,8 +118,14 @@ function DamagePop({ effect, center, d, s }) {
   const { amount = 0, absorbed = 0 } = effect.data ?? {};
   const hurt = amount > 0;
   const both = hurt && absorbed > 0;
+  const o = outcomesOf(effect);
   return (
     <>
+      {o.armor > 0 && <ArmorPulse center={center} d={d} s={s} amount={o.armor} />}
+      {o.shieldBroke && <ShieldShatter center={center} d={d} s={s} />}
+      {o.barBroke && <BarCrack center={center} d={d} s={s} />}
+      {o.dizzied && <StarBurst center={center} d={d} s={s} delay={0.35} />}
+      {o.takenOut && <TakenOutSlam center={center} d={d} s={s} />}
       {hurt && (
         <>
           <motion.div
@@ -133,7 +147,7 @@ function DamagePop({ effect, center, d, s }) {
       {absorbed > 0 && <ShieldHit center={center} d={d} s={s} />}
       {hurt && <NumberRise center={center} d={d} s={s} text={amount} color="#ef4444" delay={0.12 * s} dx={both ? d * 0.3 : 0} />}
       {absorbed > 0 && <NumberRise center={center} d={d} s={s} text={absorbed} color="#60a5fa" delay={0.05 * s} dx={both ? -d * 0.3 : 0} size={0.5} />}
-      {!hurt && !absorbed && <NumberRise center={center} d={d} s={s} text="BLOCKED" color="#d4d4d8" size={0.3} />}
+      {!hurt && !absorbed && <NumberRise center={center} d={d} s={s} text="BLOCKED" color={o.armor ? '#fcd34d' : '#d4d4d8'} size={0.3} />}
     </>
   );
 }
@@ -196,6 +210,156 @@ function ShieldShell({ center, d, s }) {
         <ellipse rx={r * 0.25} ry={r} fill="none" stroke="rgba(191,219,254,0.4)" strokeWidth="1" />
       </g>
     </motion.svg>
+  );
+}
+
+// A Shield used up (phase 2): the shell bursts into blue shards.
+function ShieldShatter({ center, d, s }) {
+  const r = d / 2 + Math.max(4, d * 0.08);
+  return (
+    <div className="absolute" style={{ left: center.x, top: center.y }}>
+      {Array.from({ length: 8 }, (_, i) => {
+        const a = (i / 8) * Math.PI * 2 + 0.3;
+        const size = d * 0.14;
+        return (
+          <motion.span
+            key={i}
+            className="absolute"
+            style={{ left: -size / 2, top: -size / 2, width: size, height: size, background: 'linear-gradient(135deg, #dbeafe, #3b82f6)', clipPath: 'polygon(50% 0, 100% 100%, 0 70%)' }}
+            initial={{ x: Math.cos(a) * r, y: Math.sin(a) * r, opacity: 1, rotate: 0 }}
+            animate={{ x: Math.cos(a) * r * 1.7, y: Math.sin(a) * r * 1.7 + d * 0.2, opacity: 0, rotate: 160 }}
+            transition={{ duration: 0.6 * s, delay: 0.08 * s, ease: 'easeOut' }}
+          />
+        );
+      })}
+    </div>
+  );
+}
+
+// Armor blocked part of the hit (phase 2): a gold ring flares from the base.
+function ArmorPulse({ center, d, s }) {
+  return (
+    <motion.div
+      className="absolute rounded-full"
+      style={{ left: center.x - d / 2, top: center.y - d / 2, width: d, height: d, border: `${Math.max(3, d * 0.07)}px solid #fbbf24`, boxShadow: '0 0 12px rgba(251,191,36,0.8)' }}
+      initial={{ opacity: 0, scale: 1 }}
+      animate={{ opacity: [0, 1, 0], scale: [1, 1.15, 1.35] }}
+      transition={{ duration: 0.5 * s, ease: 'easeOut' }}
+    />
+  );
+}
+
+// An HP bar broken (phase 2): white cracks across the figure and red chips
+// flying off (the HP strip's own shatter plays with it).
+function BarCrack({ center, d, s }) {
+  const r = d / 2;
+  return (
+    <>
+      <motion.svg
+        className="absolute overflow-visible"
+        style={{ left: center.x, top: center.y, width: 1, height: 1 }}
+        initial={{ opacity: 0 }}
+        animate={{ opacity: [0, 1, 1, 0] }}
+        transition={{ duration: 0.8 * s, delay: 0.1 * s, times: [0, 0.1, 0.6, 1] }}
+      >
+        {[
+          `M${-r * 0.9} ${-r * 0.3} L${-r * 0.3} ${-r * 0.05} L${-r * 0.1} ${-r * 0.4} L${r * 0.35} ${r * 0.05} L${r * 0.9} ${-r * 0.15}`,
+          `M${-r * 0.1} ${-r * 0.4} L${-r * 0.2} ${-r * 0.9}`,
+          `M${r * 0.35} ${r * 0.05} L${r * 0.2} ${r * 0.8}`,
+        ].map((p) => (
+          <g key={p}>
+            <path d={p} stroke="black" strokeWidth={Math.max(3, d * 0.06)} fill="none" strokeLinejoin="round" />
+            <path d={p} stroke="white" strokeWidth={Math.max(1.5, d * 0.03)} fill="none" strokeLinejoin="round" />
+          </g>
+        ))}
+      </motion.svg>
+      <div className="absolute" style={{ left: center.x, top: center.y + r }}>
+        {Array.from({ length: 6 }, (_, i) => {
+          const size = d * 0.1;
+          const dx = (i - 2.5) * d * 0.18;
+          return (
+            <motion.span
+              key={i}
+              className="absolute bg-red-500"
+              style={{ left: -size / 2, top: -size / 2, width: size, height: size * 0.6 }}
+              initial={{ x: dx * 0.4, y: 0, opacity: 1, rotate: 0 }}
+              animate={{ x: dx, y: [0, -d * 0.25, d * 0.35], opacity: [1, 1, 0], rotate: i % 2 ? 120 : -120 }}
+              transition={{ duration: 0.7 * s, delay: 0.1 * s, ease: 'easeOut' }}
+            />
+          );
+        })}
+      </div>
+    </>
+  );
+}
+
+// Dizzy (phase 2): stars burst out round the head, then the Dizzy icon stays.
+function StarBurst({ center, d, s, delay = 0 }) {
+  const top = { x: center.x, y: center.y - d * 0.45 };
+  return (
+    <div className="absolute" style={{ left: top.x, top: top.y }}>
+      {Array.from({ length: 5 }, (_, i) => {
+        const a = -Math.PI / 2 + ((i - 2) / 2) * 1.1;
+        const size = d * 0.22;
+        return (
+          <motion.span
+            key={i}
+            className="absolute flex items-center justify-center leading-none text-yellow-300"
+            style={{ left: -size / 2, top: -size / 2, width: size, height: size, fontSize: size, textShadow: '0 0 4px black, 0 0 2px black' }}
+            initial={{ x: 0, y: 0, opacity: 0, scale: 0.4, rotate: 0 }}
+            animate={{ x: Math.cos(a) * d * 0.55, y: Math.sin(a) * d * 0.45, opacity: [0, 1, 1, 0], scale: [0.4, 1.1, 1, 0.8], rotate: 200 }}
+            transition={{ duration: 0.7 * s, delay: delay * s, ease: 'easeOut' }}
+          >
+            ★
+          </motion.span>
+        );
+      })}
+    </div>
+  );
+}
+
+// Taken Out (phase 2): the figure is slammed down — a dark shock and a ring
+// of dust; it then shows grey with the skull.
+function TakenOutSlam({ center, d, s }) {
+  return (
+    <>
+      <motion.div
+        className="absolute rounded-full"
+        style={{ left: center.x - d / 2, top: center.y - d / 2, width: d, height: d, background: 'radial-gradient(circle, rgba(0,0,0,0.75) 30%, rgba(0,0,0,0) 72%)' }}
+        initial={{ opacity: 0, scale: 1.4 }}
+        animate={{ opacity: [0, 1, 0], scale: [1.4, 0.9, 1] }}
+        transition={{ duration: 0.6 * s, delay: 0.4 * s, ease: 'easeIn' }}
+      />
+      <motion.div
+        className="absolute rounded-full"
+        style={{ left: center.x - d / 2, top: center.y + d * 0.2, width: d, height: d * 0.4, border: `${Math.max(3, d * 0.08)}px solid rgba(161,161,170,0.8)`, filter: 'blur(1px)' }}
+        initial={{ opacity: 0, scaleX: 0.6, scaleY: 0.6 }}
+        animate={{ opacity: [0, 0.9, 0], scaleX: [0.6, 1.6, 2], scaleY: [0.6, 1.2, 1.4] }}
+        transition={{ duration: 0.6 * s, delay: 0.55 * s, ease: 'easeOut' }}
+      />
+      <motion.div
+        className="absolute flex items-center justify-center font-display font-black uppercase leading-none text-zinc-100"
+        style={{ left: center.x - d, top: center.y - d * 0.15, width: d * 2, fontSize: d * 0.26, WebkitTextStroke: `${Math.max(1, d * 0.02)}px black`, textShadow: '0 2px 6px black' }}
+        initial={{ opacity: 0, scale: 1.6 }}
+        animate={{ opacity: [0, 1, 1, 0], scale: [1.6, 1, 1, 1] }}
+        transition={{ duration: 0.6 * s, delay: 0.5 * s, times: [0, 0.2, 0.75, 1] }}
+      >
+        Taken Out
+      </motion.div>
+    </>
+  );
+}
+
+// Back from Taken Out (phase 2): a column of light lifts the grey.
+function LightColumn({ center, d, s }) {
+  return (
+    <motion.div
+      className="absolute"
+      style={{ left: center.x - d * 0.4, top: center.y - d * 1.4, width: d * 0.8, height: d * 1.9, background: 'linear-gradient(to top, rgba(253,224,71,0.9), rgba(255,255,255,0.6) 60%, rgba(255,255,255,0))', filter: 'blur(2px)', transformOrigin: 'bottom' }}
+      initial={{ opacity: 0, scaleY: 0 }}
+      animate={{ opacity: [0, 1, 0], scaleY: [0, 1, 1] }}
+      transition={{ duration: 1 * s, ease: 'easeOut' }}
+    />
   );
 }
 

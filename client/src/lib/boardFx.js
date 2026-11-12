@@ -8,6 +8,8 @@
 //
 // Pure: no React, no socket (tested in server/test/boardFx.test.js).
 
+import { isTakenOut } from './hpBars.js';
+
 // How long each kind plays at Normal speed (ms).
 export const FX_MS = {
   tokens: 1000,
@@ -15,14 +17,40 @@ export const FX_MS = {
   heal: 800,
   shield: 1200,
   challenge: 600,
+  dizzy: 700,
 };
 const DEFAULT_MS = 600;
+
+// What a damage / heal / Dizzy effect led to, read off its before and after
+// (phase 2): a Shield broken, Armor that blocked, a bar broken, Dizzy, Taken
+// Out, back from Taken Out.
+export function outcomesOf(e) {
+  const b = e?.before?.hp;
+  const a = e?.after?.hp;
+  const out = (s) => Boolean(s && isTakenOut(s));
+  return {
+    shieldBroke: e?.kind === 'damage' && Boolean(e.data?.broke),
+    armor: e?.kind === 'damage' ? Number(e.data?.blocked) || 0 : 0,
+    barBroke: Boolean(b && a && (a.broken ?? 0) > (b.broken ?? 0)),
+    dizzied: Boolean(a?.dizzy && !b?.dizzy),
+    takenOut: !out(b) && out(a),
+    revived: out(b) && !out(a),
+  };
+}
+// One effect's time: the bigger outcomes take a little longer.
+export function effectMs(e) {
+  const base = FX_MS[e?.kind] ?? DEFAULT_MS;
+  const o = outcomesOf(e);
+  if (o.takenOut) return Math.max(base, 1100);
+  if (o.barBroke || o.dizzied || o.revived) return Math.max(base, 1000);
+  return base;
+}
 // More than this many waiting: play at twice the speed until caught up.
 export const CATCH_UP_AFTER = 4;
 // Never keep more than this many waiting (a device that slept skips ahead).
 export const MAX_WAITING = 30;
 
-export const beatMs = (beat) => Math.max(0, ...(beat?.effects ?? []).map((e) => FX_MS[e.kind] ?? DEFAULT_MS));
+export const beatMs = (beat) => Math.max(0, ...(beat?.effects ?? []).map(effectMs));
 
 // The time one beat takes: the speed setting, and 2x when the queue is behind.
 export function playMs(beat, speed, waiting) {

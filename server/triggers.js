@@ -433,7 +433,15 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
       walls.delete(`${sq.col},${sq.row}`);
       markDirty();
     };
-    const setDizzy = (f) => (f.isCopy ? null : queued(() => run('UPDATE combatants SET dizzy = 1 WHERE id = ?', [f.id])).then(() => (f.dizzy = true)));
+    const setDizzy = (f) =>
+      f.isCopy
+        ? null
+        : queued(async () => {
+            const was = shapeFightState(await readRow(f.id));
+            await run('UPDATE combatants SET dizzy = 1 WHERE id = ?', [f.id]);
+            // Board animations: Dizzy outside a hit (a hit's own shows in its damage beat).
+            if (!was.hp.dizzy) recordFx({ sceneId, mode, kind: 'dizzy', combatantId: f.id, before: slice(was), after: { ...slice(was), hp: { ...was.hp, dizzy: true } } });
+          }).then(() => (f.dizzy = true));
 
     // ---- obstacles (phase E): placing, destroying, replacing (mapTiles.js stacking rules)
     const kindsAtSq = (sq) => tileList.filter((t) => t.col === sq.col && t.row === sq.row).map((t) => t.kind);

@@ -4079,7 +4079,7 @@ The user's standing rule: **nothing is left "by hand"** — the core rules are f
      - **"First Aid can only target an ally once per turn" was never enforced.** It is now, per ally, reset each turn.
    - **Now permanent tests:** `server/test/branches.test.js` fails when any condition can never come out true, any conditional case can never run, or a rule reads a value that is never there. It also holds the engine's event contract (`ENGINE_EVENT_FIELDS`): a rule reading an `event.*` value its event doesn't carry fails the tests. The fake world is shared in `server/test/fakeWorld.js`; the interpreter has a test-only `trace` hook.
 
-## Board animations (decided; phase 1 implemented)
+## Board animations (decided; phases 1–2 implemented)
 
 Every change the engine makes in a fight is shown as a short animation, so a chain of effects can be followed one by one on both the Simple Combat lanes and the Combat map.
 
@@ -4102,7 +4102,12 @@ Every change the engine makes in a fight is shown as a short animation, so a cha
 | Gain Shield | An energy shell closes over the whole figure from below, pulses once, fades quickly. | 1200 | 1 ✓ |
 | Challenge given | The target lock (Challenge holder → Challenger) plays, then fades fast. | 600 | 1 ✓ |
 | Heal / HP paid | Green "+N" rises (paid HP is a plain damage beat). | 800 | 1 ✓ |
-| Shield broken, Armor ring triggers, bar break (scaled shatter), Dizzy burst, Taken Out slam, returned to play | | 500–900 | 2 |
+| Shield broken | Blue shards burst from the shell. | in the hit | 2 ✓ |
+| Armor blocks | A gold ring flares from the figure; a hit Armor stopped entirely says "BLOCKED" in gold. | in the hit | 2 ✓ |
+| HP bar broken | White cracks across the figure and red chips flying off (with the HP strip's own shatter). | 1000 | 2 ✓ |
+| Dizzy | Stars burst round the head (in the hit that caused it, or alone: 700). | 700–1000 | 2 ✓ |
+| Taken Out | The figure is slammed down (dark shock, dust ring), "Taken Out" flashes, then it shows grey with the skull. | 1100 | 2 ✓ |
+| Back from Taken Out | A column of light with the heal. | 1000 | 2 ✓ |
 | Own move, push/pull with streaks and wall impact, teleport flash, swap, obstacles placed/moved/destroyed, Copies created/destroyed | positions held too | 160–500 | 3 |
 | Turn start ring + name, Action lunge + trails, Super Move banner across the board | | 450–1500 | 4 |
 
@@ -4111,6 +4116,7 @@ Every change the engine makes in a fight is shown as a short animation, so a cha
 - **Where they are recorded (`server/triggers.js` world):** `writeTokens` (kind `tokens`, or `shield` from `gainShield`), `changeHp` (`heal`, or `damage` for HP paid), `challenge` (`challenge`), `removeChallenge` (a `tokens` loss of `challenge`). A hit (`engine/hits.js resolveHit`) wraps the target's Shield, Iron and HP in one `damage` effect via `internals.hitFx` (`data`: `amount, absorbed, reduced, blocked, broke, immune, attackerId`); the attacker's spent Power and Weakness are a separate token beat.
 - **Sent:** `emitStageUpdated` (server/index.js) drains, filters per viewer and emits `fight:effects` just before `stage:updated`.
 - **Client:** `client/src/lib/boardFx.js` (pure: durations, `playMs`, `enqueue`, `heldFight`), `client/src/lib/useBoardFx.js` (the queue; ScenePage holds `combatTokens` and `summons` through `fx.hold`), `client/src/components/fx/FighterFx.jsx` (TokenFloat, DamagePop, ShieldShell, NumberRise, ChallengeFlash), drawn per fighter by `CombatMap.jsx` and `SimpleCombatLane.jsx` (`fxBeat`).
+- **Phase 2:** no new effect kinds except `dizzy` (`setDizzy` outside a hit). The client reads each damage/heal effect's outcomes off its before/after (`boardFx.outcomesOf`: Shield broken, Armor blocked, bar broken, Dizzy, Taken Out, revived) and gives the bigger ones a little longer (`effectMs`).
 - **Tests:** `server/test/boardFx.test.js`; `scripts/playtest-damage.mjs` checks the damage beat (2 to HP, 2 absorbed), the attacker's token beat, that a hit's Shield and Iron aren't separate beats, that manual edits play nothing, and that effects come before their stage update.
 
 ## Open items to decide later
