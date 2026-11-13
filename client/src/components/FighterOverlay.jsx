@@ -79,7 +79,7 @@ function CountedIcon({ tokenKey, count, size, dim = false, active = false, onCli
 // The stacked bars. `compact` is the always-on strip; otherwise the full bar
 // with its buttons. A bar breaking plays a shatter, and the next bar slides up.
 // `weight`: the fight's Cinematic Weight (cinematicWeight.js), or null.
-function HpStack({ hp, compact, width, canEdit, fighterRef, weight = null, shield = 0 }) {
+function HpStack({ hp, compact, width, canEdit, fighterRef, weight = null, shield = 0, infinite = false, taken = 0 }) {
   // **Shield on the bar (decided):** a blue extension after the bar, as long
   // relative to the bar as the Shield is to the current bar's Max HP. Both
   // share the bar's width (flex-grow 1 : ratio), so the proportion holds and
@@ -97,6 +97,25 @@ function HpStack({ hp, compact, width, canEdit, fighterRef, weight = null, shiel
   const barH = compact ? 6 : 18;
   const emit = (event, extra = {}) => socket.emit(event, { ref: fighterRef, ...extra });
   const tone = pct > 50 ? 'bg-emerald-500' : pct > 25 ? 'bg-amber-400' : 'bg-red-500';
+
+  // **Infinite HP (Fight Setup):** one golden bar with ∞, and the damage taken so far.
+  if (infinite) {
+    return (
+      <div className="relative" style={{ width }} title={`Infinite HP · ${taken} damage taken`}>
+        <div
+          className="relative flex items-center justify-center overflow-hidden rounded-sm border border-black bg-gradient-to-r from-amber-500 via-yellow-300 to-amber-500 font-display font-black leading-none text-amber-950"
+          style={{ height: compact ? Math.max(8, barH) : barH, fontSize: compact ? 9 : 13 }}
+        >
+          ∞{!compact && <span className="ml-1.5 text-[11px] font-bold">Infinite HP</span>}
+        </div>
+        {taken > 0 && (
+          <div className="mt-0.5 text-center font-display font-bold leading-none text-red-300" style={{ fontSize: compact ? 9 : 11, textShadow: '0 1px 2px black' }}>
+            {compact ? `−${taken}` : `${taken} damage taken`}
+          </div>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className="relative" style={{ width }}>
@@ -211,13 +230,13 @@ function HpStack({ hp, compact, width, canEdit, fighterRef, weight = null, shiel
   );
 }
 
-function FullPanelHp({ hp, canEdit, fighterRef, width, weight = null, shield = 0 }) {
+function FullPanelHp({ hp, canEdit, fighterRef, width, weight = null, shield = 0, infinite = false, taken = 0 }) {
   const [maxDraft, setMaxDraft] = useState(hp.max ?? '');
   useEffect(() => setMaxDraft(hp.max ?? ''), [hp.max]);
   const emit = (event, extra = {}) => socket.emit(event, { ref: fighterRef, ...extra });
   return (
     <div className="flex flex-col items-center gap-1.5">
-      <HpStack hp={hp} width={width} canEdit={canEdit} fighterRef={fighterRef} weight={weight} shield={shield} />
+      <HpStack hp={hp} width={width} canEdit={canEdit} fighterRef={fighterRef} weight={weight} shield={shield} infinite={infinite} taken={taken} />
       {canEdit && (
         <div className="flex items-center gap-2">
           <button
@@ -571,7 +590,7 @@ export default function FighterOverlay({
                 <X size={14} aria-hidden />
               </button>
             </div>
-            <FullPanelHp hp={hp} canEdit={canEdit} fighterRef={fighterRef} width={Math.max(140, barWidth * 1.6)} weight={weight} shield={fight.tokens.shield ?? 0} />
+            <FullPanelHp hp={hp} canEdit={canEdit} fighterRef={fighterRef} width={Math.max(140, barWidth * 1.6)} weight={weight} shield={fight.tokens.shield ?? 0} infinite={fight.infinite} taken={fight.damage_taken ?? 0} />
             {hp.dizzy && canEdit && (
               <button type="button" onClick={() => emit('fighter:clear_dizzy')} className="text-[10px] text-sky-300 hover:text-sky-100">
                 Clear Dizzy
@@ -596,7 +615,7 @@ export default function FighterOverlay({
             )}
           </div>
         ) : (
-          hp.max != null && <HpStack hp={hp} compact width={barWidth} weight={weight} shield={fight.tokens.shield ?? 0} />
+          hp.max != null && <HpStack hp={hp} compact width={barWidth} weight={weight} shield={fight.tokens.shield ?? 0} infinite={fight.infinite} taken={fight.damage_taken ?? 0} />
         )}
       </div>
     </>

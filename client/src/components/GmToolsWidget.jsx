@@ -28,8 +28,8 @@ const TOOLS = [
     // Panic at the Dojo: the fight's Cinematic Weight, levels and HP. Works on
     // the Scene page in Simple Combat or Combat; says so anywhere else.
     id: 'combat-weight',
-    name: 'Preset Narrative Combat Weight',
-    blurb: 'Pick the fight\u2019s weight class and everyone\u2019s level: HP, Heal and Bleed for this fight.',
+    name: 'Fight Setup',
+    blurb: 'The fight\u2019s weight class, everyone\u2019s level and HP, infinite HP, Complications and Battle Parameters.',
     icon: Scale,
     render: (props) => <CombatWeightTool {...props} />,
   },

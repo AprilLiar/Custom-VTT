@@ -45,6 +45,9 @@ export function shapeFightState(row) {
     // Cinematic Weight preset: this copy's level (1-10) and level table.
     level: clampLevel(row?.level ?? 1),
     kind: FIGHTER_KINDS.includes(row?.fighter_kind) ? row.fighter_kind : null,
+    // Infinite HP (Fight Setup): never loses HP; `damage_taken` is what hit it.
+    infinite: Boolean(row?.infinite_hp),
+    damage_taken: Math.max(0, Number(row?.damage_taken) || 0),
   };
 }
 
@@ -192,6 +195,11 @@ export function registerCombatStateHandlers({ on: onRaw, socket, mayWrite, emitS
   on('fighter:hp', async ({ ref, delta }) => {
     const row = await editable(ref);
     if (!row) return;
+    // Infinite HP: a loss is counted, never taken.
+    if (row.infinite_hp && Number(delta) < 0) {
+      await run('UPDATE combatants SET damage_taken = damage_taken + ? WHERE id = ?', [Math.trunc(-Number(delta)), row.id]);
+      return emitStageUpdated();
+    }
     const before = hpOf(row);
     await saveHp(row.id, applyHpDelta(before, delta).state);
     if (Number(delta) < 0) await checkBleed(row, before, before.current + Math.trunc(Number(delta)));
@@ -221,7 +229,8 @@ export function registerCombatStateHandlers({ on: onRaw, socket, mayWrite, emitS
       await run('UPDATE combatants SET tokens = ? WHERE id = ?', [JSON.stringify(tokens), row.id]);
     }
     const before = hpOf(row);
-    if (r.rest && before.max != null) {
+    if (r.rest && row.infinite_hp) await run('UPDATE combatants SET damage_taken = damage_taken + ? WHERE id = ?', [r.rest, row.id]);
+    else if (r.rest && before.max != null) {
       await saveHp(row.id, applyHpDelta(before, -r.rest).state);
       await checkBleed(row, before, before.current - r.rest);
     }
@@ -235,6 +244,16 @@ export function registerCombatStateHandlers({ on: onRaw, socket, mayWrite, emitS
     const weight = await weightOf(row);
     if (!weight) return;
     await saveHp(row.id, applyHpDelta(hpOf(row), weight.heal).state);
+    await emitStageUpdated();
+  });
+
+  // **Infinite HP (GM, Fight Setup):** on or off for one fighter; turning it
+  // on starts the damage count afresh.
+  on('fighter:infinite', async ({ ref, on: value }) => {
+    if (socket.data.identity?.role !== 'gm') return;
+    const row = await resolveRef(ref);
+    if (!row) return;
+    await run('UPDATE combatants SET infinite_hp = ?, damage_taken = CASE WHEN ? = 1 THEN 0 ELSE damage_taken END WHERE id = ?', [value ? 1 : 0, value ? 1 : 0, row.id]);
     await emitStageUpdated();
   });
 
@@ -267,7 +286,7 @@ export function registerCombatStateHandlers({ on: onRaw, socket, mayWrite, emitS
       const bars = Math.min(9, Math.max(1, Math.trunc(Number(f.bars)) || 1));
       await run(
         `UPDATE combatants SET level = ?, fighter_kind = ?, hp_max = ?, hp_current = ?, hp_bars = ?, hp_broken = 0,
-           dizzy = 0, bled_round = NULL WHERE id = ?`,
+           dizzy = 0, bled_round = NULL, damage_taken = 0 WHERE id = ?`,
         [level, kind, hp, hp, bars, row.id]
       );
     }

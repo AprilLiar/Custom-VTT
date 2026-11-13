@@ -4,7 +4,7 @@
 // the GM retrieves its die (decided: undo fully).
 import { all, one, run } from '../db.js';
 
-const COLS = ['tokens', 'challenge_id', 'hp_max', 'hp_current', 'hp_bars', 'hp_broken', 'dizzy', 'active_stance_key', 'frantic_pick', 'grid_col', 'grid_row', 'bled_round'];
+const COLS = ['tokens', 'challenge_id', 'hp_max', 'hp_current', 'hp_bars', 'hp_broken', 'dizzy', 'active_stance_key', 'frantic_pick', 'grid_col', 'grid_row', 'bled_round', 'damage_taken'];
 
 export async function takeSnapshot(fightId) {
   const fight = await one('SELECT * FROM fights WHERE id = ?', [fightId]);

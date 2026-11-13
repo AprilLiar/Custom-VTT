@@ -361,6 +361,16 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
         if (!row) return;
         const before = hpOf(row);
         if (before.max == null) return;
+        // **Infinite HP (Fight Setup):** a loss is counted, never taken — no
+        // Bleed, no broken bar, never Taken Out (landed = where they stand).
+        if (row.infinite_hp && delta < 0) {
+          await run('UPDATE combatants SET damage_taken = damage_taken + ? WHERE id = ?', [-delta, f.id]);
+          const was = shapeFightState(row);
+          recordFx({ sceneId, mode, kind: 'damage', combatantId: f.id, before: slice(was), after: slice(was), data: { amount: -delta, infinite: true } });
+          result = { before, landed: before.current, row };
+          f.hp = before;
+          return;
+        }
         const next = applyHpDelta(before, delta).state;
         await saveHp(f.id, next);
         // Board animations: HP paid or healed (a hit records its own "damage").

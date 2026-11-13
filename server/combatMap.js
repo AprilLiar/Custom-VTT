@@ -41,7 +41,7 @@ export function sceneGrid(sceneRow) {
 export async function loadCombatTokens(sceneId) {
   const rows = await all(
     `SELECT cb.id, cb.character_id, cb.temp_npc_id, cb.grid_col, cb.grid_row,
-            cb.tokens, cb.challenge_id, cb.hp_max, cb.hp_current, cb.hp_bars, cb.hp_broken, cb.dizzy, cb.active_stance_key, cb.level, cb.fighter_kind,
+            cb.tokens, cb.challenge_id, cb.hp_max, cb.hp_current, cb.hp_bars, cb.hp_broken, cb.dizzy, cb.active_stance_key, cb.level, cb.fighter_kind, cb.infinite_hp, cb.damage_taken,
             COALESCE(c.name, tn.name) AS name,
             cp.id AS profile_id, cp.image_hash AS token_hash, (cp.image_data IS NOT NULL) AS has_token,
             cp.crop_x AS token_crop_x, cp.crop_y AS token_crop_y, cp.crop_w AS token_crop_w, cp.crop_h AS token_crop_h,

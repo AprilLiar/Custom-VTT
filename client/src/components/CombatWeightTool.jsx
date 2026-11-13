@@ -5,7 +5,7 @@ import { useStage } from '../lib/useStage.js';
 import { useRoster } from '../lib/useRoster.js';
 import { WEIGHTS, WEIGHT_BY_KEY, barHp, bonusDie, bonusHp } from '../lib/cinematicWeight.js';
 
-// **GM Tools → Preset Narrative Combat Weight** (decided). Works only on the
+// **GM Tools → Fight Setup** (decided; was Preset Narrative Combat Weight). Works only on the
 // Scene page while the active Scene is in Simple Combat or Combat; it applies
 // to THAT mode's fight.
 //
@@ -45,6 +45,7 @@ export default function CombatWeightTool({ onDone }) {
           level: levelFor(t.character_id, t.fight.level),
           kind: setupOf(t.character_id)?.kind ?? t.fight.kind ?? kindFor(t.character_id),
           bars: barsFor(t.character_id),
+          infinite: Boolean(t.fight.infinite),
         }))
       : stage.summons.filter((s) => s.character_id != null).map((s) => ({
           key: `s${s.id}`,
@@ -53,6 +54,7 @@ export default function CombatWeightTool({ onDone }) {
           level: levelFor(s.character_id, s.fight?.level),
           kind: setupOf(s.character_id)?.kind ?? s.fight?.kind ?? kindFor(s.character_id),
           bars: barsFor(s.character_id),
+          infinite: Boolean(s.fight?.infinite),
         }));
   }, [stage, mode, typeOf]);
 
@@ -170,8 +172,20 @@ export default function CombatWeightTool({ onDone }) {
                   </option>
                 ))}
               </select>
+              {/* **Infinite HP (decided):** per fighter, at once — hits resolve, HP never drops. */}
+              <button
+                type="button"
+                onClick={() => socket.emit('fighter:infinite', { ref: f.ref, on: !f.infinite })}
+                aria-pressed={f.infinite}
+                title={f.infinite ? 'Infinite HP: on (hits resolve, HP never drops). Tap to turn off.' : 'Give this fighter infinite HP'}
+                className={`h-8 min-w-8 panel-cut-sm border px-2 font-display text-sm font-black ${
+                  f.infinite ? 'border-amber-400 bg-amber-500/30 text-amber-100' : 'border-zinc-700 bg-zinc-800 text-zinc-500 hover:text-zinc-200'
+                }`}
+              >
+                ∞
+              </button>
               <span className="w-28 text-right text-[11px] tabular-nums text-zinc-300">
-                {w ? `${barHp(weight, row.kind, row.level)} HP` : '—'}
+                {f.infinite ? 'Infinite HP' : w ? `${barHp(weight, row.kind, row.level)} HP` : '—'}
                 <span className="text-zinc-500"> (+{bonusHp(row.kind, row.level)}{die ? `, d${die}` : ''})</span>
               </span>
             </li>
