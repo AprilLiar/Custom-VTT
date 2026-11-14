@@ -43,6 +43,7 @@ import CombatMap from './CombatMap.jsx';
 import { CombatFightersDrawer, CombatMapDrawer } from './CombatDrawers.jsx';
 import { ActionButton, FightSetupDialog, InitiativeRail, InterruptBar, InterruptLock, MoveBar, MovementPhaseBar, StancePrompt, StartCombatButton, TriggerPrompts } from './FightControls.jsx';
 import ResolvingPlaque from './ResolvingPlaque.jsx';
+import FullscreenButton from './FullscreenButton.jsx';
 import { turnsPerRound } from '../lib/hpBars.js';
 import { WEIGHT_BY_KEY } from '../lib/cinematicWeight.js';
 import { useDominantColor } from '../lib/dominantColor.js';
@@ -502,6 +503,8 @@ export default function ScenePage() {
       {/* Map tiles (decided, new): the palette, at the left, in either fight mode. */}
       {/* Stays up with the interface hidden (decided), so tiles can be placed in cinematic mode. */}
       {/* On a phone only the lock (play feedback 8): Actions place tiles, or the GM at a computer. */}
+      {/* Phones, either fight mode: a small fullscreen toggle, bottom-left; stays up in cinematic mode too. */}
+      {fightMode && isPhone && <FullscreenButton left={role === 'gm' && !uiHidden ? 256 : 0} />}
       {fightMode && <MapTilePalette mode={fightMode} role={role} left={role === 'gm' && !uiHidden ? 256 : 0} lockOnly={isPhone} />}
       {!uiHidden && role === 'gm' && fightMode && !fight && <StartCombatButton onClick={() => setFightSetupOpen(true)} />}
       {/* The rail stays up in cinematic mode too (decided, mobile fix): the

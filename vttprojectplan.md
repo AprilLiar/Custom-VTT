@@ -31,7 +31,7 @@ The app's original game system (Moves, Perks, Quirks, the 8 Stat dice, Stamina, 
   - **The stage payload is small:** hashes and flags, not pictures; drawings only when the active Scene changes (strokes have their own events); fighter setup only for the active Scene's characters; derived builds cached until a build is saved (`fighterStances.loadAllDerived`). HTTP responses are compressed.
   - **Clients keep lists for the session.** The Scene tab's lists (Scenes, folders, characters, Temp NPCs) load once and stay live from socket events (`client/src/lib/liveList.js`, `sceneLists.js`); `useRoster` is one shared copy.
   - Requests made on every stage update are debounced (Interrupt offers, the active range, the dice board's fighter state).
-- **Mobile:** every page works on a phone (bottom nav below `md:`, 44px touch targets). The Scene tab is landscape-only on a phone (an orientation gate asks to rotate). Playwright drives a phone matrix (`playwright.config.js`, `e2e-mobile/`).
+- **Mobile:** every page works on a phone (bottom nav below `md:`, 44px touch targets). The Scene tab is landscape-only on a phone (an orientation gate asks to rotate). In Combat and Simple Combat a phone gets a small fullscreen toggle in the bottom-left corner (`FullscreenButton.jsx`; hidden where the browser can't fullscreen a page, e.g. iPhone Safari). Playwright drives a phone matrix (`playwright.config.js`, `e2e-mobile/`).
 
 ## Roles and access
 - **A role is picked on every fresh load** (`RoleModal`): **GM**, or **Play as…** one of the PCs. It is a display filter, not authentication (the accepted trust model; never add accounts). The server keeps the identity per connection (`identity:set`, re-sent on reconnect) and uses it wherever an answer depends on the viewer.
