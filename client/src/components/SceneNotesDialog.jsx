@@ -249,7 +249,7 @@ function NoteEditor({ note, isNew, onSave, onCancel, onDelete }) {
     // **The breakpoint here is HEIGHT, not width (decided, revised — "notes are
     // barely visible on mobile").**
     //
-    // The Scene tab is landscape-only (OrientationGate), so "Notes on mobile"
+    // On a landscape phone "Notes on mobile"
     // means a phone held sideways — about 844x390. That is WIDER than Tailwind's
     // `md`, so every `md:` rule in this file already applies to it: a phone was
     // getting the full desktop layout, three columns and all, inside 390px of

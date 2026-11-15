@@ -15,7 +15,7 @@ import { chooseGm, choosePlayer } from './helpers.js';
 // shared project matrix (playwright.config.js): none of its 5 projects land
 // on "narrower than the desktop breakpoint AND landscape" at once, which is
 // the one combination the orientation gate has to get right (mobile width,
-// landscape orientation → show the canvas, not the rotate prompt).
+// landscape orientation → the landscape canvas, not the portrait footer).
 async function goToScene(page) {
   // Already there? Skip the click entirely — this suite's projects share
   // one live dev server, and `stage:updated` is a global `io.emit`
@@ -82,21 +82,22 @@ test.describe('Scene tab: cinematic hide-UI toggle', () => {
   });
 });
 
-test.describe('Scene tab: orientation gate — phone-width portrait is asked to rotate', () => {
+test.describe('Scene tab: portrait on a phone — the stage with every button in a footer', () => {
   test.use({ viewport: { width: 390, height: 844 } });
 
-  test('the rotate prompt shows, chrome stays absent, and the corner link still gets you out', async ({ page }) => {
+  test('no rotate prompt, the footer holds Back / Hide / Chat / More, and Back gets you out', async ({ page }) => {
     await chooseGm(page);
     await goToScene(page);
-    await expect(page.getByText('Flip your device to landscape')).toBeVisible();
-    // Chrome stays absent even while gated — the gate is inside the same
-    // chromeless route, not a fallback to the normal Shell.
+    await expect(page.getByText('Flip your device to landscape')).toHaveCount(0);
+    // Chrome stays absent: the footer belongs to the chromeless route.
     await expect(page.locator('header')).toHaveCount(0);
-    // Regression: the gate used to render with no way off the route at
-    // all — a phone-width Player stuck in portrait had to rotate the
-    // device just to reach the corner link, which only rendered in the
-    // canvas branch below this one.
-    await page.locator('a[title="Back"]').click();
+    const footer = page.getByRole('navigation', { name: 'Scene controls' });
+    await expect(footer).toBeVisible();
+    await expect(footer.getByRole('button', { name: 'Open chat' })).toBeVisible();
+    await expect(footer.getByRole('button', { name: 'More' })).toBeVisible();
+    // Nothing floats over the stage: the GM's drawers open from More.
+    await expect(page.getByRole('button', { name: 'GM tools' })).toHaveCount(0);
+    await footer.locator('a[title="Back"]').click();
     await expect(page).toHaveURL(/\/$/);
   });
 });

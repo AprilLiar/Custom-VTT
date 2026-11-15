@@ -10,13 +10,14 @@ const MODES = [
   { key: 'combat', label: 'Combat' },
 ];
 
-export default function SceneModeToggle({ mode }) {
+// `inline`: inside the portrait footer's More sheet instead of floating at the top.
+export default function SceneModeToggle({ mode, inline = false }) {
   return (
     <div
       role="radiogroup"
       aria-label="Scene mode"
-      className="absolute left-1/2 top-3 flex -translate-x-1/2 panel-cut-sm border border-zinc-700 bg-zinc-950/85 p-0.5 shadow-lg backdrop-blur"
-      style={{ zIndex: 1000, marginTop: 'var(--safe-top)' }}
+      className={inline ? 'flex w-full panel-cut-sm border border-zinc-700 bg-zinc-950/85 p-0.5 [&>button]:flex-1' : 'absolute left-1/2 top-3 flex -translate-x-1/2 panel-cut-sm border border-zinc-700 bg-zinc-950/85 p-0.5 shadow-lg backdrop-blur'}
+      style={inline ? undefined : { zIndex: 1000, marginTop: 'var(--safe-top)' }}
     >
       {MODES.map((m) => {
         const active = mode === m.key;

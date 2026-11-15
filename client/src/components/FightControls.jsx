@@ -188,7 +188,8 @@ export function FightSetupDialog({ mode, fighters, existing = null, onClose }) {
 // Top-left (decided: clear of the Scene's chat button and cards, which live
 // bottom-right), under the corner buttons — or just right of the GM's left
 // drawer while it shows. `left` is set by the page.
-export function InitiativeRail({ mode, fight, fighters, role, left = 12, onEditSides, weight = null }) {
+// `inline`: inside the portrait footer's More sheet (GM), not floating at the left.
+export function InitiativeRail({ mode, fight, fighters, role, left = 12, onEditSides, weight = null, inline = false }) {
   const byCombatant = useMemo(() => new Map(fighters.filter((f) => f.combatantId != null).map((f) => [f.combatantId, f])), [fighters]);
   const currentRef = useRef(null);
   useEffect(() => {
@@ -230,9 +231,9 @@ export function InitiativeRail({ mode, fight, fighters, role, left = 12, onEditS
     <>
     {ending && <EndFightDialog mode={mode} fight={fight} byCombatant={byCombatant} onClose={() => setEnding(false)} />}
     <div
-      className={`absolute top-16 flex w-48 flex-col panel-cut-sm border border-zinc-700 bg-zinc-950/85 shadow-xl backdrop-blur transition-opacity ${picking ? 'pointer-events-none opacity-20' : ''}`}
+      className={`${inline ? 'relative max-h-[40dvh] w-full' : 'absolute top-16 w-48'} flex flex-col panel-cut-sm border border-zinc-700 bg-zinc-950/85 shadow-xl backdrop-blur transition-opacity ${picking ? 'pointer-events-none opacity-20' : ''}`}
       // Stops above the bottom-left dock, so on a short screen the two never overlap.
-      style={{ left, zIndex: 900, maxHeight: 'calc(100% - 140px)', minHeight: 120, marginTop: 'var(--safe-top)', marginLeft: 'var(--safe-left)' }}
+      style={inline ? undefined : { left, zIndex: 900, maxHeight: 'calc(100% - 140px)', minHeight: 120, marginTop: 'var(--safe-top)', marginLeft: 'var(--safe-left)' }}
     >
       <div className="flex items-center justify-between border-b border-zinc-800 px-2 py-1.5">
         <span className="font-display text-xs font-bold uppercase tracking-wide text-zinc-200">Round {fight.round}</span>
@@ -663,7 +664,8 @@ export function MoveBar() {
 // the turn's dice board — the Actions, the pool, Commit, Move, End turn. The
 // Stance roll's dice in the chat no longer open it. After Heroic Spirit it
 // belongs to the ally who was given the turn.
-export function ActionButton({ fight, mode, controls = () => false }) {
+// `inline` (portrait Scene, decided): rendered inside the footer, not floating.
+export function ActionButton({ fight, mode, controls = () => false, inline = false }) {
   const pick = useSquarePick();
   const [current, setCurrent] = useState(null); // { payload, characterId }
   const [open, setOpen] = useState(false);
@@ -723,8 +725,8 @@ export function ActionButton({ fight, mode, controls = () => false }) {
   const shape = 'pointer-events-auto flex min-h-11 items-center gap-1.5 panel-cut-sm border px-4 font-display text-xs font-bold uppercase tracking-wide shadow-lg backdrop-blur';
   return (
     <div
-      className="pointer-events-none fixed left-1/2 flex max-w-[calc(100vw-1rem)] -translate-x-1/2 items-end gap-2"
-      style={{ zIndex: 2990, bottom: 'max(0.5rem, var(--safe-bottom, 0px))' }}
+      className={inline ? 'flex min-w-0 items-center gap-1.5' : 'pointer-events-none fixed left-1/2 flex max-w-[calc(100vw-1rem)] -translate-x-1/2 items-end gap-2'}
+      style={inline ? undefined : { zIndex: 2990, bottom: 'max(0.5rem, var(--safe-bottom, 0px))' }}
     >
       <button
         type="button"
@@ -834,7 +836,7 @@ export function InterruptBar({ fight, mode, left = 8 }) {
       else setError(r?.error ?? 'Could not interrupt');
     });
   return (
-    <div className="pointer-events-auto fixed flex max-w-[60vw] flex-col items-start gap-1" style={{ zIndex: 2990, left, bottom: 'max(0.5rem, var(--safe-bottom, 0px))' }} role="group" aria-label="Interrupts">
+    <div className="pointer-events-auto fixed flex max-w-[60vw] flex-col items-start gap-1" style={{ zIndex: 2990, left, bottom: 'calc(var(--scene-footer-h, 0px) + max(0.5rem, var(--safe-bottom, 0px)))' }} role="group" aria-label="Interrupts">
       {error && <p className="panel-cut-sm bg-zinc-950/90 px-2 py-0.5 text-[10px] text-red-300">{error}</p>}
       {list.map(([id, o]) => (
         <button
@@ -882,7 +884,7 @@ export function InterruptLock({ fight, mode, fighters = [], role, controls = () 
   return (
     <>
       {queue.length > 0 && (
-        <div className="pointer-events-none fixed inset-x-0 flex flex-wrap justify-center gap-1 px-4" style={{ zIndex: 3600, bottom: 'max(0.5rem, var(--safe-bottom, 0px))' }} role="status" aria-label="Waiting to interrupt">
+        <div className="pointer-events-none fixed inset-x-0 flex flex-wrap justify-center gap-1 px-4" style={{ zIndex: 3600, bottom: 'calc(var(--scene-footer-h, 0px) + max(0.5rem, var(--safe-bottom, 0px)))' }} role="status" aria-label="Waiting to interrupt">
           {queue.map((q) => (
             <span key={q.combatantId} title="Waiting for the Action resolving now to finish" className="flex items-center gap-1 panel-cut-sm border border-fuchsia-400/70 bg-zinc-950/90 px-2 py-0.5 font-display text-[11px] font-bold uppercase tracking-wide text-fuchsia-100 shadow-lg">
               <span aria-hidden>⚡</span>

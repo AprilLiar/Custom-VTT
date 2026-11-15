@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { sceneChat } from '../lib/sceneFooter.js';
 import { AnimatePresence, motion } from 'framer-motion';
 import { MessageCircle, X } from 'lucide-react';
 import { socket } from '../socket.js';
@@ -33,7 +34,8 @@ const EVENTS = ['roll:result', 'chat:message', 'chat:card'];
 
 // `cardsRight`: how far from the right edge the cards sit (the initiative
 // rail lives top-left, so nothing shares this corner by default).
-export default function SceneChat({ cardsRight = 12 }) {
+// `footer` (portrait Scene, decided): no floating button; the footer's Chat button opens it.
+export default function SceneChat({ cardsRight = 12, footer = false }) {
   const roster = useRoster();
   const characters = useMemo(() => new Map((roster ?? []).map((c) => [c.id, c])), [roster]);
   const [open, setOpen] = useState(false);
@@ -82,6 +84,9 @@ export default function SceneChat({ cardsRight = 12 }) {
     setOpen((o) => !o);
     setCards((prev) => prev.filter((c) => c.pin != null));
   };
+  const unread = !open && cards.some((c) => c.pin == null);
+  useEffect(() => sceneChat.handle(toggle), []);
+  useEffect(() => sceneChat.set({ open, unread }), [open, unread]);
 
   return (
     <>
@@ -89,7 +94,7 @@ export default function SceneChat({ cardsRight = 12 }) {
         <div
           className="pointer-events-none fixed flex w-72 max-w-[calc(100vw-24px)] flex-col items-stretch justify-end gap-2 overflow-hidden"
           // Clipped at the top on a short screen: the newest stay, the oldest go first.
-          style={{ right: cardsRight, bottom: 196, maxHeight: 'calc(100dvh - 204px)', zIndex: 1050, marginRight: 'var(--safe-right)' }}
+          style={footer ? { right: cardsRight, bottom: 'calc(var(--scene-footer-h, 0px) + 0.75rem)', maxHeight: 'calc(55dvh)', zIndex: 1050, marginRight: 'var(--safe-right)' } : { right: cardsRight, bottom: 196, maxHeight: 'calc(100dvh - 204px)', zIndex: 1050, marginRight: 'var(--safe-right)' }}
           aria-live="polite"
         >
           <AnimatePresence initial={false}>
@@ -111,11 +116,12 @@ export default function SceneChat({ cardsRight = 12 }) {
       )}
 
       {open && (
-        <div className="fixed inset-y-0 right-0 flex w-full sm:w-80" style={{ zIndex: 1040 }}>
+        <div className="fixed inset-y-0 right-0 flex w-full sm:w-80" style={{ zIndex: 1040, bottom: footer ? 'var(--scene-footer-h, 0px)' : 0 }}>
           <ChatPanel open />
         </div>
       )}
 
+      {!footer && (
       <button
         type="button"
         onClick={toggle}
@@ -129,6 +135,7 @@ export default function SceneChat({ cardsRight = 12 }) {
           <span className="absolute -right-0.5 -top-0.5 h-3 w-3 rounded-full border border-zinc-900 bg-brand-500" />
         )}
       </button>
+      )}
     </>
   );
 }

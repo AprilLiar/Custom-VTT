@@ -7,6 +7,8 @@ import ImageReencodeTool from './ImageReencodeTool.jsx';
 import CombatWeightTool from './CombatWeightTool.jsx';
 import CommitHomebrewTool from './CommitHomebrewTool.jsx';
 import { registerAudioPanelOpener } from '../lib/audioPanel.js';
+import { useLocation } from 'react-router-dom';
+import { gmTools, usePortraitPhone } from '../lib/sceneFooter.js';
 
 // GM Tools (decided, new) — a small circular widget the GM can reach from
 // anywhere in the app, overlaid above every page's own content. Opening it
@@ -71,6 +73,10 @@ export default function GmToolsWidget() {
   const [toolId, setToolId] = useState(null);
   // A standalone tool replaces the drawer rather than rendering inside it.
   const [audioOpen, setAudioOpen] = useState(false);
+  // **Portrait Scene (decided):** no floating button; the footer's More sheet opens the tools.
+  const location = useLocation();
+  const inFooter = usePortraitPhone() && location.pathname === '/scene';
+  useEffect(() => gmTools.handle(() => setOpen(true)), []);
 
   // The spinning now-playing record opens this panel, from wherever it happens
   // to be rendered — see lib/audioPanel.js for why that is a registry.
@@ -200,6 +206,7 @@ export default function GmToolsWidget() {
           it's still useful) but below any modal dialog (z-50): a dialog is a
           decision you're in the middle of, and a button floating over it
           reads as part of it. */}
+      {!inFooter && (
       <motion.button
         type="button"
         whileTap={{ scale: 0.92 }}
@@ -211,6 +218,7 @@ export default function GmToolsWidget() {
       >
         <Wrench size={20} />
       </motion.button>
+      )}
     </>
   );
 }

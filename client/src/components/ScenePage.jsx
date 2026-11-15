@@ -25,7 +25,9 @@ import {
 } from '../lib/sceneSettings.js';
 import { DEFAULT_BACKGROUND_FIT, backdropFitClassName } from '../lib/backgroundFit.js';
 import { socket } from '../socket.js';
-import OrientationGate from './OrientationGate.jsx';
+import ScenePortraitFooter from './ScenePortraitFooter.jsx';
+import ScenePortraitMore from './ScenePortraitMore.jsx';
+import { FOOTER_REM } from '../lib/sceneFooter.js';
 import SceneCastDrawer from './SceneCastDrawer.jsx';
 import SceneListDrawer from './SceneListDrawer.jsx';
 import SceneNotesDialog from './SceneNotesDialog.jsx';
@@ -201,6 +203,17 @@ export default function ScenePage() {
   // way in or out any more.
   const [uiHidden, setUiHidden] = useState(false);
 
+  // Portrait: which of the GM's sheets is open ('more', or a drawer's key).
+  const [sheet, setSheet] = useState(null);
+  // Bottom popups (Interrupts, the chat cards) clear the portrait footer.
+  const portraitNow = !isDesktop && !isLandscape;
+  useEffect(() => {
+    if (!portraitNow) return undefined;
+    const root = document.documentElement;
+    root.style.setProperty('--scene-footer-h', `calc(${FOOTER_REM}rem + var(--safe-bottom, 0px))`);
+    return () => root.style.removeProperty('--scene-footer-h');
+  }, [portraitNow]);
+
   // GM Notes (decided, new) — a dialog, not a docked drawer like
   // SceneCastDrawer/SceneListDrawer, since it's opened on demand rather
   // than needed at a glance the whole time the GM is on this page.
@@ -246,21 +259,11 @@ export default function ScenePage() {
     }
   };
 
-  // Decided: no portrait layout for the stage is ever built. Desktop is
-  // never gated, regardless of window aspect — see useIsLandscape's own
-  // comment for why the width check has to live with the caller.
-  if (!isDesktop && !isLandscape) {
-    return (
-      <div className="relative flex h-full w-full flex-col">
-        <OrientationGate />
-        {/* The chromeless route (App.jsx's Shell()) mounts no header, no
-            bottom nav — without this, a phone-width Player stuck in
-            portrait had no way off the route at all short of rotating the
-            device just to reach the corner link below. */}
-        <TopLeftControls />
-      </div>
-    );
-  }
+  // **Portrait on a phone (decided, replaces the rotate prompt):** the stage
+  // on top and every button in one footer (ScenePortraitFooter); the GM's
+  // drawers, mode switch and the rest open from its More sheet. Desktop is
+  // never portrait, whatever the window's shape.
+  const portrait = portraitNow;
 
   const summons = heldSummons;
   // **Temp NPCs take no part in combat (decided):** they stay on the Scene as
@@ -272,7 +275,7 @@ export default function ScenePage() {
   // lane give way to the Combat Background, its grid and the tokens.
   const isCombat = sceneMode === 'combat';
   // Clear of the GM's two w-64 drawers while they are showing.
-  const drawerInset = role === 'gm' && !uiHidden ? { left: 256, right: 256 } : undefined;
+  const drawerInset = role === 'gm' && !uiHidden && !portrait ? { left: 256, right: 256 } : undefined;
   // The fight this mode shows (Phase 5) and every fighter in it.
   const fightMode = sceneMode === 'simple' || sceneMode === 'combat' ? sceneMode : null;
   const fight = fightMode ? (stage?.fights?.[fightMode] ?? null) : null;
@@ -302,11 +305,16 @@ export default function ScenePage() {
           turns: turnsPerRound(s.fight?.hp ?? { bars: 1, broken: 0 }),
         }));
 
-  return (
-    <div
-      ref={setStageEl}
-      className="relative flex h-full w-full flex-col items-center justify-center overflow-hidden bg-zinc-950 text-zinc-500"
-    >
+  // Portrait: a Scene backdrop and the Simple Combat lane fit the screen's
+  // width, centered (decided); the Combat map fills the space above the footer.
+  const stageClass = portrait
+    ? isCombat
+      ? 'relative flex h-full w-full flex-col items-center justify-center overflow-hidden bg-zinc-950 text-zinc-500'
+      : 'relative flex aspect-video max-h-full w-full flex-col items-center justify-center overflow-hidden bg-zinc-950 text-zinc-500'
+    : 'relative flex h-full w-full flex-col items-center justify-center overflow-hidden bg-zinc-950 text-zinc-500';
+
+  const page = (
+    <div ref={setStageEl} className={stageClass}>
       {/* **Kept mounted through Combat (decided, fix).** The backdrop, figures
           and drawings are hidden, not unmounted, while the Scene is in Combat,
           so leaving Combat shows them at once instead of reloading them.
@@ -441,14 +449,17 @@ export default function ScenePage() {
           stays clickable even while the whole stage is capturing pointer
           events for an active draw/erase tool, not just above the drawers'
           plain z-10. */}
-      <TopLeftControls
-        uiHidden={uiHidden}
-        onToggleUi={() => setUiHidden((v) => !v)}
-        onOpenNotes={role === 'gm' ? () => setNotesOpen(true) : undefined}
-      />
-      <TopRightAudio uiHidden={uiHidden} role={role} />
-      {!uiHidden && role === 'gm' && activeScene && <SceneModeToggle mode={sceneMode} />}
-      {!uiHidden && (
+      {/* Portrait: all of these live in the footer and its More sheet. */}
+      {!portrait && (
+        <TopLeftControls
+          uiHidden={uiHidden}
+          onToggleUi={() => setUiHidden((v) => !v)}
+          onOpenNotes={role === 'gm' ? () => setNotesOpen(true) : undefined}
+        />
+      )}
+      {!portrait && <TopRightAudio uiHidden={uiHidden} role={role} />}
+      {!portrait && !uiHidden && role === 'gm' && activeScene && <SceneModeToggle mode={sceneMode} />}
+      {!uiHidden && !portrait && (
         <>
           {/* z-[2]: summons are independent of the active Scene (decision
               #6), so this text can be on screen at the same time as
@@ -504,9 +515,9 @@ export default function ScenePage() {
       {/* Stays up with the interface hidden (decided), so tiles can be placed in cinematic mode. */}
       {/* On a phone only the lock (play feedback 8): Actions place tiles, or the GM at a computer. */}
       {/* Phones, either fight mode: a small fullscreen toggle, bottom-left; stays up in cinematic mode too. */}
-      {fightMode && isPhone && <FullscreenButton left={role === 'gm' && !uiHidden ? 256 : 0} />}
-      {fightMode && <MapTilePalette mode={fightMode} role={role} left={role === 'gm' && !uiHidden ? 256 : 0} lockOnly={isPhone} />}
-      {!uiHidden && role === 'gm' && fightMode && !fight && <StartCombatButton onClick={() => setFightSetupOpen(true)} />}
+      {fightMode && isPhone && !portrait && <FullscreenButton left={role === 'gm' && !uiHidden ? 256 : 0} />}
+      {fightMode && !portrait && <MapTilePalette mode={fightMode} role={role} left={role === 'gm' && !uiHidden ? 256 : 0} lockOnly={isPhone} />}
+      {!portrait && !uiHidden && role === 'gm' && fightMode && !fight && <StartCombatButton onClick={() => setFightSetupOpen(true)} />}
       {/* The rail stays up in cinematic mode too (decided, mobile fix): the
           turn order and Next turn are needed mid-fight whatever the GM hides. */}
       {/* No turn order on a phone (play feedback 8): the Action / End Turn buttons say when it's yours. */}
@@ -523,9 +534,9 @@ export default function ScenePage() {
       )}
       {fight && <StancePrompt mode={fightMode} fight={fight} fighters={fightFighters} role={role} controls={controls} />}
       {fight && <MovementPhaseBar mode={fightMode} fight={fight} fighters={fightFighters} role={role} controls={controls} />}
-      {fight && <InterruptBar fight={fight} mode={fightMode} left={role === 'gm' && !uiHidden ? 268 : 8} />}
+      {fight && <InterruptBar fight={fight} mode={fightMode} left={role === 'gm' && !uiHidden && !portrait ? 268 : 8} />}
       {fight && <InterruptLock fight={fight} mode={fightMode} fighters={fightFighters} role={role} controls={controls} />}
-      {fight && <ActionButton fight={fight} mode={fightMode} controls={controls} />}
+      {fight && !portrait && <ActionButton fight={fight} mode={fightMode} controls={controls} />}
       {fight && <ResolvingPlaque mode={fightMode} sceneId={activeScene?.id ?? null} />}
       <MoveBar />
       <TriggerPrompts />
@@ -534,9 +545,41 @@ export default function ScenePage() {
       )}
       {/* Chat on the Scene: floating cards for new entries and a chat button
           that opens the full log — both even with the interface hidden. */}
-      <SceneChat />
+      <SceneChat footer={portrait} />
       {notesOpen && <SceneNotesDialog activeScene={activeScene} onClose={() => setNotesOpen(false)} />}
       {timestampsOpen && <SceneTimestampDialog onClose={() => setTimestampsOpen(false)} />}
+    </div>
+  );
+  if (!portrait) return page;
+  return (
+    <div className="flex h-full w-full flex-col bg-zinc-950">
+      <div className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden">{page}</div>
+      <ScenePortraitFooter
+        role={role}
+        uiHidden={uiHidden}
+        onToggleUi={() => setUiHidden((v) => !v)}
+        fight={fight}
+        fightMode={fightMode}
+        controls={controls}
+        onOpenMore={() => setSheet('more')}
+      />
+      {role === 'gm' && (
+        <ScenePortraitMore
+          sheet={sheet}
+          setSheet={setSheet}
+          activeScene={activeScene}
+          sceneMode={sceneMode}
+          fight={fight}
+          fightMode={fightMode}
+          fighters={fightFighters}
+          weight={weight}
+          tokenCount={combatTokens.length}
+          onStartCombat={() => setFightSetupOpen(true)}
+          onEditSides={() => setFightSetupOpen(true)}
+          onOpenNotes={() => setNotesOpen(true)}
+          onOpenTimestamps={() => setTimestampsOpen(true)}
+        />
+      )}
     </div>
   );
 }
