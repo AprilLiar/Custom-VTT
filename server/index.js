@@ -895,8 +895,9 @@ app.get('/api/audio-library', wrap(async (req, res) => {
   const viewer = viewerFromQuery(req.query);
   if (viewer?.role !== 'gm') return res.status(403).json({ error: 'GM only' });
   const [playlists, tracks] = await readMany([
-    ['SELECT * FROM audio_playlists ORDER BY id', []],
-    ['SELECT * FROM audio_tracks ORDER BY playlist_id, sort_order, id', []],
+    // The hidden "Scene music" playlist (Scenes' own songs) is not the GM's to browse.
+    ['SELECT * FROM audio_playlists WHERE hidden = 0 ORDER BY id', []],
+    ['SELECT t.* FROM audio_tracks t JOIN audio_playlists p ON p.id = t.playlist_id WHERE p.hidden = 0 ORDER BY t.playlist_id, t.sort_order, t.id', []],
   ]);
   res.json({ playlists, tracks });
 }));
@@ -1035,6 +1036,19 @@ app.get('/api/scene-pictures', wrap(async (req, res) => {
 
 // Scene tab: the GM's Scenes library (Phase 4) — open read, same reasoning
 // as temp-npcs/character-folders above.
+// **A Scene's songs, for its editor (GM).** { scene, combat }: { name, url } or null.
+app.get('/api/scenes/:id/music', wrap(async (req, res) => {
+  const viewer = viewerFromQuery(req.query);
+  if (viewer?.role !== 'gm') return res.status(403).json({ error: 'GM only' });
+  const scene = await one('SELECT scene_track_id, combat_track_id FROM scenes WHERE id = ?', [Number(req.params.id)]);
+  if (!scene) return res.status(404).json({ error: 'No such Scene' });
+  const song = async (id) => {
+    const t = id != null ? await one('SELECT name, youtube_id FROM audio_tracks WHERE id = ?', [id]) : null;
+    return t ? { name: t.name, url: `https://www.youtube.com/watch?v=${t.youtube_id}` } : null;
+  };
+  res.json({ scene: await song(scene.scene_track_id), combat: await song(scene.combat_track_id) });
+}));
+
 app.get('/api/scenes', wrap(async (req, res) => {
   // Not a 403 like the Timestamp list itself — the Scene list is open read by
   // design (GM-managed, not GM-secret). Only the `timestamp_id` field is
@@ -1419,6 +1433,59 @@ async function getAudioPayload() {
   };
 }
 
+// **Scene music (decided).** Each Scene may have a song for the Scene (also
+// played in Simple Combat) and one for Combat — tracks of a hidden playlist,
+// so they sync, time and report their length like any other. While the active
+// Scene's current mode has a song it plays on loop, replacing whatever was
+// playing (the global music stops); a Scene, or mode, without one stops a
+// Scene song left playing. Applied on activate, on a mode switch and when the
+// active Scene's songs are edited.
+async function sceneMusicPlaylistId() {
+  const have = await one('SELECT id FROM audio_playlists WHERE hidden = 1 ORDER BY id LIMIT 1');
+  if (have) return have.id;
+  const r = await run("INSERT INTO audio_playlists (name, hidden) VALUES ('Scene music', 1)");
+  return Number(r.lastInsertRowid);
+}
+async function isSceneSong(trackId) {
+  if (trackId == null) return false;
+  const row = await one('SELECT p.hidden FROM audio_tracks t JOIN audio_playlists p ON p.id = t.playlist_id WHERE t.id = ?', [trackId]);
+  return Boolean(row?.hidden);
+}
+// `song`: undefined (leave it), null / no link (clear it), or { name, url }.
+// → the new track id, or `undefined` when the link isn't a YouTube one.
+async function saveSceneSong(currentTrackId, song) {
+  const current = currentTrackId != null ? await one('SELECT * FROM audio_tracks WHERE id = ?', [currentTrackId]) : null;
+  if (song == null || !String(song.url ?? '').trim()) {
+    if (current) {
+      // Playing now: stopped first, so nobody is left on a deleted track.
+      if ((await one(AUDIO_STATE_SQL))?.track_id === current.id) await startTrack(null);
+      await run('DELETE FROM audio_tracks WHERE id = ?', [current.id]);
+    }
+    return null;
+  }
+  const youtubeId = parseYouTubeId(song.url);
+  if (!youtubeId) return undefined;
+  const name = String(song.name ?? '').trim().slice(0, 200) || 'Untitled';
+  if (current) {
+    // A new link is a new song: its known length goes.
+    await run('UPDATE audio_tracks SET name = ?, youtube_id = ?, duration_ms = CASE WHEN youtube_id = ? THEN duration_ms ELSE NULL END WHERE id = ?', [name, youtubeId, youtubeId, current.id]);
+    return current.id;
+  }
+  const r = await run('INSERT INTO audio_tracks (playlist_id, name, youtube_id) VALUES (?, ?, ?)', [await sceneMusicPlaylistId(), name, youtubeId]);
+  return Number(r.lastInsertRowid);
+}
+async function applySceneMusic({ restart = false } = {}) {
+  const st = await one('SELECT active_scene_id FROM scene_state WHERE id = 1');
+  const scene = st?.active_scene_id ? await one('SELECT combat_mode, scene_track_id, combat_track_id FROM scenes WHERE id = ?', [st.active_scene_id]) : null;
+  const want = scene ? (scene.combat_mode === 'combat' ? scene.combat_track_id : scene.scene_track_id) : null;
+  const state = await one(AUDIO_STATE_SQL);
+  if (want != null && (await one('SELECT id FROM audio_tracks WHERE id = ?', [want]))) {
+    if (restart || state?.track_id !== want || !state?.is_playing) await startTrack(want, 0);
+    return;
+  }
+  if (state?.track_id && state.is_playing && (await isSceneSong(state.track_id))) await startTrack(null);
+}
+
 // The single write path. Every playback change goes through here so that
 // bumping `anchor_id`, re-arming the end-of-track timer and broadcasting can
 // never be forgotten at one call site and remembered at the others.
@@ -1494,6 +1561,8 @@ async function startTrack(trackId, positionMs = 0) {
 async function advance(direction, atNaturalEnd) {
   const state = await one(AUDIO_STATE_SQL);
   if (!state?.track_id) return null;
+  // A Scene's own song loops for as long as the Scene is active (decided).
+  if (await isSceneSong(state.track_id)) return startTrack(state.track_id, 0);
   const { tracks } = await tracksAround(state.track_id);
   const target = nextTrackId({
     tracks,
@@ -1987,7 +2056,7 @@ io.on('connection', (socket) => {
   // but unlike the image it never needs an "absent means unchanged" branch
   // of its own: an invalid/missing value just falls back to whatever the
   // Scene already had, rather than being treated as "no change requested."
-  on('scene:update', async ({ sceneId, name, imageData, imageMimeType, backgroundFit, timestampId, ...payload }) => {
+  on('scene:update', async ({ sceneId, name, imageData, imageMimeType, backgroundFit, timestampId, sceneSong, combatSong, ...payload }) => {
     if (socket.data.identity?.role !== 'gm') return;
     const scene = await one('SELECT * FROM scenes WHERE id = ?', [sceneId]);
     const sceneName = String(name ?? '').trim();
@@ -2006,6 +2075,18 @@ io.on('connection', (socket) => {
           : ((await one('SELECT id FROM scene_timestamps WHERE id = ?', [timestampId]))?.id ?? null);
     }
     await run('UPDATE scenes SET timestamp_id = ? WHERE id = ?', [cue, scene.id]);
+    // **Scene music:** the Scene's song and the Combat song (undefined: untouched).
+    let musicChanged = false;
+    for (const [song, column] of [[sceneSong, 'scene_track_id'], [combatSong, 'combat_track_id']]) {
+      if (song === undefined) continue;
+      const id = await saveSceneSong(scene[column], song);
+      if (id === undefined) {
+        socket.emit('scene:song_rejected', { sceneId: scene.id, which: column === 'scene_track_id' ? 'scene' : 'combat', reason: 'not-a-youtube-link' });
+        continue;
+      }
+      await run(`UPDATE scenes SET ${column} = ? WHERE id = ?`, [id, scene.id]);
+      musicChanged = true;
+    }
     // Giving a copy its own backdrop ends the borrowing: it now holds real
     // bytes, and leaving the pointer set would have shapeScene serve the old
     // Scene's picture over the new one.
@@ -2023,6 +2104,7 @@ io.on('connection', (socket) => {
     // carries a copy of that row, not a live join, so it needs its own push.
     const state = await one('SELECT active_scene_id FROM scene_state WHERE id = 1');
     if (state?.active_scene_id === scene.id) await emitStageUpdated();
+    if (musicChanged && state?.active_scene_id === scene.id) await applySceneMusic({ restart: true });
   });
 
   on('scene:set_folder', async ({ sceneId, folderId }) => {
@@ -2098,6 +2180,11 @@ io.on('connection', (socket) => {
     if (socket.data.identity?.role !== 'gm') return;
     const scene = await one('SELECT * FROM scenes WHERE id = ?', [sceneId]);
     if (!scene) return;
+    // Its songs go with it (they live in the hidden Scene music playlist) —
+    // stopped first if one is playing, so nobody is left on a deleted track.
+    const songs = [scene.scene_track_id, scene.combat_track_id].filter((id) => id != null);
+    if (songs.includes((await one(AUDIO_STATE_SQL))?.track_id)) await startTrack(null);
+    for (const id of songs) await run('DELETE FROM audio_tracks WHERE id = ?', [id]);
     // **Hand the backdrop on before deleting the Scene that owns it.** Copies
     // borrow these bytes (scenes.image_source_id); the column's own
     // ON DELETE SET NULL would leave every one of them holding a hash and no
@@ -2161,6 +2248,8 @@ io.on('connection', (socket) => {
     }
     await run('UPDATE scene_state SET active_scene_id = ? WHERE id = 1', [target]);
     await emitStageUpdated();
+    // Its song (Scene or Combat, by its mode) takes over the music.
+    await applySceneMusic();
 
     // **A Scene that cues a Timestamp plays it on activation (decided, new).**
     //
@@ -2271,6 +2360,8 @@ io.on('connection', (socket) => {
     if (!state?.active_scene_id) return;
     await run('UPDATE scenes SET combat_mode = ? WHERE id = ?', [mode, state.active_scene_id]);
     await emitStageUpdated();
+    // Into or out of Combat: its own song (Simple Combat keeps the Scene's).
+    await applySceneMusic();
   });
 
   // **Simple Combat: move a miniature to a lane space (0-9), or to the tray

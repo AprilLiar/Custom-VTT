@@ -54,6 +54,42 @@ export default function SceneEditor({ scene, onClose }) {
   const [timestampId, setTimestampId] = useState(scene.timestamp_id ?? '');
   const [timestamps, setTimestamps] = useState([]);
   const fileRef = useRef(null);
+  // **Scene music (decided):** the Scene's song (Scene and Simple Combat) and
+  // the Combat song — a name and a YouTube link, as in the Audio Player. Sent
+  // only when changed; an empty link clears it.
+  const [songs, setSongs] = useState({ scene: { name: '', url: '' }, combat: { name: '', url: '' } });
+  const [songsDirty, setSongsDirty] = useState({ scene: false, combat: false });
+  const [songError, setSongError] = useState(null);
+  useEffect(() => {
+    let alive = true;
+    fetch(`/api/scenes/${scene.id}/music?role=gm`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((m) => {
+        if (alive && m) setSongs({ scene: m.scene ?? { name: '', url: '' }, combat: m.combat ?? { name: '', url: '' } });
+      })
+      .catch(console.error);
+    const onTitle = ({ url, title }) => {
+      if (!title) return;
+      setSongs((cur) => {
+        const next = { ...cur };
+        for (const k of ['scene', 'combat']) if (cur[k].url === url && !cur[k].name.trim()) next[k] = { ...cur[k], name: title };
+        return next;
+      });
+    };
+    const onRejected = ({ sceneId, which }) => sceneId === scene.id && setSongError(which);
+    socket.on('audio:title', onTitle);
+    socket.on('scene:song_rejected', onRejected);
+    return () => {
+      alive = false;
+      socket.off('audio:title', onTitle);
+      socket.off('scene:song_rejected', onRejected);
+    };
+  }, [scene.id]);
+  const setSong = (which, patch) => {
+    setSongs((cur) => ({ ...cur, [which]: { ...cur[which], ...patch } }));
+    setSongsDirty((d) => ({ ...d, [which]: true }));
+    setSongError(null);
+  };
 
   // GM-only read (403 otherwise), and this editor is only ever reached from the
   // GM's own Scene drawer. Fetched per open rather than held globally: the list
@@ -95,6 +131,8 @@ export default function SceneEditor({ scene, onClose }) {
       // Always sent, `null` for None — the server reads `undefined` as "leave
       // it alone", which is not what an untouched-but-present picker means.
       timestampId: timestampId === '' ? null : Number(timestampId),
+      ...(songsDirty.scene ? { sceneSong: songs.scene.url.trim() ? songs.scene : null } : {}),
+      ...(songsDirty.combat ? { combatSong: songs.combat.url.trim() ? songs.combat : null } : {}),
       ...(picture ?? {}),
     });
   };
@@ -186,6 +224,33 @@ export default function SceneEditor({ scene, onClose }) {
             &ldquo;Current&rdquo; Timestamp is left alone.
           </p>
         </div>
+        {[
+          ['scene', 'Scene music', 'Plays on loop while this Scene is active — in Simple Combat too.'],
+          ['combat', 'Combat music', 'Plays on loop instead while the Scene is in Combat.'],
+        ].map(([which, label, hint]) => (
+          <div key={which}>
+            <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-zinc-500">{label}</label>
+            <input
+              value={songs[which].url}
+              onChange={(e) => setSong(which, { url: e.target.value })}
+              onBlur={(e) => e.target.value.trim() && !songs[which].name.trim() && socket.emit('audio:lookup_title', { url: e.target.value.trim() })}
+              placeholder="YouTube link"
+              aria-label={`${label}: YouTube link`}
+              className="mb-1 min-h-11 w-full panel-cut-sm border border-zinc-700 bg-zinc-800 px-2 py-1 text-sm outline-none focus:border-brand-500"
+            />
+            <input
+              value={songs[which].name}
+              onChange={(e) => setSong(which, { name: e.target.value })}
+              placeholder="Song name"
+              aria-label={`${label}: name`}
+              className="min-h-11 w-full panel-cut-sm border border-zinc-700 bg-zinc-800 px-2 py-1 text-sm outline-none focus:border-brand-500"
+            />
+            <p className="mt-1 text-[11px] leading-snug text-zinc-500">
+              {songError === which ? <span className="text-red-400">That isn&rsquo;t a YouTube link. </span> : null}
+              {hint} It replaces whatever music is playing.
+            </p>
+          </div>
+        ))}
         <button
           type="submit"
           disabled={!name.trim()}

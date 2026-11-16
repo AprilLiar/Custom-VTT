@@ -1000,6 +1000,10 @@ export async function initDb() {
   // **Fight Setup's Complications and Battle Parameters** per fight mode:
   // JSON { simple, combat } (shape: client/src/lib/battleParams.js).
   await ensureColumn('scenes', 'battle', 'TEXT');
+  // **Scene music (decided):** a song for the Scene (Scene and Simple Combat)
+  // and one for Combat — tracks of the hidden "Scene music" playlist.
+  await ensureColumn('scenes', 'scene_track_id', 'INTEGER');
+  await ensureColumn('scenes', 'combat_track_id', 'INTEGER');
   // **The Combat map (Phase 3):** a Combat Background separate from the Scene
   // backdrop (image kind 'scene-combat'), and its grid — square size and
   // offset in the MAP IMAGE's own pixels (decided), and line opacity. See
@@ -1624,6 +1628,8 @@ export async function initDb() {
     )
   `);
   ddl(`INSERT OR IGNORE INTO audio_state (id) VALUES (1)`);
+  // The hidden "Scene music" playlist (Scenes' own songs): not shown in the Audio Player.
+  await ensureColumn('audio_playlists', 'hidden', 'INTEGER NOT NULL DEFAULT 0');
   // **Every boot comes up paused, deliberately.** Render's free tier cold-starts
   // between sessions constantly, and resuming an anchor taken six hours ago
   // would compute a position deep past the end of the track. What is worth
