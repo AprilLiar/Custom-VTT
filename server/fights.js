@@ -31,6 +31,7 @@ import { mayFreeMove } from './engine/moves.js';
 import { recordFx } from './fx.js';
 import { claimInterrupt, dropInterrupts, interruptOf, nextInterrupt, releaseInterrupt, unqueueInterrupt } from './interrupts.js';
 import { parseBattleColumn, tiltOn } from '../client/src/lib/battleParams.js';
+import { forcedFirstSide } from '../client/src/lib/battleVictory.js';
 import { battleFightStart } from './battle.js';
 
 // The fight's reaction window (phase F): { seq, activeId, offers: { [id]: { clusters, … } }, done } | null.
@@ -141,6 +142,7 @@ export async function loadFightState(sceneId, mode) {
     turn_index: row.turn_index,
     allies: parseIds(row.allies),
     enemies: parseIds(row.enemies),
+    renegades: parseIds(row.renegades),
     pending_stance: pending,
     // Early / Late Movement (phase D): who still gets to move, or null.
     movement_phase: phaseOf(row),
@@ -265,7 +267,7 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
   };
 
   const sideOf = (fight, id) =>
-    parseIds(fight.allies).includes(id) ? 'allies' : parseIds(fight.enemies).includes(id) ? 'enemies' : null;
+    parseIds(fight.allies).includes(id) ? 'allies' : parseIds(fight.enemies).includes(id) ? 'enemies' : parseIds(fight.renegades).includes(id) ? 'renegades' : null;
 
   // ---- the order
   // `prev`: the last round's order, which this one repeats (decided, batch 5:
@@ -281,7 +283,11 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
       return turnsPerRound(f.hp);
     };
     const side = (ids) => ids.map((id) => ({ id, turns: turnsOf(id) })).filter((x) => x.turns > 0);
-    const sides = { allies: side(parseIds(fight.allies)), enemies: side(parseIds(fight.enemies)) };
+    const sides = { allies: side(parseIds(fight.allies)), enemies: side(parseIds(fight.enemies)), renegades: side(parseIds(fight.renegades)) };
+    // Outlast's Attackers / Sabotage's Saboteurs always take a Round's first turn.
+    const battle = parseBattleColumn((await one('SELECT battle FROM scenes WHERE id = ?', [fight.scene_id]))?.battle)[fight.mode];
+    const forced = forcedFirstSide(battle, ['allies', 'enemies', 'renegades'].filter((s) => sides[s].length));
+    if (forced && sides[forced]?.length) return buildRound({ ...sides, firstSide: forced, openerId: prev || forced !== firstSide ? null : openerId });
     return prev ? repeatRound({ prev, ...sides }) : buildRound({ ...sides, firstSide, openerId });
   };
 
@@ -391,20 +397,47 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
   };
 
   // Move on to the next valid turn, starting a new round when this one is done.
+  // **The Round's end runs on the engine's chain, outside this handler.** Its
+  // rules (The Fight Must Go On!, Outlast, King of the Hill, Tournament Play)
+  // write through the same server-wide queue this handler holds, so awaiting
+  // them here would deadlock. The handler lets go; once they are done, the new
+  // Round is built (from HP as they stand then) in a queued job of its own.
+  // Meanwhile Next / End turn / Previous are ignored for that fight.
+  const roundEnding = new Set();
+  const startRound = async (fight, prevOrder) => {
+    const order = await newRound(fight, null, null, prevOrder);
+    // Kept so "Previous turn" can step back into the last round.
+    fight.prev_turn_order = fight.turn_order;
+    fight.round += 1;
+    fight.turn_order = JSON.stringify(order);
+    await postSystemMessage(`— Round ${fight.round} —`);
+    await fire(fight, 'round_start');
+    fight.turn_index = 0;
+    fight.pending_stance_combatant = null;
+    await save(fight);
+    await beginTurn(fight);
+  };
   const advance = async (fight) => {
-    let order = orderOf(fight);
+    const order = orderOf(fight);
     let index = fight.turn_index + 1;
     while (index < order.length && !(await valid(fight, order[index].id))) index++;
     if (index >= order.length) {
       await fire(fight, 'round_end');
-      order = await newRound(fight, null, null, order);
-      // Kept so "Previous turn" can step back into the last round.
-      fight.prev_turn_order = fight.turn_order;
-      fight.round += 1;
-      index = 0;
-      fight.turn_order = JSON.stringify(order);
-      await postSystemMessage(`— Round ${fight.round} —`);
-      await fire(fight, 'round_start');
+      roundEnding.add(fight.id);
+      const roundOf = fight.round;
+      Promise.resolve(triggers?.roundEnd?.({ ...fight }))
+        .catch((err) => console.error('round end', err))
+        .then(() =>
+          serialized(async () => {
+            roundEnding.delete(fight.id);
+            const fresh = await one('SELECT * FROM fights WHERE id = ?', [fight.id]);
+            if (!fresh || fresh.round !== roundOf) return;
+            await startRound(fresh, order);
+            await emitStageUpdated();
+          })()
+        )
+        .catch((err) => console.error('new round', err));
+      return;
     }
     fight.turn_index = index;
     fight.pending_stance_combatant = null;
@@ -433,19 +466,21 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
   };
 
   // **Start Combat (GM).** Sides, the side that starts, and its opener.
-  on('fight:start', async ({ mode, allies, enemies, firstSide, opener }) => {
+  on('fight:start', async ({ mode, allies, enemies, renegades = [], firstSide, opener }) => {
     if (!isGm() || !MODES.has(mode)) return;
     const sceneId = await activeSceneId();
     if (!sceneId) return;
     const allyIds = await resolveIds(allies, sceneId, mode);
     const enemyIds = (await resolveIds(enemies, sceneId, mode)).filter((id) => !allyIds.includes(id));
-    if (!allyIds.length && !enemyIds.length) return;
+    // Three Way Battles: the Renegades fight everyone.
+    const renegadeIds = (await resolveIds(renegades, sceneId, mode)).filter((id) => !allyIds.includes(id) && !enemyIds.includes(id));
+    if (!allyIds.length && !enemyIds.length && !renegadeIds.length) return;
     const openerRow = opener ? await resolveRef(opener) : null;
-    const side = firstSide === 'enemies' ? 'enemies' : 'allies';
+    const side = firstSide === 'enemies' || firstSide === 'renegades' ? firstSide : 'allies';
     await run('DELETE FROM fights WHERE scene_id = ? AND mode = ?', [sceneId, mode]);
     await run(
-      "INSERT INTO fights (scene_id, mode, allies, enemies, round, turn_order, turn_index) VALUES (?, ?, ?, ?, 1, '[]', 0)",
-      [sceneId, mode, JSON.stringify(allyIds), JSON.stringify(enemyIds)]
+      "INSERT INTO fights (scene_id, mode, allies, enemies, renegades, round, turn_order, turn_index) VALUES (?, ?, ?, ?, ?, 1, '[]', 0)",
+      [sceneId, mode, JSON.stringify(allyIds), JSON.stringify(enemyIds), JSON.stringify(renegadeIds)]
     );
     const fight = await one('SELECT * FROM fights WHERE scene_id = ? AND mode = ?', [sceneId, mode]);
     const order = await newRound(fight, side, openerRow?.id ?? null);
@@ -476,7 +511,7 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
     return run('UPDATE fights SET movement_phase = ? WHERE id = ?', [fight.movement_phase, fight.id]);
   };
   const speedHolders = async (fight, exceptId = null) => {
-    const ids = [...parseIds(fight.allies), ...parseIds(fight.enemies)].filter((id) => id !== exceptId);
+    const ids = [...parseIds(fight.allies), ...parseIds(fight.enemies), ...parseIds(fight.renegades)].filter((id) => id !== exceptId);
     if (!ids.length) return [];
     const rows = await all(`SELECT * FROM combatants WHERE id IN (${ids.map(() => '?').join(',')})`, ids);
     return rows
@@ -510,6 +545,8 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
   };
 
   const nextTurn = async (fight) => {
+    // The Round is still ending (its rules run on the engine's chain): wait.
+    if (roundEnding.has(fight.id)) return;
     // Any movement phase is over (the GM's Next turn skips Late Movement),
     // and so is any reaction window.
     if (fight.movement_phase) await setPhase(fight, null);
@@ -824,7 +861,7 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
   on('fight:previous', async ({ mode }) => {
     if (!isGm()) return;
     const fight = await fightFor(mode);
-    if (!fight) return;
+    if (!fight || roundEnding.has(fight.id)) return;
     triggers?.turnOver({ ...fight });
     if (fight.movement_phase) await setPhase(fight, null);
     const current = orderOf(fight)[fight.turn_index];
@@ -894,18 +931,19 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
 
   // **Change the sides mid-fight (GM)** — takes effect from the next round
   // (decided); anyone removed is skipped from now on.
-  on('fight:set_sides', async ({ mode, allies, enemies }) => {
+  on('fight:set_sides', async ({ mode, allies, enemies, renegades = [] }) => {
     if (!isGm()) return;
     const fight = await fightFor(mode);
     if (!fight) return;
     const allyIds = await resolveIds(allies, fight.scene_id, fight.mode);
     const enemyIds = (await resolveIds(enemies, fight.scene_id, fight.mode)).filter((id) => !allyIds.includes(id));
-    await run('UPDATE fights SET allies = ?, enemies = ? WHERE id = ?', [JSON.stringify(allyIds), JSON.stringify(enemyIds), fight.id]);
+    const renegadeIds = (await resolveIds(renegades, fight.scene_id, fight.mode)).filter((id) => !allyIds.includes(id) && !enemyIds.includes(id));
+    await run('UPDATE fights SET allies = ?, enemies = ?, renegades = ? WHERE id = ?', [JSON.stringify(allyIds), JSON.stringify(enemyIds), JSON.stringify(renegadeIds), fight.id]);
     await emitStageUpdated();
   });
 
   // **End Combat (GM).** Clears the order; positions, HP and tokens stay.
-  // `outcome` (decided): 'allies' or 'enemies' won — every character on the
+  // `outcome` (decided): 'allies', 'enemies' or 'renegades' won — every character on the
   // winning side gets Victory XP (+2), every one on the losing side Defeat XP
   // (+1), on hero builds only, once per character — or anything else to skip
   // (the fight ended mechanically but the story goes on).
@@ -913,7 +951,7 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
     if (!isGm()) return;
     const fight = await fightFor(mode);
     if (!fight) return;
-    if (outcome === 'allies' || outcome === 'enemies') {
+    if (outcome === 'allies' || outcome === 'enemies' || outcome === 'renegades') {
       const scene = await one('SELECT name FROM scenes WHERE id = ?', [fight.scene_id]);
       const charactersOf = async (ids) => {
         const out = new Map();
@@ -923,8 +961,8 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
         }
         return out;
       };
-      const winners = await charactersOf(parseIds(outcome === 'allies' ? fight.allies : fight.enemies));
-      const losers = await charactersOf(parseIds(outcome === 'allies' ? fight.enemies : fight.allies));
+      const winners = await charactersOf(parseIds(fight[outcome]));
+      const losers = await charactersOf(['allies', 'enemies', 'renegades'].filter((s) => s !== outcome).flatMap((s) => parseIds(fight[s])));
       const lines = [];
       for (const [group, amount, label] of [
         [winners, XP_AWARDS.victory, 'Victory'],
@@ -938,11 +976,11 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
           lines.push(`${name} +${amount} (${label}, ${r.build.xp} XP${r.canLevelUp ? ' — can level up!' : ''})`);
         }
       }
-      await postSystemMessage(`— ${outcome === 'allies' ? 'The allies' : 'The enemies'} win — XP: ${lines.length ? lines.join(', ') : 'nobody on an XP track'}`);
+      await postSystemMessage(`— ${outcome === 'allies' ? 'The allies' : outcome === 'enemies' ? 'The enemies' : 'The Renegades'} win — XP: ${lines.length ? lines.join(', ') : 'nobody on an XP track'}`);
     }
     await run('DELETE FROM fights WHERE id = ?', [fight.id]);
     dropInterrupts(fight.id);
-    await endTurnDice([...parseIds(fight.allies), ...parseIds(fight.enemies)], emitAll);
+    await endTurnDice([...parseIds(fight.allies), ...parseIds(fight.enemies), ...parseIds(fight.renegades)], emitAll);
     triggers?.endFight(fight.scene_id, fight.mode);
     await run('UPDATE combatants SET dizzy = 0 WHERE scene_id = ? AND mode = ?', [fight.scene_id, fight.mode]);
     await postSystemMessage('— Combat ends —');

@@ -49,6 +49,7 @@ export default function CombatWeightTool({ onDone }) {
           bars: barsFor(t.character_id),
           infinite: Boolean(t.fight.infinite),
           combatantId: t.id,
+          characterId: t.character_id,
           excluded: Boolean(t.fight.excluded),
         }))
       : stage.summons.filter((s) => s.character_id != null).map((s) => ({
@@ -60,12 +61,16 @@ export default function CombatWeightTool({ onDone }) {
           bars: barsFor(s.character_id),
           infinite: Boolean(s.fight?.infinite),
           combatantId: s.fight?.combatant_id ?? null,
+          characterId: s.character_id,
           excluded: Boolean(s.fight?.excluded),
         }));
   }, [stage, mode, typeOf]);
 
   const [weight, setWeight] = useState(null);
-  const [rows, setRows] = useState({}); // key → { level, kind }
+  const [rows, setRows] = useState({}); // key → { level, kind, bars }
+  // Uneven Fights: the heroes' Health Bars in all, and how they split them.
+  const [heroBars, setHeroBars] = useState(null);
+  const [split, setSplit] = useState('even');
   useEffect(() => {
     if (weight == null && scene) setWeight(scene.weights?.[mode] ?? 'middle');
   }, [scene, mode, weight]);
@@ -88,6 +93,18 @@ export default function CombatWeightTool({ onDone }) {
   }
 
   const set = (key, patch) => setRows((r) => ({ ...r, [key]: { ...r[key], ...patch } }));
+  // **Complications (Fight Setup):** Guest Heroes (one bar, any hero player
+  // controls them) and Uneven Fights (bars per fighter; the heroes' extra
+  // bars split evenly as HP, or handed out whole).
+  const battle = scene?.battle?.[mode];
+  const guestsOn = battle?.complications?.includes('guest_heroes');
+  const uneven = battle?.complications?.includes('uneven_fights');
+  const isGuest = (f) => guestsOn && (battle?.guests ?? []).includes(f.characterId);
+  const heroes = fighters.filter((f) => !f.excluded && !isGuest(f) && (rows[f.key]?.kind ?? f.kind) === 'hero');
+  const spare = Math.max(0, (heroBars ?? heroes.length) - heroes.length);
+  const avgBar = heroes.length ? heroes.reduce((n, f) => n + (w ? barHp(weight, 'hero', rows[f.key]?.level ?? 1) : 0), 0) / heroes.length : 0;
+  const evenExtra = uneven && split === 'even' && heroes.length ? Math.ceil((spare * avgBar) / heroes.length) : 0;
+  const barsOf = (f) => (isGuest(f) ? 1 : uneven && split === 'uneven' ? (rows[f.key]?.bars ?? f.bars ?? 1) : uneven && split === 'even' && heroes.includes(f) ? 1 : (rows[f.key]?.bars ?? f.bars ?? 1));
   const setAllLevels = (level) => setRows((r) => Object.fromEntries(Object.entries(r).map(([k, v]) => [k, { ...v, level }])));
   const w = WEIGHT_BY_KEY[weight];
 
@@ -96,7 +113,9 @@ export default function CombatWeightTool({ onDone }) {
       mode,
       weight,
       // A figure left out (×) gets no HP: it stays scenery.
-      fighters: fighters.filter((f) => !f.excluded).map((f) => ({ ref: f.ref, level: rows[f.key]?.level ?? 1, kind: rows[f.key]?.kind ?? 'hero', bars: f.bars ?? 1 })),
+      fighters: fighters
+        .filter((f) => !f.excluded)
+        .map((f) => ({ ref: f.ref, level: rows[f.key]?.level ?? 1, kind: rows[f.key]?.kind ?? 'hero', bars: barsOf(f), extra: heroes.includes(f) ? evenExtra : 0 })),
     });
     onDone?.();
   };
@@ -148,6 +167,32 @@ export default function CombatWeightTool({ onDone }) {
           </select>
         </label>
       </div>
+      {uneven && (
+        <div className="flex flex-wrap items-center gap-2 panel-cut-sm border border-zinc-800 bg-zinc-950/70 px-2 py-1.5 text-[11px] text-zinc-300">
+          <span className="font-display font-bold uppercase tracking-wide text-zinc-200">Uneven Fights</span>
+          <label className="flex items-center gap-1">
+            Heroes&rsquo; bars
+            <input
+              type="number"
+              min={heroes.length}
+              max={30}
+              value={heroBars ?? heroes.length}
+              onChange={(e) => setHeroBars(Math.max(0, Math.trunc(Number(e.target.value)) || 0))}
+              className="h-7 w-14 panel-cut-sm border border-zinc-700 bg-zinc-800 px-1 outline-none focus:border-brand-500"
+            />
+          </label>
+          {['even', 'uneven'].map((k) => (
+            <button key={k} type="button" aria-pressed={split === k} onClick={() => setSplit(k)} className={`h-7 panel-cut-sm border px-2 capitalize ${split === k ? 'border-purple-400 bg-purple-500/30 text-purple-100' : 'border-zinc-700 bg-zinc-900'}`}>
+              {k}
+            </button>
+          ))}
+          <span className="text-zinc-500">
+            {split === 'even'
+              ? `Each hero +${evenExtra} HP on their bar (${spare} spare bar${spare === 1 ? '' : 's'}).`
+              : 'Set each fighter’s bars below (a Boss up to 6). A 1v1: 2 bars each.'}
+          </span>
+        </div>
+      )}
       {fighters.length === 0 && <p className="text-xs italic text-zinc-500">Nobody is in this fight yet.</p>}
       <ul className="space-y-1">
         {fighters.map((f) => {
@@ -198,6 +243,31 @@ export default function CombatWeightTool({ onDone }) {
                   </option>
                 ))}
               </select>
+              {uneven && split === 'uneven' && !isGuest(f) && (
+                <label className="flex items-center gap-1 text-[11px] text-zinc-400">
+                  Bars
+                  <input
+                    type="number"
+                    min={1}
+                    max={6}
+                    value={rows[f.key]?.bars ?? f.bars ?? 1}
+                    onChange={(e) => set(f.key, { bars: Math.min(6, Math.max(1, Math.trunc(Number(e.target.value)) || 1)) })}
+                    aria-label={`${f.name} Health Bars`}
+                    className="h-8 w-12 panel-cut-sm border border-zinc-700 bg-zinc-800 px-1 text-xs outline-none focus:border-brand-500"
+                  />
+                </label>
+              )}
+              {guestsOn && f.characterId != null && (
+                <button
+                  type="button"
+                  onClick={() => socket.emit('battle:set', { mode, change: { guest: { id: f.characterId, on: !isGuest(f) } } })}
+                  aria-pressed={isGuest(f)}
+                  title={isGuest(f) ? 'A Guest Hero: one Health Bar, any hero player controls them. Tap to undo.' : 'Make a Guest Hero'}
+                  className={`h-8 panel-cut-sm border px-2 font-display text-[11px] font-bold uppercase ${isGuest(f) ? 'border-purple-400 bg-purple-500/30 text-purple-100' : 'border-zinc-700 bg-zinc-800 text-zinc-500 hover:text-zinc-200'}`}
+                >
+                  Guest
+                </button>
+              )}
               {/* **Infinite HP (decided):** per fighter, at once — hits resolve, HP never drops. */}
               <button
                 type="button"

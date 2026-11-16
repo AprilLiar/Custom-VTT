@@ -42,5 +42,14 @@ export function controlsCharacter(viewer, characterId) {
   if (viewer.role === 'gm') return true;
   if (viewer.role !== 'player' || characterId == null) return false;
   const id = Number(characterId);
+  // Guest Heroes (Fight Setup): any hero player may put a Guest to use.
+  if (guestCharacters.has(id)) return true;
   return viewer.characterId === id || assignedTo.get(id) === viewer.characterId;
+}
+
+// **Guest Heroes (Fight Setup):** the active Scene's Guests, refreshed with
+// every stage payload (server/index.js buildStagePayload).
+let guestCharacters = new Set();
+export function setGuestCharacters(ids) {
+  guestCharacters = new Set((ids ?? []).map(Number));
 }

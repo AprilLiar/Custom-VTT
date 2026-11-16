@@ -39,7 +39,8 @@ import { ENGINE_NATIVE, continuousSupport, isIronAnySource, isNativeRule } from 
 import { addPoolValue, livePool, setPoolValue, turnActions } from '../client/src/lib/patd/diceBoard.js';
 import { fighterState, readData as readBoardData, saveBoard, setPayableHook } from './diceMarks.js';
 import { muteFx, recordFx, slice, unmuteFx } from './fx.js';
-import { isDisarmed, leashOf, parseBattleColumn, partnerOf, tiltOn } from '../client/src/lib/battleParams.js';
+import { NO_GO_ON, SIDE_LABEL, isDisarmed, leashOf, parseBattleColumn, partnerOf, tiltOn } from '../client/src/lib/battleParams.js';
+import { kingOfTheHill, lastOneStanding, outlast, protectTheVip, roundsToWin, tournamentRoundLoser } from '../client/src/lib/battleVictory.js';
 import { updateBattle } from './battle.js';
 
 // The combat map's image size, by image hash (its playable bounds — phase D).
@@ -188,8 +189,9 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
   // ---- the world of one fight
   async function buildWorld(fight) {
     const { scene_id: sceneId, mode } = fight;
-    const ids = new Set([...JSON.parse(fight.allies || '[]'), ...JSON.parse(fight.enemies || '[]')]);
-    const sideOf = (id) => (JSON.parse(fight.allies || '[]').includes(id) ? 'allies' : 'enemies');
+    const ids = new Set([...JSON.parse(fight.allies || '[]'), ...JSON.parse(fight.enemies || '[]'), ...JSON.parse(fight.renegades || '[]')]);
+    // Three Way Battles: the Renegades are everyone else's enemy.
+    const sideOf = (id) => (JSON.parse(fight.allies || '[]').includes(id) ? 'allies' : JSON.parse(fight.renegades || '[]').includes(id) ? 'renegades' : 'enemies');
     const rows = (await all('SELECT cb.*, c.name, c.character_type FROM combatants cb JOIN characters c ON c.id = cb.character_id WHERE cb.scene_id = ? AND cb.mode = ?', [sceneId, mode])).filter((r) => ids.has(r.id));
     const scene = await one('SELECT simple_weight, combat_weight, battle FROM scenes WHERE id = ?', [sceneId]);
     // Fight Setup's Complications and Battle Parameters (lib/battleParams.js).
@@ -358,6 +360,9 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
         recordFx({ sceneId, mode, kind: 'damage', combatantId: f.id, before, after: await shownState(f), data });
       },
     };
+    // Protect the VIP: who still has the first bar's +10 (battle.applied.vip, this fight only).
+    const vipBonus = new Set(battle.applied?.vip?.fightId === fight.id ? battle.applied.vip.ids ?? [] : []);
+    let vipSpent = false;
     const changeHp = async (f, delta) => {
       let result = { landed: null, before: null };
       await queued(async () => {
@@ -381,6 +386,14 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
         const was = shapeFightState(row);
         const shown = shapeFightState({ ...row, hp_max: next.max, hp_current: next.current, hp_bars: next.bars, hp_broken: next.broken, dizzy: next.dizzy ? 1 : 0 });
         if (delta) recordFx({ sceneId, mode, kind: delta > 0 ? 'heal' : 'damage', combatantId: f.id, before: slice(was), after: slice(shown), data: { amount: Math.abs(delta) } });
+        // **Protect the VIP:** their +10 max HP is on the first bar only — gone once it breaks.
+        if (next.broken > before.broken && vipBonus.has(f.id) && next.max != null) {
+          vipBonus.delete(f.id);
+          next.max = Math.max(1, next.max - 10);
+          next.current = Math.min(next.current, next.max);
+          await saveHp(f.id, next);
+          vipSpent = true;
+        }
         result = { before, landed: before.current + delta, row, down: !atZero(before) && atZero(next) };
         f.bleeding = next.current <= weight.bleed;
         f.dizzy = Boolean(next.dizzy);
@@ -388,6 +401,13 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
         f.currentBar = { damage: next.max - next.current };
       });
       markDirty();
+      if (vipSpent) {
+        vipSpent = false;
+        await updateBattle(sceneId, mode, (bt) => {
+          if (bt.applied?.vip) bt.applied.vip.ids = (bt.applied.vip.ids ?? []).filter((id) => vipBonus.has(id));
+          return bt;
+        });
+      }
       // **Handcuffs (Tilt):** one falls to 0 HP — their partner gains 3 Fatigue.
       if (result.down) {
         const partner = fighters.find((x) => x.id === partnerOf(battle, f.id));
@@ -412,13 +432,26 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     };
     const inPit = (f) => f.square != null && pits.has(`${f.square.col},${f.square.row}`);
     // **The board (phase D):** bounds, obstacles and who stands where, now.
-    const board = () =>
-      makeBoard({
-        bounds,
-        tiles: tileList,
+    // **Arena Parameters (Fight Setup)** that change the edge — one at a time:
+    // Cage Match (no Outside: the edge holds), Endless Field (no edge at all),
+    // Pyroclasm (no edge; everything beyond the map is Traps, and Pits are
+    // Pit Traps), Trick Room (off one edge, in at the opposite one).
+    const arena = new Set(battle.arena);
+    const endless = mode === 'combat' && (arena.has('endless_field') || arena.has('pyroclasm'));
+    const pyroclasm = arena.has('pyroclasm');
+    const board = () => {
+      const b = makeBoard({
+        bounds: endless ? null : bounds,
+        tiles: pyroclasm ? [...tileList, ...tileList.filter((t) => t.kind === 'pit').map((t) => ({ ...t, kind: 'trap' }))] : tileList,
         units: [...fighters, ...copies].filter((f) => f.square).map((f) => ({ id: f.id, square: f.square, size: f.size ?? 1 })),
-        exits: mode === 'simple' ? 'cols' : 'all',
+        exits: arena.has('cage_match') || arena.has('trick_room') || endless ? 'none' : mode === 'simple' ? 'cols' : 'all',
       });
+      // Where comebacks land when the board itself has no edge.
+      b.home = bounds;
+      if (pyroclasm && bounds) b.trapsBeyond = bounds;
+      if (arena.has('trick_room') && bounds) b.wrap = bounds;
+      return b;
+    };
     // Board animations (phase 3): a square as the stage stores it — a map
     // cell, or a lane's slot (lane × 10 + space).
     const fxSquare = (sq) => (sq ? (mode === 'simple' ? { col: sq.col, row: sq.row, slot: sq.row * 10 + sq.col } : { col: sq.col, row: sq.row }) : null);
@@ -465,6 +498,43 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
       markDirty();
       if (!quiet) await flushStage();
       if (!quiet) await cuffCheck(f);
+      if (!quiet && from && sq && (how === 'move' || how === 'push' || how === 'pull') && !slidingIds.has(f.id)) await icySlide(f, from, sq);
+    };
+    // **Icy Floor (Arena):** after a movement ends, one more space the same way
+    // — not into a Wall or Rubble, not after stopping in Rubble or a Pit, not
+    // after a teleport or swap. A unit in the way is pushed 1 first (and slides
+    // in turn). (A Free Movement slides once at its end, not after each space.)
+    let sliding = 0;
+    const slidingIds = new Set(); // whoever is sliding now: their slide's own step doesn't slide again
+    const icySlide = async (f, from, to) => {
+      if (!battle.arena.includes('icy_floor') || sliding > 4) return;
+      const dc = Math.sign(to.col - from.col);
+      const dr = Math.sign(to.row - from.row);
+      const dir = Math.abs(to.col - from.col) >= Math.abs(to.row - from.row) ? { dc, dr: 0 } : { dc: 0, dr };
+      if (!dir.dc && !dir.dr) return;
+      const here = kindsAtSq(to);
+      if (here.includes('rubble') || here.includes('pit')) return;
+      const next = { col: to.col + dir.dc, row: to.row + dir.dr };
+      const b = board();
+      if (!inBoundsAt(b, next) || kindsAtSq(next).includes('wall') || kindsAtSq(next).includes('rubble')) return;
+      sliding++;
+      try {
+        const other = [...fighters].find((x) => x.square && x.square.col === next.col && x.square.row === next.row && x.id !== f.id);
+        if (other) {
+          const beyond = { col: next.col + dir.dc, row: next.row + dir.dr };
+          if (!inBoundsAt(b, beyond) || !isEmptyAt(b, beyond, [other.id])) return;
+          await setSquare(other, beyond, 'push');
+        }
+        if (!isEmptyAt(board(), next, [f.id])) return;
+        slidingIds.add(f.id);
+        try {
+          await setSquare(f, next, 'push');
+        } finally {
+          slidingIds.delete(f.id);
+        }
+      } finally {
+        sliding--;
+      }
     };
     // **Handcuffs (Tilt, Fight Setup):** cuffed pairs stay adjacent. When one
     // moves away, the one who stayed is pulled 1 space at a time until adjacent
@@ -720,6 +790,25 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
       gainShield: (f, v) => (f.isCopy ? null : writeTokens(f, (t) => (t.shield = Math.min(capOf('shield'), Math.max(Number(v) || 0, (t.shield ?? 0) + 1))), 'shield')),
       // Temporary Armor is binary (book p.24): you have it or you don't.
       tempArmor: (f) => (f.isCopy ? null : writeTokens(f, (t) => (t.temp_armor = 1))),
+      // Back to full HP: every bar whole, no Dizzy (Outlast, Tournament Play).
+      restoreFull: async (f) => {
+        if (f.isCopy) return;
+        await queued(async () => {
+          const row = await readRow(f.id);
+          if (!row || row.hp_max == null) return;
+          const before = hpOf(row);
+          const next = { ...before, current: before.max, broken: 0, dizzy: false };
+          await saveHp(f.id, next);
+          const was = shapeFightState(row);
+          const shown = shapeFightState({ ...row, hp_current: next.current, hp_broken: 0, dizzy: 0 });
+          recordFx({ sceneId, mode, kind: 'heal', combatantId: f.id, before: slice(was), after: slice(shown), data: { amount: Math.max(1, next.max - before.current) } });
+          f.hp = next;
+          f.dizzy = false;
+        });
+        markDirty();
+      },
+      // The squares of a marker kind (King Zone, Danger Zone …) on this board.
+      markers: (kind) => tileList.filter((t) => t.kind === kind).map((t) => ({ col: t.col, row: t.row })),
       heal: async (f, n) => {
         if (f.isCopy) return 0;
         const r = await changeHp(f, Math.max(0, Number(n) || 0));
@@ -954,8 +1043,16 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
       destroyObstacle: async (o, by = null) => {
         if (o.isCopy) return destroyCopy(o, by);
         const kinds = kindsAtSq(o.square);
-        await writeKinds(o.square, o.kind === 'wall' ? placeTile(removeTile(kinds, 'wall'), 'rubble') : removeTile(kinds, o.kind));
+        // Pyroclasm: a Trap or Pit removed leaves Rubble — the fix is temporary.
+        const leavesRubble = o.kind === 'wall' || (pyroclasm && (o.kind === 'trap' || o.kind === 'pit' || o.kind === 'deadly_trap'));
+        await writeKinds(o.square, leavesRubble ? placeTile(removeTile(kinds, o.kind), 'rubble') : removeTile(kinds, o.kind));
         countDestroyed(by);
+      },
+      // Pyroclasm, at a Round's end: every Rubble crumbles into a Pit Trap.
+      rubbleToPitTraps: async () => {
+        const rubble = tileList.filter((t) => t.kind === 'rubble').map((t) => ({ col: t.col, row: t.row }));
+        for (const sq of rubble) await writeKinds(sq, placeTile(placeTile(removeTile(kindsAtSq(sq), 'rubble'), 'pit'), 'trap'));
+        return rubble.length;
       },
       replaceObstacle: async (o, to, by = null) => {
         const sq = { col: o.square.col, row: o.square.row };
@@ -1496,6 +1593,119 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
 
   // Start of combat: Improved Warrior gives the Warrior's Path's benefit (its
   // rule is text only in the content, so it is matched by id here).
+  // **Victory Parameters (Fight Setup):** a winner is announced once, by a
+  // card; the GM ends the fight (decided). Checked at every turn's end and at
+  // every Round's end (lib/battleVictory.js).
+  async function announceWin(env, side, why) {
+    if (!side || env.rt.victory) return;
+    env.rt.victory = { side, why };
+    await postCard('reminder', {
+      title: `Victory: ${SIDE_LABEL[side] ?? side} win`,
+      text: `${why} The GM ends the fight (End Combat).`,
+      fighters: [],
+      automatic: 'victory',
+    });
+  }
+  async function victoryCheck(env, world, fighters, { roundEnd = false, round = 1 } = {}) {
+    const b = world.battle;
+    if (!b || env.rt.victory) return;
+    const o = b.victoryOpts ?? {};
+    const all = fighters.filter((f) => !f.isCopy && f.side);
+    let side = null;
+    let why = '';
+    if (b.victory === 'protect_the_vip') {
+      side = protectTheVip(all, o.vips);
+      why = 'The other side’s VIP has fallen.';
+    } else if (b.victory === 'outlast') {
+      side = outlast(all, o.survivors, { roundEnd, round });
+      why = side === o.survivors ? 'The Survivors held out for three Rounds.' : 'Every Survivor is down.';
+    } else if (b.victory === 'king_of_the_hill') {
+      if (roundEnd) side = kingOfTheHill(all, world.markers('king'));
+      why = 'They alone hold the King Zone at the end of the Round.';
+    } else if (b.victory === 'last_one_standing') {
+      side = lastOneStanding(all);
+      why = 'Only they remain standing.';
+    }
+    if (side) await announceWin(env, side, why);
+  }
+
+  // **The end of a Round (Fight Setup):** The Fight Must Go On! (every Victory
+  // Parameter but Last One Standing and Outlast): everyone heals twice the
+  // Heal Value. Outlast: the Attackers heal to full (they come back for free
+  // at the new Round, as anyone does). Tournament Play: the round's loser,
+  // the score, and a reset of positions, HP and tokens. Then who has won.
+  async function runRoundEnd(fightRow) {
+    const { env, world, fighters, movers } = await envFor(fightRow);
+    const b = world.battle;
+    env.when = `End of round ${fightRow.round}`;
+    const people = fighters.filter((f) => !f.isCopy && f.side);
+    if (b.victory === 'tournament') {
+      await tournamentRoundEnd(env, world, movers, people, fightRow);
+    } else if (!NO_GO_ON.has(b.victory) && !env.rt.victory) {
+      const heal = 2 * (world.context.healValue ?? 0);
+      for (const f of people) if (f.square) await world.heal(f, heal);
+      if (heal) await postCard('reminder', { title: 'The Fight Must Go On!', text: `End of round ${fightRow.round}: everyone heals ${heal} (twice the Heal Value).`, fighters: [], automatic: 'battle', notice: true });
+    }
+    // Arena Parameters at a Round's end. Traffic: anyone standing in the Danger
+    // Zone takes 6 (Armor and Iron may reduce it). Pyroclasm: Rubble → Pit Traps.
+    if (b.arena.includes('traffic')) {
+      const zone = world.markers('danger');
+      const hit = people.filter((f) => f.square && zone.some((z) => z.col === f.square.col && z.row === f.square.row));
+      const said = [];
+      for (const f of hit) {
+        const r = await world.damage(f, 6, null, { source: 'traffic', allowIron: true });
+        said.push(`${f.name} ${r?.taken ?? 6}`);
+      }
+      if (hit.length) await postCard('reminder', { title: 'Traffic', text: `End of round ${fightRow.round}: the Danger Zone hits — ${said.join(', ')} damage.`, fighters: hit.map((f) => ({ name: f.name })), automatic: 'battle', notice: true });
+    }
+    if (b.arena.includes('pyroclasm')) {
+      const n = await world.rubbleToPitTraps();
+      if (n) await postCard('reminder', { title: 'Pyroclasm', text: `End of round ${fightRow.round}: ${n} Rubble crumble${n === 1 ? 's' : ''} into Pit Traps.`, fighters: [], automatic: 'battle', notice: true });
+    }
+    if (b.victory === 'outlast' && b.victoryOpts?.survivors) {
+      const attackers = people.filter((f) => f.side !== b.victoryOpts.survivors);
+      for (const f of attackers) await world.restoreFull(f);
+      if (attackers.length) await postCard('reminder', { title: 'Outlast', text: `End of round ${fightRow.round}: the Attackers heal to full and return to play.`, fighters: [], automatic: 'battle', notice: true });
+    }
+    await victoryCheck(env, world, people, { roundEnd: true, round: fightRow.round });
+    await env.save();
+  }
+
+  // Tournament Play: a lost Round scores for the other side and resets
+  // everyone (start positions, full HP, no tokens or Challenges); a drawn
+  // Round just goes on. Best of 3 or 5 (Fight Setup).
+  async function tournamentRoundEnd(env, world, movers, people, fightRow) {
+    const t = (env.rt.tournament ??= { positions: {}, score: {} });
+    const loser = tournamentRoundLoser(people);
+    if (!loser) {
+      await postCard('reminder', { title: 'Tournament Play', text: `Round ${fightRow.round} is a draw: the fight goes on as it stands.`, fighters: [], automatic: 'battle', notice: true });
+      return;
+    }
+    const winner = [...new Set(people.map((f) => f.side))].find((s) => s !== loser);
+    t.score[winner] = (t.score[winner] ?? 0) + 1;
+    const need = roundsToWin(world.battle.victoryOpts?.bestOf);
+    const tally = Object.entries(t.score).map(([s, n]) => `${SIDE_LABEL[s] ?? s} ${n}`).join(' – ');
+    if (t.score[winner] >= need) {
+      await announceWin(env, winner, `They take the Tournament, ${tally}.`);
+      return;
+    }
+    await postCard('reminder', { title: 'Tournament Play', text: `${SIDE_LABEL[winner] ?? winner} take round ${fightRow.round} (${tally}). Everyone resets: start positions, full HP, no tokens.`, fighters: [], automatic: 'battle', notice: true });
+    // Off the board first, then each to their start, so nobody blocks anyone.
+    for (const f of people) if (f.square) await movers.setSquare(f, null, null, { quiet: true });
+    for (const f of people) {
+      const at = t.positions[f.id];
+      if (at) await movers.setSquare(f, at, 'teleport', { quiet: true });
+      await world.restoreFull(f);
+      await movers.writeTokens(f, (tok) => {
+        for (const k of Object.keys(tok)) delete tok[k];
+      });
+      if (f.challengeId != null) {
+        await run('UPDATE combatants SET challenge_id = NULL WHERE id = ?', [f.id]);
+        f.challengeId = null;
+      }
+    }
+  }
+
   // **Chained Down (Tilt):** each fighter on the side places their own Wall
   // next to them — their controller picks the square (decided). Its square is
   // remembered (`battle.chains`), so the Wall (then its Rubble) leashes them.
@@ -1530,7 +1740,12 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
   }
 
   async function runFightStart(fightRow) {
-    const { env, fighters } = await envFor(fightRow);
+    const { env, fighters, world } = await envFor(fightRow);
+    // Tournament Play: everyone's start position, to reset to after a lost Round.
+    if (world.battle.victory === 'tournament') {
+      env.rt.tournament = { positions: Object.fromEntries(fighters.filter((f) => f.square && !f.isCopy).map((f) => [f.id, { ...f.square }])), score: {} };
+      await env.save();
+    }
     for (const f of fighters) {
       if (f.abilityIds.includes(IMPROVED_WARRIOR)) await runFor(f, ['warrior_path.trigger'], env, {});
     }
@@ -1564,7 +1779,7 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     if (f.square || f.derived?.type?.id === 'character-type.stooges' || f.removedForGood) return false;
     if (!free && !((f.hp?.current ?? 0) >= 3)) return false;
     const b = movers.board();
-    const squares = comebackSquares(b.bounds, (sq) => isEmptyAt(b, sq), { colsOnly: movers.mode === 'simple' });
+    const squares = comebackSquares(b.home ?? b.bounds, (sq) => isEmptyAt(b, sq), { colsOnly: movers.mode === 'simple' });
     if (!squares.length) return false;
     const ans = await ask(f, env.key, env.gen, env.tg, env.when)({
       kind: 'square',
@@ -1776,6 +1991,12 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
       for (const k of ['power', 'iron', 'speed']) await world.gainTokens(active, k, 1);
       said.push('Overwhelming Power: +1 Power, +1 Iron, +1 Speed');
     }
+    // Protect the VIP: at the start of their turn the VIP discards a Challenge
+    // that isn't another VIP's.
+    const vips = Object.values(b.victoryOpts?.vips ?? {});
+    if (b.victory === 'protect_the_vip' && vips.includes(active.id) && active.challengeId != null && !vips.includes(active.challengeId)) {
+      if (await world.removeChallenge(active, active)) said.push('Protect the VIP: discards the Challenge they held');
+    }
     if (said.length) await postCard('reminder', { title: 'Tilted Parameter', text: `${active.name} — ${said.join('; ')}.`, fighters: [{ name: active.name }], automatic: 'battle', notice: true });
   }
 
@@ -1836,6 +2057,8 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
       await runScheduled(env, 'current_turn.end', () => true);
       await runEndPhase(env, fighters, onTrap, active);
       expireTemps(rt, 'end_of_turn', { activeId });
+      // Victory Parameters: has anyone won? (King of the Hill waits for the Round's end.)
+      await victoryCheck(env, world, fighters, { round: fightRow.round });
     }
     await env.save();
   }
@@ -2133,6 +2356,10 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     // The active fighter's Action Phase began (after Early Movement): its rules.
     actionPhase(fightRow, activeId) {
       return onChain(fightRow, () => runActionPhase(fightRow, activeId));
+    },
+    // The Round ended (fights.js advance): Victory Parameters' round-end rules.
+    roundEnd(fightRow) {
+      return onChain(fightRow, () => runRoundEnd(fightRow));
     },
     // Chained Down set on a side: its Walls, on the fight's chain.
     chainDown(fightRow, side) {

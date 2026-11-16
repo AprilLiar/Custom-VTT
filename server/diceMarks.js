@@ -134,12 +134,13 @@ export async function fighterState(combatantId) {
   const row = await one('SELECT * FROM combatants WHERE id = ?', [Number(combatantId)]);
   if (!row) return null;
   const st = shapeFightState(row);
-  const fight = await one('SELECT allies, enemies FROM fights WHERE scene_id = ? AND mode = ?', [row.scene_id, row.mode]);
+  const fight = await one('SELECT allies, enemies, renegades FROM fights WHERE scene_id = ? AND mode = ?', [row.scene_id, row.mode]);
   let foes = [];
   if (fight) {
-    const allies = JSON.parse(fight.allies || '[]');
-    const enemies = JSON.parse(fight.enemies || '[]');
-    foes = allies.includes(row.id) ? enemies : enemies.includes(row.id) ? allies : [];
+    // Everyone on another side (Three Way Battles: two other sides).
+    const sides = ['allies', 'enemies', 'renegades'].map((s) => JSON.parse(fight[s] || '[]'));
+    const mine = sides.find((ids) => ids.includes(row.id));
+    foes = mine ? sides.filter((ids) => ids !== mine).flat() : [];
   }
   const holders = foes.length
     ? await all(
@@ -175,7 +176,7 @@ export async function superStatus(combatantId) {
   const fight = me ? await one('SELECT * FROM fights WHERE scene_id = ? AND mode = ?', [me.scene_id, me.mode]) : null;
   if (!fight) return null;
   const allies = JSON.parse(fight.allies || '[]');
-  const side = allies.includes(me.id) ? 'allies' : 'enemies';
+  const side = allies.includes(me.id) ? 'allies' : JSON.parse(fight.renegades || '[]').includes(me.id) ? 'renegades' : 'enemies';
   const rt = await loadRuntime(fight.id);
   const scene = await one('SELECT combat_weight, simple_weight FROM scenes WHERE id = ?', [fight.scene_id]);
   const weight = WEIGHT_BY_KEY[fight.mode === 'simple' ? scene?.simple_weight : scene?.combat_weight] ?? WEIGHT_BY_KEY.middle;
@@ -206,7 +207,8 @@ export async function turnStateOf(row) {
   }
   const activeId = order[fight.turn_index]?.id ?? null;
   const allies = JSON.parse(fight.allies || '[]');
-  const sideOf = (id) => (allies.includes(id) ? 'allies' : 'enemies');
+  const renegades = JSON.parse(fight.renegades || '[]');
+  const sideOf = (id) => (allies.includes(id) ? 'allies' : renegades.includes(id) ? 'renegades' : 'enemies');
   const rt = await loadRuntime(fight.id);
   const ctx = turnContext({ actorId: me.id, actorSide: sideOf(me.id), activeId, activeSide: activeId != null ? sideOf(activeId) : null, tokens: shapeFightState(me).tokens });
   // The side's Super Move limit per Round, from the Scene's Cinematic Weight (phase I).

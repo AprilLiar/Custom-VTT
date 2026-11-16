@@ -17,13 +17,13 @@ export const SIDE_LABEL = { allies: 'Allies', enemies: 'Enemies', renegades: 'Re
 // `lane`: works on a Simple Combat lane too. `built`: the engine runs it.
 export const PARAMS = [
   // Complications
-  { key: 'guest_heroes', family: 'complication', name: 'Guest Heroes', icon: 'UserPlus', lane: true, built: false,
+  { key: 'guest_heroes', family: 'complication', name: 'Guest Heroes', icon: 'UserPlus', lane: true, built: true,
     text: 'An NPC Warrior or Boss with one Health Bar joins the heroes. Any hero player controls it; it adds a Hero slot and an Enemy slot to the Initiative.' },
-  { key: 'uneven_fights', family: 'complication', name: 'Uneven Fights', icon: 'Scale3d', lane: true, built: false,
+  { key: 'uneven_fights', family: 'complication', name: 'Uneven Fights', icon: 'Scale3d', lane: true, built: true,
     text: 'More Health Bars than heroes. Heroes split the extra evenly (extra HP on every bar, rounded up) or unevenly (whole bars to chosen heroes). Bosses take up to 6 bars. A 1v1 is 2 bars each.' },
-  { key: 'switched_sides', family: 'complication', name: 'Switched Sides', icon: 'ArrowLeftRight', lane: true, built: false,
-    text: 'A hero joins the enemies (acting on Enemy slots) or an enemy joins the heroes (as a Guest).' },
-  { key: 'three_way', family: 'complication', name: 'Three Way Battle', icon: 'Triangle', lane: true, built: false,
+  { key: 'switched_sides', family: 'complication', name: 'Switched Sides', icon: 'ArrowLeftRight', lane: true, built: true,
+    text: 'A hero joins the enemies (acting on Enemy slots) or an enemy joins the heroes (as a Guest). Put them in that column at Start Combat; an enemy joining the heroes is made a Guest.' },
+  { key: 'three_way', family: 'complication', name: 'Three Way Battle', icon: 'Triangle', lane: true, built: true,
     text: 'A third side, the Renegades, fights everyone. Initiative goes Heroes → Enemies → Renegades.' },
   // Tilted Parameters — one per side
   { key: 'chained_down', family: 'tilt', name: 'Chained Down', icon: 'Link', lane: true, built: true,
@@ -43,38 +43,38 @@ export const PARAMS = [
   { key: 'weakened_state', family: 'tilt', name: 'Weakened State', icon: 'Wine', lane: true, built: true,
     text: 'At the start of each of this side’s turns, the active character gains 1 Burning, 1 Weakness and 1 Fatigue.' },
   // Arena Parameters
-  { key: 'cage_match', family: 'arena', name: 'Cage Match', icon: 'Grid2x2', lane: true, built: false, outside: true,
+  { key: 'cage_match', family: 'arena', name: 'Cage Match', icon: 'Grid2x2', lane: true, built: true, outside: true,
     text: 'No Outside: the edge of the arena holds everyone. (Half-size arena; units start on the edge.)' },
-  { key: 'endless_field', family: 'arena', name: 'Endless Field', icon: 'Infinity', lane: false, built: false, outside: true,
+  { key: 'endless_field', family: 'arena', name: 'Endless Field', icon: 'Infinity', lane: false, built: true, outside: true,
     text: 'No Outside: the grid goes on past the map in every direction.' },
   { key: 'factory', family: 'arena', name: 'Factory', icon: 'Factory', lane: false, built: false,
     text: 'Conveyor Belts: at the end of every turn, everything on a belt is pushed 1 space along it. Spend 1 Iron or 1 Speed to stay put.' },
-  { key: 'icy_floor', family: 'arena', name: 'Icy Floor', icon: 'Snowflake', lane: true, built: false,
-    text: 'After every movement, slide 1 more space the same way (not after teleports or swaps, or into Walls and Rubble; a unit in the way is pushed 1).' },
-  { key: 'pyroclasm', family: 'arena', name: 'Pyroclasm', icon: 'FlameKindling', lane: true, built: false, outside: true,
+  { key: 'icy_floor', family: 'arena', name: 'Icy Floor', icon: 'Snowflake', lane: true, built: true,
+    text: 'After every movement, slide 1 more space the same way (not after teleports or swaps, or into Walls and Rubble; a unit in the way is pushed 1). Here a Free Movement slides once, at its end.' },
+  { key: 'pyroclasm', family: 'arena', name: 'Pyroclasm', icon: 'FlameKindling', lane: true, built: true, outside: true,
     text: 'The Outside is endless Traps. Pits become Pit Traps; all Rubble becomes Pit Traps at each round end; removed Traps and Pits leave Rubble.' },
   { key: 'second_floor', family: 'arena', name: 'Second Floor', icon: 'Layers', lane: false, built: false,
     text: 'Two floors side by side, joined by Stairs (2 Speed up, 1 down). Top-floor Pits drop you to the same spot below (3 Fall damage by force); 3 Speed climbs up beside a Pit.' },
-  { key: 'traffic', family: 'arena', name: 'Traffic', icon: 'Car', lane: true, built: false,
+  { key: 'traffic', family: 'arena', name: 'Traffic', icon: 'Car', lane: true, built: true,
     text: 'The Danger Zone: anyone in it at the end of each Round takes 6 damage (Armor and Iron reduce it).' },
-  { key: 'trick_room', family: 'arena', name: 'Trick Room', icon: 'Repeat2', lane: true, built: false, outside: true,
+  { key: 'trick_room', family: 'arena', name: 'Trick Room', icon: 'Repeat2', lane: true, built: true, outside: true,
     text: 'No Outside: moving off one edge brings you in at the opposite edge, same row or column.' },
   { key: 'disarmed_all', family: 'arena', name: 'Disarmed (everyone)', icon: 'Ban', lane: true, built: true,
     text: 'Disarmed as an Arena Parameter: every unit has Range 1, whatever the Stance; Abilities do not increase it.' },
   // Victory Parameters — one per fight
-  { key: 'last_one_standing', family: 'victory', name: 'Last One Standing', icon: 'Trophy', lane: true, built: false,
+  { key: 'last_one_standing', family: 'victory', name: 'Last One Standing', icon: 'Trophy', lane: true, built: true,
     text: 'The default: the fight ends when only one side remains in play. No Fight Must Go On.' },
-  { key: 'king_of_the_hill', family: 'victory', name: 'King of the Hill', icon: 'Crown', lane: true, built: false,
+  { key: 'king_of_the_hill', family: 'victory', name: 'King of the Hill', icon: 'Crown', lane: true, built: true,
     text: 'A 4×4 King Zone. At each round end, if everyone standing in it is from one side, that side wins.' },
-  { key: 'outlast', family: 'victory', name: 'Outlast', icon: 'Hourglass', lane: true, built: false,
+  { key: 'outlast', family: 'victory', name: 'Outlast', icon: 'Hourglass', lane: true, built: true,
     text: 'Survivors vs Attackers (who go first). Attackers return and heal fully each round end. Survivors standing after round 3 win. No Fight Must Go On.' },
-  { key: 'protect_the_vip', family: 'victory', name: 'Protect the VIP', icon: 'ShieldUser', lane: true, built: false,
+  { key: 'protect_the_vip', family: 'victory', name: 'Protect the VIP', icon: 'ShieldUser', lane: true, built: true,
     text: 'Each side has a VIP with +10 max HP on their first bar. A side whose VIP falls loses. Anyone may give their turn to the VIP.' },
   { key: 'sabotage', family: 'victory', name: 'Sabotage', icon: 'Bomb', lane: false, built: false,
     text: 'Saboteurs (who go first) plant Bombs (HP = Bleed Value) on Key Locations; each scores 1 at round end. 3 points wins; otherwise the Defense wins after round 3.' },
   { key: 'secure_the_mcguffin', family: 'victory', name: 'Secure the McGuffin', icon: 'Gem', lane: false, built: false,
     text: 'Grab It! the Important Thing and bring it into your Control Zone to win. Moved by anyone else, you drop it.' },
-  { key: 'tournament', family: 'victory', name: 'Tournament Play', icon: 'Medal', lane: true, built: false,
+  { key: 'tournament', family: 'victory', name: 'Tournament Play', icon: 'Medal', lane: true, built: true,
     text: 'Best of 3 or 5. A side loses a round when one of them goes Outside or two reach 0 HP; positions, HP and tokens reset. A drawn round just continues.' },
 ];
 
@@ -90,8 +90,11 @@ export const NO_GO_ON = new Set(['last_one_standing', 'outlast']);
 //   victory: a victory key (default Last One Standing)
 //   complications: [complication keys]
 //   cuffs:   [[combatantId, combatantId]]   (Handcuffs pairs, set by the GM)
+//   guests:  [characterId]  (Guest Heroes: any hero player controls them; one Health Bar)
 //   chains:  { [combatantId]: { col, row } } (Chained Down Walls)
-//   applied: { keep_em_coming: { [side]: fightId } } (applied once per fight)
+//   applied: { keep_em_coming: { [side]: fightId }, vip: { fightId, ids } } (once per fight)
+//   victoryOpts: { survivors (Outlast), vips: { [side]: combatantId } (Protect the VIP),
+//                  bestOf: 3|5 (Tournament), saboteurs (Sabotage) }
 export function normalizeBattle(raw) {
   const v = raw && typeof raw === 'object' ? raw : {};
   const tilts = {};
@@ -107,7 +110,17 @@ export function normalizeBattle(raw) {
     if (Number.isInteger(sq?.col) && Number.isInteger(sq?.row)) chains[id] = { col: sq.col, row: sq.row };
   }
   const applied = v.applied && typeof v.applied === 'object' ? v.applied : {};
-  return { tilts, arena, victory, complications, cuffs, chains, applied };
+  const o = v.victoryOpts && typeof v.victoryOpts === 'object' ? v.victoryOpts : {};
+  const vips = {};
+  for (const s of SIDES) if (Number.isInteger(o.vips?.[s])) vips[s] = o.vips[s];
+  const victoryOpts = {
+    survivors: SIDES.includes(o.survivors) ? o.survivors : null,
+    saboteurs: SIDES.includes(o.saboteurs) ? o.saboteurs : null,
+    vips,
+    bestOf: o.bestOf === 5 ? 5 : 3,
+  };
+  const guests = [...new Set((Array.isArray(v.guests) ? v.guests : []).map(Number).filter(Number.isInteger))];
+  return { tilts, arena, victory, complications, cuffs, chains, applied, victoryOpts, guests };
 }
 
 export function parseBattleColumn(json) {
@@ -152,3 +165,6 @@ export function keepEmComing(hp, tokens) {
   const current = hp?.current != null ? Math.ceil(hp.current / 2) : hp?.current;
   return { hp: { ...hp, current }, tokens: t };
 }
+
+// Guest Heroes in force for a fight mode's settings (character ids).
+export const guestsOf = (battle) => (battle?.complications?.includes('guest_heroes') ? battle.guests ?? [] : []);

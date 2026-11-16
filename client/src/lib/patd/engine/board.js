@@ -79,7 +79,16 @@ export const onEdge = (b, sq) =>
   (sq.col === b.bounds.colMin || sq.col === b.bounds.colMax || (b.exits !== 'cols' && (sq.row === b.bounds.rowMin || sq.row === b.bounds.rowMax)));
 // Is a step off the board a way Outside (not off a lane's front or back)?
 const exitStep = (b, n) => b.exits !== 'none' && (b.exits !== 'cols' || (n.row >= b.bounds.rowMin && n.row <= b.bounds.rowMax));
-export const has = (b, sq, kind) => b.tiles.get(key(sq))?.has(kind) ?? false;
+// **Arena Parameters (Fight Setup)** ride on the board too:
+//   b.trapsBeyond  bounds — Pyroclasm: every square outside them is a Trap
+//   b.wrap         bounds — Trick Room: off one edge, in at the opposite one
+const within = (bounds, sq) => sq.col >= bounds.colMin && sq.col <= bounds.colMax && sq.row >= bounds.rowMin && sq.row <= bounds.rowMax;
+export const has = (b, sq, kind) => (b.tiles.get(key(sq))?.has(kind) ?? false) || (kind === 'trap' && Boolean(b.trapsBeyond) && !within(b.trapsBeyond, sq));
+export const wrapSquare = (b, sq) => {
+  if (!b.wrap || within(b.wrap, sq)) return sq;
+  const w = b.wrap;
+  return { col: sq.col < w.colMin ? w.colMax : sq.col > w.colMax ? w.colMin : sq.col, row: sq.row < w.rowMin ? w.rowMax : sq.row > w.rowMax ? w.rowMin : sq.row };
+};
 export const occupant = (b, sq) => b.unitAt.get(key(sq)) ?? null;
 // Full: a Wall, or a unit other than those ignored (the mover itself).
 // **A mover's own rules (the QA pass)** ride on the board it plans with
@@ -104,7 +113,7 @@ const stopsAt = (b, sq) => has(b, sq, 'rubble') || has(b, sq, 'pit') || ((b.wall
 // The spaces one step away — and, from a Pit, every other Pit (Vortex Style).
 const pitsOf = (b) => [...b.tiles.entries()].filter(([, kinds]) => kinds.has('pit')).map(([k]) => ({ col: Number(k.split(',')[0]), row: Number(k.split(',')[1]) }));
 const stepsFrom = (b, sq, around8 = false) => {
-  const near = (around8 ? allNeighbors : neighbors)(sq);
+  const near = (around8 ? allNeighbors : neighbors)(sq).map((n) => wrapSquare(b, n));
   if (!b.pitsLinked || !has(b, sq, 'pit')) return near;
   return [...near, ...pitsOf(b).filter((p) => !sameSquare(p, sq) && !near.some((n) => sameSquare(n, p)))];
 };
@@ -240,6 +249,15 @@ export function forcedMoves(b, target, origin, distance, { pull = false, upTo = 
     let moved = false;
     for (const n of steps) {
       if (sameSquare(n, origin) || sameSquare(n, target) || path.some((p) => sameSquare(p, n))) continue;
+      if (!inBounds(b, n) && b.wrap) {
+        // Trick Room: off the edge, in at the opposite side — the movement ends there.
+        const w = wrapSquare(b, n);
+        if (isEmpty(b, w, [targetId])) {
+          done([...path, w], 'wrapped');
+          moved = true;
+        }
+        continue;
+      }
       if (!inBounds(b, n)) {
         // Off the edge: only from the edge they started on (book p.53).
         if (path.length === 0 && startedOnEdge && exitStep(b, n)) {

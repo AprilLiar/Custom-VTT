@@ -5,7 +5,7 @@ import { FAMILIES, PARAM_BY_KEY, SIDES, SIDE_LABEL, paramsOf } from '../lib/batt
 
 // **Fight Setup's Complications and Battle Parameters (decided).** Beside the
 // fighters list: small square icons in four groups — Complications, Tilted,
-// Arena, Victory — each group behind a vertical line carrying its name. Hover
+// Arena, Victory — stacked as a vertical list, each group under a horizontal line carrying its name. Hover
 // (or a tap, on a phone) shows the name and what it does; a click sets it:
 //   Tilted: pick the side it is on (one Tilt per side) · Arena / Complications:
 //   on or off · Victory: the one in force.
@@ -41,18 +41,16 @@ export default function BattleParamsPanel({ mode, battle, fighters = [] }) {
 
   return (
     <div className="flex min-w-0 flex-col gap-2">
-      <div className="flex items-stretch gap-1.5 overflow-x-auto pb-1">
+      {/* A vertical list (play feedback 10): each group under a horizontal line carrying its name. */}
+      <div className="flex flex-col gap-2">
         {FAMILIES.map((fam) => (
-          <div key={fam.key} className="flex shrink-0 items-stretch gap-1.5">
-            {/* The vertical line with the family's name on it. */}
-            <div className="flex w-4 shrink-0 flex-col items-center">
-              <div className="w-px flex-1 bg-zinc-700" />
-              <span className="py-1 font-display text-[9px] font-bold uppercase tracking-[0.2em] text-zinc-400 [writing-mode:vertical-rl] rotate-180">
-                {fam.label}
-              </span>
-              <div className="w-px flex-1 bg-zinc-700" />
+          <div key={fam.key} className="flex flex-col gap-1.5">
+            <div className="flex items-center gap-2">
+              <div className="h-px flex-1 bg-zinc-700" />
+              <span className="font-display text-[9px] font-bold uppercase tracking-[0.2em] text-zinc-400">{fam.label}</span>
+              <div className="h-px flex-1 bg-zinc-700" />
             </div>
-            <div className="grid auto-rows-min grid-cols-2 gap-1">
+            <div className="flex flex-wrap gap-1">
               {paramsOf(fam.key).map((p) => {
                 const on = isOn(p);
                 const ok = usable(p);
@@ -99,6 +97,7 @@ export default function BattleParamsPanel({ mode, battle, fighters = [] }) {
             {!usable(shown) && <span className="font-sans text-[10px] font-normal normal-case text-zinc-500">{mode === 'simple' && !shown.lane ? 'map only' : 'not automated yet'}</span>}
           </p>
           <p className="text-zinc-400">{shown.text}</p>
+          {shown.family === 'victory' && battle?.victory === shown.key && <VictoryOptions victory={shown.key} opts={battle?.victoryOpts ?? {}} fighters={fighters} set={set} />}
           {/* A Tilt: which side it is on (one Tilt per side). */}
           {tiltPick === shown.key && (
             <div className="mt-2 flex flex-wrap gap-1">
@@ -185,4 +184,62 @@ function CuffPairs({ cuffs, fighters, set }) {
       </div>
     </div>
   );
+}
+
+// The chosen Victory Parameter's own choices (Fight Setup).
+const chip = (on) =>
+  `min-h-8 panel-cut-sm border px-2 font-display text-[11px] font-bold uppercase ${on ? 'border-purple-400 bg-purple-500/30 text-purple-100' : 'border-zinc-700 bg-zinc-900 text-zinc-300'}`;
+function VictoryOptions({ victory, opts, fighters, set }) {
+  const two = ['allies', 'enemies'];
+  if (victory === 'outlast' || victory === 'sabotage') {
+    const key = victory === 'outlast' ? 'survivors' : 'saboteurs';
+    return (
+      <div className="mt-2 flex flex-wrap items-center gap-1">
+        <span className="mr-1 text-zinc-500">{victory === 'outlast' ? 'Survivors:' : 'Saboteurs:'}</span>
+        {two.map((s) => (
+          <button key={s} type="button" aria-pressed={opts[key] === s} onClick={() => set({ victoryOpts: { [key]: s } })} className={chip(opts[key] === s)}>
+            {SIDE_LABEL[s]}
+          </button>
+        ))}
+      </div>
+    );
+  }
+  if (victory === 'tournament') {
+    return (
+      <div className="mt-2 flex items-center gap-1">
+        <span className="mr-1 text-zinc-500">Best of</span>
+        {[3, 5].map((n) => (
+          <button key={n} type="button" aria-pressed={opts.bestOf === n} onClick={() => set({ victoryOpts: { bestOf: n } })} className={chip(opts.bestOf === n)}>
+            {n}
+          </button>
+        ))}
+      </div>
+    );
+  }
+  if (victory === 'protect_the_vip') {
+    const pickable = fighters.filter((f) => f.combatantId != null);
+    return (
+      <div className="mt-2 space-y-1">
+        {two.map((s) => (
+          <label key={s} className="flex items-center gap-2">
+            <span className="w-16 text-zinc-500">{SIDE_LABEL[s]} VIP</span>
+            <select
+              value={opts.vips?.[s] ?? ''}
+              onChange={(e) => set({ victoryOpts: { vip: { side: s, id: e.target.value === '' ? null : Number(e.target.value) } } })}
+              className="h-8 min-w-0 flex-1 panel-cut-sm border border-zinc-700 bg-zinc-800 px-1 outline-none focus:border-brand-500"
+            >
+              <option value="">—</option>
+              {pickable.map((f) => (
+                <option key={f.combatantId} value={f.combatantId}>
+                  {f.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        ))}
+        <p className="text-[10px] text-zinc-500">Set before Start Combat: the VIPs get +10 max HP on their first bar then.</p>
+      </div>
+    );
+  }
+  return null;
 }

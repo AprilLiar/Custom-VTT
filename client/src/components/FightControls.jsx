@@ -58,12 +58,14 @@ export function StartCombatButton({ onClick }) {
 
 // `existing` (a fight) turns this into the mid-fight sides editor.
 // `skipped`: figures left out of the fight — never set up (no max HP) or ×'d in Fight Setup.
-export function FightSetupDialog({ mode, fighters, existing = null, onClose, skipped = 0 }) {
+// `threeWay` (Fight Setup's Three Way Battle): a third column, the Renegades.
+export function FightSetupDialog({ mode, fighters, existing = null, onClose, skipped = 0, threeWay = false }) {
   const [side, setSide] = useState(() => {
     const out = {};
     for (const f of fighters) {
       if (existing?.allies.includes(f.combatantId)) out[f.key] = 'allies';
       else if (existing?.enemies.includes(f.combatantId)) out[f.key] = 'enemies';
+      else if (existing?.renegades?.includes(f.combatantId)) out[f.key] = 'renegades';
       else out[f.key] = null;
     }
     return out;
@@ -73,7 +75,9 @@ export function FightSetupDialog({ mode, fighters, existing = null, onClose, ski
   const column = (which) => fighters.filter((f) => (side[f.key] ?? null) === which);
   const allies = column('allies');
   const enemies = column('enemies');
-  const starters = firstSide === 'allies' ? allies : enemies;
+  const renegades = column('renegades');
+  const thirdSide = threeWay || renegades.length > 0;
+  const starters = firstSide === 'allies' ? allies : firstSide === 'renegades' ? renegades : enemies;
   useEffect(() => {
     if (!starters.some((f) => f.key === opener)) setOpener(starters[0]?.key ?? '');
   }, [starters, opener]);
@@ -82,12 +86,13 @@ export function FightSetupDialog({ mode, fighters, existing = null, onClose, ski
   const submit = () => {
     const refs = (list) => list.map((f) => f.ref);
     if (existing) {
-      socket.emit('fight:set_sides', { mode, allies: refs(allies), enemies: refs(enemies) });
+      socket.emit('fight:set_sides', { mode, allies: refs(allies), enemies: refs(enemies), renegades: refs(renegades) });
     } else {
       socket.emit('fight:start', {
         mode,
         allies: refs(allies),
         enemies: refs(enemies),
+        renegades: refs(renegades),
         firstSide,
         opener: fighters.find((f) => f.key === opener)?.ref ?? null,
       });
@@ -116,6 +121,16 @@ export function FightSetupDialog({ mode, fighters, existing = null, onClose, ski
         {where === null && (
           <button type="button" onClick={() => move(f, 'enemies')} className="p-1 text-red-400 hover:text-red-200" aria-label={`${f.name} to Enemies`}>
             <ArrowRight size={14} aria-hidden />
+          </button>
+        )}
+        {where === null && thirdSide && (
+          <button type="button" onClick={() => move(f, 'renegades')} className="p-1 font-display text-[11px] font-bold text-amber-400 hover:text-amber-200" aria-label={`${f.name} to Renegades`} title="To the Renegades">
+            R
+          </button>
+        )}
+        {where === 'renegades' && (
+          <button type="button" onClick={() => move(f, null)} className="p-1 text-zinc-400 hover:text-zinc-100" aria-label={`Unassign ${f.name}`}>
+            <ArrowLeft size={14} aria-hidden />
           </button>
         )}
         {where === 'allies' && (
@@ -150,11 +165,12 @@ export function FightSetupDialog({ mode, fighters, existing = null, onClose, ski
         <Column title="Allies" list={allies} tone="text-sky-300" />
         <Column title="Fighters" list={column(null)} tone="text-zinc-300" />
         <Column title="Enemies" list={enemies} tone="text-red-300" />
+        {thirdSide && <Column title="Renegades" list={renegades} tone="text-amber-300" />}
       </div>
       {!existing && (
         <div className="mt-3 flex flex-wrap items-center gap-3">
           <span className="text-xs font-semibold uppercase tracking-wide text-zinc-400">Who starts?</span>
-          {['allies', 'enemies'].map((s) => (
+          {(thirdSide ? ['allies', 'enemies', 'renegades'] : ['allies', 'enemies']).map((s) => (
             <label key={s} className="flex items-center gap-1 text-sm capitalize text-zinc-200">
               <input type="radio" name="first-side" checked={firstSide === s} onChange={() => setFirstSide(s)} className="accent-brand-500" />
               {s}
@@ -178,7 +194,7 @@ export function FightSetupDialog({ mode, fighters, existing = null, onClose, ski
       <button
         type="button"
         onClick={submit}
-        disabled={existing ? false : !(allies.length + enemies.length) || !opener}
+        disabled={existing ? false : !(allies.length + enemies.length + renegades.length) || !opener}
         className="mt-3 min-h-11 w-full panel-cut-sm bg-brand-600 px-3 text-sm font-semibold hover:bg-brand-500 disabled:opacity-40"
       >
         {existing ? 'Save sides' : 'Start Combat'}
@@ -293,7 +309,7 @@ export function InitiativeRail({ mode, fight, fighters, role, left = 12, onEditS
                   <GripVertical size={12} aria-hidden />
                 </button>
               )}
-              <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${entry.side === 'allies' ? 'bg-sky-400' : 'bg-red-500'}`} />
+              <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${entry.side === 'allies' ? 'bg-sky-400' : entry.side === 'renegades' ? 'bg-amber-400' : 'bg-red-500'}`} />
               <Portrait fighter={f} className="h-10 w-8 shrink-0 rounded-sm border border-zinc-700" />
               <span className="min-w-0 flex-1 truncate font-display text-xs font-semibold text-zinc-100">{f?.name ?? 'Gone'}</span>
               {current && pending && <span className="text-[9px] uppercase text-yellow-300">stance…</span>}
@@ -376,6 +392,12 @@ function EndFightDialog({ mode, fight, byCombatant, onClose }) {
           <span className="block font-display font-bold uppercase tracking-wide">Enemies won</span>
           <span className="block text-[11px] text-zinc-400">{names(fight.enemies)}</span>
         </button>
+        {fight.renegades?.length > 0 && (
+          <button type="button" onClick={() => end('renegades')} className={`${btn} border-amber-600 bg-amber-950/30 text-amber-100 hover:bg-amber-900/40`}>
+            <span className="block font-display font-bold uppercase tracking-wide">Renegades won</span>
+            <span className="block text-[11px] text-zinc-400">{names(fight.renegades)}</span>
+          </button>
+        )}
         <button type="button" onClick={() => end('skip')} className={`${btn} border-zinc-700 bg-zinc-900 text-zinc-200 hover:border-zinc-500`}>
           <span className="block font-display font-bold uppercase tracking-wide">Skip — no XP</span>
           <span className="block text-[11px] text-zinc-500">The fight ended mechanically, but the story goes on.</span>

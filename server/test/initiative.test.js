@@ -191,3 +191,16 @@ test('the GM drags an entry anywhere; the current turn stays the current turn an
   assert.equal(moveEntry(order, 1, 2, 2), null);
   assert.equal(moveEntry(order, 1, 2, 9), null);
 });
+
+test('Three Way Battles: Heroes → Enemies → Renegades, then whoever is left', () => {
+  const order = buildRound({
+    allies: [{ id: 'a', turns: 2 }],
+    enemies: [{ id: 'e', turns: 2 }],
+    renegades: [{ id: 'r', turns: 1 }],
+    firstSide: 'allies',
+    rng: () => 0,
+  });
+  assert.deepEqual(order.map((o) => o.side), ['allies', 'enemies', 'renegades', 'allies', 'enemies']);
+  assert.equal(nextFirstSide([{ side: 'enemies', id: 'e' }, { side: 'renegades', id: 'r' }]), 'allies');
+  assert.equal(nextFirstSide([{ side: 'allies', id: 'a' }, { side: 'enemies', id: 'e' }, { side: 'renegades', id: 'r' }, { side: 'enemies', id: 'e' }]), 'renegades');
+});

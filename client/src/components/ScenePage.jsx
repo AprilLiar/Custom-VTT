@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ArrowLeft, Eye, EyeOff, StickyNote } from 'lucide-react';
 import { useIsDesktop, useIsLandscape, useIsPhone } from '../lib/useMediaQuery.js';
@@ -28,6 +28,7 @@ import { socket } from '../socket.js';
 import ScenePortraitFooter from './ScenePortraitFooter.jsx';
 import ScenePortraitMore from './ScenePortraitMore.jsx';
 import { FOOTER_REM } from '../lib/sceneFooter.js';
+import { guestsOf } from '../lib/battleParams.js';
 import SceneCastDrawer from './SceneCastDrawer.jsx';
 import SceneListDrawer from './SceneListDrawer.jsx';
 import SceneNotesDialog from './SceneNotesDialog.jsx';
@@ -70,9 +71,15 @@ export default function ScenePage() {
   const isLandscape = useIsLandscape();
   const { role, characterId } = useRole();
   // Own PC plus NPCs the GM assigned to this player (see useControl).
-  const { controls, controlled } = useControl();
+  const { controls: ownControls, controlled } = useControl();
   const identity = role === 'gm' ? { role: 'gm' } : role === 'player' ? { role: 'player', characterId } : undefined;
   const stage = useStage(identity);
+  // **Guest Heroes (Fight Setup):** any hero player controls a Guest.
+  const guestIds = useMemo(() => {
+    const b = stage?.activeScene?.battle ?? {};
+    return new Set([...guestsOf(b.simple), ...guestsOf(b.combat)]);
+  }, [stage?.activeScene?.battle]);
+  const controls = useCallback((id) => ownControls(id) || (role === 'player' && id != null && guestIds.has(Number(id))), [ownControls, role, guestIds]);
   // A phone (play feedback 8): the fight UI is pared down for it.
   const isPhone = useIsPhone();
   // Board animations (decided): the beat playing, and the board held to it.
@@ -563,7 +570,7 @@ export default function ScenePage() {
       <MoveBar />
       <TriggerPrompts />
       {fightSetupOpen && fightMode && (
-        <FightSetupDialog mode={fightMode} fighters={fightFighters.filter((f) => f.eligible)} skipped={fightFighters.filter((f) => !f.eligible).length} existing={fight} onClose={() => setFightSetupOpen(false)} />
+        <FightSetupDialog mode={fightMode} fighters={fightFighters.filter((f) => f.eligible)} skipped={fightFighters.filter((f) => !f.eligible).length} existing={fight} threeWay={Boolean(activeScene?.battle?.[fightMode]?.complications?.includes('three_way'))} onClose={() => setFightSetupOpen(false)} />
       )}
       {/* Chat on the Scene: floating cards for new entries and a chat button
           that opens the full log — both even with the interface hidden. */}

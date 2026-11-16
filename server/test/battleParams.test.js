@@ -65,3 +65,19 @@ test('the leash on the board: Free Movement never ends past it, and no Outside',
   const pushes = forcedMoves(board, { col: 7, row: 5 }, { col: 4, row: 5 }, 5, { targetId: 1 });
   assert.ok(pushes.every((m) => m.square && Math.abs(m.square.col - 5) + Math.abs(m.square.row - 5) <= 3), JSON.stringify(pushes));
 });
+
+test('Arena on the board: Cage Match holds the edge, Trick Room wraps, Pyroclasm is Traps beyond', async () => {
+  const { wrapSquare, has, forcedMoves: fm, makeBoard: mk } = await import('../../client/src/lib/patd/engine/board.js');
+  const bounds = { colMin: 1, colMax: 8, rowMin: 1, rowMax: 8 };
+  const cage = mk({ bounds, units: [{ id: 1, square: { col: 8, row: 4 } }], exits: 'none' });
+  assert.ok(fm(cage, { col: 8, row: 4 }, { col: 7, row: 4 }, 2, { targetId: 1 }).every((m) => m.square), 'no Outside in a Cage Match');
+  const trick = mk({ bounds, units: [{ id: 1, square: { col: 8, row: 4 } }], exits: 'none' });
+  trick.wrap = bounds;
+  assert.deepEqual(wrapSquare(trick, { col: 9, row: 4 }), { col: 1, row: 4 });
+  const pushed = fm(trick, { col: 8, row: 4 }, { col: 7, row: 4 }, 2, { targetId: 1 });
+  assert.ok(pushed.some((m) => m.ends === 'wrapped' && m.square.col === 1), JSON.stringify(pushed));
+  const lava = mk({ bounds: null });
+  lava.trapsBeyond = bounds;
+  assert.equal(has(lava, { col: 0, row: 4 }, 'trap'), true);
+  assert.equal(has(lava, { col: 4, row: 4 }, 'trap'), false);
+});

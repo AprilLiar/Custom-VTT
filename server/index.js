@@ -33,10 +33,10 @@ import { loadCore } from './homebrewCore.js';
 import { loadBoard, registerEventHandlers } from './events.js';
 import { fighterState, listMarks, registerDiceMarkHandlers, superStatus } from './diceMarks.js';
 import { loadAllDerived, setupFromDerived } from './fighterStances.js';
-import { controlsCharacter, dropAssignmentsTo, loadAssignments, setAssignment } from './control.js';
+import { controlsCharacter, dropAssignmentsTo, loadAssignments, setAssignment, setGuestCharacters } from './control.js';
 import { drainFx } from './fx.js';
 import { lightAll } from './lightSelect.js';
-import { parseBattleColumn } from '../client/src/lib/battleParams.js';
+import { guestsOf, parseBattleColumn } from '../client/src/lib/battleParams.js';
 import { registerBattleHandlers } from './battle.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -571,6 +571,9 @@ async function buildStagePayload({ skipDrawingsFor = null } = {}) {
         [state.active_scene_id]
       )
     : null;
+  // Guest Heroes: whoever is a Guest on the active Scene is any hero player's to control.
+  const battles = parseBattleColumn(sceneRow?.battle);
+  setGuestCharacters([...guestsOf(battles.simple), ...guestsOf(battles.combat)]);
   const activeScene = sceneRow
     ? {
         id: sceneRow.id,
@@ -591,7 +594,7 @@ async function buildStagePayload({ skipDrawingsFor = null } = {}) {
         // Cinematic Weight per fight (keys of client/src/lib/cinematicWeight.js).
         weights: { simple: sceneRow.simple_weight ?? null, combat: sceneRow.combat_weight ?? null },
         // Complications and Battle Parameters per fight (lib/battleParams.js).
-        battle: parseBattleColumn(sceneRow.battle),
+        battle: battles,
         // A copy's backdrop is served from whichever Scene owns the bytes —
         // see shapeScene, and scenes.image_source_id for why.
         image_url: imageUrl('scene', sceneRow.image_source_id ?? sceneRow.id, {

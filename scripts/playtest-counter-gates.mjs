@@ -128,8 +128,10 @@ check('...while the GM is pushed the whole thing',
 
 // ============================================ 3. reaching a Gate posts
 console.log('\n--- reaching a Gate ---');
-const chatSince = async (from) => (await jf('/api/chat')).slice(from);
-let chatLen = (await jf('/api/chat')).length;
+// By id, not by count: /api/chat returns only the newest entries, so a full log shifts.
+const lastId = async () => (await jf('/api/chat')).reduce((m, e) => Math.max(m, e.id ?? 0), 0);
+const chatSince = async (from) => (await jf('/api/chat')).filter((e) => (e.id ?? 0) > from);
+let chatLen = (await lastId());
 
 gm.emit('counter:adjust', { counterId: counter.id, delta: 1 });
 await sleep(700);
@@ -143,14 +145,14 @@ check('landing ON a Gate posts to chat', posted.length === 1, JSON.stringify(pos
 check('...naming an open Gate', /The Warning/.test(posted[0]?.message ?? ''), JSON.stringify(posted[0]?.message));
 check('...and saying where it happened', /2\/6/.test(posted[0]?.message ?? ''), posted[0]?.message);
 
-chatLen = (await jf('/api/chat')).length;
+chatLen = (await lastId());
 gm.emit('counter:adjust', { counterId: counter.id, delta: -2 });
 await sleep(700);
 check('ticking back down past it says nothing — a correction is not an event',
   (await chatSince(chatLen)).length === 0, JSON.stringify(await chatSince(chatLen)));
 
 // A single big jump reaches everything it passes, in order.
-chatLen = (await jf('/api/chat')).length;
+chatLen = (await lastId());
 gm.emit('counter:adjust', { counterId: counter.id, delta: 5 });
 await sleep(900);
 posted = await chatSince(chatLen);
@@ -163,7 +165,7 @@ check('the SECRET Gate is announced without its name',
 check('...and without its description', !/Mira turns/.test(posted[1].message), posted[1].message);
 
 // A jump past the end announces only the Gates actually reached.
-chatLen = (await jf('/api/chat')).length;
+chatLen = (await lastId());
 gm.emit('counter:adjust', { counterId: counter.id, delta: 99 });
 await sleep(800);
 check('a jump past the end announces nothing it did not actually reach',

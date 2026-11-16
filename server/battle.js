@@ -77,6 +77,23 @@ export async function battleFightStart(fight, { postCard, triggers }) {
     return b;
   });
   await applyKeepEmComing(fight, postCard);
+  // Protect the VIP: each side's VIP starts with +10 max HP on their first bar.
+  if (battle.victory === 'protect_the_vip') {
+    const vips = Object.values(battle.victoryOpts.vips).filter((id) => ids.has(id));
+    const given = [];
+    for (const id of vips) {
+      const row = await one('SELECT cb.*, c.name FROM combatants cb JOIN characters c ON c.id = cb.character_id WHERE cb.id = ?', [id]);
+      if (!row || row.hp_max == null) continue;
+      const hp = hpOf(row);
+      await saveHp(id, { ...hp, max: hp.max + 10, current: hp.current + 10 });
+      given.push({ id, name: row.name });
+    }
+    await updateBattle(fight.scene_id, fight.mode, (b) => {
+      b.applied = { ...b.applied, vip: { fightId: fight.id, ids: given.map((g) => g.id) } };
+      return b;
+    });
+    if (given.length) await postCard('reminder', { title: 'Protect the VIP', text: `${given.map((g) => g.name).join(' and ')}: +10 max HP on the first Health Bar. A side whose VIP falls loses.`, fighters: given.map((g) => ({ name: g.name })), automatic: 'battle', notice: true });
+  }
   // Queued on the fight's chain, never awaited: the Walls are asked for while
   // the handler moves on (the turn's own rules wait their turn on the chain).
   for (const side of SIDES) if (battle.tilts[side] === 'chained_down') Promise.resolve(triggers?.chainDown?.(fight, side)).catch((err) => console.error('chained down', err));
@@ -120,6 +137,22 @@ export function registerBattleHandlers({ on: onRaw, socket, emitStageUpdated, po
         if (Number.isInteger(a) && Number.isInteger(c) && a !== c) b.cuffs = [...b.cuffs.filter((p) => !p.includes(a) && !p.includes(c)), [a, c]];
       }
       if (change.uncuff != null) b.cuffs = b.cuffs.filter((p) => !p.includes(Number(change.uncuff)));
+      // Guest Heroes: a character made a Guest (any hero player controls them), or not.
+      if (change.guest != null && Number.isInteger(Number(change.guest.id))) {
+        const id = Number(change.guest.id);
+        b.guests = change.guest.on ? [...new Set([...b.guests, id])] : b.guests.filter((x) => x !== id);
+      }
+      // Victory options: Outlast's Survivors, Sabotage's Saboteurs, each side's VIP, best of 3 or 5.
+      const o = change.victoryOpts;
+      if (o && typeof o === 'object') {
+        if ('survivors' in o) b.victoryOpts.survivors = SIDES.includes(o.survivors) ? o.survivors : null;
+        if ('saboteurs' in o) b.victoryOpts.saboteurs = SIDES.includes(o.saboteurs) ? o.saboteurs : null;
+        if ('bestOf' in o) b.victoryOpts.bestOf = o.bestOf === 5 ? 5 : 3;
+        if (o.vip && SIDES.includes(o.vip.side)) {
+          if (Number.isInteger(Number(o.vip.id)) && o.vip.id != null && o.vip.id !== '') b.victoryOpts.vips[o.vip.side] = Number(o.vip.id);
+          else delete b.victoryOpts.vips[o.vip.side];
+        }
+      }
       return b;
     });
     // Set during a fight: the once-only Tilts take effect now.

@@ -219,7 +219,7 @@ export function registerCombatStateHandlers({ on: onRaw, socket, mayWrite, emitS
     const n = Math.min(99, Math.max(0, Math.trunc(Number(amount) || 0)));
     if (!row || !n) return;
     const fight = await one('SELECT * FROM fights WHERE scene_id = ? AND mode = ?', [row.scene_id, row.mode]);
-    const inFight = fight && [...JSON.parse(fight.allies || '[]'), ...JSON.parse(fight.enemies || '[]')].includes(row.id);
+    const inFight = fight && [...JSON.parse(fight.allies || '[]'), ...JSON.parse(fight.enemies || '[]'), ...JSON.parse(fight.renegades || '[]')].includes(row.id);
     if (inFight && triggers && row.character_id != null) {
       triggers.actionDamage({ ...fight }, row, n);
       return;
@@ -313,7 +313,8 @@ export function registerCombatStateHandlers({ on: onRaw, socket, mayWrite, emitS
       if (!row || row.scene_id !== sceneId || row.mode !== mode || row.excluded) continue;
       const level = clampLevel(f.level);
       const kind = FIGHTER_KINDS.includes(f.kind) ? f.kind : 'hero';
-      const hp = barHp(weight, kind, level);
+      // Uneven Fights' even split: extra HP on every bar (0-200).
+      const hp = barHp(weight, kind, level) + Math.min(200, Math.max(0, Math.trunc(Number(f.extra)) || 0));
       // Health Bars: the tool's number (a Boss's bars from their build), 1-9.
       const bars = Math.min(9, Math.max(1, Math.trunc(Number(f.bars)) || 1));
       await run(

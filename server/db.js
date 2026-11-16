@@ -1532,6 +1532,8 @@ export async function initDb() {
   `);
   // The previous round's order, so "Previous turn" can step back into it.
   await ensureColumn('fights', 'prev_turn_order', 'TEXT');
+  // Three Way Battles (Fight Setup): the third side.
+  await ensureColumn('fights', 'renegades', "TEXT NOT NULL DEFAULT '[]'");
   // The engine's runtime for this fight (client/src/lib/patd/engine/runtime.js): JSON.
   await ensureColumn('fights', 'runtime', 'TEXT');
   // Early / Late Movement in progress (full automation phase D): JSON or NULL.

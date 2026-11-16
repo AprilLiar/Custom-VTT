@@ -16,8 +16,20 @@
 // injectable so tests are deterministic. Shuffling is not a dice roll and is
 // never posted to chat.
 
-export const SIDES = ['allies', 'enemies'];
+// **Three Way Battles (Fight Setup):** a third side, the Renegades. The turn
+// cycle is Heroes → Enemies → Renegades; with two sides it is the old
+// one-for-one alternation exactly.
+export const SIDES = ['allies', 'enemies', 'renegades'];
 export const otherSide = (side) => (side === 'allies' ? 'enemies' : 'allies');
+// The side after `side` in the cycle that `has` turns left (or `side` itself).
+const nextSideOf = (side, has) => {
+  const i = SIDES.indexOf(side);
+  for (let k = 1; k <= SIDES.length; k++) {
+    const s = SIDES[(i + k) % SIDES.length];
+    if (has(s)) return s;
+  }
+  return side;
+};
 
 // `allies` / `enemies`: [{ id, turns }]. `id` must be unique across both sides
 // (the caller's fighter key). `turns` is how many turns that fighter takes
@@ -30,9 +42,9 @@ export const otherSide = (side) => (side === 'allies' ? 'enemies' : 'allies');
 // other slot.
 //
 // Returns [{ side, id }], one entry per turn.
-export function buildRound({ allies = [], enemies = [], firstSide = 'allies', openerId = null, rng = Math.random }) {
-  const remaining = { allies: new Map(), enemies: new Map() };
-  for (const [side, list] of [['allies', allies], ['enemies', enemies]]) {
+export function buildRound({ allies = [], enemies = [], renegades = [], firstSide = 'allies', openerId = null, rng = Math.random }) {
+  const remaining = { allies: new Map(), enemies: new Map(), renegades: new Map() };
+  for (const [side, list] of [['allies', allies], ['enemies', enemies], ['renegades', renegades]]) {
     for (const f of list) {
       const turns = Math.max(0, Math.trunc(Number(f.turns) || 0));
       if (turns > 0) remaining[side].set(f.id, (remaining[side].get(f.id) ?? 0) + turns);
@@ -46,7 +58,7 @@ export function buildRound({ allies = [], enemies = [], firstSide = 'allies', op
   };
 
   const order = [];
-  const lastBySide = { allies: null, enemies: null };
+  const lastBySide = { allies: null, enemies: null, renegades: null };
 
   // Choose who fills a slot on `side`:
   //  1. never whoever took the slot immediately before, if anyone else can;
@@ -77,17 +89,15 @@ export function buildRound({ allies = [], enemies = [], firstSide = 'allies', op
   };
 
   let side = SIDES.includes(firstSide) ? firstSide : 'allies';
-  if (!left(side)) side = otherSide(side);
+  if (!left(side)) side = nextSideOf(side, (s) => left(s) > 0);
   if (!left(side)) return order;
 
   if (openerId != null && remaining[side].has(openerId)) place(side, openerId);
   else place(side, pick(side));
 
-  while (left('allies') + left('enemies') > 0) {
-    const next = otherSide(order[order.length - 1].side);
-    // Alternate while both sides have turns; afterwards, whoever is left.
-    side = left(next) ? next : otherSide(next);
-    if (!left(side)) side = next;
+  while (SIDES.reduce((n, s) => n + left(s), 0) > 0) {
+    // Round the cycle while sides have turns; afterwards, whoever is left.
+    side = nextSideOf(order[order.length - 1].side, (s) => left(s) > 0);
     place(side, pick(side));
   }
   return order;
@@ -96,17 +106,20 @@ export function buildRound({ allies = [], enemies = [], firstSide = 'allies', op
 // Which side opens the round after `order`: the opposite of whoever took its
 // last turn. An empty round leaves the choice where it was.
 export function nextFirstSide(order, fallback = 'allies') {
-  return order.length ? otherSide(order[order.length - 1].side) : fallback;
+  if (!order.length) return fallback;
+  // Allies and Enemies always take part; the Renegades when they are in it.
+  const present = new Set(['allies', 'enemies', ...order.map((e) => e.side)]);
+  return nextSideOf(order[order.length - 1].side, (s) => present.has(s));
 }
 
 // **The next round repeats the last one (decided, batch 5).** `prev` is the
 // last round's order; `allies` / `enemies` as for buildRound, with today's
 // turns. Whoever left is dropped, someone with fewer turns loses their last
 // ones, and new fighters or new turns (a new HP bar) go to the end.
-export function repeatRound({ prev = [], allies = [], enemies = [] }) {
+export function repeatRound({ prev = [], allies = [], enemies = [], renegades = [] }) {
   const want = new Map();
   const sideOf = new Map();
-  for (const [side, list] of [['allies', allies], ['enemies', enemies]]) {
+  for (const [side, list] of [['allies', allies], ['enemies', enemies], ['renegades', renegades]]) {
     for (const f of list) {
       const turns = Math.max(0, Math.trunc(Number(f.turns) || 0));
       if (!turns) continue;
