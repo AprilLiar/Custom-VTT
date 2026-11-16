@@ -858,7 +858,47 @@ function reconcile(reason) {
 }
 
 // ------------------------------------------------------------------- wiring
+// **A switch fades out first (decided, 500 ms).** When the table moves to
+// another song — a Scene with its own music, the GM picking a track, a stop —
+// a client that is making sound ramps the old one down over half a second
+// before the new state takes over (which then fades in by its own envelope).
+// Until then the old state stays in force, so nothing loads the new video
+// early; if more states arrive meanwhile, the latest one wins.
+const SWITCH_FADE_MS = 500;
+let switchTimer = null;
+let switchPending = null;
+function fadeOutThen(state) {
+  switchPending = state;
+  if (switchTimer) return;
+  if (fadeTimer) {
+    clearInterval(fadeTimer);
+    fadeTimer = null;
+  }
+  const from = fadeGain;
+  const t0 = performance.now();
+  switchTimer = setInterval(() => {
+    const k = Math.min(1, (performance.now() - t0) / SWITCH_FADE_MS);
+    fadeGain = from * (1 - k);
+    applyVolume();
+    if (k < 1) return;
+    clearInterval(switchTimer);
+    switchTimer = null;
+    const next = switchPending;
+    switchPending = null;
+    applyServerState(next);
+  }, FADE_STEP_MS);
+}
+
 socket.on('audio:state', (state) => {
+  const switching = audible && currentVideoId && (state?.youtubeId ?? null) !== currentVideoId;
+  if (switching || switchTimer) {
+    fadeOutThen(state);
+    return;
+  }
+  applyServerState(state);
+});
+
+function applyServerState(state) {
   const changed = state?.anchorId !== lastAnchorId;
   lastAnchorId = state?.anchorId ?? null;
   serverState = state;
@@ -879,7 +919,7 @@ socket.on('audio:state', (state) => {
   // how that answer changes. A GM pressing Play on a device whose clock is not
   // good enough yet is precisely the case that used to stick.
   scheduleClockRetry();
-});
+}
 
 socket.on('connect', () => {
   offlineSince = null;

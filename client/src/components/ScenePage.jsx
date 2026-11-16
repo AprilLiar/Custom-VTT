@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
+import { motion } from 'framer-motion';
 import { ArrowLeft, Eye, EyeOff, StickyNote } from 'lucide-react';
 import { useIsDesktop, useIsLandscape, useIsPhone } from '../lib/useMediaQuery.js';
 import { useRole } from '../roleContext.jsx';
@@ -168,6 +169,16 @@ export default function ScenePage() {
     else setSceneSeen(true);
   }, [sceneMode]);
   const laneGlow = useDominantColor(sceneMode === 'simple' ? backgroundSrc : null);
+  // How many times the active Scene has changed since this page opened (the fade).
+  const [sceneSwitches, setSceneSwitches] = useState(0);
+  const lastSceneId = useRef(undefined);
+  const stageLoaded = stage != null;
+  useEffect(() => {
+    if (!stageLoaded) return; // the first stage to arrive is not a switch
+    const id = activeScene?.id ?? null;
+    if (lastSceneId.current !== undefined && lastSceneId.current !== id) setSceneSwitches((n) => n + 1);
+    lastSceneId.current = id;
+  }, [activeScene?.id, stageLoaded]);
   useEffect(() => {
     setImageNatural({ width: 0, height: 0 });
   }, [backgroundSrc]);
@@ -335,6 +346,20 @@ export default function ScenePage() {
 
   const page = (
     <div ref={setStageEl} className={stageClass}>
+      {/* **A Scene change fades (decided, slight):** the stage dips toward black
+          and comes back over half a second — keyed on the Scene, so only a
+          switch plays it, not the page's first load. */}
+      {sceneSwitches > 0 && (
+        <motion.div
+          key={`fade-${sceneSwitches}`}
+          aria-hidden
+          initial={{ opacity: 0.85 }}
+          animate={{ opacity: 0 }}
+          transition={{ duration: 0.5, ease: 'easeOut' }}
+          className="pointer-events-none absolute inset-0 bg-black"
+          style={{ zIndex: 5 }}
+        />
+      )}
       {/* **Kept mounted through Combat (decided, fix).** The backdrop, figures
           and drawings are hidden, not unmounted, while the Scene is in Combat,
           so leaving Combat shows them at once instead of reloading them.
