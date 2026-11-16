@@ -20,6 +20,11 @@ const DRAWERS = {
   map: { title: 'Combat map', render: (p) => <CombatMapDrawer scene={p.activeScene} tokenCount={p.tokenCount} /> },
 };
 
+// **Below every ordinary dialog (z-50), above the footer (40).** A drawer
+// opens its own dialogs from here — the Cast's art picker, the Scene editor —
+// and those must land on top of this sheet, not under it (play feedback 11).
+const SHEET_Z = 45;
+
 // The drawers are `absolute` side rails, w-64, full height: here they fill the sheet instead.
 const asSheet = '[&>div]:static! [&>div]:h-full! [&>div]:w-full! [&>div]:border-0! [&>div]:bg-transparent! [&>div]:p-0! [&>div]:pt-0!';
 
@@ -32,7 +37,7 @@ export default function ScenePortraitMore({ sheet, setSheet, ...p }) {
   const drawer = DRAWERS[sheet];
   if (drawer) {
     return (
-      <DialogShell title={drawer.title} onClose={close} dismissible closeButton zIndex={1200} portal>
+      <DialogShell title={drawer.title} onClose={close} dismissible closeButton zIndex={SHEET_Z} portal>
         <div className={`relative h-[70dvh] min-h-0 overflow-y-auto ${asSheet}`}>{drawer.render(p)}</div>
       </DialogShell>
     );
@@ -43,7 +48,7 @@ export default function ScenePortraitMore({ sheet, setSheet, ...p }) {
     fn();
   };
   return (
-    <DialogShell title="More" onClose={close} dismissible closeButton zIndex={1200} portal>
+    <DialogShell title="More" onClose={close} dismissible closeButton zIndex={SHEET_Z} portal>
       <div className="flex min-h-0 flex-col gap-3 overflow-y-auto">
         {p.activeScene && <SceneModeToggle mode={p.sceneMode} inline />}
         {p.fightMode && !p.fight && p.activeScene && (
