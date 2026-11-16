@@ -81,7 +81,8 @@ export function createHits({ ask, emitEvent }) {
         // The target's Weakness (Exploit Weakness) is free: spent even with
         // the board's Power off or "Never" (play feedback 7).
         if (opts.power === 'none') return free;
-        const mode = prefs(attacker).power;
+        // The board's Power toggle on Ask asks, whatever the build's setting.
+        const mode = opts.power === 'ask' ? 'ask' : prefs(attacker).power;
         if (mode === 'never') return free;
         if (mode === 'auto') return max;
         return askNumber(env, attacker, 'Enhance the hit', `${attacker.name} hits ${target.name} for ${n}. Spend Power: +1 damage and Push 1 each.`, max, 'Power');

@@ -148,7 +148,7 @@ export function publicBoard(rollId, data, active) {
       summary: summary ?? null,
       option: option ?? null,
     })),
-    power: Boolean(data.power),
+    power: data.power === 'ask' ? 'ask' : Boolean(data.power),
     paused: Boolean(data.paused),
     committing: Boolean(data.committing),
     // A reaction board (phase F): the reactions on offer, by resource.

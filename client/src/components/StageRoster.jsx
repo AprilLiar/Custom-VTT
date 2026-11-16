@@ -241,6 +241,10 @@ export default function StageRoster({
   // can't be moved, resized or unsummoned from the stage by anyone, so a drag
   // aimed at the lane never shifts them by accident.
   locked = false,
+  // **Portrait (decided, play feedback 9):** the stage is laid out at
+  // landscape size and scaled down, so a figure's height is a share of that
+  // landscape height in px rather than of this (tall) screen's dvh.
+  viewportHeight = null,
 }) {
   const reduceMotion = useReducedMotion();
   // A manually-placed summon's pos_x/pos_y are fractions of the ACTIVE
@@ -639,7 +643,7 @@ export default function StageRoster({
             // it exists to fix.
             className="block w-auto max-w-none"
             style={{
-              height: `${BASE_HEIGHT_DVH * heightScale * (entry.scale ?? 1)}dvh`,
+              height: viewportHeight ? `${(BASE_HEIGHT_DVH / 100) * viewportHeight * heightScale * (entry.scale ?? 1)}px` : `${BASE_HEIGHT_DVH * heightScale * (entry.scale ?? 1)}dvh`,
               // Half-transparent for the GM only — a Player never receives
               // a Hidden summon's row at all (stagePayloadFor), so there is
               // nothing for this branch to do on their side; `entry.is_hidden`

@@ -85,6 +85,7 @@ p.on('trigger:prompt', (x) => {
   prompts.push(x);
   let answer;
   if (x.title === 'Reduce the hit') answer = ironAnswers.shift() ?? '0';
+  else if (x.title === 'Enhance the hit') answer = x.options.at(-1).id;
   else if (x.kind === 'targets') answer = [x.options[0].id];
   else if (x.kind === 'confirm') answer = true;
   else answer = x.options[0].id;
@@ -141,7 +142,7 @@ gm.emit('fight:next', { mode: 'combat' });
 await sleep(1800);
 const roll = cards.filter((c) => c.kind === 'stance_roll').at(-1);
 const rollId = roll?.payload.roll_id;
-check("a player's board starts with Power off (Ask)", (await marks())[rollId]?.power === false);
+check("a player's board starts with Power on Ask (their setting: Ask)", (await marks())[rollId]?.power === 'ask', JSON.stringify((await marks())[rollId]?.power));
 for (const k of ['power', 'iron', 'speed', 'burning', 'fatigue']) gm.emit('fighter:token', { ref: { combatantId: tm.id }, key: k, clear: true });
 for (const k of ['power', 'iron', 'speed', 'shield', 'weakness']) gm.emit('fighter:token', { ref: { combatantId: tt.id }, key: k, clear: true });
 await sleep(300);
@@ -155,8 +156,9 @@ const big = [...roll.payload.results.map((r, i) => ({ v: r.result, i }))].sort((
 p.emit('board:place', { rollId, die: big.i, actionId: DAMAGE });
 await sleep(300);
 if ((await marks())[rollId].placements[0]?.threshold > 1) p.emit('board:stop', { rollId, key: `d${big.i}`, stop: 1 });
-p.emit('board:power', { rollId, on: true });
+// Power stays on Ask: the hit asks how much (play feedback 9 — Ask used to spend none, unasked).
 await sleep(300);
+const asksBefore = prompts.length;
 const thugHp = (await fight(tt.id)).hp.current;
 p.emit('board:commit', { rollId });
 await sleep(2500);
@@ -170,7 +172,8 @@ fm = await fight(tm.id);
   const i = all.indexOf(act);
   check('…played before the damage it led to', i >= 0 && all.slice(i).some((e) => e.kind === 'damage' && e.combatantId === tt.id), '');
 }
-check('Damage at 1+ with the Power toggle on: 1 +1 Power = 2', thugHp - ft.hp.current === 2, `${thugHp} → ${ft.hp.current}`);
+check('Power on Ask: the hit asks "Enhance the hit" (None / 1 Power)', prompts.slice(asksBefore).some((x) => x.title === 'Enhance the hit' && x.options.length === 2), JSON.stringify(prompts.slice(asksBefore).map((x) => x.title)));
+check('Damage at 1+ with 1 Power chosen: 1 +1 Power = 2', thugHp - ft.hp.current === 2, `${thugHp} → ${ft.hp.current}`);
 check('…and the Power is spent', !fm.tokens.power, JSON.stringify(fm.tokens));
 const hpBeforeEnd = fm.hp.current;
 const asked = prompts.length;

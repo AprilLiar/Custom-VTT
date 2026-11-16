@@ -63,6 +63,9 @@ gm.on('trigger:prompt', (p) => {
   asked = p;
   gm.emit('trigger:answer', { id: p.id, answer: p.options?.[1]?.id ?? p.options?.[0]?.id });
 });
+// A fight takes only fighters with a max HP (decided, play feedback 9).
+for (const id of [ta.id, te.id]) gm.emit('fighter:set_hp', { ref: { combatantId: id }, max: 20, current: 20 });
+await sleep(300);
 gm.emit('fight:start', { mode: 'combat', allies: [{ combatantId: ta.id }], enemies: [{ combatantId: te.id }], firstSide: 'allies', opener: { combatantId: ta.id } });
 await sleep(1800);
 const row = (await db.execute({ sql: 'SELECT runtime FROM fights WHERE scene_id = ?', args: [scene.id] })).rows[0];

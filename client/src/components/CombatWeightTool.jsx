@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useLocation } from 'react-router-dom';
+import { X, Undo2 } from 'lucide-react';
 import { socket } from '../socket.js';
 import { useStage } from '../lib/useStage.js';
 import { useRoster } from '../lib/useRoster.js';
@@ -46,6 +47,7 @@ export default function CombatWeightTool({ onDone }) {
           kind: setupOf(t.character_id)?.kind ?? t.fight.kind ?? kindFor(t.character_id),
           bars: barsFor(t.character_id),
           infinite: Boolean(t.fight.infinite),
+          excluded: Boolean(t.fight.excluded),
         }))
       : stage.summons.filter((s) => s.character_id != null).map((s) => ({
           key: `s${s.id}`,
@@ -55,6 +57,7 @@ export default function CombatWeightTool({ onDone }) {
           kind: setupOf(s.character_id)?.kind ?? s.fight?.kind ?? kindFor(s.character_id),
           bars: barsFor(s.character_id),
           infinite: Boolean(s.fight?.infinite),
+          excluded: Boolean(s.fight?.excluded),
         }));
   }, [stage, mode, typeOf]);
 
@@ -89,7 +92,8 @@ export default function CombatWeightTool({ onDone }) {
     socket.emit('fight:preset_weight', {
       mode,
       weight,
-      fighters: fighters.map((f) => ({ ref: f.ref, level: rows[f.key]?.level ?? 1, kind: rows[f.key]?.kind ?? 'hero', bars: f.bars ?? 1 })),
+      // A figure left out (×) gets no HP: it stays scenery.
+      fighters: fighters.filter((f) => !f.excluded).map((f) => ({ ref: f.ref, level: rows[f.key]?.level ?? 1, kind: rows[f.key]?.kind ?? 'hero', bars: f.bars ?? 1 })),
     });
     onDone?.();
   };
@@ -145,6 +149,24 @@ export default function CombatWeightTool({ onDone }) {
         {fighters.map((f) => {
           const row = rows[f.key] ?? { level: 1, kind: 'hero' };
           const die = bonusDie(row.level);
+          // **Left out (×, decided):** only scenery — no HP, never in a fight.
+          if (f.excluded) {
+            return (
+              <li key={f.key} className="flex items-center gap-2 panel-cut-sm border border-dashed border-zinc-800 bg-zinc-950 px-2 py-1 opacity-60">
+                <span className="min-w-0 flex-1 truncate text-sm text-zinc-400 line-through">{f.name}</span>
+                <span className="text-[11px] text-zinc-500">Left out of the fight</span>
+                <button
+                  type="button"
+                  onClick={() => socket.emit('fighter:exclude', { ref: f.ref, on: false })}
+                  title="Bring back into the fight"
+                  aria-label={`Bring ${f.name} back into the fight`}
+                  className="flex h-8 w-8 items-center justify-center panel-cut-sm border border-zinc-700 bg-zinc-800 text-zinc-300 hover:text-zinc-100"
+                >
+                  <Undo2 size={14} aria-hidden />
+                </button>
+              </li>
+            );
+          }
           return (
             <li key={f.key} className="flex flex-wrap items-center gap-2 panel-cut-sm border border-zinc-800 bg-zinc-900 px-2 py-1">
               <span className="min-w-0 flex-1 truncate text-sm text-zinc-100">{f.name}</span>
@@ -188,6 +210,15 @@ export default function CombatWeightTool({ onDone }) {
                 {f.infinite ? 'Infinite HP' : w ? `${barHp(weight, row.kind, row.level)} HP` : '—'}
                 <span className="text-zinc-500"> (+{bonusHp(row.kind, row.level)}{die ? `, d${die}` : ''})</span>
               </span>
+              <button
+                type="button"
+                onClick={() => socket.emit('fighter:exclude', { ref: f.ref, on: true })}
+                title="Leave out of the fight (only scenery)"
+                aria-label={`Leave ${f.name} out of the fight`}
+                className="flex h-8 w-8 items-center justify-center panel-cut-sm border border-zinc-700 bg-zinc-800 text-zinc-500 hover:border-red-500 hover:text-red-300"
+              >
+                <X size={14} aria-hidden />
+              </button>
             </li>
           );
         })}

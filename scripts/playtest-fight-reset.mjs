@@ -29,6 +29,9 @@ const run = async (label, endFast) => {
   await sleep(500);
   const st = await jf('/api/stage?role=gm');
   const ta = st.combatTokens.find((t) => t.character_id === a.id), te = st.combatTokens.find((t) => t.character_id === e.id);
+  // A fight takes only fighters with a max HP (decided, play feedback 9).
+  for (const id of [ta.id, te.id]) gm.emit('fighter:set_hp', { ref: { combatantId: id }, max: 20, current: 20 });
+  await sleep(300);
   gm.emit('fight:start', { mode: 'combat', allies: [{ combatantId: ta.id }], enemies: [{ combatantId: te.id }], firstSide: 'allies', opener: { combatantId: ta.id } });
   if (endFast) { await sleep(1500); gm.emit('fight:end', { mode: 'combat', outcome: 'skip' }); }
   await sleep(1500);

@@ -53,11 +53,22 @@ gm.emit('build:save', { characterId: thug.id, build: { type: 'character-type.war
 await sleep(400);
 gm.emit('combat_token:place', { ownerType: 'character', ownerId: mira.id, col: 2, row: 2 });
 gm.emit('combat_token:place', { ownerType: 'character', ownerId: thug.id, col: 3, row: 2 });
+// Scenery: one never set up (no HP), one left out with Fight Setup's ×.
+const bys = await jpost('/api/characters', { name: `FSBystander${stamp}`, characterType: 'npc' });
+const scen = await jpost('/api/characters', { name: `FSStatue${stamp}`, characterType: 'npc' });
+gm.emit('combat_token:place', { ownerType: 'character', ownerId: bys.id, col: 6, row: 6 });
+gm.emit('combat_token:place', { ownerType: 'character', ownerId: scen.id, col: 7, row: 6 });
 await sleep(600);
 const st = await jf('/api/stage?role=gm');
 const tm = st.combatTokens.find((t) => t.character_id === mira.id);
 const tt = st.combatTokens.find((t) => t.character_id === thug.id);
-gm.emit('fight:preset_weight', { mode: 'combat', weight: 'middle', fighters: [{ ref: { combatantId: tm.id }, level: 1 }, { ref: { combatantId: tt.id }, level: 1, kind: 'warrior' }] });
+const tb = st.combatTokens.find((t) => t.character_id === bys.id);
+const ts = st.combatTokens.find((t) => t.character_id === scen.id);
+p.emit('fighter:exclude', { ref: { combatantId: ts.id }, on: true });
+await sleep(200);
+gm.emit('fighter:exclude', { ref: { combatantId: ts.id }, on: true });
+await sleep(300);
+gm.emit('fight:preset_weight', { mode: 'combat', weight: 'middle', fighters: [{ ref: { combatantId: tm.id }, level: 1 }, { ref: { combatantId: tt.id }, level: 1, kind: 'warrior' }, { ref: { combatantId: ts.id }, level: 1, kind: 'warrior' }] });
 await sleep(400);
 const fight = async (id) => (await jf('/api/stage?role=gm')).combatTokens.find((t) => t.id === id).fight;
 const token = (ref, key, delta) => gm.emit('fighter:token', { ref: { combatantId: ref }, key, delta });
@@ -67,8 +78,15 @@ p.on('trigger:prompt', (x) => {
   setTimeout(() => p.emit('trigger:answer', { id: x.id, answer }), 100);
 });
 
-gm.emit('fight:start', { mode: 'combat', allies: [{ combatantId: tm.id }], enemies: [{ combatantId: tt.id }], firstSide: 'allies', opener: { combatantId: tm.id } });
+gm.emit('fight:start', { mode: 'combat', allies: [{ combatantId: tm.id }], enemies: [{ combatantId: tt.id }, { combatantId: tb.id }, { combatantId: ts.id }], firstSide: 'allies', opener: { combatantId: tm.id } });
 await sleep(1500);
+console.log('\n--- who fights ---');
+{
+  const fs = await fight(ts.id);
+  check('the × leaves a figure out (GM only); Apply gives it no HP', fs.excluded === true && fs.hp.max == null, JSON.stringify(fs));
+  const f = (await jf('/api/stage?role=gm')).fights.combat;
+  check('Start Combat skips the figure with no max HP and the one left out', JSON.stringify(f.enemies) === JSON.stringify([tt.id]) && !f.order.some((e) => e.id === tb.id || e.id === ts.id), JSON.stringify([f.enemies, f.order]));
+}
 console.log('\n--- infinite HP ---');
 p.emit('fighter:infinite', { ref: { combatantId: tt.id }, on: true });
 await sleep(300);
@@ -97,6 +115,28 @@ gm.emit('fighter:hp', { ref: { combatantId: tt.id }, delta: -5 });
 await sleep(400);
 ft = await fight(tt.id);
 check('turned off: HP drops again', !ft.infinite && ft.hp.current === hp0 - 5, JSON.stringify(ft));
+
+console.log('\n--- Battle Cleanup ---');
+gm.emit('map_tile:place', { mode: 'combat', col: 5, row: 5, kind: 'wall' });
+gm.emit('map_tile:place', { mode: 'combat', col: 6, row: 5, kind: 'king' });
+token(tm.id, 'power', 2);
+token(tt.id, 'weakness', 1);
+gm.emit('fighter:challenge', { ref: { combatantId: tm.id }, target: { combatantId: tt.id } });
+await sleep(500);
+p.emit('fight:cleanup');
+await sleep(300);
+check('only the GM cleans up', (await fight(tm.id)).tokens.power === 2, JSON.stringify((await fight(tm.id)).tokens));
+gm.emit('fight:cleanup');
+await sleep(500);
+{
+  const st2 = await jf('/api/stage?role=gm');
+  const kinds = (st2.tiles?.combat ?? []).flatMap((t) => t.kinds ?? [t.kind]);
+  const fm2 = await fight(tm.id);
+  const ft2 = await fight(tt.id);
+  check('the wall is gone, the King marker stays', !kinds.includes('wall') && kinds.includes('king'), JSON.stringify(st2.tiles?.combat));
+  check('every token and Challenge is cleared', !Object.keys(fm2.tokens).length && !Object.keys(ft2.tokens).length && fm2.challenge_id == null, JSON.stringify([fm2.tokens, ft2.tokens, fm2.challenge_id]));
+  check('HP is back to full', ft2.hp.current === ft2.hp.max && !ft2.hp.broken && !ft2.hp.dizzy, JSON.stringify(ft2.hp));
+}
 
 gm.emit('fight:end', { mode: 'combat' });
 await sleep(300);

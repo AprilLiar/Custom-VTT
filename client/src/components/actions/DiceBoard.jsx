@@ -515,14 +515,21 @@ export default function DiceBoard({ payload, onClose, canEdit }) {
           {/* Power (decided): the balance, and Enhance for the placed Actions' hits. */}
           <button
             type="button"
-            onClick={() => editable && emit('board:power', { on: !board.power })}
+            // Off → Ask → On → Off (decided, revised): Ask asks how much on each hit.
+            onClick={() => editable && emit('board:power', { on: board.power === 'ask' ? true : board.power ? false : 'ask' })}
             disabled={!editable}
-            aria-pressed={board.power}
-            title={board.power ? 'Power on: placed Actions Enhance their hits while Power lasts' : 'Power off'}
-            className={`${btn} ${board.power ? 'border-red-400 bg-red-500/25 text-red-100' : 'border-zinc-700 text-zinc-300'}`}
+            aria-pressed={board.power === true}
+            title={
+              board.power === 'ask'
+                ? 'Power on Ask: each hit asks how much Power to spend'
+                : board.power
+                  ? 'Power on: placed Actions Enhance their hits while Power lasts'
+                  : 'Power off'
+            }
+            className={`${btn} ${board.power === 'ask' ? 'border-amber-400 bg-amber-500/20 text-amber-100' : board.power ? 'border-red-400 bg-red-500/25 text-red-100' : 'border-zinc-700 text-zinc-300'}`}
           >
             {/* Named (play feedback 8): the bolt alone was easy to forget. */}
-            <Zap size={13} aria-hidden /> Power {power} · {board.power ? 'On' : 'Off'}
+            <Zap size={13} aria-hidden /> Power {power} · {board.power === 'ask' ? 'Ask' : board.power ? 'On' : 'Off'}
           </button>
           <div className="flex min-w-0 flex-1 flex-wrap justify-center gap-1.5">
             {pool.map((n) => {

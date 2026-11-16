@@ -422,12 +422,12 @@ export function createActionRunner(kit) {
       resolution: { gateRating },
       payment,
       history,
-      // Its hits are an Action's (a Super Move's); the board's Power toggle stands in for "Ask"
-      // on your own Actions (decided): on = Enhance each hit as far as allowed.
+      // Its hits are an Action's (a Super Move's); the board's Power toggle decides
+      // (decided, revised): On = Enhance each hit as far as allowed, Ask = each hit asks, Off = none.
       source: placement.kind === 'super' ? 'super' : 'action',
       // "No token responses" to a Super Move (`allowsTokenResponses: false`): no Iron against its hits.
       unblockable: placement.kind === 'super' && action.allowsTokenResponses === false ? ['iron_tokens'] : [],
-      power: data.power ? 'max' : 'none',
+      power: data.power === 'ask' ? 'ask' : data.power ? 'max' : 'none',
       originSquare,
       // Dodged (Control): they're immune to this Action.
       immuneIds: control.dodged,

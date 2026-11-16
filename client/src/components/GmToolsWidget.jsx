@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { Wrench, X, Music, ImageDown, Scale, GitCommitHorizontal } from 'lucide-react';
+import { Wrench, X, Music, ImageDown, Scale, GitCommitHorizontal, Eraser } from 'lucide-react';
 import { useRole } from '../roleContext.jsx';
 import AudioPlayerDialog from './AudioPlayerDialog.jsx';
 import ImageReencodeTool from './ImageReencodeTool.jsx';
 import CombatWeightTool from './CombatWeightTool.jsx';
+import BattleCleanupTool from './BattleCleanupTool.jsx';
 import CommitHomebrewTool from './CommitHomebrewTool.jsx';
 import { registerAudioPanelOpener } from '../lib/audioPanel.js';
 import { useLocation } from 'react-router-dom';
@@ -31,9 +32,18 @@ const TOOLS = [
     // the Scene page in Simple Combat or Combat; says so anywhere else.
     id: 'combat-weight',
     name: 'Fight Setup',
-    blurb: 'The fight\u2019s weight class, everyone\u2019s level and HP, infinite HP, Complications and Battle Parameters.',
+    // Complications and Battle Parameters join it phase by phase (plan: Fight Setup).
+    blurb: 'The fight\u2019s weight class, everyone\u2019s level and HP, and infinite HP.',
     icon: Scale,
     render: (props) => <CombatWeightTool {...props} />,
+  },
+  {
+    // After a fight: obstacles off the board, tokens gone, HP full (decided).
+    id: 'battle-cleanup',
+    name: 'Battle Cleanup',
+    blurb: 'Remove every obstacle, clear everyone\u2019s tokens and reset their HP to full.',
+    icon: Eraser,
+    render: (props) => <BattleCleanupTool {...props} />,
   },
   {
     // **`standalone` means "open instead of the drawer, not inside it".** The

@@ -74,6 +74,9 @@ p.on('trigger:prompt', (q) => {
   const ans = q.maximum > 1 ? ['option-1'] : q.options.find((o) => o.id !== '__skip')?.id;
   setTimeout(() => p.emit('trigger:answer', { id: q.id, answer: ans }), 100);
 });
+// A fight takes only fighters with a max HP (decided, play feedback 9).
+for (const id of [tt.id, ta.id, te.id, te2.id]) gm.emit('fighter:set_hp', { ref: { combatantId: id }, max: 20, current: 20 });
+await sleep(300);
 gm.emit('fight:start', { mode: 'combat', allies: [{ combatantId: tt.id }, { combatantId: ta.id }], enemies: [{ combatantId: te.id }, { combatantId: te2.id }], firstSide: 'allies', opener: { combatantId: tt.id } });
 const turns = [];
 for (let i = 0; i < 8; i++) {

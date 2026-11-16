@@ -408,7 +408,10 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
     const out = [];
     for (const ref of Array.isArray(refs) ? refs : []) {
       const row = await resolveRef(ref);
-      if (row && row.scene_id === sceneId && row.mode === mode && !out.includes(row.id)) out.push(row.id);
+      // **Only real fighters (decided, play feedback 9):** a figure left out
+      // (Fight Setup's ×) or never set up (no max HP) is scenery, not a fighter.
+      if (!row || row.excluded || row.hp_max == null) continue;
+      if (row.scene_id === sceneId && row.mode === mode && !out.includes(row.id)) out.push(row.id);
     }
     return out;
   };

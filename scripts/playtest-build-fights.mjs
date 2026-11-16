@@ -79,7 +79,7 @@ const tm = st.combatTokens.find((t) => t.character_id === mira.id);
 const tb = st.combatTokens.find((t) => t.character_id === boss.id);
 
 console.log('\n--- the Combat Weight preset reads the build ---');
-gm.emit('fight:preset_weight', { mode: 'combat', weight: 'middle', fighters: [{ ref: { combatantId: tb.id }, level: 1, kind: 'warrior', bars: 3 }] });
+gm.emit('fight:preset_weight', { mode: 'combat', weight: 'middle', fighters: [{ ref: { combatantId: tm.id }, level: 4, kind: 'hero' }, { ref: { combatantId: tb.id }, level: 1, kind: 'warrior', bars: 3 }] });
 await sleep(400);
 st = await jf('/api/stage?role=gm');
 check('a Boss gets its Health Bars from the build', st.combatTokens.find((t) => t.id === tb.id).fight.hp.bars === 3, JSON.stringify(st.combatTokens.find((t) => t.id === tb.id).fight.hp));

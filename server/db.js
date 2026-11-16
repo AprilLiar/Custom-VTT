@@ -1434,6 +1434,8 @@ export async function initDb() {
   // **Infinite HP (fight setup, decided):** hits resolve, HP never drops; the damage taken is counted.
   await ensureColumn('combatants', 'infinite_hp', 'INTEGER NOT NULL DEFAULT 0');
   await ensureColumn('combatants', 'damage_taken', 'INTEGER NOT NULL DEFAULT 0');
+  // Left out of fights (Fight Setup's ×): a figure that is only scenery.
+  await ensureColumn('combatants', 'excluded', 'INTEGER NOT NULL DEFAULT 0');
   // A Frantic Hero's pick this turn { formId, styleId, abilityId } (builder phase 4).
   await ensureColumn('combatants', 'frantic_pick', 'TEXT');
   // A Simple Combat fighter is created on its first change, keyed by its

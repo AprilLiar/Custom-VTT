@@ -16,6 +16,7 @@ import { stanceByKey } from './fighterStances.js';
 import { addBar, applyHpDelta, normalizeHp, removeBar, setHp } from '../client/src/lib/hpBars.js';
 import { FIGHTER_KINDS, WEIGHT_BY_KEY, barHp, clampLevel, crossesBleed } from '../client/src/lib/cinematicWeight.js';
 import { imageUrl } from './images.js';
+import { OBSTACLES } from '../client/src/lib/mapTiles.js';
 
 export function shapeFightState(row) {
   let tokens = {};
@@ -48,6 +49,8 @@ export function shapeFightState(row) {
     // Infinite HP (Fight Setup): never loses HP; `damage_taken` is what hit it.
     infinite: Boolean(row?.infinite_hp),
     damage_taken: Math.max(0, Number(row?.damage_taken) || 0),
+    // Left out of the fight (Fight Setup's ×): only scenery.
+    excluded: Boolean(row?.excluded),
   };
 }
 
@@ -247,6 +250,35 @@ export function registerCombatStateHandlers({ on: onRaw, socket, mayWrite, emitS
     await emitStageUpdated();
   });
 
+  // **Battle Cleanup (GM Tools, decided):** on the active Scene, in both fight
+  // modes: every obstacle and Copy leaves the board (markers stay), every
+  // fighter drops all tokens and any Challenge, and HP goes back to full
+  // (every bar whole, no Dizzy, the Bleed and infinite-HP counts reset).
+  // Manual, so no animations; a running fight keeps running.
+  // **Left out of the fight (GM, Fight Setup's ×):** a figure that is only
+  // scenery: Start Combat and Change sides skip it, and Apply gives it no HP.
+  on('fighter:exclude', async ({ ref, on: value }) => {
+    if (socket.data.identity?.role !== 'gm') return;
+    const row = await resolveRef(ref);
+    if (!row) return;
+    await run('UPDATE combatants SET excluded = ? WHERE id = ?', [value ? 1 : 0, row.id]);
+    await emitStageUpdated();
+  });
+
+  on('fight:cleanup', async () => {
+    if (socket.data.identity?.role !== 'gm') return;
+    const sceneId = (await one('SELECT active_scene_id FROM scene_state WHERE id = 1'))?.active_scene_id;
+    if (!sceneId) return;
+    const kinds = [...OBSTACLES, 'copy'];
+    await run(`DELETE FROM map_tiles WHERE scene_id = ? AND kind IN (${kinds.map(() => '?').join(', ')})`, [sceneId, ...kinds]);
+    await run(
+      `UPDATE combatants SET tokens = '{}', challenge_id = NULL, hp_current = COALESCE(hp_max, hp_current), hp_broken = 0,
+         dizzy = 0, bled_round = NULL, damage_taken = 0 WHERE scene_id = ?`,
+      [sceneId]
+    );
+    await emitStageUpdated();
+  });
+
   // **Infinite HP (GM, Fight Setup):** on or off for one fighter; turning it
   // on starts the damage count afresh.
   on('fighter:infinite', async ({ ref, on: value }) => {
@@ -278,7 +310,7 @@ export function registerCombatStateHandlers({ on: onRaw, socket, mayWrite, emitS
     await run(`UPDATE scenes SET ${mode === 'simple' ? 'simple_weight' : 'combat_weight'} = ? WHERE id = ?`, [weight, sceneId]);
     for (const f of Array.isArray(fighters) ? fighters : []) {
       const row = await resolveRef(f?.ref);
-      if (!row || row.scene_id !== sceneId || row.mode !== mode) continue;
+      if (!row || row.scene_id !== sceneId || row.mode !== mode || row.excluded) continue;
       const level = clampLevel(f.level);
       const kind = FIGHTER_KINDS.includes(f.kind) ? f.kind : 'hero';
       const hp = barHp(weight, kind, level);

@@ -88,6 +88,9 @@ await sleep(600);
 st = await jf('/api/stage?role=gm');
 const m = st.combatTokens.find((t) => t.character_id === mira.id);
 const g = st.combatTokens.find((t) => t.character_id === thug.id);
+// A fight takes only fighters with a max HP (decided, play feedback 9).
+for (const id of [m.id, g.id]) gm.emit('fighter:set_hp', { ref: { combatantId: id }, max: 20, current: 20 });
+await sleep(300);
 gm.emit('fight:start', { mode: 'combat', allies: [{ combatantId: m.id }], enemies: [{ combatantId: g.id }], firstSide: 'allies', opener: { combatantId: m.id } });
 await sleep(800);
 gm.emit('fight:next', { mode: 'combat' });

@@ -207,6 +207,13 @@ export default function ScenePage() {
   const [sheet, setSheet] = useState(null);
   // Bottom popups (Interrupts, the chat cards) clear the portrait footer.
   const portraitNow = !isDesktop && !isLandscape;
+  // The window's size: portrait lays the stage out at its landscape size (below).
+  const [win, setWin] = useState(() => ({ w: window.innerWidth, h: window.innerHeight }));
+  useEffect(() => {
+    const onResize = () => setWin({ w: window.innerWidth, h: window.innerHeight });
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
   useEffect(() => {
     if (!portraitNow) return undefined;
     const root = document.documentElement;
@@ -293,6 +300,8 @@ export default function ScenePage() {
           image_url: t.image_url,
           crop: t.crop,
           turns: turnsPerRound(t.fight.hp),
+          // A fighter at all (decided): set up (a max HP) and not left out (Fight Setup's ×).
+          eligible: t.fight.hp?.max != null && !t.fight.excluded,
         }))
       : laneSummons.map((s) => ({
           key: `s${s.id}`,
@@ -303,15 +312,19 @@ export default function ScenePage() {
           image_url: s.image_url,
           top: true,
           turns: turnsPerRound(s.fight?.hp ?? { bars: 1, broken: 0 }),
+          eligible: s.fight?.hp?.max != null && !s.fight?.excluded,
         }));
 
-  // Portrait: a Scene backdrop and the Simple Combat lane fit the screen's
-  // width, centered (decided); the Combat map fills the space above the footer.
-  const stageClass = portrait
-    ? isCombat
-      ? 'relative flex h-full w-full flex-col items-center justify-center overflow-hidden bg-zinc-950 text-zinc-500'
-      : 'relative flex aspect-video max-h-full w-full flex-col items-center justify-center overflow-hidden bg-zinc-950 text-zinc-500'
-    : 'relative flex h-full w-full flex-col items-center justify-center overflow-hidden bg-zinc-950 text-zinc-500';
+  // **Portrait (decided, revised — play feedback 9):** the Scene and Simple
+  // Combat are laid out exactly as on this phone held sideways (its height ×
+  // its width) and scaled down to the screen's width, centered: everyone is
+  // in view as in landscape, only smaller (controls on them get fiddly — the
+  // accepted cost). The Combat map, which pans and zooms, fills the space.
+  const virtual = portrait && !isCombat ? { w: Math.max(win.w, win.h), h: Math.min(win.w, win.h) } : null;
+  const fitScale = virtual ? win.w / virtual.w : 1;
+  const sw = virtual ? virtual.w : stageWidth;
+  const sh = virtual ? virtual.h : stageHeight;
+  const stageClass = 'relative flex h-full w-full flex-col items-center justify-center overflow-hidden bg-zinc-950 text-zinc-500';
 
   const page = (
     <div ref={setStageEl} className={stageClass}>
@@ -319,6 +332,13 @@ export default function ScenePage() {
           and drawings are hidden, not unmounted, while the Scene is in Combat,
           so leaving Combat shows them at once instead of reloading them.
           `display: contents` adds no box, so their layering is unchanged. */}
+      <div
+        style={
+          virtual
+            ? { position: 'absolute', left: '50%', top: '50%', width: virtual.w, height: virtual.h, transform: `translate(-50%, -50%) scale(${fitScale})` }
+            : { display: 'contents' }
+        }
+      >
       <div style={{ display: isCombat ? 'none' : 'contents' }}>
       {backgroundSrc && (
         <img
@@ -347,8 +367,8 @@ export default function ScenePage() {
       {stageWidth > 0 && (
         <StageRoster
           summons={summons}
-          stageWidth={stageWidth}
-          stageHeight={stageHeight}
+          stageWidth={sw}
+          stageHeight={sh}
           imageNaturalWidth={imageNatural.width}
           imageNaturalHeight={imageNatural.height}
           backgroundFit={backgroundFit}
@@ -359,6 +379,7 @@ export default function ScenePage() {
           role={role}
           controls={controls}
           locked={sceneMode === 'simple'}
+          viewportHeight={virtual ? virtual.h : null}
         />
       )}
       {/* A sibling of StageRoster, not a child — see this component's own
@@ -370,8 +391,8 @@ export default function ScenePage() {
       {stageWidth > 0 && (
         <SceneDrawingLayer
           drawings={drawings}
-          stageWidth={stageWidth}
-          stageHeight={stageHeight}
+          stageWidth={sw}
+          stageHeight={sh}
           imageNaturalWidth={imageNatural.width}
           imageNaturalHeight={imageNatural.height}
           backgroundFit={backgroundFit}
@@ -388,8 +409,8 @@ export default function ScenePage() {
       {stageWidth > 0 && sceneMode === 'simple' && (
         <SimpleCombatLane
           summons={laneSummons}
-          stageWidth={stageWidth}
-          stageHeight={stageHeight}
+          stageWidth={sw}
+          stageHeight={sh}
           glow={laneGlow}
           role={role}
           controls={controls}
@@ -404,6 +425,7 @@ export default function ScenePage() {
           fxBeat={fx.playing?.mode === 'simple' ? fx.playing : null}
         />
       )}
+      </div>
       {/* Likewise the Combat map stays mounted once seen, hidden outside
           Combat, so switching back is instant too. */}
       {stageWidth > 0 && (isCombat || combatSeen) && (
@@ -541,7 +563,7 @@ export default function ScenePage() {
       <MoveBar />
       <TriggerPrompts />
       {fightSetupOpen && fightMode && (
-        <FightSetupDialog mode={fightMode} fighters={fightFighters} existing={fight} onClose={() => setFightSetupOpen(false)} />
+        <FightSetupDialog mode={fightMode} fighters={fightFighters.filter((f) => f.eligible)} skipped={fightFighters.filter((f) => !f.eligible).length} existing={fight} onClose={() => setFightSetupOpen(false)} />
       )}
       {/* Chat on the Scene: floating cards for new entries and a chat button
           that opens the full log — both even with the interface hidden. */}

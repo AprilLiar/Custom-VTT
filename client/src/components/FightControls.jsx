@@ -57,7 +57,8 @@ export function StartCombatButton({ onClick }) {
 }
 
 // `existing` (a fight) turns this into the mid-fight sides editor.
-export function FightSetupDialog({ mode, fighters, existing = null, onClose }) {
+// `skipped`: figures left out of the fight — never set up (no max HP) or ×'d in Fight Setup.
+export function FightSetupDialog({ mode, fighters, existing = null, onClose, skipped = 0 }) {
   const [side, setSide] = useState(() => {
     const out = {};
     for (const f of fighters) {
@@ -143,6 +144,7 @@ export function FightSetupDialog({ mode, fighters, existing = null, onClose }) {
       <p className="mb-2 text-xs text-zinc-500">
         Send each fighter to Allies or Enemies. "×N" is how many HP bars they have — one turn each per round.
         {existing && ' Changes take effect from the next round.'}
+        {skipped > 0 && ` ${skipped} figure${skipped === 1 ? ' is' : 's are'} left out: no HP set up yet, or left out in Fight Setup.`}
       </p>
       <div className="flex flex-col gap-2 sm:flex-row">
         <Column title="Allies" list={allies} tone="text-sky-300" />

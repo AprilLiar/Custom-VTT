@@ -68,6 +68,8 @@ const tMira = tokenOf((t) => t.character_id === mira.id);
 const tBo = tokenOf((t) => t.character_id === bo.id);
 const [tG1, tG2] = st.combatTokens.filter((t) => t.character_id === goon.id);
 gm.emit('fighter:set_hp', { ref: { combatantId: tMira.id }, max: 5 });
+// A fight takes only fighters with a max HP (decided, play feedback 9).
+for (const t of [tBo, tG1, tG2]) gm.emit('fighter:set_hp', { ref: { combatantId: t.id }, max: 10, current: 10 });
 gm.emit('fighter:add_bar', { ref: { combatantId: tMira.id } });
 gm.emit('fighter:token', { ref: { combatantId: tMira.id }, key: 'burning', delta: 3 });
 gm.emit('fighter:token', { ref: { combatantId: tBo.id }, key: 'speed', delta: 2 });
