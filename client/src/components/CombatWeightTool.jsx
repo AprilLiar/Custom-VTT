@@ -4,6 +4,7 @@ import { X, Undo2 } from 'lucide-react';
 import { socket } from '../socket.js';
 import { useStage } from '../lib/useStage.js';
 import { useRoster } from '../lib/useRoster.js';
+import BattleParamsPanel from './BattleParamsPanel.jsx';
 import { WEIGHTS, WEIGHT_BY_KEY, barHp, bonusDie, bonusHp } from '../lib/cinematicWeight.js';
 
 // **GM Tools → Fight Setup** (decided; was Preset Narrative Combat Weight). Works only on the
@@ -47,6 +48,7 @@ export default function CombatWeightTool({ onDone }) {
           kind: setupOf(t.character_id)?.kind ?? t.fight.kind ?? kindFor(t.character_id),
           bars: barsFor(t.character_id),
           infinite: Boolean(t.fight.infinite),
+          combatantId: t.id,
           excluded: Boolean(t.fight.excluded),
         }))
       : stage.summons.filter((s) => s.character_id != null).map((s) => ({
@@ -57,6 +59,7 @@ export default function CombatWeightTool({ onDone }) {
           kind: setupOf(s.character_id)?.kind ?? s.fight?.kind ?? kindFor(s.character_id),
           bars: barsFor(s.character_id),
           infinite: Boolean(s.fight?.infinite),
+          combatantId: s.fight?.combatant_id ?? null,
           excluded: Boolean(s.fight?.excluded),
         }));
   }, [stage, mode, typeOf]);
@@ -99,7 +102,8 @@ export default function CombatWeightTool({ onDone }) {
   };
 
   return (
-    <div className="space-y-3">
+    <div className="flex flex-col gap-4 md:flex-row">
+    <div className="min-w-0 flex-1 space-y-3">
       <p className="text-xs text-zinc-500">
         For this Scene&rsquo;s <b className="text-zinc-300">{mode === 'simple' ? 'Simple Combat' : 'Combat'}</b> fight. Applying resets everyone listed
         to full Health Bars — one each, or as many as their build says (a Boss). Levels and HP tables come from their builds.
@@ -232,6 +236,12 @@ export default function CombatWeightTool({ onDone }) {
       >
         Apply {w?.name ?? ''}
       </button>
+    </div>
+    {/* Complications and Battle Parameters (decided): beside the list, as icons. */}
+    <aside className="md:w-[19rem] md:shrink-0 md:border-l md:border-zinc-800 md:pl-4">
+      <h4 className="mb-2 font-display text-xs font-bold uppercase tracking-wide text-zinc-300">Battle Parameters</h4>
+      <BattleParamsPanel mode={mode} battle={scene?.battle?.[mode]} fighters={fighters} />
+    </aside>
     </div>
   );
 }

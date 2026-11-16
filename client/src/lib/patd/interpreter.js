@@ -986,7 +986,11 @@ function candidatesOf(rawSel, scope, ctx) {
   // "Yourself and each ally you can see" (Inspire Perfection — phase I).
   else if (sel.kind === 'self_and_visible_allies') pool = world.alliesOf(self).filter((f) => f.id === self.id || world.inRange(from, f, { mode: 'visible', origin: 'self' }));
   else if (sel.kind === 'own_copy') pool = copies.filter((c) => c.ownerId === self.id);
-  else if (sel.kind === 'obstacle') pool = world.obstacles?.(from, obstacleRange, { types: sel.types ?? null }) ?? [];
+  else if (sel.kind === 'obstacle') {
+    pool = world.obstacles?.(from, obstacleRange, { types: sel.types ?? null }) ?? [];
+    // Chained Down: a fighter's named Wall (and its Rubble) is immune to Open The Path.
+    if (ctx?.ability?.id === 'action.system-basic-actions.open-the-path') pool = pool.filter((o) => o.chainedTo == null);
+  }
   else if (sel.kind.endsWith('_or_obstacle')) {
     const units = sel.kind === 'enemy_or_obstacle' ? world.enemiesOf(self) : sel.kind === 'ally_or_obstacle' ? world.alliesOf(self) : world.fighters();
     pool = [...units, ...(world.obstacles?.(from, obstacleRange, {}) ?? [])];

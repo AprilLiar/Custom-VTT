@@ -997,6 +997,9 @@ export async function initDb() {
   // NULL until the GM presets one.
   await ensureColumn('scenes', 'simple_weight', 'TEXT');
   await ensureColumn('scenes', 'combat_weight', 'TEXT');
+  // **Fight Setup's Complications and Battle Parameters** per fight mode:
+  // JSON { simple, combat } (shape: client/src/lib/battleParams.js).
+  await ensureColumn('scenes', 'battle', 'TEXT');
   // **The Combat map (Phase 3):** a Combat Background separate from the Scene
   // backdrop (image kind 'scene-combat'), and its grid — square size and
   // offset in the MAP IMAGE's own pixels (decided), and line opacity. See

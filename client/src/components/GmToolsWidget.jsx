@@ -35,6 +35,8 @@ const TOOLS = [
     // Complications and Battle Parameters join it phase by phase (plan: Fight Setup).
     blurb: 'The fight\u2019s weight class, everyone\u2019s level and HP, and infinite HP.',
     icon: Scale,
+    // Wide on a desktop: the Battle Parameters sit beside the fighters.
+    wide: true,
     render: (props) => <CombatWeightTool {...props} />,
   },
   {
@@ -146,7 +148,7 @@ export default function GmToolsWidget() {
               onClick={(e) => e.stopPropagation()}
               // See DialogShell: added to p-4's 1rem, not replacing it.
               style={{ paddingBottom: 'calc(1rem + var(--safe-bottom))' }}
-              className="flex max-h-[88dvh] w-full max-w-lg flex-col gap-3 rounded-t-2xl border border-zinc-700 bg-zinc-900 p-4 md:rounded-none md:panel-cut-lg"
+              className={`flex max-h-[88dvh] w-full ${tool?.wide ? 'max-w-lg md:max-w-4xl' : 'max-w-lg'} flex-col gap-3 rounded-t-2xl border border-zinc-700 bg-zinc-900 p-4 md:rounded-none md:panel-cut-lg`}
             >
               <div className="flex shrink-0 items-center gap-2">
                 <h3 className="font-display font-bold uppercase tracking-wide text-zinc-100">

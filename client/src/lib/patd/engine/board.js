@@ -54,7 +54,7 @@ export const diagonals = around(DIAGONAL);
 export const allNeighbors = around([...LATERAL, ...DIAGONAL]);
 export const isDiagonal = (a, b) => a.col !== b.col && a.row !== b.row;
 
-// `exits`: where the Outside is — 'all' four edges (the map), or only the
+// `exits`: where the Outside is — 'none' (no Outside: Chained Down's leash, Cage Match), 'all' four edges (the map), or only the
 // 'cols' ends (Simple Combat: a lane's ends are the arena's edge, decided).
 export function makeBoard({ bounds = null, tiles = [], units = [], exits = 'all' } = {}) {
   const t = new Map();
@@ -75,9 +75,10 @@ export const inBounds = (b, sq) =>
   !b.bounds || (sq.col >= b.bounds.colMin && sq.col <= b.bounds.colMax && sq.row >= b.bounds.rowMin && sq.row <= b.bounds.rowMax);
 export const onEdge = (b, sq) =>
   Boolean(b.bounds) &&
+  b.exits !== 'none' &&
   (sq.col === b.bounds.colMin || sq.col === b.bounds.colMax || (b.exits !== 'cols' && (sq.row === b.bounds.rowMin || sq.row === b.bounds.rowMax)));
 // Is a step off the board a way Outside (not off a lane's front or back)?
-const exitStep = (b, n) => b.exits !== 'cols' || (n.row >= b.bounds.rowMin && n.row <= b.bounds.rowMax);
+const exitStep = (b, n) => b.exits !== 'none' && (b.exits !== 'cols' || (n.row >= b.bounds.rowMin && n.row <= b.bounds.rowMax));
 export const has = (b, sq, kind) => b.tiles.get(key(sq))?.has(kind) ?? false;
 export const occupant = (b, sq) => b.unitAt.get(key(sq)) ?? null;
 // Full: a Wall, or a unit other than those ignored (the mover itself).
@@ -88,8 +89,10 @@ export const occupant = (b, sq) => b.unitAt.get(key(sq)) ?? null;
 //   b.walls    'empty' (Parkour) | 'rubble' (Spirit Style) | 'smash' (the
 //              Giant: the Wall becomes Rubble) — Walls they may enter
 //   b.pitsLinked  standing on a Pit, every other Pit is adjacent (Vortex Style)
+//   b.leash    { at, max } — Chained Down: never farther than `max` from `at` (and no Outside)
 export const isFull = (b, sq, ignore = []) => {
   if (b.blocked?.has(key(sq))) return true;
+  if (b.leash && gridDistance(sq, b.leash.at) > b.leash.max) return true;
   if (b.open) return false;
   if (has(b, sq, 'wall') && !b.walls) return true;
   return occupant(b, sq) != null && !ignore.includes(occupant(b, sq));

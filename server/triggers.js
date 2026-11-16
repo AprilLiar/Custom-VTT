@@ -15,7 +15,7 @@ import { applyHpDelta } from '../client/src/lib/hpBars.js';
 import { WEIGHT_BY_KEY, crossesBleed } from '../client/src/lib/cinematicWeight.js';
 import { TOKEN_BY_KEY, capOf, innateArmor } from '../client/src/lib/panicTokens.js';
 import { TRAY, clampLanes, moveOnLane, packLane } from '../client/src/lib/simpleLane.js';
-import { inBounds as inBoundsAt, isEmpty as isEmptyAt, makeBoard, nearestCells, occupant as occupantAt } from '../client/src/lib/patd/engine/board.js';
+import { inBounds as inBoundsAt, isEmpty as isEmptyAt, makeBoard, nearestCells, neighbors as sideSquares, occupant as occupantAt } from '../client/src/lib/patd/engine/board.js';
 import { OBSTACLES as OBSTACLE_KINDS, placeTile, removeTile } from '../client/src/lib/mapTiles.js';
 import { cellBounds, imageSize } from './imageSize.js';
 import { sceneGrid } from './combatMap.js';
@@ -39,6 +39,8 @@ import { ENGINE_NATIVE, continuousSupport, isIronAnySource, isNativeRule } from 
 import { addPoolValue, livePool, setPoolValue, turnActions } from '../client/src/lib/patd/diceBoard.js';
 import { fighterState, readData as readBoardData, saveBoard, setPayableHook } from './diceMarks.js';
 import { muteFx, recordFx, slice, unmuteFx } from './fx.js';
+import { isDisarmed, leashOf, parseBattleColumn, partnerOf, tiltOn } from '../client/src/lib/battleParams.js';
+import { updateBattle } from './battle.js';
 
 // The combat map's image size, by image hash (its playable bounds — phase D).
 const imageSizes = new Map();
@@ -189,7 +191,9 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     const ids = new Set([...JSON.parse(fight.allies || '[]'), ...JSON.parse(fight.enemies || '[]')]);
     const sideOf = (id) => (JSON.parse(fight.allies || '[]').includes(id) ? 'allies' : 'enemies');
     const rows = (await all('SELECT cb.*, c.name, c.character_type FROM combatants cb JOIN characters c ON c.id = cb.character_id WHERE cb.scene_id = ? AND cb.mode = ?', [sceneId, mode])).filter((r) => ids.has(r.id));
-    const scene = await one('SELECT simple_weight, combat_weight FROM scenes WHERE id = ?', [sceneId]);
+    const scene = await one('SELECT simple_weight, combat_weight, battle FROM scenes WHERE id = ?', [sceneId]);
+    // Fight Setup's Complications and Battle Parameters (lib/battleParams.js).
+    const battle = parseBattleColumn(scene?.battle)[mode];
     const weight = WEIGHT_BY_KEY[mode === 'simple' ? scene?.simple_weight : scene?.combat_weight] ?? MIDDLEWEIGHT;
     // Squares: a map cell, or a lane space as (column, lane).
     let squareOf = (r) => (r.grid_col != null ? { col: r.grid_col, row: r.grid_row } : null);
@@ -377,13 +381,21 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
         const was = shapeFightState(row);
         const shown = shapeFightState({ ...row, hp_max: next.max, hp_current: next.current, hp_bars: next.bars, hp_broken: next.broken, dizzy: next.dizzy ? 1 : 0 });
         if (delta) recordFx({ sceneId, mode, kind: delta > 0 ? 'heal' : 'damage', combatantId: f.id, before: slice(was), after: slice(shown), data: { amount: Math.abs(delta) } });
-        result = { before, landed: before.current + delta, row };
+        result = { before, landed: before.current + delta, row, down: !atZero(before) && atZero(next) };
         f.bleeding = next.current <= weight.bleed;
         f.dizzy = Boolean(next.dizzy);
         f.hp = next;
         f.currentBar = { damage: next.max - next.current };
       });
       markDirty();
+      // **Handcuffs (Tilt):** one falls to 0 HP — their partner gains 3 Fatigue.
+      if (result.down) {
+        const partner = fighters.find((x) => x.id === partnerOf(battle, f.id));
+        if (partner && world.gainTokens) {
+          await world.gainTokens(partner, 'fatigue', 3);
+          await postCard('reminder', { title: 'Handcuffs', text: `${f.name} is down: ${partner.name}, cuffed to them, gains 3 Fatigue.`, fighters: [{ name: partner.name }], automatic: 'battle', notice: true });
+        }
+      }
       return result;
     };
     // You Bleed once per Round, when damage takes you to the Bleed Value or below.
@@ -452,6 +464,36 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
       // A move shows at once (decided): every step of an Action, one by one.
       markDirty();
       if (!quiet) await flushStage();
+      if (!quiet) await cuffCheck(f);
+    };
+    // **Handcuffs (Tilt, Fight Setup):** cuffed pairs stay adjacent. When one
+    // moves away, the one who stayed is pulled 1 space at a time until adjacent
+    // again (as far as the board lets them); removed from play, both are.
+    let cuffing = false;
+    const cuffCheck = async (mover) => {
+      if (cuffing) return;
+      const partner = fighters.find((x) => x.id === partnerOf(battle, mover.id));
+      if (!partner) return;
+      cuffing = true;
+      try {
+        if (!mover.square && partner.square) {
+          await setSquare(partner, null, 'teleport');
+          await postCard('reminder', { title: 'Handcuffs', text: `${mover.name} is removed from play — and so is ${partner.name}, cuffed to them.`, fighters: [{ name: partner.name }], automatic: 'battle', notice: true });
+          return;
+        }
+        let steps = 0;
+        while (mover.square && partner.square && gridDistance(partner.square, mover.square) > 1 && steps < 30) {
+          const b = board();
+          const here = gridDistance(partner.square, mover.square);
+          const next = sideSquares(partner.square).filter((sq) => isEmptyAt(b, sq, [partner.id]) && gridDistance(sq, mover.square) < here)[0];
+          if (!next) break;
+          await setSquare(partner, next, 'pull');
+          steps++;
+        }
+        if (steps) await postCard('reminder', { title: 'Handcuffs', text: `${partner.name} is pulled ${steps} space${steps === 1 ? '' : 's'} after ${mover.name}.`, fighters: [{ name: partner.name }], automatic: 'battle', notice: true });
+      } finally {
+        cuffing = false;
+      }
     };
     // World of Cardboard: a Wall smashed into Rubble.
     const smashWall = async (sq) => {
@@ -547,15 +589,35 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     // modifiers in effect (and "this Action's +X" carried as `rangeBonus`);
     // Walls and Fog ignored for sight where a modifier says so.
     const modsOf = (f) => (f && !f.isCopy && world.env ? modifiersOn(byId(f.id) ?? f, world, patdContent(), world.env.rt.temps) : []);
-    const rangeOf = (f) => (f?.isCopy ? f.stance?.range : effectiveRange(f?.stance?.range, modsOf(f), f?.rangeBonus ?? 0));
+    // **Disarmed (Tilt / Arena):** Range 1 whatever the Stance; Abilities don't raise it.
+    const rangeOf = (f) => {
+      if (f && isDisarmed(battle, f.side)) return { minimum: Math.min(1, f.stance?.range?.minimum ?? 1), maximum: 1 };
+      return f?.isCopy ? f.stance?.range : effectiveRange(f?.stance?.range, modsOf(f), f?.rangeBonus ?? 0);
+    };
     const sightOf = (f) => {
       const ignore = listMod(modsOf(f), 'sight.ignore');
       return { walls: ignore.includes('walls') ? new Set() : walls, fogged: ignore.includes('fog') ? () => false : fogged };
     };
 
     // An obstacle as the rules see it (a pick's option, a push's target).
-    const obstacleOf = (t) => ({ id: `${t.col},${t.row}:${t.kind}`, isObstacle: true, kind: t.kind, name: t.kind === 'deadly_trap' ? 'Deadly Trap' : t.kind[0].toUpperCase() + t.kind.slice(1), square: { col: t.col, row: t.row } });
+    // **Chained Down:** a fighter's own Wall (then its Rubble) is named for them
+    // and immune to Open The Path (interpreter candidatesOf).
+    const chainOwnerAt = (t) => {
+      if (t.kind !== 'wall' && t.kind !== 'rubble') return null;
+      const id = Object.keys(battle.chains).find((k) => battle.chains[k].col === t.col && battle.chains[k].row === t.row);
+      return id != null ? Number(id) : null;
+    };
+    const obstacleOf = (t) => {
+      const base = t.kind === 'deadly_trap' ? 'Deadly Trap' : t.kind[0].toUpperCase() + t.kind.slice(1);
+      const chainedTo = chainOwnerAt(t);
+      const owner = chainedTo != null ? fighters.find((f) => f.id === chainedTo) : null;
+      return { id: `${t.col},${t.row}:${t.kind}`, isObstacle: true, kind: t.kind, name: owner ? `${owner.name}'s ${base}` : base, square: { col: t.col, row: t.row }, chainedTo };
+    };
     const world = {
+      // Fight Setup's settings for this fight (Tilts, Arena, Victory, Complications).
+      battle,
+      // Chained Down: { at, max } for a fighter on a chained side, else null (engine/moves.js boardFor).
+      leash: (f) => leashOf(battle, f.id, kindsAtSq),
       context: { healValue: weight.heal, bleedValue: weight.bleed, round: fight.round, superLimit: weight.supers ?? 1 },
       fighters: () => fighters,
       enemiesOf: (f) => fighters.filter((x) => x.side !== f.side),
@@ -716,7 +778,25 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
           await destroyCopy(f, attacker);
           return { taken: dmg, toHp: dmg, dealt: dmg, steps: [...steps, 'the Copy is destroyed'], destroyed: true };
         }
-        return hits.resolveHit(world.env, { writeTokens, changeHp, bleedCheck, inPit, spend: world.spend, spendable: world.spendable, hitFx }, f, n, attacker, opts);
+        const r = await hits.resolveHit(world.env, { writeTokens, changeHp, bleedCheck, inPit, spend: world.spend, spendable: world.spendable, hitFx }, f, n, attacker, opts);
+        // **Enraged (Tilt):** dealt damage by an enemy, they take that enemy's
+        // Challenge token (a unique token: whoever held it loses it) and drop
+        // their own. No Abilities trigger from it.
+        if (attacker && !attacker.isCopy && attacker.side !== f.side && (r?.taken ?? 0) > 0 && tiltOn(battle, f.side) === 'enraged' && f.challengeId !== attacker.id) {
+          await queued(async () => {
+            for (const other of fighters.filter((x) => x.challengeId === attacker.id && x.id !== f.id)) {
+              await run('UPDATE combatants SET challenge_id = NULL WHERE id = ?', [other.id]);
+              other.challengeId = null;
+            }
+            const was = shapeFightState(await readRow(f.id));
+            await run('UPDATE combatants SET challenge_id = ? WHERE id = ?', [attacker.id, f.id]);
+            recordFx({ sceneId, mode, kind: 'challenge', combatantId: f.id, before: slice(was), after: { ...slice(was), challenge_id: attacker.id }, data: { challengerId: attacker.id } });
+          });
+          f.challengeId = attacker.id;
+          markDirty();
+          await postCard('reminder', { title: 'Enraged', text: `${f.name} takes ${attacker.name}'s Challenge.`, fighters: [{ name: f.name }], automatic: 'battle', notice: true });
+        }
+        return r;
       },
       // **Obstacles (phase E).** The legal squares for a placement, the obstacles
       // in range, and the changes — all by the book's stacking (mapTiles.js).
@@ -1416,6 +1496,39 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
 
   // Start of combat: Improved Warrior gives the Warrior's Path's benefit (its
   // rule is text only in the content, so it is matched by id here).
+  // **Chained Down (Tilt):** each fighter on the side places their own Wall
+  // next to them — their controller picks the square (decided). Its square is
+  // remembered (`battle.chains`), so the Wall (then its Rubble) leashes them.
+  async function runChainDown(fightRow, side) {
+    const { env, world, fighters, movers } = await envFor(fightRow);
+    env.when = 'Chained Down';
+    const placed = [];
+    for (const f of fighters.filter((x) => x.side === side && x.square && !x.isCopy)) {
+      if (world.battle.chains[f.id]) continue;
+      const b = movers.board();
+      const options = sideSquares(f.square)
+        .filter((sq) => world.canPlace('wall', sq) && isEmptyAt(b, sq))
+        .map((sq) => ({ id: `${sq.col},${sq.row}`, label: `${sq.col},${sq.row}`, col: sq.col, row: sq.row }));
+      if (!options.length) continue;
+      const ans = options.length === 1
+        ? options[0].id
+        : await ask(f, env.key, env.gen, env.tg, env.when)({ kind: 'square', mode: fightRow.mode, title: `Chained Down: ${f.name}'s Wall`, text: `Place ${f.name}'s Wall next to them. They can't move more than 3 spaces from it (5 from its Rubble).`, options, minimum: 1, maximum: 1, skippable: false });
+      const id = (Array.isArray(ans) ? ans[0] : ans) ?? options[0].id;
+      const opt = options.find((o) => o.id === id) ?? options[0];
+      const sq = { col: opt.col, row: opt.row };
+      await world.placeObstacle('wall', sq, f);
+      world.battle.chains[f.id] = sq;
+      await updateBattle(fightRow.scene_id, fightRow.mode, (bt) => {
+        bt.chains[f.id] = sq;
+        return bt;
+      });
+      placed.push(f.name);
+    }
+    await env.save();
+    await emitStageUpdated();
+    if (placed.length) await postCard('reminder', { title: 'Chained Down', text: `${placed.join(', ')} ${placed.length === 1 ? 'is' : 'are'} chained to their own Wall: no more than 3 spaces from it, 5 from its Rubble, free once that is gone.`, fighters: placed.map((name) => ({ name })), automatic: 'battle', notice: true });
+  }
+
   async function runFightStart(fightRow) {
     const { env, fighters } = await envFor(fightRow);
     for (const f of fighters) {
@@ -1646,6 +1759,26 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     await postCard('reminder', { title: 'Persistant Freestyle', text: `${active.name} keeps ${picks.map((p) => p.value).join(' and ')} for their next turn.`, fighters: [{ name: active.name }], automatic: 'ability', notice: true });
   }
 
+  // **Tilted Parameters at the start of a turn (Fight Setup).** Weakened State:
+  // the tilted side's active character gains 1 Burning, 1 Weakness, 1 Fatigue.
+  // Overwhelming Power: whoever takes a turn on any OTHER side gains 1 Power,
+  // 1 Iron and 1 Speed. Both through the engine, so they animate and trigger.
+  async function battleTurnStart(env, world, fighters, active) {
+    const b = world.battle;
+    if (!b) return;
+    const said = [];
+    if (tiltOn(b, active.side) === 'weakened_state') {
+      for (const k of ['burning', 'weakness', 'fatigue']) await world.gainTokens(active, k, 1);
+      said.push('Weakened State: +1 Burning, +1 Weakness, +1 Fatigue');
+    }
+    const outmatched = Object.entries(b.tilts).some(([side, k]) => k === 'overwhelming_power' && side !== active.side && fighters.some((f) => f.side === side));
+    if (outmatched) {
+      for (const k of ['power', 'iron', 'speed']) await world.gainTokens(active, k, 1);
+      said.push('Overwhelming Power: +1 Power, +1 Iron, +1 Speed');
+    }
+    if (said.length) await postCard('reminder', { title: 'Tilted Parameter', text: `${active.name} — ${said.join('; ')}.`, fighters: [{ name: active.name }], automatic: 'battle', notice: true });
+  }
+
   async function runTurn(fightRow, activeId, moment, tg, opts = {}) {
     const { env, world, fighters, byId, onTrap, movers } = await envFor(fightRow, tg);
     for (const f of fighters) if (opts.dizzyIds?.includes(f.id)) f.dizzy = true;
@@ -1673,6 +1806,8 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     if (moment === 'start') fighterRt(rt, active.id).flags.startSquare = active.square ?? null;
     env.when = `${moment === 'start' ? 'Start' : 'End'} of ${active.name}'s turn`;
     world.context.activeCharacter = active;
+    // Fight Setup's Tilts that act at the start of a turn (Weakened State, Overwhelming Power).
+    if (moment === 'start' && !stale(env) && active.square) await battleTurnStart(env, world, fighters, active);
     // "At the start of your next turn …" effects scheduled earlier (phase G).
     if (moment === 'start') await runScheduled(env, 'next_turn.start', (s) => s.ownerId === active.id && s.seq < rt.turnSeq);
     // "If they take the next turn for their side …" (Showdown — the QA pass):
@@ -1998,6 +2133,10 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     // The active fighter's Action Phase began (after Early Movement): its rules.
     actionPhase(fightRow, activeId) {
       return onChain(fightRow, () => runActionPhase(fightRow, activeId));
+    },
+    // Chained Down set on a side: its Walls, on the fight's chain.
+    chainDown(fightRow, side) {
+      return onChain(fightRow, () => runChainDown(fightRow, side));
     },
     // A fight began: forget any old fight state, then "start of combat" rules.
     startFight(fightRow) {

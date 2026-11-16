@@ -36,6 +36,8 @@ import { loadAllDerived, setupFromDerived } from './fighterStances.js';
 import { controlsCharacter, dropAssignmentsTo, loadAssignments, setAssignment } from './control.js';
 import { drainFx } from './fx.js';
 import { lightAll } from './lightSelect.js';
+import { parseBattleColumn } from '../client/src/lib/battleParams.js';
+import { registerBattleHandlers } from './battle.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3001;
@@ -564,7 +566,7 @@ async function buildStagePayload({ skipDrawingsFor = null } = {}) {
         `SELECT id, name, image_hash, image_source_id,
                 (image_data IS NOT NULL) AS has_image, background_fit, combat_mode,
                 combat_image_hash, (combat_image_data IS NOT NULL) AS has_combat_image,
-                grid_size, grid_offset_x, grid_offset_y, grid_opacity, simple_weight, combat_weight
+                grid_size, grid_offset_x, grid_offset_y, grid_opacity, simple_weight, combat_weight, battle
          FROM scenes WHERE id = ?`,
         [state.active_scene_id]
       )
@@ -588,6 +590,8 @@ async function buildStagePayload({ skipDrawingsFor = null } = {}) {
         grid: sceneGrid(sceneRow),
         // Cinematic Weight per fight (keys of client/src/lib/cinematicWeight.js).
         weights: { simple: sceneRow.simple_weight ?? null, combat: sceneRow.combat_weight ?? null },
+        // Complications and Battle Parameters per fight (lib/battleParams.js).
+        battle: parseBattleColumn(sceneRow.battle),
         // A copy's backdrop is served from whichever Scene owns the bytes —
         // see shapeScene, and scenes.image_source_id for why.
         image_url: imageUrl('scene', sceneRow.image_source_id ?? sceneRow.id, {
@@ -1571,6 +1575,7 @@ io.on('connection', (socket) => {
   // A fighter's HP, tokens, Challenge and Stance (Phase 4) — see server/combatState.js.
   registerCombatStateHandlers({ on, socket, mayWrite: mayWriteScenePicture, emitStageUpdated, postCard, triggers: triggerEngine() });
   registerMapTileHandlers({ on, socket, emitStageUpdated });
+  registerBattleHandlers({ on, socket, emitStageUpdated, postCard, triggers: triggerEngine() });
   registerBuildHandlers({ on, socket, io, mayWrite: mayWriteScenePicture, emitStageUpdated });
   registerHomebrewHandlers({ on, socket, io, emitStageUpdated });
   // The Events tab: sticky notes in lanes — see server/events.js.

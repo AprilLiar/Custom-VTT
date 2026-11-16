@@ -44,6 +44,12 @@ const costOpts = (mods) => {
 function boardFor(env, m, f) {
   const b = m.board();
   if (f?.size === 2) b.size = 2;
+  // Chained Down (Fight Setup): no farther than 3 from their Wall, 5 from its Rubble; no Outside.
+  const leash = f && !f.isCopy ? env?.world?.leash?.(f) : null;
+  if (leash) {
+    b.leash = leash;
+    b.exits = 'none';
+  }
   const owner = f?.isCopy ? env?.world?.fighters().find((x) => x.id === f.ownerId) : f;
   const mods = modsOn(env, owner);
   if (!mods.length) return b;

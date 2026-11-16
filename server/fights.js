@@ -30,6 +30,8 @@ import { controlsCharacter } from './control.js';
 import { mayFreeMove } from './engine/moves.js';
 import { recordFx } from './fx.js';
 import { claimInterrupt, dropInterrupts, interruptOf, nextInterrupt, releaseInterrupt, unqueueInterrupt } from './interrupts.js';
+import { parseBattleColumn, tiltOn } from '../client/src/lib/battleParams.js';
+import { battleFightStart } from './battle.js';
 
 // The fight's reaction window (phase F): { seq, activeId, offers: { [id]: { clusters, … } }, done } | null.
 export const windowOf = (row) => {
@@ -333,7 +335,21 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
       const bodies = (await loadFighters(fight.scene_id, fight.mode)).filter((f) => f.characterId === fighter.characterId && sideOf(fight, f.combatantId));
       for (const b of bodies) await run('UPDATE combatants SET active_stance_key = ? WHERE id = ?', [stance.id, b.combatantId]);
     }
-    const results = rollDerived(stance.dice);
+    // **Too Slow (Tilt, Fight Setup):** on this side's turns the active
+    // character discards their lowest die before rolling.
+    let dice = stance.dice;
+    let tooSlow = null;
+    const battle = parseBattleColumn((await one('SELECT battle FROM scenes WHERE id = ?', [fight.scene_id]))?.battle)[fight.mode];
+    if (tiltOn(battle, sideOf(fight, combatantId)) === 'too_slow') {
+      const rolled = dice.map((d, i) => ({ d, i })).filter((x) => x.d.kind !== 'fixed' && x.d.sides);
+      if (rolled.length) {
+        const low = rolled.reduce((a, x) => (x.d.sides < a.d.sides ? x : a));
+        dice = dice.filter((_, i) => i !== low.i);
+        tooSlow = `d${low.d.sides}`;
+      }
+    }
+    const results = rollDerived(dice);
+    if (tooSlow) await postCard('reminder', { title: 'Too Slow', text: `${fighter.name} discards their lowest die (${tooSlow}) before rolling.`, fighters: [{ name: fighter.name }], automatic: 'battle', notice: true });
     // `combatant_id` lets the Scene keep this card up until that fighter's
     // turn ends (fight:turn_ended). `roll_id`, `character_id` and
     // `stance_key` open the turn's dice board from it (server/diceMarks.js).
@@ -441,6 +457,8 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
     await run('UPDATE combatants SET frantic_pick = NULL WHERE scene_id = ? AND mode = ?', [sceneId, mode]);
     // "At the start of combat" abilities (Improved Warrior's Path), before the first turn.
     triggers?.startFight({ ...fight });
+    // Fight Setup: Keep 'Em Coming applies, Chained Down asks for its Walls.
+    await battleFightStart({ ...fight }, { postCard, triggers });
     await fire(fight, 'round_start');
     await beginTurn(fight);
     await emitStageUpdated();
