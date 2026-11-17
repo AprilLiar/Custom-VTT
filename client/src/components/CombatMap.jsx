@@ -13,6 +13,7 @@ import {
   cellRect,
   cellTaken,
   fitImage,
+  GRID_MARGIN_SQUARES,
   gridLines,
   moveToken,
   normalizeGrid,
@@ -89,10 +90,14 @@ export default function CombatMap({
   const grid = useMemo(() => normalizeGrid(scene?.grid ?? {}), [scene?.grid]);
   const insetLeft = inset?.left ?? 0;
   const insetRight = inset?.right ?? 0;
-  const baseFit = useMemo(
-    () => fitImage(stageWidth, stageHeight, natural.width, natural.height, { left: insetLeft, right: insetRight }),
-    [stageWidth, stageHeight, natural.width, natural.height, insetLeft, insetRight]
-  );
+  // The whole board fits at zoom 1: the picture and the 2 squares round it
+  // (combatGrid.js GRID_MARGIN_SQUARES). `baseFit` is still the picture's place.
+  const baseFit = useMemo(() => {
+    const m = GRID_MARGIN_SQUARES * grid.size;
+    if (!natural.width) return fitImage(stageWidth, stageHeight, 0, 0, { left: insetLeft, right: insetRight });
+    const board = fitImage(stageWidth, stageHeight, natural.width + 2 * m, natural.height + 2 * m, { left: insetLeft, right: insetRight });
+    return { scale: board.scale, width: natural.width * board.scale, height: natural.height * board.scale, left: board.left + m * board.scale, top: board.top + m * board.scale };
+  }, [stageWidth, stageHeight, natural.width, natural.height, insetLeft, insetRight, grid.size]);
 
   // **Zoom (decided, added with Phase 5)** — per viewer, never synced: the
   // wheel zooms about the pointer (0.5× to 5×), dragging empty map pans, and
@@ -404,12 +409,18 @@ export default function CombatMap({
       {ready && lines && (
         <svg
           className="pointer-events-none absolute"
-          style={{ left: fit.left - area.left, top: fit.top }}
-          width={fit.width}
-          height={fit.height}
-          viewBox={`0 0 ${natural.width} ${natural.height}`}
+          style={{ left: fit.left + lines.rect.x0 * fit.scale - area.left, top: fit.top + lines.rect.y0 * fit.scale }}
+          width={(lines.rect.x1 - lines.rect.x0) * fit.scale}
+          height={(lines.rect.y1 - lines.rect.y0) * fit.scale}
+          viewBox={`${lines.rect.x0} ${lines.rect.y0} ${lines.rect.x1 - lines.rect.x0} ${lines.rect.y1 - lines.rect.y0}`}
           aria-hidden
         >
+          {/* The board's ring past the picture: plain and dark, still squares to stand on. */}
+          <path
+            d={`M${lines.rect.x0},${lines.rect.y0}H${lines.rect.x1}V${lines.rect.y1}H${lines.rect.x0}Z M0,0V${natural.height}H${natural.width}V0Z`}
+            fillRule="evenodd"
+            fill="rgba(39,39,42,0.75)"
+          />
           {highlight && (
             <rect x={highlight.x} y={highlight.y} width={highlight.width} height={highlight.height} fill={HIGHLIGHT} />
           )}

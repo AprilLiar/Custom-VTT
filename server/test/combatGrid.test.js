@@ -28,16 +28,17 @@ test('a stored grid is cleaned and clamped', () => {
   assert.equal(normalizeGrid({ size: 'junk' }).size, GRID_DEFAULTS.size);
 });
 
-test('the grid lives inside a 10% padding of the image', () => {
-  assert.deepEqual(innerRect(1000, 500), { x0: 100, y0: 50, x1: 900, y1: 450 });
+test('the board is the whole picture plus 2 squares on every side', () => {
+  assert.deepEqual(innerRect(1000, 500, { size: 100 }), { x0: -200, y0: -200, x1: 1200, y1: 700 });
+  assert.deepEqual(innerRect(1000, 500), { x0: 0, y0: 0, x1: 1000, y1: 500 }, 'no grid: just the picture');
 });
 
-test('lines fall every square from the offset, framed by the padding edges, and stop there', () => {
+test('lines fall every square from the offset, framed by the board edges, past the picture', () => {
   const { xs, ys } = gridLines(1000, 500, { size: 100, offsetX: 0, offsetY: 0 });
-  assert.deepEqual(xs, [100, 200, 300, 400, 500, 600, 700, 800, 900]);
-  assert.deepEqual(ys, [50, 100, 200, 300, 400, 450]);
+  assert.deepEqual(xs, [-200, -100, 0, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 1100, 1200]);
+  assert.deepEqual(ys, [-200, -100, 0, 100, 200, 300, 400, 500, 600, 700]);
   const shifted = gridLines(1000, 500, { size: 100, offsetX: 30, offsetY: 0 });
-  assert.deepEqual(shifted.xs, [100, 130, 230, 330, 430, 530, 630, 730, 830, 900]);
+  assert.deepEqual(shifted.xs, [-200, -170, -70, 30, 130, 230, 330, 430, 530, 630, 730, 830, 930, 1030, 1130, 1200]);
 });
 
 test('cells and their centres', () => {
@@ -48,18 +49,19 @@ test('cells and their centres', () => {
   assert.deepEqual(cellCenter(grid, 2, 3), { x: 135, y: 170 });
 });
 
-test('a cell holds a token only when its centre is inside the padding', () => {
+test('a cell holds a token when its centre is on the board — the picture and 2 squares round it', () => {
   const grid = { size: 100, offsetX: 0, offsetY: 0 };
-  assert.equal(cellInside(1000, 1000, grid, 0, 0), false, 'centre at 50,50 is in the border');
-  assert.equal(cellInside(1000, 1000, grid, 1, 1), true);
-  assert.equal(cellInside(1000, 1000, grid, 8, 8), true);
-  assert.equal(cellInside(1000, 1000, grid, 9, 1), false);
+  assert.equal(cellInside(1000, 1000, grid, 0, 0), true, 'the picture\'s corner square');
+  assert.equal(cellInside(1000, 1000, grid, -2, -2), true, '2 squares past the picture');
+  assert.equal(cellInside(1000, 1000, grid, 11, 11), true);
+  assert.equal(cellInside(1000, 1000, grid, -3, 0), false, 'beyond the board');
+  assert.equal(cellInside(1000, 1000, grid, 12, 1), false);
   assert.equal(cellInside(1000, 1000, grid, 1.5, 1), false);
 });
 
-test('a cut square is clipped to the padding for the highlight', () => {
+test('a cut square is clipped to the board for the highlight', () => {
   const grid = { size: 100, offsetX: 50, offsetY: 0 };
-  assert.deepEqual(cellRect(1000, 1000, grid, 0, 1), { x: 100, y: 100, width: 50, height: 100 });
+  assert.deepEqual(cellRect(1000, 1000, grid, -3, 1), { x: -200, y: 100, width: 50, height: 100 });
 });
 
 test('the map fits whole and centred between the drawers', () => {

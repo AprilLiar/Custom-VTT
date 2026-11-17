@@ -132,8 +132,8 @@ test('Save Yourself: 1 Speed (2 out of a Pit) for one space; from the Outside ne
   assert.ok(fromOut.some((s) => key(s) === '9,5') && fromOut.some((s) => key(s) === '8,5'));
 });
 
-test('map bounds from the image: cells whose centre is inside the 10% padding', () => {
-  assert.deepEqual(cellBounds(1000, 700, { size: 100, offsetX: 0, offsetY: 0 }), { colMin: 1, colMax: 8, rowMin: 1, rowMax: 5 });
+test('map bounds from the image: the picture and 2 squares round it', () => {
+  assert.deepEqual(cellBounds(1000, 700, { size: 100, offsetX: 0, offsetY: 0 }), { colMin: -2, colMax: 11, rowMin: -2, rowMax: 8 });
   assert.equal(cellBounds(0, 0, { size: 70 }), null);
   const png = Buffer.alloc(24);
   png.set([0x89, 0x50, 0x4e, 0x47], 0);

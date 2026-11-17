@@ -7,15 +7,17 @@
 // (col, row) of this grid, so moving or resizing the grid moves the tokens
 // with it.
 //
-// The grid is drawn only inside a 10% padding of the image (decided): lines
-// simply stop at that inner rectangle, even where that cuts a square short.
-// A cell can hold a token when its centre lies inside the inner rectangle.
+// **The board is the whole picture plus 2 squares on every side (decided,
+// replacing the old 10% inner padding):** the grid's lines run over the image
+// and on past its edge, and a cell can hold a token when its centre lies
+// inside that rectangle. Its edge is the board's edge (Outside beyond it).
 
 export const GRID_DEFAULTS = Object.freeze({ size: 70, offsetX: 0, offsetY: 0, opacity: 0.6 });
 export const GRID_SIZE_MIN = 8;
 export const GRID_SIZE_MAX = 400;
 export const GRID_OFFSET_LIMIT = 400;
-export const GRID_PADDING = 0.1;
+// How many squares the board reaches past each edge of the picture.
+export const GRID_MARGIN_SQUARES = 2;
 
 const clampNum = (n, lo, hi, fallback) => {
   const v = Number(n);
@@ -32,21 +34,18 @@ export function normalizeGrid(g = {}) {
   };
 }
 
-// The rectangle the grid lives in: the image minus a 10% border.
-export function innerRect(width, height) {
-  return {
-    x0: width * GRID_PADDING,
-    y0: height * GRID_PADDING,
-    x1: width * (1 - GRID_PADDING),
-    y1: height * (1 - GRID_PADDING),
-  };
+// The rectangle the grid lives in: the image grown by GRID_MARGIN_SQUARES
+// squares of `grid` on every side (image pixels; negative past the top-left).
+export function innerRect(width, height, grid = null) {
+  const m = GRID_MARGIN_SQUARES * (grid?.size ?? 0);
+  return { x0: 0 - m || 0, y0: 0 - m || 0, x1: width + m, y1: height + m };
 }
 
 // Positions of the grid lines that fall inside the inner rectangle, in image
 // pixels: every `offset + k * size`. The rectangle's own edges are drawn too,
 // so the grid always has a frame.
 export function gridLines(width, height, grid) {
-  const { x0, y0, x1, y1 } = innerRect(width, height);
+  const { x0, y0, x1, y1 } = innerRect(width, height, grid);
   const along = (lo, hi, offset, size) => {
     const out = [];
     let k = Math.ceil((lo - offset) / size);
@@ -71,7 +70,7 @@ export const cellAt = (grid, x, y) => ({
 // Whether a cell can hold a token: its centre is inside the inner rectangle.
 export function cellInside(width, height, grid, col, row) {
   if (!Number.isInteger(col) || !Number.isInteger(row)) return false;
-  const { x0, y0, x1, y1 } = innerRect(width, height);
+  const { x0, y0, x1, y1 } = innerRect(width, height, grid);
   const c = cellCenter(grid, col, row);
   return c.x >= x0 && c.x <= x1 && c.y >= y0 && c.y <= y1;
 }
@@ -79,7 +78,7 @@ export function cellInside(width, height, grid, col, row) {
 // The square a cell covers, clipped to the inner rectangle — what the drop
 // highlight fills.
 export function cellRect(width, height, grid, col, row) {
-  const { x0, y0, x1, y1 } = innerRect(width, height);
+  const { x0, y0, x1, y1 } = innerRect(width, height, grid);
   const left = Math.max(x0, grid.offsetX + col * grid.size);
   const top = Math.max(y0, grid.offsetY + row * grid.size);
   const right = Math.min(x1, grid.offsetX + (col + 1) * grid.size);

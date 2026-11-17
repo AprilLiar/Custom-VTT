@@ -41,14 +41,16 @@ export function imageSize(buf) {
   return null;
 }
 
-// The cells whose centre lies inside the map's inner rectangle (combatGrid.js
-// `cellInside`), as a rectangle of columns and rows — or null when unknown.
-export function cellBounds(width, height, grid, padding = 0.1) {
+// The cells whose centre lies inside the board — the picture plus
+// `marginSquares` squares on every side (combatGrid.js `innerRect` /
+// `cellInside`) — as a rectangle of columns and rows, or null when unknown.
+export function cellBounds(width, height, grid, marginSquares = 2) {
   if (!width || !height || !grid?.size) return null;
-  const x0 = width * padding;
-  const x1 = width * (1 - padding);
-  const y0 = height * padding;
-  const y1 = height * (1 - padding);
+  const m = marginSquares * grid.size;
+  const x0 = -m;
+  const x1 = width + m;
+  const y0 = -m;
+  const y1 = height + m;
   const lo = (v0, off) => Math.ceil((v0 - off) / grid.size - 0.5);
   const hi = (v1, off) => Math.floor((v1 - off) / grid.size - 0.5);
   const b = { colMin: lo(x0, grid.offsetX), colMax: hi(x1, grid.offsetX), rowMin: lo(y0, grid.offsetY), rowMax: hi(y1, grid.offsetY) };
