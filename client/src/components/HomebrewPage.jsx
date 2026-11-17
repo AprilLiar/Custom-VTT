@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useSkillsEnabled } from '../lib/skillsSetting.js';
 import { Copy, Plus, Trash2 } from 'lucide-react';
 import { socket } from '../socket.js';
 import { useRole } from '../roleContext.jsx';
@@ -172,6 +173,8 @@ function Field({ label, children }) {
 }
 
 function ItemEditor({ item, setItem, idx, book, sync, onClose }) {
+  // Skills off (GM setting): the Form's Skill fields are hidden; what is stored stays.
+  const skillsOn = useSkillsEnabled();
   const set = (patch) => setItem((e) => ({ ...e, ...patch }));
   const save = () => {
     // An Ability without its own text gets its rules' summary.
@@ -272,6 +275,7 @@ function ItemEditor({ item, setItem, idx, book, sync, onClose }) {
                 className={inputClass}
               />
             </Field>
+            {skillsOn && (
             <Field label="Skill">
               <select
                 value={item.customSkill ? OTHER_SKILL : (item.skillId ?? '')}
@@ -291,7 +295,8 @@ function ItemEditor({ item, setItem, idx, book, sync, onClose }) {
                 <option value={OTHER_SKILL}>Other (write your own)…</option>
               </select>
             </Field>
-            {item.customSkill && (
+            )}
+            {skillsOn && item.customSkill && (
               <div className="space-y-2 sm:col-span-2">
                 <Field label="Custom Skill name">
                   <input

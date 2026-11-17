@@ -706,8 +706,8 @@ async function dropSummonFightState(summonIds) {
 
 // The table settings as the client sees them: { simpleLanes, laneY }.
 async function readTableSettings() {
-  const row = await one('SELECT simple_lanes, lane_y FROM table_settings WHERE id = 1');
-  return { simpleLanes: clampLanes(row?.simple_lanes), laneY: clampLaneY(row?.lane_y ?? undefined) };
+  const row = await one('SELECT simple_lanes, lane_y, skills_enabled FROM table_settings WHERE id = 1');
+  return { simpleLanes: clampLanes(row?.simple_lanes), laneY: clampLaneY(row?.lane_y ?? undefined), skillsEnabled: row?.skills_enabled !== 0 };
 }
 
 // How many lanes Simple Combat has (table_settings.simple_lanes, 1-3).
@@ -2386,8 +2386,9 @@ io.on('connection', (socket) => {
 
   // **Table settings (GM).** Simple Combat's lane count, for everyone.
   // Also the lanes' height (laneY, a share of the stage height; null resets).
-  on('table_settings:set', async ({ simpleLanes, laneY }) => {
-    if (socket.data.identity?.role !== 'gm' || (simpleLanes === undefined && laneY === undefined)) return;
+  on('table_settings:set', async ({ simpleLanes, laneY, skillsEnabled }) => {
+    if (socket.data.identity?.role !== 'gm' || (simpleLanes === undefined && laneY === undefined && skillsEnabled === undefined)) return;
+    if (skillsEnabled !== undefined) await run('UPDATE table_settings SET skills_enabled = ? WHERE id = 1', [skillsEnabled ? 1 : 0]);
     if (simpleLanes !== undefined) await run('UPDATE table_settings SET simple_lanes = ? WHERE id = 1', [clampLanes(simpleLanes)]);
     if (laneY !== undefined) await run('UPDATE table_settings SET lane_y = ? WHERE id = 1', [laneY === null ? null : clampLaneY(laneY)]);
     io.emit('table_settings:updated', await readTableSettings());

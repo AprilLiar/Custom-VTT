@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { useSkillsEnabled } from '../lib/skillsSetting.js';
 import { Download } from 'lucide-react';
 import { socket } from '../socket.js';
 import { getTableSettings } from '../lib/api.js';
@@ -439,6 +440,7 @@ export default function SettingsPage() {
       </div>
 
       {role === 'gm' && <SimpleCombatLanes />}
+      {role === 'gm' && <SkillsSetting />}
       {role === 'gm' && <OldSystemArchive />}
     </div>
   );
@@ -472,6 +474,44 @@ function SceneSlider({ label, value, min, max, step, onChange, onReset }) {
         >
           Reset
         </button>
+      </div>
+    </div>
+  );
+}
+
+// **Skills (GM, whole table — decided).** Some campaigns use no Skills: off
+// hides them everywhere (builder, sheet, Stance Contests, warnings, Homebrew);
+// what is stored stays, and comes back when turned on again.
+function SkillsSetting() {
+  const on = useSkillsEnabled();
+  return (
+    <div className="panel-cut-lg space-y-3 border border-zinc-800 bg-zinc-900 p-4">
+      <div>
+        <h2 className="text-sm font-bold uppercase tracking-wide text-zinc-400">Skills</h2>
+        <p className="mt-1 text-xs text-zinc-600">
+          Whether this campaign uses Skills — for the whole table. Off hides them in the character builder and sheet,
+          skips the Skill bonus step in Stance Contests and drops Skill warnings. Nothing is deleted: turning them back on
+          shows every character&rsquo;s Skills as they were. GM-only.
+        </p>
+      </div>
+      <div className="flex gap-2" role="radiogroup" aria-label="Skills">
+        {[
+          [true, 'On'],
+          [false, 'Off'],
+        ].map(([v, label]) => (
+          <button
+            key={label}
+            type="button"
+            role="radio"
+            aria-checked={on === v}
+            onClick={() => socket.emit('table_settings:set', { skillsEnabled: v })}
+            className={`min-h-11 flex-1 panel-cut-sm border px-3 text-sm font-semibold ${
+              on === v ? 'border-brand-500 bg-brand-600 text-white' : 'border-zinc-700 bg-zinc-800 text-zinc-300 hover:border-brand-500'
+            }`}
+          >
+            {label}
+          </button>
+        ))}
       </div>
     </div>
   );

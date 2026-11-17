@@ -1561,6 +1561,8 @@ export async function initDb() {
   ddl('INSERT OR IGNORE INTO table_settings (id) VALUES (1)');
   // The lanes' vertical position, a share of the stage height (NULL = 5/7).
   await ensureColumn('table_settings', 'lane_y', 'REAL');
+  // Skills on or off for the whole table (decided): off hides them everywhere; the data stays.
+  await ensureColumn('table_settings', 'skills_enabled', 'INTEGER NOT NULL DEFAULT 1');
 
   // ---------------------------------------------------------------- Audio Player
   //

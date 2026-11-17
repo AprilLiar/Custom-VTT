@@ -3,7 +3,8 @@ import { socket } from '../../socket.js';
 import { getBuild } from '../../lib/api.js';
 import { useContent } from '../../lib/patd/useContent.js';
 import { LEVEL_MAX, XP_AWARDS, deriveBuild, emptyBuild, normalizeBuild, withXp } from '../../lib/patd/build.js';
-import { STEPS, StepBody, grantText } from './BuildSteps.jsx';
+import { STEPS as ALL_STEPS, StepBody, grantText } from './BuildSteps.jsx';
+import { isSkillWarning, useSkillsEnabled } from '../../lib/skillsSetting.js';
 import LevelUpDialog from './LevelUpDialog.jsx';
 import { DiceRow, RulesEntry, rangeText } from './BuildParts.jsx';
 import { ActionCard, SuperMoveCard } from '../actions/ActionCards.jsx';
@@ -17,10 +18,15 @@ import { SPEND_KEYS, SPEND_MODES, spendPrefs } from '../../lib/patd/engine/damag
 // character has (decided: on the sheet only, not in combat).
 
 export default function BuildTab({ characterId, canEdit, isNpc = false }) {
+  // Skills off (GM setting): the Skills step is skipped.
+  const skillsOn = useSkillsEnabled();
+  const STEPS = skillsOn ? ALL_STEPS : ALL_STEPS.filter((st) => st.key !== 'skills');
   const idx = useContent();
   const [saved, setSaved] = useState(undefined); // undefined: loading; null: none yet
   const [draft, setDraft] = useState(null); // the wizard's working copy
-  const [step, setStep] = useState(0);
+  const [rawStep, setStep] = useState(0);
+  // Skills switched off mid-way: never past the last step there is.
+  const step = Math.min(rawStep, STEPS.length - 1);
   const [editing, setEditing] = useState(null); // overview: the step being edited
 
   useEffect(() => {
@@ -80,7 +86,7 @@ export default function BuildTab({ characterId, canEdit, isNpc = false }) {
         <StepBody step={STEPS[step].key} draft={draft} set={(patch) => setDraft((d) => ({ ...d, ...patch }))} idx={idx} />
         <Warnings derived={deriveBuild(draft, idx)} />
         <div className="flex gap-2">
-          <button type="button" disabled={step === 0} onClick={() => setStep((s) => s - 1)} className="min-h-10 panel-cut-sm border border-zinc-700 px-3 text-sm text-zinc-200 disabled:opacity-40">
+          <button type="button" disabled={step === 0} onClick={() => setStep(step - 1)} className="min-h-10 panel-cut-sm border border-zinc-700 px-3 text-sm text-zinc-200 disabled:opacity-40">
             Back
           </button>
           <button
@@ -89,7 +95,7 @@ export default function BuildTab({ characterId, canEdit, isNpc = false }) {
               if (last) {
                 save(draft);
                 setDraft(null);
-              } else setStep((s) => s + 1);
+              } else setStep(step + 1);
             }}
             className="min-h-10 panel-cut-sm bg-brand-600 px-4 text-sm font-semibold text-white hover:bg-brand-500"
           >
@@ -107,6 +113,7 @@ export default function BuildTab({ characterId, canEdit, isNpc = false }) {
 }
 
 function Overview({ saved, idx, canEdit, editing, setEditing, save, characterId, isNpc }) {
+  const skillsOn = useSkillsEnabled();
   const d = useMemo(() => deriveBuild(saved, idx), [saved, idx]);
   const [edit, setEdit] = useState(null);
   const startEdit = (key) => {
@@ -196,7 +203,7 @@ function Overview({ saved, idx, canEdit, editing, setEditing, save, characterId,
         )
       )}
       {section('build', 'Build', <p className="text-sm text-zinc-200">{d.build.buildId ? name(d.build.buildId) : '—'}</p>)}
-      {section(
+      {skillsOn && section(
         'skills',
         'Skills',
         <p className="text-sm text-zinc-200">{[...d.skillIds.map(name), d.customSkill].filter(Boolean).join(' · ') || '—'}</p>
@@ -352,10 +359,12 @@ function XpTracker({ build, level, canEdit, save, idx }) {
 }
 
 function Warnings({ derived }) {
-  if (!derived.warnings.length) return null;
+  const skillsOn = useSkillsEnabled();
+  const warnings = skillsOn ? derived.warnings : derived.warnings.filter((w) => !isSkillWarning(w));
+  if (!warnings.length) return null;
   return (
     <ul className="space-y-0.5 panel-cut-sm border border-amber-600/50 bg-amber-950/30 px-2 py-1.5 text-[11px] text-amber-200">
-      {derived.warnings.map((w) => (
+      {warnings.map((w) => (
         <li key={w}>⚠ {w}</li>
       ))}
     </ul>
