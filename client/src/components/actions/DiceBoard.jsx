@@ -190,8 +190,8 @@ export default function DiceBoard({ payload, onClose, canEdit }) {
   const lists = useMemo(() => {
     if (!idx || !build) return null;
     const d = deriveBuild(build, idx);
-    return turnActions(d, stanceOfBuild(d, payload.stance_key, idx), idx);
-  }, [idx, build, payload.stance_key]);
+    return turnActions(d, stanceOfBuild(d, payload.stance_key, idx), idx, board.battleActions);
+  }, [idx, build, payload.stance_key, board.battleActions]);
 
   // The pool: the roll's results (from the board, or the card for an old roll) and added numbers.
   const pool = useMemo(() => poolOf({ results: board.results?.length ? board.results : payload.results ?? [], extra: board.extra ?? [] }), [board.results, board.extra, payload.results]);

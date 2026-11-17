@@ -425,3 +425,13 @@ textarea {
 @media (prefers-reduced-motion: reduce) {
   .chain-links { animation: none; }
 }
+
+/* Secure the McGuffin: the carried Important Thing glints. */
+@keyframes mcguffin-glint {
+  0%, 100% { filter: drop-shadow(0 0 2px rgba(56, 189, 248, 0.6)); }
+  50% { filter: drop-shadow(0 0 7px rgba(56, 189, 248, 1)); }
+}
+.mcguffin-gem { animation: mcguffin-glint 1.8s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .mcguffin-gem { animation: none; }
+}

@@ -149,6 +149,10 @@ export function makeWorld() {
       return obstacleOf({ kind, square: s });
     },
     destroyObstacle: async () => true,
+    // The Victory Parameters' Actions (Sabotage, Grab It!).
+    sabotage: async () => ({ hp: 4 }),
+    grabIt: async () => ({ ok: true }),
+    damageBomb: async () => ({ destroyed: false, hp: 2 }),
     replaceObstacle: async () => true,
     addTemp: async () => true,
     schedule: async () => true,

@@ -17,6 +17,7 @@ import {
   DESTRUCTIBLE,
   destroyTile,
   isPaletteKind,
+  placementBarred,
   mergeInto,
   placeTile,
   removeTile,
@@ -87,7 +88,8 @@ export function registerMapTileHandlers({ on: onRaw, socket, emitStageUpdated })
   on('map_tile:place', async ({ mode, col, row, kind }) => {
     const sceneId = await target(mode, col, row);
     if (sceneId == null || !isPaletteKind(kind)) return;
-    if (await change(sceneId, mode, col, row, (k) => placeTile(k, kind))) await emitStageUpdated();
+    // No obstacle into a Control Zone, and only a Bomb into a Key Location.
+    if (await change(sceneId, mode, col, row, (k) => (placementBarred(k, kind === 'pit_trap' ? 'pit' : kind) ? k : placeTile(k, kind)))) await emitStageUpdated();
   });
 
   on('map_tile:remove', async ({ mode, col, row, kind }) => {

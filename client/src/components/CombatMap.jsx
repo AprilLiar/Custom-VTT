@@ -459,6 +459,10 @@ export default function CombatMap({
       {ready && activeCombatantId != null && (
         <ChainLayer chains={scene?.battle?.combat?.chains ?? {}} tiles={tiles} tokens={placed} quadOf={tileQuadOf} centerOf={tokenCenter} width={stageWidth} height={stageHeight} thickness={Math.max(2, grid.size * fit.scale * 0.07)} />
       )}
+      {/* Sabotage: each Bomb's HP; Secure the McGuffin: the gem over whoever holds the Important Thing. */}
+      {ready && (
+        <BattleMarks battle={scene?.battle?.combat} tokens={placed} quadOf={tileQuadOf} centerOf={tokenCenter} size={tokenSize} width={stageWidth} height={stageHeight} />
+      )}
       {/* Squares to pick (phase D): above the tiles, below the tokens. */}
       {ready && <ActiveRangeLayer mode="combat" active={activeCombatantId != null && active} quadOf={tileQuadOf} width={stageWidth} height={stageHeight} zIndex={6} />}
       {ready && <PickViewLayer mode="combat" sceneId={scene?.id} quadOf={tileQuadOf} width={stageWidth} height={stageHeight} zIndex={7} />}
@@ -747,6 +751,47 @@ function ChainLayer({ chains, tiles, tokens, quadOf, centerOf, width, height, th
           </g>
         );
       })}
+    </svg>
+  );
+}
+
+// **Victory Parameters on the map:** a Bomb's HP (Sabotage) and the Important
+// Thing carried by its holder (Secure the McGuffin). Stage pixels, over the tokens.
+const SIDE_FILL = { allies: '#38bdf8', enemies: '#f87171', renegades: '#fbbf24' };
+function BattleMarks({ battle, tokens, quadOf, centerOf, size, width, height }) {
+  const bombs = battle?.victory === 'sabotage' ? (battle.sabotage?.bombs ?? []) : [];
+  const holder = battle?.victory === 'secure_the_mcguffin' && battle.mcguffin?.holder != null ? tokens.find((t) => t.id === battle.mcguffin.holder) : null;
+  if (!bombs.length && !holder) return null;
+  const r = Math.max(7, size * 0.2);
+  return (
+    <svg className="pointer-events-none absolute inset-0" width={width} height={height} style={{ zIndex: 12 }} aria-hidden>
+      {bombs.map((b) => {
+        const q = quadOf(b.col, b.row);
+        if (!q) return null;
+        const x = q[1][0] - r * 0.4;
+        const y = q[0][1] + r * 0.4;
+        return (
+          <g key={`${b.col},${b.row}`}>
+            <circle cx={x} cy={y} r={r} fill="#18181b" stroke={SIDE_FILL[b.side] ?? '#f43f5e'} strokeWidth={2} />
+            <text x={x} y={y} textAnchor="middle" dominantBaseline="central" fontSize={r * 1.1} fontWeight="700" fill="#fecdd3" style={{ fontFamily: 'Rajdhani, sans-serif' }}>
+              {b.hp}
+            </text>
+          </g>
+        );
+      })}
+      {holder?.col != null &&
+        (() => {
+          const c = centerOf(holder);
+          const x = c.x + size * 0.36;
+          const y = c.y - size * 0.36;
+          const g = r * 1.1;
+          return (
+            <g className="mcguffin-gem">
+              <polygon points={`${x},${y - g} ${x + g * 0.8},${y - g * 0.2} ${x},${y + g} ${x - g * 0.8},${y - g * 0.2}`} fill="#38bdf8" stroke="#e0f2fe" strokeWidth={1.5} />
+              <polyline points={`${x - g * 0.8},${y - g * 0.2} ${x + g * 0.8},${y - g * 0.2}`} stroke="#e0f2fe" strokeWidth={1} fill="none" />
+            </g>
+          );
+        })()}
     </svg>
   );
 }

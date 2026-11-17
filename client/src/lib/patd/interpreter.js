@@ -37,6 +37,9 @@ import { addPoolValue, removePoolNumber, setPoolValue } from './diceBoard.js';
 
 export const SUPPORTED_OPS = new Set([
   'sequence',
+  // The Victory Parameters' Actions (battleActions.js).
+  'battle_sabotage',
+  'battle_grab_it',
   'gain_tokens',
   'gain_shield',
   'heal',
@@ -492,6 +495,10 @@ export function describe(node) {
     }
     case 'destroy_obstacle':
       return `destroy ${typeof node.obstacle === 'string' ? tokenName(node.obstacle) : 'an obstacle'}`;
+    case 'battle_sabotage':
+      return 'plant a Bomb in an adjacent Key Location';
+    case 'battle_grab_it':
+      return 'pick up the adjacent Important Thing';
     case 'heal':
       return `heal ${n(node.amount)}`.trim();
     case 'damage':
@@ -541,7 +548,15 @@ export function describe(node) {
 //   onUnsupported(node) — a step the engine can't run yet
 export async function runRule(rule, ctx) {
   const scope = scopeFor(rule, ctx);
-  return runScoped(rule, scope, ctx);
+  // Who is acting now (Secure the McGuffin: moved by anyone else, the holder drops it).
+  const wc = ctx.world?.context;
+  const before = wc?.performer;
+  if (wc) wc.performer = ctx.self ?? null;
+  try {
+    return await runScoped(rule, scope, ctx);
+  } finally {
+    if (wc) wc.performer = before;
+  }
 }
 function scopeFor(rule, ctx) {
   return {
@@ -980,7 +995,8 @@ function candidatesOf(rawSel, scope, ctx) {
   if (sel.kind === 'enemy') {
     pool = [...world.enemiesOf(self), ...copies.filter((c) => c.side !== self.side)];
     // A damaging pick may take a Wall or Rubble instead (2+ in one hit breaks it).
-    if (sel.breakables && sel.count !== 'all') pool.push(...(world.obstacles?.(from, obstacleRange, { types: ['wall', 'rubble'] }) ?? []));
+    // (Sabotage: another side's Bomb too — hit it as an enemy.)
+    if (sel.breakables && sel.count !== 'all') pool.push(...(world.obstacles?.(from, obstacleRange, { types: ['wall', 'rubble', 'bomb'] }) ?? []).filter((o) => o.kind !== 'bomb' || o.side !== self.side));
   }
   else if (sel.kind === 'ally' || sel.kind === 'self_and_allies' || sel.kind === 'self_or_ally') pool = world.alliesOf(self);
   // "Yourself and each ally you can see" (Inspire Perfection — phase I).
@@ -989,7 +1005,8 @@ function candidatesOf(rawSel, scope, ctx) {
   else if (sel.kind === 'obstacle') {
     pool = world.obstacles?.(from, obstacleRange, { types: sel.types ?? null }) ?? [];
     // Chained Down: a fighter's named Wall (and its Rubble) is immune to Open The Path.
-    if (ctx?.ability?.id === 'action.system-basic-actions.open-the-path') pool = pool.filter((o) => o.chainedTo == null);
+    // Sabotage: a Bomb cannot be removed by Open The Path either.
+    if (ctx?.ability?.id === 'action.system-basic-actions.open-the-path') pool = pool.filter((o) => o.chainedTo == null && o.kind !== 'bomb');
   }
   else if (sel.kind.endsWith('_or_obstacle')) {
     const units = sel.kind === 'enemy_or_obstacle' ? world.enemiesOf(self) : sel.kind === 'ally_or_obstacle' ? world.alliesOf(self) : world.fighters();
@@ -1497,6 +1514,12 @@ async function run(node, scope, ctx) {
     case 'damage': {
       const n = Math.max(0, num(val(node.amount)));
       for (const f of await targetsOf(node.target, scope, ctx, 'an enemy', { obstacles: true, hit: true })) {
+        // A Bomb (Sabotage) has HP: the hit takes that much off it.
+        if (f.isObstacle && !f.isCopy && f.kind === 'bomb') {
+          const r = world.damageBomb ? await world.damageBomb(f, n, scope.self) : null;
+          ctx.log(r?.destroyed ? `${scope.self.name} destroys the ${f.name}` : `${scope.self.name} hits the ${f.name} for ${n}${r ? ` (${r.hp} HP left)` : ''}`);
+          continue;
+        }
         // A Wall or Rubble hit for 2+ in one hit is destroyed (book p.11; phase E).
         if (f.isObstacle && !f.isCopy) {
           if (n >= 2 && (f.kind === 'wall' || f.kind === 'rubble')) {
@@ -1596,6 +1619,18 @@ async function run(node, scope, ctx) {
     }
     // **Obstacles (phase E):** placed on picked spaces by the book's stacking
     // (mapTiles.js); a Copy is placed for whoever makes it (`self`).
+    case 'battle_sabotage': {
+      if (!world.sabotage) return unsupported(node, scope, ctx);
+      const r = await world.sabotage(scope.self);
+      ctx.log(r?.error ? `${scope.self.name}: ${r.error}` : `${scope.self.name} plants a Bomb (${r.hp} HP)`);
+      return;
+    }
+    case 'battle_grab_it': {
+      if (!world.grabIt) return unsupported(node, scope, ctx);
+      const r = await world.grabIt(scope.self);
+      ctx.log(r?.error ? `${scope.self.name}: ${r.error}` : `${scope.self.name} grabs the Important Thing`);
+      return;
+    }
     case 'place_obstacle': {
       const kind = val(node.obstacle);
       if (!world.placeObstacle || !OBSTACLE_OPS_KINDS.has(kind)) return unsupported(node, scope, ctx);

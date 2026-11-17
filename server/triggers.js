@@ -16,7 +16,7 @@ import { WEIGHT_BY_KEY, crossesBleed } from '../client/src/lib/cinematicWeight.j
 import { TOKEN_BY_KEY, capOf, innateArmor } from '../client/src/lib/panicTokens.js';
 import { TRAY, clampLanes, moveOnLane, packLane } from '../client/src/lib/simpleLane.js';
 import { inBounds as inBoundsAt, isEmpty as isEmptyAt, makeBoard, nearestCells, neighbors as sideSquares, occupant as occupantAt } from '../client/src/lib/patd/engine/board.js';
-import { BELT_DIRS, OBSTACLES as OBSTACLE_KINDS, TILE_BY_KEY, placeTile, removeTile } from '../client/src/lib/mapTiles.js';
+import { BELT_DIRS, CONTROL_SIDE, OBSTACLES as OBSTACLE_KINDS, TILE_BY_KEY, placeTile, placementBarred, removeTile } from '../client/src/lib/mapTiles.js';
 import { cellBounds, imageSize } from './imageSize.js';
 import { sceneGrid } from './combatMap.js';
 import { evalValue, gridDistance, ruleSupport, runRule, targetable } from '../client/src/lib/patd/interpreter.js';
@@ -455,7 +455,11 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
       const b = makeBoard({
         bounds: endless ? null : bounds,
         tiles: pyroclasm ? [...tileList, ...tileList.filter((t) => t.kind === 'pit').map((t) => ({ ...t, kind: 'trap' }))] : tileList,
-        units: [...fighters, ...copies].filter((f) => f.square).map((f) => ({ id: f.id, square: f.square, size: f.size ?? 1 })),
+        // (A Bomb fills its space: nobody enters it, a push stops before it.)
+        units: [
+          ...[...fighters, ...copies].filter((f) => f.square).map((f) => ({ id: f.id, square: f.square, size: f.size ?? 1 })),
+          ...tileList.filter((t) => t.kind === 'bomb').map((t) => ({ id: `bomb:${t.col},${t.row}`, square: { col: t.col, row: t.row }, size: 1 })),
+        ],
         exits: arena.has('cage_match') || arena.has('trick_room') || endless ? 'none' : mode === 'simple' ? 'cols' : 'all',
       });
       // Where comebacks land when the board itself has no edge.
@@ -510,7 +514,33 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
       markDirty();
       if (!quiet) await flushStage();
       if (!quiet) await cuffCheck(f);
+      await mcguffinMoved(f, from, sq, how);
       if (!quiet && from && sq && (how === 'move' || how === 'push' || how === 'pull') && !slidingIds.has(f.id)) await icySlide(f, from, sq);
+    };
+    // **Secure the McGuffin:** the holder carries the Important Thing. Moved by
+    // anyone else's Action or Ability (a push, pull, swap, Action Movement), they
+    // drop it where this move began; any teleport — even their own — leaves it
+    // behind; leaving play drops it too. Carried into their own side's Control
+    // Zone, their side wins. (A belt, Icy Floor's slide and Free Movement are
+    // nobody's Action: they keep it.)
+    const mcguffinMoved = async (f, from, sq, how) => {
+      if (battle.victory !== 'secure_the_mcguffin' || battle.mcguffin?.holder !== f.id || f.isCopy) return;
+      const performer = world.context?.performer;
+      const byOther = performer != null && performer.id !== f.id && how !== null && !slidingIds.has(f.id);
+      const drop = !sq || how === 'teleport' || (byOther && (how === 'push' || how === 'pull' || how === 'move')) || (how == null && performer != null && performer.id !== f.id);
+      if (drop && from) {
+        await writeKinds(from, placeTile(kindsAtSq(from), 'important'));
+        battle.mcguffin = { holder: null };
+        await saveBattleState();
+        await postCard('reminder', { title: 'Secure the McGuffin', text: `${f.name} drops the Important Thing${how === 'teleport' ? ' (a teleport leaves it behind)' : ''}.`, fighters: [{ name: f.name }], automatic: 'battle', notice: true });
+        return;
+      }
+      if (sq) await mcguffinHome(f);
+    };
+    const mcguffinHome = async (f) => {
+      if (!f.square || !world.env) return;
+      const zone = kindsAtSq(f.square).map((k) => CONTROL_SIDE[k]).filter(Boolean);
+      if (zone.includes(f.side)) await announceWin(world.env, f.side, `${f.name} carried the Important Thing into their Control Zone.`);
     };
     // **Icy Floor (Arena):** after a movement ends, one more space the same way
     // — not into a Wall or Rubble, not after stopping in Rubble or a Pit, not
@@ -693,7 +723,19 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
       const base = t.kind === 'deadly_trap' ? 'Deadly Trap' : t.kind[0].toUpperCase() + t.kind.slice(1);
       const chainedTo = chainOwnerAt(t);
       const owner = chainedTo != null ? fighters.find((f) => f.id === chainedTo) : null;
-      return { id: `${t.col},${t.row}:${t.kind}`, isObstacle: true, kind: t.kind, name: owner ? `${owner.name}'s ${base}` : base, square: { col: t.col, row: t.row }, chainedTo };
+      // Sabotage: a Bomb belongs to the team that planted it.
+      const bomb = t.kind === 'bomb' ? bombAt(t) : null;
+      const bombName = bomb ? `${SIDE_LABEL[bomb.side] ?? bomb.side}' Bomb` : null;
+      return { id: `${t.col},${t.row}:${t.kind}`, isObstacle: true, kind: t.kind, name: bombName ?? (owner ? `${owner.name}'s ${base}` : base), square: { col: t.col, row: t.row }, chainedTo, side: bomb?.side ?? null };
+    };
+    const bombAt = (sq) => (battle.sabotage?.bombs ?? []).find((x) => x.col === sq.col && x.row === sq.row) ?? null;
+    // Writes this fight's Sabotage / McGuffin state back to the Scene (and keeps it here).
+    const saveBattleState = async () => {
+      const keep = { sabotage: battle.sabotage, mcguffin: battle.mcguffin };
+      const nb = await updateBattle(sceneId, mode, (bt) => ({ ...bt, ...keep }));
+      battle.sabotage = nb.sabotage;
+      battle.mcguffin = nb.mcguffin;
+      markDirty();
     };
     const world = {
       // Fight Setup's settings for this fight (Tilts, Arena, Victory, Complications).
@@ -924,6 +966,7 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
         // Rubble and Walls fill a space: not onto a fighter or a Copy.
         if ((kind === 'wall' || kind === 'copy') && occupantAt(b, sq) != null) return false;
         if (kind === 'copy') return isEmptyAt(b, sq);
+        if (placementBarred(kindsAtSq(sq), kind === 'pit_trap' ? 'pit' : kind)) return false;
         return placeTile(kindsAtSq(sq), kind).includes(kind);
       },
       placeObstacle: async (kind, sq, owner = null) => {
@@ -986,10 +1029,73 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
         const by = tileList.find((t) => t.col === from.col && t.row === from.row && t.kind === o.kind)?.placed_by ?? null;
         await writeKinds(from, removeTile(kindsAtSq(from), o.kind));
         await writeKinds(sq, placeTile(kindsAtSq(sq), o.kind), by);
+        if (o.kind === 'bomb') {
+          const rec = bombAt(from);
+          if (rec) {
+            rec.col = sq.col;
+            rec.row = sq.row;
+            await saveBattleState();
+          }
+        }
         o.square = { col: sq.col, row: sq.row };
         o.id = `${sq.col},${sq.row}:${o.kind}`;
         await flushStage();
         return true;
+      },
+      // **Sabotage (Action, 1+):** a Bomb into an adjacent Key Location — not
+      // while an enemy or another Bomb is in it. HP = the Bleed Value.
+      saveBattle: () => saveBattleState(),
+      sabotage: async (self) => {
+        if (!self?.square) return { error: 'not on the board' };
+        const free = tileList
+          .filter((t) => t.kind === 'key_location' && gridDistance(t, self.square) === 1)
+          .map((t) => ({ col: t.col, row: t.row }))
+          .filter((sq) => !kindsAtSq(sq).includes('bomb') && !fighters.some((x) => x.side !== self.side && x.square && x.square.col === sq.col && x.square.row === sq.row));
+        if (!free.length) return { error: 'no free Key Location beside them (an enemy or a Bomb is in it, or none is adjacent)' };
+        let at = free[0];
+        if (free.length > 1 && world.env) {
+          const e = world.env;
+          const ans = await ask(self, e.key, e.gen, e.tg, e.when)({ kind: 'square', mode, title: 'Sabotage', text: `${self.name}: which Key Location?`, options: free.map((q) => ({ id: `${q.col},${q.row}`, label: `column ${q.col}, row ${q.row}`, col: q.col, row: q.row })), minimum: 1, maximum: 1 });
+          const id = Array.isArray(ans) ? ans[0] : ans;
+          at = free.find((q) => `${q.col},${q.row}` === id) ?? at;
+        }
+        // A fighter standing there (an ally) shares it; the Bomb only needs the Key Location.
+        await writeKinds(at, placeTile(kindsAtSq(at), 'bomb'), self.characterId ?? null);
+        const hp = Math.max(1, weight.bleed ?? 4);
+        battle.sabotage.bombs = [...(battle.sabotage.bombs ?? []).filter((x) => !(x.col === at.col && x.row === at.row)), { col: at.col, row: at.row, side: self.side, hp, max: hp }];
+        await saveBattleState();
+        await flushStage();
+        return { hp, at };
+      },
+      // A hit on a Bomb: its HP goes down; at 0 it is removed from play.
+      damageBomb: async (o, n, by = null) => {
+        const rec = bombAt(o.square);
+        if (!rec) {
+          await writeKinds(o.square, removeTile(kindsAtSq(o.square), 'bomb'));
+          return { destroyed: true, hp: 0 };
+        }
+        rec.hp = Math.max(0, rec.hp - Math.max(0, Number(n) || 0));
+        if (rec.hp <= 0) {
+          battle.sabotage.bombs = battle.sabotage.bombs.filter((x) => x !== rec);
+          await writeKinds(o.square, removeTile(kindsAtSq(o.square), 'bomb'));
+          countDestroyed(by);
+        }
+        await saveBattleState();
+        await flushStage();
+        return { destroyed: rec.hp <= 0, hp: rec.hp };
+      },
+      // **Grab It! (Action, 1+):** the adjacent Important Thing, if nobody holds it.
+      grabIt: async (self) => {
+        if (!self?.square) return { error: 'not on the board' };
+        if (battle.mcguffin?.holder != null) return { error: 'someone already holds the Important Thing' };
+        const it = tileList.find((t) => t.kind === 'important' && gridDistance(t, self.square) <= 1);
+        if (!it) return { error: 'the Important Thing is not adjacent' };
+        await writeKinds(it, removeTile(kindsAtSq(it), 'important'));
+        battle.mcguffin = { holder: self.id };
+        await saveBattleState();
+        await flushStage();
+        await mcguffinHome(self);
+        return { ok: true };
       },
       // An obstacle pushed away from `origin` or pulled toward it: each step
       // strictly farther or closer, never onto another obstacle; the chooser
@@ -1662,6 +1768,23 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     } else if (b.victory === 'last_one_standing') {
       side = lastOneStanding(all);
       why = 'Only they remain standing.';
+    } else if (b.victory === 'sabotage' && roundEnd) {
+      // 3 Points wins; the Saboteurs without 3 by the end of round 3 are driven off.
+      const pts = b.sabotage?.points ?? {};
+      const sab = o.saboteurs;
+      const won = ['allies', 'enemies', 'renegades'].filter((s) => (pts[s] ?? 0) >= 3 && (s === sab || s === 'renegades'));
+      if (won.length > 1) {
+        env.rt.victory = { side: null, why: 'both' };
+        await postCard('reminder', { title: 'Sabotage: the Defense loses', text: 'The Saboteurs and the Renegades reach 3 Points together. The Defense is out; the other two fight on under a new Victory Parameter (the GM picks it). Nobody heals or discards; a new Round starts.', fighters: [], automatic: 'victory' });
+        return;
+      }
+      if (won.length) {
+        side = won[0];
+        why = 'Their Bombs scored 3 Points.';
+      } else if (sab && round >= 3) {
+        side = sab === 'allies' ? 'enemies' : 'allies';
+        why = 'The Saboteurs were driven off: no 3 Points by the end of round 3.';
+      }
     }
     if (side) await announceWin(env, side, why);
   }
@@ -1698,6 +1821,16 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     if (b.arena.includes('pyroclasm')) {
       const n = await world.rubbleToPitTraps();
       if (n) await postCard('reminder', { title: 'Pyroclasm', text: `End of round ${fightRow.round}: ${n} Rubble crumble${n === 1 ? 's' : ''} into Pit Traps.`, fighters: [], automatic: 'battle', notice: true });
+    }
+    // **Sabotage:** each Bomb in play scores 1 Point for its team.
+    if (b.victory === 'sabotage') {
+      const onMap = world.markers('bomb');
+      const live = (b.sabotage?.bombs ?? []).filter((x) => onMap.some((t) => t.col === x.col && t.row === x.row));
+      b.sabotage.bombs = live;
+      for (const x of live) b.sabotage.points[x.side] = (b.sabotage.points[x.side] ?? 0) + 1;
+      await world.saveBattle();
+      const tally = Object.entries(b.sabotage.points).filter(([, n]) => n > 0).map(([s, n]) => `${SIDE_LABEL[s] ?? s} ${n}`).join(', ');
+      await postCard('reminder', { title: 'Sabotage', text: `End of round ${fightRow.round}: ${live.length ? `${live.length} Bomb${live.length === 1 ? '' : 's'} score${live.length === 1 ? 's' : ''}` : 'no Bomb in play'}. Points: ${tally || 'none yet'} (3 wins).`, fighters: [], automatic: 'battle', notice: true });
     }
     if (b.victory === 'outlast' && b.victoryOpts?.survivors) {
       const attackers = people.filter((f) => f.side !== b.victoryOpts.survivors);

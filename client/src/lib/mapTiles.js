@@ -81,9 +81,11 @@ export const TILES = [
       'King of the Hill: no obstacles may be placed inside. At the end of each Round, if everyone inside (not at 0 HP) is from one Side, that Side wins.',
   },
   {
+    // Before per-side zones (decided): an old Control Zone belongs to nobody; not in the palette.
     key: 'control',
     name: 'Control Zone',
     group: 'marker',
+    hidden: true,
     color: '#22c55e',
     blurb:
       'Secure the McGuffin: a Side’s 3×3 home corner; its units start within 2 spaces of it. Obstacles can never be placed inside. Bring the Important Thing here to win.',
@@ -128,18 +130,64 @@ export const TILES = [
     mapOnly: true,
     blurb: 'Factory: a Conveyor Belt running left. At the end of every turn, every unit and obstacle on it moves 1 space left (into a Trap, Pit or Rubble at its end). Spend 1 Iron or 1 Speed to stay put.',
   },
+  {
+    key: 'control_allies',
+    name: 'Allies Zone',
+    group: 'marker',
+    color: '#38bdf8',
+    mapOnly: true,
+    blurb: 'Secure the McGuffin: the Allies’ Control Zone (3×3, in or near a corner). Obstacles can never be placed in it. An Ally carrying the Important Thing into it wins.',
+  },
+  {
+    key: 'control_enemies',
+    name: 'Enemies Zone',
+    group: 'marker',
+    color: '#f87171',
+    mapOnly: true,
+    blurb: 'Secure the McGuffin: the Enemies’ Control Zone (3×3, in or near a corner). Obstacles can never be placed in it. An Enemy carrying the Important Thing into it wins.',
+  },
+  {
+    key: 'control_renegades',
+    name: 'Renegades Zone',
+    group: 'marker',
+    color: '#fbbf24',
+    mapOnly: true,
+    blurb: 'Secure the McGuffin: the Renegades’ Control Zone. Obstacles can never be placed in it. A Renegade carrying the Important Thing into it wins.',
+  },
+  {
+    key: 'key_location',
+    name: 'Key Location',
+    group: 'marker',
+    color: '#fb7185',
+    mapOnly: true,
+    blurb: 'Sabotage: an empty space where no obstacle but a Bomb may be placed. A Saboteur (or Renegade) beside it plants a Bomb with the Sabotage Action (1+).',
+  },
+  {
+    key: 'bomb',
+    name: 'Bomb',
+    group: 'obstacle',
+    color: '#f43f5e',
+    engineOnly: true,
+    blurb: 'Sabotage: planted on a Key Location. It blocks the space, has HP equal to the Bleed Value (hit it as an enemy), and cannot be removed by Open The Path. At the end of each Round each Bomb scores 1 Point for its team.',
+  },
 ];
 // Factory's Conveyor Belts: kind → the way they run.
+// Secure the McGuffin: whose Control Zone a tile is (decided: per-side tiles).
+export const CONTROL_SIDE = { control_allies: 'allies', control_enemies: 'enemies', control_renegades: 'renegades' };
 export const BELT_DIRS = { belt_n: { dc: 0, dr: -1 }, belt_e: { dc: 1, dr: 0 }, belt_s: { dc: 0, dr: 1 }, belt_w: { dc: -1, dr: 0 } };
 export const TILE_BY_KEY = Object.fromEntries(TILES.map((t) => [t.key, t]));
 
 // The kinds actually stored. Pit Trap is shorthand for a Pit and a Trap in one
 // square, so it is stored as both and only exists as a palette entry and a label.
-export const STORED_KINDS = ['fog', 'pit', 'rubble', 'trap', 'deadly_trap', 'wall', 'danger', 'king', 'control', 'important', 'belt_n', 'belt_e', 'belt_s', 'belt_w'];
-export const OBSTACLES = new Set(['fog', 'pit', 'rubble', 'trap', 'deadly_trap', 'wall']);
-export const isPaletteKind = (k) => k in TILE_BY_KEY;
+export const STORED_KINDS = ['fog', 'pit', 'rubble', 'trap', 'deadly_trap', 'wall', 'danger', 'king', 'control', 'important', 'belt_n', 'belt_e', 'belt_s', 'belt_w', 'control_allies', 'control_enemies', 'control_renegades', 'key_location', 'bomb'];
+export const OBSTACLES = new Set(['fog', 'pit', 'rubble', 'trap', 'deadly_trap', 'wall', 'bomb']);
+// (A Bomb is planted by the Sabotage Action only — never from the palette.)
+export const isPaletteKind = (k) => k in TILE_BY_KEY && !TILE_BY_KEY[k].engineOnly;
+// No obstacle may ever be placed in a Control Zone; only a Bomb in a Key Location.
+export const placementBarred = (kinds, kind) =>
+  OBSTACLES.has(kind) && (kinds.some((k) => k in CONTROL_SIDE || k === 'control') || (kinds.includes('key_location') && kind !== 'bomb'));
 
-const ORDER = new Map(['fog', 'pit', 'pit_trap', 'rubble', 'trap', 'deadly_trap', 'wall', 'danger', 'king', 'control', 'important', 'belt_n', 'belt_e', 'belt_s', 'belt_w'].map((k, i) => [k, i]));
+const ORDER = new Map(['fog', 'pit', 'pit_trap', 'rubble', 'trap', 'deadly_trap', 'wall', 'danger', 'king', 'control', 'important', 'belt_n', 'belt_e', 'belt_s', 'belt_w', 'control_allies', 'control_enemies', 'control_renegades', 'key_location', 'bomb'].map((k, i) => [k, i]));
 const sorted = (set) => [...set].sort((a, b) => ORDER.get(a) - ORDER.get(b));
 const markersOf = (kinds) => kinds.filter((k) => !OBSTACLES.has(k));
 

@@ -68,9 +68,9 @@ export const PARAMS = [
     text: 'Survivors vs Attackers (who go first). Attackers return and heal fully each round end. Survivors standing after round 3 win. No Fight Must Go On.' },
   { key: 'protect_the_vip', family: 'victory', name: 'Protect the VIP', icon: 'ShieldUser', lane: true, built: true,
     text: 'Each side has a VIP with +10 max HP on their first bar. A side whose VIP falls loses. Anyone may give their turn to the VIP.' },
-  { key: 'sabotage', family: 'victory', name: 'Sabotage', icon: 'Bomb', lane: false, built: false,
+  { key: 'sabotage', family: 'victory', name: 'Sabotage', icon: 'Bomb', lane: false, built: true,
     text: 'Saboteurs (who go first) plant Bombs (HP = Bleed Value) on Key Locations; each scores 1 at round end. 3 points wins; otherwise the Defense wins after round 3.' },
-  { key: 'secure_the_mcguffin', family: 'victory', name: 'Secure the McGuffin', icon: 'Gem', lane: false, built: false,
+  { key: 'secure_the_mcguffin', family: 'victory', name: 'Secure the McGuffin', icon: 'Gem', lane: false, built: true,
     text: 'Grab It! the Important Thing and bring it into your Control Zone to win. Moved by anyone else, you drop it.' },
   { key: 'tournament', family: 'victory', name: 'Tournament Play', icon: 'Medal', lane: true, built: true,
     text: 'Best of 3 or 5. A side loses a round when one of them goes Outside or two reach 0 HP; positions, HP and tokens reset. A drawn round just continues.' },
@@ -118,7 +118,17 @@ export function normalizeBattle(raw) {
     bestOf: o.bestOf === 5 ? 5 : 3,
   };
   const guests = [...new Set((Array.isArray(v.guests) ? v.guests : []).map(Number).filter(Number.isInteger))];
-  return { tilts, arena, victory, complications, cuffs, chains, applied, victoryOpts, guests };
+  // **Sabotage (in a fight):** each side's Points and the Bombs in play — { col, row, side, hp, max }.
+  const sv = v.sabotage && typeof v.sabotage === 'object' ? v.sabotage : {};
+  const points = {};
+  for (const s of SIDES) points[s] = Math.max(0, Math.trunc(Number(sv.points?.[s]) || 0));
+  const bombs = (Array.isArray(sv.bombs) ? sv.bombs : [])
+    .filter((x) => Number.isInteger(x?.col) && Number.isInteger(x?.row) && SIDES.includes(x?.side))
+    .map((x) => ({ col: x.col, row: x.row, side: x.side, hp: Math.max(0, Math.trunc(Number(x.hp) || 0)), max: Math.max(1, Math.trunc(Number(x.max) || 1)) }));
+  const sabotage = { points, bombs };
+  // **Secure the McGuffin (in a fight):** who carries the Important Thing (a combatant id), or nobody.
+  const mcguffin = { holder: Number.isInteger(v.mcguffin?.holder) ? v.mcguffin.holder : null };
+  return { tilts, arena, victory, complications, cuffs, chains, applied, victoryOpts, guests, sabotage, mcguffin };
 }
 
 export function parseBattleColumn(json) {

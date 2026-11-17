@@ -52,8 +52,9 @@ export const costBonus = (action, state) =>
 // available (Archetypes, Build, Features) plus the rolled Stance's (its Form
 // and Style) — then Super Moves. `derived` from deriveBuild, `stance` from
 // stanceOfBuild. → { basic: [id], personal: [{ title, ids }], supers: [id] }
-export function turnActions(derived, stance, idx) {
-  const basicIds = idx.content.basicActionIds ?? [];
+// `extra`: Actions the fight's Victory Parameter grants (battleActions.js), with the Basic ones.
+export function turnActions(derived, stance, idx, extra = []) {
+  const basicIds = [...(idx.content.basicActionIds ?? []), ...(extra ?? []).filter((id) => !(idx.content.basicActionIds ?? []).includes(id))];
   const basic = new Set(basicIds);
   const always = (derived?.constantActionIds ?? []).filter((id) => !basic.has(id) && idx.get(id));
   const own = (stance?.actionIds ?? []).filter((id) => !basic.has(id) && !always.includes(id) && idx.get(id));
@@ -155,6 +156,8 @@ export function publicBoard(rollId, data, active) {
     reaction: data.reaction ? { clusters: data.reaction.clusters ?? [], fighterName: data.reaction.fighterName ?? null } : null,
     // Heroic Spirit (phase F): the ally who takes this turn with these dice.
     heroic: data.heroic ?? null,
+    // The Victory Parameter's Actions on this board (Sabotage, Grab It!).
+    battleActions: data.battleActions ?? [],
   };
 }
 

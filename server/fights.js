@@ -35,6 +35,7 @@ import { forcedFirstSide } from '../client/src/lib/battleVictory.js';
 import { battleFightStart } from './battle.js';
 import { cleanBonuses, contestOfScene, contestState, dropArenas, finishContest, hpLeftOf, mayActFor, runningContest, saveArenas, snapshotStats, startContest } from './contests.js';
 import { CONTEST_BY_KEY, normalizeCustom } from '../client/src/lib/contests.js';
+import { battleActionIdsFor } from '../client/src/lib/patd/battleActions.js';
 
 // The fight's reaction window (phase F): { seq, activeId, offers: { [id]: { clusters, … } }, done } | null.
 export const windowOf = (row) => {
@@ -365,7 +366,9 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
     // turn ends (fight:turn_ended). `roll_id`, `character_id` and
     // `stance_key` open the turn's dice board from it (server/diceMarks.js).
     const rollId = `${combatantId}-${Date.now().toString(36)}${Math.floor(Math.random() * 1296).toString(36)}`;
-    await startRoll({ rollId, combatantId, characterId: fighter.characterId, results, stanceKey: stance.id }, emitAll);
+    // The Victory Parameter's own Actions (Sabotage for the Saboteurs, Grab It! for everyone).
+    const battleActions = battleActionIdsFor(battle, sideOf(fight, combatantId));
+    await startRoll({ rollId, combatantId, characterId: fighter.characterId, results, stanceKey: stance.id, battleActions }, emitAll);
     await postCard('stance_roll', {
       fighter: card(fighter),
       stance: stance.name,

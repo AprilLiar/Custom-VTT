@@ -74,6 +74,9 @@ export async function battleFightStart(fight, { postCard, triggers }) {
   const battle = await updateBattle(fight.scene_id, fight.mode, (b) => {
     b.chains = {};
     b.cuffs = b.cuffs.filter((p) => p.every((id) => ids.has(id)));
+    // Sabotage's score starts at nothing (Bombs already on the map count from their HP onward).
+    b.sabotage = { points: {}, bombs: b.sabotage?.bombs ?? [] };
+    b.mcguffin = { holder: null };
     return b;
   });
   await applyKeepEmComing(fight, postCard);

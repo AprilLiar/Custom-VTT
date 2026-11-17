@@ -18,11 +18,15 @@ export const RULINGS = [
   },
 ];
 
+import { BATTLE_ACTIONS } from './battleActions.js';
+
 export function applyRulings(content) {
   const byAbility = new Map();
   for (const r of RULINGS) byAbility.set(r.abilityId, [...(byAbility.get(r.abilityId) ?? []), r]);
   return {
     ...content,
+    // The Victory Parameters' own Actions (battleActions.js).
+    actions: [...(content.actions ?? []), ...BATTLE_ACTIONS.filter((a) => !(content.actions ?? []).some((x) => x.id === a.id))],
     abilities: content.abilities.map((a) => {
       const rs = byAbility.get(a.id);
       if (!rs) return a;
