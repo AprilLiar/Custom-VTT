@@ -290,6 +290,30 @@ test('Challenge enforced (decided): a damaging Action must include the Challenge
   assert.equal(foe.hp, 7, 'Damage at a 6: 3 damage (the 5+ Gate); its Push is left to people for now');
 });
 
+test('Challenge with the Challenger out of reach: a damaging Action may hit nobody else (book p.76)', async () => {
+  const me = fighter(1, 'a');
+  const foe = fighter(2, 'b');
+  const challenger = fighter(3, 'b');
+  const { w } = makeWorld([me, foe, challenger]);
+  // Only the foe is in range; the Challenger is not.
+  w.inRange = (from, to) => to.id !== 3;
+  const damage = idx.get('action.system-basic-actions.damage');
+  const asked = [];
+  const logs = [];
+  await runRule({ id: damage.id, effect: damage.effect }, { world: w, self: me, state: {}, usage: {}, log: (t) => logs.push(t), ask: async (q) => (asked.push(q), [q.options?.[0]?.id]), resolution: { gateRating: 3 }, mustTarget: 3 });
+  assert.equal(foe.hp, 10, 'the foe in range is not hit: the Challenge forbids it');
+  assert.equal(challenger.hp, 10);
+  assert.equal(asked.length, 0, 'nothing to pick');
+  assert.ok(logs.some((t) => /Challenge/.test(t)), JSON.stringify(logs));
+  // The board asks first: "no valid targets" for a damaging Action while challenged…
+  const ctx = (mustTarget) => ({ world: w, self: me, state: {}, usage: {}, resolution: { gateRating: 1 }, history: {}, payment: {}, mustTarget });
+  assert.equal(hasNoTargets(damage.effect, ctx(3)), true);
+  // …but not without the Challenge.
+  assert.equal(hasNoTargets(damage.effect, ctx(null)), false);
+  // A non-damaging Action is not bound by it.
+  assert.equal(hasNoTargets({ op: 'gain_tokens', token: 'fatigue', amount: 1, target: { kind: 'enemy', range: { mode: 'stance', origin: 'self' }, count: 1 } }, ctx(null)), false);
+});
+
 // ---- full automation phase C: rules changed for a resolution, temporaries, damage steps
 
 test('Iron Form: "you may spend 1 Iron to take 1 less" — offered only with Iron, and it reduces the hit', async () => {

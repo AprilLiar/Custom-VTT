@@ -321,7 +321,9 @@ export function createActionRunner(kit) {
     if (!placement.copied && !placement.free) {
       let none = false;
       try {
-        none = hasNoTargets(action.effect, { world: env.world, self: actor, state: fighterRt(env.rt, actor.id).state, usage: env.usage, resolution: { gateRating: placement.stop ?? 0 }, history: {}, payment: {} });
+        // (Holding a Challenge, a damaging Action may only target the Challenger.)
+        const challenger = hasDamage(action.effect) && actor.challengeId != null ? actor.challengeId : null;
+        none = hasNoTargets(action.effect, { world: env.world, self: actor, state: fighterRt(env.rt, actor.id).state, usage: env.usage, resolution: { gateRating: placement.stop ?? 0 }, history: {}, payment: {}, mustTarget: challenger });
       } catch {
         none = false;
       }

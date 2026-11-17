@@ -721,6 +721,20 @@ function performCandidates(sel, scope, ctx, actor) {
 const THROW_ID = 'action.system-basic-actions.throw';
 // Picks that an Action's extra target (Blaster Form, Amplify) may add to.
 const EXTRA_TARGET_KINDS = new Set(['enemy', 'ally', 'unit', 'enemy_or_obstacle', 'unit_or_obstacle', 'ally_or_obstacle']);
+// **Challenge (book p.76; decided: enforced):** "when you hold someone's
+// Challenge, all of your damage-dealing Actions must include them as one of
+// their targets." The picks that can take enemies: with the Challenger among
+// the candidates they must be picked (below); without them — out of range,
+// out of sight — no other enemy, Copy or obstacle may be, so the Action can
+// hit nobody (allies a 'unit' pick may take stay).
+const CHALLENGE_KINDS = new Set(['enemy', 'unit', 'enemy_or_obstacle', 'unit_or_obstacle']);
+function challengeBound(pool, sel, ctx, self) {
+  if (ctx.mustTarget == null || !CHALLENGE_KINDS.has(sel.kind)) return { pool, must: null, barred: false };
+  const must = pool.find((f) => f.id === ctx.mustTarget) ?? null;
+  if (must) return { pool, must, barred: false };
+  const rest = pool.filter((f) => !f.isObstacle && !(f.side != null && self?.side != null && f.side !== self.side));
+  return { pool: rest, must: null, barred: rest.length < pool.length };
+}
 const DECLINED = Symbol('declined');
 // A "you may" opening with a pick offers its own skip (phase D: a square too).
 const PICK_OPS = new Set([
@@ -852,7 +866,9 @@ export function hasNoTargets(effect, ctx) {
       judged++;
       try {
         const breakable = n.kind === 'enemy' && hasDamageOp(effect);
-        if (candidatesOf(breakable ? { ...n, breakables: true } : n, scope, ctx)?.pool?.length) open++;
+        const pool = candidatesOf(breakable ? { ...n, breakables: true } : n, scope, ctx)?.pool ?? [];
+        // (Holding a Challenge, a damaging Action may only take the Challenger.)
+        if (challengeBound(pool, n, ctx, ctx.self).pool.length) open++;
       } catch {
         open++;
       }
@@ -1068,7 +1084,13 @@ async function pickFrom(c, scope, ctx, label) {
   // **Challenge (decided: enforced).** A damaging Action must include the
   // Challenger whenever they are a legal target: the only choice for a single
   // target, and a required pick among several.
-  const must = ctx.mustTarget != null && (sel.kind === 'enemy' || sel.kind === 'unit') ? pool.find((f) => f.id === ctx.mustTarget) : null;
+  const bound = challengeBound(pool, sel, ctx, self);
+  const must = bound.must;
+  if (bound.barred) {
+    ctx.log?.(`${self?.name ?? 'They'} hold${self ? 's' : ''} a Challenge: their Challenger isn't a legal target, so this damaging Action can target no one else`);
+    pool = bound.pool;
+    if (!pool.length) return [];
+  }
   // One target and a Challenger in reach: they're the only choice (still
   // skippable — not attacking at all is allowed).
   if (must && maximum === 1) {
@@ -1080,7 +1102,7 @@ async function pickFrom(c, scope, ctx, label) {
   // kind within the Stance's range — once per Action (`ctx.extraTargets`).
   const base = { pool, maximum };
   let bonus = 0;
-  if ((ctx.extraTargets ?? 0) > 0 && EXTRA_TARGET_KINDS.has(sel.kind) && !must) {
+  if ((ctx.extraTargets ?? 0) > 0 && EXTRA_TARGET_KINDS.has(sel.kind) && !must && !bound.barred) {
     const wide = candidatesOf({ ...sel, range: { mode: 'stance', origin: 'self' }, originBinding: undefined, breakables: false }, scope, { ...ctx, extraTargets: 0 })?.pool ?? [];
     const merged = [...pool, ...wide.filter((f) => !pool.includes(f))];
     if (merged.length > maximum) {
