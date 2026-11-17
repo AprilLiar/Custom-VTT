@@ -136,7 +136,7 @@ check("a player can't move someone they don't control", (await reach(p, tb.id)).
 const r = await reach(p, ta.id);
 const cost = (id) => r.options?.find((o) => o.id === id)?.cost;
 check('Free Movement reach: 1 per lateral space, a diagonal is 2 (the diamond grid), within the Speed held', cost('4,2') === 1 && cost('5,2') === 2 && cost('4,3') === 2 && cost('6,2') === 3 && cost('5,4') === undefined, JSON.stringify(r));
-check('…never onto an occupied space or off the map', cost('2,2') === undefined && !(r.options ?? []).some((o) => o.col < 1 || o.row < 1));
+check('…never onto an occupied space or off the map', cost('2,2') === undefined && !(r.options ?? []).some((o) => o.col < -2 || o.row < -2 || o.col > 11 || o.row > 11));
 p.emit('move:free', { combatantId: ta.id, to: { col: 5, row: 2 } });
 await sleep(800);
 await stage();
@@ -196,7 +196,8 @@ answerWith = null;
 
 console.log('\n--- the Outside ---');
 gm.emit('fighter:token', { ref: { combatantId: ta.id }, key: 'speed', clear: true });
-gm.emit('combat_token:move', { combatantId: ta.id, col: 8, row: 6 });
+// (The board: the 700px picture's columns 0-9 plus 2 squares each side — its east edge is column 11.)
+gm.emit('combat_token:move', { combatantId: ta.id, col: 11, row: 6 });
 await sleep(500);
 answerWith = null;
 gm.emit('fighter:damage', { ref: { combatantId: ta.id }, amount: 1 });
