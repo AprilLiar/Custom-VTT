@@ -329,8 +329,21 @@ function StanceStep({ draft, set, idx }) {
                 Remove
               </button>
             </div>
+            {/* Any name the player likes (decided); empty: the rules' name. */}
+            <label className="flex items-center gap-2 text-xs text-zinc-400">
+              <span className="shrink-0">Name</span>
+              <input
+                value={s.customName ?? ''}
+                onChange={(e) => update(i, { customName: e.target.value.slice(0, 60) })}
+                placeholder={derived.ruleName}
+                maxLength={60}
+                aria-label={`Stance ${i + 1} custom name`}
+                className="h-8 min-w-0 flex-1 panel-cut-sm border border-zinc-700 bg-zinc-800 px-2 text-sm text-zinc-100 outline-none placeholder:text-zinc-500 focus:border-brand-500"
+              />
+            </label>
             <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-300">
               <span className="font-display font-semibold uppercase tracking-wide text-zinc-100">{derived.name}</span>
+              {derived.customName && <span className="text-zinc-500">({derived.ruleName})</span>}
               <DiceRow dice={derived.dice} />
               <span className="text-zinc-500">{rangeText(derived.range)}</span>
             </div>

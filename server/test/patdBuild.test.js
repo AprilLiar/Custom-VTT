@@ -112,7 +112,7 @@ test('a saved build is cleaned: unknown ids dropped, numbers clamped', () => {
   );
   assert.equal(n.type, 'hero-type.focused');
   assert.deepEqual(n.archetypes, [{ id: 'archetype.angel', variant: 'focused' }]);
-  assert.deepEqual(n.stances, [{ formId: 'form.iron', form2Id: null, styleId: null, alias: 'Armor', constructChoice: null }]);
+  assert.deepEqual(n.stances, [{ formId: 'form.iron', form2Id: null, styleId: null, alias: 'Armor', constructChoice: null, customName: null }]);
   assert.equal(n.level, 10);
   assert.equal(n.xp, 0);
   assert.equal(n.buildId, null);
@@ -162,4 +162,16 @@ test("Frantic: the Frantic abilities are picked per turn, not always on; last tu
   // With only one Form known, last turn's Form is offered again rather than stalling the turn.
   const one = franticOptions({ ...d, formIds: ['form.wild'] }, last, idx);
   assert.equal(one.forms[0].used, false);
+});
+
+test('a Stance may carry its own name (any the player likes); empty keeps the rules name', () => {
+  const raw = { type: 'hero-type.focused', stances: [{ formId: 'form.power', styleId: 'style.halcyon', customName: '  Dragon Fist  ' }, { formId: 'form.blaster', styleId: 'style.relentless', customName: '   ' }] };
+  const b = normalizeBuild(raw, idx);
+  assert.equal(b.stances[0].customName, 'Dragon Fist');
+  assert.equal(b.stances[1].customName, null);
+  const d = deriveBuild(b, idx);
+  assert.equal(d.stances[0].name, 'Dragon Fist');
+  assert.match(d.stances[0].ruleName, /Stance$/);
+  assert.equal(d.stances[1].name, d.stances[1].ruleName);
+  assert.equal(normalizeBuild({ ...raw, stances: [{ ...raw.stances[0], customName: 'x'.repeat(200) }] }, idx).stances[0].customName.length, 60);
 });

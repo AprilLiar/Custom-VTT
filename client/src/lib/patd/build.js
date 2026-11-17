@@ -11,7 +11,8 @@
 //   {
 //     type:       'hero-type.focused' | ... | 'character-type.warrior' | ...,
 //     archetypes: [{ id, variant: 'focused' | 'fused' | 'frantic' }],
-//     stances:    [{ formId, styleId, alias, constructChoice }]  (styleId may be a Freestyle)
+//     stances:    [{ formId, styleId, alias, constructChoice, customName }]  (styleId may be a Freestyle;
+//                 customName: the player's own name for it, shown instead of the rules' name)
 //     forms:      [formId]    — Frantic only: known Forms
 //     styles:     [styleId]   — Frantic only: known Styles
 //     buildId, skills: { replaceFromId, replaceToId, custom },
@@ -130,6 +131,7 @@ export function normalizeBuild(raw, idx) {
       styleId,
       alias: form?.aliases?.includes(s?.alias) ? s.alias : form?.aliases?.[0] ?? null,
       constructChoice: typeof s?.constructChoice === 'string' ? s.constructChoice.slice(0, 40) : null,
+      customName: typeof s?.customName === 'string' && s.customName.trim() ? s.customName.trim().slice(0, 60) : null,
     });
   }
   out.forms = uniq((Array.isArray(b.forms) ? b.forms : []).filter((id) => isKind(idx, id, 'form.'))).slice(0, MAX_STANCES);
@@ -317,7 +319,10 @@ export function deriveStance(pair, idx, bonusDie = null, opts = {}) {
   const style = pair.styleId ? idx.get(pair.styleId) : null;
   const form2 = opts.machine && pair.form2Id ? idx.get(pair.form2Id) : null;
   const alias = pair.alias ?? form?.aliases?.[0] ?? '';
-  const name = [shortStyleName(style?.name ?? '—'), alias || form?.name?.replace(/\s+Form$/, '') || '—', 'Stance'].join(' ');
+  // The rules' name ("Halcyon Blade Stance"), unless the player named it themselves (decided).
+  const ruleName = [shortStyleName(style?.name ?? '—'), alias || form?.name?.replace(/\s+Form$/, '') || '—', 'Stance'].join(' ');
+  const customName = typeof pair.customName === 'string' && pair.customName.trim() ? pair.customName.trim().slice(0, 60) : null;
+  const name = customName ?? ruleName;
   // With the token mechanics its Form and Style bring (Training Tokens, Control
   // Tokens): their Abilities and Actions belong to the Stance (fixed in the QA
   // pass — they were never attached, so they never ran).
@@ -327,6 +332,8 @@ export function deriveStance(pair, idx, bonusDie = null, opts = {}) {
   return {
     key: stanceKey(pair.formId, pair.styleId),
     name,
+    ruleName,
+    customName,
     formId: pair.formId,
     styleId: pair.styleId,
     isFreestyle: Boolean(style?.id?.startsWith('freestyle.')),
