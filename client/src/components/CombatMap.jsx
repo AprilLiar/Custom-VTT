@@ -215,19 +215,26 @@ export default function CombatMap({
     if (!rect) return { x: -1, y: -1 };
     return { x: (clientX - rect.left - fit.left) / fit.scale, y: (clientY - rect.top - fit.top) / fit.scale };
   };
+  // **Endless Field / Pyroclasm (Arena Parameters):** the board has no edge —
+  // every cell beyond the map image is a square too (Pyroclasm's are Traps).
+  const arenaParams = scene?.battle?.combat?.arena ?? [];
+  const boundless = arenaParams.includes('endless_field') || arenaParams.includes('pyroclasm');
+  const lava = arenaParams.includes('pyroclasm');
   const cellUnder = (clientX, clientY) => {
     if (!ready) return null;
     const p = toImage(clientX, clientY);
     const c = cellAt(grid, p.x, p.y);
-    return cellInside(natural.width, natural.height, grid, c.col, c.row) ? c : null;
+    return boundless || cellInside(natural.width, natural.height, grid, c.col, c.row) ? c : null;
   };
   const toStagePx = (x, y) => ({ x: fit.left + x * fit.scale, y: fit.top + y * fit.scale });
 
   // Map tiles: a grid cell's square in stage pixels (only cells that can hold
   // a token).
   const tileQuadOf = (col, row) => {
-    if (!ready || !cellInside(natural.width, natural.height, grid, col, row)) return null;
-    const r = cellRect(natural.width, natural.height, grid, col, row);
+    if (!ready) return null;
+    const inside = cellInside(natural.width, natural.height, grid, col, row);
+    if (!inside && !boundless) return null;
+    const r = inside ? cellRect(natural.width, natural.height, grid, col, row) : { x: grid.offsetX + col * grid.size, y: grid.offsetY + row * grid.size, width: grid.size, height: grid.size };
     const a = toStagePx(r.x, r.y);
     const b = toStagePx(r.x + r.width, r.y + r.height);
     return [[a.x, a.y], [b.x, a.y], [b.x, b.y], [a.x, b.y]];
@@ -244,7 +251,7 @@ export default function CombatMap({
     if (e.button !== 0) return;
     e.stopPropagation();
     // A legal square of the open pick under this token: the tap is the pick's.
-    if (pickAt('combat', t.col, t.row)) return;
+    if (pickAt('combat', t.col, t.row, scene?.id)) return;
     if (!canDrag(t)) {
       onSelect?.(t);
       return;
@@ -317,7 +324,8 @@ export default function CombatMap({
     hoverCell = cellUnder(paletteDrag.x, paletteDrag.y);
     hoverOk = Boolean(hoverCell) && !cellTaken(placed, hoverCell.col, hoverCell.row);
   }
-  const highlight = hoverCell && hoverOk ? cellRect(natural.width, natural.height, grid, hoverCell.col, hoverCell.row) : null;
+  const highlight = hoverCell && hoverOk && cellInside(natural.width, natural.height, grid, hoverCell.col, hoverCell.row) ? cellRect(natural.width, natural.height, grid, hoverCell.col, hoverCell.row) : null;
+  const outsideHighlight = hoverCell && hoverOk && !highlight ? tileQuadOf(hoverCell.col, hoverCell.row) : null;
 
   const tokenSize = grid.size * fit.scale * 0.88;
   // A token's middle: its square's, or — the Giant's 2×2 — between its four.
@@ -360,6 +368,18 @@ export default function CombatMap({
         onPointerUp={onPanUp}
         onPointerCancel={onPanUp}
       >
+      {ready && boundless && lines && (
+        <BeyondTheMap
+          left={area.left}
+          width={Math.max(0, area.right - area.left)}
+          height={stageHeight}
+          inner={{ x0: fit.left + lines.rect.x0 * fit.scale, y0: fit.top + lines.rect.y0 * fit.scale, x1: fit.left + lines.rect.x1 * fit.scale, y1: fit.top + lines.rect.y1 * fit.scale }}
+          step={grid.size * fit.scale}
+          origin={{ x: fit.left + grid.offsetX * fit.scale, y: fit.top + grid.offsetY * fit.scale }}
+          lava={lava}
+          hover={outsideHighlight}
+        />
+      )}
       {src ? (
         <img
           ref={imgRef}
@@ -435,10 +455,14 @@ export default function CombatMap({
           zIndex={7}
         />
       )}
+      {/* Chained Down (Tilt): a chain from each chained fighter to their Wall (or its Rubble). */}
+      {ready && activeCombatantId != null && (
+        <ChainLayer chains={scene?.battle?.combat?.chains ?? {}} tiles={tiles} tokens={placed} quadOf={tileQuadOf} centerOf={tokenCenter} width={stageWidth} height={stageHeight} thickness={Math.max(2, grid.size * fit.scale * 0.07)} />
+      )}
       {/* Squares to pick (phase D): above the tiles, below the tokens. */}
       {ready && <ActiveRangeLayer mode="combat" active={activeCombatantId != null && active} quadOf={tileQuadOf} width={stageWidth} height={stageHeight} zIndex={6} />}
-      {ready && <PickViewLayer mode="combat" quadOf={tileQuadOf} width={stageWidth} height={stageHeight} zIndex={7} />}
-      {ready && <SquarePickLayer mode="combat" quadOf={tileQuadOf} width={stageWidth} height={stageHeight} zIndex={8} />}
+      {ready && <PickViewLayer mode="combat" sceneId={scene?.id} quadOf={tileQuadOf} width={stageWidth} height={stageHeight} zIndex={7} />}
+      {ready && <SquarePickLayer mode="combat" sceneId={scene?.id} quadOf={tileQuadOf} width={stageWidth} height={stageHeight} zIndex={8} />}
 
       {ready && zoomButtons && (
         <div
@@ -640,5 +664,89 @@ export function Token({ token, center, size, lifted = false, animate = true, sli
         </button>
       )}
     </div>
+  );
+}
+
+// **Beyond the map (Endless Field / Pyroclasm):** the grid goes on past the
+// image's edge — faint squares a fighter can be pushed or moved to; under
+// Pyroclasm they glow as lava (every square out there is a Trap). Stage pixels.
+function BeyondTheMap({ left, width, height, inner, step, origin, lava, hover }) {
+  if (!(step > 4)) return null;
+  const xs = [];
+  for (let x = origin.x + Math.ceil((left - origin.x) / step) * step; x <= left + width; x += step) xs.push(x - left);
+  const ys = [];
+  for (let y = origin.y + Math.ceil(-origin.y / step) * step; y <= height; y += step) ys.push(y);
+  const hole = `M0,0H${width}V${height}H0Z M${inner.x0 - left},${inner.y0}V${inner.y1}H${inner.x1 - left}V${inner.y0}Z`;
+  return (
+    <svg className="pointer-events-none absolute inset-0" width={width} height={height} aria-hidden>
+      <defs>
+        <radialGradient id="beyond-lava" cx="50%" cy="50%" r="75%">
+          <stop offset="0%" stopColor="#f97316" stopOpacity="0.35" />
+          <stop offset="100%" stopColor="#7f1d1d" stopOpacity="0.55" />
+        </radialGradient>
+        <clipPath id="beyond-clip">
+          <path d={hole} clipRule="evenodd" />
+        </clipPath>
+      </defs>
+      <g clipPath="url(#beyond-clip)">
+        <rect width={width} height={height} fill={lava ? 'url(#beyond-lava)' : 'rgba(24,24,27,0.6)'} className={lava ? 'beyond-lava' : undefined} />
+        <g stroke={lava ? 'rgba(253,186,116,0.35)' : 'rgba(161,161,170,0.25)'} strokeWidth="1">
+          {xs.map((x) => (
+            <line key={`x${x}`} x1={x} x2={x} y1={0} y2={height} />
+          ))}
+          {ys.map((y) => (
+            <line key={`y${y}`} x1={0} x2={width} y1={y} y2={y} />
+          ))}
+        </g>
+      </g>
+      {hover && <polygon points={hover.map(([x, y]) => `${x - left},${y}`).join(' ')} fill="rgba(250, 204, 21, 0.45)" />}
+    </svg>
+  );
+}
+
+// **Chained Down (Tilt, decided):** an iron chain, sagging and swaying
+// slightly, from the fighter to the Wall they're chained to — while the Wall
+// (or its Rubble) stands. Stage pixels; under the tokens.
+function ChainLayer({ chains, tiles, tokens, quadOf, centerOf, width, height, thickness }) {
+  const links = [];
+  for (const [id, sq] of Object.entries(chains)) {
+    const t = tokens.find((x) => String(x.id) === String(id));
+    if (!t || t.col == null) continue;
+    if (!tiles.some((x) => x.col === sq.col && x.row === sq.row && (x.kind === 'wall' || x.kind === 'rubble'))) continue;
+    const q = quadOf(sq.col, sq.row);
+    if (!q) continue;
+    const a = { x: q.reduce((n, p) => n + p[0], 0) / 4, y: q.reduce((n, p) => n + p[1], 0) / 4 };
+    const b = centerOf(t);
+    links.push({ id, a, b });
+  }
+  if (!links.length) return null;
+  const sag = (a, b, k) => {
+    const mx = (a.x + b.x) / 2;
+    const my = (a.y + b.y) / 2 + Math.max(6, Math.hypot(b.x - a.x, b.y - a.y) * k);
+    return `M${a.x},${a.y} Q${mx},${my} ${b.x},${b.y}`;
+  };
+  return (
+    <svg className="pointer-events-none absolute inset-0" width={width} height={height} style={{ zIndex: 9 }} aria-hidden>
+      {links.map(({ id, a, b }) => {
+        const d1 = sag(a, b, 0.12);
+        const d2 = sag(a, b, 0.2);
+        return (
+          <g key={id}>
+            {/* The links: a dark outline, then alternating steel links that creep along. */}
+            <path d={d1} fill="none" stroke="rgba(0,0,0,0.6)" strokeWidth={thickness * 1.8} strokeLinecap="round">
+              <animate attributeName="d" values={`${d1};${d2};${d1}`} dur="2.6s" repeatCount="indefinite" />
+            </path>
+            <path d={d1} fill="none" stroke="#a1a1aa" strokeWidth={thickness} strokeLinecap="round" strokeDasharray={`${thickness * 2.2} ${thickness * 1.1}`} className="chain-links">
+              <animate attributeName="d" values={`${d1};${d2};${d1}`} dur="2.6s" repeatCount="indefinite" />
+            </path>
+            <path d={d1} fill="none" stroke="#e4e4e7" strokeWidth={thickness * 0.4} strokeLinecap="round" strokeDasharray={`${thickness * 1.1} ${thickness * 2.2}`} className="chain-links">
+              <animate attributeName="d" values={`${d1};${d2};${d1}`} dur="2.6s" repeatCount="indefinite" />
+            </path>
+            {/* The shackle at the Wall. */}
+            <circle cx={a.x} cy={a.y} r={thickness * 1.6} fill="none" stroke="#d4d4d8" strokeWidth={thickness * 0.7} />
+          </g>
+        );
+      })}
+    </svg>
   );
 }

@@ -23,7 +23,7 @@ import { franticOptions, franticPickAllowed } from '../client/src/lib/patd/build
 import { patdContent } from './patdContent.js';
 import { addXp } from './builds.js';
 import { parseRuntime } from '../client/src/lib/patd/engine/runtime.js';
-import { activeBoardOf, closeInterruptBoards, closeReactionBoards, endTurnDice, resumeRoll, startReaction, startRoll } from './diceMarks.js';
+import { activeBoardOf, saveBoard, closeInterruptBoards, closeReactionBoards, endTurnDice, resumeRoll, startReaction, startRoll } from './diceMarks.js';
 import { XP_AWARDS } from '../client/src/lib/patd/build.js';
 import { resolveRef, serialized, shapeFightState } from './combatState.js';
 import { controlsCharacter } from './control.js';
@@ -33,6 +33,8 @@ import { claimInterrupt, dropInterrupts, interruptOf, nextInterrupt, releaseInte
 import { parseBattleColumn, tiltOn } from '../client/src/lib/battleParams.js';
 import { forcedFirstSide } from '../client/src/lib/battleVictory.js';
 import { battleFightStart } from './battle.js';
+import { cleanBonuses, contestOfScene, contestState, dropArenas, finishContest, hpLeftOf, mayActFor, runningContest, saveArenas, snapshotStats, startContest } from './contests.js';
+import { CONTEST_BY_KEY, normalizeCustom } from '../client/src/lib/contests.js';
 
 // The fight's reaction window (phase F): { seq, activeId, offers: { [id]: { clusters, … } }, done } | null.
 export const windowOf = (row) => {
@@ -354,6 +356,9 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
         tooSlow = `d${low.d.sides}`;
       }
     }
+    // Stance Contests: the Skill bonuses' green dice join the roll.
+    const bonus = JSON.parse((await one('SELECT contest_bonus FROM combatants WHERE id = ?', [combatantId]))?.contest_bonus || '[]');
+    for (const b of bonus) for (const sides of { dice_d8: [8], dice_2d6: [6, 6], dice_3d4: [4, 4, 4] }[b.key] ?? []) dice = [...dice, { sides, color: 'green', bonus: true }];
     const results = rollDerived(dice);
     if (tooSlow) await postCard('reminder', { title: 'Too Slow', text: `${fighter.name} discards their lowest die (${tooSlow}) before rolling.`, fighters: [{ name: fighter.name }], automatic: 'battle', notice: true });
     // `combatant_id` lets the Scene keep this card up until that fighter's
@@ -445,7 +450,11 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
     await beginTurn(fight);
   };
 
-  const fightFor = async (mode) => {
+  // `fightId`: a Stance Contest's arena fight (never the active Scene's).
+  const fightFor = async (mode, fightId = null) => {
+    if (fightId != null) {
+      return one('SELECT f.* FROM fights f JOIN scenes s ON s.id = f.scene_id WHERE f.id = ? AND s.contest_id IS NOT NULL', [Number(fightId)]);
+    }
     const sceneId = await activeSceneId();
     if (!sceneId || !MODES.has(mode)) return null;
     return one('SELECT * FROM fights WHERE scene_id = ? AND mode = ?', [sceneId, mode]);
@@ -547,6 +556,9 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
   const nextTurn = async (fight) => {
     // The Round is still ending (its rules run on the engine's chain): wait.
     if (roundEnding.has(fight.id)) return;
+    // A Stance Contest's arena: the contestant's one turn is over.
+    const contestId = await contestOfScene(fight.scene_id);
+    if (contestId) return contestTurnEnded(fight, contestId);
     // Any movement phase is over (the GM's Next turn skips Late Movement),
     // and so is any reaction window.
     if (fight.movement_phase) await setPhase(fight, null);
@@ -603,7 +615,8 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
     if (!fight || orderOf(fight)[fight.turn_index]?.id !== board.combatant_id) return;
     if (phaseOf(fight)?.kind === 'late') return;
     // Late Movement first, if anyone holds Speed (phase D); the turn ends when it's done.
-    const waiting = await speedHolders(fight);
+    // (Not in a Stance Contest's arena: the turn simply ends there.)
+    const waiting = (await contestOfScene(fight.scene_id)) ? [] : await speedHolders(fight);
     if (waiting.length) {
       await setPhase(fight, { kind: 'late', activeId: board.combatant_id, waiting });
       triggers?.movementPhase?.({ ...fight }, 'late', board.combatant_id);
@@ -644,8 +657,8 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
       if (!c || !mayControl(c) || !triggers || !(await freeMoveOk(fight, c))) return ack({ error: 'not now' });
       const reach = await triggers.freeReach({ ...fight }, c.id);
       // Shown to everyone too (batch 3: a shared player monitor), view-only.
-      emitAll?.('pick:view', { id: `move:${c.id}`, kind: 'move', mode: reach.mode, title: 'Free Movement', options: (reach.options ?? []).map((o) => ({ id: o.id, col: o.col, row: o.row })) });
-      ack(reach);
+      emitAll?.('pick:view', { id: `move:${c.id}`, kind: 'move', mode: reach.mode, sceneId: fight.scene_id, title: 'Free Movement', options: (reach.options ?? []).map((o) => ({ id: o.id, col: o.col, row: o.row })) });
+      ack({ ...reach, sceneId: fight.scene_id });
     } catch (err) {
       console.error('error handling move:reach:', err);
       ack({ error: 'failed' });
@@ -687,7 +700,7 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
   socket.on('board:current', async (payload, ack) => {
     if (typeof ack !== 'function') return;
     try {
-      const fight = await fightFor(payload?.mode);
+      const fight = await fightFor(payload?.mode, payload?.fightId ?? null);
       const entry = fight ? orderOf(fight)[fight.turn_index] : null;
       const row = entry && !fight.pending_stance_combatant ? await activeBoardOf(entry.id) : null;
       if (!row || String(row.roll_id).startsWith('react-')) return ack({ payload: null });
@@ -711,7 +724,7 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
   socket.on('fight:active_range', async (payload, ack) => {
     if (typeof ack !== 'function') return;
     try {
-      const fight = await fightFor(payload?.mode);
+      const fight = await fightFor(payload?.mode, payload?.fightId ?? null);
       if (!fight || !triggers?.activeRange) return ack({ combatantId: null, squares: [] });
       ack({ mode: fight.mode, ...(await triggers.activeRange({ ...fight })) });
     } catch (err) {
@@ -889,8 +902,8 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
   // **The turn-start Stance pick.** The fighter's player — or the GM, who can
   // always answer — chooses; only then do its dice roll and the turn's Start
   // reminders fire.
-  on('fight:choose_stance', async ({ mode, stanceId, abilityId = null }) => {
-    const fight = await fightFor(mode);
+  on('fight:choose_stance', async ({ mode, stanceId, abilityId = null, fightId = null }) => {
+    const fight = await fightFor(mode, fightId);
     if (!fight?.pending_stance_combatant) return;
     const c = await one('SELECT * FROM combatants WHERE id = ?', [fight.pending_stance_combatant]);
     if (!c) return;
@@ -941,6 +954,132 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
     await run('UPDATE fights SET allies = ?, enemies = ?, renegades = ? WHERE id = ?', [JSON.stringify(allyIds), JSON.stringify(enemyIds), JSON.stringify(renegadeIds), fight.id]);
     await emitStageUpdated();
   });
+
+  // ---- Stance Contests (GM Tools; server/contests.js) ----
+  const emitContest = async () => emitAll?.('contest:state', await contestState());
+  const contestLabel = (def) => `${def.name}${def.key === 'custom' ? '' : ' Contest'}`;
+  // An arena's fight begins: Stance pick or roll, then the turn's own rules.
+  const beginArena = async (arena) => {
+    const fight = await one('SELECT * FROM fights WHERE id = ?', [arena.fightId]);
+    if (!fight) return;
+    await beginTurn(fight);
+  };
+  on('contest:start', async ({ def, sides } = {}) => {
+    if (!isGm()) return;
+    const skillsOn = (await one('SELECT skills_enabled FROM table_settings WHERE id = 1'))?.skills_enabled !== 0;
+    const def_ = def?.key === 'custom' ? normalizeCustom(def) : CONTEST_BY_KEY[def?.key] ? { key: def.key } : null;
+    const r = await startContest({ def: def_ ?? def, sides, originSceneId: await activeSceneId(), skillsOn });
+    if (r.error) return socket.emit('contest:error', { error: r.error });
+    const shown = def?.key === 'custom' ? normalizeCustom(def) : CONTEST_BY_KEY[def.key];
+    await postCard('reminder', { title: `Stance Contest: ${shown.name}`, text: `${shown.text}${shown.key === 'custom' && !shown.text ? 'A custom contest.' : ''} Everyone plays one turn at the same time, in their own arena.`, fighters: r.arenas.map((a) => ({ name: a.name })), automatic: 'contest' });
+    // Skills off: nobody has a bonus step — every arena begins at once.
+    if (!skillsOn) for (const a of r.arenas) await beginArena(a);
+    await emitContest();
+  });
+  // A contestant's Skill bonuses (Skills on), then their arena begins.
+  on('contest:ready', async ({ contestId, combatantId, bonuses } = {}) => {
+    const row = await one("SELECT * FROM contests WHERE id = ? AND status = 'running'", [Number(contestId)]);
+    if (!row) return;
+    const arenas = JSON.parse(row.arenas || '[]');
+    const arena = arenas.find((a) => a.combatantId === Number(combatantId));
+    if (!arena || arena.ready || !mayActFor(socket.data.identity, arena.characterId)) return;
+    const list = cleanBonuses(bonuses);
+    await run('UPDATE combatants SET contest_bonus = ? WHERE id = ?', [JSON.stringify(list), arena.combatantId]);
+    // 3 Basic tokens of their choice, now.
+    const gained = list.filter((b) => b.key === 'basic_tokens').flatMap((b) => b.tokens);
+    if (gained.length) {
+      const c = await one('SELECT tokens FROM combatants WHERE id = ?', [arena.combatantId]);
+      const t = JSON.parse(c?.tokens || '{}');
+      for (const k of gained) t[k] = (t[k] ?? 0) + 1;
+      await run('UPDATE combatants SET tokens = ? WHERE id = ?', [JSON.stringify(t), arena.combatantId]);
+    }
+    arena.ready = true;
+    arena.plusTwo = list.filter((b) => b.key === 'plus_two').length;
+    await saveArenas(row.id, arenas);
+    await beginArena(arena);
+    await emitContest();
+    await emitStageUpdated();
+  });
+  // "After you roll, you may increase one of your numbers by 2" (a Skill bonus).
+  on('contest:plus_two', async ({ contestId, combatantId, index } = {}) => {
+    const row = await one("SELECT * FROM contests WHERE id = ? AND status = 'running'", [Number(contestId)]);
+    if (!row) return;
+    const arenas = JSON.parse(row.arenas || '[]');
+    const arena = arenas.find((a) => a.combatantId === Number(combatantId));
+    if (!arena || !(arena.plusTwo > 0) || arena.done || !mayActFor(socket.data.identity, arena.characterId)) return;
+    const board = await activeBoardOf(arena.combatantId);
+    if (!board) return;
+    const data = JSON.parse(board.data || '{}');
+    const r = data.results?.[Number(index)];
+    if (!r || r.plusTwo || (data.placements ?? []).some((p) => p.die === Number(index) || (p.dice ?? []).includes(Number(index)))) return;
+    r.result = Number(r.result) + 2;
+    r.plusTwo = true;
+    r.changed = true;
+    arena.plusTwo -= 1;
+    await saveArenas(row.id, arenas);
+    await saveBoard(board.roll_id, data, emitAll);
+    await emitContest();
+  });
+  on('contest:cancel', async () => {
+    if (!isGm()) return;
+    const row = await runningContest();
+    if (!row) return;
+    await run("UPDATE contests SET status = 'cancelled' WHERE id = ?", [row.id]);
+    await dropArenas(JSON.parse(row.arenas || '[]'));
+    await postSystemMessage('— The Stance Contest is called off —');
+    emitAll?.('contest:state', null);
+  });
+  // A contestant ended their turn: what they did is kept; Survival's (or a
+  // custom contest's) hits land first, on the engine's chain. Then, once every
+  // arena is done, the result.
+  const contestTurnEnded = async (fight, contestId) => {
+    const row = await one('SELECT * FROM contests WHERE id = ?', [contestId]);
+    if (!row || row.status !== 'running') return;
+    const arenas = JSON.parse(row.arenas || '[]');
+    const arena = arenas.find((a) => a.fightId === fight.id);
+    if (!arena || arena.done) return;
+    const def = JSON.parse(row.def || '{}').key === 'custom' ? normalizeCustom(JSON.parse(row.def)) : CONTEST_BY_KEY[JSON.parse(row.def).key];
+    triggers?.turnOver({ ...fight });
+    arena.stats = await snapshotStats(arena, def);
+    arena.ending = true;
+    await saveArenas(row.id, arenas);
+    emitAll?.('fight:turn_ended', { combatantId: arena.combatantId });
+    await endTurnDice([arena.combatantId], emitAll);
+    await emitContest();
+    const hits = def.setup?.hits ?? [];
+    // The hits write through the same queue this handler holds: run them on the
+    // engine's chain, and finish in a queued job of its own once they're done.
+    Promise.resolve(hits.length ? triggers?.contestHits?.({ ...fight }, arena.combatantId, hits) : null)
+      .catch((err) => console.error('contest hits', err))
+      .then(() =>
+        serialized(async () => {
+          const fresh = await one('SELECT * FROM contests WHERE id = ?', [contestId]);
+          if (!fresh || fresh.status !== 'running') return;
+          const list = JSON.parse(fresh.arenas || '[]');
+          const a = list.find((x) => x.fightId === fight.id);
+          if (!a) return;
+          if (hits.length) a.stats.hpLost = Math.max(0, a.stats.hpBefore - (await hpLeftOf(a.combatantId)));
+          a.done = true;
+          a.ending = false;
+          await saveArenas(contestId, list);
+          if (list.every((x) => x.done)) {
+            const out = await finishContest(contestId);
+            if (out) await postContestResult(out);
+          }
+          await emitContest();
+          await emitStageUpdated();
+        })()
+      )
+      .catch((err) => console.error('contest end', err));
+  };
+  const postContestResult = async ({ def, result }) => {
+    const sideName = (side) => result.scores.filter((s) => s.side === side).map((s) => s.name).join(' & ');
+    const best = (side) => result.best[side]?.name;
+    const text = result.winner
+      ? `${sideName(result.winner)} win${result.scores.filter((s) => s.side === result.winner).length === 1 ? 's' : ''} (best: ${best(result.winner)}).`
+      : 'A tie — the book says a fight must break out, with no Tilt.';
+    await postCard('reminder', { title: `${contestLabel(def)}: ${result.winner ? 'result' : 'a tie'}`, text, fighters: result.scores.map((s) => ({ name: s.name })), automatic: 'contest' });
+  };
 
   // **End Combat (GM).** Clears the order; positions, HP and tokens stay.
   // `outcome` (decided): 'allies', 'enemies' or 'renegades' won — every character on the

@@ -92,7 +92,9 @@ MOTIFS.pit_trap = [...MOTIFS.pit, ...MOTIFS.trap.map((s) => ({ ...s, fill: '#ef4
 // A Deadly Trap: a Trap's teeth, twice over.
 MOTIFS.deadly_trap = [...MOTIFS.trap, ...MOTIFS.trap.map((s) => ({ ...s, points: s.points.map(([x, y]) => [x + 0.045, y + 0.045]), opacity: 0.7 }))];
 
-const MARKERS = new Set(['danger', 'king', 'control', 'important']);
+const MARKERS = new Set(['danger', 'king', 'control', 'important', 'belt_n', 'belt_e', 'belt_s', 'belt_w']);
+// Factory's belts: a chevron through the middle, the way the belt runs.
+const BELT_ANGLE = { belt_n: -Math.PI / 2, belt_e: 0, belt_s: Math.PI / 2, belt_w: Math.PI };
 
 // The four mirrored copies of one corner's points.
 const CORNERS = [
@@ -157,6 +159,14 @@ export function tileShapes(kind, quad, color, layer = 0) {
     opacity: 0.9,
     dash: kind === 'danger' || kind === 'king' ? `${(s * 0.08).toFixed(1)} ${(s * 0.05).toFixed(1)}` : undefined,
   });
+  if (BELT_ANGLE[kind] != null) {
+    const a = BELT_ANGLE[kind];
+    const rot = ([u, v]) => [0.5 + (u - 0.5) * Math.cos(a) - (v - 0.5) * Math.sin(a), 0.5 + (u - 0.5) * Math.sin(a) + (v - 0.5) * Math.cos(a)];
+    for (const off of [-0.16, 0.12]) {
+      const pts = [[0.36 + off, 0.26], [0.56 + off, 0.5], [0.36 + off, 0.74]].map(rot).map(mq);
+      out.push({ d: path(pts, false), fill: 'none', stroke: color, strokeWidth: Math.max(1.5, s * 0.07), opacity: 0.85 });
+    }
+  }
   for (const shape of MOTIFS[kind] ?? []) {
     for (const corner of CORNERS) {
       const pts = shape.points.map((p) => mq(corner(p)));

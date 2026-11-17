@@ -1,14 +1,14 @@
 import { usePickViews } from '../lib/pickViews.js';
-import { useSquarePick } from '../lib/squarePick.js';
+import { onScene, useSquarePick } from '../lib/squarePick.js';
 
 // The board picks open now, as everyone sees them (lib/pickViews.js): a target
 // pick's Range faint red and its targets brighter red, a square pick's
 // squares lime, a Free Movement's reach sky blue. View-only — whoever is
 // asked picks on their own SquarePickLayer, so their own pick isn't drawn twice.
-export default function PickViewLayer({ mode, quadOf, width, height, zIndex = 7 }) {
+export default function PickViewLayer({ mode, sceneId = null, quadOf, width, height, zIndex = 7 }) {
   const views = usePickViews();
   const mine = useSquarePick();
-  const shown = views.filter((v) => v.mode === mode && v.id !== mine?.key && !(v.kind === 'move' && mine?.tone === 'move' && v.id === `move:${mine.combatantId}`));
+  const shown = views.filter((v) => v.mode === mode && onScene(v, sceneId) && v.id !== mine?.key && !(v.kind === 'move' && mine?.tone === 'move' && v.id === `move:${mine.combatantId}`));
   if (!shown.length) return null;
   const poly = (q) => q.map((p) => p.join(',')).join(' ');
   const tone = (kind) =>

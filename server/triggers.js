@@ -16,7 +16,7 @@ import { WEIGHT_BY_KEY, crossesBleed } from '../client/src/lib/cinematicWeight.j
 import { TOKEN_BY_KEY, capOf, innateArmor } from '../client/src/lib/panicTokens.js';
 import { TRAY, clampLanes, moveOnLane, packLane } from '../client/src/lib/simpleLane.js';
 import { inBounds as inBoundsAt, isEmpty as isEmptyAt, makeBoard, nearestCells, neighbors as sideSquares, occupant as occupantAt } from '../client/src/lib/patd/engine/board.js';
-import { OBSTACLES as OBSTACLE_KINDS, placeTile, removeTile } from '../client/src/lib/mapTiles.js';
+import { BELT_DIRS, OBSTACLES as OBSTACLE_KINDS, TILE_BY_KEY, placeTile, removeTile } from '../client/src/lib/mapTiles.js';
 import { cellBounds, imageSize } from './imageSize.js';
 import { sceneGrid } from './combatMap.js';
 import { evalValue, gridDistance, ruleSupport, runRule, targetable } from '../client/src/lib/patd/interpreter.js';
@@ -94,6 +94,7 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
           id: prompt.id,
           kind: prompt.kind,
           mode: prompt.mode,
+          sceneId: prompt.sceneId ?? null,
           title: prompt.title,
           fighterName: prompt.fighterName,
           area: prompt.area ?? [],
@@ -160,6 +161,8 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
         // A target pick (batch 3) too: its options carry their squares and
         // `area` is the Range they're picked in (red on the board).
         mode: request.mode ?? null,
+        // Which Scene's board (a Stance Contest's arena is a hidden Scene of its own).
+        sceneId: Number(String(fightKey).split(':')[0]) || null,
         area: request.area ?? null,
         // Skip offered even when a pick is required (batch 4): answers '__skip'.
         skippable: Boolean(request.skippable),
@@ -373,15 +376,24 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
         // **Infinite HP (Fight Setup):** a loss is counted, never taken — no
         // Bleed, no broken bar, never Taken Out (landed = where they stand).
         if (row.infinite_hp && delta < 0) {
-          await run('UPDATE combatants SET damage_taken = damage_taken + ? WHERE id = ?', [-delta, f.id]);
+          // (Stance Contests: a target's biggest single hit too.)
+          await run('UPDATE combatants SET damage_taken = damage_taken + ?, damage_max = MAX(COALESCE(damage_max, 0), ?) WHERE id = ?', [-delta, -delta, f.id]);
           const was = shapeFightState(row);
           recordFx({ sceneId, mode, kind: 'damage', combatantId: f.id, before: slice(was), after: slice(was), data: { amount: -delta, infinite: true } });
           result = { before, landed: before.current, row };
           f.hp = before;
           return;
         }
-        const next = applyHpDelta(before, delta).state;
+        let next = applyHpDelta(before, delta).state;
         await saveHp(f.id, next);
+        // **Hundred-Hand (Stance Contests):** a felled target is replaced at once —
+        // counted, and back at full HP where it stood.
+        if (row.dummy === 2 && delta < 0 && atZero(next)) {
+          await run('UPDATE combatants SET felled = COALESCE(felled, 0) + 1 WHERE id = ?', [f.id]);
+          next = { ...next, current: next.max, broken: 0, dizzy: false };
+          await saveHp(f.id, next);
+          delta = 0;
+        }
         // Board animations: HP paid or healed (a hit records its own "damage").
         const was = shapeFightState(row);
         const shown = shapeFightState({ ...row, hp_max: next.max, hp_current: next.current, hp_bars: next.bars, hp_broken: next.broken, dizzy: next.dizzy ? 1 : 0 });
@@ -956,6 +968,18 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
         }
         return out;
       },
+      inBounds: (sq) => Boolean(sq) && inBoundsAt(board(), sq),
+      // **Factory (Arena):** the way the Conveyor Belt on this square runs, or null.
+      beltAt: (sq) => {
+        const k = sq ? kindsAtSq(sq).find((x) => BELT_DIRS[x]) : null;
+        return k ? BELT_DIRS[k] : null;
+      },
+      // Every square holding a belt and the obstacles on it.
+      beltSquares: () => {
+        const out = new Map();
+        for (const t of tileList) if (BELT_DIRS[t.kind]) out.set(`${t.col},${t.row}`, { col: t.col, row: t.row, dir: BELT_DIRS[t.kind] });
+        return [...out.values()].map((b) => ({ ...b, obstacles: kindsAtSq(b).filter((k) => OBSTACLE_KINDS.has(k)) }));
+      },
       moveObstacle: async (o, sq) => {
         if (!o?.square || o.isCopy) return false;
         const from = { col: o.square.col, row: o.square.row };
@@ -1526,6 +1550,19 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
   // they are on the other side — so their Weakness, Power and Unblockable
   // apply, and "after your Shield absorbs from an enemy Action" (Thorns Form)
   // runs against them. `row`: the target's combatant row.
+  async function runContestHits(fightRow, combatantId, hits) {
+    const { env, byId, world } = await envFor(fightRow);
+    const target = byId(combatantId);
+    if (!target) return;
+    env.when = 'Stance Contest';
+    for (const amount of hits) {
+      const r = await world.damage(target, amount, null, { source: 'contest' });
+      await postCard('reminder', { title: 'Survival', text: `${target.name} takes ${r.taken} of ${amount}${r.steps.length ? ` (${r.steps.join(', ')})` : ''}.`, fighters: [{ name: target.name }], automatic: 'contest', notice: true });
+    }
+    await emitStageUpdated();
+    await env.save();
+  }
+
   async function runActionDamage(fightRow, row, amount) {
     const { env, byId, world } = await envFor(fightRow);
     const target = byId(row.id);
@@ -1978,6 +2015,65 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
   // the tilted side's active character gains 1 Burning, 1 Weakness, 1 Fatigue.
   // Overwhelming Power: whoever takes a turn on any OTHER side gains 1 Power,
   // 1 Iron and 1 Speed. Both through the engine, so they animate and trigger.
+  // **Factory (Arena Parameter):** at the end of every turn, every unit and
+  // obstacle on a Conveyor Belt moves 1 space the way it runs — those farthest
+  // along first, so a queue moves together. A fighter may spend 1 Iron or 1
+  // Speed to stay put (asked; an NPC set to Auto stays only when the belt would
+  // carry them onto a Trap, Pit or Rubble, or Outside). Obstacles move with the
+  // stacking rules; a Wall stops where a unit stands.
+  async function factoryBelts(env, world, fighters) {
+    if (world.mode !== 'combat' || !world.battle?.arena?.includes('factory')) return;
+    const belts = world.beltSquares();
+    if (!belts.length) return;
+    const ahead = (x, dir) => x.col * dir.dc + x.row * dir.dr;
+    const said = [];
+    const riders = [...fighters, ...(world.copies?.() ?? [])].filter((f) => f.square && world.beltAt(f.square));
+    riders.sort((a, b) => ahead(b.square, world.beltAt(b.square)) - ahead(a.square, world.beltAt(a.square)));
+    for (const f of riders) {
+      if (stale(env)) return;
+      const dir = world.beltAt(f.square);
+      if (!dir) continue;
+      const next = { col: f.square.col + dir.dc, row: f.square.row + dir.dr };
+      if (!f.isCopy) {
+        const can = ['iron', 'speed'].filter((k) => (f.tokens[k] ?? 0) > 0);
+        let stay = null;
+        if (can.length) {
+          const mode = f.prefs?.iron ?? 'auto';
+          if (mode === 'auto') {
+            const bad = !world.inBounds?.(next) || world.obstacleAt(next) != null;
+            stay = bad ? can[0] : null;
+          } else if (mode === 'ask') {
+            const options = [{ id: 'ride', label: 'Ride the belt' }, ...can.map((k) => ({ id: k, label: `Spend 1 ${k === 'iron' ? 'Iron' : 'Speed'}: stay put` }))];
+            const ans = await ask(f, env.key, env.gen, env.tg, 'Factory')({ kind: 'choose', title: 'Conveyor Belt', text: `${f.name} is on a Conveyor Belt: it carries them 1 space.`, options, minimum: 1, maximum: 1 });
+            const id = Array.isArray(ans) ? ans[0] : ans;
+            stay = can.includes(id) ? id : null;
+          }
+        }
+        if (stay) {
+          await world.discardTokens(f, [stay], 1);
+          said.push(`${f.name} spends 1 ${stay === 'iron' ? 'Iron' : 'Speed'} to stay put`);
+          continue;
+        }
+      }
+      const origin = { col: f.square.col - dir.dc, row: f.square.row - dir.dr };
+      const was = f.square;
+      await world.forced(f, { distance: 1, origin, chooser: null, willing: true, straight: dir });
+      if (!f.square || f.square.col !== was.col || f.square.row !== was.row) said.push(`${f.name} rides the belt`);
+    }
+    // The obstacles on the belts, farthest along first.
+    const loads = belts.filter((b) => b.obstacles.length).sort((a, b) => ahead(b, b.dir) - ahead(a, a.dir));
+    for (const b of loads) {
+      const to = { col: b.col + b.dir.dc, row: b.row + b.dir.dr };
+      if (world.inBounds && !world.inBounds(to)) continue;
+      for (const kind of b.obstacles) {
+        if (kind === 'wall' && fighters.some((f) => f.square && f.square.col === to.col && f.square.row === to.row)) continue;
+        await world.moveObstacle({ square: { col: b.col, row: b.row }, kind }, to);
+      }
+      said.push(`${b.obstacles.map((k) => TILE_BY_KEY[k]?.name ?? k).join(' + ')} moves along the belt`);
+    }
+    if (said.length) await postCard('reminder', { title: 'Factory', text: `${said.join('. ')}.`, fighters: [], automatic: 'battle', notice: true });
+  }
+
   async function battleTurnStart(env, world, fighters, active) {
     const b = world.battle;
     if (!b) return;
@@ -2055,6 +2151,9 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
       if (!stale(env)) await keepPoolNumbers(env, active);
       // "At the end of this turn …" effects scheduled during it, before the End Phase.
       await runScheduled(env, 'current_turn.end', () => true);
+      // Factory's belts first: Speed held now can still keep someone in place
+      // (the End Phase discards it), and a Trap they ride onto bites once.
+      if (!stale(env)) await factoryBelts(env, world, fighters);
       await runEndPhase(env, fighters, onTrap, active);
       expireTemps(rt, 'end_of_turn', { activeId });
       // Victory Parameters: has anyone won? (King of the Hill waits for the Round's end.)
@@ -2369,6 +2468,10 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     startFight(fightRow) {
       reset(`${fightRow.scene_id}:${fightRow.mode}`);
       return onChain(fightRow, () => runFightStart(fightRow));
+    },
+    // **Survival (Stance Contests):** hits taken in a row at the turn's end, on its chain.
+    contestHits(fightRow, combatantId, hits) {
+      return onChain(fightRow, () => runContestHits(fightRow, combatantId, hits));
     },
     // Damage from an Action to a fighter of this fight, on its chain.
     actionDamage(fightRow, row, amount) {

@@ -274,6 +274,9 @@ export function registerDiceMarkHandlers({ on: onRaw, socket, io, triggers = nul
     // number and a free one matching it, both 3+.
     if (isSuperMove(action)) {
       if (data.reaction) return refuse(row.roll_id, 'a Super Move is not a Reactive Action');
+      // Stance Contests (decided): no Super Moves in a contest's arena.
+      const inArena = await one('SELECT s.contest_id FROM combatants c JOIN scenes s ON s.id = c.scene_id WHERE c.id = ?', [row.combatant_id]);
+      if (inArena?.contest_id) return refuse(row.roll_id, 'Super Moves are off in a Stance Contest');
       if (ts) {
         const ok = superUsable({
           move: action,

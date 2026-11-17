@@ -33,8 +33,11 @@ export const useSquarePick = () => useSyncExternalStore(subscribe, getSquarePick
 // pick goes to the pick, never to the token (decided, batch 3): a target is
 // picked by tapping it, and "act from" a Copy's or your own square works even
 // though a token sits there. → true when the tap was the pick's.
-export function pickAt(mode, col, row) {
-  if (!current || current.mode !== mode || col == null || row == null) return false;
+// `sceneId`: the board's Scene — a Stance Contest's arena is a hidden Scene
+// of its own, so a pick there never lands on the main map, nor the other way.
+export const onScene = (pick, sceneId) => pick?.sceneId == null || sceneId == null || Number(pick.sceneId) === Number(sceneId);
+export function pickAt(mode, col, row, sceneId = null) {
+  if (!current || current.mode !== mode || !onScene(current, sceneId) || col == null || row == null) return false;
   const o = current.options.find((x) => x.col === col && x.row === row);
   if (!o) return false;
   current.onPick(o.id);

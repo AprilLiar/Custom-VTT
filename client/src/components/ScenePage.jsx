@@ -595,7 +595,7 @@ export default function ScenePage() {
       <MoveBar />
       <TriggerPrompts />
       {fightSetupOpen && fightMode && (
-        <FightSetupDialog mode={fightMode} fighters={fightFighters.filter((f) => f.eligible)} skipped={fightFighters.filter((f) => !f.eligible).length} existing={fight} threeWay={Boolean(activeScene?.battle?.[fightMode]?.complications?.includes('three_way'))} onClose={() => setFightSetupOpen(false)} />
+        <FightSetupDialog mode={fightMode} fighters={fightFighters.filter((f) => f.eligible)} skipped={fightFighters.filter((f) => !f.eligible).length} existing={fight} threeWay={Boolean(activeScene?.battle?.[fightMode]?.complications?.includes('three_way'))} battle={activeScene?.battle?.[fightMode] ?? null} onClose={() => setFightSetupOpen(false)} />
       )}
       {/* Chat on the Scene: floating cards for new entries and a chat button
           that opens the full log — both even with the interface hidden. */}

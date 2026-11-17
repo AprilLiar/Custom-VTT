@@ -422,7 +422,7 @@ export function MapTilePalette({ mode, left = 0, role, lockOnly = false }) {
       {open && (
       <div className="absolute left-full top-1/2 ml-1.5 flex -translate-y-1/2 items-center gap-1.5">
         <div className="flex max-h-[70vh] w-36 flex-col gap-0.5 overflow-y-auto panel-cut-sm border border-zinc-700 bg-zinc-950/90 p-1">
-          {TILES.map((t) => (
+          {TILES.filter((t) => !t.mapOnly || mode === 'combat').map((t) => (
             <button
               key={t.key}
               type="button"

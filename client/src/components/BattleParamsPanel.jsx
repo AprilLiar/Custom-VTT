@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { HelpCircle, X, ArrowLeftRight, Ban, Bomb, Car, Crown, Factory, Flame, FlameKindling, Gem, Grid2x2, Hourglass, Infinity as InfinityIcon, Layers, Link as LinkIcon, Lock, Medal, Repeat, Repeat2, Scale3d, ShieldUser, Snowflake, Triangle, Trophy, Turtle, UserPlus, Wine, Zap } from 'lucide-react';
+import { HelpCircle, X, ArrowLeftRight, Ban, Bomb, Car, Crown, Factory, Flame, FlameKindling, Gem, Grid2x2, Hourglass, Infinity as InfinityIcon, Link as LinkIcon, Lock, Medal, Repeat, Repeat2, Scale3d, ShieldUser, Snowflake, Triangle, Trophy, Turtle, UserPlus, Wine, Zap } from 'lucide-react';
 import { socket } from '../socket.js';
 import { FAMILIES, PARAM_BY_KEY, SIDES, SIDE_LABEL, paramsOf } from '../lib/battleParams.js';
 
@@ -12,8 +12,8 @@ import { FAMILIES, PARAM_BY_KEY, SIDES, SIDE_LABEL, paramsOf } from '../lib/batt
 // The ones the engine doesn't run yet are greyed out, saying so.
 const sideTone = { allies: 'bg-sky-500', enemies: 'bg-red-500', renegades: 'bg-amber-500' };
 
-const ICONS = { ArrowLeftRight, Ban, Bomb, Car, Crown, Factory, Flame, FlameKindling, Gem, Grid2x2, Hourglass, Infinity: InfinityIcon, Layers, Link: LinkIcon, Lock, Medal, Repeat, Repeat2, Scale3d, ShieldUser, Snowflake, Triangle, Trophy, Turtle, UserPlus, Wine, Zap };
-function Glyph({ name, size = 16 }) {
+const ICONS = { ArrowLeftRight, Ban, Bomb, Car, Crown, Factory, Flame, FlameKindling, Gem, Grid2x2, Hourglass, Infinity: InfinityIcon, Link: LinkIcon, Lock, Medal, Repeat, Repeat2, Scale3d, ShieldUser, Snowflake, Triangle, Trophy, Turtle, UserPlus, Wine, Zap };
+export function Glyph({ name, size = 16 }) {
   const I = ICONS[name] ?? HelpCircle;
   return <I size={size} aria-hidden />;
 }

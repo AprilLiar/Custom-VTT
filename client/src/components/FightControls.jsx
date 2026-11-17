@@ -3,6 +3,8 @@ import { ArrowLeft, ArrowRight, ChevronLeft, ChevronRight, Flag, GripVertical, S
 import { socket } from '../socket.js';
 import { cropOf } from '../lib/imageCrop.js';
 import CroppedImage from './CroppedImage.jsx';
+import { Glyph } from './BattleParamsPanel.jsx';
+import { PARAM_BY_KEY } from '../lib/battleParams.js';
 import DialogShell from './DialogShell.jsx';
 import { clearSquarePick, setPromptsOpen, setSquarePick, useSquarePick } from '../lib/squarePick.js';
 import { startFreeMove, stopFreeMove, undoFreeMove } from '../lib/freeMove.js';
@@ -59,7 +61,38 @@ export function StartCombatButton({ onClick }) {
 // `existing` (a fight) turns this into the mid-fight sides editor.
 // `skipped`: figures left out of the fight — never set up (no max HP) or ×'d in Fight Setup.
 // `threeWay` (Fight Setup's Three Way Battle): a third column, the Renegades.
-export function FightSetupDialog({ mode, fighters, existing = null, onClose, skipped = 0, threeWay = false }) {
+// **What's in force, where it applies (decided):** the global parameters —
+// Arena, Victory, Complications — sit across the top; a one-sided one (a
+// side's Tilt, Outlast's Survivors / Attackers, Sabotage's Saboteurs, a side's
+// VIP) sits at the head of that side's column.
+function ParamChip({ p, note = null }) {
+  return (
+    <span title={`${p.name} — ${p.text}`} className="inline-flex items-center gap-1 panel-cut-sm border border-purple-500/50 bg-purple-500/15 px-1.5 py-0.5 font-display text-[10px] font-bold uppercase tracking-wide text-purple-100">
+      <Glyph name={p.icon} size={12} /> {p.name}
+      {note && <span className="font-sans font-normal normal-case text-purple-200/80">· {note}</span>}
+    </span>
+  );
+}
+export function sideParams(battle, which, nameOf = () => null) {
+  const out = [];
+  const tilt = battle?.tilts?.[which];
+  if (tilt && PARAM_BY_KEY[tilt]) out.push({ p: PARAM_BY_KEY[tilt] });
+  const o = battle?.victoryOpts ?? {};
+  const v = PARAM_BY_KEY[battle?.victory];
+  if (battle?.victory === 'outlast' && o.survivors && which !== 'renegades') out.push({ p: v, note: o.survivors === which ? 'Survivors' : 'Attackers' });
+  if (battle?.victory === 'sabotage' && o.saboteurs && which !== 'renegades') out.push({ p: v, note: o.saboteurs === which ? 'Saboteurs' : 'Defenders' });
+  if (battle?.victory === 'protect_the_vip' && o.vips?.[which] != null) out.push({ p: v, note: `VIP: ${nameOf(o.vips[which]) ?? '?'}` });
+  return out;
+}
+export function globalParams(battle) {
+  const keys = [...(battle?.arena ?? []), ...(battle?.complications ?? [])];
+  const out = keys.map((k) => PARAM_BY_KEY[k]).filter(Boolean).map((p) => ({ p }));
+  const v = PARAM_BY_KEY[battle?.victory];
+  if (v) out.unshift({ p: v, note: battle.victory === 'tournament' && battle.victoryOpts?.bestOf ? `best of ${battle.victoryOpts.bestOf}` : null });
+  return out;
+}
+
+export function FightSetupDialog({ mode, fighters, existing = null, onClose, skipped = 0, threeWay = false, battle = null }) {
   const [side, setSide] = useState(() => {
     const out = {};
     for (const f of fighters) {
@@ -141,11 +174,19 @@ export function FightSetupDialog({ mode, fighters, existing = null, onClose, ski
       </li>
     );
   };
-  const Column = ({ title, list, tone }) => (
+  const nameOf = (id) => fighters.find((f) => f.combatantId === id)?.name ?? null;
+  const Column = ({ title, list, tone, which = null }) => (
     <div className="flex min-w-0 flex-1 flex-col">
       <h3 className={`mb-1 font-display text-xs font-bold uppercase tracking-wide ${tone}`}>
         {title} <span className="text-zinc-500">({list.reduce((n, f) => n + f.turns, 0)} turns)</span>
       </h3>
+      {which && sideParams(battle, which, nameOf).length > 0 && (
+        <div className="mb-1 flex flex-wrap gap-1">
+          {sideParams(battle, which, nameOf).map((x) => (
+            <ParamChip key={`${x.p.key}${x.note ?? ''}`} p={x.p} note={x.note} />
+          ))}
+        </div>
+      )}
       <ul className="min-h-24 space-y-1 panel-cut-sm border border-zinc-800 bg-zinc-950/60 p-1">
         {list.map((f) => (
           <Card key={f.key} f={f} />
@@ -155,17 +196,25 @@ export function FightSetupDialog({ mode, fighters, existing = null, onClose, ski
   );
 
   return (
-    <DialogShell title={existing ? 'Change sides' : 'Start Combat'} onClose={onClose} maxWidth="max-w-3xl" portal>
+    <DialogShell title={existing ? 'Change sides' : 'Start Combat'} onClose={onClose} maxWidth="max-w-3xl" zIndex={1060} portal>
       <p className="mb-2 text-xs text-zinc-500">
         Send each fighter to Allies or Enemies. "×N" is how many HP bars they have — one turn each per round.
         {existing && ' Changes take effect from the next round.'}
         {skipped > 0 && ` ${skipped} figure${skipped === 1 ? ' is' : 's are'} left out: no HP set up yet, or left out in Fight Setup.`}
       </p>
+      {globalParams(battle).length > 0 && (
+        <div className="mb-2 flex flex-wrap items-center gap-1" aria-label="Battle parameters in force">
+          <span className="mr-1 font-display text-[10px] font-bold uppercase tracking-[0.2em] text-zinc-500">In force</span>
+          {globalParams(battle).map((x) => (
+            <ParamChip key={x.p.key} p={x.p} note={x.note} />
+          ))}
+        </div>
+      )}
       <div className="flex flex-col gap-2 sm:flex-row">
-        <Column title="Allies" list={allies} tone="text-sky-300" />
+        <Column title="Allies" list={allies} tone="text-sky-300" which="allies" />
         <Column title="Fighters" list={column(null)} tone="text-zinc-300" />
-        <Column title="Enemies" list={enemies} tone="text-red-300" />
-        {thirdSide && <Column title="Renegades" list={renegades} tone="text-amber-300" />}
+        <Column title="Enemies" list={enemies} tone="text-red-300" which="enemies" />
+        {thirdSide && <Column title="Renegades" list={renegades} tone="text-amber-300" which="renegades" />}
       </div>
       {!existing && (
         <div className="mt-3 flex flex-wrap items-center gap-3">
@@ -344,22 +393,23 @@ export function InitiativeRail({ mode, fight, fighters, role, left = 12, onEditS
   );
 }
 
-export function StancePrompt({ mode, fight, fighters, role, controls = () => false }) {
+// `fightId` / `zIndex`: a Stance Contest's arena (its own fight, over the contest window).
+export function StancePrompt({ mode, fight, fighters, role, controls = () => false, fightId = null, zIndex }) {
   const pending = fight?.pending_stance;
   if (!pending) return null;
   const mine = role === 'gm' || (pending.character_id != null && controls(pending.character_id));
   if (!mine) return null;
   const fighter = fighters.find((f) => f.combatantId === pending.combatant_id);
-  if (pending.assemble) return <FranticPick key={pending.combatant_id} mode={mode} name={fighter?.name ?? 'Fighter'} options={pending.assemble} />;
+  if (pending.assemble) return <FranticPick key={pending.combatant_id} mode={mode} fightId={fightId} zIndex={zIndex} name={fighter?.name ?? 'Fighter'} options={pending.assemble} />;
   return (
-    <DialogShell title={`${fighter?.name ?? 'Fighter'}: choose a stance`} onClose={() => {}} maxWidth="max-w-sm" portal>
+    <DialogShell title={`${fighter?.name ?? 'Fighter'}: choose a stance`} onClose={() => {}} maxWidth="max-w-sm" zIndex={zIndex} portal>
       <p className="mb-2 text-xs text-zinc-500">Only the chosen stance’s dice roll.</p>
       <div className="flex flex-col gap-2">
         {pending.stances.map((s) => (
           <button
             key={s.id}
             type="button"
-            onClick={() => socket.emit('fight:choose_stance', { mode, stanceId: s.id })}
+            onClick={() => socket.emit('fight:choose_stance', { mode, stanceId: s.id, fightId })}
             className="min-h-11 panel-cut-sm border border-zinc-700 bg-zinc-900 px-3 font-display text-sm font-semibold uppercase tracking-wide text-zinc-100 hover:border-brand-500 hover:bg-brand-950/40"
           >
             {s.name}
@@ -413,7 +463,7 @@ function EndFightDialog({ mode, fight, byCombatant, onClose }) {
 // **Frantic Versatility (builder phase 4).** A Frantic Hero assembles this
 // turn's Stance: one Form, one Style and one Frantic Ability, none of which
 // they used last turn (those are shown struck through and can't be picked).
-function FranticPick({ mode, name, options }) {
+function FranticPick({ mode, name, options, fightId = null, zIndex }) {
   const first = (list) => list.find((o) => !o.used)?.id ?? null;
   const [formId, setForm] = useState(() => first(options.forms));
   const [styleId, setStyle] = useState(() => first(options.styles));
@@ -442,7 +492,7 @@ function FranticPick({ mode, name, options }) {
   );
   const ready = formId && styleId && (options.abilities.length === 0 || abilityId);
   return (
-    <DialogShell title={`${name}: assemble this turn’s stance`} onClose={() => {}} maxWidth="max-w-md" portal>
+    <DialogShell title={`${name}: assemble this turn’s stance`} onClose={() => {}} maxWidth="max-w-md" zIndex={zIndex} portal>
       <div className="space-y-3">
         {part('Form', options.forms, formId, setForm)}
         {part('Style', options.styles, styleId, setStyle)}
@@ -451,7 +501,7 @@ function FranticPick({ mode, name, options }) {
         <button
           type="button"
           disabled={!ready}
-          onClick={() => socket.emit('fight:choose_stance', { mode, stanceId: `${formId}+${styleId}`, abilityId: options.abilities.length ? abilityId : null })}
+          onClick={() => socket.emit('fight:choose_stance', { mode, stanceId: `${formId}+${styleId}`, abilityId: options.abilities.length ? abilityId : null, fightId })}
           className="min-h-11 w-full panel-cut-sm bg-brand-600 px-3 text-sm font-semibold text-white hover:bg-brand-500 disabled:opacity-40"
         >
           Roll this stance
@@ -558,6 +608,7 @@ function TargetPromptBar({ prompt }) {
       key: prompt.id,
       tone: 'target',
       mode: prompt.mode,
+      sceneId: prompt.sceneId ?? null,
       title: prompt.title,
       area: prompt.area ?? [],
       options: onBoard.map((o) => ({ ...o, selected: chosen.includes(o.id) })),
@@ -615,7 +666,8 @@ const barButton = 'min-h-8 panel-cut-sm border border-zinc-700 bg-zinc-900 px-2 
 function SquarePromptBar({ prompt }) {
   const answer = (value) => socket.emit('trigger:answer', { id: prompt.id, answer: value });
   useEffect(() => {
-    setSquarePick({ key: prompt.id, tone: 'pick', mode: prompt.mode, title: prompt.title, options: prompt.options ?? [], onPick: (id) => answer(id) });
+    setSquarePick({ key: prompt.id, tone: 'pick', mode: prompt.mode,
+      sceneId: prompt.sceneId ?? null, title: prompt.title, options: prompt.options ?? [], onPick: (id) => answer(id) });
     return () => clearSquarePick(prompt.id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [prompt.id]);
@@ -689,7 +741,7 @@ export function MoveBar() {
 // Stance roll's dice in the chat no longer open it. After Heroic Spirit it
 // belongs to the ally who was given the turn.
 // `inline` (portrait Scene, decided): rendered inside the footer, not floating.
-export function ActionButton({ fight, mode, controls = () => false, inline = false }) {
+export function ActionButton({ fight, mode, controls = () => false, inline = false, fightId = null }) {
   const pick = useSquarePick();
   const [current, setCurrent] = useState(null); // { payload, characterId }
   const [open, setOpen] = useState(false);
@@ -703,7 +755,7 @@ export function ActionButton({ fight, mode, controls = () => false, inline = fal
     let timer = null;
     const load = () => {
       clearTimeout(timer);
-      timer = setTimeout(() => socket.emit('board:current', { mode }, (r) => alive && setCurrent(r?.payload ? r : null)), 200);
+      timer = setTimeout(() => socket.emit('board:current', { mode, fightId }, (r) => alive && setCurrent(r?.payload ? r : null)), 200);
     };
     load();
     // A new roll, Heroic Spirit, a turn ending: the board changes hands.
@@ -715,7 +767,7 @@ export function ActionButton({ fight, mode, controls = () => false, inline = fal
       socket.off('dice:marks', load);
       socket.off('fight:turn_ended', load);
     };
-  }, [turnKey, mode]);
+  }, [turnKey, mode, fightId]);
   const rollId = current?.payload?.roll_id ?? null;
   const [confirming, setConfirming] = useState(false);
   // The turn moved on: an open board of the old turn closes.

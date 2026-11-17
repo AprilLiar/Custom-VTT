@@ -19,6 +19,7 @@ export function startFreeMove({ combatantId, name, inPhase = false, onError = nu
         key,
         tone: 'move',
         mode: r.mode,
+        sceneId: r.sceneId ?? null,
         title: `${name}: Free Movement`,
         combatantId,
         inPhase,

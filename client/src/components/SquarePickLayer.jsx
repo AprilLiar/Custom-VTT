@@ -1,12 +1,12 @@
-import { useSquarePick } from '../lib/squarePick.js';
+import { onScene, useSquarePick } from '../lib/squarePick.js';
 
 // The glowing squares of the open square pick (lib/squarePick.js), over the
 // map or the lane: tap one to pick it. `quadOf(col, row)` gives a square's
 // polygon in stage pixels ([[x, y], …]) or null; `mode` is this board's.
 // Free Movement squares show their Speed cost.
-export default function SquarePickLayer({ mode, quadOf, width, height, zIndex = 8 }) {
+export default function SquarePickLayer({ mode, sceneId = null, quadOf, width, height, zIndex = 8 }) {
   const pick = useSquarePick();
-  if (!pick || pick.mode !== mode) return null;
+  if (!pick || pick.mode !== mode || !onScene(pick, sceneId)) return null;
   const move = pick.tone === 'move';
   const target = pick.tone === 'target';
   const fill = move ? 'rgba(56,189,248,0.32)' : target ? 'rgba(239,68,68,0.5)' : 'rgba(190,242,100,0.34)';

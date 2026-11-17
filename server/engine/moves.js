@@ -255,7 +255,8 @@ export function createMoves({ ask, emitEvent, postCard }) {
   // ({ pushBonus: Power, pushResist: Iron }); without one they may resist
   // with Iron here. `unblockable`: the hit's Unblockable list.
   // `willing`: they move themselves (Ka-Boom!, First Aid) — no Iron against it.
-  async function forced(env, m, target, { distance, origin, pull = false, upTo = false, chooser, hit = null, unblockable = [], willing = false }) {
+  // `straight` ({ dc, dr }): only the square that far along that line (Factory's belts).
+  async function forced(env, m, target, { distance, origin, pull = false, upTo = false, chooser, hit = null, unblockable = [], willing = false, straight = null }) {
     if (!target?.square || !origin) return null;
     const verb = pull ? 'Pull' : 'Push';
     let d = Math.max(0, Number(distance) || 0) + (hit?.pushBonus ?? 0) - (hit?.pushResist ?? 0);
@@ -293,7 +294,11 @@ export function createMoves({ ask, emitEvent, postCard }) {
     }
     const b = m.board();
     if (target.size === 2) b.size = 2;
-    const landings = landingsOf(forcedMoves(b, target.square, origin, d, { pull, upTo, targetId: target.id }));
+    let landings = landingsOf(forcedMoves(b, target.square, origin, d, { pull, upTo, targetId: target.id }));
+    if (straight) {
+      const line = landings.filter((l) => l.square && Math.sign(l.square.col - target.square.col) === straight.dc && Math.sign(l.square.row - target.square.row) === straight.dr && (straight.dc === 0 || l.square.row === target.square.row) && (straight.dr === 0 || l.square.col === target.square.col));
+      landings = line.length ? line : landings.filter((l) => !l.square);
+    }
     if (!landings.length) {
       await flush(verb, target);
       return target.square;

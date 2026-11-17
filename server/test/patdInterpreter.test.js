@@ -509,6 +509,22 @@ test('Taken Out at zero HP: enemies cannot target them, their own side still can
   assert.equal(seen.length, 0, 'their one ally is picked without asking — and it is the one Taken Out');
 });
 
+test('Three Way Battles: a Renegade is never an ally — ally picks skip them, enemy picks include them', async () => {
+  const me = fighter(1, 'allies');
+  const friend = fighter(2, 'allies');
+  const renegade = fighter(3, 'renegades');
+  const foe = fighter(4, 'enemies');
+  const { w } = makeWorld([me, friend, renegade, foe]);
+  const pick = { id: 'p', effect: { op: 'select', binding: 'ally', selector: { kind: 'ally', range: { mode: 'map', origin: 'self' }, count: 1, excludeSelf: true } } };
+  const seen = [];
+  await runRule(pick, { world: w, self: me, state: {}, usage: {}, log: () => {}, ask: async (q) => (seen.push(q), [q.options[0].id]) });
+  assert.equal(seen.length, 0, 'one ally only (the Renegade is not one): picked without asking');
+  const foes = { id: 'q', effect: { op: 'select', binding: 'foe', selector: { kind: 'enemy', range: { mode: 'map', origin: 'self' }, count: 1 } } };
+  const asked = [];
+  await runRule(foes, { world: w, self: me, state: {}, usage: {}, log: () => {}, ask: async (q) => (asked.push(q), [q.options[0].id]) });
+  assert.deepEqual(asked[0].options.map((o) => String(o.id)).sort(), ['3', '4'], 'the Renegade and the Enemy are both enemies');
+});
+
 test('"no valid targets": an Action with picks and nobody to pick; not one that needs no target', () => {
   const me = fighter(1, 'a');
   const foe = fighter(2, 'b');

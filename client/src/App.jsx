@@ -13,6 +13,7 @@ import SettingsPage from './components/SettingsPage.jsx';
 import HomebrewPage from './components/HomebrewPage.jsx';
 import ConnectionBanner from './components/ConnectionBanner.jsx';
 import GmToolsWidget from './components/GmToolsWidget.jsx';
+import ContestWindow from './components/ContestWindow.jsx';
 import ScenePage from './components/ScenePage.jsx';
 import EventsPage from './components/EventsPage.jsx';
 import { useControl } from './lib/useControl.js';
@@ -192,6 +193,7 @@ function Shell() {
         <ConnectionBanner />
         <div className="flex flex-1 overflow-hidden">{routes}</div>
         <GmToolsWidget />
+        <ContestWindow />
       </div>
     );
   }
@@ -389,6 +391,7 @@ function Shell() {
       {/* Global on purpose: the GM's tool drawer has to be reachable from any
           page (it renders nothing for a Player). */}
       <GmToolsWidget />
+        <ContestWindow />
     </div>
   );
 }

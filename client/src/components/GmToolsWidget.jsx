@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { Wrench, X, Music, ImageDown, Scale, GitCommitHorizontal, Eraser } from 'lucide-react';
+import { Wrench, X, Music, ImageDown, Scale, GitCommitHorizontal, Eraser, Trophy } from 'lucide-react';
 import { useRole } from '../roleContext.jsx';
 import AudioPlayerDialog from './AudioPlayerDialog.jsx';
 import ImageReencodeTool from './ImageReencodeTool.jsx';
 import CombatWeightTool from './CombatWeightTool.jsx';
 import BattleCleanupTool from './BattleCleanupTool.jsx';
+import StanceContestTool from './StanceContestTool.jsx';
 import CommitHomebrewTool from './CommitHomebrewTool.jsx';
 import { registerAudioPanelOpener } from '../lib/audioPanel.js';
 import { useLocation } from 'react-router-dom';
@@ -46,6 +47,16 @@ const TOOLS = [
     blurb: 'Remove every obstacle, clear everyone\u2019s tokens and reset their HP to full.',
     icon: Eraser,
     render: (props) => <BattleCleanupTool {...props} />,
+  },
+  {
+    // Two sides compete over something without fighting (yet): the book's
+    // twelve contests or a custom one, each contestant in their own hidden arena.
+    id: 'stance-contest',
+    name: 'Stance Contest',
+    blurb: 'Who gets the most Iron, rolls best, hits hardest… one turn each, at the same time.',
+    icon: Trophy,
+    wide: true,
+    render: (props) => <StanceContestTool {...props} />,
   },
   {
     // **`standalone` means "open instead of the drawer, not inside it".** The

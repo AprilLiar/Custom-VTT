@@ -1,3 +1,4 @@
+import { contestState, runningContest } from './contests.js';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
@@ -422,7 +423,8 @@ app.get('/api/health', async (_req, res) => {
 // that, and nothing else on this endpoint changes: `stances` is additive, so
 // callers that only want the flat roster are untouched.
 app.get('/api/characters', wrap(async (_req, res) => {
-  const characters = await lightAll('characters', 'ORDER BY id');
+  // A Stance Contest's targets are hidden characters, never listed.
+  const characters = await lightAll('characters', 'WHERE hidden = 0 ORDER BY id');
   res.json(characters.map(shapeCharacter));
 }));
 
@@ -749,6 +751,8 @@ async function emitStageUpdated() {
     }
     viewerSocket.emit('stage:updated', payload);
   }
+  // A Stance Contest's arenas change with the same engine work: everyone watches live.
+  if (await runningContest()) io.emit('contest:state', await contestState());
 }
 
 // A private board must never cross the wire to another player, so this is a
@@ -1016,6 +1020,10 @@ app.get('/api/combat-setup', wrap(async (req, res) => {
 
 // Every fighter's combat profile at once, keyed `character:<id>` /
 // `temp_npc:<id>` — what the Scene's combat views draw tokens from.
+app.get('/api/contest', wrap(async (_req, res) => {
+  res.json(await contestState());
+}));
+
 app.get('/api/table-settings', wrap(async (_req, res) => {
   res.json(await readTableSettings());
 }));
@@ -1055,7 +1063,8 @@ app.get('/api/scenes', wrap(async (req, res) => {
   // withheld; see publicScene.
   const viewer = viewerFromQuery(req.query);
   // Light (play feedback 8): no picture bytes — the list was the slowest read in a session.
-  const rows = (await lightAll('scenes', 'ORDER BY name')).map(shapeScene);
+  // A Stance Contest's hidden arenas are never listed.
+  const rows = (await lightAll('scenes', 'WHERE contest_id IS NULL ORDER BY name')).map(shapeScene);
   res.json(viewer?.role === 'gm' ? rows : rows.map(publicScene));
 }));
 
@@ -1103,7 +1112,7 @@ app.get('/api/search', wrap(async (req, res) => {
   const q = String(req.query.q ?? '').trim();
   if (!q) return res.json({ characters: [] });
   const characters = await all(
-    'SELECT id, name, character_type, assigned_to FROM characters WHERE name LIKE ? ORDER BY name',
+    'SELECT id, name, character_type, assigned_to FROM characters WHERE name LIKE ? AND hidden = 0 ORDER BY name',
     [`%${q}%`]
   );
   res.json({ characters });

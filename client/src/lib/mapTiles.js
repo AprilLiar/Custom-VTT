@@ -96,16 +96,50 @@ export const TILES = [
     blurb:
       'Secure the McGuffin: "Grab It!" (1+) picks it up from an adjacent space; it moves with you. Being moved by anyone else’s Action or Ability, or teleporting, drops it. Carry it into your Control Zone to win.',
   },
+  {
+    key: 'belt_n',
+    name: 'Belt ↑',
+    group: 'marker',
+    color: '#a3e635',
+    mapOnly: true,
+    blurb: 'Factory: a Conveyor Belt running up. At the end of every turn, every unit and obstacle on it moves 1 space up (into a Trap, Pit or Rubble at its end). Spend 1 Iron or 1 Speed to stay put.',
+  },
+  {
+    key: 'belt_e',
+    name: 'Belt →',
+    group: 'marker',
+    color: '#a3e635',
+    mapOnly: true,
+    blurb: 'Factory: a Conveyor Belt running right. At the end of every turn, every unit and obstacle on it moves 1 space right (into a Trap, Pit or Rubble at its end). Spend 1 Iron or 1 Speed to stay put.',
+  },
+  {
+    key: 'belt_s',
+    name: 'Belt ↓',
+    group: 'marker',
+    color: '#a3e635',
+    mapOnly: true,
+    blurb: 'Factory: a Conveyor Belt running down. At the end of every turn, every unit and obstacle on it moves 1 space down (into a Trap, Pit or Rubble at its end). Spend 1 Iron or 1 Speed to stay put.',
+  },
+  {
+    key: 'belt_w',
+    name: 'Belt ←',
+    group: 'marker',
+    color: '#a3e635',
+    mapOnly: true,
+    blurb: 'Factory: a Conveyor Belt running left. At the end of every turn, every unit and obstacle on it moves 1 space left (into a Trap, Pit or Rubble at its end). Spend 1 Iron or 1 Speed to stay put.',
+  },
 ];
+// Factory's Conveyor Belts: kind → the way they run.
+export const BELT_DIRS = { belt_n: { dc: 0, dr: -1 }, belt_e: { dc: 1, dr: 0 }, belt_s: { dc: 0, dr: 1 }, belt_w: { dc: -1, dr: 0 } };
 export const TILE_BY_KEY = Object.fromEntries(TILES.map((t) => [t.key, t]));
 
 // The kinds actually stored. Pit Trap is shorthand for a Pit and a Trap in one
 // square, so it is stored as both and only exists as a palette entry and a label.
-export const STORED_KINDS = ['fog', 'pit', 'rubble', 'trap', 'deadly_trap', 'wall', 'danger', 'king', 'control', 'important'];
+export const STORED_KINDS = ['fog', 'pit', 'rubble', 'trap', 'deadly_trap', 'wall', 'danger', 'king', 'control', 'important', 'belt_n', 'belt_e', 'belt_s', 'belt_w'];
 export const OBSTACLES = new Set(['fog', 'pit', 'rubble', 'trap', 'deadly_trap', 'wall']);
 export const isPaletteKind = (k) => k in TILE_BY_KEY;
 
-const ORDER = new Map(['fog', 'pit', 'pit_trap', 'rubble', 'trap', 'deadly_trap', 'wall', 'danger', 'king', 'control', 'important'].map((k, i) => [k, i]));
+const ORDER = new Map(['fog', 'pit', 'pit_trap', 'rubble', 'trap', 'deadly_trap', 'wall', 'danger', 'king', 'control', 'important', 'belt_n', 'belt_e', 'belt_s', 'belt_w'].map((k, i) => [k, i]));
 const sorted = (set) => [...set].sort((a, b) => ORDER.get(a) - ORDER.get(b));
 const markersOf = (kinds) => kinds.filter((k) => !OBSTACLES.has(k));
 

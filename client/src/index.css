@@ -406,3 +406,22 @@ textarea {
 @media (prefers-reduced-motion: reduce) {
   .die-selected { animation: none; }
 }
+
+/* Pyroclasm (Arena Parameter): the lava beyond the map breathes slowly. */
+@keyframes beyond-lava-glow {
+  0%, 100% { opacity: 0.8; }
+  50% { opacity: 1; }
+}
+.beyond-lava { animation: beyond-lava-glow 3.2s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .beyond-lava { animation: none; }
+}
+
+/* Chained Down (Tilt): the chain's links creep slowly as it sways. */
+@keyframes chain-creep {
+  to { stroke-dashoffset: -40; }
+}
+.chain-links { animation: chain-creep 4s linear infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .chain-links { animation: none; }
+}

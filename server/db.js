@@ -1004,6 +1004,10 @@ export async function initDb() {
   // and one for Combat — tracks of the hidden "Scene music" playlist.
   await ensureColumn('scenes', 'scene_track_id', 'INTEGER');
   await ensureColumn('scenes', 'combat_track_id', 'INTEGER');
+  // **Stance Contests:** a contestant's hidden mini-arena is a Scene of its contest
+  // (left out of every Scene list); its targets are hidden characters.
+  await ensureColumn('scenes', 'contest_id', 'INTEGER');
+  await ensureColumn('characters', 'hidden', 'INTEGER NOT NULL DEFAULT 0');
   // **The Combat map (Phase 3):** a Combat Background separate from the Scene
   // backdrop (image kind 'scene-combat'), and its grid — square size and
   // offset in the MAP IMAGE's own pixels (decided), and line opacity. See
@@ -1443,6 +1447,13 @@ export async function initDb() {
   await ensureColumn('combatants', 'damage_taken', 'INTEGER NOT NULL DEFAULT 0');
   // Left out of fights (Fight Setup's ×): a figure that is only scenery.
   await ensureColumn('combatants', 'excluded', 'INTEGER NOT NULL DEFAULT 0');
+  // Stance Contests: a target (1, never takes a turn; 2: respawns when felled),
+  // its biggest single hit taken, how many times it was felled, and a
+  // contestant's Skill bonuses (JSON).
+  await ensureColumn('combatants', 'dummy', 'INTEGER NOT NULL DEFAULT 0');
+  await ensureColumn('combatants', 'damage_max', 'INTEGER NOT NULL DEFAULT 0');
+  await ensureColumn('combatants', 'felled', 'INTEGER NOT NULL DEFAULT 0');
+  await ensureColumn('combatants', 'contest_bonus', 'TEXT');
   // A Frantic Hero's pick this turn { formId, styleId, abilityId } (builder phase 4).
   await ensureColumn('combatants', 'frantic_pick', 'TEXT');
   // A Simple Combat fighter is created on its first change, keyed by its
@@ -1627,6 +1638,20 @@ export async function initDb() {
       repeat_mode TEXT NOT NULL DEFAULT 'playlist' CHECK(repeat_mode IN ('off','playlist','track')),
       shuffle INTEGER NOT NULL DEFAULT 0,
       shuffle_seed INTEGER NOT NULL DEFAULT 0
+    )
+  `);
+  // **Stance Contests (GM Tools):** one row per contest — its definition, the
+  // two sides, each contestant's arena, and the result once scored.
+  ddl(`
+    CREATE TABLE IF NOT EXISTS contests (
+      id INTEGER PRIMARY KEY,
+      def TEXT NOT NULL,
+      sides TEXT NOT NULL,
+      arenas TEXT NOT NULL DEFAULT '[]',
+      status TEXT NOT NULL DEFAULT 'running',
+      result TEXT,
+      finished_at INTEGER,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP
     )
   `);
   ddl(`INSERT OR IGNORE INTO audio_state (id) VALUES (1)`);
