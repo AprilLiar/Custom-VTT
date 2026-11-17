@@ -93,6 +93,8 @@ export default function CombatWeightTool({ onDone }) {
   }
 
   const set = (key, patch) => setRows((r) => ({ ...r, [key]: { ...r[key], ...patch } }));
+  // Before anything below reads it (the Uneven Fights maths does).
+  const w = WEIGHT_BY_KEY[weight];
   // **Complications (Fight Setup):** Guest Heroes (one bar, any hero player
   // controls them) and Uneven Fights (bars per fighter; the heroes' extra
   // bars split evenly as HP, or handed out whole).
@@ -106,7 +108,6 @@ export default function CombatWeightTool({ onDone }) {
   const evenExtra = uneven && split === 'even' && heroes.length ? Math.ceil((spare * avgBar) / heroes.length) : 0;
   const barsOf = (f) => (isGuest(f) ? 1 : uneven && split === 'uneven' ? (rows[f.key]?.bars ?? f.bars ?? 1) : uneven && split === 'even' && heroes.includes(f) ? 1 : (rows[f.key]?.bars ?? f.bars ?? 1));
   const setAllLevels = (level) => setRows((r) => Object.fromEntries(Object.entries(r).map(([k, v]) => [k, { ...v, level }])));
-  const w = WEIGHT_BY_KEY[weight];
 
   const apply = () => {
     socket.emit('fight:preset_weight', {
