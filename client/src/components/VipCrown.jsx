@@ -1,16 +1,11 @@
-// **Protect the VIP (decided):** a small golden crown with "VIP" beside it,
-// floating just above a VIP's token (the map) or figure (a lane). `x`, `y`:
-// the point it sits on (stage pixels — the crown's bottom middle); `size`:
-// the token's diameter, which it scales with.
-export default function VipCrown({ x, y, size = 48, zIndex = 13 }) {
-  const h = Math.max(12, Math.min(26, size * 0.32));
+// **Protect the VIP (decided, revised):** a small golden crown with "VIP"
+// beside it, under the fighter's HP bar (FighterOverlay — above the token it
+// covered the tokens they hold). `size`: the token's diameter, which it scales with.
+export default function VipCrown({ size = 48 }) {
+  const h = Math.max(11, Math.min(20, size * 0.28));
   const w = h * 1.35;
   return (
-    <div
-      className="vip-crown pointer-events-none absolute flex -translate-x-1/2 -translate-y-full items-center gap-0.5"
-      style={{ left: x, top: y, zIndex }}
-      aria-label="VIP"
-    >
+    <div className="vip-crown pointer-events-none flex items-center gap-0.5" aria-label="VIP">
       <svg width={w} height={h} viewBox="0 0 27 20" aria-hidden>
         <path d="M2 17 L4 6 L9.5 11 L13.5 2.5 L17.5 11 L23 6 L25 17 Z" fill="#facc15" stroke="#78350f" strokeWidth="1.4" strokeLinejoin="round" />
         <rect x="2" y="16" width="23" height="3" rx="1" fill="#eab308" stroke="#78350f" strokeWidth="1.2" />

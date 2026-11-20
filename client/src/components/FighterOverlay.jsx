@@ -1,3 +1,4 @@
+import VipCrown from './VipCrown.jsx';
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Minus, Plus, X } from 'lucide-react';
@@ -333,6 +334,8 @@ export default function FighterOverlay({
   onClose,
   bounds = null,
   weight = null,
+  // Protect the VIP: a crown and "VIP" under the HP bar.
+  vip = false,
 }) {
   const panelRef = useRef(null);
   const belowRef = useRef(null);
@@ -617,6 +620,7 @@ export default function FighterOverlay({
         ) : (
           hp.max != null && <HpStack hp={hp} compact width={barWidth} weight={weight} shield={fight.tokens.shield ?? 0} infinite={fight.infinite} taken={fight.damage_taken ?? 0} />
         )}
+        {vip && !selected && <VipCrown size={barWidth} />}
       </div>
     </>
   );

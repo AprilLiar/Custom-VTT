@@ -1,11 +1,11 @@
-import VipCrown from './VipCrown.jsx';
 import { vipIdsOf } from '../lib/battleParams.js';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import CopyLayer from './CopyLayer.jsx';
 import SquarePickLayer from './SquarePickLayer.jsx';
 import ActiveRangeLayer from './ActiveRangeLayer.jsx';
 import PickViewLayer from './PickViewLayer.jsx';
-import { isChoosing, pickAt, useChoosing } from '../lib/squarePick.js';
+import { clearSquarePick, isChoosing, pickAt, setSquarePick, useChoosing } from '../lib/squarePick.js';
+import { OBSTACLES } from '../lib/mapTiles.js';
 import { Maximize2, Minus, Plus, X } from 'lucide-react';
 import { socket } from '../socket.js';
 import {
@@ -316,10 +316,65 @@ export default function CombatMap({
             col: cell.col,
             row: cell.row,
           });
+          // **Stooges (decided):** dropping a Stooges character asks how many
+          // there are, then the rest are placed by tapping free squares.
+          if (ev.fighter.ownerType === 'character') {
+            fetch(`/api/characters/${ev.fighter.ownerId}/build`)
+              .then((r) => r.json())
+              .then((r) => {
+                if (r?.build?.type === 'character-type.stooges') setStooges({ fighter: ev.fighter, ask: true, total: 6, placed: [cell], left: 0 });
+              })
+              .catch(() => {});
+          }
         }
       }),
     []
   );
+
+  // ---- placing a unit of Stooges: how many, then their squares
+  const [stooges, setStooges] = useState(null); // { fighter, ask, total, placed: [cells], left }
+  // Every free square of the board: on it, no token, no obstacle but Fog.
+  const freeCells = (extra = []) => {
+    if (!lines || !natural.width) return [];
+    const r = lines.rect;
+    const c0 = Math.ceil((r.x0 - grid.offsetX) / grid.size - 0.5);
+    const c1 = Math.floor((r.x1 - grid.offsetX) / grid.size - 0.5);
+    const r0 = Math.ceil((r.y0 - grid.offsetY) / grid.size - 0.5);
+    const r1 = Math.floor((r.y1 - grid.offsetY) / grid.size - 0.5);
+    const blocked = new Set(tiles.filter((t) => t.kind !== 'fog' && OBSTACLES.has(t.kind)).map((t) => `${t.col},${t.row}`));
+    const out = [];
+    for (let row = r0; row <= r1; row++) {
+      for (let col = c0; col <= c1; col++) {
+        if (!cellInside(natural.width, natural.height, grid, col, row)) continue;
+        if (blocked.has(`${col},${row}`) || cellTaken(placed, col, row) || extra.some((x) => x.col === col && x.row === row)) continue;
+        out.push({ id: `${col},${row}`, col, row, label: `column ${col}, row ${row}` });
+      }
+    }
+    return out;
+  };
+  const stoogeKey = 'stooges-place';
+  useEffect(() => {
+    if (!stooges || stooges.ask || stooges.left <= 0) {
+      clearSquarePick(stoogeKey);
+      return undefined;
+    }
+    setSquarePick({
+      key: stoogeKey,
+      tone: 'pick',
+      mode: 'combat',
+      sceneId: scene?.id ?? null,
+      title: `Place ${stooges.fighter.name}: ${stooges.left} left`,
+      options: freeCells(stooges.placed),
+      onPick: (id) => {
+        const [col, row] = id.split(',').map(Number);
+        socket.emit('combat_token:place', { ownerType: stooges.fighter.ownerType, ownerId: stooges.fighter.ownerId, col, row });
+        setStooges((s) => (s ? { ...s, placed: [...s.placed, { col, row }], left: s.left - 1 } : s));
+      },
+    });
+    return undefined;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stooges, placed, tiles]);
+  useEffect(() => () => clearSquarePick(stoogeKey), []);
 
   const dragging = drag?.moved ? drag : null;
   let hoverCell = null;
@@ -342,9 +397,57 @@ export default function CombatMap({
     const b = cellCenter(grid, t.col + 1, t.row + 1);
     return toStagePx((a.x + b.x) / 2, (a.y + b.y) / 2);
   };
+  // Each token's overlay (tokens, HP, Challenge) and the open token panel.
+  // `onlySelected`: just the token whose panel is open — drawn in a layer of
+  // its own above the page's controls, so the map itself never covers the
+  // turn order, the back button or the drawers (play feedback).
+  const vipIds = vipIdsOf(scene?.battle?.combat);
+  const overlays = (onlySelected) => {
+          // Where every token stands, for the overlays and the Challenge sparks.
+          const centers = new Map(placed.map((t) => [t.id, tokenCenter(t)]));
+          const iconSize = Math.max(14, Math.min(26, tokenSize * 0.42));
+          const byId = new Map(placed.map((t) => [t.id, t]));
+          return placed.filter((t) => (onlySelected ? t.id === selectedTokenId : t.id !== selectedTokenId)).map((t) => {
+            if (dragging?.id === t.id) return null;
+            const center = centers.get(t.id);
+            const fight = t.fight;
+            const challenger = fight?.challenge_id != null ? byId.get(fight.challenge_id) : null;
+            return (
+              <div key={`o${t.id}`}>
+                {fight && <ArmorRings center={center} rx={tokenSize / 2 + 6} gap={6} rings={armorRings(fight, setup[`${t.owner_type}:${t.owner_id}`], armorUsed[t.id] ?? 0)} />}
+                {/* Only during the Challenge holder's own turn (decided). */}
+                {challenger && activeCombatantId === t.id && (
+                  <ChallengeLock from={center} to={centers.get(challenger.id)} radius={tokenSize / 2} />
+                )}
+                {fight && (
+                  <FighterOverlay
+                    name={t.name}
+                    fight={fight}
+                    setup={setup[`${t.owner_type}:${t.owner_id}`]}
+                    anchor={{ x: center.x, top: center.y - tokenSize / 2, bottom: center.y + tokenSize / 2 }}
+                    iconSize={iconSize}
+                    selected={selectedTokenId === t.id}
+                    canEdit={canDrag(t)}
+                    fighterRef={{ combatantId: t.id }}
+                    bounds={{ width: stageWidth, height: stageHeight }}
+                    weight={weight}
+                    challenger={challenger}
+                    candidates={placed
+                      .filter((o) => o.id !== t.id)
+                      .map((o) => ({ key: o.id, ref: { combatantId: o.id }, name: o.name, image_url: o.image_url, crop: o.crop }))}
+                    onClose={() => setSelectedTokenId(null)}
+                    vip={vipIds.includes(t.id)}
+                  />
+                )}
+              </div>
+            );
+          });
+  };
+
   const rootRect = rootRef.current?.getBoundingClientRect();
 
   return (
+    <>
     <div
       ref={rootRef}
       // Click-through: only the tokens (and an open panel) catch the pointer,
@@ -356,8 +459,8 @@ export default function CombatMap({
       // when the whole layer sits above the drawers instead.
       style={{
         // 1001 while a panel is open: above the drawers, docks and corner controls.
-        zIndex: selectedTokenId != null ? 1001 : 1,
-        clipPath: selectedTokenId != null ? undefined : `inset(0 ${insetRight}px 0 ${insetLeft}px)`,
+        zIndex: 1,
+        clipPath: `inset(0 ${insetRight}px 0 ${insetLeft}px)`,
       }}
       // The wheel bubbles here from the map and from the tokens on it alike.
       onWheel={onWheel}
@@ -473,15 +576,6 @@ export default function CombatMap({
         <ChainLayer chains={scene?.battle?.combat?.chains ?? {}} tiles={tiles} tokens={placed} quadOf={tileQuadOf} centerOf={tokenCenter} width={stageWidth} height={stageHeight} thickness={Math.max(2, grid.size * fit.scale * 0.07)} />
       )}
       {/* Sabotage: each Bomb's HP; Secure the McGuffin: the gem over whoever holds the Important Thing. */}
-      {/* Protect the VIP: a golden crown and "VIP" above each VIP's token. */}
-      {ready &&
-        vipIdsOf(scene?.battle?.combat).map((id) => {
-          const t = placed.find((x) => x.id === id);
-          if (!t || t.col == null) return null;
-          const c = tokenCenter(t);
-          const r = (tokenSize * (t.size > 1 ? 2 : 1)) / 2;
-          return <VipCrown key={`vip${id}`} x={c.x} y={c.y - r - 2} size={tokenSize} />;
-        })}
       {ready && (
         <BattleMarks battle={scene?.battle?.combat} tokens={placed} quadOf={tileQuadOf} centerOf={tokenCenter} size={tokenSize} width={stageWidth} height={stageHeight} />
       )}
@@ -547,47 +641,7 @@ export default function CombatMap({
           );
         })}
 
-      {ready &&
-        (() => {
-          // Where every token stands, for the overlays and the Challenge sparks.
-          const centers = new Map(placed.map((t) => [t.id, tokenCenter(t)]));
-          const iconSize = Math.max(14, Math.min(26, tokenSize * 0.42));
-          const byId = new Map(placed.map((t) => [t.id, t]));
-          return placed.map((t) => {
-            if (dragging?.id === t.id) return null;
-            const center = centers.get(t.id);
-            const fight = t.fight;
-            const challenger = fight?.challenge_id != null ? byId.get(fight.challenge_id) : null;
-            return (
-              <div key={`o${t.id}`}>
-                {fight && <ArmorRings center={center} rx={tokenSize / 2 + 6} gap={6} rings={armorRings(fight, setup[`${t.owner_type}:${t.owner_id}`], armorUsed[t.id] ?? 0)} />}
-                {/* Only during the Challenge holder's own turn (decided). */}
-                {challenger && activeCombatantId === t.id && (
-                  <ChallengeLock from={center} to={centers.get(challenger.id)} radius={tokenSize / 2} />
-                )}
-                {fight && (
-                  <FighterOverlay
-                    name={t.name}
-                    fight={fight}
-                    setup={setup[`${t.owner_type}:${t.owner_id}`]}
-                    anchor={{ x: center.x, top: center.y - tokenSize / 2, bottom: center.y + tokenSize / 2 }}
-                    iconSize={iconSize}
-                    selected={selectedTokenId === t.id}
-                    canEdit={canDrag(t)}
-                    fighterRef={{ combatantId: t.id }}
-                    bounds={{ width: stageWidth, height: stageHeight }}
-                    weight={weight}
-                    challenger={challenger}
-                    candidates={placed
-                      .filter((o) => o.id !== t.id)
-                      .map((o) => ({ key: o.id, ref: { combatantId: o.id }, name: o.name, image_url: o.image_url, crop: o.crop }))}
-                    onClose={() => setSelectedTokenId(null)}
-                  />
-                )}
-              </div>
-            );
-          });
-        })()}
+      {ready && overlays(false)}
 
       {ready &&
         fxBeat &&
@@ -624,6 +678,35 @@ export default function CombatMap({
       )}
       {handMoveDialog}
     </div>
+    {stooges?.ask && (
+      <StoogeCountDialog
+        name={stooges.fighter.name}
+        onCancel={() => setStooges(null)}
+        onConfirm={(total) => setStooges((s) => (s ? { ...s, ask: false, total, left: Math.max(0, total - s.placed.length) } : s))}
+      />
+    )}
+    {stooges && !stooges.ask && stooges.left > 0 && (
+      <div
+        className="pointer-events-auto fixed inset-x-2 mx-auto flex max-w-sm items-center gap-2 panel-cut-sm border border-lime-600 bg-zinc-950/90 px-2 py-1 shadow-xl"
+        style={{ zIndex: 3100, top: 'max(3rem, var(--safe-top, 0px))' }}
+        role="dialog"
+        aria-label="Placing Stooges"
+      >
+        <p className="min-w-0 flex-1 truncate font-display text-xs font-bold uppercase tracking-wide text-lime-200">
+          {stooges.fighter.name}: tap {stooges.left} more free square{stooges.left === 1 ? '' : 's'}
+        </p>
+        <button type="button" onClick={() => setStooges(null)} className="min-h-7 shrink-0 panel-cut-sm border border-zinc-700 px-2 text-[11px] text-zinc-300 hover:border-lime-400">
+          Done
+        </button>
+      </div>
+    )}
+    {/* The open token panel, above the page's controls (z 1001) — only it. */}
+    {ready && selectedTokenId != null && (
+      <div className="pointer-events-none absolute inset-0" style={{ zIndex: 1001 }}>
+        {overlays(true)}
+      </div>
+    )}
+    </>
   );
 }
 
@@ -815,5 +898,44 @@ function BattleMarks({ battle, tokens, quadOf, centerOf, size, width, height }) 
           );
         })()}
     </svg>
+  );
+}
+
+// **How many Stooges (decided):** asked when a Stooges character is dropped on
+// the map — the one just dropped counts; the rest are placed by tapping squares.
+function StoogeCountDialog({ name, onConfirm, onCancel }) {
+  const [n, setN] = useState(6);
+  return (
+    <div className="pointer-events-auto fixed inset-0 flex items-center justify-center bg-black/50 p-4" style={{ zIndex: 3050 }} role="dialog" aria-label="How many Stooges?">
+      <div className="w-full max-w-xs panel-cut-sm border border-zinc-700 bg-zinc-950 p-3 shadow-2xl">
+        <p className="mb-1 font-display text-sm font-bold uppercase tracking-wide text-zinc-100">{name}: how many?</p>
+        <p className="mb-2 text-xs text-zinc-400">Stooges are one unit of several bodies (the book starts with 6). This one counts; tap free squares for the rest.</p>
+        <div className="mb-3 flex items-center justify-center gap-2">
+          <button type="button" onClick={() => setN((v) => Math.max(1, v - 1))} className="h-10 w-10 panel-cut-sm border border-zinc-700 text-lg text-zinc-200" aria-label="Fewer">
+            −
+          </button>
+          <input
+            type="number"
+            min={1}
+            max={20}
+            value={n}
+            onChange={(e) => setN(Math.min(20, Math.max(1, Math.trunc(Number(e.target.value)) || 1)))}
+            className="h-10 w-16 panel-cut-sm border border-zinc-700 bg-zinc-900 text-center text-lg text-zinc-100 outline-none focus:border-brand-500"
+            aria-label="How many Stooges"
+          />
+          <button type="button" onClick={() => setN((v) => Math.min(20, v + 1))} className="h-10 w-10 panel-cut-sm border border-zinc-700 text-lg text-zinc-200" aria-label="More">
+            +
+          </button>
+        </div>
+        <div className="flex gap-2">
+          <button type="button" onClick={() => onConfirm(n)} className="min-h-10 flex-1 panel-cut-sm bg-brand-600 font-display text-xs font-bold uppercase text-white hover:bg-brand-500">
+            Place them
+          </button>
+          <button type="button" onClick={onCancel} className="min-h-10 panel-cut-sm border border-zinc-700 px-3 text-xs text-zinc-300">
+            Just this one
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
