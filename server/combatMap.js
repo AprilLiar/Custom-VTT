@@ -92,6 +92,8 @@ export async function loadCombatTokens(sceneId) {
       row: r.grid_row,
       size: sizes.get(r.character_id) ?? 1,
       image_url: tokenUrl ?? portraitUrl,
+      // A Scene Picture as the token: framed from its top, so the face shows (decided).
+      top: Boolean(pictureUrl),
       crop: pictureUrl
         ? null
         : tokenUrl

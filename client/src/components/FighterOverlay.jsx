@@ -32,7 +32,7 @@ const cropFrom = (c) => (c ? cropOf({ crop_x: c.x, crop_y: c.y, crop_w: c.w, cro
 function Portrait({ fighter, className }) {
   if (!fighter) return null;
   return fighter.image_url ? (
-    <CroppedImage src={fighter.image_url} crop={cropFrom(fighter.crop)} alt={fighter.name} className={className} draggable={false} />
+    <CroppedImage src={fighter.image_url} crop={cropFrom(fighter.crop)} top={Boolean(fighter.top)} alt={fighter.name} className={className} draggable={false} />
   ) : (
     <span className={`flex items-center justify-center bg-zinc-700 text-[10px] font-bold uppercase text-zinc-200 ${className}`}>
       {(fighter.name ?? '?').slice(0, 1)}

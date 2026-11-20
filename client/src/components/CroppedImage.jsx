@@ -22,6 +22,9 @@ export default function CroppedImage({
   style,
   draggable,
   loading,
+  // No crop: frame from the picture's top instead of its middle (a full-body
+  // Scene Picture used as a token — the face shows).
+  top = false,
 }) {
   const inner = cropStyle(crop);
   if (!inner) {
@@ -31,7 +34,7 @@ export default function CroppedImage({
         alt={alt}
         draggable={draggable}
         loading={loading}
-        className={`${className} object-cover`}
+        className={`${className} object-cover${top ? ' object-top' : ''}`}
         style={style}
       />
     );

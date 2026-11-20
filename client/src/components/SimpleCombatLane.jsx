@@ -1,3 +1,4 @@
+import VipCrown from './VipCrown.jsx';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import CopyLayer from './CopyLayer.jsx';
 import SquarePickLayer from './SquarePickLayer.jsx';
@@ -37,6 +38,8 @@ const HIGHLIGHT = 'rgba(250, 204, 21, 0.45)';
 
 export default function SimpleCombatLane({
   summons,
+  // Protect the VIP: the VIPs' combatant ids (a crown over their figures).
+  vipIds = [],
   stageWidth,
   stageHeight,
   glow,
@@ -341,6 +344,7 @@ export default function SimpleCombatLane({
           const ownerKey = s.character_id != null ? `character:${s.character_id}` : `temp_npc:${s.temp_npc_id}`;
           return (
             <div key={`o${s.id}`}>
+              {vipIds.includes(s.fight.combatant_id) && <VipCrown x={box.x} y={box.top - 4} size={box.d} zIndex={12} />}
               <ArmorRings center={box.base.center} rx={box.base.rx * 1.16} ry={box.base.ry * 1.4} gap={7} rings={armorRings(s.fight, setup[ownerKey], armorUsed[s.fight.combatant_id] ?? 0)} />
               {/* Only during the Challenge holder's own turn (decided). */}
               {target && activeCombatantId != null && s.fight.combatant_id === activeCombatantId && (

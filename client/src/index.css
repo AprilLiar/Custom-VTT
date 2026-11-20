@@ -435,3 +435,13 @@ textarea {
 @media (prefers-reduced-motion: reduce) {
   .mcguffin-gem { animation: none; }
 }
+
+/* Protect the VIP: the crown glints. */
+@keyframes vip-glint {
+  0%, 100% { filter: drop-shadow(0 0 1px rgba(250, 204, 21, 0.5)); }
+  50% { filter: drop-shadow(0 0 5px rgba(250, 204, 21, 0.95)); }
+}
+.vip-crown { animation: vip-glint 2.4s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .vip-crown { animation: none; }
+}

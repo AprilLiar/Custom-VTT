@@ -1,3 +1,5 @@
+import VipCrown from './VipCrown.jsx';
+import { vipIdsOf } from '../lib/battleParams.js';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import CopyLayer from './CopyLayer.jsx';
 import SquarePickLayer from './SquarePickLayer.jsx';
@@ -471,6 +473,15 @@ export default function CombatMap({
         <ChainLayer chains={scene?.battle?.combat?.chains ?? {}} tiles={tiles} tokens={placed} quadOf={tileQuadOf} centerOf={tokenCenter} width={stageWidth} height={stageHeight} thickness={Math.max(2, grid.size * fit.scale * 0.07)} />
       )}
       {/* Sabotage: each Bomb's HP; Secure the McGuffin: the gem over whoever holds the Important Thing. */}
+      {/* Protect the VIP: a golden crown and "VIP" above each VIP's token. */}
+      {ready &&
+        vipIdsOf(scene?.battle?.combat).map((id) => {
+          const t = placed.find((x) => x.id === id);
+          if (!t || t.col == null) return null;
+          const c = tokenCenter(t);
+          const r = (tokenSize * (t.size > 1 ? 2 : 1)) / 2;
+          return <VipCrown key={`vip${id}`} x={c.x} y={c.y - r - 2} size={tokenSize} />;
+        })}
       {ready && (
         <BattleMarks battle={scene?.battle?.combat} tokens={placed} quadOf={tileQuadOf} centerOf={tokenCenter} size={tokenSize} width={stageWidth} height={stageHeight} />
       )}
@@ -604,7 +615,7 @@ export default function CombatMap({
 
       {paletteDrag && rootRect && (
         <Token
-          token={{ name: paletteDrag.fighter.name, image_url: paletteDrag.fighter.image_url, crop: paletteDrag.fighter.crop }}
+          token={{ name: paletteDrag.fighter.name, image_url: paletteDrag.fighter.image_url, crop: paletteDrag.fighter.crop, top: paletteDrag.fighter.top }}
           center={{ x: paletteDrag.x - rootRect.left, y: paletteDrag.y - rootRect.top }}
           size={Math.max(36, tokenSize)}
           lifted
@@ -655,7 +666,7 @@ export function Token({ token, center, size, lifted = false, animate = true, sli
         }}
       >
         {token.image_url ? (
-          <CroppedImage src={token.image_url} crop={cropFrom(token.crop)} alt={token.name} className="h-full w-full rounded-full" draggable={false} />
+          <CroppedImage src={token.image_url} crop={cropFrom(token.crop)} top={Boolean(token.top)} alt={token.name} className="h-full w-full rounded-full" draggable={false} />
         ) : (
           <span className="flex h-full w-full items-center justify-center font-display text-lg font-bold uppercase text-zinc-300">
             {(token.name ?? '?').slice(0, 1)}

@@ -110,6 +110,8 @@ export async function loadFighters(sceneId, mode) {
           ? imageUrl(ownerType === 'character' ? 'character' : 'temp-npc', ownerId, { present: true, hash: r.portrait_hash })
           : null),
       crop: picture ? null : token ? { x: r.t_cx, y: r.t_cy, w: r.t_cw, h: r.t_ch } : { x: r.p_cx, y: r.p_cy, w: r.p_cw, h: r.p_ch },
+      // A Scene Picture as the token: framed from its top, so the face shows (decided).
+      top: Boolean(picture),
       tokens: state.tokens,
       challengeId: state.challenge_id,
       activeStanceId: state.active_stance_id,
@@ -226,7 +228,7 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
   const activeSceneId = async () =>
     (await one('SELECT active_scene_id FROM scene_state WHERE id = 1'))?.active_scene_id ?? null;
 
-  const card = (f) => ({ name: f.name, image_url: f.image_url, crop: f.crop });
+  const card = (f) => ({ name: f.name, image_url: f.image_url, crop: f.crop, ...(f.top ? { top: true } : {}) });
 
   // Squares holding a Trap tile on this fight's board (map_tiles; a Pit Trap is
   // a Pit and a Trap).

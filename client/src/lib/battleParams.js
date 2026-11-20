@@ -175,4 +175,6 @@ export function keepEmComing(hp, tokens) {
 }
 
 // Guest Heroes in force for a fight mode's settings (character ids).
+// Protect the VIP: the VIPs' combatant ids (one per side, as set in Fight Setup).
+export const vipIdsOf = (battle) => (battle?.victory === 'protect_the_vip' ? Object.values(battle.victoryOpts?.vips ?? {}).filter(Number.isInteger) : []);
 export const guestsOf = (battle) => (battle?.complications?.includes('guest_heroes') ? battle.guests ?? [] : []);

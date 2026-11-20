@@ -88,6 +88,8 @@ async function fighterCard(row) {
     // The Scene Picture ticked as the token first (decided), then the unique token.
     image_url: r?.tp_id ? imageUrl('scene-picture', r.tp_id, { present: true, hash: r.tp_hash }) : r?.has_token ? imageUrl('combat-token', r.profile_id, { present: true, hash: r.token_hash }) : null,
     crop: !r?.tp_id && r?.has_token ? { x: r.crop_x, y: r.crop_y, w: r.crop_w, h: r.crop_h } : null,
+    // A Scene Picture as the token: framed from its top, so the face shows.
+    ...(r?.tp_id ? { top: true } : {}),
   };
 }
 

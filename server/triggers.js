@@ -40,7 +40,7 @@ import { addPoolValue, livePool, setPoolValue, turnActions } from '../client/src
 import { fighterState, readData as readBoardData, saveBoard, setPayableHook } from './diceMarks.js';
 import { muteFx, recordFx, slice, unmuteFx } from './fx.js';
 import { NO_GO_ON, SIDE_LABEL, isDisarmed, leashOf, parseBattleColumn, partnerOf, tiltOn } from '../client/src/lib/battleParams.js';
-import { kingOfTheHill, lastOneStanding, outlast, protectTheVip, roundsToWin, tournamentRoundLoser } from '../client/src/lib/battleVictory.js';
+import { kingOfTheHill, lastOneStanding, outlast, protectTheVip, roundsToWin, standing, tournamentRoundLoser } from '../client/src/lib/battleVictory.js';
 import { updateBattle } from './battle.js';
 
 // The combat map's image size, by image hash (its playable bounds — phase D).
@@ -367,6 +367,7 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
         recordFx({ sceneId, mode, kind: 'damage', combatantId: f.id, before, after: await shownState(f), data });
       },
     };
+    const vipFell = (f) => battle.victory === 'protect_the_vip' && world.env && Object.values(battle.victoryOpts?.vips ?? {}).includes(f.id);
     // **A Stooge is destroyed (decided):** out of play for good; the unit's turn,
     // and any Challenge on it, move to the next body still standing. The bar
     // empty: the whole unit is defeated, however many bodies are left.
@@ -464,6 +465,8 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
       // **Stooges (decided):** a body that loses any HP is destroyed; the HP
       // came off the unit's one shared bar (the database copies it to all).
       if (result.row?.stooge_unit != null && delta < 0 && result.landed != null && result.landed < (result.before?.current ?? 0)) await stoogeHit(f);
+      // **Protect the VIP:** a VIP falling ends it at once (not at the turn's end).
+      if (result.down && vipFell(f)) await victoryCheck(world.env, world, fighters);
       // **Handcuffs (Tilt):** one falls to 0 HP — their partner gains 3 Fatigue.
       if (result.down) {
         const partner = fighters.find((x) => x.id === partnerOf(battle, f.id));
@@ -559,6 +562,8 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
       if (!quiet) await flushStage();
       if (!quiet) await cuffCheck(f);
       await mcguffinMoved(f, from, sq, how);
+      // Protect the VIP: a VIP removed from play ends it at once too.
+      if (!sq && from && vipFell(f)) await victoryCheck(world.env, world, fighters);
       if (!quiet && from && sq && (how === 'move' || how === 'push' || how === 'pull') && !slidingIds.has(f.id)) await icySlide(f, from, sq);
     };
     // **Secure the McGuffin:** the holder carries the Important Thing. Moved by
@@ -1820,6 +1825,20 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     let side = null;
     let why = '';
     if (b.victory === 'protect_the_vip') {
+      // **Three sides (book p.49):** the side whose VIP falls first is removed
+      // from play — the other two fight it out; the last side with its VIP wins.
+      const sides = [...new Set(all.map((f) => f.side))];
+      if (sides.length >= 3) {
+        env.rt.vipOut ??= [];
+        for (const s of sides) {
+          const vip = all.find((f) => f.id === o.vips?.[s]);
+          if (!vip || standing(vip) || env.rt.vipOut.includes(s)) continue;
+          env.rt.vipOut.push(s);
+          const theirs = all.filter((f) => f.side === s && f.square);
+          for (const f of theirs) await world.removeFromPlay(f, { forGood: true });
+          await postCard('reminder', { title: 'Protect the VIP', text: `${vip.name}, the ${SIDE_LABEL[s] ?? s}' VIP, has fallen: their side is out of the fight. The other two fight it out.`, fighters: [{ name: vip.name }], automatic: 'battle', notice: true });
+        }
+      }
       side = protectTheVip(all, o.vips);
       why = 'The other side’s VIP has fallen.';
     } else if (b.victory === 'outlast') {
@@ -2197,6 +2216,30 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
       maximum: 1,
     });
     const ally = allies.find((a) => String(a.id) === String(Array.isArray(ans) ? ans[0] : ans)) ?? allies[0];
+    await giveTurn(env, active, ally);
+  }
+
+  // **Protect the VIP (book p.49):** "Anyone can use Heroic Spirit to donate
+  // their turn to the VIP, even if they are still in play and above zero HP."
+  // At the start of each turn of a fighter on a side whose VIP is standing
+  // (not the VIP themselves), they are asked — Yes gives the VIP this turn.
+  async function vipSpirit(env, active) {
+    const b = env.world.battle;
+    if (b?.victory !== 'protect_the_vip' || !active.square || atZero(active.hp)) return;
+    const vipId = b.victoryOpts?.vips?.[active.side];
+    if (vipId == null || vipId === active.id) return;
+    const vip = env.world.fighters().find((f) => f.id === vipId);
+    if (!vip?.square || atZero(vip.hp)) return;
+    const yes = await ask(active, env.key, env.gen, env.tg, env.when)({
+      kind: 'confirm',
+      title: 'Protect the VIP',
+      text: `${active.name}: give this turn — your dice — to ${vip.name}, the VIP (Heroic Spirit)?`,
+    });
+    if (yes) await giveTurn(env, active, vip);
+  }
+
+  // Heroic Spirit's handover: the ally takes this turn with the giver's dice, in their own Stance.
+  async function giveTurn(env, active, ally) {
     const board = await one('SELECT * FROM dice_marks WHERE combatant_id = ? AND active = 1 ORDER BY created_at DESC, rowid DESC LIMIT 1', [active.id]);
     if (!board) return;
     const data = readBoardData(board);
@@ -2400,6 +2443,8 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     unplan(env, planned);
     // Phase 3 of the turn: still Taken Out? Heroic Spirit.
     if (moment === 'start' && !stale(env) && (!active.square || atZero(active.hp))) await tracked(env, `Heroic Spirit (${active.name})`, () => heroicSpirit(env, active).then(() => true));
+    // Protect the VIP: anyone may give their turn to their side's VIP.
+    if (moment === 'start' && !stale(env) && active.square && !atZero(active.hp)) await vipSpirit(env, active);
     // "After you roll your Action Dice" (phase G): the turn's dice are on its board.
     if (moment === 'start' && !stale(env) && active.square && !atZero(active.hp)) {
       await frenzy(env, active, 'rolled');

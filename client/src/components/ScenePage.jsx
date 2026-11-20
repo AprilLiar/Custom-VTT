@@ -29,7 +29,7 @@ import { socket } from '../socket.js';
 import ScenePortraitFooter from './ScenePortraitFooter.jsx';
 import ScenePortraitMore from './ScenePortraitMore.jsx';
 import { FOOTER_REM } from '../lib/sceneFooter.js';
-import { guestsOf } from '../lib/battleParams.js';
+import { guestsOf, vipIdsOf } from '../lib/battleParams.js';
 import SceneCastDrawer from './SceneCastDrawer.jsx';
 import SceneListDrawer from './SceneListDrawer.jsx';
 import SceneNotesDialog from './SceneNotesDialog.jsx';
@@ -317,6 +317,8 @@ export default function ScenePage() {
           name: t.name,
           image_url: t.image_url,
           crop: t.crop,
+          // A Scene Picture as the token: shown from its top (the face).
+          top: Boolean(t.top),
           turns: turnsPerRound(t.fight.hp),
           // A fighter at all (decided): set up (a max HP) and not left out (Fight Setup's ×).
           eligible: t.fight.hp?.max != null && !t.fight.excluded,
@@ -441,6 +443,7 @@ export default function ScenePage() {
       {stageWidth > 0 && sceneMode === 'simple' && (
         <SimpleCombatLane
           summons={laneSummons}
+          vipIds={vipIdsOf(activeScene?.battle?.simple)}
           stageWidth={sw}
           stageHeight={sh}
           glow={laneGlow}

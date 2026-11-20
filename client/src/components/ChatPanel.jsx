@@ -25,7 +25,7 @@ function FighterChip({ fighter }) {
     <span className="inline-flex items-center gap-1.5">
       <span className="h-6 w-6 shrink-0 overflow-hidden rounded-full border border-zinc-600 bg-zinc-800">
         {fighter?.image_url ? (
-          <CroppedImage src={fighter.image_url} crop={crop} alt="" className="h-full w-full rounded-full" />
+          <CroppedImage src={fighter.image_url} crop={crop} top={Boolean(fighter.top)} alt="" className="h-full w-full rounded-full" />
         ) : (
           <span className="flex h-full w-full items-center justify-center text-[10px] font-bold uppercase text-zinc-400">
             {(fighter?.name ?? '?').slice(0, 1)}

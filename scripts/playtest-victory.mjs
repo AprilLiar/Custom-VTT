@@ -70,9 +70,13 @@ const stamp = Date.now();
 const gm = await connect({ role: 'gm' });
 const cards = [];
 gm.on('chat:card', (c) => cards.push(c));
+let vipYes = false;
+const vipAsks = [];
 gm.on('trigger:prompt', (x) => {
-  // Comebacks and the like: decline what can be declined, else the first option.
-  const answer = x.kind === 'confirm' ? false : x.kind === 'targets' ? [x.options[0].id] : x.minimum === 0 ? [] : x.options?.[0]?.id;
+  if (x.title === 'Protect the VIP') vipAsks.push(x);
+  // Comebacks and the like: decline what can be declined, else the first option
+  // (Protect the VIP's "give your turn to the VIP?": as the test says).
+  const answer = x.title === 'Protect the VIP' ? vipYes : x.kind === 'confirm' ? false : x.kind === 'targets' ? [x.options[0].id] : x.minimum === 0 ? [] : x.options?.[0]?.id;
   setTimeout(() => gm.emit('trigger:answer', { id: x.id, answer }), 120);
 });
 gm.emit('scene:create', { name: `VC ${stamp}` });
@@ -173,12 +177,45 @@ const maxBo = (await stage(), tok(tb.id).fight.hp.max);
 await start();
 await stage();
 check("each side's VIP starts with +10 max HP", tok(tb.id).fight.hp.max === maxBo + 10 && tok(tb.id).fight.hp.current === maxBo + 10, `${maxBo} → ${JSON.stringify(tok(tb.id).fight.hp)}`);
+check('the VIP is never asked to give their own turn away', !vipAsks.some((x) => x.fighterName === ana.name || /^VCAna/.test(x.fighterName ?? '')), JSON.stringify(vipAsks.map((x) => x.fighterName)));
+// Heroic Spirit to the VIP (book p.49): Cy, still standing, gives their turn to Bo.
+vipYes = true;
+await next();
+await next();
+await stage();
+const gave = cards.filter((c) => c.payload?.title === 'Heroic Spirit' && /gives their turn to VCBo/.test(c.payload.text));
+check("on Cy's turn: asked to give it to the VIP — Yes hands Bo the turn", vipAsks.some((x) => /VCCy/.test(x.fighterName ?? '') && /VCBo/.test(x.text)) && gave.length === 1, JSON.stringify({ asks: vipAsks.map((x) => [x.fighterName, x.text]), gave: gave.map((c) => c.payload.text) }));
+vipYes = false;
 const vBefore = victories().length;
 ko(tb.id);
 await sleep(400);
 await next();
 check("the enemies' VIP falls: the Allies win (Cy still stands)", victories().length === vBefore + 1 && /Allies win/.test(victories().at(-1).payload.title), JSON.stringify(victories().map((c) => c.payload.title)));
 await end();
+
+console.log('\n--- Protect the VIP, three sides ---');
+set({ victoryOpts: { vip: { side: 'allies', id: ta.id } } });
+set({ victoryOpts: { vip: { side: 'enemies', id: tb.id } } });
+set({ victoryOpts: { vip: { side: 'renegades', id: tc.id } } });
+await sleep(300);
+await preset();
+gm.emit('fight:start', { mode: 'combat', allies: [{ combatantId: ta.id }], enemies: [{ combatantId: tb.id }], renegades: [{ combatantId: tc.id }], firstSide: 'allies', opener: { combatantId: ta.id } });
+await sleep(2000);
+const v3 = victories().length;
+gm.emit('fighter:damage', { ref: { combatantId: tb.id }, amount: 99 });
+await sleep(2500);
+await stage();
+check("the first VIP to fall (Bo): their side is out of the fight, nobody has won yet", tok(tb.id).col == null && victories().length === v3 && cards.some((c) => c.payload?.title === 'Protect the VIP' && /out of the fight/.test(c.payload.text)), JSON.stringify({ col: tok(tb.id).col, v: victories().map((c) => c.payload.title) }));
+gm.emit('fighter:damage', { ref: { combatantId: tc.id }, amount: 99 });
+await sleep(2500);
+check('the second VIP falls (Cy): the last side with its VIP wins — at once, not at the turn\'s end', victories().length === v3 + 1 && /Allies win/.test(victories().at(-1).payload.title), JSON.stringify(victories().map((c) => c.payload.title)));
+await end();
+set({ victoryOpts: { vip: { side: 'renegades', id: null } } });
+await sleep(200);
+// (Back on the board where they started, for what follows.)
+gm.emit('combat_token:move', { combatantId: tb.id, col: 6, row: 2 });
+gm.emit('combat_token:move', { combatantId: tc.id, col: 6, row: 5 });
+await sleep(400);
 
 console.log('\n--- Outlast: the Attackers go first ---');
 set({ victory: 'outlast' });
