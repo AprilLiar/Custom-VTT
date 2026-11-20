@@ -30,7 +30,7 @@ import { controlsCharacter } from './control.js';
 import { mayFreeMove } from './engine/moves.js';
 import { recordFx } from './fx.js';
 import { claimInterrupt, dropInterrupts, interruptOf, nextInterrupt, releaseInterrupt, unqueueInterrupt } from './interrupts.js';
-import { parseBattleColumn, tiltOn } from '../client/src/lib/battleParams.js';
+import { isDisarmed, parseBattleColumn, tiltOn } from '../client/src/lib/battleParams.js';
 import { forcedFirstSide } from '../client/src/lib/battleVictory.js';
 import { battleFightStart } from './battle.js';
 import { cleanBonuses, contestOfScene, contestState, dropArenas, finishContest, hpLeftOf, mayActFor, runningContest, saveArenas, snapshotStats, startContest } from './contests.js';
@@ -399,7 +399,9 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
     const rollId = `${combatantId}-${Date.now().toString(36)}${Math.floor(Math.random() * 1296).toString(36)}`;
     // The Victory Parameter's own Actions (Sabotage for the Saboteurs, Grab It! for everyone).
     const battleActions = battleActionIdsFor(battle, sideOf(fight, combatantId));
-    await startRoll({ rollId, combatantId, characterId: fighter.characterId, results, stanceKey: stance.id, battleActions }, emitAll);
+    // Disarmed (Tilt / Arena): the board shows Range 1 whatever the Stance says.
+    const disarmed = isDisarmed(battle, sideOf(fight, combatantId));
+    await startRoll({ rollId, combatantId, characterId: fighter.characterId, results, stanceKey: stance.id, battleActions, disarmed }, emitAll);
     await postCard('stance_roll', {
       fighter: card(fighter),
       stance: stance.name,

@@ -197,6 +197,18 @@ set(gm, { tilt: { side: 'enemies', key: null } });
 await sleep(400);
 check('Chained Down off: the chain is gone (the Wall stays a Wall)', !(await battle()).chains[tb.id], JSON.stringify((await battle()).chains));
 
+console.log('\n--- the dice board shows Range 1 while Disarmed ---');
+set(gm, { tilt: { side: 'allies', key: 'disarmed' } });
+set(gm, { tilt: { side: 'enemies', key: 'disarmed' } });
+await sleep(300);
+for (const id of (await stage()).fights.combat?.movement_phase?.waiting ?? []) gm.emit('move:done', { combatantId: id });
+await sleep(300);
+gm.emit('fight:next', { mode: 'combat' });
+await sleep(2200);
+const lastRoll = cards.filter((c) => c.kind === 'stance_roll').at(-1)?.payload.roll_id;
+const boardNow = (await jf('/api/dice-marks')).marks[lastRoll];
+check("Disarmed: the turn's board is flagged, so it shows Range 1", boardNow?.disarmed === true, JSON.stringify(boardNow && { disarmed: boardNow.disarmed }));
+
 gm.emit('fight:end', { mode: 'combat' });
 await sleep(300);
 gm.emit('scene:delete', { sceneId: scene.id });

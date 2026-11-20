@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Check, Footprints, Play, X, Zap } from 'lucide-react';
+import { Check, Crosshair, Footprints, Play, X, Zap } from 'lucide-react';
 import { socket } from '../../socket.js';
 import { getBuild } from '../../lib/api.js';
 import { useRole } from '../../roleContext.jsx';
@@ -187,11 +187,15 @@ export default function DiceBoard({ payload, onClose, canEdit }) {
     };
   }, [onClose]);
 
-  const lists = useMemo(() => {
+  const stance = useMemo(() => {
     if (!idx || !build) return null;
     const d = deriveBuild(build, idx);
-    return turnActions(d, stanceOfBuild(d, payload.stance_key, idx), idx, board.battleActions);
-  }, [idx, build, payload.stance_key, board.battleActions]);
+    return { d, stance: stanceOfBuild(d, payload.stance_key, idx) };
+  }, [idx, build, payload.stance_key]);
+  const lists = useMemo(() => (stance ? turnActions(stance.d, stance.stance, idx, board.battleActions) : null), [stance, idx, board.battleActions]);
+  // **The Stance's range, up top (play feedback):** what every "within Range"
+  // Action reaches this turn — Range 1 while Disarmed.
+  const range = board.disarmed ? { minimum: Math.min(1, stance?.stance?.range?.minimum ?? 1), maximum: 1 } : (stance?.stance?.range ?? null);
 
   // The pool: the roll's results (from the board, or the card for an old roll) and added numbers.
   const pool = useMemo(() => poolOf({ results: board.results?.length ? board.results : payload.results ?? [], extra: board.extra ?? [] }), [board.results, board.extra, payload.results]);
@@ -418,6 +422,16 @@ export default function DiceBoard({ payload, onClose, canEdit }) {
         style={{ paddingLeft: 'var(--safe-left, 0px)', paddingRight: 'var(--safe-right, 0px)', paddingTop: 'var(--safe-top, 0px)' }}
         onClick={(e) => e.target === e.currentTarget && setSelected(null)}
       >
+        {range && (
+          <div className="sticky top-0 z-10 flex items-center justify-center gap-2 border-b border-zinc-800 bg-zinc-950/95 px-2 py-1.5" data-testid="stance-range">
+            <span className="min-w-0 truncate font-display text-[11px] font-bold uppercase tracking-wide text-zinc-400">{payload.stance}</span>
+            <span className="flex shrink-0 items-center gap-1.5 rounded-sm border-2 border-sky-400 bg-sky-500/20 px-3 py-0.5 font-display text-base font-bold uppercase tracking-wide text-sky-100">
+              <Crosshair size={17} aria-hidden />
+              {range.minimum === range.maximum ? `Range ${range.maximum}` : `Range ${range.minimum}-${range.maximum}`}
+            </span>
+            {board.disarmed && <span className="shrink-0 text-[10px] font-bold uppercase text-orange-300">Disarmed</span>}
+          </div>
+        )}
         {reaction && !idx ? (
           <p className="p-4 text-sm text-zinc-500">Loading the Actions…</p>
         ) : reaction ? (

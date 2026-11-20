@@ -270,7 +270,7 @@ check('the cost dialog knows she is Fatigued', tired.fatigue === 1 && tired.cost
 const short = await ask(p, 'move:hand_pay', { combatantId: ta.id, col: 5, row: 8 });
 await sleep(600);
 await stage();
-check('Fatigue: she stops 2 spaces short on the same path (5,6), discards it, and pays only the 1 space moved', short.ok && at(ta.id) === '5,6' && !tok(ta.id).fight.tokens.fatigue && tok(ta.id).fight.tokens.speed === 3, JSON.stringify([short, at(ta.id), tok(ta.id).fight.tokens]));
+check('Fatigue: she stops 2 spaces short on the same path (5,6), discards it, and still pays the full 3 Speed', short.ok && at(ta.id) === '5,6' && !tok(ta.id).fight.tokens.fatigue && tok(ta.id).fight.tokens.speed === 1, JSON.stringify([short, at(ta.id), tok(ta.id).fight.tokens]));
 const nobody = await ask(p, 'move:hand_cost', { combatantId: tb.id, col: 1, row: 1 });
 check("…only for fighters you control", Boolean(nobody.error), JSON.stringify(nobody));
 

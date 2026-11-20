@@ -72,7 +72,7 @@ function HandMoveDialog({ ask, close }) {
           </button>
         </div>
         {ask.fatigue > 0 && (
-          <p className="mt-2 text-xs text-orange-300">Fatigued: spending Speed discards 1 Fatigue and stops 2 spaces short on the way (only the spaces moved are paid).</p>
+          <p className="mt-2 text-xs text-orange-300">Fatigued: spending Speed discards 1 Fatigue and stops 2 spaces short on the way (the full cost is still paid).</p>
         )}
         {error && <p className="mt-2 text-xs text-red-400">{error}</p>}
         <button type="button" onClick={cancel} className="mt-3 w-full text-center text-xs text-zinc-400 hover:text-zinc-200">

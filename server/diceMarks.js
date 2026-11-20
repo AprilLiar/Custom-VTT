@@ -52,13 +52,13 @@ export async function saveBoard(rollId, data, emit) {
 // The Power toggle follows the character's Power setting (decided, revised):
 // On for Auto (NPCs by default), Ask for Ask — each hit asks how much — and
 // Off for Never.
-export async function startRoll({ rollId, combatantId, characterId, results = [], stanceKey = null, battleActions = [] }, emit) {
+export async function startRoll({ rollId, combatantId, characterId, results = [], stanceKey = null, battleActions = [], disarmed = false }, emit) {
   await endTurnDice([combatantId], emit);
   const ch = characterId != null ? await one('SELECT character_type FROM characters WHERE id = ?', [characterId]) : null;
   const d = characterId != null ? await derivedFor(characterId) : null;
   const pref = spendPrefs(d?.build?.prefs, ch?.character_type === 'npc').power;
   const power = pref === 'auto' ? true : pref === 'ask' ? 'ask' : false;
-  const data = { stanceKey, results, extra: [], placements: [], power, paused: false, committing: false, battleActions };
+  const data = { stanceKey, results, extra: [], placements: [], power, paused: false, committing: false, battleActions, disarmed: Boolean(disarmed) };
   await run('INSERT INTO dice_marks (roll_id, combatant_id, character_id, dice, data, active) VALUES (?, ?, ?, ?, ?, 1)', [
     rollId,
     combatantId,

@@ -158,6 +158,8 @@ export function publicBoard(rollId, data, active) {
     heroic: data.heroic ?? null,
     // The Victory Parameter's Actions on this board (Sabotage, Grab It!).
     battleActions: data.battleActions ?? [],
+    // Disarmed (Tilt / Arena) on this turn: the board shows Range 1.
+    disarmed: Boolean(data.disarmed),
   };
 }
 

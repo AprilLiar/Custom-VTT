@@ -3,6 +3,6 @@
 // package.json versions — a test checks they match) and rewrite `note` as ONE
 // sentence on every push to main.
 export const PATCH = {
-  version: '0.2.0',
-  note: 'Stooges are one unit: every body shares one HP bar, tokens and Abilities, shows as one row in Fight Setup and Start Combat, and you tap which Stooge acts.',
+  version: '0.2.1',
+  note: 'The Actions board shows your Stance\'s range up top, and a Fatigued Free Movement now still pays the full Speed for the square you picked while stopping 2 short.',
 };

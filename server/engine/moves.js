@@ -403,7 +403,8 @@ export function createMoves({ ask, emitEvent, postCard }) {
 
   // One Free Movement: the cheapest path to `to`, paid in Speed after; Traps
   // trigger and Rubble gives Fatigue on the way. Fatigued: it goes 2 spaces
-  // less (decided: the last 2 of the path), and only the spaces moved are paid.
+  // less (decided: the last 2 of the path) but **the full Speed for the square
+  // picked is still paid** — Fatigue punishes, it never saves Speed (play feedback).
   async function freeMove(env, m, f, to) {
     if (!f?.square) return { error: 'not on the board' };
     const mods = modsOn(env, f);
@@ -420,7 +421,7 @@ export function createMoves({ ask, emitEvent, postCard }) {
       path = path.slice(0, Math.max(0, path.length - 2));
       note(`${f.name} is Fatigued: discards 1, moves 2 less`);
     }
-    const cost = pathCost(b, f.square, path, opts);
+    const cost = r.cost;
     if (cost) await spendSpeed(env, f, cost);
     // What an undo puts back (batch 3) — only a clean move: no Trap or Rubble crossed.
     const clean = !path.some((sq) => has(b, sq, 'trap') || has(b, sq, 'rubble'));
