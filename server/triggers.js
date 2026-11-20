@@ -248,13 +248,17 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
       const frantic2 = pick?.abilityId2 ?? null;
       // Stooges are one unit: only the leading body's abilities run.
       const isStooges = d?.type.id === 'character-type.stooges';
-      const follower = isStooges && stoogeSeen.has(r.character_id);
-      if (isStooges) stoogeSeen.add(r.character_id);
+      // (The leading body is the first one not destroyed.)
+      const follower = isStooges && (Boolean(r.stooge_out) || stoogeSeen.has(r.character_id));
+      if (isStooges && !r.stooge_out) stoogeSeen.add(r.character_id);
       fighters.push({
         id: r.id,
         characterId: r.character_id,
         summonId: r.summon_id ?? null,
         name: r.name,
+        // Stooges (decided): the unit they share everything with, and whether this body was destroyed.
+        stoogeUnit: r.stooge_unit ?? null,
+        stoogeOut: Boolean(r.stooge_out),
         side: sideOf(r.id),
         tokens: { ...state.tokens },
         // Whose Challenge this fighter holds (their Challenger's combatant id).
@@ -363,6 +367,43 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
         recordFx({ sceneId, mode, kind: 'damage', combatantId: f.id, before, after: await shownState(f), data });
       },
     };
+    // **A Stooge is destroyed (decided):** out of play for good; the unit's turn,
+    // and any Challenge on it, move to the next body still standing. The bar
+    // empty: the whole unit is defeated, however many bodies are left.
+    const stoogeHit = async (f) => {
+      if (f.stoogeOut) return;
+      f.stoogeOut = true;
+      await queued(() => run('UPDATE combatants SET stooge_out = 1 WHERE id = ?', [f.id]));
+      const unit = fighters.filter((x) => x.stoogeUnit === f.stoogeUnit && x.id !== f.id && !x.stoogeOut && x.square).sort((a, b) => a.id - b.id);
+      if (f.square) await world.removeFromPlay(f, { forGood: true });
+      const next = unit[0] ?? null;
+      if (next) {
+        await queued(async () => {
+          const row = await one('SELECT turn_order FROM fights WHERE id = ?', [fight.id]);
+          let order = [];
+          try {
+            order = JSON.parse(row?.turn_order || '[]');
+          } catch {
+            order = [];
+          }
+          if (order.some((e) => e.id === f.id)) await run('UPDATE fights SET turn_order = ? WHERE id = ?', [JSON.stringify(order.map((e) => (e.id === f.id ? { ...e, id: next.id } : e))), fight.id]);
+          // Challenges the unit gave stay the unit's.
+          await run('UPDATE combatants SET challenge_id = ? WHERE challenge_id = ? AND scene_id = ? AND mode = ?', [next.id, f.id, sceneId, mode]);
+        });
+        for (const x of fighters) if (x.challengeId === f.id) x.challengeId = next.id;
+      }
+      const bar = hpOf(await readRow(f.id));
+      const gone = atZero(bar);
+      await postCard('reminder', {
+        title: 'Stooges',
+        text: gone
+          ? `${f.name}: the Stooges' shared Health Bar is empty — the whole unit is defeated.`
+          : `A Stooge is destroyed (${unit.length} left standing; the unit's bar: ${Math.max(0, bar.current)}/${bar.max}).`,
+        fighters: [{ name: f.name }],
+        automatic: 'battle',
+        notice: true,
+      });
+    };
     // Protect the VIP: who still has the first bar's +10 (battle.applied.vip, this fight only).
     const vipBonus = new Set(battle.applied?.vip?.fightId === fight.id ? battle.applied.vip.ids ?? [] : []);
     let vipSpent = false;
@@ -420,6 +461,9 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
           return bt;
         });
       }
+      // **Stooges (decided):** a body that loses any HP is destroyed; the HP
+      // came off the unit's one shared bar (the database copies it to all).
+      if (result.row?.stooge_unit != null && delta < 0 && result.landed != null && result.landed < (result.before?.current ?? 0)) await stoogeHit(f);
       // **Handcuffs (Tilt):** one falls to 0 HP — their partner gains 3 Fatigue.
       if (result.down) {
         const partner = fighters.find((x) => x.id === partnerOf(battle, f.id));
@@ -944,6 +988,25 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
       // **Obstacles (phase E).** The legal squares for a placement, the obstacles
       // in range, and the changes — all by the book's stacking (mapTiles.js).
       mode,
+      // Every empty square of the board, no obstacle on it (a board without an
+      // edge: those within 6 of someone). For placing new bodies (Stooges).
+      emptySquares: () => {
+        const b = board();
+        const out = [];
+        const lo = bounds ?? null;
+        const near = [...fighters].filter((x) => x.square).map((x) => x.square);
+        const box = lo
+          ? { c0: lo.colMin, c1: lo.colMax, r0: lo.rowMin, r1: lo.rowMax }
+          : near.length
+            ? { c0: Math.min(...near.map((q) => q.col)) - 6, c1: Math.max(...near.map((q) => q.col)) + 6, r0: Math.min(...near.map((q) => q.row)) - 6, r1: Math.max(...near.map((q) => q.row)) + 6 }
+            : null;
+        if (!box) return out;
+        for (let r = box.r0; r <= box.r1; r++) for (let c = box.c0; c <= box.c1; c++) {
+          const sq = { col: c, row: r };
+          if (inBoundsAt(b, sq) && isEmptyAt(b, sq) && !world.obstacleAt(sq)) out.push(sq);
+        }
+        return out;
+      },
       spaces: (from, range, { empty = false } = {}) => {
         const b = board();
         return squaresNear(from, range).filter(
@@ -1838,7 +1901,65 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
       if (attackers.length) await postCard('reminder', { title: 'Outlast', text: `End of round ${fightRow.round}: the Attackers heal to full and return to play.`, fighters: [], automatic: 'battle', notice: true });
     }
     await victoryCheck(env, world, people, { roundEnd: true, round: fightRow.round });
+    await stoogeRefill(env, world, fighters, fightRow);
     await env.save();
+  }
+
+  // **Stooges at a new Round (decided):** a unit with fewer bodies standing than
+  // it started with — and its bar not empty — gets new ones: the GM places each
+  // (a square pick; Skip stops). A new body shares the unit's bar and tokens and
+  // joins its side. On a lane the GM adds figures by hand (Change sides).
+  async function stoogeRefill(env, world, fighters, fightRow) {
+    const units = new Map();
+    for (const f of fighters) {
+      if (f.stoogeUnit == null || f.isCopy) continue;
+      if (!units.has(f.stoogeUnit)) units.set(f.stoogeUnit, []);
+      units.get(f.stoogeUnit).push(f);
+    }
+    if (!units.size) return;
+    env.rt.stoogeStart ??= {};
+    for (const [unit, bodies] of units) {
+      const start = (env.rt.stoogeStart[unit] ??= bodies.length);
+      const standing = bodies.filter((b) => !b.stoogeOut && b.square);
+      const src = standing[0] ?? [...bodies].sort((a, b) => b.id - a.id)[0];
+      if (!src || atZero(src.hp)) continue;
+      const missing = start - standing.length;
+      if (missing <= 0) continue;
+      if (world.mode !== 'combat') {
+        await postCard('reminder', { title: 'Stooges', text: `New Round: ${missing} Stooge${missing === 1 ? '' : 's'} down. Add ${missing === 1 ? 'a figure' : 'figures'} to the lane and bring ${missing === 1 ? 'it' : 'them'} in with Change sides (they share the unit's bar).`, fighters: [{ name: src.name }], automatic: 'battle', notice: true });
+        continue;
+      }
+      let placed = 0;
+      for (let i = 0; i < missing; i++) {
+        const options = world.emptySquares().map((q) => ({ id: `${q.col},${q.row}`, label: `column ${q.col}, row ${q.row}`, col: q.col, row: q.row }));
+        if (!options.length) break;
+        const ans = await ask(src, env.key, env.gen, env.tg, `Round ${fightRow.round + 1}`)({ kind: 'square', mode: 'combat', title: `Stooges: place a new one (${i + 1} of ${missing})`, text: `${src.name}: ${missing} down since the fight began — place a new body (it shares the unit's bar and tokens). Skip to stop.`, options, minimum: 0, maximum: 1, skippable: true });
+        const id = Array.isArray(ans) ? ans[0] : ans;
+        const at = options.find((o) => o.id === id);
+        if (!at) break;
+        await queued(async () => {
+          const r = await run(
+            `INSERT INTO combatants (scene_id, mode, character_id, grid_col, grid_row, stooge_unit, stooge_out, tokens, challenge_id, hp_max, hp_current, hp_bars, hp_broken, dizzy, bled_round, active_stance_key, level, fighter_kind)
+             SELECT scene_id, mode, character_id, ?, ?, stooge_unit, 0, tokens, challenge_id, hp_max, hp_current, hp_bars, hp_broken, dizzy, bled_round, active_stance_key, level, fighter_kind FROM combatants WHERE id = ?`,
+            [at.col, at.row, src.id]
+          );
+          const newId = Number(r.lastInsertRowid);
+          const col = src.side === 'allies' ? 'allies' : src.side === 'renegades' ? 'renegades' : 'enemies';
+          const fr = await one(`SELECT ${col} AS ids FROM fights WHERE id = ?`, [fightRow.id]);
+          let ids = [];
+          try {
+            ids = JSON.parse(fr?.ids || '[]');
+          } catch {
+            ids = [];
+          }
+          await run(`UPDATE fights SET ${col} = ? WHERE id = ?`, [JSON.stringify([...ids, newId]), fightRow.id]);
+        });
+        placed++;
+        markDirty();
+        await flushStage();
+      }
+      if (placed) await postCard('reminder', { title: 'Stooges', text: `New Round: ${placed} new Stooge${placed === 1 ? '' : 's'} join${placed === 1 ? 's' : ''} the fight.`, fighters: [{ name: src.name }], automatic: 'battle', notice: true });
+    }
   }
 
   // Tournament Play: a lost Round scores for the other side and resets
@@ -1911,6 +2032,10 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
 
   async function runFightStart(fightRow) {
     const { env, fighters, world } = await envFor(fightRow);
+    // Stooges: how many bodies each unit started with (refilled to it each Round).
+    env.rt.stoogeStart = {};
+    for (const f of fighters) if (f.stoogeUnit != null && !f.isCopy && !f.stoogeOut) env.rt.stoogeStart[f.stoogeUnit] = (env.rt.stoogeStart[f.stoogeUnit] ?? 0) + 1;
+    await env.save();
     // Tournament Play: everyone's start position, to reset to after a lost Round.
     if (world.battle.victory === 'tournament') {
       env.rt.tournament = { positions: Object.fromEntries(fighters.filter((f) => f.square && !f.isCopy).map((f) => [f.id, { ...f.square }])), score: {} };

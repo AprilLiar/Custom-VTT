@@ -109,6 +109,8 @@ export async function loadFighters(sceneId, mode) {
       activeStanceId: state.active_stance_id,
       hp: state.hp,
       summonId: r.summon_id,
+      // Stooges: a body destroyed by a hit (decided) — never the unit's leading body again.
+      stoogeOut: Boolean(r.stooge_out),
     };
   });
 }
@@ -296,16 +298,39 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
 
   // **Stooges (builder phase 4):** every body of one Stooges character in this
   // fight is one unit with one turn and one Stance. Map(characterId → the
-  // leading body: the lowest combatant id still in the fight).
+  // leading body: the lowest combatant id still in the fight and not destroyed).
   const stoogeLeaders = async (fight, fighters) => {
     const out = new Map();
-    const inFight = fighters.filter((f) => sideOf(fight, f.combatantId)).sort((a, b) => a.combatantId - b.combatantId);
+    const inFight = fighters.filter((f) => sideOf(fight, f.combatantId) && !f.stoogeOut).sort((a, b) => a.combatantId - b.combatantId);
     for (const f of inFight) {
       if (out.has(f.characterId)) continue;
       const d = await derivedFor(f.characterId);
       if (d?.type.id === 'character-type.stooges') out.set(f.characterId, f.combatantId);
     }
     return out;
+  };
+
+  // **Stooges (decided):** the bodies of each Stooges unit in the fight are tied
+  // (`stooge_unit`), so the database shares one Health Bar, tokens and all
+  // between them (db.js `stooges_share`) — taken from the leading body.
+  // `fresh` (Start Combat): every body starts in play. Otherwise (Change sides)
+  // a body joining copies the unit's state from one already tied.
+  const tieStooges = async (fight, { fresh = true } = {}) => {
+    const fighters = (await loadFighters(fight.scene_id, fight.mode)).filter((f) => sideOf(fight, f.combatantId));
+    const units = new Map();
+    for (const f of [...fighters].sort((a, b) => a.combatantId - b.combatantId)) {
+      const d = await derivedFor(f.characterId);
+      if (d?.type.id !== 'character-type.stooges') continue;
+      if (!units.has(f.characterId)) units.set(f.characterId, []);
+      units.get(f.characterId).push(f.combatantId);
+    }
+    for (const [characterId, ids] of units) {
+      const marks = ids.map(() => '?').join(',');
+      const tied = fresh ? null : await one(`SELECT id FROM combatants WHERE id IN (${marks}) AND stooge_unit IS NOT NULL AND stooge_out = 0 ORDER BY id LIMIT 1`, ids);
+      await run(`UPDATE combatants SET stooge_unit = ?${fresh ? ', stooge_out = 0' : ''} WHERE id IN (${marks})`, [characterId, ...ids]);
+      // Touch the source: the trigger copies its state to every other body.
+      await run('UPDATE combatants SET hp_current = hp_current WHERE id = ?', [tied?.id ?? ids[0]]);
+    }
   };
 
   const save = (fight) =>
@@ -495,6 +520,7 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
       [sceneId, mode, JSON.stringify(allyIds), JSON.stringify(enemyIds), JSON.stringify(renegadeIds)]
     );
     const fight = await one('SELECT * FROM fights WHERE scene_id = ? AND mode = ?', [sceneId, mode]);
+    await tieStooges(fight);
     const order = await newRound(fight, side, openerRow?.id ?? null);
     fight.turn_order = JSON.stringify(order);
     fight.turn_index = 0;
@@ -955,6 +981,7 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
     const enemyIds = (await resolveIds(enemies, fight.scene_id, fight.mode)).filter((id) => !allyIds.includes(id));
     const renegadeIds = (await resolveIds(renegades, fight.scene_id, fight.mode)).filter((id) => !allyIds.includes(id) && !enemyIds.includes(id));
     await run('UPDATE fights SET allies = ?, enemies = ?, renegades = ? WHERE id = ?', [JSON.stringify(allyIds), JSON.stringify(enemyIds), JSON.stringify(renegadeIds), fight.id]);
+    await tieStooges({ ...fight, allies: JSON.stringify(allyIds), enemies: JSON.stringify(enemyIds), renegades: JSON.stringify(renegadeIds) }, { fresh: false });
     await emitStageUpdated();
   });
 

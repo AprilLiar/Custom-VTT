@@ -1456,6 +1456,21 @@ export async function initDb() {
   await ensureColumn('combatants', 'contest_bonus', 'TEXT');
   // A Frantic Hero's pick this turn { formId, styleId, abilityId } (builder phase 4).
   await ensureColumn('combatants', 'frantic_pick', 'TEXT');
+  // **Stooges (decided):** every body of one Stooges unit in a fight shares one
+  // Health Bar, its tokens, its Challenge and everything else — `stooge_unit`
+  // (the character id) ties them; a write to any body is copied to the others
+  // by the trigger below, so every place that writes a fighter stays right.
+  // (SQLite's recursive triggers are off: the copy does not fire it again.)
+  // `stooge_out`: a body destroyed by a hit (it never comes back).
+  await ensureColumn('combatants', 'stooge_unit', 'INTEGER');
+  await ensureColumn('combatants', 'stooge_out', 'INTEGER NOT NULL DEFAULT 0');
+  ddl('DROP TRIGGER IF EXISTS stooges_share');
+  ddl(`CREATE TRIGGER stooges_share AFTER UPDATE OF tokens, challenge_id, hp_max, hp_current, hp_bars, hp_broken, dizzy, bled_round, active_stance_key, level, fighter_kind ON combatants
+    WHEN NEW.stooge_unit IS NOT NULL
+    BEGIN
+      UPDATE combatants SET tokens = NEW.tokens, challenge_id = NEW.challenge_id, hp_max = NEW.hp_max, hp_current = NEW.hp_current, hp_bars = NEW.hp_bars, hp_broken = NEW.hp_broken, dizzy = NEW.dizzy, bled_round = NEW.bled_round, active_stance_key = NEW.active_stance_key, level = NEW.level, fighter_kind = NEW.fighter_kind
+      WHERE stooge_unit = NEW.stooge_unit AND scene_id = NEW.scene_id AND mode = NEW.mode AND id <> NEW.id;
+    END`);
   // A Simple Combat fighter is created on its first change, keyed by its
   // summon: at most one row per summon, so INSERT OR IGNORE is race-free.
   ddl('CREATE UNIQUE INDEX IF NOT EXISTS idx_combatants_summon_unique ON combatants(summon_id) WHERE summon_id IS NOT NULL');

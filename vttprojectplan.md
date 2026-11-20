@@ -114,6 +114,7 @@ A GM-controlled fullscreen stage for roleplay, in the visual language of a light
   - **Gates add up:** every Gate a number reaches applies, unless it says "instead".
 
 ### The character builder (the sheet's Combat tab)
+- **Stooges (decided, the user's rules — the book's Stooges chapter isn't in our copy):** the GM places as many bodies as they like. At Start Combat the bodies of one Stooges character in the fight are tied (`combatants.stooge_unit`) and share **one Health Bar, tokens, Challenge, Dizzy, Stance — everything**: a database trigger (`db.js` `stooges_share`) copies any write to one body onto the others, so every code path stays right. One turn per Round (the leading body: the first not destroyed); only its Abilities run. **A body that loses any HP is destroyed** (`stooge_out`, out of play for good) and the HP comes off the shared bar; the unit's turn and any Challenge it gave pass to the next body standing. **The bar empty: the whole unit is defeated**, however many bodies are left (all show 0 HP; a card says so). **At each new Round**, a unit with fewer bodies standing than it started with (and HP left) gets new ones: the GM is asked to place each on an empty square (Skip stops); a new body copies the unit's state and joins its side (`triggers.js` `stoogeRefill`; on a lane the GM adds figures by hand and uses Change sides, which ties them). Never a Comeback. Playtest: `scripts/playtest-stooges.mjs`.
 - **Everyone builds** from the content: a hero type (Focused / Fused / Frantic) or NPC type (Warrior / Boss / Stooges), Archetypes, Forms, Styles or a Freestyle, a Build, Skills (one may be the free two-word Skill). Nothing is locked; **legality only warns**.
 - **Derived Stances** ("{Style} {Form alias} Stance" — or **any name the player gives it**, decided: an optional Name field per Stance in the builder, `customName` (60 characters), shown everywhere the Stance is named — sheet, Stance pick, dice board, chat — with the rules' name as its placeholder and in brackets beside it): the Form's dice (Freestyle-modified), the level's bonus die, range from the Style and the Form's construct rules. The Machine has two Forms per Stance.
 - **Levels 1-10 and XP** (Victory 2, Defeat 1; End Combat awards it). **Level up** opens a window with everything the level brings and every choice it needs (Super Move, Stance, Archetype, Form or Style, Warrior's Path…).
@@ -278,7 +279,6 @@ REST: `/api/health`, `/api/characters[/:id]`, `/api/characters/:id/relationships
 - **Simple Combat lanes have no camera** (no pinch or pan); the map has one.
 - **Taken Out fighters keep their square** — assumed, to confirm with the book.
 - **The Untouchable's Dodge cost** (the content's one "requires a ruling") is read plainly as 1.
-- **Stooges:** whether a unit should share one Health Bar (today each body has its own).
 - **Not tracked:** the character-type Bleed Ability at turn start, and the book's Complications (Guest Heroes, Uneven Fights).
 - **The Machine's "no Freestyles"** is only a warning.
 - **The book's PDF is not in the repo**; rules not in the content export are read from the content's quotes.
