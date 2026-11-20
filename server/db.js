@@ -1463,6 +1463,9 @@ export async function initDb() {
   // (SQLite's recursive triggers are off: the copy does not fire it again.)
   // `stooge_out`: a body destroyed by a hit (it never comes back).
   await ensureColumn('combatants', 'stooge_unit', 'INTEGER');
+  // The one Scene Picture a character (or Temp NPC) uses as their combat token
+  // (decided; at most one per owner — scene_picture:set_token keeps it so).
+  await ensureColumn('scene_pictures', 'is_token', 'INTEGER NOT NULL DEFAULT 0');
   await ensureColumn('combatants', 'stooge_out', 'INTEGER NOT NULL DEFAULT 0');
   ddl('DROP TRIGGER IF EXISTS stooges_share');
   ddl(`CREATE TRIGGER stooges_share AFTER UPDATE OF tokens, challenge_id, hp_max, hp_current, hp_bars, hp_broken, dizzy, bled_round, active_stance_key, level, fighter_kind ON combatants

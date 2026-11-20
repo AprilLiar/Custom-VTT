@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { socket } from '../socket.js';
 import { getScenePictures } from '../lib/api.js';
 import { fileToScenePicture } from '../lib/image.js';
+import { Check } from 'lucide-react';
 import Thumb from './Thumb.jsx';
 
 // The Scene tab's shared picture editor (Scene tab plan, Phase 3: upload,
@@ -120,7 +121,7 @@ export default function ScenePicturesEditor({ ownerType, ownerId, canEdit = fals
       <p className="text-sm text-zinc-500">
         Transparent PNGs of this {ownerType === 'temp_npc' ? 'Temp NPC' : 'character'}, picked when
         they're summoned onto a Scene. These are separate from the regular portrait above — any
-        number, any pose or expression.
+        number, any pose or expression. Tick one to use it as the combat token.
       </p>
       {pictures.length === 0 && !canEdit ? (
         <p className="panel-cut-sm border border-dashed border-zinc-800 p-4 text-center text-sm text-zinc-600">
@@ -129,7 +130,25 @@ export default function ScenePicturesEditor({ ownerType, ownerId, canEdit = fals
       ) : (
         <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">
           {pictures.map((picture) => (
-            <div key={picture.id} className="space-y-1 panel-cut-sm border border-zinc-800 bg-zinc-900 p-2">
+            <div key={picture.id} className={`relative space-y-1 panel-cut-sm border bg-zinc-900 p-2 ${picture.is_token ? 'border-brand-500' : 'border-zinc-800'}`}>
+              {/* **The token picture (decided):** one at most — ticking another moves
+                  the tick, ticking this one again clears it (the unique token, else
+                  the portrait, then shows on the map). */}
+              {(canEdit || picture.is_token) ? (
+                <button
+                  type="button"
+                  onClick={canEdit ? () => socket.emit('scene_picture:set_token', { scenePictureId: picture.id }) : undefined}
+                  disabled={!canEdit}
+                  aria-pressed={Boolean(picture.is_token)}
+                  aria-label={picture.is_token ? `${picture.name || 'This picture'} is the combat token — tap to stop using it` : `Use ${picture.name || 'this picture'} as the combat token`}
+                  title={picture.is_token ? 'The combat token — tap to go back to the token picture or portrait' : 'Use as the combat token'}
+                  className={`absolute right-1 top-1 z-10 flex h-6 w-6 items-center justify-center rounded-full border-2 shadow ${
+                    picture.is_token ? 'border-brand-400 bg-brand-600 text-white' : 'border-zinc-500 bg-zinc-900/80 text-transparent hover:border-brand-400 hover:text-brand-300'
+                  }`}
+                >
+                  <Check size={14} strokeWidth={3} aria-hidden />
+                </button>
+              ) : null}
               <button
                 type="button"
                 onClick={canEdit ? () => rename(picture) : undefined}
@@ -140,6 +159,7 @@ export default function ScenePicturesEditor({ ownerType, ownerId, canEdit = fals
                 <Thumb record={picture} name={picture.name} size="h-20 w-full" cut="panel-cut-sm" />
               </button>
               <p className="truncate text-center text-xs text-zinc-400">{picture.name || 'Untitled'}</p>
+              {picture.is_token ? <p className="text-center text-[9px] font-bold uppercase tracking-wide text-brand-300">Token</p> : null}
               {canEdit && (
                 <button
                   type="button"

@@ -1981,6 +1981,27 @@ io.on('connection', (socket) => {
     io.emit('scene_picture:updated', withImageUrl('scene-picture')(await one('SELECT * FROM scene_pictures WHERE id = ?', [picture.id])));
   });
 
+  // **The token picture (decided):** tick one Scene Picture to be this
+  // character's combat token — only one at a time (ticking another moves the
+  // tick); ticking the ticked one again clears it, and the token falls back
+  // to the unique combat token, else the portrait.
+  on('scene_picture:set_token', async ({ scenePictureId }) => {
+    const picture = await one('SELECT * FROM scene_pictures WHERE id = ?', [scenePictureId]);
+    if (!picture) return;
+    const ownerType = picture.character_id != null ? 'character' : 'temp_npc';
+    const ownerId = picture.character_id ?? picture.temp_npc_id;
+    if (!mayWriteScenePicture(socket.data.identity, ownerType, ownerId)) return;
+    const col = ownerColumn(ownerType);
+    const was = await all(`SELECT id FROM scene_pictures WHERE ${col} = ? AND is_token = 1`, [ownerId]);
+    const on = !picture.is_token;
+    await run(`UPDATE scene_pictures SET is_token = 0 WHERE ${col} = ?`, [ownerId]);
+    if (on) await run('UPDATE scene_pictures SET is_token = 1 WHERE id = ?', [picture.id]);
+    for (const id of new Set([...was.map((r) => r.id), picture.id])) {
+      io.emit('scene_picture:updated', withImageUrl('scene-picture')(await one('SELECT * FROM scene_pictures WHERE id = ?', [id])));
+    }
+    await emitStageUpdated();
+  });
+
   on('scene_picture:delete', async ({ scenePictureId }) => {
     const picture = await one('SELECT * FROM scene_pictures WHERE id = ?', [scenePictureId]);
     if (!picture) return;

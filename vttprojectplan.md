@@ -120,7 +120,7 @@ A GM-controlled fullscreen stage for roleplay, in the visual language of a light
 - **Levels 1-10 and XP** (Victory 2, Defeat 1; End Combat awards it). **Level up** opens a window with everything the level brings and every choice it needs (Super Move, Stance, Archetype, Form or Style, Warrior's Path…).
 - **Hit spends:** Ask / Auto / Never for Power, Iron and Shield (players Ask, NPCs Auto). On your own Actions the dice board's **Power toggle** decides, three ways — **Off → Ask → On** — starting from the setting (Auto → On, Ask → Ask, Never → Off): On spends as much as allowed on each hit, Ask asks on each hit (a 0-damage hit too), Off spends none (the target's Weakness under Exploit Weakness is still free).
 - **The sheet's reference:** Actions as book-style cards (Basic and Personal side by side, then Super Moves), and the Abilities ("Active effects") with their rules text.
-- **The combat token picture** (round, cropped) is set here too.
+- **The combat token picture** (round, cropped) is set here too. **Or a Scene Picture (decided):** on the Scene Pictures tab each picture has a tick — the ticked one is the token (map, turn order, cards; shown whole, uncropped). One at most: ticking another moves the tick; ticking the ticked one clears it, and the token falls back to this unique token picture, else the portrait (`scene_pictures.is_token`, `scene_picture:set_token`; the token lookups in `combatMap.js`, `fights.js`, `combatState.js`). Playtest: `scripts/playtest-token-picture.mjs`.
 - Code: `client/src/lib/patd/build.js` (`deriveBuild`, `normalizeBuild`, `levelInfo`…), `server/builds.js` (`build:save|clear`), `components/builder/`.
 
 ### Fight modes

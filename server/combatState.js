@@ -69,20 +69,25 @@ export async function roundOf(row) {
 async function fighterCard(row) {
   const r = await one(
     `SELECT COALESCE(c.name, tn.name) AS name, cp.id AS profile_id, cp.image_hash AS token_hash,
-            (cp.image_data IS NOT NULL) AS has_token, cp.crop_x, cp.crop_y, cp.crop_w, cp.crop_h
+            (cp.image_data IS NOT NULL) AS has_token, cp.crop_x, cp.crop_y, cp.crop_w, cp.crop_h,
+            tp.id AS tp_id, tp.image_hash AS tp_hash
      FROM combatants cb
      LEFT JOIN characters c ON c.id = cb.character_id
      LEFT JOIN temp_npcs tn ON tn.id = cb.temp_npc_id
      LEFT JOIN combat_profiles cp
        ON (cb.character_id IS NOT NULL AND cp.character_id = cb.character_id)
        OR (cb.temp_npc_id IS NOT NULL AND cp.temp_npc_id = cb.temp_npc_id)
+     LEFT JOIN scene_pictures tp
+       ON tp.is_token = 1 AND ((cb.character_id IS NOT NULL AND tp.character_id = cb.character_id)
+        OR (cb.temp_npc_id IS NOT NULL AND tp.temp_npc_id = cb.temp_npc_id))
      WHERE cb.id = ?`,
     [row.id]
   );
   return {
     name: r?.name ?? 'Someone',
-    image_url: r?.has_token ? imageUrl('combat-token', r.profile_id, { present: true, hash: r.token_hash }) : null,
-    crop: r?.has_token ? { x: r.crop_x, y: r.crop_y, w: r.crop_w, h: r.crop_h } : null,
+    // The Scene Picture ticked as the token first (decided), then the unique token.
+    image_url: r?.tp_id ? imageUrl('scene-picture', r.tp_id, { present: true, hash: r.tp_hash }) : r?.has_token ? imageUrl('combat-token', r.profile_id, { present: true, hash: r.token_hash }) : null,
+    crop: !r?.tp_id && r?.has_token ? { x: r.crop_x, y: r.crop_y, w: r.crop_w, h: r.crop_h } : null,
   };
 }
 

@@ -48,13 +48,17 @@ export async function loadCombatTokens(sceneId) {
             COALESCE(c.image_hash, tn.image_hash) AS portrait_hash,
             (COALESCE(c.image_data, tn.image_data) IS NOT NULL) AS has_portrait,
             COALESCE(c.crop_x, tn.crop_x) AS crop_x, COALESCE(c.crop_y, tn.crop_y) AS crop_y,
-            COALESCE(c.crop_w, tn.crop_w) AS crop_w, COALESCE(c.crop_h, tn.crop_h) AS crop_h
+            COALESCE(c.crop_w, tn.crop_w) AS crop_w, COALESCE(c.crop_h, tn.crop_h) AS crop_h,
+            tp.id AS tp_id, tp.image_hash AS tp_hash
      FROM combatants cb
      LEFT JOIN characters c ON c.id = cb.character_id
      LEFT JOIN temp_npcs tn ON tn.id = cb.temp_npc_id
      LEFT JOIN combat_profiles cp
        ON (cb.character_id IS NOT NULL AND cp.character_id = cb.character_id)
        OR (cb.temp_npc_id IS NOT NULL AND cp.temp_npc_id = cb.temp_npc_id)
+     LEFT JOIN scene_pictures tp
+       ON tp.is_token = 1 AND ((cb.character_id IS NOT NULL AND tp.character_id = cb.character_id)
+        OR (cb.temp_npc_id IS NOT NULL AND tp.temp_npc_id = cb.temp_npc_id))
      WHERE cb.scene_id = ? AND cb.mode = 'combat' AND cb.character_id IS NOT NULL
      ORDER BY cb.id`,
     [sceneId]
@@ -70,7 +74,10 @@ export async function loadCombatTokens(sceneId) {
   return rows.map((r) => {
     const ownerType = r.character_id != null ? 'character' : 'temp_npc';
     const ownerId = r.character_id ?? r.temp_npc_id;
-    const tokenUrl = r.has_token ? imageUrl('combat-token', r.profile_id, { present: true, hash: r.token_hash }) : null;
+    // **The token picture (decided):** the Scene Picture ticked as the token,
+    // else the unique combat token, else the portrait.
+    const pictureUrl = r.tp_id ? imageUrl('scene-picture', r.tp_id, { present: true, hash: r.tp_hash }) : null;
+    const tokenUrl = pictureUrl ?? (r.has_token ? imageUrl('combat-token', r.profile_id, { present: true, hash: r.token_hash }) : null);
     const portraitUrl = r.has_portrait
       ? imageUrl(ownerType === 'character' ? 'character' : 'temp-npc', ownerId, { present: true, hash: r.portrait_hash })
       : null;
@@ -85,7 +92,9 @@ export async function loadCombatTokens(sceneId) {
       row: r.grid_row,
       size: sizes.get(r.character_id) ?? 1,
       image_url: tokenUrl ?? portraitUrl,
-      crop: tokenUrl
+      crop: pictureUrl
+        ? null
+        : tokenUrl
         ? { x: r.token_crop_x, y: r.token_crop_y, w: r.token_crop_w, h: r.token_crop_h }
         : { x: r.crop_x, y: r.crop_y, w: r.crop_w, h: r.crop_h },
       // Phase 4: HP, tokens, Challenge, Dizzy, Stance.

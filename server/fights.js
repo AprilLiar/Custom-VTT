@@ -76,13 +76,17 @@ export async function loadFighters(sceneId, mode) {
             COALESCE(c.image_hash, tn.image_hash) AS portrait_hash,
             (COALESCE(c.image_data, tn.image_data) IS NOT NULL) AS has_portrait,
             COALESCE(c.crop_x, tn.crop_x) AS p_cx, COALESCE(c.crop_y, tn.crop_y) AS p_cy,
-            COALESCE(c.crop_w, tn.crop_w) AS p_cw, COALESCE(c.crop_h, tn.crop_h) AS p_ch
+            COALESCE(c.crop_w, tn.crop_w) AS p_cw, COALESCE(c.crop_h, tn.crop_h) AS p_ch,
+            tp.id AS tp_id, tp.image_hash AS tp_hash
      FROM combatants cb
      LEFT JOIN characters c ON c.id = cb.character_id
      LEFT JOIN temp_npcs tn ON tn.id = cb.temp_npc_id
      LEFT JOIN combat_profiles cp
        ON (cb.character_id IS NOT NULL AND cp.character_id = cb.character_id)
        OR (cb.temp_npc_id IS NOT NULL AND cp.temp_npc_id = cb.temp_npc_id)
+     LEFT JOIN scene_pictures tp
+       ON tp.is_token = 1 AND ((cb.character_id IS NOT NULL AND tp.character_id = cb.character_id)
+        OR (cb.temp_npc_id IS NOT NULL AND tp.temp_npc_id = cb.temp_npc_id))
      WHERE cb.scene_id = ? AND cb.mode = ? AND cb.character_id IS NOT NULL`,
     [sceneId, mode]
   );
@@ -90,7 +94,9 @@ export async function loadFighters(sceneId, mode) {
     const ownerType = r.character_id != null ? 'character' : 'temp_npc';
     const ownerId = r.character_id ?? r.temp_npc_id;
     const state = shapeFightState(r);
-    const token = r.has_token ? imageUrl('combat-token', r.profile_id, { present: true, hash: r.token_hash }) : null;
+    // The Scene Picture ticked as the token first (decided), then the unique token, then the portrait.
+    const picture = r.tp_id ? imageUrl('scene-picture', r.tp_id, { present: true, hash: r.tp_hash }) : null;
+    const token = picture ?? (r.has_token ? imageUrl('combat-token', r.profile_id, { present: true, hash: r.token_hash }) : null);
     return {
       combatantId: r.id,
       ownerKey: `${ownerType}:${ownerId}`,
@@ -103,7 +109,7 @@ export async function loadFighters(sceneId, mode) {
         (r.has_portrait
           ? imageUrl(ownerType === 'character' ? 'character' : 'temp-npc', ownerId, { present: true, hash: r.portrait_hash })
           : null),
-      crop: token ? { x: r.t_cx, y: r.t_cy, w: r.t_cw, h: r.t_ch } : { x: r.p_cx, y: r.p_cy, w: r.p_cw, h: r.p_ch },
+      crop: picture ? null : token ? { x: r.t_cx, y: r.t_cy, w: r.t_cw, h: r.t_ch } : { x: r.p_cx, y: r.p_cy, w: r.p_cw, h: r.p_ch },
       tokens: state.tokens,
       challengeId: state.challenge_id,
       activeStanceId: state.active_stance_id,
