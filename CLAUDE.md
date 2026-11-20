@@ -28,6 +28,8 @@ not the plan is incomplete.
   push to `main` is a deploy — Render auto-builds `main` on every push — so run `npm test`, lint and
   the client build first. Move on to the next plan phase as soon as the previous one has landed.
   Ask the user clarifying questions whenever a choice is genuinely unsettled.
+- **Every push bumps the patch note** (`client/src/lib/patchNotes.js`: the version — kept equal in both
+  `package.json` files and lockfiles — and ONE sentence on what this push changed; shown on the role screen).
 - **Always finish every phase of the active plan without asking** (the user's standing instruction):
   build, verify and push phase after phase; stop only for a real question.
 - **Never poll GitHub.** Merges, closes and review comments arrive on their own as events.

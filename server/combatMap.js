@@ -15,6 +15,7 @@ import { all, one, run, writeMany } from './db.js';
 import { imageUrl, sanitizeImageMime } from './images.js';
 import { moveToken, normalizeGrid } from '../client/src/lib/combatGrid.js';
 import { releaseChallengesOf, serialized, shapeFightState } from './combatState.js';
+import { tieStooges } from './stooges.js';
 import { loadAllDerived } from './fighterStances.js';
 import { hasRuleIn } from '../client/src/lib/patd/build.js';
 import { patdContent } from './patdContent.js';
@@ -41,7 +42,7 @@ export function sceneGrid(sceneRow) {
 export async function loadCombatTokens(sceneId) {
   const rows = await all(
     `SELECT cb.id, cb.character_id, cb.temp_npc_id, cb.grid_col, cb.grid_row,
-            cb.tokens, cb.challenge_id, cb.hp_max, cb.hp_current, cb.hp_bars, cb.hp_broken, cb.dizzy, cb.active_stance_key, cb.level, cb.fighter_kind, cb.infinite_hp, cb.damage_taken, cb.excluded,
+            cb.tokens, cb.challenge_id, cb.hp_max, cb.hp_current, cb.hp_bars, cb.hp_broken, cb.dizzy, cb.active_stance_key, cb.level, cb.fighter_kind, cb.infinite_hp, cb.damage_taken, cb.excluded, cb.stooge_unit, cb.stooge_out,
             COALESCE(c.name, tn.name) AS name,
             cp.id AS profile_id, cp.image_hash AS token_hash, (cp.image_data IS NOT NULL) AS has_token,
             cp.crop_x AS token_crop_x, cp.crop_y AS token_crop_y, cp.crop_w AS token_crop_w, cp.crop_h AS token_crop_h,
@@ -183,6 +184,8 @@ export function registerCombatMapHandlers({ on: onRaw, socket, mayWrite, emitSta
       col,
       row,
     ]);
+    // Stooges: a new body joins its unit at once (shared HP, tokens, everything).
+    await tieStooges(sceneId, 'combat', id);
     await emitStageUpdated();
   });
 

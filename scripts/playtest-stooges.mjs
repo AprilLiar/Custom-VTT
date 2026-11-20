@@ -99,16 +99,40 @@ const tok = (id) => st.combatTokens.find((t) => t.id === id);
 const ta = st.combatTokens.find((t) => t.character_id === ana.id);
 const bodies = st.combatTokens.filter((t) => t.character_id === goons.id).map((t) => t.id).sort((a, b) => a - b);
 check('three Stooge bodies placed', bodies.length === 3);
-gm.emit('fight:preset_weight', { mode: 'combat', weight: 'middle', fighters: [{ ref: { combatantId: ta.id }, level: 1 }, ...bodies.map((id) => ({ ref: { combatantId: id }, level: 1, kind: 'warrior' }))] });
-await sleep(400);
-// Give the bodies different HP first: Start Combat ties them to the leader's.
+// Fight Setup sends ONE row for the unit (its first body): every body gets it.
+gm.emit('fight:preset_weight', { mode: 'combat', weight: 'middle', fighters: [{ ref: { combatantId: ta.id }, level: 1 }, { ref: { combatantId: bodies[0] }, level: 3, kind: 'warrior' }] });
+await sleep(500);
+await stage();
+check('tied from placement: Fight Setup on one body gives every body the same bar and level', bodies.every((id) => tok(id).fight.hp.max != null && tok(id).fight.hp.max === tok(bodies[0]).fight.hp.max && tok(id).fight.level === 3), JSON.stringify(bodies.map((id) => [tok(id).fight.hp, tok(id).fight.level])));
+check('…every body knows its unit', bodies.every((id) => tok(id).fight.stooge_unit === goons.id), JSON.stringify(bodies.map((id) => tok(id).fight.stooge_unit)));
 gm.emit('fighter:set_hp', { ref: { combatantId: bodies[2] }, current: 5 });
+await sleep(400);
+await stage();
+check('before any fight: HP set on one body shows on every body', bodies.every((id) => tok(id).fight.hp.current === 5), JSON.stringify(bodies.map((id) => tok(id).fight.hp)));
+gm.emit('fighter:set_hp', { ref: { combatantId: bodies[0] }, current: tok(bodies[0]).fight.hp.max });
+await sleep(400);
+// Start Combat lists the unit once and sends one body: the whole unit joins.
+gm.emit('fight:start', { mode: 'combat', allies: [{ combatantId: ta.id }], enemies: [{ combatantId: bodies[0] }], firstSide: 'enemies', opener: { combatantId: bodies[0] } });
+await sleep(2500);
+await stage();
+check('Start Combat with one body: every body is on the enemies side', bodies.every((id) => st.fights.combat.enemies.includes(id)), JSON.stringify(st.fights.combat.enemies));
+
+console.log('\n--- the unit acts through any body: the player taps which one ---');
+const DAMAGE = 'action.system-basic-actions.damage';
+const marks = async () => (await jf('/api/dice-marks')).marks;
+const goonRoll = cards.filter((c) => c.kind === 'stance_roll').at(-1)?.payload.roll_id;
+prompts.length = 0;
+gm.emit('board:place', { rollId: goonRoll, die: 0, actionId: DAMAGE });
+await sleep(400);
+for (const x of (await marks())[goonRoll]?.placements ?? []) if (x.threshold > 1) gm.emit('board:stop', { rollId: goonRoll, key: x.key, stop: 1 });
 await sleep(300);
-gm.emit('fight:start', { mode: 'combat', allies: [{ combatantId: ta.id }], enemies: bodies.map((id) => ({ combatantId: id })), firstSide: 'allies', opener: { combatantId: ta.id } });
-await sleep(2000);
+gm.emit('board:commit', { rollId: goonRoll });
+await sleep(3000);
+const pick = prompts.find((x) => /which Stooge\?/.test(x.title));
+check('performing an Action asks which Stooge performs it, offering every body', pick && bodies.every((id) => pick.options.some((o) => o.id === String(id))), JSON.stringify(prompts.map((x) => [x.title, x.options?.map((o) => o.id)])));
 await stage();
 const hpOf = (id) => tok(id)?.fight.hp;
-check('Start Combat: every body shows the one shared bar (the leader\'s)', bodies.every((id) => hpOf(id).current === hpOf(bodies[0]).current && hpOf(id).max === hpOf(bodies[0]).max) && hpOf(bodies[0]).current === hpOf(bodies[0]).max, JSON.stringify(bodies.map(hpOf)));
+check('in the fight: every body shows the one shared bar', bodies.every((id) => hpOf(id).current === hpOf(bodies[0]).current && hpOf(id).max === hpOf(bodies[0]).max) && hpOf(bodies[0]).current === hpOf(bodies[0]).max, JSON.stringify(bodies.map(hpOf)));
 const max = hpOf(bodies[0]).max;
 gm.emit('fighter:token', { ref: { combatantId: bodies[1] }, key: 'power', delta: 2 });
 await sleep(500);

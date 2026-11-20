@@ -10,6 +10,7 @@
 // Events name a fighter by a REF: `{ combatantId }` (a map token) or
 // `{ summonId }` (a Simple Combat miniature). Writes follow the figure rule:
 // the GM edits anyone, a Player their own character's copies.
+import { tieStooges } from './stooges.js';
 import { all, one, run } from './db.js';
 import { TOKEN_BY_KEY, absorbWithShield, capOf } from '../client/src/lib/panicTokens.js';
 import { stanceByKey } from './fighterStances.js';
@@ -51,6 +52,10 @@ export function shapeFightState(row) {
     damage_taken: Math.max(0, Number(row?.damage_taken) || 0),
     // Left out of the fight (Fight Setup's ×): only scenery.
     excluded: Boolean(row?.excluded),
+    // Stooges (decided): the unit this body belongs to (its character id), and
+    // whether it was destroyed — Fight Setup and Start Combat show one row per unit.
+    stooge_unit: row?.stooge_unit ?? null,
+    stooge_out: Boolean(row?.stooge_out),
   };
 }
 
@@ -115,7 +120,10 @@ export async function resolveRef(ref) {
        VALUES (?, 'simple', ?, ?, ?)`,
       [summon.scene_id, summon.id, summon.character_id, summon.temp_npc_id]
     );
-    return one('SELECT * FROM combatants WHERE summon_id = ?', [summon.id]);
+    // Stooges on a lane: a body's row joins its unit as soon as it exists.
+    const fresh = await one('SELECT * FROM combatants WHERE summon_id = ?', [summon.id]);
+    if (fresh && fresh.stooge_unit == null && (await tieStooges(summon.scene_id, 'simple', summon.character_id)).length) return one('SELECT * FROM combatants WHERE summon_id = ?', [summon.id]);
+    return fresh;
   }
   return null;
 }

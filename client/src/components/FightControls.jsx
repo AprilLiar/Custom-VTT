@@ -95,10 +95,12 @@ export function globalParams(battle) {
 export function FightSetupDialog({ mode, fighters, existing = null, onClose, skipped = 0, threeWay = false, battle = null }) {
   const [side, setSide] = useState(() => {
     const out = {};
+    // (A Stooges unit is one row standing for every body: any body on a side puts it there.)
+    const on = (list, f) => (f.combatantIds?.length ? f.combatantIds : [f.combatantId]).some((id) => list?.includes(id));
     for (const f of fighters) {
-      if (existing?.allies.includes(f.combatantId)) out[f.key] = 'allies';
-      else if (existing?.enemies.includes(f.combatantId)) out[f.key] = 'enemies';
-      else if (existing?.renegades?.includes(f.combatantId)) out[f.key] = 'renegades';
+      if (on(existing?.allies, f)) out[f.key] = 'allies';
+      else if (on(existing?.enemies, f)) out[f.key] = 'enemies';
+      else if (on(existing?.renegades, f)) out[f.key] = 'renegades';
       else out[f.key] = null;
     }
     return out;
@@ -117,7 +119,8 @@ export function FightSetupDialog({ mode, fighters, existing = null, onClose, ski
   const move = (f, to) => setSide((s) => ({ ...s, [f.key]: to }));
 
   const submit = () => {
-    const refs = (list) => list.map((f) => f.ref);
+    // (A Stooges unit sends every body.)
+    const refs = (list) => list.flatMap((f) => f.bodies ?? [f.ref]);
     if (existing) {
       socket.emit('fight:set_sides', { mode, allies: refs(allies), enemies: refs(enemies), renegades: refs(renegades) });
     } else {

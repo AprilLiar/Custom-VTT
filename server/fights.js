@@ -36,6 +36,7 @@ import { battleFightStart } from './battle.js';
 import { cleanBonuses, contestOfScene, contestState, dropArenas, finishContest, hpLeftOf, mayActFor, runningContest, saveArenas, snapshotStats, startContest } from './contests.js';
 import { CONTEST_BY_KEY, normalizeCustom } from '../client/src/lib/contests.js';
 import { battleActionIdsFor } from '../client/src/lib/patd/battleActions.js';
+import { tieStooges } from './stooges.js';
 
 // The fight's reaction window (phase F): { seq, activeId, offers: { [id]: { clusters, … } }, done } | null.
 export const windowOf = (row) => {
@@ -318,27 +319,24 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
     return out;
   };
 
-  // **Stooges (decided):** the bodies of each Stooges unit in the fight are tied
-  // (`stooge_unit`), so the database shares one Health Bar, tokens and all
-  // between them (db.js `stooges_share`) — taken from the leading body.
-  // `fresh` (Start Combat): every body starts in play. Otherwise (Change sides)
-  // a body joining copies the unit's state from one already tied.
-  const tieStooges = async (fight, { fresh = true } = {}) => {
-    const fighters = (await loadFighters(fight.scene_id, fight.mode)).filter((f) => sideOf(fight, f.combatantId));
-    const units = new Map();
-    for (const f of [...fighters].sort((a, b) => a.combatantId - b.combatantId)) {
-      const d = await derivedFor(f.characterId);
-      if (d?.type.id !== 'character-type.stooges') continue;
-      if (!units.has(f.characterId)) units.set(f.characterId, []);
-      units.get(f.characterId).push(f.combatantId);
+  // **Stooges (decided):** every Stooges unit in the fight is tied again
+  // (server/stooges.js) — at Start Combat every body starts in play.
+  // The ids with every other body of any Stooges unit among them (on this board).
+  const withUnits = async (ids, sceneId, mode) => {
+    if (!ids.length) return ids;
+    const chars = await all(`SELECT DISTINCT character_id FROM combatants WHERE id IN (${ids.map(() => '?').join(',')}) AND character_id IS NOT NULL`, ids);
+    const out = [...ids];
+    for (const c of chars) {
+      const bodies = await tieStooges(sceneId, mode, c.character_id);
+      for (const id of bodies) if (!out.includes(id)) out.push(id);
     }
-    for (const [characterId, ids] of units) {
-      const marks = ids.map(() => '?').join(',');
-      const tied = fresh ? null : await one(`SELECT id FROM combatants WHERE id IN (${marks}) AND stooge_unit IS NOT NULL AND stooge_out = 0 ORDER BY id LIMIT 1`, ids);
-      await run(`UPDATE combatants SET stooge_unit = ?${fresh ? ', stooge_out = 0' : ''} WHERE id IN (${marks})`, [characterId, ...ids]);
-      // Touch the source: the trigger copies its state to every other body.
-      await run('UPDATE combatants SET hp_current = hp_current WHERE id = ?', [tied?.id ?? ids[0]]);
-    }
+    return out;
+  };
+  const tieFightStooges = async (fight, { fresh = true } = {}) => {
+    const ids = [...parseIds(fight.allies), ...parseIds(fight.enemies), ...parseIds(fight.renegades)];
+    if (!ids.length) return;
+    const chars = await all(`SELECT DISTINCT character_id FROM combatants WHERE id IN (${ids.map(() => '?').join(',')}) AND character_id IS NOT NULL`, ids);
+    for (const c of chars) await tieStooges(fight.scene_id, fight.mode, c.character_id, { fresh });
   };
 
   const save = (fight) =>
@@ -515,10 +513,11 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
     if (!isGm() || !MODES.has(mode)) return;
     const sceneId = await activeSceneId();
     if (!sceneId) return;
-    const allyIds = await resolveIds(allies, sceneId, mode);
-    const enemyIds = (await resolveIds(enemies, sceneId, mode)).filter((id) => !allyIds.includes(id));
+    // (Stooges: any body sent to a side brings the whole unit — every body.)
+    const allyIds = await withUnits(await resolveIds(allies, sceneId, mode), sceneId, mode);
+    const enemyIds = (await withUnits(await resolveIds(enemies, sceneId, mode), sceneId, mode)).filter((id) => !allyIds.includes(id));
     // Three Way Battles: the Renegades fight everyone.
-    const renegadeIds = (await resolveIds(renegades, sceneId, mode)).filter((id) => !allyIds.includes(id) && !enemyIds.includes(id));
+    const renegadeIds = (await withUnits(await resolveIds(renegades, sceneId, mode), sceneId, mode)).filter((id) => !allyIds.includes(id) && !enemyIds.includes(id));
     if (!allyIds.length && !enemyIds.length && !renegadeIds.length) return;
     const openerRow = opener ? await resolveRef(opener) : null;
     const side = firstSide === 'enemies' || firstSide === 'renegades' ? firstSide : 'allies';
@@ -528,7 +527,7 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
       [sceneId, mode, JSON.stringify(allyIds), JSON.stringify(enemyIds), JSON.stringify(renegadeIds)]
     );
     const fight = await one('SELECT * FROM fights WHERE scene_id = ? AND mode = ?', [sceneId, mode]);
-    await tieStooges(fight);
+    await tieFightStooges(fight);
     const order = await newRound(fight, side, openerRow?.id ?? null);
     fight.turn_order = JSON.stringify(order);
     fight.turn_index = 0;
@@ -682,8 +681,15 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
   };
   // May this fighter use Free Movement right now (book p.57)?
   // Never while someone is interrupting (the Interrupt lock).
-  const freeMoveOk = async (fight, c) =>
-    !interruptOf(fight.id)?.active && mayFreeMove({ phase: phaseOf(fight), activeId: orderOf(fight)[fight.turn_index]?.id, combatantId: c.id, committing: await activeCommitting(fight) });
+  // (Stooges: on the unit's turn every body of it may move — they share the Speed.)
+  const freeMoveOk = async (fight, c) => {
+    let activeId = orderOf(fight)[fight.turn_index]?.id;
+    if (c.stooge_unit != null && activeId != null && activeId !== c.id) {
+      const a = await one('SELECT stooge_unit FROM combatants WHERE id = ?', [activeId]);
+      if (a?.stooge_unit === c.stooge_unit) activeId = c.id;
+    }
+    return !interruptOf(fight.id)?.active && mayFreeMove({ phase: phaseOf(fight), activeId, combatantId: c.id, committing: await activeCommitting(fight) });
+  };
 
   // Where they can go with their Speed: ack({ mode, speed, options }).
   // (Straight on the socket: the shared `on` wrapper drops acknowledgements.)
@@ -985,11 +991,11 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
     if (!isGm()) return;
     const fight = await fightFor(mode);
     if (!fight) return;
-    const allyIds = await resolveIds(allies, fight.scene_id, fight.mode);
-    const enemyIds = (await resolveIds(enemies, fight.scene_id, fight.mode)).filter((id) => !allyIds.includes(id));
-    const renegadeIds = (await resolveIds(renegades, fight.scene_id, fight.mode)).filter((id) => !allyIds.includes(id) && !enemyIds.includes(id));
+    const allyIds = await withUnits(await resolveIds(allies, fight.scene_id, fight.mode), fight.scene_id, fight.mode);
+    const enemyIds = (await withUnits(await resolveIds(enemies, fight.scene_id, fight.mode), fight.scene_id, fight.mode)).filter((id) => !allyIds.includes(id));
+    const renegadeIds = (await withUnits(await resolveIds(renegades, fight.scene_id, fight.mode), fight.scene_id, fight.mode)).filter((id) => !allyIds.includes(id) && !enemyIds.includes(id));
     await run('UPDATE fights SET allies = ?, enemies = ?, renegades = ? WHERE id = ?', [JSON.stringify(allyIds), JSON.stringify(enemyIds), JSON.stringify(renegadeIds), fight.id]);
-    await tieStooges({ ...fight, allies: JSON.stringify(allyIds), enemies: JSON.stringify(enemyIds), renegades: JSON.stringify(renegadeIds) }, { fresh: false });
+    await tieFightStooges({ ...fight, allies: JSON.stringify(allyIds), enemies: JSON.stringify(enemyIds), renegades: JSON.stringify(renegadeIds) }, { fresh: false });
     await emitStageUpdated();
   });
 

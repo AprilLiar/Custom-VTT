@@ -5,6 +5,7 @@ import { socket } from '../socket.js';
 import { useStage } from '../lib/useStage.js';
 import { useRoster } from '../lib/useRoster.js';
 import BattleParamsPanel from './BattleParamsPanel.jsx';
+import { groupStooges } from '../lib/stooges.js';
 import { WEIGHTS, WEIGHT_BY_KEY, barHp, bonusDie, bonusHp } from '../lib/cinematicWeight.js';
 
 // **GM Tools → Fight Setup** (decided; was Preset Narrative Combat Weight). Works only on the
@@ -39,7 +40,7 @@ export default function CombatWeightTool({ onDone }) {
     const kindFor = (characterId) => setupOf(characterId)?.kind ?? (characterId != null && typeOf.get(characterId) === 'pc' ? 'hero' : 'warrior');
     const levelFor = (characterId, own) => setupOf(characterId)?.level ?? own ?? 1;
     const barsFor = (characterId) => setupOf(characterId)?.health_bars ?? 1;
-    return mode === 'combat'
+    const list = mode === 'combat'
       ? stage.combatTokens.map((t) => ({
           key: `c${t.id}`,
           ref: { combatantId: t.id },
@@ -51,6 +52,8 @@ export default function CombatWeightTool({ onDone }) {
           combatantId: t.id,
           characterId: t.character_id,
           excluded: Boolean(t.fight.excluded),
+          unit: t.fight.stooge_unit ?? null,
+          out: Boolean(t.fight.stooge_out),
         }))
       : stage.summons.filter((s) => s.character_id != null).map((s) => ({
           key: `s${s.id}`,
@@ -63,7 +66,11 @@ export default function CombatWeightTool({ onDone }) {
           combatantId: s.fight?.combatant_id ?? null,
           characterId: s.character_id,
           excluded: Boolean(s.fight?.excluded),
+          unit: s.fight?.stooge_unit ?? null,
+          out: Boolean(s.fight?.stooge_out),
         }));
+    // A Stooges unit is one row (they share one bar, one level, everything).
+    return groupStooges(list);
   }, [stage, mode, typeOf]);
 
   const [weight, setWeight] = useState(null);
@@ -207,7 +214,7 @@ export default function CombatWeightTool({ onDone }) {
                 <span className="text-[11px] text-zinc-500">Left out of the fight</span>
                 <button
                   type="button"
-                  onClick={() => socket.emit('fighter:exclude', { ref: f.ref, on: false })}
+                  onClick={() => f.bodies.forEach((ref) => socket.emit('fighter:exclude', { ref, on: false }))}
                   title="Bring back into the fight"
                   aria-label={`Bring ${f.name} back into the fight`}
                   className="flex h-8 w-8 items-center justify-center panel-cut-sm border border-zinc-700 bg-zinc-800 text-zinc-300 hover:text-zinc-100"
@@ -272,7 +279,7 @@ export default function CombatWeightTool({ onDone }) {
               {/* **Infinite HP (decided):** per fighter, at once — hits resolve, HP never drops. */}
               <button
                 type="button"
-                onClick={() => socket.emit('fighter:infinite', { ref: f.ref, on: !f.infinite })}
+                onClick={() => f.bodies.forEach((ref) => socket.emit('fighter:infinite', { ref, on: !f.infinite }))}
                 aria-pressed={f.infinite}
                 title={f.infinite ? 'Infinite HP: on (hits resolve, HP never drops). Tap to turn off.' : 'Give this fighter infinite HP'}
                 className={`h-8 min-w-8 panel-cut-sm border px-2 font-display text-sm font-black ${
@@ -287,7 +294,7 @@ export default function CombatWeightTool({ onDone }) {
               </span>
               <button
                 type="button"
-                onClick={() => socket.emit('fighter:exclude', { ref: f.ref, on: true })}
+                onClick={() => f.bodies.forEach((ref) => socket.emit('fighter:exclude', { ref, on: true }))}
                 title="Leave out of the fight (only scenery)"
                 aria-label={`Leave ${f.name} out of the fight`}
                 className="flex h-8 w-8 items-center justify-center panel-cut-sm border border-zinc-700 bg-zinc-800 text-zinc-500 hover:border-red-500 hover:text-red-300"

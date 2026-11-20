@@ -315,6 +315,26 @@ export function createActionRunner(kit) {
       }
       actor = pick;
     }
+    // **Stooges (decided):** the unit acts through any of its bodies — with
+    // several standing, the player taps the one that performs this Action
+    // (its square is where range, moves and pushes start from).
+    if (actor.stoogeUnit != null) {
+      const bodies = env.world.fighters().filter((f) => f.stoogeUnit === actor.stoogeUnit && f.square && !f.stoogeOut && !atZero(f.hp));
+      if (bodies.length > 1) {
+        const ans = await askPayer(action.name)({
+          kind: 'targets',
+          title: `${action.name}: which Stooge?`,
+          text: 'Tap the body that performs it.',
+          mode: env.world.mode ?? null,
+          options: bodies.map((b) => ({ id: String(b.id), label: `${b.name} (${b.square.col},${b.square.row})`, col: b.square.col, row: b.square.row })),
+          minimum: 1,
+          maximum: 1,
+        });
+        const pick = bodies.find((b) => String(b.id) === String(Array.isArray(ans) ? ans[0] : ans));
+        if (!pick) return { ok: false, cancelled: true, action };
+        actor = pick;
+      } else if (bodies.length === 1) actor = bodies[0];
+    }
     // **No valid targets (decided, batch 5):** asked before anything is paid.
     // Yes performs it anyway (whatever needs no target still happens); No
     // takes the Action off the board, its dice back in the pool.

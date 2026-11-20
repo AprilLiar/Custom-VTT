@@ -30,6 +30,7 @@ import ScenePortraitFooter from './ScenePortraitFooter.jsx';
 import ScenePortraitMore from './ScenePortraitMore.jsx';
 import { FOOTER_REM } from '../lib/sceneFooter.js';
 import { guestsOf, vipIdsOf } from '../lib/battleParams.js';
+import { groupStooges } from '../lib/stooges.js';
 import SceneCastDrawer from './SceneCastDrawer.jsx';
 import SceneListDrawer from './SceneListDrawer.jsx';
 import SceneNotesDialog from './SceneNotesDialog.jsx';
@@ -322,6 +323,9 @@ export default function ScenePage() {
           turns: turnsPerRound(t.fight.hp),
           // A fighter at all (decided): set up (a max HP) and not left out (Fight Setup's ×).
           eligible: t.fight.hp?.max != null && !t.fight.excluded,
+          // Stooges: the unit this body belongs to (Start Combat shows one row per unit).
+          unit: t.fight.stooge_unit ?? null,
+          out: Boolean(t.fight.stooge_out),
         }))
       : laneSummons.map((s) => ({
           key: `s${s.id}`,
@@ -333,6 +337,8 @@ export default function ScenePage() {
           top: true,
           turns: turnsPerRound(s.fight?.hp ?? { bars: 1, broken: 0 }),
           eligible: s.fight?.hp?.max != null && !s.fight?.excluded,
+          unit: s.fight?.stooge_unit ?? null,
+          out: Boolean(s.fight?.stooge_out),
         }));
 
   // **Portrait (decided, revised — play feedback 9):** the Scene and Simple
@@ -598,7 +604,7 @@ export default function ScenePage() {
       <MoveBar />
       <TriggerPrompts />
       {fightSetupOpen && fightMode && (
-        <FightSetupDialog mode={fightMode} fighters={fightFighters.filter((f) => f.eligible)} skipped={fightFighters.filter((f) => !f.eligible).length} existing={fight} threeWay={Boolean(activeScene?.battle?.[fightMode]?.complications?.includes('three_way'))} battle={activeScene?.battle?.[fightMode] ?? null} onClose={() => setFightSetupOpen(false)} />
+        <FightSetupDialog mode={fightMode} fighters={groupStooges(fightFighters.filter((f) => f.eligible))} skipped={groupStooges(fightFighters.filter((f) => !f.eligible)).length} existing={fight} threeWay={Boolean(activeScene?.battle?.[fightMode]?.complications?.includes('three_way'))} battle={activeScene?.battle?.[fightMode] ?? null} onClose={() => setFightSetupOpen(false)} />
       )}
       {/* Chat on the Scene: floating cards for new entries and a chat button
           that opens the full log — both even with the interface hidden. */}

@@ -40,10 +40,15 @@ export async function applyKeepEmComing(fight, postCard) {
   const sides = SIDES.filter((s) => battle.tilts[s] === 'keep_em_coming' && battle.applied?.keep_em_coming?.[s] !== fight.id);
   if (!sides.length) return;
   const names = [];
+  const units = new Set(); // Stooges: their shared bar is halved once, not once per body
   for (const side of sides) {
     for (const id of sideIdsOf(fight, side)) {
       const row = await one('SELECT cb.*, c.name FROM combatants cb JOIN characters c ON c.id = cb.character_id WHERE cb.id = ?', [id]);
       if (!row) continue;
+      if (row.stooge_unit != null) {
+        if (units.has(row.stooge_unit)) continue;
+        units.add(row.stooge_unit);
+      }
       const hp = hpOf(row);
       const next = keepEmComing(hp, shapeFightState(row).tokens);
       if (hp.max != null && !row.infinite_hp) await saveHp(id, next.hp);

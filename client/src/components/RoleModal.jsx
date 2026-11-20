@@ -4,6 +4,7 @@ import { getCharacters } from '../lib/api.js';
 import { portraitSrc } from '../lib/image.js';
 import { cropOf } from '../lib/imageCrop.js';
 import CroppedImage from './CroppedImage.jsx';
+import { PATCH } from '../lib/patchNotes.js';
 
 // Shown on every fresh load, before anything else. A display filter, not
 // auth: picking a character just tells the server (via identity:set, see
@@ -21,7 +22,14 @@ export default function RoleModal() {
   const pcs = (characters ?? []).filter((c) => c.character_type === 'pc');
 
   return (
-    <div className="bg-arena flex h-[100dvh] flex-col items-center justify-center gap-6 overflow-y-auto px-4 py-6 text-zinc-100 sm:gap-8">
+    <div className="bg-arena flex h-[100dvh] flex-col items-center overflow-y-auto px-4 pb-6 pt-3 text-zinc-100">
+      {/* At the very top: the current patch, its version and what it changed (patchNotes.js). */}
+      <div className="panel-cut-sm max-w-2xl shrink-0 border border-zinc-800 bg-zinc-900/80 px-3 py-1.5 text-center text-xs text-zinc-400" data-testid="patch-note">
+        <span className="font-display font-bold tracking-wide text-amber-400">v{PATCH.version}</span>
+        <span className="mx-1.5 text-zinc-600">·</span>
+        {PATCH.note}
+      </div>
+      <div className="my-auto flex w-full flex-col items-center gap-6 py-6 sm:gap-8">
       <h1 className="text-center font-display text-2xl font-bold uppercase tracking-wide sm:text-4xl">Dogfight: Martial Arts TTRPG</h1>
       <p className="text-zinc-400">Who are you this session?</p>
       <div className="flex w-full max-w-3xl items-stretch gap-3 px-2 sm:gap-6 sm:px-6">
@@ -65,6 +73,7 @@ export default function RoleModal() {
         >
           GM
         </button>
+      </div>
       </div>
     </div>
   );

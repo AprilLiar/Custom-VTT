@@ -69,3 +69,15 @@ test('custom contests: measure, higher or lower, and the setup', () => {
 test('the Skill bonuses: 3 Basic tokens, green d8 / 2d6 / 3d4, +2 after rolling', () => {
   assert.deepEqual(SKILL_BONUSES.map((b) => b.dice ?? null).filter(Boolean), [[8], [6, 6], [4, 4, 4]]);
 });
+
+import { groupStooges } from '../../client/src/lib/stooges.js';
+test('Stooges show as one row per unit — every body behind it, destroyed bodies left out', () => {
+  const f = (id, unit = null, out = false) => ({ key: `c${id}`, ref: { combatantId: id }, combatantId: id, unit, out, name: unit ? 'Goons' : `F${id}`, turns: 2 });
+  const g = groupStooges([f(1), f(2, 9), f(3, 9), f(4, 9, true), f(5, 9), f(6)]);
+  assert.equal(g.length, 3);
+  const unit = g.find((x) => x.stooges);
+  assert.equal(unit.name, 'Goons · 3 bodies');
+  assert.deepEqual(unit.combatantIds, [2, 3, 5]);
+  assert.equal(unit.turns, 1);
+  assert.deepEqual(g.find((x) => x.key === 'c1').bodies, [{ combatantId: 1 }]);
+});

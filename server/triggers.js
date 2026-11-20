@@ -189,6 +189,9 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
   // Movement on the map and lanes (engine/moves.js).
   const moves = createMoves({ ask, emitEvent: (env, ev, f, p, filter) => emitEvent(env, ev, f, p, 0, filter), postCard });
 
+  // **Stooges:** a list with each Stooges unit kept once (its representative body).
+  const unitOnce = (list) => list.filter((f) => f.stoogeUnit == null || f.stoogeRep);
+
   // ---- the world of one fight
   async function buildWorld(fight) {
     const { scene_id: sceneId, mode } = fight;
@@ -246,11 +249,13 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
       const pick = assembles(d) ? franticPickOf(r) : null;
       const frantic = pick?.abilityId ?? null;
       const frantic2 = pick?.abilityId2 ?? null;
-      // Stooges are one unit: only the leading body's abilities run.
-      const isStooges = d?.type.id === 'character-type.stooges';
-      // (The leading body is the first one not destroyed.)
-      const follower = isStooges && (Boolean(r.stooge_out) || stoogeSeen.has(r.character_id));
-      if (isStooges && !r.stooge_out) stoogeSeen.add(r.character_id);
+      // **Stooges (decided):** every body carries the unit's Abilities (a hit
+      // body reacts as the unit); `stoogeRep` marks the one body that speaks
+      // for the unit wherever something happens once per fighter — turn
+      // moments, events heard by many, the End Phase — so nothing runs twice.
+      const isStooges = r.stooge_unit != null;
+      const stoogeRep = isStooges && !r.stooge_out && squareOf(r) != null && !stoogeSeen.has(r.stooge_unit);
+      if (stoogeRep) stoogeSeen.add(r.stooge_unit);
       fighters.push({
         id: r.id,
         characterId: r.character_id,
@@ -259,6 +264,7 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
         // Stooges (decided): the unit they share everything with, and whether this body was destroyed.
         stoogeUnit: r.stooge_unit ?? null,
         stoogeOut: Boolean(r.stooge_out),
+        stoogeRep,
         side: sideOf(r.id),
         tokens: { ...state.tokens },
         // Whose Challenge this fighter holds (their Challenger's combatant id).
@@ -272,7 +278,7 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
         square: squareOf(r),
         stance,
         derived: d,
-        abilityIds: d && !follower ? [...new Set([...d.constantAbilityIds, ...(frantic ? [frantic] : []), ...(frantic2 ? [frantic2] : []), ...(stance?.abilityIds ?? [])])] : [],
+        abilityIds: d ? [...new Set([...d.constantAbilityIds, ...(frantic ? [frantic] : []), ...(frantic2 ? [frantic2] : []), ...(stance?.abilityIds ?? [])])] : [],
         // The Giant fills a 2×2 block on the map (its `footprint` rule).
         size: mode === 'combat' && d && hasRuleIn(d.constantAbilityIds, 'footprint', idx) ? 2 : 1,
         // Armor from the build (always, or while this Stance is active).
@@ -794,7 +800,8 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
       context: { healValue: weight.heal, bleedValue: weight.bleed, round: fight.round, superLimit: weight.supers ?? 1 },
       fighters: () => fighters,
       enemiesOf: (f) => fighters.filter((x) => x.side !== f.side),
-      alliesOf: (f) => fighters.filter((x) => x.side === f.side),
+      // (A Stooge's other bodies are the unit itself, not its allies.)
+      alliesOf: (f) => fighters.filter((x) => x.side === f.side && (x.id === f.id || x.stoogeUnit == null || x.stoogeUnit !== f.stoogeUnit)),
       inRange: (from, to, range) => {
         const r = rangeOf(from);
         const sight = sightOf(from);
@@ -1630,7 +1637,17 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
   // **The event bus** (engine/bus.js): one event, every listener's rules.
   // `filter(listener)`: only some of them (whose Shield was hit: their own, or an ally's).
   async function emitEvent(env, eventName, subject, payload = {}, depth = 0, filter = null) {
-    for (const f of listenersFor(eventName, subject, env.world)) {
+    // A Stooges unit hears an event once — through the body it happened to,
+    // else the first body that hears it (in range of any body = in range).
+    const heard = new Set();
+    const listeners = listenersFor(eventName, subject, env.world).filter((f) => {
+      if (f.stoogeUnit == null) return true;
+      if (subject && subject.stoogeUnit === f.stoogeUnit && f.id !== subject.id) return false;
+      if (heard.has(f.stoogeUnit)) return false;
+      heard.add(f.stoogeUnit);
+      return true;
+    });
+    for (const f of listeners) {
       if (filter && !filter(f)) continue;
       if (stale(env)) return;
       await runFor(f, [eventName], env, payload, depth);
@@ -1693,7 +1710,7 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
       endNote(`${f.name} attacked ${challenger?.name ?? 'their Challenger'}: the Challenge is removed`);
     }
     const lost = [];
-    for (const f of fighters) {
+    for (const f of unitOnce(fighters)) {
       const held = f.tokens.speed ?? 0;
       if (!held) continue;
       const per = Number(endPhaseRule(env, f, 'end_phase.speed_discard') ?? 3);
@@ -1885,7 +1902,7 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
       await tournamentRoundEnd(env, world, movers, people, fightRow);
     } else if (!NO_GO_ON.has(b.victory) && !env.rt.victory) {
       const heal = 2 * (world.context.healValue ?? 0);
-      for (const f of people) if (f.square) await world.heal(f, heal);
+      for (const f of unitOnce(people)) if (f.square) await world.heal(f, heal);
       if (heal) await postCard('reminder', { title: 'The Fight Must Go On!', text: `End of round ${fightRow.round}: everyone heals ${heal} (twice the Heal Value).`, fighters: [], automatic: 'battle', notice: true });
     }
     // Arena Parameters at a Round's end. Traffic: anyone standing in the Danger
@@ -2060,7 +2077,7 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
       env.rt.tournament = { positions: Object.fromEntries(fighters.filter((f) => f.square && !f.isCopy).map((f) => [f.id, { ...f.square }])), score: {} };
       await env.save();
     }
-    for (const f of fighters) {
+    for (const f of unitOnce(fighters)) {
       if (f.abilityIds.includes(IMPROVED_WARRIOR)) await runFor(f, ['warrior_path.trigger'], env, {});
     }
     // **Lasting rules left to people (phase J):** each fighter's continuous
@@ -2068,7 +2085,7 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     // so nothing is dropped silently (lib/patd/coverage.js).
     // One card per Ability, with its rules text — the reminder itself (decided, fix).
     const idx = patdContent();
-    for (const f of fighters) {
+    for (const f of unitOnce(fighters)) {
       const ids = [...new Set(f.abilityIds)].filter((id) => !ENGINE_NATIVE.has(id) && (idx.get(id)?.rules ?? []).some((r) => r.events?.includes('continuous') && !isNativeRule(r) && !continuousSupport(r).ok));
       for (const id of ids) {
         const ability = idx.get(id);
@@ -2436,7 +2453,8 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     }
     if (moment === 'start' && !stale(env)) await turnStartPool(env, active);
     if (moment === 'start' && !stale(env)) await frenzy(env, active, 'start');
-    const order = [active, ...fighters.filter((f) => f.id !== active.id)];
+    // (Stooges: the active unit is the active body alone; any other unit is heard once.)
+    const order = [active, ...unitOnce(fighters.filter((f) => f.id !== active.id && (f.stoogeUnit == null || f.stoogeUnit !== active.stoogeUnit)))];
     // The Abilities this moment runs, by name, in the order they will run.
     const planned = planSteps(env, order.map((f) => ({ f, events: turnEvents(moment, relationTo(f, active)) })));
     for (const f of order) await runFor(f, turnEvents(moment, relationTo(f, active)), env, { activeCharacter: active });
@@ -2587,8 +2605,10 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     const active = byId(activeId);
     const offers = {};
     if (activeId == null) return offers;
-    for (const f of fighters) {
+    const active0 = fighters.find((x) => x.id === activeId);
+    for (const f of unitOnce(fighters)) {
       if (f.id === activeId || except.includes(f.id) || !f.derived) continue;
+      if (active0?.stoogeUnit != null && f.stoogeUnit === active0.stoogeUnit) continue;
       const out = !f.square || atZero(f.hp);
       const t = turnActions(f.derived, f.stance, idx);
       const ids = [...t.basic, ...t.personal.flatMap((g) => g.ids)].filter((id) => !out || idx.get(id)?.usableWhileTakenOut);

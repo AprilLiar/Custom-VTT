@@ -131,7 +131,7 @@ export default function BattleParamsPanel({ mode, battle, fighters = [] }) {
 function CuffPairs({ cuffs, fighters, set }) {
   const [a, setA] = useState('');
   const [b, setB] = useState('');
-  const nameOf = (id) => fighters.find((f) => f.combatantId === id)?.name ?? `#${id}`;
+  const nameOf = (id) => fighters.find((f) => f.combatantId === id || f.combatantIds?.includes(id))?.name ?? `#${id}`;
   const pickable = fighters.filter((f) => f.combatantId != null);
   return (
     <div className="panel-cut-sm border border-zinc-800 bg-zinc-950/80 p-2 text-xs">
