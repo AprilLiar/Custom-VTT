@@ -160,6 +160,10 @@ export function publicBoard(rollId, data, active) {
     battleActions: data.battleActions ?? [],
     // Disarmed (Tilt / Arena) on this turn: the board shows Range 1.
     disarmed: Boolean(data.disarmed),
+    // A real Interrupt cut in (decided): the queue waits; `review` once the
+    // Interrupt is over — its player then keeps all, some or none (board:resume).
+    interrupted: Boolean(data.interrupted),
+    review: Boolean(data.review),
   };
 }
 

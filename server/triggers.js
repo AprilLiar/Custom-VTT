@@ -42,6 +42,7 @@ import { muteFx, recordFx, slice, unmuteFx } from './fx.js';
 import { NO_GO_ON, SIDE_LABEL, isDisarmed, leashOf, parseBattleColumn, partnerOf, tiltOn } from '../client/src/lib/battleParams.js';
 import { kingOfTheHill, lastOneStanding, outlast, protectTheVip, roundsToWin, standing, tournamentRoundLoser } from '../client/src/lib/battleVictory.js';
 import { updateBattle } from './battle.js';
+import { keepRewindMark, rewindMark } from './rewind.js';
 
 // The combat map's image size, by image hash (its playable bounds — phase D).
 const imageSizes = new Map();
@@ -2689,6 +2690,10 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
       if (fight) for (const k of [...freeUndo.keys()]) if (k.startsWith(`${fight.id}:`)) freeUndo.delete(k);
       return onBoardChain(rollId, () => runner.commitBoard(rollId));
     },
+    // **GM Rewind:** the fight was stepped back — its Free Movement take-backs are gone.
+    rewound(fightRow) {
+      for (const k of [...freeUndo.keys()]) if (k.startsWith(`${fightRow.id}:`)) freeUndo.delete(k);
+    },
     // GM: undo a committed Action and every later one.
     retrieve(rollId, key) {
       return onBoardChain(rollId, () => runner.retrieve(rollId, key));
@@ -2719,7 +2724,9 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
       return onChain(fightRow, async () => {
         const { env, byId, movers } = await envFor(fightRow);
         env.when = 'Free Movement';
+        const mark = await rewindMark(fightRow.id);
         const r = await moves.freeMove(env, movers, byId(combatantId), to);
+        if (r?.ok) await keepRewindMark(fightRow.id, `Free Movement (${byId(combatantId)?.name ?? 'someone'})`, mark);
         if (r?.undo) {
           const k = undoKey(fightRow, combatantId);
           freeUndo.set(k, [...(freeUndo.get(k) ?? []), { ...r.undo, tg: turnGen(fightKeyOf(fightRow)) }]);
@@ -2760,7 +2767,9 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     freeSwap(fightRow, combatantId, allyId) {
       return onChain(fightRow, async () => {
         const { env, byId, movers } = await envFor(fightRow);
+        const mark = await rewindMark(fightRow.id);
         const r = await moves.freeSwap(env, movers, byId(combatantId), byId(allyId));
+        if (r?.ok) await keepRewindMark(fightRow.id, `Swap (${byId(combatantId)?.name ?? 'someone'})`, mark);
         await env.save();
         await emitStageUpdated();
         return r;

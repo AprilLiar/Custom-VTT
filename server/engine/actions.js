@@ -17,6 +17,8 @@ import { patdContent } from '../patdContent.js';
 import { actingOn, readData, saveBoard, fighterState } from '../diceMarks.js';
 import { restoreSnapshot, takeSnapshot } from './snapshots.js';
 import { atZero, recordUse, superKey } from '../../client/src/lib/patd/engine/turn.js';
+import { interruptWaiting } from '../interrupts.js';
+import { keepRewindMark, rewindMark } from '../rewind.js';
 
 const THROWS = new Set(['action.system-basic-actions.throw', 'action.system-basic-actions.grapple']);
 const POLTERGEIST = 'ability.resource-mechanic-poltergeist.poltergeist-mechanics';
@@ -625,8 +627,24 @@ export function createActionRunner(kit) {
         if (data.reaction && (data.placements ?? []).some((p) => p.committed)) await kit.reactionDone?.(fight, row);
         return;
       }
+      // **A real Interrupt (decided):** someone pressed Interrupt while this
+      // board was resolving — it goes next, after the Action that was resolving.
+      // The rest of the queue waits; once the Interrupt is over, the
+      // interrupted player decides what of it still happens (`board:resume`).
+      if (!data.reaction && interruptWaiting(fight.id)) {
+        data.committing = false;
+        data.interrupted = true;
+        data.review = false;
+        await saveQ(rollId, data);
+        const left = (data.placements ?? []).filter((x) => !x.committed).length;
+        await postCard('reminder', { title: 'Interrupted', text: `${who || 'The turn'} is interrupted: ${left} queued Action${left === 1 ? '' : 's'} wait${left === 1 ? 's' : ''} until the Interrupt is over.`, fighters: who ? [{ name: who }] : [], automatic: 'action', notice: true });
+        await emitStageUpdated();
+        return finish();
+      }
       data.committing = true;
       await saveQ(rollId, data);
+      // **GM Rewind:** the whole fight as it is, kept once the Action really happens.
+      const mark = await rewindMark(fight.id);
       // Snapshot first, with the board's pool as it was (added numbers come back too).
       const snap = await takeSnapshot(fight.id);
       const ins = await queued(() =>
@@ -652,6 +670,7 @@ export function createActionRunner(kit) {
         await postCard('reminder', { title: result.action?.name ?? 'Action', text: `Not performed: ${result.error}.`, fighters: [], automatic: 'action' });
         return finish();
       }
+      await keepRewindMark(fight.id, `${result.action?.name ?? 'Action'}${result.actor?.name ? ` (${result.actor.name})` : ''}`, mark);
       if (p) {
         p.committed = true;
         p.snapshot = Number(ins?.lastInsertRowid);

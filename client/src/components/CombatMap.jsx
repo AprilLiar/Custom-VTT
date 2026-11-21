@@ -30,6 +30,7 @@ import { lungeOf, moveHow, slideTransition, swapStepOf } from '../lib/boardFx.js
 import { useLunge } from './fx/useLunge.js';
 import { armorRings } from '../lib/panicTokens.js';
 import { MapTileLayer } from './MapTiles.jsx';
+import { HazardBadges, hazardsAt } from './HazardBadges.jsx';
 import { isTakenOut } from '../lib/hpBars.js';
 import { useHandMove } from './HandMoveDialog.jsx';
 
@@ -637,6 +638,7 @@ export default function CombatMap({
               selected={selectedTokenId === t.id}
               canEdit={canDrag(t)}
               onPointerDown={(e) => onTokenDown(e, t)}
+              underfoot={hazardsAt(tiles, t)}
             />
           );
         })}
@@ -715,7 +717,7 @@ const cropFrom = (c) => (c ? cropOf({ crop_x: c.x, crop_y: c.y, crop_w: c.w, cro
 // A round combat token: the fighter's combat-token picture (or portrait), a
 // light ring and a drop shadow. Lifted while dragged.
 // `slide` (board animations): a move playing now (boardFx.slideTransition).
-export function Token({ token, center, size, lifted = false, animate = true, slide = null, lunge = null, selected = false, ghost = false, canEdit = false, onPointerDown }) {
+export function Token({ token, center, size, lifted = false, animate = true, slide = null, lunge = null, selected = false, ghost = false, canEdit = false, onPointerDown, underfoot = [] }) {
   const lungeRef = useLunge(lunge);
   return (
     <div
@@ -756,6 +758,7 @@ export function Token({ token, center, size, lifted = false, animate = true, sli
           </span>
         )}
       </div>
+      {!lifted && <HazardBadges list={underfoot} size={size} className="bottom-[10%]" />}
       {/* Only once the token is tapped (decided): on a phone there's no hover,
           and an always-visible ✕ was too easy to hit by accident. */}
       {canEdit && !lifted && token.id != null && selected && (

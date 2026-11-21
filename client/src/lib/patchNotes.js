@@ -3,6 +3,6 @@
 // package.json versions — a test checks they match) and rewrite `note` as ONE
 // sentence on every push to main.
 export const PATCH = {
-  version: '0.2.1',
-  note: 'The Actions board shows your Stance\'s range up top, and a Fatigued Free Movement now still pays the full Speed for the square you picked while stopping 2 short.',
+  version: '0.2.2',
+  note: "Interrupts now cut in after the current Action and let the interrupted player keep or drop the rest of their queue, the GM can Rewind up to 5 steps, Traps under fighters show a badge, and contest pushes can be tapped.",
 };

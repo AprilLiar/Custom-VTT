@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, ArrowRight, ChevronLeft, ChevronRight, Flag, GripVertical, Swords, Users, X } from 'lucide-react';
+import { ArrowLeft, ArrowRight, ChevronLeft, ChevronRight, Flag, GripVertical, Swords, Undo2, Users, X } from 'lucide-react';
 import { socket } from '../socket.js';
 import { cropOf } from '../lib/imageCrop.js';
 import CroppedImage from './CroppedImage.jsx';
@@ -9,6 +9,8 @@ import DialogShell from './DialogShell.jsx';
 import { clearSquarePick, setPromptsOpen, setSquarePick, useSquarePick } from '../lib/squarePick.js';
 import { startFreeMove, stopFreeMove, undoFreeMove } from '../lib/freeMove.js';
 import DiceBoard from './actions/DiceBoard.jsx';
+import InterruptReview from './actions/InterruptReview.jsx';
+import { useDiceMarks } from '../lib/diceMarks.js';
 import { ActionCard } from './actions/ActionCards.jsx';
 import { livePool } from '../lib/patd/diceBoard.js';
 import { useContent } from '../lib/patd/useContent.js';
@@ -382,6 +384,7 @@ export function InitiativeRail({ mode, fight, fighters, role, left = 12, onEditS
           >
             <ChevronLeft size={14} aria-hidden />
           </button>
+          <RewindButton fight={fight} mode={mode} className="border-r border-zinc-800 bg-zinc-900 px-2.5 py-2 text-zinc-300 hover:bg-zinc-800 hover:text-white" />
           <button
             type="button"
             onClick={() => socket.emit('fight:next', { mode })}
@@ -393,6 +396,39 @@ export function InitiativeRail({ mode, fight, fighters, role, left = 12, onEditS
       )}
     </div>
     </>
+  );
+}
+
+// **GM Rewind (decided):** always there for the GM in a fight — one step back
+// before the last Action (and every Ability it set off), Free Movement or Next
+// turn, refunding everything; up to 5 in a row. The badge counts the steps left,
+// the tooltip names what the next one undoes (server: fights.js `fight:rewind`).
+export function RewindButton({ fight, mode, className = '', label = false }) {
+  const [error, setError] = useState(null);
+  useEffect(() => {
+    const onFail = (e) => {
+      setError(e?.error ?? 'Could not rewind');
+      setTimeout(() => setError(null), 2500);
+    };
+    socket.on('fight:rewind_failed', onFail);
+    return () => socket.off('fight:rewind_failed', onFail);
+  }, []);
+  const steps = fight?.rewind ?? [];
+  const title = error ?? (steps.length ? `Rewind: undo “${steps[0]}” (${steps.length} step${steps.length === 1 ? '' : 's'} back available)` : 'Rewind: nothing to undo yet');
+  return (
+    <button
+      type="button"
+      onClick={() => socket.emit('fight:rewind', { mode })}
+      disabled={!steps.length}
+      title={title}
+      aria-label={title}
+      data-testid="rewind"
+      className={`relative flex items-center justify-center gap-1 disabled:opacity-40 ${error ? 'text-red-300' : ''} ${className}`}
+    >
+      <Undo2 size={14} aria-hidden />
+      {label && <span className="font-display text-xs font-bold uppercase tracking-wide">Rewind</span>}
+      {steps.length > 0 && <span className="absolute -right-0.5 -top-0.5 rounded-full bg-amber-500 px-1 text-[9px] font-bold leading-tight text-zinc-950">{steps.length}</span>}
+    </button>
   );
 }
 
@@ -772,6 +808,7 @@ export function ActionButton({ fight, mode, controls = () => false, inline = fal
     };
   }, [turnKey, mode, fightId]);
   const rollId = current?.payload?.roll_id ?? null;
+  const board = useDiceMarks(rollId);
   const [confirming, setConfirming] = useState(false);
   // The turn moved on: an open board of the old turn closes.
   useEffect(() => {
@@ -798,6 +835,8 @@ export function ActionButton({ fight, mode, controls = () => false, inline = fal
     return () => socket.off('dice:marks', onMarks);
   }, [rollId, mine]);
   if (!current || !controls(current.characterId)) return null;
+  // After a real Interrupt: what of the queue still happens (decided).
+  if (board.review) return <InterruptReview key={rollId} board={board} rollId={rollId} name={current.payload.fighter?.name ?? ''} />;
   if (open) return <DiceBoard payload={current.payload} canEdit onClose={() => setOpen(false)} />;
   if (pick || fight?.interrupt?.active) return null;
   const name = current.payload.fighter?.name ?? '';

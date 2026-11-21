@@ -5,7 +5,8 @@ import { useRole } from '../roleContext.jsx';
 import { useControl } from '../lib/useControl.js';
 import { useDiceMarks } from '../lib/diceMarks.js';
 import { livePool } from '../lib/patd/diceBoard.js';
-import { pickAt } from '../lib/squarePick.js';
+import { onScene, pickAt, useSquarePick } from '../lib/squarePick.js';
+import { usePickViews } from '../lib/pickViews.js';
 import { useSkillsEnabled } from '../lib/skillsSetting.js';
 import { BASIC_TOKENS, TOKEN_BY_KEY } from '../lib/panicTokens.js';
 import { SKILL_BONUSES } from '../lib/contests.js';
@@ -139,13 +140,18 @@ function ArenaPanel({ contest, arena, mine, role, controls, done }) {
   const tone = sideTone[arena.side];
   const me = arena.tokens?.find((t) => t.id === arena.combatantId);
   const fight = arena.fight;
-  // The grid shows everyone with two squares to spare (at least 7×7 round the start).
+  // The grid shows everyone with two squares to spare (at least 7×7 round the start)
+  // — and every square of a pick open in this arena (a Push 5 lands far off:
+  // its squares must be on the grid to be tapped; play feedback).
+  const pick = useSquarePick();
+  const views = usePickViews();
   const view = useMemo(() => {
-    const pts = (arena.tokens ?? []).filter((t) => t.col != null).map((t) => [t.col, t.row]);
+    const picked = [...(pick && pick.mode === 'combat' && pick.sceneId != null && onScene(pick, arena.sceneId) ? pick.options : []), ...views.filter((v) => v.mode === 'combat' && v.sceneId != null && onScene(v, arena.sceneId)).flatMap((v) => v.options ?? [])];
+    const pts = [...(arena.tokens ?? []).filter((t) => t.col != null).map((t) => [t.col, t.row]), ...picked.filter((o) => o.col != null).map((o) => [o.col, o.row])];
     const xs = [...pts.map((p) => p[0]), 1, 7];
     const ys = [...pts.map((p) => p[1]), 1, 7];
     return { c0: Math.min(...xs) - 1, r0: Math.min(...ys) - 1, cols: Math.max(...xs) - Math.min(...xs) + 3, rows: Math.max(...ys) - Math.min(...ys) + 3 };
-  }, [arena.tokens]);
+  }, [arena.tokens, arena.sceneId, pick, views]);
   const w = view.cols * CELL;
   const h = view.rows * CELL;
   const quadOf = (col, row) => {

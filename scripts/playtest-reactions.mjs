@@ -165,7 +165,7 @@ check('…and every screen sees it, view-only: a player who isn’t asked gets i
 const ar = await new Promise((r) => pc.emit('fight:active_range', { mode: 'combat' }, r));
 check("the active fighter's attack range (batch 3): Bo's, squares around him, not his own", ar.combatantId === tb.id && ar.squares.length > 0 && !ar.squares.some((q) => q.col === 4 && q.row === 3), JSON.stringify(ar));
 const b = (await marks())[boRoll];
-check('Commit performs every placed Action without pausing for reactions (decided, revised)', b.placements.every((x) => x.committed) && !b.paused && !st.fights.combat.reaction_window, JSON.stringify([b.placements.map((x) => x.committed), b.paused, st.fights.combat.reaction_window]));
+check('a real Interrupt (decided): Bo’s queue stops after the Action that was resolving — one done, one waiting', b.placements[0]?.committed && !b.placements[1]?.committed && b.interrupted && !b.review && !st.fights.combat.reaction_window, JSON.stringify([b.placements.map((x) => x.committed), b.interrupted, b.review]));
 const offersOf = (s) => new Promise((r) => s.emit('interrupt:offers', { mode: 'combat' }, (x) => r(x?.offers ?? {})));
 let offers = await offersOf(p);
 check('Ana has an Interrupt now: Swift Strike for 2 Iron (an enemy’s turn)', offers[ta.id]?.clusters?.some((c) => c.resource === 'tokens' && c.ids.includes(SWIFT)), JSON.stringify(offers));
@@ -189,6 +189,15 @@ await sleep(2500);
 await stage();
 check('the Interrupt is performed: Swift Strike hits Bo, the Iron is paid', f(tb.id).hp.current < boHp && !f(ta.id).tokens.iron, `${boHp} → ${f(tb.id).hp.current}; ${JSON.stringify(f(ta.id).tokens)}`);
 check('…its board closes after the one Reactive Action', !(await marks())[rx].active);
+const br = (await marks())[boRoll];
+check('the Interrupt over: Bo’s board asks what of its queue still happens (the review)', br.interrupted && br.review && !br.placements[1]?.committed, JSON.stringify([br.interrupted, br.review]));
+gm.emit('board:commit', { rollId: boRoll });
+await sleep(300);
+check('…a plain Commit is refused until then', gmRefusals.some((x) => /decide first/.test(x.error)), JSON.stringify(gmRefusals));
+gm.emit('board:resume', { rollId: boRoll, keep: br.placements.filter((x) => !x.committed).map((x) => x.key) });
+await sleep(2500);
+const bk = (await marks())[boRoll];
+check('…Keep all: the rest of the queue resolves after the Interrupt', bk.placements.every((x) => x.committed) && !bk.interrupted && !bk.review && cards.some((c) => c.payload?.title === 'After the Interrupt'), JSON.stringify([bk.placements.map((x) => x.committed), bk.interrupted]));
 offers = await offersOf(p);
 check('…and Swift Strike is off the offer now (no Iron, once per turn)', !(offers[ta.id]?.clusters ?? []).some((c) => c.ids.includes(SWIFT)), JSON.stringify(offers));
 

@@ -23,7 +23,7 @@ import { franticOptions, franticPickAllowed } from '../client/src/lib/patd/build
 import { patdContent } from './patdContent.js';
 import { addXp } from './builds.js';
 import { parseRuntime } from '../client/src/lib/patd/engine/runtime.js';
-import { activeBoardOf, saveBoard, closeInterruptBoards, closeReactionBoards, endTurnDice, resumeRoll, startReaction, startRoll } from './diceMarks.js';
+import { activeBoardOf, markInterruptReview, readData, saveBoard, closeInterruptBoards, closeReactionBoards, endTurnDice, resumeRoll, startReaction, startRoll } from './diceMarks.js';
 import { XP_AWARDS } from '../client/src/lib/patd/build.js';
 import { resolveRef, serialized, shapeFightState } from './combatState.js';
 import { controlsCharacter } from './control.js';
@@ -37,6 +37,7 @@ import { cleanBonuses, contestOfScene, contestState, dropArenas, finishContest, 
 import { CONTEST_BY_KEY, normalizeCustom } from '../client/src/lib/contests.js';
 import { battleActionIdsFor } from '../client/src/lib/patd/battleActions.js';
 import { tieStooges } from './stooges.js';
+import { clearRewind, pushRewindPoint, rewindList, rewindOnce } from './rewind.js';
 
 // The fight's reaction window (phase F): { seq, activeId, offers: { [id]: { clusters, … } }, done } | null.
 export const windowOf = (row) => {
@@ -173,6 +174,8 @@ export async function loadFightState(sceneId, mode) {
     // **The Interrupt lock (decided):** who is interrupting (everyone waits),
     // and who waits for the resolving stack to finish. Null when none.
     interrupt: interruptOf(row.id),
+    // **GM Rewind:** what the next steps back would undo, newest first (up to 5).
+    rewind: (await rewindList(row.id)).map((r) => r.label),
     // Who may still react to the last Action (phase F), or null.
     reaction_window: (() => {
       const w = windowOf(row);
@@ -214,6 +217,9 @@ export function wireInterrupts({ triggers, emitStageUpdated, emitAll }) {
       emitAll?.('interrupt:open', { mode, combatantId: c.id, by: who.by ?? null, payload: await interruptBoard(fight, c, offer, emitAll), clusters: offer.clusters });
       break;
     }
+    // Nobody interrupting or waiting any more: an interrupted turn board asks
+    // its player what of its queue still happens (decided: a real Interrupt).
+    if (!interruptOf(fight.id)) await markInterruptReview(scene_id, mode, emitAll);
     if (changed) await emitStageUpdated();
   };
   triggers.onIdle(startNext);
@@ -597,6 +603,10 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
     // A Stance Contest's arena: the contestant's one turn is over.
     const contestId = await contestOfScene(fight.scene_id);
     if (contestId) return contestTurnEnded(fight, contestId);
+    // **GM Rewind:** a step back to before this turn ended.
+    const ending = orderOf(fight)[fight.turn_index];
+    const endingName = ending ? (await one('SELECT c.name FROM combatants cb JOIN characters c ON c.id = cb.character_id WHERE cb.id = ?', [ending.id]))?.name : null;
+    await pushRewindPoint(fight.id, endingName ? `End of ${endingName}'s turn` : 'Next turn', { inQueue: true });
     // Any movement phase is over (the GM's Next turn skips Late Movement),
     // and so is any reaction window.
     if (fight.movement_phase) await setPhase(fight, null);
@@ -876,6 +886,27 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
     await emitStageUpdated();
     if (triggers && !triggers.isBusy?.(fight)) await startNextInterrupt?.({ scene_id: fight.scene_id, mode: fight.mode });
   });
+  // **GM Rewind (decided):** one step back — before the fight's last Action
+  // (and every Ability it set off), Free Movement or Next turn. Everything
+  // returns: HP, tokens, positions, tiles, dice, whose turn it is. Up to 5 in a row.
+  on('fight:rewind', async ({ mode } = {}) => {
+    if (!isGm()) return;
+    const fight = await fightFor(mode);
+    if (!fight) return;
+    if (triggers?.isBusy?.(fight)) return socket.emit('fight:rewind_failed', { error: 'Wait — something is still resolving.' });
+    const r = await rewindOnce(fight.id);
+    if (!r) return socket.emit('fight:rewind_failed', { error: 'Nothing left to rewind.' });
+    dropInterrupts(fight.id);
+    triggers?.rewound?.({ ...fight });
+    // Every board it touched, re-announced (the dice come back on screen).
+    for (const id of r.rollIds) {
+      const row = await one('SELECT * FROM dice_marks WHERE roll_id = ?', [id]);
+      if (row) await saveBoard(id, readData(row), emitAll);
+    }
+    await postCard('reminder', { title: 'Rewound', text: `The GM rewound “${r.label}”: everything it did is undone.`, fighters: [], automatic: 'retrieve', notice: true });
+    await emitStageUpdated();
+  });
+
   // GM: lift a stuck Interrupt lock (the interrupter left, or changed their mind).
   on('interrupt:cancel', async ({ mode } = {}) => {
     if (!isGm()) return;
@@ -1165,6 +1196,7 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
     }
     await run('DELETE FROM fights WHERE id = ?', [fight.id]);
     dropInterrupts(fight.id);
+    await clearRewind(fight.id);
     await endTurnDice([...parseIds(fight.allies), ...parseIds(fight.enemies), ...parseIds(fight.renegades)], emitAll);
     triggers?.endFight(fight.scene_id, fight.mode);
     await run('UPDATE combatants SET dizzy = 0 WHERE scene_id = ? AND mode = ?', [fight.scene_id, fight.mode]);

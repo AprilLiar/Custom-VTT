@@ -622,6 +622,8 @@ export default function DiceBoard({ payload, onClose, canEdit }) {
               ? `${payload.stance} · this turn is over — view only`
               : !editable
                 ? `${payload.stance} · view only`
+                : board.interrupted
+                  ? 'Interrupted — your queue waits until the Interrupt is over.'
                 : board.paused
                   ? 'Paused for reactions — Continue when everyone had their chance.'
                   : selected != null

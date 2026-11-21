@@ -1515,6 +1515,19 @@ export async function initDb() {
     )
   `);
 
+  // **GM Rewind (decided):** the last few moments of a fight, newest last —
+  // one full snapshot before each Action, Free Movement and Next turn
+  // (server/rewind.js keeps 5 per fight).
+  ddl(`
+    CREATE TABLE IF NOT EXISTS rewind_points (
+      id INTEGER PRIMARY KEY,
+      fight_id INTEGER NOT NULL,
+      label TEXT NOT NULL,
+      data TEXT NOT NULL,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
   // Homebrew content (server/homebrew.js, client/src/lib/patd/homebrew.js):
   // the GM's own Forms, Styles and Archetypes, one cleaned item per row.
   ddl(`

@@ -1,3 +1,4 @@
+import { HazardBadges, hazardsAt } from './HazardBadges.jsx';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import CopyLayer from './CopyLayer.jsx';
 import SquarePickLayer from './SquarePickLayer.jsx';
@@ -252,6 +253,8 @@ export default function SimpleCombatLane({
           <Miniature
             key={s.id}
             summon={s}
+            // Lane space: slot = row × 10 + col (the tiles' own squares).
+            underfoot={hazardsAt(tiles, { col: placed.get(s.id) % 10, row: Math.floor(placed.get(s.id) / 10) })}
             slide={(() => {
               const mv = fxBeat?.effects.find((e) => e.kind === 'move' && e.combatantId === s.fight?.combatant_id);
               return mv ? { how: moveHow(mv), ms: fxBeat.ms } : null;
@@ -416,7 +419,7 @@ export default function SimpleCombatLane({
 // than a lane space, fading out at the bottom so the feet disperse rather than
 // end on a hard edge, standing on a small round plinth. (x, y) is where the
 // plinth's centre sits.
-function Miniature({ summon, x, y, size, lifted = false, slide = null, lunge = null, selected = false, draggable, onPointerDown, layer = 1, onAspect }) {
+function Miniature({ summon, x, y, size, lifted = false, slide = null, lunge = null, selected = false, draggable, onPointerDown, layer = 1, onAspect, underfoot = [] }) {
   const lungeRef = useLunge(lunge);
   if (!summon) return null;
   const rx = size.plinthRx;
@@ -445,6 +448,8 @@ function Miniature({ summon, x, y, size, lifted = false, slide = null, lunge = n
       data-lane-mini={summon.id}
       onPointerDown={onPointerDown}
     >
+      {/* A Trap or Rubble under the figure (hidden by it): named on the base. */}
+      {!lifted && <HazardBadges list={underfoot} size={size.width} className="bottom-0" />}
       {/* The plinth — a dark disc with a lit rim, seen at the lane's angle. */}
       <svg
         className="absolute left-1/2 -translate-x-1/2 overflow-visible"

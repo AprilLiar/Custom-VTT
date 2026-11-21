@@ -48,6 +48,19 @@ export async function saveBoard(rollId, data, emit) {
   if (row) emit?.('dice:marks', shape(row));
 }
 
+// **After a real Interrupt:** every board of this fight that was interrupted
+// now asks its player what of its queue still happens (the review screen).
+// Called once no Interrupt is active or waiting. (Inside the write queue.)
+export async function markInterruptReview(sceneId, mode, emit) {
+  const rows = await all('SELECT dm.* FROM dice_marks dm JOIN combatants cb ON cb.id = dm.combatant_id WHERE cb.scene_id = ? AND cb.mode = ? AND dm.active = 1', [sceneId, mode]);
+  for (const r of rows) {
+    const d = readData(r);
+    if (!d.interrupted || d.review) continue;
+    d.review = true;
+    await saveBoard(r.roll_id, d, emit);
+  }
+}
+
 // A new Stance roll: its (empty) board, the only active one for that fighter.
 // The Power toggle follows the character's Power setting (decided, revised):
 // On for Auto (NPCs by default), Ask for Ask — each hit asks how much — and
@@ -235,7 +248,7 @@ export async function listMarks() {
 }
 
 // deps: on, socket, io, triggers (the engine: commit / continue / retrieve)
-export function registerDiceMarkHandlers({ on: onRaw, socket, io, triggers = null, emitStageUpdated = null }) {
+export function registerDiceMarkHandlers({ on: onRaw, socket, io, triggers = null, emitStageUpdated = null, postCard = null }) {
   const on = (event, handler) => onRaw(event, serialized(handler));
   const emit = (ev, payload) => io.emit(ev, payload);
   const isGm = () => socket.data.identity?.role === 'gm';
@@ -365,8 +378,41 @@ export function registerDiceMarkHandlers({ on: onRaw, socket, io, triggers = nul
     // commits while it is up — and committing it drops the lock at once.
     const lock = fight ? activeInterrupt(fight.id) : null;
     if (lock && !(row.roll_id.startsWith('react-') && row.combatant_id === lock.combatantId)) return refuse(row.roll_id, `wait — ${lock.name} is interrupting`);
+    // An interrupted queue goes on only through the review (board:resume).
+    if (readData(row).interrupted) return refuse(row.roll_id, 'decide first what of your queue still happens');
     if (lock && releaseInterrupt(fight.id, lock.combatantId)) await emitStageUpdated?.();
     triggers.commitBoard(row.roll_id);
+  });
+
+  // **After an Interrupt (decided):** the interrupted player keeps all, some
+  // or none of their queued Actions. Those dropped come off the board — their
+  // dice (and token costs) fully back, nothing done — and the rest resolve in order.
+  on('board:resume', async ({ rollId, keep } = {}) => {
+    const row = await editableRoll(rollId);
+    if (!row || !triggers) return;
+    const data = readData(row);
+    if (!data.interrupted) return;
+    const c = await one('SELECT scene_id, mode FROM combatants WHERE id = ?', [row.combatant_id]);
+    const fight = c ? await one('SELECT id, scene_id, mode FROM fights WHERE scene_id = ? AND mode = ?', [c.scene_id, c.mode]) : null;
+    if (fight && activeInterrupt(fight.id)) return refuse(row.roll_id, 'wait — the Interrupt is not over yet');
+    const kept = new Set((Array.isArray(keep) ? keep : []).map(String));
+    const queuedBefore = (data.placements ?? []).filter((p) => !p.committed);
+    data.placements = (data.placements ?? []).filter((p) => p.committed || kept.has(String(p.key)));
+    const going = data.placements.filter((p) => !p.committed);
+    delete data.interrupted;
+    delete data.review;
+    data.committing = going.length > 0;
+    await saveBoard(row.roll_id, data, emit);
+    const dropped = queuedBefore.length - going.length;
+    const name = (await one('SELECT name FROM characters WHERE id = ?', [actingOn(row).characterId]))?.name ?? 'They';
+    await postCard?.('reminder', {
+      title: 'After the Interrupt',
+      text: !queuedBefore.length ? `${name} carries on.` : going.length === queuedBefore.length ? `${name} goes on with every queued Action.` : going.length ? `${name} goes on with ${going.length} of ${queuedBefore.length} queued Actions; ${dropped} given up (dice back).` : `${name} gives up the ${queuedBefore.length} queued Action${queuedBefore.length === 1 ? '' : 's'} (dice back).`,
+      fighters: [{ name }],
+      automatic: 'action',
+      notice: true,
+    });
+    if (going.length) triggers.commitBoard(row.roll_id);
   });
 
   // **Retrieve (GM only, decided):** undo a committed Action and every later one.

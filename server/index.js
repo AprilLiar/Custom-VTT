@@ -1661,7 +1661,7 @@ io.on('connection', (socket) => {
   registerHomebrewHandlers({ on, socket, io, emitStageUpdated });
   // The Events tab: sticky notes in lanes — see server/events.js.
   registerEventHandlers({ on, socket, io });
-  registerDiceMarkHandlers({ on, socket, io, triggers: triggerEngine(), emitStageUpdated });
+  registerDiceMarkHandlers({ on, socket, io, triggers: triggerEngine(), emitStageUpdated, postCard });
   // Rounds, turns, Stance rolls and Reminders (Phase 5) — see server/fights.js.
   registerFightHandlers({ on, socket, emitStageUpdated, postCard, postSystemMessage, emitAll: (event, payload) => io.emit(event, payload), triggers: triggerEngine(), startNextInterrupt });
   // Turn triggers' choices and targets (builder phase 3) — see server/triggers.js.

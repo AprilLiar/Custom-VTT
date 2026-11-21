@@ -3,8 +3,9 @@
 // the interrupter commits their Interrupt board (the lock drops at once and
 // the Reactive Action resolves) or gives it up. An Interrupt never cuts into
 // a resolving Action: pressed while the fight's chain is busy, it waits in a
-// queue (a small ⚡ chip with the name at the bottom of the screen) and the
-// lock opens as soon as the current stack finishes.
+// queue (a small ⚡ chip with the name at the bottom of the screen). A turn
+// board resolving several Actions yields after the current one (decided: a
+// real Interrupt), so the lock opens as soon as that Action is done.
 //
 // In memory, per fight: a server restart simply drops it (nothing is lost —
 // the Interrupt boards themselves live in dice_marks).
@@ -25,6 +26,13 @@ export function interruptOf(fightId) {
 }
 
 export const activeInterrupt = (fightId) => state.get(fightId)?.active ?? null;
+
+// Someone is interrupting, or waiting to (a resolving turn board yields to them
+// after its current Action — engine/actions.js `commitBoard`).
+export const interruptWaiting = (fightId) => {
+  const s = state.get(fightId);
+  return Boolean(s && (s.active || s.queue.length));
+};
 
 // Someone pressed Interrupt. `busy`: an Action is resolving right now.
 // → 'active' (the lock is theirs now), 'already' (it was), or 'queued'.
