@@ -4,13 +4,14 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { WEIGHT_BY_KEY, barHp, bonusDie, bonusHp, crossesBleed } from '../../client/src/lib/cinematicWeight.js';
 
+// HP and Heal from the 1e patch (decided, patch review); Bleed 20% of a bar.
 test('the five weight classes: HP per bar, Heal, Bleed, Super Moves', () => {
   const row = (k) => { const w = WEIGHT_BY_KEY[k]; return [w.hp, w.heal, w.bleed, w.supers]; };
-  assert.deepEqual(row('feather'), [10, 1, 2, 0]);
-  assert.deepEqual(row('light'), [15, 2, 3, 1]);
-  assert.deepEqual(row('middle'), [20, 2, 4, 1]);
-  assert.deepEqual(row('heavy'), [25, 3, 5, 1]);
-  assert.deepEqual(row('world'), [30, 3, 6, 2]);
+  assert.deepEqual(row('feather'), [8, 1, 2, 0]);
+  assert.deepEqual(row('light'), [12, 2, 2, 1]);
+  assert.deepEqual(row('middle'), [16, 2, 3, 1]);
+  assert.deepEqual(row('heavy'), [20, 3, 4, 1]);
+  assert.deepEqual(row('world'), [25, 4, 5, 2]);
 });
 
 test('Hero bonus HP follows the table, not level - 1 (the jump at 6)', () => {
@@ -27,8 +28,8 @@ test('levels are clamped to 1-10', () => {
 });
 
 test('bar HP = weight HP + bonus', () => {
-  assert.equal(barHp('middle', 'hero', 6), 26);
-  assert.equal(barHp('world', 'warrior', 10), 45);
+  assert.equal(barHp('middle', 'hero', 6), 22);
+  assert.equal(barHp('world', 'warrior', 10), 40);
 });
 
 test('the Bonus Die from level 2, a size up every even level', () => {

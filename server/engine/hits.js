@@ -188,6 +188,11 @@ export function createHits({ ask, emitEvent }) {
     // ---- HP
     let bled = false;
     let fell = false;
+    // Who the attacker damaged this turn (Experimental Build: "an enemy you dealt damage to during this turn").
+    if (attacker && r.amount > 0) {
+      const af = fighterRt(rt, attacker.id).flags;
+      if (!(af.damagedIds ?? []).includes(target.id)) af.damagedIds = [...(af.damagedIds ?? []), target.id];
+    }
     if (r.amount > 0) {
       // "At the end of each turn you took damage" (phase G).
       frt.flags.tookDamage = true;

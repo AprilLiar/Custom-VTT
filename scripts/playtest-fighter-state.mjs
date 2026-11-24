@@ -56,7 +56,7 @@ const boRef = { combatantId: tok(bo).id };
 
 console.log('\n--- a fresh fighter ---');
 check('a new token starts with no tokens, no Challenge and one unset bar',
-  JSON.stringify(tok(mira).fight) === JSON.stringify({ combatant_id: tok(mira).id, tokens: {}, challenge_id: null, hp: { max: null, current: 0, bars: 1, broken: 0, dizzy: false }, active_stance_id: null, level: 1, kind: null, infinite: false, damage_taken: 0, excluded: false, stooge_unit: null, stooge_out: false }),
+  JSON.stringify(tok(mira).fight) === JSON.stringify({ combatant_id: tok(mira).id, tokens: {}, challenge_id: null, hp: { max: null, current: 0, bars: 1, broken: 0, dizzy: false }, active_stance_id: null, stance_lost: false, level: 1, kind: null, infinite: false, damage_taken: 0, excluded: false, stooge_unit: null, stooge_out: false }),
   JSON.stringify(tok(mira).fight));
 const setupKey = `character:${mira.id}`;
 check('no hand-made setup rides the payload any more (builder phase 0 purge)',
@@ -70,14 +70,14 @@ p.emit('fighter:token', { ref: miraRef, key: 'challenge', delta: 1 });
 p.emit('fighter:token', { ref: boRef, key: 'iron', delta: 1 });
 await sleep(800);
 st = await stage();
-check('counts cap at 9; unknown keys and Challenge-as-a-count are refused',
-  JSON.stringify(tok(mira).fight.tokens) === JSON.stringify({ iron: 9, burning: 2 }), JSON.stringify(tok(mira).fight.tokens));
+check('counts cap at 10 (1e patch review); unknown keys and Challenge-as-a-count are refused',
+  JSON.stringify(tok(mira).fight.tokens) === JSON.stringify({ iron: 10, burning: 2 }), JSON.stringify(tok(mira).fight.tokens));
 check("a Player can't touch someone else's tokens", JSON.stringify(tok(bo).fight.tokens) === '{}');
 p.emit('fighter:token', { ref: miraRef, key: 'iron', delta: -1 });
 p.emit('fighter:token', { ref: miraRef, key: 'burning', clear: true });
 await sleep(400);
 st = await stage();
-check('− removes one, −− removes all', JSON.stringify(tok(mira).fight.tokens) === JSON.stringify({ iron: 8 }), JSON.stringify(tok(mira).fight.tokens));
+check('− removes one, −− removes all', JSON.stringify(tok(mira).fight.tokens) === JSON.stringify({ iron: 9 }), JSON.stringify(tok(mira).fight.tokens));
 
 console.log('\n--- HP bars ---');
 p.emit('fighter:hp', { ref: miraRef, delta: -1 });

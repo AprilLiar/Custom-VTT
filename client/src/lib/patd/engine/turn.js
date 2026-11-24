@@ -90,15 +90,22 @@ export const isSuperMove = (a) => typeof a?.id === 'string' && a.id.startsWith('
 export const superOnBoard = (a) => isSuperMove(a) && (a.timing ?? 'when_an_action_can_be_performed') === 'when_an_action_can_be_performed' && (a.cost?.options ?? []).some((o) => (o.components ?? []).some((c) => c.kind === 'pool_number' && c.matching));
 export const SUPER_MINIMUM = 3;
 export const superKey = (fighterId) => `super:${fighterId}:fight`;
+// Used this turn (a ':turn' key: the runtime clears it each turn).
+export const superTurnKey = (fighterId) => `super:${fighterId}:turn`;
+// **Worldweight (decided, 1e patch review):** each unit may use 2 Super Moves
+// per fight there (never both on the same turn); 1 in every other weight.
+export const supersPerUnit = (sideLimit) => (sideLimit >= 2 ? 2 : 1);
 
 // **May this fighter use a Super Move now? (decided: all limits enforced)**
 // Not in Round 1; once per fight per character; the side's per-round limit
 // from the Cinematic Weight (Feather 0, Light/Middle/Heavy 1, World 2).
 // → { ok, reason }
-export function superUsable({ move, round, usedByMe = 0, sideUsed = 0, sideLimit = 1, pending = 0 }) {
+export function superUsable({ move, round, usedByMe = 0, sideUsed = 0, sideLimit = 1, pending = 0, usedThisTurn = 0 }) {
   if (!superOnBoard(move)) return { ok: false, reason: 'used while giving your Heroic Spirit (you are asked then)' };
   if (!(round > 1)) return { ok: false, reason: 'not in Round 1' };
-  if (usedByMe + pending >= 1) return { ok: false, reason: 'once per fight' };
+  const perUnit = supersPerUnit(sideLimit);
+  if (usedByMe + pending >= perUnit) return { ok: false, reason: perUnit === 1 ? 'once per fight' : 'twice per fight (Worldweight)' };
+  if (usedThisTurn + pending >= 1) return { ok: false, reason: 'not two on the same turn' };
   if (sideUsed >= sideLimit) return { ok: false, reason: sideLimit ? `your side has used its Super Move${sideLimit === 1 ? '' : 's'} this Round` : 'no Super Moves at this Cinematic Weight' };
   return { ok: true };
 }

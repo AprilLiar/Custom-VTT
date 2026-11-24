@@ -18,8 +18,8 @@ test('a die reaches the highest Gate at or below its number', () => {
   const guard = idx.get('action.system-basic-actions.guard');
   assert.equal(gateFor(guard, 3), null, 'below its only threshold (4+)');
   assert.equal(gateFor(idx.get('action.system-basic-actions.movement'), 5), 0, 'an X cost: any number buys the base effect');
-  assert.equal(gateFor(idx.get('action.system-basic-actions.grapple'), 7), 7, "…and reaches its effect Gates");
-  assert.equal(gateFor(idx.get('action.system-basic-actions.grapple'), 5), 4);
+  assert.equal(gateFor(idx.get('action.system-basic-actions.put-it-out'), 8), 7, '…and reaches its effect Gates');
+  assert.equal(gateFor(idx.get('action.system-basic-actions.put-it-out'), 5), 4);
 });
 
 test("a turn's Actions: Basic, then the rolled Stance's and the always-available ones, then Super Moves", () => {

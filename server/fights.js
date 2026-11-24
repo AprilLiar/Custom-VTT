@@ -159,6 +159,8 @@ export async function loadFightState(sceneId, mode) {
     enemies: parseIds(row.enemies),
     renegades: parseIds(row.renegades),
     pending_stance: pending,
+    // **Combat Start (1e patch review):** Stances are being declared before Round 1.
+    declaring: row.declaring != null,
     // Early / Late Movement (phase D): who still gets to move, or null.
     movement_phase: phaseOf(row),
     // **Armor sources used this turn**, by combatant (the Armor rings — decided):
@@ -374,7 +376,8 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
     // dice already hold the level's bonus die, from the build's level.
     const stance = await stanceByKey(fighter.characterId, stanceId);
     if (!stance) return;
-    await run('UPDATE combatants SET active_stance_key = ? WHERE id = ?', [stance.id, combatantId]);
+    // Taking a turn enters the Stance again (Dizzy had left it — 1e patch review).
+    await run('UPDATE combatants SET active_stance_key = ?, stance_lost = 0 WHERE id = ?', [stance.id, combatantId]);
     // Stooges share their Stance: every body of the unit in this fight takes it.
     const d = await derivedFor(fighter.characterId);
     if (d?.type.id === 'character-type.stooges') {
@@ -420,13 +423,49 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
   };
 
   // The start of the turn at fight.turn_index: Stance, then Start reminders.
+  // Who declares a Stance at Combat Start, in order (1e patch review): the
+  // enemies — Stooges, then Warriors, then Bosses — then the heroes, then a
+  // third side; only those with a choice (several Stances, or a Frantic
+  // Hero); a Stooges unit once.
+  const declareOrder = async (fight) => {
+    const typeRank = { 'character-type.stooges': 0, 'character-type.warrior': 1, 'character-type.boss': 2 };
+    const out = [];
+    const units = new Set();
+    for (const side of ['enemies', 'allies', 'renegades']) {
+      const list = [];
+      for (const id of parseIds(fight[side])) {
+        const c = await one('SELECT id, character_id, stooge_unit FROM combatants WHERE id = ?', [id]);
+        if (!c?.character_id) continue;
+        if (c.stooge_unit != null) {
+          if (units.has(c.stooge_unit)) continue;
+          units.add(c.stooge_unit);
+        }
+        const d = await derivedFor(c.character_id);
+        if (!((await stancesOf(c.character_id)).length > 1 || assembles(d))) continue;
+        list.push({ id, rank: side === 'enemies' ? (typeRank[d?.type?.id] ?? 3) : 0 });
+      }
+      out.push(...list.sort((a, b) => a.rank - b.rank).map((x) => x.id));
+    }
+    return out;
+  };
   const beginTurn = async (fight) => {
     const entry = orderOf(fight)[fight.turn_index];
     if (!entry) return;
     // Board animations (phase 4): the turn starts — a ring round them and their name.
     recordFx({ sceneId: fight.scene_id, mode: fight.mode, kind: 'turn', combatantId: entry.id, before: null, after: null, data: {} });
-    const row = await one('SELECT character_id FROM combatants WHERE id = ?', [entry.id]);
+    const row = await one('SELECT character_id, declared_stance FROM combatants WHERE id = ?', [entry.id]);
     const stances = row ? await stancesOf(row.character_id) : [];
+    // Their first turn: the Stance declared at Combat Start, no choice (1e patch review).
+    if (row?.declared_stance) {
+      await run('UPDATE combatants SET declared_stance = NULL WHERE id = ?', [entry.id]);
+      await rollStanceIntoChat(fight, entry.id, row.declared_stance);
+      await fire(fight, 'turn_start', entry.id);
+      const at0 = { id: fight.id, index: fight.turn_index, round: fight.round };
+      Promise.resolve(triggers?.schedule({ ...fight }, entry.id, 'start'))
+        .then(() => openEarly({ fightId: at0.id, activeId: entry.id, turnIndex: at0.index, round: at0.round }))
+        .catch((err) => console.error('early movement', err));
+      return;
+    }
     // A Frantic Hero assembles a Stance every turn; several fixed Stances ask which.
     if (stances.length > 1 || (row && assembles(await derivedFor(row.character_id)))) {
       fight.pending_stance_combatant = entry.id;
@@ -541,13 +580,25 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
     fight.turn_index = 0;
     await save(fight);
     await postSystemMessage('— Combat begins: Round 1 —');
-    // Last fight's Frantic picks don't bind this one.
-    await run('UPDATE combatants SET frantic_pick = NULL WHERE scene_id = ? AND mode = ?', [sceneId, mode]);
+    // Last fight's Frantic picks don't bind this one (nor a lost or declared Stance).
+    await run('UPDATE combatants SET frantic_pick = NULL, declared_stance = NULL, stance_lost = 0 WHERE scene_id = ? AND mode = ?', [sceneId, mode]);
     // "At the start of combat" abilities (Improved Warrior's Path), before the first turn.
     triggers?.startFight({ ...fight });
     // Fight Setup: Keep 'Em Coming applies, Chained Down asks for its Walls.
     await battleFightStart({ ...fight }, { postCard, triggers });
     await fire(fight, 'round_start');
+    // **Combat Start (decided, 1e patch review):** everyone with a choice
+    // declares their Stance first — Stooges, Warriors, Bosses, then the heroes
+    // (and a third side) — and their first turn is fought in it.
+    const declarers = await declareOrder(fight);
+    if (declarers.length) {
+      fight.pending_stance_combatant = declarers[0];
+      await save(fight);
+      await run('UPDATE fights SET declaring = ? WHERE id = ?', [JSON.stringify(declarers.slice(1)), fight.id]);
+      await postSystemMessage('— Everyone declares a Stance —');
+      await emitStageUpdated();
+      return;
+    }
     await beginTurn(fight);
     await emitStageUpdated();
   });
@@ -996,6 +1047,26 @@ export function registerFightHandlers({ on: onRaw, socket, emitStageUpdated, pos
     } else if (!(await stancesOf(c.character_id)).some((s) => s.id === String(stanceId))) return;
     const stance = await stanceByKey(c.character_id, String(stanceId));
     if (!stance) return;
+    // Declaring before Round 1: remember it, then the next one declares; the
+    // last declaration starts the first turn.
+    if (fight.declaring != null) {
+      await run('UPDATE combatants SET declared_stance = ?, active_stance_key = ? WHERE id = ?', [stance.id, stance.id, c.id]);
+      let rest = [];
+      try {
+        rest = JSON.parse(fight.declaring) ?? [];
+      } catch {
+        rest = [];
+      }
+      fight.pending_stance_combatant = rest[0] ?? null;
+      await save(fight);
+      await run('UPDATE fights SET declaring = ? WHERE id = ?', [rest.length ? JSON.stringify(rest.slice(1)) : null, fight.id]);
+      if (!rest.length) {
+        fight.declaring = null;
+        await beginTurn(fight);
+      }
+      await emitStageUpdated();
+      return;
+    }
     fight.pending_stance_combatant = null;
     await save(fight);
     await rollStanceIntoChat(fight, c.id, stance.id);

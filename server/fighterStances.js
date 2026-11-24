@@ -109,6 +109,8 @@ export function setupFromDerived(d) {
     level: d.level.level,
     kind: hpTableOf(d),
     health_bars: d.healthBars,
+    // Bulky Build: +3 HP per Health Bar (only when set).
+    ...(d.barHpBonus ? { bar_bonus: d.barHpBonus } : {}),
     // The Tank: their Armor blocks 10 the first time it triggers (its ring is
     // black). Only when set: this rides on every stage payload, per character.
     ...(first != null ? { armor_first_reduction: first } : {}),

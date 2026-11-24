@@ -120,3 +120,12 @@ test('Inspire Perfection: yourself and each ally you can see', async () => {
   assert.equal(foe.tokens.power, undefined);
   assert.equal(me.tokens.burning, 0, 'Status tokens removed');
 });
+
+test('Worldweight (1e patch review): 2 Super Moves per unit per fight, never two on the same turn', () => {
+  const base = { move: PILEDRIVER, round: 2, sideLimit: 2 };
+  assert.ok(superUsable({ ...base, usedByMe: 1 }).ok, 'the second one, on a later turn');
+  assert.match(superUsable({ ...base, usedByMe: 1, usedThisTurn: 1 }).reason, /same turn/);
+  assert.match(superUsable({ ...base, usedByMe: 0, pending: 1 }).reason, /same turn/, 'one already placed this turn');
+  assert.match(superUsable({ ...base, usedByMe: 2 }).reason, /twice per fight/);
+  assert.match(superUsable({ ...base, sideLimit: 1, usedByMe: 1 }).reason, /once per fight/, 'other weights: still one');
+});

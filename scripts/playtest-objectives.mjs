@@ -141,7 +141,7 @@ check("the Saboteur's board offers Sabotage", ((await marks())[ra.roll_id]?.batt
 await perform(ana.id, SABOTAGE);
 await stage();
 const bomb = st.activeScene.battle.combat.sabotage.bombs[0];
-check('Sabotage plants a Bomb in the adjacent Key Location — HP 4 (the Bleed Value)', tileAt(4, 3, 'bomb') && bomb?.hp === 4 && bomb.side === 'allies', JSON.stringify(st.activeScene.battle.combat.sabotage));
+check('Sabotage plants a Bomb in the adjacent Key Location — HP 3 (the Middleweight Bleed Value)', tileAt(4, 3, 'bomb') && bomb?.hp === 3 && bomb.side === 'allies', JSON.stringify(st.activeScene.battle.combat.sabotage));
 const reachBo = await new Promise((r) => gm.emit('move:reach', { combatantId: tb.id }, r));
 await next();
 check("the Defense's board has no Sabotage", !((await marks())[lastRoll(bo.id).roll_id]?.battleActions ?? []).includes(SABOTAGE));

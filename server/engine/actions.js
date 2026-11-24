@@ -16,7 +16,7 @@ import { closeAction, openAction } from '../fx.js';
 import { patdContent } from '../patdContent.js';
 import { actingOn, readData, saveBoard, fighterState } from '../diceMarks.js';
 import { restoreSnapshot, takeSnapshot } from './snapshots.js';
-import { atZero, recordUse, superKey } from '../../client/src/lib/patd/engine/turn.js';
+import { atZero, recordUse, superKey, superTurnKey } from '../../client/src/lib/patd/engine/turn.js';
 import { interruptWaiting } from '../interrupts.js';
 import { keepRewindMark, rewindMark } from '../rewind.js';
 
@@ -492,6 +492,7 @@ export function createActionRunner(kit) {
     // A Super Move: once per fight for them, and one of their side's this Round.
     if (placement.kind === 'super') {
       env.rt.usage[superKey(actor.id)] = (env.rt.usage[superKey(actor.id)] ?? 0) + 1;
+      env.rt.usage[superTurnKey(actor.id)] = (env.rt.usage[superTurnKey(actor.id)] ?? 0) + 1;
       const side = (env.rt.sides ??= {})[actor.side] ??= { supersThisRound: 0 };
       side.supersThisRound = (side.supersThisRound ?? 0) + 1;
     }

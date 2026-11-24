@@ -13,7 +13,7 @@
 
 // The book caps every token at 10 (Training at 4, Challenge at 1). **Decided:
 // the app caps every type at 9**, so a count is always a single digit.
-export const TOKEN_CAP = 9;
+export const TOKEN_CAP = 10;
 
 export const BASIC_TOKENS = [
   { key: 'iron', name: 'Iron', kind: 'basic', summary: 'Spend 1-2 when hit to reduce the damage and push/pull by 1 each.' },
@@ -36,7 +36,7 @@ export const UNIQUE_TOKENS = [
   { key: 'mentor', name: 'Mentor', kind: 'unique', source: 'Teacher', summary: 'Improves your Heroic Spirit; pays for Remember Your Training.' },
   { key: 'inspired', name: 'Inspired', kind: 'unique', source: 'Teacher / Motivating Style', summary: 'Given by the Teacher and Motivating Style.' },
   { key: 'poltergeist', name: 'Poltergeist', kind: 'unique', source: 'Phantom', summary: 'Spend when paying for an Action to modify its properties.' },
-  { key: 'training', name: 'Training', kind: 'unique', source: 'Training Style', summary: 'Spend after an Action to improve a number in your Action Pool.' },
+  { key: 'training', name: 'Training', kind: 'unique', source: 'Training Style', cap: 4, summary: 'Spend after an Action to improve a number in your Action Pool. Cap 4.' },
   { key: 'rapid_strike', name: 'Rapid Strike', kind: 'super', source: 'Underdog — Blur Super Move', summary: 'Spend (your turn or as a Reactive Action) to move 1, then deal 1 damage to an adjacent enemy.' },
 ];
 
@@ -54,16 +54,16 @@ export const SPECIAL_TOKENS = [
   },
   // **Shield (decided, new)** — p.24. A value, not stacked sources: you hold
   // one Shield, and gaining another either replaces it or raises it by 1.
-  // Capped at 8 (the book's Shield Cap). It absorbs damage from Actions and
+  // Capped at 10 (decided, 1e patch review: Shield and normal tokens cap at 10). It absorbs damage from Actions and
   // Abilities (absorbWithShield, below); HP "−" never spends it. It is also
   // drawn as a blue extension of the HP bar.
   {
     key: 'shield',
     name: 'Shield',
     kind: 'special',
-    cap: 8,
+    cap: 10,
     summary:
-      'Blocks incoming damage from any Action or Ability that targets you, up to its value; when used up it breaks and the rest hits you. One Shield at a time: a new one replaces it, or raises it by 1. Cannot be healed. Cap 8.',
+      'Blocks incoming damage from any Action or Ability that targets you, up to its value; when used up it breaks and the rest hits you. One Shield at a time: a new one replaces it, or raises it by 1. Cannot be healed. Cap 10.',
   },
   // **Temporary Armor (full automation, phase C)** — p.24: Guard and the like.
   // Binary (cap 1): used after all other Armor, triggers once, then it is lost.
@@ -116,7 +116,7 @@ export function armorRings(fight, setup, used = 0) {
   return rings;
 }
 
-// A token's own cap: TOKEN_CAP unless the token has a lower one (Shield: 8).
+// A token's own cap: TOKEN_CAP unless the token has its own in-game cap (Training 4, Challenge 1).
 // **A Shield absorbs damage (decided, revised).** Damage from an Action or an
 // Ability that targets you hits the Shield first, up to its value; what's left
 // of the Shield stays, a Shield used up breaks, and the rest hits HP. (Traps

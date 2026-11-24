@@ -3,6 +3,6 @@
 // package.json versions — a test checks they match) and rewrite `note` as ONE
 // sentence on every push to main.
 export const PATCH = {
-  version: '0.2.2',
-  note: "Interrupts now cut in after the current Action and let the interrupted player keep or drop the rest of their queue, the GM can Rewind up to 5 steps, Traps under fighters show a badge, and contest pushes can be tapped.",
+  version: '0.3.0',
+  note: "Rules now follow the 1e PATCH'd UP choices you picked: smaller weight HP, token cap 10, 2 Power per hit, 1e Super texts and Basic Actions, new Builds, Taken Out and Dizzy rework, and Stances declared at Combat Start.",
 };

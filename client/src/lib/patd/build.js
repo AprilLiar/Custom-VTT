@@ -433,6 +433,8 @@ export function deriveBuild(rawBuild, idx) {
     skillIds: uniq(skillIds),
     customSkill: build.skills.custom,
     healthBars: build.healthBars ?? type.healthBars,
+    // Bulky Build (1e patch review): extra HP on every Health Bar.
+    barHpBonus: Number(buildRow?.barHpBonus) || 0,
     machine,
     bonusFrantic,
   };

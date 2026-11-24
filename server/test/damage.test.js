@@ -29,9 +29,9 @@ test('unblockable lists: all, tokens covers Iron, shield spelled either way', ()
   assert.equal(unblockableSet(null, []).size, 0);
 });
 
-test('allowances: Power 1 (+ Power Form 2, + Drive Install 1); Iron 2 (+1), capped by an Armor Install attacker', () => {
-  assert.equal(powerAllowance([]), 1);
-  assert.equal(powerAllowance([mod('enhance_hit.additional_uses', 2), mod('power_tokens.additional_per_hit', 1)]), 4);
+test('allowances: Power 2 like Iron (1e patch review; + Power Form 2, + Drive Install 1); Iron 2 (+1), capped by an Armor Install attacker', () => {
+  assert.equal(powerAllowance([]), 2);
+  assert.equal(powerAllowance([mod('enhance_hit.additional_uses', 2), mod('power_tokens.additional_per_hit', 1)]), 5);
   assert.equal(ironAllowance([]), 2);
   assert.equal(ironAllowance([mod('iron_tokens.additional_per_hit', 1)]), 3);
   assert.equal(ironAllowance([mod('iron_tokens.additional_per_hit', 1)], [mod('opponents.iron_token_limit_per_hit', 1)]), 1);
@@ -141,8 +141,8 @@ test('Dizzy takes no damage; Pit −1 beyond Range 3; Exploit Weakness spends th
     { amount: 2, source: action, attacker: { tokens: { power: 1 }, mods: [], enemy: true }, target: target({ weakness: 1 }), exploitWeakness: true },
     { power: ({ max }) => max }
   );
-  assert.equal(ex.amount, 3, 'one Power allowed per hit');
-  assert.deepEqual([ex.spend.targetWeakness, ex.spend.power], [1, 0]);
+  assert.equal(ex.amount, 4, 'two Power allowed per hit: the target’s Weakness first, then one of the attacker’s');
+  assert.deepEqual([ex.spend.targetWeakness, ex.spend.power], [1, 1]);
 });
 
 test('Auto Iron saves tokens Armor would make pointless; Heroic split; "1 less from any source"', async () => {

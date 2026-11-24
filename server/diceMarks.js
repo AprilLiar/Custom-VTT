@@ -19,7 +19,7 @@ import { patdContent } from './patdContent.js';
 import { derivedFor } from './fighterStances.js';
 import { activeInterrupt, releaseInterrupt } from './interrupts.js';
 import { stanceOfBuild } from '../client/src/lib/patd/build.js';
-import { actionUsable, atZero, isSuperMove, superKey, superPair, superUsable, turnContext } from '../client/src/lib/patd/engine/turn.js';
+import { actionUsable, atZero, isSuperMove, superKey, superPair, superTurnKey, superUsable, turnContext } from '../client/src/lib/patd/engine/turn.js';
 import { WEIGHT_BY_KEY } from '../client/src/lib/cinematicWeight.js';
 import { loadRuntime } from './engine/runtimeStore.js';
 import { spendPrefs } from '../client/src/lib/patd/engine/damage.js';
@@ -193,7 +193,7 @@ export async function superStatus(combatantId) {
   const rt = await loadRuntime(fight.id);
   const scene = await one('SELECT combat_weight, simple_weight FROM scenes WHERE id = ?', [fight.scene_id]);
   const weight = WEIGHT_BY_KEY[fight.mode === 'simple' ? scene?.simple_weight : scene?.combat_weight] ?? WEIGHT_BY_KEY.middle;
-  return { round: fight.round, usedByMe: rt.usage?.[superKey(me.id)] ?? 0, sideUsed: rt.sides?.[side]?.supersThisRound ?? 0, sideLimit: weight.supers ?? 1 };
+  return { round: fight.round, usedByMe: rt.usage?.[superKey(me.id)] ?? 0, usedThisTurn: rt.usage?.[superTurnKey(me.id)] ?? 0, sideUsed: rt.sides?.[side]?.supersThisRound ?? 0, sideLimit: weight.supers ?? 1 };
 }
 
 // The fighter's state minus what uncommitted token placements already promise.
@@ -295,6 +295,7 @@ export function registerDiceMarkHandlers({ on: onRaw, socket, io, triggers = nul
           move: action,
           round: ts.fight.round,
           usedByMe: ts.usage[superKey(actingOn(row).combatantId)] ?? 0,
+          usedThisTurn: ts.usage[superTurnKey(actingOn(row).combatantId)] ?? 0,
           sideUsed: ts.rt?.sides?.[ts.side]?.supersThisRound ?? 0,
           sideLimit: ts.superLimit,
           pending: data.placements.filter((p) => p.kind === 'super' && !p.committed).length,

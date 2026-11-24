@@ -59,7 +59,7 @@ for (let i = 0; i < 12; i++) other.emit('fighter:token', { ref: { summonId: sm.i
 other.emit('fighter:token', { ref: { summonId: sm.id }, key: 'armor', delta: 12 });
 await sleep(700);
 sm = (await jf('/api/stage?role=gm')).summons.find((s) => s.character_id === bo.id);
-check('Shield caps at 8, Armor at 9', sm.fight.tokens.shield === 8 && sm.fight.tokens.armor === 9, JSON.stringify(sm.fight.tokens));
+check('Shield and Armor cap at 10 (1e patch review)', sm.fight.tokens.shield === 10 && sm.fight.tokens.armor === 10, JSON.stringify(sm.fight.tokens));
 const before = (await jf('/api/table-settings')).laneY;
 p.emit('table_settings:set', { laneY: 0.3 });
 await sleep(200);

@@ -1467,11 +1467,25 @@ export async function initDb() {
   // (decided; at most one per owner — scene_picture:set_token keeps it so).
   await ensureColumn('scene_pictures', 'is_token', 'INTEGER NOT NULL DEFAULT 0');
   await ensureColumn('combatants', 'stooge_out', 'INTEGER NOT NULL DEFAULT 0');
+  // **Dizzy exits the Stance (decided, 1e patch review):** until that fighter's
+  // next turn they have no Stance — Range 1, no Form or Style Abilities, no
+  // Unique Actions. Set by the database the moment Dizzy is (every path).
+  await ensureColumn('combatants', 'stance_lost', 'INTEGER NOT NULL DEFAULT 0');
+  ddl('DROP TRIGGER IF EXISTS dizzy_loses_stance');
+  ddl(`CREATE TRIGGER dizzy_loses_stance AFTER UPDATE OF dizzy ON combatants
+    WHEN NEW.dizzy = 1 AND OLD.dizzy = 0
+    BEGIN
+      UPDATE combatants SET stance_lost = 1 WHERE id = NEW.id;
+    END`);
+  // **Combat Start (decided, 1e patch review):** everyone declares a Stance
+  // before Round 1; their first turn uses it. `fights.declaring`: who still
+  // has to declare (JSON ids, in order); `combatants.declared_stance`.
+  await ensureColumn('combatants', 'declared_stance', 'TEXT');
   ddl('DROP TRIGGER IF EXISTS stooges_share');
-  ddl(`CREATE TRIGGER stooges_share AFTER UPDATE OF tokens, challenge_id, hp_max, hp_current, hp_bars, hp_broken, dizzy, bled_round, active_stance_key, level, fighter_kind ON combatants
+  ddl(`CREATE TRIGGER stooges_share AFTER UPDATE OF tokens, challenge_id, hp_max, hp_current, hp_bars, hp_broken, dizzy, bled_round, active_stance_key, level, fighter_kind, stance_lost, declared_stance ON combatants
     WHEN NEW.stooge_unit IS NOT NULL
     BEGIN
-      UPDATE combatants SET tokens = NEW.tokens, challenge_id = NEW.challenge_id, hp_max = NEW.hp_max, hp_current = NEW.hp_current, hp_bars = NEW.hp_bars, hp_broken = NEW.hp_broken, dizzy = NEW.dizzy, bled_round = NEW.bled_round, active_stance_key = NEW.active_stance_key, level = NEW.level, fighter_kind = NEW.fighter_kind
+      UPDATE combatants SET tokens = NEW.tokens, challenge_id = NEW.challenge_id, hp_max = NEW.hp_max, hp_current = NEW.hp_current, hp_bars = NEW.hp_bars, hp_broken = NEW.hp_broken, dizzy = NEW.dizzy, bled_round = NEW.bled_round, active_stance_key = NEW.active_stance_key, level = NEW.level, fighter_kind = NEW.fighter_kind, stance_lost = NEW.stance_lost, declared_stance = NEW.declared_stance
       WHERE stooge_unit = NEW.stooge_unit AND scene_id = NEW.scene_id AND mode = NEW.mode AND id <> NEW.id;
     END`);
   // A Simple Combat fighter is created on its first change, keyed by its
@@ -1590,6 +1604,8 @@ export async function initDb() {
   await ensureColumn('map_tiles', 'placed_by', 'INTEGER');
   // An open reaction window (full automation phase F): JSON or NULL.
   await ensureColumn('fights', 'reaction_window', 'TEXT');
+  // Combat Start (1e patch review): who still has to declare a Stance (JSON ids), or NULL.
+  await ensureColumn('fights', 'declaring', 'TEXT');
 
   // **Table-wide settings the GM sets for everyone** (Settings page). A
   // singleton, like scene_state. `simple_lanes`: how many lanes Simple

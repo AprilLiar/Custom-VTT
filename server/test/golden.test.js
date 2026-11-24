@@ -132,20 +132,16 @@ const cases = [
   ['action.system-basic-actions.throw', 5, ['push F3 3', 'damage F3 1']],
   ['action.system-basic-actions.throw', 7, ['push F3 4', 'damage F3 2']],
   ['action.system-basic-actions.throw', 9, ['push F3 5', 'damage F3 3']],
-  // "Target someone within Range 1-X. Pull them 2. 4+: Pull 1 more and if they
-  //  are an enemy, give them 1 Fatigue token. 7+: Pull 2 more and if they are
-  //  an enemy, give them 2 Fatigue tokens." Gates add up unless they say
-  //  "instead": at 7, Pull 2 + 1 + 2 and Fatigue 1 + 2.
-  ['action.system-basic-actions.grapple', 2, ['pull F3 2']],
-  ['action.system-basic-actions.grapple', 4, ['pull F3 2', 'pull F3 1', 'gain F3 fatigue 1']],
-  ['action.system-basic-actions.grapple', 7, ['pull F3 2', 'pull F3 1', 'pull F3 2', 'gain F3 fatigue 3']],
+  // 1e PATCH'd UP (decided): "Target someone within Range 1-X. Pull them up
+  //  to 3 spaces." — no Gates.
+  ['action.system-basic-actions.grapple', 2, ['pull F3 3']],
+  ['action.system-basic-actions.grapple', 7, ['pull F3 3']],
   // "Give 2 Fatigue tokens to an adjacent enemy. 7+: Give them 2 more Fatigue
   //  tokens and 2 Weakness tokens."
   ['action.system-basic-actions.stagger', 3, ['gain F3 fatigue 2']],
   ['action.system-basic-actions.stagger', 7, ['gain F3 fatigue 4', 'gain F3 weakness 2']],
-  // "Challenge an enemy within Range 1-4. 4+: Challenge up to two more enemies
-  //  within Range 1-4." (Two enemies on the board.)
-  ['action.system-basic-actions.a-challenger-approaches', 1, ['challenge F3']],
+  // 1e PATCH'd UP (decided): Bring It On! (4+) — "Challenge any number of
+  //  enemies within Range 1-3." (Two enemies on the board.)
   ['action.system-basic-actions.a-challenger-approaches', 4, ['challenge F3', 'challenge F4']],
   // "You gain X Speed tokens."
   ['action.system-basic-actions.movement', 4, ['gain F1 speed 4']],

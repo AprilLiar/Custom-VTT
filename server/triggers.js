@@ -244,7 +244,11 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     for (const r of [...rows].sort((a, b) => a.id - b.id)) {
       const d = await derivedFor(r.character_id);
       const state = shapeFightState(r);
-      const stance = stanceOfBuild(d, state.active_stance_id, idx) ?? d?.stances.find((s) => s.formId && s.styleId) ?? null;
+      const built = stanceOfBuild(d, state.active_stance_id, idx) ?? d?.stances.find((s) => s.formId && s.styleId) ?? null;
+      // **No Stance after Dizzy (1e patch review):** Range 1, no Form or Style
+      // Abilities, no Unique Actions — until their next turn.
+      const stanceLost = Boolean(r.stance_lost);
+      const stance = built && stanceLost ? { ...built, range: { minimum: 1, maximum: 1 }, abilityIds: [], lost: true } : built;
       // A Frantic Hero's one Frantic Ability for this turn comes with their pick.
       // (Greater Frenzy: a second Frantic Ability this turn — `abilityId2`.)
       const pick = assembles(d) ? franticPickOf(r) : null;
@@ -279,11 +283,12 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
         square: squareOf(r),
         stance,
         derived: d,
+        stanceLost,
         abilityIds: d ? [...new Set([...d.constantAbilityIds, ...(frantic ? [frantic] : []), ...(frantic2 ? [frantic2] : []), ...(stance?.abilityIds ?? [])])] : [],
         // The Giant fills a 2×2 block on the map (its `footprint` rule).
         size: mode === 'combat' && d && hasRuleIn(d.constantAbilityIds, 'footprint', idx) ? 2 : 1,
         // Armor from the build (always, or while this Stance is active).
-        innateArmor: d ? innateArmor(armorSourcesOf(d, idx), stance?.key ?? null) : 0,
+        innateArmor: d ? innateArmor(armorSourcesOf(d, idx), stanceLost ? null : (stance?.key ?? null)) : 0,
       });
     }
     const byId = (id) => fighters.find((f) => f.id === id);
@@ -474,6 +479,8 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
       if (result.row?.stooge_unit != null && delta < 0 && result.landed != null && result.landed < (result.before?.current ?? 0)) await stoogeHit(f);
       // **Protect the VIP:** a VIP falling ends it at once (not at the turn's end).
       if (result.down && vipFell(f)) await victoryCheck(world.env, world, fighters);
+      // **Their Challenge drops (1e patch review):** falling to 0 HP, everyone holding theirs discards it.
+      if (result.down) await dropChallengesOf(f);
       // **Handcuffs (Tilt):** one falls to 0 HP — their partner gains 3 Fatigue.
       if (result.down) {
         const partner = fighters.find((x) => x.id === partnerOf(battle, f.id));
@@ -511,7 +518,8 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
         tiles: pyroclasm ? [...tileList, ...tileList.filter((t) => t.kind === 'pit').map((t) => ({ ...t, kind: 'trap' }))] : tileList,
         // (A Bomb fills its space: nobody enters it, a push stops before it.)
         units: [
-          ...[...fighters, ...copies].filter((f) => f.square).map((f) => ({ id: f.id, square: f.square, size: f.size ?? 1 })),
+          // (Someone at zero HP is Empty Space — anyone walks over them; 1e patch review.)
+          ...[...fighters, ...copies].filter((f) => f.square && (f.isCopy || !f.hp || !atZero(f.hp))).map((f) => ({ id: f.id, square: f.square, size: f.size ?? 1 })),
           ...tileList.filter((t) => t.kind === 'bomb').map((t) => ({ id: `bomb:${t.col},${t.row}`, square: { col: t.col, row: t.row }, size: 1 })),
         ],
         exits: arena.has('cage_match') || arena.has('trick_room') || endless ? 'none' : mode === 'simple' ? 'cols' : 'all',
@@ -538,6 +546,21 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     // A fighter's new square (null: out of play — the Outside). `how` (board
     // animations): 'move', 'push', 'pull', 'teleport' or 'swap'; null shows nothing.
     // `quiet`: no stage update yet (a swap's steps — the board shows only its end).
+    // **A Challenger falls or leaves play (decided, 1e patch review):** everyone
+    // holding their Challenge discards it at once (no protection stops it).
+    async function dropChallengesOf(f) {
+      const holders = fighters.filter((x) => x.challengeId === f.id && x.id !== f.id);
+      if (!holders.length) return;
+      await queued(async () => {
+        for (const h of holders) {
+          const was = shapeFightState(await readRow(h.id));
+          await run('UPDATE combatants SET challenge_id = NULL WHERE id = ? AND challenge_id = ?', [h.id, f.id]);
+          recordFx({ sceneId, mode, kind: 'tokens', combatantId: h.id, before: slice(was), after: { ...slice(was), challenge_id: null }, data: { changes: [{ key: 'challenge', delta: -1 }] } });
+        }
+      });
+      for (const h of holders) h.challengeId = null;
+      markDirty();
+    }
     const setSquare = async (f, sq, how = 'move', { quiet = false } = {}) => {
       if (f.isCopy) {
         // A Copy moves as its tile; one that goes Outside is gone.
@@ -569,6 +592,8 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
       if (!quiet) await flushStage();
       if (!quiet) await cuffCheck(f);
       await mcguffinMoved(f, from, sq, how);
+      // Leaving play: their Challenge drops (1e patch review).
+      if (!sq && from) await dropChallengesOf(f);
       // Protect the VIP: a VIP removed from play ends it at once too.
       if (!sq && from && vipFell(f)) await victoryCheck(world.env, world, fighters);
       if (!quiet && from && sq && (how === 'move' || how === 'push' || how === 'pull') && !slidingIds.has(f.id)) await icySlide(f, from, sq);
@@ -978,6 +1003,8 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
           await destroyCopy(f, attacker);
           return { taken: dmg, toHp: dmg, dealt: dmg, steps: [...steps, 'the Copy is destroyed'], destroyed: true };
         }
+        // **Taken Out (1e patch review):** at zero HP they take no damage.
+        if (f.hp && atZero(f.hp) && !f.infinite) return { taken: 0, toHp: 0, dealt: 0, steps: [`${f.name} is Taken Out: no damage`], immune: true, takenOut: true };
         const r = await hits.resolveHit(world.env, { writeTokens, changeHp, bleedCheck, inPit, spend: world.spend, spendable: world.spendable, hitFx }, f, n, attacker, opts);
         // **Enraged (Tilt):** dealt damage by an enemy, they take that enemy's
         // Challenge token (a unique token: whoever held it loses it) and drop
@@ -1028,7 +1055,9 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
       },
       obstacles: (from, range, { types = null } = {}) => {
         const list = [
-          ...tileList.filter((t) => OBSTACLE_KINDS.has(t.kind)).map(obstacleOf),
+          // **A Deadly Trap can't be removed by Actions or Abilities** (decided,
+          // 1e patch review): never a candidate to destroy, replace or move.
+          ...tileList.filter((t) => OBSTACLE_KINDS.has(t.kind) && t.kind !== 'deadly_trap').map(obstacleOf),
           ...copies.map((c) => Object.assign(c, { kind: 'copy' })),
         ];
         return list.filter(
@@ -1036,11 +1065,15 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
         );
       },
       copies: () => copies,
+      // Whom `f` damaged this turn (the runtime's turn flags; Experimental Build).
+      damagedThisTurn: (f) => (world.env ? fighterRt(world.env.rt, f.id).flags.damagedIds ?? [] : []),
       canPlace: (kind, sq) => {
         const b = board();
         if (!inBoundsAt(b, sq)) return false;
         // Rubble and Walls fill a space: not onto a fighter or a Copy.
         if ((kind === 'wall' || kind === 'copy') && occupantAt(b, sq) != null) return false;
+        // Rubble or a Wall would clear the space — not a Deadly Trap's (it can't be removed).
+        if ((kind === 'wall' || kind === 'rubble') && kindsAtSq(sq).includes('deadly_trap')) return false;
         if (kind === 'copy') return isEmptyAt(b, sq);
         if (placementBarred(kindsAtSq(sq), kind === 'pit_trap' ? 'pit' : kind)) return false;
         return placeTile(kindsAtSq(sq), kind).includes(kind);
@@ -1511,6 +1544,32 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
 
   // ---- running one fighter's rules for some events
   const WORKS_AT_ZERO = new Set(['own_turn.start', 'self.fell_to_zero_hp', 'self.giving_heroic_spirit']);
+  // The part of an effect that affects only its owner: steps whose target is
+  // themselves (or none), no picks, no passive rules. → the pruned effect or null.
+  const PICKS = new Set(['select', 'for_each', 'choose', 'joint_choice', 'ensure_target', 'select_token']);
+  const PASSIVE = new Set(['modify_rule', 'temporary', 'register_trigger', 'schedule', 'grant_armor']);
+  const pickInside = (n) => (Array.isArray(n) ? n.some(pickInside) : n && typeof n === 'object' ? (typeof n.kind === 'string' && n.range) || Object.values(n).some(pickInside) : false);
+  function selfOnlyEffect(node) {
+    if (!node || typeof node !== 'object') return null;
+    if (node.op === 'sequence') {
+      const steps = (node.steps ?? []).map(selfOnlyEffect).filter(Boolean);
+      return steps.length ? { ...node, steps } : null;
+    }
+    if (node.op === 'optional') {
+      const effect = selfOnlyEffect(node.effect);
+      return effect ? { ...node, effect } : null;
+    }
+    if (node.op === 'if') {
+      const then = node.then ? selfOnlyEffect(node.then) : null;
+      const otherwise = node.else ? selfOnlyEffect(node.else) : null;
+      return then || otherwise ? { ...node, then: then ?? { op: 'sequence', steps: [] }, ...(node.else ? { else: otherwise ?? { op: 'sequence', steps: [] } } : {}) } : null;
+    }
+    if (PICKS.has(node.op) || PASSIVE.has(node.op)) return null;
+    if (node.target && node.target.ref !== 'self') return null;
+    if (node.recipient && node.recipient.ref !== 'self') return null;
+    if (pickInside(node)) return null;
+    return node;
+  }
   async function runFor(fighter, events, env, eventPayload = null, depth = 0) {
     const idx = patdContent();
     // Their Abilities are disabled for now (Synchro Breaker — phase J).
@@ -1519,13 +1578,21 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     // at the start of their own turn (the Angel heals herself back up, the
     // Teacher still gains Mentor Tokens), on falling to zero (A Warrior's
     // Death) and when giving Heroic Spirit.
+    // **1e patch review (decided):** at zero HP, the parts of an Ability that
+    // affect only themselves still work (`selfOnlyEffect`); the parts that
+    // target others, and passive effects, don't.
     const down = atZero(fighter.hp);
-    if (down && !events.some((e) => WORKS_AT_ZERO.has(e))) return;
+    const atZeroRule = (rule) => {
+      if (!down || rule.events.some((e) => WORKS_AT_ZERO.has(e))) return rule;
+      const effect = selfOnlyEffect(rule.effect);
+      return effect ? { ...rule, effect } : null;
+    };
     // Triggers registered for a while (phase G: `register_trigger`), as rules of their source.
     for (const t of env.rt.temps.filter((x) => x.trigger && x.ownerId === fighter.id && x.trigger.events.some((e) => events.includes(e)))) {
       if (stale(env)) return;
       const ability = idx.get(t.source) ?? { id: t.source, name: 'Trigger', rulesText: '' };
-      await runOne(fighter, ability, { id: `${t.source}:registered`, events: t.trigger.events, effect: t.trigger.effect }, env, eventPayload, depth);
+      const rule = atZeroRule({ id: `${t.source}:registered`, events: t.trigger.events, effect: t.trigger.effect });
+      if (rule) await runOne(fighter, ability, rule, env, eventPayload, depth);
     }
     for (const abilityId of fighter.abilityIds) {
       if (stale(env)) return;
@@ -1535,12 +1602,13 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
       const ability = idx.get(abilityId);
       for (const rule of ability?.rules ?? []) {
         if (!rule.events.some((e) => events.includes(e))) continue;
-        if (down && !rule.events.some((e) => WORKS_AT_ZERO.has(e))) continue;
+        const live = atZeroRule(rule);
+        if (!live) continue;
         // Run by the engine itself (coverage.js NATIVE_RULES).
         if (isNativeRule(rule)) continue;
         // Iron Form's extra Iron is the damage step's own (engine/hits.js).
         if (isIronAnySource(rule)) continue;
-        await runOne(fighter, ability, rule, env, eventPayload, depth);
+        await runOne(fighter, ability, live, env, eventPayload, depth);
       }
     }
   }
@@ -1772,7 +1840,7 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     const r = await world.damage(target, amount, attacker, { source: 'action' });
     await postCard('reminder', {
       title: 'Damage',
-      text: `${target.name} takes ${r.taken} damage${attacker ? ` from ${attacker.name}` : ''}${r.immune ? ' — immune' : r.steps.length ? ` (${amount}: ${r.steps.join(', ')})` : ''}.`,
+      text: `${target.name} takes ${r.taken} damage${attacker ? ` from ${attacker.name}` : ''}${r.takenOut ? ' — Taken Out: no damage' : r.immune ? ' — immune' : r.steps.length ? ` (${amount}: ${r.steps.join(', ')})` : ''}.`,
       fighters: [{ name: target.name }],
       automatic: 'damage',
       notice: true,
@@ -2612,7 +2680,8 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
       if (active0?.stoogeUnit != null && f.stoogeUnit === active0.stoogeUnit) continue;
       const out = !f.square || atZero(f.hp);
       const t = turnActions(f.derived, f.stance, idx);
-      const ids = [...t.basic, ...t.personal.flatMap((g) => g.ids)].filter((id) => !out || idx.get(id)?.usableWhileTakenOut);
+      // No Stance (Dizzy, 1e patch review): no Unique Actions — Basic only.
+      const ids = [...t.basic, ...(f.stanceLost ? [] : t.personal.flatMap((g) => g.ids))].filter((id) => !out || idx.get(id)?.usableWhileTakenOut);
       if (!ids.length) continue;
       const state = await fighterState(f.id);
       const clusters = reactionClusters({

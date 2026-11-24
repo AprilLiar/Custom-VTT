@@ -444,6 +444,17 @@ export default function FighterOverlay({
 
   return (
     <>
+      {/* No Stance since a Dizzy, until their next turn (1e patch review): Range 1, no Form/Style Abilities. */}
+      {fight.stance_lost && !takenOut && (
+        <div
+          className="pointer-events-none absolute -translate-x-1/2 whitespace-nowrap rounded-sm bg-zinc-900/90 px-1 font-display text-[9px] font-bold uppercase leading-tight text-amber-300 shadow ring-1 ring-amber-500/60"
+          style={{ left: anchor.x, top: anchor.top - 2, zIndex: 41 }}
+          title="No Stance until their next turn: Range 1, no Form or Style Abilities, no Unique Actions"
+          data-testid="no-stance"
+        >
+          No Stance
+        </div>
+      )}
       {/* Dizzy / Taken Out over the fighter itself. */}
       {(hp.dizzy || takenOut) && (
         <div

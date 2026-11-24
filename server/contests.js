@@ -72,7 +72,7 @@ export async function contestState() {
 async function freshHp(characterId, weightKey) {
   const d = (await loadAllDerived()).get(characterId);
   const setup = d ? setupFromDerived(d) : { level: 1, kind: 'hero', health_bars: 1 };
-  const hp = barHp(weightKey, setup.kind ?? 'hero', setup.level ?? 1) || 20;
+  const hp = (barHp(weightKey, setup.kind ?? 'hero', setup.level ?? 1) || 16) + (Number(setup.bar_bonus) || 0);
   return { max: hp, bars: Math.min(9, Math.max(1, setup.health_bars ?? 1)), level: setup.level ?? 1, kind: setup.kind ?? 'hero' };
 }
 

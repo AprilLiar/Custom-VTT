@@ -289,7 +289,7 @@ export default function CombatWeightTool({ onDone }) {
                 ∞
               </button>
               <span className="w-28 text-right text-[11px] tabular-nums text-zinc-300">
-                {f.infinite ? 'Infinite HP' : w ? `${barHp(weight, row.kind, row.level)} HP` : '—'}
+                {f.infinite ? 'Infinite HP' : w ? `${barHp(weight, row.kind, row.level) + (stage.fighterSetup?.[`character:${f.characterId}`]?.bar_bonus ?? 0)} HP` : '—'}
                 <span className="text-zinc-500"> (+{bonusHp(row.kind, row.level)}{die ? `, d${die}` : ''})</span>
               </span>
               <button

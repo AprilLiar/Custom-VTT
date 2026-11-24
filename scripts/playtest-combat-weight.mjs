@@ -73,22 +73,23 @@ await sleep(500);
 st = await jf('/api/stage?role=gm');
 const hpOf = (id) => st.combatTokens.find((t) => t.id === id).fight.hp;
 check('the weight is stored for this fight only', st.activeScene.weights.combat === 'middle' && st.activeScene.weights.simple === null, JSON.stringify(st.activeScene.weights));
-check('a level 6 Hero: 20 + 6 = 26 HP, ONE full bar (the extra bars are gone)',
-  JSON.stringify(hpOf(tm.id)) === JSON.stringify({ max: 26, current: 26, bars: 1, broken: 0, dizzy: false }), JSON.stringify(hpOf(tm.id)));
-check('a level 4 Warrior: 20 + 5 = 25 HP', hpOf(tg.id).max === 25 && hpOf(tg.id).current === 25, JSON.stringify(hpOf(tg.id)));
+// Middleweight is 16 HP per bar (1e patch review).
+check('a level 6 Hero: 16 + 6 = 22 HP, ONE full bar (the extra bars are gone)',
+  JSON.stringify(hpOf(tm.id)) === JSON.stringify({ max: 22, current: 22, bars: 1, broken: 0, dizzy: false }), JSON.stringify(hpOf(tm.id)));
+check('a level 4 Warrior: 16 + 5 = 21 HP', hpOf(tg.id).max === 21 && hpOf(tg.id).current === 21, JSON.stringify(hpOf(tg.id)));
 check('level and table are kept on the fighter', st.combatTokens.find((t) => t.id === tm.id).fight.level === 6 && st.combatTokens.find((t) => t.id === tm.id).fight.kind === 'hero');
 
 console.log('\n--- Bleed and Heal ---');
 gm.emit('fighter:set_hp', { ref: m, current: 10 });
 await sleep(300);
-check('damage that stays above the Bleed Value (4) announces nothing', !cards.some((c) => c.payload.automatic === 'bleed'));
-gm.emit('fighter:hp', { ref: m, delta: -6 });
+check('damage that stays above the Bleed Value (3) announces nothing', !cards.some((c) => c.payload.automatic === 'bleed'));
+gm.emit('fighter:hp', { ref: m, delta: -7 });
 await sleep(400);
 let bleeds = cards.filter((c) => c.payload.automatic === 'bleed');
 check('dropping to the Bleed Value announces a Bleed to the table', bleeds.length === 1 && bleeds[0].payload.fighters[0].name === `WMira${stamp}`, JSON.stringify(bleeds.map((c) => c.payload)));
 p.emit('fighter:heal', { ref: m });
 await sleep(300);
-check('Heal restores the Heal Value (2 in Middleweight)', (await jf('/api/stage?role=gm')).combatTokens.find((t) => t.id === tm.id).fight.hp.current === 6);
+check('Heal restores the Heal Value (2 in Middleweight)', (await jf('/api/stage?role=gm')).combatTokens.find((t) => t.id === tm.id).fight.hp.current === 5);
 gm.emit('fighter:hp', { ref: m, delta: -3 });
 await sleep(400);
 bleeds = cards.filter((c) => c.payload.automatic === 'bleed');

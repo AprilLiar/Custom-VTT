@@ -13,3 +13,11 @@ test('the role screen patch note: a version both package.json files share, and o
   assert.ok(note.length > 10 && note.length <= 240, 'a short note');
   assert.equal(note.split(/[.!?](\s|$)/).filter((x) => x && x.trim()).length, 1, 'exactly one sentence');
 });
+
+test('token caps (1e patch review): 10 for Shield and normal tokens; Training 4 (a Challenge is a single slot)', async () => {
+  const { capOf, TOKEN_CAP } = await import('../../client/src/lib/panicTokens.js');
+  assert.equal(TOKEN_CAP, 10);
+  assert.equal(capOf('shield'), 10);
+  assert.equal(capOf('power'), 10);
+  assert.equal(capOf('training'), 4);
+});

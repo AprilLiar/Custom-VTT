@@ -439,9 +439,11 @@ export function StancePrompt({ mode, fight, fighters, role, controls = () => fal
   const mine = role === 'gm' || (pending.character_id != null && controls(pending.character_id));
   if (!mine) return null;
   const fighter = fighters.find((f) => f.combatantId === pending.combatant_id);
-  if (pending.assemble) return <FranticPick key={pending.combatant_id} mode={mode} fightId={fightId} zIndex={zIndex} name={fighter?.name ?? 'Fighter'} options={pending.assemble} />;
+  // Combat Start (1e patch review): declared before Round 1, fought in on their first turn.
+  const declaring = Boolean(fight?.declaring);
+  if (pending.assemble) return <FranticPick key={pending.combatant_id} mode={mode} fightId={fightId} zIndex={zIndex} name={fighter?.name ?? 'Fighter'} options={pending.assemble} declaring={declaring} />;
   return (
-    <DialogShell title={`${fighter?.name ?? 'Fighter'}: choose a stance`} onClose={() => {}} maxWidth="max-w-sm" zIndex={zIndex} portal>
+    <DialogShell title={`${fighter?.name ?? 'Fighter'}: ${declaring ? 'declare your stance for Round 1' : 'choose a stance'}`} onClose={() => {}} maxWidth="max-w-sm" zIndex={zIndex} portal>
       <p className="mb-2 text-xs text-zinc-500">Only the chosen stance’s dice roll.</p>
       <div className="flex flex-col gap-2">
         {pending.stances.map((s) => (
@@ -502,7 +504,7 @@ function EndFightDialog({ mode, fight, byCombatant, onClose }) {
 // **Frantic Versatility (builder phase 4).** A Frantic Hero assembles this
 // turn's Stance: one Form, one Style and one Frantic Ability, none of which
 // they used last turn (those are shown struck through and can't be picked).
-function FranticPick({ mode, name, options, fightId = null, zIndex }) {
+function FranticPick({ mode, name, options, fightId = null, zIndex, declaring = false }) {
   const first = (list) => list.find((o) => !o.used)?.id ?? null;
   const [formId, setForm] = useState(() => first(options.forms));
   const [styleId, setStyle] = useState(() => first(options.styles));
@@ -531,7 +533,7 @@ function FranticPick({ mode, name, options, fightId = null, zIndex }) {
   );
   const ready = formId && styleId && (options.abilities.length === 0 || abilityId);
   return (
-    <DialogShell title={`${name}: assemble this turn’s stance`} onClose={() => {}} maxWidth="max-w-md" zIndex={zIndex} portal>
+    <DialogShell title={`${name}: ${declaring ? 'declare your stance for Round 1' : 'assemble this turn’s stance'}`} onClose={() => {}} maxWidth="max-w-md" zIndex={zIndex} portal>
       <div className="space-y-3">
         {part('Form', options.forms, formId, setForm)}
         {part('Style', options.styles, styleId, setStyle)}

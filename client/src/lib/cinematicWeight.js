@@ -7,11 +7,11 @@
 // below, once per Round) and how many Super Moves each side may use per Round.
 
 export const WEIGHTS = [
-  { key: 'feather', name: 'Featherweight', hp: 10, heal: 1, bleed: 2, supers: 0, blurb: 'Quick, low stakes — a bunch of nobodies who messed with the wrong people.' },
-  { key: 'light', name: 'Lightweight', hp: 15, heal: 2, bleed: 3, supers: 1, blurb: 'Fast and deadly; favours quick fighters and big hits.' },
-  { key: 'middle', name: 'Middleweight', hp: 20, heal: 2, bleed: 4, supers: 1, blurb: 'The standard. If unsure how serious a fight is, it is Middleweight.' },
-  { key: 'heavy', name: 'Heavyweight', hp: 25, heal: 3, bleed: 5, supers: 1, blurb: 'Injury and livelihood on the line; plan several turns ahead.' },
-  { key: 'world', name: 'Worldweight', hp: 30, heal: 3, bleed: 6, supers: 2, blurb: 'The world is on the line. A player risking their life makes it Worldweight.' },
+  { key: 'feather', name: 'Featherweight', hp: 8, heal: 1, bleed: 2, supers: 0, blurb: 'Quick, low stakes — a bunch of nobodies who messed with the wrong people.' },
+  { key: 'light', name: 'Lightweight', hp: 12, heal: 2, bleed: 2, supers: 1, blurb: 'Fast and deadly; favours quick fighters and big hits.' },
+  { key: 'middle', name: 'Middleweight', hp: 16, heal: 2, bleed: 3, supers: 1, blurb: 'The standard. If unsure how serious a fight is, it is Middleweight.' },
+  { key: 'heavy', name: 'Heavyweight', hp: 20, heal: 3, bleed: 4, supers: 1, blurb: 'Injury and livelihood on the line; plan several turns ahead.' },
+  { key: 'world', name: 'Worldweight', hp: 25, heal: 4, bleed: 5, supers: 2, blurb: 'The world is on the line. A player risking their life makes it Worldweight.' },
 ];
 export const WEIGHT_BY_KEY = Object.fromEntries(WEIGHTS.map((w) => [w.key, w]));
 

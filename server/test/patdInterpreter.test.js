@@ -516,7 +516,7 @@ test('a damaging pick offers Walls and Rubble as targets; 2+ in one hit breaks o
   assert.equal(foe.tokens.weakness, 1);
 });
 
-test('Taken Out at zero HP: enemies cannot target them, their own side still can', async () => {
+test('Taken Out at zero HP (1e patch review): anyone may target them — tokens from others never land', async () => {
   const me = fighter(1, 'a');
   const out = fighter(2, 'b', { hp: down });
   const friend = fighter(3, 'b');
@@ -524,8 +524,14 @@ test('Taken Out at zero HP: enemies cannot target them, their own side still can
   const damage = idx.get(DAMAGE);
   const asked = [];
   await runRule({ id: damage.id, effect: damage.effect }, { world: w, self: me, state: {}, usage: {}, log: () => {}, ask: async (q) => (asked.push(q), [q.options[0].id]), resolution: { gateRating: 1 } });
-  assert.equal(asked.length, 0, 'only the one standing can be attacked: no pick');
-  assert.equal(friend.hp, 9);
+  assert.equal(asked.length, 1, 'both can be picked now: the one Taken Out too');
+  assert.ok(asked[0].options.some((o) => o.id === String(out.id)));
+  const give = { id: 'g', effect: { op: 'gain_tokens', token: 'weakness', amount: 2, target: { ref: 'targets.t' } } };
+  const fallen = fighter(4, 'b', { hp: { ...down } });
+  const w2 = makeWorld([me, fallen]).w;
+  const tokensBefore = JSON.stringify(fallen.tokens ?? {});
+  await runRule({ id: 'gift', effect: { op: 'sequence', steps: [{ op: 'select', binding: 't', selector: { kind: 'enemy', range: { mode: 'map', origin: 'self' }, count: 1 } }, give.effect] } }, { world: w2, self: me, state: {}, usage: {}, log: () => {}, ask: async () => [String(fallen.id)] });
+  assert.equal(JSON.stringify(fallen.tokens ?? {}), tokensBefore, 'no tokens given to someone Taken Out');
   // Their ally picks them (that is how they are healed).
   const pick = { id: 'p', effect: { op: 'select', binding: 'ally', selector: { kind: 'ally', range: { mode: 'stance', origin: 'self' }, count: 1, excludeSelf: true } } };
   const seen = [];
@@ -558,8 +564,8 @@ test('"no valid targets": an Action with picks and nobody to pick; not one that 
   const damage = idx.get(DAMAGE).effect;
   assert.equal(hasNoTargets(damage, ctx(alone)), true);
   assert.equal(hasNoTargets(damage, ctx(withFoe)), false);
-  // Everyone the enemy side has is Taken Out: still nobody.
-  assert.equal(hasNoTargets(damage, ctx(makeWorld([me, fighter(2, 'b', { hp: down })]).w)), true);
+  // Everyone the enemy side has is Taken Out: they can still be targeted (1e patch review).
+  assert.equal(hasNoTargets(damage, ctx(makeWorld([me, fighter(2, 'b', { hp: down })]).w)), false);
   // Gaining tokens yourself needs no target.
   assert.equal(hasNoTargets({ op: 'gain_tokens', token: 'power', amount: 1, target: { ref: 'self' } }, ctx(alone)), false);
 });

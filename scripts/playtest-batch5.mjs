@@ -146,7 +146,7 @@ check('the Action is a step of the stack, named with who performs it, then done'
 check('…the stack lingers, all ticked, before it goes; then the plaque is told it is all done', resolving.some((e) => e.busy && e.steps?.length && e.steps.every((x) => x.state === 'done')) && resolving.at(-1)?.busy === false, JSON.stringify(resolving.slice(-3)));
 check('a trigger that arises joins the stack (the total grows)', resolving.some((e) => (e.steps?.length ?? 0) >= 2 && e.steps.some((s) => /Mastermind Style/.test(s.label))), JSON.stringify(resolving.map((e) => e.steps?.map((s) => s.label))));
 
-console.log('\n--- Taken Out: no enemy can target them; "no valid targets" ---');
+console.log('\n--- Taken Out (1e patch review): they can be targeted, but no damage lands ---');
 await stage();
 gm.emit('fighter:hp', { ref: { combatantId: tb.id }, delta: -f(tb.id).hp.current });
 await sleep(500);
@@ -156,20 +156,12 @@ prompts.length = 0;
 gm.emit('board:place', { rollId: anaRoll, die: 1, actionId: DAMAGE });
 await sleep(400);
 gm.emit('board:commit', { rollId: anaRoll });
-await sleep(2000);
-const warn = prompts.find((q) => q.kind === 'confirm' && /no valid targets/.test(q.title));
-check('with Bo Taken Out, Damage has nobody to target: a confirmation before anything is paid', Boolean(warn), JSON.stringify(prompts.map((q) => [q.kind, q.title])));
-let board = (await marks())[anaRoll];
-check('No: the Action comes off the board, its die free again', !board.placements.some((x) => x.die === 1) && board.committing !== true, JSON.stringify(board.placements));
-answerWith = (q) => (q.kind === 'confirm' && /no valid targets/.test(q.title) ? true : undefined);
-gm.emit('board:place', { rollId: anaRoll, die: 1, actionId: DAMAGE });
-await sleep(400);
-gm.emit('board:commit', { rollId: anaRoll });
 await sleep(2500);
-board = (await marks())[anaRoll];
+const board = (await marks())[anaRoll];
 await stage();
-check('Yes: it is performed anyway (committed) and nobody is hurt', board.placements.some((x) => x.die === 1 && x.committed) && f(tb.id).hp.current === 0, JSON.stringify(board.placements));
-answerWith = () => undefined;
+const hitOut = board.placements.find((x) => x.die === 1);
+check('Damage may still target Bo (no "no valid targets" question) …', !prompts.some((q) => q.kind === 'confirm' && /no valid targets/.test(q.title)) && hitOut?.committed, JSON.stringify([prompts.map((q) => [q.kind, q.title]), board.placements]));
+check('…but it lands nothing: Taken Out takes no damage', f(tb.id).hp.current === 0 && /Taken Out: no damage/.test(hitOut?.summary ?? ''), JSON.stringify(hitOut));
 
 console.log('\n--- the next round repeats the order ---');
 const order1 = st.fights.combat.order;

@@ -13,7 +13,7 @@
 import { tieStooges } from './stooges.js';
 import { all, one, run } from './db.js';
 import { TOKEN_BY_KEY, absorbWithShield, capOf } from '../client/src/lib/panicTokens.js';
-import { stanceByKey } from './fighterStances.js';
+import { derivedFor, stanceByKey } from './fighterStances.js';
 import { addBar, applyHpDelta, normalizeHp, removeBar, setHp } from '../client/src/lib/hpBars.js';
 import { FIGHTER_KINDS, WEIGHT_BY_KEY, barHp, clampLevel, crossesBleed } from '../client/src/lib/cinematicWeight.js';
 import { imageUrl } from './images.js';
@@ -44,6 +44,8 @@ export function shapeFightState(row) {
     }),
     // The derived Stance's key (builder phase 2), or null = the first one.
     active_stance_id: row?.active_stance_key ?? null,
+    // No Stance since a Dizzy (until their next turn — 1e patch review).
+    stance_lost: Boolean(row?.stance_lost),
     // Cinematic Weight preset: this copy's level (1-10) and level table.
     level: clampLevel(row?.level ?? 1),
     kind: FIGHTER_KINDS.includes(row?.fighter_kind) ? row.fighter_kind : null,
@@ -329,7 +331,9 @@ export function registerCombatStateHandlers({ on: onRaw, socket, mayWrite, emitS
       const level = clampLevel(f.level);
       const kind = FIGHTER_KINDS.includes(f.kind) ? f.kind : 'hero';
       // Uneven Fights' even split: extra HP on every bar (0-200).
-      const hp = barHp(weight, kind, level) + Math.min(200, Math.max(0, Math.trunc(Number(f.extra)) || 0));
+      // Bulky Build: +3 HP per bar, from the character's build.
+      const bulky = row.character_id != null ? Number((await derivedFor(row.character_id))?.barHpBonus) || 0 : 0;
+      const hp = barHp(weight, kind, level) + bulky + Math.min(200, Math.max(0, Math.trunc(Number(f.extra)) || 0));
       // Health Bars: the tool's number (a Boss's bars from their build), 1-9.
       const bars = Math.min(9, Math.max(1, Math.trunc(Number(f.bars)) || 1));
       await run(

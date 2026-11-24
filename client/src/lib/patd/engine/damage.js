@@ -58,11 +58,13 @@ export const isImmune = (targetMods, source) => {
   return immunityTags(source).some((t) => list.includes(t));
 };
 
-// How many Power tokens one hit can take: 1, plus "Enhance a Hit N additional
-// times" (Power Form 2, Ego Freestyle 1, The Giant 1) and "1 more Power token
-// per hit" (Drive Install).
+// How many Power tokens one hit can take: 2 (decided, 1e patch review —
+// the same framework as Iron), plus "Enhance a Hit N additional times" (Power
+// Form 2, Ego Freestyle 1, The Giant 1) and "1 more Power token per hit"
+// (Drive Install).
+export const POWER_PER_HIT = 2;
 export const powerAllowance = (attackerMods) =>
-  1 + sumMod(attackerMods, 'enhance_hit.additional_uses') + sumMod(attackerMods, 'power_tokens.additional_per_hit');
+  POWER_PER_HIT + sumMod(attackerMods, 'enhance_hit.additional_uses') + sumMod(attackerMods, 'power_tokens.additional_per_hit');
 
 // How many Iron tokens one hit can take (Reducing a Hit: 1 or 2; Drive
 // Install: 1 more; an Armor Install attacker: only 1).

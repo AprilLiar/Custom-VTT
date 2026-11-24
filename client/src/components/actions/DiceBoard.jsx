@@ -350,7 +350,7 @@ export default function DiceBoard({ payload, onClose, canEdit }) {
   const superState = (move) => {
     const st = fighter?.supers;
     if (!st) return { ok: true };
-    return superUsable({ move, round: st.round, usedByMe: st.usedByMe, sideUsed: st.sideUsed, sideLimit: st.sideLimit, pending: placements.filter((p) => p.kind === 'super' && !p.committed).length });
+    return superUsable({ move, round: st.round, usedByMe: st.usedByMe, usedThisTurn: st.usedThisTurn ?? 0, sideUsed: st.sideUsed, sideLimit: st.sideLimit, pending: placements.filter((p) => p.kind === 'super' && !p.committed).length });
   };
   const superCard = (id) => {
     const move = idx.get(id);

@@ -4,7 +4,7 @@
 // the GM retrieves its die (decided: undo fully).
 import { all, one, run } from '../db.js';
 
-const COLS = ['tokens', 'challenge_id', 'hp_max', 'hp_current', 'hp_bars', 'hp_broken', 'dizzy', 'active_stance_key', 'frantic_pick', 'grid_col', 'grid_row', 'bled_round', 'damage_taken', 'damage_max', 'felled', 'stooge_out'];
+const COLS = ['tokens', 'challenge_id', 'hp_max', 'hp_current', 'hp_bars', 'hp_broken', 'dizzy', 'active_stance_key', 'frantic_pick', 'grid_col', 'grid_row', 'bled_round', 'damage_taken', 'damage_max', 'felled', 'stooge_out', 'stance_lost', 'declared_stance'];
 
 export async function takeSnapshot(fightId) {
   const fight = await one('SELECT * FROM fights WHERE id = ?', [fightId]);
@@ -33,7 +33,7 @@ export async function restoreSnapshot(snap) {
 // state (Sabotage points, the Important Thing's holder, chains…) and every
 // dice board of the fight's fighters — so a rewind can step back over a Next
 // turn as well as an Action.
-const FIGHT_COLS = ['allies', 'enemies', 'renegades', 'round', 'turn_order', 'turn_index', 'pending_stance_combatant', 'prev_turn_order', 'movement_phase', 'reaction_window', 'runtime'];
+const FIGHT_COLS = ['allies', 'enemies', 'renegades', 'round', 'turn_order', 'turn_index', 'pending_stance_combatant', 'prev_turn_order', 'movement_phase', 'reaction_window', 'runtime', 'declaring'];
 export async function takeFullSnapshot(fightId) {
   const base = await takeSnapshot(fightId);
   if (!base) return null;

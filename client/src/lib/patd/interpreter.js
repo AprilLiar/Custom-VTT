@@ -34,6 +34,7 @@
 import { ENFORCED_RULES } from './engine/modifiers.js';
 import { atZero } from './engine/turn.js';
 import { addPoolValue, removePoolNumber, setPoolValue } from './diceBoard.js';
+import { ALL_TOKENS } from '../panicTokens.js';
 
 export const SUPPORTED_OPS = new Set([
   'sequence',
@@ -468,7 +469,18 @@ async function discardHeld(world, f, keys, amount, by) {
 }
 
 const STATUS = ['burning', 'fatigue', 'weakness'];
-const NOT_DISCARDABLE = new Set(['shield', 'armor', 'temp_armor', 'challenge']);
+// **Taken Out at zero HP (decided, 1e patch review):** they can be targeted,
+// but only healing and forced movement affect them — no tokens, Shields or
+// Challenges from anyone else. → true when the gift is skipped.
+function givenToFallen(f, scope, ctx) {
+  if (!f || f.isCopy || f.id === scope.self?.id || !atZero(f.hp)) return false;
+  ctx.log(`${f.name} is Taken Out: unaffected`);
+  return true;
+}
+// **Super Tokens (decided, 1e patch review):** tokens only a Super Move grants
+// (Rapid Strike) can't be discarded, stolen, copied or converted by anything.
+const SUPER_TOKENS = ALL_TOKENS.filter((t) => t.kind === 'super').map((t) => t.key);
+const NOT_DISCARDABLE = new Set(['shield', 'armor', 'temp_armor', 'challenge', ...SUPER_TOKENS]);
 const NON_UNIQUE = new Set(['power', 'iron', 'speed', 'burning', 'fatigue', 'weakness']);
 const BASIC = ['power', 'iron', 'speed'];
 const SKIP = '__skip';
@@ -1029,10 +1041,14 @@ function candidatesOf(rawSel, scope, ctx) {
     pool = [...units, ...(world.obstacles?.(from, obstacleRange, {}) ?? [])];
   } else pool = [...world.fighters(), ...copies];
   if (sel.excludeSelf) pool = pool.filter((f) => f.id !== self.id);
-  // **Taken Out (book p.62; decided, batch 5):** someone at zero HP can't be
-  // attacked or targeted by their enemies until healing revives them; their
-  // own side still can (that is how they are healed).
-  pool = pool.filter((f) => !(f.side != null && self.side != null && f.side !== self.side && atZero(f.hp)));
+  // "An enemy you dealt damage to during this turn" (Experimental Build).
+  if (sel.damagedThisTurn) {
+    const hit = new Set((world.damagedThisTurn?.(self) ?? []).map(String));
+    pool = pool.filter((f) => hit.has(String(f.id)));
+  }
+  // **Taken Out (1e patch review, decided; was batch 5's "can't be targeted"):**
+  // someone at zero HP CAN be targeted — but only healing and forced movement
+  // affect them; damage, tokens, Shields and Challenges don't land.
   // **"A different / another target" (decided, batch 4):** never one already
   // picked by the bindings named (Left, Right!'s second hit, Stand Strong's
   // second ally, Taunting's second and third Challenge, Leap Out, Frostbite).
@@ -1323,6 +1339,7 @@ async function run(node, scope, ctx) {
       const amount = val(node.amount);
       if (typeof key !== 'string' || !(amount > 0)) return;
       for (const f of await targetsOf(node.target, scope, ctx)) {
+        if (givenToFallen(f, scope, ctx)) continue;
         const n = capped(scope, ctx, 'tokens_gained', amount);
         if (!(n > 0)) continue;
         // Who gave them (phase G: "after you give tokens to an enemy").
@@ -1386,7 +1403,7 @@ async function run(node, scope, ctx) {
         // Shield and Armor are never "tokens you hold" to discard here.
         // Kinds (phase I): Status, Basic (Power, Iron, Speed), Unique, non-Unique, one key, any.
         const kindOk = (k) =>
-          filter === 'status' ? STATUS.includes(k) : filter === 'basic' ? BASIC.includes(k) : filter === 'unique' ? !NON_UNIQUE.has(k) : filter === 'non_unique' ? NON_UNIQUE.has(k) : filter === 'any' || filter == null || k === filter;
+          filter === 'status' ? STATUS.includes(k) : filter === 'basic' ? BASIC.includes(k) : filter === 'unique' ? !NON_UNIQUE.has(k) : filter === 'non_unique' ? NON_UNIQUE.has(k) : filter === 'non_rare' ? NON_UNIQUE.has(k) || k === 'challenge' : filter === 'any' || filter == null || k === filter;
         // **A held Challenge (decided: a Unique token):** a Unique / any discard
         // may take it — never a Status, Basic or non-Unique one — unless it is
         // protected (world.challengeRemovable: Distracting, Showdown).
@@ -1507,6 +1524,7 @@ async function run(node, scope, ctx) {
       // rounded down" — gave a free one, as a new Shield raises the old by 1).
       if (v != null && !(Number(v) > 0)) return;
       for (const f of await targetsOf(node.target, scope, ctx)) {
+        if (givenToFallen(f, scope, ctx)) continue;
         await world.gainShield(f, v);
         ctx.log(`${f.name} gains Shield ${v}`);
       }
@@ -1911,6 +1929,7 @@ async function run(node, scope, ctx) {
     case 'challenge': {
       const challenger = asList(val(node.challenger))[0] ?? scope.self;
       for (const f of await targetsOf(node.target, scope, ctx, 'an enemy')) {
+        if (givenToFallen(f, scope, ctx)) continue;
         // Shields may block it (unless Unblockable by Shields, or the Shield
         // already took this Action's damage); someone holding it already, or
         // who discarded it this turn, can't be Challenged again (world.challenge).

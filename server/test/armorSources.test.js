@@ -3,10 +3,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { innateArmor, normalizeArmorSources } from '../../client/src/lib/panicTokens.js';
 
-test('sources are cleaned: "always" or a stance id, at most 9', () => {
+test('sources are cleaned: "always" or a stance id, at most 10 (the token cap)', () => {
   assert.deepEqual(normalizeArmorSources(['always', 3, 'x', -1, 2.5, null, 7]), ['always', 3, 7]);
   assert.deepEqual(normalizeArmorSources('always'), []);
-  assert.equal(normalizeArmorSources(Array(20).fill('always')).length, 9);
+  assert.equal(normalizeArmorSources(Array(20).fill('always')).length, 10);
 });
 
 test('each source that holds adds 1: Always, plus those of the current Stance', () => {
