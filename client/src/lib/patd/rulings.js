@@ -27,7 +27,6 @@ import { BATTLE_ACTIONS } from './battleActions.js';
 const self = { ref: 'self' };
 const target = { ref: 'targets.target' };
 const tokens = (token, amount, to = target) => ({ op: 'gain_tokens', token, amount, target: to });
-const NOTE_1E = 'Rules from the 1st Edition PATCH\u2019d UP notes (table decision).';
 const dieCost = (text, minimum, extra = {}) => ({
   text,
   selection: 'exactly_one',
@@ -180,20 +179,50 @@ export const PATCH_1E = {
     },
   ],
 };
-const withNote = (item) => ({ ...item, rulesText: item.rulesText.includes(NOTE_1E) ? item.rulesText : `${item.rulesText}\n${NOTE_1E}` });
+// (No note on the card: the 1e texts simply are the rules now — decided.)
+
+// **Luck as an Interrupt (decided, play feedback):** the Underdog's "once per
+// turn, after any Action fully resolves, you may spend 1 Luck Token to
+// Teleport 3 and Heal 1" was asked after every Action — too tedious. It is a
+// token Action instead: on the Interrupt button any time someone else acts,
+// and on your own board; once per turn.
+export const LUCKY_ESCAPE = 'action.resource-luck.lucky-escape';
+const luckyEscape = {
+  id: LUCKY_ESCAPE,
+  name: 'Lucky Escape',
+  ownerId: 'archetype.underdog',
+  kind: 'unique',
+  cost: { text: '1 Luck Token', selection: 'exactly_one', options: [{ id: 'option-1', category: 'token', components: [{ kind: 'token', token: 'luck', amount: 1, consume: true }], rating: 1 }], additionalOptions: [] },
+  rulesText: 'Teleport 3 and heal 1. Usable once per turn, at any time (as an Interrupt on other turns).',
+  effect: { op: 'sequence', steps: [{ op: 'teleport', distance: 3, target: { ref: 'self' } }, { op: 'heal', amount: 1, target: { ref: 'self' } }] },
+  gates: { headerThresholds: [], effectThresholds: [], mayStopAtEarlierGate: true, modificationsApplyBeforeExecution: true },
+  limits: [{ maximum: 1, period: 'turn', metric: 'uses' }],
+  conditions: [],
+  tags: [],
+  usableWhileTakenOut: false,
+  automationState: 'structured',
+};
+// Rules replaced by the above (dropped from their Ability).
+const DROPPED_RULES = new Set(['ability.resource-mechanic-luck.luck-mechanics.rule-1']);
+const LUCK_NOTE = 'Table ruling: Teleport 3 and Heal 1 for 1 Luck is the Lucky Escape Action — use it any time (Interrupt), once per turn.';
 
 export function applyRulings(content) {
   const byAbility = new Map();
   for (const r of RULINGS) byAbility.set(r.abilityId, [...(byAbility.get(r.abilityId) ?? []), r]);
-  const patched = (list, table) => (list ?? []).map((x) => (table[x.id] ? withNote(table[x.id](x)) : x));
+  const patched = (list, table) => (list ?? []).map((x) => (table[x.id] ? table[x.id](x) : x));
   const added = (list, extra) => [...(list ?? []), ...extra.filter((e) => !(list ?? []).some((x) => x.id === e.id))];
   return {
     ...content,
     // The Victory Parameters' own Actions (battleActions.js).
-    actions: patched([...(content.actions ?? []), ...BATTLE_ACTIONS.filter((a) => !(content.actions ?? []).some((x) => x.id === a.id))], PATCH_1E.actions),
+    actions: patched(added([...(content.actions ?? []), ...BATTLE_ACTIONS.filter((a) => !(content.actions ?? []).some((x) => x.id === a.id))], [luckyEscape]), PATCH_1E.actions),
+    archetypes: (content.archetypes ?? []).map((a) => (a.id === 'archetype.underdog' && !(a.actionIds ?? []).includes(LUCKY_ESCAPE) ? { ...a, actionIds: [...(a.actionIds ?? []), LUCKY_ESCAPE] } : a)),
     superMoves: patched(content.superMoves, PATCH_1E.superMoves),
     builds: added(content.builds, PATCH_1E.builds),
-    abilities: added(content.abilities, PATCH_1E.abilities).map((a) => {
+    abilities: added(content.abilities, PATCH_1E.abilities).map((a0) => {
+      // Rules replaced by an Action (Luck's Lucky Escape).
+      const a = a0.rules?.some((r) => DROPPED_RULES.has(r.id))
+        ? { ...a0, rules: a0.rules.filter((r) => !DROPPED_RULES.has(r.id)), rulesText: `${a0.rulesText}\n${LUCK_NOTE}` }
+        : a0;
       const rs = byAbility.get(a.id);
       if (!rs) return a;
       const notes = rs.map((r) => r.note).filter(Boolean);

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useSkillsEnabled } from '../lib/skillsSetting.js';
+import { useRangeOpacity } from '../lib/rangeOpacity.js';
 import { Download } from 'lucide-react';
 import { socket } from '../socket.js';
 import { getTableSettings } from '../lib/api.js';
@@ -441,6 +442,7 @@ export default function SettingsPage() {
 
       {role === 'gm' && <SimpleCombatLanes />}
       {role === 'gm' && <SkillsSetting />}
+      {role === 'gm' && <RangeOpacitySetting />}
       {role === 'gm' && <OldSystemArchive />}
     </div>
   );
@@ -472,6 +474,40 @@ function SceneSlider({ label, value, min, max, step, onChange, onReset }) {
           onClick={onReset}
           className="panel-cut-sm border border-zinc-700 px-3 py-1.5 text-xs font-semibold text-zinc-400 hover:bg-zinc-800"
         >
+          Reset
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// **The range shading (GM, whole table — decided):** how strongly the active
+// fighter's reachable squares show in red, 0-100% (default 50%).
+function RangeOpacitySetting() {
+  const value = useRangeOpacity();
+  const [draft, setDraft] = useState(null);
+  const shown = draft ?? value;
+  return (
+    <div className="panel-cut-lg space-y-3 border border-zinc-800 bg-zinc-900 p-4">
+      <div>
+        <h2 className="text-sm font-bold uppercase tracking-wide text-zinc-400">Range shading</h2>
+        <p className="mt-1 text-xs text-zinc-600">How strongly the active fighter&rsquo;s reach shows as red squares in a fight — for the whole table. 0% hides it. GM-only.</p>
+      </div>
+      <div className="flex flex-wrap items-center gap-3">
+        <input
+          type="range"
+          min={0}
+          max={100}
+          step={5}
+          value={shown}
+          onChange={(e) => setDraft(Number(e.target.value))}
+          onPointerUp={() => draft != null && (socket.emit('table_settings:set', { rangeOpacity: draft }), setDraft(null))}
+          onKeyUp={() => draft != null && (socket.emit('table_settings:set', { rangeOpacity: draft }), setDraft(null))}
+          aria-label="Range shading opacity"
+          className="min-w-48 flex-1 accent-brand-500"
+        />
+        <span className="w-16 shrink-0 text-right font-mono text-sm text-zinc-200">{Math.round(shown)}%</span>
+        <button type="button" onClick={() => socket.emit('table_settings:set', { rangeOpacity: 50 })} className="panel-cut-sm border border-zinc-700 px-3 py-1.5 text-xs font-semibold text-zinc-400 hover:bg-zinc-800">
           Reset
         </button>
       </div>

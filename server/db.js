@@ -1621,6 +1621,8 @@ export async function initDb() {
   await ensureColumn('table_settings', 'lane_y', 'REAL');
   // Skills on or off for the whole table (decided): off hides them everywhere; the data stays.
   await ensureColumn('table_settings', 'skills_enabled', 'INTEGER NOT NULL DEFAULT 1');
+  // The active fighter's range shading (GM, whole table): opacity 0-100%.
+  await ensureColumn('table_settings', 'range_opacity', 'INTEGER NOT NULL DEFAULT 50');
 
   // ---------------------------------------------------------------- Audio Player
   //

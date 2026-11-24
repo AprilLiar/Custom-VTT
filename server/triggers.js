@@ -2743,11 +2743,25 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     async activeRange(fightRow) {
       const id = activeOf(fightRow);
       if (id == null) return { combatantId: null, squares: [] };
-      const { world, byId } = await envFor(fightRow);
+      const { world, byId, env } = await envFor(fightRow);
       const f = byId(id);
       if (!f?.square || !world.spaces) return { combatantId: id, squares: [] };
-      const squares = world.spaces(f, { mode: 'stance' }, {}).filter((sq) => sq.col !== f.square.col || sq.row !== f.square.row);
-      return { combatantId: id, squares: squares.map((sq) => ({ col: sq.col, row: sq.row })) };
+      // **The real reach (decided, play feedback):** every square an Action
+      // of theirs can come from — their own (their Stance range with every
+      // range modifier, Disarmed included), each of their Copies' (an Action
+      // may be taken from a Copy's location), and, with Mastermind Style,
+      // each ally in sight (who performs it with their own range).
+      const origins = [f, ...(world.copies?.() ?? []).filter((c) => c.ownerId === f.id && c.square).map((c) => ({ ...f, square: c.square }))];
+      const mastermind = !atZero(f.hp) && (f.abilityIds ?? []).some((aid) => (patdContent().get(aid)?.rules ?? []).some((r) => r.effect?.op === 'delegate_actions'));
+      if (mastermind && env) origins.push(...world.alliesOf(f).filter((a) => a.id !== f.id && a.square && !atZero(a.hp) && world.inRange(f, a, { mode: 'visible', origin: 'self' })));
+      const out = new Map();
+      for (const o of origins) {
+        for (const sq of world.spaces(o, { mode: 'stance' }, {})) {
+          if (origins.some((x) => x.square.col === sq.col && x.square.row === sq.row)) continue;
+          out.set(`${sq.col},${sq.row}`, { col: sq.col, row: sq.row });
+        }
+      }
+      return { combatantId: id, squares: [...out.values()] };
     },
     interruptOffers(fightRow) {
       return reactionOffers(fightRow, activeOf(fightRow));

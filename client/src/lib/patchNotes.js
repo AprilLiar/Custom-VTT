@@ -3,6 +3,6 @@
 // package.json versions — a test checks they match) and rewrite `note` as ONE
 // sentence on every push to main.
 export const PATCH = {
-  version: '0.3.0',
-  note: "Rules now follow the 1e PATCH'd UP choices you picked: smaller weight HP, token cap 10, 2 Power per hit, 1e Super texts and Basic Actions, new Builds, Taken Out and Dizzy rework, and Stances declared at Combat Start.",
+  version: '0.3.1',
+  note: "Luck now works as an Interrupt (Lucky Escape), the red range shows a fighter's real reach (Copies included) at a GM-set strength, and the 1e cards lost their source note.",
 };
