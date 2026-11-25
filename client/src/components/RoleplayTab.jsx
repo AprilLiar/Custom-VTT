@@ -54,7 +54,10 @@ export default function RoleplayTab({ data }) {
   };
 
   return (
-    <div className="mx-auto max-w-2xl space-y-3">
+    // Desktop (decided): the questions flow into two columns (three on very wide
+    // screens) so every answer is on screen at once; the "add your own" row
+    // spans them all.
+    <div className="grid items-start gap-x-6 gap-y-3 lg:grid-cols-2 2xl:grid-cols-3">
       {FIXED_QUESTIONS.map((question) => (
         <div key={question}>
           <p className="mb-1 text-sm font-semibold text-zinc-300">{question}</p>
@@ -99,7 +102,7 @@ export default function RoleplayTab({ data }) {
         </div>
       ))}
 
-      <form onSubmit={addQuestion} className="flex gap-2 border-t border-zinc-800 pt-3">
+      <form onSubmit={addQuestion} className="flex gap-2 border-t border-zinc-800 pt-3 lg:col-span-full lg:[&>input]:max-w-2xl">
         <input
           value={newQuestion}
           onChange={(e) => setNewQuestion(e.target.value)}

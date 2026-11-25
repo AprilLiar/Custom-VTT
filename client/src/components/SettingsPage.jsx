@@ -247,9 +247,15 @@ export default function SettingsPage() {
   };
 
   return (
-    <div className="mx-auto max-w-2xl space-y-4">
+    // Desktop (decided): two labelled columns — what this device keeps for
+    // itself on the left, the GM's table-wide settings on the right. A Player
+    // has only the first, so its cards flow into two columns instead.
+    <div className="mx-auto w-full max-w-[120rem] space-y-4">
       <h1 className="text-2xl font-bold tracking-tight">Settings</h1>
 
+      <div className={role === 'gm' ? 'grid items-start gap-6 xl:grid-cols-2' : ''}>
+      <section className={role === 'gm' ? 'space-y-4' : 'gap-4 space-y-4 xl:columns-2 xl:[&>*]:break-inside-avoid'}>
+      <SettingsGroupTitle>On this device</SettingsGroupTitle>
       <div className="panel-cut-lg space-y-3 border border-zinc-800 bg-zinc-900 p-4">
         <div>
           <h2 className="text-sm font-bold uppercase tracking-wide text-zinc-400">
@@ -440,12 +446,24 @@ export default function SettingsPage() {
         </label>
       </div>
 
-      {role === 'gm' && <SimpleCombatLanes />}
-      {role === 'gm' && <SkillsSetting />}
-      {role === 'gm' && <RangeOpacitySetting />}
-      {role === 'gm' && <OldSystemArchive />}
+      </section>
+
+      {role === 'gm' && (
+        <section className="space-y-4">
+          <SettingsGroupTitle>For the whole table</SettingsGroupTitle>
+          <SimpleCombatLanes />
+          <SkillsSetting />
+          <RangeOpacitySetting />
+          <OldSystemArchive />
+        </section>
+      )}
+      </div>
     </div>
   );
+}
+
+function SettingsGroupTitle({ children }) {
+  return <h2 className="font-display text-xs font-bold uppercase tracking-[0.2em] text-zinc-500 xl:[column-span:all]">{children}</h2>;
 }
 
 // One slider row, shared by the three Scene Stage scales above — the same

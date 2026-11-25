@@ -80,15 +80,15 @@ export default function HomebrewPage() {
   const bookList = { form: book.content.forms, style: book.content.styles, archetype: book.content.archetypes };
 
   return (
-    <div className="mx-auto max-w-5xl space-y-4">
+    <div className="mx-auto w-full max-w-[120rem] space-y-4">
       <header className="space-y-1">
         <h1 className="font-display text-xl font-bold uppercase tracking-wide text-zinc-100">Homebrew</h1>
         <p className="text-xs text-zinc-500">
           Your own Forms, Styles and Archetypes. Drafts are only offered to you; publish one to offer it in every player&rsquo;s character builder.
         </p>
       </header>
-      <div className="grid gap-4 md:grid-cols-[16rem_1fr]">
-        <aside className="space-y-3">
+      <div className="grid gap-4 md:grid-cols-[16rem_minmax(0,1fr)] xl:grid-cols-[18rem_minmax(0,1fr)]">
+        <aside className="space-y-3 self-start md:sticky md:top-0">
           <div className="flex flex-wrap gap-1.5">
             {['form', 'style', 'archetype'].map((k) => (
               <button key={k} type="button" onClick={() => start(blank(k))} className={`${smallBtn} inline-flex items-center gap-1`}>
@@ -214,6 +214,11 @@ function ItemEditor({ item, setItem, idx, book, sync, onClose }) {
         </div>
       </div>
 
+      {/* Desktop (decided): the editor splits into columns — the basics
+          (name, dice, description), the Abilities and the Actions — two on a
+          laptop (Actions below, full width), three on a wide monitor. */}
+      <div className="grid items-start gap-4 xl:grid-cols-2 2xl:grid-cols-3">
+      <div className="space-y-4">
       <section className="grid gap-3 sm:grid-cols-2">
         <Field label="Name">
           <input value={item.name} maxLength={60} onChange={(e) => set({ name: e.target.value })} className={inputClass} />
@@ -327,8 +332,12 @@ function ItemEditor({ item, setItem, idx, book, sync, onClose }) {
         <textarea value={item.descriptionText} rows={3} onChange={(e) => set({ descriptionText: e.target.value })} className={`${inputClass} py-1.5`} />
       </Field>
 
+      </div>
       <AbilitiesEditor kind={item.kind} abilities={item.abilities} autoItem={sync.autoItem} set={(abilities) => set({ abilities })} />
-      <ActionsEditor actions={item.actions} autoItem={sync.autoItem} set={(actions) => set({ actions })} />
+      <div className="xl:col-span-2 2xl:col-span-1">
+        <ActionsEditor actions={item.actions} autoItem={sync.autoItem} set={(actions) => set({ actions })} />
+      </div>
+      </div>
     </div>
   );
 }

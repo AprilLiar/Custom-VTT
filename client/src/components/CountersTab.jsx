@@ -46,8 +46,8 @@ function CounterRow({ counter, gates }) {
           desktop stays single-line since everything fits. (A "Show in
           Combat" checkbox sat here too; its only effect was on the Combat
           Arena, which the pivot removed.) */}
-      <div className="flex flex-wrap items-center gap-2">
-        <span className="font-bold text-zinc-100">{counter.name}</span>
+      <div className="flex items-center gap-2">
+        <span className="min-w-0 truncate font-bold text-zinc-100" title={counter.name}>{counter.name}</span>
         <RewardSelect counter={counter} />
         <span className="font-mono text-xs text-zinc-500">
           {counter.current_pips}/{counter.target_pips}
@@ -117,21 +117,23 @@ export default function CountersTab({ data }) {
   };
 
   return (
-    <div className="space-y-3">
+    // Desktop (decided): the counters are cards in as many columns as fit
+    // (each at least 22rem); the New Counter form is the last card, dashed.
+    <div className="grid items-start gap-3 md:grid-cols-[repeat(auto-fill,minmax(22rem,1fr))]">
       {counters.length === 0 ? (
-        <p className="text-sm text-zinc-600">No counters yet.</p>
+        <p className="text-sm text-zinc-600 md:col-span-full">No counters yet.</p>
       ) : (
         counters.map((counter) => (
           <CounterRow key={counter.id} counter={counter} gates={gatesByCounter.get(counter.id)} />
         ))
       )}
 
-      <form onSubmit={add} className="flex flex-wrap items-center gap-2 panel-cut-lg border border-zinc-800 bg-zinc-900 p-3">
+      <form onSubmit={add} className="flex flex-wrap items-center gap-2 panel-cut-lg border border-dashed border-zinc-700 bg-zinc-900/60 p-3">
         <input
           value={name}
           onChange={(e) => setName(e.target.value)}
           placeholder="Counter name"
-          className="min-w-0 flex-1 panel-cut-sm border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm text-zinc-100 outline-none focus:border-brand-500"
+          className="min-w-0 flex-1 basis-40 panel-cut-sm md:basis-full border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm text-zinc-100 outline-none focus:border-brand-500"
         />
         <label className="flex items-center gap-1.5 text-xs text-zinc-500">
           Target

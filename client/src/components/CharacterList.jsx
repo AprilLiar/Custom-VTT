@@ -253,7 +253,10 @@ export default function CharacterList() {
   };
 
   return (
-    <div className="mx-auto max-w-5xl">
+    // Desktop (decided): the roster uses the whole width — the folder tree is a
+    // sticky sidebar and the cards fill as many columns as fit (each at least
+    // ~12rem), so a wide screen shows more characters, not wider ones.
+    <div className="mx-auto w-full max-w-[120rem]">
       <div className="mb-4 flex items-center justify-between">
         <h1 className="text-2xl font-bold">Characters</h1>
         {!adding && (
@@ -311,7 +314,7 @@ export default function CharacterList() {
 
       <div className="flex gap-4">
         {(folders.length > 0 || role === 'gm') && (
-          <aside className="hidden w-44 shrink-0 md:block">
+          <aside className="hidden w-44 shrink-0 self-start md:sticky md:top-0 md:block xl:w-56">
             <FolderTreeNav
               folders={folders}
               currentFolderId={currentFolder}
@@ -347,7 +350,7 @@ export default function CharacterList() {
               {currentFolder == null ? 'No characters yet — add the first one.' : 'This folder is empty.'}
             </p>
           ) : (
-            <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
+            <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-[repeat(auto-fill,minmax(12rem,1fr))]">
               {visible.map((c) => {
                 const src = portraitSrc(c);
                 const path = folderPath(c.folder_id, folders);

@@ -95,7 +95,10 @@ export default function EventsPage() {
 
   const lanes = board?.lanes ?? [];
   return (
-    <div className="mx-auto flex max-w-6xl flex-col gap-4">
+    // Desktop (decided): the board takes the whole width, so a lane shows as many
+    // notes side by side as fit before it scrolls; notes grow a little on
+    // wide screens.
+    <div className="mx-auto flex w-full max-w-[120rem] flex-col gap-4">
       <div className="flex flex-wrap items-end justify-between gap-2">
         <div>
           <h1 className="font-display text-2xl font-bold uppercase tracking-wide">Events</h1>
@@ -177,7 +180,7 @@ const DropMarker = () => <div aria-hidden className="w-1 shrink-0 self-stretch r
 
 function Note({ note, dragging, ...handlers }) {
   return (
-    <div data-note-id={note.id} className={`w-44 shrink-0 touch-pan-x select-none ${dragging ? 'opacity-30' : ''}`} {...handlers}>
+    <div data-note-id={note.id} className={`w-44 shrink-0 touch-pan-x 2xl:w-52 select-none ${dragging ? 'opacity-30' : ''}`} {...handlers}>
       <NoteFace note={note} />
     </div>
   );

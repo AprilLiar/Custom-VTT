@@ -118,7 +118,7 @@ export default function ScenePicturesEditor({ ownerType, ownerId, canEdit = fals
 
   return (
     <div className="space-y-3">
-      <p className="text-sm text-zinc-500">
+      <p className="max-w-3xl text-sm text-zinc-500">
         Transparent PNGs of this {ownerType === 'temp_npc' ? 'Temp NPC' : 'character'}, picked when
         they're summoned onto a Scene. These are separate from the regular portrait above — any
         number, any pose or expression. Tick one to use it as the combat token.
@@ -128,7 +128,7 @@ export default function ScenePicturesEditor({ ownerType, ownerId, canEdit = fals
           No Scene Pictures yet.
         </p>
       ) : (
-        <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">
+        <div className="grid grid-cols-3 gap-2 sm:grid-cols-[repeat(auto-fill,minmax(9rem,1fr))]">
           {pictures.map((picture) => (
             <div key={picture.id} className={`relative space-y-1 panel-cut-sm border bg-zinc-900 p-2 ${picture.is_token ? 'border-brand-500' : 'border-zinc-800'}`}>
               {/* **The token picture (decided):** one at most — ticking another moves

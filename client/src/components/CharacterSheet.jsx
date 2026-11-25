@@ -61,10 +61,10 @@ const TABS = [
   { key: 'scene_pictures', label: 'Scene Pictures' },
 ];
 const PC_ONLY_TABS = new Set(['relationships']);
-// The Relationships board is the one tab that does not fit a 768px column — it
-// is a canvas, and a canvas wants the whole width the page can spare.
-// (Combat: the full combat sheet, the whole screen — decided.)
-const WIDE_TABS = new Set(['relationships', 'combat']);
+// **Every tab uses the screen (decided).** The sheet is as wide as the page
+// (capped at 120rem for ultra-wide monitors); each tab lays its own content
+// out for that width — Counters and Role-play as card grids, Scene Pictures
+// as a gallery, Combat as the full combat sheet, Relationships as its canvas.
 
 export default function CharacterSheet() {
   const { id } = useParams();
@@ -156,23 +156,27 @@ export default function CharacterSheet() {
 
   const canEdit = controls;
 
-  // A canvas tab drops the column cap and takes whatever width <main> has left
-  // after the chat panel; every other tab keeps the readable 768px measure.
   const visibleTabs = TABS.filter(
     (t) => !PC_ONLY_TABS.has(t.key) || data.character.character_type === 'pc'
   );
 
   return (
-    <div className={WIDE_TABS.has(tab) ? 'mx-auto w-full' : 'mx-auto max-w-3xl'}>
-      <BackArrow
-        role={role}
-        myCharacterId={myCharacterId}
-        character={data.character}
-        fromFolder={location.state?.fromFolder}
-        navigate={navigate}
-      />
-      <CharacterHeader character={data.character} />
-      {role === 'gm' && data.character.character_type === 'npc' && <AssignToPlayer character={data.character} />}
+    <div className="mx-auto w-full max-w-[120rem]">
+      {/* Desktop: back link, portrait + name and the NPC's assignment share one
+          row instead of stacking three. */}
+      <div className="md:flex md:items-center md:gap-4">
+        <BackArrow
+          role={role}
+          myCharacterId={myCharacterId}
+          character={data.character}
+          fromFolder={location.state?.fromFolder}
+          navigate={navigate}
+        />
+        <div className="min-w-0 md:flex-1">
+          <CharacterHeader character={data.character} />
+        </div>
+        {role === 'gm' && data.character.character_type === 'npc' && <AssignToPlayer character={data.character} />}
+      </div>
       {/* Mobile readiness (Change 002) §8.1: sticky under the mobile top
           bar so it stays reachable while a tall tab's content scrolls;
           scroll-snap-x makes the horizontal tab scroll land cleanly on
@@ -224,7 +228,7 @@ function AssignToPlayer({ character }) {
   const roster = useRoster();
   const pcs = (roster ?? []).filter((c) => c.character_type === 'pc').sort(byNaturalName);
   return (
-    <label className="mb-2 flex flex-wrap items-center gap-2 text-xs text-zinc-400">
+    <label className="mb-2 flex flex-wrap items-center gap-2 text-xs text-zinc-400 md:mb-0 md:max-w-xs md:shrink-0">
       <span className="font-display font-semibold uppercase tracking-wide">Assigned to</span>
       <select
         value={character.assigned_to ?? ''}
@@ -264,7 +268,7 @@ function BackArrow({ role, myCharacterId, character, fromFolder, navigate }) {
     <button
       type="button"
       onClick={go}
-      className="mb-2 inline-flex min-h-9 items-center gap-1.5 panel-cut-sm border border-zinc-700 px-2 text-xs font-semibold uppercase tracking-wide text-zinc-400 hover:border-brand-500 hover:text-brand-300"
+      className="mb-2 inline-flex min-h-9 shrink-0 items-center gap-1.5 panel-cut-sm border border-zinc-700 px-2 md:mb-0 text-xs font-semibold uppercase tracking-wide text-zinc-400 hover:border-brand-500 hover:text-brand-300"
     >
       <ArrowLeft size={14} aria-hidden />
       {toRoster ? 'Back to folder' : 'Back to my character'}

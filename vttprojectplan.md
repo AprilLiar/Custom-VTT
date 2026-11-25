@@ -51,6 +51,14 @@ Header: logo (→ home), Characters/Character, Scene, Events, Search, Chat, Sett
 7. **Settings** (`/settings`).
 Chat is a side panel on desktop and a full-screen overlay on a phone (with an unread badge). One error boundary shows a reload prompt if a page throws.
 
+**Desktop uses the whole screen (decided, play feedback):** no page keeps a narrow centred column on a PC — each is laid out for the width it has (capped at 120rem for ultra-wide monitors), per page rather than stretched; phones are unchanged.
+- **Characters:** the folder tree is a sticky sidebar; cards fill as many columns as fit (at least 12rem each), so a wide screen shows more characters, not wider ones.
+- **Character sheet:** back link, portrait + name and an NPC's "Assigned to" share one header row. **Counters** are cards in as many columns as fit (22rem+), the New Counter form the last card (dashed); **Role-play** questions flow into two columns (three on very wide screens) with "add your own" below; **Scene Pictures** is a gallery (9rem+ tiles); **Combat** is the full combat sheet; **Relationships** its canvas.
+- **Settings:** two labelled columns — "On this device" and, for the GM, "For the whole table"; a Player's cards flow into two columns.
+- **Homebrew:** a sticky list sidebar; the editor splits into the basics, Abilities and Actions — two columns on a laptop (Actions below), three on a wide monitor.
+- **Events:** lanes run the full width, so more notes show before a lane scrolls; notes grow a little on very wide screens.
+- The Role modal stays a centred landing card; the Scene tab was already full screen.
+
 ## Characters
 - **Role-play tab:** answers to seven fixed questions (keyed by their exact text) plus up to 20 custom ones.
 - **Scene Pictures tab:** the transparent-PNG art a character shows on the Scene stage (`scene_pictures`), with crops; "copy from profile picture".
