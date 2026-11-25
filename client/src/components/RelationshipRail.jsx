@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { naturalCompare } from '../lib/folders.js';
 import { buildFolderTree } from '../lib/folders.js';
 import { portraitSrc } from '../lib/image.js';
 import { cropOf } from '../lib/imageCrop.js';
@@ -65,7 +66,7 @@ export default function RelationshipRail({
       list.sort((a, b) => {
         const aPc = a.character_type === 'pc' ? 0 : 1;
         const bPc = b.character_type === 'pc' ? 0 : 1;
-        return aPc - bPc || a.name.localeCompare(b.name);
+        return aPc - bPc || naturalCompare(a.name, b.name);
       });
     }
     return map;

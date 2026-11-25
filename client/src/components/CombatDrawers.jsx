@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { usePersistentSet } from '../lib/persistentState.js';
 import { Minus, Plus } from 'lucide-react';
 import { socket } from '../socket.js';
 import { getCombatProfiles } from '../lib/api.js';
 import { useRoster } from '../lib/useRoster.js';
 import { useCharacterFolders as useSharedCharacterFolders } from '../lib/sceneLists.js';
-import { buildFolderTree } from '../lib/folders.js';
+import { buildFolderTree, byNaturalName } from '../lib/folders.js';
 import { FolderRosterNode } from './FolderRoster.jsx';
 import { beginFighterDrag } from '../lib/combatDrag.js';
 import { fileToSceneBackground } from '../lib/image.js';
@@ -83,7 +84,8 @@ export function CombatFightersDrawer() {
   const profiles = useCombatProfiles();
   const folders = useCharacterFolders();
   const [query, setQuery] = useState('');
-  const [collapsed, setCollapsed] = useState(() => new Set());
+  // Remembered across visits (decided).
+  const [collapsed, setCollapsed] = usePersistentSet('vtt-combat-roster-collapsed');
   const toggle = (id) =>
     setCollapsed((prev) => {
       const next = new Set(prev);
@@ -104,7 +106,7 @@ export function CombatFightersDrawer() {
       if (!map.has(key)) map.set(key, []);
       map.get(key).push(c);
     }
-    for (const list of map.values()) list.sort((a, b) => a.name.localeCompare(b.name));
+    for (const list of map.values()) list.sort(byNaturalName);
     return map;
   }, [chars]);
   const chip = (c) => <FighterChip key={`c${c.id}`} fighter={fighterOf('character', c, profiles)} label={c.character_type === 'npc' ? 'NPC' : ''} />;

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { byNaturalName } from '../lib/folders.js';
 import { Paperclip } from 'lucide-react';
 import { socket } from '../socket.js';
 import { getChat } from '../lib/api.js';
@@ -522,7 +523,7 @@ export default function ChatPanel({ open }) {
         controlled={controlled}
         characters={[...characters.values()]
           .filter((c) => role === 'gm' || c.character_type === 'pc')
-          .sort((a, b) => a.name.localeCompare(b.name))}
+          .sort(byNaturalName)}
       />
       {counterEntry && (
         <CounterAdjustDialog

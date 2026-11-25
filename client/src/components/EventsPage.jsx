@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ChevronDown, ChevronUp, EyeOff, GripVertical, Plus, Trash2, Users } from 'lucide-react';
+import { Check, ChevronDown, ChevronUp, EyeOff, GripVertical, Plus, Trash2, Undo2, Users } from 'lucide-react';
 import { socket } from '../socket.js';
 import { useRole } from '../roleContext.jsx';
 import { getEvents } from '../lib/api.js';
@@ -183,16 +183,37 @@ function Note({ note, dragging, ...handlers }) {
   );
 }
 
+// **Complete (decided):** a hover button at the top-right ticks the note done —
+// its text crossed out but still readable, the note greyed; again to undo.
 function NoteFace({ note, lifted = false }) {
+  const done = Boolean(note.completed);
   return (
     <article
-      className={`relative flex h-full min-h-32 flex-col gap-1 p-3 pr-6 shadow-md ${NOTE_COLORS[note.color] ?? NOTE_COLORS.yellow} ${lifted ? 'rotate-2 shadow-2xl' : ''} ${note.mine ? 'cursor-pointer' : 'cursor-grab'}`}
+      className={`group relative flex h-full min-h-32 flex-col gap-1 p-3 pr-6 shadow-md ${done ? 'bg-zinc-400 text-zinc-700' : NOTE_COLORS[note.color] ?? NOTE_COLORS.yellow} ${lifted ? 'rotate-2 shadow-2xl' : ''} ${note.mine ? 'cursor-pointer' : 'cursor-grab'}`}
       title={note.mine ? 'Drag to move · click to edit' : 'Drag to move'}
+      data-completed={done ? 'true' : undefined}
     >
       <span data-grip className="absolute right-1 top-1 cursor-grab touch-none p-0.5 text-zinc-700/60" aria-label="Drag">
         <GripVertical size={16} />
       </span>
-      <p className="whitespace-pre-wrap break-words text-sm leading-snug">{note.text}</p>
+      {!lifted && (
+        <button
+          type="button"
+          onPointerDown={(e) => e.stopPropagation()}
+          onPointerUp={(e) => e.stopPropagation()}
+          onClick={(e) => {
+            e.stopPropagation();
+            socket.emit('event_note:complete', { noteId: note.id, done: !done });
+          }}
+          title={done ? 'Not complete' : 'Complete'}
+          aria-label={done ? 'Mark not complete' : 'Mark complete'}
+          className="absolute right-6 top-1 flex h-6 items-center gap-0.5 rounded-sm bg-zinc-900/80 px-1.5 text-[10px] font-bold uppercase tracking-wide text-zinc-100 opacity-0 transition hover:bg-emerald-700 focus:opacity-100 group-hover:opacity-100 [@media(hover:none)]:opacity-70"
+        >
+          {done ? <Undo2 size={12} aria-hidden /> : <Check size={12} aria-hidden />}
+          {done ? 'Undo' : 'Complete'}
+        </button>
+      )}
+      <p className={`whitespace-pre-wrap break-words text-sm leading-snug ${done ? 'line-through decoration-zinc-700/70 decoration-2' : ''}`}>{note.text}</p>
       <p className="mt-auto text-[10px] font-semibold uppercase tracking-wide text-zinc-700/70">{note.author}</p>
     </article>
   );

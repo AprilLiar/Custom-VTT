@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
+import { usePersistentSet, usePersistentState } from '../lib/persistentState.js';
 import { socket } from '../socket.js';
 import { useCharacterFolders, useTempNpcFolders, useTempNpcList } from '../lib/sceneLists.js';
 import { useRoster } from '../lib/useRoster.js';
 import { useStage } from '../lib/useStage.js';
-import { buildFolderTree } from '../lib/folders.js';
+import { buildFolderTree, byNaturalName } from '../lib/folders.js';
 import { FolderRosterNode } from './FolderRoster.jsx';
 import FolderTreeNav from './FolderTreeNav.jsx';
 import Thumb from './Thumb.jsx';
@@ -56,8 +57,9 @@ export default function SceneCastDrawer() {
   const characterFolders = useCharacterFolders();
   const tempNpcs = useTempNpcList();
   const tempNpcFolders = useTempNpcFolders();
-  const [currentTempFolder, setCurrentTempFolder] = useState(null);
-  const [collapsedFolders, setCollapsedFolders] = useState(new Set());
+  // Remembered across visits (decided): the same folders open when you come back.
+  const [currentTempFolder, setCurrentTempFolder] = usePersistentState('vtt-cast-temp-folder', null);
+  const [collapsedFolders, setCollapsedFolders] = usePersistentSet('vtt-cast-collapsed');
   const [newTempNpcName, setNewTempNpcName] = useState('');
   const [editingTempNpc, setEditingTempNpc] = useState(null);
   const [summoning, setSummoning] = useState(null); // { ownerType, ownerId, ownerName, currentScenePictureId }
@@ -113,7 +115,7 @@ export default function SceneCastDrawer() {
       if (!map.has(key)) map.set(key, []);
       map.get(key).push(c);
     }
-    for (const list of map.values()) list.sort((a, b) => a.name.localeCompare(b.name));
+    for (const list of map.values()) list.sort(byNaturalName);
     return map;
   }, [characters]);
   const folderlessCharacters = charsByFolder.get(null) ?? [];
@@ -122,7 +124,7 @@ export default function SceneCastDrawer() {
     () =>
       (tempNpcs ?? [])
         .filter((n) => (n.folder_id ?? null) === currentTempFolder)
-        .sort((a, b) => a.name.localeCompare(b.name)),
+        .sort(byNaturalName),
     [tempNpcs, currentTempFolder]
   );
 

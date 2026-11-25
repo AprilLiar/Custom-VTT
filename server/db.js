@@ -1173,6 +1173,8 @@ export async function initDb() {
       created_at TEXT DEFAULT CURRENT_TIMESTAMP
     )
   `);
+  // A note marked Complete (crossed out and grey, still readable — decided).
+  await ensureColumn('event_notes', 'completed', 'INTEGER NOT NULL DEFAULT 0');
   // ---------------------------------------------------------------------
 
   // **Scene drawings (decided, new).** A shared pen/eraser annotation layer

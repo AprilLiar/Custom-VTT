@@ -37,6 +37,7 @@ export function shapeBoard(lanes, notes, viewer) {
           id: n.id,
           text: n.text,
           color: n.color,
+          completed: Boolean(n.completed),
           author: n.author_role === 'gm' ? 'GM' : (n.author_name ?? 'A player'),
           mine: mayEditNote(n, viewer),
         })),
@@ -147,6 +148,13 @@ export function registerEventHandlers({ on, socket, io }) {
     if (!note || !mayEditNote(note, v) || !laneVisible(await laneFor(note.lane_id), v)) return;
     const nextText = text === undefined ? note.text : cleanText(text, NOTE_MAX) || note.text;
     await run('UPDATE event_notes SET text = ?, color = ? WHERE id = ?', [nextText, cleanColor(color) ?? note.color, note.id]);
+    await changed();
+  });
+  // **Complete (decided):** anyone who sees the note may tick it done (or undo it).
+  on('event_note:complete', async ({ noteId, done }) => {
+    const note = await noteFor(noteId);
+    if (!note || !laneVisible(await laneFor(note.lane_id), viewer())) return;
+    await run('UPDATE event_notes SET completed = ? WHERE id = ?', [done ? 1 : 0, note.id]);
     await changed();
   });
   on('event_note:delete', async ({ noteId }) => {

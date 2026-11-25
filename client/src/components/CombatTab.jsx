@@ -39,15 +39,18 @@ export default function CombatTab({ ownerType, ownerId, canEdit = false, ownerNa
 
   if (!profile) return <p className="text-sm text-zinc-500">Loading…</p>;
 
+  // A character: the whole tab is the combat sheet, the token in its banner.
+  if (ownerType === 'character') {
+    return <BuildTab characterId={ownerId} canEdit={canEdit} isNpc={isNpc} tokenSlot={<TokenPicture ownerType={ownerType} ownerId={ownerId} profile={profile} canEdit={canEdit} name={ownerName} compact />} />;
+  }
   return (
     <div className="space-y-6">
       <TokenPicture ownerType={ownerType} ownerId={ownerId} profile={profile} canEdit={canEdit} name={ownerName} />
-      {ownerType === 'character' && <BuildTab characterId={ownerId} canEdit={canEdit} isNpc={isNpc} />}
     </div>
   );
 }
 
-function TokenPicture({ ownerType, ownerId, profile, canEdit, name }) {
+function TokenPicture({ ownerType, ownerId, profile, canEdit, name, compact = false }) {
   const fileRef = useRef(null);
   const { pick, dialog, busy } = usePictureUpload({
     process: fileToPortrait,
@@ -60,7 +63,7 @@ function TokenPicture({ ownerType, ownerId, profile, canEdit, name }) {
     onPicked: (fields) => socket.emit('combat_profile:update', { ownerType, ownerId, ...fields }),
   });
   return (
-    <section className="flex items-center gap-4">
+    <section className={compact ? 'flex shrink-0 flex-col items-center gap-1' : 'flex items-center gap-4'}>
       <button
         type="button"
         disabled={!canEdit}
@@ -78,6 +81,13 @@ function TokenPicture({ ownerType, ownerId, profile, canEdit, name }) {
       </button>
       <input ref={fileRef} type="file" accept="image/*" hidden onChange={pick} />
       {dialog}
+      {compact ? (
+        canEdit && profile.image_url && (
+          <button type="button" onClick={() => socket.emit('combat_profile:update', { ownerType, ownerId, clearImage: true })} className="text-[10px] font-semibold text-red-500 hover:text-red-400">
+            Remove
+          </button>
+        )
+      ) : (
       <div>
         <h3 className="font-display text-sm font-bold uppercase tracking-wide text-zinc-300">Combat token</h3>
         <p className="text-xs text-zinc-500">
@@ -93,6 +103,7 @@ function TokenPicture({ ownerType, ownerId, profile, canEdit, name }) {
           </button>
         )}
       </div>
+      )}
     </section>
   );
 }

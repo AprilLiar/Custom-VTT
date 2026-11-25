@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
+import { usePersistentState } from '../lib/persistentState.js';
+import { byNaturalName } from '../lib/folders.js';
 import { socket } from '../socket.js';
 import { useSceneFolders, useSceneList } from '../lib/sceneLists.js';
 import Thumb from './Thumb.jsx';
@@ -28,7 +30,10 @@ export default function SceneListDrawer({ activeSceneId }) {
   // Kept for the session (play feedback 8): no reload when the drawer reopens.
   const scenes = useSceneList();
   const folders = useSceneFolders();
-  const [currentFolder, setCurrentFolder] = useState(null);
+  // Remembered across visits (decided): back on the Scene tab, the same folder is open.
+  const [savedFolder, setCurrentFolder] = usePersistentState('vtt-scenes-folder', null);
+  // (A folder deleted meanwhile: back to the top.)
+  const currentFolder = savedFolder != null && folders && !folders.some((f) => f.id === savedFolder) ? null : savedFolder;
   const [newSceneName, setNewSceneName] = useState('');
   const [editingScene, setEditingScene] = useState(null);
 
@@ -47,7 +52,7 @@ export default function SceneListDrawer({ activeSceneId }) {
     () =>
       (scenes ?? [])
         .filter((s) => (s.folder_id ?? null) === currentFolder)
-        .sort((a, b) => a.name.localeCompare(b.name)),
+        .sort(byNaturalName),
     [scenes, currentFolder]
   );
 

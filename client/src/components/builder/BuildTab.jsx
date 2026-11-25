@@ -17,7 +17,7 @@ import { SPEND_KEYS, SPEND_MODES, spendPrefs } from '../../lib/patd/engine/damag
 // the read-only rules reference — every Ability, Action and Super Move this
 // character has (decided: on the sheet only, not in combat).
 
-export default function BuildTab({ characterId, canEdit, isNpc = false }) {
+export default function BuildTab({ characterId, canEdit, isNpc = false, tokenSlot = null }) {
   // Skills off (GM setting): the Skills step is skipped.
   const skillsOn = useSkillsEnabled();
   const STEPS = skillsOn ? ALL_STEPS : ALL_STEPS.filter((st) => st.key !== 'skills');
@@ -50,9 +50,11 @@ export default function BuildTab({ characterId, canEdit, isNpc = false }) {
 
   // ---- the first run
   if (!saved) {
-    if (!canEdit) return <p className="text-sm italic text-zinc-500">No build yet.</p>;
+    if (!canEdit) return <div className="space-y-3">{tokenSlot}<p className="text-sm italic text-zinc-500">No build yet.</p></div>;
     if (!draft) {
       return (
+        <div className="flex flex-wrap items-center gap-4">
+        {tokenSlot}
         <button
           type="button"
           onClick={() => {
@@ -63,6 +65,7 @@ export default function BuildTab({ characterId, canEdit, isNpc = false }) {
         >
           Create this character&rsquo;s build
         </button>
+        </div>
       );
     }
     const last = step === STEPS.length - 1;
@@ -109,23 +112,39 @@ export default function BuildTab({ characterId, canEdit, isNpc = false }) {
     );
   }
 
-  return <Overview saved={saved} idx={idx} canEdit={canEdit} editing={editing} setEditing={setEditing} save={save} characterId={characterId} isNpc={isNpc} />;
+  return <Overview saved={saved} idx={idx} canEdit={canEdit} editing={editing} setEditing={setEditing} save={save} characterId={characterId} isNpc={isNpc} tokenSlot={tokenSlot} />;
 }
 
-function Overview({ saved, idx, canEdit, editing, setEditing, save, characterId, isNpc }) {
+// **The Combat tab as a character sheet (decided, play feedback).** The whole
+// screen: a banner with who they are (token, type, level, XP, bars, Build,
+// Archetypes), a Stance switcher, then three columns — the **choices** that
+// make the build (each editable in place), every **active Ability** in one
+// place (always on, then the chosen Stance's), and the **Actions** (Personal
+// for that Stance, Super Moves, then the Basic ones). Phones stack them.
+function Overview({ saved, idx, canEdit, editing, setEditing, save, characterId, isNpc, tokenSlot = null }) {
   const skillsOn = useSkillsEnabled();
   const d = useMemo(() => deriveBuild(saved, idx), [saved, idx]);
+  const build = useMemo(() => normalizeBuild(saved, idx), [saved, idx]);
   const [edit, setEdit] = useState(null);
   const startEdit = (key) => {
     setEdit(normalizeBuild(saved, idx));
     setEditing(key);
   };
-  const section = (key, title, body) => (
-    <section className="space-y-1.5 panel-cut-sm border border-zinc-800 bg-zinc-900/70 p-2.5">
+  const name = (id) => idx.get(id)?.name ?? id;
+  // The Stance the sheet shows (Frantic: each Form and Style is its own source).
+  const stanceTabs = d.type.assemble
+    ? [...d.formIds, ...d.styleIds].map((id) => ({ key: id, name: idx.get(id)?.name ?? id, abilityIds: idx.get(id)?.abilityIds ?? [], actionIds: idx.get(id)?.actionIds ?? [], dice: null, range: idx.get(id)?.range ?? null }))
+    : d.stances.map((s) => ({ key: s.key, name: s.name, abilityIds: s.abilityIds, actionIds: s.actionIds, dice: s.dice, range: s.range }));
+  const [picked, setPicked] = useState(null);
+  const current = stanceTabs.find((t) => t.key === picked) ?? stanceTabs[0] ?? null;
+
+  // A choice block: its title, an Edit button, and the builder step when editing.
+  const choice = (key, title, body) => (
+    <section className="space-y-1.5 border-b border-zinc-800/80 pb-3 last:border-b-0">
       <div className="flex items-center justify-between">
-        <h3 className="font-display text-xs font-bold uppercase tracking-wide text-zinc-300">{title}</h3>
+        <h4 className="font-display text-[11px] font-bold uppercase tracking-[0.18em] text-zinc-500">{title}</h4>
         {canEdit && editing !== key && (
-          <button type="button" onClick={() => startEdit(key)} className="text-[11px] text-zinc-400 hover:text-zinc-100">
+          <button type="button" onClick={() => startEdit(key)} className="rounded-sm px-1.5 text-[11px] font-semibold text-brand-300 hover:bg-brand-950/60 hover:text-brand-100">
             Edit
           </button>
         )}
@@ -155,84 +174,199 @@ function Overview({ saved, idx, canEdit, editing, setEditing, save, characterId,
       )}
     </section>
   );
+  const column = (title, accent, children, extra = '') => (
+    <div className={`min-w-0 space-y-3 panel-cut border border-zinc-800 bg-zinc-900/60 p-3 ${extra}`}>
+      <h3 className={`flex items-center gap-2 font-display text-sm font-bold uppercase tracking-wide ${accent}`}>{title}</h3>
+      {children}
+    </div>
+  );
+  const chip = (text, tone = 'border-zinc-700 bg-zinc-900 text-zinc-200') => <span className={`rounded-sm border px-2 py-0.5 text-xs font-semibold ${tone}`}>{text}</span>;
+  const pct = d.level.nextXp ? Math.min(100, Math.round(((build.xp ?? 0) / d.level.nextXp) * 100)) : 100;
 
-  const name = (id) => idx.get(id)?.name ?? id;
+  return (
+    <div className="space-y-4" data-testid="combat-sheet">
+      {/* ---- the banner */}
+      <header className="relative overflow-hidden panel-cut-lg border border-zinc-800 bg-[radial-gradient(ellipse_at_top_left,rgba(220,38,38,0.18),transparent_60%),linear-gradient(180deg,#18181b,#0c0c0e)] p-4">
+        <div className="flex flex-wrap items-center gap-4">
+          {tokenSlot}
+          <div className="min-w-0 flex-1 space-y-2">
+            <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+              <span className="font-display text-2xl font-bold uppercase tracking-wide text-zinc-50">{d.type.name}</span>
+              <span className="font-display text-lg font-bold text-amber-300">Level {d.level.level}</span>
+              {d.level.canLevelUp && <span className="rounded-sm bg-amber-500 px-1.5 text-[11px] font-bold uppercase text-zinc-950">Level up ready</span>}
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {d.archetypes.map((a) => chip(`${a.name} · ${a.variant}`, 'border-purple-500/60 bg-purple-950/40 text-purple-100'))}
+              {d.build.buildId && chip(name(d.build.buildId), 'border-zinc-600 bg-zinc-800 text-zinc-100')}
+              {build.warriorPathId && chip(name(build.warriorPathId), 'border-sky-600/60 bg-sky-950/40 text-sky-100')}
+            </div>
+          </div>
+          <dl className="grid grid-cols-3 gap-2 text-center sm:min-w-80">
+            {[
+              ['Health Bars', d.healthBars],
+              ['Bonus die', d.level.bonusDie ? `d${d.level.bonusDie.sides}` : '—'],
+              ['HP per bar', `+${d.level.bonusHpPerBar}`],
+            ].map(([k, v]) => (
+              <div key={k} className="panel-cut-sm border border-zinc-800 bg-zinc-950/70 px-2 py-1.5">
+                <dt className="text-[10px] font-bold uppercase tracking-wide text-zinc-500">{k}</dt>
+                <dd className="font-display text-xl font-bold text-zinc-100">{v}</dd>
+              </div>
+            ))}
+          </dl>
+        </div>
+        {d.level.xpLevel != null && (
+          <div className="mt-3 flex items-center gap-2 text-xs">
+            <span className="font-mono text-zinc-300">{build.xp ?? 0} XP</span>
+            <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-zinc-800">
+              <div className={`h-full ${d.level.canLevelUp ? 'bg-amber-400' : 'bg-brand-500'}`} style={{ width: `${pct}%` }} />
+            </div>
+            <span className="text-zinc-500">{d.level.nextXp != null ? `${d.level.nextXp} for level ${build.level + 1}` : 'max level'}</span>
+          </div>
+        )}
+      </header>
+      <Warnings derived={d} />
+
+      {/* ---- the Stance switcher */}
+      {stanceTabs.length > 0 && (
+        <nav className="flex gap-2 overflow-x-auto pb-1" aria-label={d.type.assemble ? 'Forms and Styles' : 'Stances'}>
+          {stanceTabs.map((t) => {
+            const on = current?.key === t.key;
+            return (
+              <button
+                key={t.key}
+                type="button"
+                onClick={() => setPicked(t.key)}
+                aria-pressed={on}
+                className={`min-w-52 shrink-0 panel-cut-sm border px-3 py-2 text-left transition ${on ? 'border-brand-500 bg-brand-950/50 shadow-[0_0_12px_rgba(220,38,38,0.25)]' : 'border-zinc-800 bg-zinc-900/70 hover:border-zinc-600'}`}
+              >
+                <span className="block font-display text-sm font-bold uppercase tracking-wide text-zinc-100">{t.name}</span>
+                <span className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-zinc-400">
+                  {t.dice && <DiceRow dice={t.dice} />}
+                  {t.range && <span className="rounded-sm bg-sky-950/60 px-1.5 py-0.5 font-semibold text-sky-200">{rangeText(t.range)}</span>}
+                </span>
+              </button>
+            );
+          })}
+        </nav>
+      )}
+
+      {/* ---- three columns */}
+      <div className="grid gap-4 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)] 2xl:grid-cols-[minmax(0,0.8fr)_minmax(0,1fr)_minmax(0,1.2fr)]">
+        {column(
+          'Choices',
+          'text-zinc-200',
+          <>
+            {choice('type', 'Type', <p className="text-sm text-zinc-200">{d.type.name} · {d.healthBars} Health Bar{d.healthBars === 1 ? '' : 's'}</p>)}
+            {choice(
+              'archetypes',
+              'Archetypes',
+              <ul className="space-y-1">
+                {d.archetypes.length === 0 && <li className="text-xs italic text-zinc-600">None.</li>}
+                {d.archetypes.map((a) => (
+                  <li key={a.id} className="text-sm text-zinc-200">
+                    {a.name} <span className="text-[11px] text-zinc-500">({a.variant} ability)</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {choice(
+              'stances',
+              d.type.assemble ? 'Forms & Styles' : 'Stances',
+              d.type.assemble ? (
+                <p className="text-xs text-zinc-300">
+                  Forms: {d.formIds.map(name).join(', ') || '—'}
+                  <br />
+                  Styles: {d.styleIds.map(name).join(', ') || '—'}
+                </p>
+              ) : (
+                <ul className="space-y-1">
+                  {d.stances.length === 0 && <li className="text-xs italic text-zinc-600">None.</li>}
+                  {d.stances.map((st) => (
+                    <li key={st.key} className="text-xs text-zinc-300">
+                      <span className="font-semibold text-zinc-100">{st.name}</span> <span className="text-zinc-500">· {name(st.formId)} + {name(st.styleId)}</span>
+                    </li>
+                  ))}
+                </ul>
+              )
+            )}
+            {choice('build', 'Build', <p className="text-sm text-zinc-200">{d.build.buildId ? name(d.build.buildId) : '—'}</p>)}
+            {skillsOn && choice('skills', 'Skills', <p className="text-sm text-zinc-200">{[...d.skillIds.map(name), d.customSkill].filter(Boolean).join(' · ') || '—'}</p>)}
+            {choice(
+              'level',
+              'Level & advancement',
+              <div className="space-y-1 text-xs text-zinc-300">
+                <p>
+                  Level {d.level.level} · {d.level.bonusDie ? `bonus d${d.level.bonusDie.sides}` : 'no bonus die'} · +{d.level.bonusHpPerBar} HP per bar
+                </p>
+                {d.level.grants.length > 0 && <p className="text-zinc-500">{d.level.grants.map((g) => `L${g.level}: ${grantText(g, idx)}`).join(' · ')}</p>}
+              </div>
+            )}
+            {d.level.xpLevel != null && <XpTracker build={build} level={d.level} canEdit={canEdit} save={save} idx={idx} />}
+            <HitSpends build={build} isNpc={isNpc} canEdit={canEdit} save={save} />
+            {canEdit && (
+              <button type="button" onClick={() => window.confirm('Delete this build and start over?') && socket.emit('build:clear', { characterId })} className="text-xs text-red-500 hover:text-red-400">
+                Delete build
+              </button>
+            )}
+          </>
+        )}
+        {column('Active Abilities', 'text-purple-200', <AbilitiesColumn d={d} idx={idx} current={current} />)}
+        {column('Actions', 'text-emerald-200', <ActionsColumn d={d} idx={idx} current={current} />, 'lg:col-span-2 2xl:col-span-1')}
+      </div>
+    </div>
+  );
+}
+
+// Every Ability in force, in one place: always on, Frantic, then the shown Stance's.
+function AbilitiesColumn({ d, idx, current }) {
+  const groups = [
+    { key: 'always', title: 'Always in effect', ids: d.constantAbilityIds },
+    ...(d.franticAbilityIds?.length ? [{ key: 'frantic', title: 'Frantic Abilities (one each turn)', ids: d.franticAbilityIds }] : []),
+    ...(current ? [{ key: current.key, title: `In ${current.name}`, ids: current.abilityIds }] : []),
+  ].filter((g) => g.ids.length);
+  if (!groups.length) return <p className="text-xs italic text-zinc-600">No Abilities yet.</p>;
   return (
     <div className="space-y-3">
-      <Warnings derived={d} />
-      {section(
-        'type',
-        'Type',
-        <p className="text-sm text-zinc-200">
-          {d.type.name} · Level {d.level.level}
-          {d.level.xpLevel != null ? ` · ${d.build.xp} XP` : ''} · {d.healthBars} Health Bar{d.healthBars === 1 ? '' : 's'}
-        </p>
-      )}
-      {section(
-        'archetypes',
-        'Archetypes',
-        <ul className="space-y-1">
-          {d.archetypes.length === 0 && <li className="text-xs italic text-zinc-600">None.</li>}
-          {d.archetypes.map((a) => (
-            <li key={a.id} className="text-sm text-zinc-200">
-              {a.name} <span className="text-[11px] text-zinc-500">({a.variant} ability)</span>
-            </li>
-          ))}
-        </ul>
-      )}
-      {section(
-        'stances',
-        d.type.assemble ? 'Forms & Styles' : 'Stances',
-        d.type.assemble ? (
-          <p className="text-xs text-zinc-300">
-            Forms: {d.formIds.map(name).join(', ') || '—'}
-            <br />
-            Styles: {d.styleIds.map(name).join(', ') || '—'}
-          </p>
-        ) : (
-          <ul className="space-y-1">
-            {d.stances.length === 0 && <li className="text-xs italic text-zinc-600">None.</li>}
-            {d.stances.map((s) => (
-              <li key={s.key} className="flex flex-wrap items-center gap-2 text-xs text-zinc-300">
-                <span className="font-display text-sm font-semibold uppercase tracking-wide text-zinc-100">{s.name}</span>
-                <DiceRow dice={s.dice} />
-                <span className="text-zinc-500">{rangeText(s.range)}</span>
-              </li>
+      {groups.map((g) => (
+        <div key={g.key} className="space-y-1.5">
+          <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-zinc-500">{g.title}</p>
+          <ul className="space-y-1.5">
+            {g.ids.map((id) => (
+              <RulesEntry key={id} entry={idx.get(id)} kind="Ability" />
             ))}
           </ul>
-        )
-      )}
-      {section('build', 'Build', <p className="text-sm text-zinc-200">{d.build.buildId ? name(d.build.buildId) : '—'}</p>)}
-      {skillsOn && section(
-        'skills',
-        'Skills',
-        <p className="text-sm text-zinc-200">{[...d.skillIds.map(name), d.customSkill].filter(Boolean).join(' · ') || '—'}</p>
-      )}
-      {section(
-        'level',
-        'Level & advancement',
-        <div className="space-y-1 text-xs text-zinc-300">
-          <p>
-            Level {d.level.level} · {d.level.bonusDie ? `bonus d${d.level.bonusDie.sides}` : 'no bonus die'} · +{d.level.bonusHpPerBar} HP per bar
-            {d.level.nextXp != null ? ` · next at ${d.level.nextXp} XP` : ''}
-            {d.level.canLevelUp && <span className="ml-1 font-bold text-amber-300">— enough XP to level up!</span>}
-          </p>
-          {d.level.grants.length > 0 && <p className="text-zinc-500">{d.level.grants.map((g) => `L${g.level}: ${grantText(g, idx)}`).join(' · ')}</p>}
         </div>
-      )}
-      {d.level.xpLevel != null && <XpTracker build={normalizeBuild(saved, idx)} level={d.level} canEdit={canEdit} save={save} idx={idx} />}
-      <HitSpends build={normalizeBuild(saved, idx)} isNpc={isNpc} canEdit={canEdit} save={save} />
-      <ActionsReference d={d} idx={idx} />
-      <RulesReference d={d} idx={idx} />
-      {canEdit && (
-        <button
-          type="button"
-          onClick={() => window.confirm('Delete this build and start over?') && socket.emit('build:clear', { characterId })}
-          className="text-xs text-red-500 hover:text-red-400"
-        >
-          Delete build
+      ))}
+    </div>
+  );
+}
+
+// The Actions: Personal (always available + the shown Stance's), Super Moves, then Basic.
+function ActionsColumn({ d, idx, current }) {
+  const basic = idx.content.basicActionIds ?? [];
+  const isBasic = new Set(basic);
+  const always = d.constantActionIds.filter((id) => !isBasic.has(id));
+  const [showBasic, setShowBasic] = useState(false);
+  const group = (title, ids, render = (id) => <ActionCard key={id} action={idx.get(id)} />) =>
+    ids.length > 0 && (
+      <div className="space-y-1.5">
+        <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-zinc-500">{title}</p>
+        <div className="grid gap-1.5 xl:grid-cols-2 2xl:grid-cols-1">{ids.map(render)}</div>
+      </div>
+    );
+  return (
+    <div className="space-y-3">
+      {group(current ? `${current.name}` : 'Stance', current?.actionIds ?? [])}
+      {group('Always available', always)}
+      {group('Super Moves', d.superMoveIds, (id) => <SuperMoveCard key={id} move={idx.get(id)} />)}
+      {!always.length && !(current?.actionIds ?? []).length && !d.superMoveIds.length && <p className="text-xs italic text-zinc-600">No Personal Actions yet.</p>}
+      <div className="space-y-1.5 border-t border-zinc-800 pt-2">
+        <button type="button" onClick={() => setShowBasic((v) => !v)} aria-expanded={showBasic} className="flex w-full items-center justify-between font-display text-[11px] font-bold uppercase tracking-wide text-emerald-300">
+          Basic Actions ({basic.length})
+          <span className="text-zinc-500">{showBasic ? '−' : '+'}</span>
         </button>
-      )}
+        {showBasic && <div className="grid gap-1.5 xl:grid-cols-2 2xl:grid-cols-1">{basic.map((id) => <ActionCard key={id} action={idx.get(id)} />)}</div>}
+      </div>
     </div>
   );
 }
@@ -368,114 +502,5 @@ function Warnings({ derived }) {
         <li key={w}>⚠ {w}</li>
       ))}
     </ul>
-  );
-}
-
-// **Active effects (decided: on the sheet only).** The Abilities this
-// character always has, the Frantic ones, then each Stance's. Actions live in
-// their own section below (ActionsReference).
-function RulesReference({ d, idx }) {
-  const [open, setOpen] = useState(null);
-  const groups = [
-    { key: 'always', title: 'Always in effect', abilities: d.constantAbilityIds },
-    ...(d.franticAbilityIds?.length ? [{ key: 'frantic', title: 'Frantic Abilities (one each turn)', abilities: d.franticAbilityIds }] : []),
-    ...d.stances.map((s) => ({ key: s.key, title: s.name, abilities: s.abilityIds })),
-    ...(d.type.assemble
-      ? [...d.formIds, ...d.styleIds].map((id) => ({ key: id, title: idx.get(id)?.name, abilities: idx.get(id)?.abilityIds ?? [] }))
-      : []),
-  ].filter((g) => g.abilities.length);
-  return (
-    <section className="space-y-1.5">
-      <h3 className="font-display text-xs font-bold uppercase tracking-wide text-zinc-300">Active effects</h3>
-      {groups.map((g) => (
-        <div key={g.key} className="panel-cut-sm border border-zinc-800 bg-zinc-900/50">
-          <button
-            type="button"
-            onClick={() => setOpen((k) => (k === g.key ? null : g.key))}
-            aria-expanded={open === g.key}
-            className="flex w-full items-center justify-between px-2 py-1.5 text-left font-display text-xs font-semibold uppercase tracking-wide text-zinc-200"
-          >
-            {g.title}
-            <span className="text-zinc-500">{open === g.key ? '−' : '+'}</span>
-          </button>
-          {open === g.key && (
-            <ul className="space-y-1 px-2 pb-2">
-              {g.abilities.map((id) => (
-                <RulesEntry key={id} entry={idx.get(id)} kind="Ability" />
-              ))}
-            </ul>
-          )}
-        </div>
-      ))}
-    </section>
-  );
-}
-
-// **Actions (decided):** apart from the active effects, drawn as the book's
-// cards, in two parts — Basic (everyone's) and Personal (this character's:
-// always available, then each Stance's, then Super Moves).
-function ActionsReference({ d, idx }) {
-  const basic = idx.content.basicActionIds ?? [];
-  const isBasic = new Set(basic);
-  const personal = [
-    { title: 'Always available', ids: d.constantActionIds.filter((id) => !isBasic.has(id)) },
-    ...d.stances.map((s) => ({ title: s.name, ids: s.actionIds })),
-    ...(d.type.assemble ? [...d.formIds, ...d.styleIds].map((id) => ({ title: idx.get(id)?.name, ids: idx.get(id)?.actionIds ?? [] })) : []),
-  ].filter((g) => g.ids.length);
-  const [show, setShow] = useState({ basic: false, personal: true });
-  const part = (key, title, body) => (
-    <div className="space-y-2">
-      <button
-        type="button"
-        onClick={() => setShow((v) => ({ ...v, [key]: !v[key] }))}
-        aria-expanded={show[key]}
-        className="flex w-full items-center justify-between font-display text-[11px] font-bold uppercase tracking-wide text-emerald-300"
-      >
-        {title}
-        <span className="text-zinc-500">{show[key] ? '−' : '+'}</span>
-      </button>
-      {show[key] && body}
-    </div>
-  );
-  return (
-    <section className="space-y-3">
-      <h3 className="font-display text-xs font-bold uppercase tracking-wide text-zinc-300">Actions</h3>
-      <div className="grid gap-4 md:grid-cols-2 md:divide-x md:divide-zinc-800">
-        {part(
-          'basic',
-          `Basic Actions (${basic.length})`,
-          <div className="space-y-1.5">
-            {basic.map((id) => (
-              <ActionCard key={id} action={idx.get(id)} />
-            ))}
-          </div>
-        )}
-        <div className="md:pl-4">
-          {part(
-            'personal',
-            'Personal Actions',
-            <div className="space-y-3">
-              {personal.length === 0 && d.superMoveIds.length === 0 && <p className="text-xs italic text-zinc-600">None yet.</p>}
-              {personal.map((g, i) => (
-                <div key={i} className="space-y-1.5">
-                  <p className="text-[10px] font-bold uppercase tracking-wide text-zinc-500">{g.title}</p>
-                  {g.ids.map((id) => (
-                    <ActionCard key={id} action={idx.get(id)} />
-                  ))}
-                </div>
-              ))}
-              {d.superMoveIds.length > 0 && (
-                <div className="space-y-1.5">
-                  <p className="text-[10px] font-bold uppercase tracking-wide text-zinc-500">Super Moves</p>
-                  {d.superMoveIds.map((id) => (
-                    <SuperMoveCard key={id} move={idx.get(id)} />
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-      </div>
-    </section>
   );
 }

@@ -55,3 +55,11 @@ test('folderPath: root (null) and unknown ids return null', () => {
   assert.equal(folderPath(null, FOLDERS), null);
   assert.equal(folderPath(999, FOLDERS), null);
 });
+
+test('natural order: numbers sort as numbers (Episode 2 before Episode 10)', async () => {
+  const { naturalCompare, buildFolderTree } = await import('../../client/src/lib/folders.js');
+  const names = ['13', '1', 'Episode 10', '2', 'episode 2', '11', 'Episode 1'];
+  assert.deepEqual([...names].sort(naturalCompare), ['1', '2', '11', '13', 'Episode 1', 'episode 2', 'Episode 10']);
+  const tree = buildFolderTree([{ id: 1, name: '10', parent_id: null }, { id: 2, name: '2', parent_id: null }, { id: 3, name: '1', parent_id: null }]);
+  assert.deepEqual(tree.map((f) => f.name), ['1', '2', '10']);
+});

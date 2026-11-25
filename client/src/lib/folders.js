@@ -1,3 +1,9 @@
+// **Natural order (decided):** names compare by their numbers as numbers —
+// "Episode 2" before "Episode 10", "1, 2, … 10, 11" — and case-insensitively.
+const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+export const naturalCompare = (a, b) => collator.compare(String(a ?? ''), String(b ?? ''));
+export const byNaturalName = (a, b) => naturalCompare(a?.name, b?.name);
+
 // Shared nested-folder utilities for both folder systems in this app —
 // character-list folders and move-compendium folders ("Disciplines"). Both
 // are flat arrays of { id, name, parent_id }, so the same tree logic
@@ -16,7 +22,7 @@ export function buildFolderTree(folders) {
   const build = (parentId) =>
     (byParent.get(parentId) ?? [])
       .slice()
-      .sort((a, b) => a.name.localeCompare(b.name))
+      .sort(byNaturalName)
       .map((f) => ({ ...f, children: build(f.id) }));
   return build(null);
 }

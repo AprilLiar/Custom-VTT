@@ -96,6 +96,19 @@ await sleep(400);
 g = await board('gm');
 check("a Player can't move a note into, or out of, a GM-only lane", lane(g, PUB).notes.map((n) => n.id).join() === String(anaNote.id) && lane(g, SECRET).notes.length === 1);
 
+console.log('\n--- complete ---');
+pb.emit('event_note:complete', { noteId: anaNote.id, done: true });
+pb.emit('event_note:complete', { noteId: secretNote.id, done: true });
+await sleep(300);
+a = await board(ana);
+g = await board('gm');
+check('anyone who sees a note marks it Complete (Bo ticks Ana’s)', lane(a, PUB).notes[0].completed === true);
+check("…but not a note in a lane they can't see", lane(g, SECRET).notes[0].completed === false);
+pa.emit('event_note:complete', { noteId: anaNote.id, done: false });
+await sleep(300);
+a = await board(ana);
+check('…and Undo clears it', lane(a, PUB).notes[0].completed === false);
+
 console.log('\n--- lanes again ---');
 gm.emit('event_lane:update', { laneId: pub, name: `Gossip ${stamp}`, visibility: 'gm' });
 await sleep(300);

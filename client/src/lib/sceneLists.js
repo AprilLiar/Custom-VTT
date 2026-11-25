@@ -1,10 +1,11 @@
 import { liveList } from './liveList.js';
+import { naturalCompare } from './folders.js';
 import { getCharacterFolders, getCharacters, getSceneFolders, getScenes, getTempNpcFolders, getTempNpcs } from './api.js';
 
 // **The Scene tab's lists, kept for the session (play feedback 8).** Loaded
 // once when first shown, then kept live by their socket events, so opening or
 // closing a drawer — or hiding the interface — never reloads them.
-const byName = (a, b) => String(a.name ?? '').localeCompare(String(b.name ?? ''));
+const byName = (a, b) => naturalCompare(a.name, b.name);
 
 // The GM's Scene list (`{ role: 'gm' }`: with each Scene's Timestamp cue).
 export const useSceneList = liveList({

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { byNaturalName } from '../lib/folders.js';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft } from 'lucide-react';
 import { AnimatePresence, motion } from 'framer-motion';
@@ -62,7 +63,8 @@ const TABS = [
 const PC_ONLY_TABS = new Set(['relationships']);
 // The Relationships board is the one tab that does not fit a 768px column — it
 // is a canvas, and a canvas wants the whole width the page can spare.
-const WIDE_TABS = new Set(['relationships']);
+// (Combat: the full combat sheet, the whole screen — decided.)
+const WIDE_TABS = new Set(['relationships', 'combat']);
 
 export default function CharacterSheet() {
   const { id } = useParams();
@@ -220,7 +222,7 @@ export default function CharacterSheet() {
 // fight state, chat and dice. "Nobody" (the default) keeps it the GM's alone.
 function AssignToPlayer({ character }) {
   const roster = useRoster();
-  const pcs = (roster ?? []).filter((c) => c.character_type === 'pc').sort((a, b) => a.name.localeCompare(b.name));
+  const pcs = (roster ?? []).filter((c) => c.character_type === 'pc').sort(byNaturalName);
   return (
     <label className="mb-2 flex flex-wrap items-center gap-2 text-xs text-zinc-400">
       <span className="font-display font-semibold uppercase tracking-wide">Assigned to</span>
