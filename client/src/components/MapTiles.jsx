@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import { Lock, LockOpen, Shapes, Trash2, X } from 'lucide-react';
+import { Fence, Lock, LockOpen, Shapes, Trash2, X } from 'lucide-react';
+import { BORDER_STYLE, setBorderTool, useBorderTool } from '../lib/borderTool.js';
 import { useControl } from '../lib/useControl.js';
 import { socket } from '../socket.js';
 import { DESTRUCTIBLE, TILES, TILE_BY_KEY, displayKinds, groupSquares, mergeInto, placeTile, squareKey } from '../lib/mapTiles.js';
@@ -364,6 +365,10 @@ export function MapTilePalette({ mode, left = 0, role, lockOnly = false }) {
   useEffect(() => {
     if (!open) setInfo(null);
   }, [open]);
+  // The Borders tool is the Combat map's: leaving it puts the tool down.
+  useEffect(() => {
+    if (mode !== 'combat' || role !== 'gm') setBorderTool({ on: false });
+  }, [mode, role]);
   // **A phone (play feedback 8): only the lock**, full size — tiles are placed
   // by Actions, or by the GM at a computer.
   if (lockOnly) {
@@ -405,6 +410,8 @@ export function MapTilePalette({ mode, left = 0, role, lockOnly = false }) {
       >
         <Shapes size={18} aria-hidden />
       </button>
+      {/* Map borders (GM, Combat map): the tool above the button. */}
+      {role === 'gm' && mode === 'combat' && <BorderTool />}
       {/* The personal lock, under the button (it never moves the button). */}
       <button
         type="button"
@@ -461,6 +468,94 @@ export function MapTilePalette({ mode, left = 0, role, lockOnly = false }) {
           </div>
         )}
       </div>
+      )}
+    </div>
+  );
+}
+
+// **The Borders tool (decided, GM only, Combat map):** sits above the Map
+// tiles button. On, the map takes taps and drags along square edges instead of
+// panning: the GM picks Red (no movement but Teleports) or Purple (nothing
+// crosses), and whether the borders drawn block range (yes by default — a
+// solid line; no — dashed). A tap on a matching border removes it.
+function BorderTool() {
+  const tool = useBorderTool();
+  return (
+    <div className="absolute bottom-full left-0 mb-1.5">
+      <button
+        type="button"
+        onClick={() => setBorderTool({ on: !tool.on })}
+        title="Borders: draw red or purple lines on square edges"
+        aria-label="Borders"
+        aria-pressed={tool.on}
+        data-border-tool={tool.on ? 'on' : 'off'}
+        className={`flex h-11 w-11 items-center justify-center panel-cut-sm border ${
+          tool.on ? 'border-brand-500 bg-brand-900/70 text-brand-200' : 'border-zinc-700 bg-zinc-900/85 text-zinc-300 hover:border-brand-500 hover:text-brand-300'
+        }`}
+      >
+        <Fence size={18} aria-hidden />
+      </button>
+      {tool.on && (
+        <div className="absolute bottom-0 left-full ml-1.5 w-60 space-y-2 panel-cut-sm border border-zinc-700 bg-zinc-950/95 p-2 shadow-xl" data-border-panel>
+          <div className="flex items-center justify-between">
+            <p className="font-display text-xs font-bold uppercase tracking-wide text-zinc-200">Borders</p>
+            <button type="button" onClick={() => setBorderTool({ on: false })} aria-label="Close" className="p-0.5 text-zinc-500 hover:text-zinc-200">
+              <X size={14} aria-hidden />
+            </button>
+          </div>
+          <div className="grid grid-cols-2 gap-1">
+            {Object.entries(BORDER_STYLE).map(([color, st]) => (
+              <button
+                key={color}
+                type="button"
+                onClick={() => setBorderTool({ color })}
+                aria-pressed={tool.color === color}
+                data-border-color={color}
+                className={`flex min-h-9 items-center justify-center gap-1.5 panel-cut-sm border text-[11px] font-bold uppercase tracking-wide ${
+                  tool.color === color ? 'bg-zinc-800 text-zinc-100' : 'border-zinc-800 text-zinc-400 hover:text-zinc-200'
+                }`}
+                style={tool.color === color ? { borderColor: st.stroke } : undefined}
+              >
+                <span className="h-1 w-5 rounded-full" style={{ background: st.stroke, boxShadow: `0 0 6px ${st.glow}` }} />
+                {color}
+              </button>
+            ))}
+          </div>
+          <p className="text-[11px] leading-snug text-zinc-400">{BORDER_STYLE[tool.color].blurb}</p>
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[11px] font-semibold text-zinc-300">Blocks range</span>
+            <div className="flex overflow-hidden panel-cut-sm border border-zinc-700" role="group" aria-label="Blocks range">
+              {[
+                [true, 'Yes'],
+                [false, 'No'],
+              ].map(([v, label]) => (
+                <button
+                  key={label}
+                  type="button"
+                  onClick={() => setBorderTool({ blocksRange: v })}
+                  aria-pressed={tool.blocksRange === v}
+                  data-border-range={label.toLowerCase()}
+                  className={`min-h-7 px-2.5 text-[11px] font-bold ${tool.blocksRange === v ? 'bg-brand-600 text-white' : 'text-zinc-400 hover:text-zinc-200'}`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <svg width="100%" height="10" aria-hidden>
+            <line x1="4" y1="5" x2="96%" y2="5" stroke={BORDER_STYLE[tool.color].stroke} strokeWidth="4" strokeLinecap="round" strokeDasharray={tool.blocksRange ? undefined : '9 7'} />
+          </svg>
+          <p className="text-[10px] italic leading-snug text-zinc-500">
+            Tap an edge between squares, or drag along a line of them. Tap a matching border to remove it. Solid: blocks range; dashed: doesn&rsquo;t.
+          </p>
+          <button
+            type="button"
+            onClick={() => window.confirm('Remove every border from this map?') && socket.emit('map_border:clear')}
+            className="flex w-full items-center justify-center gap-1 rounded-sm border border-zinc-800 px-1 py-1 text-[10px] text-zinc-400 hover:border-red-500 hover:text-red-400"
+          >
+            <Trash2 size={11} aria-hidden /> Clear all borders
+          </button>
+        </div>
       )}
     </div>
   );

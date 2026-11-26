@@ -15,7 +15,9 @@ import { applyHpDelta } from '../client/src/lib/hpBars.js';
 import { WEIGHT_BY_KEY, crossesBleed } from '../client/src/lib/cinematicWeight.js';
 import { TOKEN_BY_KEY, capOf, innateArmor } from '../client/src/lib/panicTokens.js';
 import { TRAY, clampLanes, moveOnLane, packLane } from '../client/src/lib/simpleLane.js';
-import { inBounds as inBoundsAt, isEmpty as isEmptyAt, makeBoard, nearestCells, neighbors as sideSquares, occupant as occupantAt } from '../client/src/lib/patd/engine/board.js';
+import { edgeMap } from '../client/src/lib/patd/engine/borders.js';
+import { loadMapBorders } from './mapBorders.js';
+import { inBounds as inBoundsAt, isEmpty as isEmptyAt, makeBoard, walled as walledAt, nearestCells, neighbors as sideSquares, occupant as occupantAt } from '../client/src/lib/patd/engine/board.js';
 import { BELT_DIRS, CONTROL_SIDE, OBSTACLES as OBSTACLE_KINDS, TILE_BY_KEY, placeTile, placementBarred, removeTile } from '../client/src/lib/mapTiles.js';
 import { cellBounds, imageSize } from './imageSize.js';
 import { sceneGrid } from './combatMap.js';
@@ -207,6 +209,10 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     // Squares: a map cell, or a lane space as (column, lane).
     let squareOf = (r) => (r.grid_col != null ? { col: r.grid_col, row: r.grid_row } : null);
     const tiles = await all('SELECT id, col, row, kind, owner_id, placed_by FROM map_tiles WHERE scene_id = ? AND mode = ?', [sceneId, mode]);
+    // **Map borders (Combat map only):** walking never crosses them, teleports
+    // not through purple, range not through those that block it (borders.js).
+    const borders = mode === 'combat' ? await loadMapBorders(sceneId) : [];
+    const borderEdges = edgeMap(borders);
     let tileSquare = (t) => ({ col: t.col, row: t.row });
     // Where a square is stored (lanes keep tiles as space index, row 0).
     let storedOf = (sq) => ({ col: sq.col, row: sq.row });
@@ -523,6 +529,7 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
           ...tileList.filter((t) => t.kind === 'bomb').map((t) => ({ id: `bomb:${t.col},${t.row}`, square: { col: t.col, row: t.row }, size: 1 })),
         ],
         exits: arena.has('cage_match') || arena.has('trick_room') || endless ? 'none' : mode === 'simple' ? 'cols' : 'all',
+        borders,
       });
       // Where comebacks land when the board itself has no edge.
       b.home = bounds;
@@ -639,13 +646,13 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
       if (here.includes('rubble') || here.includes('pit')) return;
       const next = { col: to.col + dir.dc, row: to.row + dir.dr };
       const b = board();
-      if (!inBoundsAt(b, next) || kindsAtSq(next).includes('wall') || kindsAtSq(next).includes('rubble')) return;
+      if (!inBoundsAt(b, next) || walledAt(b, to, next) || kindsAtSq(next).includes('wall') || kindsAtSq(next).includes('rubble')) return;
       sliding++;
       try {
         const other = [...fighters].find((x) => x.square && x.square.col === next.col && x.square.row === next.row && x.id !== f.id);
         if (other) {
           const beyond = { col: next.col + dir.dc, row: next.row + dir.dr };
-          if (!inBoundsAt(b, beyond) || !isEmptyAt(b, beyond, [other.id])) return;
+          if (!inBoundsAt(b, beyond) || walledAt(b, next, beyond) || !isEmptyAt(b, beyond, [other.id])) return;
           await setSquare(other, beyond, 'push');
         }
         if (!isEmptyAt(board(), next, [f.id])) return;
@@ -678,7 +685,7 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
         while (mover.square && partner.square && gridDistance(partner.square, mover.square) > 1 && steps < 30) {
           const b = board();
           const here = gridDistance(partner.square, mover.square);
-          const next = sideSquares(partner.square).filter((sq) => isEmptyAt(b, sq, [partner.id]) && gridDistance(sq, mover.square) < here)[0];
+          const next = sideSquares(partner.square).filter((sq) => !walledAt(b, partner.square, sq) && isEmptyAt(b, sq, [partner.id]) && gridDistance(sq, mover.square) < here)[0];
           if (!next) break;
           await setSquare(partner, next, 'pull');
           steps++;
@@ -789,7 +796,8 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
     };
     const sightOf = (f) => {
       const ignore = listMod(modsOf(f), 'sight.ignore');
-      return { walls: ignore.includes('walls') ? new Set() : walls, fogged: ignore.includes('fog') ? () => false : fogged };
+      // (Borders are not Walls: nothing lets a fighter see through them.)
+      return { walls: ignore.includes('walls') ? new Set() : walls, fogged: ignore.includes('fog') ? () => false : fogged, edges: borderEdges };
     };
 
     // An obstacle as the rules see it (a pick's option, a push's target).
@@ -1221,7 +1229,7 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
             for (const [dc, dr] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
               const sq = { col: at.col + dc, row: at.row + dr };
               if (!(pull ? dist(sq) < dist(at) : dist(sq) > dist(at)) || (sq.col === origin.col && sq.row === origin.row)) continue;
-              if (!inBoundsAt(b, sq) || world.obstacleAt(sq) || (o.kind === 'wall' && occupantAt(b, sq) != null)) continue;
+              if (!inBoundsAt(b, sq) || walledAt(b, at, sq) || world.obstacleAt(sq) || (o.kind === 'wall' && occupantAt(b, sq) != null)) continue;
               moved = true;
               walk(sq, n + 1);
             }
@@ -2793,7 +2801,7 @@ export function createTriggerEngine({ io, postCard, emitStageUpdated }) {
         speed: f?.tokens.speed ?? 0,
         fatigued: (f?.tokens.fatigue ?? 0) > 0,
         options: f ? moves.freeReach(movers, f, env) : [],
-        swaps: moves.swapsFor(fighters, f, env),
+        swaps: moves.swapsFor(fighters, f, env, movers),
       };
     },
     // **A hand move (decided):** the Speed the cheapest Free Movement there

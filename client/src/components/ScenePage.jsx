@@ -483,6 +483,7 @@ export default function ScenePage() {
           role={role}
           controls={controls}
           tiles={heldTileLists.combat ?? []}
+          borders={stage?.borders ?? []}
           activeCombatantId={isCombat ? (fight?.order?.[fight.turn_index]?.id ?? null) : null}
           armorUsed={isCombat ? (fight?.armor_used ?? {}) : {}}
           fxBeat={isCombat && fx.playing?.mode === 'combat' ? fx.playing : null}

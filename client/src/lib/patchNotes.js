@@ -3,6 +3,6 @@
 // package.json versions — a test checks they match) and rewrite `note` as ONE
 // sentence on every push to main.
 export const PATCH = {
-  version: '0.3.3',
-  note: "On a PC every page now uses the whole screen, each laid out for its own content: the roster, every sheet tab, Settings, Homebrew and Events.",
+  version: '0.3.4',
+  note: "The GM can now draw red and purple borders on Combat map square edges: red stops all movement but teleports, purple stops everything, and either can block range.",
 };

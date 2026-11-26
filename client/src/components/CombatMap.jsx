@@ -30,6 +30,7 @@ import { lungeOf, moveHow, slideTransition, swapStepOf } from '../lib/boardFx.js
 import { useLunge } from './fx/useLunge.js';
 import { armorRings } from '../lib/panicTokens.js';
 import { MapTileLayer } from './MapTiles.jsx';
+import MapBorderLayer from './MapBorders.jsx';
 import { HazardBadges, hazardsAt } from './HazardBadges.jsx';
 import { isTakenOut } from '../lib/hpBars.js';
 import { useHandMove } from './HandMoveDialog.jsx';
@@ -64,6 +65,8 @@ export default function CombatMap({
   armorUsed = {},
   weight = null,
   tiles = [],
+  // Map borders (red / purple lines on square edges): [{ side, col, row, color, blocksRange }].
+  borders = [],
   // The combatant whose turn it is (a fight in this mode), or null.
   activeCombatantId = null,
   // Board animations: the beat playing now (useBoardFx), or null.
@@ -246,6 +249,36 @@ export default function CombatMap({
     const a = toStagePx(r.x, r.y);
     const b = toStagePx(r.x + r.width, r.y + r.height);
     return [[a.x, a.y], [b.x, a.y], [b.x, b.y], [a.x, b.y]];
+  };
+
+  // **Map borders:** an edge's two ends in stage pixels ('v': a square's left
+  // edge, 'h': its top), and the edge nearest the pointer — only edges that
+  // touch a square of the board.
+  const edgePx = (side, col, row) => {
+    if (!ready) return null;
+    const x = grid.offsetX + col * grid.size;
+    const y = grid.offsetY + row * grid.size;
+    const a = toStagePx(x, y);
+    const b = side === 'v' ? toStagePx(x, y + grid.size) : toStagePx(x + grid.size, y);
+    return [[a.x, a.y], [b.x, b.y]];
+  };
+  const onBoard = (col, row) => boundless || cellInside(natural.width, natural.height, grid, col, row);
+  const edgeAt = (clientX, clientY) => {
+    if (!ready) return null;
+    const p = toImage(clientX, clientY);
+    const fx = (p.x - grid.offsetX) / grid.size;
+    const fy = (p.y - grid.offsetY) / grid.size;
+    const col = Math.floor(fx);
+    const row = Math.floor(fy);
+    const dx = fx - col;
+    const dy = fy - row;
+    const near = [
+      [dx, { side: 'v', col, row }, [col - 1, row]],
+      [1 - dx, { side: 'v', col: col + 1, row }, [col + 1, row]],
+      [dy, { side: 'h', col, row }, [col, row - 1]],
+      [1 - dy, { side: 'h', col, row: row + 1 }, [col, row + 1]],
+    ].sort((m, n) => m[0] - n[0])[0];
+    return onBoard(col, row) || onBoard(...near[2]) ? near[1] : null;
   };
 
   // The GM, or a Player who controls this character (their own, or an NPC assigned to them).
@@ -561,6 +594,19 @@ export default function CombatMap({
           height={stageHeight}
           rootRef={rootRef}
           zIndex={5}
+        />
+      )}
+      {/* Map borders: above the tiles, below the tokens — on top of everything while the GM paints them. */}
+      {ready && (
+        <MapBorderLayer
+          borders={borders}
+          edgePx={edgePx}
+          edgeAt={edgeAt}
+          cell={grid.size * fit.scale}
+          width={stageWidth}
+          height={stageHeight}
+          zIndex={6}
+          editable={role === 'gm' && active}
         />
       )}
       {/* Copies (phase E): the Original's picture, faded. */}

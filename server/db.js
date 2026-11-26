@@ -1572,6 +1572,22 @@ export async function initDb() {
   `);
   ddl('CREATE INDEX IF NOT EXISTS idx_map_tiles_scene ON map_tiles(scene_id, mode, col, row)');
 
+  // Map borders (server/mapBorders.js, client/src/lib/patd/engine/borders.js):
+  // one row per square edge of a Scene's Combat map that holds a red or purple
+  // border. `side` 'v' is the left edge of (col, row), 'h' its top edge.
+  ddl(`
+    CREATE TABLE IF NOT EXISTS map_borders (
+      id INTEGER PRIMARY KEY,
+      scene_id INTEGER NOT NULL REFERENCES scenes(id) ON DELETE CASCADE,
+      side TEXT NOT NULL CHECK(side IN ('v','h')),
+      col INTEGER NOT NULL,
+      row INTEGER NOT NULL,
+      color TEXT NOT NULL CHECK(color IN ('red','purple')),
+      blocks_range INTEGER NOT NULL DEFAULT 1,
+      UNIQUE(scene_id, side, col, row)
+    )
+  `);
+
   // **A fight (Panic at the Dojo, Phase 5)** — one per Scene per mode. The
   // sides are JSON arrays of combatant ids; `turn_order` is this round's
   // [{ side, id }] (client/src/lib/initiative.js); `pending_stance_combatant`

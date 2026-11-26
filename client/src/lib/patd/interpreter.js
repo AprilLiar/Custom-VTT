@@ -31,6 +31,7 @@
 // }
 // ask(request) → Promise(answer). request: { kind: 'confirm' | 'choose' | 'targets', fighter, title, text, options?, minimum?, maximum? }
 
+import { rangeBlocked } from './engine/borders.js';
 import { ENFORCED_RULES } from './engine/modifiers.js';
 import { atZero } from './engine/turn.js';
 import { addPoolValue, removePoolNumber, setPoolValue } from './diceBoard.js';
@@ -2219,10 +2220,14 @@ export function lineOfSight(a, b, walls) {
 
 // Whether `to` is a legal target from `from` for a range mode. `fogged(sq)`:
 // the square holds Fog or is next to Fog. `enemy`: Walls and Fog only limit
-// targeting enemies.
-export function targetable({ from, to, range, stanceRange, walls, fogged, enemy }) {
+// targeting enemies. `edges` (the map's borders, engine/borders.js): a border
+// that blocks range stops every target behind it, ally or enemy (only the
+// whole-map modes reach across).
+export function targetable({ from, to, range, stanceRange, walls, fogged, enemy, edges }) {
   if (!from || !to) return range?.mode === 'none' || range?.mode === 'map';
   const d = gridDistance(from, to);
+  const crossed = range?.mode !== 'none' && range?.mode !== 'map' && rangeBlocked(edges, from, to);
+  if (crossed) return false;
   const sight = !enemy || lineOfSight(from, to, walls);
   const fogOk = !enemy || d <= 1 || !fogged(to);
   switch (range?.mode) {

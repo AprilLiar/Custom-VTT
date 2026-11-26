@@ -18,6 +18,7 @@ import {
   pathCost,
   saveYourselfCost,
   saveYourselfSquares,
+  swapAllowed,
   teleportDestinations,
 } from '../../client/src/lib/patd/engine/board.js';
 import { ironAllowance, unblockableSet } from '../../client/src/lib/patd/engine/damage.js';
@@ -232,6 +233,13 @@ export function createMoves({ ask, emitEvent, postCard }) {
   async function swap(env, m, a, b) {
     if (!a?.square || !b?.square || a.id === b.id) return false;
     const [sa, sb] = [a.square, b.square];
+    // A Swap is two teleports: never through a purple border (borders.js).
+    const sb0 = m.board?.();
+    if (sb0 && !swapAllowed(sb0, sa, sb)) {
+      note(`${a.name} and ${b.name} can't swap: a purple border stands between them`);
+      await flush('Swap', a);
+      return false;
+    }
     // One "swap" beat for both (board animations), not out / in / move.
     // Quiet (play feedback 7): nobody sees one parked off the board mid-swap.
     // The one parked is never a Copy (a Copy sent off the board is destroyed);
@@ -395,9 +403,9 @@ export function createMoves({ ask, emitEvent, postCard }) {
     return r ? r.cost : null;
   }
   // Adjacent allies they could swap with (2 Speed).
-  const swapsFor = (fighters, f, env = null) =>
+  const swapsFor = (fighters, f, env = null, m = null) =>
     (f?.square && speedOf(env, f) >= 2 && !noFreeMove(modsOn(env, f))
-      ? fighters.filter((a) => a.id !== f.id && a.side === f.side && a.square && neighbors(f.square).some((n) => n.col === a.square.col && n.row === a.square.row))
+      ? fighters.filter((a) => a.id !== f.id && a.side === f.side && a.square && neighbors(f.square).some((n) => n.col === a.square.col && n.row === a.square.row) && (!m?.board || swapAllowed(m.board(), f.square, a.square)))
       : []
     ).map((a) => ({ id: a.id, name: a.name }));
 
@@ -438,6 +446,7 @@ export function createMoves({ ask, emitEvent, postCard }) {
     if (!neighbors(f.square).some((n) => n.col === ally.square.col && n.row === ally.square.row)) return { error: 'not adjacent' };
     if (speedOf(env, f) < 2) return { error: 'needs 2 Speed' };
     if (noFreeMove(modsOn(env, f))) return { error: 'cannot use Free Movement now' };
+    if (m.board && !swapAllowed(m.board(), f.square, ally.square)) return { error: 'a purple border stands between you' };
     await spendSpeed(env, f, 2);
     await swap(env, m, f, ally);
     return { ok: true };

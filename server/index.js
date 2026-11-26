@@ -28,6 +28,7 @@ import { EMPTY_FIGHT_STATE, loadSimpleStates, registerCombatStateHandlers, relea
 import { loadFightState, registerFightHandlers, wireInterrupts } from './fights.js';
 import { createTriggerEngine } from './triggers.js';
 import { loadMapTiles, registerMapTileHandlers } from './mapTiles.js';
+import { loadMapBorders, registerMapBorderHandlers } from './mapBorders.js';
 import { deleteBuild, loadBuild, registerBuildHandlers } from './builds.js';
 import { homebrewPayload, loadHomebrew, registerHomebrewHandlers, restoreAndMigrateHomebrew } from './homebrew.js';
 import { loadCore } from './homebrewCore.js';
@@ -677,8 +678,10 @@ async function buildStagePayload({ skipDrawingsFor = null } = {}) {
     : { simple: null, combat: null };
   // Map tiles, per mode — public, like the tokens.
   const tiles = await loadMapTiles(activeScene?.id ?? null);
+  // Map borders (Combat map only) — public too.
+  const borders = await loadMapBorders(activeScene?.id ?? null);
   const laneY = (await readTableSettings()).laneY;
-  return { activeScene, summons, drawings, combatTokens, simpleLanes, laneY, fighterSetup, fights, tiles };
+  return { activeScene, summons, drawings, combatTokens, simpleLanes, laneY, fighterSetup, fights, tiles, borders };
 }
 
 // Per fighter (`character:<id>`), from their build (builder phase 2): option
@@ -1656,6 +1659,7 @@ io.on('connection', (socket) => {
   // A fighter's HP, tokens, Challenge and Stance (Phase 4) — see server/combatState.js.
   registerCombatStateHandlers({ on, socket, mayWrite: mayWriteScenePicture, emitStageUpdated, postCard, triggers: triggerEngine() });
   registerMapTileHandlers({ on, socket, emitStageUpdated });
+  registerMapBorderHandlers({ on, socket, emitStageUpdated });
   registerBattleHandlers({ on, socket, emitStageUpdated, postCard, triggers: triggerEngine() });
   registerBuildHandlers({ on, socket, io, mayWrite: mayWriteScenePicture, emitStageUpdated });
   registerHomebrewHandlers({ on, socket, io, emitStageUpdated });
@@ -2252,6 +2256,7 @@ io.on('connection', (socket) => {
     await run('DELETE FROM scene_notes WHERE scene_id = ?', [scene.id]);
     await run('DELETE FROM fights WHERE scene_id = ?', [scene.id]);
     await run('DELETE FROM map_tiles WHERE scene_id = ?', [scene.id]);
+    await run('DELETE FROM map_borders WHERE scene_id = ?', [scene.id]);
     await run('DELETE FROM combatants WHERE scene_id = ?', [scene.id]);
     await run('DELETE FROM scene_summons WHERE scene_id = ?', [scene.id]);
     await run('DELETE FROM scene_drawings WHERE scene_id = ?', [scene.id]);

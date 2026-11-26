@@ -15,6 +15,8 @@
 // or a unit (a Copy, later); Empty otherwise (Fog, Rubble, Pits and Traps
 // leave it empty). Movement only ever enters empty spaces.
 
+import { blockStepWalled, edgeMap, teleportReach, teleportSteps } from './borders.js';
+
 export const key = (sq) => `${sq.col},${sq.row}`;
 // The squares a unit fills from its square: one, or a 2×2 block (the Giant).
 export const cellsOf = (sq, size = 1) =>
@@ -56,7 +58,8 @@ export const isDiagonal = (a, b) => a.col !== b.col && a.row !== b.row;
 
 // `exits`: where the Outside is — 'none' (no Outside: Chained Down's leash, Cage Match), 'all' four edges (the map), or only the
 // 'cols' ends (Simple Combat: a lane's ends are the arena's edge, decided).
-export function makeBoard({ bounds = null, tiles = [], units = [], exits = 'all' } = {}) {
+// `borders` (Combat map only, borders.js): red and purple lines on square edges.
+export function makeBoard({ bounds = null, tiles = [], units = [], exits = 'all', borders = [] } = {}) {
   const t = new Map();
   for (const x of tiles) {
     // (A Deadly Trap is a Trap that deals 3: `deadly` says so.)
@@ -68,7 +71,7 @@ export function makeBoard({ bounds = null, tiles = [], units = [], exits = 'all'
   const unitAt = new Map();
   // The Giant fills a 2×2 block from its square (the QA pass).
   for (const u of units) if (u.square) for (const c of cellsOf(u.square, u.size)) unitAt.set(key(c), u.id);
-  return { bounds, tiles: t, unitAt, exits };
+  return { bounds, tiles: t, unitAt, exits, edges: edgeMap(borders) };
 }
 
 export const inBounds = (b, sq) =>
@@ -112,8 +115,12 @@ export const isEmpty = (b, sq, ignore = []) => cellsOf(sq, b.size).every((c) => 
 const stopsAt = (b, sq) => has(b, sq, 'rubble') || has(b, sq, 'pit') || ((b.walls === 'rubble' || b.walls === 'smash') && has(b, sq, 'wall'));
 // The spaces one step away — and, from a Pit, every other Pit (Vortex Style).
 const pitsOf = (b) => [...b.tiles.entries()].filter(([, kinds]) => kinds.has('pit')).map(([k]) => ({ col: Number(k.split(',')[0]), row: Number(k.split(',')[1]) }));
+// **Borders:** a walking step never crosses a red or purple border (borders.js).
+export const walled = (b, at, n) => blockStepWalled(b.edges, at, n, b.size ?? 1);
 const stepsFrom = (b, sq, around8 = false) => {
-  const near = (around8 ? allNeighbors : neighbors)(sq).map((n) => wrapSquare(b, n));
+  const near = (around8 ? allNeighbors : neighbors)(sq)
+    .filter((n) => !walled(b, sq, n))
+    .map((n) => wrapSquare(b, n));
   if (!b.pitsLinked || !has(b, sq, 'pit')) return near;
   return [...near, ...pitsOf(b).filter((p) => !sameSquare(p, sq) && !near.some((n) => sameSquare(n, p)))];
 };
@@ -200,19 +207,26 @@ export function actionMoveDestinations(b, from, distance, upTo = false, selfId =
 // ------------------------------------------------------------------ Teleport and Swap
 
 // "Teleport X": any empty space within Range 1-X (the diamond), ignoring
-// what's between.
+// what's between — **but never through a purple border** (decided: no route
+// within X that avoids purple borders, no teleport there).
 export function teleportDestinations(b, from, distance, selfId = null) {
   const out = [];
   if (!(distance > 0)) return out;
+  const reach = b.edges?.size ? teleportReach(b.edges, from, distance) : null;
   for (let dc = -distance; dc <= distance; dc++) {
     for (let dr = -distance; dr <= distance; dr++) {
       if ((!dc && !dr) || Math.abs(dc) + Math.abs(dr) > distance) continue;
       const sq = { col: from.col + dc, row: from.row + dr };
+      if (reach && !reach.has(key(sq))) continue;
       if (isEmpty(b, sq, [selfId])) out.push({ square: sq, path: [sq] });
     }
   }
   return out;
 }
+
+// A Swap is two teleports: across a purple border only by a route around it
+// no longer than the distance between them.
+export const swapAllowed = (b, sa, sb) => teleportSteps(b.edges, sa, sb, gridDistance(sa, sb)) != null;
 
 // ------------------------------------------------------------------ Forced Movement (push and pull)
 
@@ -249,6 +263,8 @@ export function forcedMoves(b, target, origin, distance, { pull = false, upTo = 
     let moved = false;
     for (const n of steps) {
       if (sameSquare(n, origin) || sameSquare(n, target) || path.some((p) => sameSquare(p, n))) continue;
+      // A border stops a push or pull before it (and keeps them from the Outside).
+      if (walled(b, at, n)) continue;
       if (!inBounds(b, n) && b.wrap) {
         // Trick Room: off the edge, in at the opposite side — the movement ends there.
         const w = wrapSquare(b, n);
@@ -313,6 +329,6 @@ export function landingsOf(moves) {
 export function saveYourselfSquares(b, landing, { from = null, selfId = null } = {}) {
   const at = landing ?? from;
   if (!at) return [];
-  return neighbors(at).filter((n) => isEmpty(b, n, [selfId])).concat(landing ? [] : isEmpty(b, from, [selfId]) ? [from] : []);
+  return neighbors(at).filter((n) => !walled(b, at, n) && isEmpty(b, n, [selfId])).concat(landing ? [] : isEmpty(b, from, [selfId]) ? [from] : []);
 }
 export const saveYourselfCost = (b, landing) => 1 + (landing && has(b, landing, 'pit') ? 1 : 0);
