@@ -1,0 +1,39 @@
+{
+  "id": "style.hb-swarmkeeper-style-4k19",
+  "kind": "style",
+  "name": "Swarmkeeper Style",
+  "descriptionText": "Swarmkeeper Style focuses on Attaching to multiple creatures at once, using your Copies, manipulating the battlefield in unpredictable ways.",
+  "range": {
+    "minimum": 1,
+    "maximum": 3
+  },
+  "archetypeId": "archetype.hb-parasite-1mc5",
+  "abilities": [
+    {
+      "uid": "4amxxk5r",
+      "name": "Swarmkeeper Style",
+      "rulesText": "At the start of your turn, create 2 Copies within Range. Whenever you Attach, your Copies can also Attach to a creature within range that has no character's Attached.",
+      "rules": [
+        {
+          "moment": "text",
+          "optional": false,
+          "steps": []
+        }
+      ]
+    }
+  ],
+  "actions": [
+    {
+      "uid": "50mkp8nr",
+      "name": "Controll the Swarm",
+      "cost": "4+ or 8+",
+      "rulesText": "Choose 1: Pull 3 to all characters to whom your Copies are Attached -or- Push 3 to all characters to whom your Copies are Attached.\n8+: Choose both, while deciding to do either one of them for each character."
+    },
+    {
+      "uid": "yying4xp",
+      "name": "Hazardous Plains",
+      "cost": "5+ or 9+",
+      "rulesText": "Create a Trap, adjacent to every character to whom your Copies are Attached.\n9+: Instead place Pit Traps"
+    }
+  ]
+}

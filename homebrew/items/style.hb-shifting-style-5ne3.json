@@ -1,0 +1,33 @@
+{
+  "id": "style.hb-shifting-style-5ne3",
+  "kind": "style",
+  "name": "Shifting Style",
+  "descriptionText": "Shifting style often changes Attached characters to maximize their impact.",
+  "range": {
+    "minimum": 1,
+    "maximum": 3
+  },
+  "archetypeId": "archetype.hb-parasite-1mc5",
+  "abilities": [
+    {
+      "uid": "rnmat6fi",
+      "name": "Shifting Style",
+      "rulesText": "Whenever you first Attach yourself to a specific character during this Round, use Leech on them for free.",
+      "rules": []
+    }
+  ],
+  "actions": [
+    {
+      "uid": "8d2r6bzo",
+      "name": "Dynamic Attachment",
+      "cost": "3 Speed Tokens",
+      "rulesText": "Can be used once per Turn, during other character's turn.\nAttach yourself to a character within range. You cannot be attached to more than 1 character and you break Attachment when you select a new target."
+    },
+    {
+      "uid": "3g3d4xha",
+      "name": "Giveaway",
+      "cost": "3+ or 6+ or 9+",
+      "rulesText": "Transfer up to 2 of your Tokens to the Attached Character.\n6+: up to 4 Tokens instead.\n9+ up to 6 Tokens instead."
+    }
+  ]
+}

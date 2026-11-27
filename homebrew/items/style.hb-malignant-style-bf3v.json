@@ -1,0 +1,39 @@
+{
+  "id": "style.hb-malignant-style-bf3v",
+  "kind": "style",
+  "name": "Malignant Style",
+  "descriptionText": "Malignant Style is focused on disrupting enemy turns and making their life miserable.",
+  "range": {
+    "minimum": 1,
+    "maximum": 1
+  },
+  "archetypeId": "archetype.hb-parasite-1mc5",
+  "abilities": [
+    {
+      "uid": "gkqhm3ln",
+      "name": "Malignant Style",
+      "rulesText": "Whenever a character, that you are Attached to, heals or gets a Shield, you steal half of it (rounding down).",
+      "rules": [
+        {
+          "moment": "text",
+          "optional": false,
+          "steps": []
+        }
+      ]
+    }
+  ],
+  "actions": [
+    {
+      "uid": "07dcukbr",
+      "name": "Sap Life",
+      "cost": "5+ or 9+",
+      "rulesText": "Steal 2 HP from the Attached character.\n9+: Steal 1 more HP and give 1 Weakness and 1 Fatigue Tokens."
+    },
+    {
+      "uid": "ih3sni1x",
+      "name": "Overtake Body",
+      "cost": "3+",
+      "rulesText": "Force the Attached creature to Move up to 2. Additionally, if the Attached character has Speed Tokens, you can make them spend up to 2 of them to move even further."
+    }
+  ]
+}
