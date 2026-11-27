@@ -1115,6 +1115,13 @@ export async function initDb() {
   // from the left (packLane in client/src/lib/simpleLane.js), so a new summon
   // finds a space by itself.
   await ensureColumn('scene_summons', 'lane_slot', 'INTEGER');
+  // **One size per character (decided, play feedback):** a figure's size on
+  // the Scene stage belongs to the character (or Temp NPC), not to each
+  // Scene's summon — resizing it anywhere resizes it on every Scene, and new
+  // summons start at it. NULL: never resized (1x). Backfilled once from the
+  // newest summon that had been resized, so a size already set up survives.
+  await ensureColumn('characters', 'scene_scale', 'REAL');
+  await ensureColumn('temp_npcs', 'scene_scale', 'REAL');
   // ---------------------------------------------------------------------
 
   // GM Notes (decided, new). Two shapes, one dialog:
@@ -1743,6 +1750,20 @@ export async function initDb() {
 
   // After the queue is drained, so the columns exist to be written to.
   await backfillImageHashes();
+  await backfillSceneScales();
+}
+
+// One size per character (see scene_summons above): a character never resized
+// since then takes the size of its newest resized summon. Safe on every boot —
+// resizing now writes the character and all its summons alike, so only sizes
+// set before this existed are picked up.
+async function backfillSceneScales() {
+  for (const [table, col] of [['characters', 'character_id'], ['temp_npcs', 'temp_npc_id']]) {
+    await run(
+      `UPDATE ${table} SET scene_scale = (SELECT ss.scale FROM scene_summons ss WHERE ss.${col} = ${table}.id AND ss.scale != 1 ORDER BY ss.id DESC LIMIT 1)
+       WHERE scene_scale IS NULL AND EXISTS (SELECT 1 FROM scene_summons ss WHERE ss.${col} = ${table}.id AND ss.scale != 1)`
+    );
+  }
 }
 
 // **Indexes on the foreign keys this app actually looks rows up by (decided,

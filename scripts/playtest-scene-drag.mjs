@@ -176,6 +176,26 @@ check(
   JSON.stringify(belowArtwork)
 );
 
+// ============================================ 5. one size per character
+console.log('\n--- a figure\'s size is the character\'s: every Scene follows ---');
+gm.emit('stage:resize_summon', { summonId: aliceSummon.id, scale: 1.75 });
+gm.emit('scene:create', { name: `Drag2 ${stamp}` });
+await sleep(400);
+const scene2 = (await jf('/api/scenes?role=gm')).find((x) => x.name === `Drag2 ${stamp}`);
+gm.emit('scene:activate', { sceneId: scene2.id });
+await sleep(300);
+aliceSock.emit('stage:summon', { scenePictureId: alicePicture.id });
+await sleep(400);
+let alice2 = await summonOf(alice.id, null);
+check('a new summon on another Scene starts at her size (1.75)', alice2 && alice2.id !== aliceSummon.id && alice2.scale === 1.75, JSON.stringify(alice2));
+aliceSock.emit('stage:resize_summon', { summonId: alice2.id, scale: 0.8 });
+await sleep(300);
+gm.emit('scene:activate', { sceneId: scene.id });
+await sleep(300);
+const aliceBack = await summonOf(alice.id, null);
+check('resizing her there resizes her on the first Scene too (0.8)', aliceBack.id === aliceSummon.id && aliceBack.scale === 0.8, JSON.stringify(aliceBack));
+gm.emit('scene:delete', { sceneId: scene2.id });
+
 gm.emit('scene:delete', { sceneId: scene.id });
 await sleep(300);
 console.log(failures ? `\n${failures} FAILED` : '\nALL PASSED');

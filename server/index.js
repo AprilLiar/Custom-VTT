@@ -614,7 +614,7 @@ async function buildStagePayload({ skipDrawingsFor = null } = {}) {
     ? await all(
         `
     SELECT ss.id, ss.side, ss.character_id, ss.temp_npc_id, ss.scene_picture_id,
-           ss.pos_x, ss.pos_y, ss.scale, ss.is_hidden, ss.lane_slot,
+           ss.pos_x, ss.pos_y, COALESCE(c.scene_scale, tn.scene_scale, 1) AS scale, ss.is_hidden, ss.lane_slot,
            sp.image_hash AS picture_hash,
            COALESCE(c.name, tn.name) AS name
     FROM scene_summons ss
@@ -2439,7 +2439,11 @@ io.on('connection', (socket) => {
     const ownerType = summon.character_id != null ? 'character' : 'temp_npc';
     const ownerId = summon.character_id ?? summon.temp_npc_id;
     if (!mayWriteScenePicture(viewer, ownerType, ownerId)) return;
-    await run('UPDATE scene_summons SET scale = ? WHERE id = ?', [clamp(Number(scale), 0.25, 4), summon.id]);
+    // **One size per character (decided):** the size is the character's (or
+    // Temp NPC's) — every Scene's figure of them follows, and new summons too.
+    const next = clamp(Number(scale), 0.25, 4);
+    await run(`UPDATE ${ownerType === 'character' ? 'characters' : 'temp_npcs'} SET scene_scale = ? WHERE id = ?`, [next, ownerId]);
+    await run(`UPDATE scene_summons SET scale = ? WHERE ${ownerType === 'character' ? 'character_id' : 'temp_npc_id'} = ?`, [next, ownerId]);
     await emitStageUpdated();
   });
 
