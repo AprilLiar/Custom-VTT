@@ -1,0 +1,19 @@
+{
+  "id": "super-move.hb-we-do-not-belong-here-v6m1",
+  "kind": "superMove",
+  "name": "We Do Not Belong Here",
+  "descriptionText": "",
+  "ownerId": "archetype.hb-parasite-1mc5",
+  "variant": "delta",
+  "costCount": 2,
+  "costMinimum": 3,
+  "abilities": [],
+  "actions": [
+    {
+      "uid": "6ubw198y",
+      "name": "We Do Not Belong Here",
+      "cost": "Two matching numbers, each 3 or higher",
+      "rulesText": "Usable only while you are Attached. Teleport yourself and the Attached character to any space on the map, without breaking Attachment. Afterwards, force the Attached character to perform up to 3 Actions, available in their current stance, as if they had spent a 4."
+    }
+  ]
+}

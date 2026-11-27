@@ -1,0 +1,39 @@
+{
+  "id": "style.hb-duel-style-7jpt",
+  "kind": "style",
+  "name": "Duel Style",
+  "descriptionText": "Duel style is focused on creating the perfect environment for a 1 on 1 fight.",
+  "range": {
+    "minimum": 1,
+    "maximum": 2
+  },
+  "archetypeId": "archetype.hb-hater-8ett",
+  "abilities": [
+    {
+      "uid": "fibvmilr",
+      "name": "Duel Style",
+      "rulesText": "At the start of your turn, Challenge and enemy, holding your Hatred Token. The first time each turn, when an enemy Challenged by you deal damage to you, you deal 2 damage back to them, if they are within your range. A character holding your Challenge Token cannot move away from you or teleport in a way, that would increase the distance between you two. You are affected by the same effect.",
+      "rules": []
+    }
+  ],
+  "actions": [
+    {
+      "uid": "1qqxjcep",
+      "name": "Exchange Strikes",
+      "cost": "4+ or 8+ or 12+",
+      "rulesText": "Force an enemy Challenged by you to deal 1 damage to you. Afterwards, Heal 1 and deal 2 damage to them.\n8+: Force an enemy Challenged by you to deal 2 damage to you. Afterwards, Heal 2 and deal 3 damage to them.\n12+: Force an enemy Challenged by you to deal 2 damage to you. Afterwards, Heal 2 and deal 3 damage to them."
+    },
+    {
+      "uid": "airf45h2",
+      "name": "Clash!",
+      "cost": "1+ or 5+ or 10+",
+      "rulesText": "Pull up to 1 to an enemy with your Hatred Token, then, Pull yourself up to 1 to them\n5+: Pull 3 in both cases instead\n10+: Pull 5 in both cases, and both of you deal 1 damage to each other"
+    },
+    {
+      "uid": "dxg0mdqf",
+      "name": "Anticipate Retaliation",
+      "cost": "2+ or 6+ or 10+",
+      "rulesText": "Heal. If you have been damaged by a character, holding your Hatred Token this turn, gain 1 Iron Token,\n6+: Also gain Temporary Armor and Heal 1\n10+: Also give the enemy holding your Challenge Token 3 Weakness Tokens"
+    }
+  ]
+}

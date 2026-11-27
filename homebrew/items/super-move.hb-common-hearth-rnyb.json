@@ -1,0 +1,19 @@
+{
+  "id": "super-move.hb-common-hearth-rnyb",
+  "kind": "superMove",
+  "name": "Common Hearth",
+  "descriptionText": "",
+  "ownerId": "archetype.hb-parasite-1mc5",
+  "variant": "alpha",
+  "costCount": 2,
+  "costMinimum": 3,
+  "abilities": [],
+  "actions": [
+    {
+      "uid": "wif8xz0q",
+      "name": "Common Hearth",
+      "cost": "Two matching numbers, each 3 or higher",
+      "rulesText": "Attach to a character and Heal. This Attachment cannot be broken in any way until the end of your next turn. While Attached this way, you can steal up to half of the Damage, Healing, or Tokens received by the character you are attached to."
+    }
+  ]
+}
