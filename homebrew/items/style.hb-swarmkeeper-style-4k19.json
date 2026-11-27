@@ -25,7 +25,7 @@
   "actions": [
     {
       "uid": "50mkp8nr",
-      "name": "Controll the Swarm",
+      "name": "Control the Swarm",
       "cost": "4+ or 8+",
       "rulesText": "Choose 1: Pull 3 to all characters to whom your Copies are Attached -or- Push 3 to all characters to whom your Copies are Attached.\n8+: Choose both, while deciding to do either one of them for each character."
     },

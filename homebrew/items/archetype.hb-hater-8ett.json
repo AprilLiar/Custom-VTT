@@ -2,7 +2,7 @@
   "id": "archetype.hb-hater-8ett",
   "kind": "archetype",
   "name": "Hater",
-  "descriptionText": "Hater is an archetype that specializes in complete and utter destruction of a singular foe.\n\nHatred Token: While a character holds your Hatred Token, you are effectively Challenged by them. Hatred Token cannot be discarded by anyone, other than the character who has given it. When a character, holding a Hatred Token looses a health bar or is Taken Out, the character who has given it Heals 2 times.",
+  "descriptionText": "Hater is an archetype that specializes in complete and utter destruction of a singular foe.\n\nHatred Token: While a character holds your Hatred Token, you are effectively Challenged by them. Hatred Token cannot be discarded by anyone, other than the character who has given it. When a character, holding a Hatred Token loses a health bar or is Taken Out, the character who has given it Heals 2 times.",
   "archetypeKind": "player",
   "abilities": [
     {
@@ -15,7 +15,7 @@
     {
       "uid": "tq3tm5vj",
       "name": "Fused Hater",
-      "rulesText": "At the start of your turn give any enemy you know is present in the combat a Hatred token. You cannot give another character a Hatred token, until the current character who is holding it is Taken Out. After that, add X to your Action Pool. X is equal to the damage on the current health bar of a character with a Hatred Token, to a maximum of 9. X cannot be lower than 2.",
+      "rulesText": "At the start of your turn give any enemy you know is present in the combat a Hatred token. You cannot give another character a Hatred token, until the current character who is holding it is Taken Out. After that, add X to your Action Pool. X is equal to half the damage on the current health bar of a character with a Hatred Token, rounded up, to a maximum of 9. X cannot be lower than 2.",
       "variant": "fused",
       "rules": []
     },
@@ -32,7 +32,7 @@
       "uid": "e7inkdvj",
       "name": "Pursuit",
       "cost": "3+",
-      "rulesText": "Pull yourself up to 4 to a an enemy holding your Hatred Token. Then, deal 1 damage to them."
+      "rulesText": "Pull yourself up to 4 to an enemy holding your Hatred Token. Then, deal 1 damage to them."
     }
   ]
 }

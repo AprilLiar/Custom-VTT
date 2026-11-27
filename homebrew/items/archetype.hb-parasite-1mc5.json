@@ -2,7 +2,7 @@
   "id": "archetype.hb-parasite-1mc5",
   "kind": "archetype",
   "name": "Parasite",
-  "descriptionText": "Parasites live off others and unable to survive by themselves. Be it friend or foe - you do not really care, as survival is the only goal in your head.",
+  "descriptionText": "Parasites live off others and unable to survive by themselves. Be it friend or foe - you do not really care, as survival is the only goal in your head.\n\nAttached: you share the Attached character's space and count as Adjacent to them. If the Attached character is not present (Taken Out or removed from play), you are no longer Attached.",
   "archetypeKind": "player",
   "abilities": [
     {

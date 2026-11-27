@@ -202,3 +202,25 @@ test('the repo’s homebrew core: automation names real items and parts, and eve
     for (const r of a.rules) assert.ok(!byHand.has(r.id) && !byHand.has(a.id), `${a.id}: automated by Claude but the engine runs it by hand`);
   for (const x of merged.content.actions.filter((y) => y.homebrew && y.effect)) assert.ok(!byHand.has(x.id), `${x.id}: automated by Claude but the engine runs it by hand`);
 });
+
+test("Claude's edits to live homebrew: applied once, only while the old text is there", async () => {
+  const { applyEdits } = await import('../../client/src/lib/patd/homebrewSync.js');
+  const item = { id: 'style.hb-x-1', name: 'Controll', descriptionText: 'A b.', abilities: [{ uid: 'aaaaaa11', name: 'A', rulesText: 'use Leach now' }], actions: [{ uid: 'bbbbbb22', name: 'Go', cost: '3+', rulesText: 'x' }] };
+  const edits = [
+    { id: 'style.hb-x-1', field: 'name', from: 'Controll', to: 'Control' },
+    { id: 'style.hb-x-1', field: 'abilities.aaaaaa11.rulesText', from: 'Leach', to: 'Leech' },
+    { id: 'style.hb-x-1', field: 'descriptionText', from: 'A b.', to: 'A b.\n\nMore.' },
+    { id: 'other', field: 'name', from: 'Go', to: 'No' },
+    { id: 'style.hb-x-1', field: 'actions.bbbbbb22.uid', from: 'b', to: 'c' },
+  ];
+  const once = applyEdits(item, edits);
+  assert.ok(once.changed);
+  assert.equal(once.item.name, 'Control');
+  assert.equal(once.item.abilities[0].rulesText, 'use Leech now');
+  assert.equal(once.item.descriptionText, 'A b.\n\nMore.');
+  assert.equal(once.item.actions[0].uid, 'bbbbbb22', 'only text fields');
+  const twice = applyEdits(once.item, edits);
+  assert.equal(twice.changed, false, 'an appending edit applies once');
+  const rewritten = applyEdits({ ...item, name: 'Something else' }, edits);
+  assert.equal(rewritten.item.name, 'Something else', "the GM's own newer text is left alone");
+});

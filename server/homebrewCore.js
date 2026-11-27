@@ -18,6 +18,7 @@ export const HOMEBREW_DIR = process.env.HOMEBREW_DIR || path.join(here, '..', 'h
 
 let coreItems = new Map();
 let automation = emptyAutomation();
+let edits = [];
 
 function readAutomation(dir) {
   try {
@@ -43,15 +44,27 @@ function readItems(dir) {
   return out;
 }
 
+// Claude's text edits to live items (homebrewSync.js applyEdits).
+function readEdits(dir) {
+  try {
+    const data = JSON.parse(fs.readFileSync(path.join(dir, 'edits.json'), 'utf8'));
+    return Array.isArray(data?.edits) ? data.edits : [];
+  } catch {
+    return [];
+  }
+}
+
 export function loadCore(dir = HOMEBREW_DIR) {
   coreItems = readItems(dir);
   automation = readAutomation(dir);
+  edits = readEdits(dir);
   return { items: [...coreItems.values()], automation };
 }
 
 export const coreItemList = () => [...coreItems.values()];
 export const coreIds = () => [...coreItems.keys()];
 export const homebrewAutomation = () => automation;
+export const homebrewEdits = () => edits;
 
 // After a commit: the core is now exactly the published items.
 export function setCoreItems(items) {

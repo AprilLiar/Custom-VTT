@@ -13,7 +13,7 @@
       "uid": "wif8xz0q",
       "name": "Common Hearth",
       "cost": "Two matching numbers, each 3 or higher",
-      "rulesText": "Attach to a character and Heal. This Attachment cannot be broken in any way until the end of your next turn. While Attached this way, you can steal up to half of the Damage, Healing, or Tokens received by the character you are attached to."
+      "rulesText": "Attach to a character and Heal. This Attachment cannot be broken in any way until the end of your next turn. While Attached this way, you may redirect to yourself up to half of the Damage received by the character you are attached to, and you can steal up to half of the Healing or Tokens they receive."
     }
   ]
 }

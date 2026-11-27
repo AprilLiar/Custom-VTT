@@ -128,3 +128,33 @@ export function automationReport(items, automation) {
   for (const id of Object.keys(automation?.items ?? {})) if (!ids.has(id)) report.orphanItems.push(id);
   return report;
 }
+
+// **Claude's edits to live homebrew (decided):** the live table wins over the
+// repo, so a text fix Claude makes at the GM's request rides in
+// `homebrew/edits.json` — { edits: [{ id, field, from, to }] } — and is applied
+// to the live item at boot. `field`: 'name' | 'descriptionText' | 'rulesText'
+// | 'abilities.<uid>.<name|rulesText>' | 'actions.<uid>.<name|cost|rulesText>'.
+// Each replaces the text `from` with `to` only while `from` is still there and
+// `to` is not yet — so it applies once, and never over a newer edit of yours.
+const EDITABLE = new Set(['name', 'rulesText', 'cost', 'descriptionText']);
+export function applyEdits(item, edits) {
+  let out = item;
+  let changed = false;
+  const swap = (v, e) => {
+    if (typeof v !== 'string' || typeof e.from !== 'string' || typeof e.to !== 'string' || !e.from) return v;
+    if (!v.includes(e.from) || (e.to.includes(e.from) ? v.includes(e.to) : false)) return v;
+    changed = true;
+    return v.replace(e.from, e.to);
+  };
+  for (const e of edits ?? []) {
+    if (!e || e.id !== item.id || typeof e.field !== 'string') continue;
+    const [part, uid, key] = e.field.split('.');
+    if (!key) {
+      if (EDITABLE.has(part)) out = { ...out, [part]: swap(out[part], e) };
+      continue;
+    }
+    if ((part !== 'abilities' && part !== 'actions') || !EDITABLE.has(key)) continue;
+    out = { ...out, [part]: (out[part] ?? []).map((x) => (x.uid === uid ? { ...x, [key]: swap(x[key], e) } : x)) };
+  }
+  return { item: changed ? out : item, changed };
+}

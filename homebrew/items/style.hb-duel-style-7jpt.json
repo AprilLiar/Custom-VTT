@@ -12,7 +12,7 @@
     {
       "uid": "fibvmilr",
       "name": "Duel Style",
-      "rulesText": "At the start of your turn, Challenge and enemy, holding your Hatred Token. The first time each turn, when an enemy Challenged by you deal damage to you, you deal 2 damage back to them, if they are within your range. A character holding your Challenge Token cannot move away from you or teleport in a way, that would increase the distance between you two. You are affected by the same effect.",
+      "rulesText": "At the start of your turn, Challenge an enemy holding your Hatred Token. The first time each turn, when an enemy Challenged by you deals damage to you, you deal 2 damage back to them, if they are within your range. A character holding your Challenge Token cannot move away from you or teleport in a way, that would increase the distance between you two. You are affected by the same effect.",
       "rules": []
     }
   ],

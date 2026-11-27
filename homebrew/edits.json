@@ -1,0 +1,13 @@
+{
+  "edits": [
+    { "id": "archetype.hb-hater-8ett", "field": "abilities.tq3tm5vj.rulesText", "from": "X is equal to the damage on the current health bar of a character with a Hatred Token, to a maximum of 9.", "to": "X is equal to half the damage on the current health bar of a character with a Hatred Token, rounded up, to a maximum of 9." },
+    { "id": "archetype.hb-hater-8ett", "field": "descriptionText", "from": "looses a health bar", "to": "loses a health bar" },
+    { "id": "archetype.hb-hater-8ett", "field": "actions.e7inkdvj.rulesText", "from": "to a an enemy", "to": "to an enemy" },
+    { "id": "style.hb-duel-style-7jpt", "field": "abilities.fibvmilr.rulesText", "from": "Challenge and enemy, holding your Hatred Token", "to": "Challenge an enemy holding your Hatred Token" },
+    { "id": "style.hb-duel-style-7jpt", "field": "abilities.fibvmilr.rulesText", "from": "when an enemy Challenged by you deal damage to you", "to": "when an enemy Challenged by you deals damage to you" },
+    { "id": "style.hb-co-existence-style-vd34", "field": "abilities.y183xl7a.rulesText", "from": "use Leach for free", "to": "use Leech for free" },
+    { "id": "style.hb-swarmkeeper-style-4k19", "field": "actions.50mkp8nr.name", "from": "Controll the Swarm", "to": "Control the Swarm" },
+    { "id": "super-move.hb-common-hearth-rnyb", "field": "actions.wif8xz0q.rulesText", "from": "you can steal up to half of the Damage, Healing, or Tokens received by the character you are attached to.", "to": "you may redirect to yourself up to half of the Damage received by the character you are attached to, and you can steal up to half of the Healing or Tokens they receive." },
+    { "id": "archetype.hb-parasite-1mc5", "field": "descriptionText", "from": "as survival is the only goal in your head.", "to": "as survival is the only goal in your head.\n\nAttached: you share the Attached character's space and count as Adjacent to them. If the Attached character is not present (Taken Out or removed from play), you are no longer Attached." }
+  ]
+}

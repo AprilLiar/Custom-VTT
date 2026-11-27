@@ -12,10 +12,11 @@
 // automation map live in server/homebrewCore.js and ride along with the items
 // to every client (`{ items, automation, coreIds }`), which draws the wrenches.
 import { all, one, run } from './db.js';
-import { cleanHomebrew, ensureUids, isHomebrewId, newHomebrewId } from '../client/src/lib/patd/homebrew.js';
+import { HB_PREFIX, cleanHomebrew, ensureUids, isHomebrewId, newHomebrewId } from '../client/src/lib/patd/homebrew.js';
+import { applyEdits } from '../client/src/lib/patd/homebrewSync.js';
 import { HOMEBREW_TOKEN_KEYS } from '../client/src/lib/patd/homebrew.js';
 import { bookContent, setHomebrewItems } from './patdContent.js';
-import { coreIds, coreItemList, homebrewAutomation, setCoreItems } from './homebrewCore.js';
+import { coreIds, coreItemList, homebrewAutomation, homebrewEdits, setCoreItems } from './homebrewCore.js';
 import { commitHomebrew, githubConfig } from './githubCommit.js';
 
 const parse = (row) => {
@@ -47,14 +48,17 @@ export async function restoreAndMigrateHomebrew() {
     let restored = 0;
     for (const item of coreItemList()) {
       const clean = cleanHomebrew(item, bookContent(), HOMEBREW_TOKEN_KEYS);
-      if (clean && item.id.startsWith(`${clean.kind}.`)) (await save({ ...clean, id: item.id }), restored++);
+      if (clean && item.id.startsWith(HB_PREFIX[clean.kind])) (await save({ ...clean, id: item.id }), restored++);
     }
     console.log(`Homebrew: restored ${restored} item(s) from the committed core`);
     items = await listHomebrew();
   }
   for (const item of items) {
     const { item: fixed, changed } = ensureUids(item);
-    if (changed) await save(fixed);
+    // Claude's edits (homebrew/edits.json), each applied once.
+    const { item: edited, changed: editedNow } = applyEdits(fixed, homebrewEdits());
+    if (editedNow) console.log(`Homebrew: applied Claude's edits to ${item.name}`);
+    if (changed || editedNow) await save(edited);
   }
 }
 
